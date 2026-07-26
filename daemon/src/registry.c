@@ -25,7 +25,8 @@ struct registry_entry *registry_find(const char *name)
 }
 
 enum registry_error registry_create(const char *name, const struct container_spec *spec,
-                                     uint32_t ip_be, struct registry_entry **out)
+                                     uint32_t ip_be, const char *network_name,
+                                     struct registry_entry **out)
 {
 	int i, slot = -1;
 	struct registry_entry *e;
@@ -53,9 +54,24 @@ enum registry_error registry_create(const char *name, const struct container_spe
 	e->in_use = 1;
 	e->reactor_conn = NULL;
 	e->ip_be = ip_be;
+	memset(e->network, 0, sizeof(e->network));
+	if (network_name != NULL)
+		strncpy(e->network, network_name, sizeof(e->network) - 1);
 
 	*out = e;
 	return REGISTRY_OK;
+}
+
+int registry_network_in_use(const char *network_name)
+{
+	int i;
+
+	for (i = 0; i < REGISTRY_MAX_CONTAINERS; i++) {
+		if (g_entries[i].in_use && g_entries[i].network[0] != '\0' &&
+		    strcmp(g_entries[i].network, network_name) == 0)
+			return 1;
+	}
+	return 0;
 }
 
 int registry_alloc_ip(uint32_t network_base_be, int host_min, int host_max, uint32_t *out_ip_be)
@@ -124,6 +140,11 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 		jw_null(w);
 	else
 		jw_int(w, entry->exit_status);
+	jw_key(w, "network");
+	if (entry->network[0] == '\0')
+		jw_null(w);
+	else
+		jw_str(w, entry->network);
 	jw_key(w, "ip");
 	if (entry->ip_be == 0) {
 		jw_null(w);

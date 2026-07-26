@@ -3,6 +3,7 @@
 
 #include "container.h"
 #include "json.h"
+#include "network.h"
 
 #define REGISTRY_MAX_CONTAINERS 256
 #define REGISTRY_NAME_MAX 64
@@ -21,6 +22,7 @@ struct registry_entry {
 	int exit_status;   /* valid once running == 0 */
 	int in_use;        /* 0 for free slots */
 	uint32_t ip_be;    /* network byte order; 0 = not attached to a network */
+	char network[NETWORK_NAME_MAX]; /* empty string if not attached */
 	/*
 	 * Opaque; owned exclusively by main.c's epoll bookkeeping
 	 * (registry.c never reads or writes it beyond zeroing it here).
@@ -44,14 +46,25 @@ void registry_init(void);
  * over from a previous occupant would otherwise leak into a new,
  * non-networked container. On success returns REGISTRY_OK and *out
  * points at the stored entry (stable for the process lifetime -- the
- * table is a fixed array, never reallocated). On
- * REGISTRY_ERR_CREATE_FAILED, errno is set by the failing
+ * table is a fixed array, never reallocated). network_name (NULL or
+ * "" if the container has no network) is stored atomically alongside
+ * ip_be, for the same reason: a stale value from a previous occupant
+ * of a reused slot must never leak into a new container.
+ * On REGISTRY_ERR_CREATE_FAILED, errno is set by the failing
  * container_create()/cgroup_create() call.
  */
 enum registry_error registry_create(const char *name, const struct container_spec *spec,
-                                     uint32_t ip_be, struct registry_entry **out);
+                                     uint32_t ip_be, const char *network_name,
+                                     struct registry_entry **out);
 
 struct registry_entry *registry_find(const char *name);
+
+/*
+ * True if any in-use entry currently reports network_name as its own
+ * -- used by network_delete() to refuse removing a network something
+ * is still attached to.
+ */
+int registry_network_in_use(const char *network_name);
 
 /*
  * Scans in-use entries' recorded IPs for the first unused host

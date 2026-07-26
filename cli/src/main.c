@@ -26,7 +26,10 @@ static void print_usage(FILE *out)
 	        "  ps\n"
 	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] [--network=NAME] -- CMD [ARGS...]\n"
 	        "  inspect NAME\n"
-	        "  rm NAME\n");
+	        "  rm NAME\n"
+	        "  network create --name=NAME --subnet=A.B.C.D --prefix=N\n"
+	        "  network ls\n"
+	        "  network rm NAME\n");
 }
 
 static const char *json_str_field(const struct json_value *obj, const char *key)
@@ -123,6 +126,27 @@ static void fmt_removed(const struct json_value *v)
 {
 	(void)v;
 	printf("removed\n");
+}
+
+static void fmt_network_line(const struct json_value *v)
+{
+	const char *name = json_str_field(v, "name");
+	const char *subnet = json_str_field(v, "subnet");
+	long prefix_len = (long)json_as_number(json_object_get(v, "prefix_len"));
+	const char *gateway = json_str_field(v, "gateway");
+
+	printf("%-20s %s/%-3ld gateway=%s\n", name, subnet, prefix_len, gateway);
+}
+
+static void fmt_network_list(const struct json_value *v)
+{
+	const struct json_value *networks = json_object_get(v, "networks");
+	size_t i;
+
+	if (networks == NULL || networks->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < networks->u.array.count; i++)
+		fmt_network_line(networks->u.array.items[i]);
 }
 
 /*
@@ -298,6 +322,106 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	return emit(&r, json_mode, fmt_container_line);
 }
 
+static int cmd_network_create(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *name = NULL;
+	const char *subnet = NULL;
+	long prefix_len = -1;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--name=", 7) == 0)
+			name = argv[i] + 7;
+		else if (strncmp(argv[i], "--subnet=", 9) == 0)
+			subnet = argv[i] + 9;
+		else if (strncmp(argv[i], "--prefix=", 9) == 0)
+			prefix_len = atol(argv[i] + 9);
+		else {
+			fprintf(stderr, "kanxeoctl: unknown network create option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	if (name == NULL || subnet == NULL || prefix_len < 0) {
+		fprintf(stderr,
+		        "usage: kanxeoctl network create --name=NAME --subnet=A.B.C.D --prefix=N\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "subnet");
+	jw_str(&w, subnet);
+	jw_key(&w, "prefix_len");
+	jw_int(&w, prefix_len);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/networks", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_network_line);
+}
+
+static int cmd_network_ls(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/networks", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_network_list);
+}
+
+static int cmd_network_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: network rm requires a network name\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/networks/%s", argv[0]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static int cmd_network(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr,
+		        "usage: kanxeoctl network create --name=NAME --subnet=A.B.C.D --prefix=N\n"
+		        "       kanxeoctl network ls\n"
+		        "       kanxeoctl network rm NAME\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "create") == 0)
+		return cmd_network_create(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "ls") == 0)
+		return cmd_network_ls(c, json_mode);
+	if (strcmp(sub, "rm") == 0)
+		return cmd_network_rm(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown network subcommand '%s'\n", sub);
+	return 2;
+}
+
 int main(int argc, char **argv)
 {
 	const char *host = DEFAULT_HOST;
@@ -340,6 +464,8 @@ int main(int argc, char **argv)
 		return cmd_inspect(&client, json_mode, argc - i, argv + i);
 	if (strcmp(cmd, "rm") == 0)
 		return cmd_rm(&client, json_mode, argc - i, argv + i);
+	if (strcmp(cmd, "network") == 0)
+		return cmd_network(&client, json_mode, argc - i, argv + i);
 
 	fprintf(stderr, "kanxeoctl: unknown command '%s'\n", cmd);
 	print_usage(stderr);

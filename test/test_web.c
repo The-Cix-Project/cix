@@ -8,7 +8,6 @@
  * something this test (or any tool in this project) can verify.
  */
 #include "httpclient.h"
-#include "test_net_cleanup.h"
 
 #include <signal.h>
 #include <stdio.h>
@@ -126,14 +125,6 @@ int main(void)
 			ok = 0;
 		}
 	}
-
-	/*
-	 * Test hygiene: ensure_default_network() creates "kanxeo0" on every
-	 * kanxeod startup, regardless of whether this test exercises
-	 * networking, so repeated runs (and other tests using the same
-	 * subnet, like test_rtnetlink.c) start clean.
-	 */
-	test_cleanup_bridge("kanxeo0");
 
 	printf(ok ? "WEB RESULT: PASS\n" : "WEB RESULT: FAIL\n");
 	return ok ? 0 : 1;

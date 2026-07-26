@@ -12,6 +12,8 @@ const healthBadge = document.getElementById("health");
 const statusBox = document.getElementById("status");
 const containersBody = document.getElementById("containers-body");
 const runForm = document.getElementById("run-form");
+const networksBody = document.getElementById("networks-body");
+const networkForm = document.getElementById("network-form");
 
 function showStatus(message, isError) {
 	statusBox.textContent = message;
@@ -134,6 +136,77 @@ async function removeContainer(name) {
 	}
 }
 
+function renderNetworks(networks) {
+	networksBody.textContent = "";
+
+	if (networks.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+		cell.colSpan = 5;
+		cell.className = "empty";
+		cell.textContent = "No networks";
+		row.appendChild(cell);
+		networksBody.appendChild(row);
+		return;
+	}
+
+	for (const n of networks) {
+		const row = document.createElement("tr");
+
+		const nameCell = document.createElement("td");
+		nameCell.textContent = n.name;
+		row.appendChild(nameCell);
+
+		const subnetCell = document.createElement("td");
+		subnetCell.textContent = n.subnet;
+		row.appendChild(subnetCell);
+
+		const prefixCell = document.createElement("td");
+		prefixCell.textContent = n.prefix_len;
+		row.appendChild(prefixCell);
+
+		const gatewayCell = document.createElement("td");
+		gatewayCell.textContent = n.gateway;
+		row.appendChild(gatewayCell);
+
+		const actionCell = document.createElement("td");
+		const rmButton = document.createElement("button");
+		rmButton.textContent = "Remove";
+		rmButton.className = "button-danger";
+		rmButton.addEventListener("click", () => removeNetwork(n.name));
+		actionCell.appendChild(rmButton);
+		row.appendChild(actionCell);
+
+		networksBody.appendChild(row);
+	}
+}
+
+async function refreshNetworks() {
+	try {
+		const data = await apiRequest("GET", "/v1/networks");
+		renderNetworks(data.networks);
+	} catch (e) {
+		networksBody.textContent = "";
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+		cell.colSpan = 5;
+		cell.className = "empty";
+		cell.textContent = "Could not load networks: " + e.message;
+		row.appendChild(cell);
+		networksBody.appendChild(row);
+	}
+}
+
+async function removeNetwork(name) {
+	try {
+		await apiRequest("DELETE", "/v1/networks/" + encodeURIComponent(name));
+		clearStatus();
+		await refreshNetworks();
+	} catch (e) {
+		showStatus("Failed to remove network " + name + ": " + e.message, true);
+	}
+}
+
 runForm.addEventListener("submit", async (event) => {
 	event.preventDefault();
 
@@ -166,9 +239,33 @@ runForm.addEventListener("submit", async (event) => {
 	}
 });
 
+networkForm.addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const name = document.getElementById("nf-name").value.trim();
+	const subnet = document.getElementById("nf-subnet").value.trim();
+	const prefixText = document.getElementById("nf-prefix").value.trim();
+
+	const body = {
+		name: name,
+		subnet: subnet,
+		prefix_len: parseInt(prefixText, 10),
+	};
+
+	try {
+		await apiRequest("POST", "/v1/networks", body);
+		clearStatus();
+		networkForm.reset();
+		await refreshNetworks();
+	} catch (e) {
+		showStatus("Failed to create network: " + e.message, true);
+	}
+});
+
 async function poll() {
 	await refreshHealth();
 	await refreshContainers();
+	await refreshNetworks();
 }
 
 poll();

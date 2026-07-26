@@ -1,16 +1,16 @@
 /*
- * Phase 6 part 3 end-to-end test: proves the daemon's own network
- * lifecycle (ensure_default_network()) and IP allocation
- * (registry_alloc_ip()) work over real HTTP -- containers created via
- * POST /v1/containers with "network":"default" get real, distinct,
- * connectable IPs, and containers created without it are completely
- * unaffected (the explicit regression check for this endpoint's
- * unchanged default behavior).
+ * Phase 7 part 1 end-to-end test: proves the dynamic network resource
+ * (POST/GET/DELETE /v1/networks -- daemon/src/network.c) and
+ * container IP allocation against it work over real HTTP -- containers
+ * created via POST /v1/containers with a "network" naming a network
+ * created through this same API get real, distinct, connectable IPs,
+ * and containers created without it are completely unaffected (the
+ * explicit regression check for this endpoint's unchanged default
+ * behavior).
  */
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
-#include "test_net_cleanup.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -27,7 +27,8 @@ extern char **environ;
 #define PORT_ARG "--port=7624"
 #define IMAGE_ROOT "/var/lib/kanxeo/images/nettest/rootfs"
 #define NET_CHILD_PORT 17700
-#define DEFAULT_BRIDGE "kanxeo0"
+#define TEST_NETWORK_NAME "dnettest"
+#define TEST_NETWORK_SUBNET "172.33.0.0"
 
 static int wait_for_daemon(const struct kx_client *c, int max_attempts)
 {
@@ -130,12 +131,24 @@ int main(void)
 		return 1;
 	}
 
-	/* 1-2. create n1 with networking, confirm a real assigned ip and
+	/* 1. create the test network */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/networks",
+	                       "{\"name\":\"" TEST_NETWORK_NAME "\",\"subnet\":\"" TEST_NETWORK_SUBNET
+	                       "\",\"prefix_len\":24}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST /v1/networks, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	/* 2-3. create n1 with networking, confirm a real assigned ip and
 	 * real connectivity through it */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"n1\",\"image\":\"nettest\",\"cmd\":[\"/bin/net_child\"],"
-	                       "\"network\":\"default\"}",
+	                       "\"network\":\"" TEST_NETWORK_NAME "\"}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST n1, status=%d\n", r.status);
@@ -156,11 +169,11 @@ int main(void)
 	}
 	kx_response_free(&r);
 
-	/* 3. second networked container gets a DIFFERENT ip */
+	/* 4. second networked container gets a DIFFERENT ip */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"n2\",\"image\":\"nettest\",\"cmd\":[\"/bin/net_child\"],"
-	                       "\"network\":\"default\"}",
+	                       "\"network\":\"" TEST_NETWORK_NAME "\"}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST n2, status=%d\n", r.status);
@@ -185,7 +198,7 @@ int main(void)
 	}
 	kx_response_free(&r);
 
-	/* 4. GET /v1/containers shows both with their correct, distinct ips */
+	/* 5. GET /v1/containers shows both with their correct, distinct ips */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "GET", "/v1/containers", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/containers\n");
@@ -216,7 +229,7 @@ int main(void)
 	}
 	kx_response_free(&r);
 
-	/* 5. no "network" field -> ip null, regression check on unchanged
+	/* 6. no "network" field -> ip null, regression check on unchanged
 	 * default behavior */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/containers",
@@ -235,7 +248,7 @@ int main(void)
 	}
 	kx_response_free(&r);
 
-	/* 6. unsupported network name -> 400 */
+	/* 7. unsupported network name -> 400 */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"n4\",\"image\":\"nettest\",\"cmd\":[\"/bin/net_child\"],"
@@ -247,14 +260,32 @@ int main(void)
 	}
 	kx_response_free(&r);
 
-	/* 7. cleanup: remove containers (kills n3, still blocked in
+	/* 8. deleting a network still in use by a container -> 409 */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "DELETE", "/v1/networks/" TEST_NETWORK_NAME, NULL, &r) != 0 ||
+	    r.status != 409) {
+		fprintf(stderr, "FAIL: DELETE in-use network expected 409, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	/* 9. cleanup: remove containers (kills n3, still blocked in
 	 * accept() since nothing can reach it -- no networking, isolated
-	 * netns), then delete the bridge directly */
+	 * netns), then the network itself via the real API */
 	kx_client_request(&client, "DELETE", "/v1/containers/n1", NULL, &r);
 	kx_response_free(&r);
 	kx_client_request(&client, "DELETE", "/v1/containers/n2", NULL, &r);
 	kx_response_free(&r);
 	kx_client_request(&client, "DELETE", "/v1/containers/n3", NULL, &r);
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "DELETE", "/v1/networks/" TEST_NETWORK_NAME, NULL, &r) != 0 ||
+	    r.status != 204) {
+		fprintf(stderr, "FAIL: DELETE " TEST_NETWORK_NAME " (unused) expected 204, got %d\n",
+		        r.status);
+		ok = 0;
+	}
 	kx_response_free(&r);
 
 	kill(daemon_pid, SIGTERM);
@@ -267,8 +298,6 @@ int main(void)
 			ok = 0;
 		}
 	}
-
-	test_cleanup_bridge(DEFAULT_BRIDGE);
 
 	printf(ok ? "DAEMON NET RESULT: PASS\n" : "DAEMON NET RESULT: FAIL\n");
 	return ok ? 0 : 1;

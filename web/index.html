@@ -40,10 +40,43 @@
 			</label>
 			<label>
 				Network
-				<input type="text" id="f-network" placeholder="default">
+				<input type="text" id="f-network" placeholder="(none)">
 			</label>
 			<button type="submit">Run</button>
 		</form>
+	</section>
+
+	<section class="panel">
+		<h2>Networks</h2>
+		<form id="network-form">
+			<label>
+				Name
+				<input type="text" id="nf-name" pattern="[A-Za-z0-9_-]{1,15}" required>
+			</label>
+			<label>
+				Subnet
+				<input type="text" id="nf-subnet" placeholder="172.31.0.0" required>
+			</label>
+			<label>
+				Prefix length
+				<input type="number" id="nf-prefix" min="8" max="30" value="24" required>
+			</label>
+			<button type="submit">Create</button>
+		</form>
+		<table id="networks">
+			<thead>
+				<tr>
+					<th>Name</th>
+					<th>Subnet</th>
+					<th>Prefix</th>
+					<th>Gateway</th>
+					<th></th>
+				</tr>
+			</thead>
+			<tbody id="networks-body">
+				<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
+			</tbody>
+		</table>
 	</section>
 
 	<section class="panel">
