@@ -162,6 +162,158 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /dns/records:
+    get:
+      summary: List all DNS records known to this daemon
+      operationId: listDnsRecords
+      responses:
+        "200":
+          description: Record list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [records]
+                properties:
+                  records:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DnsRecord"
+    post:
+      summary: Create a DNS record (name -> IPv4 address), persisted across daemon restarts
+      operationId: createDnsRecord
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DnsRecordCreateRequest"
+      responses:
+        "201":
+          description: Record created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DnsRecord"
+        "400":
+          description: Invalid hostname or ip
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A record with this name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /dns/records/{name}:
+    get:
+      summary: Inspect one DNS record
+      operationId: getDnsRecord
+      parameters:
+        - $ref: "#/components/parameters/DnsRecordName"
+      responses:
+        "200":
+          description: Record detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DnsRecord"
+        "404":
+          description: No record with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Remove a DNS record
+      operationId: deleteDnsRecord
+      parameters:
+        - $ref: "#/components/parameters/DnsRecordName"
+      responses:
+        "204":
+          description: Removed
+        "404":
+          description: No record with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /dns/servers:
+    get:
+      summary: List all registered DNS server bindings
+      operationId: listDnsServers
+      responses:
+        "200":
+          description: Binding list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [servers]
+                properties:
+                  servers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DnsServerBinding"
+    post:
+      summary: >
+        Register a running container as a DNS-serving target: writes the current full
+        record set (dnsmasq --addn-hosts format) to hosts_path inside that container's
+        own filesystem, and sends it SIGHUP to reload. Every subsequent record change
+        re-writes the file and re-sends SIGHUP for as long as this binding exists.
+      operationId: createDnsServer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DnsServerBindingCreateRequest"
+      responses:
+        "201":
+          description: Registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DnsServerBinding"
+        "400":
+          description: hosts_path missing, not absolute, or contains ".."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No running container with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: This container is already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /dns/servers/{container}:
+    delete:
+      summary: Unregister a DNS server binding (does not touch the file or the container itself)
+      operationId: deleteDnsServer
+      parameters:
+        - $ref: "#/components/parameters/DnsServerContainerName"
+      responses:
+        "204":
+          description: Unregistered
+        "404":
+          description: No binding for this container
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /containers/{name}:
     get:
       summary: Inspect one container
@@ -213,6 +365,21 @@ components:
       schema:
         type: string
         pattern: "^[A-Za-z0-9_-]{1,15}$"
+
+    DnsRecordName:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+
+    DnsServerContainerName:
+      name: container
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9_-]+$"
 
   schemas:
     ContainerCreateRequest:
@@ -377,6 +544,53 @@ components:
         gateway:
           type: string
           description: Derived as subnet's first host address; never independently settable.
+
+    DnsRecordCreateRequest:
+      type: object
+      required: [name, ip]
+      properties:
+        name:
+          type: string
+          description: >
+            Hostname: dot-separated labels of [A-Za-z0-9-], each 1-63 chars, ≤253 chars
+            total (RFC 1035). Deliberately a different charset from network/container
+            names, which don't allow dots.
+        ip:
+          type: string
+          description: IPv4 address (dotted-quad) this name resolves to.
+
+    DnsRecord:
+      type: object
+      required: [name, ip]
+      properties:
+        name:
+          type: string
+        ip:
+          type: string
+
+    DnsServerBindingCreateRequest:
+      type: object
+      required: [container, hosts_path]
+      properties:
+        container:
+          type: string
+          description: Name of an existing, running container (see /containers) to keep in sync.
+        hosts_path:
+          type: string
+          description: >
+            Absolute path, as the container's own filesystem sees it (e.g.
+            "/etc/dnsmasq-hosts"), that the daemon writes the current record set into
+            (dnsmasq --addn-hosts format) and re-writes on every future record change.
+            Rejected if not absolute or if it contains "..".
+
+    DnsServerBinding:
+      type: object
+      required: [container, hosts_path]
+      properties:
+        container:
+          type: string
+        hosts_path:
+          type: string
 
     Error:
       type: object

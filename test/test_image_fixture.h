@@ -17,4 +17,16 @@
 int test_image_fixture_build(const char *image_root, const char *child_binary_path,
                               const char *child_basename);
 
+/*
+ * Copies one additional shared library from the host into image_root
+ * at the SAME absolute path it has on the host (mirroring how ld.so
+ * and libc.so.6 are already placed above) -- needed for staging a
+ * real third-party binary (e.g. dnsmasq) with more dependencies than
+ * the minimal ld.so+libc pair every other exec target in this project
+ * needs. Call once per library (the full dependency closure, e.g.
+ * from `ldd`). Idempotent; returns 0 or -1 (perror on the failing
+ * path).
+ */
+int test_image_fixture_add_lib(const char *image_root, const char *host_lib_abs_path);
+
 #endif /* TEST_IMAGE_FIXTURE_H */

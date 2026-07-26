@@ -1,0 +1,102 @@
+#ifndef DNS_H
+#define DNS_H
+
+#include "json.h"
+
+#include <stdint.h>
+#include <sys/types.h>
+
+/*
+ * Phase 8 part 1: DNS as a REST resource (name -> IP records), with
+ * actual resolution done by a real DNS server (dnsmasq) running as a
+ * normal containerized workload -- not hand-rolled, per the same
+ * reasoning BIRD wasn't hand-rolled for routing in Phase 7 (ADR-0007's
+ * "hand-rolled, no external libraries" rule is about this project's
+ * own platform components, not about workloads a container runs).
+ */
+
+#define DNS_MAX_RECORDS 256
+#define DNS_NAME_MAX 254 /* RFC 1035 */
+
+struct dns_record {
+	char name[DNS_NAME_MAX];
+	uint32_t ip_be; /* network byte order */
+};
+
+enum dns_error {
+	DNS_OK = 0,
+	DNS_ERR_INVALID_NAME,
+	DNS_ERR_INVALID_IP,
+	DNS_ERR_DUPLICATE,
+	DNS_ERR_FULL,
+	DNS_ERR_NOT_FOUND,
+	DNS_ERR_PERSIST_FAILED
+};
+
+/* Loads persisted records (if any) at startup. Unlike networks, there
+ * is no kernel state to recreate here -- just the in-memory table. */
+int dns_init(const char *state_path);
+
+enum dns_error dns_record_create(const char *name, uint32_t ip_be, struct dns_record **out);
+enum dns_error dns_record_delete(const char *name);
+struct dns_record *dns_record_find(const char *name);
+
+void dns_write_json_one(const struct dns_record *rec, struct json_writer *w);
+void dns_write_json_list(struct json_writer *w);
+
+/*
+ * Serializes every current record as "<ip> <name>" lines (dnsmasq's
+ * --addn-hosts format) and writes them atomically to abs_path.
+ */
+int dns_write_hosts_file(const char *abs_path);
+
+#define DNS_SERVER_MAX 32
+#define DNS_SERVER_NAME_MAX 64   /* matches REGISTRY_NAME_MAX */
+#define DNS_SERVER_PATH_MAX 256
+
+struct dns_server_binding {
+	char container_name[DNS_SERVER_NAME_MAX];
+	char hosts_path[DNS_SERVER_PATH_MAX]; /* relative, as the container itself sees it */
+};
+
+enum dns_server_error {
+	DNS_SERVER_OK = 0,
+	DNS_SERVER_ERR_INVALID_PATH,
+	DNS_SERVER_ERR_DUPLICATE,
+	DNS_SERVER_ERR_FULL,
+	DNS_SERVER_ERR_WRITE_FAILED,
+	DNS_SERVER_ERR_NOT_FOUND
+};
+
+/*
+ * Registers container_name as a DNS-serving target: writes the
+ * current full record set to /proc/<pid>/root/<hosts_path> (the
+ * container's own view of that path, reached through the magic procfs
+ * symlink -- writing directly to the container's raw upperdir does
+ * NOT work: the kernel does not guarantee an already-mounted overlay
+ * notices changes made to the upper layer from outside it; verified
+ * empirically before this was built, see docs/ROADMAP.md Phase 8),
+ * then sends SIGHUP via pidfd (dnsmasq's documented "reload
+ * --addn-hosts files" signal) so an already-running dnsmasq picks up
+ * this initial write immediately. hosts_path is rejected
+ * (DNS_SERVER_ERR_INVALID_PATH) unless it's an absolute path (starts
+ * with '/') containing no "..". DNS_SERVER_ERR_DUPLICATE if
+ * container_name is already registered -- unregister first to change
+ * its hosts_path.
+ */
+enum dns_server_error dns_server_register(const char *container_name, pid_t pid, int pidfd,
+                                           const char *hosts_path);
+enum dns_server_error dns_server_unregister(const char *container_name);
+
+/* Called after every record create/delete: rewrites the hosts file
+ * and re-sends SIGHUP for every currently-registered binding. */
+void dns_server_sync_all(void);
+
+/* Called when a container is removed, so a stale binding never
+ * lingers referencing a name (and pidfd) that no longer exists. */
+void dns_server_forget(const char *container_name);
+
+void dns_server_write_json_one(const struct dns_server_binding *binding, struct json_writer *w);
+void dns_server_write_json_list(struct json_writer *w);
+
+#endif /* DNS_H */

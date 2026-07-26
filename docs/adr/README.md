@@ -17,3 +17,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0010](0010-vanilla-web-dashboard-no-build-step.md) | Vanilla HTML/CSS/JS dashboard, no framework, no build step, served by kanxeod | Accepted |
 | [0011](0011-rtnetlink-control-plane-over-kernel-bridge.md) | rtnetlink control plane over the kernel's own bridge/veth, not a userspace switch | Accepted |
 | [0012](0012-networks-json-persistence.md) | Atomically-rewritten flat file for network persistence, not a database | Accepted |
+| [0013](0013-proc-pid-root-for-live-container-file-writes.md) | /proc/<pid>/root/ for writing into a running container's filesystem, not raw upperdir or setns() | Accepted |

@@ -1,4 +1,5 @@
 #include "container.h"
+#include "dns.h"
 #include "http.h"
 #include "json.h"
 #include "linux_compat.h"
@@ -30,9 +31,12 @@
 #define IMAGES_DIR BASE_DIR "/images"
 #define CONTAINERS_DIR BASE_DIR "/containers"
 #define NETWORKS_STATE_PATH BASE_DIR "/networks.json"
+#define DNS_RECORDS_STATE_PATH BASE_DIR "/dns_records.json"
 #define MAX_EVENTS 64
 #define CONTAINERS_PREFIX "/v1/containers/"
 #define NETWORKS_PREFIX "/v1/networks/"
+#define DNS_RECORDS_PREFIX "/v1/dns/records/"
+#define DNS_SERVERS_PREFIX "/v1/dns/servers/"
 
 enum conn_kind { CONN_LISTENER, CONN_CLIENT, CONN_CONTAINER };
 
@@ -407,6 +411,7 @@ static void handle_delete(int fd, const char *name)
 	}
 
 	registry_remove(name);
+	dns_server_forget(name);
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
@@ -524,6 +529,212 @@ static void handle_network_delete(int fd, const char *name)
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
+static void respond_dns_error(int fd, enum dns_error err)
+{
+	switch (err) {
+	case DNS_ERR_INVALID_NAME:
+		respond_error(fd, 400, "Bad Request", "invalid DNS record name");
+		break;
+	case DNS_ERR_INVALID_IP:
+		respond_error(fd, 400, "Bad Request", "invalid ip");
+		break;
+	case DNS_ERR_DUPLICATE:
+		respond_error(fd, 409, "Conflict", "a record with this name already exists");
+		break;
+	case DNS_ERR_FULL:
+		respond_error(fd, 500, "Internal Server Error", "DNS record table full");
+		break;
+	case DNS_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such DNS record");
+		break;
+	case DNS_ERR_PERSIST_FAILED:
+	default:
+		respond_error(fd, 500, "Internal Server Error", "DNS record operation failed");
+		break;
+	}
+}
+
+static void handle_dns_record_create(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *name, *ip;
+	struct in_addr addr;
+	struct dns_record *rec;
+	enum dns_error derr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+
+	name = json_as_string(json_object_get(root, "name"));
+	ip = json_as_string(json_object_get(root, "ip"));
+
+	if (name == NULL || ip == NULL || inet_pton(AF_INET, ip, &addr) != 1) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "name/ip missing or invalid");
+		return;
+	}
+
+	derr = dns_record_create(name, addr.s_addr, &rec);
+	json_free(root);
+
+	if (derr != DNS_OK) {
+		respond_dns_error(fd, derr);
+		return;
+	}
+
+	jw_init(&w);
+	dns_write_json_one(rec, &w);
+	respond_json(fd, 201, "Created", &w);
+	jw_free(&w);
+}
+
+static void handle_dns_record_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "records");
+	dns_write_json_list(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_dns_record_get_one(int fd, const char *name)
+{
+	struct dns_record *rec = dns_record_find(name);
+	struct json_writer w;
+
+	if (rec == NULL) {
+		respond_error(fd, 404, "Not Found", "no such DNS record");
+		return;
+	}
+	jw_init(&w);
+	dns_write_json_one(rec, &w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_dns_record_delete(int fd, const char *name)
+{
+	enum dns_error derr = dns_record_delete(name);
+
+	if (derr != DNS_OK) {
+		respond_dns_error(fd, derr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+static void respond_dns_server_error(int fd, enum dns_server_error err)
+{
+	switch (err) {
+	case DNS_SERVER_ERR_INVALID_PATH:
+		respond_error(fd, 400, "Bad Request", "invalid hosts_path");
+		break;
+	case DNS_SERVER_ERR_DUPLICATE:
+		respond_error(fd, 409, "Conflict", "this container is already registered");
+		break;
+	case DNS_SERVER_ERR_FULL:
+		respond_error(fd, 500, "Internal Server Error", "DNS server binding table full");
+		break;
+	case DNS_SERVER_ERR_WRITE_FAILED:
+		respond_error(fd, 500, "Internal Server Error", "failed to write hosts file");
+		break;
+	case DNS_SERVER_ERR_NOT_FOUND:
+	default:
+		respond_error(fd, 404, "Not Found", "no such DNS server binding");
+		break;
+	}
+}
+
+static void handle_dns_server_create(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *container_name, *hosts_path;
+	struct registry_entry *entry;
+	enum dns_server_error serr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+
+	container_name = json_as_string(json_object_get(root, "container"));
+	hosts_path = json_as_string(json_object_get(root, "hosts_path"));
+
+	if (container_name == NULL || hosts_path == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "container/hosts_path missing");
+		return;
+	}
+
+	entry = registry_find(container_name);
+	if (entry == NULL || !entry->running) {
+		json_free(root);
+		respond_error(fd, 404, "Not Found", "no such running container");
+		return;
+	}
+
+	serr = dns_server_register(container_name, entry->handle.pid, entry->handle.pidfd,
+	                            hosts_path);
+
+	if (serr != DNS_SERVER_OK) {
+		json_free(root);
+		respond_dns_server_error(fd, serr);
+		return;
+	}
+
+	/*
+	 * container_name/hosts_path still point into root -- build the
+	 * response before freeing it, not after (freeing first and then
+	 * reading through these pointers would be a use-after-free).
+	 */
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "container");
+	jw_str(&w, container_name);
+	jw_key(&w, "hosts_path");
+	jw_str(&w, hosts_path);
+	jw_obj_close(&w);
+	json_free(root);
+	respond_json(fd, 201, "Created", &w);
+	jw_free(&w);
+}
+
+static void handle_dns_server_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "servers");
+	dns_server_write_json_list(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_dns_server_delete(int fd, const char *name)
+{
+	enum dns_server_error serr = dns_server_unregister(name);
+
+	if (serr != DNS_SERVER_OK) {
+		respond_dns_server_error(fd, serr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
 static void dispatch(int fd, const struct http_request *req)
 {
 	const char *name;
@@ -576,6 +787,46 @@ static void dispatch(int fd, const struct http_request *req)
 				handle_network_delete(fd, name);
 				return;
 			}
+		}
+	}
+	if (strcmp(req->path, "/v1/dns/records") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_dns_record_list(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_dns_record_create(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strncmp(req->path, DNS_RECORDS_PREFIX, strlen(DNS_RECORDS_PREFIX)) == 0) {
+		name = req->path + strlen(DNS_RECORDS_PREFIX);
+		if (name[0] != '\0') {
+			if (strcmp(req->method, "GET") == 0) {
+				handle_dns_record_get_one(fd, name);
+				return;
+			}
+			if (strcmp(req->method, "DELETE") == 0) {
+				handle_dns_record_delete(fd, name);
+				return;
+			}
+		}
+	}
+	if (strcmp(req->path, "/v1/dns/servers") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_dns_server_list(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_dns_server_create(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strncmp(req->path, DNS_SERVERS_PREFIX, strlen(DNS_SERVERS_PREFIX)) == 0) {
+		name = req->path + strlen(DNS_SERVERS_PREFIX);
+		if (name[0] != '\0' && strcmp(req->method, "DELETE") == 0) {
+			handle_dns_server_delete(fd, name);
+			return;
 		}
 	}
 
@@ -716,6 +967,8 @@ int main(int argc, char **argv)
 		return 1;
 
 	if (network_init(NETWORKS_STATE_PATH) != 0)
+		return 1;
+	if (dns_init(DNS_RECORDS_STATE_PATH) != 0)
 		return 1;
 
 	registry_init();

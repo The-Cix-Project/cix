@@ -4,7 +4,26 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
-### Phase 7 follow-up: raise the per-container network cap
+### Phase 8 (part 1): DNS records + containerized dnsmasq resolution
+
+#### Added
+- `daemon/include/dns.h` + `daemon/src/dns.c`: DNS records as a REST resource (`POST/GET/DELETE /v1/dns/records`, name -> IPv4) mirroring `network.c`'s shape, persisted to `/var/lib/kanxeo/dns_records.json`. A second, independent piece in the same file: DNS server bindings (`POST/GET/DELETE /v1/dns/servers`) registering a running container to keep synced — in-memory only, unlike records, since a binding references a container's pid and containers don't survive a daemon restart either.
+- `daemon/include/persist.h` + `daemon/src/persist.c`: `persist_atomic_write()`/`persist_read_file()` extracted from `network.c`'s `save_state()`/`load_state()` (otherwise `dns.c` would duplicate the identical logic) plus a new `persist_mkdir_p()`. `network.c` refactored to use these; re-verified against `test_networks.c`'s restart-survival scenario.
+- `docs/adr/0013-proc-pid-root-for-live-container-file-writes.md`: `/proc/<pid>/root/<path>` (not raw upperdir, not `setns()`) is now the standing pattern for the daemon to read/write a specific running container's filesystem from outside it — the original upperdir-write design was verified empirically to not work (the kernel documents this as unsupported for an already-mounted overlay) before anything was built on top of it.
+- `test/test_image_fixture.c` gained `test_image_fixture_add_lib()` — stages one additional shared library at its real absolute path, needed for a real (not hand-rolled) dnsmasq binary's ~20-library dependency closure, well beyond the usual ld.so+libc pair every other exec target in this project needs.
+- `test/test_dns.c`: records CRUD + validation, a real dnsmasq container registered as a DNS server and queried with the host's own `dig` (genuine protocol resolution), a live record update proving the `SIGHUP`-reload path (not just the initial snapshot), and DNS-server-binding cleanup on container deletion.
+- `cli/src/main.c`: `kanxeoctl dns record create/ls/rm` and `dns server register/ls/unregister`, mirroring the `network` subcommand family. `web/`: matching DNS Records and DNS Servers dashboard sections.
+
+#### Changed
+- `docs/ROADMAP.md`: Phase 8 marked in progress (part 1 done).
+- `web/style.css`: form styling generalized from `#run-form`-scoped rules to `.panel form` — fixes a latent gap from Phase 7 part 1 (the Networks form was never actually getting the intended styling) while adding two more forms, rather than leaving three unstyled forms instead of one.
+
+#### Fixed
+- **The original "write to a running container's upperdir" design didn't work at all**: verified empirically before building on it (a file written directly into a running container's upperdir from the host never appeared in that container's mounted view, even after correctly pre-creating the parent directory) — the kernel documents modifying the upper layer of an already-mounted overlay as unsupported/undefined. Replaced with `/proc/<pid>/root/<path>`, confirmed to work correctly via the same kind of live test. See ADR-0013.
+- **dnsmasq failed to start in a minimal container image, three times over, each caught and fixed before declaring this part done**: no `/dev/urandom` for RNG seeding (fixed with real `mknod` device nodes, `1,9`/`1,3`); `-u root`/default group still perform a real NSS lookup even for the account already running as, with no `/etc/passwd`/`/etc/group` at all (fixed with a minimal two-line version of each, plus explicit `-g root`); default pidfile path `/var/run/dnsmasq.pid` with no `/var/run` (fixed with `-x` pointed at the already-created `/etc`).
+- **A real use-after-free** in `handle_dns_server_create()`: `json_free(root)` was called before reading `container_name`/`hosts_path` — pointers into the now-freed tree — to build the success response, producing garbled output. Caught via manual smoke-testing before the automated test was even written; fixed by building the response before freeing, the same ordering `handle_create()`'s own existing comment already documents for a different field.
+
+## Phase 7 follow-up: raise the per-container network cap
 
 #### Changed
 - `include/container.h`: `CONTAINER_MAX_NETWORKS` raised from `4` to `64`, matching `daemon/include/network.h`'s `NETWORK_MAX` — a container can never attach to more networks than could possibly exist, so that's the real ceiling, not an arbitrary round number picked without justification. `cli/src/main.c`'s mirrored `CLI_MAX_NETWORKS` raised to match. `docs/api/openapi.yaml`'s `ContainerCreateRequest.networks.maxItems` and the daemon's validation error message updated accordingly.

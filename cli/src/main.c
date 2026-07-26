@@ -30,7 +30,13 @@ static void print_usage(FILE *out)
 	        "  rm NAME\n"
 	        "  network create --name=NAME --subnet=A.B.C.D --prefix=N\n"
 	        "  network ls\n"
-	        "  network rm NAME\n");
+	        "  network rm NAME\n"
+	        "  dns record create --name=NAME --ip=A.B.C.D\n"
+	        "  dns record ls\n"
+	        "  dns record rm NAME\n"
+	        "  dns server register --container=NAME --hosts-path=PATH\n"
+	        "  dns server ls\n"
+	        "  dns server unregister CONTAINER\n");
 }
 
 static const char *json_str_field(const struct json_value *obj, const char *key)
@@ -169,6 +175,44 @@ static void fmt_network_list(const struct json_value *v)
 		return;
 	for (i = 0; i < networks->u.array.count; i++)
 		fmt_network_line(networks->u.array.items[i]);
+}
+
+static void fmt_dns_record_line(const struct json_value *v)
+{
+	const char *name = json_str_field(v, "name");
+	const char *ip = json_str_field(v, "ip");
+
+	printf("%-30s %s\n", name, ip);
+}
+
+static void fmt_dns_record_list(const struct json_value *v)
+{
+	const struct json_value *records = json_object_get(v, "records");
+	size_t i;
+
+	if (records == NULL || records->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < records->u.array.count; i++)
+		fmt_dns_record_line(records->u.array.items[i]);
+}
+
+static void fmt_dns_server_line(const struct json_value *v)
+{
+	const char *container = json_str_field(v, "container");
+	const char *hosts_path = json_str_field(v, "hosts_path");
+
+	printf("%-20s %s\n", container, hosts_path);
+}
+
+static void fmt_dns_server_list(const struct json_value *v)
+{
+	const struct json_value *servers = json_object_get(v, "servers");
+	size_t i;
+
+	if (servers == NULL || servers->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < servers->u.array.count; i++)
+		fmt_dns_server_line(servers->u.array.items[i]);
 }
 
 /*
@@ -533,6 +577,215 @@ static int cmd_network(const struct kx_client *c, int json_mode, int argc, char 
 	return 2;
 }
 
+static int cmd_dns_record_create(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *name = NULL;
+	const char *ip = NULL;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--name=", 7) == 0)
+			name = argv[i] + 7;
+		else if (strncmp(argv[i], "--ip=", 5) == 0)
+			ip = argv[i] + 5;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown dns record create option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	if (name == NULL || ip == NULL) {
+		fprintf(stderr, "usage: kanxeoctl dns record create --name=NAME --ip=A.B.C.D\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "ip");
+	jw_str(&w, ip);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/dns/records", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_dns_record_line);
+}
+
+static int cmd_dns_record_ls(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/dns/records", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_dns_record_list);
+}
+
+static int cmd_dns_record_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: dns record rm requires a record name\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/dns/records/%s", argv[0]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static int cmd_dns_record(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr,
+		        "usage: kanxeoctl dns record create --name=NAME --ip=A.B.C.D\n"
+		        "       kanxeoctl dns record ls\n"
+		        "       kanxeoctl dns record rm NAME\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "create") == 0)
+		return cmd_dns_record_create(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "ls") == 0)
+		return cmd_dns_record_ls(c, json_mode);
+	if (strcmp(sub, "rm") == 0)
+		return cmd_dns_record_rm(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown dns record subcommand '%s'\n", sub);
+	return 2;
+}
+
+static int cmd_dns_server_register(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *container = NULL;
+	const char *hosts_path = NULL;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--container=", 12) == 0)
+			container = argv[i] + 12;
+		else if (strncmp(argv[i], "--hosts-path=", 13) == 0)
+			hosts_path = argv[i] + 13;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown dns server register option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	if (container == NULL || hosts_path == NULL) {
+		fprintf(stderr,
+		        "usage: kanxeoctl dns server register --container=NAME --hosts-path=PATH\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "container");
+	jw_str(&w, container);
+	jw_key(&w, "hosts_path");
+	jw_str(&w, hosts_path);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/dns/servers", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_dns_server_line);
+}
+
+static int cmd_dns_server_ls(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/dns/servers", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_dns_server_list);
+}
+
+static int cmd_dns_server_unregister(const struct kx_client *c, int json_mode, int argc,
+                                      char **argv)
+{
+	struct kx_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: dns server unregister requires a container name\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/dns/servers/%s", argv[0]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static int cmd_dns_server(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr,
+		        "usage: kanxeoctl dns server register --container=NAME --hosts-path=PATH\n"
+		        "       kanxeoctl dns server ls\n"
+		        "       kanxeoctl dns server unregister CONTAINER\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "register") == 0)
+		return cmd_dns_server_register(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "ls") == 0)
+		return cmd_dns_server_ls(c, json_mode);
+	if (strcmp(sub, "unregister") == 0)
+		return cmd_dns_server_unregister(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown dns server subcommand '%s'\n", sub);
+	return 2;
+}
+
+static int cmd_dns(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl dns record ...\n"
+		                "       kanxeoctl dns server ...\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "record") == 0)
+		return cmd_dns_record(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "server") == 0)
+		return cmd_dns_server(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown dns subcommand '%s'\n", sub);
+	return 2;
+}
+
 int main(int argc, char **argv)
 {
 	const char *host = DEFAULT_HOST;
@@ -577,6 +830,8 @@ int main(int argc, char **argv)
 		return cmd_rm(&client, json_mode, argc - i, argv + i);
 	if (strcmp(cmd, "network") == 0)
 		return cmd_network(&client, json_mode, argc - i, argv + i);
+	if (strcmp(cmd, "dns") == 0)
+		return cmd_dns(&client, json_mode, argc - i, argv + i);
 
 	fprintf(stderr, "kanxeoctl: unknown command '%s'\n", cmd);
 	print_usage(stderr);

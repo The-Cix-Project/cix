@@ -88,6 +88,60 @@
 	</section>
 
 	<section class="panel">
+		<h2>DNS Records</h2>
+		<form id="dns-record-form">
+			<label>
+				Name
+				<input type="text" id="df-name" placeholder="db.internal" required>
+			</label>
+			<label>
+				IP
+				<input type="text" id="df-ip" placeholder="172.31.0.5" required>
+			</label>
+			<button type="submit">Create</button>
+		</form>
+		<table id="dns-records">
+			<thead>
+				<tr>
+					<th>Name</th>
+					<th>IP</th>
+					<th></th>
+				</tr>
+			</thead>
+			<tbody id="dns-records-body">
+				<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
+			</tbody>
+		</table>
+	</section>
+
+	<section class="panel">
+		<h2>DNS Servers</h2>
+		<form id="dns-server-form">
+			<label>
+				Container
+				<input type="text" id="sf-container" pattern="[A-Za-z0-9_-]+" required>
+			</label>
+			<label class="wide">
+				Hosts path
+				<input type="text" id="sf-hosts-path" placeholder="/etc/dnsmasq-hosts" required>
+			</label>
+			<button type="submit">Register</button>
+		</form>
+		<table id="dns-servers">
+			<thead>
+				<tr>
+					<th>Container</th>
+					<th>Hosts path</th>
+					<th></th>
+				</tr>
+			</thead>
+			<tbody id="dns-servers-body">
+				<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
+			</tbody>
+		</table>
+	</section>
+
+	<section class="panel">
 		<h2>Containers</h2>
 		<table id="containers">
 			<thead>

@@ -17,6 +17,13 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | POST | `/networks` | Create a network (a real bridge, persisted across restarts) |
 | GET | `/networks/{name}` | Inspect one network |
 | DELETE | `/networks/{name}` | Remove a network (refused if any container is still attached) |
+| GET | `/dns/records` | List all DNS records this daemon knows about |
+| POST | `/dns/records` | Create a DNS record (name -> IP, persisted across restarts) |
+| GET | `/dns/records/{name}` | Inspect one DNS record |
+| DELETE | `/dns/records/{name}` | Remove a DNS record |
+| GET | `/dns/servers` | List all registered DNS server bindings |
+| POST | `/dns/servers` | Register a running container as a DNS-serving target |
+| DELETE | `/dns/servers/{container}` | Unregister a DNS server binding |
 
 Every error response is `{"error": "message"}` with an appropriate 4xx/5xx status.
 
@@ -106,6 +113,29 @@ POST /v1/containers
 - `routes` is optional: 0–8 entries, each `{dest, prefix_len, via}` (all required). `dest`/`via` must be well-formed IPv4; `prefix_len` in `[0, 32]`. Only format is validated — whether `via` is actually reachable is the caller's responsibility. Set once at creation; not modifiable on an already-running container.
 - `ip_forward` is optional, default `false`. Per-netns — never affects the host or other containers.
 
+## DNS: records + a real dnsmasq container
+
+DNS records are a REST resource; the actual name resolution is done by a real DNS server (dnsmasq recommended) running as a normal containerized workload — not hand-rolled, the same reasoning BIRD wasn't hand-rolled for routing (ADR-0007's "no external libraries" rule is about this project's own platform components, not about workloads a container runs).
+
+```
+POST /v1/dns/records
+{"name": "db.internal", "ip": "172.31.0.5"}
+```
+
+- `name` is a hostname (dot-separated labels, `[A-Za-z0-9-]`, RFC 1035 length limits) — a different charset from network/container names, which don't allow dots.
+- `ip` must be well-formed IPv4.
+
+Once a container running dnsmasq exists (e.g. `cmd: ["/usr/sbin/dnsmasq", "-k", "-u", "root", "-p", "53", "-H", "/etc/dnsmasq-hosts", "-R", "-h"]` — `-u root` since a minimal container image typically has no `/etc/passwd` for dnsmasq's default privilege drop to resolve; `-R`/`-h` skip `/etc/resolv.conf`/`/etc/hosts`, which likely don't exist either), register it:
+
+```
+POST /v1/dns/servers
+{"container": "dns1", "hosts_path": "/etc/dnsmasq-hosts"}
+```
+
+This writes every current record into `dns1`'s own `/etc/dnsmasq-hosts` (dnsmasq's `--addn-hosts` format) and sends `SIGHUP` so it reloads immediately. Every subsequent `POST`/`DELETE` on `/v1/dns/records` re-writes that file and re-signals `dns1` — genuinely live updates, not a one-time snapshot at registration.
+
+The write itself goes through `/proc/<pid>/root/<hosts_path>` (the container's own filesystem view via the magic procfs symlink), not the container's raw upperdir directly — writing straight into a running container's upperdir does **not** reliably show up in its mounted view (confirmed empirically; the kernel documents this as unsupported/undefined for an already-mounted overlay). `/proc/<pid>/root/` correctly resolves through the container's real mount namespace without needing any new namespace-entry syscall.
+
 ## Current scope boundaries (v1, deliberate — see ADR-0007)
 
 - No image build/pull endpoint yet — images are provisioned onto disk out of band.
@@ -113,6 +143,7 @@ POST /v1/containers
 - No authentication yet — the daemon binds to loopback only as its safety boundary for now.
 - HTTP: no keep-alive/pipelining (`Connection: close` on every response), no chunked bodies.
 - Routes are set-once at creation and not echoed back or introspectable afterward; modifying them on a running container would need a new "enter another netns from outside" primitive, not built yet. See `docs/ROADMAP.md`.
+- DNS server bindings are in-memory only (not persisted, like the container registry itself — a binding referencing a container that dies with the daemon means nothing after a restart anyway). Only one hosts-format record type; no CNAME/MX/TXT/etc.
 
 ## Why this file exists alongside `openapi.yaml`
 

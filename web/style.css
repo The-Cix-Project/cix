@@ -73,14 +73,14 @@ main {
 	letter-spacing: 0.04em;
 }
 
-#run-form {
+.panel form {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 1rem;
 	align-items: end;
 }
 
-#run-form label {
+.panel form label {
 	display: flex;
 	flex-direction: column;
 	font-size: 0.85rem;
@@ -88,17 +88,17 @@ main {
 	gap: 0.25rem;
 }
 
-#run-form label.wide {
+.panel form label.wide {
 	flex: 1 1 100%;
 }
 
-#run-form label.checkbox {
+.panel form label.checkbox {
 	flex-direction: row;
 	align-items: center;
 	gap: 0.4rem;
 }
 
-#run-form input {
+.panel form input {
 	padding: 0.5rem;
 	border: 1px solid var(--border);
 	border-radius: 6px;

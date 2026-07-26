@@ -101,3 +101,25 @@ int test_image_fixture_build(const char *image_root, const char *child_binary_pa
 
 	return 0;
 }
+
+int test_image_fixture_add_lib(const char *image_root, const char *host_lib_abs_path)
+{
+	char dst_path[PATH_MAX];
+	char dst_dir[PATH_MAX];
+	char *slash;
+
+	if (snprintf(dst_path, sizeof(dst_path), "%s%s", image_root, host_lib_abs_path) >=
+	    (int)sizeof(dst_path)) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+
+	snprintf(dst_dir, sizeof(dst_dir), "%s", dst_path);
+	slash = strrchr(dst_dir, '/');
+	if (slash != NULL)
+		*slash = '\0';
+
+	if (mkdir_p(dst_dir) != 0)
+		return -1;
+	return copy_file(host_lib_abs_path, dst_path);
+}

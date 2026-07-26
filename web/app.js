@@ -14,6 +14,10 @@ const containersBody = document.getElementById("containers-body");
 const runForm = document.getElementById("run-form");
 const networksBody = document.getElementById("networks-body");
 const networkForm = document.getElementById("network-form");
+const dnsRecordsBody = document.getElementById("dns-records-body");
+const dnsRecordForm = document.getElementById("dns-record-form");
+const dnsServersBody = document.getElementById("dns-servers-body");
+const dnsServerForm = document.getElementById("dns-server-form");
 
 function showStatus(message, isError) {
 	statusBox.textContent = message;
@@ -214,6 +218,132 @@ async function removeNetwork(name) {
 	}
 }
 
+function renderDnsRecords(records) {
+	dnsRecordsBody.textContent = "";
+
+	if (records.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+		cell.colSpan = 3;
+		cell.className = "empty";
+		cell.textContent = "No DNS records";
+		row.appendChild(cell);
+		dnsRecordsBody.appendChild(row);
+		return;
+	}
+
+	for (const rec of records) {
+		const row = document.createElement("tr");
+
+		const nameCell = document.createElement("td");
+		nameCell.textContent = rec.name;
+		row.appendChild(nameCell);
+
+		const ipCell = document.createElement("td");
+		ipCell.textContent = rec.ip;
+		row.appendChild(ipCell);
+
+		const actionCell = document.createElement("td");
+		const rmButton = document.createElement("button");
+		rmButton.textContent = "Remove";
+		rmButton.className = "button-danger";
+		rmButton.addEventListener("click", () => removeDnsRecord(rec.name));
+		actionCell.appendChild(rmButton);
+		row.appendChild(actionCell);
+
+		dnsRecordsBody.appendChild(row);
+	}
+}
+
+async function refreshDnsRecords() {
+	try {
+		const data = await apiRequest("GET", "/v1/dns/records");
+		renderDnsRecords(data.records);
+	} catch (e) {
+		dnsRecordsBody.textContent = "";
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+		cell.colSpan = 3;
+		cell.className = "empty";
+		cell.textContent = "Could not load DNS records: " + e.message;
+		row.appendChild(cell);
+		dnsRecordsBody.appendChild(row);
+	}
+}
+
+async function removeDnsRecord(name) {
+	try {
+		await apiRequest("DELETE", "/v1/dns/records/" + encodeURIComponent(name));
+		clearStatus();
+		await refreshDnsRecords();
+	} catch (e) {
+		showStatus("Failed to remove DNS record " + name + ": " + e.message, true);
+	}
+}
+
+function renderDnsServers(servers) {
+	dnsServersBody.textContent = "";
+
+	if (servers.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+		cell.colSpan = 3;
+		cell.className = "empty";
+		cell.textContent = "No DNS server bindings";
+		row.appendChild(cell);
+		dnsServersBody.appendChild(row);
+		return;
+	}
+
+	for (const s of servers) {
+		const row = document.createElement("tr");
+
+		const containerCell = document.createElement("td");
+		containerCell.textContent = s.container;
+		row.appendChild(containerCell);
+
+		const pathCell = document.createElement("td");
+		pathCell.textContent = s.hosts_path;
+		row.appendChild(pathCell);
+
+		const actionCell = document.createElement("td");
+		const rmButton = document.createElement("button");
+		rmButton.textContent = "Unregister";
+		rmButton.className = "button-danger";
+		rmButton.addEventListener("click", () => removeDnsServer(s.container));
+		actionCell.appendChild(rmButton);
+		row.appendChild(actionCell);
+
+		dnsServersBody.appendChild(row);
+	}
+}
+
+async function refreshDnsServers() {
+	try {
+		const data = await apiRequest("GET", "/v1/dns/servers");
+		renderDnsServers(data.servers);
+	} catch (e) {
+		dnsServersBody.textContent = "";
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+		cell.colSpan = 3;
+		cell.className = "empty";
+		cell.textContent = "Could not load DNS server bindings: " + e.message;
+		row.appendChild(cell);
+		dnsServersBody.appendChild(row);
+	}
+}
+
+async function removeDnsServer(container) {
+	try {
+		await apiRequest("DELETE", "/v1/dns/servers/" + encodeURIComponent(container));
+		clearStatus();
+		await refreshDnsServers();
+	} catch (e) {
+		showStatus("Failed to unregister DNS server " + container + ": " + e.message, true);
+	}
+}
+
 runForm.addEventListener("submit", async (event) => {
 	event.preventDefault();
 
@@ -293,10 +423,44 @@ networkForm.addEventListener("submit", async (event) => {
 	}
 });
 
+dnsRecordForm.addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const name = document.getElementById("df-name").value.trim();
+	const ip = document.getElementById("df-ip").value.trim();
+
+	try {
+		await apiRequest("POST", "/v1/dns/records", { name: name, ip: ip });
+		clearStatus();
+		dnsRecordForm.reset();
+		await refreshDnsRecords();
+	} catch (e) {
+		showStatus("Failed to create DNS record: " + e.message, true);
+	}
+});
+
+dnsServerForm.addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const container = document.getElementById("sf-container").value.trim();
+	const hostsPath = document.getElementById("sf-hosts-path").value.trim();
+
+	try {
+		await apiRequest("POST", "/v1/dns/servers", { container: container, hosts_path: hostsPath });
+		clearStatus();
+		dnsServerForm.reset();
+		await refreshDnsServers();
+	} catch (e) {
+		showStatus("Failed to register DNS server: " + e.message, true);
+	}
+});
+
 async function poll() {
 	await refreshHealth();
 	await refreshContainers();
 	await refreshNetworks();
+	await refreshDnsRecords();
+	await refreshDnsServers();
 }
 
 poll();

@@ -1,16 +1,14 @@
 #include "network.h"
+#include "persist.h"
 #include "registry.h"
 #include "rtnetlink.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 static struct network_def g_networks[NETWORK_MAX];
 static char g_state_path[PATH_MAX];
@@ -53,48 +51,16 @@ static int ranges_overlap(uint32_t a_base_be, int a_prefix, uint32_t b_base_be, 
 	return (ntohl(a_base_be) & mask) == (ntohl(b_base_be) & mask);
 }
 
-/*
- * Rewrites the persisted file atomically: a crash mid-write must
- * never corrupt this state, since it's the only record of which
- * bridges this daemon is responsible for across a restart. Writes to
- * a temp file in the same directory, fsyncs, then renames over the
- * real path (rename() is atomic on the same filesystem).
- */
 static int save_state(void)
 {
-	char tmp_path[PATH_MAX + 8];
 	struct json_writer w;
-	int fd;
-	ssize_t written;
-	size_t len;
-
-	if (snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", g_state_path) >= (int)sizeof(tmp_path))
-		return -1;
+	int rc;
 
 	jw_init(&w);
 	network_write_json_list(&w);
-	len = w.len;
-
-	fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
-	if (fd < 0) {
-		jw_free(&w);
-		return -1;
-	}
-	written = write(fd, w.buf, len);
+	rc = persist_atomic_write(g_state_path, w.buf, w.len);
 	jw_free(&w);
-	if (written < 0 || (size_t)written != len) {
-		close(fd);
-		return -1;
-	}
-	if (fsync(fd) != 0) {
-		close(fd);
-		return -1;
-	}
-	close(fd);
-
-	if (rename(tmp_path, g_state_path) != 0)
-		return -1;
-	return 0;
+	return rc;
 }
 
 /*
@@ -143,39 +109,18 @@ static int parse_persisted_entry(const struct json_value *item, struct network_d
 
 static int load_state(void)
 {
-	int fd;
-	struct stat st;
 	char *buf;
-	ssize_t n;
+	size_t len;
 	struct json_value *root;
 	size_t i;
 	int rc = 0;
 
-	fd = open(g_state_path, O_RDONLY | O_CLOEXEC);
-	if (fd < 0) {
-		if (errno == ENOENT)
-			return 0;
-		perror(g_state_path);
+	if (persist_read_file(g_state_path, &buf, &len) != 0)
 		return -1;
-	}
-	if (fstat(fd, &st) != 0) {
-		close(fd);
-		return -1;
-	}
-	buf = malloc((size_t)st.st_size + 1);
-	if (buf == NULL) {
-		close(fd);
-		return -1;
-	}
-	n = read(fd, buf, (size_t)st.st_size);
-	close(fd);
-	if (n < 0 || (size_t)n != (size_t)st.st_size) {
-		free(buf);
-		return -1;
-	}
-	buf[n] = '\0';
+	if (buf == NULL)
+		return 0; /* no persisted state yet -- first-ever startup */
 
-	root = json_parse(buf, (size_t)n);
+	root = json_parse(buf, len);
 	free(buf);
 	if (root == NULL || root->type != JSON_ARRAY) {
 		json_free(root);
