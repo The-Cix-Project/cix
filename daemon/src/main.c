@@ -417,7 +417,7 @@ static void accept_loop(void)
 	struct kx_epoll_event ev;
 
 	for (;;) {
-		client_fd = accept4(g_listener_conn.fd, NULL, NULL, SOCK_NONBLOCK);
+		client_fd = accept4(g_listener_conn.fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
 		if (client_fd < 0) {
 			if (errno == EAGAIN || errno == EWOULDBLOCK)
 				break;
@@ -480,7 +480,20 @@ int main(int argc, char **argv)
 	sigaction(SIGTERM, &sa, NULL);
 	sigaction(SIGINT, &sa, NULL);
 
-	listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+	/*
+	 * SOCK_CLOEXEC/EPOLL_CLOEXEC everywhere below: container_create()
+	 * clone3()'s a new process for every container this daemon runs.
+	 * Without close-on-exec, that child inherits a duplicate of every
+	 * fd we hold open at the moment of the clone -- including the
+	 * client connection socket for whatever request triggered the
+	 * container's creation. The kernel won't deliver EOF on that
+	 * connection to the client until *every* reference to it closes,
+	 * so an un-CLOEXEC'd fd would silently stall that HTTP response
+	 * until the container itself exits, defeating the entire
+	 * non-blocking reactor. The container's own execve() closes any
+	 * CLOEXEC fd immediately, well before it does real work.
+	 */
+	listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
 	if (listen_fd < 0) {
 		perror("socket");
 		return 1;
@@ -504,7 +517,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	g_epfd = epoll_create1(0);
+	g_epfd = epoll_create1(EPOLL_CLOEXEC);
 	if (g_epfd < 0) {
 		perror("epoll_create1");
 		return 1;

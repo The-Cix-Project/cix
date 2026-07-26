@@ -72,7 +72,14 @@ int cgroup_create(const struct cgroup_limits *lim, int *out_fd)
 			return -1;
 	}
 
-	fd = open(dir, O_PATH);
+	/*
+	 * O_CLOEXEC: this fd is only needed by the kernel at clone3() time
+	 * (CLONE_INTO_CGROUP reads it during the syscall itself); the
+	 * daemon keeps its own copy for bookkeeping, but the fd table this
+	 * clone3() inherits into shouldn't carry a lingering duplicate
+	 * past that child's own execve().
+	 */
+	fd = open(dir, O_PATH | O_CLOEXEC);
 	if (fd < 0)
 		return -1;
 

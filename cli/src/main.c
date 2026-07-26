@@ -1,0 +1,336 @@
+/*
+ * kanxeoctl: a pure REST client for the Kanxeo host API
+ * (docs/api/openapi.yaml). Per the project's API-First Mandate
+ * (CLAUDE.md, ADR-0005), this file holds no namespace/cgroup/mount
+ * logic of its own -- every subcommand is exactly one HTTP call via
+ * client/src/httpclient.c, the same library test_daemon.c uses to
+ * verify the daemon.
+ */
+#include "httpclient.h"
+#include "json.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define DEFAULT_HOST "127.0.0.1"
+#define DEFAULT_PORT 7620
+
+static void print_usage(FILE *out)
+{
+	fprintf(out,
+	        "usage: kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args]\n"
+	        "\n"
+	        "commands:\n"
+	        "  health\n"
+	        "  ps\n"
+	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] -- CMD [ARGS...]\n"
+	        "  inspect NAME\n"
+	        "  rm NAME\n");
+}
+
+static const char *json_str_field(const struct json_value *obj, const char *key)
+{
+	return json_as_string(json_object_get(obj, key));
+}
+
+/* Writes v (recursively) into w using the same escaping/structure
+ * logic the daemon itself uses to build responses -- so --json mode
+ * has no separate JSON-rendering implementation of its own. */
+static void jw_write_value(struct json_writer *w, const struct json_value *v)
+{
+	size_t i;
+
+	if (v == NULL) {
+		jw_null(w);
+		return;
+	}
+	switch (v->type) {
+	case JSON_NULL:
+		jw_null(w);
+		break;
+	case JSON_BOOL:
+		jw_bool(w, v->u.boolean);
+		break;
+	case JSON_NUMBER:
+		jw_int(w, (long long)v->u.number); /* this API never emits non-integral numbers */
+		break;
+	case JSON_STRING:
+		jw_str(w, v->u.string);
+		break;
+	case JSON_ARRAY:
+		jw_arr_open(w);
+		for (i = 0; i < v->u.array.count; i++)
+			jw_write_value(w, v->u.array.items[i]);
+		jw_arr_close(w);
+		break;
+	case JSON_OBJECT:
+		jw_obj_open(w);
+		for (i = 0; i < v->u.object.count; i++) {
+			jw_key(w, v->u.object.keys[i]);
+			jw_write_value(w, v->u.object.values[i]);
+		}
+		jw_obj_close(w);
+		break;
+	}
+}
+
+static void print_raw_json(const struct json_value *v)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_write_value(&w, v);
+	printf("%.*s\n", (int)w.len, w.buf);
+	jw_free(&w);
+}
+
+static void fmt_health(const struct json_value *v)
+{
+	printf("%s\n", json_str_field(v, "status"));
+}
+
+static void fmt_container_line(const struct json_value *v)
+{
+	const char *name = json_str_field(v, "name");
+	const char *status = json_str_field(v, "status");
+	long pid = (long)json_as_number(json_object_get(v, "pid"));
+	const struct json_value *exitv = json_object_get(v, "exit_status");
+
+	if (exitv != NULL && exitv->type == JSON_NUMBER)
+		printf("%-20s %-8s pid=%-8ld exit_status=%ld\n", name, status, pid,
+		       (long)json_as_number(exitv));
+	else
+		printf("%-20s %-8s pid=%-8ld exit_status=-\n", name, status, pid);
+}
+
+static void fmt_list(const struct json_value *v)
+{
+	const struct json_value *containers = json_object_get(v, "containers");
+	size_t i;
+
+	if (containers == NULL || containers->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < containers->u.array.count; i++)
+		fmt_container_line(containers->u.array.items[i]);
+}
+
+static void fmt_removed(const struct json_value *v)
+{
+	(void)v;
+	printf("removed\n");
+}
+
+/*
+ * Common success/failure handling for every subcommand: 2xx prints
+ * either the raw JSON (--json, or when the subcommand has no special
+ * formatting) or a formatted rendering via fmt; anything else prints
+ * the API's {"error": "..."} message to stderr. Always frees r.
+ * Returns the process exit code.
+ */
+static int emit(struct kx_response *r, int json_mode, void (*fmt)(const struct json_value *))
+{
+	int rc;
+
+	if (r->status < 200 || r->status >= 300) {
+		const char *msg = json_str_field(r->json, "error");
+
+		fprintf(stderr, "kanxeoctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		        r->status);
+		rc = 1;
+	} else if (json_mode || fmt == NULL) {
+		print_raw_json(r->json);
+		rc = 0;
+	} else {
+		fmt(r->json);
+		rc = 0;
+	}
+	kx_response_free(r);
+	return rc;
+}
+
+static int cmd_health(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/health", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_health);
+}
+
+static int cmd_ps(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/containers", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_list);
+}
+
+static int cmd_inspect(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: inspect requires a container name\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/containers/%s", argv[0]);
+	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_container_line);
+}
+
+static int cmd_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: rm requires a container name\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/containers/%s", argv[0]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *name = NULL;
+	const char *image = NULL;
+	long memory_max = -1;
+	long pids_max = -1;
+	int i = 0;
+	int cmd_start = -1;
+	struct json_writer w;
+	struct kx_response r;
+
+	while (i < argc) {
+		if (strcmp(argv[i], "--") == 0) {
+			cmd_start = i + 1;
+			break;
+		}
+		if (strncmp(argv[i], "--name=", 7) == 0)
+			name = argv[i] + 7;
+		else if (strncmp(argv[i], "--image=", 8) == 0)
+			image = argv[i] + 8;
+		else if (strncmp(argv[i], "--memory-max=", 13) == 0)
+			memory_max = atol(argv[i] + 13);
+		else if (strncmp(argv[i], "--pids-max=", 11) == 0)
+			pids_max = atol(argv[i] + 11);
+		else {
+			fprintf(stderr, "kanxeoctl: unknown run option '%s'\n", argv[i]);
+			return 2;
+		}
+		i++;
+	}
+
+	if (name == NULL || image == NULL || cmd_start < 0 || cmd_start >= argc) {
+		fprintf(stderr,
+		        "usage: kanxeoctl run --name=NAME --image=IMAGE [--memory-max=N] "
+		        "[--pids-max=N] -- CMD [ARGS...]\n");
+		return 2;
+	}
+
+	/*
+	 * Built with the json writer (jw_*), not snprintf string
+	 * concatenation, because name/image/cmd come from arbitrary
+	 * user-supplied argv and must be properly JSON-escaped.
+	 */
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "image");
+	jw_str(&w, image);
+	jw_key(&w, "cmd");
+	jw_arr_open(&w);
+	for (i = cmd_start; i < argc; i++)
+		jw_str(&w, argv[i]);
+	jw_arr_close(&w);
+	if (memory_max >= 0) {
+		jw_key(&w, "memory_max");
+		jw_int(&w, memory_max);
+	}
+	if (pids_max >= 0) {
+		jw_key(&w, "pids_max");
+		jw_int(&w, pids_max);
+	}
+	jw_obj_close(&w);
+
+	/*
+	 * kx_client_request() needs a NUL-terminated C string; w.buf isn't
+	 * one, but jw_ensure()'s growth policy always keeps at least one
+	 * spare byte of capacity beyond w.len, so writing the NUL directly
+	 * here is safe without a further allocation.
+	 */
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/containers", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_container_line);
+}
+
+int main(int argc, char **argv)
+{
+	const char *host = DEFAULT_HOST;
+	int port = DEFAULT_PORT;
+	int json_mode = 0;
+	int i = 1;
+	const char *cmd;
+	struct kx_client client;
+
+	while (i < argc && strncmp(argv[i], "--", 2) == 0) {
+		if (strncmp(argv[i], "--host=", 7) == 0)
+			host = argv[i] + 7;
+		else if (strncmp(argv[i], "--port=", 7) == 0)
+			port = atoi(argv[i] + 7);
+		else if (strcmp(argv[i], "--json") == 0)
+			json_mode = 1;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown option '%s'\n", argv[i]);
+			print_usage(stderr);
+			return 2;
+		}
+		i++;
+	}
+
+	if (i >= argc) {
+		print_usage(stderr);
+		return 2;
+	}
+	cmd = argv[i++];
+
+	kx_client_init(&client, host, port);
+
+	if (strcmp(cmd, "health") == 0)
+		return cmd_health(&client, json_mode);
+	if (strcmp(cmd, "ps") == 0)
+		return cmd_ps(&client, json_mode);
+	if (strcmp(cmd, "run") == 0)
+		return cmd_run(&client, json_mode, argc - i, argv + i);
+	if (strcmp(cmd, "inspect") == 0)
+		return cmd_inspect(&client, json_mode, argc - i, argv + i);
+	if (strcmp(cmd, "rm") == 0)
+		return cmd_rm(&client, json_mode, argc - i, argv + i);
+
+	fprintf(stderr, "kanxeoctl: unknown command '%s'\n", cmd);
+	print_usage(stderr);
+	return 2;
+}

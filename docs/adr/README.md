@@ -13,3 +13,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0006](0006-openapi-spec-format.md) | OpenAPI 3.0 YAML as the API spec format | Accepted |
 | [0007](0007-hand-rolled-daemon-no-external-libs.md) | Hand-rolled HTTP/JSON/reactor in the daemon, no external libraries | Accepted |
 | [0008](0008-tcc-pragma-pack-for-kernel-abi-structs.md) | Use #pragma pack, not __attribute__((packed)), for kernel-ABI structs under TCC | Accepted |
+| [0009](0009-cloexec-daemon-fds-before-clone3.md) | CLOEXEC every daemon-owned fd before any clone3() call | Accepted |
