@@ -255,7 +255,8 @@ static int cmd_rm(const struct kx_client *c, int json_mode, int argc, char **arg
 	return emit(&r, json_mode, fmt_removed);
 }
 
-#define CLI_MAX_NETWORKS 4
+/* Matches daemon's CONTAINER_MAX_NETWORKS -- see include/container.h. */
+#define CLI_MAX_NETWORKS 64
 #define CLI_MAX_ROUTES 8
 
 struct cli_route {

@@ -223,7 +223,7 @@ static void handle_create(int fd, const char *body, size_t body_len)
 		    jnetworks->u.array.count > CONTAINER_MAX_NETWORKS) {
 			json_free(root);
 			respond_error(fd, 400, "Bad Request",
-			              "networks must be a non-empty array of at most 4 entries");
+			              "networks must be a non-empty array of at most 64 entries");
 			return;
 		}
 		for (i = 0; i < jnetworks->u.array.count; i++) {

@@ -20,7 +20,12 @@ struct mount_spec {
 	const char *put_old_rel;
 };
 
-#define CONTAINER_MAX_NETWORKS 4
+/*
+ * Matches daemon/include/network.h's NETWORK_MAX: a container can
+ * never attach to more networks than could possibly exist, so that's
+ * the real ceiling here, not an arbitrary round number.
+ */
+#define CONTAINER_MAX_NETWORKS 64
 
 /*
  * One network attachment. Addresses are network byte order (e.g.

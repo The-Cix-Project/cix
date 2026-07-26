@@ -57,7 +57,7 @@ POST /v1/containers
 - `name` must match `[A-Za-z0-9_-]+` — it's used verbatim as the on-disk directory name under `/var/lib/kanxeo/containers/`.
 - `image` must already exist and be populated at `/var/lib/kanxeo/images/{image}/rootfs` — the daemon never creates image content itself (see ADR-0004); a missing image is a `400`, not a silently-empty container.
 - `memory_max`/`pids_max` are optional cgroup v2 limits; omit for no limit.
-- `networks` is optional: 1–4 names, each already created via `POST /v1/networks` — any unknown name is a `400`. Omit for no networking (isolated netns, only `lo` — same as before this field existed). The **first** entry is primary and gets the default route; the rest only get their own subnet's connected route.
+- `networks` is optional: 1–64 names, each already created via `POST /v1/networks` — any unknown name is a `400`. Omit for no networking (isolated netns, only `lo` — same as before this field existed). The **first** entry is primary and gets the default route; the rest only get their own subnet's connected route.
 
 Response (`201`):
 
