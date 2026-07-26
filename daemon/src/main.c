@@ -3,6 +3,7 @@
 #include "json.h"
 #include "linux_compat.h"
 #include "registry.h"
+#include "staticfile.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -22,6 +23,7 @@
 
 #define DEFAULT_PORT 7620
 #define DEFAULT_BIND "127.0.0.1"
+#define DEFAULT_WEB_ROOT "web"
 #define BASE_DIR "/var/lib/kanxeo"
 #define IMAGES_DIR BASE_DIR "/images"
 #define CONTAINERS_DIR BASE_DIR "/containers"
@@ -39,6 +41,7 @@ struct conn {
 
 static int g_epfd;
 static struct conn g_listener_conn;
+static const char *g_web_root;
 static volatile sig_atomic_t g_stop;
 
 static void on_signal(int sig)
@@ -54,15 +57,6 @@ static int ensure_dir(const char *path)
 		return -1;
 	}
 	return 0;
-}
-
-static int make_blocking(int fd)
-{
-	int flags = fcntl(fd, F_GETFL, 0);
-
-	if (flags < 0)
-		return -1;
-	return fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
 }
 
 static int name_is_valid(const char *name)
@@ -85,7 +79,7 @@ static int name_is_valid(const char *name)
 
 static void respond_json(int fd, int status, const char *status_text, struct json_writer *w)
 {
-	make_blocking(fd);
+	http_set_blocking(fd);
 	http_write_response(fd, status, status_text, "application/json", w->buf, w->len);
 }
 
@@ -319,7 +313,7 @@ static void handle_delete(int fd, const char *name)
 	}
 
 	registry_remove(name);
-	make_blocking(fd);
+	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
@@ -353,6 +347,20 @@ static void dispatch(int fd, const struct http_request *req)
 				return;
 			}
 		}
+	}
+
+	/*
+	 * Anything outside /v1/... isn't part of the API contract at all --
+	 * it's the web dashboard's static assets (docs/adr/0010). An
+	 * unrecognized /v1/... path still falls through to the JSON 404
+	 * below, unchanged.
+	 */
+	if (strncmp(req->path, "/v1/", 4) != 0) {
+		if (strcmp(req->method, "GET") == 0)
+			static_serve(fd, g_web_root, req->path);
+		else
+			respond_error(fd, 404, "Not Found", "no such endpoint");
+		return;
 	}
 
 	respond_error(fd, 404, "Not Found", "no such endpoint");
@@ -455,6 +463,7 @@ int main(int argc, char **argv)
 {
 	int port = DEFAULT_PORT;
 	const char *bind_addr = DEFAULT_BIND;
+	const char *web_root = DEFAULT_WEB_ROOT;
 	int i;
 	int listen_fd;
 	int opt = 1;
@@ -467,7 +476,10 @@ int main(int argc, char **argv)
 			port = atoi(argv[i] + 7);
 		else if (strncmp(argv[i], "--bind=", 7) == 0)
 			bind_addr = argv[i] + 7;
+		else if (strncmp(argv[i], "--web-root=", 11) == 0)
+			web_root = argv[i] + 11;
 	}
+	g_web_root = web_root;
 
 	if (ensure_dir(BASE_DIR) != 0 || ensure_dir(IMAGES_DIR) != 0 ||
 	    ensure_dir(CONTAINERS_DIR) != 0)

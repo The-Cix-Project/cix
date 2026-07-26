@@ -2,15 +2,17 @@ CC := tcc
 CFLAGS := -Wall -Werror -D_GNU_SOURCE -D_FORTIFY_SOURCE=0 -Iinclude
 DAEMON_CFLAGS := $(CFLAGS) -Idaemon/include
 CLIENT_CFLAGS := $(CFLAGS) -Iclient/include -Idaemon/include
+NETPLANE_CFLAGS := $(CFLAGS) -Inetplane/include
 BUILD := build
 
 LIB_SRCS := src/cgroup.c src/mountns.c src/ns_create.c src/container.c src/overlay.c
-DAEMON_SRCS := daemon/src/json.c daemon/src/http.c daemon/src/registry.c
+DAEMON_SRCS := daemon/src/json.c daemon/src/http.c daemon/src/registry.c daemon/src/staticfile.c
 CLIENT_SRCS := client/src/httpclient.c daemon/src/json.c
+NETPLANE_SRCS := netplane/src/rtnetlink.c
 
 .PHONY: all clean
 
-all: $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/kanxeod $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/kanxeoctl $(BUILD)/test_cli
+all: $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/kanxeod $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/kanxeoctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_rtnetlink
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -44,6 +46,12 @@ $(BUILD)/kanxeoctl: cli/src/main.c $(CLIENT_SRCS) | $(BUILD)
 
 $(BUILD)/test_cli: test/test_cli.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
+
+$(BUILD)/test_web: test/test_web.c client/src/httpclient.c daemon/src/json.c | $(BUILD)
+	$(CC) $(CLIENT_CFLAGS) $^ -o $@
+
+$(BUILD)/test_rtnetlink: test/test_rtnetlink.c $(NETPLANE_SRCS) src/ns_create.c | $(BUILD)
+	$(CC) $(NETPLANE_CFLAGS) $^ -o $@
 
 clean:
 	rm -rf $(BUILD)

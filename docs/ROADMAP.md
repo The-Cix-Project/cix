@@ -9,8 +9,8 @@ Phased, dependency-ordered breakdown of the mission in [MISSION.md](MISSION.md).
 | 2 | OverlayFS root construction | 1 | Done |
 | 3 | REST API spec + daemon (host + container lifecycle) | 1, 2 | Done |
 | 4 | CLI (pure REST API client) | 3 | Done |
-| 5 | Web dashboard (pure REST API client) | 3 | Not started |
-| 6 | Custom virtual switch / rtnetlink data plane | 3 | Not started |
+| 5 | Web dashboard (pure REST API client) | 3 | Done |
+| 6 | Custom virtual switch / rtnetlink data plane | 3 | In progress (part 1 done) |
 | 7 | Routing protocols (containerized VPNs/routers) | 6 | Not started |
 | 8 | DNS service | 3, 6 | Not started |
 | 9 | PKI / certificate management | 3 | Not started |
@@ -102,6 +102,48 @@ Verified end to end by `test/test_cli.c`, driving the real, built `kanxeoctl` bi
 7. Daemon unreachable (wrong port) → exit `1`, no crash.
 8. Zero warnings under `-Wall -Werror` across every new/changed file; `test_harness`, `test_overlay`, and the refactored `test_daemon` re-run and still fully pass.
 
-## Phase 5 — Web dashboard, pure REST API client (next, not yet designed)
+## Phase 5 — Web dashboard, pure REST API client (done)
 
-Same constraint as the CLI: a REST client only. Not designed yet.
+`web/index.html` + `web/app.js` + `web/style.css` — vanilla HTML/CSS/JS, no framework, no build step (ADR-0010): a health indicator, an auto-refreshing (2s poll) container table, a create-container form, and a remove button per row. Mirrors `kanxeoctl`'s exact command surface — no dashboard feature without a CLI/API equivalent, and no separate "inspect" view since `GET /v1/containers` already returns every field a per-container detail view would add.
+
+Served by `kanxeod` itself, same origin as the API (`daemon/src/staticfile.c`, new `--web-root` flag, default `web/`) — confirmed with the user directly rather than assumed: a separate static-file process would make the dashboard's `fetch()` calls cross-origin, needing CORS preflight/header handling in the daemon for no functional benefit. `dispatch()` in `daemon/src/main.c` now falls through to `static_serve()` for any GET path that doesn't start with `/v1/`, before the existing JSON-404 fallback (which still covers unrecognized `/v1/...` paths unchanged). `main.c`'s private `make_blocking()` was promoted to a public `http_set_blocking()` in `daemon/src/http.c`, since `static_serve()` needed the identical "blocking mode before this small, connection-closing write" behavior `respond_json()` already relied on.
+
+`client/include/httpclient.h`'s `struct kx_response` gained `content_type`/`body`/`body_len` (previously it only exposed the parsed JSON tree) — needed to verify static file responses, which aren't JSON at all.
+
+Verified end to end by `test/test_web.c` (reusing `client/src/httpclient.c`, like every test since Phase 4):
+
+1. `GET /` → `200`, `Content-Type: text/html`, body contains the page title.
+2. `GET /app.js` → `200`, `Content-Type: application/javascript`.
+3. `GET /style.css` → `200`, `Content-Type: text/css`.
+4. `GET /nonexistent.txt` → `404`.
+5. `GET /../CLAUDE.md` (path-traversal attempt) → `400`, response body does **not** contain `CLAUDE.md`'s actual content.
+6. `GET /v1/health` still `200` — the new static-fallback branch didn't regress API routing.
+7. Zero warnings under `-Wall -Werror`; `test_harness`, `test_overlay`, `test_daemon`, `test_cli` re-run and still fully pass (including a repeated-run stress pass, per the ADR-0008/ADR-0009 lesson that a single passing run isn't enough).
+
+**Explicit scope boundary (not a silent gap):** whether the dashboard actually *renders and behaves* correctly in a real browser (form submission, table updates, delete button) wasn't automated — this project has no headless-browser/Node toolchain, and adding one for a single small dashboard would repeat the exact dependency-cost trade-off ADR-0010 decided against. What was checked instead: `node --check` (a pre-installed system tool, not a new project dependency) confirms `app.js` is syntactically valid, and every DOM element ID `app.js` references was confirmed present in `index.html`. Whether it looks and behaves right needs a real browser at `http://127.0.0.1:7620/`.
+
+## Phase 6 — Custom virtual switch / rtnetlink data plane (in progress: part 1 done)
+
+Confirmed with the user before writing any code: "custom" means our own control-plane code driving the kernel's native bridge/veth/routing via rtnetlink directly — never `ip`/iproute2, never OVS, never eBPF — with the kernel itself still doing the actual packet forwarding. See ADR-0011.
+
+**Part 1 (done): rtnetlink primitives, proven standalone.** `netplane/include/rtnetlink.h` + `netplane/src/rtnetlink.c` — hand-built netlink messages (a small generic message/attribute builder, including the one genuinely intricate construction here: `IFLA_LINKINFO` → `IFLA_INFO_DATA` → `VETH_INFO_PEER` nesting, which the kernel's veth driver expects to open with a raw embedded `struct ifinfomsg`) for bridge creation, veth pair creation, moving a link into another process's netns, bridge attachment, IPv4 addressing, default-route installation, and link deletion. Links are addressed by name for every existing-link operation (no separate ifindex lookup needed). Before writing any of it, per ADR-0008's lesson, confirmed via a throwaway `sizeof`/`offsetof` check that TCC lays out `nlmsghdr`/`ifinfomsg`/`ifaddrmsg`/`rtmsg`/`rtattr`/`nlmsgerr` identically to GCC (none of them rely on non-default packing, unlike `epoll_event`), and that `<linux/rtnetlink.h>`/`<linux/if_link.h>`/`<linux/veth.h>` don't conflict with glibc's own `<net/if.h>`/`<sys/socket.h>`.
+
+A real design pitfall surfaced during this work, not just a test gap: the gateway IP must go on the **bridge device**, never on a veth port that's enslaved to it — a bridge port doesn't behave like a normal addressable interface once attached, even though assigning it an address doesn't itself return an error. See ADR-0011.
+
+Verified end to end by `test/test_rtnetlink.c` (reuses `ns_clone3()` from `src/ns_create.c` to fork a "container-like" `CLONE_NEWNET` child — no second way to create a namespaced process invented for this):
+
+1. Clears any leftover state from a previous interrupted run first.
+2. Creates bridge `kanxeo-test0` — confirmed via `/sys/class/net/kanxeo-test0/bridge/`.
+3. Creates veth pair `vt-a`/`vt-b` — both appear on the host.
+4. Moves `vt-b` into the child's netns — confirmed by its disappearance from the host's `/sys/class/net`.
+5. Attaches `vt-a` to the bridge — confirmed via `/sys/class/net/kanxeo-test0/brif/vt-a`.
+6. Assigns the gateway IP to the bridge, addresses `vt-b` inside the child.
+7. **Real TCP connectivity** through the resulting topology (host → bridge → veth → child), not just "the syscalls didn't error" — a one-byte round trip.
+8. Cleanup (`rtnl_link_delete`) leaves no interfaces behind — confirmed directly.
+9. Zero warnings under `-Wall -Werror`; all five prior test suites (`test_harness`, `test_overlay`, `test_daemon`, `test_cli`, `test_web`) re-run and still fully pass, plus this new test itself re-run repeatedly (no regression, and no flakiness of its own).
+
+**Part 2 (not started, deliberately deferred — see the plan's own reasoning): wiring this into real containers.** This needs, and does not yet have:
+- A synchronization barrier inside `container_create()` (the parent must move a veth into the child's netns *before* the child configures/uses it; today the child's `clone3()` branch runs straight through to `execve()` with no pause point) — a real change to already-shipped code, not just an additive one.
+- Network attachment made **opt-in** per container (a new field on `container_spec`/`POST /v1/containers`), specifically so `test_harness.c`'s existing "container sees only `lo`" assertion keeps passing unchanged.
+- Simple IP allocation (one fixed subnet, sequential assignment, tracked in the registry — no DHCP).
+- REST API additions (`network` on create, `ip` on the container schema), then `kanxeoctl --network=` and a dashboard field.

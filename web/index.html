@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kanxeo</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+	<h1>Kanxeo</h1>
+	<span id="health" class="badge badge-unknown">checking&hellip;</span>
+</header>
+
+<main>
+	<section id="status" class="status" hidden></section>
+
+	<section class="panel">
+		<h2>Run a container</h2>
+		<form id="run-form">
+			<label>
+				Name
+				<input type="text" id="f-name" pattern="[A-Za-z0-9_-]+" required>
+			</label>
+			<label>
+				Image
+				<input type="text" id="f-image" required>
+			</label>
+			<label class="wide">
+				Command
+				<input type="text" id="f-cmd" placeholder="/bin/echo hello world" required>
+			</label>
+			<label>
+				Memory max (bytes)
+				<input type="number" id="f-memory-max" min="0">
+			</label>
+			<label>
+				PIDs max
+				<input type="number" id="f-pids-max" min="0">
+			</label>
+			<button type="submit">Run</button>
+		</form>
+	</section>
+
+	<section class="panel">
+		<h2>Containers</h2>
+		<table id="containers">
+			<thead>
+				<tr>
+					<th>Name</th>
+					<th>Status</th>
+					<th>PID</th>
+					<th>Exit status</th>
+					<th></th>
+				</tr>
+			</thead>
+			<tbody id="containers-body">
+				<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
+			</tbody>
+		</table>
+	</section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

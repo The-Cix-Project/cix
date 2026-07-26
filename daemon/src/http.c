@@ -1,6 +1,7 @@
 #include "http.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -214,4 +215,13 @@ int http_write_response(int fd, int status, const char *status_text,
 	if (body_len > 0 && write_all(fd, body, body_len) != 0)
 		return -1;
 	return 0;
+}
+
+int http_set_blocking(int fd)
+{
+	int flags = fcntl(fd, F_GETFL, 0);
+
+	if (flags < 0)
+		return -1;
+	return fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
 }

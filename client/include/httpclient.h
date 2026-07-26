@@ -15,8 +15,13 @@ struct kx_client {
 	int port;
 };
 
+#define KX_CONTENT_TYPE_MAX 64
+
 struct kx_response {
 	int status;
+	char content_type[KX_CONTENT_TYPE_MAX]; /* empty string if no Content-Type header was present */
+	char *body;                             /* raw response body, NUL-terminated; NULL if empty */
+	size_t body_len;
 	struct json_value *json; /* NULL if the body was empty or not valid JSON (e.g. a 204) */
 };
 

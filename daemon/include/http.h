@@ -66,4 +66,12 @@ int http_conn_try_parse(struct http_conn *c, struct http_request *req);
 int http_write_response(int fd, int status, const char *status_text,
                          const char *content_type, const char *body, size_t body_len);
 
+/*
+ * Puts fd back into blocking mode. Every response-writing call site
+ * (respond_json() in main.c, static_serve() in staticfile.c) must call
+ * this before http_write_response(), per that function's contract
+ * above -- one implementation of the fcntl() call, not one per caller.
+ */
+int http_set_blocking(int fd);
+
 #endif /* HTTP_H */

@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -111,6 +112,57 @@ static int read_all_response(int fd, struct read_buf *rb)
 	return 0;
 }
 
+/* headers spans the status line plus every header line (each ending
+ * "\r\n"), i.e. the header block excluding the final blank-line
+ * "\r\n" that terminates it -- same convention as daemon/src/http.c's
+ * find_content_length(), applied here to a response instead of a
+ * request. Writes an empty string to out if name isn't present. */
+static void find_header_value(const char *headers, size_t headers_len, const char *name,
+                               char *out, size_t out_size)
+{
+	size_t name_len = strlen(name);
+	size_t i = 0;
+
+	out[0] = '\0';
+
+	while (i < headers_len && !(headers[i] == '\r' && i + 1 < headers_len && headers[i + 1] == '\n'))
+		i++;
+	if (i < headers_len)
+		i += 2;
+
+	while (i < headers_len) {
+		size_t line_start = i;
+		size_t line_len;
+		size_t colon;
+
+		while (i < headers_len &&
+		       !(headers[i] == '\r' && i + 1 < headers_len && headers[i + 1] == '\n'))
+			i++;
+		line_len = i - line_start;
+
+		colon = 0;
+		while (colon < line_len && headers[line_start + colon] != ':')
+			colon++;
+
+		if (colon < line_len && colon == name_len &&
+		    strncasecmp(headers + line_start, name, name_len) == 0) {
+			size_t vstart = colon + 1;
+			size_t vlen;
+
+			while (vstart < line_len && headers[line_start + vstart] == ' ')
+				vstart++;
+			vlen = line_len - vstart;
+			if (vlen >= out_size)
+				vlen = out_size - 1;
+			memcpy(out, headers + line_start + vstart, vlen);
+			out[vlen] = '\0';
+			return;
+		}
+
+		i += 2;
+	}
+}
+
 int kx_client_request(const struct kx_client *c, const char *method, const char *path,
                        const char *body, struct kx_response *out)
 {
@@ -172,11 +224,26 @@ int kx_client_request(const struct kx_client *c, const char *method, const char 
 
 	body_start = strstr(rb.buf, "\r\n\r\n");
 	out->json = NULL;
+	out->body = NULL;
+	out->body_len = 0;
+	out->content_type[0] = '\0';
 	if (body_start != NULL) {
+		size_t headers_len = (size_t)(body_start - rb.buf);
+
+		find_header_value(rb.buf, headers_len, "Content-Type", out->content_type,
+		                   sizeof(out->content_type));
+
 		body_start += 4;
 		json_len = rb.len - (size_t)(body_start - rb.buf);
-		if (json_len > 0)
+		if (json_len > 0) {
+			out->body = malloc(json_len + 1);
+			if (out->body != NULL) {
+				memcpy(out->body, body_start, json_len);
+				out->body[json_len] = '\0';
+				out->body_len = json_len;
+			}
 			out->json = json_parse(body_start, json_len);
+		}
 	}
 
 	free(rb.buf);
@@ -187,4 +254,7 @@ void kx_response_free(struct kx_response *r)
 {
 	json_free(r->json);
 	r->json = NULL;
+	free(r->body);
+	r->body = NULL;
+	r->body_len = 0;
 }
