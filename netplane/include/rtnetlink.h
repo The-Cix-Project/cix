@@ -45,8 +45,13 @@ int rtnl_link_set_up(int fd, const char *name);
 /* Assigns an IPv4 address/prefix to a link. */
 int rtnl_addr_add_ipv4(int fd, const char *link_name, uint32_t addr_be, int prefix_len);
 
-/* Adds a default (0.0.0.0/0) IPv4 route via gateway_be, or a direct
- * (gateway-less) default route if gateway_be is 0. */
+/* Adds an IPv4 route to dest_be/dest_prefix_len via gateway_be (0 for
+ * a direct/gateway-less route). dest_prefix_len == 0 means the
+ * default route, and dest_be is ignored (no RTA_DST attribute). */
+int rtnl_route_add_ipv4(int fd, uint32_t dest_be, int dest_prefix_len, uint32_t gateway_be);
+
+/* rtnl_route_add_ipv4(fd, 0, 0, gateway_be) -- kept as its own name
+ * since "the default route" is the common case every container gets. */
 int rtnl_route_add_default_ipv4(int fd, uint32_t gateway_be);
 
 /* Deletes the named link. Deleting either end of a veth pair removes

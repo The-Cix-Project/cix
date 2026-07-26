@@ -24,7 +24,8 @@ static void print_usage(FILE *out)
 	        "commands:\n"
 	        "  health\n"
 	        "  ps\n"
-	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] [--network=NAME ...] -- CMD [ARGS...]\n"
+	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] [--network=NAME ...]\n"
+	        "      [--ip-forward] [--route=DEST/PREFIX:VIA ...] -- CMD [ARGS...]\n"
 	        "  inspect NAME\n"
 	        "  rm NAME\n"
 	        "  network create --name=NAME --subnet=A.B.C.D --prefix=N\n"
@@ -100,6 +101,7 @@ static void fmt_container_line(const struct json_value *v)
 	long pid = (long)json_as_number(json_object_get(v, "pid"));
 	const struct json_value *exitv = json_object_get(v, "exit_status");
 	const struct json_value *networks = json_object_get(v, "networks");
+	const struct json_value *ip_forward = json_object_get(v, "ip_forward");
 	char exit_buf[16];
 	char net_buf[256];
 	size_t off = 0;
@@ -125,8 +127,10 @@ static void fmt_container_line(const struct json_value *v)
 		}
 	}
 
-	printf("%-20s %-8s pid=%-8ld exit_status=%-6s networks=%s\n", name, status, pid, exit_buf,
-	       net_buf[0] != '\0' ? net_buf : "-");
+	printf("%-20s %-8s pid=%-8ld exit_status=%-6s networks=%-20s fwd=%s\n", name, status, pid,
+	       exit_buf, net_buf[0] != '\0' ? net_buf : "-",
+	       (ip_forward != NULL && ip_forward->type == JSON_BOOL && ip_forward->u.boolean) ? "yes"
+	                                                                                        : "no");
 }
 
 static void fmt_list(const struct json_value *v)
@@ -252,6 +256,45 @@ static int cmd_rm(const struct kx_client *c, int json_mode, int argc, char **arg
 }
 
 #define CLI_MAX_NETWORKS 4
+#define CLI_MAX_ROUTES 8
+
+struct cli_route {
+	char dest[64];
+	int prefix_len;
+	char via[64];
+};
+
+/* Parses "DEST/PREFIX:VIA" (e.g. "172.34.0.0/24:172.33.0.5") into its
+ * three parts. Purely a CLI presentation-syntax split -- whether
+ * dest/via are actually well-formed IPv4 is the daemon's job to
+ * validate, not duplicated here. */
+static int parse_route_flag(const char *s, struct cli_route *out)
+{
+	const char *slash = strchr(s, '/');
+	const char *colon;
+	size_t dest_len, via_len;
+
+	if (slash == NULL)
+		return -1;
+	colon = strchr(slash + 1, ':');
+	if (colon == NULL)
+		return -1;
+
+	dest_len = (size_t)(slash - s);
+	if (dest_len == 0 || dest_len >= sizeof(out->dest))
+		return -1;
+	memcpy(out->dest, s, dest_len);
+	out->dest[dest_len] = '\0';
+
+	out->prefix_len = atoi(slash + 1);
+
+	via_len = strlen(colon + 1);
+	if (via_len == 0 || via_len >= sizeof(out->via))
+		return -1;
+	strcpy(out->via, colon + 1);
+
+	return 0;
+}
 
 static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
@@ -259,6 +302,9 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	const char *image = NULL;
 	const char *networks[CLI_MAX_NETWORKS];
 	int network_count = 0;
+	int ip_forward = 0;
+	struct cli_route routes[CLI_MAX_ROUTES];
+	int route_count = 0;
 	long memory_max = -1;
 	long pids_max = -1;
 	int i = 0;
@@ -286,6 +332,21 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 				return 2;
 			}
 			networks[network_count++] = argv[i] + 10;
+		} else if (strcmp(argv[i], "--ip-forward") == 0) {
+			ip_forward = 1;
+		} else if (strncmp(argv[i], "--route=", 8) == 0) {
+			if (route_count >= CLI_MAX_ROUTES) {
+				fprintf(stderr, "kanxeoctl: too many --route= flags (max %d)\n",
+				        CLI_MAX_ROUTES);
+				return 2;
+			}
+			if (parse_route_flag(argv[i] + 8, &routes[route_count]) != 0) {
+				fprintf(stderr,
+				        "kanxeoctl: invalid --route= value '%s' (expected DEST/PREFIX:VIA)\n",
+				        argv[i] + 8);
+				return 2;
+			}
+			route_count++;
 		} else {
 			fprintf(stderr, "kanxeoctl: unknown run option '%s'\n", argv[i]);
 			return 2;
@@ -296,7 +357,8 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (name == NULL || image == NULL || cmd_start < 0 || cmd_start >= argc) {
 		fprintf(stderr,
 		        "usage: kanxeoctl run --name=NAME --image=IMAGE [--memory-max=N] "
-		        "[--pids-max=N] [--network=NAME ...] -- CMD [ARGS...]\n");
+		        "[--pids-max=N] [--network=NAME ...] [--ip-forward] "
+		        "[--route=DEST/PREFIX:VIA ...] -- CMD [ARGS...]\n");
 		return 2;
 	}
 
@@ -329,6 +391,25 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		jw_arr_open(&w);
 		for (i = 0; i < network_count; i++)
 			jw_str(&w, networks[i]);
+		jw_arr_close(&w);
+	}
+	if (ip_forward) {
+		jw_key(&w, "ip_forward");
+		jw_bool(&w, 1);
+	}
+	if (route_count > 0) {
+		jw_key(&w, "routes");
+		jw_arr_open(&w);
+		for (i = 0; i < route_count; i++) {
+			jw_obj_open(&w);
+			jw_key(&w, "dest");
+			jw_str(&w, routes[i].dest);
+			jw_key(&w, "prefix_len");
+			jw_int(&w, routes[i].prefix_len);
+			jw_key(&w, "via");
+			jw_str(&w, routes[i].via);
+			jw_obj_close(&w);
+		}
 		jw_arr_close(&w);
 	}
 	jw_obj_close(&w);

@@ -26,7 +26,7 @@ struct registry_entry *registry_find(const char *name)
 
 enum registry_error registry_create(const char *name, const struct container_spec *spec,
                                      const struct registry_network_attachment *nets, int net_count,
-                                     struct registry_entry **out)
+                                     int ip_forward, struct registry_entry **out)
 {
 	int i, slot = -1;
 	struct registry_entry *e;
@@ -57,6 +57,7 @@ enum registry_error registry_create(const char *name, const struct container_spe
 	e->net_count = net_count;
 	for (i = 0; i < net_count; i++)
 		e->nets[i] = nets[i];
+	e->ip_forward = ip_forward;
 
 	*out = e;
 	return REGISTRY_OK;
@@ -165,6 +166,8 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 		jw_obj_close(w);
 	}
 	jw_arr_close(w);
+	jw_key(w, "ip_forward");
+	jw_bool(w, entry->ip_forward);
 	jw_obj_close(w);
 }
 

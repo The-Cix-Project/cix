@@ -336,6 +336,43 @@ int main(void)
 		}
 	}
 
+	/* 10. --ip-forward and --route= are accepted and plumbed through
+	 * to the daemon -- the full 3-container proof that packets are
+	 * actually forwarded already lives in test_daemon_net.c; this just
+	 * confirms the real kanxeoctl binary sends these fields correctly */
+	{
+		char *net_create_argv[] = { "kanxeoctl",      PORT_ARG,          "network",
+			                     "create",         "--name=clifwd",   "--subnet=172.38.0.0",
+			                     "--prefix=24",    NULL };
+		char *run_argv[] = { "kanxeoctl",     PORT_ARG,
+			              "run",           "--name=c5",
+			              "--image=test",  "--network=clifwd",
+			              "--ip-forward",  "--route=10.0.0.0/24:172.38.0.1",
+			              "--",            "/bin/net_child",
+			              NULL };
+		char *rm_argv[] = { "kanxeoctl", PORT_ARG, "rm", "c5", NULL };
+		char *net_rm_argv[] = { "kanxeoctl", PORT_ARG, "network", "rm", "clifwd", NULL };
+
+		if (run_cli(net_create_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
+			fprintf(stderr, "FAIL: kanxeoctl network create clifwd, rc=%d out=%s\n", rc, out);
+			ok = 0;
+		}
+		if (run_cli(run_argv, out, sizeof(out), &rc) != 0 || rc != 0 ||
+		    strstr(out, "fwd=yes") == NULL) {
+			fprintf(stderr, "FAIL: kanxeoctl run c5 --ip-forward --route=, rc=%d out=%s\n", rc,
+			        out);
+			ok = 0;
+		}
+		if (run_cli(rm_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
+			fprintf(stderr, "FAIL: kanxeoctl rm c5, rc=%d out=%s\n", rc, out);
+			ok = 0;
+		}
+		if (run_cli(net_rm_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
+			fprintf(stderr, "FAIL: kanxeoctl network rm clifwd, rc=%d out=%s\n", rc, out);
+			ok = 0;
+		}
+	}
+
 	kill(daemon_pid, SIGTERM);
 	waitpid(daemon_pid, NULL, 0);
 

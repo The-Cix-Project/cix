@@ -1,6 +1,7 @@
 #include "internal.h"
 #include "rtnetlink.h"
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -90,5 +91,45 @@ int container_net_child_configure(const struct network_spec *nets, int net_count
 	}
 
 	rtnl_close(fd);
+	return 0;
+}
+
+int container_net_install_routes(const struct route_spec *routes, int route_count)
+{
+	int fd;
+	int i;
+
+	if (route_count == 0)
+		return 0;
+
+	fd = rtnl_open();
+	if (fd < 0)
+		return -1;
+
+	for (i = 0; i < route_count; i++) {
+		if (rtnl_route_add_ipv4(fd, routes[i].dest_be, routes[i].dest_prefix_len,
+		                         routes[i].gateway_be) != 0) {
+			rtnl_close(fd);
+			return -1;
+		}
+	}
+
+	rtnl_close(fd);
+	return 0;
+}
+
+int container_net_enable_ip_forward(void)
+{
+	int fd;
+	static const char one[] = "1\n";
+
+	fd = open("/proc/sys/net/ipv4/ip_forward", O_WRONLY);
+	if (fd < 0)
+		return -1;
+	if (write(fd, one, sizeof(one) - 1) != (ssize_t)(sizeof(one) - 1)) {
+		close(fd);
+		return -1;
+	}
+	close(fd);
 	return 0;
 }

@@ -60,4 +60,22 @@ int container_net_host_setup(const struct network_spec *nets, int net_count, pid
 int container_net_child_configure(const struct network_spec *nets, int net_count,
                                    int ready_pipe_read);
 
+/*
+ * Child side, called after container_net_child_configure() (if any)
+ * succeeds, before PR_SET_PDEATHSIG/execve. Installs each of routes[]
+ * in order via one rtnetlink session; a no-op that returns 0
+ * immediately if route_count == 0. Needs no pipe synchronization --
+ * unlike the interface setup above, this only touches the child's own
+ * already-established netns, nothing the parent needs to coordinate.
+ */
+int container_net_install_routes(const struct route_spec *routes, int route_count);
+
+/*
+ * Child side, called if spec->ip_forward is set. Enables
+ * net.ipv4.ip_forward inside the container's own netns by writing
+ * directly to /proc/sys/net/ipv4/ip_forward -- a per-netns sysctl, so
+ * this only affects this one container, never the host or siblings.
+ */
+int container_net_enable_ip_forward(void);
+
 #endif /* CONTAINER_INTERNAL_H */

@@ -259,9 +259,42 @@ components:
             only lo, the same as every container got before this field
             existed). The first entry is "primary" and receives the
             default route; any further entries only get their own
-            subnet's connected route (no default route of their own),
-            the prerequisite for a container to act as a router
-            between them (docs/ROADMAP.md Phase 7 part 3).
+            subnet's connected route (no default route of their own).
+        ip_forward:
+          type: boolean
+          default: false
+          description: >
+            Enables net.ipv4.ip_forward inside this container's own
+            netns -- combined with two or more networks, lets it act
+            as a router between them. Per-netns; never affects the
+            host or other containers.
+        routes:
+          type: array
+          items:
+            $ref: "#/components/schemas/RouteSpec"
+          maxItems: 8
+          description: >
+            Extra static routes installed inside the container's netns
+            at creation time, after the primary default route. Set
+            once at creation; not modifiable on an already-running
+            container. Format only is validated (dest/via must be
+            well-formed IPv4, prefix_len 0-32) -- whether via is
+            actually reachable is the caller's responsibility.
+
+    RouteSpec:
+      type: object
+      required: [dest, prefix_len, via]
+      properties:
+        dest:
+          type: string
+          description: Destination network address (dotted-quad).
+        prefix_len:
+          type: integer
+          minimum: 0
+          maximum: 32
+        via:
+          type: string
+          description: Gateway IPv4 address (dotted-quad). Required -- v1 has no on-link/direct route support.
 
     Container:
       type: object
@@ -284,6 +317,14 @@ components:
           items:
             $ref: "#/components/schemas/ContainerNetworkAttachment"
           description: Every network this container is attached to, in the order given at creation (first is primary). Empty if not networked.
+        ip_forward:
+          type: boolean
+          description: >
+            Whether net.ipv4.ip_forward is enabled inside this
+            container's netns. Static routes given at creation are not
+            echoed back here -- the caller already has them, and v1
+            doesn't support introspecting or modifying them after
+            creation.
 
     ContainerNetworkAttachment:
       type: object

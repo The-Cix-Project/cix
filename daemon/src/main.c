@@ -176,7 +176,7 @@ static void register_container_pidfd(struct registry_entry *entry)
 static void handle_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
-	const struct json_value *jname, *jimage, *jcmd, *jmem, *jpids, *jnetworks;
+	const struct json_value *jname, *jimage, *jcmd, *jmem, *jpids, *jnetworks, *jip_forward, *jroutes;
 	const char *name, *image;
 	char lowerdir[PATH_MAX];
 	char container_base[PATH_MAX];
@@ -191,6 +191,9 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	struct json_writer w;
 	struct registry_network_attachment net_attachments[CONTAINER_MAX_NETWORKS];
 	int net_count = 0;
+	int ip_forward = 0;
+	struct route_spec route_specs[CONTAINER_MAX_ROUTES];
+	int route_count = 0;
 
 	root = json_parse(body, body_len);
 	if (root == NULL) {
@@ -202,8 +205,11 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	jimage = json_object_get(root, "image");
 	jcmd = json_object_get(root, "cmd");
 	jnetworks = json_object_get(root, "networks");
+	jip_forward = json_object_get(root, "ip_forward");
+	jroutes = json_object_get(root, "routes");
 	name = json_as_string(jname);
 	image = json_as_string(jimage);
+	ip_forward = (jip_forward != NULL && jip_forward->type == JSON_BOOL && jip_forward->u.boolean);
 
 	if (!name_is_valid(name) || image == NULL || image[0] == '\0' || jcmd == NULL ||
 	    jcmd->type != JSON_ARRAY || jcmd->u.array.count == 0 ||
@@ -228,6 +234,39 @@ static void handle_create(int fd, const char *body, size_t body_len)
 				respond_error(fd, 400, "Bad Request", "unknown network");
 				return;
 			}
+		}
+	}
+	if (jroutes != NULL) {
+		if (jroutes->type != JSON_ARRAY || jroutes->u.array.count > CONTAINER_MAX_ROUTES) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "routes must be an array of at most 8 entries");
+			return;
+		}
+		route_count = (int)jroutes->u.array.count;
+		for (i = 0; i < (size_t)route_count; i++) {
+			const struct json_value *item = jroutes->u.array.items[i];
+			const char *dest = json_as_string(json_object_get(item, "dest"));
+			const char *via = json_as_string(json_object_get(item, "via"));
+			const struct json_value *jprefix = json_object_get(item, "prefix_len");
+			struct in_addr dest_addr, via_addr;
+			long prefix_len;
+
+			if (dest == NULL || via == NULL || jprefix == NULL ||
+			    inet_pton(AF_INET, dest, &dest_addr) != 1 ||
+			    inet_pton(AF_INET, via, &via_addr) != 1) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request", "invalid routes entry");
+				return;
+			}
+			prefix_len = (long)json_as_number(jprefix);
+			if (prefix_len < 0 || prefix_len > 32) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request", "routes prefix_len must be 0-32");
+				return;
+			}
+			route_specs[i].dest_be = dest_addr.s_addr;
+			route_specs[i].dest_prefix_len = (int)prefix_len;
+			route_specs[i].gateway_be = via_addr.s_addr;
 		}
 	}
 
@@ -309,10 +348,14 @@ static void handle_create(int fd, const char *body, size_t body_len)
 		spec.nets[i].gateway_ip_be = net->gateway_be;
 		spec.nets[i].prefix_len = net->prefix_len;
 	}
+	spec.ip_forward = ip_forward;
+	spec.route_count = route_count;
+	for (i = 0; i < (size_t)route_count; i++)
+		spec.routes[i] = route_specs[i];
 	spec.argv = argv_buf;
 	spec.envp = empty_envp;
 
-	rerr = registry_create(name, &spec, net_attachments, net_count, &entry);
+	rerr = registry_create(name, &spec, net_attachments, net_count, ip_forward, &entry);
 	/*
 	 * Safe to free the JSON tree now even though spec.ns.hostname,
 	 * spec.cg.name and spec.argv[] point into it: registry_create()

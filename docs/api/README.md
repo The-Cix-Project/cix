@@ -57,7 +57,7 @@ POST /v1/containers
 - `name` must match `[A-Za-z0-9_-]+` — it's used verbatim as the on-disk directory name under `/var/lib/kanxeo/containers/`.
 - `image` must already exist and be populated at `/var/lib/kanxeo/images/{image}/rootfs` — the daemon never creates image content itself (see ADR-0004); a missing image is a `400`, not a silently-empty container.
 - `memory_max`/`pids_max` are optional cgroup v2 limits; omit for no limit.
-- `networks` is optional: 1–4 names, each already created via `POST /v1/networks` — any unknown name is a `400`. Omit for no networking (isolated netns, only `lo` — same as before this field existed). The **first** entry is primary and gets the default route; the rest only get their own subnet's connected route — the prerequisite for a container to sit between two networks and route between them (Phase 7 part 3, not yet built).
+- `networks` is optional: 1–4 names, each already created via `POST /v1/networks` — any unknown name is a `400`. Omit for no networking (isolated netns, only `lo` — same as before this field existed). The **first** entry is primary and gets the default route; the rest only get their own subnet's connected route.
 
 Response (`201`):
 
@@ -70,9 +70,41 @@ Response (`201`):
   "networks": [
     {"name": "internal", "ip": "172.31.0.2"},
     {"name": "dmz", "ip": "172.32.0.2"}
-  ]
+  ],
+  "ip_forward": false
 }
 ```
+
+## Making a container act as a router
+
+A container attached to two networks with `ip_forward` on will actually forward packets between them — enough for a container running BIRD/FRR to do dynamic routing on top, or for pure static routing on its own:
+
+```
+POST /v1/containers
+{
+  "name": "router",
+  "image": "test",
+  "cmd": ["/sbin/some-router-process"],
+  "networks": ["internal", "dmz"],
+  "ip_forward": true
+}
+```
+
+Other containers then need a static route pointing at the router's IP on their own network to actually reach the far side:
+
+```
+POST /v1/containers
+{
+  "name": "internal-host",
+  "image": "test",
+  "cmd": ["/bin/some-binary"],
+  "networks": ["internal"],
+  "routes": [{"dest": "172.32.0.0", "prefix_len": 24, "via": "172.31.0.2"}]
+}
+```
+
+- `routes` is optional: 0–8 entries, each `{dest, prefix_len, via}` (all required). `dest`/`via` must be well-formed IPv4; `prefix_len` in `[0, 32]`. Only format is validated — whether `via` is actually reachable is the caller's responsibility. Set once at creation; not modifiable on an already-running container.
+- `ip_forward` is optional, default `false`. Per-netns — never affects the host or other containers.
 
 ## Current scope boundaries (v1, deliberate — see ADR-0007)
 
@@ -80,7 +112,7 @@ Response (`201`):
 - No log retrieval endpoint yet — the daemon doesn't capture container stdout/stderr separately.
 - No authentication yet — the daemon binds to loopback only as its safety boundary for now.
 - HTTP: no keep-alive/pipelining (`Connection: close` on every response), no chunked bodies.
-- No IP forwarding toggle or static route installation yet — a multi-homed container has independent interfaces on each network but doesn't forward between them until Phase 7 part 3 ships. See `docs/ROADMAP.md`.
+- Routes are set-once at creation and not echoed back or introspectable afterward; modifying them on a running container would need a new "enter another netns from outside" primitive, not built yet. See `docs/ROADMAP.md`.
 
 ## Why this file exists alongside `openapi.yaml`
 

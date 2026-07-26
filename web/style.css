@@ -92,6 +92,12 @@ main {
 	flex: 1 1 100%;
 }
 
+#run-form label.checkbox {
+	flex-direction: row;
+	align-items: center;
+	gap: 0.4rem;
+}
+
 #run-form input {
 	padding: 0.5rem;
 	border: 1px solid var(--border);

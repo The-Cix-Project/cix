@@ -12,7 +12,7 @@ NETPLANE_SRCS := netplane/src/rtnetlink.c
 
 .PHONY: all clean
 
-all: $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/kanxeod $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/kanxeoctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/test_daemon_net $(BUILD)/test_networks
+all: $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/kanxeod $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/kanxeoctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/net_connect $(BUILD)/test_daemon_net $(BUILD)/test_networks
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -54,6 +54,9 @@ $(BUILD)/test_rtnetlink: test/test_rtnetlink.c $(NETPLANE_SRCS) src/ns_create.c 
 	$(CC) $(NETPLANE_CFLAGS) $^ -o $@
 
 $(BUILD)/net_child: test/net_child.c | $(BUILD)
+	$(CC) $(CFLAGS) $< -o $@
+
+$(BUILD)/net_connect: test/net_connect.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
 $(BUILD)/test_container_net: test/test_container_net.c test/test_image_fixture.c $(LIB_SRCS) | $(BUILD)

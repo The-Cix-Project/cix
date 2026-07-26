@@ -339,7 +339,7 @@ int rtnl_addr_add_ipv4(int fd, const char *link_name, uint32_t addr_be, int pref
 	return nl_msg_send_and_ack(fd, &m);
 }
 
-int rtnl_route_add_default_ipv4(int fd, uint32_t gateway_be)
+int rtnl_route_add_ipv4(int fd, uint32_t dest_be, int dest_prefix_len, uint32_t gateway_be)
 {
 	struct nl_msg m;
 	struct nlmsghdr *nh;
@@ -351,7 +351,7 @@ int rtnl_route_add_default_ipv4(int fd, uint32_t gateway_be)
 	if (nh == NULL || rtm == NULL)
 		return -1;
 	rtm->rtm_family = AF_INET;
-	rtm->rtm_dst_len = 0;
+	rtm->rtm_dst_len = (unsigned char)dest_prefix_len;
 	rtm->rtm_src_len = 0;
 	rtm->rtm_tos = 0;
 	rtm->rtm_table = RT_TABLE_MAIN;
@@ -359,12 +359,19 @@ int rtnl_route_add_default_ipv4(int fd, uint32_t gateway_be)
 	rtm->rtm_scope = RT_SCOPE_UNIVERSE;
 	rtm->rtm_type = RTN_UNICAST;
 
+	if (dest_prefix_len > 0 && nl_msg_put_attr(&m, RTA_DST, &dest_be, sizeof(dest_be)) == NULL)
+		return -1;
 	if (gateway_be != 0 && nl_msg_put_attr(&m, RTA_GATEWAY, &gateway_be, sizeof(gateway_be)) == NULL)
 		return -1;
 
 	nh->nlmsg_type = RTM_NEWROUTE;
 	nh->nlmsg_flags = NLM_F_CREATE;
 	return nl_msg_send_and_ack(fd, &m);
+}
+
+int rtnl_route_add_default_ipv4(int fd, uint32_t gateway_be)
+{
+	return rtnl_route_add_ipv4(fd, 0, 0, gateway_be);
 }
 
 int rtnl_link_delete(int fd, const char *name)

@@ -129,6 +129,10 @@ int main(void)
 
 	if (test_image_fixture_build(IMAGE_ROOT, "build/net_child", "net_child") != 0)
 		return 1;
+	if (test_image_fixture_build(IMAGE_ROOT, "build/daemon_child", "daemon_child") != 0)
+		return 1;
+	if (test_image_fixture_build(IMAGE_ROOT, "build/net_connect", "net_connect") != 0)
+		return 1;
 
 	dargv[0] = "build/kanxeod";
 	dargv[1] = PORT_ARG;
@@ -327,7 +331,133 @@ int main(void)
 	}
 	kx_response_free(&r);
 
-	/* 9. deleting a network still in use by a container -> 409 */
+	/* 9. real router topology (Phase 7 part 3): router sits on both
+	 * networks with ip_forward on; h and t each get a static route via
+	 * router for the other's subnet. h connects to t from inside its
+	 * own netns (net_connect, not this test's own host-side
+	 * connect_and_echo()) -- proving the round trip actually crosses
+	 * through router's kernel routing table, driven entirely over the
+	 * daemon's real HTTP API. */
+	{
+		char body[512];
+		char r_ip_a[64] = { 0 }, r_ip_b[64] = { 0 };
+		char t_ip[64] = { 0 };
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"router\",\"image\":\"nettest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"6\",\"0\"],"
+		                       "\"networks\":[\"" TEST_NETWORK_NAME "\",\"" TEST_NETWORK_NAME2
+		                       "\"],\"ip_forward\":true}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST router, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const char *ip_a = network_ip_in_response(r.json, TEST_NETWORK_NAME);
+			const char *ip_b = network_ip_in_response(r.json, TEST_NETWORK_NAME2);
+
+			if (ip_a == NULL || ip_b == NULL) {
+				fprintf(stderr, "FAIL: router missing an ip on one of its two networks\n");
+				ok = 0;
+			} else {
+				snprintf(r_ip_a, sizeof(r_ip_a), "%s", ip_a);
+				snprintf(r_ip_b, sizeof(r_ip_b), "%s", ip_b);
+			}
+		}
+		kx_response_free(&r);
+
+		if (r_ip_b[0] != '\0') {
+			/* t lives on TEST_NETWORK_NAME2, so its route to
+			 * TEST_NETWORK_NAME's subnet must go via router's IP on
+			 * that SAME network (r_ip_b) -- a gateway has to be
+			 * directly reachable on one of the container's own
+			 * connected subnets, not the far one. */
+			snprintf(body, sizeof(body),
+			         "{\"name\":\"t\",\"image\":\"nettest\",\"cmd\":[\"/bin/net_child\"],"
+			         "\"networks\":[\"%s\"],"
+			         "\"routes\":[{\"dest\":\"%s\",\"prefix_len\":24,\"via\":\"%s\"}]}",
+			         TEST_NETWORK_NAME2, TEST_NETWORK_SUBNET, r_ip_b);
+
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "POST", "/v1/containers", body, &r) != 0 ||
+			    r.status != 201) {
+				fprintf(stderr, "FAIL: POST t (router scenario), status=%d\n", r.status);
+				ok = 0;
+			} else {
+				const char *ip = network_ip_in_response(r.json, TEST_NETWORK_NAME2);
+
+				if (ip == NULL) {
+					fprintf(stderr, "FAIL: t (router scenario) has no ip\n");
+					ok = 0;
+				} else {
+					snprintf(t_ip, sizeof(t_ip), "%s", ip);
+				}
+			}
+			kx_response_free(&r);
+		}
+
+		if (r_ip_a[0] != '\0' && t_ip[0] != '\0') {
+			int seen = 0;
+			int attempt;
+			long exit_status = -1;
+
+			/* h lives on TEST_NETWORK_NAME, so its route to
+			 * TEST_NETWORK_NAME2's subnet must go via router's IP on
+			 * that SAME network (r_ip_a), for the same reason as t's
+			 * route above. */
+			snprintf(body, sizeof(body),
+			         "{\"name\":\"h\",\"image\":\"nettest\",\"cmd\":[\"/bin/net_connect\",\"%s\"],"
+			         "\"networks\":[\"%s\"],"
+			         "\"routes\":[{\"dest\":\"%s\",\"prefix_len\":24,\"via\":\"%s\"}]}",
+			         t_ip, TEST_NETWORK_NAME, TEST_NETWORK_SUBNET2, r_ip_a);
+
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "POST", "/v1/containers", body, &r) != 0 ||
+			    r.status != 201) {
+				fprintf(stderr, "FAIL: POST h (router scenario), status=%d\n", r.status);
+				ok = 0;
+			}
+			kx_response_free(&r);
+
+			/* h's own exit status is the real proof: net_connect only
+			 * exits 0 if its round trip through router's kernel
+			 * routing table actually succeeded. */
+			for (attempt = 0; attempt < 100; attempt++) {
+				memset(&r, 0, sizeof(r));
+				if (kx_client_request(&client, "GET", "/v1/containers/h", NULL, &r) == 0 &&
+				    r.status == 200 && str_eq(json_str_field(r.json, "status"), "exited")) {
+					seen = 1;
+					exit_status = (long)json_as_number(json_object_get(r.json, "exit_status"));
+					kx_response_free(&r);
+					break;
+				}
+				kx_response_free(&r);
+				usleep(100000);
+			}
+			if (!seen) {
+				fprintf(stderr, "FAIL: h (router scenario) never reported exited\n");
+				ok = 0;
+			} else if (exit_status != 0) {
+				fprintf(stderr,
+				        "FAIL: h (router scenario) exit_status=%ld, expected 0 -- packet "
+				        "forwarding through the router container did not work\n",
+				        exit_status);
+				ok = 0;
+			}
+		}
+
+		/* cleanup: h/t/router removed before their networks -- same
+		 * ordering rule the rest of this file already follows */
+		kx_client_request(&client, "DELETE", "/v1/containers/h", NULL, &r);
+		kx_response_free(&r);
+		kx_client_request(&client, "DELETE", "/v1/containers/t", NULL, &r);
+		kx_response_free(&r);
+		kx_client_request(&client, "DELETE", "/v1/containers/router", NULL, &r);
+		kx_response_free(&r);
+	}
+
+	/* 10. deleting a network still in use by a container -> 409 */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "DELETE", "/v1/networks/" TEST_NETWORK_NAME, NULL, &r) != 0 ||
 	    r.status != 409) {
@@ -336,7 +466,7 @@ int main(void)
 	}
 	kx_response_free(&r);
 
-	/* 10. cleanup: remove containers (kills n3, still blocked in
+	/* 11. cleanup: remove containers (kills n3, still blocked in
 	 * accept() since nothing can reach it -- no networking, isolated
 	 * netns), then both networks via the real API */
 	kx_client_request(&client, "DELETE", "/v1/containers/n1", NULL, &r);

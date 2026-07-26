@@ -33,6 +33,21 @@ struct network_spec {
 	int prefix_len;
 };
 
+#define CONTAINER_MAX_ROUTES 8
+
+/*
+ * One static route, installed inside the container's own netns at
+ * creation time (not modifiable on an already-running container --
+ * that would need a separate "enter another netns from outside"
+ * primitive, not built yet). gateway_be is required: v1 has no
+ * on-link/direct route support, only via-a-gateway.
+ */
+struct route_spec {
+	uint32_t dest_be;
+	int dest_prefix_len;
+	uint32_t gateway_be;
+};
+
 struct overlay_spec {
 	const char *lowerdir;
 	const char *upperdir;
@@ -55,6 +70,15 @@ struct container_spec {
 	 */
 	struct network_spec nets[CONTAINER_MAX_NETWORKS];
 	int net_count;
+	/*
+	 * ip_forward enables net.ipv4.ip_forward inside the container's own
+	 * netns -- harmless without net_count > 1, but not gated on it
+	 * either; the operator asked for it, so it's applied regardless.
+	 * routes are installed after the primary default route, in order.
+	 */
+	int ip_forward;
+	struct route_spec routes[CONTAINER_MAX_ROUTES];
+	int route_count;
 	char *const *argv;
 	char *const *envp;
 };

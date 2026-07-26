@@ -28,6 +28,7 @@ struct registry_entry {
 	int in_use;        /* 0 for free slots */
 	struct registry_network_attachment nets[CONTAINER_MAX_NETWORKS];
 	int net_count;     /* 0 = not attached to any network */
+	int ip_forward;    /* mirrors container_spec.ip_forward, for display */
 	/*
 	 * Opaque; owned exclusively by main.c's epoll bookkeeping
 	 * (registry.c never reads or writes it beyond zeroing it here).
@@ -45,22 +46,18 @@ void registry_init(void);
  * a fixed-size in-memory table (in-memory only -- see docs/ROADMAP.md
  * Phase 3 for why that's safe: every container dies automatically via
  * PR_SET_PDEATHSIG if this daemon exits, so there's no restart-orphan
- * state to reconcile). ip_be (0 if the container has no network) is
- * set atomically as part of this call, not poked in by the caller
- * afterward -- this table reuses freed slots, and a stale ip_be left
- * over from a previous occupant would otherwise leak into a new,
- * non-networked container. On success returns REGISTRY_OK and *out
- * points at the stored entry (stable for the process lifetime -- the
- * table is a fixed array, never reallocated). nets/net_count (net_count
- * may be 0) are copied atomically as part of this call, not poked in
- * by the caller afterward -- this table reuses freed slots, and stale
- * attachments left over from a previous occupant would otherwise leak
- * into a new container. On REGISTRY_ERR_CREATE_FAILED, errno is set by
+ * state to reconcile). nets/net_count/ip_forward are copied atomically
+ * as part of this call, not poked in by the caller afterward -- this
+ * table reuses freed slots, and stale values left over from a
+ * previous occupant would otherwise leak into a new container. On
+ * success returns REGISTRY_OK and *out points at the stored entry
+ * (stable for the process lifetime -- the table is a fixed array,
+ * never reallocated). On REGISTRY_ERR_CREATE_FAILED, errno is set by
  * the failing container_create()/cgroup_create() call.
  */
 enum registry_error registry_create(const char *name, const struct container_spec *spec,
                                      const struct registry_network_attachment *nets, int net_count,
-                                     struct registry_entry **out);
+                                     int ip_forward, struct registry_entry **out);
 
 struct registry_entry *registry_find(const char *name);
 

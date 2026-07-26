@@ -71,6 +71,15 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			close(net_pipe[0]);
 		}
 
+		if (container_net_install_routes(spec->routes, spec->route_count) != 0) {
+			perror("child: container_net_install_routes");
+			_exit(126);
+		}
+		if (spec->ip_forward && container_net_enable_ip_forward() != 0) {
+			perror("child: container_net_enable_ip_forward");
+			_exit(126);
+		}
+
 		if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0) {
 			perror("child: prctl(PR_SET_PDEATHSIG)");
 			_exit(126);

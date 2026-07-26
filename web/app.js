@@ -64,7 +64,7 @@ function renderContainers(containers) {
 	if (containers.length === 0) {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
-		cell.colSpan = 6;
+		cell.colSpan = 7;
 		cell.className = "empty";
 		cell.textContent = "No containers";
 		row.appendChild(cell);
@@ -101,6 +101,10 @@ function renderContainers(containers) {
 				: "-";
 		row.appendChild(ipCell);
 
+		const fwdCell = document.createElement("td");
+		fwdCell.textContent = c.ip_forward ? "yes" : "no";
+		row.appendChild(fwdCell);
+
 		const actionCell = document.createElement("td");
 		const rmButton = document.createElement("button");
 		rmButton.textContent = "Remove";
@@ -121,7 +125,7 @@ async function refreshContainers() {
 		containersBody.textContent = "";
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
-		cell.colSpan = 6;
+		cell.colSpan = 7;
 		cell.className = "empty";
 		cell.textContent = "Could not load containers: " + e.message;
 		row.appendChild(cell);
@@ -219,6 +223,8 @@ runForm.addEventListener("submit", async (event) => {
 	const memoryMaxText = document.getElementById("f-memory-max").value.trim();
 	const pidsMaxText = document.getElementById("f-pids-max").value.trim();
 	const network = document.getElementById("f-network").value.trim();
+	const ipForward = document.getElementById("f-ip-forward").checked;
+	const routesText = document.getElementById("f-routes").value.trim();
 
 	const body = {
 		name: name,
@@ -234,6 +240,24 @@ runForm.addEventListener("submit", async (event) => {
 			.split(",")
 			.map((s) => s.trim())
 			.filter((s) => s.length > 0);
+	}
+	if (ipForward)
+		body.ip_forward = true;
+	if (routesText !== "") {
+		body.routes = routesText
+			.split(",")
+			.map((s) => s.trim())
+			.filter((s) => s.length > 0)
+			.map((entry) => {
+				const slashIdx = entry.indexOf("/");
+				const colonIdx = entry.indexOf(":", slashIdx + 1);
+
+				return {
+					dest: entry.slice(0, slashIdx),
+					prefix_len: parseInt(entry.slice(slashIdx + 1, colonIdx), 10),
+					via: entry.slice(colonIdx + 1),
+				};
+			});
 	}
 
 	try {

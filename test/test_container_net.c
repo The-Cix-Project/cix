@@ -1,10 +1,10 @@
 /*
- * Phase 6 part 2 / Phase 7 part 2 end-to-end test: proves real
+ * Phase 6 part 2 / Phase 7 parts 2+3 end-to-end test: proves real
  * networking works through the actual container lifecycle
  * (container_create(), not raw rtnetlink primitives -- those were
  * already proven in isolation by test_rtnetlink.c).
  *
- * Two scenarios:
+ * Three scenarios:
  * 1. Two containers concurrently on the same bridge -- real,
  *    simultaneous connectivity to each, then confirms the kernel
  *    tears down both veth ends automatically once each container
@@ -13,6 +13,12 @@
  * 2. One container attached to TWO bridges at once (Phase 7 part 2's
  *    multi-homing) -- both interfaces independently addressed and
  *    reachable from the host.
+ * 3. A real 3-container router topology (Phase 7 part 3): R sits on
+ *    both bridges with ip_forward on; H (bridge 1 only) and T
+ *    (bridge 2 only) each get a static route pointing at R for the
+ *    other's subnet. H connects to T *from inside its own netns*,
+ *    proving packets actually cross through R's kernel routing --
+ *    not just that the syscalls to set it up didn't error.
  */
 #include "container.h"
 #include "linux_compat.h"
@@ -106,7 +112,8 @@ static int connect_and_echo(uint32_t ip_be, int *ok)
 
 static int build_container_spec(struct container_spec *spec, const char *cg_name,
                                  const char *scratch_dir, const struct network_spec *nets,
-                                 int net_count, char **argv, char **envp)
+                                 int net_count, int ip_forward, const struct route_spec *routes,
+                                 int route_count, char **argv, char **envp)
 {
 	static char lowerdir[256];
 	static char upperdir[256];
@@ -139,6 +146,10 @@ static int build_container_spec(struct container_spec *spec, const char *cg_name
 	spec->net_count = net_count;
 	for (i = 0; i < net_count; i++)
 		spec->nets[i] = nets[i];
+	spec->ip_forward = ip_forward;
+	spec->route_count = route_count;
+	for (i = 0; i < route_count; i++)
+		spec->routes[i] = routes[i];
 
 	spec->argv = argv;
 	spec->envp = envp;
@@ -185,6 +196,10 @@ int main(void)
 
 	if (test_image_fixture_build(IMAGE_ROOT, "build/net_child", "net_child") != 0)
 		return 1;
+	if (test_image_fixture_build(IMAGE_ROOT, "build/daemon_child", "daemon_child") != 0)
+		return 1;
+	if (test_image_fixture_build(IMAGE_ROOT, "build/net_connect", "net_connect") != 0)
+		return 1;
 
 	/* 1. two containers concurrently on the same bridge */
 	{
@@ -204,11 +219,11 @@ int main(void)
 		net2.gateway_ip_be = ipv4("172.30.1.1");
 		net2.prefix_len = 24;
 
-		if (build_container_spec(&spec1, "tcc-net-c1", "/tmp/container_net_test/c1", &net1, 1,
-		                          argv, envp) != 0)
+		if (build_container_spec(&spec1, "tcc-net-c1", "/tmp/container_net_test/c1", &net1, 1, 0,
+		                          NULL, 0, argv, envp) != 0)
 			return 1;
-		if (build_container_spec(&spec2, "tcc-net-c2", "/tmp/container_net_test/c2", &net2, 1,
-		                          argv, envp) != 0)
+		if (build_container_spec(&spec2, "tcc-net-c2", "/tmp/container_net_test/c2", &net2, 1, 0,
+		                          NULL, 0, argv, envp) != 0)
 			return 1;
 
 		/* both created before either is waited on -- genuinely concurrent */
@@ -281,8 +296,8 @@ int main(void)
 		nets3[1].gateway_ip_be = ipv4("172.30.2.1");
 		nets3[1].prefix_len = 24;
 
-		if (build_container_spec(&spec3, "tcc-net-c3", "/tmp/container_net_test/c3", nets3, 2,
-		                          argv_dual, envp) != 0)
+		if (build_container_spec(&spec3, "tcc-net-c3", "/tmp/container_net_test/c3", nets3, 2, 0,
+		                          NULL, 0, argv_dual, envp) != 0)
 			return 1;
 
 		if (container_create(&spec3, &h3) != 0) {
@@ -320,6 +335,110 @@ int main(void)
 			fprintf(stderr, "FAIL: %s still exists after c3 exited\n", vh3b);
 			ok = 0;
 		}
+	}
+
+	/* 3. real 3-container router topology -- Phase 7 part 3. R sits on
+	 * both bridges with ip_forward on; H and T each get a static route
+	 * pointing at R for the other's subnet; H connects to T from
+	 * inside its own netns, proving the round trip actually crosses
+	 * through R's kernel routing table. */
+	{
+		struct container_spec specR, specH, specT;
+		struct container_handle hR, hH, hT;
+		struct network_spec netsR[2], netH, netT;
+		struct route_spec routeH, routeT;
+		int exitR = -1, exitH = -1, exitT = -1;
+		char *argv_router[] = { "/bin/daemon_child", "6", "0", NULL };
+		char *argv_host[] = { "/bin/net_connect", "172.30.2.50", NULL };
+
+		netsR[0].bridge = BRIDGE_NAME;
+		netsR[0].container_ip_be = ipv4("172.30.1.30");
+		netsR[0].gateway_ip_be = ipv4("172.30.1.1");
+		netsR[0].prefix_len = 24;
+		netsR[1].bridge = BRIDGE_NAME2;
+		netsR[1].container_ip_be = ipv4("172.30.2.30");
+		netsR[1].gateway_ip_be = ipv4("172.30.2.1");
+		netsR[1].prefix_len = 24;
+
+		netH.bridge = BRIDGE_NAME;
+		netH.container_ip_be = ipv4("172.30.1.40");
+		netH.gateway_ip_be = ipv4("172.30.1.1");
+		netH.prefix_len = 24;
+		routeH.dest_be = ipv4("172.30.2.0");
+		routeH.dest_prefix_len = 24;
+		routeH.gateway_be = ipv4("172.30.1.30"); /* R's bridge-1 IP */
+
+		netT.bridge = BRIDGE_NAME2;
+		netT.container_ip_be = ipv4("172.30.2.50");
+		netT.gateway_ip_be = ipv4("172.30.2.1");
+		netT.prefix_len = 24;
+		routeT.dest_be = ipv4("172.30.1.0");
+		routeT.dest_prefix_len = 24;
+		routeT.gateway_be = ipv4("172.30.2.30"); /* R's bridge-2 IP */
+
+		if (build_container_spec(&specR, "tcc-net-r", "/tmp/container_net_test/r", netsR, 2, 1,
+		                          NULL, 0, argv_router, envp) != 0)
+			return 1;
+		if (build_container_spec(&specT, "tcc-net-t", "/tmp/container_net_test/t", &netT, 1, 0,
+		                          &routeT, 1, argv, envp) != 0)
+			return 1;
+		if (build_container_spec(&specH, "tcc-net-h", "/tmp/container_net_test/h", &netH, 1, 0,
+		                          &routeH, 1, argv_host, envp) != 0)
+			return 1;
+
+		/* T listens, R routes, then H connects out to T through R --
+		 * created in this order so T and R are both already up before
+		 * H starts (net_connect still retries regardless, since
+		 * container startup timing isn't guaranteed). */
+		if (container_create(&specT, &hT) != 0) {
+			perror("container_create t (router scenario)");
+			return 1;
+		}
+		if (container_create(&specR, &hR) != 0) {
+			perror("container_create r (router scenario)");
+			return 1;
+		}
+		if (container_create(&specH, &hH) != 0) {
+			perror("container_create h (router scenario)");
+			return 1;
+		}
+
+		/* H's own exit status is the real proof: net_connect only
+		 * exits 0 if its round trip through R's kernel routing table
+		 * actually succeeded. */
+		if (container_wait(&hH, &exitH) != 0) {
+			perror("container_wait h (router scenario)");
+			ok = 0;
+		} else if (exitH != 0) {
+			fprintf(stderr,
+			        "FAIL: h (router scenario) exit status %d, expected 0 -- packet "
+			        "forwarding through the router container did not work\n",
+			        exitH);
+			ok = 0;
+		}
+
+		if (container_wait(&hT, &exitT) != 0) {
+			perror("container_wait t (router scenario)");
+			ok = 0;
+		} else if (exitT != 0) {
+			fprintf(stderr, "FAIL: t (router scenario) exit status %d, expected 0\n", exitT);
+			ok = 0;
+		}
+
+		if (container_wait(&hR, &exitR) != 0) {
+			perror("container_wait r (router scenario)");
+			ok = 0;
+		} else if (exitR != 0) {
+			fprintf(stderr, "FAIL: r (router scenario) exit status %d, expected 0\n", exitR);
+			ok = 0;
+		}
+
+		close(hH.pidfd);
+		close(hH.cgroup_fd);
+		close(hT.pidfd);
+		close(hT.cgroup_fd);
+		close(hR.pidfd);
+		close(hR.cgroup_fd);
 	}
 
 	rtnl_link_delete(bfd, BRIDGE_NAME);
