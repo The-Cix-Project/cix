@@ -1,0 +1,178 @@
+openapi: 3.0.3
+info:
+  title: Kanxeo Host API
+  version: "1"
+  description: >
+    The single control surface for the Kanxeo host. Per the project's
+    API-First Mandate (see /CLAUDE.md), this daemon is the only process
+    with direct access to the container runtime library or any other
+    host/network/DNS/PKI primitive. The CLI and the web dashboard are
+    pure clients of this API -- every capability either surface offers
+    must exist here first.
+servers:
+  - url: http://127.0.0.1:7620/v1
+
+paths:
+  /health:
+    get:
+      summary: Liveness check
+      operationId: getHealth
+      responses:
+        "200":
+          description: Daemon is up
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+
+  /containers:
+    get:
+      summary: List all containers known to this daemon
+      operationId: listContainers
+      responses:
+        "200":
+          description: Container list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [containers]
+                properties:
+                  containers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Container"
+    post:
+      summary: Create and start a container
+      operationId: createContainer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContainerCreateRequest"
+      responses:
+        "201":
+          description: Container created and started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Container"
+        "400":
+          description: Invalid request (bad fields, or the named image's rootfs does not exist)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A container with this name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /containers/{name}:
+    get:
+      summary: Inspect one container
+      operationId: getContainer
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+      responses:
+        "200":
+          description: Container detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Container"
+        "404":
+          description: No container with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Stop (if running) and remove a container
+      operationId: deleteContainer
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+      responses:
+        "204":
+          description: Removed
+        "404":
+          description: No container with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  parameters:
+    ContainerName:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9_-]+$"
+
+  schemas:
+    ContainerCreateRequest:
+      type: object
+      required: [name, image, cmd]
+      properties:
+        name:
+          type: string
+          pattern: "^[A-Za-z0-9_-]+$"
+          description: >
+            Unique container name. Used verbatim as the on-disk directory
+            name under /var/lib/kanxeo/containers/, so it is restricted to
+            [A-Za-z0-9_-].
+        image:
+          type: string
+          description: >
+            Name of a pre-existing, pre-populated image whose rootfs lives
+            at /var/lib/kanxeo/images/{image}/rootfs. This daemon never
+            creates image content itself -- only 400s if it's missing.
+        cmd:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: argv for the container's entry process (cmd[0] is the executable path, relative to the container's own root).
+        memory_max:
+          type: integer
+          format: int64
+          description: cgroup v2 memory.max in bytes. Omit for no limit.
+        pids_max:
+          type: integer
+          format: int64
+          description: cgroup v2 pids.max. Omit for no limit.
+
+    Container:
+      type: object
+      required: [name, status, pid]
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+          enum: [running, exited]
+        pid:
+          type: integer
+          description: PID in the daemon's own PID namespace. Meaningless once status is exited.
+        exit_status:
+          type: integer
+          nullable: true
+          description: Exit status once status is exited; null while running.
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
