@@ -28,7 +28,15 @@ int container_create(const struct container_spec *spec, struct container_handle 
 
 	if (ret == 0) {
 		/* Child: from here on we live inside the new namespaces. */
-		if (mountns_pivot(&spec->mnt) != 0) {
+		if (mountns_make_private() != 0) {
+			perror("child: mountns_make_private");
+			_exit(126);
+		}
+		if (overlay_create(&spec->ov) != 0) {
+			perror("child: overlay_create");
+			_exit(126);
+		}
+		if (mountns_pivot(spec->ov.merged, &spec->mnt) != 0) {
 			perror("child: mountns_pivot");
 			_exit(126);
 		}

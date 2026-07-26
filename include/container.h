@@ -16,13 +16,20 @@ struct cgroup_limits {
 };
 
 struct mount_spec {
-	const char *root_source;
 	const char *put_old_rel;
+};
+
+struct overlay_spec {
+	const char *lowerdir;
+	const char *upperdir;
+	const char *workdir;
+	const char *merged;
 };
 
 struct container_spec {
 	struct ns_config ns;
 	struct cgroup_limits cg;
+	struct overlay_spec ov;
 	struct mount_spec mnt;
 	char *const *argv;
 	char *const *envp;
@@ -42,11 +49,20 @@ struct container_handle {
 int cgroup_create(const struct cgroup_limits *lim, int *out_fd);
 
 /*
+ * Mounts an overlayfs at ov->merged: lowerdir must already exist and
+ * be populated (never auto-created -- a silently-empty lowerdir would
+ * mean a silently-broken container); upperdir/workdir/merged are
+ * created if missing. On success ov->merged is a mount point ready
+ * for mountns_pivot().
+ */
+int overlay_create(const struct overlay_spec *ov);
+
+/*
  * Creates and starts a container per spec: clone3 into new
  * PID/MNT/UTS/NET/CGROUP namespaces, places the child atomically
- * into the cgroup opened by cgroup_create, pivot_roots into
- * mnt.root_source, and execve's argv[0] with argv/envp. On success
- * fills out with the child's pid, cgroup fd and pidfd.
+ * into the cgroup opened by cgroup_create, mounts spec->ov and
+ * pivot_roots into it, and execve's argv[0] with argv/envp. On
+ * success fills out with the child's pid, cgroup fd and pidfd.
  */
 int container_create(const struct container_spec *spec, struct container_handle *out);
 

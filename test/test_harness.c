@@ -7,12 +7,21 @@
 #include "container.h"
 #include "linux_compat.h"
 
+#include <errno.h>
 #include <sched.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
-#define RESULT_PATH "/tmp/harness_result.txt"
+/*
+ * Phase 2 mounts an overlay onto spec.ov.merged before pivoting into
+ * it, so writes the child makes copy up into upperdir rather than
+ * mutating the live host directly -- the result file is read back
+ * from there, not from the bare host path.
+ */
+#define UPPERDIR "/tmp/harness_overlay/upper"
+#define RESULT_PATH UPPERDIR "/tmp/harness_result.txt"
 
 static int read_cgroup_procs_count(const char *cgroup_name, pid_t expect_pid)
 {
@@ -109,6 +118,11 @@ int main(void)
 		return 1;
 	}
 
+	if (mkdir("/tmp/harness_overlay", 0755) != 0 && errno != EEXIST) {
+		perror("mkdir /tmp/harness_overlay");
+		return 1;
+	}
+
 	memset(&spec, 0, sizeof(spec));
 	spec.ns.clone_flags = CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUTS |
 	                       CLONE_NEWNET | CLONE_NEWCGROUP | CLONE_INTO_CGROUP;
@@ -117,7 +131,10 @@ int main(void)
 	spec.cg.memory_max = 67108864;
 	spec.cg.pids_max = 32;
 	spec.cg.cpu_max = NULL;
-	spec.mnt.root_source = "/tmp/harness_root";
+	spec.ov.lowerdir = "/";
+	spec.ov.upperdir = UPPERDIR;
+	spec.ov.workdir = "/tmp/harness_overlay/work";
+	spec.ov.merged = "/tmp/harness_root";
 	spec.mnt.put_old_rel = ".old_root";
 	spec.argv = child_argv;
 	spec.envp = child_envp;

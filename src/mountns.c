@@ -8,37 +8,27 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-int mountns_pivot(const struct mount_spec *mnt)
+int mountns_make_private(void)
+{
+	/*
+	 * Must happen before any other mount in this namespace (including
+	 * overlay_create()'s overlay mount): without this, mount events
+	 * propagate between this namespace and the host in both
+	 * directions even though we're already in a new mount namespace.
+	 */
+	if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) != 0) {
+		perror("mountns_make_private: mount(MS_REC|MS_PRIVATE)");
+		return -1;
+	}
+	return 0;
+}
+
+int mountns_pivot(const char *new_root, const struct mount_spec *mnt)
 {
 	char put_old_path[PATH_MAX];
 
-	/*
-	 * Must happen before pivot_root: without this, host mount
-	 * propagation leaks into the child (and vice versa) even
-	 * though we're already in a new mount namespace.
-	 */
-	if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) != 0) {
-		perror("mountns_pivot: mount(MS_REC|MS_PRIVATE)");
-		return -1;
-	}
-
-	if (mkdir(mnt->root_source, 0700) != 0 && errno != EEXIST) {
-		perror("mountns_pivot: mkdir(root_source)");
-		return -1;
-	}
-
-	/*
-	 * Bind-mount host / onto the scratch dir: this becomes the
-	 * container's root. pivot_root also requires new_root to be a
-	 * mount point in its own right, which this satisfies too.
-	 */
-	if (mount("/", mnt->root_source, NULL, MS_BIND | MS_REC, NULL) != 0) {
-		perror("mountns_pivot: mount(MS_BIND|MS_REC)");
-		return -1;
-	}
-
 	if (snprintf(put_old_path, sizeof(put_old_path), "%s/%s",
-	             mnt->root_source, mnt->put_old_rel) >= (int)sizeof(put_old_path)) {
+	             new_root, mnt->put_old_rel) >= (int)sizeof(put_old_path)) {
 		errno = ENAMETOOLONG;
 		return -1;
 	}
@@ -48,8 +38,8 @@ int mountns_pivot(const struct mount_spec *mnt)
 		return -1;
 	}
 
-	if (chdir(mnt->root_source) != 0) {
-		perror("mountns_pivot: chdir(root_source)");
+	if (chdir(new_root) != 0) {
+		perror("mountns_pivot: chdir(new_root)");
 		return -1;
 	}
 
@@ -88,17 +78,18 @@ int mountns_pivot(const struct mount_spec *mnt)
 	}
 
 	/*
-	 * /sys was carried in by the recursive host-root bind mount above,
-	 * including whatever sub-mounts the host stacked under it (e.g. a
-	 * separate writable sysfs instance at /sys/devices/virtual/net).
-	 * Those sub-mounts are bind copies pinned to the netns active when
-	 * the host set them up, not the netns we just created, so they'd
-	 * keep showing host network devices. Detach the carried-in tree
-	 * and mount a fresh sysfs, same as every real container runtime
+	 * /sys may not exist at all (a minimal lowerdir with no /sys entry),
+	 * or may already be populated (e.g. an overlay lowerdir that itself
+	 * contains host mounts), including sub-mounts stacked under it like
+	 * a separate writable sysfs instance at /sys/devices/virtual/net.
+	 * Any such sub-mount is pinned to whatever netns was active when it
+	 * was set up, not the netns we just created, so it would keep
+	 * showing devices from the wrong namespace. Detach anything carried
+	 * in and mount a fresh sysfs, same as every real container runtime
 	 * does after unsharing the network namespace.
 	 */
 	umount2("/sys/devices/virtual/net", MNT_DETACH);
-	if (umount2("/sys", MNT_DETACH) != 0 && errno != EINVAL) {
+	if (umount2("/sys", MNT_DETACH) != 0 && errno != EINVAL && errno != ENOENT) {
 		perror("mountns_pivot: umount2(/sys)");
 		return -1;
 	}
