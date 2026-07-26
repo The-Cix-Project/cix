@@ -20,11 +20,11 @@ struct mount_spec {
 	const char *put_old_rel;
 };
 
+#define CONTAINER_MAX_NETWORKS 4
+
 /*
- * Opt-in network attachment. bridge == NULL means no networking --
- * the container gets exactly what every container has gotten since
- * Phase 1: an isolated netns with only "lo". Addresses are network
- * byte order (e.g. straight from inet_pton()).
+ * One network attachment. Addresses are network byte order (e.g.
+ * straight from inet_pton()).
  */
 struct network_spec {
 	const char *bridge;
@@ -45,7 +45,16 @@ struct container_spec {
 	struct cgroup_limits cg;
 	struct overlay_spec ov;
 	struct mount_spec mnt;
-	struct network_spec net;
+	/*
+	 * Opt-in network attachment: net_count == 0 means no networking --
+	 * the container gets exactly what every container has gotten since
+	 * Phase 1, an isolated netns with only "lo". nets[0] is "primary"
+	 * (gets the default route); any further attachments get only their
+	 * subnet's connected route, from the kernel automatically assigning
+	 * one alongside the address.
+	 */
+	struct network_spec nets[CONTAINER_MAX_NETWORKS];
+	int net_count;
 	char *const *argv;
 	char *const *envp;
 };

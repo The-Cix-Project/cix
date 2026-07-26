@@ -95,7 +95,10 @@ function renderContainers(containers) {
 		row.appendChild(exitCell);
 
 		const ipCell = document.createElement("td");
-		ipCell.textContent = c.ip === null || c.ip === undefined ? "-" : c.ip;
+		ipCell.textContent =
+			c.networks && c.networks.length > 0
+				? c.networks.map((n) => n.name + ":" + n.ip).join(", ")
+				: "-";
 		row.appendChild(ipCell);
 
 		const actionCell = document.createElement("td");
@@ -226,8 +229,12 @@ runForm.addEventListener("submit", async (event) => {
 		body.memory_max = parseInt(memoryMaxText, 10);
 	if (pidsMaxText !== "")
 		body.pids_max = parseInt(pidsMaxText, 10);
-	if (network !== "")
-		body.network = network;
+	if (network !== "") {
+		body.networks = network
+			.split(",")
+			.map((s) => s.trim())
+			.filter((s) => s.length > 0);
+	}
 
 	try {
 		await apiRequest("POST", "/v1/containers", body);

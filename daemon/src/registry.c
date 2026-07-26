@@ -25,7 +25,7 @@ struct registry_entry *registry_find(const char *name)
 }
 
 enum registry_error registry_create(const char *name, const struct container_spec *spec,
-                                     uint32_t ip_be, const char *network_name,
+                                     const struct registry_network_attachment *nets, int net_count,
                                      struct registry_entry **out)
 {
 	int i, slot = -1;
@@ -53,10 +53,10 @@ enum registry_error registry_create(const char *name, const struct container_spe
 	e->exit_status = 0;
 	e->in_use = 1;
 	e->reactor_conn = NULL;
-	e->ip_be = ip_be;
-	memset(e->network, 0, sizeof(e->network));
-	if (network_name != NULL)
-		strncpy(e->network, network_name, sizeof(e->network) - 1);
+	memset(e->nets, 0, sizeof(e->nets));
+	e->net_count = net_count;
+	for (i = 0; i < net_count; i++)
+		e->nets[i] = nets[i];
 
 	*out = e;
 	return REGISTRY_OK;
@@ -64,12 +64,15 @@ enum registry_error registry_create(const char *name, const struct container_spe
 
 int registry_network_in_use(const char *network_name)
 {
-	int i;
+	int i, j;
 
 	for (i = 0; i < REGISTRY_MAX_CONTAINERS; i++) {
-		if (g_entries[i].in_use && g_entries[i].network[0] != '\0' &&
-		    strcmp(g_entries[i].network, network_name) == 0)
-			return 1;
+		if (!g_entries[i].in_use)
+			continue;
+		for (j = 0; j < g_entries[i].net_count; j++) {
+			if (strcmp(g_entries[i].nets[j].name, network_name) == 0)
+				return 1;
+		}
 	}
 	return 0;
 }
@@ -78,16 +81,20 @@ int registry_alloc_ip(uint32_t network_base_be, int host_min, int host_max, uint
 {
 	uint32_t network_base_host = ntohl(network_base_be);
 	int host;
-	int i;
+	int i, j;
 
 	for (host = host_min; host <= host_max; host++) {
 		uint32_t candidate_be = htonl(network_base_host | (uint32_t)host);
 		int taken = 0;
 
-		for (i = 0; i < REGISTRY_MAX_CONTAINERS; i++) {
-			if (g_entries[i].in_use && g_entries[i].ip_be == candidate_be) {
-				taken = 1;
-				break;
+		for (i = 0; i < REGISTRY_MAX_CONTAINERS && !taken; i++) {
+			if (!g_entries[i].in_use)
+				continue;
+			for (j = 0; j < g_entries[i].net_count; j++) {
+				if (g_entries[i].nets[j].ip_be == candidate_be) {
+					taken = 1;
+					break;
+				}
 			}
 		}
 		if (!taken) {
@@ -128,6 +135,8 @@ int registry_remove(const char *name)
 
 void registry_write_json_one(const struct registry_entry *entry, struct json_writer *w)
 {
+	int i;
+
 	jw_obj_open(w);
 	jw_key(w, "name");
 	jw_str(w, entry->name);
@@ -140,22 +149,22 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 		jw_null(w);
 	else
 		jw_int(w, entry->exit_status);
-	jw_key(w, "network");
-	if (entry->network[0] == '\0')
-		jw_null(w);
-	else
-		jw_str(w, entry->network);
-	jw_key(w, "ip");
-	if (entry->ip_be == 0) {
-		jw_null(w);
-	} else {
+	jw_key(w, "networks");
+	jw_arr_open(w);
+	for (i = 0; i < entry->net_count; i++) {
 		struct in_addr a;
 		char ipstr[INET_ADDRSTRLEN];
 
-		a.s_addr = entry->ip_be;
+		jw_obj_open(w);
+		jw_key(w, "name");
+		jw_str(w, entry->nets[i].name);
+		a.s_addr = entry->nets[i].ip_be;
 		inet_ntop(AF_INET, &a, ipstr, sizeof(ipstr));
+		jw_key(w, "ip");
 		jw_str(w, ipstr);
+		jw_obj_close(w);
 	}
+	jw_arr_close(w);
 	jw_obj_close(w);
 }
 

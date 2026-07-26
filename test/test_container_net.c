@@ -1,12 +1,18 @@
 /*
- * Phase 6 part 2 end-to-end test: proves real networking works
- * through the actual container lifecycle (container_create(), not
- * raw rtnetlink primitives -- those were already proven in isolation
- * by test_rtnetlink.c). Creates two containers concurrently on the
- * same bridge and proves real, simultaneous connectivity to each,
- * then confirms the kernel tears down both veth ends automatically
- * once each container exits -- no explicit delete call needed for
- * that part, only for the bridge itself.
+ * Phase 6 part 2 / Phase 7 part 2 end-to-end test: proves real
+ * networking works through the actual container lifecycle
+ * (container_create(), not raw rtnetlink primitives -- those were
+ * already proven in isolation by test_rtnetlink.c).
+ *
+ * Two scenarios:
+ * 1. Two containers concurrently on the same bridge -- real,
+ *    simultaneous connectivity to each, then confirms the kernel
+ *    tears down both veth ends automatically once each container
+ *    exits (no explicit delete call needed for that part, only for
+ *    the bridge itself).
+ * 2. One container attached to TWO bridges at once (Phase 7 part 2's
+ *    multi-homing) -- both interfaces independently addressed and
+ *    reachable from the host.
  */
 #include "container.h"
 #include "linux_compat.h"
@@ -24,6 +30,7 @@
 #include <unistd.h>
 
 #define BRIDGE_NAME "kanxeo-ctnet0"
+#define BRIDGE_NAME2 "kanxeo-ctnet1"
 #define IMAGE_ROOT "/tmp/container_net_test/lower"
 #define NET_CHILD_PORT 17700
 
@@ -98,14 +105,14 @@ static int connect_and_echo(uint32_t ip_be, int *ok)
 }
 
 static int build_container_spec(struct container_spec *spec, const char *cg_name,
-                                 const char *scratch_dir, const char *container_ip,
-                                 char **argv, char **envp)
+                                 const char *scratch_dir, const struct network_spec *nets,
+                                 int net_count, char **argv, char **envp)
 {
 	static char lowerdir[256];
 	static char upperdir[256];
 	static char workdir[256];
 	static char merged[256];
-	struct in_addr a;
+	int i;
 
 	snprintf(lowerdir, sizeof(lowerdir), "%s", IMAGE_ROOT);
 	snprintf(upperdir, sizeof(upperdir), "%s/upper", scratch_dir);
@@ -129,30 +136,30 @@ static int build_container_spec(struct container_spec *spec, const char *cg_name
 	spec->ov.merged = merged;
 	spec->mnt.put_old_rel = ".old_root";
 
-	spec->net.bridge = BRIDGE_NAME;
-	inet_pton(AF_INET, container_ip, &a);
-	spec->net.container_ip_be = a.s_addr;
-	inet_pton(AF_INET, "172.30.1.1", &a);
-	spec->net.gateway_ip_be = a.s_addr;
-	spec->net.prefix_len = 24;
+	spec->net_count = net_count;
+	for (i = 0; i < net_count; i++)
+		spec->nets[i] = nets[i];
 
 	spec->argv = argv;
 	spec->envp = envp;
 	return 0;
 }
 
+static uint32_t ipv4(const char *s)
+{
+	struct in_addr a;
+
+	inet_pton(AF_INET, s, &a);
+	return a.s_addr;
+}
+
 int main(void)
 {
 	int bfd;
 	int ok = 1;
-	struct in_addr gw;
-	struct container_spec spec1, spec2;
-	struct container_handle h1, h2;
 	char *argv[] = { "/bin/net_child", NULL };
+	char *argv_dual[] = { "/bin/net_child", "2", NULL };
 	char *envp[] = { NULL };
-	int exit1 = -1, exit2 = -1;
-	char vh1[16], vh2[16];
-	struct in_addr ip1, ip2;
 
 	bfd = rtnl_open();
 	if (bfd < 0) {
@@ -161,84 +168,162 @@ int main(void)
 	}
 
 	rtnl_link_delete(bfd, BRIDGE_NAME);
+	rtnl_link_delete(bfd, BRIDGE_NAME2);
 
-	if (rtnl_bridge_create(bfd, BRIDGE_NAME) != 0) {
-		perror("rtnl_bridge_create");
+	if (rtnl_bridge_create(bfd, BRIDGE_NAME) != 0 ||
+	    rtnl_addr_add_ipv4(bfd, BRIDGE_NAME, ipv4("172.30.1.1"), 24) != 0 ||
+	    rtnl_link_set_up(bfd, BRIDGE_NAME) != 0) {
+		perror("bridge 1 setup");
 		return 1;
 	}
-	inet_pton(AF_INET, "172.30.1.1", &gw);
-	if (rtnl_addr_add_ipv4(bfd, BRIDGE_NAME, gw.s_addr, 24) != 0) {
-		perror("rtnl_addr_add_ipv4 (bridge)");
-		return 1;
-	}
-	if (rtnl_link_set_up(bfd, BRIDGE_NAME) != 0) {
-		perror("rtnl_link_set_up (bridge)");
+	if (rtnl_bridge_create(bfd, BRIDGE_NAME2) != 0 ||
+	    rtnl_addr_add_ipv4(bfd, BRIDGE_NAME2, ipv4("172.30.2.1"), 24) != 0 ||
+	    rtnl_link_set_up(bfd, BRIDGE_NAME2) != 0) {
+		perror("bridge 2 setup");
 		return 1;
 	}
 
 	if (test_image_fixture_build(IMAGE_ROOT, "build/net_child", "net_child") != 0)
 		return 1;
 
-	if (build_container_spec(&spec1, "tcc-net-c1", "/tmp/container_net_test/c1", "172.30.1.10",
-	                          argv, envp) != 0)
-		return 1;
-	if (build_container_spec(&spec2, "tcc-net-c2", "/tmp/container_net_test/c2", "172.30.1.11",
-	                          argv, envp) != 0)
-		return 1;
+	/* 1. two containers concurrently on the same bridge */
+	{
+		struct container_spec spec1, spec2;
+		struct container_handle h1, h2;
+		struct network_spec net1, net2;
+		int exit1 = -1, exit2 = -1;
+		char vh1[16], vh2[16];
 
-	/* both created before either is waited on -- genuinely concurrent */
-	if (container_create(&spec1, &h1) != 0) {
-		perror("container_create c1");
-		return 1;
+		net1.bridge = BRIDGE_NAME;
+		net1.container_ip_be = ipv4("172.30.1.10");
+		net1.gateway_ip_be = ipv4("172.30.1.1");
+		net1.prefix_len = 24;
+
+		net2.bridge = BRIDGE_NAME;
+		net2.container_ip_be = ipv4("172.30.1.11");
+		net2.gateway_ip_be = ipv4("172.30.1.1");
+		net2.prefix_len = 24;
+
+		if (build_container_spec(&spec1, "tcc-net-c1", "/tmp/container_net_test/c1", &net1, 1,
+		                          argv, envp) != 0)
+			return 1;
+		if (build_container_spec(&spec2, "tcc-net-c2", "/tmp/container_net_test/c2", &net2, 1,
+		                          argv, envp) != 0)
+			return 1;
+
+		/* both created before either is waited on -- genuinely concurrent */
+		if (container_create(&spec1, &h1) != 0) {
+			perror("container_create c1");
+			return 1;
+		}
+		if (container_create(&spec2, &h2) != 0) {
+			perror("container_create c2");
+			return 1;
+		}
+
+		snprintf(vh1, sizeof(vh1), "vh%d-0", (int)h1.pid);
+		snprintf(vh2, sizeof(vh2), "vh%d-0", (int)h2.pid);
+
+		/* give each container a brief moment to bind() before we connect */
+		usleep(200000);
+
+		connect_and_echo(net1.container_ip_be, &ok);
+		connect_and_echo(net2.container_ip_be, &ok);
+
+		if (container_wait(&h1, &exit1) != 0) {
+			perror("container_wait c1");
+			ok = 0;
+		} else if (exit1 != 0) {
+			fprintf(stderr, "FAIL: c1 exit status %d, expected 0\n", exit1);
+			ok = 0;
+		}
+		if (container_wait(&h2, &exit2) != 0) {
+			perror("container_wait c2");
+			ok = 0;
+		} else if (exit2 != 0) {
+			fprintf(stderr, "FAIL: c2 exit status %d, expected 0\n", exit2);
+			ok = 0;
+		}
+		close(h1.pidfd);
+		close(h1.cgroup_fd);
+		close(h2.pidfd);
+		close(h2.cgroup_fd);
+
+		/* The kernel destroys both ends of a veth pair once the netns
+		 * holding one end is torn down -- no explicit delete needed,
+		 * and worth confirming directly rather than assuming. */
+		if (!iface_gone_eventually(vh1, 20)) {
+			fprintf(stderr, "FAIL: %s still exists after c1 exited\n", vh1);
+			ok = 0;
+		}
+		if (!iface_gone_eventually(vh2, 20)) {
+			fprintf(stderr, "FAIL: %s still exists after c2 exited\n", vh2);
+			ok = 0;
+		}
 	}
-	if (container_create(&spec2, &h2) != 0) {
-		perror("container_create c2");
-		return 1;
-	}
 
-	snprintf(vh1, sizeof(vh1), "vh%d", (int)h1.pid);
-	snprintf(vh2, sizeof(vh2), "vh%d", (int)h2.pid);
+	/* 2. one container, two bridges at once -- Phase 7 part 2's
+	 * multi-homing, proven at the real container_create() level */
+	{
+		struct container_spec spec3;
+		struct container_handle h3;
+		struct network_spec nets3[2];
+		int exit3 = -1;
+		char vh3a[16], vh3b[16];
 
-	/* give each container a brief moment to bind() before we connect */
-	usleep(200000);
+		nets3[0].bridge = BRIDGE_NAME;
+		nets3[0].container_ip_be = ipv4("172.30.1.20");
+		nets3[0].gateway_ip_be = ipv4("172.30.1.1");
+		nets3[0].prefix_len = 24;
 
-	inet_pton(AF_INET, "172.30.1.10", &ip1);
-	inet_pton(AF_INET, "172.30.1.11", &ip2);
-	connect_and_echo(ip1.s_addr, &ok);
-	connect_and_echo(ip2.s_addr, &ok);
+		nets3[1].bridge = BRIDGE_NAME2;
+		nets3[1].container_ip_be = ipv4("172.30.2.20");
+		nets3[1].gateway_ip_be = ipv4("172.30.2.1");
+		nets3[1].prefix_len = 24;
 
-	if (container_wait(&h1, &exit1) != 0) {
-		perror("container_wait c1");
-		ok = 0;
-	} else if (exit1 != 0) {
-		fprintf(stderr, "FAIL: c1 exit status %d, expected 0\n", exit1);
-		ok = 0;
-	}
-	if (container_wait(&h2, &exit2) != 0) {
-		perror("container_wait c2");
-		ok = 0;
-	} else if (exit2 != 0) {
-		fprintf(stderr, "FAIL: c2 exit status %d, expected 0\n", exit2);
-		ok = 0;
-	}
-	close(h1.pidfd);
-	close(h1.cgroup_fd);
-	close(h2.pidfd);
-	close(h2.cgroup_fd);
+		if (build_container_spec(&spec3, "tcc-net-c3", "/tmp/container_net_test/c3", nets3, 2,
+		                          argv_dual, envp) != 0)
+			return 1;
 
-	/* The kernel destroys both ends of a veth pair once the netns
-	 * holding one end is torn down -- no explicit delete needed, and
-	 * worth confirming directly rather than assuming. */
-	if (!iface_gone_eventually(vh1, 20)) {
-		fprintf(stderr, "FAIL: %s still exists after c1 exited\n", vh1);
-		ok = 0;
-	}
-	if (!iface_gone_eventually(vh2, 20)) {
-		fprintf(stderr, "FAIL: %s still exists after c2 exited\n", vh2);
-		ok = 0;
+		if (container_create(&spec3, &h3) != 0) {
+			perror("container_create c3");
+			return 1;
+		}
+
+		snprintf(vh3a, sizeof(vh3a), "vh%d-0", (int)h3.pid);
+		snprintf(vh3b, sizeof(vh3b), "vh%d-1", (int)h3.pid);
+
+		usleep(200000);
+
+		/* real connectivity to BOTH interfaces, from their respective
+		 * subnets -- proves eth0/eth1 are both independently addressed
+		 * and reachable, not just that container_create() didn't
+		 * error out */
+		connect_and_echo(nets3[0].container_ip_be, &ok);
+		connect_and_echo(nets3[1].container_ip_be, &ok);
+
+		if (container_wait(&h3, &exit3) != 0) {
+			perror("container_wait c3");
+			ok = 0;
+		} else if (exit3 != 0) {
+			fprintf(stderr, "FAIL: c3 exit status %d, expected 0\n", exit3);
+			ok = 0;
+		}
+		close(h3.pidfd);
+		close(h3.cgroup_fd);
+
+		if (!iface_gone_eventually(vh3a, 20)) {
+			fprintf(stderr, "FAIL: %s still exists after c3 exited\n", vh3a);
+			ok = 0;
+		}
+		if (!iface_gone_eventually(vh3b, 20)) {
+			fprintf(stderr, "FAIL: %s still exists after c3 exited\n", vh3b);
+			ok = 0;
+		}
 	}
 
 	rtnl_link_delete(bfd, BRIDGE_NAME);
+	rtnl_link_delete(bfd, BRIDGE_NAME2);
 	rtnl_close(bfd);
 
 	printf(ok ? "CONTAINER NET RESULT: PASS\n" : "CONTAINER NET RESULT: FAIL\n");

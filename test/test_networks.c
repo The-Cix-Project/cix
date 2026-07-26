@@ -217,7 +217,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"c1\",\"image\":\"networkstest\","
-	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],\"network\":\"neta\"}",
+	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],\"networks\":[\"neta\"]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST c1, status=%d\n", r.status);

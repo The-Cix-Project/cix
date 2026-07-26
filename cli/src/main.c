@@ -24,7 +24,7 @@ static void print_usage(FILE *out)
 	        "commands:\n"
 	        "  health\n"
 	        "  ps\n"
-	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] [--network=NAME] -- CMD [ARGS...]\n"
+	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] [--network=NAME ...] -- CMD [ARGS...]\n"
 	        "  inspect NAME\n"
 	        "  rm NAME\n"
 	        "  network create --name=NAME --subnet=A.B.C.D --prefix=N\n"
@@ -99,16 +99,34 @@ static void fmt_container_line(const struct json_value *v)
 	const char *status = json_str_field(v, "status");
 	long pid = (long)json_as_number(json_object_get(v, "pid"));
 	const struct json_value *exitv = json_object_get(v, "exit_status");
-	const char *ip = json_str_field(v, "ip");
+	const struct json_value *networks = json_object_get(v, "networks");
 	char exit_buf[16];
+	char net_buf[256];
+	size_t off = 0;
+	size_t i;
 
 	if (exitv != NULL && exitv->type == JSON_NUMBER)
 		snprintf(exit_buf, sizeof(exit_buf), "%ld", (long)json_as_number(exitv));
 	else
 		snprintf(exit_buf, sizeof(exit_buf), "-");
 
-	printf("%-20s %-8s pid=%-8ld exit_status=%-6s ip=%s\n", name, status, pid, exit_buf,
-	       ip != NULL ? ip : "-");
+	net_buf[0] = '\0';
+	if (networks != NULL && networks->type == JSON_ARRAY) {
+		for (i = 0; i < networks->u.array.count && off < sizeof(net_buf) - 1; i++) {
+			const struct json_value *item = networks->u.array.items[i];
+			const char *n = json_str_field(item, "name");
+			const char *ip = json_str_field(item, "ip");
+			int written = snprintf(net_buf + off, sizeof(net_buf) - off, "%s%s:%s",
+			                        i > 0 ? "," : "", n != NULL ? n : "?",
+			                        ip != NULL ? ip : "?");
+
+			if (written > 0)
+				off += (size_t)written;
+		}
+	}
+
+	printf("%-20s %-8s pid=%-8ld exit_status=%-6s networks=%s\n", name, status, pid, exit_buf,
+	       net_buf[0] != '\0' ? net_buf : "-");
 }
 
 static void fmt_list(const struct json_value *v)
@@ -233,11 +251,14 @@ static int cmd_rm(const struct kx_client *c, int json_mode, int argc, char **arg
 	return emit(&r, json_mode, fmt_removed);
 }
 
+#define CLI_MAX_NETWORKS 4
+
 static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *image = NULL;
-	const char *network = NULL;
+	const char *networks[CLI_MAX_NETWORKS];
+	int network_count = 0;
 	long memory_max = -1;
 	long pids_max = -1;
 	int i = 0;
@@ -258,9 +279,14 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 			memory_max = atol(argv[i] + 13);
 		else if (strncmp(argv[i], "--pids-max=", 11) == 0)
 			pids_max = atol(argv[i] + 11);
-		else if (strncmp(argv[i], "--network=", 10) == 0)
-			network = argv[i] + 10;
-		else {
+		else if (strncmp(argv[i], "--network=", 10) == 0) {
+			if (network_count >= CLI_MAX_NETWORKS) {
+				fprintf(stderr, "kanxeoctl: too many --network= flags (max %d)\n",
+				        CLI_MAX_NETWORKS);
+				return 2;
+			}
+			networks[network_count++] = argv[i] + 10;
+		} else {
 			fprintf(stderr, "kanxeoctl: unknown run option '%s'\n", argv[i]);
 			return 2;
 		}
@@ -270,7 +296,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (name == NULL || image == NULL || cmd_start < 0 || cmd_start >= argc) {
 		fprintf(stderr,
 		        "usage: kanxeoctl run --name=NAME --image=IMAGE [--memory-max=N] "
-		        "[--pids-max=N] [--network=NAME] -- CMD [ARGS...]\n");
+		        "[--pids-max=N] [--network=NAME ...] -- CMD [ARGS...]\n");
 		return 2;
 	}
 
@@ -298,9 +324,12 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		jw_key(&w, "pids_max");
 		jw_int(&w, pids_max);
 	}
-	if (network != NULL) {
-		jw_key(&w, "network");
-		jw_str(&w, network);
+	if (network_count > 0) {
+		jw_key(&w, "networks");
+		jw_arr_open(&w);
+		for (i = 0; i < network_count; i++)
+			jw_str(&w, networks[i]);
+		jw_arr_close(&w);
 	}
 	jw_obj_close(&w);
 

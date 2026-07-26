@@ -1,9 +1,10 @@
 /*
- * Phase 7 part 1 end-to-end test: proves the dynamic network resource
- * (POST/GET/DELETE /v1/networks -- daemon/src/network.c) and
+ * Phase 7 parts 1+2 end-to-end test: proves the dynamic network
+ * resource (POST/GET/DELETE /v1/networks -- daemon/src/network.c) and
  * container IP allocation against it work over real HTTP -- containers
- * created via POST /v1/containers with a "network" naming a network
- * created through this same API get real, distinct, connectable IPs,
+ * created via POST /v1/containers with a "networks" array naming
+ * networks created through this same API get real, distinct,
+ * connectable IPs (one interface per entry, part 2's multi-homing),
  * and containers created without it are completely unaffected (the
  * explicit regression check for this endpoint's unchanged default
  * behavior).
@@ -29,6 +30,8 @@ extern char **environ;
 #define NET_CHILD_PORT 17700
 #define TEST_NETWORK_NAME "dnettest"
 #define TEST_NETWORK_SUBNET "172.33.0.0"
+#define TEST_NETWORK_NAME2 "dnettest2"
+#define TEST_NETWORK_SUBNET2 "172.34.0.0"
 
 static int wait_for_daemon(const struct kx_client *c, int max_attempts)
 {
@@ -53,6 +56,25 @@ static const char *json_str_field(const struct json_value *obj, const char *key)
 static int str_eq(const char *a, const char *b)
 {
 	return a != NULL && b != NULL && strcmp(a, b) == 0;
+}
+
+/* Finds {"name": network_name, "ip": ...} inside a Container response's
+ * "networks" array and returns the ip, or NULL if not attached to it. */
+static const char *network_ip_in_response(const struct json_value *container,
+                                           const char *network_name)
+{
+	const struct json_value *networks = json_object_get(container, "networks");
+	size_t i;
+
+	if (networks == NULL || networks->type != JSON_ARRAY)
+		return NULL;
+	for (i = 0; i < networks->u.array.count; i++) {
+		const struct json_value *item = networks->u.array.items[i];
+
+		if (str_eq(json_str_field(item, "name"), network_name))
+			return json_str_field(item, "ip");
+	}
+	return NULL;
 }
 
 /*
@@ -131,7 +153,7 @@ int main(void)
 		return 1;
 	}
 
-	/* 1. create the test network */
+	/* 1. create the test networks */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"" TEST_NETWORK_NAME "\",\"subnet\":\"" TEST_NETWORK_SUBNET
@@ -143,21 +165,32 @@ int main(void)
 	}
 	kx_response_free(&r);
 
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/networks",
+	                       "{\"name\":\"" TEST_NETWORK_NAME2 "\",\"subnet\":\"" TEST_NETWORK_SUBNET2
+	                       "\",\"prefix_len\":24}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST /v1/networks (2nd), status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
 	/* 2-3. create n1 with networking, confirm a real assigned ip and
 	 * real connectivity through it */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"n1\",\"image\":\"nettest\",\"cmd\":[\"/bin/net_child\"],"
-	                       "\"network\":\"" TEST_NETWORK_NAME "\"}",
+	                       "\"networks\":[\"" TEST_NETWORK_NAME "\"]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST n1, status=%d\n", r.status);
 		ok = 0;
 	} else {
-		const char *ip = json_str_field(r.json, "ip");
+		const char *ip = network_ip_in_response(r.json, TEST_NETWORK_NAME);
 
 		if (ip == NULL) {
-			fprintf(stderr, "FAIL: n1 has no ip\n");
+			fprintf(stderr, "FAIL: n1 has no ip on %s\n", TEST_NETWORK_NAME);
 			ok = 0;
 		} else {
 			snprintf(ip1, sizeof(ip1), "%s", ip);
@@ -173,16 +206,16 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"n2\",\"image\":\"nettest\",\"cmd\":[\"/bin/net_child\"],"
-	                       "\"network\":\"" TEST_NETWORK_NAME "\"}",
+	                       "\"networks\":[\"" TEST_NETWORK_NAME "\"]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST n2, status=%d\n", r.status);
 		ok = 0;
 	} else {
-		const char *ip = json_str_field(r.json, "ip");
+		const char *ip = network_ip_in_response(r.json, TEST_NETWORK_NAME);
 
 		if (ip == NULL) {
-			fprintf(stderr, "FAIL: n2 has no ip\n");
+			fprintf(stderr, "FAIL: n2 has no ip on %s\n", TEST_NETWORK_NAME);
 			ok = 0;
 		} else {
 			snprintf(ip2, sizeof(ip2), "%s", ip);
@@ -212,11 +245,10 @@ int main(void)
 			for (i = 0; i < containers->u.array.count; i++) {
 				const struct json_value *item = containers->u.array.items[i];
 				const char *n = json_str_field(item, "name");
-				const char *ip = json_str_field(item, "ip");
 
-				if (str_eq(n, "n1") && str_eq(ip, ip1))
+				if (str_eq(n, "n1") && str_eq(network_ip_in_response(item, TEST_NETWORK_NAME), ip1))
 					found1 = 1;
-				if (str_eq(n, "n2") && str_eq(ip, ip2))
+				if (str_eq(n, "n2") && str_eq(network_ip_in_response(item, TEST_NETWORK_NAME), ip2))
 					found2 = 1;
 			}
 		}
@@ -229,20 +261,20 @@ int main(void)
 	}
 	kx_response_free(&r);
 
-	/* 6. no "network" field -> ip null, regression check on unchanged
-	 * default behavior */
+	/* 6. no "networks" field -> empty networks array, regression check
+	 * on unchanged default behavior */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"n3\",\"image\":\"nettest\",\"cmd\":[\"/bin/net_child\"]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
-		fprintf(stderr, "FAIL: POST n3 (no network), status=%d\n", r.status);
+		fprintf(stderr, "FAIL: POST n3 (no networks), status=%d\n", r.status);
 		ok = 0;
 	} else {
-		const struct json_value *ipv = json_object_get(r.json, "ip");
+		const struct json_value *networks = json_object_get(r.json, "networks");
 
-		if (ipv == NULL || ipv->type != JSON_NULL) {
-			fprintf(stderr, "FAIL: n3 (no network) should have ip=null\n");
+		if (networks == NULL || networks->type != JSON_ARRAY || networks->u.array.count != 0) {
+			fprintf(stderr, "FAIL: n3 (no networks) should have an empty networks array\n");
 			ok = 0;
 		}
 	}
@@ -252,7 +284,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"n4\",\"image\":\"nettest\",\"cmd\":[\"/bin/net_child\"],"
-	                       "\"network\":\"bogus\"}",
+	                       "\"networks\":[\"bogus\"]}",
 	                       &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: unsupported network expected 400, got %d\n", r.status);
@@ -260,7 +292,42 @@ int main(void)
 	}
 	kx_response_free(&r);
 
-	/* 8. deleting a network still in use by a container -> 409 */
+	/* 8. multi-homing: one container, two networks -- Phase 7 part 2 */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"n5\",\"image\":\"nettest\",\"cmd\":[\"/bin/net_child\",\"2\"],"
+	                       "\"networks\":[\"" TEST_NETWORK_NAME "\",\"" TEST_NETWORK_NAME2 "\"]}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST n5 (multi-homed), status=%d\n", r.status);
+		ok = 0;
+	} else {
+		const char *ip_a = network_ip_in_response(r.json, TEST_NETWORK_NAME);
+		const char *ip_b = network_ip_in_response(r.json, TEST_NETWORK_NAME2);
+		char ip_a_buf[64] = { 0 };
+		char ip_b_buf[64] = { 0 };
+
+		if (ip_a == NULL || ip_b == NULL) {
+			fprintf(stderr, "FAIL: n5 missing an ip on one of its two networks\n");
+			ok = 0;
+		} else {
+			snprintf(ip_a_buf, sizeof(ip_a_buf), "%s", ip_a);
+			snprintf(ip_b_buf, sizeof(ip_b_buf), "%s", ip_b);
+			if (!connect_and_echo(ip_a_buf)) {
+				fprintf(stderr, "FAIL: could not connect to n5 at %s (%s)\n", ip_a_buf,
+				        TEST_NETWORK_NAME);
+				ok = 0;
+			}
+			if (!connect_and_echo(ip_b_buf)) {
+				fprintf(stderr, "FAIL: could not connect to n5 at %s (%s)\n", ip_b_buf,
+				        TEST_NETWORK_NAME2);
+				ok = 0;
+			}
+		}
+	}
+	kx_response_free(&r);
+
+	/* 9. deleting a network still in use by a container -> 409 */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "DELETE", "/v1/networks/" TEST_NETWORK_NAME, NULL, &r) != 0 ||
 	    r.status != 409) {
@@ -269,20 +336,31 @@ int main(void)
 	}
 	kx_response_free(&r);
 
-	/* 9. cleanup: remove containers (kills n3, still blocked in
+	/* 10. cleanup: remove containers (kills n3, still blocked in
 	 * accept() since nothing can reach it -- no networking, isolated
-	 * netns), then the network itself via the real API */
+	 * netns), then both networks via the real API */
 	kx_client_request(&client, "DELETE", "/v1/containers/n1", NULL, &r);
 	kx_response_free(&r);
 	kx_client_request(&client, "DELETE", "/v1/containers/n2", NULL, &r);
 	kx_response_free(&r);
 	kx_client_request(&client, "DELETE", "/v1/containers/n3", NULL, &r);
 	kx_response_free(&r);
+	kx_client_request(&client, "DELETE", "/v1/containers/n5", NULL, &r);
+	kx_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "DELETE", "/v1/networks/" TEST_NETWORK_NAME, NULL, &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "FAIL: DELETE " TEST_NETWORK_NAME " (unused) expected 204, got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "DELETE", "/v1/networks/" TEST_NETWORK_NAME2, NULL, &r) != 0 ||
+	    r.status != 204) {
+		fprintf(stderr, "FAIL: DELETE " TEST_NETWORK_NAME2 " (unused) expected 204, got %d\n",
 		        r.status);
 		ok = 0;
 	}

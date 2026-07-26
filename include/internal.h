@@ -31,25 +31,33 @@ int mountns_pivot(const char *new_root, const struct mount_spec *mnt);
 
 /*
  * Parent side, called after ns_clone3() returns the child's pid, only
- * if spec->net.bridge != NULL. Creates a veth pair (named from the
- * child's real pid), moves the container-side end into the child's
- * netns, attaches the host side to the bridge, brings it up, then
- * writes the container-side veth's name through ready_pipe_write --
- * not just a bare "ready" signal, since the child can't recover that
- * name itself via getpid() (CLONE_NEWPID means it sees itself as pid
- * 1 in its own namespace). On failure, the caller must close
- * ready_pipe_write without writing, so the child's read() observes
- * EOF and fails cleanly instead of blocking forever.
+ * if spec->net_count > 0. For each of the net_count attachments in
+ * nets[], creates a veth pair (named from the child's real pid and
+ * that attachment's index), moves the container-side end into the
+ * child's netns, attaches the host side to that attachment's bridge,
+ * brings it up, then writes the container-side veth's name through
+ * ready_pipe_write -- not just a bare "ready" signal, since the child
+ * can't recover that name itself via getpid() (CLONE_NEWPID means it
+ * sees itself as pid 1 in its own namespace). One write per
+ * attachment, same order the child will read them in. On failure, the
+ * caller must close ready_pipe_write without writing, so the child's
+ * read() observes EOF and fails cleanly instead of blocking forever.
  */
-int container_net_host_setup(const struct network_spec *net, pid_t child_pid, int ready_pipe_write);
+int container_net_host_setup(const struct network_spec *nets, int net_count, pid_t child_pid,
+                              int ready_pipe_write);
 
 /*
  * Child side, called after mount/root setup and sethostname(), before
- * PR_SET_PDEATHSIG/execve, only if spec->net.bridge != NULL. Blocks
- * reading the veth name from ready_pipe_read (failure or EOF -> -1),
- * renames it to "eth0", addresses it, brings it and "lo" up, and
- * installs the default route.
+ * PR_SET_PDEATHSIG/execve, only if spec->net_count > 0. For each of
+ * the net_count attachments in nets[], blocks reading one veth name
+ * from ready_pipe_read (failure or EOF -> -1), renames it to "eth" +
+ * index, addresses it, and brings it up. After the loop, brings up
+ * "lo" and installs the default route via nets[0] only -- the first
+ * attachment is "primary"; any others get only their subnet's
+ * connected route, which the kernel already installed as a side
+ * effect of the address assignment.
  */
-int container_net_child_configure(const struct network_spec *net, int ready_pipe_read);
+int container_net_child_configure(const struct network_spec *nets, int net_count,
+                                   int ready_pipe_read);
 
 #endif /* CONTAINER_INTERNAL_H */

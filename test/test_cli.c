@@ -273,7 +273,7 @@ int main(void)
 			ok = 0;
 		}
 		if (run_cli(run_argv, out, sizeof(out), &rc) != 0 || rc != 0 ||
-		    strstr(out, "ip=-") != NULL || strstr(out, "ip=172.32.0.") == NULL) {
+		    strstr(out, "networks=-") != NULL || strstr(out, "networks=clitest:172.32.0.") == NULL) {
 			fprintf(stderr, "FAIL: kanxeoctl run c3 --network=clitest, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
@@ -283,6 +283,55 @@ int main(void)
 		}
 		if (run_cli(net_rm_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
 			fprintf(stderr, "FAIL: kanxeoctl network rm clitest, rc=%d out=%s\n", rc, out);
+			ok = 0;
+		}
+	}
+
+	/* 9. repeated --network= flags -> a container attached to two
+	 * networks at once, Phase 7 part 2's multi-homing, driven through
+	 * the real kanxeoctl binary */
+	{
+		char *net_create_a_argv[] = { "kanxeoctl",       PORT_ARG,           "network",
+			                       "create",          "--name=climulti1", "--subnet=172.36.0.0",
+			                       "--prefix=24",     NULL };
+		char *net_create_b_argv[] = { "kanxeoctl",       PORT_ARG,           "network",
+			                       "create",          "--name=climulti2", "--subnet=172.37.0.0",
+			                       "--prefix=24",     NULL };
+		char *run_argv[] = { "kanxeoctl",         PORT_ARG,
+			              "run",               "--name=c4",
+			              "--image=test",      "--network=climulti1",
+			              "--network=climulti2", "--",
+			              "/bin/net_child",    "2",
+			              NULL };
+		char *rm_argv[] = { "kanxeoctl", PORT_ARG, "rm", "c4", NULL };
+		char *net_rm_a_argv[] = { "kanxeoctl", PORT_ARG, "network", "rm", "climulti1", NULL };
+		char *net_rm_b_argv[] = { "kanxeoctl", PORT_ARG, "network", "rm", "climulti2", NULL };
+
+		if (run_cli(net_create_a_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
+			fprintf(stderr, "FAIL: kanxeoctl network create climulti1, rc=%d out=%s\n", rc, out);
+			ok = 0;
+		}
+		if (run_cli(net_create_b_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
+			fprintf(stderr, "FAIL: kanxeoctl network create climulti2, rc=%d out=%s\n", rc, out);
+			ok = 0;
+		}
+		if (run_cli(run_argv, out, sizeof(out), &rc) != 0 || rc != 0 ||
+		    strstr(out, "networks=climulti1:172.36.0.") == NULL ||
+		    strstr(out, "climulti2:172.37.0.") == NULL) {
+			fprintf(stderr, "FAIL: kanxeoctl run c4 with two --network= flags, rc=%d out=%s\n", rc,
+			        out);
+			ok = 0;
+		}
+		if (run_cli(rm_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
+			fprintf(stderr, "FAIL: kanxeoctl rm c4, rc=%d out=%s\n", rc, out);
+			ok = 0;
+		}
+		if (run_cli(net_rm_a_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
+			fprintf(stderr, "FAIL: kanxeoctl network rm climulti1, rc=%d out=%s\n", rc, out);
+			ok = 0;
+		}
+		if (run_cli(net_rm_b_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
+			fprintf(stderr, "FAIL: kanxeoctl network rm climulti2, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
 	}

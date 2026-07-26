@@ -246,15 +246,22 @@ components:
           type: integer
           format: int64
           description: cgroup v2 pids.max. Omit for no limit.
-        network:
-          type: string
+        networks:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          maxItems: 4
           description: >
-            Name of a network (see POST /networks) to attach to -- any
-            name not currently known to this daemon is a 400. Omit for
-            no networking at all (an isolated netns with only lo, the
-            same as every container got before this field existed). v1
-            attaches to exactly one network per container; attaching
-            to more than one is future work (docs/ROADMAP.md Phase 7).
+            Names of networks (see POST /networks) to attach to, in
+            order -- any name not currently known to this daemon is a
+            400. Omit for no networking at all (an isolated netns with
+            only lo, the same as every container got before this field
+            existed). The first entry is "primary" and receives the
+            default route; any further entries only get their own
+            subnet's connected route (no default route of their own),
+            the prerequisite for a container to act as a router
+            between them (docs/ROADMAP.md Phase 7 part 3).
 
     Container:
       type: object
@@ -272,14 +279,22 @@ components:
           type: integer
           nullable: true
           description: Exit status once status is exited; null while running.
-        network:
+        networks:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContainerNetworkAttachment"
+          description: Every network this container is attached to, in the order given at creation (first is primary). Empty if not networked.
+
+    ContainerNetworkAttachment:
+      type: object
+      required: [name, ip]
+      properties:
+        name:
           type: string
-          nullable: true
-          description: Name of the network attached to (see /networks); null if not networked.
+          description: Name of the attached network (see /networks).
         ip:
           type: string
-          nullable: true
-          description: Assigned IPv4 address (dotted-quad) if attached to a network; null otherwise.
+          description: Assigned IPv4 address (dotted-quad) within that network.
 
     NetworkCreateRequest:
       type: object

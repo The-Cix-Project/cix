@@ -15,14 +15,19 @@ enum registry_error {
 	REGISTRY_ERR_CREATE_FAILED
 };
 
+struct registry_network_attachment {
+	char name[NETWORK_NAME_MAX];
+	uint32_t ip_be; /* network byte order */
+};
+
 struct registry_entry {
 	char name[REGISTRY_NAME_MAX];
 	struct container_handle handle;
 	int running;       /* 1 while the container's process is alive */
 	int exit_status;   /* valid once running == 0 */
 	int in_use;        /* 0 for free slots */
-	uint32_t ip_be;    /* network byte order; 0 = not attached to a network */
-	char network[NETWORK_NAME_MAX]; /* empty string if not attached */
+	struct registry_network_attachment nets[CONTAINER_MAX_NETWORKS];
+	int net_count;     /* 0 = not attached to any network */
 	/*
 	 * Opaque; owned exclusively by main.c's epoll bookkeeping
 	 * (registry.c never reads or writes it beyond zeroing it here).
@@ -46,15 +51,15 @@ void registry_init(void);
  * over from a previous occupant would otherwise leak into a new,
  * non-networked container. On success returns REGISTRY_OK and *out
  * points at the stored entry (stable for the process lifetime -- the
- * table is a fixed array, never reallocated). network_name (NULL or
- * "" if the container has no network) is stored atomically alongside
- * ip_be, for the same reason: a stale value from a previous occupant
- * of a reused slot must never leak into a new container.
- * On REGISTRY_ERR_CREATE_FAILED, errno is set by the failing
- * container_create()/cgroup_create() call.
+ * table is a fixed array, never reallocated). nets/net_count (net_count
+ * may be 0) are copied atomically as part of this call, not poked in
+ * by the caller afterward -- this table reuses freed slots, and stale
+ * attachments left over from a previous occupant would otherwise leak
+ * into a new container. On REGISTRY_ERR_CREATE_FAILED, errno is set by
+ * the failing container_create()/cgroup_create() call.
  */
 enum registry_error registry_create(const char *name, const struct container_spec *spec,
-                                     uint32_t ip_be, const char *network_name,
+                                     const struct registry_network_attachment *nets, int net_count,
                                      struct registry_entry **out);
 
 struct registry_entry *registry_find(const char *name);

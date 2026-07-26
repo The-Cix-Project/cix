@@ -176,8 +176,8 @@ static void register_container_pidfd(struct registry_entry *entry)
 static void handle_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
-	const struct json_value *jname, *jimage, *jcmd, *jmem, *jpids, *jnetwork;
-	const char *name, *image, *network;
+	const struct json_value *jname, *jimage, *jcmd, *jmem, *jpids, *jnetworks;
+	const char *name, *image;
 	char lowerdir[PATH_MAX];
 	char container_base[PATH_MAX];
 	char upperdir[PATH_MAX], workdir[PATH_MAX], merged[PATH_MAX];
@@ -189,7 +189,8 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	char *empty_envp[1];
 	size_t argc, i;
 	struct json_writer w;
-	uint32_t ip_be = 0;
+	struct registry_network_attachment net_attachments[CONTAINER_MAX_NETWORKS];
+	int net_count = 0;
 
 	root = json_parse(body, body_len);
 	if (root == NULL) {
@@ -200,10 +201,9 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	jname = json_object_get(root, "name");
 	jimage = json_object_get(root, "image");
 	jcmd = json_object_get(root, "cmd");
-	jnetwork = json_object_get(root, "network");
+	jnetworks = json_object_get(root, "networks");
 	name = json_as_string(jname);
 	image = json_as_string(jimage);
-	network = json_as_string(jnetwork);
 
 	if (!name_is_valid(name) || image == NULL || image[0] == '\0' || jcmd == NULL ||
 	    jcmd->type != JSON_ARRAY || jcmd->u.array.count == 0 ||
@@ -212,10 +212,23 @@ static void handle_create(int fd, const char *body, size_t body_len)
 		respond_error(fd, 400, "Bad Request", "name/image/cmd missing or invalid");
 		return;
 	}
-	if (network != NULL && network[0] != '\0' && network_find(network) == NULL) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "unknown network");
-		return;
+	if (jnetworks != NULL) {
+		if (jnetworks->type != JSON_ARRAY || jnetworks->u.array.count == 0 ||
+		    jnetworks->u.array.count > CONTAINER_MAX_NETWORKS) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request",
+			              "networks must be a non-empty array of at most 4 entries");
+			return;
+		}
+		for (i = 0; i < jnetworks->u.array.count; i++) {
+			const char *n = json_as_string(jnetworks->u.array.items[i]);
+
+			if (n == NULL || network_find(n) == NULL) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request", "unknown network");
+				return;
+			}
+		}
 	}
 
 	argc = jcmd->u.array.count;
@@ -245,11 +258,20 @@ static void handle_create(int fd, const char *body, size_t body_len)
 		return;
 	}
 
-	if (network != NULL && network[0] != '\0') {
-		if (network_alloc_ip(network, &ip_be) != 0) {
-			json_free(root);
-			respond_error(fd, 500, "Internal Server Error", "no free IP addresses");
-			return;
+	if (jnetworks != NULL) {
+		net_count = (int)jnetworks->u.array.count;
+		for (i = 0; i < (size_t)net_count; i++) {
+			const char *n = json_as_string(jnetworks->u.array.items[i]);
+			uint32_t ip_be;
+
+			if (network_alloc_ip(n, &ip_be) != 0) {
+				json_free(root);
+				respond_error(fd, 500, "Internal Server Error", "no free IP addresses");
+				return;
+			}
+			memset(net_attachments[i].name, 0, sizeof(net_attachments[i].name));
+			strncpy(net_attachments[i].name, n, sizeof(net_attachments[i].name) - 1);
+			net_attachments[i].ip_be = ip_be;
 		}
 	}
 
@@ -278,18 +300,19 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	spec.ov.workdir = workdir;
 	spec.ov.merged = merged;
 	spec.mnt.put_old_rel = ".old_root";
-	if (ip_be != 0) {
-		struct network_def *net = network_find(network);
+	spec.net_count = net_count;
+	for (i = 0; i < (size_t)net_count; i++) {
+		struct network_def *net = network_find(net_attachments[i].name);
 
-		spec.net.bridge = net->name;
-		spec.net.container_ip_be = ip_be;
-		spec.net.gateway_ip_be = net->gateway_be;
-		spec.net.prefix_len = net->prefix_len;
+		spec.nets[i].bridge = net->name;
+		spec.nets[i].container_ip_be = net_attachments[i].ip_be;
+		spec.nets[i].gateway_ip_be = net->gateway_be;
+		spec.nets[i].prefix_len = net->prefix_len;
 	}
 	spec.argv = argv_buf;
 	spec.envp = empty_envp;
 
-	rerr = registry_create(name, &spec, ip_be, network, &entry);
+	rerr = registry_create(name, &spec, net_attachments, net_count, &entry);
 	/*
 	 * Safe to free the JSON tree now even though spec.ns.hostname,
 	 * spec.cg.name and spec.argv[] point into it: registry_create()

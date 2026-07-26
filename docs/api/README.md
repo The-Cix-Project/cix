@@ -50,19 +50,28 @@ POST /v1/containers
   "cmd": ["/bin/some-binary", "arg1"],
   "memory_max": 67108864,
   "pids_max": 32,
-  "network": "internal"
+  "networks": ["internal", "dmz"]
 }
 ```
 
 - `name` must match `[A-Za-z0-9_-]+` — it's used verbatim as the on-disk directory name under `/var/lib/kanxeo/containers/`.
 - `image` must already exist and be populated at `/var/lib/kanxeo/images/{image}/rootfs` — the daemon never creates image content itself (see ADR-0004); a missing image is a `400`, not a silently-empty container.
 - `memory_max`/`pids_max` are optional cgroup v2 limits; omit for no limit.
-- `network` is optional and must name a network already created via `POST /v1/networks` — any other value is a `400`. Omit for no networking (isolated netns, only `lo` — same as before this field existed).
+- `networks` is optional: 1–4 names, each already created via `POST /v1/networks` — any unknown name is a `400`. Omit for no networking (isolated netns, only `lo` — same as before this field existed). The **first** entry is primary and gets the default route; the rest only get their own subnet's connected route — the prerequisite for a container to sit between two networks and route between them (Phase 7 part 3, not yet built).
 
 Response (`201`):
 
 ```json
-{"name": "my-container", "status": "running", "pid": 12345, "exit_status": null, "network": "internal", "ip": "172.31.0.2"}
+{
+  "name": "my-container",
+  "status": "running",
+  "pid": 12345,
+  "exit_status": null,
+  "networks": [
+    {"name": "internal", "ip": "172.31.0.2"},
+    {"name": "dmz", "ip": "172.32.0.2"}
+  ]
+}
 ```
 
 ## Current scope boundaries (v1, deliberate — see ADR-0007)
@@ -71,7 +80,7 @@ Response (`201`):
 - No log retrieval endpoint yet — the daemon doesn't capture container stdout/stderr separately.
 - No authentication yet — the daemon binds to loopback only as its safety boundary for now.
 - HTTP: no keep-alive/pipelining (`Connection: close` on every response), no chunked bodies.
-- Exactly one network per container — a container attached to more than one (the router/VPN prerequisite) is Phase 7 part 2, not yet built. See `docs/ROADMAP.md`.
+- No IP forwarding toggle or static route installation yet — a multi-homed container has independent interfaces on each network but doesn't forward between them until Phase 7 part 3 ships. See `docs/ROADMAP.md`.
 
 ## Why this file exists alongside `openapi.yaml`
 
