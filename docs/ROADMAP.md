@@ -10,7 +10,7 @@ Phased, dependency-ordered breakdown of the mission in [MISSION.md](MISSION.md).
 | 3 | REST API spec + daemon (host + container lifecycle) | 1, 2 | Done |
 | 4 | CLI (pure REST API client) | 3 | Done |
 | 5 | Web dashboard (pure REST API client) | 3 | Done |
-| 6 | Custom virtual switch / rtnetlink data plane | 3 | In progress (part 1 done) |
+| 6 | Custom virtual switch / rtnetlink data plane | 3 | Done |
 | 7 | Routing protocols (containerized VPNs/routers) | 6 | Not started |
 | 8 | DNS service | 3, 6 | Not started |
 | 9 | PKI / certificate management | 3 | Not started |
@@ -122,7 +122,7 @@ Verified end to end by `test/test_web.c` (reusing `client/src/httpclient.c`, lik
 
 **Explicit scope boundary (not a silent gap):** whether the dashboard actually *renders and behaves* correctly in a real browser (form submission, table updates, delete button) wasn't automated — this project has no headless-browser/Node toolchain, and adding one for a single small dashboard would repeat the exact dependency-cost trade-off ADR-0010 decided against. What was checked instead: `node --check` (a pre-installed system tool, not a new project dependency) confirms `app.js` is syntactically valid, and every DOM element ID `app.js` references was confirmed present in `index.html`. Whether it looks and behaves right needs a real browser at `http://127.0.0.1:7620/`.
 
-## Phase 6 — Custom virtual switch / rtnetlink data plane (in progress: parts 1–2 done)
+## Phase 6 — Custom virtual switch / rtnetlink data plane (done)
 
 Confirmed with the user before writing any code: "custom" means our own control-plane code driving the kernel's native bridge/veth/routing via rtnetlink directly — never `ip`/iproute2, never OVS, never eBPF — with the kernel itself still doing the actual packet forwarding. See ADR-0011.
 
@@ -158,4 +158,21 @@ Verified end to end by new `test/test_container_net.c` (`test/net_child.c` is it
 
 `test/test_image_fixture.c` gained a third parameter (destination basename) so this test's `net_child` exec target could reuse the same staging function as every other test's `daemon_child`, rather than a second, near-duplicate one.
 
-**Part 3 (not started, deliberately deferred): exposing this.** Daemon-level bridge lifecycle at startup (a real `kanxeo0`, not a test-owned bridge), IP allocation tracked in the registry (fixed subnet, sequential scan, no DHCP), then `POST /v1/containers`'s `network` field and the `Container` schema's `ip` field in `docs/api/openapi.yaml`, then `kanxeoctl --network=` and a dashboard field.
+**Part 3 (done): exposed through the daemon/API/CLI/dashboard.** `kanxeod` now owns a real default network end to end, not just a test-owned bridge: `daemon/src/main.c`'s `ensure_default_network()` creates bridge `kanxeo0` (`172.30.0.0/24`, gateway `.1`) at startup, tolerating `EEXIST` on both the bridge create and the gateway address assignment — the same idempotent-restart pattern `ensure_dir()` already established for the storage directories, run unconditionally on every startup exactly as `ensure_dir()` is.
+
+IP allocation is tracked in `daemon/src/registry.c`, deliberately kept topology-agnostic: `registry_alloc_ip(network_base_be, host_min, host_max, *out_ip_be)` takes the subnet as parameters and scans in-use entries for the first free host address — `main.c` remains the single owner of the actual topology (bridge name, subnet, gateway), never duplicated into the registry. `registry_create()`'s signature gained an `ip_be` parameter set atomically at construction, not poked in afterward by the caller — closes a real footgun, since the registry reuses freed slots and an unconditional reset is what stops a new non-networked container from appearing to inherit a previous occupant's stale IP.
+
+`POST /v1/containers`'s optional `"network"` field (`docs/api/openapi.yaml`, only `"default"` supported in v1 — anything else is `400`) allocates an IP and populates `struct network_spec` from Part 2; omitting it leaves `spec.net` zeroed, exactly the pre-existing behavior, unchanged. The `Container` schema's new `"ip"` field is `null` for non-networked containers. `kanxeoctl run --network=default` and an `ip=` column in its `ps`/`inspect` output; the web dashboard gained a matching create-form field and IP column (`node --check` clean, DOM IDs cross-referenced — same scope boundary as Phase 5/ADR-0010, actual rendering not automated).
+
+**Stated v1 scope boundary, not a silent gap:** exactly one fixed network (`"default"`), sequential IP allocation, no user-defined networks/subnets, no DHCP. No new ADR for this — it's a stated limitation, not a durable architectural decision beyond what ADR-0011 already covers (per ADR-0000's own guidance against writing one for everything).
+
+Verified end to end by new `test/test_daemon_net.c` (`test/net_child.c` is its exec target again) over real HTTP:
+
+1. `POST` with `"network":"default"` → `201`, non-null `ip`, real TCP connectivity through it.
+2. A second such `POST` gets a **different** `ip` — proves allocation actually advances, not just returns the same address twice.
+3. `GET /v1/containers` shows both containers' correct, distinct IPs.
+4. `POST` **without** `network` still works exactly as before, `ip` is `null` — the explicit regression check on this endpoint's unchanged default behavior.
+5. `POST` with an unsupported network name → `400`.
+6. Zero warnings; `test/test_cli.c` gained a matching scenario driving the real `kanxeoctl` binary (`--network=default` shows a real `ip=` in its output); all 8 suites (`test_harness`, `test_overlay`, `test_daemon`, `test_cli`, `test_web`, `test_rtnetlink`, `test_container_net`, `test_daemon_net`) re-run repeatedly back-to-back and still fully pass, confirming no leftover interfaces between runs.
+
+**A real test-hygiene bug found here, not a bug in the shipped daemon/library code:** `ensure_default_network()` runs unconditionally on every `kanxeod` startup (correct, intentional behavior — mirrors `ensure_dir()`), which means *every* test that starts a real `kanxeod` creates `kanxeo0` as a side effect, whether or not that specific test exercises networking. `test/test_rtnetlink.c` (Part 1) creates its own standalone bridge on the **same** `172.30.0.0/24` subnet, so a `kanxeo0` left behind by an earlier `test_daemon.c`/`test_cli.c`/`test_web.c`/`test_daemon_net.c` run collided with it and hung the test. Fixed by giving every test that transitively starts `kanxeod` the same cleanup: a shared `test_cleanup_bridge()` (`test/test_net_cleanup.c`/`.h`) that retries the delete (up to 20 times, 100ms apart) rather than a single attempt, since network namespace/veth teardown runs on a kernel workqueue and can lag briefly behind the process being reaped — the same async-teardown fact `test_container_net.c` (Part 2) already had to account for. One implementation, not four copies of the same retry loop.

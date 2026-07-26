@@ -12,7 +12,7 @@ NETPLANE_SRCS := netplane/src/rtnetlink.c
 
 .PHONY: all clean
 
-all: $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/kanxeod $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/kanxeoctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child
+all: $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/kanxeod $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/kanxeoctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/test_daemon_net
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -35,7 +35,7 @@ $(BUILD)/overlay_child: test/overlay_child.c | $(BUILD)
 $(BUILD)/kanxeod: daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) | $(BUILD)
 	$(CC) $(DAEMON_CFLAGS) $^ -o $@
 
-$(BUILD)/test_daemon: test/test_daemon.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_daemon: test/test_daemon.c test/test_image_fixture.c test/test_net_cleanup.c $(CLIENT_SRCS) netplane/src/rtnetlink.c | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/daemon_child: test/daemon_child.c | $(BUILD)
@@ -44,10 +44,10 @@ $(BUILD)/daemon_child: test/daemon_child.c | $(BUILD)
 $(BUILD)/kanxeoctl: cli/src/main.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_cli: test/test_cli.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_cli: test/test_cli.c test/test_image_fixture.c test/test_net_cleanup.c $(CLIENT_SRCS) netplane/src/rtnetlink.c | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_web: test/test_web.c client/src/httpclient.c daemon/src/json.c | $(BUILD)
+$(BUILD)/test_web: test/test_web.c test/test_net_cleanup.c client/src/httpclient.c daemon/src/json.c netplane/src/rtnetlink.c | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_rtnetlink: test/test_rtnetlink.c $(NETPLANE_SRCS) src/ns_create.c | $(BUILD)
@@ -58,6 +58,9 @@ $(BUILD)/net_child: test/net_child.c | $(BUILD)
 
 $(BUILD)/test_container_net: test/test_container_net.c test/test_image_fixture.c $(LIB_SRCS) | $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD)/test_daemon_net: test/test_daemon_net.c test/test_image_fixture.c test/test_net_cleanup.c $(CLIENT_SRCS) netplane/src/rtnetlink.c | $(BUILD)
+	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 clean:
 	rm -rf $(BUILD)

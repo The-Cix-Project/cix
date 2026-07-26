@@ -62,7 +62,7 @@ function renderContainers(containers) {
 	if (containers.length === 0) {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
-		cell.colSpan = 5;
+		cell.colSpan = 6;
 		cell.className = "empty";
 		cell.textContent = "No containers";
 		row.appendChild(cell);
@@ -92,6 +92,10 @@ function renderContainers(containers) {
 		exitCell.textContent = c.exit_status === null || c.exit_status === undefined ? "-" : c.exit_status;
 		row.appendChild(exitCell);
 
+		const ipCell = document.createElement("td");
+		ipCell.textContent = c.ip === null || c.ip === undefined ? "-" : c.ip;
+		row.appendChild(ipCell);
+
 		const actionCell = document.createElement("td");
 		const rmButton = document.createElement("button");
 		rmButton.textContent = "Remove";
@@ -112,7 +116,7 @@ async function refreshContainers() {
 		containersBody.textContent = "";
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
-		cell.colSpan = 5;
+		cell.colSpan = 6;
 		cell.className = "empty";
 		cell.textContent = "Could not load containers: " + e.message;
 		row.appendChild(cell);
@@ -138,6 +142,7 @@ runForm.addEventListener("submit", async (event) => {
 	const cmdText = document.getElementById("f-cmd").value.trim();
 	const memoryMaxText = document.getElementById("f-memory-max").value.trim();
 	const pidsMaxText = document.getElementById("f-pids-max").value.trim();
+	const network = document.getElementById("f-network").value.trim();
 
 	const body = {
 		name: name,
@@ -148,6 +153,8 @@ runForm.addEventListener("submit", async (event) => {
 		body.memory_max = parseInt(memoryMaxText, 10);
 	if (pidsMaxText !== "")
 		body.pids_max = parseInt(pidsMaxText, 10);
+	if (network !== "")
+		body.network = network;
 
 	try {
 		await apiRequest("POST", "/v1/containers", body);

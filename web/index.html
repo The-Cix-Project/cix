@@ -38,6 +38,10 @@
 				PIDs max
 				<input type="number" id="f-pids-max" min="0">
 			</label>
+			<label>
+				Network
+				<input type="text" id="f-network" placeholder="default">
+			</label>
 			<button type="submit">Run</button>
 		</form>
 	</section>
@@ -51,11 +55,12 @@
 					<th>Status</th>
 					<th>PID</th>
 					<th>Exit status</th>
+					<th>IP</th>
 					<th></th>
 				</tr>
 			</thead>
 			<tbody id="containers-body">
-				<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
+				<tr><td colspan="6" class="empty">Loading&hellip;</td></tr>
 			</tbody>
 		</table>
 	</section>

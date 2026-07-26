@@ -24,7 +24,7 @@ static void print_usage(FILE *out)
 	        "commands:\n"
 	        "  health\n"
 	        "  ps\n"
-	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] -- CMD [ARGS...]\n"
+	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] [--network=NAME] -- CMD [ARGS...]\n"
 	        "  inspect NAME\n"
 	        "  rm NAME\n");
 }
@@ -96,12 +96,16 @@ static void fmt_container_line(const struct json_value *v)
 	const char *status = json_str_field(v, "status");
 	long pid = (long)json_as_number(json_object_get(v, "pid"));
 	const struct json_value *exitv = json_object_get(v, "exit_status");
+	const char *ip = json_str_field(v, "ip");
+	char exit_buf[16];
 
 	if (exitv != NULL && exitv->type == JSON_NUMBER)
-		printf("%-20s %-8s pid=%-8ld exit_status=%ld\n", name, status, pid,
-		       (long)json_as_number(exitv));
+		snprintf(exit_buf, sizeof(exit_buf), "%ld", (long)json_as_number(exitv));
 	else
-		printf("%-20s %-8s pid=%-8ld exit_status=-\n", name, status, pid);
+		snprintf(exit_buf, sizeof(exit_buf), "-");
+
+	printf("%-20s %-8s pid=%-8ld exit_status=%-6s ip=%s\n", name, status, pid, exit_buf,
+	       ip != NULL ? ip : "-");
 }
 
 static void fmt_list(const struct json_value *v)
@@ -209,6 +213,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 {
 	const char *name = NULL;
 	const char *image = NULL;
+	const char *network = NULL;
 	long memory_max = -1;
 	long pids_max = -1;
 	int i = 0;
@@ -229,6 +234,8 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 			memory_max = atol(argv[i] + 13);
 		else if (strncmp(argv[i], "--pids-max=", 11) == 0)
 			pids_max = atol(argv[i] + 11);
+		else if (strncmp(argv[i], "--network=", 10) == 0)
+			network = argv[i] + 10;
 		else {
 			fprintf(stderr, "kanxeoctl: unknown run option '%s'\n", argv[i]);
 			return 2;
@@ -239,7 +246,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (name == NULL || image == NULL || cmd_start < 0 || cmd_start >= argc) {
 		fprintf(stderr,
 		        "usage: kanxeoctl run --name=NAME --image=IMAGE [--memory-max=N] "
-		        "[--pids-max=N] -- CMD [ARGS...]\n");
+		        "[--pids-max=N] [--network=NAME] -- CMD [ARGS...]\n");
 		return 2;
 	}
 
@@ -266,6 +273,10 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (pids_max >= 0) {
 		jw_key(&w, "pids_max");
 		jw_int(&w, pids_max);
+	}
+	if (network != NULL) {
+		jw_key(&w, "network");
+		jw_str(&w, network);
 	}
 	jw_obj_close(&w);
 

@@ -25,18 +25,20 @@ POST /v1/containers
   "image": "test",
   "cmd": ["/bin/some-binary", "arg1"],
   "memory_max": 67108864,
-  "pids_max": 32
+  "pids_max": 32,
+  "network": "default"
 }
 ```
 
 - `name` must match `[A-Za-z0-9_-]+` — it's used verbatim as the on-disk directory name under `/var/lib/kanxeo/containers/`.
 - `image` must already exist and be populated at `/var/lib/kanxeo/images/{image}/rootfs` — the daemon never creates image content itself (see ADR-0004); a missing image is a `400`, not a silently-empty container.
 - `memory_max`/`pids_max` are optional cgroup v2 limits; omit for no limit.
+- `network` is optional. v1 supports exactly one, fixed network: `"default"` — a `kanxeo0` bridge on `172.30.0.0/24`, gateway `172.30.0.1`, sequential IP allocation (no DHCP). Any other value is a `400`. Omit for no networking (isolated netns, only `lo` — same as before this field existed).
 
 Response (`201`):
 
 ```json
-{"name": "my-container", "status": "running", "pid": 12345, "exit_status": null}
+{"name": "my-container", "status": "running", "pid": 12345, "exit_status": null, "ip": "172.30.0.2"}
 ```
 
 ## Current scope boundaries (v1, deliberate — see ADR-0007)
@@ -45,6 +47,7 @@ Response (`201`):
 - No log retrieval endpoint yet — the daemon doesn't capture container stdout/stderr separately.
 - No authentication yet — the daemon binds to loopback only as its safety boundary for now.
 - HTTP: no keep-alive/pipelining (`Connection: close` on every response), no chunked bodies.
+- Exactly one fixed network (`"default"`), no user-defined networks/subnets yet, no DHCP — see `docs/ROADMAP.md` Phase 6 part 3.
 
 ## Why this file exists alongside `openapi.yaml`
 

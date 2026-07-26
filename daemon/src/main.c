@@ -3,6 +3,7 @@
 #include "json.h"
 #include "linux_compat.h"
 #include "registry.h"
+#include "rtnetlink.h"
 #include "staticfile.h"
 
 #include <arpa/inet.h>
@@ -30,6 +31,19 @@
 #define MAX_EVENTS 64
 #define CONTAINERS_PREFIX "/v1/containers/"
 
+/*
+ * v1 scope: one fixed default network, no user-defined subnets yet
+ * (docs/ROADMAP.md Phase 6 part 3). "default" is the only value the
+ * API's "network" field accepts.
+ */
+#define DEFAULT_BRIDGE "kanxeo0"
+#define DEFAULT_NETWORK_NAME "default"
+#define NETWORK_SUBNET "172.30.0.0"
+#define NETWORK_GATEWAY "172.30.0.1"
+#define NETWORK_PREFIX_LEN 24
+#define NETWORK_HOST_MIN 2
+#define NETWORK_HOST_MAX 254
+
 enum conn_kind { CONN_LISTENER, CONN_CLIENT, CONN_CONTAINER };
 
 struct conn {
@@ -43,6 +57,8 @@ static int g_epfd;
 static struct conn g_listener_conn;
 static const char *g_web_root;
 static volatile sig_atomic_t g_stop;
+static uint32_t g_network_base_be;
+static uint32_t g_gateway_be;
 
 static void on_signal(int sig)
 {
@@ -56,6 +72,43 @@ static int ensure_dir(const char *path)
 		perror(path);
 		return -1;
 	}
+	return 0;
+}
+
+/*
+ * Idempotent, same spirit as ensure_dir(): a daemon restart shouldn't
+ * fail against a bridge/address it already set up on a previous run,
+ * so EEXIST is tolerated on both the bridge creation and the address
+ * assignment.
+ */
+static int ensure_default_network(void)
+{
+	int fd;
+
+	fd = rtnl_open();
+	if (fd < 0) {
+		perror("rtnl_open (network init)");
+		return -1;
+	}
+
+	if (rtnl_bridge_create(fd, DEFAULT_BRIDGE) != 0 && errno != EEXIST) {
+		perror("rtnl_bridge_create");
+		rtnl_close(fd);
+		return -1;
+	}
+	if (rtnl_addr_add_ipv4(fd, DEFAULT_BRIDGE, g_gateway_be, NETWORK_PREFIX_LEN) != 0 &&
+	    errno != EEXIST) {
+		perror("rtnl_addr_add_ipv4 (bridge gateway)");
+		rtnl_close(fd);
+		return -1;
+	}
+	if (rtnl_link_set_up(fd, DEFAULT_BRIDGE) != 0) {
+		perror("rtnl_link_set_up (bridge)");
+		rtnl_close(fd);
+		return -1;
+	}
+
+	rtnl_close(fd);
 	return 0;
 }
 
@@ -172,8 +225,8 @@ static void register_container_pidfd(struct registry_entry *entry)
 static void handle_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
-	const struct json_value *jname, *jimage, *jcmd, *jmem, *jpids;
-	const char *name, *image;
+	const struct json_value *jname, *jimage, *jcmd, *jmem, *jpids, *jnetwork;
+	const char *name, *image, *network;
 	char lowerdir[PATH_MAX];
 	char container_base[PATH_MAX];
 	char upperdir[PATH_MAX], workdir[PATH_MAX], merged[PATH_MAX];
@@ -185,6 +238,7 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	char *empty_envp[1];
 	size_t argc, i;
 	struct json_writer w;
+	uint32_t ip_be = 0;
 
 	root = json_parse(body, body_len);
 	if (root == NULL) {
@@ -195,14 +249,21 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	jname = json_object_get(root, "name");
 	jimage = json_object_get(root, "image");
 	jcmd = json_object_get(root, "cmd");
+	jnetwork = json_object_get(root, "network");
 	name = json_as_string(jname);
 	image = json_as_string(jimage);
+	network = json_as_string(jnetwork);
 
 	if (!name_is_valid(name) || image == NULL || image[0] == '\0' || jcmd == NULL ||
 	    jcmd->type != JSON_ARRAY || jcmd->u.array.count == 0 ||
 	    jcmd->u.array.count >= (sizeof(argv_buf) / sizeof(argv_buf[0]))) {
 		json_free(root);
 		respond_error(fd, 400, "Bad Request", "name/image/cmd missing or invalid");
+		return;
+	}
+	if (network != NULL && network[0] != '\0' && strcmp(network, DEFAULT_NETWORK_NAME) != 0) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "unknown network");
 		return;
 	}
 
@@ -233,6 +294,15 @@ static void handle_create(int fd, const char *body, size_t body_len)
 		return;
 	}
 
+	if (network != NULL && network[0] != '\0') {
+		if (registry_alloc_ip(g_network_base_be, NETWORK_HOST_MIN, NETWORK_HOST_MAX,
+		                       &ip_be) != 0) {
+			json_free(root);
+			respond_error(fd, 500, "Internal Server Error", "no free IP addresses");
+			return;
+		}
+	}
+
 	snprintf(container_base, sizeof(container_base), "%s/%s", CONTAINERS_DIR, name);
 	if (mkdir(container_base, 0755) != 0 && errno != EEXIST) {
 		json_free(root);
@@ -258,10 +328,16 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	spec.ov.workdir = workdir;
 	spec.ov.merged = merged;
 	spec.mnt.put_old_rel = ".old_root";
+	if (ip_be != 0) {
+		spec.net.bridge = DEFAULT_BRIDGE;
+		spec.net.container_ip_be = ip_be;
+		spec.net.gateway_ip_be = g_gateway_be;
+		spec.net.prefix_len = NETWORK_PREFIX_LEN;
+	}
 	spec.argv = argv_buf;
 	spec.envp = empty_envp;
 
-	rerr = registry_create(name, &spec, &entry);
+	rerr = registry_create(name, &spec, ip_be, &entry);
 	/*
 	 * Safe to free the JSON tree now even though spec.ns.hostname,
 	 * spec.cg.name and spec.argv[] point into it: registry_create()
@@ -470,6 +546,7 @@ int main(int argc, char **argv)
 	struct sockaddr_in addr;
 	struct kx_epoll_event ev;
 	struct sigaction sa;
+	struct in_addr net_addr;
 
 	for (i = 1; i < argc; i++) {
 		if (strncmp(argv[i], "--port=", 7) == 0)
@@ -483,6 +560,13 @@ int main(int argc, char **argv)
 
 	if (ensure_dir(BASE_DIR) != 0 || ensure_dir(IMAGES_DIR) != 0 ||
 	    ensure_dir(CONTAINERS_DIR) != 0)
+		return 1;
+
+	inet_pton(AF_INET, NETWORK_SUBNET, &net_addr);
+	g_network_base_be = net_addr.s_addr;
+	inet_pton(AF_INET, NETWORK_GATEWAY, &net_addr);
+	g_gateway_be = net_addr.s_addr;
+	if (ensure_default_network() != 0)
 		return 1;
 
 	registry_init();

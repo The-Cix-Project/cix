@@ -8,6 +8,7 @@
  */
 #include "httpclient.h"
 #include "test_image_fixture.h"
+#include "test_net_cleanup.h"
 
 #include <errno.h>
 #include <signal.h>
@@ -112,6 +113,8 @@ int main(void)
 	int ok = 1;
 
 	if (test_image_fixture_build(IMAGE_ROOT, "build/daemon_child", "daemon_child") != 0)
+		return 1;
+	if (test_image_fixture_build(IMAGE_ROOT, "build/net_child", "net_child") != 0)
 		return 1;
 
 	dargv[0] = "build/kanxeod";
@@ -255,8 +258,34 @@ int main(void)
 		}
 	}
 
+	/* 8. --network= shows a real assigned ip in the output */
+	{
+		char *run_argv[] = { "kanxeoctl",   PORT_ARG,       "run",
+			              "--name=c3",  "--image=test", "--network=default",
+			              "--",         "/bin/net_child", NULL };
+		char *rm_argv[] = { "kanxeoctl", PORT_ARG, "rm", "c3", NULL };
+
+		if (run_cli(run_argv, out, sizeof(out), &rc) != 0 || rc != 0 ||
+		    strstr(out, "ip=-") != NULL || strstr(out, "ip=172.30.0.") == NULL) {
+			fprintf(stderr, "FAIL: kanxeoctl run c3 --network=default, rc=%d out=%s\n", rc, out);
+			ok = 0;
+		}
+		if (run_cli(rm_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
+			fprintf(stderr, "FAIL: kanxeoctl rm c3, rc=%d out=%s\n", rc, out);
+			ok = 0;
+		}
+	}
+
 	kill(daemon_pid, SIGTERM);
 	waitpid(daemon_pid, NULL, 0);
+
+	/*
+	 * Test hygiene: the daemon's ensure_default_network() creates
+	 * "kanxeo0" on every startup, regression, so repeated runs (and
+	 * other tests using the same subnet, like test_rtnetlink.c) start
+	 * clean.
+	 */
+	test_cleanup_bridge("kanxeo0");
 
 	printf(ok ? "CLI RESULT: PASS\n" : "CLI RESULT: FAIL\n");
 	return ok ? 0 : 1;

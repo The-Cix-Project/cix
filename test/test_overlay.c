@@ -14,6 +14,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <ftw.h>
 #include <sched.h>
 #include <stdio.h>
 #include <string.h>
@@ -97,10 +98,33 @@ static int copy_file(const char *src_path, const char *dst_path)
 #define HOST_LD_SO "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"
 #define HOST_LIBC "/usr/lib/x86_64-linux-gnu/libc.so.6"
 
+static int rm_tree_visitor(const char *path, const struct stat *sb, int typeflag,
+                            struct FTW *ftwbuf)
+{
+	(void)sb;
+	(void)ftwbuf;
+	if (typeflag == FTW_DP)
+		return rmdir(path);
+	return unlink(path);
+}
+
+/*
+ * Fixed /tmp paths are reused across runs (the point of this test is
+ * host-visible upperdir contents, so it can't use a fresh mkdtemp()
+ * each time and still make its "pre-existing status.txt" assertion
+ * meaningful) -- so leftovers from a prior run must be cleared first,
+ * or a second invocation always fails.
+ */
+static void rm_tree(const char *path)
+{
+	nftw(path, rm_tree_visitor, 16, FTW_DEPTH | FTW_PHYS);
+}
+
 static int build_lowerdir(void)
 {
 	char path[256];
 
+	rm_tree("/tmp/overlay_test");
 	if (mkdir_p1("/tmp/overlay_test") != 0)
 		return -1;
 	if (mkdir_p1(LOWERDIR) != 0)

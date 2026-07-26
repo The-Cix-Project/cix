@@ -20,6 +20,7 @@ struct registry_entry {
 	int running;       /* 1 while the container's process is alive */
 	int exit_status;   /* valid once running == 0 */
 	int in_use;        /* 0 for free slots */
+	uint32_t ip_be;    /* network byte order; 0 = not attached to a network */
 	/*
 	 * Opaque; owned exclusively by main.c's epoll bookkeeping
 	 * (registry.c never reads or writes it beyond zeroing it here).
@@ -37,15 +38,36 @@ void registry_init(void);
  * a fixed-size in-memory table (in-memory only -- see docs/ROADMAP.md
  * Phase 3 for why that's safe: every container dies automatically via
  * PR_SET_PDEATHSIG if this daemon exits, so there's no restart-orphan
- * state to reconcile). On success returns REGISTRY_OK and *out points
- * at the stored entry (stable for the process lifetime -- the table
- * is a fixed array, never reallocated). On REGISTRY_ERR_CREATE_FAILED,
- * errno is set by the failing container_create()/cgroup_create() call.
+ * state to reconcile). ip_be (0 if the container has no network) is
+ * set atomically as part of this call, not poked in by the caller
+ * afterward -- this table reuses freed slots, and a stale ip_be left
+ * over from a previous occupant would otherwise leak into a new,
+ * non-networked container. On success returns REGISTRY_OK and *out
+ * points at the stored entry (stable for the process lifetime -- the
+ * table is a fixed array, never reallocated). On
+ * REGISTRY_ERR_CREATE_FAILED, errno is set by the failing
+ * container_create()/cgroup_create() call.
  */
 enum registry_error registry_create(const char *name, const struct container_spec *spec,
-                                     struct registry_entry **out);
+                                     uint32_t ip_be, struct registry_entry **out);
 
 struct registry_entry *registry_find(const char *name);
+
+/*
+ * Scans in-use entries' recorded IPs for the first unused host
+ * address in [host_min, host_max] within network_base_be (the
+ * network's address with its host bits already zero, e.g.
+ * htonl-of-172.30.0.0 for a /24 -- this project only ever allocates
+ * within a single fixed /24, so only the low octet varies). Returns
+ * 0 and fills *out_ip_be, or -1 if every address in range is taken.
+ * Deliberately topology-agnostic: the subnet itself is owned by
+ * daemon/src/main.c, not hardcoded here, so this table doesn't need
+ * to know what network topology the daemon happens to be using.
+ * No corresponding "release" call is needed: a failed
+ * registry_create() never sets in_use, so this scan never counted
+ * that address as spent in the first place.
+ */
+int registry_alloc_ip(uint32_t network_base_be, int host_min, int host_max, uint32_t *out_ip_be);
 
 /*
  * Call when epoll reports entry->handle.pidfd readable: reaps via
