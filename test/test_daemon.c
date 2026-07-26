@@ -83,7 +83,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	kx_client_init(&client, "127.0.0.1", TEST_PORT);
 
-	if (test_image_fixture_build(IMAGE_ROOT, "build/daemon_child") != 0)
+	if (test_image_fixture_build(IMAGE_ROOT, "build/daemon_child", "daemon_child") != 0)
 		return 1;
 
 	dargv[0] = "build/kanxeod";

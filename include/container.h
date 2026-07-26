@@ -1,6 +1,7 @@
 #ifndef CONTAINER_H
 #define CONTAINER_H
 
+#include <stdint.h>
 #include <sys/types.h>
 
 struct ns_config {
@@ -19,6 +20,19 @@ struct mount_spec {
 	const char *put_old_rel;
 };
 
+/*
+ * Opt-in network attachment. bridge == NULL means no networking --
+ * the container gets exactly what every container has gotten since
+ * Phase 1: an isolated netns with only "lo". Addresses are network
+ * byte order (e.g. straight from inet_pton()).
+ */
+struct network_spec {
+	const char *bridge;
+	uint32_t container_ip_be;
+	uint32_t gateway_ip_be;
+	int prefix_len;
+};
+
 struct overlay_spec {
 	const char *lowerdir;
 	const char *upperdir;
@@ -31,6 +45,7 @@ struct container_spec {
 	struct cgroup_limits cg;
 	struct overlay_spec ov;
 	struct mount_spec mnt;
+	struct network_spec net;
 	char *const *argv;
 	char *const *envp;
 };

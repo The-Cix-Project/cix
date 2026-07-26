@@ -70,7 +70,8 @@ static int copy_file(const char *src_path, const char *dst_path)
 	return n < 0 ? -1 : 0;
 }
 
-int test_image_fixture_build(const char *image_root, const char *child_binary_path)
+int test_image_fixture_build(const char *image_root, const char *child_binary_path,
+                              const char *child_basename)
 {
 	char path[PATH_MAX];
 
@@ -80,7 +81,7 @@ int test_image_fixture_build(const char *image_root, const char *child_binary_pa
 	snprintf(path, sizeof(path), "%s/bin", image_root);
 	if (mkdir_p(path) != 0)
 		return -1;
-	snprintf(path, sizeof(path), "%s/bin/daemon_child", image_root);
+	snprintf(path, sizeof(path), "%s/bin/%s", image_root, child_basename);
 	if (copy_file(child_binary_path, path) != 0)
 		return -1;
 

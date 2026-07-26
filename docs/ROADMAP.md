@@ -122,7 +122,7 @@ Verified end to end by `test/test_web.c` (reusing `client/src/httpclient.c`, lik
 
 **Explicit scope boundary (not a silent gap):** whether the dashboard actually *renders and behaves* correctly in a real browser (form submission, table updates, delete button) wasn't automated — this project has no headless-browser/Node toolchain, and adding one for a single small dashboard would repeat the exact dependency-cost trade-off ADR-0010 decided against. What was checked instead: `node --check` (a pre-installed system tool, not a new project dependency) confirms `app.js` is syntactically valid, and every DOM element ID `app.js` references was confirmed present in `index.html`. Whether it looks and behaves right needs a real browser at `http://127.0.0.1:7620/`.
 
-## Phase 6 — Custom virtual switch / rtnetlink data plane (in progress: part 1 done)
+## Phase 6 — Custom virtual switch / rtnetlink data plane (in progress: parts 1–2 done)
 
 Confirmed with the user before writing any code: "custom" means our own control-plane code driving the kernel's native bridge/veth/routing via rtnetlink directly — never `ip`/iproute2, never OVS, never eBPF — with the kernel itself still doing the actual packet forwarding. See ADR-0011.
 
@@ -142,8 +142,20 @@ Verified end to end by `test/test_rtnetlink.c` (reuses `ns_clone3()` from `src/n
 8. Cleanup (`rtnl_link_delete`) leaves no interfaces behind — confirmed directly.
 9. Zero warnings under `-Wall -Werror`; all five prior test suites (`test_harness`, `test_overlay`, `test_daemon`, `test_cli`, `test_web`) re-run and still fully pass, plus this new test itself re-run repeatedly (no regression, and no flakiness of its own).
 
-**Part 2 (not started, deliberately deferred — see the plan's own reasoning): wiring this into real containers.** This needs, and does not yet have:
-- A synchronization barrier inside `container_create()` (the parent must move a veth into the child's netns *before* the child configures/uses it; today the child's `clone3()` branch runs straight through to `execve()` with no pause point) — a real change to already-shipped code, not just an additive one.
-- Network attachment made **opt-in** per container (a new field on `container_spec`/`POST /v1/containers`), specifically so `test_harness.c`'s existing "container sees only `lo`" assertion keeps passing unchanged.
-- Simple IP allocation (one fixed subnet, sequential assignment, tracked in the registry — no DHCP).
-- REST API additions (`network` on create, `ip` on the container schema), then `kanxeoctl --network=` and a dashboard field.
+**Part 2 (done): wired into the real container lifecycle.** `container_spec` gained an opt-in `struct network_spec net` (`include/container.h`) — `bridge == NULL` means exactly what every container has gotten since Phase 1 (isolated netns, only `lo`), unchanged. `test_harness.c`/`test_overlay.c` needed zero source changes to prove this: their existing `memset(&spec, 0, ...)` already zeroes the new field, and re-running them (not just reasoning about it) confirmed nothing regressed.
+
+New `src/container_net.c` (`container_net_host_setup()`/`container_net_child_configure()`, declared in `include/internal.h`, following the same one-file-per-concern pattern as `mountns.c`/`overlay.c`), and a new `rtnl_link_rename()` primitive in `netplane/` (needed to rename the container's veth end to `eth0` — the one operation here that can't identify its target via `IFLA_IFNAME`, since that attribute means "set this as the new name," so it resolves the old name to an ifindex first instead, same as `rtnl_link_set_master()` already does for a *referenced* interface).
+
+`container_create()` gained a synchronization barrier (a `pipe()`, created before `clone3()`, inherited by both branches) for exactly one reason: the parent must move a veth into the child's netns before the child touches it, but there was no pause point for that. A real subtlety surfaced here, not just plumbing: the parent names the veth pair from the child's *real* pid, but `CLONE_NEWPID` means the child sees itself as pid 1 in its own namespace — `getpid()` inside the child can't recover that name. Fixed by sending the veth's name *through* the same barrier pipe rather than inventing a second channel. The failure path got real attention too: if the parent's host-side network setup fails, it closes the pipe's write end *without writing*, which makes the already-blocked child's `read()` see EOF and fail cleanly (`_exit(126)`) instead of hanging forever — then the parent reaps it, frees its fds, and reports the whole `container_create()` call as failed, the same contract every other early-return in that function already honors.
+
+Verified end to end by new `test/test_container_net.c` (`test/net_child.c` is its exec target — binds `0.0.0.0:<port>`, echoes one byte, exits 0) — through the real `container_create()`, not the raw primitives:
+
+1. Creates **two** containers concurrently (not sequentially) on the same bridge, distinct static IPs.
+2. Real, simultaneous TCP connectivity to both from the host — proves the bridge correctly demultiplexes between two ports, not just that one point-to-point link works.
+3. Both exit 0, reaped via `container_wait()`.
+4. Confirms the host-side veth for each is gone after that container exits **with no explicit delete call** — moving a veth's peer into a dying netns makes the kernel destroy both ends automatically. One genuinely useful kernel fact learned here: that teardown runs on a workqueue, not synchronously with the process being reaped, so the interface can briefly still exist right after `waitid()` returns — the test polls for its disappearance (same pattern as every other "wait for something async" check in this project) rather than asserting immediately, after an initial run caught exactly that race.
+5. Zero warnings; all six prior suites (`test_harness`, `test_overlay`, `test_daemon`, `test_cli`, `test_web`, `test_rtnetlink`) re-run and still fully pass.
+
+`test/test_image_fixture.c` gained a third parameter (destination basename) so this test's `net_child` exec target could reuse the same staging function as every other test's `daemon_child`, rather than a second, near-duplicate one.
+
+**Part 3 (not started, deliberately deferred): exposing this.** Daemon-level bridge lifecycle at startup (a real `kanxeo0`, not a test-owned bridge), IP allocation tracked in the registry (fixed subnet, sequential scan, no DHCP), then `POST /v1/containers`'s `network` field and the `Container` schema's `ip` field in `docs/api/openapi.yaml`, then `kanxeoctl --network=` and a dashboard field.

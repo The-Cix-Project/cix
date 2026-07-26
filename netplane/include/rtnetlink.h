@@ -53,4 +53,10 @@ int rtnl_route_add_default_ipv4(int fd, uint32_t gateway_be);
  * both, kernel-side. */
 int rtnl_link_delete(int fd, const char *name);
 
+/* Renames a link. Identifies the target by resolving old_name to an
+ * ifindex first (via if_nametoindex()), unlike every other operation
+ * here -- IFLA_IFNAME as an attribute means "set this as the new
+ * name," so it can't double as the identifier when renaming. */
+int rtnl_link_rename(int fd, const char *old_name, const char *new_name);
+
 #endif /* RTNETLINK_H */

@@ -111,7 +111,7 @@ int main(void)
 	int rc;
 	int ok = 1;
 
-	if (test_image_fixture_build(IMAGE_ROOT, "build/daemon_child") != 0)
+	if (test_image_fixture_build(IMAGE_ROOT, "build/daemon_child", "daemon_child") != 0)
 		return 1;
 
 	dargv[0] = "build/kanxeod";

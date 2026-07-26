@@ -387,3 +387,30 @@ int rtnl_link_delete(int fd, const char *name)
 	nh->nlmsg_flags = 0;
 	return nl_msg_send_and_ack(fd, &m);
 }
+
+int rtnl_link_rename(int fd, const char *old_name, const char *new_name)
+{
+	struct nl_msg m;
+	struct nlmsghdr *nh;
+	struct ifinfomsg *ifi;
+	unsigned int ifindex;
+
+	ifindex = if_nametoindex(old_name);
+	if (ifindex == 0)
+		return -1;
+
+	nl_msg_init(&m);
+	nh = nl_msg_put(&m, sizeof(*nh));
+	ifi = nl_msg_put(&m, sizeof(*ifi));
+	if (nh == NULL || ifi == NULL)
+		return -1;
+	ifi->ifi_family = AF_UNSPEC;
+	ifi->ifi_index = (int)ifindex;
+
+	if (nl_msg_put_attr_str(&m, IFLA_IFNAME, new_name) == NULL)
+		return -1;
+
+	nh->nlmsg_type = RTM_NEWLINK;
+	nh->nlmsg_flags = 0;
+	return nl_msg_send_and_ack(fd, &m);
+}
