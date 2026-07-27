@@ -79,26 +79,37 @@ enum qemu_boot_outcome {
 };
 
 /*
- * Runs one QEMU power-on attempt against disk_img (OVMF firmware +
- * ovmf_vars, software-emulated -- no /dev/kvm in this dev LXC), plus a
- * second disk_img2 if non-NULL (e.g. test_installer.c's target disk,
- * attached alongside its own boot/installer disk) and a virtio-net
- * device if with_nic is set (e.g. test_installer.c's second boot
- * session, proving the static-IP-application path actually has a real
- * interface to apply to) -- streaming captured
- * serial output live to stdout while also copying it into out (truncated
- * at out_size, always NUL-terminated) so the caller can inspect the full
- * text afterward -- not just the marker that stopped the wait. Stops as
- * soon as success_marker or panic_marker (either may be NULL to disable
- * that check -- e.g. an installer run that deliberately ends with init
- * exiting, a harmless, expected "Kernel panic - Attempted to kill init!"
- * that isn't a real failure) appears, the timeout elapses, or qemu's
- * output ends; always cleans up the qemu subprocess (SIGTERM, SIGKILL if
- * it doesn't exit promptly) before returning.
+ * qemu_boot_capture()'s options -- a struct rather than a growing list of
+ * positional parameters, since by Phase 11 part 4 (a -cdrom vs. -drive
+ * choice for disk_img, on top of the existing second-disk and NIC
+ * options) that list had stopped being readable. Zero-initialize
+ * (memset or `= {0}`) and set only what a given boot needs -- every
+ * field's default (0/NULL) is the inert, part-1-era behavior: a single
+ * virtio disk, no second disk, no NIC.
  */
-enum qemu_boot_outcome qemu_boot_capture(const char *disk_img, const char *disk_img2, int with_nic,
-                                          const char *ovmf_vars, const char *success_marker,
-                                          const char *panic_marker, int timeout_seconds, char *out,
-                                          size_t out_size);
+struct qemu_boot_opts {
+	const char *disk_img;      /* required */
+	int disk_img_is_cdrom;     /* attach disk_img via -cdrom instead of -drive,if=virtio */
+	const char *disk_img2;     /* optional second disk, always a virtio block device, or NULL */
+	int with_nic;              /* attach a virtio-net device */
+	const char *ovmf_vars;     /* required */
+	const char *success_marker; /* required */
+	const char *panic_marker;   /* NULL to disable panic detection (e.g. an installer run that
+	                              * deliberately ends with init exiting -- a harmless, expected
+	                              * "Attempted to kill init!" panic, not a failure) */
+	int timeout_seconds;        /* required */
+};
+
+/*
+ * Runs one QEMU power-on attempt per opts (software-emulated -- no
+ * /dev/kvm in this dev LXC), streaming captured serial output live to
+ * stdout while also copying it into out (truncated at out_size, always
+ * NUL-terminated) so the caller can inspect the full text afterward --
+ * not just the marker that stopped the wait. Stops as soon as
+ * opts->success_marker or opts->panic_marker appears, the timeout
+ * elapses, or qemu's output ends; always cleans up the qemu subprocess
+ * (SIGTERM, SIGKILL if it doesn't exit promptly) before returning.
+ */
+enum qemu_boot_outcome qemu_boot_capture(const struct qemu_boot_opts *opts, char *out, size_t out_size);
 
 #endif /* TEST_DISK_IMAGE_H */

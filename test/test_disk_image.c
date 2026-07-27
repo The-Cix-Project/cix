@@ -313,10 +313,7 @@ int build_squashfs(const char *image_root, const char *out_path)
 	return run_subprocess(MKSQUASHFS_BIN, argv);
 }
 
-enum qemu_boot_outcome qemu_boot_capture(const char *disk_img, const char *disk_img2, int with_nic,
-                                          const char *ovmf_vars, const char *success_marker,
-                                          const char *panic_marker, int timeout_seconds, char *out,
-                                          size_t out_size)
+enum qemu_boot_outcome qemu_boot_capture(const struct qemu_boot_opts *opts, char *out, size_t out_size)
 {
 	char code_arg[600], vars_arg[600], disk_arg[600], disk2_arg[600];
 	int pipefd[2];
@@ -330,8 +327,11 @@ enum qemu_boot_outcome qemu_boot_capture(const char *disk_img, const char *disk_
 	out[0] = '\0';
 
 	snprintf(code_arg, sizeof(code_arg), "if=pflash,format=raw,readonly=on,file=%s", OVMF_CODE);
-	snprintf(vars_arg, sizeof(vars_arg), "if=pflash,format=raw,file=%s", ovmf_vars);
-	snprintf(disk_arg, sizeof(disk_arg), "file=%s,if=virtio,format=raw", disk_img);
+	snprintf(vars_arg, sizeof(vars_arg), "if=pflash,format=raw,file=%s", opts->ovmf_vars);
+	if (opts->disk_img_is_cdrom)
+		snprintf(disk_arg, sizeof(disk_arg), "%s", opts->disk_img);
+	else
+		snprintf(disk_arg, sizeof(disk_arg), "file=%s,if=virtio,format=raw", opts->disk_img);
 
 	qemu_argv[argc++] = (char *)QEMU_BIN;
 	qemu_argv[argc++] = "-machine";
@@ -351,14 +351,19 @@ enum qemu_boot_outcome qemu_boot_capture(const char *disk_img, const char *disk_
 	qemu_argv[argc++] = code_arg;
 	qemu_argv[argc++] = "-drive";
 	qemu_argv[argc++] = vars_arg;
-	qemu_argv[argc++] = "-drive";
-	qemu_argv[argc++] = disk_arg;
-	if (disk_img2 != NULL) {
-		snprintf(disk2_arg, sizeof(disk2_arg), "file=%s,if=virtio,format=raw", disk_img2);
+	if (opts->disk_img_is_cdrom) {
+		qemu_argv[argc++] = "-cdrom";
+		qemu_argv[argc++] = disk_arg;
+	} else {
+		qemu_argv[argc++] = "-drive";
+		qemu_argv[argc++] = disk_arg;
+	}
+	if (opts->disk_img2 != NULL) {
+		snprintf(disk2_arg, sizeof(disk2_arg), "file=%s,if=virtio,format=raw", opts->disk_img2);
 		qemu_argv[argc++] = "-drive";
 		qemu_argv[argc++] = disk2_arg;
 	}
-	if (with_nic) {
+	if (opts->with_nic) {
 		qemu_argv[argc++] = "-netdev";
 		qemu_argv[argc++] = "user,id=n0";
 		qemu_argv[argc++] = "-device";
@@ -388,7 +393,7 @@ enum qemu_boot_outcome qemu_boot_capture(const char *disk_img, const char *disk_
 	close(pipefd[1]);
 
 	clock_gettime(CLOCK_MONOTONIC, &deadline);
-	deadline.tv_sec += timeout_seconds;
+	deadline.tv_sec += opts->timeout_seconds;
 	outcome = QEMU_BOOT_TIMEOUT;
 
 	for (;;) {
@@ -400,7 +405,7 @@ enum qemu_boot_outcome qemu_boot_capture(const char *disk_img, const char *disk_
 		remaining_ms = (int)((deadline.tv_sec - now.tv_sec) * 1000 +
 		                      (deadline.tv_nsec - now.tv_nsec) / 1000000);
 		if (remaining_ms <= 0) {
-			fprintf(stderr, "timed out after %ds waiting for boot\n", timeout_seconds);
+			fprintf(stderr, "timed out after %ds waiting for boot\n", opts->timeout_seconds);
 			break;
 		}
 
@@ -440,12 +445,12 @@ enum qemu_boot_outcome qemu_boot_capture(const char *disk_img, const char *disk_
 				out[total] = '\0';
 			}
 
-			if (panic_marker != NULL && strstr(out, panic_marker) != NULL) {
+			if (opts->panic_marker != NULL && strstr(out, opts->panic_marker) != NULL) {
 				fprintf(stderr, "\npanic marker detected\n");
 				outcome = QEMU_BOOT_PANIC;
 				break;
 			}
-			if (success_marker != NULL && strstr(out, success_marker) != NULL) {
+			if (opts->success_marker != NULL && strstr(out, opts->success_marker) != NULL) {
 				outcome = QEMU_BOOT_SUCCESS;
 				break;
 			}

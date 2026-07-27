@@ -38,10 +38,13 @@ extern char **environ;
 #define MKFS_VFAT_BIN "/usr/sbin/mkfs.vfat"
 #define MKFS_EXT4_BIN "/usr/sbin/mkfs.ext4"
 
-/* Bundled inside this installer's own squashfs image -- see
- * test/test_installer.c for how they get staged there. */
+/* Bundled inside this installer's own bootable environment -- see
+ * image/src/mkinstalleriso.c for how they get staged there. The kernel
+ * lives under /boot/ rather than /payload/ since it serves double duty:
+ * the same file GRUB itself boots as this installer's own kernel, and
+ * the file copied here onto the target disk's ESP -- one copy, not two. */
 #define SYSTEMD_BOOT_EFI_SRC "/payload/systemd-bootx64.efi"
-#define BZIMAGE_SRC "/payload/kanxeo-bzImage"
+#define BZIMAGE_SRC "/boot/kanxeo-bzImage"
 #define ROOT_SQUASHFS_SRC "/payload/kanxeo-root.squashfs"
 
 #define ESP_MOUNT "/mnt/esp"

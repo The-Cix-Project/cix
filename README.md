@@ -33,6 +33,7 @@ Kanxeo is more than a distribution — it's a discipline. Complex routing protoc
 | 8 | DNS service | Done |
 | 9 | PKI / certificate management | Done |
 | 10 | Package manager (source-based, dependency resolution, upgrades) | Done |
+| 11 | Bare-metal boot: kernel, bootloader, A/B root, installer | Done |
 
 Every phase above is fully implemented, tested end to end, and documented — see the per-phase write-ups (design, verification steps, real bugs found and fixed) in `docs/ROADMAP.md`. Full charter: [`docs/MISSION.md`](docs/MISSION.md). API contract: [`docs/api/openapi.yaml`](docs/api/openapi.yaml), with a narrative walkthrough at [`docs/api/README.md`](docs/api/README.md).
 
@@ -49,6 +50,21 @@ make clean
 
 Every test binary in `build/` is self-contained (each forks and execs its own `kanxeod` instance where needed) and runs standalone as root, e.g. `sudo build/test_pkg`. There is one test binary per phase/part; see `docs/ROADMAP.md` for what each one verifies.
 
+`build/bzImage` (the kernel) is a separate, deliberately-not-automated build — not reproduced by `make`/`make clean`. See `image/kernel/qemu-part1.config`'s own header comment for the exact fetch-and-build recipe (mainline source, a hand-curated config fragment, a real GCC toolchain — never TCC, which governs this project's own code, not unmodified upstream software).
+
+## Building and Using the Installer ISO
+
+Once `build/kanxeod`, `build/kanxeo-install`, and `build/bzImage` all exist:
+
+```sh
+sudo build/mkbootroot  /tmp/root_stage build/kanxeod /tmp/kanxeod-root.squashfs
+sudo build/mkinstalleriso build/iso_stage build/kanxeo-install build/bzImage \
+     /tmp/kanxeod-root.squashfs build/kanxeo-install.iso \
+     "--disk=/dev/CHANGEME --ip=CHANGEME --prefix=24 --gateway=CHANGEME"
+```
+
+This produces `build/kanxeo-install.iso` — attach it as a CD-ROM/optical drive to a VM (or a real machine, once you have one on hand) and boot from it. The placeholder args are deliberate: at the GRUB boot menu, press `e` to edit the boot entry, replace `/dev/CHANGEME`/`CHANGEME`/`CHANGEME` with the real target disk (e.g. `/dev/sda`), IP address, and gateway for this install, then `Ctrl-X` to boot. If you forget, `kanxeo-install`'s own disk check fails safely — it refuses to touch a disk that doesn't exist rather than silently doing the wrong thing. Once booted, it partitions the disk interactively via `cfdisk` (see `docs/ROADMAP.md`'s Phase 11 part 3/4 write-ups for the exact GPT partition names it expects: `kanxeo-esp`, `kanxeo-root-a`, `kanxeo-root-b`, `kanxeo-config`, `kanxeo-containers`), formats, writes the system, and reboots into a running `kanxeod` at the IP you gave it.
+
 ## Repository Layout
 
 ```
@@ -59,6 +75,7 @@ daemon/        kanxeod: the REST daemon — the only process with direct runtime
 client/        shared HTTP client library used by the CLI and the daemon's own test suite
 cli/           kanxeoctl: pure REST API client, no direct runtime access
 web/           browser dashboard: vanilla HTML/CSS/JS, no framework, no build step, served by kanxeod
+image/         bare-metal boot tooling (Phase 11): kernel config, mkbootroot, kanxeo-install, mkinstalleriso
 test/          one demonstrable test (+ exec target, where needed) per phase/part
 docs/          mission charter, phased roadmap, ADRs, and the OpenAPI contract
 build/         compiled output (gitignored)

@@ -179,8 +179,17 @@ int main(void)
 	if (test_image_fixture_copy_file(OVMF_VARS_TEMPLATE, ovmf_vars) != 0)
 		return 1;
 
-	outcome = qemu_boot_capture(disk_img, NULL, 0, ovmf_vars, SUCCESS_MARKER, PANIC_MARKER,
-	                             BOOT_TIMEOUT_SECONDS, captured, sizeof(captured));
+	{
+		struct qemu_boot_opts opts;
+
+		memset(&opts, 0, sizeof(opts));
+		opts.disk_img = disk_img;
+		opts.ovmf_vars = ovmf_vars;
+		opts.success_marker = SUCCESS_MARKER;
+		opts.panic_marker = PANIC_MARKER;
+		opts.timeout_seconds = BOOT_TIMEOUT_SECONDS;
+		outcome = qemu_boot_capture(&opts, captured, sizeof(captured));
+	}
 	if (outcome != QEMU_BOOT_SUCCESS) {
 		fprintf(stderr, "boot did not reach a healthy state (outcome=%d)\n", (int)outcome);
 		return 1;

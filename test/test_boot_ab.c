@@ -249,8 +249,17 @@ int main(void)
 		int this_is_a, this_is_b;
 
 		printf("\n===== attempt %d =====\n", attempt);
-		outcome = qemu_boot_capture(disk_img, NULL, 0, ovmf_vars, SUCCESS_MARKER, PANIC_MARKER,
-		                             BOOT_TIMEOUT_SECONDS, captured, sizeof(captured));
+		{
+			struct qemu_boot_opts opts;
+
+			memset(&opts, 0, sizeof(opts));
+			opts.disk_img = disk_img;
+			opts.ovmf_vars = ovmf_vars;
+			opts.success_marker = SUCCESS_MARKER;
+			opts.panic_marker = PANIC_MARKER;
+			opts.timeout_seconds = BOOT_TIMEOUT_SECONDS;
+			outcome = qemu_boot_capture(&opts, captured, sizeof(captured));
+		}
 		if (outcome != QEMU_BOOT_SUCCESS) {
 			fprintf(stderr, "attempt %d: did not reach a healthy boot (outcome=%d)\n",
 			        attempt, (int)outcome);

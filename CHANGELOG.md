@@ -4,6 +4,28 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 11 (part 4): ISO packaging — the installer becomes a real, distributable artifact
+
+**Phase 11 is now complete — all 4 parts done.** Part 4's job: package the installer environment as an actual `.iso` file, the concrete artifact an operator hands to their own hypervisor. Confirmed with the user before writing any code: since this dev LXC has no physical hardware, this part's own completion bar is booting the real `.iso` via QEMU's CD-ROM emulation — a genuinely different, more realistic path than the raw-disk-image testing parts 1–3 used; a real VM/hardware install is the user's own next step.
+
+A working approach was found via direct empirical spiking, not guessed: hand-tuning `xorriso`'s raw El Torito/GPT-hybrid flags proved genuinely fiddly and kept failing even with a real FAT boot image; `grub-mkrescue` (the standard tool every major distro uses for this) worked on the first real attempt. The kernel mounts the ISO9660 media directly as root (`root=/dev/sr0 rootfstype=iso9660 ro`) — no initramfs, consistent with every other root in this phase.
+
+#### Added
+- `image/src/mkinstalleriso.c` (`build/mkinstalleriso`): stages `kanxeo-install` + its full real-tool closure (`cfdisk`/`sfdisk`/`mkfs.vfat`/`mkfs.ext4`) + the target-disk payload + a generated `/boot/grub/grub.cfg`, shells out to `grub-mkrescue`. The last CLI argument is the kernel command line tail after `init=/bin/kanxeo-install --`, so the same tool builds both the real, shippable ISO (`/dev/CHANGEME` placeholder args) and `test_installer.c`'s own verification ISO (real test values + `--skip-partition`).
+- `image/kernel/qemu-part1.config`: `CONFIG_ATA`/`CONFIG_SATA_AHCI`/`CONFIG_BLK_DEV_SR`/`CONFIG_ISO9660_FS` — the ATA→SCSI→CD-ROM block-device stack plus ISO9660 filesystem support.
+- `test/test_disk_image.h`/`.c`: `qemu_boot_capture()` refactored from a growing positional-parameter list to a `struct qemu_boot_opts` (adds `disk_img_is_cdrom`); all four existing call sites updated.
+- `build/kanxeo-install.iso`: the real, shippable production ISO, built with placeholder `--disk=/dev/CHANGEME --ip=CHANGEME --gateway=CHANGEME` args an operator edits at the GRUB boot menu (press `e`) before booking — `kanxeo-install`'s existing `stat()` check on `--disk=` already fails safely if left unedited.
+
+#### Changed
+- `image/src/kanxeo-install.c`: `BZIMAGE_SRC` moved from `/payload/kanxeo-bzImage` to `/boot/kanxeo-bzImage` — one kernel copy serves both GRUB's own boot and the file copied onto the target disk's ESP.
+- `test/test_installer.c`: simplified, not just extended — its own private `build_installer_image()`/`build_boot_esp()` are gone; session 1 now boots the real `build/mkinstalleriso` output via `-cdrom`, a strictly more faithful test than part 3's private disk-image approximation.
+- `docs/ROADMAP.md`: Phase 11 marked fully done (all 4 parts).
+
+#### Fixed
+- **A self-inflicted environment bug, not a code defect**: an early exploratory spike accidentally pointed a `-drive if=pflash,...` argument directly at the shared system template `/usr/share/OVMF/OVMF_VARS_4M.fd` instead of a private copy, permanently corrupting it with a phantom "boot from DVD-ROM" NVRAM entry that silently broke every test in this project (all of them copy from that same template). Fixed with `apt-get install --reinstall ovmf`; re-verified against `test_boot`/`test_boot_ab` immediately.
+
+Zero warnings; `test_installer` re-run 3 consecutive times; `test_boot`/`test_boot_ab` (parts 1–2) each re-run 3 consecutive times to confirm zero regression from the `qemu_boot_capture()` refactor and kernel-config additions; the full pre-existing 13-binary suite re-run once more after a clean rebuild.
+
 ### Phase 11 (part 3): the installer — cfdisk flow, real 5-partition layout, static IP
 
 Part 3's job: build the actual installer that takes a raw disk and produces the real 5-partition layout (ESP, root A, root B, config, containers) an operator would use, culminating in a real, running `kanxeod` on a freshly-installed system.
