@@ -249,7 +249,7 @@ int main(void)
 		int this_is_a, this_is_b;
 
 		printf("\n===== attempt %d =====\n", attempt);
-		outcome = qemu_boot_capture(disk_img, ovmf_vars, SUCCESS_MARKER, PANIC_MARKER,
+		outcome = qemu_boot_capture(disk_img, NULL, 0, ovmf_vars, SUCCESS_MARKER, PANIC_MARKER,
 		                             BOOT_TIMEOUT_SECONDS, captured, sizeof(captured));
 		if (outcome != QEMU_BOOT_SUCCESS) {
 			fprintf(stderr, "attempt %d: did not reach a healthy boot (outcome=%d)\n",
@@ -309,6 +309,7 @@ int main(void)
 		return 1;
 	}
 
+	rm_tree(workdir); /* only on success -- a failure's artifacts are worth keeping to debug */
 	printf("BOOT AB RESULT: PASS\n");
 	return 0;
 }

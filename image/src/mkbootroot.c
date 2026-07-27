@@ -114,6 +114,12 @@ int main(int argc, char **argv)
 	 * healthy (daemon/src/main.c). */
 	if (ensure_dir_under(image_root, "boot") != 0)
 		return 1;
+	/* Phase 11 part 3: kanxeod --init-mode mounts the config partition
+	 * here for its static-IP net.conf (daemon/src/main.c's
+	 * apply_static_ip()) -- absent (and harmlessly so) on parts 1/2's
+	 * own throwaway disks, which have no partition 4 at all. */
+	if (ensure_dir_under(image_root, "config") != 0)
+		return 1;
 	if (ensure_dir_under(image_root, "var") != 0)
 		return 1;
 	if (ensure_dir_under(image_root, "var/lib") != 0)

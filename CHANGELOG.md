@@ -4,6 +4,28 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 11 (part 3): the installer — cfdisk flow, real 5-partition layout, static IP
+
+Part 3's job: build the actual installer that takes a raw disk and produces the real 5-partition layout (ESP, root A, root B, config, containers) an operator would use, culminating in a real, running `kanxeod` on a freshly-installed system.
+
+Confirmed with the user before writing any code, four rounds: the installer is tested inside a QEMU guest against a second attached virtio disk, using ordinary `mount()`/`mkfs` (the loop-device workaround `test_disk_image.c` needed in part 1 only applies to building a disk *image file* on this dev LXC, not to a real block device inside a guest); a new standalone binary, not a `kanxeod` mode; CLI-flag input (`--disk=`, `--ip=`, `--prefix=`, `--gateway=`), not interactive prompts; the very first install is counted with a boot-attempt counter too, exactly like any future update.
+
+#### Added
+- `image/src/kanxeo-install.c` (`build/kanxeo-install`): the installer. Bootable itself (a second `init=` target, part 4 turns this into a distributable ISO) — confirms the target disk, optionally shells out to real `cfdisk` (`--skip-partition` for scripted provisioning and this part's own test, which can't drive `cfdisk`'s curses UI), reads roles back from GPT partition *names* (`kanxeo-esp`/`kanxeo-root-a`/`kanxeo-root-b`/`kanxeo-config`/`kanxeo-containers`), formats, writes the bundled root-A squashfs raw plus a counted loader entry, writes a static-IP `net.conf` to the config partition, leaves root B and containers empty for `kanxeod`'s own existing machinery to use later.
+- `daemon/src/main.c`: `boot_init()` now also (non-fatally) mounts the config partition and applies `net.conf` if present — new `find_nic()` (scans `/sys/class/net` for the first real interface rather than hardcoding a name), `parse_net_conf()`, `apply_static_ip()`, reusing the exact `rtnl_*` primitives `lo`'s own bring-up already established.
+- `image/kernel/qemu-part1.config`: `CONFIG_EXT4_FS` for the config/containers partitions.
+- `test/test_disk_image.h`/`.c`: `qemu_boot_capture()` gained an optional second disk and an optional virtio-net device; `extract_partition()` (reverse of `write_at_offset()`, needed for `debugfs`, which has no `@@offset` addressing the way `mtools` does); `build_squashfs()`; a shared `rm_tree()` (same pattern `test_overlay.c` already established) now called on every boot test's successful exit, fixing a real hygiene gap — 16 leftover `mkdtemp()` workdirs, ~1GB, had silently accumulated across this phase's own development.
+- `test/test_installer.c` (new): two QEMU sessions — installer + blank pre-partitioned target disk, then the target disk alone with a NIC attached, proving install and boot-what-was-installed are the same real code paths already proven in parts 1–2. Verification happens from the host side: ESP contents via `mtools`, root A's raw bytes compared byte-for-byte against the original squashfs, `net.conf` via `debugfs`, and the second boot's own log confirming the static IP was genuinely applied.
+
+#### Changed
+- `docs/ROADMAP.md`: Phase 11 part 3 marked done with what shipped and how it was verified.
+
+#### Fixed
+- **`kanxeo-install` needs the same minimal PID-1 boot shape `kanxeod` already has** — the first attempt failed with `/proc: No such file or directory`; neither an early proc/sysfs mount step nor the mountpoint directories existed in the installer's own image. Fixed with a new `early_mounts()` mirroring `boot_init()`, and the missing mountpoints in `test_installer.c`'s staging step.
+- **The static-IP test only proved the config file was written, not applied** — the installed system's second boot never had a NIC attached, so `find_nic()` correctly (and harmlessly) found nothing. Caught by re-reading what the test actually proved; strengthened by attaching a NIC and asserting the exact applied address/gateway appear in the boot log.
+
+Zero warnings; `test_installer` re-run 3 consecutive times; `test_boot`/`test_boot_ab` (parts 1–2) each re-run 3 consecutive times to confirm zero regression; the full pre-existing 13-binary suite re-run once more after a clean rebuild.
+
 ### Phase 11 (part 2): A/B write + systemd-boot's boot-counter + automatic rollback
 
 Part 2's job: prove the rollback mechanism itself works — a slot that boots but never confirms is automatically abandoned in favor of the other one, no operator involved. The real payoff of ADR-0014's "own the counter with systemd-boot's native mechanism, not a bespoke one" call.

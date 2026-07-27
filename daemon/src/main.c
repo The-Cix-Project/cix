@@ -16,6 +16,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <sched.h>
 #include <signal.h>
@@ -51,6 +52,16 @@
 #define ESP_DEVICE "/dev/vda1"
 #define ESP_DIR "/boot"
 #define ESP_LOADER_ENTRIES_DIR ESP_DIR "/loader/entries"
+/*
+ * Partition 4 in kanxeo-install's own layout (image/src/kanxeo-install.c)
+ * -- absent on parts 1/2's own throwaway 2/3-partition test disks, so
+ * mounting it is deliberately non-fatal (boot_init()'s only non-fatal
+ * mount): its absence just means "not a real installed system," not a
+ * broken boot.
+ */
+#define CONFIG_DEVICE "/dev/vda4"
+#define CONFIG_DIR "/config"
+#define NET_CONF_PATH CONFIG_DIR "/net.conf"
 #define MAX_EVENTS 64
 #define CONTAINERS_PREFIX "/v1/containers/"
 #define NETWORKS_PREFIX "/v1/networks/"
@@ -111,6 +122,123 @@ static int mount_or_fail(const char *source, const char *target, const char *fst
  * installer mounts there instead -- same mount point, so nothing below
  * this function changes when that lands.
  */
+/*
+ * Finds the first real, non-loopback network interface -- not hardcoded
+ * to a specific kernel-assigned name. Confirmed empirically that QEMU's
+ * virtio-net gets "eth0" with no udev/systemd predictable-naming running
+ * (this environment's own boot never printed a registration line, so
+ * this was checked with a throwaway diagnostic init, not assumed from
+ * dmesg silence), but a fixed name could differ on part 4's real target
+ * hardware. "sit0" is always present once IPv6/SIT is compiled in -- a
+ * pseudo-interface, never a real NIC, explicitly skipped.
+ */
+static int find_nic(char *out_name, size_t out_size)
+{
+	DIR *d;
+	struct dirent *de;
+	int found = 0;
+
+	d = opendir("/sys/class/net");
+	if (d == NULL) {
+		perror("/sys/class/net");
+		return -1;
+	}
+	while ((de = readdir(d)) != NULL) {
+		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+			continue;
+		if (strcmp(de->d_name, "lo") == 0)
+			continue;
+		if (strncmp(de->d_name, "sit", 3) == 0)
+			continue;
+		snprintf(out_name, out_size, "%s", de->d_name);
+		found = 1;
+		break;
+	}
+	closedir(d);
+	if (!found) {
+		fprintf(stderr, "find_nic: no real network interface found\n");
+		return -1;
+	}
+	return 0;
+}
+
+/* Parses the simple key=value net.conf kanxeo-install writes to the
+ * config partition (image/src/kanxeo-install.c's populate step) --
+ * ip=/prefix=/gateway=, one per line. */
+static int parse_net_conf(const char *path, char *out_ip, size_t ip_size, int *out_prefix,
+                           char *out_gateway, size_t gateway_size)
+{
+	FILE *f;
+	char line[256];
+	int have_ip = 0, have_prefix = 0, have_gateway = 0;
+
+	f = fopen(path, "r");
+	if (f == NULL)
+		return -1;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		line[strcspn(line, "\n")] = '\0';
+		if (strncmp(line, "ip=", 3) == 0) {
+			snprintf(out_ip, ip_size, "%s", line + 3);
+			have_ip = 1;
+		} else if (strncmp(line, "prefix=", 7) == 0) {
+			*out_prefix = atoi(line + 7);
+			have_prefix = 1;
+		} else if (strncmp(line, "gateway=", 8) == 0) {
+			snprintf(out_gateway, gateway_size, "%s", line + 8);
+			have_gateway = 1;
+		}
+	}
+	fclose(f);
+	return (have_ip && have_prefix && have_gateway) ? 0 : -1;
+}
+
+/*
+ * Applies the static IP configured at install time (Phase 11 part 3) --
+ * the concrete answer to "static IP configured at install time" from
+ * this phase's own design. A missing or incomplete net.conf is not an
+ * error (0, not -1): parts 1/2's own test disks never write one, and
+ * that must stay a normal, inert boot, not a failure.
+ */
+static int apply_static_ip(void)
+{
+	char ip[64], gateway[64], nic[IFNAMSIZ];
+	int prefix = 0;
+	struct in_addr addr, gw;
+	int rtfd;
+
+	if (parse_net_conf(NET_CONF_PATH, ip, sizeof(ip), &prefix, gateway, sizeof(gateway)) != 0)
+		return 0;
+
+	if (find_nic(nic, sizeof(nic)) != 0)
+		return -1;
+
+	if (inet_pton(AF_INET, ip, &addr) != 1) {
+		fprintf(stderr, "apply_static_ip: invalid ip %s\n", ip);
+		return -1;
+	}
+	if (inet_pton(AF_INET, gateway, &gw) != 1) {
+		fprintf(stderr, "apply_static_ip: invalid gateway %s\n", gateway);
+		return -1;
+	}
+
+	rtfd = rtnl_open();
+	if (rtfd < 0) {
+		perror("rtnl_open");
+		return -1;
+	}
+	if (rtnl_link_set_up(rtfd, nic) != 0 || rtnl_addr_add_ipv4(rtfd, nic, addr.s_addr, prefix) != 0 ||
+	    rtnl_route_add_default_ipv4(rtfd, gw.s_addr) != 0) {
+		perror("apply_static_ip");
+		rtnl_close(rtfd);
+		return -1;
+	}
+	rtnl_close(rtfd);
+
+	printf("init-mode: applied static ip %s/%d via %s, gateway %s\n", ip, prefix, nic, gateway);
+	fflush(stdout);
+	return 0;
+}
+
 static int boot_init(void)
 {
 	int rtfd;
@@ -128,6 +256,10 @@ static int boot_init(void)
 	 * like the root mounts, since that rename is a real write. */
 	if (mount_or_fail(ESP_DEVICE, ESP_DIR, "vfat", MS_NOSUID | MS_NODEV | MS_NOEXEC) != 0)
 		return -1;
+	/* Deliberately non-fatal, unlike every mount above -- see
+	 * CONFIG_DEVICE's own comment. */
+	if (mount(CONFIG_DEVICE, CONFIG_DIR, "ext4", 0, NULL) == 0)
+		apply_static_ip();
 
 	/*
 	 * A fresh kernel boot brings lo up as a device but leaves it

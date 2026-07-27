@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <ftw.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
@@ -18,6 +19,7 @@ extern char **environ;
 #define MCOPY_BIN "/usr/bin/mcopy"
 #define MMD_BIN "/usr/bin/mmd"
 #define MREN_BIN "/usr/bin/mren"
+#define MKSQUASHFS_BIN "/usr/bin/mksquashfs"
 #define QEMU_BIN "/usr/bin/qemu-system-x86_64"
 #define OVMF_CODE "/usr/share/OVMF/OVMF_CODE_4M.fd"
 
@@ -163,6 +165,20 @@ int write_text_file(const char *path, const char *content)
 	return 0;
 }
 
+static int rm_tree_visitor(const char *path, const struct stat *sb, int typeflag, struct FTW *ftwbuf)
+{
+	(void)sb;
+	(void)ftwbuf;
+	if (typeflag == FTW_DP)
+		return rmdir(path);
+	return unlink(path);
+}
+
+void rm_tree(const char *path)
+{
+	nftw(path, rm_tree_visitor, 16, FTW_DEPTH | FTW_PHYS);
+}
+
 int sfdisk_dump_offset(const char *dump, int partition_index, long *out_start_sectors,
                         long *out_size_sectors)
 {
@@ -217,6 +233,47 @@ int write_at_offset(const char *dst_path, long offset_bytes, const char *src_pat
 	return ok ? 0 : -1;
 }
 
+int extract_partition(const char *src_path, long offset_bytes, long size_bytes, const char *out_path)
+{
+	FILE *src = fopen(src_path, "rb");
+	FILE *dst;
+	char buf[65536];
+	long remaining = size_bytes;
+	int ok = 1;
+
+	if (src == NULL) {
+		perror(src_path);
+		return -1;
+	}
+	dst = fopen(out_path, "wb");
+	if (dst == NULL) {
+		perror(out_path);
+		fclose(src);
+		return -1;
+	}
+	if (fseek(src, offset_bytes, SEEK_SET) != 0) {
+		perror("fseek");
+		ok = 0;
+	} else {
+		while (remaining > 0) {
+			size_t want = (size_t)(remaining < (long)sizeof(buf) ? remaining : (long)sizeof(buf));
+			size_t n = fread(buf, 1, want, src);
+
+			if (n == 0)
+				break;
+			if (fwrite(buf, 1, n, dst) != n) {
+				perror("fwrite");
+				ok = 0;
+				break;
+			}
+			remaining -= (long)n;
+		}
+	}
+	fclose(src);
+	fclose(dst);
+	return ok ? 0 : -1;
+}
+
 int esp_mkfs(const char *esp_img)
 {
 	char *argv[] = { (char *)MKFS_VFAT_BIN, "-n", "ESP", (char *)esp_img, NULL };
@@ -247,16 +304,28 @@ int esp_mren(const char *esp_img, const char *esp_old_path, const char *esp_new_
 	return run_subprocess(MREN_BIN, argv);
 }
 
-enum qemu_boot_outcome qemu_boot_capture(const char *disk_img, const char *ovmf_vars,
-                                          const char *success_marker, const char *panic_marker,
-                                          int timeout_seconds, char *out, size_t out_size)
+int build_squashfs(const char *image_root, const char *out_path)
 {
-	char code_arg[600], vars_arg[600], disk_arg[600];
+	char *argv[] = { (char *)MKSQUASHFS_BIN, (char *)image_root, (char *)out_path,
+		          "-noappend", "-comp", "xz", "-quiet", NULL };
+
+	unlink(out_path);
+	return run_subprocess(MKSQUASHFS_BIN, argv);
+}
+
+enum qemu_boot_outcome qemu_boot_capture(const char *disk_img, const char *disk_img2, int with_nic,
+                                          const char *ovmf_vars, const char *success_marker,
+                                          const char *panic_marker, int timeout_seconds, char *out,
+                                          size_t out_size)
+{
+	char code_arg[600], vars_arg[600], disk_arg[600], disk2_arg[600];
 	int pipefd[2];
 	pid_t pid;
 	enum qemu_boot_outcome outcome;
 	size_t total = 0;
 	struct timespec deadline, now;
+	char *qemu_argv[28];
+	int argc = 0;
 
 	out[0] = '\0';
 
@@ -264,11 +333,38 @@ enum qemu_boot_outcome qemu_boot_capture(const char *disk_img, const char *ovmf_
 	snprintf(vars_arg, sizeof(vars_arg), "if=pflash,format=raw,file=%s", ovmf_vars);
 	snprintf(disk_arg, sizeof(disk_arg), "file=%s,if=virtio,format=raw", disk_img);
 
-	char *qemu_argv[] = {
-		(char *)QEMU_BIN, "-machine", "q35", "-m", "512", "-cpu", "qemu64",
-		"-display", "none", "-serial", "stdio", "-monitor", "none", "-no-reboot",
-		"-drive", code_arg, "-drive", vars_arg, "-drive", disk_arg, NULL
-	};
+	qemu_argv[argc++] = (char *)QEMU_BIN;
+	qemu_argv[argc++] = "-machine";
+	qemu_argv[argc++] = "q35";
+	qemu_argv[argc++] = "-m";
+	qemu_argv[argc++] = "512";
+	qemu_argv[argc++] = "-cpu";
+	qemu_argv[argc++] = "qemu64";
+	qemu_argv[argc++] = "-display";
+	qemu_argv[argc++] = "none";
+	qemu_argv[argc++] = "-serial";
+	qemu_argv[argc++] = "stdio";
+	qemu_argv[argc++] = "-monitor";
+	qemu_argv[argc++] = "none";
+	qemu_argv[argc++] = "-no-reboot";
+	qemu_argv[argc++] = "-drive";
+	qemu_argv[argc++] = code_arg;
+	qemu_argv[argc++] = "-drive";
+	qemu_argv[argc++] = vars_arg;
+	qemu_argv[argc++] = "-drive";
+	qemu_argv[argc++] = disk_arg;
+	if (disk_img2 != NULL) {
+		snprintf(disk2_arg, sizeof(disk2_arg), "file=%s,if=virtio,format=raw", disk_img2);
+		qemu_argv[argc++] = "-drive";
+		qemu_argv[argc++] = disk2_arg;
+	}
+	if (with_nic) {
+		qemu_argv[argc++] = "-netdev";
+		qemu_argv[argc++] = "user,id=n0";
+		qemu_argv[argc++] = "-device";
+		qemu_argv[argc++] = "virtio-net-pci,netdev=n0";
+	}
+	qemu_argv[argc] = NULL;
 
 	if (pipe2(pipefd, O_CLOEXEC) != 0) {
 		perror("pipe2");

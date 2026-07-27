@@ -179,13 +179,14 @@ int main(void)
 	if (test_image_fixture_copy_file(OVMF_VARS_TEMPLATE, ovmf_vars) != 0)
 		return 1;
 
-	outcome = qemu_boot_capture(disk_img, ovmf_vars, SUCCESS_MARKER, PANIC_MARKER,
+	outcome = qemu_boot_capture(disk_img, NULL, 0, ovmf_vars, SUCCESS_MARKER, PANIC_MARKER,
 	                             BOOT_TIMEOUT_SECONDS, captured, sizeof(captured));
 	if (outcome != QEMU_BOOT_SUCCESS) {
 		fprintf(stderr, "boot did not reach a healthy state (outcome=%d)\n", (int)outcome);
 		return 1;
 	}
 
+	rm_tree(workdir); /* only on success -- a failure's artifacts are worth keeping to debug */
 	printf("BOOT RESULT: PASS\n");
 	return 0;
 }
