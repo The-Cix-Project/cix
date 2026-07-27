@@ -25,7 +25,8 @@ static void print_usage(FILE *out)
 	        "  health\n"
 	        "  ps\n"
 	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] [--network=NAME ...]\n"
-	        "      [--ip-forward] [--dns-register] [--route=DEST/PREFIX:VIA ...] -- CMD [ARGS...]\n"
+	        "      [--ip-forward] [--dns-register] [--pki-issue] [--pki-cert-dir=PATH]\n"
+	        "      [--pki-days=N] [--route=DEST/PREFIX:VIA ...] -- CMD [ARGS...]\n"
 	        "  inspect NAME\n"
 	        "  rm NAME\n"
 	        "  network create --name=NAME --subnet=A.B.C.D --prefix=N\n"
@@ -240,8 +241,9 @@ static void fmt_pki_cert_line(const struct json_value *v)
 	const char *name = json_str_field(v, "name");
 	const char *serial = json_str_field(v, "serial");
 	const char *not_after = json_str_field(v, "not_after");
+	const char *owner = json_str_field(v, "owner");
 
-	printf("%-24s %-42s %s\n", name, serial, not_after);
+	printf("%-24s %-42s %-30s %s\n", name, serial, not_after, owner != NULL ? owner : "-");
 }
 
 static void fmt_pki_cert_list(const struct json_value *v)
@@ -423,6 +425,9 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	int network_count = 0;
 	int ip_forward = 0;
 	int dns_register = 0;
+	int pki_issue = 0;
+	const char *pki_cert_dir = NULL;
+	long pki_days = -1;
 	struct cli_route routes[CLI_MAX_ROUTES];
 	int route_count = 0;
 	long memory_max = -1;
@@ -456,6 +461,12 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 			ip_forward = 1;
 		} else if (strcmp(argv[i], "--dns-register") == 0) {
 			dns_register = 1;
+		} else if (strcmp(argv[i], "--pki-issue") == 0) {
+			pki_issue = 1;
+		} else if (strncmp(argv[i], "--pki-cert-dir=", 15) == 0) {
+			pki_cert_dir = argv[i] + 15;
+		} else if (strncmp(argv[i], "--pki-days=", 11) == 0) {
+			pki_days = atol(argv[i] + 11);
 		} else if (strncmp(argv[i], "--route=", 8) == 0) {
 			if (route_count >= CLI_MAX_ROUTES) {
 				fprintf(stderr, "kanxeoctl: too many --route= flags (max %d)\n",
@@ -480,6 +491,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		fprintf(stderr,
 		        "usage: kanxeoctl run --name=NAME --image=IMAGE [--memory-max=N] "
 		        "[--pids-max=N] [--network=NAME ...] [--ip-forward] [--dns-register] "
+		        "[--pki-issue] [--pki-cert-dir=PATH] [--pki-days=N] "
 		        "[--route=DEST/PREFIX:VIA ...] -- CMD [ARGS...]\n");
 		return 2;
 	}
@@ -522,6 +534,18 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (dns_register) {
 		jw_key(&w, "dns_register");
 		jw_bool(&w, 1);
+	}
+	if (pki_issue) {
+		jw_key(&w, "pki_issue");
+		jw_bool(&w, 1);
+		if (pki_cert_dir != NULL) {
+			jw_key(&w, "pki_cert_dir");
+			jw_str(&w, pki_cert_dir);
+		}
+		if (pki_days >= 0) {
+			jw_key(&w, "pki_days");
+			jw_int(&w, pki_days);
+		}
 	}
 	if (route_count > 0) {
 		jw_key(&w, "routes");

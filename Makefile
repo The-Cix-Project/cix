@@ -71,7 +71,7 @@ $(BUILD)/test_networks: test/test_networks.c test/test_image_fixture.c $(CLIENT_
 $(BUILD)/test_dns: test/test_dns.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_pki: test/test_pki.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_pki: test/test_pki.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 clean:

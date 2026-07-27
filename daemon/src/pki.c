@@ -22,6 +22,10 @@ struct pki_cert_record {
 	char not_after[PKI_DATE_MAX];
 	char sans[PKI_MAX_SANS][DNS_NAME_MAX];
 	int san_count;
+	/* Empty: created directly via POST /v1/pki/certs, not tied to any
+	 * container's lifecycle. Non-empty: this container's name -- the
+	 * cert is auto-deleted when it's deleted (pki_cert_forget_owner()). */
+	char owner_container[DNS_NAME_MAX];
 };
 
 static char g_pki_dir[PATH_MAX];
@@ -190,6 +194,8 @@ static int save_state(void)
 		for (j = 0; j < rec->san_count; j++)
 			jw_str(&w, rec->sans[j]);
 		jw_arr_close(&w);
+		jw_key(&w, "owner");
+		jw_str(&w, rec->owner_container);
 		jw_obj_close(&w);
 	}
 	jw_arr_close(&w);
@@ -204,6 +210,9 @@ static int parse_persisted_entry(const struct json_value *item, struct pki_cert_
 	const char *serial = json_as_string(json_object_get(item, "serial"));
 	const char *not_after = json_as_string(json_object_get(item, "not_after"));
 	const struct json_value *jsans = json_object_get(item, "sans");
+	/* "owner" is optional for backward compatibility with state
+	 * persisted by part 1, before this field existed. */
+	const char *owner = json_as_string(json_object_get(item, "owner"));
 	size_t i;
 
 	if (!dns_name_is_valid(name) || serial == NULL || not_after == NULL || jsans == NULL ||
@@ -223,6 +232,8 @@ static int parse_persisted_entry(const struct json_value *item, struct pki_cert_
 			return -1;
 		strncpy(slot->sans[i], s, sizeof(slot->sans[i]) - 1);
 	}
+	if (owner != NULL)
+		strncpy(slot->owner_container, owner, sizeof(slot->owner_container) - 1);
 	return 0;
 }
 
@@ -410,7 +421,7 @@ enum pki_error pki_ca_get(struct json_writer *w)
 }
 
 enum pki_error pki_cert_create(const char *name, const char *const *sans, int san_count, int days,
-                                struct json_writer *w)
+                                const char *owner_container, struct json_writer *w)
 {
 	char key_path[PATH_MAX], csr_path[PATH_MAX], crt_path[PATH_MAX];
 	char subj[DNS_NAME_MAX + 8];
@@ -557,6 +568,8 @@ enum pki_error pki_cert_create(const char *name, const char *const *sans, int sa
 	rec->san_count = san_count;
 	for (i = 0; i < san_count; i++)
 		strncpy(rec->sans[i], sans[i], sizeof(rec->sans[i]) - 1);
+	if (owner_container != NULL)
+		strncpy(rec->owner_container, owner_container, sizeof(rec->owner_container) - 1);
 
 	if (save_state() != 0) {
 		memset(rec, 0, sizeof(*rec));
@@ -585,6 +598,11 @@ enum pki_error pki_cert_create(const char *name, const char *const *sans, int sa
 	for (i = 0; i < rec->san_count; i++)
 		jw_str(w, rec->sans[i]);
 	jw_arr_close(w);
+	jw_key(w, "owner");
+	if (rec->owner_container[0] != '\0')
+		jw_str(w, rec->owner_container);
+	else
+		jw_null(w);
 	jw_key(w, "cert_pem");
 	jw_str(w, cert_pem);
 	jw_key(w, "key_pem");
@@ -594,6 +612,48 @@ enum pki_error pki_cert_create(const char *name, const char *const *sans, int sa
 	free(key_pem);
 	free(cert_pem);
 	return PKI_OK;
+}
+
+enum pki_error pki_cert_deliver(const char *name, pid_t pid, const char *dest_dir)
+{
+	char src_key[PATH_MAX], src_crt[PATH_MAX];
+	char dst_key[PATH_MAX], dst_crt[PATH_MAX];
+	char parent[PATH_MAX + 32];
+	char *key_pem = NULL, *cert_pem = NULL;
+	size_t key_pem_len, cert_pem_len;
+	enum pki_error result = PKI_OK;
+
+	if (cert_find(name) == NULL)
+		return PKI_ERR_NOT_FOUND;
+
+	snprintf(src_key, sizeof(src_key), "%s/%s.key", g_certs_dir, name);
+	snprintf(src_crt, sizeof(src_crt), "%s/%s.crt", g_certs_dir, name);
+	if (persist_read_file(src_key, &key_pem, &key_pem_len) != 0 || key_pem == NULL ||
+	    persist_read_file(src_crt, &cert_pem, &cert_pem_len) != 0 || cert_pem == NULL) {
+		free(key_pem);
+		free(cert_pem);
+		return PKI_ERR_PERSIST_FAILED;
+	}
+
+	if (snprintf(parent, sizeof(parent), "/proc/%d/root%s", (int)pid, dest_dir) >=
+	        (int)sizeof(parent) ||
+	    snprintf(dst_crt, sizeof(dst_crt), "%s/tls.crt", parent) >= (int)sizeof(dst_crt) ||
+	    snprintf(dst_key, sizeof(dst_key), "%s/tls.key", parent) >= (int)sizeof(dst_key)) {
+		free(key_pem);
+		free(cert_pem);
+		return PKI_ERR_PERSIST_FAILED;
+	}
+
+	if (persist_mkdir_p(parent) != 0 || persist_atomic_write(dst_crt, cert_pem, cert_pem_len) != 0 ||
+	    persist_atomic_write(dst_key, key_pem, key_pem_len) != 0) {
+		result = PKI_ERR_PERSIST_FAILED;
+	} else {
+		chmod(dst_key, 0600);
+	}
+
+	free(key_pem);
+	free(cert_pem);
+	return result;
 }
 
 enum pki_error pki_cert_delete(const char *name)
@@ -615,6 +675,15 @@ enum pki_error pki_cert_delete(const char *name)
 	return PKI_OK;
 }
 
+void pki_cert_forget_owner(const char *container_name)
+{
+	struct pki_cert_record *rec = cert_find(container_name);
+
+	if (rec == NULL || strcmp(rec->owner_container, container_name) != 0)
+		return;
+	pki_cert_delete(container_name);
+}
+
 /* cert_pem may be NULL (list view: metadata only, never a key). */
 static void write_cert_json(const struct pki_cert_record *rec, const char *cert_pem,
                              struct json_writer *w)
@@ -633,6 +702,11 @@ static void write_cert_json(const struct pki_cert_record *rec, const char *cert_
 	for (i = 0; i < rec->san_count; i++)
 		jw_str(w, rec->sans[i]);
 	jw_arr_close(w);
+	jw_key(w, "owner");
+	if (rec->owner_container[0] != '\0')
+		jw_str(w, rec->owner_container);
+	else
+		jw_null(w);
 	if (cert_pem != NULL) {
 		jw_key(w, "cert_pem");
 		jw_str(w, cert_pem);

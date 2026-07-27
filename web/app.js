@@ -374,7 +374,7 @@ function renderPkiCerts(certs) {
 	if (certs.length === 0) {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
-		cell.colSpan = 5;
+		cell.colSpan = 6;
 		cell.className = "empty";
 		cell.textContent = "No certificates issued";
 		row.appendChild(cell);
@@ -401,6 +401,10 @@ function renderPkiCerts(certs) {
 		sansCell.textContent = (cert.sans || []).join(", ");
 		row.appendChild(sansCell);
 
+		const ownerCell = document.createElement("td");
+		ownerCell.textContent = cert.owner || "-";
+		row.appendChild(ownerCell);
+
 		const actionCell = document.createElement("td");
 		const rmButton = document.createElement("button");
 		rmButton.textContent = "Remove";
@@ -421,7 +425,7 @@ async function refreshPkiCerts() {
 		pkiCertsBody.textContent = "";
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
-		cell.colSpan = 5;
+		cell.colSpan = 6;
 		cell.className = "empty";
 		cell.textContent = "Could not load certificates: " + e.message;
 		row.appendChild(cell);
@@ -450,6 +454,7 @@ runForm.addEventListener("submit", async (event) => {
 	const network = document.getElementById("f-network").value.trim();
 	const ipForward = document.getElementById("f-ip-forward").checked;
 	const dnsRegister = document.getElementById("f-dns-register").checked;
+	const pkiIssue = document.getElementById("f-pki-issue").checked;
 	const routesText = document.getElementById("f-routes").value.trim();
 
 	const body = {
@@ -471,6 +476,8 @@ runForm.addEventListener("submit", async (event) => {
 		body.ip_forward = true;
 	if (dnsRegister)
 		body.dns_register = true;
+	if (pkiIssue)
+		body.pki_issue = true;
 	if (routesText !== "") {
 		body.routes = routesText
 			.split(",")

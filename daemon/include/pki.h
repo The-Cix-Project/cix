@@ -3,6 +3,8 @@
 
 #include "json.h"
 
+#include <sys/types.h>
+
 /*
  * Phase 9 part 1: a single internal root CA plus REST-managed leaf
  * certificate issuance. Actual cryptography (keypair generation, CSR
@@ -76,11 +78,32 @@ enum pki_error pki_ca_get(struct json_writer *w);
  * w on success.
  */
 enum pki_error pki_cert_create(const char *name, const char *const *sans, int san_count, int days,
-                                struct json_writer *w);
+                                const char *owner_container, struct json_writer *w);
 
 enum pki_error pki_cert_delete(const char *name);
 
-/* Metadata only (name/serial/not_after/sans) -- no cert_pem, no key_pem. */
+/* Best-effort cleanup on container deletion: deletes name's cert iff
+ * it exists and its owner_container is name itself (via
+ * pki_cert_delete() -- one deletion code path, not two). Safe no-op
+ * for every container that never had an auto-issued cert, so this is
+ * called unconditionally from the container-delete handler. Mirrors
+ * dns_record_forget_owner()'s exact shape. */
+void pki_cert_forget_owner(const char *container_name);
+
+/*
+ * Delivers an already-issued cert (name must already exist, i.e.
+ * pki_cert_create() succeeded first -- this is a separate step, not
+ * part of issuance itself) into a running container's own filesystem:
+ * writes <dest_dir>/tls.crt and <dest_dir>/tls.key (chmod 0600 on the
+ * key) via /proc/<pid>/root/<dest_dir>/..., the same
+ * /proc/<pid>/root/ pattern dns_server_register() already established
+ * (ADR-0013) for reaching into a running container from outside it.
+ * One-time: unlike DNS server bindings, there is no live-resync
+ * mechanism here -- a cert doesn't change after a container starts.
+ */
+enum pki_error pki_cert_deliver(const char *name, pid_t pid, const char *dest_dir);
+
+/* Metadata only (name/serial/not_after/sans/owner) -- no cert_pem, no key_pem. */
 void pki_write_json_list(struct json_writer *w);
 
 /* Metadata + cert_pem (read fresh from the .crt file on disk) -- still no key_pem. */

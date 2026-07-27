@@ -13,7 +13,7 @@ Phased, dependency-ordered breakdown of the mission in [MISSION.md](MISSION.md).
 | 6 | Custom virtual switch / rtnetlink data plane | 3 | Done |
 | 7 | Routing protocols (containerized VPNs/routers) | 6 | Done |
 | 8 | DNS service | 3, 6 | Done |
-| 9 | PKI / certificate management | 3 | In progress (part 1 done) |
+| 9 | PKI / certificate management | 3 | Done |
 | 10 | Package manager | 1, 2, 4 | Not started |
 
 **API-first, no exceptions (added after Phase 2):** the REST daemon is the only process with direct access to the runtime library or any host/network/DNS/PKI primitive. The CLI (4) and web dashboard (5) are pure REST clients — every capability they expose must exist as a REST endpoint first. This reordered the roadmap: the CLI can no longer come before the REST daemon, since it now depends on the daemon's API existing rather than linking against `container.h` directly. See `CLAUDE.md`'s API-First Mandate.
@@ -279,7 +279,9 @@ Verified end to end in `test/test_dns.c`, reusing the dnsmasq container and netw
 
 Zero warnings; all 11 suites (the 10 from part 1's count plus `test_dns` itself now counted individually — same physical set) re-run across 3 consecutive full back-to-back runs with no failures attributable to this change. `test_harness` was seen to fail once during this cycle with a `cgroup.procs has 0 entries` timing error and passed cleanly on every other run before and after — unrelated to any file this phase touched (`daemon/src/dns.c`, `daemon/src/main.c`, `cli/src/main.c`, `web/`), consistent with a pre-existing cgroup-population race under host load rather than a regression introduced here.
 
-## Phase 9 — PKI / certificate management (in progress: part 1 done)
+**Not designed or built yet, per Zen:** any record type beyond A-record-equivalent name→IPv4, live modification of DNS server bindings' `hosts_path` (re-register instead), and any retry/force-replace path for a collided auto-registration (stated v1 boundary above).
+
+## Phase 9 — PKI / certificate management (done)
 
 MISSION.md groups "DNS, PKI/certificate management" together as REST-controlled shared infrastructure, and CLAUDE.md's API-First Mandate names "PKI primitive" alongside host/network/DNS as something only the daemon has direct access to. Confirmed with the user before any code was written (the same question shape as DNS's "why hand-roll?"): actual cryptography (CA keypair generation, CSR signing) is done by the daemon shelling out to the system's real, unmodified `openssl` binary as a short-lived subprocess — never linked into the daemon (ADR-0007's "no third-party dependency footprint anywhere in the daemon" stays intact, since exec'ing isn't linking) and never a separate persistent CA container either (PKI operations are request/response, not continuously-served the way DNS resolution needs dnsmasq to be). The exact `openssl` CLI flow (`genpkey` → `req -x509` for the CA; `genpkey` → `req -new -addext subjectAltName=...` → `x509 -req -CAcreateserial -copy_extensions copy` per leaf) was verified live in a scratch directory before any daemon code was written, confirming `-CAcreateserial` correctly persists and increments its own serial file across repeated invocations with no collisions — openssl's own serial file is the source of truth for uniqueness, not a counter this project invents.
 
@@ -309,6 +311,20 @@ Verified end to end in `test/test_pki.c`, with real cryptographic verification a
 
 Zero warnings; all 12 suites (11 from Phase 8's count plus `test_pki`) re-run across 3 consecutive full back-to-back runs with no failures.
 
-**Not designed or built yet, per Zen — the natural part 2, mirroring DNS's own part 1 → part 2 shape:** automatic cert issuance (and delivery into a running container's filesystem, reusing ADR-0013's `/proc/<pid>/root/` pattern) at container-creation time; certificate revocation/CRL; CA regeneration/rotation; a CSR-submission flow where the caller keeps its own private key instead of the daemon always generating both halves.
+**Part 1's stated deferral, picked back up in part 2:** automatic cert issuance and delivery into a running container's own filesystem at creation time. Requested by the user immediately after part 1 shipped, the same "keep rockin'" continuation DNS part 2 got — a cert sitting only in `/var/lib/kanxeo/pki/certs/` on the host is useless to a workload that needs to actually `read()` it.
 
-**Not designed or built yet, per Zen:** any record type beyond A-record-equivalent name→IPv4, live modification of DNS server bindings' `hosts_path` (re-register instead), and any retry/force-replace path for a collided auto-registration (stated v1 boundary above).
+**Part 2 design.** `struct pki_cert_record` (private to `pki.c`) gained `owner_container[DNS_NAME_MAX]`, exactly mirroring `dns_record`'s field from Phase 8 part 2; `pki_cert_create()` gained an `owner_container` parameter (the manual call site passes `NULL`); `write_cert_json()` gained an `"owner"` field. New `pki_cert_forget_owner(container_name)` finds the cert named after the container and, only if its owner actually matches, calls the existing `pki_cert_delete()` internally — one deletion code path, not two, mirroring `dns_record_forget_owner()`'s exact shape.
+
+New `pki_cert_deliver(name, pid, dest_dir)`: reads the already-persisted `<name>.crt`/`.key` and writes them to `/proc/<pid>/root/<dest_dir>/tls.{crt,key}` (chmod 0600 on the key) — `dns_server_register()`'s `/proc/<pid>/root/` pattern (ADR-0013) getting its second real consumer, reusing `persist_mkdir_p()`/`persist_read_file()`/`persist_atomic_write()` throughout. Unlike DNS server bindings, there is no live-resync mechanism — delivery is one-time at container creation, since a cert doesn't change after a container starts.
+
+`POST /v1/containers` gained `pki_issue` (bool), `pki_cert_dir` (string, default `/etc/kanxeo-tls`), and `pki_days` (int, default 365). Unlike `dns_register`, `pki_issue` does **not** require `networks` — the cert's CN/SAN is the container's own name, not its IP, and delivery via `/proc/<pid>/root/` works regardless of networking. It **does** require the CA to already be bootstrapped, validated upfront as a `400` — a genuine precondition, the same class `dns_register`'s networks check already is — while a *name collision*, only discoverable at issuance time, stays best-effort/skip-and-log, matching `dns_register`'s exact asymmetry between upfront-checkable preconditions and issuance-time surprises. `kanxeoctl run --pki-issue [--pki-cert-dir=PATH] [--pki-days=N]`; `fmt_pki_cert_line()` gained an owner column. The web dashboard's run form gained an "Issue TLS cert" checkbox and the PKI Certificates table gained an Owner column.
+
+Verified end to end in `test/test_pki.c`, reusing the CA already bootstrapped earlier in the same test:
+
+1. `pki_issue: true` with the CA not yet bootstrapped → `400`.
+2. A container created with `pki_issue: true` gets an auto-issued cert matching its own name (`GET /v1/pki/certs/<name>` confirms `"owner"`); the delivered files are read directly via `/proc/<pid>/root/etc/kanxeo-tls/tls.{crt,key}` by the test itself (the same privilege the daemon uses) — confirmed to exist, confirmed the key is chmod 0600, and confirmed the delivered cert genuinely verifies against the CA with `openssl verify -CAfile`, not assumed from a `201` response.
+3. **The ownership check specifically:** a cert is created manually (unowned), then a container with that *exact same name* and `pki_issue: true` is created — issuance is silently skipped (`PKI_ERR_DUPLICATE`, logged) and container creation still succeeds. Deleting that container leaves the manually-created cert untouched; a separate container's own auto-issued cert is confirmed to actually disappear when *that* container is deleted.
+
+Zero warnings; all 12 suites re-run across 3 consecutive full back-to-back runs with no failures.
+
+**Not designed or built yet, per Zen:** certificate revocation/CRL, CA regeneration/rotation, and a CSR-submission flow where the caller keeps its own private key instead of the daemon always generating both halves.

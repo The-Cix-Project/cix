@@ -601,6 +601,37 @@ components:
             overwrites a colliding record. The record's owner field is
             set to this container's name, and it is automatically
             removed when the container is deleted.
+        pki_issue:
+          type: boolean
+          default: false
+          description: >
+            If true, automatically issues a leaf TLS certificate (see POST
+            /pki/certs) named after this container (CN and sole SAN) and
+            delivers it into the container's own filesystem as part of
+            container creation -- requires the CA to already be
+            bootstrapped (400 otherwise; unlike dns_register this does NOT
+            require networks, since the cert identifies the container by
+            name and delivery works regardless of networking). Best-effort
+            past that point: if a cert with this name already exists (e.g.
+            a stale one from a same-named container created before a
+            daemon restart), issuance is silently skipped and the
+            container is still created successfully -- it never overwrites
+            a colliding cert. The cert's owner field is set to this
+            container's name, and it is automatically removed when the
+            container is deleted. Delivery is one-time (no live resync) --
+            reused verbatim from POST /pki/certs's own reasoning, since a
+            cert doesn't change after a container starts.
+        pki_cert_dir:
+          type: string
+          default: "/etc/kanxeo-tls"
+          description: >
+            Destination directory inside the container (its own filesystem
+            view) that the cert (tls.crt) and key (tls.key, chmod 0600)
+            are written into when pki_issue is true. Ignored otherwise.
+        pki_days:
+          type: integer
+          default: 365
+          description: Validity period in days for the pki_issue certificate. Ignored otherwise.
 
     RouteSpec:
       type: object
@@ -825,6 +856,14 @@ components:
         cert_pem:
           type: string
           description: PEM-encoded leaf certificate. Present on GET /pki/certs/{name}; omitted from the GET /pki/certs list view.
+        owner:
+          type: string
+          nullable: true
+          description: >
+            Name of the container this cert was auto-issued for (via
+            ContainerCreateRequest.pki_issue), or null for a cert created
+            directly via POST /pki/certs. Owned certs are automatically
+            deleted when their container is.
 
     PkiCertIssued:
       allOf:

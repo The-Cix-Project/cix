@@ -204,6 +204,10 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	int route_count = 0;
 	const struct json_value *jdns_register;
 	int dns_register = 0;
+	const struct json_value *jpki_issue, *jpki_cert_dir, *jpki_days;
+	int pki_issue = 0;
+	char pki_cert_dir_buf[PATH_MAX];
+	int pki_days = 365;
 
 	root = json_parse(body, body_len);
 	if (root == NULL) {
@@ -218,11 +222,20 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	jip_forward = json_object_get(root, "ip_forward");
 	jroutes = json_object_get(root, "routes");
 	jdns_register = json_object_get(root, "dns_register");
+	jpki_issue = json_object_get(root, "pki_issue");
+	jpki_cert_dir = json_object_get(root, "pki_cert_dir");
+	jpki_days = json_object_get(root, "pki_days");
 	name = json_as_string(jname);
 	image = json_as_string(jimage);
 	ip_forward = (jip_forward != NULL && jip_forward->type == JSON_BOOL && jip_forward->u.boolean);
 	dns_register = (jdns_register != NULL && jdns_register->type == JSON_BOOL &&
 	                jdns_register->u.boolean);
+	pki_issue = (jpki_issue != NULL && jpki_issue->type == JSON_BOOL && jpki_issue->u.boolean);
+	snprintf(pki_cert_dir_buf, sizeof(pki_cert_dir_buf), "%s",
+	         json_as_string(jpki_cert_dir) != NULL ? json_as_string(jpki_cert_dir) :
+	                                                  "/etc/kanxeo-tls");
+	if (jpki_days != NULL)
+		pki_days = (int)json_as_number(jpki_days);
 
 	if (!name_is_valid(name) || image == NULL || image[0] == '\0' || jcmd == NULL ||
 	    jcmd->type != JSON_ARRAY || jcmd->u.array.count == 0 ||
@@ -252,6 +265,11 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	if (dns_register && jnetworks == NULL) {
 		json_free(root);
 		respond_error(fd, 400, "Bad Request", "dns_register requires networks");
+		return;
+	}
+	if (pki_issue && !pki_ca_bootstrapped()) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "pki_issue requires the CA to be bootstrapped -- POST /v1/pki/ca first");
 		return;
 	}
 	if (jroutes != NULL) {
@@ -414,6 +432,36 @@ static void handle_create(int fd, const char *body, size_t body_len)
 			        entry->name, (int)derr);
 	}
 
+	if (pki_issue) {
+		/* CN/SAN = the container's own name, matching pki_cert_create()'s
+		 * existing manual-call default-SAN-to-name behavior. No IP SAN --
+		 * pki_issue doesn't require networks, unlike dns_register, since
+		 * delivery via /proc/<pid>/root/ works for any running container
+		 * regardless of networking. */
+		const char *pki_sans[1];
+		struct json_writer scratch;
+		enum pki_error perr;
+
+		pki_sans[0] = entry->name;
+		jw_init(&scratch);
+		perr = pki_cert_create(entry->name, pki_sans, 1, pki_days, entry->name, &scratch);
+		jw_free(&scratch);
+
+		if (perr != PKI_OK) {
+			fprintf(stderr,
+			        "%s: pki_issue requested but cert issuance failed (err=%d)\n",
+			        entry->name, (int)perr);
+		} else {
+			enum pki_error derr2 =
+			    pki_cert_deliver(entry->name, entry->handle.pid, pki_cert_dir_buf);
+
+			if (derr2 != PKI_OK)
+				fprintf(stderr,
+				        "%s: pki_issue cert issued but delivery into the container failed (err=%d)\n",
+				        entry->name, (int)derr2);
+		}
+	}
+
 	jw_init(&w);
 	registry_write_json_one(entry, &w);
 	respond_json(fd, 201, "Created", &w);
@@ -440,6 +488,7 @@ static void handle_delete(int fd, const char *name)
 	registry_remove(name);
 	dns_server_forget(name);
 	dns_record_forget_owner(name);
+	pki_cert_forget_owner(name);
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
@@ -915,7 +964,7 @@ static void handle_pki_cert_create(int fd, const char *body, size_t body_len)
 	}
 
 	jw_init(&w);
-	perr = pki_cert_create(name, sans_buf, san_count, days, &w);
+	perr = pki_cert_create(name, sans_buf, san_count, days, NULL, &w);
 	json_free(root);
 
 	if (perr != PKI_OK) {

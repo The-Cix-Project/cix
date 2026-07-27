@@ -1,15 +1,18 @@
 /*
- * Phase 9 part 1 end-to-end test: proves the PKI resource family
+ * Phase 9 parts 1-2 end-to-end test: proves the PKI resource family
  * (POST/GET /v1/pki/ca, POST/GET/DELETE /v1/pki/certs -- daemon/src/pki.c)
  * over real HTTP, with real cryptographic verification as the actual
  * payoff -- not a config-file or string check. Actual crypto (keypair
  * generation, CSR signing) is done by the daemon shelling out to the
  * system's real, unmodified openssl binary (ADR-0007: hand-rolled
  * applies to this project's own platform components, not real
- * software it invokes).
+ * software it invokes). Part 2 additionally proves automatic
+ * per-container cert issuance + delivery into a running container's
+ * own filesystem via /proc/<pid>/root/ (ADR-0013).
  */
 #include "httpclient.h"
 #include "json.h"
+#include "test_image_fixture.h"
 
 #include <signal.h>
 #include <stdio.h>
@@ -24,6 +27,7 @@ extern char **environ;
 #define TEST_PORT 7627
 #define PORT_ARG "--port=7627"
 #define PKI_STATE_DIR "/var/lib/kanxeo/pki"
+#define PKI_IMAGE_ROOT "/var/lib/kanxeo/images/pkitest/rootfs"
 
 static int wait_for_daemon(const struct kx_client *c, int max_attempts)
 {
@@ -151,6 +155,11 @@ int main(void)
 
 	reset_pki_state_dir();
 
+	if (test_image_fixture_build(PKI_IMAGE_ROOT, "build/daemon_child", "daemon_child") != 0) {
+		fprintf(stderr, "FAIL: could not stage pkitest image\n");
+		return 1;
+	}
+
 	daemon_pid = start_daemon();
 	if (daemon_pid < 0)
 		return 1;
@@ -176,6 +185,17 @@ int main(void)
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: POST /v1/pki/certs before bootstrap expected 400, got %d\n",
 		        r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"earlypki\",\"image\":\"pkitest\","
+	                       "\"cmd\":[\"/bin/daemon_child\"],\"pki_issue\":true}",
+	                       &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: pki_issue before CA bootstrap expected 400, got %d\n", r.status);
 		ok = 0;
 	}
 	kx_response_free(&r);
@@ -388,6 +408,163 @@ int main(void)
 		}
 	}
 
+	/*
+	 * 6b. Phase 9 part 2: automatic per-container cert issuance +
+	 * delivery. A container created with pki_issue:true gets its own
+	 * cert (owner == its own name) delivered into its own filesystem
+	 * at /etc/kanxeo-tls/{tls.crt,tls.key} -- read directly via
+	 * /proc/<pid>/root/, the same privilege the daemon itself uses
+	 * (ADR-0013), not just assumed from a 201 response.
+	 */
+	{
+		int webtls_pid = -1;
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"webtls\",\"image\":\"pkitest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"20\"],\"pki_issue\":true}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST webtls (pki_issue), status=%d\n", r.status);
+			ok = 0;
+		} else {
+			webtls_pid = (int)json_as_number(json_object_get(r.json, "pid"));
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pki/certs/webtls", NULL, &r) != 0 ||
+		    r.status != 200 || !str_eq(json_str_field(r.json, "owner"), "webtls")) {
+			fprintf(stderr, "FAIL: GET webtls cert, status=%d, owner=%s\n", r.status,
+			        json_str_field(r.json, "owner") ? json_str_field(r.json, "owner") : "(null)");
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		if (webtls_pid > 0) {
+			char proc_path[160];
+			struct stat st;
+
+			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/kanxeo-tls/tls.key",
+			         webtls_pid);
+			if (stat(proc_path, &st) != 0 || (st.st_mode & 0777) != 0600) {
+				fprintf(stderr,
+				        "FAIL: delivered tls.key missing or not chmod 0600 (path=%s)\n",
+				        proc_path);
+				ok = 0;
+			}
+
+			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/kanxeo-tls/tls.crt",
+			         webtls_pid);
+			{
+				FILE *f = fopen(proc_path, "r");
+				char delivered_pem[8192] = { 0 };
+				size_t n = 0;
+
+				if (f == NULL) {
+					fprintf(stderr, "FAIL: could not open delivered tls.crt (%s)\n",
+					        proc_path);
+					ok = 0;
+				} else {
+					n = fread(delivered_pem, 1, sizeof(delivered_pem) - 1, f);
+					fclose(f);
+					delivered_pem[n] = '\0';
+				}
+
+				if (n > 0 && ca_cert_pem[0] != '\0') {
+					char scratch_dir2[] = "/tmp/kanxeo_test_pki2_XXXXXX";
+
+					if (mkdtemp(scratch_dir2) == NULL) {
+						fprintf(stderr, "FAIL: mkdtemp (2)\n");
+						ok = 0;
+					} else {
+						char ca_path2[192], leaf_path2[192], cmd2[224];
+
+						snprintf(ca_path2, sizeof(ca_path2), "%s/ca.crt", scratch_dir2);
+						snprintf(leaf_path2, sizeof(leaf_path2), "%s/leaf.crt", scratch_dir2);
+						write_file(ca_path2, ca_cert_pem);
+						write_file(leaf_path2, delivered_pem);
+
+						{
+							char *argv[] = { "/usr/bin/openssl", "verify", "-CAfile",
+								          ca_path2, leaf_path2, NULL };
+
+							if (run_openssl_argv(argv) != 0) {
+								fprintf(stderr,
+								        "FAIL: delivered webtls cert does not "
+								        "verify against the CA\n");
+								ok = 0;
+							}
+						}
+						snprintf(cmd2, sizeof(cmd2), "rm -rf '%s'", scratch_dir2);
+						system(cmd2);
+					}
+				}
+			}
+		} else {
+			fprintf(stderr, "FAIL: webtls never got a pid, skipping delivery checks\n");
+			ok = 0;
+		}
+
+		/*
+		 * Ownership-scoped cleanup: a manually-created cert sharing a
+		 * container's exact name must survive that container's
+		 * deletion -- proves pki_cert_forget_owner() checks
+		 * owner_container, not just the name. Also exercises the
+		 * "issuance best-effort skipped on collision" path: creating
+		 * container "shadow3" with pki_issue:true must still succeed
+		 * (201) even though a cert named "shadow3" already exists.
+		 */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pki/certs", "{\"name\":\"shadow3\"}", &r) !=
+		        0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST shadow3 (manual), status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"shadow3\",\"image\":\"pkitest\","
+		                       "\"cmd\":[\"/bin/daemon_child\"],\"pki_issue\":true}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr,
+			        "FAIL: POST shadow3 container (colliding pki_issue), status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		kx_client_request(&client, "DELETE", "/v1/containers/shadow3", NULL, &r);
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pki/certs/shadow3", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr,
+			        "FAIL: manually-created 'shadow3' cert did not survive same-named "
+			        "container's deletion, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		kx_client_request(&client, "DELETE", "/v1/containers/webtls", NULL, &r);
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pki/certs/webtls", NULL, &r) != 0 ||
+		    r.status != 404) {
+			fprintf(stderr,
+			        "FAIL: webtls's auto-issued cert survived container deletion, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+	}
+
 	/* 7. restart-survival: the CA and any remaining cert index entries
 	 * must persist across a daemon restart (issue one more cert first,
 	 * so there's something in the index to check). */
@@ -432,6 +609,8 @@ int main(void)
 
 	/* cleanup */
 	kx_client_request(&client, "DELETE", "/v1/pki/certs/persisted.internal", NULL, &r);
+	kx_response_free(&r);
+	kx_client_request(&client, "DELETE", "/v1/pki/certs/shadow3", NULL, &r);
 	kx_response_free(&r);
 
 	if (stop_daemon(daemon_pid) != 0) {

@@ -72,6 +72,7 @@ POST /v1/containers
 - `memory_max`/`pids_max` are optional cgroup v2 limits; omit for no limit.
 - `networks` is optional: 1–64 names, each already created via `POST /v1/networks` — any unknown name is a `400`. Omit for no networking (isolated netns, only `lo` — same as before this field existed). The **first** entry is primary and gets the default route; the rest only get their own subnet's connected route.
 - `dns_register` is optional, default `false` — see [DNS: records + a real dnsmasq container](#dns-records--a-real-dnsmasq-container) below. Requires `networks` to be set (`400` otherwise).
+- `pki_issue`/`pki_cert_dir`/`pki_days` are optional, default `false`/`/etc/kanxeo-tls`/`365` — see [PKI: a root CA and issued leaf certificates](#pki-a-root-ca-and-issued-leaf-certificates) below. Requires the CA to already be bootstrapped (`400` otherwise); does **not** require `networks`.
 
 Response (`201`):
 
@@ -202,6 +203,26 @@ The `201` response (`PkiCertIssued`) is the **only** place the leaf's private ke
 Neither `GET /v1/pki/certs` (list) nor `GET /v1/pki/certs/{name}` (single) ever includes `key_pem` again — save it now. Both do include `cert_pem` on the single-item view (list omits it too, to keep listing lightweight).
 
 Deleting a cert (`DELETE /v1/pki/certs/{name}`) removes its key and cert files from disk, not just the metadata index entry.
+
+### Automatic issuance + delivery: `pki_issue`
+
+Instead of a separate `POST /v1/pki/certs` call (and then figuring out how to get the result into the container), a container can get its own cert issued *and delivered into its own filesystem* at creation time:
+
+```
+POST /v1/containers
+{
+  "name": "web",
+  "image": "test",
+  "cmd": ["/bin/some-binary"],
+  "pki_issue": true,
+  "pki_cert_dir": "/etc/kanxeo-tls",
+  "pki_days": 365
+}
+```
+
+`pki_cert_dir` and `pki_days` are optional (shown defaults). This issues a cert named `web` (CN and sole SAN) and writes `tls.crt`/`tls.key` (chmod 0600) into `/etc/kanxeo-tls` **inside the `web` container's own filesystem** — the same `/proc/<pid>/root/<path>` mechanism `POST /v1/dns/servers` already uses to reach into a running container (ADR-0013), just delivering a cert+key instead of a hosts file. Unlike DNS server bindings, delivery is **one-time**: there's no live resync, since a cert doesn't change after a container starts. `GET /v1/pki/certs/web` shows `"owner": "web"`; deleting the `web` container automatically removes its cert (both the index entry and the on-disk key/cert files) — a manually-created cert is never touched by any container's deletion, even if it happens to share that container's name but wasn't the one that created it.
+
+Unlike `dns_register`, `pki_issue` does **not** require `networks` — the cert identifies the container by name, not by IP, and delivery works for any running container regardless of networking. It **does** require the CA to already be bootstrapped, checked upfront as a `400` (you can't issue a cert with no CA). A *name collision* discovered only at issuance time (e.g. a stale cert persisted from a same-named container created before a daemon restart) is best-effort instead: issuance is silently skipped rather than overwriting it, and the container is still created successfully.
 
 ## Current scope boundaries (v1, deliberate — see ADR-0007)
 

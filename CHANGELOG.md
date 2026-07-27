@@ -4,6 +4,24 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 9 (part 2): automatic per-container TLS cert issuance + delivery
+
+#### Added
+- `daemon/include/pki.h` + `daemon/src/pki.c`: `struct pki_cert_record` gained `owner_container` (empty for a manually-created cert, a container's name for one it auto-issued), mirroring `dns_record`'s Phase 8 part 2 field. `pki_cert_create()` gained an `owner_container` parameter; new `pki_cert_forget_owner(container_name)` deletes a container's own cert on its deletion (via the existing `pki_cert_delete()`, one deletion path not two), but only if the cert's owner actually matches. `write_cert_json()` gained an `"owner"` field.
+- New `pki_cert_deliver(name, pid, dest_dir)`: writes an already-issued cert's `.crt`/`.key` into `/proc/<pid>/root/<dest_dir>/tls.{crt,key}` (chmod 0600 on the key) — `dns_server_register()`'s `/proc/<pid>/root/` pattern (ADR-0013) getting its second real consumer. One-time delivery, no live resync (unlike DNS server bindings) since a cert doesn't change after a container starts.
+- `POST /v1/containers` gained `pki_issue` (bool), `pki_cert_dir` (string, default `/etc/kanxeo-tls`), `pki_days` (int, default 365). Unlike `dns_register`, does not require `networks` (the cert's identity is the container's name, not its IP); does require the CA to already be bootstrapped, validated upfront as a `400` — a name collision discovered only at issuance time stays best-effort/skip-and-log instead, matching `dns_register`'s exact asymmetry.
+- `cli/src/main.c`: `kanxeoctl run --pki-issue [--pki-cert-dir=PATH] [--pki-days=N]`; `fmt_pki_cert_line()` gained an owner column. `web/`: run form gained an "Issue TLS cert" checkbox; PKI Certificates table gained an Owner column.
+- `docs/api/openapi.yaml` + `docs/api/README.md`: `ContainerCreateRequest.pki_issue`/`pki_cert_dir`/`pki_days`, `PkiCert.owner`, and a worked auto-issuance example.
+- `test/test_pki.c`: `pki_issue` before CA bootstrap → `400`; an auto-issued cert's owner confirmed via `GET`, then its delivered files read directly via `/proc/<pid>/root/` (chmod 0600 on the key) and cryptographically verified against the CA; a same-named manually-created cert confirmed to survive a colliding container's deletion (the ownership check, not just "delete by name") alongside the positive case (an owned cert does disappear when its container is deleted).
+
+#### Changed
+- `docs/ROADMAP.md`: Phase 9 marked done.
+
+#### Fixed
+- A stray misplacement in `docs/ROADMAP.md`: Phase 8's own closing "not designed yet" note had been left orphaned after Phase 9's section (a side effect of how Phase 9 part 1's content was originally inserted) rather than staying inside Phase 8's own section. Caught while editing this same file for part 2; moved back into place, no content lost or duplicated going forward.
+
+## Phase 9 (parts 1–2): PKI/certificate management — a root CA, issued leaf certificates, and automatic per-container issuance
+
 ### Phase 9 (part 1): PKI/certificate management — a root CA and issued leaf certificates
 
 #### Added
