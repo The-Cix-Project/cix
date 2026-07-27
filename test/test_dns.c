@@ -347,6 +347,18 @@ int main(void)
 	}
 	kx_response_free(&r);
 
+	/* 2b. dns_register requires networks -- 400 without it (Phase 8 part 2) */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"badreg\",\"image\":\"dnstest\",\"cmd\":[\"/bin/dnsmasq\"],"
+	                       "\"dns_register\":true}",
+	                       &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: dns_register without networks expected 400, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
 	/* 3. create the real dnsmasq container */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/containers",
@@ -441,6 +453,132 @@ int main(void)
 			        server_ip, dig_out);
 			ok = 0;
 		}
+
+		/*
+		 * 6b. Phase 8 part 2: automatic container DNS registration.
+		 * A container created with dns_register:true gets its own
+		 * record (owner == its own name) with no separate POST
+		 * /v1/dns/records call, picked up by the already-running,
+		 * already-registered dnsmasq container the same way a
+		 * manual record is (dns_record_create() already calls
+		 * dns_server_sync_all() internally).
+		 */
+		{
+			char webapp_ip[64] = { 0 };
+
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "POST", "/v1/containers",
+			                       "{\"name\":\"webapp\",\"image\":\"dnstest\","
+			                       "\"cmd\":[\"/bin/dnsmasq\",\"-k\",\"-u\",\"root\",\"-g\",\"root\","
+			                       "\"-p\",\"53\",\"-H\",\"/etc/dnsmasq-hosts\",\"-R\",\"-h\","
+			                       "\"-x\",\"/etc/dnsmasq.pid\"],"
+			                       "\"networks\":[\"" TEST_NETWORK_NAME "\"],"
+			                       "\"dns_register\":true}",
+			                       &r) != 0 ||
+			    r.status != 201) {
+				fprintf(stderr, "FAIL: POST webapp (dns_register), status=%d\n", r.status);
+				ok = 0;
+			} else {
+				const char *ip = network_ip_in_response(r.json, TEST_NETWORK_NAME);
+
+				if (ip == NULL) {
+					fprintf(stderr, "FAIL: webapp has no ip\n");
+					ok = 0;
+				} else {
+					snprintf(webapp_ip, sizeof(webapp_ip), "%s", ip);
+				}
+			}
+			kx_response_free(&r);
+
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "GET", "/v1/dns/records/webapp", NULL, &r) != 0 ||
+			    r.status != 200 || !str_eq(json_str_field(r.json, "ip"), webapp_ip) ||
+			    !str_eq(json_str_field(r.json, "owner"), "webapp")) {
+				fprintf(stderr,
+				        "FAIL: GET webapp record, status=%d, ip=%s (want %s), owner=%s "
+				        "(want webapp)\n",
+				        r.status, json_str_field(r.json, "ip") ? json_str_field(r.json, "ip") : "?",
+				        webapp_ip,
+				        json_str_field(r.json, "owner") ? json_str_field(r.json, "owner") : "(null)");
+				ok = 0;
+			}
+			kx_response_free(&r);
+
+			if (webapp_ip[0] != '\0') {
+				if (run_dig(server_ip, "webapp", dig_out, sizeof(dig_out)) != 0 ||
+				    strstr(dig_out, webapp_ip) == NULL) {
+					fprintf(stderr,
+					        "FAIL: dig webapp @%s did not resolve to %s, got: %s\n",
+					        server_ip, webapp_ip, dig_out);
+					ok = 0;
+				}
+			}
+
+			/*
+			 * 6c. ownership-scoped cleanup: a manually-created
+			 * record sharing a container's exact name must
+			 * survive that container's deletion -- proves
+			 * dns_record_forget_owner() checks owner_container,
+			 * not just the name. Also exercises the
+			 * "registration best-effort skipped on collision"
+			 * path: creating container "shadow" with
+			 * dns_register:true must still succeed (201) even
+			 * though a record named "shadow" already exists.
+			 */
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "POST", "/v1/dns/records",
+			                       "{\"name\":\"shadow\",\"ip\":\"10.9.9.20\"}", &r) != 0 ||
+			    r.status != 201) {
+				fprintf(stderr, "FAIL: POST shadow (manual), status=%d\n", r.status);
+				ok = 0;
+			}
+			kx_response_free(&r);
+
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "POST", "/v1/containers",
+			                       "{\"name\":\"shadow\",\"image\":\"dnstest\","
+			                       "\"cmd\":[\"/bin/dnsmasq\",\"-k\",\"-u\",\"root\",\"-g\",\"root\","
+			                       "\"-p\",\"53\",\"-H\",\"/etc/dnsmasq-hosts\",\"-R\",\"-h\","
+			                       "\"-x\",\"/etc/dnsmasq.pid\"],"
+			                       "\"networks\":[\"" TEST_NETWORK_NAME "\"],"
+			                       "\"dns_register\":true}",
+			                       &r) != 0 ||
+			    r.status != 201) {
+				fprintf(stderr,
+				        "FAIL: POST shadow container (colliding dns_register), status=%d\n",
+				        r.status);
+				ok = 0;
+			}
+			kx_response_free(&r);
+
+			kx_client_request(&client, "DELETE", "/v1/containers/shadow", NULL, &r);
+			kx_response_free(&r);
+
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "GET", "/v1/dns/records/shadow", NULL, &r) != 0 ||
+			    r.status != 200 || !str_eq(json_str_field(r.json, "ip"), "10.9.9.20")) {
+				fprintf(stderr,
+				        "FAIL: manually-created 'shadow' record did not survive "
+				        "same-named container's deletion, status=%d\n",
+				        r.status);
+				ok = 0;
+			}
+			kx_response_free(&r);
+
+			kx_client_request(&client, "DELETE", "/v1/containers/webapp", NULL, &r);
+			kx_response_free(&r);
+
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "GET", "/v1/dns/records/webapp", NULL, &r) != 0 ||
+			    r.status != 404) {
+				fprintf(stderr,
+				        "FAIL: webapp's auto-registered record survived container "
+				        "deletion, status=%d\n",
+				        r.status);
+				ok = 0;
+			}
+			kx_response_free(&r);
+		}
 	} else {
 		fprintf(stderr, "FAIL: skipping dig checks, dnsserver never got an ip\n");
 		ok = 0;
@@ -476,6 +614,8 @@ int main(void)
 	kx_client_request(&client, "DELETE", "/v1/dns/records/svc.test", NULL, &r);
 	kx_response_free(&r);
 	kx_client_request(&client, "DELETE", "/v1/dns/records/svc2.test", NULL, &r);
+	kx_response_free(&r);
+	kx_client_request(&client, "DELETE", "/v1/dns/records/shadow", NULL, &r);
 	kx_response_free(&r);
 
 	memset(&r, 0, sizeof(r));

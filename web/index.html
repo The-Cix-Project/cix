@@ -46,6 +46,10 @@
 				<input type="checkbox" id="f-ip-forward">
 				IP forwarding
 			</label>
+			<label class="checkbox">
+				<input type="checkbox" id="f-dns-register">
+				Register DNS name
+			</label>
 			<label class="wide">
 				Static routes
 				<input type="text" id="f-routes" placeholder="(none), or comma-separated: dest/prefix:via, e.g. 172.32.0.0/24:172.31.0.2">
@@ -105,11 +109,12 @@
 				<tr>
 					<th>Name</th>
 					<th>IP</th>
+					<th>Owner</th>
 					<th></th>
 				</tr>
 			</thead>
 			<tbody id="dns-records-body">
-				<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
+				<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
 			</tbody>
 		</table>
 	</section>

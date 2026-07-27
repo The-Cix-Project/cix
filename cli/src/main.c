@@ -25,7 +25,7 @@ static void print_usage(FILE *out)
 	        "  health\n"
 	        "  ps\n"
 	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] [--network=NAME ...]\n"
-	        "      [--ip-forward] [--route=DEST/PREFIX:VIA ...] -- CMD [ARGS...]\n"
+	        "      [--ip-forward] [--dns-register] [--route=DEST/PREFIX:VIA ...] -- CMD [ARGS...]\n"
 	        "  inspect NAME\n"
 	        "  rm NAME\n"
 	        "  network create --name=NAME --subnet=A.B.C.D --prefix=N\n"
@@ -181,8 +181,9 @@ static void fmt_dns_record_line(const struct json_value *v)
 {
 	const char *name = json_str_field(v, "name");
 	const char *ip = json_str_field(v, "ip");
+	const char *owner = json_str_field(v, "owner");
 
-	printf("%-30s %s\n", name, ip);
+	printf("%-30s %-16s %s\n", name, ip, owner != NULL ? owner : "-");
 }
 
 static void fmt_dns_record_list(const struct json_value *v)
@@ -348,6 +349,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	const char *networks[CLI_MAX_NETWORKS];
 	int network_count = 0;
 	int ip_forward = 0;
+	int dns_register = 0;
 	struct cli_route routes[CLI_MAX_ROUTES];
 	int route_count = 0;
 	long memory_max = -1;
@@ -379,6 +381,8 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 			networks[network_count++] = argv[i] + 10;
 		} else if (strcmp(argv[i], "--ip-forward") == 0) {
 			ip_forward = 1;
+		} else if (strcmp(argv[i], "--dns-register") == 0) {
+			dns_register = 1;
 		} else if (strncmp(argv[i], "--route=", 8) == 0) {
 			if (route_count >= CLI_MAX_ROUTES) {
 				fprintf(stderr, "kanxeoctl: too many --route= flags (max %d)\n",
@@ -402,7 +406,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (name == NULL || image == NULL || cmd_start < 0 || cmd_start >= argc) {
 		fprintf(stderr,
 		        "usage: kanxeoctl run --name=NAME --image=IMAGE [--memory-max=N] "
-		        "[--pids-max=N] [--network=NAME ...] [--ip-forward] "
+		        "[--pids-max=N] [--network=NAME ...] [--ip-forward] [--dns-register] "
 		        "[--route=DEST/PREFIX:VIA ...] -- CMD [ARGS...]\n");
 		return 2;
 	}
@@ -440,6 +444,10 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	}
 	if (ip_forward) {
 		jw_key(&w, "ip_forward");
+		jw_bool(&w, 1);
+	}
+	if (dns_register) {
+		jw_key(&w, "dns_register");
 		jw_bool(&w, 1);
 	}
 	if (route_count > 0) {

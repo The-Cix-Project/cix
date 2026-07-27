@@ -12,7 +12,7 @@ Phased, dependency-ordered breakdown of the mission in [MISSION.md](MISSION.md).
 | 5 | Web dashboard (pure REST API client) | 3 | Done |
 | 6 | Custom virtual switch / rtnetlink data plane | 3 | Done |
 | 7 | Routing protocols (containerized VPNs/routers) | 6 | Done |
-| 8 | DNS service | 3, 6 | In progress (part 1 done) |
+| 8 | DNS service | 3, 6 | Done |
 | 9 | PKI / certificate management | 3 | Not started |
 | 10 | Package manager | 1, 2, 4 | Not started |
 
@@ -235,7 +235,7 @@ Zero warnings; all 9 suites re-run repeatedly across multiple full back-to-back 
 
 **Phase 7 is now complete.** A container can attach to multiple real, dynamically-managed networks, forward packets between them, and have other containers route through it via static configuration — the full platform substrate the user asked for. Dynamic routing protocols (BIRD, FRR, ...) are, as scoped at the very start of this phase, just a normal containerized workload on top of this substrate — no further platform work required for that.
 
-## Phase 8 — DNS service (in progress: part 1 done)
+## Phase 8 — DNS service (done)
 
 Confirmed with the user before designing any of this, the same way Phase 7's routing scope was: DNS resolution is **not** hand-rolled. ADR-0007's "no external libraries" rule governs this project's own platform components (the daemon, the CLI, the runtime) — it never applied to workloads a container runs, which is exactly why BIRD was fine as a routing workload in Phase 7 without anyone hand-rolling a routing protocol. A real DNS server — **dnsmasq**, chosen for being the lighter of the two options discussed (PowerDNS was the other) — runs as a normal containerized workload; the daemon's own job is owning DNS **records** as a REST resource (name → IP), exactly like `/v1/networks`, and getting the current record set into that container.
 
@@ -260,4 +260,23 @@ Verified end to end, with real protocol resolution as the actual payoff, not a c
 
 Zero warnings; all 10 suites re-run repeatedly across multiple full back-to-back runs, confirming no leftover interfaces or persisted-state residue between runs.
 
-**Not designed or built yet, per Zen:** automatic container-name → IP registration (records are entirely manual/independent in v1, the same "no auto-anything" boundary Part 1 of Phase 7 held for networks), any record type beyond A-record-equivalent name→IPv4, and live modification of DNS server bindings' hosts_path (re-register instead).
+**Part 1's stated deferral, picked back up in part 2:** automatic container-name → IP registration. Requested by the user immediately after part 1 shipped, explicitly to remove the need for a second `POST /v1/dns/records` call for the common case of "give this container a resolvable name."
+
+**Part 2 design.** `struct dns_record` (`daemon/include/dns.h`) gained `char owner_container[DNS_OWNER_NAME_MAX]` (`DNS_OWNER_NAME_MAX` 64, matching `REGISTRY_NAME_MAX` by value only — no new header dependency on `registry.h`, consistent with `DNS_SERVER_NAME_MAX`'s existing precedent). Empty string means "created directly via `POST /v1/dns/records`," unowned, exactly the part-1 behavior; non-empty means "this record belongs to that container's lifecycle." `dns_record_create()` gained an `owner_container` parameter (the existing manual-creation call site passes `NULL`); a new `dns_record_forget_owner(container_name)` looks up the record named exactly after the container and deletes it only if its `owner_container` matches — a safe no-op for every container that never had one, so it's called unconditionally from the container-delete handler, mirroring `dns_server_forget()`'s existing shape. `dns_write_json_one()` gained an `"owner"` field (`null` or the owning container's name) so an operator can tell which records are container-managed at a glance.
+
+`POST /v1/containers` gained an optional `"dns_register"` boolean. `true` with no `networks` is a `400` (nothing to register without an IP) — validated alongside the existing networks/routes checks. On success, the daemon best-effort registers a record named after the container, pointing at its primary (first) network's IP — the same "first entry is primary" convention Phase 7 part 2 already established for the default route. Since `dns_record_create()` already calls `dns_server_sync_all()` internally, an auto-registered record reaches any already-registered dnsmasq container the exact same way a manual one does, with no new sync path.
+
+**Stated v1 boundary, not a silent gap:** registration is attempted once, at creation time, and never force-replaces a colliding record — if a record with that name already exists (e.g. a stale one persisted from a same-named container created before a daemon restart; DNS records survive a restart, containers don't, ADR-0012), registration is skipped and logged to the daemon's own stderr, and the container is still created successfully. Silently overwriting what could be an operator's own manually-created record is worse than a container occasionally missing its auto-record until cleaned up by hand.
+
+`kanxeoctl run` gained `--dns-register`; `dns record ls`'s output gained an owner column (`-` when unowned). The web dashboard's run form gained a "Register DNS name" checkbox and the DNS Records table gained an Owner column.
+
+Verified end to end in `test/test_dns.c`, reusing the dnsmasq container and network already set up earlier in that same test (no new container image needed):
+
+1. `dns_register: true` with no `networks` → `400`.
+2. A container created with `dns_register: true` gets a record matching its own name and primary IP; `GET /v1/dns/records/<name>` confirms both the IP and `"owner"` == the container's own name.
+3. `dig` against the already-running, already-registered dnsmasq container resolves the new name — proving the existing `dns_server_sync_all()` path picks up an auto-registered record exactly like a manual one.
+4. **The ownership check specifically, not just "delete by name":** a record is created manually (unowned) under a name, then a container with that *exact same name* is created with `dns_register: true` — registration is silently skipped (`DNS_ERR_DUPLICATE`, logged) since the name collides, and container creation still succeeds. Deleting that container is then confirmed to leave the manually-created record untouched (`GET` still `200`, same IP) — proving `dns_record_forget_owner()` checks `owner_container`, not just whether a same-named record exists. A separate container's own auto-registered record is confirmed to actually disappear (`GET` → `404`) when *that* container is deleted, showing the positive case works too.
+
+Zero warnings; all 11 suites (the 10 from part 1's count plus `test_dns` itself now counted individually — same physical set) re-run across 3 consecutive full back-to-back runs with no failures attributable to this change. `test_harness` was seen to fail once during this cycle with a `cgroup.procs has 0 entries` timing error and passed cleanly on every other run before and after — unrelated to any file this phase touched (`daemon/src/dns.c`, `daemon/src/main.c`, `cli/src/main.c`, `web/`), consistent with a pre-existing cgroup-population race under host load rather than a regression introduced here.
+
+**Not designed or built yet, per Zen:** any record type beyond A-record-equivalent name→IPv4, live modification of DNS server bindings' `hosts_path` (re-register instead), and any retry/force-replace path for a collided auto-registration (stated v1 boundary above).

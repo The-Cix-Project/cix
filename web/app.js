@@ -224,7 +224,7 @@ function renderDnsRecords(records) {
 	if (records.length === 0) {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
-		cell.colSpan = 3;
+		cell.colSpan = 4;
 		cell.className = "empty";
 		cell.textContent = "No DNS records";
 		row.appendChild(cell);
@@ -242,6 +242,10 @@ function renderDnsRecords(records) {
 		const ipCell = document.createElement("td");
 		ipCell.textContent = rec.ip;
 		row.appendChild(ipCell);
+
+		const ownerCell = document.createElement("td");
+		ownerCell.textContent = rec.owner || "-";
+		row.appendChild(ownerCell);
 
 		const actionCell = document.createElement("td");
 		const rmButton = document.createElement("button");
@@ -354,6 +358,7 @@ runForm.addEventListener("submit", async (event) => {
 	const pidsMaxText = document.getElementById("f-pids-max").value.trim();
 	const network = document.getElementById("f-network").value.trim();
 	const ipForward = document.getElementById("f-ip-forward").checked;
+	const dnsRegister = document.getElementById("f-dns-register").checked;
 	const routesText = document.getElementById("f-routes").value.trim();
 
 	const body = {
@@ -373,6 +378,8 @@ runForm.addEventListener("submit", async (event) => {
 	}
 	if (ipForward)
 		body.ip_forward = true;
+	if (dnsRegister)
+		body.dns_register = true;
 	if (routesText !== "") {
 		body.routes = routesText
 			.split(",")

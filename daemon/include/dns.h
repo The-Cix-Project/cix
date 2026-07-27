@@ -17,10 +17,16 @@
 
 #define DNS_MAX_RECORDS 256
 #define DNS_NAME_MAX 254 /* RFC 1035 */
+#define DNS_OWNER_NAME_MAX 64 /* matches REGISTRY_NAME_MAX by value, no header dependency */
 
 struct dns_record {
 	char name[DNS_NAME_MAX];
 	uint32_t ip_be; /* network byte order */
+	/* Empty string: created directly via POST /v1/dns/records, not
+	 * tied to any container's lifecycle. Non-empty: this container's
+	 * name -- the record is auto-deleted when it's deleted (see
+	 * dns_record_forget_owner()). */
+	char owner_container[DNS_OWNER_NAME_MAX];
 };
 
 enum dns_error {
@@ -37,9 +43,16 @@ enum dns_error {
  * is no kernel state to recreate here -- just the in-memory table. */
 int dns_init(const char *state_path);
 
-enum dns_error dns_record_create(const char *name, uint32_t ip_be, struct dns_record **out);
+enum dns_error dns_record_create(const char *name, uint32_t ip_be, const char *owner_container,
+                                  struct dns_record **out);
 enum dns_error dns_record_delete(const char *name);
 struct dns_record *dns_record_find(const char *name);
+
+/* Best-effort cleanup on container deletion: deletes name's record iff
+ * it exists and its owner_container is name itself. Safe no-op for
+ * every container that never had an auto-registered record, so this
+ * is called unconditionally from the container-delete handler. */
+void dns_record_forget_owner(const char *container_name);
 
 void dns_write_json_one(const struct dns_record *rec, struct json_writer *w);
 void dns_write_json_list(struct json_writer *w);

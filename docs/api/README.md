@@ -65,6 +65,7 @@ POST /v1/containers
 - `image` must already exist and be populated at `/var/lib/kanxeo/images/{image}/rootfs` — the daemon never creates image content itself (see ADR-0004); a missing image is a `400`, not a silently-empty container.
 - `memory_max`/`pids_max` are optional cgroup v2 limits; omit for no limit.
 - `networks` is optional: 1–64 names, each already created via `POST /v1/networks` — any unknown name is a `400`. Omit for no networking (isolated netns, only `lo` — same as before this field existed). The **first** entry is primary and gets the default route; the rest only get their own subnet's connected route.
+- `dns_register` is optional, default `false` — see [DNS: records + a real dnsmasq container](#dns-records--a-real-dnsmasq-container) below. Requires `networks` to be set (`400` otherwise).
 
 Response (`201`):
 
@@ -135,6 +136,25 @@ POST /v1/dns/servers
 This writes every current record into `dns1`'s own `/etc/dnsmasq-hosts` (dnsmasq's `--addn-hosts` format) and sends `SIGHUP` so it reloads immediately. Every subsequent `POST`/`DELETE` on `/v1/dns/records` re-writes that file and re-signals `dns1` — genuinely live updates, not a one-time snapshot at registration.
 
 The write itself goes through `/proc/<pid>/root/<hosts_path>` (the container's own filesystem view via the magic procfs symlink), not the container's raw upperdir directly — writing straight into a running container's upperdir does **not** reliably show up in its mounted view (confirmed empirically; the kernel documents this as unsupported/undefined for an already-mounted overlay). `/proc/<pid>/root/` correctly resolves through the container's real mount namespace without needing any new namespace-entry syscall.
+
+### Automatic registration: `dns_register`
+
+Instead of a separate `POST /v1/dns/records` call, a container can register its own name at creation time:
+
+```
+POST /v1/containers
+{
+  "name": "db",
+  "image": "test",
+  "cmd": ["/bin/some-binary"],
+  "networks": ["internal"],
+  "dns_register": true
+}
+```
+
+This creates a record named `db` pointing at `db`'s IP on its primary (first) network, as part of container creation — any already-registered dnsmasq container (`POST /v1/dns/servers`) picks it up immediately via the same live-reload path as a manually-created record, so `dig db.internal.example @dns1` (or whatever domain dnsmasq is configured to answer for) resolves right away. `GET /v1/dns/records/db` shows `"owner": "db"` to distinguish it from a manually-created record (`"owner": null`). Deleting the `db` container automatically removes its record; a manually-created record is never touched by any container's deletion, even if it happens to share that container's name but wasn't the one that created it.
+
+Registration is best-effort and non-fatal to container creation: if a record named `db` already exists (e.g. a stale one persisted from a previous container of the same name — DNS records outlive a daemon restart, containers don't), registration is silently skipped rather than overwriting it, and the container is still created successfully.
 
 ## Current scope boundaries (v1, deliberate — see ADR-0007)
 

@@ -63,6 +63,7 @@ static int parse_persisted_entry(const struct json_value *item, struct dns_recor
 {
 	const char *name = json_as_string(json_object_get(item, "name"));
 	const char *ip = json_as_string(json_object_get(item, "ip"));
+	const char *owner = json_as_string(json_object_get(item, "owner"));
 	struct in_addr addr;
 	int i;
 
@@ -77,6 +78,8 @@ static int parse_persisted_entry(const struct json_value *item, struct dns_recor
 	memset(slot, 0, sizeof(*slot));
 	strncpy(slot->name, name, sizeof(slot->name) - 1);
 	slot->ip_be = addr.s_addr;
+	if (owner != NULL)
+		strncpy(slot->owner_container, owner, sizeof(slot->owner_container) - 1);
 	return 0;
 }
 
@@ -140,7 +143,8 @@ struct dns_record *dns_record_find(const char *name)
 	return NULL;
 }
 
-enum dns_error dns_record_create(const char *name, uint32_t ip_be, struct dns_record **out)
+enum dns_error dns_record_create(const char *name, uint32_t ip_be, const char *owner_container,
+                                  struct dns_record **out)
 {
 	int i, slot = -1;
 	struct dns_record *e;
@@ -163,6 +167,8 @@ enum dns_error dns_record_create(const char *name, uint32_t ip_be, struct dns_re
 	memset(e, 0, sizeof(*e));
 	strncpy(e->name, name, sizeof(e->name) - 1);
 	e->ip_be = ip_be;
+	if (owner_container != NULL)
+		strncpy(e->owner_container, owner_container, sizeof(e->owner_container) - 1);
 
 	if (save_state() != 0) {
 		memset(e, 0, sizeof(*e));
@@ -189,6 +195,18 @@ enum dns_error dns_record_delete(const char *name)
 	return DNS_OK;
 }
 
+void dns_record_forget_owner(const char *container_name)
+{
+	struct dns_record *e = dns_record_find(container_name);
+
+	if (e == NULL || strcmp(e->owner_container, container_name) != 0)
+		return;
+
+	memset(e, 0, sizeof(*e));
+	save_state();
+	dns_server_sync_all();
+}
+
 void dns_write_json_one(const struct dns_record *rec, struct json_writer *w)
 {
 	struct in_addr a;
@@ -201,6 +219,11 @@ void dns_write_json_one(const struct dns_record *rec, struct json_writer *w)
 	inet_ntop(AF_INET, &a, ipstr, sizeof(ipstr));
 	jw_key(w, "ip");
 	jw_str(w, ipstr);
+	jw_key(w, "owner");
+	if (rec->owner_container[0] != '\0')
+		jw_str(w, rec->owner_container);
+	else
+		jw_null(w);
 	jw_obj_close(w);
 }
 

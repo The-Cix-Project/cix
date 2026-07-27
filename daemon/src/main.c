@@ -198,6 +198,8 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	int ip_forward = 0;
 	struct route_spec route_specs[CONTAINER_MAX_ROUTES];
 	int route_count = 0;
+	const struct json_value *jdns_register;
+	int dns_register = 0;
 
 	root = json_parse(body, body_len);
 	if (root == NULL) {
@@ -211,9 +213,12 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	jnetworks = json_object_get(root, "networks");
 	jip_forward = json_object_get(root, "ip_forward");
 	jroutes = json_object_get(root, "routes");
+	jdns_register = json_object_get(root, "dns_register");
 	name = json_as_string(jname);
 	image = json_as_string(jimage);
 	ip_forward = (jip_forward != NULL && jip_forward->type == JSON_BOOL && jip_forward->u.boolean);
+	dns_register = (jdns_register != NULL && jdns_register->type == JSON_BOOL &&
+	                jdns_register->u.boolean);
 
 	if (!name_is_valid(name) || image == NULL || image[0] == '\0' || jcmd == NULL ||
 	    jcmd->type != JSON_ARRAY || jcmd->u.array.count == 0 ||
@@ -239,6 +244,11 @@ static void handle_create(int fd, const char *body, size_t body_len)
 				return;
 			}
 		}
+	}
+	if (dns_register && jnetworks == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "dns_register requires networks");
+		return;
 	}
 	if (jroutes != NULL) {
 		if (jroutes->type != JSON_ARRAY || jroutes->u.array.count > CONTAINER_MAX_ROUTES) {
@@ -387,6 +397,19 @@ static void handle_create(int fd, const char *body, size_t body_len)
 
 	register_container_pidfd(entry);
 
+	if (dns_register) {
+		/* entry->name, not the local `name`, which pointed into
+		 * root and is no longer valid after json_free() above. */
+		struct dns_record *rec;
+		enum dns_error derr = dns_record_create(entry->name, spec.nets[0].container_ip_be,
+		                                         entry->name, &rec);
+
+		if (derr != DNS_OK)
+			fprintf(stderr,
+			        "%s: dns_register requested but auto-registration failed (err=%d)\n",
+			        entry->name, (int)derr);
+	}
+
 	jw_init(&w);
 	registry_write_json_one(entry, &w);
 	respond_json(fd, 201, "Created", &w);
@@ -412,6 +435,7 @@ static void handle_delete(int fd, const char *name)
 
 	registry_remove(name);
 	dns_server_forget(name);
+	dns_record_forget_owner(name);
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
@@ -578,7 +602,7 @@ static void handle_dns_record_create(int fd, const char *body, size_t body_len)
 		return;
 	}
 
-	derr = dns_record_create(name, addr.s_addr, &rec);
+	derr = dns_record_create(name, addr.s_addr, NULL, &rec);
 	json_free(root);
 
 	if (derr != DNS_OK) {

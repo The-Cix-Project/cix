@@ -447,6 +447,21 @@ components:
             container. Format only is validated (dest/via must be
             well-formed IPv4, prefix_len 0-32) -- whether via is
             actually reachable is the caller's responsibility.
+        dns_register:
+          type: boolean
+          default: false
+          description: >
+            If true, automatically creates a DNS record (see POST
+            /dns/records) named after this container, pointing at its
+            primary network's IP, as part of container creation --
+            requires networks to be set (400 otherwise). Best-effort:
+            if a record with this name already exists (e.g. a stale
+            persisted one from a same-named container created before a
+            daemon restart), registration is silently skipped and the
+            container is still created successfully -- it never
+            overwrites a colliding record. The record's owner field is
+            set to this container's name, and it is automatically
+            removed when the container is deleted.
 
     RouteSpec:
       type: object
@@ -567,6 +582,14 @@ components:
           type: string
         ip:
           type: string
+        owner:
+          type: string
+          nullable: true
+          description: >
+            Name of the container this record was auto-registered for
+            (via ContainerCreateRequest.dns_register), or null for a
+            record created directly via POST /dns/records. Owned
+            records are automatically deleted when their container is.
 
     DnsServerBindingCreateRequest:
       type: object

@@ -4,6 +4,18 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 8 (part 2): automatic container DNS registration
+
+#### Added
+- `daemon/include/dns.h` + `daemon/src/dns.c`: `struct dns_record` gained `owner_container` (empty for a manually-created record, a container's name for one it auto-registered). `dns_record_create()` gained an `owner_container` parameter; new `dns_record_forget_owner(container_name)` deletes a container's own record on its deletion, but only if the record's owner actually matches — a safe no-op otherwise, called unconditionally alongside the existing `dns_server_forget()`. `dns_write_json_one()` gained an `"owner"` field (`null` or the owning container's name).
+- `POST /v1/containers` gained an optional `dns_register` boolean: on success, best-effort registers a record named after the container pointing at its primary network's IP (`400` if set with no `networks`). Reuses the existing `dns_record_create()` -> `dns_server_sync_all()` path, so an auto-registered record reaches an already-registered dnsmasq container exactly like a manual one, live, with no new sync code.
+- `cli/src/main.c`: `kanxeoctl run --dns-register`; `dns record ls` output gained an owner column. `web/`: run form gained a "Register DNS name" checkbox; DNS Records table gained an Owner column.
+- `docs/api/openapi.yaml` + `docs/api/README.md`: `ContainerCreateRequest.dns_register`, `DnsRecord.owner`, and a worked auto-registration example.
+- `test/test_dns.c`: `dns_register` without `networks` -> `400`; an auto-registered record's name/IP/owner confirmed via `GET`, then confirmed to actually resolve via `dig` against the already-running dnsmasq container; a same-named manually-created record confirmed to survive a colliding container's deletion (proving the ownership check, not just "delete by name") alongside the positive case (an owned record does disappear when its container is deleted).
+
+#### Changed
+- `docs/ROADMAP.md`: Phase 8 marked done.
+
 ### Phase 8 (part 1): DNS records + containerized dnsmasq resolution
 
 #### Added
