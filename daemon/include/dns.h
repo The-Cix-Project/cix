@@ -43,6 +43,15 @@ enum dns_error {
  * is no kernel state to recreate here -- just the in-memory table. */
 int dns_init(const char *state_path);
 
+/*
+ * Hostname validation (dot-separated labels of [A-Za-z0-9-], each
+ * 1-63 chars, <=DNS_NAME_MAX-1 total -- RFC 1035). Exported so other
+ * modules whose own resources are conceptually hostnames (e.g. a PKI
+ * certificate's CN/SANs) can reuse this instead of re-implementing
+ * the same label/charset/length rules a second time.
+ */
+int dns_name_is_valid(const char *name);
+
 enum dns_error dns_record_create(const char *name, uint32_t ip_be, const char *owner_container,
                                   struct dns_record **out);
 enum dns_error dns_record_delete(const char *name);

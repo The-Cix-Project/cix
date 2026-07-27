@@ -314,6 +314,138 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /pki/ca:
+    get:
+      summary: Inspect the root CA (never includes the private key)
+      operationId: getPkiCa
+      responses:
+        "200":
+          description: CA detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkiCa"
+        "404":
+          description: CA not bootstrapped yet -- POST /pki/ca first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      summary: >
+        Bootstraps the single root CA (self-signed keypair, generated via the system's
+        real openssl binary). The CA private key is never returned over the API, in any
+        endpoint, ever. No CA regeneration in v1 -- a second call is a 409.
+      operationId: createPkiCa
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PkiCaCreateRequest"
+      responses:
+        "201":
+          description: CA bootstrapped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkiCa"
+        "400":
+          description: Invalid common_name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: CA is already bootstrapped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /pki/certs:
+    get:
+      summary: List all issued leaf certificates (metadata only -- never a key)
+      operationId: listPkiCerts
+      responses:
+        "200":
+          description: Cert list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [certs]
+                properties:
+                  certs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PkiCert"
+    post:
+      summary: >
+        Issues a leaf certificate signed by the root CA. The response is the ONLY place
+        the leaf private key is ever returned -- neither the list nor the single-get
+        endpoint includes one again afterward.
+      operationId: createPkiCert
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PkiCertCreateRequest"
+      responses:
+        "201":
+          description: Cert issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkiCertIssued"
+        "400":
+          description: Invalid name/sans, or CA not bootstrapped yet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A cert with this name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /pki/certs/{name}:
+    get:
+      summary: Inspect one issued certificate (metadata + cert_pem -- never the key)
+      operationId: getPkiCert
+      parameters:
+        - $ref: "#/components/parameters/PkiCertName"
+      responses:
+        "200":
+          description: Cert detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkiCert"
+        "404":
+          description: No cert with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Remove an issued certificate (deletes its key and cert files on disk)
+      operationId: deletePkiCert
+      parameters:
+        - $ref: "#/components/parameters/PkiCertName"
+      responses:
+        "204":
+          description: Removed
+        "404":
+          description: No cert with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /containers/{name}:
     get:
       summary: Inspect one container
@@ -380,6 +512,13 @@ components:
       schema:
         type: string
         pattern: "^[A-Za-z0-9_-]+$"
+
+    PkiCertName:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
 
   schemas:
     ContainerCreateRequest:
@@ -614,6 +753,90 @@ components:
           type: string
         hosts_path:
           type: string
+
+    PkiCaCreateRequest:
+      type: object
+      properties:
+        common_name:
+          type: string
+          default: "Kanxeo Root CA"
+          description: >
+            A free-form display label (not a hostname -- dots/spaces are fine), embedded
+            as the CA's subject CN. Must not contain "/" (would inject additional,
+            unintended DN fields into the openssl -subj argument) or control characters.
+        days:
+          type: integer
+          default: 3650
+          description: Validity period in days.
+
+    PkiCa:
+      type: object
+      required: [subject, serial, not_before, not_after, cert_pem]
+      properties:
+        subject:
+          type: string
+        serial:
+          type: string
+        not_before:
+          type: string
+        not_after:
+          type: string
+        cert_pem:
+          type: string
+          description: PEM-encoded CA certificate. The CA private key is never included here or anywhere else.
+
+    PkiCertCreateRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: >
+            Hostname (same RFC 1035 rules as DnsRecord.name) -- becomes the leaf
+            certificate's CN, and this endpoint's REST identifier.
+        sans:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          maxItems: 8
+          description: >
+            Subject Alternative Names (each a hostname). Omit to default to [name] --
+            a cert always carries at least its own name as a SAN.
+        days:
+          type: integer
+          default: 365
+          description: Validity period in days.
+
+    PkiCert:
+      type: object
+      required: [name, serial, not_after, sans]
+      properties:
+        name:
+          type: string
+        serial:
+          type: string
+        not_after:
+          type: string
+        sans:
+          type: array
+          items:
+            type: string
+        cert_pem:
+          type: string
+          description: PEM-encoded leaf certificate. Present on GET /pki/certs/{name}; omitted from the GET /pki/certs list view.
+
+    PkiCertIssued:
+      allOf:
+        - $ref: "#/components/schemas/PkiCert"
+        - type: object
+          required: [cert_pem, key_pem]
+          properties:
+            key_pem:
+              type: string
+              description: >
+                PEM-encoded private key. Present ONLY in this POST /pki/certs response --
+                never returned again by any later GET, list, or any other endpoint.
 
     Error:
       type: object

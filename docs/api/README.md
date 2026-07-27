@@ -24,6 +24,12 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | GET | `/dns/servers` | List all registered DNS server bindings |
 | POST | `/dns/servers` | Register a running container as a DNS-serving target |
 | DELETE | `/dns/servers/{container}` | Unregister a DNS server binding |
+| GET | `/pki/ca` | Inspect the root CA (never includes the private key) |
+| POST | `/pki/ca` | Bootstrap the root CA (once; no regeneration in v1) |
+| GET | `/pki/certs` | List all issued leaf certificates (metadata only) |
+| POST | `/pki/certs` | Issue a leaf certificate signed by the root CA |
+| GET | `/pki/certs/{name}` | Inspect one issued certificate (metadata + cert, never the key) |
+| DELETE | `/pki/certs/{name}` | Remove an issued certificate |
 
 Every error response is `{"error": "message"}` with an appropriate 4xx/5xx status.
 
@@ -156,6 +162,47 @@ This creates a record named `db` pointing at `db`'s IP on its primary (first) ne
 
 Registration is best-effort and non-fatal to container creation: if a record named `db` already exists (e.g. a stale one persisted from a previous container of the same name — DNS records outlive a daemon restart, containers don't), registration is silently skipped rather than overwriting it, and the container is still created successfully.
 
+## PKI: a root CA and issued leaf certificates
+
+A single internal root CA plus leaf certificate issuance. Actual cryptography (keypair generation, CSR signing) is done by the daemon shelling out to the system's real, unmodified `openssl` binary as a short-lived subprocess — the same "real software, not hand-rolled" reasoning BIRD and dnsmasq were chosen under (ADR-0007's "no external libraries" rule governs this project's own platform components, not real software it invokes or runs as a workload).
+
+Bootstrap the CA once:
+
+```
+POST /v1/pki/ca
+{"common_name": "Kanxeo Root CA", "days": 3650}
+```
+
+Both fields are optional (shown defaults). **The CA private key is never returned over the API, in any endpoint, ever** — it's the root of trust and must never leave the host. A second `POST /v1/pki/ca` is a `409`; there's no CA regeneration in v1.
+
+Issue a leaf certificate:
+
+```
+POST /v1/pki/certs
+{"name": "svc.internal", "sans": ["svc.internal", "svc"], "days": 365}
+```
+
+- `name` is a hostname (same RFC 1035 rules as `DnsRecord.name`) — it becomes the certificate's CN and this endpoint's REST identifier.
+- `sans` is optional and defaults to `[name]` — a cert always carries at least its own name as a Subject Alternative Name.
+- `days` is optional, default 365.
+
+The `201` response (`PkiCertIssued`) is the **only** place the leaf's private key is ever returned:
+
+```json
+{
+  "name": "svc.internal",
+  "serial": "11EAFF2213CAE630340F388C62AE620833EBEDFF",
+  "not_after": "Jul 27 10:25:19 2027 GMT",
+  "sans": ["svc.internal", "svc"],
+  "cert_pem": "-----BEGIN CERTIFICATE-----\n...",
+  "key_pem": "-----BEGIN PRIVATE KEY-----\n..."
+}
+```
+
+Neither `GET /v1/pki/certs` (list) nor `GET /v1/pki/certs/{name}` (single) ever includes `key_pem` again — save it now. Both do include `cert_pem` on the single-item view (list omits it too, to keep listing lightweight).
+
+Deleting a cert (`DELETE /v1/pki/certs/{name}`) removes its key and cert files from disk, not just the metadata index entry.
+
 ## Current scope boundaries (v1, deliberate — see ADR-0007)
 
 - No image build/pull endpoint yet — images are provisioned onto disk out of band.
@@ -164,6 +211,7 @@ Registration is best-effort and non-fatal to container creation: if a record nam
 - HTTP: no keep-alive/pipelining (`Connection: close` on every response), no chunked bodies.
 - Routes are set-once at creation and not echoed back or introspectable afterward; modifying them on a running container would need a new "enter another netns from outside" primitive, not built yet. See `docs/ROADMAP.md`.
 - DNS server bindings are in-memory only (not persisted, like the container registry itself — a binding referencing a container that dies with the daemon means nothing after a restart anyway). Only one hosts-format record type; no CNAME/MX/TXT/etc.
+- PKI: no certificate revocation/CRL, no CA regeneration/rotation, no CSR-submission flow (the daemon always generates both the keypair and the cert itself) — see `docs/ROADMAP.md` Phase 9.
 
 ## Why this file exists alongside `openapi.yaml`
 

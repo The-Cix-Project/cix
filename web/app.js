@@ -18,6 +18,11 @@ const dnsRecordsBody = document.getElementById("dns-records-body");
 const dnsRecordForm = document.getElementById("dns-record-form");
 const dnsServersBody = document.getElementById("dns-servers-body");
 const dnsServerForm = document.getElementById("dns-server-form");
+const pkiCaStatus = document.getElementById("pki-ca-status");
+const pkiCaForm = document.getElementById("pki-ca-form");
+const pkiCertsBody = document.getElementById("pki-certs-body");
+const pkiCertForm = document.getElementById("pki-cert-form");
+const pkiCertIssued = document.getElementById("pki-cert-issued");
 
 function showStatus(message, isError) {
 	statusBox.textContent = message;
@@ -348,6 +353,92 @@ async function removeDnsServer(container) {
 	}
 }
 
+async function refreshPkiCa() {
+	try {
+		const ca = await apiRequest("GET", "/v1/pki/ca");
+
+		pkiCaStatus.className = "pki-ca-status bootstrapped";
+		pkiCaStatus.textContent =
+			"Bootstrapped: " + ca.subject + " (serial " + ca.serial + ", expires " + ca.not_after + ")";
+		pkiCaForm.hidden = true;
+	} catch (e) {
+		pkiCaStatus.className = "pki-ca-status";
+		pkiCaStatus.textContent = "Not yet bootstrapped.";
+		pkiCaForm.hidden = false;
+	}
+}
+
+function renderPkiCerts(certs) {
+	pkiCertsBody.textContent = "";
+
+	if (certs.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+		cell.colSpan = 5;
+		cell.className = "empty";
+		cell.textContent = "No certificates issued";
+		row.appendChild(cell);
+		pkiCertsBody.appendChild(row);
+		return;
+	}
+
+	for (const cert of certs) {
+		const row = document.createElement("tr");
+
+		const nameCell = document.createElement("td");
+		nameCell.textContent = cert.name;
+		row.appendChild(nameCell);
+
+		const serialCell = document.createElement("td");
+		serialCell.textContent = cert.serial;
+		row.appendChild(serialCell);
+
+		const notAfterCell = document.createElement("td");
+		notAfterCell.textContent = cert.not_after;
+		row.appendChild(notAfterCell);
+
+		const sansCell = document.createElement("td");
+		sansCell.textContent = (cert.sans || []).join(", ");
+		row.appendChild(sansCell);
+
+		const actionCell = document.createElement("td");
+		const rmButton = document.createElement("button");
+		rmButton.textContent = "Remove";
+		rmButton.className = "button-danger";
+		rmButton.addEventListener("click", () => removePkiCert(cert.name));
+		actionCell.appendChild(rmButton);
+		row.appendChild(actionCell);
+
+		pkiCertsBody.appendChild(row);
+	}
+}
+
+async function refreshPkiCerts() {
+	try {
+		const data = await apiRequest("GET", "/v1/pki/certs");
+		renderPkiCerts(data.certs);
+	} catch (e) {
+		pkiCertsBody.textContent = "";
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+		cell.colSpan = 5;
+		cell.className = "empty";
+		cell.textContent = "Could not load certificates: " + e.message;
+		row.appendChild(cell);
+		pkiCertsBody.appendChild(row);
+	}
+}
+
+async function removePkiCert(name) {
+	try {
+		await apiRequest("DELETE", "/v1/pki/certs/" + encodeURIComponent(name));
+		clearStatus();
+		await refreshPkiCerts();
+	} catch (e) {
+		showStatus("Failed to remove certificate " + name + ": " + e.message, true);
+	}
+}
+
 runForm.addEventListener("submit", async (event) => {
 	event.preventDefault();
 
@@ -462,12 +553,93 @@ dnsServerForm.addEventListener("submit", async (event) => {
 	}
 });
 
+pkiCaForm.addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const commonName = document.getElementById("caf-common-name").value.trim();
+	const daysText = document.getElementById("caf-days").value.trim();
+	const body = {};
+
+	if (commonName !== "")
+		body.common_name = commonName;
+	if (daysText !== "")
+		body.days = parseInt(daysText, 10);
+
+	try {
+		await apiRequest("POST", "/v1/pki/ca", body);
+		clearStatus();
+		pkiCaForm.reset();
+		await refreshPkiCa();
+	} catch (e) {
+		showStatus("Failed to bootstrap CA: " + e.message, true);
+	}
+});
+
+pkiCertForm.addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const name = document.getElementById("pf-name").value.trim();
+	const sansText = document.getElementById("pf-sans").value.trim();
+	const daysText = document.getElementById("pf-days").value.trim();
+	const body = { name: name };
+
+	if (sansText !== "") {
+		body.sans = sansText
+			.split(",")
+			.map((s) => s.trim())
+			.filter((s) => s.length > 0);
+	}
+	if (daysText !== "")
+		body.days = parseInt(daysText, 10);
+
+	try {
+		const issued = await apiRequest("POST", "/v1/pki/certs", body);
+		clearStatus();
+		pkiCertForm.reset();
+		await refreshPkiCerts();
+
+		/* The response is the ONLY place key_pem is ever returned --
+		 * shown once here, built with textContent (never innerHTML)
+		 * since cert_pem/key_pem are PEM text, not markup. */
+		pkiCertIssued.textContent = "";
+		const heading = document.createElement("h3");
+
+		heading.textContent =
+			"Issued " + issued.name + " -- copy the private key now, it won't be shown again";
+		pkiCertIssued.appendChild(heading);
+
+		const certLabel = document.createElement("div");
+
+		certLabel.textContent = "Certificate:";
+		pkiCertIssued.appendChild(certLabel);
+		const certPre = document.createElement("pre");
+
+		certPre.textContent = issued.cert_pem;
+		pkiCertIssued.appendChild(certPre);
+
+		const keyLabel = document.createElement("div");
+
+		keyLabel.textContent = "Private key:";
+		pkiCertIssued.appendChild(keyLabel);
+		const keyPre = document.createElement("pre");
+
+		keyPre.textContent = issued.key_pem;
+		pkiCertIssued.appendChild(keyPre);
+
+		pkiCertIssued.hidden = false;
+	} catch (e) {
+		showStatus("Failed to issue certificate: " + e.message, true);
+	}
+});
+
 async function poll() {
 	await refreshHealth();
 	await refreshContainers();
 	await refreshNetworks();
 	await refreshDnsRecords();
 	await refreshDnsServers();
+	await refreshPkiCa();
+	await refreshPkiCerts();
 }
 
 poll();

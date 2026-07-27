@@ -36,7 +36,12 @@ static void print_usage(FILE *out)
 	        "  dns record rm NAME\n"
 	        "  dns server register --container=NAME --hosts-path=PATH\n"
 	        "  dns server ls\n"
-	        "  dns server unregister CONTAINER\n");
+	        "  dns server unregister CONTAINER\n"
+	        "  pki ca bootstrap [--common-name=NAME] [--days=N]\n"
+	        "  pki ca show\n"
+	        "  pki cert create --name=NAME [--sans=a,b,c] [--days=N]\n"
+	        "  pki cert ls\n"
+	        "  pki cert rm NAME\n");
 }
 
 static const char *json_str_field(const struct json_value *obj, const char *key)
@@ -214,6 +219,74 @@ static void fmt_dns_server_list(const struct json_value *v)
 		return;
 	for (i = 0; i < servers->u.array.count; i++)
 		fmt_dns_server_line(servers->u.array.items[i]);
+}
+
+static void print_sans_csv(const struct json_value *v)
+{
+	const struct json_value *sans = json_object_get(v, "sans");
+	size_t i;
+
+	if (sans == NULL || sans->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < sans->u.array.count; i++) {
+		if (i > 0)
+			printf(",");
+		printf("%s", json_as_string(sans->u.array.items[i]));
+	}
+}
+
+static void fmt_pki_cert_line(const struct json_value *v)
+{
+	const char *name = json_str_field(v, "name");
+	const char *serial = json_str_field(v, "serial");
+	const char *not_after = json_str_field(v, "not_after");
+
+	printf("%-24s %-42s %s\n", name, serial, not_after);
+}
+
+static void fmt_pki_cert_list(const struct json_value *v)
+{
+	const struct json_value *certs = json_object_get(v, "certs");
+	size_t i;
+
+	if (certs == NULL || certs->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < certs->u.array.count; i++)
+		fmt_pki_cert_line(certs->u.array.items[i]);
+}
+
+/* Multi-line: a PEM cert (and, for a fresh issuance, a PEM key) can't
+ * sensibly fit the %-Ns single-row table format every other list uses. */
+static void fmt_pki_cert_issued(const struct json_value *v)
+{
+	const char *name = json_str_field(v, "name");
+	const char *serial = json_str_field(v, "serial");
+	const char *not_after = json_str_field(v, "not_after");
+	const char *cert_pem = json_str_field(v, "cert_pem");
+	const char *key_pem = json_str_field(v, "key_pem");
+
+	printf("name:      %s\n", name);
+	printf("serial:    %s\n", serial);
+	printf("not_after: %s\n", not_after);
+	printf("sans:      ");
+	print_sans_csv(v);
+	printf("\n\nCertificate:\n%s\n", cert_pem != NULL ? cert_pem : "");
+	printf("Private Key (shown once -- save it now):\n%s\n", key_pem != NULL ? key_pem : "");
+}
+
+static void fmt_pki_ca(const struct json_value *v)
+{
+	const char *subject = json_str_field(v, "subject");
+	const char *serial = json_str_field(v, "serial");
+	const char *not_before = json_str_field(v, "not_before");
+	const char *not_after = json_str_field(v, "not_after");
+	const char *cert_pem = json_str_field(v, "cert_pem");
+
+	printf("subject:    %s\n", subject);
+	printf("serial:     %s\n", serial);
+	printf("not_before: %s\n", not_before);
+	printf("not_after:  %s\n", not_after);
+	printf("\nCertificate:\n%s\n", cert_pem != NULL ? cert_pem : "");
 }
 
 /*
@@ -794,6 +867,209 @@ static int cmd_dns(const struct kx_client *c, int json_mode, int argc, char **ar
 	return 2;
 }
 
+static int cmd_pki_ca_bootstrap(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *common_name = NULL;
+	long days = -1;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--common-name=", 14) == 0)
+			common_name = argv[i] + 14;
+		else if (strncmp(argv[i], "--days=", 7) == 0)
+			days = atol(argv[i] + 7);
+		else {
+			fprintf(stderr, "kanxeoctl: unknown pki ca bootstrap option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	if (common_name != NULL) {
+		jw_key(&w, "common_name");
+		jw_str(&w, common_name);
+	}
+	if (days >= 0) {
+		jw_key(&w, "days");
+		jw_int(&w, days);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/pki/ca", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_pki_ca);
+}
+
+static int cmd_pki_ca_show(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/pki/ca", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_pki_ca);
+}
+
+static int cmd_pki_ca(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl pki ca bootstrap [--common-name=NAME] [--days=N]\n"
+		                "       kanxeoctl pki ca show\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "bootstrap") == 0)
+		return cmd_pki_ca_bootstrap(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "show") == 0)
+		return cmd_pki_ca_show(c, json_mode);
+
+	fprintf(stderr, "kanxeoctl: unknown pki ca subcommand '%s'\n", sub);
+	return 2;
+}
+
+static int cmd_pki_cert_create(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *name = NULL;
+	const char *sans = NULL;
+	long days = -1;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--name=", 7) == 0)
+			name = argv[i] + 7;
+		else if (strncmp(argv[i], "--sans=", 7) == 0)
+			sans = argv[i] + 7;
+		else if (strncmp(argv[i], "--days=", 7) == 0)
+			days = atol(argv[i] + 7);
+		else {
+			fprintf(stderr, "kanxeoctl: unknown pki cert create option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	if (name == NULL) {
+		fprintf(stderr, "usage: kanxeoctl pki cert create --name=NAME [--sans=a,b,c] [--days=N]\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	if (sans != NULL) {
+		char buf[1024];
+		char *tok, *save = NULL;
+
+		snprintf(buf, sizeof(buf), "%s", sans);
+		jw_key(&w, "sans");
+		jw_arr_open(&w);
+		tok = strtok_r(buf, ",", &save);
+		while (tok != NULL) {
+			jw_str(&w, tok);
+			tok = strtok_r(NULL, ",", &save);
+		}
+		jw_arr_close(&w);
+	}
+	if (days >= 0) {
+		jw_key(&w, "days");
+		jw_int(&w, days);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/pki/certs", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_pki_cert_issued);
+}
+
+static int cmd_pki_cert_ls(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/pki/certs", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_pki_cert_list);
+}
+
+static int cmd_pki_cert_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: pki cert rm requires a cert name\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/pki/certs/%s", argv[0]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static int cmd_pki_cert(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl pki cert create --name=NAME [--sans=a,b,c] [--days=N]\n"
+		                "       kanxeoctl pki cert ls\n"
+		                "       kanxeoctl pki cert rm NAME\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "create") == 0)
+		return cmd_pki_cert_create(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "ls") == 0)
+		return cmd_pki_cert_ls(c, json_mode);
+	if (strcmp(sub, "rm") == 0)
+		return cmd_pki_cert_rm(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown pki cert subcommand '%s'\n", sub);
+	return 2;
+}
+
+static int cmd_pki(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl pki ca ...\n"
+		                "       kanxeoctl pki cert ...\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "ca") == 0)
+		return cmd_pki_ca(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "cert") == 0)
+		return cmd_pki_cert(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown pki subcommand '%s'\n", sub);
+	return 2;
+}
+
 int main(int argc, char **argv)
 {
 	const char *host = DEFAULT_HOST;
@@ -840,6 +1116,8 @@ int main(int argc, char **argv)
 		return cmd_network(&client, json_mode, argc - i, argv + i);
 	if (strcmp(cmd, "dns") == 0)
 		return cmd_dns(&client, json_mode, argc - i, argv + i);
+	if (strcmp(cmd, "pki") == 0)
+		return cmd_pki(&client, json_mode, argc - i, argv + i);
 
 	fprintf(stderr, "kanxeoctl: unknown command '%s'\n", cmd);
 	print_usage(stderr);

@@ -188,3 +188,43 @@ td.empty {
 	background: var(--error-bg);
 	color: var(--error);
 }
+
+.pki-ca-status {
+	padding: 0.75rem 1rem;
+	border-radius: 6px;
+	font-size: 0.9rem;
+	background: var(--unknown-bg);
+	color: var(--muted);
+	margin-bottom: 1rem;
+}
+
+.pki-ca-status.bootstrapped {
+	background: var(--ok-bg);
+	color: var(--ok);
+}
+
+.pki-cert-issued {
+	margin-top: 1rem;
+	padding: 1rem;
+	border-radius: 6px;
+	background: var(--ok-bg);
+	border: 1px solid var(--ok);
+}
+
+.pki-cert-issued h3 {
+	margin: 0 0 0.5rem 0;
+	font-size: 0.95rem;
+	color: var(--ok);
+}
+
+.pki-cert-issued pre {
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 0.5rem;
+	font-size: 0.75rem;
+	overflow-x: auto;
+	white-space: pre-wrap;
+	word-break: break-all;
+	margin: 0.25rem 0 0.75rem 0;
+}

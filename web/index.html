@@ -147,6 +147,56 @@
 	</section>
 
 	<section class="panel">
+		<h2>PKI: Root CA</h2>
+		<div id="pki-ca-status" class="pki-ca-status"></div>
+		<form id="pki-ca-form">
+			<label>
+				Common name
+				<input type="text" id="caf-common-name" placeholder="Kanxeo Root CA">
+			</label>
+			<label>
+				Days
+				<input type="number" id="caf-days" min="1" placeholder="3650">
+			</label>
+			<button type="submit">Bootstrap CA</button>
+		</form>
+	</section>
+
+	<section class="panel">
+		<h2>PKI: Certificates</h2>
+		<form id="pki-cert-form">
+			<label>
+				Name
+				<input type="text" id="pf-name" placeholder="svc.internal" required>
+			</label>
+			<label class="wide">
+				SANs
+				<input type="text" id="pf-sans" placeholder="(defaults to name), or comma-separated: svc.internal,svc">
+			</label>
+			<label>
+				Days
+				<input type="number" id="pf-days" min="1" placeholder="365">
+			</label>
+			<button type="submit">Issue</button>
+		</form>
+		<div id="pki-cert-issued" class="pki-cert-issued" hidden></div>
+		<table id="pki-certs">
+			<thead>
+				<tr>
+					<th>Name</th>
+					<th>Serial</th>
+					<th>Not after</th>
+					<th>SANs</th>
+					<th></th>
+				</tr>
+			</thead>
+			<tbody id="pki-certs-body">
+				<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
+			</tbody>
+		</table>
+	</section>
+
+	<section class="panel">
 		<h2>Containers</h2>
 		<table id="containers">
 			<thead>

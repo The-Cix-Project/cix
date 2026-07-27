@@ -4,6 +4,7 @@
 #include "json.h"
 #include "linux_compat.h"
 #include "network.h"
+#include "pki.h"
 #include "registry.h"
 #include "rtnetlink.h"
 #include "staticfile.h"
@@ -32,11 +33,14 @@
 #define CONTAINERS_DIR BASE_DIR "/containers"
 #define NETWORKS_STATE_PATH BASE_DIR "/networks.json"
 #define DNS_RECORDS_STATE_PATH BASE_DIR "/dns_records.json"
+#define PKI_DIR BASE_DIR "/pki"
+#define PKI_CERTS_STATE_PATH PKI_DIR "/pki_certs.json"
 #define MAX_EVENTS 64
 #define CONTAINERS_PREFIX "/v1/containers/"
 #define NETWORKS_PREFIX "/v1/networks/"
 #define DNS_RECORDS_PREFIX "/v1/dns/records/"
 #define DNS_SERVERS_PREFIX "/v1/dns/servers/"
+#define PKI_CERTS_PREFIX "/v1/pki/certs/"
 
 enum conn_kind { CONN_LISTENER, CONN_CLIENT, CONN_CONTAINER };
 
@@ -759,6 +763,212 @@ static void handle_dns_server_delete(int fd, const char *name)
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
+static void respond_pki_error(int fd, enum pki_error err)
+{
+	switch (err) {
+	case PKI_ERR_INVALID_NAME:
+		respond_error(fd, 400, "Bad Request", "invalid name/common_name/sans");
+		break;
+	case PKI_ERR_NOT_BOOTSTRAPPED:
+		respond_error(fd, 400, "Bad Request", "CA not bootstrapped -- POST /v1/pki/ca first");
+		break;
+	case PKI_ERR_ALREADY_BOOTSTRAPPED:
+		respond_error(fd, 409, "Conflict", "CA is already bootstrapped");
+		break;
+	case PKI_ERR_DUPLICATE:
+		respond_error(fd, 409, "Conflict", "a cert with this name already exists");
+		break;
+	case PKI_ERR_FULL:
+		respond_error(fd, 500, "Internal Server Error", "PKI cert table full");
+		break;
+	case PKI_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such CA / cert");
+		break;
+	case PKI_ERR_OPENSSL_FAILED:
+	case PKI_ERR_PERSIST_FAILED:
+	default:
+		respond_error(fd, 500, "Internal Server Error", "PKI operation failed");
+		break;
+	}
+}
+
+static void handle_pki_ca_create(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = NULL;
+	const char *common_name = "Kanxeo Root CA";
+	int days = 3650;
+	enum pki_error perr;
+
+	if (body_len > 0) {
+		root = json_parse(body, body_len);
+		if (root == NULL) {
+			respond_error(fd, 400, "Bad Request", "invalid JSON body");
+			return;
+		}
+		if (json_as_string(json_object_get(root, "common_name")) != NULL)
+			common_name = json_as_string(json_object_get(root, "common_name"));
+		if (json_object_get(root, "days") != NULL)
+			days = (int)json_as_number(json_object_get(root, "days"));
+	}
+
+	perr = pki_ca_create(common_name, days);
+	json_free(root);
+
+	if (perr != PKI_OK) {
+		respond_pki_error(fd, perr);
+		return;
+	}
+
+	{
+		struct json_writer w;
+
+		jw_init(&w);
+		if (pki_ca_get(&w) != PKI_OK) {
+			jw_free(&w);
+			respond_error(fd, 500, "Internal Server Error", "CA created but could not be read back");
+			return;
+		}
+		respond_json(fd, 201, "Created", &w);
+		jw_free(&w);
+	}
+}
+
+static void handle_pki_ca_get(int fd)
+{
+	struct json_writer w;
+	enum pki_error perr;
+
+	jw_init(&w);
+	perr = pki_ca_get(&w);
+	if (perr != PKI_OK) {
+		jw_free(&w);
+		/*
+		 * PKI_ERR_NOT_BOOTSTRAPPED means two different things
+		 * depending on the endpoint: for POST /v1/pki/certs it's a
+		 * genuine "you can't do this yet" precondition (400, via
+		 * respond_pki_error below). Here, GET-ing a CA that doesn't
+		 * exist yet is exactly the same shape as GET
+		 * /v1/dns/records/{name} or /v1/networks/{name} on a
+		 * missing resource -- 404, matching every other single-
+		 * resource GET in this API, not respond_pki_error's generic
+		 * (POST-precondition-oriented) 400 mapping.
+		 */
+		if (perr == PKI_ERR_NOT_BOOTSTRAPPED)
+			respond_error(fd, 404, "Not Found", "CA not bootstrapped yet");
+		else
+			respond_pki_error(fd, perr);
+		return;
+	}
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_pki_cert_create(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *name;
+	const struct json_value *jsans, *jdays;
+	const char *sans_buf[PKI_MAX_SANS];
+	int san_count;
+	int days = 365;
+	enum pki_error perr;
+	struct json_writer w;
+	size_t i;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+
+	name = json_as_string(json_object_get(root, "name"));
+	jsans = json_object_get(root, "sans");
+	jdays = json_object_get(root, "days");
+	if (jdays != NULL)
+		days = (int)json_as_number(jdays);
+
+	if (name == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "name missing");
+		return;
+	}
+
+	if (jsans != NULL) {
+		if (jsans->type != JSON_ARRAY || jsans->u.array.count == 0 ||
+		    jsans->u.array.count > PKI_MAX_SANS) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "sans must be a non-empty array of at most 8 entries");
+			return;
+		}
+		san_count = (int)jsans->u.array.count;
+		for (i = 0; i < (size_t)san_count; i++) {
+			sans_buf[i] = json_as_string(jsans->u.array.items[i]);
+			if (sans_buf[i] == NULL) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request", "sans must be an array of strings");
+				return;
+			}
+		}
+	} else {
+		sans_buf[0] = name;
+		san_count = 1;
+	}
+
+	jw_init(&w);
+	perr = pki_cert_create(name, sans_buf, san_count, days, &w);
+	json_free(root);
+
+	if (perr != PKI_OK) {
+		jw_free(&w);
+		respond_pki_error(fd, perr);
+		return;
+	}
+
+	respond_json(fd, 201, "Created", &w);
+	jw_free(&w);
+}
+
+static void handle_pki_cert_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "certs");
+	pki_write_json_list(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_pki_cert_get_one(int fd, const char *name)
+{
+	struct json_writer w;
+	enum pki_error perr;
+
+	jw_init(&w);
+	perr = pki_cert_get_one(name, &w);
+	if (perr != PKI_OK) {
+		jw_free(&w);
+		respond_pki_error(fd, perr);
+		return;
+	}
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_pki_cert_delete(int fd, const char *name)
+{
+	enum pki_error perr = pki_cert_delete(name);
+
+	if (perr != PKI_OK) {
+		respond_pki_error(fd, perr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
 static void dispatch(int fd, const struct http_request *req)
 {
 	const char *name;
@@ -851,6 +1061,39 @@ static void dispatch(int fd, const struct http_request *req)
 		if (name[0] != '\0' && strcmp(req->method, "DELETE") == 0) {
 			handle_dns_server_delete(fd, name);
 			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/pki/ca") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_pki_ca_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_pki_ca_create(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/pki/certs") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_pki_cert_list(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_pki_cert_create(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strncmp(req->path, PKI_CERTS_PREFIX, strlen(PKI_CERTS_PREFIX)) == 0) {
+		name = req->path + strlen(PKI_CERTS_PREFIX);
+		if (name[0] != '\0') {
+			if (strcmp(req->method, "GET") == 0) {
+				handle_pki_cert_get_one(fd, name);
+				return;
+			}
+			if (strcmp(req->method, "DELETE") == 0) {
+				handle_pki_cert_delete(fd, name);
+				return;
+			}
 		}
 	}
 
@@ -987,12 +1230,15 @@ int main(int argc, char **argv)
 	g_web_root = web_root;
 
 	if (ensure_dir(BASE_DIR) != 0 || ensure_dir(IMAGES_DIR) != 0 ||
-	    ensure_dir(CONTAINERS_DIR) != 0)
+	    ensure_dir(CONTAINERS_DIR) != 0 || ensure_dir(PKI_DIR) != 0 ||
+	    ensure_dir(PKI_DIR "/certs") != 0)
 		return 1;
 
 	if (network_init(NETWORKS_STATE_PATH) != 0)
 		return 1;
 	if (dns_init(DNS_RECORDS_STATE_PATH) != 0)
+		return 1;
+	if (pki_init(PKI_DIR, PKI_CERTS_STATE_PATH) != 0)
 		return 1;
 
 	registry_init();

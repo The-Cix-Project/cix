@@ -4,6 +4,24 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 9 (part 1): PKI/certificate management — a root CA and issued leaf certificates
+
+#### Added
+- `daemon/include/pki.h` + `daemon/src/pki.c`: a single root CA (`POST/GET /v1/pki/ca`) plus leaf certificate issuance (`POST/GET/DELETE /v1/pki/certs`), mirroring `dns.c`'s shape. Actual cryptography (keypair generation, CSR signing) is done by the daemon shelling out to the system's real, unmodified `openssl` binary as a short-lived subprocess — confirmed with the user before any code was written (same question shape as DNS's "why hand-roll?"), keeping ADR-0007's "no third-party dependency footprint in the daemon" intact since exec'ing isn't linking. `dns_name_is_valid()` exported from `dns.h` (was `static` in `dns.c`) and reused for leaf cert names/SANs rather than re-implementing hostname validation.
+- On-disk layout under `/var/lib/kanxeo/pki/`: `ca.key` (chmod 0600)/`ca.crt`/`ca.srl`, `certs/<name>.key`(0600)/`certs/<name>.crt` per leaf, plus a `pki_certs.json` metadata index persisted via the existing `daemon/src/persist.c` (Phase 8 part 1's shared module getting its intended second consumer).
+- Two deliberate, asymmetric security properties: the CA private key is never returned over the API, in any endpoint, ever; a leaf certificate's private key is returned exactly once, in the `POST /v1/pki/certs` response, never again by any later `GET`/list.
+- `docs/api/openapi.yaml` + `docs/api/README.md`: `/pki/ca`, `/pki/certs`, `/pki/certs/{name}` paths and schemas, with a worked example.
+- `cli/src/main.c`: `kanxeoctl pki ca bootstrap/show` and `pki cert create/ls/rm`, mirroring the `dns record`/`dns server` subcommand families, with a distinct multi-line PEM formatter for `create`/`show` (a cert/key can't fit the usual single-row table format). `web/`: a "PKI: Root CA" panel (bootstrap status/button) and a "PKI: Certificates" panel (issuance form + table + a one-time key/cert reveal).
+- `test/test_pki.c`: real cryptographic verification (`openssl verify -CAfile`, SAN round-trip via `openssl x509 -noout -ext`) as the actual proof, not a string check; the "shown once" key guarantee asserted directly (list/get responses confirmed to carry no `key_pem` field); on-disk file deletion confirmed via `stat()`, not just the index entry; restart-survival for both the CA and the cert index.
+
+#### Changed
+- `docs/ROADMAP.md`: Phase 9 marked in progress (part 1 done).
+
+#### Fixed
+- `handle_pki_ca_get()`'s `PKI_ERR_NOT_BOOTSTRAPPED` mapping: the shared `respond_pki_error()` maps it to `400` (correct for `POST /v1/pki/certs`'s "you can't do this yet" precondition), but `GET /v1/pki/ca` on a not-yet-bootstrapped CA needs `404`, matching every other single-resource `GET` in this API. Caught before writing the automated test, once the test's own planned verification made the inconsistency obvious; fixed with an explicit special case rather than threading endpoint context through the shared error mapper.
+
+### Phase 8 (parts 1–2): DNS records + containerized dnsmasq resolution + automatic container registration
+
 ### Phase 8 (part 2): automatic container DNS registration
 
 #### Added

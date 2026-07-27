@@ -14,7 +14,7 @@ static struct dns_record g_records[DNS_MAX_RECORDS];
 static char g_state_path[PATH_MAX];
 static struct dns_server_binding g_bindings[DNS_SERVER_MAX];
 
-static int dns_name_is_valid(const char *name)
+int dns_name_is_valid(const char *name)
 {
 	size_t i;
 	size_t label_len = 0;

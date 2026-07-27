@@ -1,0 +1,89 @@
+#ifndef PKI_H
+#define PKI_H
+
+#include "json.h"
+
+/*
+ * Phase 9 part 1: a single internal root CA plus REST-managed leaf
+ * certificate issuance. Actual cryptography (keypair generation, CSR
+ * signing) is done by the daemon shelling out to the system's real,
+ * unmodified `openssl` binary as a short-lived subprocess -- never
+ * linked into the daemon (ADR-0007's "no third-party dependency
+ * footprint anywhere in the daemon" stays intact: exec'ing isn't
+ * linking) and never hand-rolled (the same "real software, not
+ * hand-rolled" reasoning BIRD and dnsmasq were chosen under in
+ * Phases 7 and 8).
+ *
+ * The CA private key is never returned over the API, in any endpoint,
+ * ever -- it is the root of trust and must never leave the host. Leaf
+ * certificate private keys ARE returned, but exactly once, in the
+ * POST /v1/pki/certs response at the moment of issuance -- neither
+ * the list nor the single-get endpoint ever includes one again
+ * afterward, matching the "credential shown once" pattern most real
+ * ACME-shaped systems use.
+ */
+
+#define PKI_MAX_CERTS 256
+#define PKI_MAX_SANS 8
+#define PKI_SERIAL_MAX 64
+#define PKI_DATE_MAX 32
+#define PKI_SUBJECT_MAX 128 /* CA common_name only -- a free-form display label, not a hostname */
+
+enum pki_error {
+	PKI_OK = 0,
+	PKI_ERR_INVALID_NAME,
+	PKI_ERR_NOT_BOOTSTRAPPED,
+	PKI_ERR_ALREADY_BOOTSTRAPPED,
+	PKI_ERR_DUPLICATE,
+	PKI_ERR_FULL,
+	PKI_ERR_NOT_FOUND,
+	PKI_ERR_OPENSSL_FAILED,
+	PKI_ERR_PERSIST_FAILED
+};
+
+/*
+ * pki_dir is the root of the on-disk layout (ca.key, ca.crt, ca.srl,
+ * certs/<name>.{key,crt}); certs_state_path is the persisted leaf-cert
+ * metadata index (name/serial/not_after/sans -- a fast-listing cache,
+ * not the source of truth for correctness; the key/cert files on disk
+ * are authoritative). Loads that index, if any, at startup.
+ */
+int pki_init(const char *pki_dir, const char *certs_state_path);
+
+int pki_ca_bootstrapped(void);
+
+/* common_name must not contain '/' or control characters -- it is
+ * embedded verbatim into an openssl `-subj "/CN=<common_name>"`
+ * argument, and an unvalidated '/' would let a caller inject
+ * additional, unintended DN fields (e.g. "Foo/O=EvilOrg"). */
+enum pki_error pki_ca_create(const char *common_name, int days);
+
+/* Writes CA info (subject, serial, not_before, not_after, cert_pem --
+ * never the key) straight into w, read fresh from ca.crt on disk via
+ * `openssl x509 -noout ...` every call -- no in-memory cache to keep
+ * in sync, One Source of Truth, and this is a low-frequency
+ * management call so the extra subprocess cost is a non-issue. */
+enum pki_error pki_ca_get(struct json_writer *w);
+
+/*
+ * Issues a leaf certificate named after `name` (used verbatim as its
+ * CN), with the given SANs (san_count must be >=1; every entry,
+ * including name itself if the caller wants it in the SAN list too,
+ * is validated with dns_name_is_valid() -- a leaf cert's identity is
+ * conceptually a hostname, exactly like a DNS record's name).
+ * Writes the full response -- including cert_pem AND key_pem, the
+ * only place the leaf private key is ever returned -- straight into
+ * w on success.
+ */
+enum pki_error pki_cert_create(const char *name, const char *const *sans, int san_count, int days,
+                                struct json_writer *w);
+
+enum pki_error pki_cert_delete(const char *name);
+
+/* Metadata only (name/serial/not_after/sans) -- no cert_pem, no key_pem. */
+void pki_write_json_list(struct json_writer *w);
+
+/* Metadata + cert_pem (read fresh from the .crt file on disk) -- still no key_pem. */
+enum pki_error pki_cert_get_one(const char *name, struct json_writer *w);
+
+#endif /* PKI_H */
