@@ -4,6 +4,26 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 10 (part 2): dependency resolution + explicit upgrades
+
+#### Added
+- `daemon/src/pkg.c`: `pkg_install_start()` gained an `upgrade` parameter and now resolves the full install order via a recursive DFS over `pkg_depends` (post-order, already-installed dependencies skipped, cycle detection against the current resolution path) before forking anything — all local recipe-file I/O, no async need for resolution itself. A `pkg_depends` name with no matching recipe, or a circular dependency, is a `400`, same class as an unparseable recipe.
+- `pkg_build_completed()` gained a chaining contract: on a successful build, if more packages remain queued, it starts the next one's fetch itself and returns `1` with the new pid/pidfd for the caller to track — `handle_container_event()`'s existing unconditional call just started reacting to a return value, no new call site. `pkg_install_start()` gained an `out_started_name` parameter so `POST /v1/pkg/install`'s `202` response honestly describes whichever package actually started fetching first (a dependency, not necessarily the requested name).
+- Upgrades: the already-installed short-circuit is now gated on `upgrade` (still `409` unless true and the recipe's version genuinely differs). `start_fetch_for()` deliberately leaves an in-place upgrade's existing `version`/`files` untouched until the new build actually succeeds; only then are the OLD manifest's files unlinked and the new ones merged and recorded -- a failed upgrade attempt reverts to `PKG_STATE_INSTALLED` (the old, never-touched version) instead of ending `FAILED` with an orphaned, untracked binary still sitting in the base image.
+- `write_pkg_json()` gained `"available_version"` (`null`, or the recipe's current version if it differs from what's installed) — re-read fresh from the recipe file on every response, the concrete "is this out of date" answer.
+- `docs/api/openapi.yaml` + `docs/api/README.md`: `PkgInstallRequest.upgrade`, `PkgEntry.available_version`, worked dependency-chain and upgrade examples.
+- `cli/src/main.c`: `kanxeoctl pkg install --name=NAME [--upgrade]`; `fmt_pkg_line()` gained an available-version column. `web/`: install form gained an "Upgrade" checkbox; packages table gained an Available column.
+- `test/test_pkg.c`: a `top`/`leaf` dependency pair installed via one `POST` (both reach `installed`); a circular pair → `400`, confirmed never registered; a missing-dependency recipe → `400`; an upgrade scenario where `GET` shows `available_version` live before upgrading, a plain re-`POST` stays `409`, `{"upgrade": true}` proceeds, and the resulting binary's real stdout is checked against the *new* fixture's expected output (proof of an actual rebuild, not a relabeled stale cache).
+
+#### Changed
+- `docs/ROADMAP.md`: Phase 10 marked done.
+
+#### Fixed
+- **Reused `__pkgbuild` container upperdir was never cleared between builds** — a chained dependency's `pkg-dest` could silently inherit leftover files from whatever built there previously (a latent gap present since part 1, never triggered by a test that only ever built one package per daemon lifetime). Fixed with `reset_build_container_dir()` (a real `rm -rf` subprocess, not a hand-rolled recursive delete) called before every build's prep. Caught during this part's own manual verification, before the automated test was written.
+- The upgrade-completion failure-handling gap described above (an upgrade attempt that fails partway would otherwise orphan a still-working, still-physically-present old install as untracked and unremovable) — also caught and fixed during manual verification.
+
+## Phase 10 (parts 1–2): package manager — source-based, sandboxed, asynchronous installs, with dependency resolution and upgrades
+
 ### Phase 10 (part 1): package manager — source-based, sandboxed, asynchronous installs
 
 #### Added

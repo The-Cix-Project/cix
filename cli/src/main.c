@@ -45,7 +45,7 @@ static void print_usage(FILE *out)
 	        "  pki cert rm NAME\n"
 	        "  pkg bootstrap\n"
 	        "  pkg recipes\n"
-	        "  pkg install --name=NAME\n"
+	        "  pkg install --name=NAME [--upgrade]\n"
 	        "  pkg ls\n"
 	        "  pkg rm NAME\n");
 }
@@ -1131,8 +1131,10 @@ static void fmt_pkg_line(const struct json_value *v)
 	const char *version = json_str_field(v, "version");
 	const char *state = json_str_field(v, "state");
 	const char *error = json_str_field(v, "error");
+	const char *available = json_str_field(v, "available_version");
 
-	printf("%-24s %-12s %-10s %s\n", name, version, state,
+	printf("%-24s %-12s %-10s %-14s %s\n", name, version, state,
+	       available != NULL && available[0] != '\0' ? available : "-",
 	       error != NULL && error[0] != '\0' ? error : "-");
 }
 
@@ -1172,6 +1174,7 @@ static int cmd_pkg_recipes(const struct kx_client *c, int json_mode)
 static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
+	int upgrade = 0;
 	int i;
 	struct json_writer w;
 	struct kx_response r;
@@ -1179,13 +1182,15 @@ static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, c
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
 			name = argv[i] + 7;
+		else if (strcmp(argv[i], "--upgrade") == 0)
+			upgrade = 1;
 		else {
 			fprintf(stderr, "kanxeoctl: unknown pkg install option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: kanxeoctl pkg install --name=NAME\n");
+		fprintf(stderr, "usage: kanxeoctl pkg install --name=NAME [--upgrade]\n");
 		return 2;
 	}
 
@@ -1193,6 +1198,10 @@ static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, c
 	jw_obj_open(&w);
 	jw_key(&w, "name");
 	jw_str(&w, name);
+	if (upgrade) {
+		jw_key(&w, "upgrade");
+		jw_bool(&w, 1);
+	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -1241,7 +1250,7 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (argc < 1) {
 		fprintf(stderr, "usage: kanxeoctl pkg bootstrap\n"
 		                "       kanxeoctl pkg recipes\n"
-		                "       kanxeoctl pkg install --name=NAME\n"
+		                "       kanxeoctl pkg install --name=NAME [--upgrade]\n"
 		                "       kanxeoctl pkg ls\n"
 		                "       kanxeoctl pkg rm NAME\n");
 		return 2;

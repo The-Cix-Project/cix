@@ -52,6 +52,9 @@
 #define PKG_SHA256_MAX 65
 #define PKG_DEPENDS_MAX 256
 #define PKG_ERROR_MAX 256
+/* Max total packages in one resolved install chain (the target plus
+ * every transitive dependency) -- a real cap, not an unbounded queue. */
+#define PKG_MAX_DEP_CHAIN 32
 
 /* Reserved container name for the single in-flight build (v1
  * serializes installs -- at most one at a time). Shows up in the
@@ -110,15 +113,30 @@ void pkg_write_json_recipes(struct json_writer *w);
 
 /*
  * Validates name + its recipe, refuses if any install is already in
- * flight (PKG_ERR_BUSY) or this package is already PKG_STATE_INSTALLED
- * (PKG_ERR_DUPLICATE), then forks+execve's `curl` to fetch
- * pkg_source on the host (no container yet -- nothing to isolate for
- * a plain network fetch of a URL the operator's own recipe named).
- * On success, *out_pid/*out_pidfd are the running curl subprocess,
- * ready for the caller (main.c, which owns epoll) to track via
- * EPOLLIN on *out_pidfd exactly like a container's own pidfd.
+ * flight (PKG_ERR_BUSY). If name is already PKG_STATE_INSTALLED, this
+ * is PKG_ERR_DUPLICATE unless upgrade is true AND the recipe's current
+ * version differs from what's installed (still PKG_ERR_DUPLICATE if
+ * upgrade is true but the version already matches -- nothing to do).
+ * Otherwise resolves the full dependency chain (pkg_depends, recursive,
+ * cycle-checked, already-installed dependencies skipped) via local
+ * recipe files only -- no async needed for this part, it's all
+ * on-disk. PKG_ERR_INVALID_RECIPE covers a missing/unparseable recipe
+ * for name OR any dependency it names, including a circular one.
+ * Forks+execve's `curl` to fetch the first package in the resolved
+ * chain's source on the host (no container yet -- nothing to isolate
+ * for a plain network fetch of a URL the operator's own recipe
+ * named) -- which may be a dependency, not name itself, if name
+ * needed something installed first. *out_started_name (a caller-
+ * owned buffer of size out_started_name_size) is filled with whatever
+ * that first package actually is, so the caller can build an accurate
+ * response describing what's really happening right now rather than
+ * assuming it's always name. On success, *out_pid/*out_pidfd are the
+ * running curl subprocess, ready for the caller (main.c, which owns
+ * epoll) to track via EPOLLIN on *out_pidfd exactly like a
+ * container's own pidfd.
  */
-enum pkg_error pkg_install_start(const char *name, pid_t *out_pid, int *out_pidfd);
+enum pkg_error pkg_install_start(const char *name, int upgrade, char *out_started_name,
+                                  size_t out_started_name_size, pid_t *out_pid, int *out_pidfd);
 
 /*
  * Called once the tracked fetch subprocess's pidfd fires (caller has
@@ -141,21 +159,35 @@ void pkg_build_spawn_failed(void);
 
 /*
  * Called from main.c's container-exit path unconditionally, after
- * registry_mark_exited() -- no-ops unless container_name is
- * PKG_BUILD_CONTAINER_NAME, mirroring exactly how
+ * registry_mark_exited() -- no-ops (returns 0) unless container_name
+ * is PKG_BUILD_CONTAINER_NAME, mirroring exactly how
  * dns_record_forget_owner()/pki_cert_forget_owner() are already
  * called unconditionally on every container delete. On a clean exit,
  * merges <build container upperdir>/build/pkg-dest/ into the base
  * image (plain host file I/O -- the container has already exited, so
  * there is no running mount namespace left to reach into via
- * /proc/<pid>/root/, unlike DNS/PKI's live-container writes) and
- * records every copied file's path into the package's manifest.
+ * /proc/<pid>/root/, unlike DNS/PKI's live-container writes); for an
+ * upgrade of an already-installed package, the OLD manifest's files
+ * are unlinked first, so a version that renamed/dropped files doesn't
+ * leave the old ones behind. Records every copied file's path into
+ * the package's manifest.
+ *
+ * If this completion advances the dependency chain (there's a next
+ * queued package to install), forks+execve's `curl` for it exactly
+ * like pkg_install_start() does for the first one, and returns 1 with
+ * *out_pid/*out_pidfd filled in -- the caller must
+ * register_pkg_fetch_pidfd() them, the same reaction it already has
+ * to pkg_fetch_completed() returning 1 to start a build. Returns 0 if
+ * there's nothing more to chain (queue exhausted, this container
+ * wasn't the tracked job, or the build failed).
  */
-void pkg_build_completed(const char *container_name, int exit_status);
+int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_pid, int *out_pidfd);
 
 /* Metadata for every known package (installed or in-flight): name,
  * version, state, error (null unless FAILED), files (manifest, empty
- * until INSTALLED). */
+ * until INSTALLED), available_version (null if up to date or not yet
+ * installed, else the recipe's current version -- re-read from disk
+ * on every call, One Source of Truth). */
 void pkg_write_json_list(struct json_writer *w);
 enum pkg_error pkg_get_one(const char *name, struct json_writer *w);
 

@@ -286,7 +286,36 @@ Poll `GET /v1/pkg/hello` until `state` leaves `fetching`/`building`:
 
 `state: "failed"` populates `error` (checksum mismatch, build failure, etc.) — the package stays visible via `GET` so the failure is diagnosable, not silently dropped. `DELETE /v1/pkg/hello` unlinks every file in its manifest from the base image, not just the registry entry.
 
-v1 serializes installs — only one may be in flight at a time (`POST /v1/pkg/install` for a second package while another is still `fetching`/`building` is a `409`). `pkg_depends` is parsed and shown but not acted on yet — no automatic dependency installation in v1.
+v1 serializes installs — only one may be in flight at a time (`POST /v1/pkg/install` for a second package while another is still `fetching`/`building` is a `409`).
+
+### Dependencies
+
+A recipe's `pkg_depends` (space-separated names) is resolved automatically. Given a `top` recipe with `pkg_depends="leaf"`:
+
+```
+POST /v1/pkg/install
+{"name": "top"}
+```
+
+Installs `leaf` first (skipped entirely if already installed), then `top` — one `POST`, both packages end up `installed`, visible individually via `GET /v1/pkg`. **The `202` response describes whichever package actually started fetching first** — here, `leaf`, not `top`, since `top` can't start until its dependency is done. Poll by name (`GET /v1/pkg/leaf`, then `GET /v1/pkg/top`) to follow the whole chain. A dependency with no matching recipe, or a circular dependency (`A` needs `B` needs `A`), is a `400` — nothing is fetched.
+
+### Upgrades
+
+Re-`POST`ing an already-installed package is always `409`, even after its recipe's `pkg_version` has changed on disk — explicit intent is required:
+
+```
+POST /v1/pkg/install
+{"name": "leaf"}
+```
+→ `409` (still installed at the old version; add `"upgrade": true` to proceed).
+
+```
+POST /v1/pkg/install
+{"name": "leaf", "upgrade": true}
+```
+→ `202` if the recipe's version genuinely differs from what's installed (still `409`, "nothing to do," if it doesn't). The old version's manifested files are removed only once the new version's build actually succeeds — a failed upgrade attempt leaves the working old install untouched, not half-removed.
+
+`GET /v1/pkg/{name}` shows `"available_version"` (`null`, or the recipe's current version) for any installed package whose recipe has since changed — the concrete "is this out of date" answer, checked live against the recipe on disk every time, not cached.
 
 ## Current scope boundaries (v1, deliberate — see ADR-0007)
 
@@ -297,7 +326,7 @@ v1 serializes installs — only one may be in flight at a time (`POST /v1/pkg/in
 - Routes are set-once at creation and not echoed back or introspectable afterward; modifying them on a running container would need a new "enter another netns from outside" primitive, not built yet. See `docs/ROADMAP.md`.
 - DNS server bindings are in-memory only (not persisted, like the container registry itself — a binding referencing a container that dies with the daemon means nothing after a restart anyway). Only one hosts-format record type; no CNAME/MX/TXT/etc.
 - PKI: no certificate revocation/CRL, no CA regeneration/rotation, no CSR-submission flow (the daemon always generates both the keypair and the cert itself) — see `docs/ROADMAP.md` Phase 9.
-- Package manager: no automatic dependency installation yet (`pkg_depends` is parsed and shown, not acted on); only one install in flight at a time; symlinks in a package's own `DESTDIR` output are skipped (regular files and directories only); no package upgrade/rebuild flow — see `docs/ROADMAP.md` Phase 10.
+- Package manager: only one install in flight at a time (dependency chains still serialize through that same single slot); no version-constrained dependencies (any installed version satisfies a dependency); symlinks in a package's own `DESTDIR` output are skipped (regular files and directories only); no bulk "upgrade everything outdated" — upgrades are per-package, explicit — see `docs/ROADMAP.md` Phase 10.
 
 ## Why this file exists alongside `openapi.yaml`
 

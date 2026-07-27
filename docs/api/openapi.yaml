@@ -507,13 +507,15 @@ paths:
               schema:
                 $ref: "#/components/schemas/PkgEntry"
         "400":
-          description: name missing, or no such recipe / it failed to parse
+          description: >
+            name missing; no such recipe / it failed to parse; or a dependency it names
+            (transitively) is missing its own recipe or forms a circular dependency
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: Already installed, or another install is already in progress
+          description: Already installed (see upgrade), or another install is already in progress
           content:
             application/json:
               schema:
@@ -1036,7 +1038,21 @@ components:
       properties:
         name:
           type: string
-          description: Must match an existing <name>.recipe file's own pkg_name=.
+          description: >
+            Must match an existing <name>.recipe file's own pkg_name=. Its pkg_depends
+            are resolved and installed first automatically (already-installed
+            dependencies are skipped; a circular or unresolvable dependency is a 400).
+        upgrade:
+          type: boolean
+          default: false
+          description: >
+            If name is already installed, a plain POST (upgrade omitted or false) is
+            always 409, even if the recipe's version has since changed -- explicit intent
+            is required to rebuild a working install. Set true to allow it: still 409 if
+            the recipe's version already matches what's installed (nothing to do),
+            otherwise proceeds -- the old version's files are removed and the new
+            version's are installed once the rebuild succeeds. Only ever applies to name
+            itself, never to a dependency pulled in transitively.
 
     PkgEntry:
       type: object
@@ -1049,10 +1065,22 @@ components:
         state:
           type: string
           enum: [fetching, building, installed, failed]
+          description: >
+            The response to POST /pkg/install describes whichever package actually
+            started fetching first, which may be a dependency rather than the requested
+            name if that name needed something installed first.
         error:
           type: string
           nullable: true
           description: Populated only when state is "failed".
+        available_version:
+          type: string
+          nullable: true
+          description: >
+            Only meaningful when state is "installed": null if the installed version
+            matches the recipe currently on disk, otherwise the recipe's current
+            pkg_version= -- re-read fresh on every response, not cached. The concrete
+            answer to "is this out of date."
         files:
           type: array
           items:

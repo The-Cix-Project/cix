@@ -21,6 +21,7 @@ extern char **environ;
 #define PKG_TAR_BIN "/usr/bin/tar"
 #define PKG_SHA256SUM_BIN "/usr/bin/sha256sum"
 #define PKG_CP_BIN "/usr/bin/cp"
+#define PKG_RM_BIN "/bin/rm"
 
 struct pkg_entry {
 	char name[PKG_NAME_MAX];
@@ -53,6 +54,17 @@ static char g_pkgbuild_rootfs[PATH_MAX];
 
 /* v1 serializes installs: at most one job in flight. Empty = idle. */
 static char g_current_job_name[PKG_NAME_MAX];
+
+/* The resolved install order for the current job: dependencies first
+ * (post-order), the originally-requested package last. g_dep_queue_pos
+ * is the index currently fetching/building; g_dep_queue_is_upgrade is
+ * true only when the LAST entry is an explicit upgrade of an already-
+ * installed package (dependencies are only ever fresh-installed if
+ * missing, never auto-upgraded as a side effect). */
+static char g_dep_queue[PKG_MAX_DEP_CHAIN][PKG_NAME_MAX];
+static int g_dep_queue_count;
+static int g_dep_queue_pos;
+static int g_dep_queue_is_upgrade;
 
 /* Static storage for the pending build's container_spec inputs --
  * valid from pkg_fetch_completed() returning success through the
@@ -103,6 +115,23 @@ static void pkg_entry_free_files(struct pkg_entry *e)
 	e->files = NULL;
 	e->file_count = 0;
 	e->files_cap = 0;
+}
+
+/* Unlinks every one of e's manifested files from the base image --
+ * does NOT touch e->files itself (caller decides when to forget the
+ * list, e.g. only once a replacement build has actually succeeded for
+ * an in-place upgrade). Shared by pkg_delete() and the upgrade path
+ * in pkg_build_completed(). */
+static void unlink_manifest_files(const struct pkg_entry *e)
+{
+	int i;
+
+	for (i = 0; i < e->file_count; i++) {
+		char path[PATH_MAX];
+
+		snprintf(path, sizeof(path), "%s/%s", g_base_rootfs, e->files[i]);
+		unlink(path);
+	}
 }
 
 static int pkg_entry_add_file(struct pkg_entry *e, const char *relpath)
@@ -247,6 +276,22 @@ static int extract_tarball(const char *tarball_path, const char *dest_dir)
 	return run_subprocess(PKG_TAR_BIN, argv);
 }
 
+/*
+ * __pkgbuild is a single, reserved, reused container path (v1
+ * serializes builds to one at a time) -- without this, a later
+ * build's /build/pkg-dest would silently inherit leftover files from
+ * whatever the previous build (chained dependency or a completely
+ * unrelated earlier install) left in the same upperdir. Called before
+ * every build's prep, guaranteeing each one starts from a genuinely
+ * clean container directory regardless of what ran there before.
+ */
+static int reset_build_container_dir(const char *container_base)
+{
+	char *argv[] = { (char *)PKG_RM_BIN, "-rf", (char *)container_base, NULL };
+
+	return run_subprocess(PKG_RM_BIN, argv);
+}
+
 static int run_capture_sha256(const char *path, char *out, size_t out_size)
 {
 	int pipefd[2];
@@ -365,6 +410,8 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 {
 	int i;
 	const char *state_str;
+	char available_version[PKG_VERSION_MAX];
+	int has_available = 0;
 
 	switch (e->state) {
 	case PKG_STATE_FETCHING:
@@ -382,6 +429,21 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 		break;
 	}
 
+	/* Re-read fresh from disk every call -- One Source of Truth, no
+	 * cached comparison to keep in sync. Only meaningful once installed
+	 * (an in-flight fetch/build is already "the latest recipe", by
+	 * definition -- it was just resolved from it). */
+	if (e->state == PKG_STATE_INSTALLED) {
+		char recipe_path[PATH_MAX];
+		struct pkg_recipe recipe;
+
+		snprintf(recipe_path, sizeof(recipe_path), "%s/%s.recipe", g_recipes_dir, e->name);
+		if (parse_recipe(recipe_path, &recipe) == 0 && strcmp(recipe.version, e->version) != 0) {
+			snprintf(available_version, sizeof(available_version), "%s", recipe.version);
+			has_available = 1;
+		}
+	}
+
 	jw_obj_open(w);
 	jw_key(w, "name");
 	jw_str(w, e->name);
@@ -392,6 +454,11 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 	jw_key(w, "error");
 	if (e->error[0] != '\0')
 		jw_str(w, e->error);
+	else
+		jw_null(w);
+	jw_key(w, "available_version");
+	if (has_available)
+		jw_str(w, available_version);
 	else
 		jw_null(w);
 	jw_key(w, "files");
@@ -542,6 +609,9 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
 
 	memset(g_packages, 0, sizeof(g_packages));
 	g_current_job_name[0] = '\0';
+	g_dep_queue_count = 0;
+	g_dep_queue_pos = 0;
+	g_dep_queue_is_upgrade = 0;
 	return load_state();
 }
 
@@ -624,61 +694,147 @@ void pkg_write_json_recipes(struct json_writer *w)
 	jw_arr_close(w);
 }
 
-enum pkg_error pkg_install_start(const char *name, pid_t *out_pid, int *out_pidfd)
+/*
+ * Recursive DFS, post-order: name's own pkg_depends (each recursed
+ * into first) land in queue before name itself. Already-INSTALLED
+ * packages are skipped as already-satisfied dependencies -- UNLESS
+ * force is set, which only the top-level pkg_install_start() call
+ * uses, so an explicit-upgrade target still gets queued even though
+ * it's already installed. Cycle detection via "visiting" (the current
+ * DFS path); a name reappearing there is a circular dependency, not a
+ * legitimate diamond (diamonds are fine and already deduplicated by
+ * the "already in queue" check below, independent of the cycle check).
+ * All local file I/O -- no async need, every recipe involved is
+ * already on disk.
+ */
+static int resolve_chain(const char *name, int force, char queue[][PKG_NAME_MAX], int *count,
+                          char visiting[][PKG_NAME_MAX], int *visiting_count, char *err_out,
+                          size_t err_out_size)
+{
+	struct pkg_entry *existing;
+	struct pkg_recipe recipe;
+	char recipe_path[PATH_MAX];
+	char deps_copy[PKG_DEPENDS_MAX];
+	char *tok, *save = NULL;
+	int i;
+
+	if (!pkg_name_is_valid(name)) {
+		snprintf(err_out, err_out_size, "invalid dependency name '%s'", name);
+		return -1;
+	}
+
+	existing = pkg_find(name);
+	if (!force && existing != NULL && existing->state == PKG_STATE_INSTALLED)
+		return 0; /* already satisfied */
+
+	for (i = 0; i < *count; i++) {
+		if (strcmp(queue[i], name) == 0)
+			return 0; /* already queued via another branch (a diamond, not a cycle) */
+	}
+
+	for (i = 0; i < *visiting_count; i++) {
+		if (strcmp(visiting[i], name) == 0) {
+			snprintf(err_out, err_out_size, "circular dependency involving '%s'", name);
+			return -1;
+		}
+	}
+
+	snprintf(recipe_path, sizeof(recipe_path), "%s/%s.recipe", g_recipes_dir, name);
+	if (parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0) {
+		snprintf(err_out, err_out_size, "unknown dependency '%s' (no recipe)", name);
+		return -1;
+	}
+
+	if (*visiting_count >= PKG_MAX_DEP_CHAIN) {
+		snprintf(err_out, err_out_size, "dependency chain too deep");
+		return -1;
+	}
+	strncpy(visiting[*visiting_count], name, PKG_NAME_MAX - 1);
+	visiting[*visiting_count][PKG_NAME_MAX - 1] = '\0';
+	(*visiting_count)++;
+
+	snprintf(deps_copy, sizeof(deps_copy), "%s", recipe.depends);
+	tok = strtok_r(deps_copy, " \t", &save);
+	while (tok != NULL) {
+		if (resolve_chain(tok, 0, queue, count, visiting, visiting_count, err_out, err_out_size) !=
+		    0)
+			return -1;
+		tok = strtok_r(NULL, " \t", &save);
+	}
+
+	(*visiting_count)--;
+
+	if (*count >= PKG_MAX_DEP_CHAIN) {
+		snprintf(err_out, err_out_size, "dependency chain too large");
+		return -1;
+	}
+	strncpy(queue[*count], name, PKG_NAME_MAX - 1);
+	queue[*count][PKG_NAME_MAX - 1] = '\0';
+	(*count)++;
+	return 0;
+}
+
+/*
+ * Starts the fetch for a single package already known to have a valid
+ * recipe (resolve_chain() already checked). Shared by pkg_install_start()
+ * (the first queue entry) and pkg_build_completed() (chaining into the
+ * next one). For a genuine in-place upgrade of an already-INSTALLED
+ * entry, deliberately does NOT reset it -- e->version/e->files are
+ * left exactly as they are until the new build actually succeeds, so
+ * a failure here leaves the old, still-physically-present install
+ * correctly tracked instead of silently orphaned.
+ */
+static enum pkg_error start_fetch_for(const char *name, pid_t *out_pid, int *out_pidfd)
 {
 	struct pkg_recipe recipe;
 	char recipe_path[PATH_MAX];
 	char tarball_path[PATH_MAX];
 	struct pkg_entry *e;
 	int i, slot = -1;
+	int is_upgrade;
 	pid_t pid;
 	int pidfd;
-
-	if (!pkg_name_is_valid(name))
-		return PKG_ERR_INVALID_NAME;
-	if (g_current_job_name[0] != '\0')
-		return PKG_ERR_BUSY;
-
-	e = pkg_find(name);
-	if (e != NULL && e->state == PKG_STATE_INSTALLED)
-		return PKG_ERR_DUPLICATE;
 
 	snprintf(recipe_path, sizeof(recipe_path), "%s/%s.recipe", g_recipes_dir, name);
 	if (parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
 		return PKG_ERR_INVALID_RECIPE;
 
-	if (e == NULL) {
-		for (i = 0; i < PKG_MAX_PACKAGES; i++) {
-			if (!g_packages[i].in_use) {
-				slot = i;
-				break;
+	e = pkg_find(name);
+	is_upgrade = (e != NULL && e->state == PKG_STATE_INSTALLED);
+
+	if (e == NULL || !is_upgrade) {
+		if (e == NULL) {
+			for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+				if (!g_packages[i].in_use) {
+					slot = i;
+					break;
+				}
 			}
+			if (slot < 0)
+				return PKG_ERR_FULL;
+			e = &g_packages[slot];
+		} else {
+			pkg_entry_free_files(e); /* retry after a previous FAILED attempt */
 		}
-		if (slot < 0)
-			return PKG_ERR_FULL;
-		e = &g_packages[slot];
-	} else {
-		pkg_entry_free_files(e); /* retry after a previous FAILED attempt */
+		memset(e, 0, sizeof(*e));
+		e->in_use = 1;
+		strncpy(e->name, recipe.name, sizeof(e->name) - 1);
 	}
-	memset(e, 0, sizeof(*e));
-	e->in_use = 1;
-	strncpy(e->name, recipe.name, sizeof(e->name) - 1);
-	strncpy(e->version, recipe.version, sizeof(e->version) - 1);
-	strncpy(e->depends, recipe.depends, sizeof(e->depends) - 1);
 	e->state = PKG_STATE_FETCHING;
+	e->error[0] = '\0';
 
 	if (persist_mkdir_p(g_sources_dir) != 0) {
-		e->state = PKG_STATE_FAILED;
+		e->state = is_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
 		snprintf(e->error, sizeof(e->error), "could not create sources directory");
 		return PKG_ERR_PERSIST_FAILED;
 	}
-	snprintf(tarball_path, sizeof(tarball_path), "%s/%s-%s.tarball", g_sources_dir, e->name,
-	         e->version);
+	snprintf(tarball_path, sizeof(tarball_path), "%s/%s-%s.tarball", g_sources_dir, recipe.name,
+	         recipe.version);
 
 	pid = fork();
 	if (pid < 0) {
 		perror("fork");
-		e->state = PKG_STATE_FAILED;
+		e->state = is_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
 		snprintf(e->error, sizeof(e->error), "fork failed");
 		return PKG_ERR_SPAWN_FAILED;
 	}
@@ -694,14 +850,61 @@ enum pkg_error pkg_install_start(const char *name, pid_t *out_pid, int *out_pidf
 		perror("pidfd_open");
 		kill(pid, SIGKILL);
 		waitpid(pid, NULL, 0);
-		e->state = PKG_STATE_FAILED;
+		e->state = is_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
 		snprintf(e->error, sizeof(e->error), "could not track fetch subprocess");
 		return PKG_ERR_SPAWN_FAILED;
 	}
 
-	strncpy(g_current_job_name, e->name, sizeof(g_current_job_name) - 1);
+	strncpy(g_current_job_name, name, sizeof(g_current_job_name) - 1);
 	*out_pid = pid;
 	*out_pidfd = pidfd;
+	return PKG_OK;
+}
+
+enum pkg_error pkg_install_start(const char *name, int upgrade, char *out_started_name,
+                                  size_t out_started_name_size, pid_t *out_pid, int *out_pidfd)
+{
+	struct pkg_recipe recipe;
+	char recipe_path[PATH_MAX];
+	struct pkg_entry *e;
+	char visiting[PKG_MAX_DEP_CHAIN][PKG_NAME_MAX];
+	int visiting_count = 0;
+	char err[PKG_ERROR_MAX];
+	enum pkg_error perr;
+
+	if (!pkg_name_is_valid(name))
+		return PKG_ERR_INVALID_NAME;
+	if (g_current_job_name[0] != '\0')
+		return PKG_ERR_BUSY;
+
+	snprintf(recipe_path, sizeof(recipe_path), "%s/%s.recipe", g_recipes_dir, name);
+	if (parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
+		return PKG_ERR_INVALID_RECIPE;
+
+	e = pkg_find(name);
+	if (e != NULL && e->state == PKG_STATE_INSTALLED &&
+	    (!upgrade || strcmp(e->version, recipe.version) == 0))
+		return PKG_ERR_DUPLICATE;
+
+	/* Resolve the full install order: name's own dependencies first
+	 * (skipped if already satisfied), then name itself -- force=1 so
+	 * an explicit upgrade target is queued even though it's already
+	 * installed (resolve_chain()'s default "already installed, skip"
+	 * rule is for pure dependencies, not the package actually asked for). */
+	g_dep_queue_count = 0;
+	if (resolve_chain(name, 1, g_dep_queue, &g_dep_queue_count, visiting, &visiting_count, err,
+	                   sizeof(err)) != 0)
+		return PKG_ERR_INVALID_RECIPE;
+
+	g_dep_queue_pos = 0;
+	g_dep_queue_is_upgrade = (e != NULL && e->state == PKG_STATE_INSTALLED);
+
+	perr = start_fetch_for(g_dep_queue[0], out_pid, out_pidfd);
+	if (perr != PKG_OK) {
+		g_dep_queue_count = 0;
+		return perr;
+	}
+	snprintf(out_started_name, out_started_name_size, "%s", g_dep_queue[0]);
 	return PKG_OK;
 }
 
@@ -714,34 +917,44 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out)
 	char sha_out[128];
 	char container_base[PATH_MAX];
 	char src_dir[PATH_MAX], dest_dir[PATH_MAX], recipe_dst[PATH_MAX];
+	int is_final_upgrade;
 
 	if (e == NULL) {
 		g_current_job_name[0] = '\0';
+		g_dep_queue_count = 0;
 		return 0;
 	}
+	is_final_upgrade = g_dep_queue_is_upgrade && (g_dep_queue_pos + 1 >= g_dep_queue_count);
 
 	if (exit_status != 0) {
-		e->state = PKG_STATE_FAILED;
+		e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
 		snprintf(e->error, sizeof(e->error), "fetch failed (curl exit status %d)", exit_status);
 		g_current_job_name[0] = '\0';
+		g_dep_queue_count = 0;
 		return 0;
 	}
 
 	snprintf(recipe_path, sizeof(recipe_path), "%s/%s.recipe", g_recipes_dir, e->name);
 	if (parse_recipe(recipe_path, &recipe) != 0) {
-		e->state = PKG_STATE_FAILED;
+		e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
 		snprintf(e->error, sizeof(e->error), "recipe became unreadable mid-install");
 		g_current_job_name[0] = '\0';
+		g_dep_queue_count = 0;
 		return 0;
 	}
+	/* recipe.version, not e->version -- during an in-place upgrade
+	 * e->version is deliberately still the OLD version until this job
+	 * actually succeeds; the tarball on disk was fetched under the
+	 * NEW version's name by start_fetch_for(). */
 	snprintf(tarball_path, sizeof(tarball_path), "%s/%s-%s.tarball", g_sources_dir, e->name,
-	         e->version);
+	         recipe.version);
 
 	if (run_capture_sha256(tarball_path, sha_out, sizeof(sha_out)) != 0 ||
 	    strcasecmp(sha_out, recipe.sha256) != 0) {
-		e->state = PKG_STATE_FAILED;
+		e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
 		snprintf(e->error, sizeof(e->error), "checksum mismatch");
 		g_current_job_name[0] = '\0';
+		g_dep_queue_count = 0;
 		return 0;
 	}
 
@@ -756,12 +969,13 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out)
 	snprintf(dest_dir, sizeof(dest_dir), "%s/build/pkg-dest", g_build_upperdir);
 	snprintf(recipe_dst, sizeof(recipe_dst), "%s/build/recipe.sh", g_build_upperdir);
 
-	if (persist_mkdir_p(src_dir) != 0 || persist_mkdir_p(dest_dir) != 0 ||
-	    copy_file_simple(recipe_path, recipe_dst) != 0 ||
+	if (reset_build_container_dir(container_base) != 0 || persist_mkdir_p(src_dir) != 0 ||
+	    persist_mkdir_p(dest_dir) != 0 || copy_file_simple(recipe_path, recipe_dst) != 0 ||
 	    extract_tarball(tarball_path, src_dir) != 0) {
-		e->state = PKG_STATE_FAILED;
+		e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
 		snprintf(e->error, sizeof(e->error), "could not prepare the build container");
 		g_current_job_name[0] = '\0';
+		g_dep_queue_count = 0;
 		return 0;
 	}
 
@@ -797,48 +1011,96 @@ void pkg_build_spawn_failed(void)
 	struct pkg_entry *e = pkg_find(g_current_job_name);
 
 	if (e != NULL) {
-		e->state = PKG_STATE_FAILED;
+		int is_final_upgrade = g_dep_queue_is_upgrade && (g_dep_queue_pos + 1 >= g_dep_queue_count);
+
+		e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
 		snprintf(e->error, sizeof(e->error), "could not start the build container");
 	}
 	g_current_job_name[0] = '\0';
+	g_dep_queue_count = 0;
 }
 
-void pkg_build_completed(const char *container_name, int exit_status)
+int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_pid,
+                         int *out_pidfd)
 {
 	struct pkg_entry *e;
 	char container_base[PATH_MAX];
 	char dest_dir[PATH_MAX];
+	int is_final, is_upgrade;
 
 	if (strcmp(container_name, PKG_BUILD_CONTAINER_NAME) != 0)
-		return;
+		return 0;
 
 	e = pkg_find(g_current_job_name);
 	if (e == NULL) {
 		g_current_job_name[0] = '\0';
-		return;
+		g_dep_queue_count = 0;
+		return 0;
 	}
 
+	is_final = (g_dep_queue_pos + 1 >= g_dep_queue_count);
+	is_upgrade = is_final && g_dep_queue_is_upgrade;
+
 	if (exit_status != 0) {
-		e->state = PKG_STATE_FAILED;
+		e->state = is_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
 		snprintf(e->error, sizeof(e->error), "build failed (exit status %d)", exit_status);
 		g_current_job_name[0] = '\0';
-		return;
+		g_dep_queue_count = 0; /* abort the rest of the chain -- a failed dependency
+		                        * means the top-level install can't complete either */
+		return 0;
 	}
 
 	snprintf(container_base, sizeof(container_base), "%s/%s", g_containers_dir,
 	         PKG_BUILD_CONTAINER_NAME);
 	snprintf(dest_dir, sizeof(dest_dir), "%s/upper/build/pkg-dest", container_base);
 
+	if (is_upgrade) {
+		/* Unlink the OLD manifest's files first -- a version that
+		 * renamed/dropped files shouldn't leave the old ones behind.
+		 * Only after this do we lose track of the old file list. */
+		unlink_manifest_files(e);
+		pkg_entry_free_files(e);
+	}
+
+	/* Refresh version from the recipe -- for a fresh install this is
+	 * the first time it's set; for an upgrade this is where the entry
+	 * finally moves from the old version to the new one. */
+	{
+		char recipe_path[PATH_MAX];
+		struct pkg_recipe recipe;
+
+		snprintf(recipe_path, sizeof(recipe_path), "%s/%s.recipe", g_recipes_dir, e->name);
+		if (parse_recipe(recipe_path, &recipe) == 0) {
+			strncpy(e->version, recipe.version, sizeof(e->version) - 1);
+			strncpy(e->depends, recipe.depends, sizeof(e->depends) - 1);
+		}
+	}
+
 	if (persist_mkdir_p(g_base_rootfs) != 0 || merge_tree(dest_dir, g_base_rootfs, "", e) != 0) {
 		e->state = PKG_STATE_FAILED;
 		snprintf(e->error, sizeof(e->error), "failed to merge installed files into the base image");
 		g_current_job_name[0] = '\0';
-		return;
+		g_dep_queue_count = 0;
+		return 0;
 	}
 
 	e->state = PKG_STATE_INSTALLED;
+	e->error[0] = '\0';
 	save_state();
+
+	if (!is_final) {
+		enum pkg_error perr;
+
+		g_dep_queue_pos++;
+		perr = start_fetch_for(g_dep_queue[g_dep_queue_pos], out_pid, out_pidfd);
+		if (perr == PKG_OK)
+			return 1;
+		/* couldn't start the next dependency -- abort the chain */
+	}
+
 	g_current_job_name[0] = '\0';
+	g_dep_queue_count = 0;
+	return 0;
 }
 
 void pkg_write_json_list(struct json_writer *w)
@@ -866,19 +1128,13 @@ enum pkg_error pkg_get_one(const char *name, struct json_writer *w)
 enum pkg_error pkg_delete(const char *name)
 {
 	struct pkg_entry *e = pkg_find(name);
-	int i;
 
 	if (e == NULL || e->state != PKG_STATE_INSTALLED)
 		return PKG_ERR_NOT_FOUND;
 	if (strcmp(g_current_job_name, name) == 0)
 		return PKG_ERR_BUSY;
 
-	for (i = 0; i < e->file_count; i++) {
-		char path[PATH_MAX];
-
-		snprintf(path, sizeof(path), "%s/%s", g_base_rootfs, e->files[i]);
-		unlink(path);
-	}
+	unlink_manifest_files(e);
 	pkg_entry_free_files(e);
 	memset(e, 0, sizeof(*e));
 

@@ -227,6 +227,10 @@
 				Name
 				<input type="text" id="pkgf-name" pattern="[A-Za-z0-9_-]+" required>
 			</label>
+			<label class="checkbox">
+				<input type="checkbox" id="pkgf-upgrade">
+				Upgrade
+			</label>
 			<button type="submit">Install</button>
 		</form>
 		<table id="pkg-list">
@@ -235,13 +239,14 @@
 					<th>Name</th>
 					<th>Version</th>
 					<th>State</th>
+					<th>Available</th>
 					<th>Error</th>
 					<th>Files</th>
 					<th></th>
 				</tr>
 			</thead>
 			<tbody id="pkg-list-body">
-				<tr><td colspan="6" class="empty">Loading&hellip;</td></tr>
+				<tr><td colspan="7" class="empty">Loading&hellip;</td></tr>
 			</tbody>
 		</table>
 	</section>

@@ -1113,6 +1113,9 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
 	const char *name;
+	const struct json_value *jupgrade;
+	int upgrade;
+	char started_name[PKG_NAME_MAX];
 	pid_t pid;
 	int pidfd;
 	enum pkg_error perr;
@@ -1129,16 +1132,23 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 		respond_error(fd, 400, "Bad Request", "name missing");
 		return;
 	}
+	jupgrade = json_object_get(root, "upgrade");
+	upgrade = (jupgrade != NULL && jupgrade->type == JSON_BOOL && jupgrade->u.boolean);
 
-	perr = pkg_install_start(name, &pid, &pidfd);
+	perr = pkg_install_start(name, upgrade, started_name, sizeof(started_name), &pid, &pidfd);
 	if (perr != PKG_OK) {
 		json_free(root);
 		respond_pkg_error(fd, perr);
 		return;
 	}
 
+	/*
+	 * started_name, not name -- if name needed a dependency installed
+	 * first, that dependency (not name itself) is what's actually
+	 * fetching right now, and that's the honest thing to describe.
+	 */
 	jw_init(&w);
-	if (pkg_get_one(name, &w) != PKG_OK) {
+	if (pkg_get_one(started_name, &w) != PKG_OK) {
 		/* shouldn't happen -- pkg_install_start() just created it */
 		jw_free(&w);
 		json_free(root);
@@ -1431,6 +1441,9 @@ static void handle_client_event(struct conn *cc)
 static void handle_container_event(struct conn *cc)
 {
 	struct registry_entry *entry = cc->entry;
+	pid_t pkg_pid;
+	int pkg_pidfd;
+	int chained;
 
 	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	registry_mark_exited(entry);
@@ -1442,10 +1455,15 @@ static void handle_container_event(struct conn *cc)
 	 * pki_cert_forget_owner() on every container delete -- pkg.c
 	 * decides relevance (no-op unless this is PKG_BUILD_CONTAINER_NAME),
 	 * so this hook stays trivial regardless of which container exited.
+	 * A return of 1 means a dependency chain is advancing into another
+	 * fetch -- register its pidfd exactly like a fresh top-level
+	 * install already does.
 	 */
-	pkg_build_completed(entry->name, entry->exit_status);
+	chained = pkg_build_completed(entry->name, entry->exit_status, &pkg_pid, &pkg_pidfd);
 	if (strcmp(entry->name, PKG_BUILD_CONTAINER_NAME) == 0)
 		registry_remove(entry->name);
+	if (chained)
+		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd);
 }
 
 /*

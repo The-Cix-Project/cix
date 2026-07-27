@@ -1,5 +1,5 @@
 /*
- * Phase 10 part 1 end-to-end test: proves the package manager
+ * Phase 10 parts 1-2 end-to-end test: proves the package manager
  * (POST /v1/pkg/bootstrap, POST /v1/pkg/install, GET /v1/pkg[/{name}],
  * DELETE /v1/pkg/{name} -- daemon/src/pkg.c) over real HTTP, with a
  * real fetch -> checksum verify -> isolated container build -> merge
@@ -8,7 +8,9 @@
  * uses a file:// URL against a tiny synthetic C fixture this test
  * stages itself, so the real `curl` subprocess code path is genuinely
  * exercised (not skipped/mocked) while the suite stays offline-safe
- * for repeated stress-testing runs.
+ * for repeated stress-testing runs. Part 2 additionally proves
+ * automatic dependency resolution (with cycle detection) and explicit
+ * per-package upgrades.
  */
 #include "httpclient.h"
 #include "json.h"
@@ -130,11 +132,15 @@ static int stage_fixture_tarball(const char *scratch_dir, const char *name, cons
 	if (run_cmd("mkdir -p '%s'", src_dir) != 0)
 		return -1;
 
+	/* version embedded in the output too, not just the name -- lets a
+	 * test tell an old build from a rebuilt-at-a-new-version one apart
+	 * by what the binary actually prints, not just its manifest. */
 	snprintf(hello_c, sizeof(hello_c), "%s/hello.c", src_dir);
 	f = fopen(hello_c, "w");
 	if (f == NULL)
 		return -1;
-	fprintf(f, "#include <stdio.h>\nint main(void){printf(\"hello from %s\\n\");return 0;}\n", name);
+	fprintf(f, "#include <stdio.h>\nint main(void){printf(\"hello from %s v%s\\n\");return 0;}\n",
+	        name, version);
 	fclose(f);
 
 	snprintf(makefile, sizeof(makefile), "%s/Makefile", src_dir);
@@ -174,7 +180,7 @@ static int stage_fixture_tarball(const char *scratch_dir, const char *name, cons
 }
 
 static int write_recipe(const char *name, const char *version, const char *tarball_path,
-                         const char *sha256)
+                         const char *sha256, const char *depends)
 {
 	char path[256];
 	FILE *f;
@@ -187,7 +193,7 @@ static int write_recipe(const char *name, const char *version, const char *tarba
 	fprintf(f, "pkg_version=%s\n", version);
 	fprintf(f, "pkg_source=file://%s\n", tarball_path);
 	fprintf(f, "pkg_sha256=%s\n", sha256);
-	fprintf(f, "pkg_depends=\"\"\n\n");
+	fprintf(f, "pkg_depends=\"%s\"\n\n", depends != NULL ? depends : "");
 	fprintf(f, "pkg_build() {\n\tgcc -o hello hello.c\n}\n\n");
 	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
 	           "\"$PKG_DESTDIR/usr/bin/%s\"\n}\n",
@@ -254,15 +260,15 @@ int main(void)
 		fprintf(stderr, "FAIL: could not stage fixture tarball\n");
 		return 1;
 	}
-	if (write_recipe("greeter", "1.0", tarball_path, sha256) != 0 ||
-	    write_recipe("concurrent", "1.0", tarball_path, sha256) != 0) {
+	if (write_recipe("greeter", "1.0", tarball_path, sha256, "") != 0 ||
+	    write_recipe("concurrent", "1.0", tarball_path, sha256, "") != 0) {
 		fprintf(stderr, "FAIL: could not write recipes\n");
 		return 1;
 	}
 	snprintf(bad_sha256, sizeof(bad_sha256),
 	         "0000000000000000000000000000000000000000000000000000000000000000");
 	bad_sha256[64] = '\0';
-	if (write_recipe("badsum", "1.0", tarball_path, bad_sha256) != 0) {
+	if (write_recipe("badsum", "1.0", tarball_path, bad_sha256, "") != 0) {
 		fprintf(stderr, "FAIL: could not write badsum recipe\n");
 		return 1;
 	}
@@ -394,6 +400,167 @@ int main(void)
 		ok = 0;
 	}
 	kx_response_free(&r);
+
+	/* 9. dependency resolution: `top` depends on `leaf` -- a single
+	 * install of top should transparently install leaf first, both
+	 * ending up installed. */
+	{
+		char leaf_tarball[512], leaf_sha[128];
+		char top_tarball[512], top_sha[128];
+
+		if (stage_fixture_tarball(scratch_dir, "leaf", "1.0", leaf_tarball, sizeof(leaf_tarball),
+		                           leaf_sha, sizeof(leaf_sha)) != 0 ||
+		    stage_fixture_tarball(scratch_dir, "top", "1.0", top_tarball, sizeof(top_tarball),
+		                           top_sha, sizeof(top_sha)) != 0) {
+			fprintf(stderr, "FAIL: could not stage leaf/top fixtures\n");
+			ok = 0;
+		} else if (write_recipe("leaf", "1.0", leaf_tarball, leaf_sha, "") != 0 ||
+		           write_recipe("top", "1.0", top_tarball, top_sha, "leaf") != 0) {
+			fprintf(stderr, "FAIL: could not write leaf/top recipes\n");
+			ok = 0;
+		} else {
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"top\"}", &r) !=
+			        0 ||
+			    r.status != 202) {
+				fprintf(stderr, "FAIL: POST install top, status=%d\n", r.status);
+				ok = 0;
+			}
+			kx_response_free(&r);
+
+			if (poll_pkg_state(&client, "leaf", state, sizeof(state), 60) != 0 ||
+			    strcmp(state, "installed") != 0) {
+				fprintf(stderr, "FAIL: leaf (top's dependency) did not reach installed\n");
+				ok = 0;
+			}
+			if (poll_pkg_state(&client, "top", state, sizeof(state), 60) != 0 ||
+			    strcmp(state, "installed") != 0) {
+				fprintf(stderr, "FAIL: top did not reach installed\n");
+				ok = 0;
+			}
+		}
+	}
+
+	/* 10. circular dependency -> 400, nothing registered */
+	if (write_recipe("circ1", "1.0", tarball_path, sha256, "circ2") != 0 ||
+	    write_recipe("circ2", "1.0", tarball_path, sha256, "circ1") != 0) {
+		fprintf(stderr, "FAIL: could not write circular recipes\n");
+		ok = 0;
+	} else {
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"circ1\"}", &r) !=
+		        0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: circular dependency install expected 400, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pkg/circ1", NULL, &r) != 0 || r.status != 404) {
+			fprintf(stderr, "FAIL: circ1 should never have been registered, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+	}
+
+	/* 11. a dependency with no matching recipe -> 400 */
+	if (write_recipe("needsghost", "1.0", tarball_path, sha256, "ghost") != 0) {
+		fprintf(stderr, "FAIL: could not write needsghost recipe\n");
+		ok = 0;
+	} else {
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"needsghost\"}", &r) !=
+		        0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: missing dependency install expected 400, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+	}
+
+	/* 12. upgrade: bump leaf to 2.0. available_version must be visible
+	 * before upgrading; a plain re-POST stays 409; an explicit upgrade
+	 * proceeds, ends up installed at 2.0, and the binary genuinely
+	 * reflects the NEW source (real proof of a rebuild, not a stale
+	 * cache re-served under a new label). */
+	{
+		char leaf2_tarball[512], leaf2_sha[128];
+
+		if (stage_fixture_tarball(scratch_dir, "leaf", "2.0", leaf2_tarball, sizeof(leaf2_tarball),
+		                           leaf2_sha, sizeof(leaf2_sha)) != 0) {
+			fprintf(stderr, "FAIL: could not stage leaf 2.0 fixture\n");
+			ok = 0;
+		} else if (write_recipe("leaf", "2.0", leaf2_tarball, leaf2_sha, "") != 0) {
+			fprintf(stderr, "FAIL: could not write leaf 2.0 recipe\n");
+			ok = 0;
+		} else {
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "GET", "/v1/pkg/leaf", NULL, &r) != 0 ||
+			    r.status != 200 || !str_eq(json_str_field(r.json, "available_version"), "2.0")) {
+				fprintf(stderr,
+				        "FAIL: leaf should show available_version=2.0 before upgrading, got %s\n",
+				        json_str_field(r.json, "available_version")
+				            ? json_str_field(r.json, "available_version")
+				            : "(null)");
+				ok = 0;
+			}
+			kx_response_free(&r);
+
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"leaf\"}", &r) !=
+			        0 ||
+			    r.status != 409) {
+				fprintf(stderr, "FAIL: re-install without upgrade expected 409, got %d\n",
+				        r.status);
+				ok = 0;
+			}
+			kx_response_free(&r);
+
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "POST", "/v1/pkg/install",
+			                       "{\"name\":\"leaf\",\"upgrade\":true}", &r) != 0 ||
+			    r.status != 202) {
+				fprintf(stderr, "FAIL: upgrade install expected 202, got %d\n", r.status);
+				ok = 0;
+			}
+			kx_response_free(&r);
+
+			if (poll_pkg_state(&client, "leaf", state, sizeof(state), 60) != 0 ||
+			    strcmp(state, "installed") != 0) {
+				fprintf(stderr, "FAIL: leaf upgrade did not reach installed\n");
+				ok = 0;
+			} else {
+				memset(&r, 0, sizeof(r));
+				if (kx_client_request(&client, "GET", "/v1/pkg/leaf", NULL, &r) != 0 ||
+				    !str_eq(json_str_field(r.json, "version"), "2.0") ||
+				    json_str_field(r.json, "available_version") != NULL) {
+					fprintf(stderr,
+					        "FAIL: leaf after upgrade should be version=2.0, "
+					        "available_version=null\n");
+					ok = 0;
+				}
+				kx_response_free(&r);
+
+				{
+					char run_out[256] = { 0 };
+					FILE *fp = popen(BASE_ROOTFS "/usr/bin/leaf", "r");
+
+					if (fp == NULL || fgets(run_out, sizeof(run_out), fp) == NULL ||
+					    strstr(run_out, "hello from leaf v2.0") == NULL) {
+						fprintf(stderr,
+						        "FAIL: leaf binary after upgrade did not reflect the "
+						        "new source, got: %s\n",
+						        run_out);
+						ok = 0;
+					}
+					if (fp != NULL)
+						pclose(fp);
+				}
+			}
+		}
+	}
 
 	/* cleanup */
 	run_cmd("rm -rf '%s'", scratch_dir);

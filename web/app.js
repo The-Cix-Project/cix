@@ -698,7 +698,7 @@ function renderPkgList(packages) {
 	if (packages.length === 0) {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
-		cell.colSpan = 6;
+		cell.colSpan = 7;
 		cell.className = "empty";
 		cell.textContent = "No packages";
 		row.appendChild(cell);
@@ -720,6 +720,10 @@ function renderPkgList(packages) {
 		const stateCell = document.createElement("td");
 		stateCell.textContent = pkg.state;
 		row.appendChild(stateCell);
+
+		const availableCell = document.createElement("td");
+		availableCell.textContent = pkg.available_version || "-";
+		row.appendChild(availableCell);
 
 		const errorCell = document.createElement("td");
 		errorCell.textContent = pkg.error || "-";
@@ -751,7 +755,7 @@ async function refreshPkgList() {
 		pkgListBody.textContent = "";
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
-		cell.colSpan = 6;
+		cell.colSpan = 7;
 		cell.className = "empty";
 		cell.textContent = "Could not load packages: " + e.message;
 		row.appendChild(cell);
@@ -786,9 +790,14 @@ pkgInstallForm.addEventListener("submit", async (event) => {
 	event.preventDefault();
 
 	const name = document.getElementById("pkgf-name").value.trim();
+	const upgrade = document.getElementById("pkgf-upgrade").checked;
+	const body = { name: name };
+
+	if (upgrade)
+		body.upgrade = true;
 
 	try {
-		await apiRequest("POST", "/v1/pkg/install", { name: name });
+		await apiRequest("POST", "/v1/pkg/install", body);
 		clearStatus();
 		pkgInstallForm.reset();
 		await refreshPkgList();
