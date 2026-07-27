@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/mount.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -75,6 +76,64 @@ static int ensure_dir(const char *path)
 		perror(path);
 		return -1;
 	}
+	return 0;
+}
+
+static int mount_or_fail(const char *source, const char *target, const char *fstype,
+                          unsigned long flags)
+{
+	if (mount(source, target, fstype, flags, NULL) != 0) {
+		perror(target);
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * Only reached with --init-mode, i.e. kanxeod running as PID 1 on a bare
+ * kernel boot with no initramfs (Phase 11) -- nothing else has mounted
+ * /proc, /sys, or cgroup2 yet. devtmpfs is populated by the kernel itself
+ * (CONFIG_DEVTMPFS_MOUNT) before init ever runs, so /dev needs no mount
+ * here. Same proc mount flags mountns_pivot() already uses for each
+ * container's own /proc (src/mountns.c) -- one already-correct flag set,
+ * not a second one invented. The tmpfs at BASE_DIR is Phase 11 part 1's
+ * explicit stand-in for the real config/container partitions part 3's
+ * installer mounts there instead -- same mount point, so nothing below
+ * this function changes when that lands.
+ */
+static int boot_init(void)
+{
+	int rtfd;
+
+	if (mount_or_fail("proc", "/proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC) != 0)
+		return -1;
+	if (mount_or_fail("sysfs", "/sys", "sysfs", MS_NOSUID | MS_NODEV | MS_NOEXEC) != 0)
+		return -1;
+	if (mount_or_fail("cgroup2", "/sys/fs/cgroup", "cgroup2", 0) != 0)
+		return -1;
+	if (mount_or_fail("tmpfs", BASE_DIR, "tmpfs", MS_NOSUID | MS_NODEV) != 0)
+		return -1;
+
+	/*
+	 * A fresh kernel boot brings lo up as a device but leaves it
+	 * administratively down (no IFF_UP) -- DEFAULT_BIND's bind() to
+	 * 127.0.0.1 fails with EADDRNOTAVAIL until something sets it up.
+	 * Reuses rtnl_link_set_up() (netplane/), the same primitive every
+	 * container's own network setup already calls -- not a second,
+	 * ioctl-based way to change link state.
+	 */
+	rtfd = rtnl_open();
+	if (rtfd < 0) {
+		perror("rtnl_open");
+		return -1;
+	}
+	if (rtnl_link_set_up(rtfd, "lo") != 0) {
+		perror("rtnl_link_set_up lo");
+		rtnl_close(rtfd);
+		return -1;
+	}
+	rtnl_close(rtfd);
+
 	return 0;
 }
 
@@ -1536,6 +1595,7 @@ int main(int argc, char **argv)
 	int port = DEFAULT_PORT;
 	const char *bind_addr = DEFAULT_BIND;
 	const char *web_root = DEFAULT_WEB_ROOT;
+	int init_mode = 0;
 	int i;
 	int listen_fd;
 	int opt = 1;
@@ -1550,8 +1610,13 @@ int main(int argc, char **argv)
 			bind_addr = argv[i] + 7;
 		else if (strncmp(argv[i], "--web-root=", 11) == 0)
 			web_root = argv[i] + 11;
+		else if (strcmp(argv[i], "--init-mode") == 0)
+			init_mode = 1;
 	}
 	g_web_root = web_root;
+
+	if (init_mode && boot_init() != 0)
+		return 1;
 
 	if (ensure_dir(BASE_DIR) != 0 || ensure_dir(IMAGES_DIR) != 0 ||
 	    ensure_dir(CONTAINERS_DIR) != 0 || ensure_dir(PKI_DIR) != 0 ||
