@@ -26,7 +26,7 @@ $(BUILD)/test_harness: test/test_harness.c $(LIB_SRCS) | $(BUILD)
 $(BUILD)/harness_child: test/harness_child.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(BUILD)/test_overlay: test/test_overlay.c $(LIB_SRCS) | $(BUILD)
+$(BUILD)/test_overlay: test/test_overlay.c test/test_image_fixture.c $(LIB_SRCS) | $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/overlay_child: test/overlay_child.c | $(BUILD)

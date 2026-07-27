@@ -25,28 +25,41 @@ Kanxeo is more than a distribution — it's a discipline. Complex routing protoc
 | 0 | Toolchain smoke test | Done |
 | 1 | Namespace + cgroup v2 container harness | Done |
 | 2 | OverlayFS root construction | Done |
-| 3 | Minimal container CLI | Next |
-| 4–10 | REST daemon, vswitch, routing, DNS, PKI, package manager | Not started |
+| 3 | REST API spec + daemon (host + container lifecycle) | Done |
+| 4 | CLI (pure REST API client) | Done |
+| 5 | Web dashboard (pure REST API client) | Done |
+| 6 | Custom virtual switch / rtnetlink data plane | Done |
+| 7 | Routing protocols (containerized VPNs/routers) | Done |
+| 8 | DNS service | Done |
+| 9 | PKI / certificate management | Done |
+| 10 | Package manager (source-based, dependency resolution, upgrades) | Done |
 
-Full charter: [`docs/MISSION.md`](docs/MISSION.md). Phase-by-phase design and verification detail: [`docs/ROADMAP.md`](docs/ROADMAP.md).
+Every phase above is fully implemented, tested end to end, and documented — see the per-phase write-ups (design, verification steps, real bugs found and fixed) in `docs/ROADMAP.md`. Full charter: [`docs/MISSION.md`](docs/MISSION.md). API contract: [`docs/api/openapi.yaml`](docs/api/openapi.yaml), with a narrative walkthrough at [`docs/api/README.md`](docs/api/README.md).
 
 ## Building
 
 Requires `tcc` and a Linux kernel with cgroup v2 and `clone3`/`CLONE_INTO_CGROUP` support (5.7+). Namespace/mount tests must run as root and require a **privileged** container if run inside one — see `docs/ROADMAP.md` Phase 1 for why.
 
 ```sh
-make              # builds everything into build/, -Wall -Werror, zero warnings
-sudo build/test_harness   # Phase 1: namespace + cgroup harness
-sudo build/test_overlay   # Phase 2: OverlayFS layering
+make                       # builds everything into build/, -Wall -Werror, zero warnings
+sudo build/kanxeod         # start the daemon (REST API + web dashboard on :7620)
+build/kanxeoctl health     # talk to it with the CLI
 make clean
 ```
+
+Every test binary in `build/` is self-contained (each forks and execs its own `kanxeod` instance where needed) and runs standalone as root, e.g. `sudo build/test_pkg`. There is one test binary per phase/part; see `docs/ROADMAP.md` for what each one verifies.
 
 ## Repository Layout
 
 ```
-include/   public API headers (container.h) and internal glue
-src/       runtime implementation (cgroup, namespaces, mounts, overlay, orchestration)
-test/      one demonstrable test + exec target per phase
-docs/      mission charter and phased roadmap
-build/     compiled output (gitignored)
+include/       runtime library public API (container.h) and internal glue
+src/           runtime implementation (cgroup, namespaces, mounts, overlay, container networking)
+netplane/      custom rtnetlink control plane (bridges, veth, routes — no ip/iproute2, no OVS)
+daemon/        kanxeod: the REST daemon — the only process with direct runtime/network/DNS/PKI access
+client/        shared HTTP client library used by the CLI and the daemon's own test suite
+cli/           kanxeoctl: pure REST API client, no direct runtime access
+web/           browser dashboard: vanilla HTML/CSS/JS, no framework, no build step, served by kanxeod
+test/          one demonstrable test (+ exec target, where needed) per phase/part
+docs/          mission charter, phased roadmap, ADRs, and the OpenAPI contract
+build/         compiled output (gitignored)
 ```

@@ -3,6 +3,7 @@
 #include "http.h"
 #include "json.h"
 #include "linux_compat.h"
+#include "namecheck.h"
 #include "network.h"
 #include "pki.h"
 #include "pkg.h"
@@ -79,20 +80,7 @@ static int ensure_dir(const char *path)
 
 static int name_is_valid(const char *name)
 {
-	size_t i;
-
-	if (name == NULL || name[0] == '\0')
-		return 0;
-	for (i = 0; name[i] != '\0'; i++) {
-		char c = name[i];
-
-		if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-		      (c >= '0' && c <= '9') || c == '_' || c == '-'))
-			return 0;
-	}
-	if (i >= REGISTRY_NAME_MAX)
-		return 0;
-	return 1;
+	return simple_name_is_valid(name, REGISTRY_NAME_MAX);
 }
 
 static void respond_json(int fd, int status, const char *status_text, struct json_writer *w)

@@ -29,4 +29,15 @@ int test_image_fixture_build(const char *image_root, const char *child_binary_pa
  */
 int test_image_fixture_add_lib(const char *image_root, const char *host_lib_abs_path);
 
+/*
+ * Plain byte-copy of one file to another (mode 0755 on the
+ * destination), used by the two functions above and available to
+ * callers that need to stage a file test_image_fixture_build()/
+ * test_image_fixture_add_lib() don't cover directly (e.g.
+ * test_overlay.c's own lowerdir, which predates this module and
+ * originally carried its own copy). Returns 0, or -1 (with perror on
+ * the failing path) otherwise.
+ */
+int test_image_fixture_copy_file(const char *src_path, const char *dst_path);
+
 #endif /* TEST_IMAGE_FIXTURE_H */

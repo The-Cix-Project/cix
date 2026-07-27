@@ -11,6 +11,7 @@
 #include "container.h"
 #include "linux_compat.h"
 #include "overlay_test_common.h"
+#include "test_image_fixture.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -45,45 +46,6 @@ static int write_file(const char *path, const char *content)
 		return -1;
 	}
 	fclose(f);
-	return 0;
-}
-
-static int copy_file(const char *src_path, const char *dst_path)
-{
-	int src, dst;
-	char buf[4096];
-	ssize_t n;
-
-	src = open(src_path, O_RDONLY);
-	if (src < 0) {
-		perror(src_path);
-		return -1;
-	}
-
-	dst = open(dst_path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
-	if (dst < 0) {
-		perror(dst_path);
-		close(src);
-		return -1;
-	}
-
-	while ((n = read(src, buf, sizeof(buf))) > 0) {
-		if (write(dst, buf, (size_t)n) != n) {
-			perror("write");
-			close(src);
-			close(dst);
-			return -1;
-		}
-	}
-	if (n < 0) {
-		perror("read");
-		close(src);
-		close(dst);
-		return -1;
-	}
-
-	close(src);
-	close(dst);
 	return 0;
 }
 
@@ -135,14 +97,14 @@ static int build_lowerdir(void)
 		return -1;
 
 	snprintf(path, sizeof(path), "%s/bin/overlay_child", LOWERDIR);
-	if (copy_file("build/overlay_child", path) != 0)
+	if (test_image_fixture_copy_file("build/overlay_child", path) != 0)
 		return -1;
 
 	snprintf(path, sizeof(path), "%s/lib64", LOWERDIR);
 	if (mkdir_p1(path) != 0)
 		return -1;
 	snprintf(path, sizeof(path), "%s/lib64/ld-linux-x86-64.so.2", LOWERDIR);
-	if (copy_file(HOST_LD_SO, path) != 0)
+	if (test_image_fixture_copy_file(HOST_LD_SO, path) != 0)
 		return -1;
 
 	snprintf(path, sizeof(path), "%s/lib", LOWERDIR);
@@ -152,7 +114,7 @@ static int build_lowerdir(void)
 	if (mkdir_p1(path) != 0)
 		return -1;
 	snprintf(path, sizeof(path), "%s/lib/x86_64-linux-gnu/libc.so.6", LOWERDIR);
-	if (copy_file(HOST_LIBC, path) != 0)
+	if (test_image_fixture_copy_file(HOST_LIBC, path) != 0)
 		return -1;
 
 	snprintf(path, sizeof(path), "%s/lower_marker.txt", LOWERDIR);

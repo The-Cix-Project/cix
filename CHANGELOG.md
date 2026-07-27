@@ -4,6 +4,23 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Housekeeping: full-codebase audit — eliminate parallel-implementation duplication
+
+A meticulous line-by-line audit of the entire codebase and documentation set, run after Phase 10 (parts 1–2) shipped, checking every Immutable Maxim directly and mechanically rather than by inspection alone: git hygiene (nothing uncommitted, unpushed, stashed, or dangling), file-mtime-vs-commit-history cross-check (no missed reintegrations), a systematic grep for structurally duplicated logic across the daemon and test suite, a full clean rebuild, three consecutive full test-suite runs, and a line-by-line cross-check of `docs/ROADMAP.md`/`CHANGELOG.md`/`docs/adr/`/`docs/api/openapi.yaml` against the actual shipped code (every documented endpoint matches `daemon/src/main.c`'s dispatch table exactly; zero drift found).
+
+#### Fixed
+- **Three independent, byte-for-byte-identical name-charset validators**: `main.c`'s `name_is_valid()`, `network.c`'s `network_name_is_valid()`, and `pkg.c`'s `pkg_name_is_valid()` each carried their own copy of the same `[A-Za-z0-9_-]`/non-empty/length-limit logic, differing only in which length constant they checked. Extracted into a single `static inline simple_name_is_valid(name, max_len)` in a new `daemon/include/namecheck.h`; each of the three call sites is now a one-line wrapper delegating to it. `dns_name_is_valid()` was left untouched — it validates a genuinely different charset (dots allowed, RFC 1035 hostname rules) and was never part of this duplication.
+- **`copy_file()` duplicated across `test/test_overlay.c` and `test/test_image_fixture.c`**: `test_image_fixture.c`'s own header comment already documented this as "the same content test_overlay.c pioneered for its own lowerdir" — an acknowledgment, in the code itself, that `test_overlay.c` (Phase 2, predates `test_image_fixture.c`) was never migrated onto the shared staging module `test_image_fixture.c` (Phase 4) was built to consolidate onto. Exported it as `test_image_fixture_copy_file()` in `test/test_image_fixture.h`/`.c`; `test_overlay.c` now includes the header and calls the shared function, its own copy deleted. `Makefile`'s `test_overlay` build rule gained `test/test_image_fixture.c` as a build input (a pure, dependency-free utility file — no new coupling introduced).
+- Two other flagged candidates were investigated and confirmed **not** to be violations, left as-is: `pkg.c`'s `run_subprocess()` vs. `pki.c`'s `run_openssl()` capture the child's stdout/stderr through a pipe for parsing (PKI needs to read back `openssl`'s output; `run_subprocess()` only needs an exit code) — genuinely different capabilities, not the same logic twice. `test_pkg.c`'s `run_cmd()` (shell-based, `system()` + format string, used only for building test fixtures) vs. `test_pki.c`'s `run_openssl_argv()` (direct `execve()` with an argv array, no shell) likewise solve different problems with deliberately different mechanisms.
+
+#### Verified (no code change required)
+- Git state: clean, fully pushed, no stashes, no dangling branches, no stray backup/patch files anywhere in the tree.
+- File mtimes match commit history exactly — no edit was ever made outside the normal commit flow.
+- Full clean rebuild (`rm -rf build && make`): zero warnings across every one of the 19 build targets.
+- All 13 test binaries (`test_toolchain` through `test_pkg`) re-run 3 consecutive times, back to back: 100% pass, identical results each run.
+- `docs/ROADMAP.md`, `docs/adr/README.md` (all 14 ADRs present and indexed, no orphans), `docs/api/README.md`, and `docs/api/openapi.yaml` all verified accurate against the live code — no stale claims found.
+- Root `README.md` was the one stale document found: its Status table still showed Phase 3 as "Next" and Phases 4–10 as "Not started," and its Repository Layout section predated the `daemon/`/`client/`/`cli/`/`web/`/`netplane/` directories entirely (both frozen at Phase 2). Rewritten to reflect all 10 completed phases and the current directory layout.
+
 ### Phase 10 (part 2): dependency resolution + explicit upgrades
 
 #### Added

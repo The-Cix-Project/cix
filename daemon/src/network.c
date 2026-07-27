@@ -1,3 +1,4 @@
+#include "namecheck.h"
 #include "network.h"
 #include "persist.h"
 #include "registry.h"
@@ -15,20 +16,7 @@ static char g_state_path[PATH_MAX];
 
 static int network_name_is_valid(const char *name)
 {
-	size_t i;
-
-	if (name == NULL || name[0] == '\0')
-		return 0;
-	for (i = 0; name[i] != '\0'; i++) {
-		char c = name[i];
-
-		if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-		      (c >= '0' && c <= '9') || c == '_' || c == '-'))
-			return 0;
-	}
-	if (i >= NETWORK_NAME_MAX)
-		return 0;
-	return 1;
+	return simple_name_is_valid(name, NETWORK_NAME_MAX);
 }
 
 static uint32_t mask_for_prefix(int prefix_len)

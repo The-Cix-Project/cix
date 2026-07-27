@@ -40,7 +40,7 @@ static int mkdir_p(const char *path)
 	return 0;
 }
 
-static int copy_file(const char *src_path, const char *dst_path)
+int test_image_fixture_copy_file(const char *src_path, const char *dst_path)
 {
 	int src, dst;
 	char buf[4096];
@@ -65,6 +65,8 @@ static int copy_file(const char *src_path, const char *dst_path)
 			return -1;
 		}
 	}
+	if (n < 0)
+		perror(src_path);
 	close(src);
 	close(dst);
 	return n < 0 ? -1 : 0;
@@ -82,21 +84,21 @@ int test_image_fixture_build(const char *image_root, const char *child_binary_pa
 	if (mkdir_p(path) != 0)
 		return -1;
 	snprintf(path, sizeof(path), "%s/bin/%s", image_root, child_basename);
-	if (copy_file(child_binary_path, path) != 0)
+	if (test_image_fixture_copy_file(child_binary_path, path) != 0)
 		return -1;
 
 	snprintf(path, sizeof(path), "%s/lib64", image_root);
 	if (mkdir_p(path) != 0)
 		return -1;
 	snprintf(path, sizeof(path), "%s/lib64/ld-linux-x86-64.so.2", image_root);
-	if (copy_file("/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", path) != 0)
+	if (test_image_fixture_copy_file("/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", path) != 0)
 		return -1;
 
 	snprintf(path, sizeof(path), "%s/lib/x86_64-linux-gnu", image_root);
 	if (mkdir_p(path) != 0)
 		return -1;
 	snprintf(path, sizeof(path), "%s/lib/x86_64-linux-gnu/libc.so.6", image_root);
-	if (copy_file("/usr/lib/x86_64-linux-gnu/libc.so.6", path) != 0)
+	if (test_image_fixture_copy_file("/usr/lib/x86_64-linux-gnu/libc.so.6", path) != 0)
 		return -1;
 
 	return 0;
@@ -121,5 +123,5 @@ int test_image_fixture_add_lib(const char *image_root, const char *host_lib_abs_
 
 	if (mkdir_p(dst_dir) != 0)
 		return -1;
-	return copy_file(host_lib_abs_path, dst_path);
+	return test_image_fixture_copy_file(host_lib_abs_path, dst_path);
 }

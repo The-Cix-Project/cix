@@ -1,5 +1,6 @@
 #include "pkg.h"
 #include "linux_compat.h"
+#include "namecheck.h"
 #include "persist.h"
 
 #include <dirent.h>
@@ -78,20 +79,7 @@ static char *g_build_envp[3];
 
 static int pkg_name_is_valid(const char *name)
 {
-	size_t i;
-
-	if (name == NULL || name[0] == '\0')
-		return 0;
-	for (i = 0; name[i] != '\0'; i++) {
-		char c = name[i];
-
-		if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
-		      c == '_' || c == '-'))
-			return 0;
-	}
-	if (i >= PKG_NAME_MAX)
-		return 0;
-	return 1;
+	return simple_name_is_valid(name, PKG_NAME_MAX);
 }
 
 static struct pkg_entry *pkg_find(const char *name)
