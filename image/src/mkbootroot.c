@@ -109,6 +109,11 @@ int main(int argc, char **argv)
 	 * boot logged "devtmpfs: error mounting -2" without this). */
 	if (ensure_dir_under(image_root, "dev") != 0)
 		return 1;
+	/* Phase 11 part 2: kanxeod --init-mode mounts the ESP here to reach
+	 * the loader entry confirm_boot() renames once a boot proves
+	 * healthy (daemon/src/main.c). */
+	if (ensure_dir_under(image_root, "boot") != 0)
+		return 1;
 	if (ensure_dir_under(image_root, "var") != 0)
 		return 1;
 	if (ensure_dir_under(image_root, "var/lib") != 0)

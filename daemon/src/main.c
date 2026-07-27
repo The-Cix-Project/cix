@@ -12,6 +12,7 @@
 #include "staticfile.h"
 
 #include <arpa/inet.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -41,6 +42,15 @@
 #define PKI_CERTS_STATE_PATH PKI_DIR "/pki_certs.json"
 #define PKG_DIR BASE_DIR "/pkg"
 #define PKG_INSTALLED_STATE_PATH PKG_DIR "/pkg_installed.json"
+/*
+ * Fixed QEMU virtio-blk layout (Phase 11's stated fixed/known-hardware
+ * scope, same posture as root=/dev/vda2 in the loader entry itself) --
+ * a GPT-partition-type-based ESP lookup can wait for part 4's real
+ * hardware if it turns out to be needed there.
+ */
+#define ESP_DEVICE "/dev/vda1"
+#define ESP_DIR "/boot"
+#define ESP_LOADER_ENTRIES_DIR ESP_DIR "/loader/entries"
 #define MAX_EVENTS 64
 #define CONTAINERS_PREFIX "/v1/containers/"
 #define NETWORKS_PREFIX "/v1/networks/"
@@ -113,6 +123,11 @@ static int boot_init(void)
 		return -1;
 	if (mount_or_fail("tmpfs", BASE_DIR, "tmpfs", MS_NOSUID | MS_NODEV) != 0)
 		return -1;
+	/* Needed to reach the loader entry confirm_boot() renames once this
+	 * boot proves healthy (Phase 11 part 2) -- writable, not read-only
+	 * like the root mounts, since that rename is a real write. */
+	if (mount_or_fail(ESP_DEVICE, ESP_DIR, "vfat", MS_NOSUID | MS_NODEV | MS_NOEXEC) != 0)
+		return -1;
 
 	/*
 	 * A fresh kernel boot brings lo up as a device but leaves it
@@ -134,6 +149,59 @@ static int boot_init(void)
 	}
 	rtnl_close(rtfd);
 
+	return 0;
+}
+
+/*
+ * Renames whichever loader entry on the ESP matches this boot's slot
+ * (kanxeo-<slot>[+<tries-left>[-<tries-done>]].conf) down to the bare
+ * kanxeo-<slot>.conf, stripping systemd-boot's own Automatic Boot
+ * Assessment counter suffix -- a plain rename(2), not a bootctl
+ * subprocess call, the same hand-rolled-daemon posture ADR-0007/
+ * ADR-0014 already established. Called only once this boot has actually
+ * reached a healthy, serving state (main()'s own call site, right
+ * before the reactor loop starts) -- "about to serve traffic" is the
+ * honest definition of healthy this confirms.
+ */
+static int confirm_boot(const char *slot)
+{
+	DIR *d;
+	struct dirent *de;
+	char prefix[32];
+	size_t prefix_len;
+	char oldpath[PATH_MAX];
+	char newpath[PATH_MAX];
+	int found = 0;
+
+	snprintf(prefix, sizeof(prefix), "kanxeo-%s", slot);
+	prefix_len = strlen(prefix);
+
+	d = opendir(ESP_LOADER_ENTRIES_DIR);
+	if (d == NULL) {
+		perror(ESP_LOADER_ENTRIES_DIR);
+		return -1;
+	}
+	while ((de = readdir(d)) != NULL) {
+		if (strncmp(de->d_name, prefix, prefix_len) == 0) {
+			found = 1;
+			snprintf(oldpath, sizeof(oldpath), "%s/%s", ESP_LOADER_ENTRIES_DIR, de->d_name);
+			break;
+		}
+	}
+	closedir(d);
+
+	if (!found) {
+		fprintf(stderr, "confirm_boot: no loader entry found for slot %s\n", slot);
+		return -1;
+	}
+
+	snprintf(newpath, sizeof(newpath), "%s/kanxeo-%s.conf", ESP_LOADER_ENTRIES_DIR, slot);
+	if (strcmp(oldpath, newpath) == 0)
+		return 0; /* already confirmed (no counter suffix) -- nothing to do */
+	if (rename(oldpath, newpath) != 0) {
+		perror("confirm_boot rename");
+		return -1;
+	}
 	return 0;
 }
 
@@ -1596,6 +1664,8 @@ int main(int argc, char **argv)
 	const char *bind_addr = DEFAULT_BIND;
 	const char *web_root = DEFAULT_WEB_ROOT;
 	int init_mode = 0;
+	int simulate_unhealthy = 0;
+	const char *slot = NULL;
 	int i;
 	int listen_fd;
 	int opt = 1;
@@ -1612,11 +1682,24 @@ int main(int argc, char **argv)
 			web_root = argv[i] + 11;
 		else if (strcmp(argv[i], "--init-mode") == 0)
 			init_mode = 1;
+		else if (strncmp(argv[i], "--slot=", 7) == 0)
+			slot = argv[i] + 7;
+		else if (strcmp(argv[i], "--simulate-unhealthy-boot") == 0)
+			simulate_unhealthy = 1;
 	}
 	g_web_root = web_root;
 
-	if (init_mode && boot_init() != 0)
-		return 1;
+	if (init_mode) {
+		/* The only observable serial-console signal for which slot
+		 * actually booted this attempt (Phase 11 part 2's rollback
+		 * test) -- --simulate-unhealthy-boot still reaches the normal
+		 * "listening" line below, so that line alone can't tell slot
+		 * A from slot B once both boot successfully. */
+		printf("init-mode: slot=%s\n", slot != NULL ? slot : "(none)");
+		fflush(stdout);
+		if (boot_init() != 0)
+			return 1;
+	}
 
 	if (ensure_dir(BASE_DIR) != 0 || ensure_dir(IMAGES_DIR) != 0 ||
 	    ensure_dir(CONTAINERS_DIR) != 0 || ensure_dir(PKI_DIR) != 0 ||
@@ -1694,6 +1777,15 @@ int main(int argc, char **argv)
 
 	printf("kanxeod listening on %s:%d\n", bind_addr, port);
 	fflush(stdout);
+
+	/* "About to serve traffic" is the honest definition of healthy this
+	 * confirms -- everything above (mounts, network bring-up, the full
+	 * existing state-init sequence, the listening socket itself) had to
+	 * genuinely succeed to reach this line. */
+	if (init_mode && slot != NULL && !simulate_unhealthy) {
+		if (confirm_boot(slot) != 0)
+			fprintf(stderr, "confirm_boot failed for slot %s (continuing anyway)\n", slot);
+	}
 
 	while (!g_stop) {
 		struct kx_epoll_event events[MAX_EVENTS];

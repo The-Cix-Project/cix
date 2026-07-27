@@ -4,6 +4,29 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 11 (part 2): A/B write + systemd-boot's boot-counter + automatic rollback
+
+Part 2's job: prove the rollback mechanism itself works — a slot that boots but never confirms is automatically abandoned in favor of the other one, no operator involved. The real payoff of ADR-0014's "own the counter with systemd-boot's native mechanism, not a bespoke one" call.
+
+Confirmed with the user before writing any code: the failure simulated is a *valid* boot where `kanxeod` deliberately never confirms (`--simulate-unhealthy-boot`), not a corrupted/unmountable root — the real failure class this exists for. Slot identification is an explicit `--slot=a`/`--slot=b` kernel param. The test harness launches QEMU fresh per power-on attempt against the same persistent disk, inspecting the ESP between runs, rather than relying on an in-VM reboot loop.
+
+#### Added
+- `daemon/src/main.c`: new `--slot=`/`--simulate-unhealthy-boot` flags; `boot_init()` mounts the ESP (`vfat`, fixed `/dev/vda1`) at `/boot`; new `confirm_boot(slot)` renames the matching `/boot/loader/entries/kanxeo-<slot>*` file down to the bare `kanxeo-<slot>.conf`, stripping `systemd-boot`'s own Automatic Boot Assessment counter suffix — a plain `rename(2)`, not a `bootctl` call. Called right after the existing "listening" line, before the reactor loop — "about to serve traffic" is the definition of healthy this confirms. A failure here logs and continues rather than tearing down an already-healthy daemon, matching `dns_register`/`pki_issue`'s existing best-effort/skip-and-log posture.
+- `image/src/mkbootroot.c`: one more empty mountpoint, `/boot`.
+- `test/test_disk_image.h`/`.c` (new): every disk/partition/ESP/QEMU-boot primitive extracted from `test_boot.c` once `test_boot_ab.c` became a second real consumer — subprocess runners, `sfdisk_dump_offset()`, `write_at_offset()`, `mtools` wrappers (`esp_mkfs`/`esp_mmd`/`esp_mcopy_in`/`esp_mren`), and a generalized `qemu_boot_capture()` returning the full captured serial text to the caller. `test/test_boot.c` refactored onto it, re-verified with zero behavior change.
+- `test/test_boot_ab.c` (new): a 3-partition disk (ESP + root A + root B, identical squashfs on both — only the loader entries differ); slot A's entry carries a 3-try counter and `--simulate-unhealthy-boot`, slot B has no counter (already confirmed-good). Repeated power-on attempts scrape a new `"init-mode: slot=..."` log line and list `/loader/entries` via `mtools`' `mdir -i disk.img@@<offset>` between attempts.
+- `image/kernel/qemu-part1.config`: `CONFIG_FAT_FS`/`CONFIG_VFAT_FS`/`CONFIG_NLS`/`CONFIG_NLS_CODEPAGE_437`/`CONFIG_NLS_ISO8859_1` — the kernel had never needed to mount the ESP from inside the guest until now.
+
+#### Changed
+- `docs/ROADMAP.md`: Phase 11 part 2 marked done with what shipped and how it was verified.
+
+#### Fixed
+- **`default kanxeo-*` alone booted straight to slot B on the very first attempt**, not slot A — a glob only says "these are valid candidates," it expresses no priority. Fixed per the Boot Loader Specification's actual mechanism: both entries get a matching `sort-key` plus explicit `version` fields, slot A's set higher — an unambiguous, deliberate priority signal instead of relying on filename sort-order accidents. Re-verified end to end: three attempts correctly exhaust slot A's counter (`+3`→`+2-1`→`+1-2`→`+0-3`), the fourth automatically lands on slot B.
+- **`/boot: No such device`** — the kernel had never been built with `vfat`/`FAT` support at all, since part 1 never mounted the ESP from inside the guest. Fixed with `CONFIG_FAT_FS`/`CONFIG_VFAT_FS`.
+- **`FAT-fs (vda1): codepage cp437 not found`** — VFAT needs NLS codepage tables to interpret filenames; none were enabled. Fixed with `CONFIG_NLS`/`CONFIG_NLS_CODEPAGE_437`/`CONFIG_NLS_ISO8859_1`.
+
+Zero warnings; `test_boot_ab` and `test_boot` each re-run 3 consecutive times with identical passing results after a clean rebuild; the full pre-existing 13-binary suite re-run once more to confirm zero regression.
+
 ### Phase 11 (part 1): bare-metal boot — kernel, bootloader, and a minimal squashfs root booting kanxeod as PID 1 in QEMU
 
 Architecture for the whole phase confirmed with the user before any code was written, the same discipline every prior phase used: UEFI-only + `systemd-boot`; read-only A/B root as a single atomic `squashfs` image per slot, scoped to the control plane only (kernel + `kanxeod` + its direct runtime deps — never container/package workload data); no initramfs (kernel `exec`s `kanxeod` via `init=`); automatic A/B rollback via `systemd-boot`'s native boot-attempt counter; kernel built from mainline source with a real GCC toolchain, not TCC (ADR-0001's "TCC governs our own code, not unmodified upstream software" precedent); a fixed/known target hardware assumption; static IP at install time via the existing `netplane/` rtnetlink primitives; a 5-partition GPT layout (ESP, root A, root B, config, containers); a real interactive `cfdisk`-driven installer with partition roles read from GPT type/name; `kanxeod` gains an explicit `--init-mode` flag, not `getpid() == 1` auto-detection, so the boot-init path stays testable in a namespace the way `test_harness.c` already tests namespace logic. See `docs/adr/0014-squashfs-ab-root-with-native-boot-counting.md` for the reasoning behind the one call in this design that's both significant and hard to reverse once real installs exist on real disks.

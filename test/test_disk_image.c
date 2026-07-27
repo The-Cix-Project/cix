@@ -1,0 +1,381 @@
+#include "test_disk_image.h"
+
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
+
+extern char **environ;
+
+#define MKFS_VFAT_BIN "/usr/sbin/mkfs.vfat"
+#define MCOPY_BIN "/usr/bin/mcopy"
+#define MMD_BIN "/usr/bin/mmd"
+#define MREN_BIN "/usr/bin/mren"
+#define QEMU_BIN "/usr/bin/qemu-system-x86_64"
+#define OVMF_CODE "/usr/share/OVMF/OVMF_CODE_4M.fd"
+
+int run_subprocess(const char *bin, char *const argv[])
+{
+	pid_t pid;
+	int status;
+
+	pid = fork();
+	if (pid < 0) {
+		perror("fork");
+		return -1;
+	}
+	if (pid == 0) {
+		execve(bin, argv, environ);
+		perror(bin);
+		_exit(127);
+	}
+	if (waitpid(pid, &status, 0) != pid) {
+		perror("waitpid");
+		return -1;
+	}
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		fprintf(stderr, "%s failed (status 0x%x)\n", bin, (unsigned)status);
+		return -1;
+	}
+	return 0;
+}
+
+int run_subprocess_capture(const char *bin, char *const argv[], char *out, size_t out_size)
+{
+	int pipefd[2];
+	pid_t pid;
+	int status;
+	size_t total = 0;
+	ssize_t n;
+
+	out[0] = '\0';
+	if (pipe2(pipefd, O_CLOEXEC) != 0)
+		return -1;
+	pid = fork();
+	if (pid < 0) {
+		close(pipefd[0]);
+		close(pipefd[1]);
+		return -1;
+	}
+	if (pid == 0) {
+		dup2(pipefd[1], STDOUT_FILENO);
+		close(pipefd[0]);
+		close(pipefd[1]);
+		execve(bin, argv, environ);
+		_exit(127);
+	}
+	close(pipefd[1]);
+	while (total + 1 < out_size) {
+		n = read(pipefd[0], out + total, out_size - total - 1);
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			break;
+		}
+		if (n == 0)
+			break;
+		total += (size_t)n;
+	}
+	out[total] = '\0';
+	close(pipefd[0]);
+	if (waitpid(pid, &status, 0) != pid)
+		return -1;
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		return -1;
+	return 0;
+}
+
+int run_subprocess_stdin(const char *bin, char *const argv[], const char *script)
+{
+	int pipefd[2];
+	pid_t pid;
+	int status;
+	size_t len = strlen(script);
+	size_t written = 0;
+	ssize_t n;
+
+	if (pipe2(pipefd, O_CLOEXEC) != 0)
+		return -1;
+	pid = fork();
+	if (pid < 0) {
+		close(pipefd[0]);
+		close(pipefd[1]);
+		return -1;
+	}
+	if (pid == 0) {
+		dup2(pipefd[0], STDIN_FILENO);
+		close(pipefd[0]);
+		close(pipefd[1]);
+		execve(bin, argv, environ);
+		perror(bin);
+		_exit(127);
+	}
+	close(pipefd[0]);
+	while (written < len) {
+		n = write(pipefd[1], script + written, len - written);
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			break;
+		}
+		written += (size_t)n;
+	}
+	close(pipefd[1]);
+	if (waitpid(pid, &status, 0) != pid)
+		return -1;
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		fprintf(stderr, "%s failed (status 0x%x)\n", bin, (unsigned)status);
+		return -1;
+	}
+	return 0;
+}
+
+int ensure_dir(const char *path)
+{
+	if (mkdir(path, 0755) != 0 && errno != EEXIST) {
+		perror(path);
+		return -1;
+	}
+	return 0;
+}
+
+int write_text_file(const char *path, const char *content)
+{
+	FILE *f = fopen(path, "w");
+
+	if (f == NULL) {
+		perror(path);
+		return -1;
+	}
+	if (fputs(content, f) < 0) {
+		perror(path);
+		fclose(f);
+		return -1;
+	}
+	fclose(f);
+	return 0;
+}
+
+int sfdisk_dump_offset(const char *dump, int partition_index, long *out_start_sectors,
+                        long *out_size_sectors)
+{
+	const char *p = dump;
+	int idx = 0;
+
+	while ((p = strstr(p, " : start=")) != NULL) {
+		idx++;
+		if (idx == partition_index) {
+			if (sscanf(p, " : start=%ld, size=%ld", out_start_sectors, out_size_sectors) == 2)
+				return 0;
+			return -1;
+		}
+		p += 1;
+	}
+	fprintf(stderr, "sfdisk -d: partition %d not found\n", partition_index);
+	return -1;
+}
+
+int write_at_offset(const char *dst_path, long offset_bytes, const char *src_path)
+{
+	FILE *dst = fopen(dst_path, "r+b");
+	FILE *src;
+	char buf[65536];
+	size_t n;
+	int ok = 1;
+
+	if (dst == NULL) {
+		perror(dst_path);
+		return -1;
+	}
+	src = fopen(src_path, "rb");
+	if (src == NULL) {
+		perror(src_path);
+		fclose(dst);
+		return -1;
+	}
+	if (fseek(dst, offset_bytes, SEEK_SET) != 0) {
+		perror("fseek");
+		ok = 0;
+	} else {
+		while ((n = fread(buf, 1, sizeof(buf), src)) > 0) {
+			if (fwrite(buf, 1, n, dst) != n) {
+				perror("fwrite");
+				ok = 0;
+				break;
+			}
+		}
+	}
+	fclose(src);
+	fclose(dst);
+	return ok ? 0 : -1;
+}
+
+int esp_mkfs(const char *esp_img)
+{
+	char *argv[] = { (char *)MKFS_VFAT_BIN, "-n", "ESP", (char *)esp_img, NULL };
+
+	return run_subprocess(MKFS_VFAT_BIN, argv);
+}
+
+int esp_mmd(const char *esp_img, const char *esp_dir_path)
+{
+	char *argv[] = { (char *)MMD_BIN, "-i", (char *)esp_img, (char *)esp_dir_path, NULL };
+
+	return run_subprocess(MMD_BIN, argv);
+}
+
+int esp_mcopy_in(const char *esp_img, const char *host_src_path, const char *esp_dest_path)
+{
+	char *argv[] = { (char *)MCOPY_BIN, "-i", (char *)esp_img, (char *)host_src_path,
+		          (char *)esp_dest_path, NULL };
+
+	return run_subprocess(MCOPY_BIN, argv);
+}
+
+int esp_mren(const char *esp_img, const char *esp_old_path, const char *esp_new_path)
+{
+	char *argv[] = { (char *)MREN_BIN, "-i", (char *)esp_img, (char *)esp_old_path,
+		          (char *)esp_new_path, NULL };
+
+	return run_subprocess(MREN_BIN, argv);
+}
+
+enum qemu_boot_outcome qemu_boot_capture(const char *disk_img, const char *ovmf_vars,
+                                          const char *success_marker, const char *panic_marker,
+                                          int timeout_seconds, char *out, size_t out_size)
+{
+	char code_arg[600], vars_arg[600], disk_arg[600];
+	int pipefd[2];
+	pid_t pid;
+	enum qemu_boot_outcome outcome;
+	size_t total = 0;
+	struct timespec deadline, now;
+
+	out[0] = '\0';
+
+	snprintf(code_arg, sizeof(code_arg), "if=pflash,format=raw,readonly=on,file=%s", OVMF_CODE);
+	snprintf(vars_arg, sizeof(vars_arg), "if=pflash,format=raw,file=%s", ovmf_vars);
+	snprintf(disk_arg, sizeof(disk_arg), "file=%s,if=virtio,format=raw", disk_img);
+
+	char *qemu_argv[] = {
+		(char *)QEMU_BIN, "-machine", "q35", "-m", "512", "-cpu", "qemu64",
+		"-display", "none", "-serial", "stdio", "-monitor", "none", "-no-reboot",
+		"-drive", code_arg, "-drive", vars_arg, "-drive", disk_arg, NULL
+	};
+
+	if (pipe2(pipefd, O_CLOEXEC) != 0) {
+		perror("pipe2");
+		return QEMU_BOOT_ERROR;
+	}
+	pid = fork();
+	if (pid < 0) {
+		perror("fork");
+		close(pipefd[0]);
+		close(pipefd[1]);
+		return QEMU_BOOT_ERROR;
+	}
+	if (pid == 0) {
+		dup2(pipefd[1], STDOUT_FILENO);
+		close(pipefd[0]);
+		close(pipefd[1]);
+		execve(QEMU_BIN, qemu_argv, environ);
+		perror(QEMU_BIN);
+		_exit(127);
+	}
+	close(pipefd[1]);
+
+	clock_gettime(CLOCK_MONOTONIC, &deadline);
+	deadline.tv_sec += timeout_seconds;
+	outcome = QEMU_BOOT_TIMEOUT;
+
+	for (;;) {
+		struct pollfd pfd;
+		int remaining_ms;
+		int rc;
+
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		remaining_ms = (int)((deadline.tv_sec - now.tv_sec) * 1000 +
+		                      (deadline.tv_nsec - now.tv_nsec) / 1000000);
+		if (remaining_ms <= 0) {
+			fprintf(stderr, "timed out after %ds waiting for boot\n", timeout_seconds);
+			break;
+		}
+
+		pfd.fd = pipefd[0];
+		pfd.events = POLLIN;
+		rc = poll(&pfd, 1, remaining_ms);
+		if (rc < 0) {
+			if (errno == EINTR)
+				continue;
+			perror("poll");
+			outcome = QEMU_BOOT_ERROR;
+			break;
+		}
+		if (rc == 0)
+			continue; /* re-check the deadline at the top of the loop */
+
+		if (pfd.revents & POLLIN) {
+			char buf[8192];
+			ssize_t n;
+
+			n = read(pipefd[0], buf, sizeof(buf));
+			if (n <= 0) {
+				outcome = QEMU_BOOT_EOF;
+				break;
+			}
+			fwrite(buf, 1, (size_t)n, stdout);
+
+			if (total + (size_t)n < out_size) {
+				memcpy(out + total, buf, (size_t)n);
+				total += (size_t)n;
+				out[total] = '\0';
+			} else if (total + 1 < out_size) {
+				size_t room = out_size - total - 1;
+
+				memcpy(out + total, buf, room);
+				total += room;
+				out[total] = '\0';
+			}
+
+			if (panic_marker != NULL && strstr(out, panic_marker) != NULL) {
+				fprintf(stderr, "\npanic marker detected\n");
+				outcome = QEMU_BOOT_PANIC;
+				break;
+			}
+			if (success_marker != NULL && strstr(out, success_marker) != NULL) {
+				outcome = QEMU_BOOT_SUCCESS;
+				break;
+			}
+		}
+		if (pfd.revents & (POLLHUP | POLLERR)) {
+			outcome = QEMU_BOOT_EOF;
+			break;
+		}
+	}
+
+	close(pipefd[0]);
+	kill(pid, SIGTERM);
+	{
+		int status;
+		int waited;
+
+		for (waited = 0; waited < 20; waited++) {
+			if (waitpid(pid, &status, WNOHANG) == pid)
+				break;
+			usleep(100000);
+		}
+		if (waited >= 20) {
+			kill(pid, SIGKILL);
+			waitpid(pid, &status, 0);
+		}
+	}
+
+	return outcome;
+}
