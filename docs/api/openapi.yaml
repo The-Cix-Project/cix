@@ -446,6 +446,137 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /pkg/bootstrap:
+    post:
+      summary: >
+        Stages a real build toolchain (gcc/make/ld/as/cc1/sh/tar and their real headers
+        and shared libraries) from the daemon's own host into the sandboxed build image,
+        by copying whole /usr/{include,lib,lib64,bin,libexec} directories with the real
+        `cp -a`. Idempotent -- safe to call again, skips a subdirectory already staged.
+        Not automatic at daemon startup; an explicit, one-time action.
+      operationId: pkgBootstrap
+      responses:
+        "204":
+          description: Build toolchain image staged (or already was)
+        "500":
+          description: Staging failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /pkg/recipes:
+    get:
+      summary: List recipes found on disk (provisioned out of band -- metadata only, never sourced/executed)
+      operationId: listPkgRecipes
+      responses:
+        "200":
+          description: Recipe list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [recipes]
+                properties:
+                  recipes:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PkgRecipe"
+
+  /pkg/install:
+    post:
+      summary: >
+        Starts installing a package: fetches its recipe's source (a host-side `curl`
+        subprocess, tracked asynchronously -- this endpoint returns immediately, it does
+        not wait for the fetch or the build to finish), then, once fetched and its
+        checksum verified, builds it inside an isolated, network-less container and
+        merges the result into the shared base image every "base"-image container uses.
+        v1 serializes installs: only one may be in flight at a time.
+      operationId: pkgInstall
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PkgInstallRequest"
+      responses:
+        "202":
+          description: Install started -- poll GET /pkg/{name} for progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgEntry"
+        "400":
+          description: name missing, or no such recipe / it failed to parse
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Already installed, or another install is already in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /pkg:
+    get:
+      summary: List every known package (installed or in-flight) with its current state
+      operationId: listPkg
+      responses:
+        "200":
+          description: Package list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [packages]
+                properties:
+                  packages:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PkgEntry"
+
+  /pkg/{name}:
+    get:
+      summary: Inspect one package's current state (fetching/building/installed/failed)
+      operationId: getPkg
+      parameters:
+        - $ref: "#/components/parameters/PkgName"
+      responses:
+        "200":
+          description: Package detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgEntry"
+        "404":
+          description: No such package
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Uninstalls a package (unlinks its manifested files from the base image)
+      operationId: deletePkg
+      parameters:
+        - $ref: "#/components/parameters/PkgName"
+      responses:
+        "204":
+          description: Removed
+        "404":
+          description: No such package, or not currently installed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: This package is currently mid-install
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /containers/{name}:
     get:
       summary: Inspect one container
@@ -519,6 +650,14 @@ components:
       required: true
       schema:
         type: string
+
+    PkgName:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9_-]+$"
 
   schemas:
     ContainerCreateRequest:
@@ -876,6 +1015,52 @@ components:
               description: >
                 PEM-encoded private key. Present ONLY in this POST /pki/certs response --
                 never returned again by any later GET, list, or any other endpoint.
+
+    PkgRecipe:
+      type: object
+      required: [name, version]
+      properties:
+        name:
+          type: string
+        version:
+          type: string
+        depends:
+          type: string
+          description: >
+            Raw pkg_depends= value from the recipe. Parsed and surfaced for visibility
+            only in v1 -- not acted on (no automatic dependency installation yet).
+
+    PkgInstallRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Must match an existing <name>.recipe file's own pkg_name=.
+
+    PkgEntry:
+      type: object
+      required: [name, version, state, files]
+      properties:
+        name:
+          type: string
+        version:
+          type: string
+        state:
+          type: string
+          enum: [fetching, building, installed, failed]
+        error:
+          type: string
+          nullable: true
+          description: Populated only when state is "failed".
+        files:
+          type: array
+          items:
+            type: string
+          description: >
+            Paths (relative to the base image root) this package installed. Empty until
+            state is "installed". Symlinks in a package's own DESTDIR output are skipped
+            in v1 (a documented boundary) -- only regular files are copied and manifested.
 
     Error:
       type: object

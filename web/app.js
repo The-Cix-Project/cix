@@ -23,6 +23,10 @@ const pkiCaForm = document.getElementById("pki-ca-form");
 const pkiCertsBody = document.getElementById("pki-certs-body");
 const pkiCertForm = document.getElementById("pki-cert-form");
 const pkiCertIssued = document.getElementById("pki-cert-issued");
+const pkgBootstrapForm = document.getElementById("pkg-bootstrap-form");
+const pkgRecipesBody = document.getElementById("pkg-recipes-body");
+const pkgInstallForm = document.getElementById("pkg-install-form");
+const pkgListBody = document.getElementById("pkg-list-body");
 
 function showStatus(message, isError) {
 	statusBox.textContent = message;
@@ -639,6 +643,160 @@ pkiCertForm.addEventListener("submit", async (event) => {
 	}
 });
 
+function renderPkgRecipes(recipes) {
+	pkgRecipesBody.textContent = "";
+
+	if (recipes.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+		cell.colSpan = 3;
+		cell.className = "empty";
+		cell.textContent = "No recipes found";
+		row.appendChild(cell);
+		pkgRecipesBody.appendChild(row);
+		return;
+	}
+
+	for (const r of recipes) {
+		const row = document.createElement("tr");
+
+		const nameCell = document.createElement("td");
+		nameCell.textContent = r.name;
+		row.appendChild(nameCell);
+
+		const versionCell = document.createElement("td");
+		versionCell.textContent = r.version;
+		row.appendChild(versionCell);
+
+		const dependsCell = document.createElement("td");
+		dependsCell.textContent = r.depends || "-";
+		row.appendChild(dependsCell);
+
+		pkgRecipesBody.appendChild(row);
+	}
+}
+
+async function refreshPkgRecipes() {
+	try {
+		const data = await apiRequest("GET", "/v1/pkg/recipes");
+		renderPkgRecipes(data.recipes);
+	} catch (e) {
+		pkgRecipesBody.textContent = "";
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+		cell.colSpan = 3;
+		cell.className = "empty";
+		cell.textContent = "Could not load recipes: " + e.message;
+		row.appendChild(cell);
+		pkgRecipesBody.appendChild(row);
+	}
+}
+
+function renderPkgList(packages) {
+	pkgListBody.textContent = "";
+
+	if (packages.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+		cell.colSpan = 6;
+		cell.className = "empty";
+		cell.textContent = "No packages";
+		row.appendChild(cell);
+		pkgListBody.appendChild(row);
+		return;
+	}
+
+	for (const pkg of packages) {
+		const row = document.createElement("tr");
+
+		const nameCell = document.createElement("td");
+		nameCell.textContent = pkg.name;
+		row.appendChild(nameCell);
+
+		const versionCell = document.createElement("td");
+		versionCell.textContent = pkg.version;
+		row.appendChild(versionCell);
+
+		const stateCell = document.createElement("td");
+		stateCell.textContent = pkg.state;
+		row.appendChild(stateCell);
+
+		const errorCell = document.createElement("td");
+		errorCell.textContent = pkg.error || "-";
+		row.appendChild(errorCell);
+
+		const filesCell = document.createElement("td");
+		filesCell.textContent = String((pkg.files || []).length);
+		row.appendChild(filesCell);
+
+		const actionCell = document.createElement("td");
+		if (pkg.state === "installed") {
+			const rmButton = document.createElement("button");
+			rmButton.textContent = "Remove";
+			rmButton.className = "button-danger";
+			rmButton.addEventListener("click", () => removePkg(pkg.name));
+			actionCell.appendChild(rmButton);
+		}
+		row.appendChild(actionCell);
+
+		pkgListBody.appendChild(row);
+	}
+}
+
+async function refreshPkgList() {
+	try {
+		const data = await apiRequest("GET", "/v1/pkg");
+		renderPkgList(data.packages);
+	} catch (e) {
+		pkgListBody.textContent = "";
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+		cell.colSpan = 6;
+		cell.className = "empty";
+		cell.textContent = "Could not load packages: " + e.message;
+		row.appendChild(cell);
+		pkgListBody.appendChild(row);
+	}
+}
+
+async function removePkg(name) {
+	try {
+		await apiRequest("DELETE", "/v1/pkg/" + encodeURIComponent(name));
+		clearStatus();
+		await refreshPkgList();
+	} catch (e) {
+		showStatus("Failed to remove package " + name + ": " + e.message, true);
+	}
+}
+
+pkgBootstrapForm.addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	try {
+		await apiRequest("POST", "/v1/pkg/bootstrap", {});
+		clearStatus();
+		showStatus("Build toolchain image staged.", false);
+		await refreshPkgRecipes();
+	} catch (e) {
+		showStatus("Failed to bootstrap build image: " + e.message, true);
+	}
+});
+
+pkgInstallForm.addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const name = document.getElementById("pkgf-name").value.trim();
+
+	try {
+		await apiRequest("POST", "/v1/pkg/install", { name: name });
+		clearStatus();
+		pkgInstallForm.reset();
+		await refreshPkgList();
+	} catch (e) {
+		showStatus("Failed to start install: " + e.message, true);
+	}
+});
+
 async function poll() {
 	await refreshHealth();
 	await refreshContainers();
@@ -647,6 +805,8 @@ async function poll() {
 	await refreshDnsServers();
 	await refreshPkiCa();
 	await refreshPkiCerts();
+	await refreshPkgRecipes();
+	await refreshPkgList();
 }
 
 poll();

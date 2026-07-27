@@ -42,7 +42,12 @@ static void print_usage(FILE *out)
 	        "  pki ca show\n"
 	        "  pki cert create --name=NAME [--sans=a,b,c] [--days=N]\n"
 	        "  pki cert ls\n"
-	        "  pki cert rm NAME\n");
+	        "  pki cert rm NAME\n"
+	        "  pkg bootstrap\n"
+	        "  pkg recipes\n"
+	        "  pkg install --name=NAME\n"
+	        "  pkg ls\n"
+	        "  pkg rm NAME\n");
 }
 
 static const char *json_str_field(const struct json_value *obj, const char *key)
@@ -1094,6 +1099,169 @@ static int cmd_pki(const struct kx_client *c, int json_mode, int argc, char **ar
 	return 2;
 }
 
+static void fmt_bootstrapped(const struct json_value *v)
+{
+	(void)v;
+	printf("bootstrapped\n");
+}
+
+static void fmt_pkg_recipe_line(const struct json_value *v)
+{
+	const char *name = json_str_field(v, "name");
+	const char *version = json_str_field(v, "version");
+	const char *depends = json_str_field(v, "depends");
+
+	printf("%-24s %-16s %s\n", name, version, depends != NULL && depends[0] != '\0' ? depends : "-");
+}
+
+static void fmt_pkg_recipe_list(const struct json_value *v)
+{
+	const struct json_value *recipes = json_object_get(v, "recipes");
+	size_t i;
+
+	if (recipes == NULL || recipes->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < recipes->u.array.count; i++)
+		fmt_pkg_recipe_line(recipes->u.array.items[i]);
+}
+
+static void fmt_pkg_line(const struct json_value *v)
+{
+	const char *name = json_str_field(v, "name");
+	const char *version = json_str_field(v, "version");
+	const char *state = json_str_field(v, "state");
+	const char *error = json_str_field(v, "error");
+
+	printf("%-24s %-12s %-10s %s\n", name, version, state,
+	       error != NULL && error[0] != '\0' ? error : "-");
+}
+
+static void fmt_pkg_list(const struct json_value *v)
+{
+	const struct json_value *packages = json_object_get(v, "packages");
+	size_t i;
+
+	if (packages == NULL || packages->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < packages->u.array.count; i++)
+		fmt_pkg_line(packages->u.array.items[i]);
+}
+
+static int cmd_pkg_bootstrap(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "POST", "/v1/pkg/bootstrap", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_bootstrapped);
+}
+
+static int cmd_pkg_recipes(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/pkg/recipes", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_pkg_recipe_list);
+}
+
+static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *name = NULL;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--name=", 7) == 0)
+			name = argv[i] + 7;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown pkg install option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL) {
+		fprintf(stderr, "usage: kanxeoctl pkg install --name=NAME\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/pkg/install", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_pkg_line);
+}
+
+static int cmd_pkg_ls(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/pkg", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_pkg_list);
+}
+
+static int cmd_pkg_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: pkg rm requires a package name\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/pkg/%s", argv[0]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl pkg bootstrap\n"
+		                "       kanxeoctl pkg recipes\n"
+		                "       kanxeoctl pkg install --name=NAME\n"
+		                "       kanxeoctl pkg ls\n"
+		                "       kanxeoctl pkg rm NAME\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "bootstrap") == 0)
+		return cmd_pkg_bootstrap(c, json_mode);
+	if (strcmp(sub, "recipes") == 0)
+		return cmd_pkg_recipes(c, json_mode);
+	if (strcmp(sub, "install") == 0)
+		return cmd_pkg_install(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "ls") == 0)
+		return cmd_pkg_ls(c, json_mode);
+	if (strcmp(sub, "rm") == 0)
+		return cmd_pkg_rm(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown pkg subcommand '%s'\n", sub);
+	return 2;
+}
+
 int main(int argc, char **argv)
 {
 	const char *host = DEFAULT_HOST;
@@ -1142,6 +1310,8 @@ int main(int argc, char **argv)
 		return cmd_dns(&client, json_mode, argc - i, argv + i);
 	if (strcmp(cmd, "pki") == 0)
 		return cmd_pki(&client, json_mode, argc - i, argv + i);
+	if (strcmp(cmd, "pkg") == 0)
+		return cmd_pkg(&client, json_mode, argc - i, argv + i);
 
 	fprintf(stderr, "kanxeoctl: unknown command '%s'\n", cmd);
 	print_usage(stderr);

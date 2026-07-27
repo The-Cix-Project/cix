@@ -18,6 +18,10 @@
 #define SYS_pidfd_send_signal 424
 #endif
 
+#ifndef SYS_pidfd_open
+#define SYS_pidfd_open 434
+#endif
+
 /*
  * glibc declares no wrapper for clone3(2); the kernel uapi struct is
  * ABI-stable, so we declare it ourselves rather than pull in
@@ -63,6 +67,20 @@ static inline int sys_pivot_root(const char *new_root, const char *put_old)
 static inline int sys_pidfd_send_signal(int pidfd, int sig)
 {
 	return (int)syscall(SYS_pidfd_send_signal, pidfd, sig, NULL, 0);
+}
+
+/*
+ * TCC's bundled/system header view doesn't declare pidfd_open() even
+ * though glibc 2.36 on this system actually has it (confirmed: only
+ * SYS_pidfd_open, the syscall number macro, resolves) -- same class
+ * of gap as pivot_root/clone3, raw syscall per ADR-0002. Needed for
+ * async-tracking a plain fork()'d subprocess (e.g. Phase 10's package
+ * fetch step) the same non-blocking way clone3()'s CLONE_PIDFD
+ * already gives containers their pidfd for free.
+ */
+static inline int sys_pidfd_open(pid_t pid, unsigned int flags)
+{
+	return (int)syscall(SYS_pidfd_open, pid, flags);
 }
 
 /*

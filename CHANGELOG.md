@@ -4,6 +4,25 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 10 (part 1): package manager — source-based, sandboxed, asynchronous installs
+
+#### Added
+- `daemon/include/pkg.h` + `daemon/src/pkg.c`: a source-based package manager. Recipes are shell scripts (`pkg_name=`/`pkg_version=`/`pkg_source=`/`pkg_sha256=`/`pkg_depends=` metadata, `pkg_build()`/`pkg_install()` shell functions) — confirmed with the user, the recipe format and "builds run in our own container runtime" split were both explicit up-front decisions, mirroring DNS/PKI's "own code hand-rolled, real software as workloads" precedent. The daemon never sources/executes a recipe on the host: metadata is read with a strict, non-executing line scanner; only the isolated, network-less build container ever runs a recipe's real shell code.
+- **Async pipeline, tracked entirely via `pidfd`+`epoll` (no blocking request handler for a network fetch or a real compile)**: `POST /v1/pkg/install` forks+execve's `curl` on the host (a new `CONN_PKG_FETCH` reactor kind; `sys_pidfd_open()` added to `linux_compat.h` for tracking a plain `fork()`'d subprocess the same way containers already get a pidfd for free from `CLONE_PIDFD`), verifies the download against `pkg_sha256` via the real `sha256sum`, then builds it inside a single reserved container (`__pkgbuild`, v1 serializes to one install at a time) on a new sandboxed `pkgbuild` image with no network access (this project's networking plane has no outbound NAT, and fetching already happens on the host, so the build container needs none). `handle_container_event()` gained an unconditional `pkg_build_completed()` call, mirroring `dns_record_forget_owner()`/`pki_cert_forget_owner()`'s existing shape.
+- `POST /v1/pkg/bootstrap`: stages a real build toolchain (`gcc`/`make`/`ld`/`as`/`cc1`/`sh`/`tar`) from the daemon's own host into the `pkgbuild` image by copying whole `/usr/{include,lib,lib64,bin,libexec}` directories with the real `cp -a`, plus this host's own `bin`/`lib`/`lib64`/`sbin` -> `usr/...` compatibility symlinks — verified empirically via `chroot` compile+link+`make install DESTDIR=` before any daemon code was written. Idempotent; ~1.5s measured on this host.
+- Every installed package lands in one canonical image, `/var/lib/kanxeo/images/base/rootfs` — any container built on `"image": "base"` gets everything installed, the thing that makes "the same 100% for host and containers" true.
+- `docs/api/openapi.yaml` + `docs/api/README.md`: `/pkg/bootstrap`, `/pkg/recipes`, `/pkg/install`, `/pkg`, `/pkg/{name}` paths and schemas, with a worked example and the async model documented explicitly (not hidden behind a fake-synchronous API).
+- `cli/src/main.c`: `kanxeoctl pkg bootstrap/recipes/install/ls/rm`, mirroring the `pki`/`dns` subcommand families. `web/`: "Packages: Recipes" and "Packages: Installed" dashboard panels (bootstrap button, install form, live-polled state table).
+- `test/test_pkg.c`: hermetic (a `file://` URL against a tiny synthetic C fixture the test stages itself — the real `curl` subprocess path is genuinely exercised, not mocked, while staying offline-safe). Proves the full fetch → checksum verify → isolated build → merge pipeline by actually executing the installed binary from the base image and checking its real output; the `409` serialization boundary via a real overlapping-in-time request; a checksum-mismatch recipe ending in `failed`; `DELETE` actually removing the manifested file from the base image, confirmed via `stat()`.
+
+#### Changed
+- `docs/ROADMAP.md`: Phase 10 marked in progress (part 1 done).
+
+#### Fixed
+- A real use-after-free in `test/test_pkg.c`'s own `poll_pkg_state()`: `kx_response_free(&r)` (which frees `r.json`) was called before `strcmp()`-ing a `state` pointer that pointed into that same freed tree, causing unpredictable early-exit/misreported state. Caught by the test's own first real run behaving unexpectedly; fixed by comparing against a stable, already-copied buffer instead of the dangling pointer.
+
+## Phase 9 (parts 1–2): PKI/certificate management — a root CA, issued leaf certificates, and automatic per-container issuance
+
 ### Phase 9 (part 2): automatic per-container TLS cert issuance + delivery
 
 #### Added
@@ -19,8 +38,6 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 #### Fixed
 - A stray misplacement in `docs/ROADMAP.md`: Phase 8's own closing "not designed yet" note had been left orphaned after Phase 9's section (a side effect of how Phase 9 part 1's content was originally inserted) rather than staying inside Phase 8's own section. Caught while editing this same file for part 2; moved back into place, no content lost or duplicated going forward.
-
-## Phase 9 (parts 1–2): PKI/certificate management — a root CA, issued leaf certificates, and automatic per-container issuance
 
 ### Phase 9 (part 1): PKI/certificate management — a root CA and issued leaf certificates
 

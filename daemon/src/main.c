@@ -5,6 +5,7 @@
 #include "linux_compat.h"
 #include "network.h"
 #include "pki.h"
+#include "pkg.h"
 #include "registry.h"
 #include "rtnetlink.h"
 #include "staticfile.h"
@@ -23,6 +24,7 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define DEFAULT_PORT 7620
@@ -35,20 +37,24 @@
 #define DNS_RECORDS_STATE_PATH BASE_DIR "/dns_records.json"
 #define PKI_DIR BASE_DIR "/pki"
 #define PKI_CERTS_STATE_PATH PKI_DIR "/pki_certs.json"
+#define PKG_DIR BASE_DIR "/pkg"
+#define PKG_INSTALLED_STATE_PATH PKG_DIR "/pkg_installed.json"
 #define MAX_EVENTS 64
 #define CONTAINERS_PREFIX "/v1/containers/"
 #define NETWORKS_PREFIX "/v1/networks/"
 #define DNS_RECORDS_PREFIX "/v1/dns/records/"
 #define DNS_SERVERS_PREFIX "/v1/dns/servers/"
 #define PKI_CERTS_PREFIX "/v1/pki/certs/"
+#define PKG_PREFIX "/v1/pkg/"
 
-enum conn_kind { CONN_LISTENER, CONN_CLIENT, CONN_CONTAINER };
+enum conn_kind { CONN_LISTENER, CONN_CLIENT, CONN_CONTAINER, CONN_PKG_FETCH };
 
 struct conn {
 	enum conn_kind kind;
 	int fd;
 	struct http_conn http;        /* CONN_CLIENT only */
 	struct registry_entry *entry; /* CONN_CONTAINER only */
+	pid_t pkg_fetch_pid;          /* CONN_PKG_FETCH only */
 };
 
 static int g_epfd;
@@ -177,6 +183,37 @@ static void register_container_pidfd(struct registry_entry *entry)
 	ev.data.ptr = cc;
 	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD pidfd");
+		abort();
+	}
+}
+
+/*
+ * Same shape as register_container_pidfd(), for a plain fork()'d
+ * subprocess instead of a clone3()'d container -- Phase 10's package
+ * fetch step (a `curl` subprocess) needs the exact same non-blocking
+ * "tell me via epoll when this exits" treatment a container's own
+ * CLONE_PIDFD-obtained pidfd already gets, via the explicit
+ * sys_pidfd_open() equivalent for an already-forked pid.
+ */
+static void register_pkg_fetch_pidfd(pid_t pid, int pidfd)
+{
+	struct conn *cc;
+	struct kx_epoll_event ev;
+
+	cc = malloc(sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (pkg fetch reactor conn)");
+		abort();
+	}
+	cc->kind = CONN_PKG_FETCH;
+	cc->fd = pidfd;
+	cc->pkg_fetch_pid = pid;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+		perror("epoll_ctl ADD pkg fetch pidfd");
 		abort();
 	}
 }
@@ -1018,6 +1055,144 @@ static void handle_pki_cert_delete(int fd, const char *name)
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
+static void respond_pkg_error(int fd, enum pkg_error err)
+{
+	switch (err) {
+	case PKG_ERR_INVALID_NAME:
+		respond_error(fd, 400, "Bad Request", "invalid package name");
+		break;
+	case PKG_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such package");
+		break;
+	case PKG_ERR_INVALID_RECIPE:
+		respond_error(fd, 400, "Bad Request", "no such recipe, or it failed to parse");
+		break;
+	case PKG_ERR_DUPLICATE:
+		respond_error(fd, 409, "Conflict", "package is already installed");
+		break;
+	case PKG_ERR_BUSY:
+		respond_error(fd, 409, "Conflict", "another package install is already in progress");
+		break;
+	case PKG_ERR_FULL:
+		respond_error(fd, 500, "Internal Server Error", "package table full");
+		break;
+	case PKG_ERR_SPAWN_FAILED:
+	case PKG_ERR_PERSIST_FAILED:
+	default:
+		respond_error(fd, 500, "Internal Server Error", "package operation failed");
+		break;
+	}
+}
+
+static void handle_pkg_bootstrap(int fd)
+{
+	enum pkg_error perr = pkg_bootstrap_build_image();
+
+	if (perr != PKG_OK) {
+		respond_pkg_error(fd, perr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+static void handle_pkg_recipes_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "recipes");
+	pkg_write_json_recipes(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_pkg_install(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *name;
+	pid_t pid;
+	int pidfd;
+	enum pkg_error perr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	name = json_as_string(json_object_get(root, "name"));
+	if (name == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "name missing");
+		return;
+	}
+
+	perr = pkg_install_start(name, &pid, &pidfd);
+	if (perr != PKG_OK) {
+		json_free(root);
+		respond_pkg_error(fd, perr);
+		return;
+	}
+
+	jw_init(&w);
+	if (pkg_get_one(name, &w) != PKG_OK) {
+		/* shouldn't happen -- pkg_install_start() just created it */
+		jw_free(&w);
+		json_free(root);
+		respond_error(fd, 500, "Internal Server Error",
+		              "package started but could not be read back");
+		return;
+	}
+	json_free(root);
+	register_pkg_fetch_pidfd(pid, pidfd);
+	respond_json(fd, 202, "Accepted", &w);
+	jw_free(&w);
+}
+
+static void handle_pkg_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "packages");
+	pkg_write_json_list(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_pkg_get_one(int fd, const char *name)
+{
+	struct json_writer w;
+	enum pkg_error perr;
+
+	jw_init(&w);
+	perr = pkg_get_one(name, &w);
+	if (perr != PKG_OK) {
+		jw_free(&w);
+		respond_pkg_error(fd, perr);
+		return;
+	}
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_pkg_delete(int fd, const char *name)
+{
+	enum pkg_error perr = pkg_delete(name);
+
+	if (perr != PKG_OK) {
+		respond_pkg_error(fd, perr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
 static void dispatch(int fd, const struct http_request *req)
 {
 	const char *name;
@@ -1145,6 +1320,52 @@ static void dispatch(int fd, const struct http_request *req)
 			}
 		}
 	}
+	/*
+	 * These three reserved paths are checked before the generic
+	 * PKG_PREFIX/{name} fallback below, exactly like every other
+	 * resource's exact-match-then-prefix ordering in this dispatch --
+	 * a package named "bootstrap"/"recipes"/"install" would be
+	 * unreachable via GET/DELETE /v1/pkg/{name}, a deliberate,
+	 * documented reserved-words boundary (recipes are operator-
+	 * provisioned out of band, easily avoided in practice).
+	 */
+	if (strcmp(req->path, "/v1/pkg/bootstrap") == 0) {
+		if (strcmp(req->method, "POST") == 0) {
+			handle_pkg_bootstrap(fd);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/pkg/recipes") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_pkg_recipes_list(fd);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/pkg/install") == 0) {
+		if (strcmp(req->method, "POST") == 0) {
+			handle_pkg_install(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/pkg") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_pkg_list(fd);
+			return;
+		}
+	}
+	if (strncmp(req->path, PKG_PREFIX, strlen(PKG_PREFIX)) == 0) {
+		name = req->path + strlen(PKG_PREFIX);
+		if (name[0] != '\0') {
+			if (strcmp(req->method, "GET") == 0) {
+				handle_pkg_get_one(fd, name);
+				return;
+			}
+			if (strcmp(req->method, "DELETE") == 0) {
+				handle_pkg_delete(fd, name);
+				return;
+			}
+		}
+	}
 
 	/*
 	 * Anything outside /v1/... isn't part of the API contract at all --
@@ -1209,10 +1430,58 @@ static void handle_client_event(struct conn *cc)
 
 static void handle_container_event(struct conn *cc)
 {
+	struct registry_entry *entry = cc->entry;
+
 	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
-	registry_mark_exited(cc->entry);
-	cc->entry->reactor_conn = NULL;
+	registry_mark_exited(entry);
+	entry->reactor_conn = NULL;
 	free(cc);
+
+	/*
+	 * Unconditional, exactly like dns_record_forget_owner()/
+	 * pki_cert_forget_owner() on every container delete -- pkg.c
+	 * decides relevance (no-op unless this is PKG_BUILD_CONTAINER_NAME),
+	 * so this hook stays trivial regardless of which container exited.
+	 */
+	pkg_build_completed(entry->name, entry->exit_status);
+	if (strcmp(entry->name, PKG_BUILD_CONTAINER_NAME) == 0)
+		registry_remove(entry->name);
+}
+
+/*
+ * Mirrors handle_container_event()'s shape for the package fetch
+ * step's plain fork()'d curl subprocess: reap it (non-blocking here --
+ * EPOLLIN on its pidfd already means it has exited), hand the exit
+ * status to pkg_fetch_completed(), and if it says a build should
+ * start, spawn it through the exact same registry_create() +
+ * register_container_pidfd() path every other container already
+ * goes through -- one source of truth for "what's running," the
+ * package build container included.
+ */
+static void handle_pkg_fetch_event(struct conn *cc)
+{
+	int status;
+	int exit_status;
+	struct container_spec spec;
+
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
+		exit_status = WEXITSTATUS(status);
+	else
+		exit_status = -1;
+	close(cc->fd);
+	free(cc);
+
+	if (pkg_fetch_completed(exit_status, &spec)) {
+		struct registry_entry *entry;
+		enum registry_error rerr =
+		    registry_create(PKG_BUILD_CONTAINER_NAME, &spec, NULL, 0, 0, &entry);
+
+		if (rerr != REGISTRY_OK)
+			pkg_build_spawn_failed();
+		else
+			register_container_pidfd(entry);
+	}
 }
 
 static void accept_loop(void)
@@ -1280,7 +1549,7 @@ int main(int argc, char **argv)
 
 	if (ensure_dir(BASE_DIR) != 0 || ensure_dir(IMAGES_DIR) != 0 ||
 	    ensure_dir(CONTAINERS_DIR) != 0 || ensure_dir(PKI_DIR) != 0 ||
-	    ensure_dir(PKI_DIR "/certs") != 0)
+	    ensure_dir(PKI_DIR "/certs") != 0 || ensure_dir(PKG_DIR) != 0)
 		return 1;
 
 	if (network_init(NETWORKS_STATE_PATH) != 0)
@@ -1288,6 +1557,8 @@ int main(int argc, char **argv)
 	if (dns_init(DNS_RECORDS_STATE_PATH) != 0)
 		return 1;
 	if (pki_init(PKI_DIR, PKI_CERTS_STATE_PATH) != 0)
+		return 1;
+	if (pkg_init(PKG_DIR, PKG_INSTALLED_STATE_PATH, CONTAINERS_DIR, IMAGES_DIR) != 0)
 		return 1;
 
 	registry_init();
@@ -1372,6 +1643,8 @@ int main(int argc, char **argv)
 				accept_loop();
 			else if (cc->kind == CONN_CONTAINER)
 				handle_container_event(cc);
+			else if (cc->kind == CONN_PKG_FETCH)
+				handle_pkg_fetch_event(cc);
 			else
 				handle_client_event(cc);
 		}

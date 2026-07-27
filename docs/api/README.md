@@ -30,6 +30,12 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | POST | `/pki/certs` | Issue a leaf certificate signed by the root CA |
 | GET | `/pki/certs/{name}` | Inspect one issued certificate (metadata + cert, never the key) |
 | DELETE | `/pki/certs/{name}` | Remove an issued certificate |
+| POST | `/pkg/bootstrap` | Stage the sandboxed build toolchain image (once; idempotent) |
+| GET | `/pkg/recipes` | List recipes found on disk (provisioned out of band) |
+| POST | `/pkg/install` | Start installing a package (async -- returns immediately) |
+| GET | `/pkg` | List every known package (installed or in-flight) with its state |
+| GET | `/pkg/{name}` | Inspect one package's current state |
+| DELETE | `/pkg/{name}` | Uninstall a package |
 
 Every error response is `{"error": "message"}` with an appropriate 4xx/5xx status.
 
@@ -224,6 +230,64 @@ POST /v1/containers
 
 Unlike `dns_register`, `pki_issue` does **not** require `networks` — the cert identifies the container by name, not by IP, and delivery works for any running container regardless of networking. It **does** require the CA to already be bootstrapped, checked upfront as a `400` (you can't issue a cert with no CA). A *name collision* discovered only at issuance time (e.g. a stale cert persisted from a same-named container created before a daemon restart) is best-effort instead: issuance is silently skipped rather than overwriting it, and the container is still created successfully.
 
+## Package manager: source-based, asynchronous installs
+
+A package manager built from scratch: recipes are shell scripts (the same format Gentoo ebuilds/Arch PKGBUILDs/CRUX Pkgfiles use), builds happen inside this project's own container runtime, and the daemon **never sources or executes a recipe on the host** — recipe metadata (`pkg_name=`, `pkg_version=`, `pkg_source=`, `pkg_sha256=`, `pkg_depends=`) is read with a strict, non-executing line scanner; the recipe's real shell code (`pkg_build()`/`pkg_install()`) only ever runs inside the isolated, network-less build container.
+
+**Every installed package lands in one canonical image**, `/var/lib/kanxeo/images/base/rootfs` — the thing that makes host and container packaging genuinely the same: any container created with `"image": "base"` gets everything installed, with no separate host/container package paths to keep in sync.
+
+**Installs are asynchronous.** The daemon is single-threaded and non-blocking; a network fetch or a real compile can take anywhere from seconds to minutes, so `POST /v1/pkg/install` returns immediately (`202`) and the actual work happens in the background — poll `GET /v1/pkg/{name}` for progress. **Fetching happens on the host** (a `curl` subprocess — this project's networking plane has no outbound NAT, so a build container has no network access at all, a stronger isolation boundary for untrusted build scripts, not a limitation worked around).
+
+One-time setup, before installing anything:
+
+```
+POST /v1/pkg/bootstrap
+```
+
+Stages a real build toolchain (`gcc`/`make`/`ld`/`as`/`cc1`/`sh`/`tar` and their real headers/libraries) into the sandboxed build image by copying this host's own `/usr/{include,lib,lib64,bin,libexec}` with the real `cp -a`. Idempotent — safe to call again.
+
+A recipe (provisioned onto disk at `/var/lib/kanxeo/pkg/recipes/<name>.recipe`, out of band, the same v1 boundary container images already have):
+
+```sh
+pkg_name=hello
+pkg_version=2.12.1
+pkg_source=https://ftp.gnu.org/gnu/hello/hello-2.12.1.tar.gz
+pkg_sha256=8d99142afd92576f30b0cd7cb42a8dc6809998bc5d607d88761f512e26c7db8
+pkg_depends=""
+
+pkg_build() {
+    ./configure --prefix=/usr
+    make -j"$(nproc)"
+}
+
+pkg_install() {
+    make DESTDIR="$PKG_DESTDIR" install
+}
+```
+
+Install it:
+
+```
+POST /v1/pkg/install
+{"name": "hello"}
+```
+
+Response (`202`):
+
+```json
+{"name": "hello", "version": "2.12.1", "state": "fetching", "error": null, "files": []}
+```
+
+Poll `GET /v1/pkg/hello` until `state` leaves `fetching`/`building`:
+
+```json
+{"name": "hello", "version": "2.12.1", "state": "installed", "error": null, "files": ["usr/bin/hello", "..."]}
+```
+
+`state: "failed"` populates `error` (checksum mismatch, build failure, etc.) — the package stays visible via `GET` so the failure is diagnosable, not silently dropped. `DELETE /v1/pkg/hello` unlinks every file in its manifest from the base image, not just the registry entry.
+
+v1 serializes installs — only one may be in flight at a time (`POST /v1/pkg/install` for a second package while another is still `fetching`/`building` is a `409`). `pkg_depends` is parsed and shown but not acted on yet — no automatic dependency installation in v1.
+
 ## Current scope boundaries (v1, deliberate — see ADR-0007)
 
 - No image build/pull endpoint yet — images are provisioned onto disk out of band.
@@ -233,6 +297,7 @@ Unlike `dns_register`, `pki_issue` does **not** require `networks` — the cert 
 - Routes are set-once at creation and not echoed back or introspectable afterward; modifying them on a running container would need a new "enter another netns from outside" primitive, not built yet. See `docs/ROADMAP.md`.
 - DNS server bindings are in-memory only (not persisted, like the container registry itself — a binding referencing a container that dies with the daemon means nothing after a restart anyway). Only one hosts-format record type; no CNAME/MX/TXT/etc.
 - PKI: no certificate revocation/CRL, no CA regeneration/rotation, no CSR-submission flow (the daemon always generates both the keypair and the cert itself) — see `docs/ROADMAP.md` Phase 9.
+- Package manager: no automatic dependency installation yet (`pkg_depends` is parsed and shown, not acted on); only one install in flight at a time; symlinks in a package's own `DESTDIR` output are skipped (regular files and directories only); no package upgrade/rebuild flow — see `docs/ROADMAP.md` Phase 10.
 
 ## Why this file exists alongside `openapi.yaml`
 
