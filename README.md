@@ -82,9 +82,16 @@ This produces `build/kanxeo-install.iso` — attach it as a CD-ROM/optical drive
 
 ### Secure Boot
 
-The **installer media itself** always needs Secure Boot **off** in the VM/host firmware settings — it's an unsigned, one-time boot, no different from installing most non-Windows OSes from scratch (see ADR-0015 for why this can't be avoided). Turn it back on any time after.
+Also requires **UEFI firmware and a Q35 machine type** — Kanxeo is UEFI-only (see `docs/ROADMAP.md`'s Phase 11 architecture decisions); a legacy-BIOS/i440fx VM has no AHCI CD-ROM controller for this kernel to find and will panic trying to mount root. On Proxmox: VM → Hardware → BIOS → `OVMF (UEFI)`; VM → Options → Machine → `q35`.
 
-The **installed system** is Secure-Boot-capable: `kanxeo-install` signs its own boot chain with the Kanxeo key above and, during install, stages a one-time key-enrollment request (you'll be asked to set a temporary password). At the newly-installed system's **very next reboot**, firmware's own `MokManager` screen (blue, text-mode, not anything this project built) will ask you to confirm the enrollment — enter that same password. After that single confirmation, Secure Boot can stay on indefinitely, with zero further exceptions, on that machine.
+The **installer media itself** always needs Secure Boot **off** for its own one-time, unsigned boot — no different from installing most non-Windows OSes from scratch (see ADR-0015 for why this can't be avoided). Concretely, on Proxmox: when adding the VM's EFI Disk, leave **"Pre-Enroll keys" unchecked** — if Secure Boot's keys are already enrolled before this first boot, it fails with `Access Denied`.
+
+The **installed system** is Secure-Boot-capable, but getting there needs one real, in-order sequence (this is the one step our own automated tests skip via a QEMU-only shortcut, so it's easy to miss first time):
+
+1. `kanxeo-install` signs its own boot chain with the Kanxeo key above and, during install, stages a one-time key-enrollment request — you'll be asked to set a temporary password.
+2. Before letting it reboot into the installed system, enter the firmware's own setup screen (on Proxmox/OVMF: interrupt at the Tianocore splash, usually `Esc`) → **Device Manager → Secure Boot Configuration** → enable Secure Boot / "Enroll Default Secure Boot Keys" (exact wording varies by OVMF build) → save and reset. This is the step that actually turns Secure Boot on for this machine, using the *same* EFI vars store that already has the pending key request from step 1 — don't recreate the EFI Disk to do this, that would discard the pending request.
+3. On that reset, `shim` (Microsoft-signed, always trusted) detects the pending request and shows its own **MokManager** screen: "Press any key to perform MOK management" → **Enroll MOK** → **Continue** → **Yes** → enter the *same* password from step 1 → **Reboot**.
+4. From then on, Secure Boot stays on with zero further prompts on that machine.
 
 ## Repository Layout
 
