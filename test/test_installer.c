@@ -136,9 +136,13 @@ int main(void)
 	snprintf(ovmf_vars, sizeof(ovmf_vars), "%s/OVMF_VARS.fd", workdir);
 
 	/* 1. The payload: kanxeod's own control-plane squashfs, unchanged
-	 * from parts 1-2. */
+	 * from parts 1-2 except now also carrying web/ (kanxeod's own
+	 * DEFAULT_WEB_ROOT is a relative path, resolved against PID 1's own
+	 * CWD -- never staged before, so the installed system's dashboard
+	 * 404'd on every request despite the REST API working fine; found
+	 * live, after a real install). */
 	{
-		char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN, stage_dir, (char *)KANXEOD_BIN,
+		char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN, stage_dir, (char *)KANXEOD_BIN, "web",
 			                     control_plane_squashfs, NULL };
 		if (run_subprocess(MKBOOTROOT_BIN, mkbootroot_argv) != 0)
 			return 1;

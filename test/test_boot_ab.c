@@ -161,7 +161,7 @@ int main(void)
 	 * header comment for why. */
 	{
 		char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN, stage_dir,
-			                     (char *)KANXEOD_BIN, root_squashfs, NULL };
+			                     (char *)KANXEOD_BIN, "web", root_squashfs, NULL };
 		if (run_subprocess(MKBOOTROOT_BIN, mkbootroot_argv) != 0)
 			return 1;
 	}

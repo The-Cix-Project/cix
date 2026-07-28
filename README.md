@@ -70,7 +70,7 @@ openssl x509 -in image/keys/kanxeo-signing.crt -outform DER -out image/keys/kanx
 Once `build/kanxeod`, `build/kanxeo-install`, `build/bzImage`, and the signing key above all exist:
 
 ```sh
-sudo build/mkbootroot  /tmp/root_stage build/kanxeod /tmp/kanxeod-root.squashfs
+sudo build/mkbootroot  /tmp/root_stage build/kanxeod web /tmp/kanxeod-root.squashfs
 sudo build/mkinstalleriso build/iso_stage build/kanxeo-install build/bzImage \
      /tmp/kanxeod-root.squashfs \
      image/keys/kanxeo-signing.key image/keys/kanxeo-signing.crt image/keys/kanxeo-signing.cer \

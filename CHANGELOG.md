@@ -4,6 +4,15 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 11 (part 5 follow-up 4): web dashboard 404'd on every installed system
+
+Found live: `kanxeod` reachable, `kanxeoctl` working, but the browser dashboard returned "Not Found" on every request.
+
+#### Fixed
+- `image/src/mkbootroot.c`: `kanxeod`'s `DEFAULT_WEB_ROOT` (`daemon/src/main.c`) is a relative path (`"web"`), resolved against PID 1's own CWD (never `chdir()`'d, so the squashfs root itself) — but `mkbootroot` never staged the `web/` directory into that image at all, only `kanxeod` + its two dynamic-link dependencies. Every dashboard request 404'd; the REST API worked fine since it's a separate routing path (`static_serve()` only handles what doesn't match `/v1/...`). New `copy_dir_files()` (flat, not recursive — `web/`'s own three files, `index.html`/`app.js`/`style.css`, have no subdirectories, matching ADR-0010's "no framework, no build step" design) stages it alongside `kanxeod` itself. `build/mkbootroot`'s own argv grew a required `<web-dir>` argument; all four call sites (`test/test_boot.c`, `test/test_boot_ab.c`, `test/test_installer.c`, `README.md`) updated.
+
+Confirmed directly (`unsquashfs -l`) that `web/index.html` etc. land at exactly the path `kanxeod` resolves at runtime, not just inferred from the fix compiling. Zero warnings; `test_boot`/`test_boot_ab`/`test_installer` re-verified (3 consecutive `test_installer` passes); the real, shippable `build/kanxeo-install.iso` rebuilt.
+
 ### Phase 11 (part 5 follow-up 3): non-interactive partitioning (`--auto-partition`)
 
 Typing the same fixed `fdisk` command sequence by hand for every VM/scripted install was pure friction, not a meaningful safety check — asked for directly after a manual reinstall proved painful.
