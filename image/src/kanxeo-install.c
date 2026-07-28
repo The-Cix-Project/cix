@@ -272,8 +272,16 @@ static int mkfs_ext4(const char *device, const char *label)
 /* systemd-boot itself, the kernel, and root A's loader entry -- carrying
  * an initial tries-left counter, the same Automatic Boot Assessment
  * convention part 2 already proved, applied uniformly to the very first
- * install rather than treating it as a special pre-trusted case. */
-static int populate_esp(const char *esp_mount)
+ * install rather than treating it as a special pre-trusted case.
+ *
+ * The loader entry's own "--bind=<ip>" (kanxeod's real, working flag,
+ * previously never passed here at all -- kanxeod silently fell back to
+ * its 127.0.0.1-only default despite apply_static_ip() already having
+ * configured this exact address on eth0) binds the *specific* address
+ * just configured, not 0.0.0.0 -- kanxeod already knows the one real
+ * address this install is for; no reason to listen on every interface
+ * when exactly one is correct. */
+static int populate_esp(const char *esp_mount, const char *ip)
 {
 	char path[512];
 	char loader_conf[512];
@@ -315,8 +323,8 @@ static int populate_esp(const char *esp_mount)
 	         "version 1\n"
 	         "linux /kanxeo-bzImage\n"
 	         "options console=tty0 console=ttyS0 root=%s2 rw init=/bin/kanxeod -- --init-mode "
-	         "--slot=a\n",
-	         BOOT_TIME_DISK_PREFIX);
+	         "--slot=a --bind=%s\n",
+	         BOOT_TIME_DISK_PREFIX, ip);
 	if (write_text_file(path, loader_conf) != 0)
 		return -1;
 
@@ -477,7 +485,7 @@ int main(int argc, char **argv)
 		perror("mount esp");
 		return 1;
 	}
-	if (populate_esp(ESP_MOUNT) != 0) {
+	if (populate_esp(ESP_MOUNT, ip) != 0) {
 		umount(ESP_MOUNT);
 		return 1;
 	}

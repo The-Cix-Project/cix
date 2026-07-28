@@ -116,8 +116,16 @@ The **installed system** is Secure-Boot-capable, but getting there needs one rea
 
 1. `kanxeo-install` signs its own boot chain with the Kanxeo key above and, during install, stages a one-time key-enrollment request — you'll be asked to set a temporary password.
 2. Before letting it reboot into the installed system, enter the firmware's own setup screen (on Proxmox/OVMF: interrupt at the Tianocore splash, usually `Esc`) → **Device Manager → Secure Boot Configuration** → enable Secure Boot / "Enroll Default Secure Boot Keys" (exact wording varies by OVMF build) → save and reset. This is the step that actually turns Secure Boot on for this machine, using the *same* EFI vars store that already has the pending key request from step 1 — don't recreate the EFI Disk to do this, that would discard the pending request.
-3. On that reset, `shim` (Microsoft-signed, always trusted) detects the pending request and shows its own **MokManager** screen: "Press any key to perform MOK management" → **Enroll MOK** → **Continue** → **Yes** → enter the *same* password from step 1 → **Reboot**.
+3. On that reset, `shim` (Microsoft-signed, always trusted) detects the pending request and shows its own **MokManager** screen: **press any key** (there's a ~10s countdown — miss it and it falls straight through to a boot attempt that correctly fails with `Verification failed: (0x1A) Security Violation`, since nothing got enrolled) → from the main menu, arrow down to **"Enroll MOK"** (*not* "Continue boot" — see the warning below) → **"Continue"** (a *different* "Continue", inside the Enroll-MOK submenu, confirming you want to proceed past viewing the key) → **"Yes"** → enter the *same* password from step 1 → back at the main menu, now offering **"Reboot"** as the top entry — select it.
 4. From then on, Secure Boot stays on with zero further prompts on that machine.
+
+**⚠️ Do not select "Continue boot"** at that main MokManager menu, even by mistake — confirmed directly (booted it twice): picking it doesn't just skip the prompt for this boot, it **permanently discards** the pending enrollment request. Every later boot's menu will be missing the "Enroll MOK" option entirely, and there's no way to get it back short of a full reinstall (a fresh `mokutil --import` needs a fresh install run — `kanxeo-install` has no standalone "just do enrollment" mode).
+
+If this already happened to you, there's a working recovery that doesn't need a reinstall: **hash-enroll the two boot-chain files directly**, via the same MokManager menu's **"Enroll hash from disk"** option (confirmed working) — do this for *both* files, rebooting only after both are done:
+1. `\EFI\BOOT\grubx64.efi`
+2. `\kanxeo-bzImage`
+
+This trusts those exact files by hash rather than by the Kanxeo signing key, so it's narrower than the cert-based path (a future kernel rebuild or reinstall changes the hashes and needs re-enrolling) but gets you unblocked immediately.
 
 ## Repository Layout
 

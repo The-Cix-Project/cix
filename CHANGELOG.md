@@ -4,6 +4,18 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 11 (part 5 follow-up 2): kanxeod unreachable after install; MokManager's "Continue boot" trap documented
+
+Two more findings from the same real install, after Secure Boot itself was confirmed working end to end.
+
+#### Fixed
+- `image/src/kanxeo-install.c`: `kanxeod` has a working `--bind=ADDR` flag (defaults to `127.0.0.1`), but the generated loader entry never passed it — so a freshly-installed system always listened on loopback only, unreachable from the network, even though `apply_static_ip()` had already configured the real address on `eth0` moments earlier. `populate_esp()` now takes the install's own `--ip=` value and bakes `--bind=<ip>` into the loader entry, binding exactly the one real address this install is for. Confirmed directly (spiked, not assumed): `kanxeod listening on 192.168.77.77:7620`.
+
+#### Documented
+- `README.md` / `docs/adr/0015-shim-mok-secure-boot-signing.md`: a real firmware-level trap found live during the user's own MOK confirmation — selecting **"Continue boot"** at `MokManager`'s main menu doesn't defer the pending enrollment request, it **permanently discards it** (confirmed by booting the scenario twice: the "Enroll MOK" option is simply gone from every later boot's menu). Not something in this project's own code to fix. `README.md` now warns loudly and documents the recovery path the user actually used successfully: hash-enrolling `\EFI\BOOT\grubx64.efi` and `\kanxeo-bzImage` individually via the same menu's "Enroll hash from disk" — narrower than the cert-based path (tied to exact file hashes, doesn't survive a kernel rebuild) but works without a reinstall.
+
+Zero warnings; `test_installer`/`test_boot`/`test_boot_ab` re-verified (3 consecutive `test_installer` passes); the `--bind=` fix confirmed via a dedicated spike, not just inferred from the existing test's own (differently-scoped) success marker.
+
 ### Phase 11 (part 5 follow-up): real-world install fixes found via an actual VM install
 
 Four more real, previously-untested bugs found by walking the `v1.2.0` fix through an actual Proxmox install, none of them caught by the automated suite because each one lived in a path the tests had always bypassed for good reasons at the time (interactive UIs that seemingly couldn't be scripted, or a QEMU-only shortcut) — every one of them now has real coverage, not just a fix.
