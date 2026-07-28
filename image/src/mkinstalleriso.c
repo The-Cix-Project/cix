@@ -277,12 +277,12 @@ int main(int argc, char **argv)
 		return 1;
 
 	snprintf(grub_cfg, sizeof(grub_cfg),
-	         "set timeout=0\n"
+	         "set timeout=10\n"
 	         "set default=0\n"
 	         "\n"
 	         "menuentry \"Kanxeo Install\" {\n"
-	         "    linux /boot/kanxeo-bzImage console=ttyS0 root=/dev/sr0 rootfstype=iso9660 ro "
-	         "init=/bin/kanxeo-install -- %s\n"
+	         "    linux /boot/kanxeo-bzImage console=tty0 console=ttyS0 root=/dev/sr0 "
+	         "rootfstype=iso9660 ro init=/bin/kanxeo-install -- %s\n"
 	         "}\n",
 	         kernel_args);
 	snprintf(grub_cfg_path, sizeof(grub_cfg_path), "%s/boot/grub/grub.cfg", stage_dir);

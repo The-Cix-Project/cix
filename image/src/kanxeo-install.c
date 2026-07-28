@@ -314,7 +314,8 @@ static int populate_esp(const char *esp_mount)
 	         "sort-key kanxeo\n"
 	         "version 1\n"
 	         "linux /kanxeo-bzImage\n"
-	         "options console=ttyS0 root=%s2 rw init=/bin/kanxeod -- --init-mode --slot=a\n",
+	         "options console=tty0 console=ttyS0 root=%s2 rw init=/bin/kanxeod -- --init-mode "
+	         "--slot=a\n",
 	         BOOT_TIME_DISK_PREFIX);
 	if (write_text_file(path, loader_conf) != 0)
 		return -1;
