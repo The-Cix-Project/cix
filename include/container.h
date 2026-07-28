@@ -60,6 +60,36 @@ struct overlay_spec {
 	const char *merged;
 };
 
+/*
+ * A considered, generous fixed bound with no natural daemon-side
+ * ceiling to mirror (devices are host hardware, not a daemon-created
+ * resource the way CONTAINER_MAX_NETWORKS mirrors NETWORK_MAX) --
+ * same reasoning CONTAINER_MAX_ROUTES already used: enough for a
+ * whole USB controller's several endpoints, a multi-port serial card,
+ * or a handful of NVMe namespaces in one container.
+ */
+#define CONTAINER_MAX_DEVICES 16
+
+enum device_node_type {
+	DEVICE_NODE_CHAR,
+	DEVICE_NODE_BLOCK,
+};
+
+/*
+ * One device grant. dev_path is mknod()'d verbatim into the
+ * container's own private /dev after pivot (container_dev_mknod());
+ * type/major/minor drive both that mknod() and the BPF_CGROUP_DEVICE
+ * program built by container_dev_bpf_attach() -- the two must always
+ * describe the same node, which is why they travel together in one
+ * struct rather than being independently specified.
+ */
+struct device_spec {
+	enum device_node_type type;
+	unsigned int major;
+	unsigned int minor;
+	char dev_path[64];
+};
+
 struct container_spec {
 	struct ns_config ns;
 	struct cgroup_limits cg;
@@ -84,6 +114,15 @@ struct container_spec {
 	int ip_forward;
 	struct route_spec routes[CONTAINER_MAX_ROUTES];
 	int route_count;
+	/*
+	 * Opt-in device passthrough: device_count == 0 means no /dev
+	 * nodes at all beyond whatever the shared OverlayFS lowerdir
+	 * image already contains, and no BPF_CGROUP_DEVICE program is
+	 * loaded or attached -- a container that doesn't opt in is
+	 * byte-for-byte unaffected by this feature (No Regressions).
+	 */
+	struct device_spec devices[CONTAINER_MAX_DEVICES];
+	int device_count;
 	char *const *argv;
 	char *const *envp;
 };
@@ -92,6 +131,15 @@ struct container_handle {
 	pid_t pid;
 	int cgroup_fd;
 	int pidfd;
+	/*
+	 * The loaded/attached BPF_CGROUP_DEVICE program's own fd, or -1
+	 * when device_count was 0 at creation time. Kept open for the
+	 * container's lifetime so the kernel-side attachment (pinned to
+	 * the still-existing cgroup leaf -- see cgroup_create()'s own
+	 * comment on why leaves are never rmdir()'d) isn't torn down
+	 * early; closed alongside cgroup_fd/pidfd on removal.
+	 */
+	int bpf_prog_fd;
 };
 
 /*

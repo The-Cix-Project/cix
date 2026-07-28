@@ -26,7 +26,9 @@ struct registry_entry *registry_find(const char *name)
 
 enum registry_error registry_create(const char *name, const struct container_spec *spec,
                                      const struct registry_network_attachment *nets, int net_count,
-                                     int ip_forward, struct registry_entry **out)
+                                     int ip_forward,
+                                     const struct registry_device_attachment *devices,
+                                     int device_count, struct registry_entry **out)
 {
 	int i, slot = -1;
 	struct registry_entry *e;
@@ -58,6 +60,10 @@ enum registry_error registry_create(const char *name, const struct container_spe
 	for (i = 0; i < net_count; i++)
 		e->nets[i] = nets[i];
 	e->ip_forward = ip_forward;
+	memset(e->devices, 0, sizeof(e->devices));
+	e->device_count = device_count;
+	for (i = 0; i < device_count; i++)
+		e->devices[i] = devices[i];
 
 	*out = e;
 	return REGISTRY_OK;
@@ -129,6 +135,8 @@ int registry_remove(const char *name)
 	}
 
 	close(e->handle.pidfd);
+	if (e->handle.bpf_prog_fd >= 0)
+		close(e->handle.bpf_prog_fd);
 	close(e->handle.cgroup_fd);
 	e->in_use = 0;
 	return 0;
@@ -168,6 +176,17 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 	jw_arr_close(w);
 	jw_key(w, "ip_forward");
 	jw_bool(w, entry->ip_forward);
+	jw_key(w, "devices");
+	jw_arr_open(w);
+	for (i = 0; i < entry->device_count; i++) {
+		jw_obj_open(w);
+		jw_key(w, "id");
+		jw_str(w, entry->devices[i].id);
+		jw_key(w, "dev_path");
+		jw_str(w, entry->devices[i].dev_path);
+		jw_obj_close(w);
+	}
+	jw_arr_close(w);
 	jw_obj_close(w);
 }
 

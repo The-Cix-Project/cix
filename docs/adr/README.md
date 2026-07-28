@@ -21,3 +21,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0014](0014-squashfs-ab-root-with-native-boot-counting.md) | Read-only squashfs A/B root with systemd-boot's native boot counting, not a writable root or hand-rolled rollback | Accepted |
 | [0015](0015-shim-mok-secure-boot-signing.md) | shim + MOK enrollment for Secure Boot on the installed system, installer media stays unsigned | Accepted |
 | [0016](0016-reboot-syscall-for-kanxeod-shutdown.md) | kanxeod calls reboot(2) as PID 1, exposed via REST, SIGTERM/SIGINT default to poweroff | Accepted |
+| [0017](0017-ebpf-cgroup-device-filter-for-hardware-passthrough.md) | BPF_CGROUP_DEVICE for device passthrough enforcement, not a blanket eBPF ban | Accepted |

@@ -116,6 +116,30 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /devices:
+    get:
+      summary: List host PCI/USB devices discoverable via sysfs, available for passthrough
+      description: >
+        Read-only: unlike /networks, devices are real host hardware, not
+        something this daemon creates. Re-enumerated fresh from
+        /sys/bus/usb/devices and /sys/bus/pci/devices on every call, never
+        persisted. Reference a device by its `id` in a container's own
+        `devices` field (see ContainerCreateRequest) to grant it access.
+      operationId: listDevices
+      responses:
+        "200":
+          description: Device list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices]
+                properties:
+                  devices:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Device"
+
   /networks:
     get:
       summary: List all networks known to this daemon
@@ -813,6 +837,24 @@ components:
           type: integer
           default: 365
           description: Validity period in days for the pki_issue certificate. Ignored otherwise.
+        devices:
+          type: array
+          items:
+            type: string
+          maxItems: 16
+          description: >
+            ids (see GET /devices) of host PCI/USB devices to grant this
+            container access to, in order -- any id not currently
+            discoverable, or not assignable (no driver bound and/or no
+            owned /dev node found), is a 400. Omit for no device
+            passthrough at all (the same "no /dev beyond the base image"
+            behavior every container had before this field existed). Set
+            once at creation; not modifiable on an already-running
+            container. Enforced by a BPF_CGROUP_DEVICE program (ADR-0017)
+            attached to the container's own cgroup, not just by the /dev
+            node's mere presence -- a container granted no devices, or a
+            different set, cannot open another container's granted
+            device even if it already knows its major:minor.
 
     RouteSpec:
       type: object
@@ -858,6 +900,11 @@ components:
             echoed back here -- the caller already has them, and v1
             doesn't support introspecting or modifying them after
             creation.
+        devices:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContainerDeviceAttachment"
+          description: Every device this container was granted at creation. Empty if none.
 
     ContainerNetworkAttachment:
       type: object
@@ -869,6 +916,66 @@ components:
         ip:
           type: string
           description: Assigned IPv4 address (dotted-quad) within that network.
+
+    ContainerDeviceAttachment:
+      type: object
+      required: [id, dev_path]
+      properties:
+        id:
+          type: string
+          description: The granted device's id (see GET /devices).
+        dev_path:
+          type: string
+          description: Path the device node was mknod()'d at inside this container's own /dev.
+
+    Device:
+      type: object
+      required: [id, bus, vendor_id, product_id, class, description, driver, dev_path, type, major, minor, assignable]
+      properties:
+        id:
+          type: string
+          description: >
+            Stable identifier: "usb:{idVendor}:{idProduct}:{serial-or-port-path}"
+            or "pci:{bdf-address}[:{node-name}]". Never derived from
+            USB busnum/devnum (reassigned on every replug) or from
+            anything else that changes across a reboot/replug on the
+            same physical port.
+        bus:
+          type: string
+          enum: [usb, pci]
+        vendor_id:
+          type: string
+          description: 4 hex digits, no "0x" prefix.
+        product_id:
+          type: string
+          description: 4 hex digits, no "0x" prefix.
+        class:
+          type: string
+          description: PCI class/subclass/progif (6 hex digits), empty for USB.
+        description:
+          type: string
+          description: Human-readable label (manufacturer/product strings, or a synthesized PCI description).
+        driver:
+          type: string
+          description: Kernel driver currently bound, or empty if unbound.
+        dev_path:
+          type: string
+          description: The /dev node path this device owns, or empty if none was found (see assignable).
+        type:
+          type: string
+          enum: [char, block]
+        major:
+          type: integer
+        minor:
+          type: integer
+        assignable:
+          type: boolean
+          description: >
+            True only if a driver is bound AND a real /dev node was
+            found. A device with assignable=false still appears (so an
+            operator can see it exists and why it isn't offered), but
+            referencing its id in a container's own devices field is a
+            400.
 
     NetworkCreateRequest:
       type: object

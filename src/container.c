@@ -13,6 +13,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 {
 	int cgroup_fd;
 	int pidfd = -1;
+	int bpf_prog_fd = -1;
 	long ret;
 	int net_pipe[2] = { -1, -1 };
 	int want_net = (spec->net_count > 0);
@@ -20,8 +21,26 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	if (cgroup_create(&spec->cg, &cgroup_fd) != 0)
 		return -1;
 
+	/*
+	 * Before ns_clone3(): CLONE_INTO_CGROUP places the child into
+	 * cgroup_fd atomically as part of that syscall, so the device
+	 * policy must already be attached for there to be no race window,
+	 * and because the child's own container_dev_mknod() calls are
+	 * themselves subject to a BPF_DEVCG_ACC_MKNOD check under this
+	 * same program.
+	 */
+	if (container_dev_bpf_attach(cgroup_fd, spec->devices, spec->device_count,
+	                              &bpf_prog_fd) != 0) {
+		int saved_errno = errno;
+		close(cgroup_fd);
+		errno = saved_errno;
+		return -1;
+	}
+
 	if (want_net && pipe(net_pipe) != 0) {
 		int saved_errno = errno;
+		if (bpf_prog_fd >= 0)
+			close(bpf_prog_fd);
 		close(cgroup_fd);
 		errno = saved_errno;
 		return -1;
@@ -34,6 +53,8 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			close(net_pipe[0]);
 			close(net_pipe[1]);
 		}
+		if (bpf_prog_fd >= 0)
+			close(bpf_prog_fd);
 		close(cgroup_fd);
 		errno = saved_errno;
 		return -1;
@@ -54,6 +75,10 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		}
 		if (mountns_pivot(spec->ov.merged, &spec->mnt) != 0) {
 			perror("child: mountns_pivot");
+			_exit(126);
+		}
+		if (container_dev_mknod(spec->devices, spec->device_count) != 0) {
+			perror("child: container_dev_mknod");
 			_exit(126);
 		}
 
@@ -106,6 +131,8 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			close(net_pipe[1]);
 			waitid(P_PIDFD, pidfd, &info, WEXITED);
 			close(pidfd);
+			if (bpf_prog_fd >= 0)
+				close(bpf_prog_fd);
 			close(cgroup_fd);
 			errno = saved_errno;
 			return -1;
@@ -116,6 +143,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	out->pid = (pid_t)ret;
 	out->cgroup_fd = cgroup_fd;
 	out->pidfd = pidfd;
+	out->bpf_prog_fd = bpf_prog_fd;
 	return 0;
 }
 

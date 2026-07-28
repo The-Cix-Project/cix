@@ -1,4 +1,5 @@
 #include "persist.h"
+#include "pathutil.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -78,28 +79,5 @@ int persist_read_file(const char *path, char **out_buf, size_t *out_len)
 
 int persist_mkdir_p(const char *dir_path)
 {
-	char tmp[PATH_MAX];
-	size_t len;
-	char *p;
-
-	if (snprintf(tmp, sizeof(tmp), "%s", dir_path) >= (int)sizeof(tmp))
-		return -1;
-
-	len = strlen(tmp);
-	if (len == 0)
-		return 0;
-	if (tmp[len - 1] == '/')
-		tmp[len - 1] = '\0';
-
-	for (p = tmp + 1; *p != '\0'; p++) {
-		if (*p == '/') {
-			*p = '\0';
-			if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
-				return -1;
-			*p = '/';
-		}
-	}
-	if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
-		return -1;
-	return 0;
+	return kx_mkdir_p(dir_path);
 }

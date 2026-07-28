@@ -4,6 +4,23 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 12 (part 1): PCI/USB (character/block) device passthrough to containers
+
+The expanded charter's first concrete step, agreed directly with the user: pass a real USB device or a driver-backed PCI device (e.g. an NVMe namespace) straight to a container. Two architectural forks were confirmed before writing any code — enforcement via `BPF_CGROUP_DEVICE` (cgroup v2's only device-access mechanism; see ADR-0017 for why this doesn't reopen the networking plane's own separately-scoped "no eBPF" rule) rather than namespace-only isolation (this project's containers run as full root with no user namespace, so `mknod()` of an ungranted device would otherwise just work), and sysfs auto-discovery rather than operator-registered devices.
+
+#### Added
+- `include/linux_compat.h`: raw `bpf(2)` syscall wrapper and self-declared `union bpf_attr`/`struct bpf_insn` equivalents, following the exact pattern `struct clone_args` already established for `clone3(2)`.
+- `src/container_dev.c`: hand-assembles a `BPF_PROG_TYPE_CGROUP_DEVICE` program (no libbpf, no external BPF toolchain) per container, attached to the cgroup leaf before `ns_clone3()`; `mknod()`s each granted node right after `mountns_pivot()`. `include/container.h` gained `struct device_spec`/`CONTAINER_MAX_DEVICES`; `container_handle` gained `bpf_prog_fd`.
+- `daemon/src/device.c`: walks `/sys/bus/usb/devices` and `/sys/bus/pci/devices` fresh on every call (never persisted). USB nodes resolve via each device's own `dev` attribute; PCI nodes via a bounded-depth walk of each device's own sysfs subtree (handles NVMe's controller+namespace nesting and a bridge/root port's own further-enumerable downstream devices).
+- `GET /v1/devices`; `POST /v1/containers`' new `devices` array (bare ids, matching `networks`' request-is-references shape); `daemon/include/registry.h`'s `registry_device_attachment` mirrors `registry_network_attachment`.
+- `kanxeoctl device ls`; a repeatable `run --device=ID` flag.
+- `docs/api/openapi.yaml`: `/devices`, `Device`, `ContainerDeviceAttachment`, `ContainerCreateRequest.devices`, `Container.devices`.
+- `image/kernel/qemu-part1.config`: `CONFIG_BPF_SYSCALL`/`CONFIG_CGROUP_BPF` (confirmed absent before this change).
+- `docs/adr/0017-ebpf-cgroup-device-filter-for-hardware-passthrough.md`.
+- `include/pathutil.h`: `kx_mkdir_p()` extracted from `daemon/src/persist.c`'s `persist_mkdir_p()` so the runtime library doesn't gain a dependency on the daemon layer.
+
+Verified with real, not mocked, syscalls: `test/test_devices.c` proves the actual security property through a real `container_create()` (a granted device opens with the correct `fstat()`-reported major:minor; a different container is denied `EPERM` on a device it wasn't granted, even though it's visibly present; a container requesting no devices is byte-for-byte unaffected) — 3 consecutive passes. `test/test_daemon_devices.c` proves the REST/registry/CLI wiring over real HTTP, adapting to whatever hardware the test host actually has. A real environment constraint was found and documented rather than worked around silently: `BPF_CGROUP_DEVICE` checks are hierarchical, and this project's own dev/build environment (a privileged, nested LXC) runs under an ancestor cgroup permitting only a standard device set — `test_devices.c` grants real device numbers for this reason, not synthetic ones (see ADR-0017's Consequences). Zero warnings; full clean rebuild and complete pre-existing test suite re-verified with no regressions.
+
 ### Phase 11 (part 7): graceful shutdown/reboot for the installed system
 
 Asked directly, once a real install was up and reachable: "how do I start/stop the OS when it's running live?" The honest answer was there was no way to do that cleanly — `kanxeod` as PID 1 returning from `main()` (its existing `SIGTERM`/`SIGINT` handling) is exactly "init exited," which the kernel panics on unconditionally, the same failure already accepted as harmless for the one-time `kanxeo-install` run but not acceptable for a live system. See ADR-0016.

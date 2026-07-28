@@ -1,4 +1,5 @@
 #include "container.h"
+#include "device.h"
 #include "dns.h"
 #include "http.h"
 #include "json.h"
@@ -519,6 +520,7 @@ static void handle_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
 	const struct json_value *jname, *jimage, *jcmd, *jmem, *jpids, *jnetworks, *jip_forward, *jroutes;
+	const struct json_value *jdevices;
 	const char *name, *image;
 	char lowerdir[PATH_MAX];
 	char container_base[PATH_MAX];
@@ -536,6 +538,9 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	int ip_forward = 0;
 	struct route_spec route_specs[CONTAINER_MAX_ROUTES];
 	int route_count = 0;
+	struct registry_device_attachment device_attachments[CONTAINER_MAX_DEVICES];
+	struct device_spec device_specs[CONTAINER_MAX_DEVICES];
+	int device_count = 0;
 	const struct json_value *jdns_register;
 	int dns_register = 0;
 	const struct json_value *jpki_issue, *jpki_cert_dir, *jpki_days;
@@ -555,6 +560,7 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	jnetworks = json_object_get(root, "networks");
 	jip_forward = json_object_get(root, "ip_forward");
 	jroutes = json_object_get(root, "routes");
+	jdevices = json_object_get(root, "devices");
 	jdns_register = json_object_get(root, "dns_register");
 	jpki_issue = json_object_get(root, "pki_issue");
 	jpki_cert_dir = json_object_get(root, "pki_cert_dir");
@@ -637,6 +643,44 @@ static void handle_create(int fd, const char *body, size_t body_len)
 			route_specs[i].dest_be = dest_addr.s_addr;
 			route_specs[i].dest_prefix_len = (int)prefix_len;
 			route_specs[i].gateway_be = via_addr.s_addr;
+		}
+	}
+	if (jdevices != NULL) {
+		if (jdevices->type != JSON_ARRAY || jdevices->u.array.count > CONTAINER_MAX_DEVICES) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request",
+			              "devices must be an array of at most 16 entries");
+			return;
+		}
+		device_count = (int)jdevices->u.array.count;
+		for (i = 0; i < (size_t)device_count; i++) {
+			const char *id = json_as_string(jdevices->u.array.items[i]);
+			const struct discovered_device *dd;
+
+			if (id == NULL) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request", "devices entries must be strings");
+				return;
+			}
+			dd = device_find(id);
+			if (dd == NULL || !dd->assignable) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request", "unknown or unassignable device");
+				return;
+			}
+			/* dev_path/major/minor always come from the daemon's own
+			 * current sysfs snapshot (dd), never trusted from the
+			 * request body -- a client only ever names a device by id. */
+			memset(&device_specs[i], 0, sizeof(device_specs[i]));
+			device_specs[i].type = dd->type;
+			device_specs[i].major = dd->major;
+			device_specs[i].minor = dd->minor;
+			snprintf(device_specs[i].dev_path, sizeof(device_specs[i].dev_path), "%s",
+			         dd->dev_path);
+			memset(&device_attachments[i], 0, sizeof(device_attachments[i]));
+			snprintf(device_attachments[i].id, sizeof(device_attachments[i].id), "%s", dd->id);
+			snprintf(device_attachments[i].dev_path, sizeof(device_attachments[i].dev_path),
+			         "%s", dd->dev_path);
 		}
 	}
 
@@ -722,10 +766,14 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	spec.route_count = route_count;
 	for (i = 0; i < (size_t)route_count; i++)
 		spec.routes[i] = route_specs[i];
+	spec.device_count = device_count;
+	for (i = 0; i < (size_t)device_count; i++)
+		spec.devices[i] = device_specs[i];
 	spec.argv = argv_buf;
 	spec.envp = empty_envp;
 
-	rerr = registry_create(name, &spec, net_attachments, net_count, ip_forward, &entry);
+	rerr = registry_create(name, &spec, net_attachments, net_count, ip_forward,
+	                        device_attachments, device_count, &entry);
 	/*
 	 * Safe to free the JSON tree now even though spec.ns.hostname,
 	 * spec.cg.name and spec.argv[] point into it: registry_create()
@@ -857,6 +905,19 @@ static void respond_network_error(int fd, enum network_error err)
 		respond_error(fd, 500, "Internal Server Error", "network operation failed");
 		break;
 	}
+}
+
+static void handle_device_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "devices");
+	device_write_json_list(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
 }
 
 static void handle_network_create(int fd, const char *body, size_t body_len)
@@ -1539,6 +1600,10 @@ static void dispatch(int fd, const struct http_request *req)
 			}
 		}
 	}
+	if (strcmp(req->path, "/v1/devices") == 0 && strcmp(req->method, "GET") == 0) {
+		handle_device_list(fd);
+		return;
+	}
 	if (strcmp(req->path, "/v1/networks") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_network_list(fd);
@@ -1798,7 +1863,7 @@ static void handle_pkg_fetch_event(struct conn *cc)
 	if (pkg_fetch_completed(exit_status, &spec)) {
 		struct registry_entry *entry;
 		enum registry_error rerr =
-		    registry_create(PKG_BUILD_CONTAINER_NAME, &spec, NULL, 0, 0, &entry);
+		    registry_create(PKG_BUILD_CONTAINER_NAME, &spec, NULL, 0, 0, NULL, 0, &entry);
 
 		if (rerr != REGISTRY_OK)
 			pkg_build_spawn_failed();

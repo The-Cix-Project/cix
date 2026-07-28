@@ -20,6 +20,20 @@ struct registry_network_attachment {
 	uint32_t ip_be; /* network byte order */
 };
 
+/*
+ * id echoes back GET /v1/devices' own stable identifier
+ * (e.g. "usb:1058:2630:<serial>"); dev_path is where it was mknod()'d
+ * inside the container. Devices are host hardware, not something this
+ * registry owns or persists (see daemon/src/device.c) -- this struct
+ * only mirrors what a running container was granted, for GET
+ * /v1/containers to report, same role registry_network_attachment
+ * plays for networks.
+ */
+struct registry_device_attachment {
+	char id[96];
+	char dev_path[64];
+};
+
 struct registry_entry {
 	char name[REGISTRY_NAME_MAX];
 	struct container_handle handle;
@@ -29,6 +43,8 @@ struct registry_entry {
 	struct registry_network_attachment nets[CONTAINER_MAX_NETWORKS];
 	int net_count;     /* 0 = not attached to any network */
 	int ip_forward;    /* mirrors container_spec.ip_forward, for display */
+	struct registry_device_attachment devices[CONTAINER_MAX_DEVICES];
+	int device_count;  /* 0 = no devices granted */
 	/*
 	 * Opaque; owned exclusively by main.c's epoll bookkeeping
 	 * (registry.c never reads or writes it beyond zeroing it here).
@@ -57,7 +73,9 @@ void registry_init(void);
  */
 enum registry_error registry_create(const char *name, const struct container_spec *spec,
                                      const struct registry_network_attachment *nets, int net_count,
-                                     int ip_forward, struct registry_entry **out);
+                                     int ip_forward,
+                                     const struct registry_device_attachment *devices,
+                                     int device_count, struct registry_entry **out);
 
 struct registry_entry *registry_find(const char *name);
 

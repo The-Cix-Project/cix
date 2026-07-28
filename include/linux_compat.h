@@ -22,6 +22,10 @@
 #define SYS_pidfd_open 434
 #endif
 
+#ifndef SYS_bpf
+#define SYS_bpf 321
+#endif
+
 /*
  * glibc declares no wrapper for clone3(2); the kernel uapi struct is
  * ABI-stable, so we declare it ourselves rather than pull in
@@ -81,6 +85,92 @@ static inline int sys_pidfd_send_signal(int pidfd, int sig)
 static inline int sys_pidfd_open(pid_t pid, unsigned int flags)
 {
 	return (int)syscall(SYS_pidfd_open, pid, flags);
+}
+
+/*
+ * glibc declares no wrapper for bpf(2), and the real kernel uapi
+ * union bpf_attr (<linux/bpf.h>) isn't safe to include directly: it
+ * pulls in <linux/types.h>'s __u8/__u32/__u64 family, the same class
+ * of clash struct clone_args already avoids by not including
+ * <linux/sched.h>. We self-declare only the two bpf_attr variants
+ * this project actually uses (BPF_PROG_LOAD, BPF_PROG_ATTACH/DETACH),
+ * not the kernel's full union, for the same reason struct clone_args
+ * only declares the clone3(2) fields it needs.
+ *
+ * This is safe against a newer kernel whose real union bpf_attr has
+ * grown extra trailing fields (prog_btf_fd, func_info*, core_relo*,
+ * ...): bpf(2)'s own size-negotiation contract treats a user-supplied
+ * attr shorter than the kernel's own struct as having every
+ * unsupplied trailing field implicitly zero, and only rejects a
+ * *longer* user attr whose extra tail bytes are nonzero. Field order
+ * and types below match linux/bpf.h's union bpf_attr exactly, offset
+ * for offset, confirmed directly against /usr/include/linux/bpf.h.
+ * No #pragma pack needed: every field is a naturally-aligned uint32_t
+ * or uint64_t, same posture as struct clone_args.
+ */
+enum kx_bpf_cmd {
+	KX_BPF_PROG_LOAD = 5,
+	KX_BPF_PROG_ATTACH = 8,
+	KX_BPF_PROG_DETACH = 9,
+};
+
+enum kx_bpf_prog_type {
+	KX_BPF_PROG_TYPE_CGROUP_DEVICE = 15,
+};
+
+enum kx_bpf_attach_type {
+	KX_BPF_CGROUP_DEVICE = 6,
+};
+
+struct kx_bpf_prog_load_attr {
+	uint32_t prog_type;
+	uint32_t insn_cnt;
+	uint64_t insns;			/* (uintptr_t) struct kx_bpf_insn[] */
+	uint64_t license;		/* (uintptr_t) NUL-terminated string */
+	uint32_t log_level;
+	uint32_t log_size;
+	uint64_t log_buf;
+	uint32_t kern_version;		/* unused for this prog type */
+	uint32_t prog_flags;
+	char prog_name[16];		/* BPF_OBJ_NAME_LEN */
+	uint32_t prog_ifindex;
+	uint32_t expected_attach_type;	/* KX_BPF_CGROUP_DEVICE */
+};
+
+struct kx_bpf_prog_attach_attr {
+	uint32_t target_fd;		/* the cgroup's O_PATH fd */
+	uint32_t attach_bpf_fd;	/* fd returned by KX_BPF_PROG_LOAD */
+	uint32_t attach_type;		/* KX_BPF_CGROUP_DEVICE */
+	uint32_t attach_flags;		/* 0: one program per cgroup leaf,
+					 * every container owns its leaf
+					 * 1:1, so there's never a sibling
+					 * program to stack with. */
+	uint32_t replace_bpf_fd;	/* 0 */
+};
+
+/*
+ * struct bpf_insn (<linux/bpf.h>) packs dst_reg/src_reg into a single
+ * byte via two 4-bit C bitfields. This project has never trusted
+ * TCC's bitfield layout for a syscall-ABI struct (see the
+ * kx_epoll_event note below -- TCC already silently mishandles
+ * __attribute__((packed)) on a struct of our own writing), so the
+ * combined register byte is built by hand with plain bit ops
+ * (dst_reg in the low nibble, src_reg in the high nibble, matching
+ * the x86_64 kernel/GCC bitfield layout) rather than declared as a
+ * C bitfield here. 8 bytes total (1+1+2+4), no padding either
+ * compiler could disagree on -- same "plain fields, no pragma needed"
+ * posture as struct clone_args.
+ */
+struct kx_bpf_insn {
+	uint8_t code;
+	uint8_t regs;	/* (dst_reg & 0xf) | ((src_reg & 0xf) << 4) */
+	int16_t off;
+	int32_t imm;
+};
+
+static inline long sys_bpf(int cmd, void *attr, size_t size)
+{
+	return syscall(SYS_bpf, cmd, attr, size);
 }
 
 /*

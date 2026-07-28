@@ -78,4 +78,37 @@ int container_net_install_routes(const struct route_spec *routes, int route_coun
  */
 int container_net_enable_ip_forward(void);
 
+/*
+ * Parent side, called right after cgroup_create() and before
+ * ns_clone3(). device_count == 0 is a no-op (*out_prog_fd = -1,
+ * returns 0 immediately) -- a container that hasn't been granted any
+ * devices gets no BPF program at all, identical to today's behavior.
+ * Otherwise hand-assembles a BPF_PROG_TYPE_CGROUP_DEVICE program (one
+ * unrolled comparison block per granted (type, major, minor),
+ * default-deny) and attaches it to cgroup_fd via BPF_CGROUP_DEVICE.
+ * Must run before ns_clone3(): CLONE_INTO_CGROUP places the child
+ * into the cgroup atomically as part of that syscall, so the policy
+ * has to already be attached for there to be no race window, and
+ * because the child's own container_dev_mknod() calls are themselves
+ * subject to a BPF_DEVCG_ACC_MKNOD check under this same program. On
+ * success *out_prog_fd is the loaded program's own fd, kept open for
+ * the container's lifetime (closed alongside cgroup_fd/pidfd on
+ * removal). On failure, errno is set and nothing is attached.
+ */
+int container_dev_bpf_attach(int cgroup_fd, const struct device_spec *devices, int device_count,
+                              int *out_prog_fd);
+
+/*
+ * Child side, called right after mountns_pivot() succeeds -- the
+ * first point the container's /dev is genuinely private (its own
+ * pivoted mount namespace, no longer the host's or any sibling's).
+ * mknod()s each of devices[]'s granted nodes (creating dev_path's
+ * parent directories first, e.g. /dev/bus/usb/002/), mode 0666 --
+ * this project's containers already run as full root with no user
+ * namespace, so the real access gate is the BPF program
+ * container_dev_bpf_attach() already attached before clone3(), not
+ * these POSIX permission bits. A no-op if device_count == 0.
+ */
+int container_dev_mknod(const struct device_spec *devices, int device_count);
+
 #endif /* CONTAINER_INTERNAL_H */
