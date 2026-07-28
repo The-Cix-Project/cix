@@ -4,6 +4,19 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 11 (part 5 follow-up 3): non-interactive partitioning (`--auto-partition`)
+
+Typing the same fixed `fdisk` command sequence by hand for every VM/scripted install was pure friction, not a meaningful safety check — asked for directly after a manual reinstall proved painful.
+
+#### Added
+- `image/src/kanxeo-install.c`: new `--auto-partition` flag — scripts `sfdisk` (already staged and already used read-only for role detection) with the same fixed 5-partition GPT layout `fdisk`/`cfdisk` always produced, via a new `run_subprocess_stdin()` (mirroring `test/test_disk_image.c`'s own). Mutually exclusive with `--skip-partition`; omitting both still means interactive `fdisk`, unchanged, for anyone who needs different sizing. Confirmed byte-for-byte identical output to the existing interactive/scripted-`sfdisk` layouts via `sfdisk -d`.
+- `README.md`: documents all three partitioning modes, `--auto-partition` as the recommended default for VM/scripted use.
+
+#### Changed
+- `test/test_installer.c`: the main install session now uses `--auto-partition` instead of `--skip-partition` + host-side `sfdisk` pre-partitioning — `create_target_disk()` (which duplicated the same partition script host-side) is gone, replaced by a plain `create_blank_disk()`; one source of truth for the layout (`kanxeo-install.c` itself) instead of two copies kept in sync by hand. This also means `--auto-partition` now gets exercised for real by the same 3-consecutive-pass install flow every other Secure Boot fix already goes through, not just a one-off spike.
+
+Zero warnings; `test_installer`/`test_boot`/`test_boot_ab` re-verified; the real, shippable `build/kanxeo-install.iso` rebuilt with `--auto-partition`.
+
 ### Phase 11 (part 5 follow-up 2): kanxeod unreachable after install; MokManager's "Continue boot" trap documented
 
 Two more findings from the same real install, after Secure Boot itself was confirmed working end to end.

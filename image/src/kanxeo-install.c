@@ -64,6 +64,17 @@ extern char **environ;
 
 #define ROOT_A_TRIES 3
 
+/* --auto-partition's fixed layout -- the same sizes test/test_installer.c's
+ * own create_target_disk() already uses and has proven correct (byte-for-
+ * byte identical GPT names/types to what a real interactive fdisk/cfdisk
+ * session produces, per find_partition_device()'s own read-back below,
+ * which doesn't care how the table was written). Not configurable: an
+ * operator who needs different sizing already has the interactive fdisk
+ * path (the default, no flag) for that. */
+#define AUTO_ESP_SIZE_MIB 64
+#define AUTO_ROOT_SIZE_MIB 160
+#define AUTO_CONFIG_SIZE_MIB 64
+
 /*
  * The loader entry's root= and every future boot's own partition access
  * (daemon/src/main.c's ESP_DEVICE/CONFIG_DEVICE) are about the INSTALLED
@@ -144,6 +155,59 @@ static int run_subprocess_capture(const char *bin, char *const argv[], char *out
 		return -1;
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
 		return -1;
+	return 0;
+}
+
+/* Like run_subprocess(), but feeds script to the child's stdin -- used by
+ * auto_partition() to drive sfdisk's own scripted-partition-table mode
+ * (the same mechanism test/test_disk_image.c's own run_subprocess_stdin()
+ * already uses host-side to pre-partition test disks; needed here too
+ * now that kanxeo-install can do the same partitioning itself). */
+static int run_subprocess_stdin(const char *bin, char *const argv[], const char *script)
+{
+	int pipefd[2];
+	pid_t pid;
+	int status;
+	size_t len = strlen(script);
+	size_t written = 0;
+	ssize_t n;
+
+	if (pipe2(pipefd, O_CLOEXEC) != 0)
+		return -1;
+	pid = fork();
+	if (pid < 0) {
+		close(pipefd[0]);
+		close(pipefd[1]);
+		return -1;
+	}
+	if (pid == 0) {
+		dup2(pipefd[0], STDIN_FILENO);
+		close(pipefd[0]);
+		close(pipefd[1]);
+		execve(bin, argv, environ);
+		perror(bin);
+		_exit(127);
+	}
+	close(pipefd[0]);
+	while (written < len) {
+		n = write(pipefd[1], script + written, len - written);
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			perror("write");
+			break;
+		}
+		written += (size_t)n;
+	}
+	close(pipefd[1]);
+	if (waitpid(pid, &status, 0) != pid) {
+		perror("waitpid");
+		return -1;
+	}
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		fprintf(stderr, "%s failed (status 0x%x)\n", bin, (unsigned)status);
+		return -1;
+	}
 	return 0;
 }
 
@@ -267,6 +331,27 @@ static int mkfs_ext4(const char *device, const char *label)
 	char *argv[] = { (char *)MKFS_EXT4_BIN, "-q", "-F", "-L", (char *)label, (char *)device, NULL };
 
 	return run_subprocess(MKFS_EXT4_BIN, argv);
+}
+
+/* --auto-partition: sfdisk, scripted, no operator interaction -- the same
+ * mechanism (and the same GPT names/types/order) a real interactive fdisk
+ * session produces, for VM/scripted-provisioning use where an operator
+ * typing the same fixed command sequence by hand every time is pure
+ * friction, not a meaningful safety check. */
+static int auto_partition(const char *disk)
+{
+	char script[400];
+	char *sfdisk_argv[] = { (char *)SFDISK_BIN, (char *)disk, NULL };
+
+	snprintf(script, sizeof(script),
+	         "label: gpt\n"
+	         "size=%dMiB, type=uefi, name=\"kanxeo-esp\"\n"
+	         "size=%dMiB, type=linux, name=\"kanxeo-root-a\"\n"
+	         "size=%dMiB, type=linux, name=\"kanxeo-root-b\"\n"
+	         "size=%dMiB, type=linux, name=\"kanxeo-config\"\n"
+	         "type=linux, name=\"kanxeo-containers\"\n",
+	         AUTO_ESP_SIZE_MIB, AUTO_ROOT_SIZE_MIB, AUTO_ROOT_SIZE_MIB, AUTO_CONFIG_SIZE_MIB);
+	return run_subprocess_stdin(SFDISK_BIN, sfdisk_argv, script);
 }
 
 /* systemd-boot itself, the kernel, and root A's loader entry -- carrying
@@ -396,6 +481,7 @@ int main(int argc, char **argv)
 	const char *gateway = NULL;
 	int prefix = -1;
 	int skip_partition = 0;
+	int auto_partition_flag = 0;
 	int i;
 	struct stat st;
 	char sfdisk_dump[16384];
@@ -415,12 +501,19 @@ int main(int argc, char **argv)
 			prefix = atoi(argv[i] + 9);
 		else if (strcmp(argv[i], "--skip-partition") == 0)
 			skip_partition = 1;
+		else if (strcmp(argv[i], "--auto-partition") == 0)
+			auto_partition_flag = 1;
 	}
 
-	if (disk == NULL || ip == NULL || gateway == NULL || prefix <= 0 || prefix > 32) {
+	if (disk == NULL || ip == NULL || gateway == NULL || prefix <= 0 || prefix > 32 ||
+	    (skip_partition && auto_partition_flag)) {
 		fprintf(stderr,
 		        "usage: %s --disk=/dev/sdX --ip=A.B.C.D --prefix=N --gateway=A.B.C.D "
-		        "[--skip-partition]\n",
+		        "[--skip-partition | --auto-partition]\n"
+		        "  (default: interactive fdisk; --skip-partition: disk is already\n"
+		        "  partitioned by other means; --auto-partition: partition it here,\n"
+		        "  non-interactively, with the standard fixed layout -- the two flags\n"
+		        "  are mutually exclusive)\n",
 		        argv[0]);
 		return 2;
 	}
@@ -433,7 +526,12 @@ int main(int argc, char **argv)
 	printf("kanxeo-install: target disk %s -- ALL DATA ON THIS DISK WILL BE DESTROYED\n", disk);
 	fflush(stdout);
 
-	if (!skip_partition) {
+	if (auto_partition_flag) {
+		if (auto_partition(disk) != 0) {
+			fprintf(stderr, "auto-partition did not complete successfully -- aborting\n");
+			return 1;
+		}
+	} else if (!skip_partition) {
 		char *fdisk_argv[] = { (char *)FDISK_BIN, (char *)disk, NULL };
 
 		if (run_subprocess(FDISK_BIN, fdisk_argv) != 0) {
@@ -476,7 +574,16 @@ int main(int argc, char **argv)
 		return 1;
 	if (mkfs_ext4(config_dev, "kanxeo-config") != 0)
 		return 1;
-	if (mkfs_ext4(containers_dev, "kanxeo-containers") != 0)
+	/* "kanxeo-containers" is 17 characters -- one over ext4's 16-char
+	 * label limit (EXT2_LABEL_LEN), which mke2fs would otherwise
+	 * silently truncate to "kanxeo-container" anyway with just a
+	 * warning. This is purely the filesystem's own cosmetic volume
+	 * label (blkid/lsblk output) -- kanxeo-install itself always
+	 * identifies partitions by their GPT *name* (find_partition_device()
+	 * above, via sfdisk -d), never this label, so truncation here has
+	 * no functional effect either way; picking the fit deliberately
+	 * just avoids the warning. */
+	if (mkfs_ext4(containers_dev, "kanxeo-container") != 0)
 		return 1;
 
 	if (ensure_dir(ESP_MOUNT) != 0)

@@ -20,13 +20,13 @@
  * (GRUB's own menu; fdisk's own interactive UI, see step 4's own comment
  * for why this replaced cfdisk), then the three-session Secure Boot flow:
  *   1. build/mkinstalleriso's real .iso + a blank target disk,
- *      pre-partitioned by this test via sfdisk exactly the way an
- *      operator's own fdisk session would have left it (kanxeo-install
- *      is invoked with --skip-partition here specifically, since this
- *      session's own job is proving the installer's role-detection/
- *      format/write logic, not re-proving partitioning itself -- that's
- *      step 4's job). Since the boot medium is a CD-ROM (a separate
- *      ATAPI/SCSI bus), the target disk is the *only* virtio-blk device
+ *      partitioned by kanxeo-install itself via --auto-partition (its
+ *      own scripted sfdisk, the exact same layout a real fdisk session
+ *      produces -- this session's own job is proving the installer's
+ *      role-detection/format/write logic, not re-proving *interactive*
+ *      partitioning itself, which is step 4's job). Since the boot
+ *      medium is a CD-ROM (a separate ATAPI/SCSI bus), the target disk
+ *      is the *only* virtio-blk device
  *      present and is /dev/vda, not /dev/vdb. Booted via direct_kernel
  *      (QEMU's own "-kernel" injection, bypassing firmware's normal
  *      LoadImage-based Secure Boot check -- a test-harness-only
@@ -87,14 +87,17 @@
 #define TEST_PREFIX 24
 #define TEST_GATEWAY "192.168.50.1"
 
-/* Blank disk, then the same 5-partition GPT layout a real fdisk
- * session would leave -- shared by the real GRUB-path smoke test and
- * the main Secure Boot flow below, each against its own disk file. */
-static int create_target_disk(const char *path)
+/* A blank disk file of the standard test size -- shared by the real
+ * GRUB-path smoke test and the main Secure Boot flow below, each
+ * against its own disk file. Unpartitioned: every session in this file
+ * now boots with --auto-partition (kanxeo-install's own scripted
+ * sfdisk, image/src/kanxeo-install.c) rather than this test pre-
+ * partitioning host-side -- one source of truth for the partition
+ * layout, not two copies of the same sfdisk script kept in sync by
+ * hand. */
+static int create_blank_disk(const char *path)
 {
 	int fd = open(path, O_CREAT | O_WRONLY, 0644);
-	char script[400];
-	char *sfdisk_argv[] = { (char *)SFDISK_BIN, (char *)path, NULL };
 
 	if (fd < 0 || ftruncate(fd, TARGET_DISK_SIZE_BYTES) != 0) {
 		perror(path);
@@ -103,16 +106,7 @@ static int create_target_disk(const char *path)
 		return -1;
 	}
 	close(fd);
-
-	snprintf(script, sizeof(script),
-	         "label: gpt\n"
-	         "size=%dMiB, type=uefi, name=\"kanxeo-esp\"\n"
-	         "size=%dMiB, type=linux, name=\"kanxeo-root-a\"\n"
-	         "size=%dMiB, type=linux, name=\"kanxeo-root-b\"\n"
-	         "size=%dMiB, type=linux, name=\"kanxeo-config\"\n"
-	         "type=linux, name=\"kanxeo-containers\"\n",
-	         TARGET_ESP_SIZE_MIB, TARGET_ROOT_SIZE_MIB, TARGET_ROOT_SIZE_MIB, TARGET_CONFIG_SIZE_MIB);
-	return run_subprocess_stdin(SFDISK_BIN, sfdisk_argv, script);
+	return 0;
 }
 
 int main(void)
@@ -152,11 +146,14 @@ int main(void)
 
 	/* 2. The real, distributable installer .iso -- the same tool and the
 	 * same kind of artifact an operator would actually use, just with
-	 * real test values plus --skip-partition standing in for a real
-	 * fdisk session and a real operator's own --disk=/--ip=/... choice
-	 * at the GRUB boot-menu edit prompt. */
+	 * real test values plus --auto-partition standing in for a real
+	 * operator's own --disk=/--ip=/... choice at the GRUB boot-menu edit
+	 * prompt (--auto-partition itself -- kanxeo-install's own scripted
+	 * sfdisk, added as a convenience once typing the fixed fdisk sequence
+	 * by hand for every VM/scripted install proved to be pure friction --
+	 * gets exercised for real right here, this session's own install). */
 	snprintf(kernel_args, sizeof(kernel_args),
-	         "--disk=/dev/vda --ip=%s --prefix=%d --gateway=%s --skip-partition", TEST_IP,
+	         "--disk=/dev/vda --ip=%s --prefix=%d --gateway=%s --auto-partition", TEST_IP,
 	         TEST_PREFIX, TEST_GATEWAY);
 	{
 		char *mkiso_argv[] = { (char *)MKINSTALLERISO_BIN, installer_stage,
@@ -195,7 +192,7 @@ int main(void)
 
 		snprintf(grub_smoke_disk, sizeof(grub_smoke_disk), "%s/grub_smoke_disk.img", workdir);
 		snprintf(grub_smoke_vars, sizeof(grub_smoke_vars), "%s/grub_smoke_vars.fd", workdir);
-		if (create_target_disk(grub_smoke_disk) != 0)
+		if (create_blank_disk(grub_smoke_disk) != 0)
 			return 1;
 		if (test_image_fixture_copy_file("/usr/share/OVMF/OVMF_VARS_4M.fd", grub_smoke_vars) != 0)
 			return 1;
@@ -237,9 +234,10 @@ int main(void)
 	 * name all five to the exact GPT names kanxeo-install itself reads
 	 * back -- confirmed byte-for-byte via `sfdisk -d` against the
 	 * existing sfdisk-scripted layout used elsewhere in this project.
-	 * Boots via direct_kernel with kernel_args built fresh here (no
-	 * --skip-partition, unlike every other session in this file) against
-	 * the same already-built installer_iso -- direct_kernel's own
+	 * Boots via direct_kernel with kernel_args built fresh here (neither
+	 * --skip-partition nor --auto-partition, unlike every other session
+	 * in this file, so it falls through to the default: interactive
+	 * fdisk) against the same already-built installer_iso -- direct_kernel's own
 	 * command line is supplied per-boot, independent of whatever's baked
 	 * into the ISO's own grub.cfg, so no separate ISO build is needed. */
 	{
@@ -332,10 +330,9 @@ int main(void)
 		}
 	}
 
-	/* 5. Target disk: blank, then pre-partitioned via sfdisk exactly
-	 * the way a real fdisk session would have left it -- kanxeo-install
-	 * doesn't know or care which one happened. */
-	if (create_target_disk(target_disk_img) != 0)
+	/* 5. Target disk: blank -- session 1's own --auto-partition (kernel_args
+	 * above) partitions it, same as a real install would. */
+	if (create_blank_disk(target_disk_img) != 0)
 		return 1;
 
 	if (test_image_fixture_copy_file(OVMF_VARS_TEMPLATE, ovmf_vars) != 0)

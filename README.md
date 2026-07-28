@@ -75,36 +75,43 @@ sudo build/mkinstalleriso build/iso_stage build/kanxeo-install build/bzImage \
      /tmp/kanxeod-root.squashfs \
      image/keys/kanxeo-signing.key image/keys/kanxeo-signing.crt image/keys/kanxeo-signing.cer \
      build/kanxeo-install.iso \
-     "--disk=/dev/CHANGEME --ip=CHANGEME --prefix=24 --gateway=CHANGEME"
+     "--disk=/dev/CHANGEME --ip=CHANGEME --prefix=24 --gateway=CHANGEME --auto-partition"
 ```
 
 This produces `build/kanxeo-install.iso` — attach it as a CD-ROM/optical drive to a VM (or a real machine, once you have one on hand) and boot from it. The placeholder args are deliberate: at the GRUB boot menu (it waits 10s before auto-booting, giving you a real chance to interrupt it), press `e` to edit the boot entry, replace `/dev/CHANGEME`/`CHANGEME`/`CHANGEME` with the real target disk, IP address, and gateway for this install, then `Ctrl-X` to boot. If you forget, `kanxeo-install`'s own disk check fails safely — it refuses to touch a disk that doesn't exist rather than silently doing the wrong thing.
 
 **Target disk**: currently only **VirtIO Block** disks work (`/dev/vda`) — the kernel doesn't have the SCSI-disk driver needed for SATA/IDE/VirtIO-SCSI-attached disks (only the CD-ROM driver, for the installer media itself). On Proxmox, attach the target disk with Bus/Device: `VirtIO Block`.
 
-Once booted, it partitions the disk interactively via `fdisk` (switched from `cfdisk`: `fdisk`'s line-based UI needs no terminal database and can be scripted, unlike `cfdisk`'s full-screen UI — see `test/test_installer.c` for the exact, verified command sequence used to test this same flow). GPT, five partitions, named exactly (`kanxeo-esp`, `kanxeo-root-a`, `kanxeo-root-b`, `kanxeo-config`, `kanxeo-containers` — see `docs/ROADMAP.md`'s Phase 11 part 3 write-up for the role each one plays):
+**Partitioning** — three ways, pick one via `kanxeo-install`'s own flags (baked into the last argument above):
 
-```
-g                                  # new GPT label
-n  1    +64M                       # kanxeo-esp   (partition 1, default first sector, then Enter for each)
-n  2    +160M                      # kanxeo-root-a
-n  3    +160M                      # kanxeo-root-b
-n  4    +64M                       # kanxeo-config
-n  5                               # kanxeo-containers (rest of the disk -- Enter twice, no size)
-t  1  1                            # partition 1 -> EFI System type
-x                                  # expert menu, to set partition names
-n  1  kanxeo-esp
-n  2  kanxeo-root-a
-n  3  kanxeo-root-b
-n  4  kanxeo-config
-n  5  kanxeo-containers
-r                                  # back to the main menu
-w                                  # write and exit
-```
+- **`--auto-partition`** (recommended for VMs / scripted provisioning): partitions the disk itself, non-interactively, with the standard fixed layout below — no typing required. This is what the example above uses, and what `test/test_installer.c`'s own install session actually exercises.
+- **(no flag, the default)**: drops into a real, interactive `fdisk` session (switched from `cfdisk`: `fdisk`'s line-based UI needs no terminal database and can be scripted for testing, unlike `cfdisk`'s full-screen UI) — use this if you need different partition sizes than the standard layout. GPT, five partitions, named exactly (`kanxeo-esp`, `kanxeo-root-a`, `kanxeo-root-b`, `kanxeo-config`, `kanxeo-containers` — see `docs/ROADMAP.md`'s Phase 11 part 3 write-up for the role each one plays):
 
-(Each `n  <number>  <size>` above is really three separate prompts: partition number, first sector — just press Enter for the default — then last sector/size, where you type `+64M` etc., or Enter alone for partition 5's "rest of the disk".)
+  ```
+  g                                  # new GPT label
+  n  1    +64M                       # kanxeo-esp   (partition 1, default first sector, then Enter for each)
+  n  2    +160M                      # kanxeo-root-a
+  n  3    +160M                      # kanxeo-root-b
+  n  4    +64M                       # kanxeo-config
+  n  5                               # kanxeo-containers (rest of the disk -- Enter twice, no size)
+  t  1  1                            # partition 1 -> EFI System type
+  x                                  # expert menu, to set partition names
+  n  1  kanxeo-esp
+  n  2  kanxeo-root-a
+  n  3  kanxeo-root-b
+  n  4  kanxeo-config
+  n  5  kanxeo-containers
+  r                                  # back to the main menu
+  w                                  # write and exit
+  ```
 
-It then formats, writes the system, and reboots into a running `kanxeod` at the IP you gave it.
+  (Each `n  <number>  <size>` above is really three separate prompts: partition number, first sector — just press Enter for the default — then last sector/size, where you type `+64M` etc., or Enter alone for partition 5's "rest of the disk".)
+
+- **`--skip-partition`**: the disk is already partitioned correctly by other means (e.g. scripted provisioning that ran `sfdisk` itself beforehand) — `kanxeo-install` just reads the existing table back.
+
+`--skip-partition` and `--auto-partition` are mutually exclusive; omitting both means interactive `fdisk`.
+
+It then formats, writes the system, and reboots into a running `kanxeod` at the IP you gave it — reachable at that address directly (`kanxeod` binds to the exact IP given via `--ip=`, not just loopback).
 
 ### Secure Boot
 
