@@ -1,6 +1,6 @@
 /*
  * kanxeo-install: takes a raw disk (already partitioned by the operator
- * via a real, interactive cfdisk session -- or pre-partitioned by other
+ * via a real, interactive fdisk session -- or pre-partitioned by other
  * tooling, see --skip-partition) and produces the real Phase 11 layout:
  * ESP, root A, root B, config, containers (docs/ROADMAP.md's Phase 11
  * design). Boots as its own init= target, in its own squashfs image
@@ -33,7 +33,7 @@
 
 extern char **environ;
 
-#define CFDISK_BIN "/usr/sbin/cfdisk"
+#define FDISK_BIN "/usr/sbin/fdisk"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
 #define MKFS_VFAT_BIN "/usr/sbin/mkfs.vfat"
 #define MKFS_EXT4_BIN "/usr/sbin/mkfs.ext4"
@@ -363,7 +363,7 @@ static int enroll_signing_key(void)
 /*
  * kanxeo-install runs as its own init= target, the same PID-1 boot shape
  * kanxeod's own --init-mode uses (daemon/src/main.c's boot_init()) --
- * needs the same minimal proc/sysfs mounts before cfdisk/sfdisk/mkfs.*
+ * needs the same minimal proc/sysfs mounts before fdisk/sfdisk/mkfs.*
  * can be trusted to work at all. devtmpfs auto-populates /dev before
  * init ever runs (CONFIG_DEVTMPFS_MOUNT), so no /dev mount here either,
  * same as kanxeod's own boot_init().
@@ -426,10 +426,10 @@ int main(int argc, char **argv)
 	fflush(stdout);
 
 	if (!skip_partition) {
-		char *cfdisk_argv[] = { (char *)CFDISK_BIN, (char *)disk, NULL };
+		char *fdisk_argv[] = { (char *)FDISK_BIN, (char *)disk, NULL };
 
-		if (run_subprocess(CFDISK_BIN, cfdisk_argv) != 0) {
-			fprintf(stderr, "cfdisk did not complete successfully -- aborting\n");
+		if (run_subprocess(FDISK_BIN, fdisk_argv) != 0) {
+			fprintf(stderr, "fdisk did not complete successfully -- aborting\n");
 			return 1;
 		}
 	}

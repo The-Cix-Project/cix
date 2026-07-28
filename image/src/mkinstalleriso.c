@@ -54,10 +54,8 @@ extern char **environ;
  * (Phase 8), just for a different set of real, unmodified binaries. */
 static const char *const g_lib_closure[] = {
 	"/lib/x86_64-linux-gnu/libsmartcols.so.1", "/lib/x86_64-linux-gnu/libfdisk.so.1",
-	"/lib/x86_64-linux-gnu/libmount.so.1",     "/lib/x86_64-linux-gnu/libncursesw.so.6",
 	"/lib/x86_64-linux-gnu/libtinfo.so.6",     "/lib/x86_64-linux-gnu/libuuid.so.1",
-	"/lib/x86_64-linux-gnu/libblkid.so.1",     "/lib/x86_64-linux-gnu/libselinux.so.1",
-	"/lib/x86_64-linux-gnu/libpcre2-8.so.0",   "/lib/x86_64-linux-gnu/libreadline.so.8",
+	"/lib/x86_64-linux-gnu/libblkid.so.1",     "/lib/x86_64-linux-gnu/libreadline.so.8",
 	"/lib/x86_64-linux-gnu/libext2fs.so.2",    "/lib/x86_64-linux-gnu/libcom_err.so.2",
 	"/lib/x86_64-linux-gnu/libe2p.so.2",
 	/* mokutil's own closure (ldd-checked against this host), for
@@ -189,8 +187,8 @@ int main(int argc, char **argv)
 		return 1;
 	if (ensure_dir_under(stage_dir, "usr/sbin") != 0)
 		return 1;
-	snprintf(dst, sizeof(dst), "%s/usr/sbin/cfdisk", stage_dir);
-	if (test_image_fixture_copy_file("/usr/sbin/cfdisk", dst) != 0)
+	snprintf(dst, sizeof(dst), "%s/usr/sbin/fdisk", stage_dir);
+	if (test_image_fixture_copy_file("/usr/sbin/fdisk", dst) != 0)
 		return 1;
 	snprintf(dst, sizeof(dst), "%s/usr/sbin/sfdisk", stage_dir);
 	if (test_image_fixture_copy_file("/usr/sbin/sfdisk", dst) != 0)

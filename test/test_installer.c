@@ -2,12 +2,12 @@
  * Phase 11 part 4/5 demonstrable test: proves the actual installer *and*
  * its real, distributable .iso packaging both work -- given a raw,
  * blank target disk and the same 5-partition layout an operator would
- * leave behind after a real cfdisk session, kanxeo-install (booted from
- * the real .iso build/mkinstalleriso produces, via QEMU's -cdrom, not a
- * test-only disk-image approximation) partitions its role-detection,
- * formats, writes the real payload, and configures a static IP -- then
- * two more, completely separate boots prove the freshly-installed disk
- * actually comes up as a real, running kanxeod *with Secure Boot
+ * leave behind after a real, interactive fdisk session, kanxeo-install
+ * (booted from the real .iso build/mkinstalleriso produces, via QEMU's
+ * -cdrom, not a test-only disk-image approximation) partitions its role-
+ * detection, formats, writes the real payload, and configures a static
+ * IP -- then more, completely separate boots prove the freshly-installed
+ * disk actually comes up as a real, running kanxeod *with Secure Boot
  * genuinely enforced* (ADR-0015). "Install" and "boot what was
  * installed" are the same real code paths already proven in parts 1-2,
  * and "the ISO an operator would actually use" is now the same artifact
@@ -15,24 +15,26 @@
  * own test built a private squashfs-based disk instead -- this part
  * replaces that with the real thing).
  *
- * Two disks, three QEMU sessions:
+ * Two disks, five QEMU sessions -- two smoke tests proving the real,
+ * unmodified boot/partitioning mechanisms an operator actually drives
+ * (GRUB's own menu; fdisk's own interactive UI, see step 4's own comment
+ * for why this replaced cfdisk), then the three-session Secure Boot flow:
  *   1. build/mkinstalleriso's real .iso + a blank target disk,
  *      pre-partitioned by this test via sfdisk exactly the way an
- *      operator's own cfdisk session would have left it (kanxeo-install
- *      is invoked with --skip-partition, since cfdisk's curses UI can't
- *      be scripted -- proving the installer's own role-detection/format/
- *      write logic, not cfdisk itself, which is real, unmodified
- *      software this project doesn't need to re-test). Since the boot
- *      medium is a CD-ROM (a separate ATAPI/SCSI bus), the target disk
- *      is the *only* virtio-blk device present and is /dev/vda, not
- *      /dev/vdb. Booted via direct_kernel (QEMU's own "-kernel"
- *      injection, bypassing firmware's normal LoadImage-based Secure
- *      Boot check -- a test-harness-only convenience standing in for
- *      "Secure Boot off for this one boot" on real hardware, see
- *      ADR-0015) against the *real*, already-User-Mode ovmf_vars
- *      template, so this session's own enroll_signing_key() (mokutil
- *      --import) stages its MOK request into the exact same vars file
- *      session 2 reads.
+ *      operator's own fdisk session would have left it (kanxeo-install
+ *      is invoked with --skip-partition here specifically, since this
+ *      session's own job is proving the installer's role-detection/
+ *      format/write logic, not re-proving partitioning itself -- that's
+ *      step 4's job). Since the boot medium is a CD-ROM (a separate
+ *      ATAPI/SCSI bus), the target disk is the *only* virtio-blk device
+ *      present and is /dev/vda, not /dev/vdb. Booted via direct_kernel
+ *      (QEMU's own "-kernel" injection, bypassing firmware's normal
+ *      LoadImage-based Secure Boot check -- a test-harness-only
+ *      convenience standing in for "Secure Boot off for this one boot"
+ *      on real hardware, see ADR-0015) against the *real*, already-User-
+ *      Mode ovmf_vars template, so this session's own enroll_signing_key()
+ *      (mokutil --import) stages its MOK request into the exact same
+ *      vars file session 2 reads.
  *   2. The target disk, Secure Boot genuinely enforced (secure_boot=1),
  *      scripted through shim's real MokManager UI to confirm the
  *      pending enrollment.
@@ -85,7 +87,7 @@
 #define TEST_PREFIX 24
 #define TEST_GATEWAY "192.168.50.1"
 
-/* Blank disk, then the same 5-partition GPT layout a real cfdisk
+/* Blank disk, then the same 5-partition GPT layout a real fdisk
  * session would leave -- shared by the real GRUB-path smoke test and
  * the main Secure Boot flow below, each against its own disk file. */
 static int create_target_disk(const char *path)
@@ -151,7 +153,7 @@ int main(void)
 	/* 2. The real, distributable installer .iso -- the same tool and the
 	 * same kind of artifact an operator would actually use, just with
 	 * real test values plus --skip-partition standing in for a real
-	 * cfdisk session and a real operator's own --disk=/--ip=/... choice
+	 * fdisk session and a real operator's own --disk=/--ip=/... choice
 	 * at the GRUB boot-menu edit prompt. */
 	snprintf(kernel_args, sizeof(kernel_args),
 	         "--disk=/dev/vda --ip=%s --prefix=%d --gateway=%s --skip-partition", TEST_IP,
@@ -219,8 +221,119 @@ int main(void)
 		}
 	}
 
-	/* 4. Target disk: blank, then pre-partitioned via sfdisk exactly
-	 * the way a real cfdisk session would have left it -- kanxeo-install
+	/* 4. fdisk-interactive smoke test: kanxeo-install's real partitioning
+	 * path -- without --skip-partition, it shells out to a real,
+	 * interactive fdisk (switched from cfdisk: fdisk's own ncurses-free,
+	 * command-letter/line-based UI can actually be scripted via plain
+	 * piped stdin, the same technique sfdisk's own script already uses;
+	 * cfdisk's full-screen curses UI genuinely couldn't be, which is
+	 * exactly why this path had zero coverage and shipped with a real
+	 * bug -- cfdisk's terminfo database was never staged, so it failed
+	 * outright with "Error opening terminal: linux." on a real install).
+	 * The exact command sequence below was verified directly against a
+	 * real fdisk first (not guessed): create a GPT label, five
+	 * partitions sized to match this project's own layout, set
+	 * partition 1's type to EFI System, then (fdisk's expert submenu)
+	 * name all five to the exact GPT names kanxeo-install itself reads
+	 * back -- confirmed byte-for-byte via `sfdisk -d` against the
+	 * existing sfdisk-scripted layout used elsewhere in this project.
+	 * Boots via direct_kernel with kernel_args built fresh here (no
+	 * --skip-partition, unlike every other session in this file) against
+	 * the same already-built installer_iso -- direct_kernel's own
+	 * command line is supplied per-boot, independent of whatever's baked
+	 * into the ISO's own grub.cfg, so no separate ISO build is needed. */
+	{
+		char fdisk_smoke_disk[600], fdisk_smoke_vars[600], fdisk_kernel_args[300];
+		struct qemu_boot_opts opts;
+		struct qemu_scripted_input fdisk_script[] = {
+			{ "Command (m for help): ", "g\n" },
+			{ "Command (m for help): ", "n\n" },
+			{ "Partition number (", "1\n" },
+			{ "First sector (", "\n" },
+			{ "size{K,M,G,T,P} (", "+64M\n" },
+			{ "Command (m for help): ", "n\n" },
+			{ "Partition number (", "2\n" },
+			{ "First sector (", "\n" },
+			{ "size{K,M,G,T,P} (", "+160M\n" },
+			{ "Command (m for help): ", "n\n" },
+			{ "Partition number (", "3\n" },
+			{ "First sector (", "\n" },
+			{ "size{K,M,G,T,P} (", "+160M\n" },
+			{ "Command (m for help): ", "n\n" },
+			{ "Partition number (", "4\n" },
+			{ "First sector (", "\n" },
+			{ "size{K,M,G,T,P} (", "+64M\n" },
+			{ "Command (m for help): ", "n\n" },
+			{ "Partition number (", "5\n" },
+			{ "First sector (", "\n" },
+			{ "size{K,M,G,T,P} (", "\n" },
+			{ "Command (m for help): ", "t\n" },
+			{ "Partition number (", "1\n" },
+			{ "Partition type or alias", "1\n" },
+			{ "Command (m for help): ", "x\n" },
+			{ "Expert command (m for help): ", "n\n" },
+			{ "Partition number (", "1\n" },
+			{ "New name: ", "kanxeo-esp\n" },
+			{ "Expert command (m for help): ", "n\n" },
+			{ "Partition number (", "2\n" },
+			{ "New name: ", "kanxeo-root-a\n" },
+			{ "Expert command (m for help): ", "n\n" },
+			{ "Partition number (", "3\n" },
+			{ "New name: ", "kanxeo-root-b\n" },
+			{ "Expert command (m for help): ", "n\n" },
+			{ "Partition number (", "4\n" },
+			{ "New name: ", "kanxeo-config\n" },
+			{ "Expert command (m for help): ", "n\n" },
+			{ "Partition number (", "5\n" },
+			{ "New name: ", "kanxeo-containers\n" },
+			{ "Expert command (m for help): ", "r\n" },
+			{ "Command (m for help): ", "w\n" },
+			{ "input password: ", MOK_PASSWORD "\n" },
+			{ "input password again: ", MOK_PASSWORD "\n" },
+		};
+
+		snprintf(fdisk_smoke_disk, sizeof(fdisk_smoke_disk), "%s/fdisk_smoke_disk.img", workdir);
+		snprintf(fdisk_smoke_vars, sizeof(fdisk_smoke_vars), "%s/fdisk_smoke_vars.fd", workdir);
+		snprintf(fdisk_kernel_args, sizeof(fdisk_kernel_args),
+		         "console=ttyS0 root=/dev/sr0 rootfstype=iso9660 ro init=/bin/kanxeo-install -- "
+		         "--disk=/dev/vda --ip=%s --prefix=%d --gateway=%s",
+		         TEST_IP, TEST_PREFIX, TEST_GATEWAY);
+		{
+			int fd = open(fdisk_smoke_disk, O_CREAT | O_WRONLY, 0644);
+
+			if (fd < 0 || ftruncate(fd, TARGET_DISK_SIZE_BYTES) != 0) {
+				perror(fdisk_smoke_disk);
+				if (fd >= 0)
+					close(fd);
+				return 1;
+			}
+			close(fd);
+		}
+		if (test_image_fixture_copy_file("/usr/share/OVMF/OVMF_VARS_4M.fd", fdisk_smoke_vars) != 0)
+			return 1;
+
+		memset(&opts, 0, sizeof(opts));
+		opts.disk_img = installer_iso;
+		opts.disk_img_is_cdrom = 1;
+		opts.disk_img2 = fdisk_smoke_disk;
+		opts.direct_kernel = BZIMAGE_PATH;
+		opts.direct_kernel_args = fdisk_kernel_args;
+		opts.ovmf_vars = fdisk_smoke_vars;
+		opts.success_marker = INSTALL_SUCCESS_MARKER;
+		opts.timeout_seconds = INSTALL_TIMEOUT_SECONDS;
+		opts.scripted_input = fdisk_script;
+		opts.n_scripted_input = sizeof(fdisk_script) / sizeof(fdisk_script[0]);
+		outcome = qemu_boot_capture(&opts, captured, sizeof(captured));
+		if (outcome != QEMU_BOOT_SUCCESS) {
+			fprintf(stderr, "real interactive fdisk partitioning did not complete (outcome=%d)\n",
+			        (int)outcome);
+			printf("INSTALLER RESULT: FAIL\n");
+			return 1;
+		}
+	}
+
+	/* 5. Target disk: blank, then pre-partitioned via sfdisk exactly
+	 * the way a real fdisk session would have left it -- kanxeo-install
 	 * doesn't know or care which one happened. */
 	if (create_target_disk(target_disk_img) != 0)
 		return 1;
@@ -228,7 +341,7 @@ int main(void)
 	if (test_image_fixture_copy_file(OVMF_VARS_TEMPLATE, ovmf_vars) != 0)
 		return 1;
 
-	/* 5. Session 1: boot the real .iso via -cdrom against the target
+	/* 6. Session 1: boot the real .iso via -cdrom against the target
 	 * disk. No NIC needed -- formatting/writing doesn't touch the
 	 * network. A completed install ends with init exiting -- an
 	 * expected, harmless "Attempted to kill init!" panic, not a
@@ -282,7 +395,7 @@ int main(void)
 		return 1;
 	}
 
-	/* 6. Verify from the host side what the installer actually wrote --
+	/* 7. Verify from the host side what the installer actually wrote --
 	 * not just that it printed "success". */
 	{
 		char *dump_argv[] = { (char *)SFDISK_BIN, "-d", target_disk_img, NULL };
@@ -384,7 +497,7 @@ int main(void)
 		return 1;
 	}
 
-	/* 7. Session 2: MOK-confirm boot -- the target disk, for real, with
+	/* 8. Session 2: MOK-confirm boot -- the target disk, for real, with
 	 * Secure Boot actually enforced (secure_boot=1, same ovmf_vars as
 	 * session 1, so the real Microsoft certs baked into the .ms.fd
 	 * template and the pending MOK request enroll_signing_key() staged
@@ -437,7 +550,7 @@ int main(void)
 		return 1;
 	}
 
-	/* 8. Session 3: the actual end-to-end proof -- boot the target disk
+	/* 9. Session 3: the actual end-to-end proof -- boot the target disk
 	 * alone, for real, with Secure Boot still enforced (secure_boot=1)
 	 * and a real NIC attached this time, and confirm it comes up as a
 	 * genuinely working kanxeod that actually applied the static IP

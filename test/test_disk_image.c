@@ -325,6 +325,7 @@ enum qemu_boot_outcome qemu_boot_capture(const struct qemu_boot_opts *opts, char
 	char *qemu_argv[36];
 	int argc = 0;
 	int next_input = 0;
+	size_t match_search_from = 0;
 
 	out[0] = '\0';
 
@@ -479,13 +480,26 @@ enum qemu_boot_outcome qemu_boot_capture(const struct qemu_boot_opts *opts, char
 				outcome = QEMU_BOOT_SUCCESS;
 				break;
 			}
-			while (next_input < opts->n_scripted_input &&
-			       strstr(out, opts->scripted_input[next_input].wait_for) != NULL) {
-				const char *send = opts->scripted_input[next_input].send;
-				size_t send_len = strlen(send);
-				size_t sent = 0;
+			while (next_input < opts->n_scripted_input) {
+				/* Searches only the unseen tail since the last match, not
+				 * the whole cumulative buffer -- repeated, identical
+				 * prompt text (e.g. fdisk's own "Command (m for help): "
+				 * appearing many times in one session) must gate each
+				 * scripted response to a genuinely new occurrence, not
+				 * all fire at once against the first one. */
+				char *match = strstr(out + match_search_from,
+				                      opts->scripted_input[next_input].wait_for);
+				const char *send;
+				size_t send_len, sent = 0;
 				ssize_t wn;
 
+				if (match == NULL)
+					break;
+				match_search_from =
+				        (size_t)(match - out) + strlen(opts->scripted_input[next_input].wait_for);
+
+				send = opts->scripted_input[next_input].send;
+				send_len = strlen(send);
 				while (sent < send_len) {
 					wn = write(in_pipefd[1], send + sent, send_len - sent);
 					if (wn < 0) {
