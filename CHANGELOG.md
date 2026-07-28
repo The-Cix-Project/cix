@@ -4,7 +4,7 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
-### Phase 11 (part 6): graceful shutdown/reboot for the installed system
+### Phase 11 (part 7): graceful shutdown/reboot for the installed system
 
 Asked directly, once a real install was up and reachable: "how do I start/stop the OS when it's running live?" The honest answer was there was no way to do that cleanly — `kanxeod` as PID 1 returning from `main()` (its existing `SIGTERM`/`SIGINT` handling) is exactly "init exited," which the kernel panics on unconditionally, the same failure already accepted as harmless for the one-time `kanxeo-install` run but not acceptable for a live system. See ADR-0016.
 
@@ -16,7 +16,7 @@ Asked directly, once a real install was up and reachable: "how do I start/stop t
 
 The core mechanism (`reboot(2)` from genuine PID 1) was verified directly: a minimal standalone init booted on this exact kernel build confirmed both `RB_POWER_OFF` ("reboot: Power down") and `RB_AUTOBOOT` ("reboot: Restarting system") complete cleanly, no panic. The *full* REST-triggered path couldn't be exercised end-to-end by this project's own QEMU test harness — SLIRP (`-netdev user`) doesn't route host-to-guest traffic to a guest's own self-configured static IP, only to its own DHCP-assigned one, which doesn't match `kanxeod`'s `--bind=<ip>` addressing. A test-harness limitation, not a real-world one (bridged networking, e.g. Proxmox, has no equivalent restriction) — see ADR-0016's own Consequences for the honest boundary. Zero warnings; full pre-existing 13-binary non-boot suite plus `test_boot`/`test_boot_ab` re-verified with no regression.
 
-### Phase 11 (part 5 follow-up 4): web dashboard 404'd on every installed system
+### Phase 11 (part 6): web dashboard 404'd on every installed system
 
 Found live: `kanxeod` reachable, `kanxeoctl` working, but the browser dashboard returned "Not Found" on every request.
 
@@ -25,7 +25,7 @@ Found live: `kanxeod` reachable, `kanxeoctl` working, but the browser dashboard 
 
 Confirmed directly (`unsquashfs -l`) that `web/index.html` etc. land at exactly the path `kanxeod` resolves at runtime, not just inferred from the fix compiling. Zero warnings; `test_boot`/`test_boot_ab`/`test_installer` re-verified (3 consecutive `test_installer` passes); the real, shippable `build/kanxeo-install.iso` rebuilt.
 
-### Phase 11 (part 5 follow-up 3): non-interactive partitioning (`--auto-partition`)
+### Phase 11 (part 6): non-interactive partitioning (`--auto-partition`)
 
 Typing the same fixed `fdisk` command sequence by hand for every VM/scripted install was pure friction, not a meaningful safety check — asked for directly after a manual reinstall proved painful.
 
@@ -38,7 +38,7 @@ Typing the same fixed `fdisk` command sequence by hand for every VM/scripted ins
 
 Zero warnings; `test_installer`/`test_boot`/`test_boot_ab` re-verified; the real, shippable `build/kanxeo-install.iso` rebuilt with `--auto-partition`.
 
-### Phase 11 (part 5 follow-up 2): kanxeod unreachable after install; MokManager's "Continue boot" trap documented
+### Phase 11 (part 6): kanxeod unreachable after install; MokManager's "Continue boot" trap documented
 
 Two more findings from the same real install, after Secure Boot itself was confirmed working end to end.
 
@@ -50,7 +50,7 @@ Two more findings from the same real install, after Secure Boot itself was confi
 
 Zero warnings; `test_installer`/`test_boot`/`test_boot_ab` re-verified (3 consecutive `test_installer` passes); the `--bind=` fix confirmed via a dedicated spike, not just inferred from the existing test's own (differently-scoped) success marker.
 
-### Phase 11 (part 5 follow-up): real-world install fixes found via an actual VM install
+### Phase 11 (part 6): real-world install fixes found via an actual VM install
 
 Four more real, previously-untested bugs found by walking the `v1.2.0` fix through an actual Proxmox install, none of them caught by the automated suite because each one lived in a path the tests had always bypassed for good reasons at the time (interactive UIs that seemingly couldn't be scripted, or a QEMU-only shortcut) — every one of them now has real coverage, not just a fix.
 

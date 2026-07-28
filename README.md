@@ -2,7 +2,7 @@
 
 **The Architecture of Absolute Clarity**
 
-Kanxeo is a rolling-release, container-native operating system built entirely from source: a hand-rolled container runtime on raw Linux namespaces and cgroups, OverlayFS-based image layering, a 100% custom C networking data plane, and a REST control layer for the host, containers, DNS, and PKI — no runc, no Open vSwitch, no eBPF, compiled exclusively with the Tiny C Compiler (TCC).
+Kanxeo is a rolling-release hardware and workload orchestration platform, compiled entirely from source: a hand-rolled container runtime on raw Linux namespaces and cgroups, OverlayFS-based image layering, a 100% custom C networking data plane, and a REST control layer for the host, containers, hardware, DNS, and PKI — no runc, no Open vSwitch, no eBPF, compiled exclusively with the Tiny C Compiler (TCC). Every capability, including hardware itself, is a first-class API resource; containers are where all real work happens, the host is the thinnest possible layer underneath them. Full charter: [`docs/MISSION.md`](docs/MISSION.md).
 
 ## The Name
 
@@ -112,6 +112,12 @@ This produces `build/kanxeo-install.iso` — attach it as a CD-ROM/optical drive
 `--skip-partition` and `--auto-partition` are mutually exclusive; omitting both means interactive `fdisk`.
 
 It then formats, writes the system, and reboots into a running `kanxeod` at the IP you gave it — reachable at that address directly (`kanxeod` binds to the exact IP given via `--ip=`, not just loopback).
+
+### Using the installed system
+
+- **Dashboard:** `http://<ip>:7620/` — same daemon and port as the API, no separate process.
+- **CLI:** `kanxeoctl --host=<ip> health`, `... ps`, `... run --name=... --image=... --network=... -- CMD`, `... network create --name=... --subnet=... --prefix=...` (see `docs/api/README.md` for the full walkthrough).
+- **Shutdown/reboot:** `kanxeoctl --host=<ip> shutdown` / `... reboot` — the only clean way to power off or restart (as PID 1, `kanxeod` has no shell to run `shutdown`/`reboot` from; these call the real `reboot(2)` syscall internally, see ADR-0016).
 
 ### Secure Boot
 
