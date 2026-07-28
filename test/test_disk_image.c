@@ -22,6 +22,7 @@ extern char **environ;
 #define MKSQUASHFS_BIN "/usr/bin/mksquashfs"
 #define QEMU_BIN "/usr/bin/qemu-system-x86_64"
 #define OVMF_CODE "/usr/share/OVMF/OVMF_CODE_4M.fd"
+#define OVMF_CODE_SECURE "/usr/share/OVMF/OVMF_CODE_4M.ms.fd"
 
 int run_subprocess(const char *bin, char *const argv[])
 {
@@ -316,17 +317,19 @@ int build_squashfs(const char *image_root, const char *out_path)
 enum qemu_boot_outcome qemu_boot_capture(const struct qemu_boot_opts *opts, char *out, size_t out_size)
 {
 	char code_arg[600], vars_arg[600], disk_arg[600], disk2_arg[600];
-	int pipefd[2];
+	int pipefd[2], in_pipefd[2];
 	pid_t pid;
 	enum qemu_boot_outcome outcome;
 	size_t total = 0;
 	struct timespec deadline, now;
-	char *qemu_argv[28];
+	char *qemu_argv[36];
 	int argc = 0;
+	int next_input = 0;
 
 	out[0] = '\0';
 
-	snprintf(code_arg, sizeof(code_arg), "if=pflash,format=raw,readonly=on,file=%s", OVMF_CODE);
+	snprintf(code_arg, sizeof(code_arg), "if=pflash,format=raw,readonly=on,file=%s",
+	         opts->secure_boot ? OVMF_CODE_SECURE : OVMF_CODE);
 	snprintf(vars_arg, sizeof(vars_arg), "if=pflash,format=raw,file=%s", opts->ovmf_vars);
 	if (opts->disk_img_is_cdrom)
 		snprintf(disk_arg, sizeof(disk_arg), "%s", opts->disk_img);
@@ -347,6 +350,10 @@ enum qemu_boot_outcome qemu_boot_capture(const struct qemu_boot_opts *opts, char
 	qemu_argv[argc++] = "-monitor";
 	qemu_argv[argc++] = "none";
 	qemu_argv[argc++] = "-no-reboot";
+	if (opts->secure_boot) {
+		qemu_argv[argc++] = "-global";
+		qemu_argv[argc++] = "driver=cfi.pflash01,property=secure,value=on";
+	}
 	qemu_argv[argc++] = "-drive";
 	qemu_argv[argc++] = code_arg;
 	qemu_argv[argc++] = "-drive";
@@ -369,10 +376,22 @@ enum qemu_boot_outcome qemu_boot_capture(const struct qemu_boot_opts *opts, char
 		qemu_argv[argc++] = "-device";
 		qemu_argv[argc++] = "virtio-net-pci,netdev=n0";
 	}
+	if (opts->direct_kernel != NULL) {
+		qemu_argv[argc++] = "-kernel";
+		qemu_argv[argc++] = (char *)opts->direct_kernel;
+		qemu_argv[argc++] = "-append";
+		qemu_argv[argc++] = (char *)opts->direct_kernel_args;
+	}
 	qemu_argv[argc] = NULL;
 
 	if (pipe2(pipefd, O_CLOEXEC) != 0) {
 		perror("pipe2");
+		return QEMU_BOOT_ERROR;
+	}
+	if (pipe2(in_pipefd, O_CLOEXEC) != 0) {
+		perror("pipe2");
+		close(pipefd[0]);
+		close(pipefd[1]);
 		return QEMU_BOOT_ERROR;
 	}
 	pid = fork();
@@ -380,17 +399,23 @@ enum qemu_boot_outcome qemu_boot_capture(const struct qemu_boot_opts *opts, char
 		perror("fork");
 		close(pipefd[0]);
 		close(pipefd[1]);
+		close(in_pipefd[0]);
+		close(in_pipefd[1]);
 		return QEMU_BOOT_ERROR;
 	}
 	if (pid == 0) {
 		dup2(pipefd[1], STDOUT_FILENO);
+		dup2(in_pipefd[0], STDIN_FILENO);
 		close(pipefd[0]);
 		close(pipefd[1]);
+		close(in_pipefd[0]);
+		close(in_pipefd[1]);
 		execve(QEMU_BIN, qemu_argv, environ);
 		perror(QEMU_BIN);
 		_exit(127);
 	}
 	close(pipefd[1]);
+	close(in_pipefd[0]);
 
 	clock_gettime(CLOCK_MONOTONIC, &deadline);
 	deadline.tv_sec += opts->timeout_seconds;
@@ -454,6 +479,25 @@ enum qemu_boot_outcome qemu_boot_capture(const struct qemu_boot_opts *opts, char
 				outcome = QEMU_BOOT_SUCCESS;
 				break;
 			}
+			while (next_input < opts->n_scripted_input &&
+			       strstr(out, opts->scripted_input[next_input].wait_for) != NULL) {
+				const char *send = opts->scripted_input[next_input].send;
+				size_t send_len = strlen(send);
+				size_t sent = 0;
+				ssize_t wn;
+
+				while (sent < send_len) {
+					wn = write(in_pipefd[1], send + sent, send_len - sent);
+					if (wn < 0) {
+						if (errno == EINTR)
+							continue;
+						perror("write scripted input");
+						break;
+					}
+					sent += (size_t)wn;
+				}
+				next_input++;
+			}
 		}
 		if (pfd.revents & (POLLHUP | POLLERR)) {
 			outcome = QEMU_BOOT_EOF;
@@ -462,6 +506,7 @@ enum qemu_boot_outcome qemu_boot_capture(const struct qemu_boot_opts *opts, char
 	}
 
 	close(pipefd[0]);
+	close(in_pipefd[1]);
 	kill(pid, SIGTERM);
 	{
 		int status;

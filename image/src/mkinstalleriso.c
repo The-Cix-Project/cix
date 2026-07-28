@@ -39,7 +39,14 @@
 extern char **environ;
 
 #define GRUB_MKRESCUE_BIN "/usr/bin/grub-mkrescue"
+#define SBSIGN_BIN "/usr/bin/sbsign"
 #define SYSTEMD_BOOT_EFI "/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
+
+/* Secure Boot chain for the *target* disk's ESP (kanxeo-install.c's own
+ * populate_esp() writes these three under EFI/BOOT/ -- see ADR-0015).
+ * Both are pre-signed by Debian directly; no re-signing needed. */
+#define SHIM_EFI_SRC "/usr/lib/shim/shimx64.efi.signed"
+#define MOKMANAGER_EFI_SRC "/usr/lib/shim/mmx64.efi.signed"
 
 /* The real tools kanxeo-install shells out to, and their full ldd
  * closures (checked directly against this host) -- staged the same way
@@ -52,7 +59,12 @@ static const char *const g_lib_closure[] = {
 	"/lib/x86_64-linux-gnu/libblkid.so.1",     "/lib/x86_64-linux-gnu/libselinux.so.1",
 	"/lib/x86_64-linux-gnu/libpcre2-8.so.0",   "/lib/x86_64-linux-gnu/libreadline.so.8",
 	"/lib/x86_64-linux-gnu/libext2fs.so.2",    "/lib/x86_64-linux-gnu/libcom_err.so.2",
-	"/lib/x86_64-linux-gnu/libe2p.so.2",       NULL,
+	"/lib/x86_64-linux-gnu/libe2p.so.2",
+	/* mokutil's own closure (ldd-checked against this host), for
+	 * enroll_signing_key()'s "mokutil --import" call in kanxeo-install.c. */
+	"/lib/x86_64-linux-gnu/libcrypto.so.3",    "/lib/x86_64-linux-gnu/libefivar.so.1",
+	"/lib/x86_64-linux-gnu/libkeyutils.so.1",  "/lib/x86_64-linux-gnu/libcrypt.so.1",
+	"/lib/x86_64-linux-gnu/libdl.so.2",        NULL,
 };
 
 static int ensure_dir(const char *path)
@@ -115,12 +127,23 @@ static int run_subprocess(const char *bin, char *const argv[])
 	return 0;
 }
 
+static int sbsign_to(const char *key, const char *cert, const char *src, const char *dst)
+{
+	char *argv_sbsign[] = { (char *)SBSIGN_BIN, "--key",  (char *)key, "--cert", (char *)cert,
+		                 "--output", (char *)dst, (char *)src,  NULL };
+
+	return run_subprocess(SBSIGN_BIN, argv_sbsign);
+}
+
 int main(int argc, char **argv)
 {
 	const char *stage_dir;
 	const char *kanxeo_install_bin;
 	const char *bzimage_path;
 	const char *control_plane_squashfs;
+	const char *signing_key;
+	const char *signing_cert_pem;
+	const char *signing_cert_der;
 	const char *out_iso;
 	const char *kernel_args;
 	char dst[600];
@@ -128,10 +151,16 @@ int main(int argc, char **argv)
 	char grub_cfg[1024];
 	int i;
 
-	if (argc != 7) {
+	if (argc != 10) {
 		fprintf(stderr,
 		        "usage: %s <staging-dir> <kanxeo-install-bin> <bzImage> "
-		        "<control-plane-squashfs> <out.iso> <kernel-args>\n"
+		        "<control-plane-squashfs> <signing-key> <signing-cert.crt> "
+		        "<signing-cert.cer> <out.iso> <kernel-args>\n"
+		        "  signing-key/signing-cert.crt/signing-cert.cer: the Kanxeo Secure Boot\n"
+		        "  signing key pair (image/keys/kanxeo-signing.{key,crt,cer} -- .crt is\n"
+		        "  PEM, for sbsign; .cer is DER, for mokutil) -- used to sign systemd-boot\n"
+		        "  and the kernel for the *target* disk's ESP; the installer media's own\n"
+		        "  GRUB boot stays unsigned (see ADR-0015).\n"
 		        "  kernel-args: everything after 'init=/bin/kanxeo-install --' on the\n"
 		        "  kernel command line, e.g. for the real, shippable ISO:\n"
 		        "  \"--disk=/dev/CHANGEME --ip=CHANGEME --prefix=24 --gateway=CHANGEME\"\n"
@@ -145,8 +174,11 @@ int main(int argc, char **argv)
 	kanxeo_install_bin = argv[2];
 	bzimage_path = argv[3];
 	control_plane_squashfs = argv[4];
-	out_iso = argv[5];
-	kernel_args = argv[6];
+	signing_key = argv[5];
+	signing_cert_pem = argv[6];
+	signing_cert_der = argv[7];
+	out_iso = argv[8];
+	kernel_args = argv[9];
 
 	if (ensure_dir(stage_dir) != 0)
 		return 1;
@@ -169,6 +201,11 @@ int main(int argc, char **argv)
 	snprintf(dst, sizeof(dst), "%s/usr/sbin/mkfs.ext4", stage_dir);
 	if (test_image_fixture_copy_file("/usr/sbin/mke2fs", dst) != 0)
 		return 1;
+	if (ensure_dir_under(stage_dir, "usr/bin") != 0)
+		return 1;
+	snprintf(dst, sizeof(dst), "%s/usr/bin/mokutil", stage_dir);
+	if (test_image_fixture_copy_file("/usr/bin/mokutil", dst) != 0)
+		return 1;
 
 	for (i = 0; g_lib_closure[i] != NULL; i++) {
 		if (test_image_fixture_add_lib(stage_dir, g_lib_closure[i]) != 0)
@@ -176,15 +213,31 @@ int main(int argc, char **argv)
 	}
 
 	/* Target-disk payload kanxeo-install itself copies onto the ESP/
-	 * root-A it writes -- systemd-boot and the control-plane squashfs.
-	 * The kernel lives at /boot/kanxeo-bzImage instead (below) and
-	 * serves double duty: GRUB's own boot target here, and the same
-	 * file kanxeo-install.c's BZIMAGE_SRC copies onto the target disk --
-	 * one copy, not two. */
+	 * root-A it writes -- the Secure Boot chain (shim, MokManager, our
+	 * own signed systemd-boot) and the control-plane squashfs. The
+	 * kernel lives at /boot/kanxeo-bzImage instead (below) and serves
+	 * double duty: GRUB's own boot target here, and the same file
+	 * kanxeo-install.c's BZIMAGE_SRC copies onto the target disk -- one
+	 * copy, not two.
+	 *
+	 * kanxeo-grubx64.efi is systemd-boot itself, Kanxeo-signed and
+	 * deliberately renamed: shim has a hardcoded second-stage lookup of
+	 * "\\grubx64.efi" in its own directory (confirmed via `strings` on
+	 * the real Debian-signed shim binary) regardless of what's actually
+	 * inside the file -- see ADR-0015. */
 	if (ensure_dir_under(stage_dir, "payload") != 0)
 		return 1;
-	snprintf(dst, sizeof(dst), "%s/payload/systemd-bootx64.efi", stage_dir);
-	if (test_image_fixture_copy_file(SYSTEMD_BOOT_EFI, dst) != 0)
+	snprintf(dst, sizeof(dst), "%s/payload/kanxeo-shim.efi", stage_dir);
+	if (test_image_fixture_copy_file(SHIM_EFI_SRC, dst) != 0)
+		return 1;
+	snprintf(dst, sizeof(dst), "%s/payload/kanxeo-mm.efi", stage_dir);
+	if (test_image_fixture_copy_file(MOKMANAGER_EFI_SRC, dst) != 0)
+		return 1;
+	snprintf(dst, sizeof(dst), "%s/payload/kanxeo-grubx64.efi", stage_dir);
+	if (sbsign_to(signing_key, signing_cert_pem, SYSTEMD_BOOT_EFI, dst) != 0)
+		return 1;
+	snprintf(dst, sizeof(dst), "%s/payload/kanxeo-signing.cer", stage_dir);
+	if (test_image_fixture_copy_file(signing_cert_der, dst) != 0)
 		return 1;
 	snprintf(dst, sizeof(dst), "%s/payload/kanxeo-root.squashfs", stage_dir);
 	if (test_image_fixture_copy_file(control_plane_squashfs, dst) != 0)
@@ -210,13 +263,17 @@ int main(int argc, char **argv)
 	if (ensure_dir_under(stage_dir, "mnt/containers") != 0)
 		return 1;
 
-	/* GRUB's own boot target -- the ISO9660-mounted-as-root kernel. */
+	/* GRUB's own boot target -- the ISO9660-mounted-as-root kernel. Signed
+	 * here (not a plain copy): a valid signature doesn't affect the
+	 * installer's own unsigned/unenforced GRUB boot, and this exact same
+	 * signed file is what kanxeo-install.c's BZIMAGE_SRC later copies
+	 * onto the target disk's ESP, where the signature does matter. */
 	if (ensure_dir_under(stage_dir, "boot") != 0)
 		return 1;
 	if (ensure_dir_under(stage_dir, "boot/grub") != 0)
 		return 1;
 	snprintf(dst, sizeof(dst), "%s/boot/kanxeo-bzImage", stage_dir);
-	if (test_image_fixture_copy_file(bzimage_path, dst) != 0)
+	if (sbsign_to(signing_key, signing_cert_pem, bzimage_path, dst) != 0)
 		return 1;
 
 	snprintf(grub_cfg, sizeof(grub_cfg),

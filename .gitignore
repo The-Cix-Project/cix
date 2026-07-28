@@ -1,3 +1,4 @@
 build/
 core
 core.*
+image/keys/*.key

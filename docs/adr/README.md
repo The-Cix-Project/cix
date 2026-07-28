@@ -19,3 +19,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0012](0012-networks-json-persistence.md) | Atomically-rewritten flat file for network persistence, not a database | Accepted |
 | [0013](0013-proc-pid-root-for-live-container-file-writes.md) | /proc/<pid>/root/ for writing into a running container's filesystem, not raw upperdir or setns() | Accepted |
 | [0014](0014-squashfs-ab-root-with-native-boot-counting.md) | Read-only squashfs A/B root with systemd-boot's native boot counting, not a writable root or hand-rolled rollback | Accepted |
+| [0015](0015-shim-mok-secure-boot-signing.md) | shim + MOK enrollment for Secure Boot on the installed system, installer media stays unsigned | Accepted |

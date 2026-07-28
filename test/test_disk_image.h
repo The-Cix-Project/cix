@@ -79,6 +79,21 @@ enum qemu_boot_outcome {
 };
 
 /*
+ * One scripted response for qemu_boot_capture()'s interactive prompts
+ * (Phase 11 part 5, ADR-0015: mokutil's password prompt, MokManager's
+ * confirmation screen) -- event-driven rather than sleep-timed, since
+ * boot timing genuinely varies run to run: the first time wait_for
+ * appears anywhere in the output captured so far, send is written to
+ * qemu's stdin (multiplexed onto the guest's ttyS0 by -serial stdio,
+ * the same real mechanism an operator's own keystrokes would use).
+ * Consumed strictly in array order, one match each.
+ */
+struct qemu_scripted_input {
+	const char *wait_for;
+	const char *send;
+};
+
+/*
  * qemu_boot_capture()'s options -- a struct rather than a growing list of
  * positional parameters, since by Phase 11 part 4 (a -cdrom vs. -drive
  * choice for disk_img, on top of the existing second-disk and NIC
@@ -92,12 +107,34 @@ struct qemu_boot_opts {
 	int disk_img_is_cdrom;     /* attach disk_img via -cdrom instead of -drive,if=virtio */
 	const char *disk_img2;     /* optional second disk, always a virtio block device, or NULL */
 	int with_nic;              /* attach a virtio-net device */
+	int secure_boot;            /* use the .ms.fd OVMF CODE build (Phase 11 part 5) -- real
+	                              * Secure Boot enforcement is actually gated by ovmf_vars's own
+	                              * PK-enrollment state (confirmed empirically: plain CODE +
+	                              * a User-Mode-enrolled vars file DOES enforce; .secboot CODE +
+	                              * a fresh, not-yet-enrolled vars file does NOT) -- this flag's
+	                              * CODE-build switch mostly documents intent/matches the user's
+	                              * own reported failure conditions exactly; ovmf_vars is what
+	                              * actually decides enforcement. */
+	const char *direct_kernel;  /* if set, boots via QEMU's own "-kernel" fw_cfg injection
+	                              * instead of firmware's normal disk-boot-scan/LoadImage path --
+	                              * confirmed empirically to bypass Secure Boot's LoadImage-based
+	                              * enforcement entirely, regardless of ovmf_vars's state. Used to
+	                              * let the *installer's* own (deliberately unsigned, ADR-0015)
+	                              * boot succeed even against a real, already-User-Mode vars file,
+	                              * so the same vars file carries Microsoft's real enrolled certs
+	                              * AND whatever that boot's own mokutil run stages, with no
+	                              * separate vars-file-merging step needed. A pure test-harness
+	                              * convenience -- real hardware has no equivalent bypass, and the
+	                              * installer's own boot there genuinely does need Secure Boot off. */
+	const char *direct_kernel_args; /* kernel command line for direct_kernel; required if set */
 	const char *ovmf_vars;     /* required */
 	const char *success_marker; /* required */
 	const char *panic_marker;   /* NULL to disable panic detection (e.g. an installer run that
 	                              * deliberately ends with init exiting -- a harmless, expected
 	                              * "Attempted to kill init!" panic, not a failure) */
 	int timeout_seconds;        /* required */
+	const struct qemu_scripted_input *scripted_input; /* NULL = none */
+	int n_scripted_input;
 };
 
 /*

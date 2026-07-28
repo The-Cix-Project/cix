@@ -54,16 +54,37 @@ Every test binary in `build/` is self-contained (each forks and execs its own `k
 
 ## Building and Using the Installer ISO
 
-Once `build/kanxeod`, `build/kanxeo-install`, and `build/bzImage` all exist:
+### One-time: the Kanxeo Secure Boot signing key
+
+`image/keys/kanxeo-signing.{crt,cer}` (the public cert, PEM and DER) are committed; `image/keys/kanxeo-signing.key` (the private key) is gitignored and must exist locally before building the ISO. Generate it once, and keep it — every machine that has enrolled it (see below) needs the *same* key for future installs to keep working:
+
+```sh
+openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 7300 \
+    -keyout image/keys/kanxeo-signing.key -out image/keys/kanxeo-signing.crt \
+    -subj "/CN=Kanxeo Secure Boot Signing Key/O=Kanxeo Project"
+openssl x509 -in image/keys/kanxeo-signing.crt -outform DER -out image/keys/kanxeo-signing.cer
+```
+
+### Building the ISO
+
+Once `build/kanxeod`, `build/kanxeo-install`, `build/bzImage`, and the signing key above all exist:
 
 ```sh
 sudo build/mkbootroot  /tmp/root_stage build/kanxeod /tmp/kanxeod-root.squashfs
 sudo build/mkinstalleriso build/iso_stage build/kanxeo-install build/bzImage \
-     /tmp/kanxeod-root.squashfs build/kanxeo-install.iso \
+     /tmp/kanxeod-root.squashfs \
+     image/keys/kanxeo-signing.key image/keys/kanxeo-signing.crt image/keys/kanxeo-signing.cer \
+     build/kanxeo-install.iso \
      "--disk=/dev/CHANGEME --ip=CHANGEME --prefix=24 --gateway=CHANGEME"
 ```
 
 This produces `build/kanxeo-install.iso` — attach it as a CD-ROM/optical drive to a VM (or a real machine, once you have one on hand) and boot from it. The placeholder args are deliberate: at the GRUB boot menu, press `e` to edit the boot entry, replace `/dev/CHANGEME`/`CHANGEME`/`CHANGEME` with the real target disk (e.g. `/dev/sda`), IP address, and gateway for this install, then `Ctrl-X` to boot. If you forget, `kanxeo-install`'s own disk check fails safely — it refuses to touch a disk that doesn't exist rather than silently doing the wrong thing. Once booted, it partitions the disk interactively via `cfdisk` (see `docs/ROADMAP.md`'s Phase 11 part 3/4 write-ups for the exact GPT partition names it expects: `kanxeo-esp`, `kanxeo-root-a`, `kanxeo-root-b`, `kanxeo-config`, `kanxeo-containers`), formats, writes the system, and reboots into a running `kanxeod` at the IP you gave it.
+
+### Secure Boot
+
+The **installer media itself** always needs Secure Boot **off** in the VM/host firmware settings — it's an unsigned, one-time boot, no different from installing most non-Windows OSes from scratch (see ADR-0015 for why this can't be avoided). Turn it back on any time after.
+
+The **installed system** is Secure-Boot-capable: `kanxeo-install` signs its own boot chain with the Kanxeo key above and, during install, stages a one-time key-enrollment request (you'll be asked to set a temporary password). At the newly-installed system's **very next reboot**, firmware's own `MokManager` screen (blue, text-mode, not anything this project built) will ask you to confirm the enrollment — enter that same password. After that single confirmation, Secure Boot can stay on indefinitely, with zero further exceptions, on that machine.
 
 ## Repository Layout
 

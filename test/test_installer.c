@@ -1,32 +1,45 @@
 /*
- * Phase 11 part 4 demonstrable test: proves the actual installer *and*
+ * Phase 11 part 4/5 demonstrable test: proves the actual installer *and*
  * its real, distributable .iso packaging both work -- given a raw,
  * blank target disk and the same 5-partition layout an operator would
  * leave behind after a real cfdisk session, kanxeo-install (booted from
  * the real .iso build/mkinstalleriso produces, via QEMU's -cdrom, not a
  * test-only disk-image approximation) partitions its role-detection,
  * formats, writes the real payload, and configures a static IP -- then
- * a *second*, completely separate boot proves the freshly-installed
- * disk actually comes up as a real, running kanxeod. "Install" and
- * "boot what was installed" are the same real code paths already proven
- * in parts 1-2, and "the ISO an operator would actually use" is now the
- * same artifact this test boots, not a separate, untested approximation
- * of it (part 3's own test built a private squashfs-based disk instead
- * -- this part replaces that with the real thing).
+ * two more, completely separate boots prove the freshly-installed disk
+ * actually comes up as a real, running kanxeod *with Secure Boot
+ * genuinely enforced* (ADR-0015). "Install" and "boot what was
+ * installed" are the same real code paths already proven in parts 1-2,
+ * and "the ISO an operator would actually use" is now the same artifact
+ * this test boots, not a separate, untested approximation of it (part 3's
+ * own test built a private squashfs-based disk instead -- this part
+ * replaces that with the real thing).
  *
- * Two disks, two QEMU sessions:
- *   1. build/mkinstalleriso's real .iso (attached via -cdrom) + a blank
- *      target disk, pre-partitioned by this test via sfdisk exactly the
- *      way an operator's own cfdisk session would have left it
- *      (kanxeo-install is invoked with --skip-partition, since cfdisk's
- *      curses UI can't be scripted -- proving the installer's own
- *      role-detection/format/write logic, not cfdisk itself, which is
- *      real, unmodified software this project doesn't need to
- *      re-test). Since the boot medium is now a CD-ROM (a separate
- *      ATAPI/SCSI bus), the target disk is the *only* virtio-blk device
- *      present and is /dev/vda, not /dev/vdb.
- *   2. The target disk alone, boots for real -- kanxeod --init-mode
- *      --slot=a off the partition kanxeo-install just wrote.
+ * Two disks, three QEMU sessions:
+ *   1. build/mkinstalleriso's real .iso + a blank target disk,
+ *      pre-partitioned by this test via sfdisk exactly the way an
+ *      operator's own cfdisk session would have left it (kanxeo-install
+ *      is invoked with --skip-partition, since cfdisk's curses UI can't
+ *      be scripted -- proving the installer's own role-detection/format/
+ *      write logic, not cfdisk itself, which is real, unmodified
+ *      software this project doesn't need to re-test). Since the boot
+ *      medium is a CD-ROM (a separate ATAPI/SCSI bus), the target disk
+ *      is the *only* virtio-blk device present and is /dev/vda, not
+ *      /dev/vdb. Booted via direct_kernel (QEMU's own "-kernel"
+ *      injection, bypassing firmware's normal LoadImage-based Secure
+ *      Boot check -- a test-harness-only convenience standing in for
+ *      "Secure Boot off for this one boot" on real hardware, see
+ *      ADR-0015) against the *real*, already-User-Mode ovmf_vars
+ *      template, so this session's own enroll_signing_key() (mokutil
+ *      --import) stages its MOK request into the exact same vars file
+ *      session 2 reads.
+ *   2. The target disk, Secure Boot genuinely enforced (secure_boot=1),
+ *      scripted through shim's real MokManager UI to confirm the
+ *      pending enrollment.
+ *   3. The target disk again, Secure Boot still enforced, boots for
+ *      real -- kanxeod --init-mode --slot=a off the partition
+ *      kanxeo-install wrote, now via the fully-trusted shim -> signed
+ *      systemd-boot -> signed kernel chain.
  *
  * Verification of what the installer actually wrote happens from the
  * host side after session 1 -- the ESP via mtools' disk.img@@offset
@@ -51,7 +64,11 @@
 #define BZIMAGE_PATH "build/bzImage"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
 #define DEBUGFS_BIN "/usr/sbin/debugfs"
-#define OVMF_VARS_TEMPLATE "/usr/share/OVMF/OVMF_VARS_4M.fd"
+#define OVMF_VARS_TEMPLATE "/usr/share/OVMF/OVMF_VARS_4M.ms.fd"
+#define SIGNING_KEY "image/keys/kanxeo-signing.key"
+#define SIGNING_CERT_PEM "image/keys/kanxeo-signing.crt"
+#define SIGNING_CERT_DER "image/keys/kanxeo-signing.cer"
+#define MOK_PASSWORD "kanxeotest"
 
 #define TARGET_ESP_SIZE_MIB 64
 #define TARGET_ROOT_SIZE_MIB 160
@@ -114,8 +131,10 @@ int main(void)
 	{
 		char *mkiso_argv[] = { (char *)MKINSTALLERISO_BIN, installer_stage,
 			                (char *)KANXEO_INSTALL_BIN,    (char *)BZIMAGE_PATH,
-			                control_plane_squashfs,        installer_iso,
-			                kernel_args,                   NULL };
+			                control_plane_squashfs,        (char *)SIGNING_KEY,
+			                (char *)SIGNING_CERT_PEM,      (char *)SIGNING_CERT_DER,
+			                installer_iso,                 kernel_args,
+			                NULL };
 		if (run_subprocess(MKINSTALLERISO_BIN, mkiso_argv) != 0)
 			return 1;
 	}
@@ -158,17 +177,48 @@ int main(void)
 	 * disk. No NIC needed -- formatting/writing doesn't touch the
 	 * network. A completed install ends with init exiting -- an
 	 * expected, harmless "Attempted to kill init!" panic, not a
-	 * failure, hence no panic_marker here. */
+	 * failure, hence no panic_marker here.
+	 *
+	 * This installer boot itself stays unsigned/Secure-Boot-off on real
+	 * hardware (ADR-0015) -- ovmf_vars here is nonetheless the real
+	 * User-Mode template (Microsoft's own certs already enrolled), same
+	 * as MOK-confirm/final-boot below, so the pending MOK request
+	 * enroll_signing_key() stages lands in the SAME vars file shim will
+	 * later check -- no separate vars-file merge step needed. Booting via
+	 * direct_kernel (QEMU's own "-kernel" fw_cfg injection, confirmed
+	 * empirically to bypass firmware's normal LoadImage-based Secure Boot
+	 * check entirely) is what makes this safe: a pure test-harness
+	 * convenience standing in for what, on real hardware, is a genuine
+	 * "Secure Boot off for this one boot" step -- kanxeo-install's own
+	 * code runs identically either way.
+	 *
+	 * enroll_signing_key()'s "mokutil --import" prompts twice for a
+	 * password (exact wording confirmed against the real mokutil binary)
+	 * that MOK-confirm below needs again. */
 	{
 		struct qemu_boot_opts opts;
+		struct qemu_scripted_input mok_password[] = {
+			{ "input password: ", MOK_PASSWORD "\n" },
+			{ "input password again: ", MOK_PASSWORD "\n" },
+		};
+		char direct_args[512];
+
+		snprintf(direct_args, sizeof(direct_args),
+		         "console=ttyS0 root=/dev/sr0 rootfstype=iso9660 ro init=/bin/kanxeo-install "
+		         "-- %s",
+		         kernel_args);
 
 		memset(&opts, 0, sizeof(opts));
 		opts.disk_img = installer_iso;
 		opts.disk_img_is_cdrom = 1;
 		opts.disk_img2 = target_disk_img;
+		opts.direct_kernel = BZIMAGE_PATH;
+		opts.direct_kernel_args = direct_args;
 		opts.ovmf_vars = ovmf_vars;
 		opts.success_marker = INSTALL_SUCCESS_MARKER;
 		opts.timeout_seconds = INSTALL_TIMEOUT_SECONDS;
+		opts.scripted_input = mok_password;
+		opts.n_scripted_input = 2;
 		outcome = qemu_boot_capture(&opts, captured, sizeof(captured));
 	}
 	if (outcome != QEMU_BOOT_SUCCESS) {
@@ -279,17 +329,74 @@ int main(void)
 		return 1;
 	}
 
-	/* 6. Session 2: the actual end-to-end proof -- boot the target disk
-	 * alone, for real, with a real NIC attached this time, and confirm
-	 * it comes up as a genuinely working kanxeod that actually applied
-	 * the static IP configured at install time. Nothing here is
-	 * test-built; this is exactly what an operator would see after
-	 * rebooting a freshly-installed machine. */
+	/* 6. Session 2: MOK-confirm boot -- the target disk, for real, with
+	 * Secure Boot actually enforced (secure_boot=1, same ovmf_vars as
+	 * session 1, so the real Microsoft certs baked into the .ms.fd
+	 * template and the pending MOK request enroll_signing_key() staged
+	 * during session 1 are both present in the SAME vars file). shim
+	 * (Microsoft-signed) loads cleanly; finding the pending request, it
+	 * shows its own MokManager UI instead of proceeding straight to
+	 * grubx64.efi (not yet trusted at this point -- confirmed separately
+	 * that boot fails safely, "Security Violation", if this step is
+	 * skipped). The exact menu text/navigation below was discovered by
+	 * driving a real run interactively (piped scripted input, observing
+	 * the raw captured output) rather than assumed: "Press any key" (a
+	 * 10s countdown otherwise falls through to the same safe failure) ->
+	 * "Perform MOK management" (Continue boot / Enroll MOK / ...,
+	 * "Enroll MOK" one down-arrow away) -> "View key 0 / Continue" (one
+	 * down-arrow to Continue) -> "Enroll the key(s)? No / Yes" (one
+	 * down-arrow to Yes) -> "Password:" (the same password
+	 * enroll_signing_key() used) -> back at "Perform MOK management",
+	 * now offering "Reboot" as the top entry.
+	 *
+	 * MokManager's own reset after confirming reboots the machine; with
+	 * QEMU's -no-reboot flag that means the QEMU process itself exits --
+	 * there is no serial marker for "about to reset", so QEMU_BOOT_EOF
+	 * (not QEMU_BOOT_SUCCESS) is this session's own expected, successful
+	 * outcome, the same "this termination is expected, not a failure"
+	 * posture session 1's own harmless install-complete panic already
+	 * has. */
+	{
+		struct qemu_boot_opts opts;
+		struct qemu_scripted_input mok_confirm[] = {
+			{ "Press any key to perform MOK management", " " },
+			{ "Enroll MOK", "\x1b[B\r" },
+			{ "View key 0", "\x1b[B\r" },
+			{ "Enroll the key(s)?", "\x1b[B\r" },
+			{ "Password:", MOK_PASSWORD "\r" },
+			{ "Reboot", "\r" },
+		};
+
+		memset(&opts, 0, sizeof(opts));
+		opts.disk_img = target_disk_img;
+		opts.secure_boot = 1;
+		opts.ovmf_vars = ovmf_vars;
+		opts.timeout_seconds = 90;
+		opts.scripted_input = mok_confirm;
+		opts.n_scripted_input = 6;
+		outcome = qemu_boot_capture(&opts, captured, sizeof(captured));
+	}
+	if (outcome != QEMU_BOOT_EOF) {
+		fprintf(stderr, "MOK-confirm boot did not end as expected (outcome=%d)\n", (int)outcome);
+		printf("INSTALLER RESULT: FAIL\n");
+		return 1;
+	}
+
+	/* 7. Session 3: the actual end-to-end proof -- boot the target disk
+	 * alone, for real, with Secure Boot still enforced (secure_boot=1)
+	 * and a real NIC attached this time, and confirm it comes up as a
+	 * genuinely working kanxeod that actually applied the static IP
+	 * configured at install time. Nothing here is test-built; this is
+	 * exactly what an operator would see after rebooting a freshly
+	 * installed, MOK-confirmed machine -- shim -> the Kanxeo-signed
+	 * grubx64.efi (systemd-boot) -> the Kanxeo-signed kernel, all now
+	 * trusted, zero further exceptions. */
 	{
 		struct qemu_boot_opts opts;
 
 		memset(&opts, 0, sizeof(opts));
 		opts.disk_img = target_disk_img;
+		opts.secure_boot = 1;
 		opts.with_nic = 1;
 		opts.ovmf_vars = ovmf_vars;
 		opts.success_marker = BOOT_SUCCESS_MARKER;

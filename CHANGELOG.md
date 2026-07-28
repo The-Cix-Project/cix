@@ -4,6 +4,26 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 11 (part 5): Secure Boot for the installed system — shim + MOK enrollment
+
+A real user-reported defect in the `v1.1.0` ISO: booting it on a Secure-Boot-enabled VM failed with UEFI `BdsDxe: ... Access Denied`. Reproduced exactly, locally, then root-caused: `grub-mkrescue`'s self-built `BOOTX64.EFI` is unsigned, and — once a signed bootloader chain was tried — a *second*, deeper issue surfaced: Secure Boot also requires a signed kernel, not just a signed bootloader, and this project has no CA relationship to get one signed conventionally. See ADR-0015 for the full reasoning, including the MOK-enrollment bootstrap chicken/egg problem and why the installer media itself stays unsigned (Secure Boot must be off for that one, disposable boot) while the *installed* system becomes fully Secure-Boot-capable after one operator-confirmed key enrollment.
+
+Two real, non-obvious facts found via direct empirical testing this part, not assumed: Secure Boot enforcement in OVMF is gated by the **vars file's own PK-enrollment state**, not the CODE build variant (isolated by testing each independently); and `-kernel` (QEMU's own direct-boot injection) bypasses firmware's normal `LoadImage`-based Secure Boot check entirely regardless of vars state — used to let the test's own installer-boot session use the exact same, already-enrolled vars file the later MOK-confirm/final-boot sessions need, with no vars-file-merging step required. shim's real MokManager UI (menu text, navigation, password prompt) was discovered by driving a live run interactively and observing the raw captured screen output, the same technique used earlier this part to diagnose the original bug.
+
+#### Added
+- `image/keys/kanxeo-signing.{key,crt,cer}`: a project-owned Secure Boot signing key, generated once and persisted deliberately (private key gitignored; public cert, PEM and DER, committed).
+- `image/src/mkinstalleriso.c`: signs `systemd-boot` and the kernel with the Kanxeo key via `sbsign`, and stages Debian's pre-signed `shim`/`MokManager` plus the signed systemd-boot (deliberately named `kanxeo-grubx64.efi` — `shim` has a hardcoded `grubx64.efi` second-stage lookup, confirmed via `strings` on the real binary) and the DER cert for the target ESP. Three new required arguments (`<signing-key> <signing-cert.crt> <signing-cert.cer>`); the installer media's own GRUB boot chain is otherwise unchanged.
+- `image/src/kanxeo-install.c`: `populate_esp()` now writes the full `shim` → signed-`systemd-boot` → signed-kernel chain onto the target ESP instead of an unsigned `systemd-boot` direct-boot; new `enroll_signing_key()` mounts `efivarfs` and runs `mokutil --import`, prompting once for a password reused at the installed system's next boot to confirm enrollment via firmware's own `MokManager`.
+- `image/kernel/qemu-part1.config`: `CONFIG_EFIVAR_FS` — needed for `/sys/firmware/efi/efivars`, which `mokutil` reads/writes.
+- `test/test_disk_image.h`/`.c`: `qemu_boot_capture()` gained `secure_boot` (switches OVMF CODE build to document intent; the vars file is what actually gates enforcement), `direct_kernel`/`direct_kernel_args` (the `-kernel` bypass above), and `struct qemu_scripted_input` — event-driven scripted stdin (matches on captured output, not sleep-timed) for driving `mokutil`'s and `MokManager`'s interactive prompts.
+- `test/test_installer.c`: extended to a three-session flow — install (direct-kernel-booted, stages the MOK request into the real, already-User-Mode vars file), a MOK-confirm boot (`secure_boot=1`, scripted through shim's actual MokManager menu), then the real final boot (`secure_boot=1`), proving the installed system boots cleanly with Secure Boot enforced end to end.
+- `docs/adr/0015-shim-mok-secure-boot-signing.md`.
+
+#### Fixed
+- `mokutil`'s own `ldd` closure was missing `libdl.so.2` in the first pass (`mokutil: error while loading shared libraries: libdl.so.2`) — caught by an actual run inside the installer environment, not by review; fixed in `mkinstalleriso.c`'s `g_lib_closure[]`.
+
+Zero warnings; `test_installer`/`test_boot`/`test_boot_ab` each re-run 3 consecutive times; full pre-existing binary suite re-run once after a clean rebuild; the real, shippable `build/kanxeo-install.iso` rebuilt with the new signing-key arguments.
+
 ### Phase 11 (part 4): ISO packaging — the installer becomes a real, distributable artifact
 
 **Phase 11 is now complete — all 4 parts done.** Part 4's job: package the installer environment as an actual `.iso` file, the concrete artifact an operator hands to their own hypervisor. Confirmed with the user before writing any code: since this dev LXC has no physical hardware, this part's own completion bar is booting the real `.iso` via QEMU's CD-ROM emulation — a genuinely different, more realistic path than the raw-disk-image testing parts 1–3 used; a real VM/hardware install is the user's own next step.

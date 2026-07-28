@@ -37,13 +37,24 @@ extern char **environ;
 #define SFDISK_BIN "/usr/sbin/sfdisk"
 #define MKFS_VFAT_BIN "/usr/sbin/mkfs.vfat"
 #define MKFS_EXT4_BIN "/usr/sbin/mkfs.ext4"
+#define MOKUTIL_BIN "/usr/bin/mokutil"
 
 /* Bundled inside this installer's own bootable environment -- see
  * image/src/mkinstalleriso.c for how they get staged there. The kernel
  * lives under /boot/ rather than /payload/ since it serves double duty:
  * the same file GRUB itself boots as this installer's own kernel, and
- * the file copied here onto the target disk's ESP -- one copy, not two. */
-#define SYSTEMD_BOOT_EFI_SRC "/payload/systemd-bootx64.efi"
+ * the file copied here onto the target disk's ESP -- one copy, not two.
+ *
+ * The target ESP's Secure Boot chain (see populate_esp() and ADR-0015):
+ * shim (Microsoft-signed, trusted with zero enrollment) chain-loads
+ * whatever it finds at its own hardcoded "grubx64.efi" lookup -- here,
+ * systemd-boot itself, Kanxeo-signed and deliberately kept under that
+ * name. mmx64.efi is MokManager (Debian-signed), auto-invoked by shim
+ * once enroll_signing_key() below stages a pending enrollment request. */
+#define SHIM_EFI_SRC "/payload/kanxeo-shim.efi"
+#define MOKMANAGER_EFI_SRC "/payload/kanxeo-mm.efi"
+#define SIGNED_SYSTEMD_BOOT_SRC "/payload/kanxeo-grubx64.efi"
+#define SIGNING_CERT_SRC "/payload/kanxeo-signing.cer"
 #define BZIMAGE_SRC "/boot/kanxeo-bzImage"
 #define ROOT_SQUASHFS_SRC "/payload/kanxeo-root.squashfs"
 
@@ -274,7 +285,13 @@ static int populate_esp(const char *esp_mount)
 	if (ensure_dir(path) != 0)
 		return -1;
 	snprintf(path, sizeof(path), "%s/EFI/BOOT/BOOTX64.EFI", esp_mount);
-	if (copy_file(SYSTEMD_BOOT_EFI_SRC, path) != 0)
+	if (copy_file(SHIM_EFI_SRC, path) != 0)
+		return -1;
+	snprintf(path, sizeof(path), "%s/EFI/BOOT/grubx64.efi", esp_mount);
+	if (copy_file(SIGNED_SYSTEMD_BOOT_SRC, path) != 0)
+		return -1;
+	snprintf(path, sizeof(path), "%s/EFI/BOOT/mmx64.efi", esp_mount);
+	if (copy_file(MOKMANAGER_EFI_SRC, path) != 0)
 		return -1;
 
 	snprintf(path, sizeof(path), "%s/kanxeo-bzImage", esp_mount);
@@ -303,6 +320,43 @@ static int populate_esp(const char *esp_mount)
 		return -1;
 
 	return 0;
+}
+
+/*
+ * Stages a MOK (Machine Owner Key) enrollment request for the Kanxeo
+ * signing key -- shim can already run the signed systemd-boot/kernel
+ * chain populate_esp() just wrote, but only once that key is actually
+ * trusted. mokutil --import writes the pending request into the
+ * firmware's own persistent NVRAM (via efivarfs) and prompts here for a
+ * one-time password; at the *installed* system's very next boot, shim
+ * detects the pending request and auto-invokes MokManager (already
+ * trusted, no enrollment of its own needed), which prompts once more
+ * for that same password to confirm. After that single confirmation,
+ * Secure Boot needs no further exceptions on this machine (ADR-0015) --
+ * this installer's own boot stays unsigned/unenforced regardless, so
+ * this step doesn't gate anything about the install itself completing.
+ */
+static int enroll_signing_key(void)
+{
+	if (mkdir("/sys/firmware/efi/efivars", 0755) != 0 && errno != EEXIST) {
+		perror("/sys/firmware/efi/efivars");
+		return -1;
+	}
+	if (mount("efivarfs", "/sys/firmware/efi/efivars", "efivarfs", 0, NULL) != 0) {
+		perror("mount efivarfs");
+		return -1;
+	}
+
+	printf("kanxeo-install: enrolling the Kanxeo Secure Boot signing key -- choose a "
+	       "temporary password now; you'll need it once more at the very next reboot, in "
+	       "the blue MokManager screen, to confirm it\n");
+	fflush(stdout);
+
+	{
+		char *argv[] = { (char *)MOKUTIL_BIN, "--import", (char *)SIGNING_CERT_SRC, NULL };
+
+		return run_subprocess(MOKUTIL_BIN, argv);
+	}
 }
 
 /*
@@ -430,6 +484,9 @@ int main(int argc, char **argv)
 		perror("umount esp");
 		return 1;
 	}
+
+	if (enroll_signing_key() != 0)
+		return 1;
 
 	if (write_whole_file_to_device(ROOT_SQUASHFS_SRC, root_a_dev) != 0)
 		return 1;
