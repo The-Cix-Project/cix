@@ -85,6 +85,34 @@
 #define TEST_PREFIX 24
 #define TEST_GATEWAY "192.168.50.1"
 
+/* Blank disk, then the same 5-partition GPT layout a real cfdisk
+ * session would leave -- shared by the real GRUB-path smoke test and
+ * the main Secure Boot flow below, each against its own disk file. */
+static int create_target_disk(const char *path)
+{
+	int fd = open(path, O_CREAT | O_WRONLY, 0644);
+	char script[400];
+	char *sfdisk_argv[] = { (char *)SFDISK_BIN, (char *)path, NULL };
+
+	if (fd < 0 || ftruncate(fd, TARGET_DISK_SIZE_BYTES) != 0) {
+		perror(path);
+		if (fd >= 0)
+			close(fd);
+		return -1;
+	}
+	close(fd);
+
+	snprintf(script, sizeof(script),
+	         "label: gpt\n"
+	         "size=%dMiB, type=uefi, name=\"kanxeo-esp\"\n"
+	         "size=%dMiB, type=linux, name=\"kanxeo-root-a\"\n"
+	         "size=%dMiB, type=linux, name=\"kanxeo-root-b\"\n"
+	         "size=%dMiB, type=linux, name=\"kanxeo-config\"\n"
+	         "type=linux, name=\"kanxeo-containers\"\n",
+	         TARGET_ESP_SIZE_MIB, TARGET_ROOT_SIZE_MIB, TARGET_ROOT_SIZE_MIB, TARGET_CONFIG_SIZE_MIB);
+	return run_subprocess_stdin(SFDISK_BIN, sfdisk_argv, script);
+}
+
 int main(void)
 {
 	char workdir[] = "/tmp/kanxeo_test_installer_XXXXXX";
@@ -139,41 +167,68 @@ int main(void)
 			return 1;
 	}
 
-	/* 3. Target disk: blank, then pre-partitioned via sfdisk exactly
-	 * the way a real cfdisk session would have left it -- kanxeo-install
-	 * doesn't know or care which one happened. */
+	/* 3. GRUB-path smoke test: boot the actual .iso the way a human
+	 * operator really experiences it -- through its own grub-mkrescue-
+	 * built BOOTX64.EFI and grub.cfg via a normal -cdrom attach, not the
+	 * direct_kernel bypass session 1 below uses to solve a different,
+	 * Secure-Boot-specific problem. Secure Boot off (a throwaway, never-
+	 * enrolled vars copy), matching ADR-0015: the installer media itself
+	 * is never signed. This is the ONLY place this test suite exercises
+	 * the real GRUB menu/config path at all -- it's what would have
+	 * caught a genuine `timeout=0` bug (the menu booted instantly, with
+	 * no visible window to press 'e' and edit --disk=/--ip=/...) that
+	 * shipped and only surfaced during a real operator's own install.
+	 * Asserts the menu text actually renders and a countdown genuinely
+	 * runs (not an instant, uninterruptible auto-boot) before the
+	 * default entry boots and completes -- a throwaway disk, since this
+	 * is only proving the boot *mechanism*, not re-verifying what
+	 * kanxeo-install itself writes (already covered by session 1). */
 	{
-		int fd = open(target_disk_img, O_CREAT | O_WRONLY, 0644);
+		char grub_smoke_disk[600], grub_smoke_vars[600];
+		struct qemu_boot_opts opts;
+		struct qemu_scripted_input mok_password[] = {
+			{ "input password: ", MOK_PASSWORD "\n" },
+			{ "input password again: ", MOK_PASSWORD "\n" },
+		};
 
-		if (fd < 0 || ftruncate(fd, TARGET_DISK_SIZE_BYTES) != 0) {
-			perror(target_disk_img);
-			if (fd >= 0)
-				close(fd);
+		snprintf(grub_smoke_disk, sizeof(grub_smoke_disk), "%s/grub_smoke_disk.img", workdir);
+		snprintf(grub_smoke_vars, sizeof(grub_smoke_vars), "%s/grub_smoke_vars.fd", workdir);
+		if (create_target_disk(grub_smoke_disk) != 0)
+			return 1;
+		if (test_image_fixture_copy_file("/usr/share/OVMF/OVMF_VARS_4M.fd", grub_smoke_vars) != 0)
+			return 1;
+
+		memset(&opts, 0, sizeof(opts));
+		opts.disk_img = installer_iso;
+		opts.disk_img_is_cdrom = 1;
+		opts.disk_img2 = grub_smoke_disk;
+		opts.ovmf_vars = grub_smoke_vars;
+		opts.success_marker = INSTALL_SUCCESS_MARKER;
+		opts.timeout_seconds = INSTALL_TIMEOUT_SECONDS;
+		opts.scripted_input = mok_password;
+		opts.n_scripted_input = 2;
+		outcome = qemu_boot_capture(&opts, captured, sizeof(captured));
+		if (outcome != QEMU_BOOT_SUCCESS || strstr(captured, "Kanxeo Install") == NULL ||
+		    strstr(captured, "will be executed automatically") == NULL) {
+			fprintf(stderr,
+			        "real GRUB-path boot did not show a menu/countdown or complete "
+			        "(outcome=%d)\n",
+			        (int)outcome);
+			printf("INSTALLER RESULT: FAIL\n");
 			return 1;
 		}
-		close(fd);
 	}
-	{
-		char script[400];
-		char *sfdisk_argv[] = { (char *)SFDISK_BIN, target_disk_img, NULL };
 
-		snprintf(script, sizeof(script),
-		         "label: gpt\n"
-		         "size=%dMiB, type=uefi, name=\"kanxeo-esp\"\n"
-		         "size=%dMiB, type=linux, name=\"kanxeo-root-a\"\n"
-		         "size=%dMiB, type=linux, name=\"kanxeo-root-b\"\n"
-		         "size=%dMiB, type=linux, name=\"kanxeo-config\"\n"
-		         "type=linux, name=\"kanxeo-containers\"\n",
-		         TARGET_ESP_SIZE_MIB, TARGET_ROOT_SIZE_MIB, TARGET_ROOT_SIZE_MIB,
-		         TARGET_CONFIG_SIZE_MIB);
-		if (run_subprocess_stdin(SFDISK_BIN, sfdisk_argv, script) != 0)
-			return 1;
-	}
+	/* 4. Target disk: blank, then pre-partitioned via sfdisk exactly
+	 * the way a real cfdisk session would have left it -- kanxeo-install
+	 * doesn't know or care which one happened. */
+	if (create_target_disk(target_disk_img) != 0)
+		return 1;
 
 	if (test_image_fixture_copy_file(OVMF_VARS_TEMPLATE, ovmf_vars) != 0)
 		return 1;
 
-	/* 4. Session 1: boot the real .iso via -cdrom against the target
+	/* 5. Session 1: boot the real .iso via -cdrom against the target
 	 * disk. No NIC needed -- formatting/writing doesn't touch the
 	 * network. A completed install ends with init exiting -- an
 	 * expected, harmless "Attempted to kill init!" panic, not a
@@ -227,7 +282,7 @@ int main(void)
 		return 1;
 	}
 
-	/* 5. Verify from the host side what the installer actually wrote --
+	/* 6. Verify from the host side what the installer actually wrote --
 	 * not just that it printed "success". */
 	{
 		char *dump_argv[] = { (char *)SFDISK_BIN, "-d", target_disk_img, NULL };
@@ -329,7 +384,7 @@ int main(void)
 		return 1;
 	}
 
-	/* 6. Session 2: MOK-confirm boot -- the target disk, for real, with
+	/* 7. Session 2: MOK-confirm boot -- the target disk, for real, with
 	 * Secure Boot actually enforced (secure_boot=1, same ovmf_vars as
 	 * session 1, so the real Microsoft certs baked into the .ms.fd
 	 * template and the pending MOK request enroll_signing_key() staged
@@ -382,7 +437,7 @@ int main(void)
 		return 1;
 	}
 
-	/* 7. Session 3: the actual end-to-end proof -- boot the target disk
+	/* 8. Session 3: the actual end-to-end proof -- boot the target disk
 	 * alone, for real, with Secure Boot still enforced (secure_boot=1)
 	 * and a real NIC attached this time, and confirm it comes up as a
 	 * genuinely working kanxeod that actually applied the static IP
