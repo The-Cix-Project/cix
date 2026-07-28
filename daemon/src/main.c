@@ -26,6 +26,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/mount.h>
+#include <sys/reboot.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -80,10 +81,23 @@ struct conn {
 	pid_t pkg_fetch_pid;          /* CONN_PKG_FETCH only */
 };
 
+/*
+ * What to do once the event loop actually stops -- reachable via
+ * SIGTERM/SIGINT (unchanged, defaults to a graceful poweroff rather
+ * than the bare `return 0` that, as PID 1, the kernel treats as "init
+ * exited" and panics on) or the new /v1/system/{shutdown,reboot}
+ * endpoints below. Only ever acted on when running --init-mode (real
+ * PID 1) -- see main()'s own post-loop handling; a dev/test kanxeod
+ * (no --init-mode, e.g. every test/*.c invocation) just exits normally
+ * regardless of this value, exactly as it always has.
+ */
+enum shutdown_action { SHUTDOWN_ACTION_POWEROFF, SHUTDOWN_ACTION_REBOOT };
+
 static int g_epfd;
 static struct conn g_listener_conn;
 static const char *g_web_root;
 static volatile sig_atomic_t g_stop;
+static volatile sig_atomic_t g_shutdown_action = SHUTDOWN_ACTION_POWEROFF;
 
 static void on_signal(int sig)
 {
@@ -371,6 +385,42 @@ static void handle_health(int fd)
 	jw_str(&w, "ok");
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/* Both just record what main()'s own post-loop cleanup should do once
+ * the event loop actually stops (g_stop=1) -- responding here, before
+ * that happens, so the client sees a real reply rather than the
+ * connection simply dropping mid-shutdown. */
+static void handle_shutdown(int fd)
+{
+	struct json_writer w;
+
+	g_shutdown_action = SHUTDOWN_ACTION_POWEROFF;
+	g_stop = 1;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "status");
+	jw_str(&w, "shutting down");
+	jw_obj_close(&w);
+	respond_json(fd, 202, "Accepted", &w);
+	jw_free(&w);
+}
+
+static void handle_reboot(int fd)
+{
+	struct json_writer w;
+
+	g_shutdown_action = SHUTDOWN_ACTION_REBOOT;
+	g_stop = 1;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "status");
+	jw_str(&w, "rebooting");
+	jw_obj_close(&w);
+	respond_json(fd, 202, "Accepted", &w);
 	jw_free(&w);
 }
 
@@ -1458,6 +1508,14 @@ static void dispatch(int fd, const struct http_request *req)
 		handle_health(fd);
 		return;
 	}
+	if (strcmp(req->method, "POST") == 0 && strcmp(req->path, "/v1/system/shutdown") == 0) {
+		handle_shutdown(fd);
+		return;
+	}
+	if (strcmp(req->method, "POST") == 0 && strcmp(req->path, "/v1/system/reboot") == 0) {
+		handle_reboot(fd);
+		return;
+	}
 	if (strcmp(req->path, "/v1/containers") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_list(fd);
@@ -1948,5 +2006,23 @@ int main(int argc, char **argv)
 	close(listen_fd);
 	close(g_epfd);
 	printf("kanxeod shutting down\n");
+	fflush(stdout);
+
+	/* As real PID 1 (--init-mode), a bare `return 0` here is exactly
+	 * "init exited" -- the kernel panics unconditionally regardless of
+	 * how gracefully kanxeod itself shut down first. reboot(2) is the
+	 * actual, correct way for an init process to end its own life; a
+	 * dev/test invocation (no --init-mode, e.g. every test/*.c fork+
+	 * execve) is never PID 1 and just returns normally, exactly as it
+	 * always has -- reboot(2) is never reachable from there regardless
+	 * of what set g_shutdown_action (SIGTERM/SIGINT default to
+	 * SHUTDOWN_ACTION_POWEROFF; the same tests already send kanxeod
+	 * SIGTERM to end sessions today). */
+	if (init_mode) {
+		sync();
+		reboot(g_shutdown_action == SHUTDOWN_ACTION_REBOOT ? RB_AUTOBOOT : RB_POWER_OFF);
+		perror("reboot");
+		return 1;
+	}
 	return 0;
 }

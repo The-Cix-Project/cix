@@ -23,6 +23,10 @@ static void print_usage(FILE *out)
 	        "\n"
 	        "commands:\n"
 	        "  health\n"
+	        "  shutdown  -- stop kanxeod; powers off the host too when it's running as\n"
+	        "               real PID 1 (an installed system) -- a dev/interactive kanxeod\n"
+	        "               just exits, same as it always has on SIGTERM\n"
+	        "  reboot    -- stop kanxeod; restarts the host too when running as PID 1\n"
 	        "  ps\n"
 	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] [--network=NAME ...]\n"
 	        "      [--ip-forward] [--dns-register] [--pki-issue] [--pki-cert-dir=PATH]\n"
@@ -329,6 +333,28 @@ static int cmd_health(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/health", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_health);
+}
+
+static int cmd_shutdown(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "POST", "/v1/system/shutdown", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_health);
+}
+
+static int cmd_reboot(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "POST", "/v1/system/reboot", NULL, &r) != 0) {
 		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
 		return 1;
 	}
@@ -1305,6 +1331,10 @@ int main(int argc, char **argv)
 
 	if (strcmp(cmd, "health") == 0)
 		return cmd_health(&client, json_mode);
+	if (strcmp(cmd, "shutdown") == 0)
+		return cmd_shutdown(&client, json_mode);
+	if (strcmp(cmd, "reboot") == 0)
+		return cmd_reboot(&client, json_mode);
 	if (strcmp(cmd, "ps") == 0)
 		return cmd_ps(&client, json_mode);
 	if (strcmp(cmd, "run") == 0)

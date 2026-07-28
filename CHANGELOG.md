@@ -4,6 +4,18 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 11 (part 6): graceful shutdown/reboot for the installed system
+
+Asked directly, once a real install was up and reachable: "how do I start/stop the OS when it's running live?" The honest answer was there was no way to do that cleanly — `kanxeod` as PID 1 returning from `main()` (its existing `SIGTERM`/`SIGINT` handling) is exactly "init exited," which the kernel panics on unconditionally, the same failure already accepted as harmless for the one-time `kanxeo-install` run but not acceptable for a live system. See ADR-0016.
+
+#### Added
+- `daemon/src/main.c`: calls the real `reboot(2)` (`RB_POWER_OFF`/`RB_AUTOBOOT`) once the event loop stops, gated strictly behind `--init-mode` (real PID 1) — a dev/test `kanxeod` (every `test/*.c` invocation, `sudo build/kanxeod`) never reaches it, unchanged. New `POST /v1/system/shutdown` and `/v1/system/reboot` (API-first per ADR-0005); `SIGTERM`/`SIGINT` now default to a graceful poweroff instead of silently panicking under `--init-mode`.
+- `cli/src/main.c`: `kanxeoctl shutdown` / `kanxeoctl reboot`.
+- `docs/api/openapi.yaml`: the two new endpoints.
+- `docs/adr/0016-reboot-syscall-for-kanxeod-shutdown.md`.
+
+The core mechanism (`reboot(2)` from genuine PID 1) was verified directly: a minimal standalone init booted on this exact kernel build confirmed both `RB_POWER_OFF` ("reboot: Power down") and `RB_AUTOBOOT` ("reboot: Restarting system") complete cleanly, no panic. The *full* REST-triggered path couldn't be exercised end-to-end by this project's own QEMU test harness — SLIRP (`-netdev user`) doesn't route host-to-guest traffic to a guest's own self-configured static IP, only to its own DHCP-assigned one, which doesn't match `kanxeod`'s `--bind=<ip>` addressing. A test-harness limitation, not a real-world one (bridged networking, e.g. Proxmox, has no equivalent restriction) — see ADR-0016's own Consequences for the honest boundary. Zero warnings; full pre-existing 13-binary non-boot suite plus `test_boot`/`test_boot_ab` re-verified with no regression.
+
 ### Phase 11 (part 5 follow-up 4): web dashboard 404'd on every installed system
 
 Found live: `kanxeod` reachable, `kanxeoctl` working, but the browser dashboard returned "Not Found" on every request.

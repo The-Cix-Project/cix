@@ -30,6 +30,46 @@ paths:
                     type: string
                     enum: [ok]
 
+  /system/shutdown:
+    post:
+      summary: >
+        Stop kanxeod. When running as real PID 1 (--init-mode, i.e. an
+        installed system), also powers off the host via reboot(2) once
+        the event loop has stopped cleanly -- the only correct way for
+        an init process to end its own life without the kernel treating
+        it as "init exited" and panicking. A dev/interactive kanxeod
+        (no --init-mode) just exits, same as it always has on SIGTERM.
+      operationId: shutdownSystem
+      responses:
+        "202":
+          description: Shutdown accepted; the connection may drop before a reply completes
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: ["shutting down"]
+
+  /system/reboot:
+    post:
+      summary: Like /system/shutdown, but restarts the host instead of powering it off
+      operationId: rebootSystem
+      responses:
+        "202":
+          description: Reboot accepted; the connection may drop before a reply completes
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [rebooting]
+
   /containers:
     get:
       summary: List all containers known to this daemon
