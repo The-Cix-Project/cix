@@ -1,0 +1,25 @@
+# 0023 — the C runtime is seeded into every image, not only "base"
+
+## Status
+
+Accepted
+
+## Context
+
+ADR-0019 seeds a package's C runtime dependencies (`ld.so`, `libc.so.6`, `libtinfo.so.6`) into `images/base/rootfs` at real system install time only, via `image/src/mkinstalleriso.c`'s payload and `image/src/kanxeo-install.c`'s containers-partition write. That ADR's own Consequences section named the gap directly: "a non-default image needs it re-seeded manually until that's generalized." With per-image `pkg install` shipped (ADR-0020), that gap became concrete — a `router` image with `bird`/`bash`/`iproute2` installed into it has no way to execve() any of them.
+
+Investigating where a *runtime* (not install-time) seeding step could source these files from surfaced a related, previously unexamined risk: `pkg_bootstrap_build_image()` already established the precedent of "copy what's needed from wherever kanxeod is currently running" (`/usr/{include,lib,lib64,bin,libexec}`, for the build toolchain) — but on a real installed system, kanxeod runs from `image/src/mkbootroot.c`'s own minimal control-plane squashfs, which, before this change, only staged `ld-linux-x86-64.so.2`/`libc.so.6` (via `test_image_fixture_build()`), not `libtinfo.so.6`. A new per-image seeding step built on that same "copy from the running host" precedent would have silently found nothing to copy for `libtinfo.so.6` on any real deploy — working here only because this dev sandbox happens to have a full, rich `/usr` of its own (a coincidence of the sandbox, not a property of Kanxeo's own architecture). Confirmed directly by reading `mkbootroot.c`'s actual staged file list, not assumed.
+
+## Decision
+
+`image/src/mkbootroot.c` now also stages `/usr/lib/x86_64-linux-gnu/libtinfo.so.6` into the control-plane squashfs, via the same `test_image_fixture_add_lib()` helper `mkinstalleriso.c` already uses for its own closure — kanxeod itself never needs this library, it's staged purely so the *running* system's own root reliably has it available at a real, well-known host path for the next step to copy from, on any real deploy, not just this sandbox.
+
+`daemon/include/pkg.h`/`daemon/src/pkg.c` gain a new public `pkg_seed_image_runtime(const char *image)`, copying the same three files from those same fixed host paths into `<image>/rootfs/{lib64,lib/x86_64-linux-gnu}/` — idempotent (skips a file already staged) and tolerant of a missing *source* file (skip, not fatal, the same "not present on this host" precedent `pkg_bootstrap_build_image()` already sets); only a real I/O failure (mkdir/copy) returns an error. Called from `pkg_build_completed()` alongside the existing `persist_mkdir_p(target_rootfs)`, for whatever image a job is merging into — `base` included, harmlessly redundant there since ADR-0019's install-time seeding already covers it.
+
+This is a genuine *addition*, not a supersession of ADR-0019: `base`'s own install-time mechanism (sourced from the ISO's *build* machine, at install time, before the daemon has ever run) is untouched, still correct, still exactly what `test/test_installer.c` verifies. The new mechanism is the direct follow-up ADR-0019 itself predicted — closing the gap for every *other* image, sourced from wherever the daemon is actually running, at the moment it's actually needed.
+
+## Consequences
+
+- Verified: `test/test_pkg.c`'s existing per-image scenario (installs `greeter` into a freshly created `router` image) now also confirms all three runtime files land in `router`'s own rootfs after that first install — not just `base`'s. 3 consecutive clean runs. `kanxeo-install.c`/`mkinstalleriso.c` are byte-for-byte untouched by this change, so `base`'s own install-time path carries no regression risk; a full QEMU-level re-verification via `test/test_installer.c` was not run this session (no kernel image cached, and the change never touches that code path at all) — a known, low-risk, explicitly-noted gap rather than a silent skip.
+- Honest, known caveat: on a real deploy whose running root genuinely lacks these three files for some other reason (a stripped-down build, a corrupted install), a non-`base` image's runtime seeding silently no-ops per the "tolerant of missing source" rule above, exactly like `pkg_bootstrap_build_image()`'s own toolchain staging already can. Not solved here — this ADR closes the specific, confirmed `mkbootroot.c` gap that would have made this the *common* case on every real deploy, not the exception.
+- `pkg_bootstrap_build_image()`'s own toolchain sourcing (a full `/usr/{include,lib,lib64,bin,libexec}` copy, needed for `pkg install` to build anything at all, not just to seed a runtime) has the same "copy from wherever kanxeod is running" shape and was not extended or fixed here — a real installed system's own minimal squashfs root likely still lacks a full build toolchain for `pkg bootstrap` to copy from at all. Confirmed as a real, pre-existing, separate gap while investigating this one; explicitly out of scope for this change, not silently assumed solved.

@@ -226,6 +226,106 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /images:
+    get:
+      summary: List every image known to this daemon (each a directory under images_dir with its own rootfs/)
+      operationId: listImages
+      responses:
+        "200":
+          description: Image list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [images]
+                properties:
+                  images:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Image"
+    post:
+      summary: >
+        Creates an empty image (just a rootfs/ directory) and immediately seeds its
+        C runtime (ld.so/libc.so.6/libtinfo.so.6, see ADR-0023) so it's usable right
+        away -- POST /pkg/install's own image field would otherwise only create one
+        implicitly, on its first successful install into a name never seen before.
+      operationId: createImage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImageCreateRequest"
+      responses:
+        "201":
+          description: Image created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Image"
+        "400":
+          description: Invalid name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: An image with this name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /images/{name}:
+    get:
+      summary: Inspect one image
+      operationId: getImage
+      parameters:
+        - $ref: "#/components/parameters/ImageName"
+      responses:
+        "200":
+          description: Image detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Image"
+        "404":
+          description: No image with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: >
+        Removes an image's entire rootfs directory. Refused (400) for "base" itself
+        (every container's own default, never removable); refused (409) if a running
+        container still references it, or if any package (see GET /pkg) is still
+        tracked against it -- remove those first.
+      operationId: deleteImage
+      parameters:
+        - $ref: "#/components/parameters/ImageName"
+      responses:
+        "204":
+          description: Removed
+        "400":
+          description: This is the base image, which cannot be removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No image with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Still referenced by a running container, or still has packages installed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /dns/records:
     get:
       summary: List all DNS records known to this daemon
@@ -696,6 +796,14 @@ components:
         type: string
         pattern: "^[A-Za-z0-9_-]{1,15}$"
 
+    ImageName:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9_-]+$"
+
     DnsRecordName:
       name: name
       in: path
@@ -920,10 +1028,13 @@ components:
 
     Container:
       type: object
-      required: [name, status, pid]
+      required: [name, image, status, pid]
       properties:
         name:
           type: string
+        image:
+          type: string
+          description: The image this container's rootfs was built from (see GET /images).
         status:
           type: string
           enum: [running, exited]
@@ -1088,6 +1199,28 @@ components:
         gateway:
           type: string
           description: Derived as subnet's first host address; never independently settable.
+
+    ImageCreateRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: >
+            Unique image name. Used verbatim as the directory name under
+            /var/lib/kanxeo/images/, so it is restricted to [A-Za-z0-9_-] --
+            the same rule pkg_install's own image field already follows.
+
+    Image:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: >
+            Deliberately minimal -- a client wanting per-image package
+            detail already has it via GET /pkg's own "image" field per
+            entry, not duplicated here.
 
     DnsRecordCreateRequest:
       type: object

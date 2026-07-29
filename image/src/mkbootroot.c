@@ -146,6 +146,18 @@ int main(int argc, char **argv)
 		return 1;
 	if (test_image_fixture_build(image_root, kanxeod_bin, "kanxeod") != 0)
 		return 1;
+	/*
+	 * kanxeod itself never needs libtinfo -- this is staged purely so
+	 * the RUNNING system's own root reliably has it available at its
+	 * real, well-known host path, the source pkg_seed_image_runtime()
+	 * (daemon/src/pkg.c) copies from when seeding a container image's
+	 * own C runtime. Without this, that mechanism would only ever find
+	 * ld.so/libc.so.6 (already staged above) on a real installed
+	 * system -- this dev sandbox's own rich /usr made that gap easy to
+	 * miss (see ADR-0023).
+	 */
+	if (test_image_fixture_add_lib(image_root, "/usr/lib/x86_64-linux-gnu/libtinfo.so.6") != 0)
+		return 1;
 
 	/* kanxeod's DEFAULT_WEB_ROOT is "web", resolved relative to its own
 	 * CWD -- PID 1 never chdir()s anywhere, so that's this squashfs

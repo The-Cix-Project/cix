@@ -25,7 +25,8 @@ struct registry_entry *registry_find(const char *name)
 	return NULL;
 }
 
-enum registry_error registry_create(const char *name, const struct container_spec *spec,
+enum registry_error registry_create(const char *name, const char *image,
+                                     const struct container_spec *spec,
                                      const struct registry_network_attachment *nets, int net_count,
                                      int ip_forward,
                                      const struct registry_device_attachment *devices,
@@ -52,6 +53,8 @@ enum registry_error registry_create(const char *name, const struct container_spe
 
 	memset(e->name, 0, sizeof(e->name));
 	strncpy(e->name, name, sizeof(e->name) - 1);
+	memset(e->image, 0, sizeof(e->image));
+	strncpy(e->image, image, sizeof(e->image) - 1);
 	e->running = 1;
 	e->exit_status = 0;
 	e->in_use = 1;
@@ -85,6 +88,17 @@ int registry_network_in_use(const char *network_name)
 			if (strcmp(g_entries[i].nets[j].name, network_name) == 0)
 				return 1;
 		}
+	}
+	return 0;
+}
+
+int registry_image_in_use(const char *image)
+{
+	int i;
+
+	for (i = 0; i < REGISTRY_MAX_CONTAINERS; i++) {
+		if (g_entries[i].in_use && strcmp(g_entries[i].image, image) == 0)
+			return 1;
 	}
 	return 0;
 }
@@ -172,6 +186,8 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 	jw_obj_open(w);
 	jw_key(w, "name");
 	jw_str(w, entry->name);
+	jw_key(w, "image");
+	jw_str(w, entry->image);
 	jw_key(w, "status");
 	jw_str(w, entry->running ? "running" : "exited");
 	jw_key(w, "pid");

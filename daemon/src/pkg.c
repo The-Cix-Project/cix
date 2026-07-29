@@ -820,6 +820,44 @@ enum pkg_error pkg_bootstrap_build_image(void)
 	return PKG_OK;
 }
 
+enum pkg_error pkg_seed_image_runtime(const char *image)
+{
+	static const struct {
+		const char *src;
+		const char *rel_dst;
+	} runtime_libs[] = {
+		{ "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", "lib64/ld-linux-x86-64.so.2" },
+		{ "/usr/lib/x86_64-linux-gnu/libc.so.6", "lib/x86_64-linux-gnu/libc.so.6" },
+		{ "/usr/lib/x86_64-linux-gnu/libtinfo.so.6", "lib/x86_64-linux-gnu/libtinfo.so.6" },
+	};
+	char target_rootfs[PATH_MAX];
+	size_t i;
+
+	image_rootfs_path(image, target_rootfs, sizeof(target_rootfs));
+
+	for (i = 0; i < sizeof(runtime_libs) / sizeof(runtime_libs[0]); i++) {
+		char dst[PATH_MAX], dst_parent[PATH_MAX], *slash;
+		struct stat src_st, dst_st;
+
+		snprintf(dst, sizeof(dst), "%s/%s", target_rootfs, runtime_libs[i].rel_dst);
+		if (stat(dst, &dst_st) == 0)
+			continue; /* already staged -- idempotent */
+		if (stat(runtime_libs[i].src, &src_st) != 0)
+			continue; /* not present on this host -- skip, not fatal, same
+			           * precedent pkg_bootstrap_build_image() already sets */
+
+		snprintf(dst_parent, sizeof(dst_parent), "%s", dst);
+		slash = strrchr(dst_parent, '/');
+		if (slash != NULL)
+			*slash = '\0';
+
+		if (persist_mkdir_p(dst_parent) != 0 || copy_file_simple(runtime_libs[i].src, dst) != 0)
+			return PKG_ERR_PERSIST_FAILED;
+	}
+
+	return PKG_OK;
+}
+
 void pkg_write_json_recipes(struct json_writer *w)
 {
 	DIR *d;
@@ -1244,7 +1282,9 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		char target_rootfs[PATH_MAX];
 
 		image_rootfs_path(g_current_job_image, target_rootfs, sizeof(target_rootfs));
-		if (persist_mkdir_p(target_rootfs) != 0 || merge_tree(dest_dir, target_rootfs, "", e) != 0) {
+		if (persist_mkdir_p(target_rootfs) != 0 ||
+		    pkg_seed_image_runtime(g_current_job_image) != PKG_OK ||
+		    merge_tree(dest_dir, target_rootfs, "", e) != 0) {
 			e->state = PKG_STATE_FAILED;
 			snprintf(e->error, sizeof(e->error),
 			         "failed to merge installed files into the target image");
@@ -1283,6 +1323,18 @@ void pkg_write_json_list(struct json_writer *w)
 			write_pkg_json(&g_packages[i], w);
 	}
 	jw_arr_close(w);
+}
+
+int pkg_image_has_packages(const char *image)
+{
+	const char *norm_image = normalize_image(image);
+	int i;
+
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		if (g_packages[i].in_use && strcmp(g_packages[i].image, norm_image) == 0)
+			return 1;
+	}
+	return 0;
 }
 
 enum pkg_error pkg_get_one(const char *name, const char *image, struct json_writer *w)

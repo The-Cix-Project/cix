@@ -7,6 +7,10 @@
 
 #define REGISTRY_MAX_CONTAINERS 256
 #define REGISTRY_NAME_MAX 64
+/* Matches daemon's PKG_IMAGE_NAME_MAX -- see daemon/include/pkg.h. An
+ * image name is not a distinct kind of identifier, just a directory
+ * name, the same reasoning that constant's own comment already gives. */
+#define REGISTRY_IMAGE_NAME_MAX 64
 
 enum registry_error {
 	REGISTRY_OK = 0,
@@ -36,6 +40,7 @@ struct registry_device_attachment {
 
 struct registry_entry {
 	char name[REGISTRY_NAME_MAX];
+	char image[REGISTRY_IMAGE_NAME_MAX]; /* the image this container's rootfs was built from */
 	struct container_handle handle;
 	int running;       /* 1 while the container's process is alive */
 	int exit_status;   /* valid once running == 0 */
@@ -82,7 +87,8 @@ void registry_init(void);
  * never reallocated). On REGISTRY_ERR_CREATE_FAILED, errno is set by
  * the failing container_create()/cgroup_create() call.
  */
-enum registry_error registry_create(const char *name, const struct container_spec *spec,
+enum registry_error registry_create(const char *name, const char *image,
+                                     const struct container_spec *spec,
                                      const struct registry_network_attachment *nets, int net_count,
                                      int ip_forward,
                                      const struct registry_device_attachment *devices,
@@ -96,6 +102,13 @@ struct registry_entry *registry_find(const char *name);
  * is still attached to.
  */
 int registry_network_in_use(const char *network_name);
+
+/*
+ * True if any in-use entry currently reports image as the image its
+ * rootfs was built from -- used by image_delete() (daemon/src/image.c)
+ * to refuse removing an image a running container still references.
+ */
+int registry_image_in_use(const char *image);
 
 /*
  * Scans in-use entries' recorded IPs for the first unused host

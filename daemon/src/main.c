@@ -2,6 +2,7 @@
 #include "device.h"
 #include "dns.h"
 #include "http.h"
+#include "image.h"
 #include "json.h"
 #include "linux_compat.h"
 #include "namecheck.h"
@@ -79,6 +80,7 @@
 #define DNS_SERVERS_PREFIX "/v1/dns/servers/"
 #define PKI_CERTS_PREFIX "/v1/pki/certs/"
 #define PKG_PREFIX "/v1/pkg/"
+#define IMAGES_PREFIX "/v1/images/"
 
 enum conn_kind { CONN_LISTENER, CONN_CLIENT, CONN_CONTAINER, CONN_PKG_FETCH };
 
@@ -932,7 +934,7 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	spec.argv = argv_buf;
 	spec.envp = empty_envp;
 
-	rerr = registry_create(name, &spec, net_attachments, net_count, ip_forward,
+	rerr = registry_create(name, image, &spec, net_attachments, net_count, ip_forward,
 	                        device_attachments, device_count, &entry);
 	/*
 	 * Safe to free the JSON tree now even though spec.ns.hostname,
@@ -1123,6 +1125,110 @@ static void handle_network_delete(int fd, const char *name)
 
 	if (nerr != NETWORK_OK) {
 		respond_network_error(fd, nerr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+static void respond_image_error(int fd, enum image_error err)
+{
+	switch (err) {
+	case IMAGE_ERR_INVALID_NAME:
+		respond_error(fd, 400, "Bad Request", "invalid image name");
+		break;
+	case IMAGE_ERR_DUPLICATE:
+		respond_error(fd, 409, "Conflict", "an image with this name already exists");
+		break;
+	case IMAGE_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such image");
+		break;
+	case IMAGE_ERR_PROTECTED:
+		respond_error(fd, 400, "Bad Request", "the base image cannot be removed");
+		break;
+	case IMAGE_ERR_IN_USE:
+		respond_error(fd, 409, "Conflict", "image is still referenced by a running container");
+		break;
+	case IMAGE_ERR_HAS_PACKAGES:
+		respond_error(fd, 409, "Conflict", "image still has packages installed -- remove them first");
+		break;
+	case IMAGE_ERR_CREATE_FAILED:
+	case IMAGE_ERR_DELETE_FAILED:
+	default:
+		respond_error(fd, 500, "Internal Server Error", "image operation failed");
+		break;
+	}
+}
+
+static void handle_image_create(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *name;
+	enum image_error ierr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+
+	name = json_as_string(json_object_get(root, "name"));
+	if (name == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "name missing");
+		return;
+	}
+
+	ierr = image_create(name);
+	if (ierr != IMAGE_OK) {
+		json_free(root);
+		respond_image_error(fd, ierr);
+		return;
+	}
+
+	jw_init(&w);
+	image_write_json_one(name, &w);
+	json_free(root);
+	respond_json(fd, 201, "Created", &w);
+	jw_free(&w);
+}
+
+static void handle_image_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "images");
+	image_write_json_list(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_image_get_one(int fd, const char *name)
+{
+	struct json_writer w;
+	enum image_error ierr;
+
+	jw_init(&w);
+	ierr = image_write_json_one(name, &w);
+	if (ierr != IMAGE_OK) {
+		jw_free(&w);
+		respond_image_error(fd, ierr);
+		return;
+	}
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_image_delete(int fd, const char *name)
+{
+	enum image_error ierr = image_delete(name);
+
+	if (ierr != IMAGE_OK) {
+		respond_image_error(fd, ierr);
 		return;
 	}
 	http_set_blocking(fd);
@@ -1799,6 +1905,29 @@ static void dispatch(int fd, const struct http_request *req)
 			}
 		}
 	}
+	if (strcmp(req->path, "/v1/images") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_image_list(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_image_create(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strncmp(req->path, IMAGES_PREFIX, strlen(IMAGES_PREFIX)) == 0) {
+		name = req->path + strlen(IMAGES_PREFIX);
+		if (name[0] != '\0') {
+			if (strcmp(req->method, "GET") == 0) {
+				handle_image_get_one(fd, name);
+				return;
+			}
+			if (strcmp(req->method, "DELETE") == 0) {
+				handle_image_delete(fd, name);
+				return;
+			}
+		}
+	}
 	if (strcmp(req->path, "/v1/dns/records") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_dns_record_list(fd);
@@ -2035,7 +2164,8 @@ static void handle_pkg_fetch_event(struct conn *cc)
 	if (pkg_fetch_completed(exit_status, &spec)) {
 		struct registry_entry *entry;
 		enum registry_error rerr =
-		    registry_create(PKG_BUILD_CONTAINER_NAME, &spec, NULL, 0, 0, NULL, 0, &entry);
+		    registry_create(PKG_BUILD_CONTAINER_NAME, "pkgbuild", &spec, NULL, 0, 0, NULL, 0,
+		                     &entry);
 
 		if (rerr != REGISTRY_OK)
 			pkg_build_spawn_failed();
@@ -2141,6 +2271,7 @@ int main(int argc, char **argv)
 		return 1;
 	if (pkg_init(PKG_DIR, PKG_INSTALLED_STATE_PATH, CONTAINERS_DIR, IMAGES_DIR) != 0)
 		return 1;
+	image_init(IMAGES_DIR);
 
 	registry_init();
 

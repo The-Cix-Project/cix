@@ -17,6 +17,11 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | POST | `/networks` | Create a network (a real bridge, persisted across restarts) |
 | GET | `/networks/{name}` | Inspect one network |
 | DELETE | `/networks/{name}` | Remove a network (refused if any container is still attached) |
+| GET | `/devices` | List host PCI/USB/net devices discoverable via sysfs, available for passthrough |
+| GET | `/images` | List every image this daemon knows about |
+| POST | `/images` | Create an empty image (runtime pre-seeded, ready for `pkg install`) |
+| GET | `/images/{name}` | Inspect one image |
+| DELETE | `/images/{name}` | Remove an image (refused for `base`, if in use, or if it still has packages) |
 | GET | `/dns/records` | List all DNS records this daemon knows about |
 | POST | `/dns/records` | Create a DNS record (name -> IP, persisted across restarts) |
 | GET | `/dns/records/{name}` | Inspect one DNS record |
@@ -326,7 +331,7 @@ POST /v1/pkg/install
 {"name": "bird", "image": "router"}
 ```
 
-`bird` (and its dependencies, resolved the same way as always) builds into `/var/lib/kanxeo/images/router/rootfs` — containers created with `"image": "base"` never see it. The same package name is tracked independently per image: `bash` installed into both `base` and `router` are two separate entries, each independently upgradable/removable.
+`bird` (and its dependencies, resolved the same way as always) builds into `/var/lib/kanxeo/images/router/rootfs` — containers created with `"image": "base"` never see it. The same package name is tracked independently per image: `bash` installed into both `base` and `router` are two separate entries, each independently upgradable/removable. `router` above doesn't need to exist beforehand — the first install into a name never seen before creates it implicitly; `POST /v1/images {"name": "router"}` creates one explicitly instead, useful when you want an image to exist (and be immediately usable — its C runtime is seeded right away) before installing anything into it. See [Image lifecycle](#endpoints-at-a-glance) in the endpoint table above, or `openapi.yaml`'s own `/images` paths for the full contract.
 
 `GET`/`DELETE` on a non-default image use the compound `{name}@{image}` path form:
 
@@ -337,7 +342,7 @@ DELETE /v1/pkg/bird@router
 
 A bare `GET /v1/pkg/bird` still means `bird@base`. `GET /v1/pkg` (the list) includes every `(name, image)` entry, each with its own `"image"` field.
 
-Note: the C runtime seeded automatically for dynamically-linked binaries (`ld.so`/`libc.so.6`/`libtinfo.so.6`, see ADR-0019) currently targets `base` only — a package built into a non-default image needs that runtime present some other way to actually execve() inside a container using it.
+Note: the C runtime for dynamically-linked binaries (`ld.so`/`libc.so.6`/`libtinfo.so.6`) is seeded automatically into whichever image a package lands in, `base` or otherwise (ADR-0019 for `base` at install time, ADR-0023 generalizes it to every image at first install).
 
 ## Current scope boundaries (v1, deliberate — see ADR-0007)
 

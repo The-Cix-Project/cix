@@ -19,6 +19,7 @@
  */
 #include "httpclient.h"
 #include "json.h"
+#include "rtnetlink.h"
 #include "test_image_fixture.h"
 
 #include <signal.h>
@@ -231,6 +232,93 @@ int main(void)
 		kx_response_free(&r);
 	} else {
 		printf("(no assignable device discovered on this host -- scenario 3 skipped)\n");
+	}
+
+	/*
+	 * 4/5. Phase 12 part 7's "net" bus discovery must never list a
+	 * kernel-created software interface (bridges, veths, kanxeo's own
+	 * managed networks) -- only real, physically-backed hardware. A
+	 * real veth pair (genuinely kernel-backed, not a mock) proves this
+	 * at the REST layer, not just device.c's own unit-level
+	 * /virtual/net/ exclusion: GET /v1/devices must never report it
+	 * under bus:"net", and POST /v1/containers must 400 if asked to
+	 * grant it as an interface anyway -- the same validation path a
+	 * genuinely unknown name would hit. This dev sandbox has no real,
+	 * physically-backed NIC visible in its own root netns at all
+	 * (ADR-0022) -- the positive "grant a real interface, see it
+	 * work" path is not provable here, unlike the device scenario
+	 * above; this is the honest boundary of what's testable without
+	 * real hardware, not a gap silently smoothed over.
+	 */
+	{
+		int fd = rtnl_open();
+		const char *veth_a = "kanxeo-ddtest-a";
+		const char *veth_b = "kanxeo-ddtest-b";
+
+		if (fd < 0) {
+			fprintf(stderr, "FAIL: rtnl_open for veth scenario\n");
+			ok = 0;
+		} else {
+			rtnl_link_delete(fd, veth_a); /* leftover from a prior aborted run, if any */
+			if (rtnl_veth_create(fd, veth_a, veth_b) != 0) {
+				fprintf(stderr, "FAIL: could not create test veth pair\n");
+				ok = 0;
+			} else {
+				char net_id[64];
+
+				snprintf(net_id, sizeof(net_id), "net:%s", veth_b);
+
+				memset(&r, 0, sizeof(r));
+				if (kx_client_request(&client, "GET", "/v1/devices", NULL, &r) != 0 ||
+				    r.status != 200) {
+					fprintf(stderr, "FAIL: GET /v1/devices (veth scenario), status=%d\n",
+					        r.status);
+					ok = 0;
+				} else {
+					const struct json_value *devices = json_object_get(r.json, "devices");
+					size_t i;
+
+					if (devices != NULL && devices->type == JSON_ARRAY) {
+						for (i = 0; i < devices->u.array.count; i++) {
+							if (str_eq(json_str_field(devices->u.array.items[i], "id"),
+							           net_id)) {
+								fprintf(stderr,
+								        "FAIL: GET /v1/devices listed a virtual "
+								        "veth (%s) under bus:net\n",
+								        net_id);
+								ok = 0;
+							}
+						}
+					}
+				}
+				kx_response_free(&r);
+
+				{
+					char body[300];
+
+					snprintf(body, sizeof(body),
+					         "{\"name\":\"devveth\",\"image\":\"devicestest\","
+					         "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"],"
+					         "\"interfaces\":[\"%s\"]}",
+					         veth_b);
+
+					memset(&r, 0, sizeof(r));
+					if (kx_client_request(&client, "POST", "/v1/containers", body, &r) !=
+					        0 ||
+					    r.status != 400) {
+						fprintf(stderr,
+						        "FAIL: interfaces:[virtual veth] expected 400, got "
+						        "%d\n",
+						        r.status);
+						ok = 0;
+					}
+					kx_response_free(&r);
+				}
+
+				rtnl_link_delete(fd, veth_a);
+			}
+			rtnl_close(fd);
+		}
 	}
 
 	if (stop_daemon(daemon_pid) != 0) {

@@ -114,6 +114,24 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
  */
 enum pkg_error pkg_bootstrap_build_image(void);
 
+/*
+ * Copies the C runtime a dynamically-linked package needs to actually
+ * execve() (ld.so, libc.so.6, libtinfo.so.6) into image's own rootfs,
+ * from the same fixed host paths pkg_bootstrap_build_image() and this
+ * project's own test/install-image tooling already use -- image NULL
+ * or "" means PKG_DEFAULT_IMAGE, same convention as every other image
+ * parameter in this header. Idempotent (skips a file already staged)
+ * and tolerant of a missing source file on this particular host (skip,
+ * not fatal -- same precedent pkg_bootstrap_build_image() already
+ * sets); only a real I/O failure (mkdir/copy) returns
+ * PKG_ERR_PERSIST_FAILED. Called automatically by pkg_build_completed()
+ * for whatever image a job is merging into (base included, harmlessly
+ * redundant there since ADR-0019's install-time seeding already covers
+ * it) -- exposed publicly too so an explicit image-creation call can
+ * seed a freshly created, still-empty image immediately. See ADR-0023.
+ */
+enum pkg_error pkg_seed_image_runtime(const char *image);
+
 /* Scans pkg_dir/recipes/*.recipe and writes {name,version,depends}
  * for each one that parses -- metadata only, never sourced/executed. */
 void pkg_write_json_recipes(struct json_writer *w);
@@ -215,5 +233,15 @@ enum pkg_error pkg_get_one(const char *name, const char *image, struct json_writ
  * (name, image) is the one currently mid-build. image NULL or ""
  * means PKG_DEFAULT_IMAGE. */
 enum pkg_error pkg_delete(const char *name, const char *image);
+
+/*
+ * True if any package (installed or in-flight) is currently tracked
+ * against image -- used by image_delete() (daemon/src/image.c) to
+ * refuse removing an image with packages still tracked against it,
+ * avoiding orphaned pkg.c state referencing a deleted rootfs. image
+ * NULL or "" means PKG_DEFAULT_IMAGE, matching every other image
+ * parameter in this header.
+ */
+int pkg_image_has_packages(const char *image);
 
 #endif /* PKG_H */

@@ -37,6 +37,11 @@ static void print_usage(FILE *out)
 	        "  network create --name=NAME --subnet=A.B.C.D --prefix=N\n"
 	        "  network ls\n"
 	        "  network rm NAME\n"
+	        "  image create --name=NAME  -- an empty image, C runtime pre-seeded, ready for\n"
+	        "               pkg install --image=NAME\n"
+	        "  image ls\n"
+	        "  image rm NAME  -- refused for \"base\", for an image still in use, or with\n"
+	        "               packages still installed into it\n"
 	        "  device ls  -- lists host PCI/USB devices discoverable via sysfs, with each\n"
 	        "               one's id (pass to run --device=ID) and whether it's assignable\n"
 	        "  dns record create --name=NAME --ip=A.B.C.D\n"
@@ -193,6 +198,22 @@ static void fmt_network_list(const struct json_value *v)
 		return;
 	for (i = 0; i < networks->u.array.count; i++)
 		fmt_network_line(networks->u.array.items[i]);
+}
+
+static void fmt_image_line(const struct json_value *v)
+{
+	printf("%s\n", json_str_field(v, "name"));
+}
+
+static void fmt_image_list(const struct json_value *v)
+{
+	const struct json_value *images = json_object_get(v, "images");
+	size_t i;
+
+	if (images == NULL || images->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < images->u.array.count; i++)
+		fmt_image_line(images->u.array.items[i]);
 }
 
 static void fmt_device_line(const struct json_value *v)
@@ -827,6 +848,94 @@ static int cmd_network(const struct kx_client *c, int json_mode, int argc, char 
 		return cmd_network_rm(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "kanxeoctl: unknown network subcommand '%s'\n", sub);
+	return 2;
+}
+
+static int cmd_image_create(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *name = NULL;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--name=", 7) == 0)
+			name = argv[i] + 7;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown image create option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	if (name == NULL) {
+		fprintf(stderr, "usage: kanxeoctl image create --name=NAME\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/images", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_image_line);
+}
+
+static int cmd_image_ls(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/images", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_image_list);
+}
+
+static int cmd_image_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: image rm requires an image name\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/images/%s", argv[0]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static int cmd_image(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl image create --name=NAME\n"
+		                "       kanxeoctl image ls\n"
+		                "       kanxeoctl image rm NAME\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "create") == 0)
+		return cmd_image_create(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "ls") == 0)
+		return cmd_image_ls(c, json_mode);
+	if (strcmp(sub, "rm") == 0)
+		return cmd_image_rm(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown image subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -1498,6 +1607,8 @@ int main(int argc, char **argv)
 		return cmd_rm(&client, json_mode, argc - i, argv + i);
 	if (strcmp(cmd, "network") == 0)
 		return cmd_network(&client, json_mode, argc - i, argv + i);
+	if (strcmp(cmd, "image") == 0)
+		return cmd_image(&client, json_mode, argc - i, argv + i);
 	if (strcmp(cmd, "device") == 0)
 		return cmd_device(&client, json_mode, argc - i, argv + i);
 	if (strcmp(cmd, "dns") == 0)

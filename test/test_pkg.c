@@ -592,6 +592,16 @@ int main(void)
 				fprintf(stderr, "FAIL: greeter@router binary missing from router image\n");
 				ok = 0;
 			}
+			/* Phase 12 part A: runtime seeding is no longer base-only --
+			 * a non-default image's first install must land the same C
+			 * runtime greeter itself needs to execve() at all. */
+			if (stat(ROUTER_ROOTFS "/lib64/ld-linux-x86-64.so.2", &st) != 0 ||
+			    stat(ROUTER_ROOTFS "/lib/x86_64-linux-gnu/libc.so.6", &st) != 0 ||
+			    stat(ROUTER_ROOTFS "/lib/x86_64-linux-gnu/libtinfo.so.6", &st) != 0) {
+				fprintf(stderr,
+				        "FAIL: router image missing its own C runtime after first install\n");
+				ok = 0;
+			}
 			if (stat(BASE_ROOTFS "/usr/bin/greeter", &st) == 0) {
 				fprintf(stderr,
 				        "FAIL: greeter@router install leaked into the base image "

@@ -4,6 +4,41 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 12 part 7 follow-up: NIC passthrough negative-path test coverage
+
+This dev sandbox has no real, physically-backed NIC visible in its own root netns (ADR-0022), so the positive "grant a real interface, watch it work" path stays unprovable here. Added what *is* provable without real hardware, confirmed with the user directly rather than left unaddressed.
+
+#### Added
+- `test/test_daemon_devices.c`: a real, kernel-backed veth pair proves `GET /v1/devices` never lists a software-created interface under `bus: "net"`, and that `POST /v1/containers` correctly 400s an `interfaces` entry naming that same veth.
+
+3 consecutive clean runs. `docs/adr/0022-...md` and `docs/ROADMAP.md` updated to point at this coverage precisely, so the boundary between "proven" and "not provable here" stays exact.
+
+### Phase 12 (part 9): image lifecycle endpoints
+
+Before this part, images were purely implicit -- a directory that came into existence at install time (`base`) or as a side effect of the first `pkg install` targeting it. No way to list, create, or delete one. See ADR-0024.
+
+#### Added
+- `daemon/src/image.c`/`daemon/include/image.h`: `GET`/`POST /v1/images`, `GET`/`DELETE /v1/images/{name}` -- filesystem-backed, no separate persisted state.
+- `daemon/src/registry.c`/`daemon/include/registry.h`: `registry_entry.image[]`, populated via a new explicit `image` parameter on `registry_create()`; new `registry_image_in_use()`. `GET /v1/containers` responses gain an `"image"` field.
+- `daemon/src/pkg.c`/`daemon/include/pkg.h`: `pkg_image_has_packages(const char *image)`.
+- `cli/src/main.c`: `image create --name=NAME`, `image ls`, `image rm NAME`.
+- `docs/api/openapi.yaml`: `/images` paths, `Image`/`ImageCreateRequest` schemas, `Container.image`.
+- `docs/adr/0024-image-lifecycle-endpoints.md`.
+- `test/test_images.c`, new.
+
+Verified over real HTTP against a live daemon: create/list/get, 409 on duplicate create, runtime seeded immediately after create (ADR-0023), 400 deleting `base`, 404 for an unknown image, 409 deleting an image a running container references (204 once that container is gone, directory genuinely removed), 409 deleting an image with a package still tracked against it. 3 consecutive clean runs. Zero warnings; full regression sweep re-run clean.
+
+### Phase 12 (part 8): C-runtime seeding generalized to every image
+
+ADR-0019's own Consequences section named this gap directly: runtime seeding only ever landed in `images/base/rootfs` -- a non-default image (e.g. `router`, from part 5's own per-image `pkg install`) had no way to execve() anything installed into it. See ADR-0023.
+
+#### Added
+- `image/src/mkbootroot.c`: also stages `libtinfo.so.6` into the control-plane squashfs (previously only `ld.so`/`libc.so.6`) -- fixes a real risk found while designing this part: the natural "copy from wherever kanxeod is running" source would otherwise have found nothing on any real deploy, working in this dev sandbox only by coincidence.
+- `daemon/src/pkg.c`/`daemon/include/pkg.h`: `pkg_seed_image_runtime(const char *image)` -- copies the C runtime into any image's rootfs, idempotent, tolerant of a missing source file; called from `pkg_build_completed()` for whatever image a job merges into.
+- `docs/adr/0023-per-image-runtime-seeding.md`.
+
+Verified: `test/test_pkg.c`'s existing per-image scenario extended to confirm all three runtime files land in a freshly created `router` image after its first install -- 3 consecutive clean runs. `kanxeo-install.c`/`mkinstalleriso.c` confirmed byte-for-byte untouched; zero warnings.
+
 ### Phase 12 (part 7): real network interface passthrough
 
 A real PCI/USB NIC has no /dev node, so the existing BPF_CGROUP_DEVICE passthrough mechanism (ADR-0017) doesn't apply -- the only real kernel primitive is moving the interface's netdev into a container's own network namespace. The largest piece of the router use case. See ADR-0022.
