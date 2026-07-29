@@ -31,7 +31,8 @@ static void print_usage(FILE *out)
 	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] [--network=NAME[:IP] ...]\n"
 	        "      [--ip-forward] [--dns-register] [--pki-issue] [--pki-cert-dir=PATH]\n"
 	        "      [--pki-days=N] [--route=DEST/PREFIX:VIA ...] [--device=ID ...]\n"
-	        "      [--interface=IFNAME ...] -- CMD [ARGS...]\n"
+	        "      [--interface=IFNAME ...] [--restart=always] [--depends-on=NAME ...]\n"
+	        "      -- CMD [ARGS...]\n"
 	        "  inspect NAME\n"
 	        "  rm NAME\n"
 	        "  network create --name=NAME --subnet=A.B.C.D --prefix=N\n"
@@ -131,6 +132,7 @@ static void fmt_container_line(const struct json_value *v)
 	const struct json_value *exitv = json_object_get(v, "exit_status");
 	const struct json_value *networks = json_object_get(v, "networks");
 	const struct json_value *ip_forward = json_object_get(v, "ip_forward");
+	const char *restart = json_str_field(v, "restart");
 	char exit_buf[16];
 	char net_buf[256];
 	size_t off = 0;
@@ -156,10 +158,11 @@ static void fmt_container_line(const struct json_value *v)
 		}
 	}
 
-	printf("%-20s %-8s pid=%-8ld exit_status=%-6s networks=%-20s fwd=%s\n", name, status, pid,
-	       exit_buf, net_buf[0] != '\0' ? net_buf : "-",
+	printf("%-20s %-8s pid=%-8ld exit_status=%-6s networks=%-20s fwd=%-4s restart=%s\n", name,
+	       status, pid, exit_buf, net_buf[0] != '\0' ? net_buf : "-",
 	       (ip_forward != NULL && ip_forward->type == JSON_BOOL && ip_forward->u.boolean) ? "yes"
-	                                                                                        : "no");
+	                                                                                        : "no",
+	       restart != NULL ? restart : "no");
 }
 
 static void fmt_list(const struct json_value *v)
@@ -465,6 +468,8 @@ static int cmd_rm(const struct kx_client *c, int json_mode, int argc, char **arg
 #define CLI_MAX_DEVICES 16
 /* Matches daemon's CONTAINER_MAX_INTERFACES -- see include/container.h. */
 #define CLI_MAX_INTERFACES 16
+/* Matches daemon's CONTAINERDEF_MAX_DEPENDS -- see daemon/include/containerdef.h. */
+#define CLI_MAX_DEPENDS 16
 
 struct cli_route {
 	char dest[64];
@@ -549,6 +554,9 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	int device_count = 0;
 	const char *interfaces[CLI_MAX_INTERFACES];
 	int interface_count = 0;
+	const char *restart = NULL;
+	const char *depends_on[CLI_MAX_DEPENDS];
+	int depends_on_count = 0;
 	int ip_forward = 0;
 	int dns_register = 0;
 	int pki_issue = 0;
@@ -601,6 +609,15 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 				return 2;
 			}
 			interfaces[interface_count++] = argv[i] + 12;
+		} else if (strncmp(argv[i], "--restart=", 10) == 0) {
+			restart = argv[i] + 10;
+		} else if (strncmp(argv[i], "--depends-on=", 13) == 0) {
+			if (depends_on_count >= CLI_MAX_DEPENDS) {
+				fprintf(stderr, "kanxeoctl: too many --depends-on= flags (max %d)\n",
+				        CLI_MAX_DEPENDS);
+				return 2;
+			}
+			depends_on[depends_on_count++] = argv[i] + 13;
 		} else if (strcmp(argv[i], "--ip-forward") == 0) {
 			ip_forward = 1;
 		} else if (strcmp(argv[i], "--dns-register") == 0) {
@@ -637,7 +654,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		        "[--pids-max=N] [--network=NAME[:IP] ...] [--ip-forward] [--dns-register] "
 		        "[--pki-issue] [--pki-cert-dir=PATH] [--pki-days=N] "
 		        "[--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--interface=IFNAME ...] "
-		        "-- CMD [ARGS...]\n");
+		        "[--restart=always] [--depends-on=NAME ...] -- CMD [ARGS...]\n");
 		return 2;
 	}
 
@@ -729,6 +746,17 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		jw_arr_open(&w);
 		for (i = 0; i < interface_count; i++)
 			jw_str(&w, interfaces[i]);
+		jw_arr_close(&w);
+	}
+	if (restart != NULL) {
+		jw_key(&w, "restart");
+		jw_str(&w, restart);
+	}
+	if (depends_on_count > 0) {
+		jw_key(&w, "depends_on");
+		jw_arr_open(&w);
+		for (i = 0; i < depends_on_count; i++)
+			jw_str(&w, depends_on[i]);
 		jw_arr_close(&w);
 	}
 	jw_obj_close(&w);

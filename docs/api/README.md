@@ -101,6 +101,34 @@ Response (`201`):
 }
 ```
 
+## Persisted, auto-restarting containers
+
+By default a container is purely in-memory: it dies when its own process exits, and nothing about it survives a daemon restart. Add `"restart": "always"` to make it durable:
+
+```
+POST /v1/containers
+{
+  "name": "router1",
+  "image": "router",
+  "cmd": ["/bin/bird", "-f"],
+  "restart": "always"
+}
+```
+
+This persists the exact request (`/var/lib/kanxeo/container_defs.json`) in addition to creating it live right now. From then on: it's replayed automatically at every future daemon boot, and again — after a real, fixed delay of a few seconds, never instantly — any time it exits on its own, whether that's a crash or a clean `0` exit. The delay exists specifically so a genuinely crash-looping container doesn't hammer the host; there's no backoff policy beyond that fixed delay in v1.
+
+`depends_on` controls the order `restart: "always"` containers start in at boot:
+
+```json
+{"name": "router1", "image": "router", "cmd": ["/bin/bird", "-f"], "restart": "always", "depends_on": ["dns1"]}
+```
+
+`dns1` (itself a `restart: "always"` container) is guaranteed to have been *started* before `router1` is. "Started" means its own process has begun — not that it's actually ready to serve; no health-check or readiness-probe concept exists in v1, so a dependent container needing its dependency to be truly up still needs to handle that itself (retry logic, a brief wait loop, etc. — the same boundary every container orchestrator has before real health checks exist). A `depends_on` naming an unknown or non-`"always"` container, or forming a cycle, is skipped at boot (logged, not fatal to anything else starting).
+
+`DELETE /v1/containers/{name}` always means gone for good — for a `restart: "always"` container, it removes the persisted definition too, in the same call. It won't come back on a pending crash-restart (none exists, since delete never goes through that path) or on the next daemon boot. There's no separate "stop it now but keep it defined for later" operation in v1.
+
+`GET`/inspect responses always report the current `restart`/`depends_on` state, read live from the persisted definition rather than a stale echo of what creation was originally given.
+
 ## Making a container act as a router
 
 A container attached to two networks with `ip_forward` on will actually forward packets between them — enough for a container running BIRD/FRR to do dynamic routing on top, or for pure static routing on its own:

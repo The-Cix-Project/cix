@@ -1,4 +1,5 @@
 #include "container.h"
+#include "containerdef.h"
 #include "device.h"
 #include "dns.h"
 #include "http.h"
@@ -31,6 +32,7 @@
 #include <sys/reboot.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/timerfd.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -46,6 +48,17 @@
 #define PKI_CERTS_STATE_PATH PKI_DIR "/pki_certs.json"
 #define PKG_DIR BASE_DIR "/pkg"
 #define PKG_INSTALLED_STATE_PATH PKG_DIR "/pkg_installed.json"
+#define CONTAINER_DEFS_STATE_PATH BASE_DIR "/container_defs.json"
+/*
+ * Fixed, daemon-wide, not per-service (YAGNI for v1) -- how long to
+ * wait before restarting a restart:"always" container after an
+ * unprompted exit. Real, deliberate: without this, a genuinely
+ * crash-looping container would restart as fast as clone3()+execve()
+ * itself allows, a real operational hazard (CPU/log hammering) a
+ * single fixed delay is enough to prevent without a full backoff
+ * policy engine.
+ */
+#define CONTAINER_RESTART_DELAY_SECONDS 2
 /*
  * Fixed QEMU virtio-blk layout (Phase 11's stated fixed/known-hardware
  * scope, same posture as root=/dev/vda2 in the loader entry itself) --
@@ -82,14 +95,15 @@
 #define PKG_PREFIX "/v1/pkg/"
 #define IMAGES_PREFIX "/v1/images/"
 
-enum conn_kind { CONN_LISTENER, CONN_CLIENT, CONN_CONTAINER, CONN_PKG_FETCH };
+enum conn_kind { CONN_LISTENER, CONN_CLIENT, CONN_CONTAINER, CONN_PKG_FETCH, CONN_RESTART_TIMER };
 
 struct conn {
 	enum conn_kind kind;
 	int fd;
-	struct http_conn http;        /* CONN_CLIENT only */
-	struct registry_entry *entry; /* CONN_CONTAINER only */
-	pid_t pkg_fetch_pid;          /* CONN_PKG_FETCH only */
+	struct http_conn http;                 /* CONN_CLIENT only */
+	struct registry_entry *entry;           /* CONN_CONTAINER only */
+	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH only */
+	char restart_name[REGISTRY_NAME_MAX];   /* CONN_RESTART_TIMER only */
 };
 
 /*
@@ -398,42 +412,70 @@ static void respond_error(int fd, int status, const char *status_text, const cha
 	jw_free(&w);
 }
 
-static void respond_network_error(int fd, enum network_error err)
+static const char *http_status_text(int status)
+{
+	switch (status) {
+	case 400:
+		return "Bad Request";
+	case 409:
+		return "Conflict";
+	case 500:
+		return "Internal Server Error";
+	default:
+		return "Error";
+	}
+}
+
+/*
+ * Pure (no fd) resolver, shared by respond_network_error() below and
+ * create_container_from_body()'s own networks-array validation (which
+ * has no fd yet to respond on directly when reused for boot autostart
+ * /crash restart -- see containerdef.h).
+ */
+static int network_error_to_status(enum network_error err, const char **out_msg)
 {
 	switch (err) {
 	case NETWORK_ERR_INVALID_NAME:
-		respond_error(fd, 400, "Bad Request", "invalid network name");
-		break;
+		*out_msg = "invalid network name";
+		return 400;
 	case NETWORK_ERR_INVALID_SUBNET:
-		respond_error(fd, 400, "Bad Request", "invalid subnet/prefix_len");
-		break;
+		*out_msg = "invalid subnet/prefix_len";
+		return 400;
 	case NETWORK_ERR_DUPLICATE:
-		respond_error(fd, 409, "Conflict", "a network with this name already exists");
-		break;
+		*out_msg = "a network with this name already exists";
+		return 409;
 	case NETWORK_ERR_OVERLAP:
-		respond_error(fd, 400, "Bad Request", "subnet overlaps an existing network");
-		break;
+		*out_msg = "subnet overlaps an existing network";
+		return 400;
 	case NETWORK_ERR_FULL:
-		respond_error(fd, 500, "Internal Server Error", "network table full");
-		break;
+		*out_msg = "network table full";
+		return 500;
 	case NETWORK_ERR_NOT_FOUND:
-		respond_error(fd, 404, "Not Found", "no such network");
-		break;
+		*out_msg = "no such network";
+		return 404;
 	case NETWORK_ERR_IN_USE:
-		respond_error(fd, 409, "Conflict", "network is still in use by a container");
-		break;
+		*out_msg = "network is still in use by a container";
+		return 409;
 	case NETWORK_ERR_IP_OUT_OF_RANGE:
-		respond_error(fd, 400, "Bad Request", "ip is not a usable address on this network");
-		break;
+		*out_msg = "ip is not a usable address on this network";
+		return 400;
 	case NETWORK_ERR_IP_TAKEN:
-		respond_error(fd, 409, "Conflict", "ip is already assigned to a running container");
-		break;
+		*out_msg = "ip is already assigned to a running container";
+		return 409;
 	case NETWORK_ERR_CREATE_FAILED:
 	case NETWORK_ERR_DELETE_FAILED:
 	default:
-		respond_error(fd, 500, "Internal Server Error", "network operation failed");
-		break;
+		*out_msg = "network operation failed";
+		return 500;
 	}
+}
+
+static void respond_network_error(int fd, enum network_error err)
+{
+	const char *msg;
+	int status = network_error_to_status(err, &msg);
+
+	respond_error(fd, status, http_status_text(status), msg);
 }
 
 static void handle_health(int fd)
@@ -615,12 +657,37 @@ static int parse_network_entry(const struct json_value *item, char *name_out, si
 	return 0;
 }
 
-static void handle_create(int fd, const char *body, size_t body_len)
+/*
+ * Core of what POST /v1/containers does: parses+validates body,
+ * builds a container_spec, calls registry_create(), calls
+ * register_container_pidfd() on success (do NOT also call it at any
+ * call site below -- double-registering the same pidfd with epoll is
+ * a real bug, confirmed directly: it aborts the daemon), and runs the
+ * requested dns_register/pki_issue side effects -- so replaying the
+ * exact same body (boot autostart, crash restart, see
+ * daemon/include/containerdef.h) gets the exact same result a fresh
+ * POST would. Zero HTTP coupling. On success returns 0 and *out_entry
+ * is the new registry entry; *out_restart_always/out_depends_on(_count)
+ * are filled from the body's own "restart"/"depends_on" fields
+ * regardless of outcome (a caller deciding what to persist needs them
+ * either way, though only a success is ever actually persisted). On
+ * failure returns the same HTTP status code (400/409/500)
+ * handle_create() has always returned for that condition, with
+ * err_msg holding the exact same message text -- the REST wrapper
+ * forwards both verbatim; boot/restart callers just log them.
+ */
+static int create_container_from_body(const char *body, size_t body_len,
+                                       struct registry_entry **out_entry, int *out_restart_always,
+                                       char out_depends_on[][REGISTRY_NAME_MAX],
+                                       int *out_depends_on_count, char *err_msg,
+                                       size_t err_msg_size)
 {
 	struct json_value *root;
 	const struct json_value *jname, *jimage, *jcmd, *jmem, *jpids, *jnetworks, *jip_forward, *jroutes;
 	const struct json_value *jdevices;
 	const struct json_value *jinterfaces;
+	const struct json_value *jrestart, *jdepends_on;
+	const char *restart_str;
 	const char *name, *image;
 	char lowerdir[PATH_MAX];
 	char container_base[PATH_MAX];
@@ -632,7 +699,6 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	char *argv_buf[64];
 	char *empty_envp[1];
 	size_t argc, i;
-	struct json_writer w;
 	struct registry_network_attachment net_attachments[CONTAINER_MAX_NETWORKS];
 	int net_count = 0;
 	int ip_forward = 0;
@@ -650,10 +716,13 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	char pki_cert_dir_buf[PATH_MAX];
 	int pki_days = 365;
 
+	*out_restart_always = 0;
+	*out_depends_on_count = 0;
+
 	root = json_parse(body, body_len);
 	if (root == NULL) {
-		respond_error(fd, 400, "Bad Request", "invalid JSON body");
-		return;
+		snprintf(err_msg, err_msg_size, "invalid JSON body");
+		return 400;
 	}
 
 	jname = json_object_get(root, "name");
@@ -680,20 +749,51 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	if (jpki_days != NULL)
 		pki_days = (int)json_as_number(jpki_days);
 
+	jrestart = json_object_get(root, "restart");
+	restart_str = json_as_string(jrestart);
+	if (restart_str != NULL && strcmp(restart_str, "always") != 0 &&
+	    strcmp(restart_str, "no") != 0) {
+		json_free(root);
+		snprintf(err_msg, err_msg_size, "restart must be \"always\" or \"no\"");
+		return 400;
+	}
+	*out_restart_always = (restart_str != NULL && strcmp(restart_str, "always") == 0);
+
+	jdepends_on = json_object_get(root, "depends_on");
+	if (jdepends_on != NULL) {
+		if (jdepends_on->type != JSON_ARRAY ||
+		    jdepends_on->u.array.count > CONTAINERDEF_MAX_DEPENDS) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "depends_on must be an array of at most %d entries",
+			         CONTAINERDEF_MAX_DEPENDS);
+			return 400;
+		}
+		*out_depends_on_count = (int)jdepends_on->u.array.count;
+		for (i = 0; i < (size_t)*out_depends_on_count; i++) {
+			const char *dep = json_as_string(jdepends_on->u.array.items[i]);
+
+			if (dep == NULL || !name_is_valid(dep)) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size, "invalid depends_on entry");
+				return 400;
+			}
+			snprintf(out_depends_on[i], REGISTRY_NAME_MAX, "%s", dep);
+		}
+	}
+
 	if (!name_is_valid(name) || image == NULL || image[0] == '\0' || jcmd == NULL ||
 	    jcmd->type != JSON_ARRAY || jcmd->u.array.count == 0 ||
 	    jcmd->u.array.count >= (sizeof(argv_buf) / sizeof(argv_buf[0]))) {
 		json_free(root);
-		respond_error(fd, 400, "Bad Request", "name/image/cmd missing or invalid");
-		return;
+		snprintf(err_msg, err_msg_size, "name/image/cmd missing or invalid");
+		return 400;
 	}
 	if (jnetworks != NULL) {
 		if (jnetworks->type != JSON_ARRAY || jnetworks->u.array.count == 0 ||
 		    jnetworks->u.array.count > CONTAINER_MAX_NETWORKS) {
 			json_free(root);
-			respond_error(fd, 400, "Bad Request",
-			              "networks must be a non-empty array of at most 64 entries");
-			return;
+			snprintf(err_msg, err_msg_size, "networks must be a non-empty array of at most 64 entries");
+			return 400;
 		}
 		for (i = 0; i < jnetworks->u.array.count; i++) {
 			char n[NETWORK_NAME_MAX];
@@ -703,40 +803,43 @@ static void handle_create(int fd, const char *body, size_t body_len)
 			if (parse_network_entry(jnetworks->u.array.items[i], n, sizeof(n), &ip_be,
 			                         &has_ip) != 0) {
 				json_free(root);
-				respond_error(fd, 400, "Bad Request", "invalid networks entry");
-				return;
+				snprintf(err_msg, err_msg_size, "invalid networks entry");
+				return 400;
 			}
 			if (network_find(n) == NULL) {
 				json_free(root);
-				respond_error(fd, 400, "Bad Request", "unknown network");
-				return;
+				snprintf(err_msg, err_msg_size, "unknown network");
+				return 400;
 			}
 			if (has_ip) {
 				enum network_error ip_err = network_ip_available(n, ip_be);
 
 				if (ip_err != NETWORK_OK) {
+					const char *ip_msg;
+					int ip_status = network_error_to_status(ip_err, &ip_msg);
+
 					json_free(root);
-					respond_network_error(fd, ip_err);
-					return;
+					snprintf(err_msg, err_msg_size, "%s", ip_msg);
+					return ip_status;
 				}
 			}
 		}
 	}
 	if (dns_register && jnetworks == NULL) {
 		json_free(root);
-		respond_error(fd, 400, "Bad Request", "dns_register requires networks");
-		return;
+		snprintf(err_msg, err_msg_size, "dns_register requires networks");
+		return 400;
 	}
 	if (pki_issue && !pki_ca_bootstrapped()) {
 		json_free(root);
-		respond_error(fd, 400, "Bad Request", "pki_issue requires the CA to be bootstrapped -- POST /v1/pki/ca first");
-		return;
+		snprintf(err_msg, err_msg_size, "pki_issue requires the CA to be bootstrapped -- POST /v1/pki/ca first");
+		return 400;
 	}
 	if (jroutes != NULL) {
 		if (jroutes->type != JSON_ARRAY || jroutes->u.array.count > CONTAINER_MAX_ROUTES) {
 			json_free(root);
-			respond_error(fd, 400, "Bad Request", "routes must be an array of at most 8 entries");
-			return;
+			snprintf(err_msg, err_msg_size, "routes must be an array of at most 8 entries");
+			return 400;
 		}
 		route_count = (int)jroutes->u.array.count;
 		for (i = 0; i < (size_t)route_count; i++) {
@@ -751,14 +854,14 @@ static void handle_create(int fd, const char *body, size_t body_len)
 			    inet_pton(AF_INET, dest, &dest_addr) != 1 ||
 			    inet_pton(AF_INET, via, &via_addr) != 1) {
 				json_free(root);
-				respond_error(fd, 400, "Bad Request", "invalid routes entry");
-				return;
+				snprintf(err_msg, err_msg_size, "invalid routes entry");
+				return 400;
 			}
 			prefix_len = (long)json_as_number(jprefix);
 			if (prefix_len < 0 || prefix_len > 32) {
 				json_free(root);
-				respond_error(fd, 400, "Bad Request", "routes prefix_len must be 0-32");
-				return;
+				snprintf(err_msg, err_msg_size, "routes prefix_len must be 0-32");
+				return 400;
 			}
 			route_specs[i].dest_be = dest_addr.s_addr;
 			route_specs[i].dest_prefix_len = (int)prefix_len;
@@ -768,9 +871,8 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	if (jdevices != NULL) {
 		if (jdevices->type != JSON_ARRAY || jdevices->u.array.count > CONTAINER_MAX_DEVICES) {
 			json_free(root);
-			respond_error(fd, 400, "Bad Request",
-			              "devices must be an array of at most 16 entries");
-			return;
+			snprintf(err_msg, err_msg_size, "devices must be an array of at most 16 entries");
+			return 400;
 		}
 		device_count = (int)jdevices->u.array.count;
 		for (i = 0; i < (size_t)device_count; i++) {
@@ -779,14 +881,14 @@ static void handle_create(int fd, const char *body, size_t body_len)
 
 			if (id == NULL) {
 				json_free(root);
-				respond_error(fd, 400, "Bad Request", "devices entries must be strings");
-				return;
+				snprintf(err_msg, err_msg_size, "devices entries must be strings");
+				return 400;
 			}
 			dd = device_find(id);
 			if (dd == NULL || !dd->assignable) {
 				json_free(root);
-				respond_error(fd, 400, "Bad Request", "unknown or unassignable device");
-				return;
+				snprintf(err_msg, err_msg_size, "unknown or unassignable device");
+				return 400;
 			}
 			/* dev_path/major/minor always come from the daemon's own
 			 * current sysfs snapshot (dd), never trusted from the
@@ -806,9 +908,8 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	if (jinterfaces != NULL) {
 		if (jinterfaces->type != JSON_ARRAY || jinterfaces->u.array.count > CONTAINER_MAX_INTERFACES) {
 			json_free(root);
-			respond_error(fd, 400, "Bad Request",
-			              "interfaces must be an array of at most 16 entries");
-			return;
+			snprintf(err_msg, err_msg_size, "interfaces must be an array of at most 16 entries");
+			return 400;
 		}
 		interface_count = (int)jinterfaces->u.array.count;
 		for (i = 0; i < (size_t)interface_count; i++) {
@@ -818,8 +919,8 @@ static void handle_create(int fd, const char *body, size_t body_len)
 
 			if (ifname == NULL) {
 				json_free(root);
-				respond_error(fd, 400, "Bad Request", "interfaces entries must be strings");
-				return;
+				snprintf(err_msg, err_msg_size, "interfaces entries must be strings");
+				return 400;
 			}
 			/* GET /v1/devices is the one source of truth for which real
 			 * interfaces exist and are currently assignable -- an
@@ -831,8 +932,8 @@ static void handle_create(int fd, const char *body, size_t body_len)
 			dd = device_find(dev_id);
 			if (dd == NULL || !dd->assignable) {
 				json_free(root);
-				respond_error(fd, 400, "Bad Request", "unknown or unassignable interface");
-				return;
+				snprintf(err_msg, err_msg_size, "unknown or unassignable interface");
+				return 400;
 			}
 			snprintf(interface_names[i], sizeof(interface_names[i]), "%s", ifname);
 		}
@@ -844,8 +945,8 @@ static void handle_create(int fd, const char *body, size_t body_len)
 
 		if (s == NULL) {
 			json_free(root);
-			respond_error(fd, 400, "Bad Request", "cmd must be an array of strings");
-			return;
+			snprintf(err_msg, err_msg_size, "cmd must be an array of strings");
+			return 400;
 		}
 		argv_buf[i] = (char *)s;
 	}
@@ -855,14 +956,14 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	snprintf(lowerdir, sizeof(lowerdir), "%s/%s/rootfs", IMAGES_DIR, image);
 	if (stat(lowerdir, &st) != 0) {
 		json_free(root);
-		respond_error(fd, 400, "Bad Request", "image rootfs does not exist");
-		return;
+		snprintf(err_msg, err_msg_size, "image rootfs does not exist");
+		return 400;
 	}
 
 	if (registry_find(name) != NULL) {
 		json_free(root);
-		respond_error(fd, 409, "Conflict", "a container with this name already exists");
-		return;
+		snprintf(err_msg, err_msg_size, "a container with this name already exists");
+		return 409;
 	}
 
 	if (jnetworks != NULL) {
@@ -878,8 +979,8 @@ static void handle_create(int fd, const char *body, size_t body_len)
 			parse_network_entry(jnetworks->u.array.items[i], n, sizeof(n), &ip_be, &has_ip);
 			if (!has_ip && network_alloc_ip(n, &ip_be) != 0) {
 				json_free(root);
-				respond_error(fd, 500, "Internal Server Error", "no free IP addresses");
-				return;
+				snprintf(err_msg, err_msg_size, "no free IP addresses");
+				return 500;
 			}
 			memset(net_attachments[i].name, 0, sizeof(net_attachments[i].name));
 			strncpy(net_attachments[i].name, n, sizeof(net_attachments[i].name) - 1);
@@ -890,8 +991,8 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	snprintf(container_base, sizeof(container_base), "%s/%s", CONTAINERS_DIR, name);
 	if (mkdir(container_base, 0755) != 0 && errno != EEXIST) {
 		json_free(root);
-		respond_error(fd, 500, "Internal Server Error", "failed to create container directory");
-		return;
+		snprintf(err_msg, err_msg_size, "failed to create container directory");
+		return 500;
 	}
 	snprintf(upperdir, sizeof(upperdir), "%s/upper", container_base);
 	snprintf(workdir, sizeof(workdir), "%s/work", container_base);
@@ -949,16 +1050,16 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	json_free(root);
 
 	if (rerr == REGISTRY_ERR_DUPLICATE) {
-		respond_error(fd, 409, "Conflict", "a container with this name already exists");
-		return;
+		snprintf(err_msg, err_msg_size, "a container with this name already exists");
+		return 409;
 	}
 	if (rerr == REGISTRY_ERR_FULL) {
-		respond_error(fd, 500, "Internal Server Error", "container table full");
-		return;
+		snprintf(err_msg, err_msg_size, "container table full");
+		return 500;
 	}
 	if (rerr == REGISTRY_ERR_CREATE_FAILED) {
-		respond_error(fd, 500, "Internal Server Error", "failed to create container");
-		return;
+		snprintf(err_msg, err_msg_size, "failed to create container");
+		return 500;
 	}
 
 	register_container_pidfd(entry);
@@ -1006,6 +1107,35 @@ static void handle_create(int fd, const char *body, size_t body_len)
 		}
 	}
 
+	*out_entry = entry;
+	return 0;
+}
+
+static void handle_create(int fd, const char *body, size_t body_len)
+{
+	struct registry_entry *entry;
+	int restart_always;
+	char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
+	int depends_on_count;
+	char err_msg[256];
+	int status;
+	struct json_writer w;
+
+	status = create_container_from_body(body, body_len, &entry, &restart_always, depends_on,
+	                                     &depends_on_count, err_msg, sizeof(err_msg));
+	if (status != 0) {
+		respond_error(fd, status, http_status_text(status), err_msg);
+		return;
+	}
+
+	if (restart_always &&
+	    containerdef_add(entry->name, body, body_len, depends_on, depends_on_count) != 0) {
+		fprintf(stderr,
+		        "%s: restart:\"always\" requested but persisting its definition failed -- "
+		        "it will not survive a daemon restart\n",
+		        entry->name);
+	}
+
 	jw_init(&w);
 	registry_write_json_one(entry, &w);
 	respond_json(fd, 201, "Created", &w);
@@ -1017,22 +1147,43 @@ static void handle_delete(int fd, const char *name)
 	struct registry_entry *e = registry_find(name);
 	struct conn *cc;
 
-	if (e == NULL) {
+	/*
+	 * A restart:"always" definition that has never once managed to
+	 * autostart (a cycle, an unknown dependency, an image that no
+	 * longer exists, ...) has no live registry entry at all -- without
+	 * this check, DELETE could never reach it, permanently stranding a
+	 * broken definition with no way to remove it short of hand-editing
+	 * container_defs.json on disk. Found directly: test_container_restart.c's
+	 * own cleanup of exactly this case (a container skipped for a
+	 * circular/unknown dependency) silently 404'd, leaking its
+	 * definition into every subsequently-run test on this host.
+	 */
+	if (e == NULL && containerdef_find(name) == NULL) {
 		respond_error(fd, 404, "Not Found", "no such container");
 		return;
 	}
 
-	if (e->reactor_conn != NULL) {
-		cc = e->reactor_conn;
-		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
-		free(cc);
-		e->reactor_conn = NULL;
-	}
+	if (e != NULL) {
+		if (e->reactor_conn != NULL) {
+			cc = e->reactor_conn;
+			kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+			free(cc);
+			e->reactor_conn = NULL;
+		}
 
-	registry_remove(name);
-	dns_server_forget(name);
-	dns_record_forget_owner(name);
-	pki_cert_forget_owner(name);
+		registry_remove(name);
+		dns_server_forget(name);
+		dns_record_forget_owner(name);
+		pki_cert_forget_owner(name);
+	}
+	/*
+	 * Unconditional, a no-op if this name never had a restart:"always"
+	 * definition. DELETE always means gone for good: not on this
+	 * crash-restart timer (none pending, since this path never goes
+	 * through handle_container_event()) and not on the next daemon
+	 * restart.
+	 */
+	containerdef_remove(name);
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
@@ -2109,9 +2260,105 @@ static void handle_client_event(struct conn *cc)
 	/* pr == 0: request incomplete, keep waiting on this fd. */
 }
 
+/*
+ * Arms a one-shot, non-blocking timer (CONTAINER_RESTART_DELAY_SECONDS
+ * from now) that, once it fires, replays name's own persisted
+ * definition through create_container_from_body() again -- the
+ * reactor's first-ever use of a timer, deliberately isolated in a
+ * throwaway timerfd + CONN_RESTART_TIMER conn rather than a blocking
+ * sleep(), which would freeze every other in-flight request/event for
+ * the whole delay (this daemon's entire event loop is single-
+ * threaded and non-blocking by design). A failure to arm is logged
+ * and simply means this one restart doesn't happen -- not fatal to
+ * the daemon.
+ */
+static void arm_restart_timer(const char *name)
+{
+	int tfd;
+	struct itimerspec its;
+	struct conn *cc;
+	struct kx_epoll_event ev;
+
+	tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+	if (tfd < 0) {
+		perror("timerfd_create (container restart)");
+		return;
+	}
+
+	memset(&its, 0, sizeof(its));
+	its.it_value.tv_sec = CONTAINER_RESTART_DELAY_SECONDS;
+	if (timerfd_settime(tfd, 0, &its, NULL) != 0) {
+		perror("timerfd_settime (container restart)");
+		close(tfd);
+		return;
+	}
+
+	cc = malloc(sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (container restart timer conn)");
+		close(tfd);
+		return;
+	}
+	cc->kind = CONN_RESTART_TIMER;
+	cc->fd = tfd;
+	snprintf(cc->restart_name, sizeof(cc->restart_name), "%s", name);
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
+		perror("epoll_ctl ADD restart timer");
+		close(tfd);
+		free(cc);
+	}
+}
+
+/*
+ * Fires once arm_restart_timer()'s delay elapses. containerdef_find()
+ * returning NULL here is a real, correct case, not an error: the
+ * operator may have DELETEd this container during the delay window,
+ * which already removed its definition (handle_delete()) -- nothing
+ * to restart.
+ */
+static void handle_restart_timer_event(struct conn *cc)
+{
+	struct container_def *def;
+	uint64_t expirations;
+
+	/* Required to clear the timerfd's own expiration count -- without
+	 * this read() the fd would stay perpetually EPOLLIN-readable. Its
+	 * value itself (how many periods elapsed -- always 1 for a
+	 * one-shot timer that fired on time) isn't needed for anything. */
+	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
+		perror("read (restart timerfd)");
+
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	close(cc->fd);
+
+	def = containerdef_find(cc->restart_name);
+	if (def != NULL) {
+		struct registry_entry *entry;
+		int restart_always;
+		char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
+		int depends_on_count;
+		char err_msg[256];
+		int status = create_container_from_body(def->body, def->body_len, &entry,
+		                                         &restart_always, depends_on, &depends_on_count,
+		                                         err_msg, sizeof(err_msg));
+
+		if (status != 0)
+			fprintf(stderr, "%s: restart failed: %s\n", cc->restart_name, err_msg);
+		/* else: create_container_from_body() already registered its
+		 * own pidfd -- no separate call needed here either. */
+	}
+
+	free(cc);
+}
+
 static void handle_container_event(struct conn *cc)
 {
 	struct registry_entry *entry = cc->entry;
+	char name_copy[REGISTRY_NAME_MAX];
 	pid_t pkg_pid;
 	int pkg_pidfd;
 	int chained;
@@ -2120,6 +2367,10 @@ static void handle_container_event(struct conn *cc)
 	registry_mark_exited(entry);
 	entry->reactor_conn = NULL;
 	free(cc);
+
+	/* Copied before any registry_remove() below might reuse this
+	 * slot -- entry->name itself is only guaranteed valid until then. */
+	snprintf(name_copy, sizeof(name_copy), "%s", entry->name);
 
 	/*
 	 * Unconditional, exactly like dns_record_forget_owner()/
@@ -2135,6 +2386,20 @@ static void handle_container_event(struct conn *cc)
 		registry_remove(entry->name);
 	if (chained)
 		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd);
+
+	/*
+	 * An unprompted exit (never reached for an explicit DELETE, which
+	 * removes the pidfd from epoll itself before this event could ever
+	 * fire -- see registry_remove()'s own doc comment) of a
+	 * restart:"always" container. registry_remove() is safe here even
+	 * though entry->running is already 0 (its own kill/reap branch is
+	 * skipped, so no signal is sent to a possibly-already-reused pid)
+	 * -- frees the name/slot before the delayed restart re-creates it.
+	 */
+	if (containerdef_find(name_copy) != NULL) {
+		registry_remove(name_copy);
+		arm_restart_timer(name_copy);
+	}
 }
 
 /*
@@ -2215,6 +2480,52 @@ static void accept_loop(void)
 	}
 }
 
+/*
+ * Starts every persisted restart:"always" definition, in dependency
+ * order -- called once, right after confirm_boot() (never before: see
+ * that function's own comment on why "healthy" must stay defined as
+ * "about to serve traffic" alone, never coupled to whether every
+ * container also happened to start cleanly). Runs unconditionally,
+ * not just under --init-mode -- this is "whenever this daemon process
+ * starts fresh" behavior, not specific to the installed A/B boot
+ * flow. Blocking, like every other startup step already is
+ * (network_init(), pkg_init(), ...); the kernel's own listen backlog
+ * queues any incoming connection during this window, none are
+ * dropped. A single definition failing to start is logged and
+ * skipped, never fatal to the rest of boot.
+ */
+static void containerdef_autostart_all(void)
+{
+	char order[CONTAINERDEF_MAX][REGISTRY_NAME_MAX];
+	int count = containerdef_resolve_order(order);
+	int i;
+
+	for (i = 0; i < count; i++) {
+		struct container_def *def = containerdef_find(order[i]);
+		struct registry_entry *entry;
+		int restart_always;
+		char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
+		int depends_on_count;
+		char err_msg[256];
+		int status;
+
+		if (def == NULL)
+			continue; /* can't happen -- resolve_order() only ever names known defs */
+
+		status = create_container_from_body(def->body, def->body_len, &entry, &restart_always,
+		                                     depends_on, &depends_on_count, err_msg,
+		                                     sizeof(err_msg));
+		if (status != 0) {
+			fprintf(stderr, "%s: autostart failed: %s\n", order[i], err_msg);
+			continue;
+		}
+		/* create_container_from_body() already registered entry's own
+		 * pidfd with epoll -- exactly the same shape POST /v1/containers'
+		 * own success path relies on, no separate call needed here. */
+		printf("%s: autostarted (restart:always)\n", entry->name);
+	}
+}
+
 int main(int argc, char **argv)
 {
 	int port = DEFAULT_PORT;
@@ -2272,6 +2583,8 @@ int main(int argc, char **argv)
 	if (pkg_init(PKG_DIR, PKG_INSTALLED_STATE_PATH, CONTAINERS_DIR, IMAGES_DIR) != 0)
 		return 1;
 	image_init(IMAGES_DIR);
+	if (containerdef_init(CONTAINER_DEFS_STATE_PATH) != 0)
+		return 1;
 
 	registry_init();
 
@@ -2367,6 +2680,8 @@ int main(int argc, char **argv)
 			fprintf(stderr, "confirm_boot failed for slot %s (continuing anyway)\n", slot);
 	}
 
+	containerdef_autostart_all();
+
 	while (!g_stop) {
 		struct kx_epoll_event events[MAX_EVENTS];
 		int n = kx_epoll_wait(g_epfd, events, MAX_EVENTS, -1);
@@ -2388,6 +2703,8 @@ int main(int argc, char **argv)
 				handle_container_event(cc);
 			else if (cc->kind == CONN_PKG_FETCH)
 				handle_pkg_fetch_event(cc);
+			else if (cc->kind == CONN_RESTART_TIMER)
+				handle_restart_timer_event(cc);
 			else
 				handle_client_event(cc);
 		}

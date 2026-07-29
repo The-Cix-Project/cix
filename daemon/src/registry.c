@@ -1,4 +1,5 @@
 #include "registry.h"
+#include "containerdef.h"
 #include "internal.h"
 #include "linux_compat.h"
 
@@ -231,6 +232,26 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 	for (i = 0; i < entry->interface_count; i++)
 		jw_str(w, entry->interfaces[i]);
 	jw_arr_close(w);
+	{
+		/*
+		 * "restart"/"depends_on" are sourced live from containerdef.c,
+		 * not mirrored onto registry_entry -- that module is already
+		 * the one source of truth for "should this container persist
+		 * and auto-restart," and a registry_entry only exists for as
+		 * long as the process itself is alive/recently-exited anyway.
+		 */
+		struct container_def *def = containerdef_find(entry->name);
+
+		jw_key(w, "restart");
+		jw_str(w, def != NULL ? "always" : "no");
+		jw_key(w, "depends_on");
+		jw_arr_open(w);
+		if (def != NULL) {
+			for (i = 0; i < def->depends_on_count; i++)
+				jw_str(w, def->depends_on[i]);
+		}
+		jw_arr_close(w);
+	}
 	jw_obj_close(w);
 }
 

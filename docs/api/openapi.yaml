@@ -764,7 +764,17 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
     delete:
-      summary: Stop (if running) and remove a container
+      summary: >
+        Stop (if running) and remove a container. If it was created with
+        "restart": "always", this also permanently removes that persisted
+        definition in the same call -- it will not come back on the next
+        crash-restart (none is pending; this path never triggers one) or
+        on a future daemon restart. There is no separate "just stop it for
+        now, keep the definition" operation in v1. Works even if this
+        container currently isn't live (e.g. a "restart":"always"
+        definition that has never once managed to autostart, due to a
+        depends_on cycle or an unknown dependency) -- 404 only if neither
+        a live instance nor a persisted definition exists for this name.
       operationId: deleteContainer
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -994,6 +1004,36 @@ components:
             is independent of, and can be combined with, networks above.
             Set once at creation; not modifiable on an already-running
             container.
+        restart:
+          type: string
+          enum: [always, no]
+          default: "no"
+          description: >
+            "always": this container's exact create request is persisted
+            (survives a daemon restart) and replayed automatically --
+            once now (if creation succeeds), again at every future daemon
+            startup, and again after any unprompted exit (crash or a
+            clean 0 exit alike), each restart after a real, fixed delay
+            (not instant -- avoids hammering the host if it keeps
+            failing). "no" (the default): today's original behavior,
+            unchanged -- purely in-memory, gone the moment the daemon
+            restarts or this container exits, no persistence at all.
+            DELETE /containers/{name} removes the persisted definition
+            too, permanently -- see that endpoint's own description.
+        depends_on:
+          type: array
+          items:
+            type: string
+          maxItems: 16
+          description: >
+            Other "restart":"always" container names that must be
+            started (not necessarily ready -- no health-probe/readiness
+            concept exists in v1) before this one, at daemon-boot
+            autostart time. Ignored for a live POST that isn't itself
+            "restart":"always" (nothing to persist, so no future boot
+            ordering to honor). A dependency naming an unknown or non-
+            "always" definition, or participating in a cycle, is
+            skipped at boot (logged, not fatal to the rest of startup).
 
     NetworkAttachmentRequest:
       type: object
@@ -1070,6 +1110,20 @@ components:
           description: >
             Bare kernel names of every real network interface moved into
             this container's own netns at creation. Empty if none.
+        restart:
+          type: string
+          enum: [always, no]
+          description: >
+            "always" if this container's create request was persisted
+            (see ContainerCreateRequest.restart) and is auto-restarted on
+            exit / auto-started at daemon boot; "no" otherwise. Sourced
+            live from the persisted definition, not a static echo of
+            what creation was originally given.
+        depends_on:
+          type: array
+          items:
+            type: string
+          description: Empty unless restart is "always".
 
     ContainerNetworkAttachment:
       type: object

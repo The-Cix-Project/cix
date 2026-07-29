@@ -4,6 +4,22 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 13 (part 1): persisted, auto-restarting containers (`restart: "always"`, `depends_on`)
+
+Containers have been in-memory only since Phase 3 -- for a real deployment (routers, a NAS, a git-repo container, an ad-blocking DNS, some depending on others), that's the real blocker. See ADR-0025.
+
+#### Added
+- `daemon/src/containerdef.c`/`daemon/include/containerdef.h`, new: persists a container's exact create request when `"restart": "always"` is set, replayed verbatim at boot and after any unprompted exit. `containerdef_resolve_order()` mirrors `pkg.c`'s own `resolve_chain()` shape (DFS + cycle detection) for `depends_on`.
+- `daemon/src/main.c`: `POST /v1/containers` gains `restart`/`depends_on` fields; `handle_create()` split into a thin wrapper + reusable `create_container_from_body()` (zero HTTP coupling), shared by the REST path, new `containerdef_autostart_all()` (boot-time, right after `confirm_boot()`), and a new timerfd-based crash-restart with a real, measured delay (`CONN_RESTART_TIMER`, the reactor's first-ever timer) -- never a blocking `sleep()`, which would freeze the whole single-threaded event loop. `DELETE /v1/containers/{name}` now also permanently removes the persisted definition.
+- `daemon/src/registry.c`: `registry_write_json_one()` sources `restart`/`depends_on` response fields live from `containerdef_find()`.
+- `cli/src/main.c`: `run --restart=always`, repeatable `--depends-on=NAME`; `ps`/`inspect` echo `restart` status.
+- `docs/api/openapi.yaml`: `ContainerCreateRequest.restart`/`depends_on`, `Container.restart`/`depends_on`, updated `DELETE /containers/{name}` description.
+- `docs/adr/0025-persisted-auto-restarting-containers.md`.
+
+Two real bugs found and fixed during verification, not before. First: registering the same container's pidfd with epoll a second time (present in both new call sites on top of the existing call already inside the refactored core function) aborts the daemon outright -- confirmed directly via a real daemon restart with a persisted container, fixed by leaving the one call where it already was. Second, surfaced by the full regression sweep rather than the new test's own assertions: `handle_delete()` required a container to be currently live before it would even check for a persisted definition, so a `restart:"always"` definition that had never once successfully autostarted (a `depends_on` cycle or unknown dependency) could never be `DELETE`d at all -- found via cross-test log pollution (`container_defs.json` leaking stuck definitions from `test_container_restart.c` into every other test's daemon startup on the same host); fixed by decoupling "stop the live instance" from "remove the persisted definition" into two independent steps.
+
+Verified end-to-end: a fast-exiting `restart: "always"` container observed crash-looping with a real, measured ~2.0s gap (not instant) between each exit and the next restart; a daemon restart brought a persisted container back with a fresh pid; `DELETE` confirmed to stop it and keep it gone across a subsequent restart, including for a definition that never successfully autostarted. The entire pre-existing REST-facing test suite re-run unchanged after the `handle_create()` refactor, zero regressions, before any new test was added. Zero compiler warnings.
+
 ### Phase 12 part 7 follow-up: NIC passthrough negative-path test coverage
 
 This dev sandbox has no real, physically-backed NIC visible in its own root netns (ADR-0022), so the positive "grant a real interface, watch it work" path stays unprovable here. Added what *is* provable without real hardware, confirmed with the user directly rather than left unaddressed.
