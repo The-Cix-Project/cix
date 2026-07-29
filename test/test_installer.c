@@ -57,6 +57,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define MKBOOTROOT_BIN "build/mkbootroot"
@@ -71,6 +72,8 @@
 #define SIGNING_CERT_PEM "image/keys/kanxeo-signing.crt"
 #define SIGNING_CERT_DER "image/keys/kanxeo-signing.cer"
 #define MOK_PASSWORD "kanxeotest"
+
+#define E2FSCK_BIN "/sbin/e2fsck"
 
 #define TARGET_ESP_SIZE_MIB 64
 #define TARGET_ROOT_SIZE_MIB 160
@@ -109,6 +112,49 @@ static int create_blank_disk(const char *path)
 	return 0;
 }
 
+/*
+ * A partition extracted right after qemu_boot_capture() kills the QEMU
+ * process (SIGTERM once the success marker appears, per that function's
+ * own doc comment) still has a pending ext4 journal from that abrupt
+ * stop -- confirmed directly ("EXT4-fs: recovery complete" on the next
+ * real mount). Writing into the extracted image with debugfs (which
+ * touches on-disk blocks/inodes directly, bypassing the journal
+ * entirely) before that pending journal gets replayed is unsafe: the
+ * next real mount's own recovery can silently revert exactly the
+ * blocks debugfs just wrote, since the journal still records the
+ * pre-write state. Forcing replay with e2fsck -fy first (0 = clean,
+ * 1 = errors corrected -- exactly the expected "replayed a pending
+ * journal" case here, not real corruption; only >= 4 is a genuine,
+ * uncorrected problem) leaves the image in its true final state, safe
+ * for debugfs to modify directly.
+ */
+static int run_e2fsck_fy(const char *path)
+{
+	pid_t pid;
+	int status;
+	char *argv[] = { (char *)E2FSCK_BIN, "-fy", (char *)path, NULL };
+
+	pid = fork();
+	if (pid < 0) {
+		perror("fork");
+		return -1;
+	}
+	if (pid == 0) {
+		execve(E2FSCK_BIN, argv, environ);
+		perror(E2FSCK_BIN);
+		_exit(127);
+	}
+	if (waitpid(pid, &status, 0) != pid) {
+		perror("waitpid");
+		return -1;
+	}
+	if (!WIFEXITED(status) || WEXITSTATUS(status) >= 4) {
+		fprintf(stderr, "%s -fy %s failed (status 0x%x)\n", E2FSCK_BIN, path, (unsigned)status);
+		return -1;
+	}
+	return 0;
+}
+
 int main(void)
 {
 	char workdir[] = "/tmp/kanxeo_test_installer_XXXXXX";
@@ -121,6 +167,7 @@ int main(void)
 	long esp_start_sec, esp_size_sec;
 	long root_a_start_sec, root_a_size_sec;
 	long config_start_sec, config_size_sec;
+	long containers_start_sec, containers_size_sec;
 	enum qemu_boot_outcome outcome;
 	int ok = 1;
 
@@ -409,6 +456,8 @@ int main(void)
 			return 1;
 		if (sfdisk_dump_offset(sfdisk_dump, 4, &config_start_sec, &config_size_sec) != 0)
 			return 1;
+		if (sfdisk_dump_offset(sfdisk_dump, 5, &containers_start_sec, &containers_size_sec) != 0)
+			return 1;
 	}
 
 	{
@@ -581,6 +630,146 @@ int main(void)
 	if (strstr(captured, "applied static ip") == NULL ||
 	    strstr(captured, TEST_IP) == NULL || strstr(captured, TEST_GATEWAY) == NULL) {
 		fprintf(stderr, "installed system booted but never applied its static ip config\n");
+		printf("INSTALLER RESULT: FAIL\n");
+		return 1;
+	}
+
+	/* 10. The actual persistence proof (ADR-0018): BASE_DIR
+	 * (/var/lib/kanxeo) must be the real kanxeo-containers partition
+	 * boot_init() now mounts, not a fresh tmpfs -- session 3's boot
+	 * above already exercised ensure_dir()'s own directory creation
+	 * (images/, containers/, pki/, pkg/) against whatever BASE_DIR
+	 * resolved to; extracting the real on-disk partition and finding
+	 * them there (not just believing the boot succeeded) is the actual
+	 * proof, exactly as root-A's own byte-for-byte comparison above
+	 * proves the raw write landed rather than trusting "install
+	 * complete". A marker file written directly into the extracted
+	 * partition (debugfs -w, no mount needed) BEFORE a second,
+	 * completely independent boot, still present with the exact same
+	 * content AFTER it, is the stronger proof that matters here: real
+	 * data genuinely survives a real reboot, not just that kanxeod
+	 * created some directories once. */
+	{
+		char containers_extract[600];
+		char marker_src[600];
+		char listing[4096];
+		char marker_readback[256];
+		const char *marker_content = "kanxeo-persistence-test-marker\n";
+
+		snprintf(containers_extract, sizeof(containers_extract), "%s/containers_extract.img",
+		         workdir);
+		snprintf(marker_src, sizeof(marker_src), "%s/marker.txt", workdir);
+
+		if (extract_partition(target_disk_img, containers_start_sec * SECTOR_SIZE,
+		                       containers_size_sec * SECTOR_SIZE, containers_extract) != 0) {
+			fprintf(stderr, "could not extract containers partition after session 3\n");
+			ok = 0;
+		} else if (run_e2fsck_fy(containers_extract) != 0) {
+			ok = 0;
+		} else {
+			char *ls_argv[] = { (char *)DEBUGFS_BIN, "-R", "ls -l /", containers_extract, NULL };
+
+			if (run_subprocess_capture(DEBUGFS_BIN, ls_argv, listing, sizeof(listing)) != 0 ||
+			    strstr(listing, "images") == NULL || strstr(listing, "containers") == NULL ||
+			    strstr(listing, "pki") == NULL || strstr(listing, "pkg") == NULL) {
+				fprintf(stderr,
+				        "containers partition missing kanxeod's own directories after a "
+				        "real boot -- BASE_DIR was not actually the real partition. "
+				        "listing:\n%s\n",
+				        listing);
+				ok = 0;
+			} else {
+				printf("containers partition after session 3 (real kanxeod state, not "
+				       "tmpfs):\n%s\n",
+				       listing);
+			}
+		}
+
+		if (ok && write_text_file(marker_src, marker_content) != 0) {
+			fprintf(stderr, "could not write local marker file\n");
+			ok = 0;
+		}
+		if (ok) {
+			char *write_argv[] = { (char *)DEBUGFS_BIN, "-w", "-R", NULL, containers_extract,
+				                NULL };
+			char write_cmd[700];
+
+			snprintf(write_cmd, sizeof(write_cmd), "write %s images/PERSISTENCE_MARKER",
+			         marker_src);
+			write_argv[3] = write_cmd;
+			if (run_subprocess(DEBUGFS_BIN, write_argv) != 0) {
+				fprintf(stderr, "could not inject marker file into containers partition\n");
+				ok = 0;
+			}
+		}
+		if (ok && write_at_offset(target_disk_img, containers_start_sec * SECTOR_SIZE,
+		                           containers_extract) != 0) {
+			fprintf(stderr, "could not write modified containers partition back to disk\n");
+			ok = 0;
+		}
+
+		if (!ok) {
+			printf("INSTALLER RESULT: FAIL\n");
+			return 1;
+		}
+
+		/* Session 4: the same target disk, a completely independent
+		 * QEMU process/boot, Secure Boot still enforced (the same
+		 * ovmf_vars, already MOK-confirmed by session 2). A NIC is
+		 * still required even though this check has nothing to do with
+		 * networking: the ESP's own loader entry (written by session
+		 * 1's install) bakes in --bind=<the configured static IP> on
+		 * kanxeod's kernel command line unconditionally, on every boot
+		 * of this disk -- omitting the NIC here means that address is
+		 * never actually assigned to any interface, so kanxeod's own
+		 * bind() fails and PID 1 exits, panicking the kernel (found
+		 * directly by first omitting it here). */
+		{
+			struct qemu_boot_opts opts;
+
+			memset(&opts, 0, sizeof(opts));
+			opts.disk_img = target_disk_img;
+			opts.secure_boot = 1;
+			opts.with_nic = 1;
+			opts.ovmf_vars = ovmf_vars;
+			opts.success_marker = BOOT_SUCCESS_MARKER;
+			opts.panic_marker = "Kernel panic";
+			opts.timeout_seconds = BOOT_TIMEOUT_SECONDS;
+			outcome = qemu_boot_capture(&opts, captured, sizeof(captured));
+		}
+		if (outcome != QEMU_BOOT_SUCCESS) {
+			fprintf(stderr, "second, independent boot of the same disk did not succeed "
+			                "(outcome=%d)\n",
+			        (int)outcome);
+			printf("INSTALLER RESULT: FAIL\n");
+			return 1;
+		}
+
+		if (extract_partition(target_disk_img, containers_start_sec * SECTOR_SIZE,
+		                       containers_size_sec * SECTOR_SIZE, containers_extract) != 0) {
+			fprintf(stderr, "could not extract containers partition after session 4\n");
+			ok = 0;
+		} else {
+			char *cat_argv[] = { (char *)DEBUGFS_BIN, "-R", "cat images/PERSISTENCE_MARKER",
+				              containers_extract, NULL };
+
+			if (run_subprocess_capture(DEBUGFS_BIN, cat_argv, marker_readback,
+			                            sizeof(marker_readback)) != 0 ||
+			    strcmp(marker_readback, marker_content) != 0) {
+				fprintf(stderr,
+				        "marker file did not survive a real, independent second boot -- "
+				        "got %s (%zu bytes), want %s (%zu bytes)\n",
+				        marker_readback, strlen(marker_readback), marker_content,
+				        strlen(marker_content));
+				ok = 0;
+			} else {
+				printf("marker file survived a real, independent second boot unchanged -- "
+				       "BASE_DIR genuinely persists across reboots\n");
+			}
+		}
+	}
+
+	if (!ok) {
 		printf("INSTALLER RESULT: FAIL\n");
 		return 1;
 	}

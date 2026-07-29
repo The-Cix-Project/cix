@@ -4,6 +4,15 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 12 (part 2): a real reboot no longer wipes every installed package, network, and image
+
+`boot_init()` has mounted a fresh `tmpfs` at `BASE_DIR` (`/var/lib/kanxeo`) on every real boot since Phase 11 part 1 — and every piece of daemon-persisted state lives there. A full power cycle on a real installed system silently discarded it all. Found while scoping the next step (installing real software via `pkg install`, which only matters if it survives a reboot), not reported as a bug. See ADR-0018.
+
+#### Fixed
+- `daemon/src/main.c`: `boot_init()` now mounts the real, already-formatted `kanxeo-containers` partition (`/dev/vda5`) at `BASE_DIR`, falling back to `tmpfs` only when that device doesn't exist (parts 1/2's own throwaway test disks). One new `sync()` call, gated on `--init-mode`, right after state-init and before the listening socket opens — the "listening on" line is exactly the signal both this project's tests and a real operator treat as "safe to power-cycle," and QEMU's default write-back disk cache (matching real hardware's own guest-side dirty-page caching) doesn't guarantee that's true without one.
+
+Verified with a real cross-boot proof, not just "the mount succeeded": `test/test_installer.c` extracts the real on-disk containers partition after the installed system's first full boot, confirms `kanxeod`'s own directories are genuinely there, writes a marker file directly into it (`debugfs -w`), and confirms it survives a *completely independent second boot* of the same disk, byte-for-byte. Two more real bugs found and fixed while building that proof: the new `sync()` initially landed *after* the "listening on" print, racing the test harness's own kill-on-marker behavior and defeating the fix; and a partition extracted right after a QEMU session still carries a pending ext4 journal, which a raw `debugfs` write can have silently reverted by the next real mount's journal replay unless `e2fsck -fy` forces that replay first. Zero warnings; `test_boot`/`test_boot_ab` re-verified (tmpfs-fallback path unaffected); `test_installer` re-verified, 3 consecutive passes.
+
 ### Phase 12 (part 1): PCI/USB (character/block) device passthrough to containers
 
 The expanded charter's first concrete step, agreed directly with the user: pass a real USB device or a driver-backed PCI device (e.g. an NVMe namespace) straight to a container. Two architectural forks were confirmed before writing any code — enforcement via `BPF_CGROUP_DEVICE` (cgroup v2's only device-access mechanism; see ADR-0017 for why this doesn't reopen the networking plane's own separately-scoped "no eBPF" rule) rather than namespace-only isolation (this project's containers run as full root with no user namespace, so `mknod()` of an ungranted device would otherwise just work), and sysfs auto-discovery rather than operator-registered devices.

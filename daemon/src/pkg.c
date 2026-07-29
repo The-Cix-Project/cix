@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -603,6 +604,48 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
 	return load_state();
 }
 
+/*
+ * Containers get no /dev at all beyond whatever the shared lowerdir
+ * image itself contains (confirmed by test/test_dns.c's own
+ * ensure_dev_node() precedent -- no devtmpfs exists yet). A real
+ * build's own ./configure script routinely redirects to /dev/null
+ * while probing the compiler -- confirmed directly: bash's configure
+ * failed outright with "cannot create /dev/null: Directory
+ * nonexistent" before this existed, a generic blocker for any
+ * package's build, not specific to one recipe. The standard
+ * major:minor quintet below (all major 1, the kernel's own "mem"
+ * driver) covers what a non-interactive build/install actually
+ * touches; /dev/tty is deliberately omitted -- nothing in a batch
+ * "./configure && make && make install" sequence needs a controlling
+ * terminal.
+ */
+static int ensure_std_dev_nodes(const char *rootfs)
+{
+	static const struct {
+		const char *name;
+		unsigned int major, minor;
+	} nodes[] = {
+		{ "null", 1, 3 }, { "zero", 1, 5 }, { "full", 1, 7 }, { "random", 1, 8 },
+		{ "urandom", 1, 9 },
+	};
+	char dev_dir[PATH_MAX];
+	size_t i;
+
+	snprintf(dev_dir, sizeof(dev_dir), "%s/dev", rootfs);
+	if (persist_mkdir_p(dev_dir) != 0)
+		return -1;
+
+	for (i = 0; i < sizeof(nodes) / sizeof(nodes[0]); i++) {
+		char path[PATH_MAX];
+
+		snprintf(path, sizeof(path), "%s/%s", dev_dir, nodes[i].name);
+		if (mknod(path, S_IFCHR | 0666, makedev(nodes[i].major, nodes[i].minor)) != 0 &&
+		    errno != EEXIST)
+			return -1;
+	}
+	return 0;
+}
+
 enum pkg_error pkg_bootstrap_build_image(void)
 {
 	static const char *const subdirs[] = { "include", "lib", "lib64", "bin", "libexec" };
@@ -647,6 +690,88 @@ enum pkg_error pkg_bootstrap_build_image(void)
 		snprintf(linkpath, sizeof(linkpath), "%s/%s", g_pkgbuild_rootfs, compat[i].link);
 		symlink(compat[i].target, linkpath); /* EEXIST tolerated -- idempotent */
 	}
+
+	/*
+	 * Targeted extras beyond the wholesale /usr/{include,lib,lib64,bin,
+	 * libexec} copy above, each found by an actual build failing, not
+	 * guessed at -- staging the *entirety* of e.g. /usr/share (584M on
+	 * this host, almost none of it relevant to building software) just
+	 * to reach one tool's own data files would bloat this image for no
+	 * real benefit. Extend this list as a real build surfaces a real
+	 * need for one, the same "verify empirically, don't speculate"
+	 * discipline this project applies everywhere else:
+	 *
+	 * - /etc/alternatives: Debian's "alternatives" system points many
+	 *   /usr/bin/* tools (awk, and others a real build can reach for)
+	 *   at an *absolute* /etc/alternatives/<name> symlink -- cp -a on
+	 *   /usr/bin above preserves that symlink exactly as-is, target
+	 *   string included, so it still reads /etc/alternatives/<name>
+	 *   once inside the container. Confirmed directly: bash's own
+	 *   config.status failed outright ("awk: command not found")
+	 *   because /etc was never staged at all.
+	 * - /usr/share/bison: bison itself needs its own bundled M4 macro
+	 *   library (m4sugar.m4 and friends) at *run* time, not just build
+	 *   time, to generate a parser from any .y grammar -- confirmed
+	 *   directly building iproute2's tc (its ematch grammar needs
+	 *   bison): "bison: .../m4sugar.m4: cannot open: No such file or
+	 *   directory".
+	 */
+	{
+		static const struct {
+			const char *src;
+			const char *rel_dst;
+		} extras[] = {
+			{ "/etc/alternatives", "etc/alternatives" },
+			{ "/usr/share/bison", "usr/share/bison" },
+			{ "/usr/share/autoconf", "usr/share/autoconf" },
+			{ "/usr/share/perl", "usr/share/perl" },
+		};
+
+		for (i = 0; i < sizeof(extras) / sizeof(extras[0]); i++) {
+			char dst[PATH_MAX], dst_parent[PATH_MAX], *slash;
+			struct stat st;
+
+			snprintf(dst, sizeof(dst), "%s/%s", g_pkgbuild_rootfs, extras[i].rel_dst);
+			if (stat(extras[i].src, &st) != 0 || stat(dst, &st) == 0)
+				continue; /* not present on this host, or already staged */
+
+			snprintf(dst_parent, sizeof(dst_parent), "%s", dst);
+			slash = strrchr(dst_parent, '/');
+			if (slash != NULL)
+				*slash = '\0';
+
+			{
+				char *argv[] = { (char *)PKG_CP_BIN, "-a", (char *)extras[i].src, dst,
+					          NULL };
+
+				if (persist_mkdir_p(dst_parent) != 0 || run_subprocess(PKG_CP_BIN, argv) != 0)
+					return PKG_ERR_SPAWN_FAILED;
+			}
+		}
+	}
+
+	if (ensure_std_dev_nodes(g_pkgbuild_rootfs) != 0)
+		return PKG_ERR_PERSIST_FAILED;
+
+	/*
+	 * Same "the pkgbuild image only ever staged /usr, nothing at the
+	 * real root" gap /dev above already fixed -- confirmed directly
+	 * (autoconf's own config.guess failed outright: "cannot create a
+	 * temporary directory in /tmp"). Real build systems' own temp-file
+	 * handling (config.guess, mktemp, plenty of Makefiles) assumes a
+	 * writable, sticky-bit /tmp exists, the same standard FHS baseline
+	 * assumption /dev/null already covers.
+	 */
+	{
+		char tmp_dir[PATH_MAX];
+
+		snprintf(tmp_dir, sizeof(tmp_dir), "%s/tmp", g_pkgbuild_rootfs);
+		if (persist_mkdir_p(tmp_dir) != 0)
+			return PKG_ERR_PERSIST_FAILED;
+		if (chmod(tmp_dir, 01777) != 0)
+			return PKG_ERR_PERSIST_FAILED;
+	}
+
 	return PKG_OK;
 }
 

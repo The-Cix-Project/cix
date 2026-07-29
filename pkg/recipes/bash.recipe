@@ -1,0 +1,38 @@
+#
+# bash -- the GNU Bourne-Again SHell.
+#
+# Read by kanxeod's own non-executing metadata scanner (pkg_name=/
+# pkg_version=/pkg_source=/pkg_sha256=/pkg_depends=, daemon/src/pkg.c's
+# parse_recipe()) AND sourced as a real POSIX shell script inside the
+# isolated, network-less build container (". /build/recipe.sh" --
+# daemon/include/pkg.h's own documented contract) to run pkg_build()/
+# pkg_install() below. Never sourced or executed on the host itself.
+#
+# Source verified against two independent GNU mirrors (ftp.gnu.org and
+# mirrors.kernel.org) -- byte-identical, same sha256.
+#
+pkg_name="bash"
+pkg_version="5.2.37"
+pkg_source="https://ftp.gnu.org/gnu/bash/bash-5.2.37.tar.gz"
+pkg_sha256="9599b22ecd1d5787ad7d3b7bf0c59f312b3396d1e281175dd1f8a4014da621ff"
+pkg_depends=""
+
+# Run with $PWD already at /build/src (the extracted tarball, one
+# leading path component already stripped) and PATH=/usr/bin:/bin --
+# no network access. bash builds its own bundled ./lib/readline copy
+# automatically whenever no suitable external readline is found, so no
+# --without-* flags are needed either way; if the pkgbuild toolchain
+# image does carry readline/ncurses headers (pkg_bootstrap_build_image()
+# stages whatever the host itself has), configure uses those instead,
+# which is fine either way.
+pkg_build() {
+	./configure --prefix=/usr
+	make -j"$(nproc)"
+}
+
+# PKG_DESTDIR is set by kanxeod itself (daemon/src/pkg.c) -- everything
+# written under it is what actually gets merged into the shared "base"
+# image once this build container exits successfully.
+pkg_install() {
+	make install DESTDIR="$PKG_DESTDIR"
+}

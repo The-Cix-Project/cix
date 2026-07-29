@@ -64,6 +64,14 @@
 #define CONFIG_DEVICE "/dev/vda4"
 #define CONFIG_DIR "/config"
 #define NET_CONF_PATH CONFIG_DIR "/net.conf"
+/*
+ * Partition 5, same fixed QEMU virtio-blk layout as ESP_DEVICE/
+ * CONFIG_DEVICE above -- also absent on parts 1/2's throwaway 2/3-
+ * partition test disks, so boot_init() falls back to a tmpfs at
+ * BASE_DIR when this device doesn't exist, exactly like every other
+ * "not a real installed system" case in this function.
+ */
+#define CONTAINERS_DEVICE "/dev/vda5"
 #define MAX_EVENTS 64
 #define CONTAINERS_PREFIX "/v1/containers/"
 #define NETWORKS_PREFIX "/v1/networks/"
@@ -132,10 +140,21 @@ static int mount_or_fail(const char *source, const char *target, const char *fst
  * (CONFIG_DEVTMPFS_MOUNT) before init ever runs, so /dev needs no mount
  * here. Same proc mount flags mountns_pivot() already uses for each
  * container's own /proc (src/mountns.c) -- one already-correct flag set,
- * not a second one invented. The tmpfs at BASE_DIR is Phase 11 part 1's
- * explicit stand-in for the real config/container partitions part 3's
- * installer mounts there instead -- same mount point, so nothing below
- * this function changes when that lands.
+ * not a second one invented.
+ *
+ * BASE_DIR is the real kanxeo-containers partition (CONTAINERS_DEVICE) --
+ * everything a running daemon persists (images/, containers/,
+ * networks.json, dns_records.json, pki_certs.json, pkg_installed.json)
+ * genuinely survives a real reboot, not just a plain daemon restart
+ * within the same still-running kernel. Falls back to a tmpfs at the
+ * same mount point when that device doesn't exist (parts 1/2's own
+ * throwaway 2/3-partition test disks): a real, deliberate exception
+ * for "not a real installed system," same posture as CONFIG_DEVICE's
+ * own non-fatal mount below, not a bug in that fallback path. This
+ * was originally meant to land in Phase 11 part 3 (the installer
+ * already formats and names this partition for exactly this purpose)
+ * but the swap itself never actually happened until now -- see
+ * ADR-0018.
  */
 /*
  * Finds the first real, non-loopback network interface -- not hardcoded
@@ -264,7 +283,8 @@ static int boot_init(void)
 		return -1;
 	if (mount_or_fail("cgroup2", "/sys/fs/cgroup", "cgroup2", 0) != 0)
 		return -1;
-	if (mount_or_fail("tmpfs", BASE_DIR, "tmpfs", MS_NOSUID | MS_NODEV) != 0)
+	if (mount(CONTAINERS_DEVICE, BASE_DIR, "ext4", MS_NOSUID | MS_NODEV, NULL) != 0 &&
+	    mount_or_fail("tmpfs", BASE_DIR, "tmpfs", MS_NOSUID | MS_NODEV) != 0)
 		return -1;
 	/* Needed to reach the loader entry confirm_boot() renames once this
 	 * boot proves healthy (Phase 11 part 2) -- writable, not read-only
@@ -1971,6 +1991,28 @@ int main(int argc, char **argv)
 		return 1;
 
 	registry_init();
+
+	/*
+	 * ensure_dir()'s directory scaffolding and each module's own
+	 * state-init above are real writes onto BASE_DIR -- the real
+	 * kanxeo-containers partition as of this change (ADR-0018), not a
+	 * tmpfs. QEMU's default `-drive` cache mode (writeback) only
+	 * guarantees those bytes reach the actual disk image once the
+	 * guest itself issues a flush; without this, they'd sit in the
+	 * guest kernel's own dirty-page cache, unbounded, until its
+	 * periodic writeback timer next fires -- and this daemon printing
+	 * "listening on" is exactly the signal an external test harness
+	 * (or a real operator power-cycling the machine) treats as "boot
+	 * finished successfully," so it needs to already be true by then.
+	 * Same "flush before anything can go wrong" posture the shutdown
+	 * path already has (ADR-0016's sync() before reboot(2)), applied
+	 * here to the boot-time writes instead -- and it has to run
+	 * *before* the "listening on" line below, not after, or a test
+	 * harness (or operator) acting on that line as the all-clear can
+	 * still race a sync that hasn't happened yet.
+	 */
+	if (init_mode)
+		sync();
 
 	memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = on_signal;
