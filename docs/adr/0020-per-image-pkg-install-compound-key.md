@@ -1,0 +1,25 @@
+# 0020 — pkg install targets an explicit image, tracked by a (name, image) compound key
+
+## Status
+
+Accepted
+
+## Context
+
+The user's own router use case made a real gap concrete: `pkg install` has only ever had one destination, the shared `base` image every container uses by default — confirmed directly in `pkg_build_completed()` (`daemon/src/pkg.c`), whose merge step was hardcoded to `g_base_rootfs`. There was no way to build a `router`-flavored image carrying `bash`/`iproute2`/`bird` without every other container on `base` getting them too, which the user explicitly did not want ("I don't want them as part of the base kanxeo").
+
+Confirmed alongside two related gaps in the same conversation (explicit network IP allocation, real NIC passthrough) and planned together, but implemented and shipped independently, starting with this one per the user's own stated priority order.
+
+## Decision
+
+`pkg_install_start()`/`pkg_get_one()`/`pkg_delete()` all gain an `image` parameter (`NULL`/`""` meaning `PKG_DEFAULT_IMAGE`, `"base"` — every existing caller's behavior is unchanged by default). Because the same package name must now be independently trackable per target image (installing `bash` into both `base` and `router` are two separate, independently upgradable/removable things, not a collision), the in-memory/persisted package registry's lookup key becomes a **(name, image) compound key** — `pkg_find()` takes both, `struct pkg_entry` gains an `image[]` field, and `pkg_installed.json` persists it (absent on load defaults to `"base"`, so every pre-existing state file stays valid unchanged). A job-scoped `g_current_job_image` global, set once by `pkg_install_start()` and read by every downstream step (`resolve_chain()`, `start_fetch_for()`, `pkg_fetch_completed()`, `pkg_build_completed()`), means only the three genuine public entry points needed a signature change — the dependency-resolution and build-pipeline internals stay untouched in shape, they just resolve their target image from that global instead of a hardcoded constant. A package's full dependency chain always installs into the *same* target image as the top-level request — a `router` image's own `bash` dependency never leaks into `base`.
+
+REST addressing for the two single-resource endpoints (`GET`/`DELETE /v1/pkg/{name}`) needed a way to name a non-default image without new query-string infrastructure — confirmed absent from `daemon/include/http.h`'s `struct http_request` entirely. Reused the existing path segment with an `@`-separated compound form, `/v1/pkg/{name}@{image}` (bare `{name}` still means `base`), safe and unambiguous because `simple_name_is_valid()` already forbids `@` in any real name. `POST /v1/pkg/install`'s body gains an optional `"image"` field instead, since it's already a JSON object. `cli/src/main.c` mirrors both: `pkg install --image=NAME` and `pkg rm NAME[@IMAGE]` (the CLI's `rm` needed no code change at all — it already forwards its argument straight into the URL path).
+
+## Consequences
+
+- Verified end-to-end over real HTTP against a live daemon (`test/test_pkg.c`, extended): the same recipe (`greeter`) installed into both `base` and `router` lands in two genuinely separate rootfs trees with no cross-contamination, `GET /v1/pkg` lists both as distinct entries with correct `image` fields, `@`-addressed `GET`/`DELETE` reach the right one, and deleting `greeter@router` leaves the independently-installed `greeter@base` untouched — 3 consecutive clean runs. Full regression sweep (`test_daemon`, `test_cli`, `test_networks`, `test_dns`, `test_pki`, `test_daemon_net`, `test_daemon_devices`) re-run clean against the rebuilt daemon.
+- v1's existing single-install-in-flight-at-a-time serialization (`PKG_ERR_BUSY`) is now global across every image, not per-image — installing into `router` while a `base` install is in flight still 409s. Not a new limitation introduced here; the existing one-`g_current_job_name`-slot design already implied it, this just makes the boundary explicit (`pkg_delete()`'s own busy check was tightened to compare both name *and* image, so deleting from one image is never incorrectly blocked by an unrelated in-flight install into a different one).
+- `PkgEntry`'s REST schema gains a required `image` field (`docs/api/openapi.yaml`); `PkgInstallRequest` gains an optional one, defaulting to `"base"`.
+- No image *creation* step exists yet — the target rootfs directory is created on demand (`persist_mkdir_p()`) the first time anything installs into it. A container referencing an image name nothing has ever been installed into gets whatever `image_rootfs_path()` resolves to, empty, which is consistent with how `base` itself already behaves before `pkg bootstrap`.
+- ADR-0019's C-runtime seeding (`ld.so`/`libc.so.6`/`libtinfo.so.6`) still targets `images/base/rootfs` specifically, at install time — a package built into a non-default image won't be able to execve() until that seeding is generalized to every image a container might reference. A real, known gap, not addressed by this change.

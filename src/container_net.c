@@ -2,8 +2,10 @@
 #include "rtnetlink.h"
 
 #include <fcntl.h>
+#include <sched.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 int container_net_host_setup(const struct network_spec *nets, int net_count, pid_t child_pid,
@@ -92,6 +94,135 @@ int container_net_child_configure(const struct network_spec *nets, int net_count
 
 	rtnl_close(fd);
 	return 0;
+}
+
+int container_net_host_attach_interfaces(const char *const *interfaces, int interface_count,
+                                          pid_t child_pid, int *out_netns_fd)
+{
+	char ns_path[64];
+	int fd;
+	int i;
+	pid_t helper;
+	int status;
+
+	*out_netns_fd = -1;
+	if (interface_count == 0)
+		return 0;
+
+	snprintf(ns_path, sizeof(ns_path), "/proc/%d/ns/net", (int)child_pid);
+	*out_netns_fd = open(ns_path, O_RDONLY);
+	if (*out_netns_fd < 0)
+		return -1;
+
+	fd = rtnl_open();
+	if (fd < 0) {
+		close(*out_netns_fd);
+		*out_netns_fd = -1;
+		return -1;
+	}
+
+	for (i = 0; i < interface_count; i++) {
+		if (rtnl_link_set_netns_pid(fd, interfaces[i], child_pid) != 0) {
+			rtnl_close(fd);
+			close(*out_netns_fd);
+			*out_netns_fd = -1;
+			return -1;
+		}
+	}
+	rtnl_close(fd);
+
+	/*
+	 * The kernel administratively downs a link as part of moving it to
+	 * a new netns (dev_change_net_namespace()) -- confirmed directly,
+	 * not assumed -- so "up" has to happen AFTER the move, from inside
+	 * the netns it just landed in, not before. A forked, short-lived
+	 * helper does the same setns()-then-fresh-socket dance
+	 * container_net_teardown_interfaces() uses for the reverse move,
+	 * for the same reason: a netlink socket can only address
+	 * interfaces visible in its own netns.
+	 */
+	helper = fork();
+	if (helper < 0) {
+		close(*out_netns_fd);
+		*out_netns_fd = -1;
+		return -1;
+	}
+	if (helper == 0) {
+		int hfd;
+
+		if (setns(*out_netns_fd, CLONE_NEWNET) != 0)
+			_exit(1);
+		hfd = rtnl_open();
+		if (hfd < 0)
+			_exit(1);
+		for (i = 0; i < interface_count; i++) {
+			if (rtnl_link_set_up(hfd, interfaces[i]) != 0) {
+				rtnl_close(hfd);
+				_exit(1);
+			}
+		}
+		rtnl_close(hfd);
+		_exit(0);
+	}
+	if (waitpid(helper, &status, 0) != helper || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		close(*out_netns_fd);
+		*out_netns_fd = -1;
+		return -1;
+	}
+
+	return 0;
+}
+
+int container_net_teardown_interfaces(const char *const *interfaces, int interface_count,
+                                       int netns_fd)
+{
+	pid_t pid;
+	int status;
+
+	if (interface_count == 0)
+		return 0;
+
+	pid = fork();
+	if (pid < 0) {
+		close(netns_fd);
+		return -1;
+	}
+	if (pid == 0) {
+		/* Throwaway helper: setns() is whole-process, so this whole
+		 * dance is isolated here rather than risking the long-lived
+		 * daemon's own netns. root_fd must be opened BEFORE setns()
+		 * moves this process itself into the container's netns. */
+		int root_fd = open("/proc/self/ns/net", O_RDONLY);
+		int fd;
+		int i;
+		int rc = 0;
+
+		if (root_fd < 0 || setns(netns_fd, CLONE_NEWNET) != 0)
+			_exit(1);
+
+		/* Created only now, while genuinely inside the container's
+		 * netns -- a netlink socket is scoped to whatever netns was
+		 * current at its own creation, same rule rtnetlink.h documents
+		 * for every other caller. */
+		fd = rtnl_open();
+		if (fd < 0)
+			_exit(1);
+
+		for (i = 0; i < interface_count; i++) {
+			if (rtnl_link_set_netns_fd(fd, interfaces[i], root_fd) != 0)
+				rc = 1;
+		}
+
+		_exit(rc);
+	}
+
+	/* Our own copy of netns_fd is no longer needed -- the helper
+	 * duplicated it across fork() and holds its own reference for as
+	 * long as it needs one. */
+	close(netns_fd);
+	if (waitpid(pid, &status, 0) != pid)
+		return -1;
+	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
 int container_net_install_routes(const struct route_spec *routes, int route_count)

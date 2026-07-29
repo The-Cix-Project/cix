@@ -28,9 +28,10 @@ static void print_usage(FILE *out)
 	        "               just exits, same as it always has on SIGTERM\n"
 	        "  reboot    -- stop kanxeod; restarts the host too when running as PID 1\n"
 	        "  ps\n"
-	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] [--network=NAME ...]\n"
+	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] [--network=NAME[:IP] ...]\n"
 	        "      [--ip-forward] [--dns-register] [--pki-issue] [--pki-cert-dir=PATH]\n"
-	        "      [--pki-days=N] [--route=DEST/PREFIX:VIA ...] [--device=ID ...] -- CMD [ARGS...]\n"
+	        "      [--pki-days=N] [--route=DEST/PREFIX:VIA ...] [--device=ID ...]\n"
+	        "      [--interface=IFNAME ...] -- CMD [ARGS...]\n"
 	        "  inspect NAME\n"
 	        "  rm NAME\n"
 	        "  network create --name=NAME --subnet=A.B.C.D --prefix=N\n"
@@ -51,9 +52,9 @@ static void print_usage(FILE *out)
 	        "  pki cert rm NAME\n"
 	        "  pkg bootstrap\n"
 	        "  pkg recipes\n"
-	        "  pkg install --name=NAME [--upgrade]\n"
+	        "  pkg install --name=NAME [--image=IMAGE] [--upgrade]\n"
 	        "  pkg ls\n"
-	        "  pkg rm NAME\n");
+	        "  pkg rm NAME[@IMAGE]\n");
 }
 
 static const char *json_str_field(const struct json_value *obj, const char *key)
@@ -441,12 +442,49 @@ static int cmd_rm(const struct kx_client *c, int json_mode, int argc, char **arg
 #define CLI_MAX_ROUTES 8
 /* Matches daemon's CONTAINER_MAX_DEVICES -- see include/container.h. */
 #define CLI_MAX_DEVICES 16
+/* Matches daemon's CONTAINER_MAX_INTERFACES -- see include/container.h. */
+#define CLI_MAX_INTERFACES 16
 
 struct cli_route {
 	char dest[64];
 	int prefix_len;
 	char via[64];
 };
+
+struct cli_network_attach {
+	char name[64];
+	char ip[64];
+	int has_ip;
+};
+
+/* Parses "NAME" or "NAME:IP" (e.g. "lan1:172.30.1.50") -- an explicit,
+ * operator-chosen address instead of an auto-allocated one. Purely a
+ * CLI presentation-syntax split, same spirit as parse_route_flag() --
+ * whether ip is actually well-formed IPv4 is the daemon's job to
+ * validate, not duplicated here. */
+static int parse_network_flag(const char *s, struct cli_network_attach *out)
+{
+	const char *colon = strchr(s, ':');
+	size_t name_len;
+
+	memset(out, 0, sizeof(*out));
+	if (colon == NULL) {
+		if (s[0] == '\0' || strlen(s) >= sizeof(out->name))
+			return -1;
+		strcpy(out->name, s);
+		return 0;
+	}
+	name_len = (size_t)(colon - s);
+	if (name_len == 0 || name_len >= sizeof(out->name))
+		return -1;
+	memcpy(out->name, s, name_len);
+	out->name[name_len] = '\0';
+	if (strlen(colon + 1) == 0 || strlen(colon + 1) >= sizeof(out->ip))
+		return -1;
+	strcpy(out->ip, colon + 1);
+	out->has_ip = 1;
+	return 0;
+}
 
 /* Parses "DEST/PREFIX:VIA" (e.g. "172.34.0.0/24:172.33.0.5") into its
  * three parts. Purely a CLI presentation-syntax split -- whether
@@ -484,10 +522,12 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 {
 	const char *name = NULL;
 	const char *image = NULL;
-	const char *networks[CLI_MAX_NETWORKS];
+	struct cli_network_attach networks[CLI_MAX_NETWORKS];
 	int network_count = 0;
 	const char *devices[CLI_MAX_DEVICES];
 	int device_count = 0;
+	const char *interfaces[CLI_MAX_INTERFACES];
+	int interface_count = 0;
 	int ip_forward = 0;
 	int dns_register = 0;
 	int pki_issue = 0;
@@ -521,7 +561,11 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 				        CLI_MAX_NETWORKS);
 				return 2;
 			}
-			networks[network_count++] = argv[i] + 10;
+			if (parse_network_flag(argv[i] + 10, &networks[network_count]) != 0) {
+				fprintf(stderr, "kanxeoctl: invalid --network= value '%s'\n", argv[i] + 10);
+				return 2;
+			}
+			network_count++;
 		} else if (strncmp(argv[i], "--device=", 9) == 0) {
 			if (device_count >= CLI_MAX_DEVICES) {
 				fprintf(stderr, "kanxeoctl: too many --device= flags (max %d)\n",
@@ -529,6 +573,13 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 				return 2;
 			}
 			devices[device_count++] = argv[i] + 9;
+		} else if (strncmp(argv[i], "--interface=", 12) == 0) {
+			if (interface_count >= CLI_MAX_INTERFACES) {
+				fprintf(stderr, "kanxeoctl: too many --interface= flags (max %d)\n",
+				        CLI_MAX_INTERFACES);
+				return 2;
+			}
+			interfaces[interface_count++] = argv[i] + 12;
 		} else if (strcmp(argv[i], "--ip-forward") == 0) {
 			ip_forward = 1;
 		} else if (strcmp(argv[i], "--dns-register") == 0) {
@@ -562,9 +613,10 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (name == NULL || image == NULL || cmd_start < 0 || cmd_start >= argc) {
 		fprintf(stderr,
 		        "usage: kanxeoctl run --name=NAME --image=IMAGE [--memory-max=N] "
-		        "[--pids-max=N] [--network=NAME ...] [--ip-forward] [--dns-register] "
+		        "[--pids-max=N] [--network=NAME[:IP] ...] [--ip-forward] [--dns-register] "
 		        "[--pki-issue] [--pki-cert-dir=PATH] [--pki-days=N] "
-		        "[--route=DEST/PREFIX:VIA ...] [--device=ID ...] -- CMD [ARGS...]\n");
+		        "[--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--interface=IFNAME ...] "
+		        "-- CMD [ARGS...]\n");
 		return 2;
 	}
 
@@ -595,8 +647,18 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (network_count > 0) {
 		jw_key(&w, "networks");
 		jw_arr_open(&w);
-		for (i = 0; i < network_count; i++)
-			jw_str(&w, networks[i]);
+		for (i = 0; i < network_count; i++) {
+			if (networks[i].has_ip) {
+				jw_obj_open(&w);
+				jw_key(&w, "name");
+				jw_str(&w, networks[i].name);
+				jw_key(&w, "ip");
+				jw_str(&w, networks[i].ip);
+				jw_obj_close(&w);
+			} else {
+				jw_str(&w, networks[i].name);
+			}
+		}
 		jw_arr_close(&w);
 	}
 	if (ip_forward) {
@@ -639,6 +701,13 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		jw_arr_open(&w);
 		for (i = 0; i < device_count; i++)
 			jw_str(&w, devices[i]);
+		jw_arr_close(&w);
+	}
+	if (interface_count > 0) {
+		jw_key(&w, "interfaces");
+		jw_arr_open(&w);
+		for (i = 0; i < interface_count; i++)
+			jw_str(&w, interfaces[i]);
 		jw_arr_close(&w);
 	}
 	jw_obj_close(&w);
@@ -1229,12 +1298,14 @@ static void fmt_pkg_recipe_list(const struct json_value *v)
 static void fmt_pkg_line(const struct json_value *v)
 {
 	const char *name = json_str_field(v, "name");
+	const char *image = json_str_field(v, "image");
 	const char *version = json_str_field(v, "version");
 	const char *state = json_str_field(v, "state");
 	const char *error = json_str_field(v, "error");
 	const char *available = json_str_field(v, "available_version");
 
-	printf("%-24s %-12s %-10s %-14s %s\n", name, version, state,
+	printf("%-24s %-16s %-12s %-10s %-14s %s\n", name,
+	       image != NULL && image[0] != '\0' ? image : "-", version, state,
 	       available != NULL && available[0] != '\0' ? available : "-",
 	       error != NULL && error[0] != '\0' ? error : "-");
 }
@@ -1275,6 +1346,7 @@ static int cmd_pkg_recipes(const struct kx_client *c, int json_mode)
 static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
+	const char *image = NULL;
 	int upgrade = 0;
 	int i;
 	struct json_writer w;
@@ -1283,6 +1355,8 @@ static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, c
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
 			name = argv[i] + 7;
+		else if (strncmp(argv[i], "--image=", 8) == 0)
+			image = argv[i] + 8;
 		else if (strcmp(argv[i], "--upgrade") == 0)
 			upgrade = 1;
 		else {
@@ -1291,7 +1365,7 @@ static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, c
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: kanxeoctl pkg install --name=NAME [--upgrade]\n");
+		fprintf(stderr, "usage: kanxeoctl pkg install --name=NAME [--image=IMAGE] [--upgrade]\n");
 		return 2;
 	}
 
@@ -1299,6 +1373,10 @@ static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, c
 	jw_obj_open(&w);
 	jw_key(&w, "name");
 	jw_str(&w, name);
+	if (image != NULL) {
+		jw_key(&w, "image");
+		jw_str(&w, image);
+	}
 	if (upgrade) {
 		jw_key(&w, "upgrade");
 		jw_bool(&w, 1);
@@ -1351,9 +1429,9 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (argc < 1) {
 		fprintf(stderr, "usage: kanxeoctl pkg bootstrap\n"
 		                "       kanxeoctl pkg recipes\n"
-		                "       kanxeoctl pkg install --name=NAME [--upgrade]\n"
+		                "       kanxeoctl pkg install --name=NAME [--image=IMAGE] [--upgrade]\n"
 		                "       kanxeoctl pkg ls\n"
-		                "       kanxeoctl pkg rm NAME\n");
+		                "       kanxeoctl pkg rm NAME[@IMAGE]\n");
 		return 2;
 	}
 	sub = argv[0];

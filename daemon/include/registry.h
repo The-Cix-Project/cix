@@ -46,6 +46,17 @@ struct registry_entry {
 	struct registry_device_attachment devices[CONTAINER_MAX_DEVICES];
 	int device_count;  /* 0 = no devices granted */
 	/*
+	 * Real host interface names moved into this container's netns --
+	 * same bare-name shape container_spec.interfaces[] already has, so
+	 * unlike nets/devices above no separate adapter struct is needed.
+	 * handle.interfaces_netns_fd (see container.h) is what actually
+	 * keeps these safely recoverable at teardown; this array only
+	 * remembers which names to hand back to
+	 * container_net_teardown_interfaces() when that time comes.
+	 */
+	char interfaces[CONTAINER_MAX_INTERFACES][CONTAINER_IFNAME_MAX];
+	int interface_count; /* 0 = no interfaces granted */
+	/*
 	 * Opaque; owned exclusively by main.c's epoll bookkeeping
 	 * (registry.c never reads or writes it beyond zeroing it here).
 	 * Holds the reactor's `struct conn *` wrapper for this entry's
@@ -101,6 +112,16 @@ int registry_network_in_use(const char *network_name);
  * that address as spent in the first place.
  */
 int registry_alloc_ip(uint32_t network_base_be, int host_min, int host_max, uint32_t *out_ip_be);
+
+/*
+ * Pure collision check: true if no in-use entry's network attachment
+ * already reports this exact address, false otherwise. Deliberately
+ * has no notion of subnet/range/gateway -- same topology-agnostic
+ * split as registry_alloc_ip() above; a caller validating an explicit,
+ * operator-chosen IP (network_ip_available()) does that part itself,
+ * this is only ever the final "is it free" check.
+ */
+int registry_ip_available(uint32_t candidate_be);
 
 /*
  * Call when epoll reports entry->handle.pidfd readable: reaps via

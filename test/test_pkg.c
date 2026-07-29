@@ -30,6 +30,7 @@ extern char **environ;
 #define PORT_ARG "--port=7628"
 #define PKG_STATE_DIR "/var/lib/kanxeo/pkg"
 #define BASE_ROOTFS "/var/lib/kanxeo/images/base/rootfs"
+#define ROUTER_ROOTFS "/var/lib/kanxeo/images/router/rootfs"
 #define PKGBUILD_ROOTFS "/var/lib/kanxeo/images/pkgbuild"
 
 static int wait_for_daemon(const struct kx_client *c, int max_attempts)
@@ -99,6 +100,7 @@ static void reset_pkg_state(void)
 {
 	system("rm -rf '" PKG_STATE_DIR "'");
 	system("rm -rf '/var/lib/kanxeo/images/base'");
+	system("rm -rf '/var/lib/kanxeo/images/router'");
 	system("rm -rf '" PKGBUILD_ROOTFS "'");
 }
 
@@ -558,6 +560,148 @@ int main(void)
 					if (fp != NULL)
 						pclose(fp);
 				}
+			}
+		}
+	}
+
+	/* 13. per-image install: greeter's recipe still on disk (only its
+	 * base-image install was deleted in step 8) -- installing it again
+	 * with image="router" must land in a wholly separate rootfs, be
+	 * independently tracked (compound name+image key), and not collide
+	 * with a fresh, unrelated install of the SAME name back into the
+	 * default "base" image. */
+	{
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/install",
+		                       "{\"name\":\"greeter\",\"image\":\"router\"}", &r) != 0 ||
+		    r.status != 202 || !str_eq(json_str_field(r.json, "image"), "router")) {
+			fprintf(stderr, "FAIL: POST install greeter@router, status=%d, image=%s\n", r.status,
+			        json_str_field(r.json, "image") ? json_str_field(r.json, "image") : "(null)");
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		if (poll_pkg_state(&client, "greeter@router", state, sizeof(state), 60) != 0 ||
+		    strcmp(state, "installed") != 0) {
+			fprintf(stderr, "FAIL: greeter@router did not reach installed\n");
+			ok = 0;
+		} else {
+			struct stat st;
+
+			if (stat(ROUTER_ROOTFS "/usr/bin/greeter", &st) != 0) {
+				fprintf(stderr, "FAIL: greeter@router binary missing from router image\n");
+				ok = 0;
+			}
+			if (stat(BASE_ROOTFS "/usr/bin/greeter", &st) == 0) {
+				fprintf(stderr,
+				        "FAIL: greeter@router install leaked into the base image "
+				        "(greeter was deleted from base in step 8)\n");
+				ok = 0;
+			}
+		}
+
+		/* bare (base-image) addressing still 404s -- base's own greeter
+		 * entry was deleted in step 8 and this install never touched it */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pkg/greeter", NULL, &r) != 0 ||
+		    r.status != 404) {
+			fprintf(stderr, "FAIL: GET greeter (base) expected 404, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* @-addressed GET reaches the router entry specifically */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pkg/greeter@router", NULL, &r) != 0 ||
+		    r.status != 200 || !str_eq(json_str_field(r.json, "image"), "router") ||
+		    !str_eq(json_str_field(r.json, "state"), "installed")) {
+			fprintf(stderr, "FAIL: GET greeter@router expected 200 installed router, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* a fresh install of the SAME name back into the default image
+		 * is independent -- greeter@router being installed must not
+		 * make this a 409 duplicate */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"greeter\"}", &r) !=
+		        0 ||
+		    r.status != 202) {
+			fprintf(stderr,
+			        "FAIL: POST install greeter (base) while greeter@router installed "
+			        "expected 202, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		if (poll_pkg_state(&client, "greeter", state, sizeof(state), 60) != 0 ||
+		    strcmp(state, "installed") != 0) {
+			fprintf(stderr, "FAIL: greeter (base) did not reach installed\n");
+			ok = 0;
+		} else {
+			struct stat st;
+
+			if (stat(BASE_ROOTFS "/usr/bin/greeter", &st) != 0) {
+				fprintf(stderr, "FAIL: greeter (base) binary missing after independent install\n");
+				ok = 0;
+			}
+		}
+
+		/* GET /v1/pkg (list) reports both (name, image) entries distinctly */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pkg", NULL, &r) != 0 || r.status != 200) {
+			fprintf(stderr, "FAIL: GET /v1/pkg, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *packages = json_object_get(r.json, "packages");
+			int saw_base = 0, saw_router = 0;
+			size_t i;
+
+			if (packages != NULL && packages->type == JSON_ARRAY) {
+				for (i = 0; i < packages->u.array.count; i++) {
+					const struct json_value *item = packages->u.array.items[i];
+
+					if (!str_eq(json_str_field(item, "name"), "greeter"))
+						continue;
+					if (str_eq(json_str_field(item, "image"), "base"))
+						saw_base = 1;
+					if (str_eq(json_str_field(item, "image"), "router"))
+						saw_router = 1;
+				}
+			}
+			if (!saw_base || !saw_router) {
+				fprintf(stderr,
+				        "FAIL: GET /v1/pkg should list greeter@base AND greeter@router "
+				        "as distinct entries (saw_base=%d saw_router=%d)\n",
+				        saw_base, saw_router);
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		/* @-addressed DELETE removes only the router entry, leaving the
+		 * independently-installed base entry untouched */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "DELETE", "/v1/pkg/greeter@router", NULL, &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: DELETE greeter@router expected 204, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		{
+			struct stat st;
+
+			if (stat(ROUTER_ROOTFS "/usr/bin/greeter", &st) == 0) {
+				fprintf(stderr, "FAIL: greeter binary still exists in router image after delete\n");
+				ok = 0;
+			}
+			if (stat(BASE_ROOTFS "/usr/bin/greeter", &st) != 0) {
+				fprintf(stderr,
+				        "FAIL: deleting greeter@router should not remove greeter@base\n");
+				ok = 0;
 			}
 		}
 	}

@@ -396,6 +396,44 @@ static void respond_error(int fd, int status, const char *status_text, const cha
 	jw_free(&w);
 }
 
+static void respond_network_error(int fd, enum network_error err)
+{
+	switch (err) {
+	case NETWORK_ERR_INVALID_NAME:
+		respond_error(fd, 400, "Bad Request", "invalid network name");
+		break;
+	case NETWORK_ERR_INVALID_SUBNET:
+		respond_error(fd, 400, "Bad Request", "invalid subnet/prefix_len");
+		break;
+	case NETWORK_ERR_DUPLICATE:
+		respond_error(fd, 409, "Conflict", "a network with this name already exists");
+		break;
+	case NETWORK_ERR_OVERLAP:
+		respond_error(fd, 400, "Bad Request", "subnet overlaps an existing network");
+		break;
+	case NETWORK_ERR_FULL:
+		respond_error(fd, 500, "Internal Server Error", "network table full");
+		break;
+	case NETWORK_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such network");
+		break;
+	case NETWORK_ERR_IN_USE:
+		respond_error(fd, 409, "Conflict", "network is still in use by a container");
+		break;
+	case NETWORK_ERR_IP_OUT_OF_RANGE:
+		respond_error(fd, 400, "Bad Request", "ip is not a usable address on this network");
+		break;
+	case NETWORK_ERR_IP_TAKEN:
+		respond_error(fd, 409, "Conflict", "ip is already assigned to a running container");
+		break;
+	case NETWORK_ERR_CREATE_FAILED:
+	case NETWORK_ERR_DELETE_FAILED:
+	default:
+		respond_error(fd, 500, "Internal Server Error", "network operation failed");
+		break;
+	}
+}
+
 static void handle_health(int fd)
 {
 	struct json_writer w;
@@ -536,11 +574,51 @@ static void register_pkg_fetch_pidfd(pid_t pid, int pidfd)
 	}
 }
 
+/*
+ * A "networks" array entry is either a bare name (string, auto-
+ * allocated IP -- unchanged v1 behavior) or an object
+ * {"name":..., "ip":...} naming an explicit, operator-chosen address
+ * instead. Returns 0 with name_out/*out_has_ip(/*out_ip_be) filled,
+ * or -1 if item is neither shape, name is missing, or a present ip
+ * doesn't parse as an IPv4 address.
+ */
+static int parse_network_entry(const struct json_value *item, char *name_out, size_t name_out_size,
+                                uint32_t *out_ip_be, int *out_has_ip)
+{
+	const char *n;
+	const char *ip_str;
+	struct in_addr addr;
+
+	*out_has_ip = 0;
+	if (item->type == JSON_STRING) {
+		n = json_as_string(item);
+		if (n == NULL)
+			return -1;
+		snprintf(name_out, name_out_size, "%s", n);
+		return 0;
+	}
+	if (item->type != JSON_OBJECT)
+		return -1;
+	n = json_as_string(json_object_get(item, "name"));
+	if (n == NULL)
+		return -1;
+	snprintf(name_out, name_out_size, "%s", n);
+	ip_str = json_as_string(json_object_get(item, "ip"));
+	if (ip_str != NULL) {
+		if (inet_pton(AF_INET, ip_str, &addr) != 1)
+			return -1;
+		*out_ip_be = addr.s_addr;
+		*out_has_ip = 1;
+	}
+	return 0;
+}
+
 static void handle_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
 	const struct json_value *jname, *jimage, *jcmd, *jmem, *jpids, *jnetworks, *jip_forward, *jroutes;
 	const struct json_value *jdevices;
+	const struct json_value *jinterfaces;
 	const char *name, *image;
 	char lowerdir[PATH_MAX];
 	char container_base[PATH_MAX];
@@ -561,6 +639,8 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	struct registry_device_attachment device_attachments[CONTAINER_MAX_DEVICES];
 	struct device_spec device_specs[CONTAINER_MAX_DEVICES];
 	int device_count = 0;
+	char interface_names[CONTAINER_MAX_INTERFACES][CONTAINER_IFNAME_MAX];
+	int interface_count = 0;
 	const struct json_value *jdns_register;
 	int dns_register = 0;
 	const struct json_value *jpki_issue, *jpki_cert_dir, *jpki_days;
@@ -581,6 +661,7 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	jip_forward = json_object_get(root, "ip_forward");
 	jroutes = json_object_get(root, "routes");
 	jdevices = json_object_get(root, "devices");
+	jinterfaces = json_object_get(root, "interfaces");
 	jdns_register = json_object_get(root, "dns_register");
 	jpki_issue = json_object_get(root, "pki_issue");
 	jpki_cert_dir = json_object_get(root, "pki_cert_dir");
@@ -613,12 +694,29 @@ static void handle_create(int fd, const char *body, size_t body_len)
 			return;
 		}
 		for (i = 0; i < jnetworks->u.array.count; i++) {
-			const char *n = json_as_string(jnetworks->u.array.items[i]);
+			char n[NETWORK_NAME_MAX];
+			uint32_t ip_be;
+			int has_ip;
 
-			if (n == NULL || network_find(n) == NULL) {
+			if (parse_network_entry(jnetworks->u.array.items[i], n, sizeof(n), &ip_be,
+			                         &has_ip) != 0) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request", "invalid networks entry");
+				return;
+			}
+			if (network_find(n) == NULL) {
 				json_free(root);
 				respond_error(fd, 400, "Bad Request", "unknown network");
 				return;
+			}
+			if (has_ip) {
+				enum network_error ip_err = network_ip_available(n, ip_be);
+
+				if (ip_err != NETWORK_OK) {
+					json_free(root);
+					respond_network_error(fd, ip_err);
+					return;
+				}
 			}
 		}
 	}
@@ -703,6 +801,40 @@ static void handle_create(int fd, const char *body, size_t body_len)
 			         "%s", dd->dev_path);
 		}
 	}
+	if (jinterfaces != NULL) {
+		if (jinterfaces->type != JSON_ARRAY || jinterfaces->u.array.count > CONTAINER_MAX_INTERFACES) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request",
+			              "interfaces must be an array of at most 16 entries");
+			return;
+		}
+		interface_count = (int)jinterfaces->u.array.count;
+		for (i = 0; i < (size_t)interface_count; i++) {
+			const char *ifname = json_as_string(jinterfaces->u.array.items[i]);
+			char dev_id[96];
+			const struct discovered_device *dd;
+
+			if (ifname == NULL) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request", "interfaces entries must be strings");
+				return;
+			}
+			/* GET /v1/devices is the one source of truth for which real
+			 * interfaces exist and are currently assignable -- an
+			 * interface already moved into another running container's
+			 * netns simply doesn't appear there at all anymore, so
+			 * there is no separate "already claimed" check needed here
+			 * beyond this same lookup every other device grant uses. */
+			snprintf(dev_id, sizeof(dev_id), "net:%s", ifname);
+			dd = device_find(dev_id);
+			if (dd == NULL || !dd->assignable) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request", "unknown or unassignable interface");
+				return;
+			}
+			snprintf(interface_names[i], sizeof(interface_names[i]), "%s", ifname);
+		}
+	}
 
 	argc = jcmd->u.array.count;
 	for (i = 0; i < argc; i++) {
@@ -734,10 +866,15 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	if (jnetworks != NULL) {
 		net_count = (int)jnetworks->u.array.count;
 		for (i = 0; i < (size_t)net_count; i++) {
-			const char *n = json_as_string(jnetworks->u.array.items[i]);
+			char n[NETWORK_NAME_MAX];
 			uint32_t ip_be;
+			int has_ip;
 
-			if (network_alloc_ip(n, &ip_be) != 0) {
+			/* Already validated above (name exists; a given ip is
+			 * in-range and free) -- re-parsed only to recover the
+			 * values, no new failure mode expected here. */
+			parse_network_entry(jnetworks->u.array.items[i], n, sizeof(n), &ip_be, &has_ip);
+			if (!has_ip && network_alloc_ip(n, &ip_be) != 0) {
 				json_free(root);
 				respond_error(fd, 500, "Internal Server Error", "no free IP addresses");
 				return;
@@ -789,6 +926,9 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	spec.device_count = device_count;
 	for (i = 0; i < (size_t)device_count; i++)
 		spec.devices[i] = device_specs[i];
+	spec.interface_count = interface_count;
+	for (i = 0; i < (size_t)interface_count; i++)
+		snprintf(spec.interfaces[i], sizeof(spec.interfaces[i]), "%s", interface_names[i]);
 	spec.argv = argv_buf;
 	spec.envp = empty_envp;
 
@@ -893,38 +1033,6 @@ static void handle_delete(int fd, const char *name)
 	pki_cert_forget_owner(name);
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
-}
-
-static void respond_network_error(int fd, enum network_error err)
-{
-	switch (err) {
-	case NETWORK_ERR_INVALID_NAME:
-		respond_error(fd, 400, "Bad Request", "invalid network name");
-		break;
-	case NETWORK_ERR_INVALID_SUBNET:
-		respond_error(fd, 400, "Bad Request", "invalid subnet/prefix_len");
-		break;
-	case NETWORK_ERR_DUPLICATE:
-		respond_error(fd, 409, "Conflict", "a network with this name already exists");
-		break;
-	case NETWORK_ERR_OVERLAP:
-		respond_error(fd, 400, "Bad Request", "subnet overlaps an existing network");
-		break;
-	case NETWORK_ERR_FULL:
-		respond_error(fd, 500, "Internal Server Error", "network table full");
-		break;
-	case NETWORK_ERR_NOT_FOUND:
-		respond_error(fd, 404, "Not Found", "no such network");
-		break;
-	case NETWORK_ERR_IN_USE:
-		respond_error(fd, 409, "Conflict", "network is still in use by a container");
-		break;
-	case NETWORK_ERR_CREATE_FAILED:
-	case NETWORK_ERR_DELETE_FAILED:
-	default:
-		respond_error(fd, 500, "Internal Server Error", "network operation failed");
-		break;
-	}
 }
 
 static void handle_device_list(int fd)
@@ -1491,6 +1599,7 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
 	const char *name;
+	const char *image;
 	const struct json_value *jupgrade;
 	int upgrade;
 	char started_name[PKG_NAME_MAX];
@@ -1510,10 +1619,12 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 		respond_error(fd, 400, "Bad Request", "name missing");
 		return;
 	}
+	image = json_as_string(json_object_get(root, "image"));
 	jupgrade = json_object_get(root, "upgrade");
 	upgrade = (jupgrade != NULL && jupgrade->type == JSON_BOOL && jupgrade->u.boolean);
 
-	perr = pkg_install_start(name, upgrade, started_name, sizeof(started_name), &pid, &pidfd);
+	perr = pkg_install_start(name, image, upgrade, started_name, sizeof(started_name), &pid,
+	                          &pidfd);
 	if (perr != PKG_OK) {
 		json_free(root);
 		respond_pkg_error(fd, perr);
@@ -1526,7 +1637,7 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 	 * fetching right now, and that's the honest thing to describe.
 	 */
 	jw_init(&w);
-	if (pkg_get_one(started_name, &w) != PKG_OK) {
+	if (pkg_get_one(started_name, image, &w) != PKG_OK) {
 		/* shouldn't happen -- pkg_install_start() just created it */
 		jw_free(&w);
 		json_free(root);
@@ -1553,13 +1664,46 @@ static void handle_pkg_list(int fd)
 	jw_free(&w);
 }
 
-static void handle_pkg_get_one(int fd, const char *name)
+/*
+ * Splits a "{name}" or "{name}@{image}" path segment (the compound
+ * addressing form pkg_install_start()'s own image parameter documents --
+ * bare name means PKG_DEFAULT_IMAGE) into two caller-owned buffers.
+ * Returns 0 on success, -1 if either half doesn't fit its buffer.
+ */
+static int split_pkg_name_image(const char *raw, char *name_out, size_t name_out_size,
+                                 char *image_out, size_t image_out_size)
+{
+	const char *at = strchr(raw, '@');
+
+	if (at == NULL) {
+		if (snprintf(name_out, name_out_size, "%s", raw) >= (int)name_out_size)
+			return -1;
+		image_out[0] = '\0';
+		return 0;
+	}
+	if ((size_t)(at - raw) >= name_out_size)
+		return -1;
+	memcpy(name_out, raw, (size_t)(at - raw));
+	name_out[at - raw] = '\0';
+	if (snprintf(image_out, image_out_size, "%s", at + 1) >= (int)image_out_size)
+		return -1;
+	return 0;
+}
+
+static void handle_pkg_get_one(int fd, const char *raw_name)
 {
 	struct json_writer w;
 	enum pkg_error perr;
+	char name[PKG_NAME_MAX];
+	char image[PKG_IMAGE_NAME_MAX];
+
+	if (split_pkg_name_image(raw_name, name, sizeof(name), image, sizeof(image)) != 0) {
+		respond_error(fd, 400, "Bad Request", "name@image too long");
+		return;
+	}
 
 	jw_init(&w);
-	perr = pkg_get_one(name, &w);
+	perr = pkg_get_one(name, image[0] != '\0' ? image : NULL, &w);
 	if (perr != PKG_OK) {
 		jw_free(&w);
 		respond_pkg_error(fd, perr);
@@ -1569,10 +1713,18 @@ static void handle_pkg_get_one(int fd, const char *name)
 	jw_free(&w);
 }
 
-static void handle_pkg_delete(int fd, const char *name)
+static void handle_pkg_delete(int fd, const char *raw_name)
 {
-	enum pkg_error perr = pkg_delete(name);
+	char name[PKG_NAME_MAX];
+	char image[PKG_IMAGE_NAME_MAX];
+	enum pkg_error perr;
 
+	if (split_pkg_name_image(raw_name, name, sizeof(name), image, sizeof(image)) != 0) {
+		respond_error(fd, 400, "Bad Request", "name@image too long");
+		return;
+	}
+
+	perr = pkg_delete(name, image[0] != '\0' ? image : NULL);
 	if (perr != PKG_OK) {
 		respond_pkg_error(fd, perr);
 		return;

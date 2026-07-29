@@ -4,6 +4,50 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 12 (part 7): real network interface passthrough
+
+A real PCI/USB NIC has no /dev node, so the existing BPF_CGROUP_DEVICE passthrough mechanism (ADR-0017) doesn't apply -- the only real kernel primitive is moving the interface's netdev into a container's own network namespace. The largest piece of the router use case. See ADR-0022.
+
+#### Added
+- `netplane/src/rtnetlink.c`/`.h`: `rtnl_link_set_netns_fd()` -- moves a link via an open netns fd instead of a pid (needed for teardown, since the owning process may already be gone by then).
+- `daemon/src/device.c`: a third bus, `net:`, walking `/sys/class/net`, excluding every kernel-created software interface (anything resolving under `/sys/devices/virtual/net/` -- bridges, veths, kanxeo's own managed networks).
+- `include/container.h`: `CONTAINER_MAX_INTERFACES`, `container_spec.interfaces[]`/`interface_count`; `container_handle.interfaces_netns_fd`.
+- `src/container_net.c`/`include/internal.h`: `container_net_host_attach_interfaces()` (parent side, moves interfaces in, brings them up from inside the target netns via a forked helper -- required, since the kernel administratively downs a link as part of moving it to a new netns) and `container_net_teardown_interfaces()` (a forked helper does the reverse move at container removal).
+- `daemon/include/registry.h`/`daemon/src/registry.c`: `interfaces[]` name mirror for teardown.
+- `daemon/src/main.c`: `POST /v1/containers` gains an `"interfaces": ["wlan0"]` array, validated against `GET /v1/devices`' own `net:` entries.
+- `cli/src/main.c`: repeatable `run --interface=IFNAME`.
+- `docs/api/openapi.yaml`: `Device.bus` gains `net`; `ContainerCreateRequest.interfaces`; `Container.interfaces`.
+- `docs/adr/0022-real-nic-passthrough-netns-move.md`.
+
+Verified two ways: `GET /v1/devices`' new discovery logic checked directly against this dev sandbox's own real hardware; the actual netns-move mechanism proven end-to-end in `test/test_container_net.c` using a real veth pair's own two ends as a stand-in for "a named interface not yet in a container's netns" (legitimate -- `rtnl_link_set_netns_pid()`/`rtnl_link_set_netns_fd()` are confirmed fully generic, not veth-specific) -- 3 consecutive clean runs. Two real bugs found and fixed while building that verification, not before: the original design brought an interface up *before* moving it (doesn't survive the move -- corrected to bring it up after, from inside the target netns); the test's own first check of "is it visible inside" used `/sys/class/net`, whose view is captured at mount time and isn't dynamically netns-aware (corrected to a fresh-socket `SIOCGIFFLAGS` check). Zero warnings; full regression sweep (every other test in the suite) re-run clean.
+
+### Phase 12 (part 6): explicit, operator-chosen IPs for container network attachments
+
+A router's own interfaces typically need stable, predictable addresses, not whatever `network_alloc_ip()`'s first-free-address scan happens to pick — a gap surfaced alongside part 5, from the same router use case. See ADR-0021.
+
+#### Added
+- `daemon/src/registry.c`/`daemon/include/registry.h`: `registry_ip_available(candidate_be)`, a pure collision check extracted from `registry_alloc_ip()`'s own scan loop.
+- `daemon/src/network.c`/`daemon/include/network.h`: `network_ip_available(name, ip_be)` -- subnet-membership, range, and reserved-gateway validation, delegating the final collision check to the registry; `network_error` gains `NETWORK_ERR_IP_OUT_OF_RANGE`/`NETWORK_ERR_IP_TAKEN`.
+- `daemon/src/main.c`: `handle_create()`'s `"networks"` array entries may now be `{"name":..., "ip":...}` objects, not only bare strings (`parse_network_entry()`).
+- `cli/src/main.c`: `run --network=NAME:IP`, parsed the same way `--route=DEST/PREFIX:VIA` already is.
+- `docs/api/openapi.yaml`: `NetworkAttachmentRequest` schema; `ContainerCreateRequest.networks` items are now `oneOf: [string, NetworkAttachmentRequest]`.
+- `docs/adr/0021-explicit-network-ip-override.md`.
+
+Verified over real HTTP against a live daemon: `test/test_networks.c` extended to confirm an explicit valid IP is honored (not auto-allocated), and that the reserved gateway address, an out-of-subnet address, and an already-assigned address are each correctly rejected (400/400/409) -- 3 consecutive clean runs. Zero warnings; full regression sweep re-run clean.
+
+### Phase 12 (part 5): `pkg install` targets an explicit image, not always "base"
+
+`pkg install` had exactly one destination, hardcoded (`pkg_build_completed()`'s merge step) — no way to build a `router`-flavored image carrying `bash`/`iproute2`/`bird` without every container on the shared `base` image getting them too, a real gap the user's own router use case surfaced directly. See ADR-0020.
+
+#### Added
+- `daemon/include/pkg.h`/`daemon/src/pkg.c`: `pkg_install_start()`/`pkg_get_one()`/`pkg_delete()` gain an `image` parameter (`NULL`/empty defaults to `"base"`); the package registry's lookup key becomes a (name, image) compound key (`struct pkg_entry` gains `image[]`, persisted in `pkg_installed.json` with backward-compatible defaulting for pre-existing state files).
+- `daemon/src/main.c`: `POST /v1/pkg/install`'s body gains an optional `"image"` field; `GET`/`DELETE /v1/pkg/{name}` gain `@`-separated compound addressing (`{name}@{image}`, bare `{name}` still means `base`).
+- `cli/src/main.c`: `pkg install --image=NAME`; `pkg rm NAME[@IMAGE]`; `pkg ls`'s formatter gains an image column.
+- `docs/api/openapi.yaml`: `PkgInstallRequest.image`, `PkgEntry.image` (now required), `PkgName` path parameter's pattern extended for the `{name}@{image}` form.
+- `docs/adr/0020-per-image-pkg-install-compound-key.md`.
+
+Verified end-to-end over real HTTP against a live daemon: `test/test_pkg.c` extended to install the same recipe (`greeter`) into both `base` and `router`, confirming independent, non-cross-contaminating results, correct `image` fields in `GET /v1/pkg`, correct `@`-addressed `GET`/`DELETE` routing, and that deleting `greeter@router` leaves `greeter@base` untouched — 3 consecutive clean runs. Zero warnings; full regression sweep (`test_daemon`, `test_cli`, `test_networks`, `test_dns`, `test_pki`, `test_daemon_net`, `test_daemon_devices`) re-run clean.
+
 ### Phase 12 (part 4): a C runtime for the shared "base" image, seeded at install time
 
 `pkg_build_completed()` only ever merges a package's own build output into `base/rootfs` — confirmed directly (part 3's own final check) that a freshly pkg-installed `bash` fails outright inside a real container (`child: execve: No such file or directory`) because `/lib64/ld-linux-x86-64.so.2` doesn't exist anywhere in the image. Not specific to bash — blocks any dynamically-linked package from ever running. See ADR-0019.

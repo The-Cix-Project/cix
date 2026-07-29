@@ -27,6 +27,7 @@ extern char **environ;
 
 struct pkg_entry {
 	char name[PKG_NAME_MAX];
+	char image[PKG_IMAGE_NAME_MAX];
 	char version[PKG_VERSION_MAX];
 	char depends[PKG_DEPENDS_MAX];
 	enum pkg_state state;
@@ -51,11 +52,20 @@ static char g_recipes_dir[PATH_MAX];
 static char g_sources_dir[PATH_MAX];
 static char g_installed_state_path[PATH_MAX];
 static char g_containers_dir[PATH_MAX];
-static char g_base_rootfs[PATH_MAX];
+/* Raw images_dir, stored (not just used transiently at init) so any
+ * job's own target image's rootfs path can be computed on demand --
+ * unlike the old single hardcoded "base" destination, this now varies
+ * per install call. */
+static char g_images_dir[PATH_MAX];
 static char g_pkgbuild_rootfs[PATH_MAX];
 
 /* v1 serializes installs: at most one job in flight. Empty = idle. */
 static char g_current_job_name[PKG_NAME_MAX];
+/* The target image the in-flight job (name above, plus every
+ * dependency it pulls in) merges into -- always normalized (never
+ * empty; see normalize_image()), valid exactly when g_current_job_name
+ * is non-empty. */
+static char g_current_job_image[PKG_IMAGE_NAME_MAX];
 
 /* The resolved install order for the current job: dependencies first
  * (post-order), the originally-requested package last. g_dep_queue_pos
@@ -83,12 +93,34 @@ static int pkg_name_is_valid(const char *name)
 	return simple_name_is_valid(name, PKG_NAME_MAX);
 }
 
-static struct pkg_entry *pkg_find(const char *name)
+static int pkg_image_is_valid(const char *image)
+{
+	return simple_name_is_valid(image, PKG_IMAGE_NAME_MAX);
+}
+
+/* Every public entry point accepts NULL/"" to mean "the default image"
+ * (PKG_DEFAULT_IMAGE) -- internal code past this point always works
+ * with the normalized, never-empty form, so every comparison/lookup
+ * is a plain exact string match, never a second "is this empty"
+ * special case scattered throughout the file. */
+static const char *normalize_image(const char *image)
+{
+	return (image != NULL && image[0] != '\0') ? image : PKG_DEFAULT_IMAGE;
+}
+
+static void image_rootfs_path(const char *image, char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/%s/rootfs", g_images_dir, normalize_image(image));
+}
+
+static struct pkg_entry *pkg_find(const char *name, const char *image)
 {
 	int i;
+	const char *norm_image = normalize_image(image);
 
 	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
-		if (g_packages[i].in_use && strcmp(g_packages[i].name, name) == 0)
+		if (g_packages[i].in_use && strcmp(g_packages[i].name, name) == 0 &&
+		    strcmp(g_packages[i].image, norm_image) == 0)
 			return &g_packages[i];
 	}
 	return NULL;
@@ -106,19 +138,21 @@ static void pkg_entry_free_files(struct pkg_entry *e)
 	e->files_cap = 0;
 }
 
-/* Unlinks every one of e's manifested files from the base image --
- * does NOT touch e->files itself (caller decides when to forget the
+/* Unlinks every one of e's manifested files from e's own target image
+ * -- does NOT touch e->files itself (caller decides when to forget the
  * list, e.g. only once a replacement build has actually succeeded for
  * an in-place upgrade). Shared by pkg_delete() and the upgrade path
  * in pkg_build_completed(). */
 static void unlink_manifest_files(const struct pkg_entry *e)
 {
+	char rootfs[PATH_MAX];
 	int i;
 
+	image_rootfs_path(e->image, rootfs, sizeof(rootfs));
 	for (i = 0; i < e->file_count; i++) {
 		char path[PATH_MAX];
 
-		snprintf(path, sizeof(path), "%s/%s", g_base_rootfs, e->files[i]);
+		snprintf(path, sizeof(path), "%s/%s", rootfs, e->files[i]);
 		unlink(path);
 	}
 }
@@ -436,6 +470,8 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 	jw_obj_open(w);
 	jw_key(w, "name");
 	jw_str(w, e->name);
+	jw_key(w, "image");
+	jw_str(w, e->image);
 	jw_key(w, "version");
 	jw_str(w, e->version);
 	jw_key(w, "state");
@@ -473,6 +509,8 @@ static int save_state(void)
 		jw_obj_open(&w);
 		jw_key(&w, "name");
 		jw_str(&w, e->name);
+		jw_key(&w, "image");
+		jw_str(&w, e->image);
 		jw_key(&w, "version");
 		jw_str(&w, e->version);
 		jw_key(&w, "depends");
@@ -493,6 +531,7 @@ static int save_state(void)
 static int parse_persisted_entry(const struct json_value *item, struct pkg_entry *slot)
 {
 	const char *name = json_as_string(json_object_get(item, "name"));
+	const char *image = json_as_string(json_object_get(item, "image"));
 	const char *version = json_as_string(json_object_get(item, "version"));
 	const char *depends = json_as_string(json_object_get(item, "depends"));
 	const struct json_value *jfiles = json_object_get(item, "files");
@@ -501,9 +540,15 @@ static int parse_persisted_entry(const struct json_value *item, struct pkg_entry
 	if (!pkg_name_is_valid(name) || version == NULL || jfiles == NULL ||
 	    jfiles->type != JSON_ARRAY)
 		return -1;
+	/* Absent on entries persisted before per-image tracking existed --
+	 * normalize_image() correctly defaults that to "base", preserving
+	 * every pre-existing state file's meaning exactly. */
+	if (image != NULL && image[0] != '\0' && !pkg_image_is_valid(image))
+		return -1;
 
 	memset(slot, 0, sizeof(*slot));
 	strncpy(slot->name, name, sizeof(slot->name) - 1);
+	strncpy(slot->image, normalize_image(image), sizeof(slot->image) - 1);
 	strncpy(slot->version, version, sizeof(slot->version) - 1);
 	if (depends != NULL)
 		strncpy(slot->depends, depends, sizeof(slot->depends) - 1);
@@ -556,7 +601,8 @@ static int load_state(void)
 			break;
 		}
 		for (j = 0; j < count; j++) {
-			if (strcmp(g_packages[j].name, g_packages[count].name) == 0) {
+			if (strcmp(g_packages[j].name, g_packages[count].name) == 0 &&
+			    strcmp(g_packages[j].image, g_packages[count].image) == 0) {
 				dup = 1;
 				break;
 			}
@@ -589,8 +635,7 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
 	if (snprintf(g_containers_dir, sizeof(g_containers_dir), "%s", containers_dir) >=
 	    (int)sizeof(g_containers_dir))
 		return -1;
-	if (snprintf(g_base_rootfs, sizeof(g_base_rootfs), "%s/base/rootfs", images_dir) >=
-	    (int)sizeof(g_base_rootfs))
+	if (snprintf(g_images_dir, sizeof(g_images_dir), "%s", images_dir) >= (int)sizeof(g_images_dir))
 		return -1;
 	if (snprintf(g_pkgbuild_rootfs, sizeof(g_pkgbuild_rootfs), "%s/pkgbuild/rootfs", images_dir) >=
 	    (int)sizeof(g_pkgbuild_rootfs))
@@ -836,7 +881,7 @@ static int resolve_chain(const char *name, int force, char queue[][PKG_NAME_MAX]
 		return -1;
 	}
 
-	existing = pkg_find(name);
+	existing = pkg_find(name, g_current_job_image);
 	if (!force && existing != NULL && existing->state == PKG_STATE_INSTALLED)
 		return 0; /* already satisfied */
 
@@ -912,7 +957,7 @@ static enum pkg_error start_fetch_for(const char *name, pid_t *out_pid, int *out
 	if (parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
 		return PKG_ERR_INVALID_RECIPE;
 
-	e = pkg_find(name);
+	e = pkg_find(name, g_current_job_image);
 	is_upgrade = (e != NULL && e->state == PKG_STATE_INSTALLED);
 
 	if (e == NULL || !is_upgrade) {
@@ -932,6 +977,7 @@ static enum pkg_error start_fetch_for(const char *name, pid_t *out_pid, int *out
 		memset(e, 0, sizeof(*e));
 		e->in_use = 1;
 		strncpy(e->name, recipe.name, sizeof(e->name) - 1);
+		strncpy(e->image, g_current_job_image, sizeof(e->image) - 1);
 	}
 	e->state = PKG_STATE_FETCHING;
 	e->error[0] = '\0';
@@ -974,8 +1020,9 @@ static enum pkg_error start_fetch_for(const char *name, pid_t *out_pid, int *out
 	return PKG_OK;
 }
 
-enum pkg_error pkg_install_start(const char *name, int upgrade, char *out_started_name,
-                                  size_t out_started_name_size, pid_t *out_pid, int *out_pidfd)
+enum pkg_error pkg_install_start(const char *name, const char *image, int upgrade,
+                                  char *out_started_name, size_t out_started_name_size,
+                                  pid_t *out_pid, int *out_pidfd)
 {
 	struct pkg_recipe recipe;
 	char recipe_path[PATH_MAX];
@@ -987,6 +1034,8 @@ enum pkg_error pkg_install_start(const char *name, int upgrade, char *out_starte
 
 	if (!pkg_name_is_valid(name))
 		return PKG_ERR_INVALID_NAME;
+	if (image != NULL && image[0] != '\0' && !pkg_image_is_valid(image))
+		return PKG_ERR_INVALID_NAME;
 	if (g_current_job_name[0] != '\0')
 		return PKG_ERR_BUSY;
 
@@ -994,7 +1043,9 @@ enum pkg_error pkg_install_start(const char *name, int upgrade, char *out_starte
 	if (parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
 		return PKG_ERR_INVALID_RECIPE;
 
-	e = pkg_find(name);
+	snprintf(g_current_job_image, sizeof(g_current_job_image), "%s", normalize_image(image));
+
+	e = pkg_find(name, g_current_job_image);
 	if (e != NULL && e->state == PKG_STATE_INSTALLED &&
 	    (!upgrade || strcmp(e->version, recipe.version) == 0))
 		return PKG_ERR_DUPLICATE;
@@ -1023,7 +1074,7 @@ enum pkg_error pkg_install_start(const char *name, int upgrade, char *out_starte
 
 int pkg_fetch_completed(int exit_status, struct container_spec *spec_out)
 {
-	struct pkg_entry *e = pkg_find(g_current_job_name);
+	struct pkg_entry *e = pkg_find(g_current_job_name, g_current_job_image);
 	char recipe_path[PATH_MAX];
 	struct pkg_recipe recipe;
 	char tarball_path[PATH_MAX];
@@ -1121,7 +1172,7 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out)
 
 void pkg_build_spawn_failed(void)
 {
-	struct pkg_entry *e = pkg_find(g_current_job_name);
+	struct pkg_entry *e = pkg_find(g_current_job_name, g_current_job_image);
 
 	if (e != NULL) {
 		int is_final_upgrade = g_dep_queue_is_upgrade && (g_dep_queue_pos + 1 >= g_dep_queue_count);
@@ -1144,7 +1195,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	if (strcmp(container_name, PKG_BUILD_CONTAINER_NAME) != 0)
 		return 0;
 
-	e = pkg_find(g_current_job_name);
+	e = pkg_find(g_current_job_name, g_current_job_image);
 	if (e == NULL) {
 		g_current_job_name[0] = '\0';
 		g_dep_queue_count = 0;
@@ -1189,12 +1240,18 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		}
 	}
 
-	if (persist_mkdir_p(g_base_rootfs) != 0 || merge_tree(dest_dir, g_base_rootfs, "", e) != 0) {
-		e->state = PKG_STATE_FAILED;
-		snprintf(e->error, sizeof(e->error), "failed to merge installed files into the base image");
-		g_current_job_name[0] = '\0';
-		g_dep_queue_count = 0;
-		return 0;
+	{
+		char target_rootfs[PATH_MAX];
+
+		image_rootfs_path(g_current_job_image, target_rootfs, sizeof(target_rootfs));
+		if (persist_mkdir_p(target_rootfs) != 0 || merge_tree(dest_dir, target_rootfs, "", e) != 0) {
+			e->state = PKG_STATE_FAILED;
+			snprintf(e->error, sizeof(e->error),
+			         "failed to merge installed files into the target image");
+			g_current_job_name[0] = '\0';
+			g_dep_queue_count = 0;
+			return 0;
+		}
 	}
 
 	e->state = PKG_STATE_INSTALLED;
@@ -1228,9 +1285,9 @@ void pkg_write_json_list(struct json_writer *w)
 	jw_arr_close(w);
 }
 
-enum pkg_error pkg_get_one(const char *name, struct json_writer *w)
+enum pkg_error pkg_get_one(const char *name, const char *image, struct json_writer *w)
 {
-	struct pkg_entry *e = pkg_find(name);
+	struct pkg_entry *e = pkg_find(name, image);
 
 	if (e == NULL)
 		return PKG_ERR_NOT_FOUND;
@@ -1238,13 +1295,14 @@ enum pkg_error pkg_get_one(const char *name, struct json_writer *w)
 	return PKG_OK;
 }
 
-enum pkg_error pkg_delete(const char *name)
+enum pkg_error pkg_delete(const char *name, const char *image)
 {
-	struct pkg_entry *e = pkg_find(name);
+	struct pkg_entry *e = pkg_find(name, image);
 
 	if (e == NULL || e->state != PKG_STATE_INSTALLED)
 		return PKG_ERR_NOT_FOUND;
-	if (strcmp(g_current_job_name, name) == 0)
+	if (strcmp(g_current_job_name, name) == 0 &&
+	    strcmp(g_current_job_image, normalize_image(image)) == 0)
 		return PKG_ERR_BUSY;
 
 	unlink_manifest_files(e);

@@ -1,5 +1,6 @@
 #include "container.h"
 #include "internal.h"
+#include "linux_compat.h"
 
 #include <errno.h>
 #include <signal.h>
@@ -138,6 +139,37 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			return -1;
 		}
 		close(net_pipe[1]);
+	}
+
+	out->interfaces_netns_fd = -1;
+	if (spec->interface_count > 0) {
+		const char *iface_ptrs[CONTAINER_MAX_INTERFACES];
+		int i;
+
+		for (i = 0; i < spec->interface_count; i++)
+			iface_ptrs[i] = spec->interfaces[i];
+
+		if (container_net_host_attach_interfaces(iface_ptrs, spec->interface_count, (pid_t)ret,
+		                                          &out->interfaces_netns_fd) != 0) {
+			/*
+			 * Unlike the veth path above, the child was never blocked
+			 * waiting on anything interface-related -- it may already
+			 * be running. There is no clean "let it fail on its own"
+			 * signal to send, so an explicit kill is the only correct
+			 * way to abort creation here.
+			 */
+			int saved_errno = errno;
+			siginfo_t info;
+
+			sys_pidfd_send_signal(pidfd, SIGKILL);
+			waitid(P_PIDFD, pidfd, &info, WEXITED);
+			close(pidfd);
+			if (bpf_prog_fd >= 0)
+				close(bpf_prog_fd);
+			close(cgroup_fd);
+			errno = saved_errno;
+			return -1;
+		}
 	}
 
 	out->pid = (pid_t)ret;

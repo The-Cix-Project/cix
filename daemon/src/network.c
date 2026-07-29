@@ -299,6 +299,35 @@ int network_alloc_ip(const char *name, uint32_t *out_ip_be)
 	return registry_alloc_ip(net->base_be, 2, host_max_for_prefix(net->prefix_len), out_ip_be);
 }
 
+enum network_error network_ip_available(const char *name, uint32_t ip_be)
+{
+	struct network_def *net = network_find(name);
+	uint32_t mask, ip_host, base_host, host_part;
+	int host_max;
+
+	if (net == NULL)
+		return NETWORK_ERR_NOT_FOUND;
+
+	mask = mask_for_prefix(net->prefix_len);
+	ip_host = ntohl(ip_be);
+	base_host = ntohl(net->base_be);
+	host_max = host_max_for_prefix(net->prefix_len);
+
+	/* Same masked network, and a host part in [2, host_max] -- the
+	 * exact range network_alloc_ip() itself allocates from (.0 is the
+	 * network address, .1 is the reserved gateway, the top address is
+	 * the broadcast address). */
+	if ((ip_host & mask) != base_host)
+		return NETWORK_ERR_IP_OUT_OF_RANGE;
+	host_part = ip_host - base_host;
+	if (host_part < 2 || (int)host_part > host_max)
+		return NETWORK_ERR_IP_OUT_OF_RANGE;
+
+	if (!registry_ip_available(ip_be))
+		return NETWORK_ERR_IP_TAKEN;
+	return NETWORK_OK;
+}
+
 void network_write_json_one(const struct network_def *net, struct json_writer *w)
 {
 	struct in_addr a;

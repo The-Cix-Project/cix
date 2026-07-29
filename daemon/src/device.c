@@ -12,6 +12,7 @@
 #define USB_BUS_DIR "/sys/bus/usb/devices"
 #define PCI_BUS_DIR "/sys/bus/pci/devices"
 #define PCI_WALK_MAX_DEPTH 4
+#define NET_CLASS_DIR "/sys/class/net"
 
 /*
  * Reads a small sysfs text attribute into out, trimming a trailing
@@ -410,13 +411,16 @@ static void enumerate_pci_one(const char *base, const char *address, struct disc
 		closedir(d);
 	}
 
-	if (*count == before && *count < cap) {
+	/* PCI class 02xxxx is "network controller" -- already represented,
+	 * correctly and once, by enumerate_net()'s own walk of
+	 * /sys/class/net (the netdev it owns, if this netns can see it at
+	 * all). Suppressing the fallback placeholder here avoids reporting
+	 * the same physical card twice under two different bus entries. */
+	if (*count == before && *count < cap && strncmp(class_hex, "02", 2) != 0) {
 		/* Nothing owned found anywhere in this device's own subtree
-		 * (a bridge, an unbound device, a network card -- see
-		 * ROADMAP.md's own scoping note on why NICs are handled by
-		 * the existing network-attachment feature, not this one).
-		 * Still surfaced, unassignable, so an operator can see the
-		 * device exists and why it isn't offered. */
+		 * (a bridge, or an unbound device). Still surfaced,
+		 * unassignable, so an operator can see the device exists and
+		 * why it isn't offered. */
 		struct discovered_device *e = &out[(*count)++];
 
 		memset(e, 0, sizeof(*e));
@@ -436,6 +440,80 @@ static void enumerate_pci_one(const char *base, const char *address, struct disc
 			         product_id, class_hex);
 		e->assignable = 0;
 	}
+}
+
+/* --- net bus: real, physically-backed network interfaces only --
+ * every netdev the kernel creates itself (bridges, veths, dummy,
+ * loopback, tun/tap, ...) resolves under /sys/devices/virtual/net/,
+ * confirmed live -- the reliable way to tell kanxeo's own managed
+ * bridges/veths (netplane/src/rtnetlink.c) and any other purely
+ * software interface apart from something a container could
+ * meaningfully take real ownership of. Assignment itself (moving one
+ * into a container's netns) is a wholly separate mechanism from the
+ * BPF_CGROUP_DEVICE grant PCI/USB devices use above -- see
+ * container_net_host_attach_interfaces() -- a netdev has no /dev
+ * node at all. --- */
+
+static int enumerate_net_one(const char *ifname, struct discovered_device *e)
+{
+	char link_path[PATH_MAX];
+	char resolved[PATH_MAX];
+	char addr_attr[PATH_MAX];
+	char mac[32] = "";
+	ssize_t n;
+
+	snprintf(link_path, sizeof(link_path), "%s/%s", NET_CLASS_DIR, ifname);
+	n = readlink(link_path, resolved, sizeof(resolved) - 1);
+	if (n < 0)
+		return -1;
+	resolved[n] = '\0';
+	if (strstr(resolved, "/virtual/net/") != NULL)
+		return -1; /* kanxeo's own bridges/veths, or any other software netdev */
+
+	memset(e, 0, sizeof(*e));
+	snprintf(e->bus, sizeof(e->bus), "net");
+	snprintf(e->id, sizeof(e->id), "net:%s", ifname);
+
+	snprintf(addr_attr, sizeof(addr_attr), "%s/address", link_path);
+	read_sysfs_attr(addr_attr, mac, sizeof(mac));
+	if (mac[0] != '\0')
+		snprintf(e->description, sizeof(e->description), "network interface %s, mac %s", ifname,
+		         mac);
+	else
+		snprintf(e->description, sizeof(e->description), "network interface %s", ifname);
+
+	read_driver_name(link_path, e->driver, sizeof(e->driver));
+
+	/*
+	 * No /dev node, no BPF_CGROUP_DEVICE grant, no major:minor -- a
+	 * netdev is moved wholesale into a container's own netns instead
+	 * (container_net_host_attach_interfaces()), a wholly different
+	 * mechanism from every other bus this file enumerates. Once moved,
+	 * it simply stops appearing here at all (this walk only ever sees
+	 * this netns's own interfaces) -- the same visibility rule that
+	 * makes exclusivity automatic, with no separate "already claimed"
+	 * check needed.
+	 */
+	e->assignable = 1;
+	return 0;
+}
+
+static void enumerate_net(struct discovered_device *out, int cap, int *count)
+{
+	DIR *d;
+	struct dirent *ent;
+
+	d = opendir(NET_CLASS_DIR);
+	if (d == NULL)
+		return;
+
+	while (*count < cap && (ent = readdir(d)) != NULL) {
+		if (ent->d_name[0] == '.')
+			continue;
+		if (enumerate_net_one(ent->d_name, &out[*count]) == 0)
+			(*count)++;
+	}
+	closedir(d);
 }
 
 static void enumerate_pci(struct discovered_device *out, int cap, int *count)
@@ -466,6 +544,7 @@ int device_enumerate(struct discovered_device *out, int cap)
 
 	enumerate_usb(out, cap, &count);
 	enumerate_pci(out, cap, &count);
+	enumerate_net(out, cap, &count);
 	return count;
 }
 

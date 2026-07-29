@@ -245,6 +245,96 @@ int main(void)
 	}
 	kx_response_free(&r);
 
+	/* 5.5. explicit, operator-chosen IP override on a container's
+	 * network attachment (Phase 12 part 5b) -- request an address
+	 * instead of letting network_alloc_ip() pick one. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/networks",
+	                       "{\"name\":\"netip\",\"subnet\":\"172.46.0.0\",\"prefix_len\":24}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST netip, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	/* explicit, valid IP is honored, not auto-allocated */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"c2\",\"image\":\"networkstest\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+	                       "\"networks\":[{\"name\":\"netip\",\"ip\":\"172.46.0.42\"}]}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST c2 with explicit ip, status=%d\n", r.status);
+		ok = 0;
+	} else {
+		const struct json_value *networks = json_object_get(r.json, "networks");
+		const char *got_ip =
+		    networks != NULL && networks->type == JSON_ARRAY && networks->u.array.count == 1
+		        ? json_str_field(networks->u.array.items[0], "ip")
+		        : NULL;
+
+		if (!str_eq(got_ip, "172.46.0.42")) {
+			fprintf(stderr, "FAIL: c2 expected ip=172.46.0.42, got %s\n",
+			        got_ip != NULL ? got_ip : "(null)");
+			ok = 0;
+		}
+	}
+	kx_response_free(&r);
+
+	/* the reserved gateway address is rejected */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"cgw\",\"image\":\"networkstest\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+	                       "\"networks\":[{\"name\":\"netip\",\"ip\":\"172.46.0.1\"}]}",
+	                       &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: explicit gateway ip expected 400, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	/* an address outside the subnet's usable range is rejected */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"coor\",\"image\":\"networkstest\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+	                       "\"networks\":[{\"name\":\"netip\",\"ip\":\"172.99.0.5\"}]}",
+	                       &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: out-of-subnet ip expected 400, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	/* an already-assigned address is rejected (c2 above holds .42) */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"cdup\",\"image\":\"networkstest\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+	                       "\"networks\":[{\"name\":\"netip\",\"ip\":\"172.46.0.42\"}]}",
+	                       &r) != 0 ||
+	    r.status != 409) {
+		fprintf(stderr, "FAIL: already-taken ip expected 409, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	/* cleanup: c2 is holding netip, must go before the network can be deleted */
+	memset(&r, 0, sizeof(r));
+	kx_client_request(&client, "DELETE", "/v1/containers/c2", NULL, &r);
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "DELETE", "/v1/networks/netip", NULL, &r) != 0 ||
+	    r.status != 204) {
+		fprintf(stderr, "FAIL: DELETE netip, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
 	/* 6. restart-survival: create a network, restart the daemon,
 	 * confirm it's still there (both in the API and as a real bridge)
 	 * without a second create call -- the actual point of persistence. */

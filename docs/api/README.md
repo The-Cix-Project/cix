@@ -76,7 +76,7 @@ POST /v1/containers
 - `name` must match `[A-Za-z0-9_-]+` — it's used verbatim as the on-disk directory name under `/var/lib/kanxeo/containers/`.
 - `image` must already exist and be populated at `/var/lib/kanxeo/images/{image}/rootfs` — the daemon never creates image content itself (see ADR-0004); a missing image is a `400`, not a silently-empty container.
 - `memory_max`/`pids_max` are optional cgroup v2 limits; omit for no limit.
-- `networks` is optional: 1–64 names, each already created via `POST /v1/networks` — any unknown name is a `400`. Omit for no networking (isolated netns, only `lo` — same as before this field existed). The **first** entry is primary and gets the default route; the rest only get their own subnet's connected route.
+- `networks` is optional: 1–64 entries, each either a bare name (auto-allocated IP) or `{"name": "internal", "ip": "172.31.0.50"}` for an explicit, operator-chosen address — each network must already exist via `POST /v1/networks` (`400` if unknown), and an explicit `ip` must be a usable address on that network: in its subnet, not the reserved gateway/network address, and not already taken (`400`/`409`). Omit `networks` entirely for no networking (isolated netns, only `lo` — same as before this field existed). The **first** entry is primary and gets the default route; the rest only get their own subnet's connected route.
 - `dns_register` is optional, default `false` — see [DNS: records + a real dnsmasq container](#dns-records--a-real-dnsmasq-container) below. Requires `networks` to be set (`400` otherwise).
 - `pki_issue`/`pki_cert_dir`/`pki_days` are optional, default `false`/`/etc/kanxeo-tls`/`365` — see [PKI: a root CA and issued leaf certificates](#pki-a-root-ca-and-issued-leaf-certificates) below. Requires the CA to already be bootstrapped (`400` otherwise); does **not** require `networks`.
 
@@ -234,7 +234,7 @@ Unlike `dns_register`, `pki_issue` does **not** require `networks` — the cert 
 
 A package manager built from scratch: recipes are shell scripts (the same format Gentoo ebuilds/Arch PKGBUILDs/CRUX Pkgfiles use), builds happen inside this project's own container runtime, and the daemon **never sources or executes a recipe on the host** — recipe metadata (`pkg_name=`, `pkg_version=`, `pkg_source=`, `pkg_sha256=`, `pkg_depends=`) is read with a strict, non-executing line scanner; the recipe's real shell code (`pkg_build()`/`pkg_install()`) only ever runs inside the isolated, network-less build container.
 
-**Every installed package lands in one canonical image**, `/var/lib/kanxeo/images/base/rootfs` — the thing that makes host and container packaging genuinely the same: any container created with `"image": "base"` gets everything installed, with no separate host/container package paths to keep in sync.
+**Every install targets one image**, `/var/lib/kanxeo/images/{image}/rootfs` — `"base"` by default (any container created with `"image": "base"` gets everything installed there, no separate host/container package paths to keep in sync), or an explicit other one (see [Per-image installs](#per-image-installs) below) for software that shouldn't be part of every container's baseline.
 
 **Installs are asynchronous.** The daemon is single-threaded and non-blocking; a network fetch or a real compile can take anywhere from seconds to minutes, so `POST /v1/pkg/install` returns immediately (`202`) and the actual work happens in the background — poll `GET /v1/pkg/{name}` for progress. **Fetching happens on the host** (a `curl` subprocess — this project's networking plane has no outbound NAT, so a build container has no network access at all, a stronger isolation boundary for untrusted build scripts, not a limitation worked around).
 
@@ -316,6 +316,28 @@ POST /v1/pkg/install
 → `202` if the recipe's version genuinely differs from what's installed (still `409`, "nothing to do," if it doesn't). The old version's manifested files are removed only once the new version's build actually succeeds — a failed upgrade attempt leaves the working old install untouched, not half-removed.
 
 `GET /v1/pkg/{name}` shows `"available_version"` (`null`, or the recipe's current version) for any installed package whose recipe has since changed — the concrete "is this out of date" answer, checked live against the recipe on disk every time, not cached.
+
+### Per-image installs
+
+Install into something other than the default `base` image with `"image"`:
+
+```
+POST /v1/pkg/install
+{"name": "bird", "image": "router"}
+```
+
+`bird` (and its dependencies, resolved the same way as always) builds into `/var/lib/kanxeo/images/router/rootfs` — containers created with `"image": "base"` never see it. The same package name is tracked independently per image: `bash` installed into both `base` and `router` are two separate entries, each independently upgradable/removable.
+
+`GET`/`DELETE` on a non-default image use the compound `{name}@{image}` path form:
+
+```
+GET /v1/pkg/bird@router
+DELETE /v1/pkg/bird@router
+```
+
+A bare `GET /v1/pkg/bird` still means `bird@base`. `GET /v1/pkg` (the list) includes every `(name, image)` entry, each with its own `"image"` field.
+
+Note: the C runtime seeded automatically for dynamically-linked binaries (`ld.so`/`libc.so.6`/`libtinfo.so.6`, see ADR-0019) currently targets `base` only — a package built into a non-default image needs that runtime present some other way to actually execve() inside a container using it.
 
 ## Current scope boundaries (v1, deliberate — see ADR-0007)
 

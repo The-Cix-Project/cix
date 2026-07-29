@@ -61,6 +61,62 @@ int container_net_child_configure(const struct network_spec *nets, int net_count
                                    int ready_pipe_read);
 
 /*
+ * Parent side, called right after ns_clone3() returns the child's
+ * pid, alongside (but independent of, no shared pipe/coordination
+ * needed) container_net_host_setup() -- a passthrough interface keeps
+ * its own real kernel name and gets no address from this daemon at
+ * all, so there is nothing the child needs to be told. interface_count
+ * == 0 is a no-op (*out_netns_fd = -1, returns 0). Otherwise: opens
+ * *out_netns_fd on /proc/child_pid/ns/net FIRST, before moving
+ * anything (this is the fd the caller must then keep open for the
+ * container's entire lifetime and hand to
+ * container_net_teardown_interfaces() at removal -- see that
+ * function's own comment for why). Moves each of interfaces[] into
+ * the child's netns by pid, then brings each one up from a forked,
+ * short-lived helper that briefly enters that same netns (via
+ * *out_netns_fd) to do it -- confirmed directly, not assumed, that
+ * the kernel administratively downs a link as part of
+ * dev_change_net_namespace(), so bringing it up beforehand (while
+ * still addressable via the caller's own root-netns socket) doesn't
+ * stick; a netlink socket can only address interfaces visible in its
+ * own netns, so "up" has to happen from inside the netns the
+ * interface actually landed in, the same reason
+ * container_net_teardown_interfaces() below needs its own helper for
+ * the reverse move. No rename, no address -- the operator's own
+ * userspace inside the container owns that once installed via
+ * `pkg install`.
+ */
+int container_net_host_attach_interfaces(const char *const *interfaces, int interface_count,
+                                          pid_t child_pid, int *out_netns_fd);
+
+/*
+ * Called at container removal (registry_remove()), regardless of
+ * whether the owning process is still alive. netns_fd (whatever
+ * container_net_host_attach_interfaces() returned) is what makes this
+ * safe even after the process has already exited: an open fd on
+ * /proc/<pid>/ns/net keeps that namespace (and everything still in
+ * it) alive for as long as the fd itself stays open, exactly like a
+ * live process would. A netlink socket can only address interfaces
+ * visible in ITS OWN netns, so moving one back out means briefly
+ * entering netns_fd to open a socket scoped to it -- done in a
+ * forked, short-lived helper (setns() is a whole-process operation;
+ * isolating it in a throwaway child -- the same posture this codebase
+ * already takes for curl fetches and package builds -- means the
+ * long-lived daemon process's own netns is never at risk). Blocks
+ * until the helper exits (bounded, real work -- a handful of netlink
+ * round trips). Always closes netns_fd itself before returning, even
+ * on failure -- nothing further this daemon can do differs based on
+ * netns_fd staying open past this call. interface_count == 0
+ * (netns_fd == -1) is a no-op. Returns 0 on success, -1 if the helper
+ * couldn't be spawned or exited non-zero (logged -- on failure the
+ * interface may be left in the now-orphaned netns, exactly the
+ * kernel's own default fallback behavior this function exists to
+ * avoid in the first place, not a new failure mode of its own).
+ */
+int container_net_teardown_interfaces(const char *const *interfaces, int interface_count,
+                                       int netns_fd);
+
+/*
  * Child side, called after container_net_child_configure() (if any)
  * succeeds, before PR_SET_PDEATHSIG/execve. Installs each of routes[]
  * in order via one rtnetlink session; a no-op that returns 0

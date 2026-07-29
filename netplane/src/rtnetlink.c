@@ -258,6 +258,29 @@ int rtnl_link_set_netns_pid(int fd, const char *name, pid_t pid)
 	return nl_msg_send_and_ack(fd, &m);
 }
 
+int rtnl_link_set_netns_fd(int fd, const char *name, int target_netns_fd)
+{
+	struct nl_msg m;
+	struct nlmsghdr *nh;
+	struct ifinfomsg *ifi;
+
+	nl_msg_init(&m);
+	nh = nl_msg_put(&m, sizeof(*nh));
+	ifi = nl_msg_put(&m, sizeof(*ifi));
+	if (nh == NULL || ifi == NULL)
+		return -1;
+	ifi->ifi_family = AF_UNSPEC;
+
+	if (nl_msg_put_attr_str(&m, IFLA_IFNAME, name) == NULL)
+		return -1;
+	if (nl_msg_put_attr_u32(&m, IFLA_NET_NS_FD, (uint32_t)target_netns_fd) == NULL)
+		return -1;
+
+	nh->nlmsg_type = RTM_NEWLINK;
+	nh->nlmsg_flags = 0;
+	return nl_msg_send_and_ack(fd, &m);
+}
+
 int rtnl_link_set_master(int fd, const char *name, const char *bridge_name)
 {
 	struct nl_msg m;

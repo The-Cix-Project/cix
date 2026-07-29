@@ -14,7 +14,7 @@
 
 struct discovered_device {
 	char id[96];
-	char bus[4];		/* "usb" or "pci" */
+	char bus[4];		/* "usb", "pci", or "net" */
 	char vendor_id[16];
 	char product_id[16];
 	char class_hex[8];	/* PCI only, empty for USB */

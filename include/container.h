@@ -90,6 +90,20 @@ struct device_spec {
 	char dev_path[64];
 };
 
+/*
+ * A generous fixed bound, mirroring CONTAINER_MAX_DEVICES's own
+ * reasoning -- host hardware, not a daemon-created resource, so no
+ * natural daemon-side ceiling to mirror; enough for a router with a
+ * handful of physical uplinks.
+ */
+#define CONTAINER_MAX_INTERFACES 16
+/*
+ * IFNAMSIZ (linux/if.h), kept as a bare literal rather than pulling a
+ * whole extra header into this foundational one -- same precedent
+ * daemon/include/network.h's own NETWORK_NAME_MAX already set.
+ */
+#define CONTAINER_IFNAME_MAX 16
+
 struct container_spec {
 	struct ns_config ns;
 	struct cgroup_limits cg;
@@ -123,6 +137,18 @@ struct container_spec {
 	 */
 	struct device_spec devices[CONTAINER_MAX_DEVICES];
 	int device_count;
+	/*
+	 * Opt-in real network-interface passthrough: bare kernel interface
+	 * names (e.g. "wlan0"), moved into the container's own netns as-is
+	 * -- no veth, no bridge, no rename, no address configured (the
+	 * operator's own userspace inside the container, e.g. bird or
+	 * dhclient, owns addressing once installed via `pkg install`).
+	 * Independent of nets[]/net_count above -- a container can have
+	 * passthrough interfaces with zero virtual networks, or both. See
+	 * container_net_host_attach_interfaces().
+	 */
+	char interfaces[CONTAINER_MAX_INTERFACES][CONTAINER_IFNAME_MAX];
+	int interface_count;
 	char *const *argv;
 	char *const *envp;
 };
@@ -140,6 +166,17 @@ struct container_handle {
 	 * early; closed alongside cgroup_fd/pidfd on removal.
 	 */
 	int bpf_prog_fd;
+	/*
+	 * An fd on /proc/<pid>/ns/net, opened right after the child's
+	 * network namespace exists (see container_net_host_attach_interfaces()),
+	 * kept open for the container's whole lifetime -- not just at
+	 * teardown -- so a container that exits on its own (not via an
+	 * explicit DELETE) doesn't lose a passthrough interface to the
+	 * kernel's own automatic, unpredictably-named fallback the instant
+	 * the last process in that netns exits and nothing else references
+	 * it. -1 when spec->interface_count was 0 at creation time.
+	 */
+	int interfaces_netns_fd;
 };
 
 /*

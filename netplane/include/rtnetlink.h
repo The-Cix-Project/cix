@@ -36,6 +36,18 @@ int rtnl_veth_create(int fd, const char *name, const char *peer_name);
 /* Moves the named link into the network namespace of process pid. */
 int rtnl_link_set_netns_pid(int fd, const char *name, pid_t pid);
 
+/*
+ * Moves the named link into the network namespace referenced by an
+ * open file descriptor (e.g. an fd opened on /proc/<pid>/ns/net) --
+ * unlike rtnl_link_set_netns_pid(), this still works once the
+ * original process that fd was opened against has already exited, as
+ * long as the fd itself (or anything else, e.g. the process still
+ * being alive) keeps that namespace from being torn down. The link
+ * must already be visible in fd's own current netns -- exactly the
+ * same requirement rtnl_open() itself documents.
+ */
+int rtnl_link_set_netns_fd(int fd, const char *name, int target_netns_fd);
+
 /* Attaches (enslaves) the named link to a bridge. */
 int rtnl_link_set_master(int fd, const char *name, const char *bridge_name);
 

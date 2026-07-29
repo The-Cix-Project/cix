@@ -21,18 +21,22 @@
  *    not just that the syscalls to set it up didn't error.
  */
 #include "container.h"
+#include "internal.h"
 #include "linux_compat.h"
 #include "rtnetlink.h"
 #include "test_image_fixture.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <sched.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define BRIDGE_NAME "kanxeo-ctnet0"
@@ -154,6 +158,58 @@ static int build_container_spec(struct container_spec *spec, const char *cg_name
 	spec->argv = argv;
 	spec->envp = envp;
 	return 0;
+}
+
+/*
+ * Forks a throwaway helper that setns()'s into netns_fd and checks,
+ * from that exact vantage point, whether ifname is visible there and
+ * administratively up. Deliberately NOT via /sys/class/net (unlike
+ * iface_exists() above, which only ever runs in this process's own,
+ * never-changed netns): sysfs's netns view is captured at the time
+ * /sys was mounted, not re-evaluated per access, so a stale, already-
+ * mounted /sys keeps showing the OLD netns's interfaces even after a
+ * successful setns() -- confirmed the hard way while first writing
+ * this check (see docs/adr/0022's own Context). SIOCGIFFLAGS via a
+ * socket created fresh, after setns(), doesn't have that problem: a
+ * socket (like the netlink sockets container_net.c's own real
+ * teardown helper uses) is scoped to whatever netns is current at ITS
+ * OWN creation, genuinely dynamic. Returns 1 if visible and up, 0 if
+ * visible but down, -1 if not visible at all (or any other error).
+ */
+static int check_iface_inside_netns(int netns_fd, const char *ifname)
+{
+	pid_t pid;
+	int status;
+
+	pid = fork();
+	if (pid < 0)
+		return -1;
+	if (pid == 0) {
+		int sock;
+		struct ifreq ifr;
+
+		if (setns(netns_fd, CLONE_NEWNET) != 0)
+			_exit(2);
+
+		sock = socket(AF_INET, SOCK_DGRAM, 0);
+		if (sock < 0)
+			_exit(2);
+
+		memset(&ifr, 0, sizeof(ifr));
+		snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "%s", ifname);
+		if (ioctl(sock, SIOCGIFFLAGS, &ifr) != 0) {
+			close(sock);
+			_exit(2);
+		}
+		close(sock);
+		_exit((ifr.ifr_flags & IFF_UP) ? 1 : 0);
+	}
+
+	if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status))
+		return -1;
+	if (WEXITSTATUS(status) == 2)
+		return -1;
+	return WEXITSTATUS(status);
 }
 
 static uint32_t ipv4(const char *s)
@@ -439,6 +495,129 @@ int main(void)
 		close(hT.cgroup_fd);
 		close(hR.pidfd);
 		close(hR.cgroup_fd);
+	}
+
+	/*
+	 * 4. Real interface passthrough (Phase 12 part 6) --
+	 * container_net_host_attach_interfaces()/container_net_teardown_interfaces()
+	 * (src/container_net.c), proven directly against the real kernel
+	 * primitives rather than through GET /v1/devices (this dev
+	 * sandbox's own root netns has no physically-backed NIC visible to
+	 * it at all -- confirmed directly, see docs/adr/0022 -- so nothing
+	 * would ever appear there to test with end to end). A veth pair's
+	 * own two ends stand in for "some named interface not currently in
+	 * a container's netns": rtnl_link_set_netns_pid()/_fd() are fully
+	 * generic (confirmed via kernel source, not veth-specific), so
+	 * moving one really does exercise the identical code path a real
+	 * physical NIC would take.
+	 */
+	{
+		struct container_spec spec4;
+		struct container_handle h4;
+		const char *ifname_move = "kanxeo-ifpt-b";
+		const char *ifname_keep = "kanxeo-ifpt-a";
+		char *argv4[] = { "/bin/daemon_child", "2", "0", NULL };
+		int exit4 = -1;
+		int inside;
+
+		rtnl_link_delete(bfd, ifname_keep);
+		if (rtnl_veth_create(bfd, ifname_keep, ifname_move) != 0) {
+			perror("veth create (interface passthrough scenario)");
+			ok = 0;
+			goto scenario4_done;
+		}
+		if (!iface_exists(ifname_move) || !iface_exists(ifname_keep)) {
+			fprintf(stderr, "FAIL: veth pair not visible in root netns right after creation\n");
+			ok = 0;
+			goto scenario4_cleanup;
+		}
+
+		if (build_container_spec(&spec4, "tcc-net-ifpt", "/tmp/container_net_test/ifpt", NULL, 0,
+		                          0, NULL, 0, argv4, envp) != 0) {
+			ok = 0;
+			goto scenario4_cleanup;
+		}
+		spec4.interface_count = 1;
+		snprintf(spec4.interfaces[0], sizeof(spec4.interfaces[0]), "%s", ifname_move);
+
+		if (container_create(&spec4, &h4) != 0) {
+			perror("container_create ifpt");
+			ok = 0;
+			goto scenario4_cleanup;
+		}
+
+		/* Moved out: no longer visible in the root netns at all -- the
+		 * exact mechanism that makes exclusivity automatic in
+		 * GET /v1/devices too. Its untouched peer is proof this wasn't
+		 * just "the whole veth pair vanished." */
+		if (iface_exists(ifname_move)) {
+			fprintf(stderr, "FAIL: %s still visible in root netns after being granted\n",
+			        ifname_move);
+			ok = 0;
+		}
+		if (!iface_exists(ifname_keep)) {
+			fprintf(stderr, "FAIL: %s (untouched peer) vanished too\n", ifname_keep);
+			ok = 0;
+		}
+
+		/* Visible inside the container's own netns, still under its
+		 * real, unrenamed name, and administratively up -- both
+		 * confirmed from that exact vantage point, not inferred. */
+		inside = check_iface_inside_netns(h4.interfaces_netns_fd, ifname_move);
+		if (inside != 1) {
+			fprintf(stderr,
+			        "FAIL: %s not visible+up inside the container's netns (result=%d)\n",
+			        ifname_move, inside);
+			ok = 0;
+		}
+
+		if (container_wait(&h4, &exit4) != 0) {
+			perror("container_wait ifpt");
+			ok = 0;
+		} else if (exit4 != 0) {
+			fprintf(stderr, "FAIL: ifpt exit status %d, expected 0\n", exit4);
+			ok = 0;
+		}
+
+		/* Teardown: the same call registry_remove() makes. The whole
+		 * point of holding interfaces_netns_fd open since creation --
+		 * the container's own process (and, left alone, its netns) is
+		 * already gone by this point. */
+		if (container_net_teardown_interfaces((const char *const[]){ ifname_move }, 1,
+		                                       h4.interfaces_netns_fd) != 0) {
+			fprintf(stderr, "FAIL: container_net_teardown_interfaces() returned nonzero\n");
+			ok = 0;
+		}
+
+		close(h4.pidfd);
+		close(h4.cgroup_fd);
+
+		/* Reappears in the root netns under its real, original name --
+		 * not the kernel's own unpredictable "devN" fallback, since
+		 * this daemon acted before the netns was ever allowed to
+		 * disappear on its own. */
+		{
+			int reappeared = 0;
+			int attempt;
+
+			for (attempt = 0; attempt < 20; attempt++) {
+				if (iface_exists(ifname_move)) {
+					reappeared = 1;
+					break;
+				}
+				usleep(100000);
+			}
+			if (!reappeared) {
+				fprintf(stderr,
+				        "FAIL: %s did not reappear in the root netns after teardown\n",
+				        ifname_move);
+				ok = 0;
+			}
+		}
+
+	scenario4_cleanup:
+		rtnl_link_delete(bfd, ifname_keep);
+	scenario4_done:;
 	}
 
 	rtnl_link_delete(bfd, BRIDGE_NAME);

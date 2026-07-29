@@ -47,6 +47,13 @@
 
 #define PKG_MAX_PACKAGES 256
 #define PKG_NAME_MAX 64
+/* Same charset/length rules as a package name (simple_name_is_valid()),
+ * for the same reason CONTAINER/NETWORK names share one bound -- an
+ * image name is not a distinct kind of identifier, just a directory
+ * under images_dir. Not "base"-specific: any name a container's own
+ * "image" field could reference is valid here too. */
+#define PKG_IMAGE_NAME_MAX 64
+#define PKG_DEFAULT_IMAGE "base"
 #define PKG_VERSION_MAX 64
 #define PKG_URL_MAX 512
 #define PKG_SHA256_MAX 65
@@ -134,9 +141,19 @@ void pkg_write_json_recipes(struct json_writer *w);
  * running curl subprocess, ready for the caller (main.c, which owns
  * epoll) to track via EPOLLIN on *out_pidfd exactly like a
  * container's own pidfd.
+ *
+ * image is the target every package in the resolved chain (name and
+ * every dependency it pulls in) merges into once built -- NULL or ""
+ * means PKG_DEFAULT_IMAGE ("base"). A package name is tracked
+ * independently per image: installing "bash" into both "base" and
+ * "router" are two separate, independently-upgradable/removable
+ * entries, not a collision (a container using one image never sees
+ * what another image has installed -- the whole point of having more
+ * than one).
  */
-enum pkg_error pkg_install_start(const char *name, int upgrade, char *out_started_name,
-                                  size_t out_started_name_size, pid_t *out_pid, int *out_pidfd);
+enum pkg_error pkg_install_start(const char *name, const char *image, int upgrade,
+                                  char *out_started_name, size_t out_started_name_size,
+                                  pid_t *out_pid, int *out_pidfd);
 
 /*
  * Called once the tracked fetch subprocess's pidfd fires (caller has
@@ -184,16 +201,19 @@ void pkg_build_spawn_failed(void);
 int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_pid, int *out_pidfd);
 
 /* Metadata for every known package (installed or in-flight): name,
- * version, state, error (null unless FAILED), files (manifest, empty
- * until INSTALLED), available_version (null if up to date or not yet
- * installed, else the recipe's current version -- re-read from disk
- * on every call, One Source of Truth). */
+ * image, version, state, error (null unless FAILED), files (manifest,
+ * empty until INSTALLED), available_version (null if up to date or
+ * not yet installed, else the recipe's current version -- re-read
+ * from disk on every call, One Source of Truth). */
 void pkg_write_json_list(struct json_writer *w);
-enum pkg_error pkg_get_one(const char *name, struct json_writer *w);
+/* image NULL or "" means PKG_DEFAULT_IMAGE, matching pkg_install_start(). */
+enum pkg_error pkg_get_one(const char *name, const char *image, struct json_writer *w);
 
-/* Unlinks every manifested file from the base image and forgets the
- * package. PKG_ERR_NOT_FOUND if unknown or not currently installed;
- * PKG_ERR_BUSY if this package is the one currently mid-build. */
-enum pkg_error pkg_delete(const char *name);
+/* Unlinks every manifested file from that specific (name, image)
+ * entry's own image and forgets the package. PKG_ERR_NOT_FOUND if
+ * unknown or not currently installed; PKG_ERR_BUSY if this exact
+ * (name, image) is the one currently mid-build. image NULL or ""
+ * means PKG_DEFAULT_IMAGE. */
+enum pkg_error pkg_delete(const char *name, const char *image);
 
 #endif /* PKG_H */

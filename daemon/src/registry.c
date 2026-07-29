@@ -1,4 +1,5 @@
 #include "registry.h"
+#include "internal.h"
 #include "linux_compat.h"
 
 #include <arpa/inet.h>
@@ -64,6 +65,10 @@ enum registry_error registry_create(const char *name, const struct container_spe
 	e->device_count = device_count;
 	for (i = 0; i < device_count; i++)
 		e->devices[i] = devices[i];
+	memset(e->interfaces, 0, sizeof(e->interfaces));
+	e->interface_count = spec->interface_count;
+	for (i = 0; i < spec->interface_count; i++)
+		strncpy(e->interfaces[i], spec->interfaces[i], sizeof(e->interfaces[i]) - 1);
 
 	*out = e;
 	return REGISTRY_OK;
@@ -84,32 +89,40 @@ int registry_network_in_use(const char *network_name)
 	return 0;
 }
 
+static int ip_in_use(uint32_t candidate_be)
+{
+	int i, j;
+
+	for (i = 0; i < REGISTRY_MAX_CONTAINERS; i++) {
+		if (!g_entries[i].in_use)
+			continue;
+		for (j = 0; j < g_entries[i].net_count; j++) {
+			if (g_entries[i].nets[j].ip_be == candidate_be)
+				return 1;
+		}
+	}
+	return 0;
+}
+
 int registry_alloc_ip(uint32_t network_base_be, int host_min, int host_max, uint32_t *out_ip_be)
 {
 	uint32_t network_base_host = ntohl(network_base_be);
 	int host;
-	int i, j;
 
 	for (host = host_min; host <= host_max; host++) {
 		uint32_t candidate_be = htonl(network_base_host | (uint32_t)host);
-		int taken = 0;
 
-		for (i = 0; i < REGISTRY_MAX_CONTAINERS && !taken; i++) {
-			if (!g_entries[i].in_use)
-				continue;
-			for (j = 0; j < g_entries[i].net_count; j++) {
-				if (g_entries[i].nets[j].ip_be == candidate_be) {
-					taken = 1;
-					break;
-				}
-			}
-		}
-		if (!taken) {
+		if (!ip_in_use(candidate_be)) {
 			*out_ip_be = candidate_be;
 			return 0;
 		}
 	}
 	return -1;
+}
+
+int registry_ip_available(uint32_t candidate_be)
+{
+	return !ip_in_use(candidate_be);
 }
 
 void registry_mark_exited(struct registry_entry *entry)
@@ -132,6 +145,16 @@ int registry_remove(const char *name)
 	if (e->running) {
 		sys_pidfd_send_signal(e->handle.pidfd, SIGKILL);
 		registry_mark_exited(e);
+	}
+
+	if (e->interface_count > 0) {
+		const char *iface_ptrs[CONTAINER_MAX_INTERFACES];
+		int i;
+
+		for (i = 0; i < e->interface_count; i++)
+			iface_ptrs[i] = e->interfaces[i];
+		container_net_teardown_interfaces(iface_ptrs, e->interface_count,
+		                                   e->handle.interfaces_netns_fd);
 	}
 
 	close(e->handle.pidfd);
@@ -186,6 +209,11 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 		jw_str(w, entry->devices[i].dev_path);
 		jw_obj_close(w);
 	}
+	jw_arr_close(w);
+	jw_key(w, "interfaces");
+	jw_arr_open(w);
+	for (i = 0; i < entry->interface_count; i++)
+		jw_str(w, entry->interfaces[i]);
 	jw_arr_close(w);
 	jw_obj_close(w);
 }

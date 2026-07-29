@@ -18,7 +18,9 @@ enum network_error {
 	NETWORK_ERR_CREATE_FAILED,
 	NETWORK_ERR_NOT_FOUND,
 	NETWORK_ERR_IN_USE,
-	NETWORK_ERR_DELETE_FAILED
+	NETWORK_ERR_DELETE_FAILED,
+	NETWORK_ERR_IP_OUT_OF_RANGE, /* not this network's subnet, or its reserved gateway/network address */
+	NETWORK_ERR_IP_TAKEN        /* a valid, in-range address, but already assigned to a running container */
 };
 
 struct network_def {
@@ -74,6 +76,18 @@ struct network_def *network_find(const char *name);
  * exhausted).
  */
 int network_alloc_ip(const char *name, uint32_t *out_ip_be);
+
+/*
+ * Validates an explicit, operator-chosen IP for network name: must
+ * fall within this network's own subnet (its masked base, not just
+ * any address), must not be the reserved gateway address (base|1,
+ * owned by the bridge itself) or the network address itself, must
+ * fall within the same usable host range network_alloc_ip() itself
+ * allocates from ([2, host_max]), and must not already be assigned to
+ * a running container's network attachment (registry_ip_available()).
+ * NETWORK_ERR_NOT_FOUND if no such network.
+ */
+enum network_error network_ip_available(const char *name, uint32_t ip_be);
 
 void network_write_json_one(const struct network_def *net, struct json_writer *w);
 void network_write_json_list(struct json_writer *w);

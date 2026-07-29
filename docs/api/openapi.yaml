@@ -554,8 +554,9 @@ paths:
         subprocess, tracked asynchronously -- this endpoint returns immediately, it does
         not wait for the fetch or the build to finish), then, once fetched and its
         checksum verified, builds it inside an isolated, network-less container and
-        merges the result into the shared base image every "base"-image container uses.
-        v1 serializes installs: only one may be in flight at a time.
+        merges the result into the target image (request body's "image", default
+        "base") every container using that image sees. v1 serializes installs: only
+        one may be in flight at a time, across every image.
       operationId: pkgInstall
       requestBody:
         required: true
@@ -623,7 +624,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
     delete:
-      summary: Uninstalls a package (unlinks its manifested files from the base image)
+      summary: Uninstalls a package (unlinks its manifested files from its target image)
       operationId: deletePkg
       parameters:
         - $ref: "#/components/parameters/PkgName"
@@ -721,9 +722,13 @@ components:
       name: name
       in: path
       required: true
+      description: >
+        A bare package name (targets the default "base" image) or the compound
+        "{name}@{image}" form to address a package tracked against a specific,
+        non-default target image.
       schema:
         type: string
-        pattern: "^[A-Za-z0-9_-]+$"
+        pattern: "^[A-Za-z0-9_-]+(@[A-Za-z0-9_-]+)?$"
 
   schemas:
     ContainerCreateRequest:
@@ -760,15 +765,23 @@ components:
         networks:
           type: array
           items:
-            type: string
+            oneOf:
+              - type: string
+              - $ref: "#/components/schemas/NetworkAttachmentRequest"
           minItems: 1
           maxItems: 64
           description: >
-            Names of networks (see POST /networks) to attach to, in
-            order -- any name not currently known to this daemon is a
-            400. Omit for no networking at all (an isolated netns with
-            only lo, the same as every container got before this field
-            existed). The first entry is "primary" and receives the
+            Networks (see POST /networks) to attach to, in order -- any
+            name not currently known to this daemon is a 400. Each entry
+            is either a bare network name (an IP is auto-allocated, the
+            original v1 behavior) or a {name, ip} object naming an
+            explicit, operator-chosen address instead -- 400 if ip isn't
+            a usable address on that network (wrong subnet, the reserved
+            gateway/network address, or out of the network's host range),
+            409 if it's already assigned to a running container. Omit
+            networks entirely for no networking at all (an isolated netns
+            with only lo, the same as every container got before this
+            field existed). The first entry is "primary" and receives the
             default route; any further entries only get their own
             subnet's connected route (no default route of their own).
         ip_forward:
@@ -855,6 +868,40 @@ components:
             node's mere presence -- a container granted no devices, or a
             different set, cannot open another container's granted
             device even if it already knows its major:minor.
+        interfaces:
+          type: array
+          items:
+            type: string
+          maxItems: 16
+          description: >
+            Bare kernel interface names (e.g. "wlan0") of real,
+            physically-backed network interfaces to move wholesale into
+            this container's own netns -- any name not currently listed
+            under a "net" bus entry in GET /devices (unknown, or already
+            attached elsewhere) is a 400. No veth, no bridge, no rename,
+            no address configured: the interface keeps its real kernel
+            name and comes up automatically, but addressing/routing is
+            entirely the operator's own job inside the container (e.g.
+            bird or dhclient, once installed via `pkg install`) -- this
+            is independent of, and can be combined with, networks above.
+            Set once at creation; not modifiable on an already-running
+            container.
+
+    NetworkAttachmentRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Name of an existing network (see POST /networks).
+        ip:
+          type: string
+          description: >
+            An explicit, operator-chosen IPv4 address on this network
+            (dotted-quad) instead of an auto-allocated one. Must be
+            within the network's own subnet, not its reserved gateway
+            or network address, and not already assigned to a running
+            container.
 
     RouteSpec:
       type: object
@@ -905,6 +952,13 @@ components:
           items:
             $ref: "#/components/schemas/ContainerDeviceAttachment"
           description: Every device this container was granted at creation. Empty if none.
+        interfaces:
+          type: array
+          items:
+            type: string
+          description: >
+            Bare kernel names of every real network interface moved into
+            this container's own netns at creation. Empty if none.
 
     ContainerNetworkAttachment:
       type: object
@@ -935,14 +989,22 @@ components:
         id:
           type: string
           description: >
-            Stable identifier: "usb:{idVendor}:{idProduct}:{serial-or-port-path}"
-            or "pci:{bdf-address}[:{node-name}]". Never derived from
-            USB busnum/devnum (reassigned on every replug) or from
-            anything else that changes across a reboot/replug on the
-            same physical port.
+            Stable identifier: "usb:{idVendor}:{idProduct}:{serial-or-port-path}",
+            "pci:{bdf-address}[:{node-name}]", or "net:{ifname}". Never
+            derived from USB busnum/devnum (reassigned on every replug)
+            or from anything else that changes across a reboot/replug on
+            the same physical port.
         bus:
           type: string
-          enum: [usb, pci]
+          enum: [usb, pci, net]
+          description: >
+            "net" entries are real, physically-backed network interfaces
+            only -- any interface the kernel itself creates (bridges,
+            veths, kanxeo's own managed networks, ...) is never listed.
+            An interface currently attached to a running container simply
+            doesn't appear here at all (it isn't visible in this netns
+            any more) -- the same rule that makes exclusivity automatic,
+            with no separate "already claimed" state to represent.
         vendor_id:
           type: string
           description: 4 hex digits, no "0x" prefix.
@@ -951,7 +1013,7 @@ components:
           description: 4 hex digits, no "0x" prefix.
         class:
           type: string
-          description: PCI class/subclass/progif (6 hex digits), empty for USB.
+          description: PCI class/subclass/progif (6 hex digits), empty for USB and net.
         description:
           type: string
           description: Human-readable label (manufacturer/product strings, or a synthesized PCI description).
@@ -960,22 +1022,31 @@ components:
           description: Kernel driver currently bound, or empty if unbound.
         dev_path:
           type: string
-          description: The /dev node path this device owns, or empty if none was found (see assignable).
+          description: >
+            The /dev node path this device owns, or empty if none was
+            found (see assignable). Always empty for "net" -- a network
+            interface has no /dev node at all; it's moved wholesale into
+            a container's own netns instead (see
+            ContainerCreateRequest.interfaces), not mknod()'d.
         type:
           type: string
           enum: [char, block]
+          description: Meaningless for "net" (no /dev node to describe).
         major:
           type: integer
+          description: Meaningless for "net".
         minor:
           type: integer
+          description: Meaningless for "net".
         assignable:
           type: boolean
           description: >
-            True only if a driver is bound AND a real /dev node was
-            found. A device with assignable=false still appears (so an
-            operator can see it exists and why it isn't offered), but
-            referencing its id in a container's own devices field is a
-            400.
+            USB/PCI: true only if a driver is bound AND a real /dev node
+            was found. net: always true (if it's listed at all, it's in
+            this netns and free -- see bus's own description). A device
+            with assignable=false still appears (so an operator can see
+            it exists and why it isn't offered), but referencing its id
+            in a container's own devices/interfaces field is a 400.
 
     NetworkCreateRequest:
       type: object
@@ -1189,6 +1260,15 @@ components:
             Must match an existing <name>.recipe file's own pkg_name=. Its pkg_depends
             are resolved and installed first automatically (already-installed
             dependencies are skipped; a circular or unresolvable dependency is a 400).
+        image:
+          type: string
+          default: base
+          description: >
+            The target image name/version's own rootfs are merged into once built.
+            Defaults to "base" (every container using the base image). A package name
+            is tracked independently per image -- installing "bash" into both "base"
+            and "router" are two separate, independently upgradable/removable entries.
+            Every dependency name pulls in installs into this same target image.
         upgrade:
           type: boolean
           default: false
@@ -1203,10 +1283,15 @@ components:
 
     PkgEntry:
       type: object
-      required: [name, version, state, files]
+      required: [name, image, version, state, files]
       properties:
         name:
           type: string
+        image:
+          type: string
+          description: >
+            The target image this specific (name, image) entry is tracked/installed
+            against. "base" unless a non-default image was given at install time.
         version:
           type: string
         state:
