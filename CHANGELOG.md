@@ -4,6 +4,19 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 14 (part 1): GPU passthrough discovery + grouped device grants
+
+ADR-0017 explicitly named GPU passthrough as the next consumer of its own PCI/USB passthrough mechanism; a GPU needs several `/dev` nodes granted together, which the existing strictly-one-id-per-node model couldn't express. See ADR-0028.
+
+#### Added
+- `daemon/src/device.c`/`daemon/include/device.h`: new `"gpu"` bus (`enumerate_gpu()`), walking `/sys/class/drm` and grouping multiple DRM nodes (`cardN`/`renderDN`) belonging to one physical GPU under a stable `gpu:<idx>` (resolved via each node's `device` symlink back to its parent PCI address); `enumerate_pci_one()`'s placeholder-suppression extended to PCI class `03` (display controller) alongside the existing `02` (network controller), so a GPU isn't also listed generically under `pci:`. New, additive `device_find_group()` -- `device_find()` itself untouched -- resolves a bare `gpu:<idx>` logical id into every currently assignable member node at once.
+- `daemon/src/main.c`: `create_container_from_body()`'s device-grant loop reworked from a strict 1:1 request-index-to-grant-slot mapping to a decoupled read/write-index loop (`device_find_group()`), since one requested id can now expand into several grants; bounds-checked against `CONTAINER_MAX_DEVICES` incrementally.
+- `cli/src/main.c`: `device ls`/`run --device=` usage text documents grouped GPU ids (no functional CLI change -- both were already fully data-driven/generic).
+- `docs/api/openapi.yaml`: `Device.bus` gains `gpu`; `ContainerCreateRequest.devices` documents grouped-id expansion and that `GET` echoes real granted members, not the requested id.
+- `docs/adr/0028-gpu-passthrough-grouped-device-grants.md`.
+
+Verified over real HTTP against a live daemon, to the extent possible without real GPU hardware (confirmed directly: this sandbox's `/sys/class/drm` is empty, no driver bound to anything): `GET /v1/devices` returns cleanly with zero `gpu:` entries; `POST /v1/containers` with `"devices":["gpu:0"]` 400s via a genuine exercise of `device_find_group()`'s empty-expansion path; every pre-existing `usb:`/`pci:`/`net:` grant scenario re-verified unchanged. 3 consecutive clean runs; full pre-existing regression suite (all 17 binaries) re-run clean. Zero compiler warnings. Kernel driver enablement and firmware staging are deliberately a separate part 2, not included here.
+
 ### Phase 13 (part 1): persisted, auto-restarting containers (`restart: "always"`, `depends_on`)
 
 Containers have been in-memory only since Phase 3 -- for a real deployment (routers, a NAS, a git-repo container, an ad-blocking DNS, some depending on others), that's the real blocker. See ADR-0025.

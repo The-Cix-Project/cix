@@ -32,3 +32,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0025](0025-persisted-auto-restarting-containers.md) | Persisted, auto-restarting containers (`restart: "always"`, `depends_on`) | Accepted |
 | [0026](0026-tcp-readiness-checks-for-depends-on.md) | TCP readiness checks for `depends_on` | Accepted |
 | [0027](0027-restart-policy-expansion-and-backoff.md) | Restart policy expansion (`on-failure`, `unless-stopped`) and crash-restart backoff | Accepted |
+| [0028](0028-gpu-passthrough-grouped-device-grants.md) | GPU passthrough: grouped multi-node device grants | Accepted |

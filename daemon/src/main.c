@@ -942,35 +942,61 @@ static int create_container_from_body(const char *body, size_t body_len,
 			snprintf(err_msg, err_msg_size, "devices must be an array of at most 16 entries");
 			return 400;
 		}
-		device_count = (int)jdevices->u.array.count;
-		for (i = 0; i < (size_t)device_count; i++) {
+		/*
+		 * device_count is the WRITE index here, decoupled from the
+		 * request array's own read index i -- a single grouped id
+		 * (e.g. "gpu:0", ADR-0028) can expand into several grants via
+		 * device_find_group(), so one requested entry doesn't
+		 * necessarily mean one device_specs slot. The array-length
+		 * check above is only a coarse upfront guard (an array literally
+		 * longer than the cap can never fit even unexpanded); the real
+		 * bound is enforced incrementally below as groups expand.
+		 */
+		for (i = 0; i < jdevices->u.array.count; i++) {
 			const char *id = json_as_string(jdevices->u.array.items[i]);
-			const struct discovered_device *dd;
+			const struct discovered_device *matches[CONTAINER_MAX_DEVICES];
+			int n, j;
 
 			if (id == NULL) {
 				json_free(root);
 				snprintf(err_msg, err_msg_size, "devices entries must be strings");
 				return 400;
 			}
-			dd = device_find(id);
-			if (dd == NULL || !dd->assignable) {
+			n = device_find_group(id, matches, CONTAINER_MAX_DEVICES - device_count);
+			if (n <= 0) {
 				json_free(root);
 				snprintf(err_msg, err_msg_size, "unknown or unassignable device");
 				return 400;
 			}
-			/* dev_path/major/minor always come from the daemon's own
-			 * current sysfs snapshot (dd), never trusted from the
-			 * request body -- a client only ever names a device by id. */
-			memset(&device_specs[i], 0, sizeof(device_specs[i]));
-			device_specs[i].type = dd->type;
-			device_specs[i].major = dd->major;
-			device_specs[i].minor = dd->minor;
-			snprintf(device_specs[i].dev_path, sizeof(device_specs[i].dev_path), "%s",
-			         dd->dev_path);
-			memset(&device_attachments[i], 0, sizeof(device_attachments[i]));
-			snprintf(device_attachments[i].id, sizeof(device_attachments[i].id), "%s", dd->id);
-			snprintf(device_attachments[i].dev_path, sizeof(device_attachments[i].dev_path),
-			         "%s", dd->dev_path);
+			if (device_count + n > CONTAINER_MAX_DEVICES) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size,
+				         "too many devices requested (a grouped id can expand into "
+				         "more than one grant)");
+				return 400;
+			}
+			for (j = 0; j < n; j++) {
+				const struct discovered_device *dd = matches[j];
+
+				/* dev_path/major/minor always come from the daemon's
+				 * own current sysfs snapshot (dd), never trusted from
+				 * the request body -- a client only ever names a
+				 * device by id. */
+				memset(&device_specs[device_count], 0, sizeof(device_specs[device_count]));
+				device_specs[device_count].type = dd->type;
+				device_specs[device_count].major = dd->major;
+				device_specs[device_count].minor = dd->minor;
+				snprintf(device_specs[device_count].dev_path,
+				         sizeof(device_specs[device_count].dev_path), "%s", dd->dev_path);
+				memset(&device_attachments[device_count], 0,
+				       sizeof(device_attachments[device_count]));
+				snprintf(device_attachments[device_count].id,
+				         sizeof(device_attachments[device_count].id), "%s", dd->id);
+				snprintf(device_attachments[device_count].dev_path,
+				         sizeof(device_attachments[device_count].dev_path), "%s",
+				         dd->dev_path);
+				device_count++;
+			}
 		}
 	}
 	if (jinterfaces != NULL) {

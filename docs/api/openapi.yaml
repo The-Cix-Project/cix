@@ -1018,8 +1018,8 @@ components:
             type: string
           maxItems: 16
           description: >
-            ids (see GET /devices) of host PCI/USB devices to grant this
-            container access to, in order -- any id not currently
+            ids (see GET /devices) of host PCI/USB/GPU devices to grant
+            this container access to -- any id not currently
             discoverable, or not assignable (no driver bound and/or no
             owned /dev node found), is a 400. Omit for no device
             passthrough at all (the same "no /dev beyond the base image"
@@ -1030,6 +1030,21 @@ components:
             node's mere presence -- a container granted no devices, or a
             different set, cannot open another container's granted
             device even if it already knows its major:minor.
+
+            One entry here doesn't always mean one grant: a GPU's bare
+            logical id ("gpu:0", not itself listed by GET /devices --
+            only its individual member nodes are, see Device.bus) atomically
+            expands into every one of that GPU's currently assignable
+            nodes (e.g. both "gpu:0:card0" and "gpu:0:renderD128" from a
+            single "gpu:0" entry here) -- ADR-0028. GET /containers'
+            own response then reflects what was actually granted (the
+            expanded member ids), not a static echo of what this field
+            was given. maxItems bounds this field's own array length,
+            not the total grant count after expansion (still capped at
+            16 overall, a 400 if a grouped id would exceed it). An
+            individual GPU node can still be named directly (e.g. just
+            "gpu:0:renderD128") instead of the whole group, if that's
+            all a container needs.
         interfaces:
           type: array
           items:
@@ -1290,13 +1305,18 @@ components:
           type: string
           description: >
             Stable identifier: "usb:{idVendor}:{idProduct}:{serial-or-port-path}",
-            "pci:{bdf-address}[:{node-name}]", or "net:{ifname}". Never
-            derived from USB busnum/devnum (reassigned on every replug)
-            or from anything else that changes across a reboot/replug on
-            the same physical port.
+            "pci:{bdf-address}[:{node-name}]", "net:{ifname}", or
+            "gpu:{index}:{node-name}" (e.g. "gpu:0:card0",
+            "gpu:0:renderD128" for one physical GPU's two DRM nodes).
+            Never derived from USB busnum/devnum (reassigned on every
+            replug) or from anything else that changes across a
+            reboot/replug on the same physical port. GPU indices are
+            stable only within one daemon's own enumeration pass
+            (first-seen order among distinct underlying PCI addresses),
+            not a hardware-assigned number.
         bus:
           type: string
-          enum: [usb, pci, net]
+          enum: [usb, pci, net, gpu]
           description: >
             "net" entries are real, physically-backed network interfaces
             only -- any interface the kernel itself creates (bridges,
@@ -1305,6 +1325,11 @@ components:
             doesn't appear here at all (it isn't visible in this netns
             any more) -- the same rule that makes exclusivity automatic,
             with no separate "already claimed" state to represent.
+            "gpu" entries are DRM display/render nodes (see ADR-0028);
+            each individual node (e.g. "gpu:0:card0") is listed here,
+            but the bare logical id (e.g. "gpu:0") that grants every
+            node for that GPU at once is not itself a listed entry --
+            see ContainerCreateRequest.devices.
         vendor_id:
           type: string
           description: 4 hex digits, no "0x" prefix.

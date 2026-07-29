@@ -14,7 +14,7 @@
 
 struct discovered_device {
 	char id[96];
-	char bus[4];		/* "usb", "pci", or "net" */
+	char bus[4];		/* "usb", "pci", "net", or "gpu" */
 	char vendor_id[16];
 	char product_id[16];
 	char class_hex[8];	/* PCI only, empty for USB */
@@ -45,6 +45,23 @@ int device_enumerate(struct discovered_device *out, int cap);
  * unplugged and replugged elsewhere).
  */
 const struct discovered_device *device_find(const char *id);
+
+/*
+ * Resolves id to one or more discovered devices (ADR-0028). An exact
+ * id match -- covering every usb:/pci:/net: id, and a "gpu:<idx>:
+ * <node>" id naming one specific GPU member node directly -- returns
+ * exactly that one entry, identical to device_find(). Only a bare
+ * "gpu:<idx>" logical id with no exact match falls through to
+ * expansion: every currently assignable "gpu:<idx>:*" member is
+ * returned, so a single grant can atomically request everything one
+ * physical GPU needs (e.g. both its card and render nodes) without the
+ * caller naming each one by hand. Writes up to cap pointers into out,
+ * into the same kind of per-call static cache device_find() itself
+ * uses -- valid until the next device_find()/device_find_group() call.
+ * Returns the count written, or -1 if id resolves to nothing
+ * assignable at all.
+ */
+int device_find_group(const char *id, const struct discovered_device *out[], int cap);
 
 void device_write_json_one(const struct discovered_device *d, struct json_writer *w);
 

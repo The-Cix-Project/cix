@@ -152,6 +152,33 @@ int main(void)
 					snprintf(first_assignable_id, sizeof(first_assignable_id), "%s", id);
 					have_assignable = 1;
 				}
+				/* Phase 14 part 1 (ADR-0028): any "gpu" bus entry must be
+				 * an individual member node -- "gpu:<idx>:<node>" -- never
+				 * the bare logical "gpu:<idx>" id itself (that id only
+				 * ever exists as device_find_group()'s own expansion
+				 * target, not a listed discovery entry). This sandbox has
+				 * no GPU driver bound to anything (confirmed directly:
+				 * /sys/class/drm is empty here), so this branch is not
+				 * expected to run -- checked anyway so it's correct
+				 * wherever it does. */
+				if (str_eq(bus, "gpu")) {
+					const char *dev_path = json_str_field(d, "dev_path");
+					int colons = 0;
+					const char *p;
+
+					for (p = id; *p != '\0'; p++) {
+						if (*p == ':')
+							colons++;
+					}
+					if (colons != 2 || dev_path == NULL ||
+					    strncmp(dev_path, "/dev/dri/", 9) != 0) {
+						fprintf(stderr,
+						        "FAIL: gpu device entry %zu malformed (id=%s "
+						        "dev_path=%s)\n",
+						        i, id, dev_path != NULL ? dev_path : "(null)");
+						ok = 0;
+					}
+				}
 			}
 		}
 	}
@@ -167,6 +194,27 @@ int main(void)
 	                       &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: unknown device id expected 400, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	/* 2b. Phase 14 part 1 (ADR-0028): a bare "gpu:0" logical id, with no
+	 * GPU discovered on this host at all, is a real, deterministic
+	 * exercise of device_find_group()'s own empty-expansion fallback
+	 * path (no exact match, no "gpu:0:*" prefix matches either) --
+	 * fully provable here regardless of hardware, unlike the positive
+	 * "grouped id expands into real grants" path (see ADR-0028's own
+	 * Consequences for why that part isn't testable in this sandbox). */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"devgpubad\",\"image\":\"devicestest\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"],"
+	                       "\"devices\":[\"gpu:0\"]}",
+	                       &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: devices:[\"gpu:0\"] with no GPU discovered expected 400, got "
+		                "%d\n",
+		        r.status);
 		ok = 0;
 	}
 	kx_response_free(&r);

@@ -13,6 +13,11 @@
 #define PCI_BUS_DIR "/sys/bus/pci/devices"
 #define PCI_WALK_MAX_DEPTH 4
 #define NET_CLASS_DIR "/sys/class/net"
+#define DRM_CLASS_DIR "/sys/class/drm"
+/* A generous fixed bound on distinct physical GPUs in one host --
+ * mirrors CONTAINER_MAX_DEVICES's own "generous fixed bound" reasoning
+ * (container.h), not a real hardware limit. */
+#define GPU_MAX_CARDS 16
 
 /*
  * Reads a small sysfs text attribute into out, trimming a trailing
@@ -414,9 +419,13 @@ static void enumerate_pci_one(const char *base, const char *address, struct disc
 	/* PCI class 02xxxx is "network controller" -- already represented,
 	 * correctly and once, by enumerate_net()'s own walk of
 	 * /sys/class/net (the netdev it owns, if this netns can see it at
-	 * all). Suppressing the fallback placeholder here avoids reporting
-	 * the same physical card twice under two different bus entries. */
-	if (*count == before && *count < cap && strncmp(class_hex, "02", 2) != 0) {
+	 * all). Class 03xxxx is "display controller" -- same reasoning,
+	 * represented by enumerate_gpu()'s own walk of /sys/class/drm
+	 * instead. Suppressing the fallback placeholder here avoids
+	 * reporting the same physical card twice under two different bus
+	 * entries. */
+	if (*count == before && *count < cap && strncmp(class_hex, "02", 2) != 0 &&
+	    strncmp(class_hex, "03", 2) != 0) {
 		/* Nothing owned found anywhere in this device's own subtree
 		 * (a bridge, or an unbound device). Still surfaced,
 		 * unassignable, so an operator can see the device exists and
@@ -516,6 +525,129 @@ static void enumerate_net(struct discovered_device *out, int cap, int *count)
 	closedir(d);
 }
 
+/* --- gpu bus: DRM display/render nodes for a real GPU (AMD amdgpu is
+ * the confirmed target hardware -- see ADR-0028), grouped under one
+ * gpu:<idx> logical id per physical card so a container can request
+ * everything a GPU needs (card + render nodes) in a single grant via
+ * device_find_group() rather than naming each node by hand. Unlike
+ * usb/pci/net above, this bus's own ids are two-tier: "gpu:<idx>:
+ * <node>" (this function's own output, one entry per real node) plus
+ * the bare "gpu:<idx>" logical id device_find_group() alone knows how
+ * to expand -- never emitted here as its own discovered_device. --- */
+
+/* Resolves entry_path's own "device" symlink (e.g.
+ * <DRM_CLASS_DIR>/card0/device) to its parent PCI device's own BDF
+ * address (the symlink target's basename) -- the stable key used to
+ * group multiple DRM nodes (card0, renderD128, ...) belonging to the
+ * same physical GPU under one gpu:<idx>. Returns 0 and fills out, or
+ * -1 if entry_path has no "device" symlink at all. */
+static int drm_parent_pci_address(const char *entry_path, char *out, size_t out_size)
+{
+	char link_path[PATH_MAX];
+	char resolved[PATH_MAX];
+	ssize_t n;
+	const char *base;
+
+	snprintf(link_path, sizeof(link_path), "%s/device", entry_path);
+	n = readlink(link_path, resolved, sizeof(resolved) - 1);
+	if (n < 0)
+		return -1;
+	resolved[n] = '\0';
+	base = strrchr(resolved, '/');
+	base = (base != NULL) ? base + 1 : resolved;
+	snprintf(out, out_size, "%s", base);
+	return 0;
+}
+
+static void enumerate_gpu(struct discovered_device *out, int cap, int *count)
+{
+	DIR *d;
+	struct dirent *ent;
+	char seen_addr[GPU_MAX_CARDS][32];
+	int seen_count = 0;
+
+	d = opendir(DRM_CLASS_DIR);
+	if (d == NULL)
+		return;
+
+	while (*count < cap && (ent = readdir(d)) != NULL) {
+		char entry_path[PATH_MAX];
+		char attr[PATH_MAX];
+		char devbuf[32];
+		char pci_addr[32];
+		char vendor_raw[16] = "", device_raw[16] = "", class_raw[16] = "";
+		char vendor_id[16], product_id[16], class_hex[8];
+		char driver[64];
+		unsigned int major, minor;
+		int idx, i;
+		struct discovered_device *e;
+
+		if (ent->d_name[0] == '.')
+			continue;
+		if (snprintf(entry_path, sizeof(entry_path), "%s/%s", DRM_CLASS_DIR, ent->d_name) >=
+		    (int)sizeof(entry_path))
+			continue;
+
+		/* Connector subdirs (e.g. "card0-DP-1") have no "dev" file --
+		 * only a real device node (cardN, renderDN) does. */
+		snprintf(attr, sizeof(attr), "%s/dev", entry_path);
+		if (read_sysfs_attr(attr, devbuf, sizeof(devbuf)) != 0)
+			continue;
+		if (sscanf(devbuf, "%u:%u", &major, &minor) != 2)
+			continue;
+
+		if (drm_parent_pci_address(entry_path, pci_addr, sizeof(pci_addr)) != 0)
+			continue;
+
+		/* Stable index: first-seen order among unique parent PCI
+		 * addresses, so every node belonging to the same physical GPU
+		 * (card0 + renderD128, ...) lands under the same gpu:<idx>. */
+		idx = -1;
+		for (i = 0; i < seen_count; i++) {
+			if (strcmp(seen_addr[i], pci_addr) == 0) {
+				idx = i;
+				break;
+			}
+		}
+		if (idx < 0) {
+			if (seen_count >= GPU_MAX_CARDS)
+				continue;
+			snprintf(seen_addr[seen_count], sizeof(seen_addr[seen_count]), "%s", pci_addr);
+			idx = seen_count++;
+		}
+
+		snprintf(attr, sizeof(attr), "/sys/bus/pci/devices/%s/vendor", pci_addr);
+		read_sysfs_attr(attr, vendor_raw, sizeof(vendor_raw));
+		snprintf(attr, sizeof(attr), "/sys/bus/pci/devices/%s/device", pci_addr);
+		read_sysfs_attr(attr, device_raw, sizeof(device_raw));
+		snprintf(attr, sizeof(attr), "/sys/bus/pci/devices/%s/class", pci_addr);
+		read_sysfs_attr(attr, class_raw, sizeof(class_raw));
+		strip_0x(vendor_raw, vendor_id, sizeof(vendor_id));
+		strip_0x(device_raw, product_id, sizeof(product_id));
+		strip_0x(class_raw, class_hex, sizeof(class_hex));
+
+		snprintf(attr, sizeof(attr), "/sys/bus/pci/devices/%s", pci_addr);
+		read_driver_name(attr, driver, sizeof(driver));
+
+		e = &out[(*count)++];
+		memset(e, 0, sizeof(*e));
+		snprintf(e->bus, sizeof(e->bus), "gpu");
+		snprintf(e->id, sizeof(e->id), "gpu:%d:%s", idx, ent->d_name);
+		snprintf(e->vendor_id, sizeof(e->vendor_id), "%s", vendor_id);
+		snprintf(e->product_id, sizeof(e->product_id), "%s", product_id);
+		snprintf(e->class_hex, sizeof(e->class_hex), "%s", class_hex);
+		snprintf(e->driver, sizeof(e->driver), "%s", driver);
+		snprintf(e->description, sizeof(e->description), "%s (gpu %d, pci %s, driver %s)",
+		         ent->d_name, idx, pci_addr, driver[0] != '\0' ? driver : "?");
+		e->type = DEVICE_NODE_CHAR;
+		e->major = major;
+		e->minor = minor;
+		snprintf(e->dev_path, sizeof(e->dev_path), "/dev/dri/%s", ent->d_name);
+		e->assignable = (driver[0] != '\0');
+	}
+	closedir(d);
+}
+
 static void enumerate_pci(struct discovered_device *out, int cap, int *count)
 {
 	DIR *d;
@@ -545,6 +677,7 @@ int device_enumerate(struct discovered_device *out, int cap)
 	enumerate_usb(out, cap, &count);
 	enumerate_pci(out, cap, &count);
 	enumerate_net(out, cap, &count);
+	enumerate_gpu(out, cap, &count);
 	return count;
 }
 
@@ -559,6 +692,39 @@ const struct discovered_device *device_find(const char *id)
 			return &cache[i];
 	}
 	return NULL;
+}
+
+int device_find_group(const char *id, const struct discovered_device *out[], int cap)
+{
+	static struct discovered_device cache[DEVICE_ENUM_MAX];
+	int n = device_enumerate(cache, DEVICE_ENUM_MAX);
+	char prefix[100];
+	size_t prefix_len;
+	int i, found = 0;
+
+	for (i = 0; i < n; i++) {
+		if (strcmp(cache[i].id, id) == 0) {
+			if (cap < 1)
+				return -1;
+			out[0] = &cache[i];
+			return 1;
+		}
+	}
+
+	/* No exact match -- try id as a group prefix (e.g. "gpu:0"
+	 * expanding every currently-assignable "gpu:0:<node>" member).
+	 * Inert for every other bus: no existing id scheme ever has one
+	 * full id as a strict prefix of another (usb ids end at
+	 * :serial/:port..., pci node ids end at :node_name, net ids have
+	 * no third segment at all -- see this function's own header
+	 * comment in device.h). */
+	snprintf(prefix, sizeof(prefix), "%s:", id);
+	prefix_len = strlen(prefix);
+	for (i = 0; i < n && found < cap; i++) {
+		if (strncmp(cache[i].id, prefix, prefix_len) == 0 && cache[i].assignable)
+			out[found++] = &cache[i];
+	}
+	return found > 0 ? found : -1;
 }
 
 void device_write_json_one(const struct discovered_device *d, struct json_writer *w)
