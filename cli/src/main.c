@@ -32,7 +32,7 @@ static void print_usage(FILE *out)
 	        "      [--ip-forward] [--dns-register] [--pki-issue] [--pki-cert-dir=PATH]\n"
 	        "      [--pki-days=N] [--route=DEST/PREFIX:VIA ...] [--device=ID ...]\n"
 	        "      [--interface=IFNAME ...] [--restart=always] [--depends-on=NAME ...]\n"
-	        "      -- CMD [ARGS...]\n"
+	        "      [--readiness-tcp-port=N [--readiness-timeout=N]] -- CMD [ARGS...]\n"
 	        "  inspect NAME\n"
 	        "  rm NAME\n"
 	        "  network create --name=NAME --subnet=A.B.C.D --prefix=N\n"
@@ -133,8 +133,10 @@ static void fmt_container_line(const struct json_value *v)
 	const struct json_value *networks = json_object_get(v, "networks");
 	const struct json_value *ip_forward = json_object_get(v, "ip_forward");
 	const char *restart = json_str_field(v, "restart");
+	const struct json_value *readiness = json_object_get(v, "readiness");
 	char exit_buf[16];
 	char net_buf[256];
+	char readiness_buf[32];
 	size_t off = 0;
 	size_t i;
 
@@ -158,11 +160,18 @@ static void fmt_container_line(const struct json_value *v)
 		}
 	}
 
-	printf("%-20s %-8s pid=%-8ld exit_status=%-6s networks=%-20s fwd=%-4s restart=%s\n", name,
-	       status, pid, exit_buf, net_buf[0] != '\0' ? net_buf : "-",
+	if (readiness != NULL && readiness->type == JSON_OBJECT) {
+		snprintf(readiness_buf, sizeof(readiness_buf), "tcp/%ld",
+		         (long)json_as_number(json_object_get(readiness, "tcp_port")));
+	} else {
+		snprintf(readiness_buf, sizeof(readiness_buf), "-");
+	}
+
+	printf("%-20s %-8s pid=%-8ld exit_status=%-6s networks=%-20s fwd=%-4s restart=%-8s readiness=%s\n",
+	       name, status, pid, exit_buf, net_buf[0] != '\0' ? net_buf : "-",
 	       (ip_forward != NULL && ip_forward->type == JSON_BOOL && ip_forward->u.boolean) ? "yes"
 	                                                                                        : "no",
-	       restart != NULL ? restart : "no");
+	       restart != NULL ? restart : "no", readiness_buf);
 }
 
 static void fmt_list(const struct json_value *v)
@@ -557,6 +566,8 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	const char *restart = NULL;
 	const char *depends_on[CLI_MAX_DEPENDS];
 	int depends_on_count = 0;
+	long readiness_tcp_port = -1;
+	long readiness_timeout = -1;
 	int ip_forward = 0;
 	int dns_register = 0;
 	int pki_issue = 0;
@@ -618,6 +629,10 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 				return 2;
 			}
 			depends_on[depends_on_count++] = argv[i] + 13;
+		} else if (strncmp(argv[i], "--readiness-tcp-port=", 21) == 0) {
+			readiness_tcp_port = atol(argv[i] + 21);
+		} else if (strncmp(argv[i], "--readiness-timeout=", 20) == 0) {
+			readiness_timeout = atol(argv[i] + 20);
 		} else if (strcmp(argv[i], "--ip-forward") == 0) {
 			ip_forward = 1;
 		} else if (strcmp(argv[i], "--dns-register") == 0) {
@@ -654,7 +669,8 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		        "[--pids-max=N] [--network=NAME[:IP] ...] [--ip-forward] [--dns-register] "
 		        "[--pki-issue] [--pki-cert-dir=PATH] [--pki-days=N] "
 		        "[--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--interface=IFNAME ...] "
-		        "[--restart=always] [--depends-on=NAME ...] -- CMD [ARGS...]\n");
+		        "[--restart=always] [--depends-on=NAME ...] "
+		        "[--readiness-tcp-port=N [--readiness-timeout=N]] -- CMD [ARGS...]\n");
 		return 2;
 	}
 
@@ -758,6 +774,17 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		for (i = 0; i < depends_on_count; i++)
 			jw_str(&w, depends_on[i]);
 		jw_arr_close(&w);
+	}
+	if (readiness_tcp_port >= 0) {
+		jw_key(&w, "readiness");
+		jw_obj_open(&w);
+		jw_key(&w, "tcp_port");
+		jw_int(&w, readiness_tcp_port);
+		if (readiness_timeout >= 0) {
+			jw_key(&w, "timeout_seconds");
+			jw_int(&w, readiness_timeout);
+		}
+		jw_obj_close(&w);
 	}
 	jw_obj_close(&w);
 

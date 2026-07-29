@@ -34,6 +34,7 @@
 #include <sys/stat.h>
 #include <sys/timerfd.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #define DEFAULT_PORT 7620
@@ -679,14 +680,16 @@ static int parse_network_entry(const struct json_value *item, char *name_out, si
 static int create_container_from_body(const char *body, size_t body_len,
                                        struct registry_entry **out_entry, int *out_restart_always,
                                        char out_depends_on[][REGISTRY_NAME_MAX],
-                                       int *out_depends_on_count, char *err_msg,
+                                       int *out_depends_on_count, int *out_has_readiness,
+                                       int *out_readiness_tcp_port,
+                                       int *out_readiness_timeout_seconds, char *err_msg,
                                        size_t err_msg_size)
 {
 	struct json_value *root;
 	const struct json_value *jname, *jimage, *jcmd, *jmem, *jpids, *jnetworks, *jip_forward, *jroutes;
 	const struct json_value *jdevices;
 	const struct json_value *jinterfaces;
-	const struct json_value *jrestart, *jdepends_on;
+	const struct json_value *jrestart, *jdepends_on, *jreadiness;
 	const char *restart_str;
 	const char *name, *image;
 	char lowerdir[PATH_MAX];
@@ -718,6 +721,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 
 	*out_restart_always = 0;
 	*out_depends_on_count = 0;
+	*out_has_readiness = 0;
 
 	root = json_parse(body, body_len);
 	if (root == NULL) {
@@ -779,6 +783,44 @@ static int create_container_from_body(const char *body, size_t body_len,
 			}
 			snprintf(out_depends_on[i], REGISTRY_NAME_MAX, "%s", dep);
 		}
+	}
+
+	jreadiness = json_object_get(root, "readiness");
+	if (jreadiness != NULL) {
+		const struct json_value *jport, *jtimeout;
+		long port, timeout;
+
+		if (jreadiness->type != JSON_OBJECT) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "readiness must be an object");
+			return 400;
+		}
+		jport = json_object_get(jreadiness, "tcp_port");
+		port = jport != NULL ? (long)json_as_number(jport) : 0;
+		if (jport == NULL || port < 1 || port > 65535) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "readiness.tcp_port must be 1-65535");
+			return 400;
+		}
+		jtimeout = json_object_get(jreadiness, "timeout_seconds");
+		timeout = jtimeout != NULL ? (long)json_as_number(jtimeout) : 30;
+		if (timeout < 1 || timeout > 300) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "readiness.timeout_seconds must be 1-300");
+			return 400;
+		}
+		/* jnetworks itself already guarantees >= 1 entry if non-NULL
+		 * (its own validation below rejects an empty array), so this
+		 * check doesn't need net_count, which isn't computed until the
+		 * second networks pass, further down. */
+		if (jnetworks == NULL) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "readiness requires networks");
+			return 400;
+		}
+		*out_has_readiness = 1;
+		*out_readiness_tcp_port = (int)port;
+		*out_readiness_timeout_seconds = (int)timeout;
 	}
 
 	if (!name_is_valid(name) || image == NULL || image[0] == '\0' || jcmd == NULL ||
@@ -1117,19 +1159,22 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	int restart_always;
 	char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
 	int depends_on_count;
+	int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
 	char err_msg[256];
 	int status;
 	struct json_writer w;
 
 	status = create_container_from_body(body, body_len, &entry, &restart_always, depends_on,
-	                                     &depends_on_count, err_msg, sizeof(err_msg));
+	                                     &depends_on_count, &has_readiness, &readiness_tcp_port,
+	                                     &readiness_timeout_seconds, err_msg, sizeof(err_msg));
 	if (status != 0) {
 		respond_error(fd, status, http_status_text(status), err_msg);
 		return;
 	}
 
 	if (restart_always &&
-	    containerdef_add(entry->name, body, body_len, depends_on, depends_on_count) != 0) {
+	    containerdef_add(entry->name, body, body_len, depends_on, depends_on_count, has_readiness,
+	                      readiness_tcp_port, readiness_timeout_seconds) != 0) {
 		fprintf(stderr,
 		        "%s: restart:\"always\" requested but persisting its definition failed -- "
 		        "it will not survive a daemon restart\n",
@@ -2341,10 +2386,16 @@ static void handle_restart_timer_event(struct conn *cc)
 		int restart_always;
 		char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
 		int depends_on_count;
+		/* Readiness is boot-autostart-only (see containerdef_autostart_all()'s
+		 * own comment on why) -- these are validated/extracted the same
+		 * way regardless of caller, but a crash restart never acts on
+		 * them. */
+		int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
 		char err_msg[256];
-		int status = create_container_from_body(def->body, def->body_len, &entry,
-		                                         &restart_always, depends_on, &depends_on_count,
-		                                         err_msg, sizeof(err_msg));
+		int status = create_container_from_body(
+		    def->body, def->body_len, &entry, &restart_always, depends_on, &depends_on_count,
+		    &has_readiness, &readiness_tcp_port, &readiness_timeout_seconds, err_msg,
+		    sizeof(err_msg));
 
 		if (status != 0)
 			fprintf(stderr, "%s: restart failed: %s\n", cc->restart_name, err_msg);
@@ -2481,6 +2532,48 @@ static void accept_loop(void)
 }
 
 /*
+ * Returns 1 if a TCP connection to ip_be:port succeeded within
+ * timeout_seconds, 0 if it never did. Blocking, by design -- boot-time
+ * autostart is already a blocking sequence (see
+ * containerdef_autostart_all()'s own comment); this is consistent with
+ * that existing, accepted boundary, not a new one, and is deliberately
+ * NOT used from the crash-restart path (handle_restart_timer_event()),
+ * which runs inside the reactor's own event loop where blocking would
+ * violate the non-blocking design ADR-0025 established. No
+ * non-blocking-connect-plus-poll() dance needed either: the
+ * destination is always a directly L2-adjacent bridge network this
+ * daemon itself manages, so a refused/not-yet-listening connection
+ * returns immediately (ECONNREFUSED), never hangs the way a genuinely
+ * unreachable route would.
+ */
+static int wait_for_tcp_ready(uint32_t ip_be, int port, int timeout_seconds)
+{
+	time_t deadline = time(NULL) + timeout_seconds;
+
+	while (time(NULL) < deadline) {
+		int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+		struct sockaddr_in addr;
+		int rc;
+
+		if (fd < 0)
+			return 0;
+
+		memset(&addr, 0, sizeof(addr));
+		addr.sin_family = AF_INET;
+		addr.sin_port = htons((uint16_t)port);
+		addr.sin_addr.s_addr = ip_be;
+
+		rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+		close(fd);
+		if (rc == 0)
+			return 1;
+
+		usleep(200000);
+	}
+	return 0;
+}
+
+/*
  * Starts every persisted restart:"always" definition, in dependency
  * order -- called once, right after confirm_boot() (never before: see
  * that function's own comment on why "healthy" must stay defined as
@@ -2506,6 +2599,7 @@ static void containerdef_autostart_all(void)
 		int restart_always;
 		char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
 		int depends_on_count;
+		int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
 		char err_msg[256];
 		int status;
 
@@ -2513,8 +2607,9 @@ static void containerdef_autostart_all(void)
 			continue; /* can't happen -- resolve_order() only ever names known defs */
 
 		status = create_container_from_body(def->body, def->body_len, &entry, &restart_always,
-		                                     depends_on, &depends_on_count, err_msg,
-		                                     sizeof(err_msg));
+		                                     depends_on, &depends_on_count, &has_readiness,
+		                                     &readiness_tcp_port, &readiness_timeout_seconds,
+		                                     err_msg, sizeof(err_msg));
 		if (status != 0) {
 			fprintf(stderr, "%s: autostart failed: %s\n", order[i], err_msg);
 			continue;
@@ -2522,6 +2617,20 @@ static void containerdef_autostart_all(void)
 		/* create_container_from_body() already registered entry's own
 		 * pidfd with epoll -- exactly the same shape POST /v1/containers'
 		 * own success path relies on, no separate call needed here. */
+
+		/* def (not the freshly-returned out-params above) is the
+		 * authoritative, already-persisted source for readiness -- see
+		 * wait_for_tcp_ready()'s own comment for why this wait is
+		 * boot-autostart-only. */
+		if (def->has_readiness &&
+		    !wait_for_tcp_ready(entry->nets[0].ip_be, def->readiness_tcp_port,
+		                         def->readiness_timeout_seconds)) {
+			fprintf(stderr,
+			        "%s: readiness check on tcp/%d did not succeed within %ds -- "
+			        "starting dependents anyway\n",
+			        entry->name, def->readiness_tcp_port, def->readiness_timeout_seconds);
+		}
+
 		printf("%s: autostarted (restart:always)\n", entry->name);
 	}
 }

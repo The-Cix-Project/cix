@@ -1,0 +1,28 @@
+# 0026 — TCP readiness checks for `depends_on`
+
+## Status
+
+Accepted
+
+## Context
+
+ADR-0025 shipped `depends_on` as pure *start order*: a dependency being "started" means its `clone3()` has returned, nothing more. Its own Consequences section named this a real, stated boundary, not solved there. For the user's actual deployment shape (a router depending on DNS actually answering queries, a NAS depending on its own network being configured, and so on), that gap is real — `bird`/DNS/etc. can take a real, variable amount of time after process start before they're genuinely accepting connections, and a dependent starting before that point can itself fail or misbehave.
+
+## Decision
+
+**New optional `"readiness"` object on `POST /v1/containers`**: `{"tcp_port": N, "timeout_seconds": N}` (`timeout_seconds` optional, default 30, bounded 1–300). Scope deliberately narrow for v1:
+
+- **TCP-connect only** — no exec-inside-namespace probe (would need the same `setns()`-based machinery NIC-passthrough teardown already uses, applied generically — real, additional scope not justified by the use case actually raised), no HTTP probe. A plain TCP check already covers DNS and most other network services.
+- **Requires at least one network attachment** (`networks` non-empty, 400 otherwise) — mirrors `dns_register`'s own existing requirement, and for the same reason: the check needs a real, reachable address to connect to. Checked against the container's own primary network IP (`entry->nets[0].ip_be`); the daemon lives in the root netns, already directly L3-adjacent to every bridge network it manages, so a plain `connect()` suffices — no netns tricks needed.
+- **Boot-time autostart only, never crash-restart.** `containerdef_autostart_all()` is already a blocking sequence (an accepted boundary since ADR-0025); waiting there for a dependency's readiness is consistent with that, not a new one. Crash restart runs *inside* the reactor's own event loop — ADR-0025's timerfd-based design exists specifically so nothing there ever blocks, and adding a blocking wait would violate that directly. The async alternative (epoll+timerfd-based readiness polling) is real, additional infrastructure not justified by the actual failure mode: at boot everything cold-starts together and genuinely needs ordering, but a crash-restart's dependents are normally already running and already ready, since only the one container crashed.
+- **Best-effort, not a hard boot failure.** If a dependency's readiness never succeeds within its own timeout, the daemon logs a warning and starts whatever depends on it anyway — the same "one bad thing shouldn't take down the rest of boot" posture a `depends_on` cycle or unknown dependency already gets.
+
+**Implementation follows the exact shape `restart`/`depends_on` already established — no new pattern.** `create_container_from_body()` validates `readiness`'s shape and extracts it via three new out-parameters, the same as `restart`/`depends_on` already are. `containerdef_add()` gains matching new parameters; `struct container_def` caches `has_readiness`/`readiness_tcp_port`/`readiness_timeout_seconds` at add/load time (parsed once, not re-parsed from `body` on every read) — the same "cached alongside the source of truth" shape `depends_on` already has. `registry_write_json_one()` echoes `"readiness"` (object or `null`) reading straight off the same `containerdef_find()` lookup it already makes for `restart`/`depends_on`.
+
+**`wait_for_tcp_ready(ip_be, port, timeout_seconds)`** (`daemon/src/main.c`) is a plain blocking `connect()`, retried on a short interval until it succeeds or the timeout elapses — deliberately *not* the non-blocking-connect-plus-`poll()` pattern. The destination is always a directly L2-adjacent bridge network the daemon itself manages, so a refused/not-yet-listening connection returns immediately (`ECONNREFUSED`), never hangs the way a genuinely unreachable route would; the added complexity of a non-blocking dance buys nothing here. `containerdef_autostart_all()` calls it right after each definition's own successful autostart, reading that definition's own cached readiness fields — unconditionally when configured, not gated on "does anything currently depend on this one," matching this project's own preference for simplicity over a marginal, harmless optimization.
+
+## Consequences
+
+- Verified end-to-end against a live, restarted daemon, not just at the unit level: `test/tcp_listen_child.c` (new fixture) only binds+listens after a deliberate 2s delay, proving a dependent genuinely *waits* for readiness rather than merely for process start — the whole daemon-restart-to-healthy window was measured at ≥1s, dominated by that 2s delay. A readiness check configured against a port nobody ever listens on, with a 1s timeout, was confirmed to still let its dependent autostart afterward (best-effort holds, boot never hangs). `readiness` without a network attachment was confirmed rejected with 400 at creation time. 3 consecutive clean runs; full pre-existing regression suite re-run clean.
+- Readiness is consulted at exactly one call site (`containerdef_autostart_all()`) — a live `POST /v1/containers` never waits on its own just-created container's readiness, and crash-restart never re-checks it either. Both are deliberate, stated v1 boundaries (see Decision above), not oversights; a future need to readiness-gate crash-restart specifically would need the async (epoll+timerfd) approach rejected here for lack of a concrete use case.
+- No exec-inside-namespace or HTTP probe in v1 — TCP-connect only. If a future service needs more than "is the port open" (e.g. an HTTP `/healthz`), that's new scope, not an extension of this mechanism as designed.

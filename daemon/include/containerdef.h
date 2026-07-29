@@ -27,6 +27,16 @@ struct container_def {
 	size_t body_len;
 	char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
 	int depends_on_count;
+	/*
+	 * Cached from the same request's own "readiness" field (see
+	 * ADR-0026), the same "parsed once, not re-parsed from body on
+	 * every read" shape depends_on already has above. has_readiness
+	 * == 0 means no readiness check was configured; the other two
+	 * fields are meaningless in that case.
+	 */
+	int has_readiness;
+	int readiness_tcp_port;
+	int readiness_timeout_seconds;
 	int in_use;
 };
 
@@ -45,16 +55,19 @@ struct container_def {
 int containerdef_init(const char *state_path);
 
 /*
- * Persists name's definition (body verbatim, depends_on already
- * parsed/validated by the caller from that same body -- kept
- * alongside it as a cached index for containerdef_resolve_order(),
- * not a second source of truth: only this function ever writes a
- * definition, and it always receives both from the same request
- * parse). Overwrites any existing definition for the same name.
+ * Persists name's definition (body verbatim, depends_on/readiness
+ * already parsed/validated by the caller from that same body -- kept
+ * alongside it as a cached index for containerdef_resolve_order()/
+ * containerdef_autostart_all(), not a second source of truth: only
+ * this function ever writes a definition, and it always receives
+ * these from the same request parse). has_readiness == 0 means no
+ * readiness check (the other two readiness parameters are then
+ * ignored). Overwrites any existing definition for the same name.
  * Returns 0, or -1 on a persist (disk) failure.
  */
 int containerdef_add(const char *name, const char *body, size_t body_len,
-                      const char depends_on[][REGISTRY_NAME_MAX], int depends_on_count);
+                      const char depends_on[][REGISTRY_NAME_MAX], int depends_on_count,
+                      int has_readiness, int readiness_tcp_port, int readiness_timeout_seconds);
 
 /* Removes name's definition, if any. A no-op (returns 0) if none exists. */
 int containerdef_remove(const char *name);

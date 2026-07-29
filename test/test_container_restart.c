@@ -7,6 +7,14 @@
  * process actually restarted (not just its in-memory state reset) to
  * prove persistence genuinely survives that, not just an in-process
  * reload.
+ *
+ * Also covers Phase 13 part 2 (ADR-0026): TCP readiness checks on
+ * depends_on. wait_for_tcp_ready() only ever runs from inside
+ * containerdef_autostart_all() (boot-time autostart), never from the
+ * live POST /v1/containers path itself -- so, unlike the crash-restart
+ * scenario above, the readiness scenarios below only actually block
+ * during the same daemon restart the rest of this file already
+ * performs, not at creation time.
  */
 #include "httpclient.h"
 #include "json.h"
@@ -26,6 +34,12 @@ extern char **environ;
 #define PORT_ARG "--port=7630"
 #define IMAGE_ROOT "/var/lib/kanxeo/images/restarttest/rootfs"
 #define CONTAINER_DEFS_PATH "/var/lib/kanxeo/container_defs.json"
+#define READY_NETWORK_NAME "readytest"
+#define READY_NETWORK_SUBNET "172.60.0.0"
+#define READY_TCP_PORT 9100
+#define NEVER_READY_TCP_PORT 9999
+#define STR_(x) #x
+#define STR(x) STR_(x)
 
 static int wait_for_daemon(const struct kx_client *c, int max_attempts)
 {
@@ -134,6 +148,13 @@ int main(void)
 	reset_state();
 	if (test_image_fixture_build(IMAGE_ROOT, "build/daemon_child", "daemon_child") != 0)
 		return 1;
+	{
+		char tcp_child_path[256];
+
+		snprintf(tcp_child_path, sizeof(tcp_child_path), "%s/bin/tcp_listen_child", IMAGE_ROOT);
+		if (test_image_fixture_copy_file("build/tcp_listen_child", tcp_child_path) != 0)
+			return 1;
+	}
 
 	daemon_pid = start_daemon();
 	if (daemon_pid < 0)
@@ -313,6 +334,92 @@ int main(void)
 	}
 	kx_response_free(&r);
 
+	/* 6. readiness (Phase 13 part 2): a network is required (400
+	 * without one), mirroring dns_register's existing requirement. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"noreadynet\",\"image\":\"restarttest\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+	                       "\"readiness\":{\"tcp_port\":" STR(READY_TCP_PORT) "}}",
+	                       &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: readiness without networks expected 400, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/networks",
+	                       "{\"name\":\"" READY_NETWORK_NAME "\",\"subnet\":\"" READY_NETWORK_SUBNET
+	                       "\",\"prefix_len\":24}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST " READY_NETWORK_NAME ", status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	/* depR only starts listening on READY_TCP_PORT after a real 2s
+	 * delay (tcp_listen_child) -- depS (depends_on depR, with depR's
+	 * own readiness configured) must genuinely wait for that, proven
+	 * below by timing the daemon restart itself. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"depR\",\"image\":\"restarttest\","
+	                       "\"cmd\":[\"/bin/tcp_listen_child\",\"" STR(READY_TCP_PORT) "\",\"2\"],"
+	                       "\"networks\":[\"" READY_NETWORK_NAME "\"],\"restart\":\"always\","
+	                       "\"readiness\":{\"tcp_port\":" STR(READY_TCP_PORT) ",\"timeout_seconds\":10}}",
+	                       &r) != 0 ||
+	    r.status != 201 ||
+	    json_num_field(json_object_get(r.json, "readiness"), "tcp_port") != READY_TCP_PORT) {
+		fprintf(stderr, "FAIL: POST depR, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"depS\",\"image\":\"restarttest\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+	                       "\"networks\":[\"" READY_NETWORK_NAME "\"],\"restart\":\"always\","
+	                       "\"depends_on\":[\"depR\"]}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST depS, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	/* neverready never listens on NEVER_READY_TCP_PORT at all -- its
+	 * own readiness must time out (1s) without blocking boot forever,
+	 * and afterNeverReady (depends on it) must still autostart anyway
+	 * (best-effort, not a hard failure). */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"neverready\",\"image\":\"restarttest\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+	                       "\"networks\":[\"" READY_NETWORK_NAME "\"],\"restart\":\"always\","
+	                       "\"readiness\":{\"tcp_port\":" STR(NEVER_READY_TCP_PORT) ",\"timeout_seconds\":1}}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST neverready, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"afterNeverReady\",\"image\":\"restarttest\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+	                       "\"networks\":[\"" READY_NETWORK_NAME "\"],\"restart\":\"always\","
+	                       "\"depends_on\":[\"neverready\"]}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST afterNeverReady, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
 	/* Now the real proof: restart the daemon process itself (not just
 	 * reload in-memory state) and confirm every expectation above. */
 	if (stop_daemon(daemon_pid) != 0) {
@@ -320,14 +427,35 @@ int main(void)
 		ok = 0;
 	}
 
-	daemon_pid = start_daemon();
-	if (daemon_pid < 0)
-		return 1;
-	if (wait_for_daemon(&client, 50) != 0) {
-		fprintf(stderr, "FAIL: restarted daemon never accepted connections\n");
-		kill(daemon_pid, SIGKILL);
-		waitpid(daemon_pid, NULL, 0);
-		return 1;
+	{
+		time_t restart_started, restart_ready;
+
+		restart_started = time(NULL);
+		daemon_pid = start_daemon();
+		if (daemon_pid < 0)
+			return 1;
+		if (wait_for_daemon(&client, 50) != 0) {
+			fprintf(stderr, "FAIL: restarted daemon never accepted connections\n");
+			kill(daemon_pid, SIGKILL);
+			waitpid(daemon_pid, NULL, 0);
+			return 1;
+		}
+		/* By the time this call returns, containerdef_autostart_all()
+		 * (including any readiness waits it performs) has already run
+		 * to completion -- it's a blocking step ahead of the reactor's
+		 * own accept loop, so the response to this request's own GET
+		 * /v1/health can't have been sent any earlier. depR's readiness
+		 * (2s, see below) is the dominant contributor here, so a real
+		 * wait shows up as a multi-second floor on restart_ready -
+		 * restart_started; a no-op/skipped wait would not. */
+		restart_ready = time(NULL);
+		if (restart_ready - restart_started < 1) {
+			fprintf(stderr,
+			        "FAIL: daemon restart (including depR's own 2s readiness wait) "
+			        "took only %lds -- readiness wait doesn't look real\n",
+			        (long)(restart_ready - restart_started));
+			ok = 0;
+		}
 	}
 	/* containerdef_autostart_all() runs synchronously before the
 	 * listening socket's own requests are serviced, but give it a
@@ -379,9 +507,50 @@ int main(void)
 		ok = 0;
 	}
 
+	/* Phase 13 part 2: readiness. */
+	{
+		int r_exists = container_exists(&client, "depR");
+		int s_exists = container_exists(&client, "depS");
+		long pid_r = fetch_pid(&client, "depR");
+		long pid_s = fetch_pid(&client, "depS");
+
+		if (r_exists != 1 || s_exists != 1) {
+			fprintf(stderr,
+			        "FAIL: depR/depS did not both autostart after restart "
+			        "(r_exists=%d s_exists=%d)\n",
+			        r_exists, s_exists);
+			ok = 0;
+		} else if (pid_r < 0 || pid_s < 0 || pid_r >= pid_s) {
+			fprintf(stderr,
+			        "FAIL: depR (pid %ld) does not appear to have started before "
+			        "depS (pid %ld) -- depends_on ordering looks wrong\n",
+			        pid_r, pid_s);
+			ok = 0;
+		}
+	}
+	if (container_exists(&client, "neverready") != 1 ||
+	    container_exists(&client, "afterNeverReady") != 1) {
+		fprintf(stderr,
+		        "FAIL: neverready/afterNeverReady did not autostart -- a readiness "
+		        "check that never succeeds should time out and let boot proceed "
+		        "(best-effort), not block or skip the dependent\n");
+		ok = 0;
+	}
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET", "/v1/containers/depR", NULL, &r) != 0 ||
+	    r.status != 200 ||
+	    json_num_field(json_object_get(r.json, "readiness"), "tcp_port") != READY_TCP_PORT) {
+		fprintf(stderr, "FAIL: GET depR did not echo its own readiness.tcp_port\n");
+		ok = 0;
+	}
+	kx_response_free(&r);
+
 	/* cleanup */
 	{
-		const char *cleanup[] = { "depA", "depB", "cycleA", "cycleB", "needsghost", "innocent" };
+		const char *cleanup[] = { "depA",       "depB",     "cycleA",         "cycleB",
+			                       "needsghost", "innocent", "depR",           "depS",
+			                       "neverready", "afterNeverReady" };
 		size_t i;
 
 		for (i = 0; i < sizeof(cleanup) / sizeof(cleanup[0]); i++) {
@@ -393,6 +562,14 @@ int main(void)
 			kx_response_free(&r);
 		}
 	}
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "DELETE", "/v1/networks/" READY_NETWORK_NAME, NULL, &r) != 0 ||
+	    r.status != 204) {
+		fprintf(stderr, "FAIL: DELETE " READY_NETWORK_NAME ", status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
 
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM (second instance)\n");

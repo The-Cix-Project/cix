@@ -1027,13 +1027,46 @@ components:
           maxItems: 16
           description: >
             Other "restart":"always" container names that must be
-            started (not necessarily ready -- no health-probe/readiness
-            concept exists in v1) before this one, at daemon-boot
-            autostart time. Ignored for a live POST that isn't itself
-            "restart":"always" (nothing to persist, so no future boot
-            ordering to honor). A dependency naming an unknown or non-
-            "always" definition, or participating in a cycle, is
-            skipped at boot (logged, not fatal to the rest of startup).
+            started -- and, if that dependency's own `readiness` is
+            set, TCP-ready per that check -- before this one, at
+            daemon-boot autostart time only (never for a live POST, and
+            never for crash-restart -- see `readiness` below for both).
+            Ignored for a live POST that isn't itself "restart":"always"
+            (nothing to persist, so no future boot ordering to honor).
+            A dependency naming an unknown or non-"always" definition,
+            or participating in a cycle, is skipped at boot (logged,
+            not fatal to the rest of startup).
+        readiness:
+          $ref: "#/components/schemas/Readiness"
+
+    Readiness:
+      type: object
+      required: [tcp_port]
+      description: >
+        An optional plain-TCP-connect readiness check (ADR-0026) on
+        this container's own primary network address
+        (`networks[0]`'s assigned IP -- so `networks` must be
+        non-empty, 400 otherwise). Consulted in exactly one place:
+        daemon-boot autostart (`containerdef_autostart_all()`), right
+        after this container itself starts and before any
+        "restart":"always" container that lists it in `depends_on`
+        starts. Never consulted for a live POST (this container's own
+        creation never blocks on its own readiness) or for
+        crash-restart (that path only ever restarts the one container
+        that exited -- its dependents, if any, are normally already
+        running/ready). Best-effort: if the check never succeeds
+        within `timeout_seconds`, a warning is logged and dependents
+        start anyway -- this never blocks or fails boot.
+      properties:
+        tcp_port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        timeout_seconds:
+          type: integer
+          minimum: 1
+          maximum: 300
+          default: 30
 
     NetworkAttachmentRequest:
       type: object
@@ -1124,6 +1157,14 @@ components:
           items:
             type: string
           description: Empty unless restart is "always".
+        readiness:
+          allOf:
+            - $ref: "#/components/schemas/Readiness"
+          nullable: true
+          description: >
+            Sourced live from the persisted definition, same as restart/
+            depends_on above; null if none was configured or restart is
+            "no".
 
     ContainerNetworkAttachment:
       type: object

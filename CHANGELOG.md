@@ -20,6 +20,21 @@ Two real bugs found and fixed during verification, not before. First: registerin
 
 Verified end-to-end: a fast-exiting `restart: "always"` container observed crash-looping with a real, measured ~2.0s gap (not instant) between each exit and the next restart; a daemon restart brought a persisted container back with a fresh pid; `DELETE` confirmed to stop it and keep it gone across a subsequent restart, including for a definition that never successfully autostarted. The entire pre-existing REST-facing test suite re-run unchanged after the `handle_create()` refactor, zero regressions, before any new test was added. Zero compiler warnings.
 
+### Phase 13 (part 2): TCP readiness checks for `depends_on`
+
+Part 1's `depends_on` was start-order only -- a dependency being "started" didn't mean it was actually ready to serve. See ADR-0026.
+
+#### Added
+- `daemon/include/containerdef.h`/`daemon/src/containerdef.c`: `struct container_def` gains cached `has_readiness`/`readiness_tcp_port`/`readiness_timeout_seconds`, parsed once at add/load time; `containerdef_add()` gains matching parameters; persisted alongside `depends_on` in `container_defs.json`.
+- `daemon/src/main.c`: `POST /v1/containers` gains an optional `"readiness": {"tcp_port": N, "timeout_seconds": N}` object (requires at least one network attachment, 400 otherwise); new `wait_for_tcp_ready()` -- a plain, blocking, retried `connect()` against the container's own primary network address, no non-blocking-connect-plus-`poll()` needed since the destination is always a directly L2-adjacent bridge network; called only from `containerdef_autostart_all()`, never from the live `POST` path or crash-restart. A readiness check that never succeeds within its own timeout logs a warning and lets boot proceed anyway (best-effort).
+- `daemon/src/registry.c`: `registry_write_json_one()` echoes `readiness` (object or `null`) alongside `restart`/`depends_on`, sourced live from the same `containerdef_find()` lookup.
+- `cli/src/main.c`: `run --readiness-tcp-port=N [--readiness-timeout=N]`; `ps`/`inspect` gain a `readiness=` column.
+- `test/tcp_listen_child.c`, new fixture: binds+listens only after a deliberate startup delay, proving a dependent genuinely waits for readiness rather than merely for process start.
+- `docs/api/openapi.yaml`: new `Readiness` schema; `ContainerCreateRequest.readiness`, `Container.readiness`; `depends_on`'s stale "no readiness concept exists" wording corrected.
+- `docs/adr/0026-tcp-readiness-checks-for-depends-on.md`.
+
+Verified end-to-end against a live, restarted daemon: a dependent's autostart measurably waited on its dependency's real 2s-delayed listen socket (the whole restart-to-healthy window at least 1s, dominated by that delay); a readiness check pointed at a port nobody ever listens on (1s timeout) still let its dependent autostart afterward, proving best-effort holds and boot never hangs; `readiness` without a network attachment rejected with 400 at creation. 3 consecutive clean runs; full pre-existing regression suite re-run clean. Zero compiler warnings.
+
 ### Phase 12 part 7 follow-up: NIC passthrough negative-path test coverage
 
 This dev sandbox has no real, physically-backed NIC visible in its own root netns (ADR-0022), so the positive "grant a real interface, watch it work" path stays unprovable here. Added what *is* provable without real hardware, confirmed with the user directly rather than left unaddressed.

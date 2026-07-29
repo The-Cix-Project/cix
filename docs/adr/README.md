@@ -24,3 +24,10 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0017](0017-ebpf-cgroup-device-filter-for-hardware-passthrough.md) | BPF_CGROUP_DEVICE for device passthrough enforcement, not a blanket eBPF ban | Accepted |
 | [0018](0018-containers-partition-for-base-dir-persistence.md) | The real kanxeo-containers partition backs BASE_DIR, not a fresh tmpfs every boot | Accepted |
 | [0019](0019-runtime-libs-seeded-at-install-time.md) | The shared "base" image's C runtime is seeded at install time, not by pkg or at boot | Accepted |
+| [0020](0020-per-image-pkg-install-compound-key.md) | pkg install targets an explicit image, tracked by a (name, image) compound key | Accepted |
+| [0021](0021-explicit-network-ip-override.md) | A container's network attachment IP can be explicitly chosen, not only auto-allocated | Accepted |
+| [0022](0022-real-nic-passthrough-netns-move.md) | Real network interface passthrough via direct netns move, with fd-anchored teardown | Accepted |
+| [0023](0023-per-image-runtime-seeding.md) | The C runtime is seeded into every image, not only "base" | Accepted |
+| [0024](0024-image-lifecycle-endpoints.md) | Image lifecycle as a filesystem-backed REST resource, no separate persistence | Accepted |
+| [0025](0025-persisted-auto-restarting-containers.md) | Persisted, auto-restarting containers (`restart: "always"`, `depends_on`) | Accepted |
+| [0026](0026-tcp-readiness-checks-for-depends-on.md) | TCP readiness checks for `depends_on` | Accepted |
