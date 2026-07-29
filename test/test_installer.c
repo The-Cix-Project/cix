@@ -685,6 +685,46 @@ int main(void)
 			}
 		}
 
+		/* The "base" image's own C runtime (kanxeo-install.c's own
+		 * containers-partition block, staged from mkinstalleriso.c's
+		 * KANXEO_RUNTIME_DIR_SRC payload) must already be present right
+		 * here, before session 4 and before any pkg install ever runs
+		 * -- proving the installer itself wrote it, not something a
+		 * later boot happened to create. Without this, nothing
+		 * dynamically linked a package installs could ever execve()
+		 * successfully (confirmed directly this session). */
+		if (ok) {
+			char *ls_lib64_argv[] = { (char *)DEBUGFS_BIN, "-R", "ls -l images/base/rootfs/lib64",
+				                   containers_extract, NULL };
+			char *ls_lib_argv[] = { (char *)DEBUGFS_BIN, "-R",
+				                 "ls -l images/base/rootfs/lib/x86_64-linux-gnu",
+				                 containers_extract, NULL };
+			char lib64_listing[2048], lib_listing[2048];
+
+			if (run_subprocess_capture(DEBUGFS_BIN, ls_lib64_argv, lib64_listing,
+			                            sizeof(lib64_listing)) != 0 ||
+			    strstr(lib64_listing, "ld-linux-x86-64.so.2") == NULL) {
+				fprintf(stderr,
+				        "containers partition missing the seeded ld.so after install -- "
+				        "listing:\n%s\n",
+				        lib64_listing);
+				ok = 0;
+			} else if (run_subprocess_capture(DEBUGFS_BIN, ls_lib_argv, lib_listing,
+			                                   sizeof(lib_listing)) != 0 ||
+			           strstr(lib_listing, "libc.so.6") == NULL ||
+			           strstr(lib_listing, "libtinfo.so.6") == NULL) {
+				fprintf(stderr,
+				        "containers partition missing seeded libc.so.6/libtinfo.so.6 after "
+				        "install -- listing:\n%s\n",
+				        lib_listing);
+				ok = 0;
+			} else {
+				printf("base image runtime (ld.so/libc.so.6/libtinfo.so.6) seeded at install "
+				       "time:\n%s%s\n",
+				       lib64_listing, lib_listing);
+			}
+		}
+
 		if (ok && write_text_file(marker_src, marker_content) != 0) {
 			fprintf(stderr, "could not write local marker file\n");
 			ok = 0;

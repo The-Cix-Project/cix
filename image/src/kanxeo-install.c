@@ -57,6 +57,10 @@ extern char **environ;
 #define SIGNING_CERT_SRC "/payload/kanxeo-signing.cer"
 #define BZIMAGE_SRC "/boot/kanxeo-bzImage"
 #define ROOT_SQUASHFS_SRC "/payload/kanxeo-root.squashfs"
+/* image/src/mkinstalleriso.c stages a C runtime (ld.so, libc.so.6,
+ * libtinfo.so.6) here -- see the containers-partition block below for
+ * why the shared "base" container image needs it. */
+#define KANXEO_RUNTIME_DIR_SRC "/payload/kanxeo-runtime"
 
 #define ESP_MOUNT "/mnt/esp"
 #define CONFIG_MOUNT "/mnt/config"
@@ -629,15 +633,79 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	/* Containers partition: format-check only -- kanxeod's own existing
-	 * ensure_dir()/pkg_init() machinery populates it at first real boot,
-	 * the same "fall through to unmodified existing logic" precedent
-	 * parts 1-2 already established for BASE_DIR's own subdirectories. */
+	/* Containers partition: kanxeod's own existing ensure_dir()/
+	 * pkg_init() machinery populates most of it at first real boot, the
+	 * same "fall through to unmodified existing logic" precedent parts
+	 * 1-2 already established for BASE_DIR's own subdirectories -- but
+	 * the shared "base" image's own C runtime is seeded here, at install
+	 * time, since nothing else ever will be: pkg_install() (daemon/src/
+	 * pkg.c) only ever merges a package's own build output into that
+	 * image, never system runtime libraries, so without this, nothing
+	 * dynamically linked a package installs could ever execve()
+	 * successfully (confirmed directly this session -- see
+	 * mkinstalleriso.c's own staging comment for the exact failure). */
 	if (ensure_dir(CONTAINERS_MOUNT) != 0)
 		return 1;
 	if (mount(containers_dev, CONTAINERS_MOUNT, "ext4", 0, NULL) != 0) {
 		perror("mount containers");
 		return 1;
+	}
+	{
+		char path[600];
+		char src[600];
+
+		snprintf(path, sizeof(path), "%s/images", CONTAINERS_MOUNT);
+		if (ensure_dir(path) != 0) {
+			umount(CONTAINERS_MOUNT);
+			return 1;
+		}
+		snprintf(path, sizeof(path), "%s/images/base", CONTAINERS_MOUNT);
+		if (ensure_dir(path) != 0) {
+			umount(CONTAINERS_MOUNT);
+			return 1;
+		}
+		snprintf(path, sizeof(path), "%s/images/base/rootfs", CONTAINERS_MOUNT);
+		if (ensure_dir(path) != 0) {
+			umount(CONTAINERS_MOUNT);
+			return 1;
+		}
+		snprintf(path, sizeof(path), "%s/images/base/rootfs/lib64", CONTAINERS_MOUNT);
+		if (ensure_dir(path) != 0) {
+			umount(CONTAINERS_MOUNT);
+			return 1;
+		}
+		snprintf(path, sizeof(path), "%s/images/base/rootfs/lib", CONTAINERS_MOUNT);
+		if (ensure_dir(path) != 0) {
+			umount(CONTAINERS_MOUNT);
+			return 1;
+		}
+		snprintf(path, sizeof(path), "%s/images/base/rootfs/lib/x86_64-linux-gnu", CONTAINERS_MOUNT);
+		if (ensure_dir(path) != 0) {
+			umount(CONTAINERS_MOUNT);
+			return 1;
+		}
+
+		snprintf(src, sizeof(src), "%s/lib64/ld-linux-x86-64.so.2", KANXEO_RUNTIME_DIR_SRC);
+		snprintf(path, sizeof(path), "%s/images/base/rootfs/lib64/ld-linux-x86-64.so.2",
+		         CONTAINERS_MOUNT);
+		if (copy_file(src, path) != 0) {
+			umount(CONTAINERS_MOUNT);
+			return 1;
+		}
+		snprintf(src, sizeof(src), "%s/lib/x86_64-linux-gnu/libc.so.6", KANXEO_RUNTIME_DIR_SRC);
+		snprintf(path, sizeof(path), "%s/images/base/rootfs/lib/x86_64-linux-gnu/libc.so.6",
+		         CONTAINERS_MOUNT);
+		if (copy_file(src, path) != 0) {
+			umount(CONTAINERS_MOUNT);
+			return 1;
+		}
+		snprintf(src, sizeof(src), "%s/lib/x86_64-linux-gnu/libtinfo.so.6", KANXEO_RUNTIME_DIR_SRC);
+		snprintf(path, sizeof(path), "%s/images/base/rootfs/lib/x86_64-linux-gnu/libtinfo.so.6",
+		         CONTAINERS_MOUNT);
+		if (copy_file(src, path) != 0) {
+			umount(CONTAINERS_MOUNT);
+			return 1;
+		}
 	}
 	if (umount(CONTAINERS_MOUNT) != 0) {
 		perror("umount containers");

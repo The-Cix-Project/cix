@@ -118,6 +118,7 @@ It then formats, writes the system, and reboots into a running `kanxeod` at the 
 - **Dashboard:** `http://<ip>:7620/` — same daemon and port as the API, no separate process.
 - **CLI:** `kanxeoctl --host=<ip> health`, `... ps`, `... run --name=... --image=... --network=... -- CMD`, `... network create --name=... --subnet=... --prefix=...` (see `docs/api/README.md` for the full walkthrough).
 - **Shutdown/reboot:** `kanxeoctl --host=<ip> shutdown` / `... reboot` — the only clean way to power off or restart (as PID 1, `kanxeod` has no shell to run `shutdown`/`reboot` from; these call the real `reboot(2)` syscall internally, see ADR-0016).
+- **Installing real software:** `kanxeoctl --host=<ip> pkg bootstrap` once (stages a real build toolchain from this host's own `/usr`), then drop `.recipe` files into `/var/lib/kanxeo/pkg/recipes/` (see `pkg/recipes/` in this repo for real, working examples — bash, iproute2, bird) and `kanxeoctl --host=<ip> pkg install --name=<name>`. Builds from source, network-less, into the shared `base` image every container can then use with `run --image=base`. The base image's own C runtime (`ld.so`/`libc.so.6`/`libtinfo.so.6`) is already seeded at install time (ADR-0019) — nothing further needed for a package's own binaries to actually run.
 
 ### Secure Boot
 
@@ -151,6 +152,7 @@ client/        shared HTTP client library used by the CLI and the daemon's own t
 cli/           kanxeoctl: pure REST API client, no direct runtime access
 web/           browser dashboard: vanilla HTML/CSS/JS, no framework, no build step, served by kanxeod
 image/         bare-metal boot tooling (Phase 11): kernel config, mkbootroot, kanxeo-install, mkinstalleriso
+pkg/recipes/   .recipe files for `pkg install` (Phase 10) — source URL, sha256, and a real pkg_build()/pkg_install() shell build, per package
 test/          one demonstrable test (+ exec target, where needed) per phase/part
 docs/          mission charter, phased roadmap, ADRs, and the OpenAPI contract
 build/         compiled output (gitignored)

@@ -23,3 +23,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0016](0016-reboot-syscall-for-kanxeod-shutdown.md) | kanxeod calls reboot(2) as PID 1, exposed via REST, SIGTERM/SIGINT default to poweroff | Accepted |
 | [0017](0017-ebpf-cgroup-device-filter-for-hardware-passthrough.md) | BPF_CGROUP_DEVICE for device passthrough enforcement, not a blanket eBPF ban | Accepted |
 | [0018](0018-containers-partition-for-base-dir-persistence.md) | The real kanxeo-containers partition backs BASE_DIR, not a fresh tmpfs every boot | Accepted |
+| [0019](0019-runtime-libs-seeded-at-install-time.md) | The shared "base" image's C runtime is seeded at install time, not by pkg or at boot | Accepted |

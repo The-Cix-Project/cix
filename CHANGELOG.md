@@ -4,6 +4,27 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 12 (part 4): a C runtime for the shared "base" image, seeded at install time
+
+`pkg_build_completed()` only ever merges a package's own build output into `base/rootfs` — confirmed directly (part 3's own final check) that a freshly pkg-installed `bash` fails outright inside a real container (`child: execve: No such file or directory`) because `/lib64/ld-linux-x86-64.so.2` doesn't exist anywhere in the image. Not specific to bash — blocks any dynamically-linked package from ever running. See ADR-0019.
+
+#### Added
+- `image/src/mkinstalleriso.c`: stages `ld-linux-x86-64.so.2`, `libc.so.6`, and `libtinfo.so.6` into a new `/payload/kanxeo-runtime/` payload subtree, following the exact convention already used for `kanxeod`'s own runtime deps (`test_image_fixture_build()`) and the installer's own `g_lib_closure[]`.
+- `image/src/kanxeo-install.c`: new `KANXEO_RUNTIME_DIR_SRC` constant; the existing containers-partition block (previously format-check only) now copies those three files into `images/base/rootfs/{lib64,lib/x86_64-linux-gnu}` at real install time.
+- `docs/adr/0019-runtime-libs-seeded-at-install-time.md`.
+
+Verified two ways: `test/test_installer.c` extracts the real containers partition right after the installer's own first boot — before any `pkg install`, before the independent second-boot persistence check (part 2) — and confirms all three files are present with correct real byte sizes. Separately, a throwaway `base` image manually seeded with the same three files let a real `bash -c` genuinely execve() and run inside a real container, printing its own version string — the actual property this fix is for. Zero warnings; `test_boot`/`test_boot_ab` re-verified with no regression; `test_installer` re-verified, 3 consecutive passes.
+
+### Phase 12 (part 3): real pkg recipes for bash, iproute2, and bird
+
+With persistence genuinely real (part 2), the first real `.recipe` files: `pkg/recipes/{bash,iproute2,bird}.recipe`, each with a real upstream source URL and a sha256 verified against an independent authority beyond the daemon's own download.
+
+#### Added
+- `pkg/recipes/bash.recipe`, `pkg/recipes/iproute2.recipe`, `pkg/recipes/bird.recipe`.
+- `daemon/src/pkg.c`: `pkg_bootstrap_build_image()` now also stages standard `/dev` nodes (`null`/`zero`/`full`/`random`/`urandom`), a writable sticky-bit `/tmp`, and a small set of targeted host paths a real build reaches for beyond the existing `/usr/{include,lib,lib64,bin,libexec}` copy — `/etc/alternatives` (Debian's own indirection for tools like `awk`), `/usr/share/bison`, `/usr/share/autoconf`, `/usr/share/perl` (autoconf is itself a perl script).
+
+Verified by actually building and installing all three through a live daemon, not written from a template and assumed correct — each staging gap above was found by a real build failing (`./configure: cannot create /dev/null`, `awk: command not found`, `bison: .../m4sugar.m4: cannot open`, `Can't locate Class/Struct.pm`, `sysdep/autoconf.h: No such file or directory`) and fixed one at a time, not guessed at up front. BIRD's own tarball needed one more fix specific to it: no pre-generated `./configure`, requiring `autoreconf -fi` in its own recipe.
+
 ### Phase 12 (part 2): a real reboot no longer wipes every installed package, network, and image
 
 `boot_init()` has mounted a fresh `tmpfs` at `BASE_DIR` (`/var/lib/kanxeo`) on every real boot since Phase 11 part 1 — and every piece of daemon-persisted state lives there. A full power cycle on a real installed system silently discarded it all. Found while scoping the next step (installing real software via `pkg install`, which only matters if it survives a reboot), not reported as a bug. See ADR-0018.
