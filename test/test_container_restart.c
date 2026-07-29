@@ -138,6 +138,54 @@ static int container_exists(const struct kx_client *c, const char *name)
 	return status == 200;
 }
 
+/* POST .../stop; returns the HTTP status, or -1 if the daemon couldn't be reached. */
+static int stop_container(const struct kx_client *c, const char *name)
+{
+	char path[160];
+	struct kx_response r;
+	int status;
+
+	snprintf(path, sizeof(path), "/v1/containers/%s/stop", name);
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(c, "POST", path, NULL, &r) != 0)
+		return -1;
+	status = r.status;
+	kx_response_free(&r);
+	return status;
+}
+
+/* Polls until name is gone (GET 404), or max_attempts*100ms elapses.
+ * Returns the time it was first observed gone, or 0 on timeout. */
+static time_t wait_for_gone(const struct kx_client *c, const char *name, int max_attempts)
+{
+	int attempts;
+
+	for (attempts = 0; attempts < max_attempts; attempts++) {
+		if (container_exists(c, name) == 0)
+			return time(NULL);
+		usleep(100000);
+	}
+	return 0;
+}
+
+/* Polls until name's pid differs from old_pid (a restart happened), or
+ * max_attempts*100ms elapses. Returns the time it was first observed,
+ * or 0 on timeout. */
+static time_t wait_for_new_pid(const struct kx_client *c, const char *name, long old_pid,
+                                int max_attempts)
+{
+	int attempts;
+
+	for (attempts = 0; attempts < max_attempts; attempts++) {
+		long pid = fetch_pid(c, name);
+
+		if (pid >= 0 && pid != old_pid)
+			return time(NULL);
+		usleep(100000);
+	}
+	return 0;
+}
+
 int main(void)
 {
 	pid_t daemon_pid;
@@ -231,6 +279,307 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		kx_client_request(&client, "DELETE", "/v1/containers/crasher", NULL, &r);
 		kx_response_free(&r);
+	}
+
+	/* Phase 13 part 3 (ADR-0027): restart policy expansion + backoff.
+	 * Every scenario in this sub-section is fully self-contained before
+	 * a daemon restart and cleans up its own definition inline -- only
+	 * the unless-stopped/always comparison further below needs to
+	 * survive the real daemon restart this file performs later. */
+
+	/* on-failure: a clean (exit 0) exit must NOT restart. */
+	{
+		time_t gone_at;
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"onfailclean\",\"image\":\"restarttest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],"
+		                       "\"restart\":\"on-failure\"}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST onfailclean, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		gone_at = wait_for_gone(&client, "onfailclean", 40);
+		if (gone_at == 0) {
+			fprintf(stderr, "FAIL: onfailclean never exited\n");
+			ok = 0;
+		}
+		/* No restart timer is ever armed for this case -- if it were
+		 * about to come back, the default 2s delay would have already
+		 * elapsed well within this window. */
+		if (wait_for_new_pid(&client, "onfailclean", -1, 40) != 0) {
+			fprintf(stderr,
+			        "FAIL: onfailclean (restart:on-failure, clean exit) came back -- "
+			        "should stay down for the rest of this daemon's uptime\n");
+			ok = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "DELETE", "/v1/containers/onfailclean", NULL, &r);
+		kx_response_free(&r);
+	}
+
+	/* on-failure: a crash (nonzero exit) exit DOES restart, same
+	 * measured-gap style as the plain "always" crasher above -- proves
+	 * the delay/backoff wiring applies to on-failure too. */
+	{
+		long pid1;
+		time_t gone_at, back_at;
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"onfailcrash\",\"image\":\"restarttest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"7\"],"
+		                       "\"restart\":\"on-failure\"}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST onfailcrash, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		pid1 = fetch_pid(&client, "onfailcrash");
+		gone_at = wait_for_gone(&client, "onfailcrash", 40);
+		/* Its own first-ever exit already gets a 2x backoff multiplier
+		 * (consecutive_failures 0->1, see ADR-0027) -- with the default
+		 * 2s base that's ~4s, not the bare base itself, hence the
+		 * generous window here rather than a tight one around 2s. */
+		back_at = wait_for_new_pid(&client, "onfailcrash", pid1, 100);
+		if (gone_at == 0 || back_at == 0) {
+			fprintf(stderr, "FAIL: onfailcrash (restart:on-failure, crash exit) did not "
+			                "come back\n");
+			ok = 0;
+		} else if (back_at - gone_at < 1) {
+			fprintf(stderr, "FAIL: onfailcrash restarted too fast (%ld s)\n",
+			        (long)(back_at - gone_at));
+			ok = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "DELETE", "/v1/containers/onfailcrash", NULL, &r);
+		kx_response_free(&r);
+	}
+
+	/* restart_delay_seconds overrides the default base delay. */
+	{
+		long pid1;
+		time_t gone_at, back_at;
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"delaytest\",\"image\":\"restarttest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],"
+		                       "\"restart\":\"always\",\"restart_delay_seconds\":5}",
+		                       &r) != 0 ||
+		    r.status != 201 || json_num_field(r.json, "restart_delay_seconds") != 5) {
+			fprintf(stderr, "FAIL: POST delaytest, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		pid1 = fetch_pid(&client, "delaytest");
+		gone_at = wait_for_gone(&client, "delaytest", 40);
+		/* Its own first-ever exit gets a 2x backoff multiplier on top
+		 * of this 5s base (see ADR-0027) -- actual delay is ~10s, so
+		 * the window and lower bound both allow for that, not just
+		 * the bare 5s override value. */
+		back_at = wait_for_new_pid(&client, "delaytest", pid1, 200);
+		if (gone_at == 0 || back_at == 0) {
+			fprintf(stderr, "FAIL: delaytest never came back\n");
+			ok = 0;
+		} else if (back_at - gone_at < 8) {
+			fprintf(stderr,
+			        "FAIL: delaytest restarted after only %ld s -- restart_delay_seconds "
+			        "override doesn't look honored\n",
+			        (long)(back_at - gone_at));
+			ok = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "DELETE", "/v1/containers/delaytest", NULL, &r);
+		kx_response_free(&r);
+	}
+
+	/* stop during a pending crash-restart delay window -- proves
+	 * handle_restart_timer_event()'s own stopped check, not just
+	 * containerdef_autostart_all()'s. */
+	{
+		time_t gone_at;
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"stopwindow\",\"image\":\"restarttest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],"
+		                       "\"restart\":\"always\",\"restart_delay_seconds\":5}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST stopwindow, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		gone_at = wait_for_gone(&client, "stopwindow", 40);
+		if (gone_at == 0) {
+			fprintf(stderr, "FAIL: stopwindow never exited\n");
+			ok = 0;
+		}
+		/* The 5s restart timer is armed and pending right now -- stop
+		 * it mid-flight. */
+		if (stop_container(&client, "stopwindow") != 200) {
+			fprintf(stderr, "FAIL: POST stopwindow/stop during pending delay\n");
+			ok = 0;
+		}
+		/* Past when the timer would have fired -- its own first-ever
+		 * exit gets a 2x backoff multiplier on top of the 5s base (see
+		 * ADR-0027), so the real armed delay here is ~10s, not 5s. */
+		if (wait_for_new_pid(&client, "stopwindow", -1, 200) != 0) {
+			fprintf(stderr, "FAIL: stopwindow came back after being stopped mid-delay -- "
+			                "handle_restart_timer_event()'s stopped check didn't work\n");
+			ok = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "DELETE", "/v1/containers/stopwindow", NULL, &r);
+		kx_response_free(&r);
+	}
+
+	/* Backoff genuinely grows across consecutive failures: a fast
+	 * crash-loop with base delay 2s -- consecutive_failures becomes 1
+	 * on the first-ever exit (uptime well under the 30s stability
+	 * threshold), so the first restart gap is already ~2x base (~4s),
+	 * and the second is ~4x base (~8s). */
+	{
+		long pid1, pid2;
+		time_t gone1, back1, gone2, back2;
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"backoffgrow\",\"image\":\"restarttest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"1\"],"
+		                       "\"restart\":\"always\",\"restart_delay_seconds\":2}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST backoffgrow, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		pid1 = fetch_pid(&client, "backoffgrow");
+		gone1 = wait_for_gone(&client, "backoffgrow", 40);
+		back1 = wait_for_new_pid(&client, "backoffgrow", pid1, 100);
+		if (gone1 == 0 || back1 == 0) {
+			fprintf(stderr, "FAIL: backoffgrow's first restart never happened\n");
+			ok = 0;
+		} else if (back1 - gone1 < 3) {
+			fprintf(stderr,
+			        "FAIL: backoffgrow's first restart gap (%ld s) too short -- expected "
+			        "~4s (2x the 2s base, consecutive_failures already 1 on a first fast "
+			        "exit)\n",
+			        (long)(back1 - gone1));
+			ok = 0;
+		}
+
+		pid2 = fetch_pid(&client, "backoffgrow");
+		gone2 = wait_for_gone(&client, "backoffgrow", 40);
+		back2 = wait_for_new_pid(&client, "backoffgrow", pid2, 150);
+		if (gone2 == 0 || back2 == 0) {
+			fprintf(stderr, "FAIL: backoffgrow's second restart never happened\n");
+			ok = 0;
+		} else if (back2 - gone2 < 6) {
+			fprintf(stderr,
+			        "FAIL: backoffgrow's second restart gap (%ld s) too short -- expected "
+			        "~8s, backoff doesn't look like it's genuinely growing\n",
+			        (long)(back2 - gone2));
+			ok = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "DELETE", "/v1/containers/backoffgrow", NULL, &r);
+		kx_response_free(&r);
+	}
+
+	/* Backoff resets for a container that ran stably (>= the 30s
+	 * stability threshold) before exiting -- its own first-ever exit
+	 * takes the reset branch of the exact same conditional
+	 * backoffgrow's first exit took the increment branch of, so the
+	 * resulting delay (~1x the 2s base, ~2s) directly contrasts with
+	 * backoffgrow's own ~2x-base first gap above. A single container
+	 * can't be made to alternate "fast crash" vs "stable run" between
+	 * restarts (the daemon replays its exact same cmd verbatim every
+	 * time, by design -- ADR-0025), so this is proven by comparison
+	 * against backoffgrow rather than one container's own before/after. */
+	{
+		long pid1;
+		time_t gone_at, back_at;
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"backoffstable\",\"image\":\"restarttest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"32\",\"9\"],"
+		                       "\"restart\":\"always\",\"restart_delay_seconds\":2}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST backoffstable, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		pid1 = fetch_pid(&client, "backoffstable");
+		gone_at = wait_for_gone(&client, "backoffstable", 400);
+		back_at = wait_for_new_pid(&client, "backoffstable", pid1, 60);
+		if (gone_at == 0 || back_at == 0) {
+			fprintf(stderr, "FAIL: backoffstable never came back\n");
+			ok = 0;
+		} else if (back_at - gone_at < 1) {
+			fprintf(stderr, "FAIL: backoffstable restarted too fast (%ld s)\n",
+			        (long)(back_at - gone_at));
+			ok = 0;
+		} else if (back_at - gone_at > 3) {
+			fprintf(stderr,
+			        "FAIL: backoffstable's restart gap (%ld s) looks doubled, not reset -- "
+			        "expected ~2s (1x base), a >=30s-uptime exit should not have grown "
+			        "consecutive_failures\n",
+			        (long)(back_at - gone_at));
+			ok = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "DELETE", "/v1/containers/backoffstable", NULL, &r);
+		kx_response_free(&r);
+	}
+
+	/* Validation: the expanded restart enum, restart_delay_seconds
+	 * bounds, and stop's 404/idempotent-200 shape. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"badrestart\",\"image\":\"restarttest\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],\"restart\":\"bogus\"}",
+	                       &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: restart:\"bogus\" expected 400, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"baddelay\",\"image\":\"restarttest\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],\"restart\":\"always\","
+	                       "\"restart_delay_seconds\":0}",
+	                       &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: restart_delay_seconds=0 expected 400, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	if (stop_container(&client, "no-such-container") != 404) {
+		fprintf(stderr, "FAIL: stop on an unknown container expected 404\n");
+		ok = 0;
 	}
 
 	/* 2. DELETE removes the persisted definition permanently -- a
@@ -420,6 +769,52 @@ int main(void)
 	}
 	kx_response_free(&r);
 
+	/* 6. unless-stopped vs always across a real daemon restart:
+	 * stopping a container is the one thing that's supposed to
+	 * distinguish them. Both long-sleeping so a stop actually has a
+	 * live process to kill. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"stopalways\",\"image\":\"restarttest\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+	                       "\"restart\":\"always\"}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST stopalways, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"stopunless\",\"image\":\"restarttest\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+	                       "\"restart\":\"unless-stopped\"}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST stopunless, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	if (stop_container(&client, "stopalways") != 200) {
+		fprintf(stderr, "FAIL: POST stopalways/stop\n");
+		ok = 0;
+	}
+	if (stop_container(&client, "stopunless") != 200) {
+		fprintf(stderr, "FAIL: POST stopunless/stop\n");
+		ok = 0;
+	}
+	/* Idempotent: calling stop again is still 200, not an error. */
+	if (stop_container(&client, "stopunless") != 200) {
+		fprintf(stderr, "FAIL: POST stopunless/stop a second time expected 200 (idempotent)\n");
+		ok = 0;
+	}
+	if (container_exists(&client, "stopalways") != 0 || container_exists(&client, "stopunless") != 0) {
+		fprintf(stderr, "FAIL: stopalways/stopunless still exist right after being stopped\n");
+		ok = 0;
+	}
+
 	/* Now the real proof: restart the daemon process itself (not just
 	 * reload in-memory state) and confirm every expectation above. */
 	if (stop_daemon(daemon_pid) != 0) {
@@ -546,11 +941,29 @@ int main(void)
 	}
 	kx_response_free(&r);
 
+	/* Phase 13 part 3: the core unless-stopped-vs-always split. Both
+	 * were stopped identically above, right before this same restart --
+	 * "always" gets a fresh chance at every daemon boot regardless;
+	 * "unless-stopped" remembers the stop across exactly this. */
+	if (container_exists(&client, "stopalways") != 1) {
+		fprintf(stderr,
+		        "FAIL: stopalways did not autostart after a daemon restart -- restart:"
+		        "\"always\" should not remember a prior stop across a daemon restart\n");
+		ok = 0;
+	}
+	if (container_exists(&client, "stopunless") != 0) {
+		fprintf(stderr,
+		        "FAIL: stopunless autostarted after a daemon restart despite being "
+		        "stopped -- restart:\"unless-stopped\" should stay down until explicitly "
+		        "re-created\n");
+		ok = 0;
+	}
+
 	/* cleanup */
 	{
-		const char *cleanup[] = { "depA",       "depB",     "cycleA",         "cycleB",
-			                       "needsghost", "innocent", "depR",           "depS",
-			                       "neverready", "afterNeverReady" };
+		const char *cleanup[] = { "depA",       "depB",       "cycleA",     "cycleB",
+			                       "needsghost", "innocent",   "depR",       "depS",
+			                       "neverready", "afterNeverReady", "stopalways", "stopunless" };
 		size_t i;
 
 		for (i = 0; i < sizeof(cleanup) / sizeof(cleanup[0]); i++) {

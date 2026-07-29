@@ -35,6 +35,21 @@ Part 1's `depends_on` was start-order only -- a dependency being "started" didn'
 
 Verified end-to-end against a live, restarted daemon: a dependent's autostart measurably waited on its dependency's real 2s-delayed listen socket (the whole restart-to-healthy window at least 1s, dominated by that delay); a readiness check pointed at a port nobody ever listens on (1s timeout) still let its dependent autostart afterward, proving best-effort holds and boot never hangs; `readiness` without a network attachment rejected with 400 at creation. 3 consecutive clean runs; full pre-existing regression suite re-run clean. Zero compiler warnings.
 
+### Phase 13 (part 3): restart policy expansion + backoff
+
+Part 1 deliberately shipped only `restart: "always"`/`"no"` and a single fixed 2s crash-restart delay, deferring the rest. See ADR-0027.
+
+#### Added
+- `daemon/include/containerdef.h`/`daemon/src/containerdef.c`: `struct container_def` gains persisted `restart_policy`/`restart_delay_seconds`/`stopped` and non-persisted `consecutive_failures`; `containerdef_add()` gains matching parameters and explicitly clears `stopped`/`consecutive_failures` on every call; new `containerdef_set_stopped()`; `parse_persisted_entry()` defaults an absent `restart_policy` to `"always"` for backward compatibility with parts 1-2's own `container_defs.json`.
+- `daemon/include/registry.h`/`daemon/src/registry.c`: `struct registry_entry` gains `started_at`, set in `registry_create()`.
+- `daemon/src/main.c`: `POST /v1/containers`'s `restart` enum expands to `always`/`on-failure`/`unless-stopped`/`no`; new optional `restart_delay_seconds` (1-300, default 2); `on-failure` skips the crash-restart timer only for a clean exit; new `handle_stop()` + `POST /v1/containers/{name}/stop` routing (reuses `registry_remove()` verbatim, sets the new persisted `stopped` flag, does not touch the persisted definition/DNS/PKI ownership); `containerdef_autostart_all()` skips a `stopped` `unless-stopped` definition; `handle_restart_timer_event()` checks `stopped` unconditionally (any policy) to close a stop-during-pending-delay race; `arm_restart_timer()` takes a per-call delay; `handle_container_event()` computes that delay via automatic exponential backoff (doubling per consecutive failure, capped at 30s, reset after 30s of stable uptime).
+- `daemon/src/registry.c`: `registry_write_json_one()` echoes `restart` (now the real policy), `restart_delay_seconds`, and `stopped`.
+- `cli/src/main.c`: `run --restart=always|on-failure|unless-stopped [--restart-delay=N]`; new `stop NAME` subcommand; `ps`/`inspect` gain `delay=`/`stopped=` columns.
+- `docs/api/openapi.yaml`: `restart` enum expansion (request + response), new `restart_delay_seconds`/`stopped` properties, new `POST /containers/{name}/stop` path, `DELETE` description updated to point at it.
+- `docs/adr/0027-restart-policy-expansion-and-backoff.md`.
+
+Verified end-to-end against a live, restarted daemon: `on-failure` confirmed to skip a restart after a clean exit but perform one after a crash; `restart_delay_seconds` confirmed honored; a `stop` mid-pending-delay-window confirmed to permanently cancel that restart; backoff confirmed genuinely growing across two consecutive fast-crash cycles, contrasted against a stable-running container landing at the un-doubled base delay instead (proving the reset branch); `unless-stopped` confirmed to stay down across a real daemon restart while an identically-stopped `always` container came back. A real bug in the *test's own* first-draft timing expectations (not the daemon) was found and fixed during verification -- see ADR-0027's Consequences for the full account. 3 consecutive clean runs; full pre-existing regression suite (all 17 binaries) re-run clean. Zero compiler warnings.
+
 ### Phase 12 part 7 follow-up: NIC passthrough negative-path test coverage
 
 This dev sandbox has no real, physically-backed NIC visible in its own root netns (ADR-0022), so the positive "grant a real interface, watch it work" path stays unprovable here. Added what *is* provable without real hardware, confirmed with the user directly rather than left unaddressed.

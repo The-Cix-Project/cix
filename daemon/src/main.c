@@ -51,15 +51,19 @@
 #define PKG_INSTALLED_STATE_PATH PKG_DIR "/pkg_installed.json"
 #define CONTAINER_DEFS_STATE_PATH BASE_DIR "/container_defs.json"
 /*
- * Fixed, daemon-wide, not per-service (YAGNI for v1) -- how long to
- * wait before restarting a restart:"always" container after an
- * unprompted exit. Real, deliberate: without this, a genuinely
- * crash-looping container would restart as fast as clone3()+execve()
- * itself allows, a real operational hazard (CPU/log hammering) a
- * single fixed delay is enough to prevent without a full backoff
- * policy engine.
+ * Backoff cap and stability-reset threshold for the crash-restart
+ * delay (ADR-0027) -- the base delay itself is per-container
+ * (restart_delay_seconds, default CONTAINERDEF_DEFAULT_RESTART_DELAY_
+ * SECONDS, see containerdef.h), but backoff itself (doubling per
+ * consecutive failure) is uniform and not a further per-container
+ * knob (YAGNI). A container is considered "stable" (its own
+ * consecutive_failures resets to 0) once it's been running at least
+ * CONTAINER_RESTART_STABILITY_SECONDS before exiting again -- a
+ * crash-loop history from long before doesn't deserve the same
+ * backoff as one from a moment ago.
  */
-#define CONTAINER_RESTART_DELAY_SECONDS 2
+#define CONTAINER_RESTART_BACKOFF_CAP_SECONDS 30
+#define CONTAINER_RESTART_STABILITY_SECONDS 30
 /*
  * Fixed QEMU virtio-blk layout (Phase 11's stated fixed/known-hardware
  * scope, same posture as root=/dev/vda2 in the loader entry itself) --
@@ -668,17 +672,19 @@ static int parse_network_entry(const struct json_value *item, char *name_out, si
  * exact same body (boot autostart, crash restart, see
  * daemon/include/containerdef.h) gets the exact same result a fresh
  * POST would. Zero HTTP coupling. On success returns 0 and *out_entry
- * is the new registry entry; *out_restart_always/out_depends_on(_count)
- * are filled from the body's own "restart"/"depends_on" fields
- * regardless of outcome (a caller deciding what to persist needs them
- * either way, though only a success is ever actually persisted). On
+ * is the new registry entry; out_restart_policy/out_restart_delay_seconds/
+ * out_depends_on(_count) are filled from the body's own "restart"/
+ * "restart_delay_seconds"/"depends_on" fields regardless of outcome (a
+ * caller deciding what to persist needs them either way, though only
+ * a success is ever actually persisted). On
  * failure returns the same HTTP status code (400/409/500)
  * handle_create() has always returned for that condition, with
  * err_msg holding the exact same message text -- the REST wrapper
  * forwards both verbatim; boot/restart callers just log them.
  */
 static int create_container_from_body(const char *body, size_t body_len,
-                                       struct registry_entry **out_entry, int *out_restart_always,
+                                       struct registry_entry **out_entry,
+                                       char out_restart_policy[16], int *out_restart_delay_seconds,
                                        char out_depends_on[][REGISTRY_NAME_MAX],
                                        int *out_depends_on_count, int *out_has_readiness,
                                        int *out_readiness_tcp_port,
@@ -689,8 +695,9 @@ static int create_container_from_body(const char *body, size_t body_len,
 	const struct json_value *jname, *jimage, *jcmd, *jmem, *jpids, *jnetworks, *jip_forward, *jroutes;
 	const struct json_value *jdevices;
 	const struct json_value *jinterfaces;
-	const struct json_value *jrestart, *jdepends_on, *jreadiness;
+	const struct json_value *jrestart, *jrestart_delay, *jdepends_on, *jreadiness;
 	const char *restart_str;
+	long restart_delay;
 	const char *name, *image;
 	char lowerdir[PATH_MAX];
 	char container_base[PATH_MAX];
@@ -719,7 +726,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 	char pki_cert_dir_buf[PATH_MAX];
 	int pki_days = 365;
 
-	*out_restart_always = 0;
+	snprintf(out_restart_policy, 16, "no");
+	*out_restart_delay_seconds = CONTAINERDEF_DEFAULT_RESTART_DELAY_SECONDS;
 	*out_depends_on_count = 0;
 	*out_has_readiness = 0;
 
@@ -756,12 +764,30 @@ static int create_container_from_body(const char *body, size_t body_len,
 	jrestart = json_object_get(root, "restart");
 	restart_str = json_as_string(jrestart);
 	if (restart_str != NULL && strcmp(restart_str, "always") != 0 &&
+	    strcmp(restart_str, "on-failure") != 0 && strcmp(restart_str, "unless-stopped") != 0 &&
 	    strcmp(restart_str, "no") != 0) {
 		json_free(root);
-		snprintf(err_msg, err_msg_size, "restart must be \"always\" or \"no\"");
+		snprintf(err_msg, err_msg_size,
+		         "restart must be \"always\", \"on-failure\", \"unless-stopped\", or \"no\"");
 		return 400;
 	}
-	*out_restart_always = (restart_str != NULL && strcmp(restart_str, "always") == 0);
+	snprintf(out_restart_policy, 16, "%s", restart_str != NULL ? restart_str : "no");
+
+	/*
+	 * Given with restart:"no", ignored rather than rejected -- mirrors
+	 * depends_on's own existing "ignored, not an error" precedent
+	 * (nothing to persist, so no future restart to delay).
+	 */
+	jrestart_delay = json_object_get(root, "restart_delay_seconds");
+	if (jrestart_delay != NULL) {
+		restart_delay = (long)json_as_number(jrestart_delay);
+		if (restart_delay < 1 || restart_delay > 300) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "restart_delay_seconds must be 1-300");
+			return 400;
+		}
+		*out_restart_delay_seconds = (int)restart_delay;
+	}
 
 	jdepends_on = json_object_get(root, "depends_on");
 	if (jdepends_on != NULL) {
@@ -1156,7 +1182,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 static void handle_create(int fd, const char *body, size_t body_len)
 {
 	struct registry_entry *entry;
-	int restart_always;
+	char restart_policy[16];
+	int restart_delay_seconds;
 	char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
 	int depends_on_count;
 	int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
@@ -1164,21 +1191,23 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	int status;
 	struct json_writer w;
 
-	status = create_container_from_body(body, body_len, &entry, &restart_always, depends_on,
-	                                     &depends_on_count, &has_readiness, &readiness_tcp_port,
+	status = create_container_from_body(body, body_len, &entry, restart_policy,
+	                                     &restart_delay_seconds, depends_on, &depends_on_count,
+	                                     &has_readiness, &readiness_tcp_port,
 	                                     &readiness_timeout_seconds, err_msg, sizeof(err_msg));
 	if (status != 0) {
 		respond_error(fd, status, http_status_text(status), err_msg);
 		return;
 	}
 
-	if (restart_always &&
+	if (strcmp(restart_policy, "no") != 0 &&
 	    containerdef_add(entry->name, body, body_len, depends_on, depends_on_count, has_readiness,
-	                      readiness_tcp_port, readiness_timeout_seconds) != 0) {
+	                      readiness_tcp_port, readiness_timeout_seconds, restart_policy,
+	                      restart_delay_seconds) != 0) {
 		fprintf(stderr,
-		        "%s: restart:\"always\" requested but persisting its definition failed -- "
+		        "%s: restart:\"%s\" requested but persisting its definition failed -- "
 		        "it will not survive a daemon restart\n",
-		        entry->name);
+		        entry->name, restart_policy);
 	}
 
 	jw_init(&w);
@@ -1231,6 +1260,54 @@ static void handle_delete(int fd, const char *name)
 	containerdef_remove(name);
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+/*
+ * POST /v1/containers/{name}/stop (ADR-0027) -- kills a live container
+ * right now, without removing its persisted definition (unlike
+ * DELETE): no containerdef_remove(), and deliberately no dns_server_
+ * forget()/dns_record_forget_owner()/pki_cert_forget_owner() either --
+ * this name's DNS/PKI ownership survives a stop, unlike a delete.
+ * Reuses registry_remove() verbatim (already does SIGKILL + a
+ * synchronous reap) -- no new kill/reap primitive, no asymmetry with
+ * DELETE's own semantics. Applies uniformly regardless of restart
+ * policy (kills any live container; containerdef_set_stopped() is a
+ * harmless no-op for "no"/absent definitions) -- what stopped actually
+ * *means* going forward is entirely up to the two sites that consult
+ * it (containerdef_autostart_all(), handle_restart_timer_event()), not
+ * this handler. Idempotent: calling twice is both 200.
+ */
+static void handle_stop(int fd, const char *name)
+{
+	struct registry_entry *e = registry_find(name);
+	struct conn *cc;
+	struct json_writer w;
+
+	if (e == NULL && containerdef_find(name) == NULL) {
+		respond_error(fd, 404, "Not Found", "no such container");
+		return;
+	}
+
+	if (e != NULL) {
+		if (e->reactor_conn != NULL) {
+			cc = e->reactor_conn;
+			kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+			free(cc);
+			e->reactor_conn = NULL;
+		}
+		registry_remove(name);
+	}
+	containerdef_set_stopped(name, 1);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "status");
+	jw_str(&w, "stopped");
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
 }
 
 static void handle_device_list(int fd)
@@ -2064,6 +2141,23 @@ static void dispatch(int fd, const struct http_request *req)
 	if (strncmp(req->path, CONTAINERS_PREFIX, strlen(CONTAINERS_PREFIX)) == 0) {
 		name = req->path + strlen(CONTAINERS_PREFIX);
 		if (name[0] != '\0') {
+			/*
+			 * Container names are [A-Za-z0-9_-] only (namecheck.h) --
+			 * never contain '/' -- so a trailing "/stop" is unambiguous
+			 * to detect with a plain suffix check, no generic
+			 * sub-router needed for this one action endpoint.
+			 */
+			size_t nlen = strlen(name);
+
+			if (nlen > 5 && strcmp(name + nlen - 5, "/stop") == 0 &&
+			    strcmp(req->method, "POST") == 0 && nlen - 5 < REGISTRY_NAME_MAX) {
+				char container_name[REGISTRY_NAME_MAX];
+
+				memcpy(container_name, name, nlen - 5);
+				container_name[nlen - 5] = '\0';
+				handle_stop(fd, container_name);
+				return;
+			}
 			if (strcmp(req->method, "GET") == 0) {
 				handle_get_one(fd, name);
 				return;
@@ -2306,18 +2400,19 @@ static void handle_client_event(struct conn *cc)
 }
 
 /*
- * Arms a one-shot, non-blocking timer (CONTAINER_RESTART_DELAY_SECONDS
- * from now) that, once it fires, replays name's own persisted
- * definition through create_container_from_body() again -- the
- * reactor's first-ever use of a timer, deliberately isolated in a
- * throwaway timerfd + CONN_RESTART_TIMER conn rather than a blocking
- * sleep(), which would freeze every other in-flight request/event for
- * the whole delay (this daemon's entire event loop is single-
- * threaded and non-blocking by design). A failure to arm is logged
- * and simply means this one restart doesn't happen -- not fatal to
- * the daemon.
+ * Arms a one-shot, non-blocking timer (delay_seconds from now -- the
+ * caller has already applied this container's own base delay plus any
+ * backoff, see handle_container_event()) that, once it fires, replays
+ * name's own persisted definition through create_container_from_body()
+ * again -- the reactor's first-ever use of a timer, deliberately
+ * isolated in a throwaway timerfd + CONN_RESTART_TIMER conn rather
+ * than a blocking sleep(), which would freeze every other in-flight
+ * request/event for the whole delay (this daemon's entire event loop
+ * is single-threaded and non-blocking by design). A failure to arm is
+ * logged and simply means this one restart doesn't happen -- not fatal
+ * to the daemon.
  */
-static void arm_restart_timer(const char *name)
+static void arm_restart_timer(const char *name, int delay_seconds)
 {
 	int tfd;
 	struct itimerspec its;
@@ -2331,7 +2426,7 @@ static void arm_restart_timer(const char *name)
 	}
 
 	memset(&its, 0, sizeof(its));
-	its.it_value.tv_sec = CONTAINER_RESTART_DELAY_SECONDS;
+	its.it_value.tv_sec = delay_seconds;
 	if (timerfd_settime(tfd, 0, &its, NULL) != 0) {
 		perror("timerfd_settime (container restart)");
 		close(tfd);
@@ -2363,7 +2458,12 @@ static void arm_restart_timer(const char *name)
  * returning NULL here is a real, correct case, not an error: the
  * operator may have DELETEd this container during the delay window,
  * which already removed its definition (handle_delete()) -- nothing
- * to restart.
+ * to restart. def->stopped is checked unconditionally (any restart
+ * policy, not just "unless-stopped") for the same reason: POST
+ * .../stop may have fired during this same delay window, after
+ * handle_container_event() already armed this timer but before it
+ * fired -- without this check, that stop would be silently undone a
+ * moment later. See ADR-0027.
  */
 static void handle_restart_timer_event(struct conn *cc)
 {
@@ -2381,9 +2481,10 @@ static void handle_restart_timer_event(struct conn *cc)
 	close(cc->fd);
 
 	def = containerdef_find(cc->restart_name);
-	if (def != NULL) {
+	if (def != NULL && !def->stopped) {
 		struct registry_entry *entry;
-		int restart_always;
+		char restart_policy[16];
+		int restart_delay_seconds;
 		char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
 		int depends_on_count;
 		/* Readiness is boot-autostart-only (see containerdef_autostart_all()'s
@@ -2393,9 +2494,9 @@ static void handle_restart_timer_event(struct conn *cc)
 		int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
 		char err_msg[256];
 		int status = create_container_from_body(
-		    def->body, def->body_len, &entry, &restart_always, depends_on, &depends_on_count,
-		    &has_readiness, &readiness_tcp_port, &readiness_timeout_seconds, err_msg,
-		    sizeof(err_msg));
+		    def->body, def->body_len, &entry, restart_policy, &restart_delay_seconds, depends_on,
+		    &depends_on_count, &has_readiness, &readiness_tcp_port, &readiness_timeout_seconds,
+		    err_msg, sizeof(err_msg));
 
 		if (status != 0)
 			fprintf(stderr, "%s: restart failed: %s\n", cc->restart_name, err_msg);
@@ -2410,6 +2511,9 @@ static void handle_container_event(struct conn *cc)
 {
 	struct registry_entry *entry = cc->entry;
 	char name_copy[REGISTRY_NAME_MAX];
+	int exit_status;
+	time_t started_at;
+	struct container_def *def;
 	pid_t pkg_pid;
 	int pkg_pidfd;
 	int chained;
@@ -2420,8 +2524,11 @@ static void handle_container_event(struct conn *cc)
 	free(cc);
 
 	/* Copied before any registry_remove() below might reuse this
-	 * slot -- entry->name itself is only guaranteed valid until then. */
+	 * slot -- entry->name/exit_status/started_at are only guaranteed
+	 * valid until then. */
 	snprintf(name_copy, sizeof(name_copy), "%s", entry->name);
+	exit_status = entry->exit_status;
+	started_at = entry->started_at;
 
 	/*
 	 * Unconditional, exactly like dns_record_forget_owner()/
@@ -2439,17 +2546,52 @@ static void handle_container_event(struct conn *cc)
 		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd);
 
 	/*
-	 * An unprompted exit (never reached for an explicit DELETE, which
-	 * removes the pidfd from epoll itself before this event could ever
-	 * fire -- see registry_remove()'s own doc comment) of a
-	 * restart:"always" container. registry_remove() is safe here even
-	 * though entry->running is already 0 (its own kill/reap branch is
-	 * skipped, so no signal is sent to a possibly-already-reused pid)
-	 * -- frees the name/slot before the delayed restart re-creates it.
+	 * An unprompted exit (never reached for an explicit DELETE or
+	 * POST .../stop, both of which remove the pidfd from epoll
+	 * themselves before this event could ever fire -- see
+	 * registry_remove()'s own doc comment) of a restart:"always"/
+	 * "on-failure"/"unless-stopped" container. "on-failure" skips the
+	 * restart only for a clean (exit_status == 0) exit -- this decision
+	 * cannot survive a daemon restart (exit_status is never persisted),
+	 * a stated v1 boundary, see ADR-0027.
 	 */
-	if (containerdef_find(name_copy) != NULL) {
+	def = containerdef_find(name_copy);
+	if (def != NULL) {
+		int should_restart = !(strcmp(def->restart_policy, "on-failure") == 0 && exit_status == 0);
+
+		/* registry_remove() is safe here even though entry->running is
+		 * already 0 (its own kill/reap branch is skipped, so no signal
+		 * is sent to a possibly-already-reused pid) -- frees the
+		 * name/slot before a delayed restart re-creates it. */
 		registry_remove(name_copy);
-		arm_restart_timer(name_copy);
+
+		if (should_restart) {
+			time_t uptime = time(NULL) - started_at;
+			int delay = def->restart_delay_seconds;
+			int i;
+
+			if (uptime >= CONTAINER_RESTART_STABILITY_SECONDS)
+				def->consecutive_failures = 0;
+			else
+				def->consecutive_failures++;
+
+			/* Self-terminating: stops doubling the moment delay would
+			 * meet or exceed the cap, so this is safe regardless of how
+			 * large consecutive_failures grows over a long daemon
+			 * lifetime -- no risk of shift/multiply overflow. */
+			for (i = 0; i < def->consecutive_failures && delay < CONTAINER_RESTART_BACKOFF_CAP_SECONDS;
+			     i++)
+				delay *= 2;
+			if (delay > CONTAINER_RESTART_BACKOFF_CAP_SECONDS)
+				delay = CONTAINER_RESTART_BACKOFF_CAP_SECONDS;
+
+			arm_restart_timer(name_copy, delay);
+		}
+		/* else: on-failure, clean 0 exit -- left down for the rest of
+		 * this daemon's uptime. The persisted definition is untouched
+		 * and will be attempted again, unconditionally, at the next
+		 * daemon boot (containerdef_autostart_all() has no notion of
+		 * "how did it last exit"). */
 	}
 }
 
@@ -2574,18 +2716,24 @@ static int wait_for_tcp_ready(uint32_t ip_be, int port, int timeout_seconds)
 }
 
 /*
- * Starts every persisted restart:"always" definition, in dependency
- * order -- called once, right after confirm_boot() (never before: see
- * that function's own comment on why "healthy" must stay defined as
- * "about to serve traffic" alone, never coupled to whether every
- * container also happened to start cleanly). Runs unconditionally,
- * not just under --init-mode -- this is "whenever this daemon process
- * starts fresh" behavior, not specific to the installed A/B boot
- * flow. Blocking, like every other startup step already is
- * (network_init(), pkg_init(), ...); the kernel's own listen backlog
- * queues any incoming connection during this window, none are
- * dropped. A single definition failing to start is logged and
+ * Starts every persisted restart:"always"/"on-failure"/"unless-stopped"
+ * definition, in dependency order -- called once, right after
+ * confirm_boot() (never before: see that function's own comment on why
+ * "healthy" must stay defined as "about to serve traffic" alone, never
+ * coupled to whether every container also happened to start cleanly).
+ * Runs unconditionally, not just under --init-mode -- this is
+ * "whenever this daemon process starts fresh" behavior, not specific
+ * to the installed A/B boot flow. Blocking, like every other startup
+ * step already is (network_init(), pkg_init(), ...); the kernel's own
+ * listen backlog queues any incoming connection during this window,
+ * none are dropped. A single definition failing to start is logged and
  * skipped, never fatal to the rest of boot.
+ *
+ * def->stopped only skips a definition here when restart_policy is
+ * "unless-stopped" -- for "always"/"on-failure", a daemon restart is a
+ * fresh chance regardless of a prior POST .../stop, matching Docker's
+ * own real --restart=always semantics (a manual stop doesn't survive a
+ * daemon restart). See ADR-0027.
  */
 static void containerdef_autostart_all(void)
 {
@@ -2596,7 +2744,8 @@ static void containerdef_autostart_all(void)
 	for (i = 0; i < count; i++) {
 		struct container_def *def = containerdef_find(order[i]);
 		struct registry_entry *entry;
-		int restart_always;
+		char restart_policy[16];
+		int restart_delay_seconds;
 		char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
 		int depends_on_count;
 		int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
@@ -2606,10 +2755,16 @@ static void containerdef_autostart_all(void)
 		if (def == NULL)
 			continue; /* can't happen -- resolve_order() only ever names known defs */
 
-		status = create_container_from_body(def->body, def->body_len, &entry, &restart_always,
-		                                     depends_on, &depends_on_count, &has_readiness,
-		                                     &readiness_tcp_port, &readiness_timeout_seconds,
-		                                     err_msg, sizeof(err_msg));
+		if (def->stopped && strcmp(def->restart_policy, "unless-stopped") == 0) {
+			fprintf(stderr, "%s: unless-stopped, explicitly stopped -- not autostarting\n",
+			        order[i]);
+			continue;
+		}
+
+		status = create_container_from_body(def->body, def->body_len, &entry, restart_policy,
+		                                     &restart_delay_seconds, depends_on, &depends_on_count,
+		                                     &has_readiness, &readiness_tcp_port,
+		                                     &readiness_timeout_seconds, err_msg, sizeof(err_msg));
 		if (status != 0) {
 			fprintf(stderr, "%s: autostart failed: %s\n", order[i], err_msg);
 			continue;
@@ -2631,7 +2786,7 @@ static void containerdef_autostart_all(void)
 			        entry->name, def->readiness_tcp_port, def->readiness_timeout_seconds);
 		}
 
-		printf("%s: autostarted (restart:always)\n", entry->name);
+		printf("%s: autostarted (restart:%s)\n", entry->name, def->restart_policy);
 	}
 }
 

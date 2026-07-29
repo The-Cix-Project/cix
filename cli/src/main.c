@@ -31,9 +31,11 @@ static void print_usage(FILE *out)
 	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] [--network=NAME[:IP] ...]\n"
 	        "      [--ip-forward] [--dns-register] [--pki-issue] [--pki-cert-dir=PATH]\n"
 	        "      [--pki-days=N] [--route=DEST/PREFIX:VIA ...] [--device=ID ...]\n"
-	        "      [--interface=IFNAME ...] [--restart=always] [--depends-on=NAME ...]\n"
+	        "      [--interface=IFNAME ...] [--restart=always|on-failure|unless-stopped]\n"
+	        "      [--restart-delay=N] [--depends-on=NAME ...]\n"
 	        "      [--readiness-tcp-port=N [--readiness-timeout=N]] -- CMD [ARGS...]\n"
 	        "  inspect NAME\n"
+	        "  stop NAME  -- kill it now, keep its persisted definition (unlike rm)\n"
 	        "  rm NAME\n"
 	        "  network create --name=NAME --subnet=A.B.C.D --prefix=N\n"
 	        "  network ls\n"
@@ -133,10 +135,13 @@ static void fmt_container_line(const struct json_value *v)
 	const struct json_value *networks = json_object_get(v, "networks");
 	const struct json_value *ip_forward = json_object_get(v, "ip_forward");
 	const char *restart = json_str_field(v, "restart");
+	const struct json_value *restart_delay = json_object_get(v, "restart_delay_seconds");
+	const struct json_value *stopped = json_object_get(v, "stopped");
 	const struct json_value *readiness = json_object_get(v, "readiness");
 	char exit_buf[16];
 	char net_buf[256];
 	char readiness_buf[32];
+	char delay_buf[16];
 	size_t off = 0;
 	size_t i;
 
@@ -167,11 +172,19 @@ static void fmt_container_line(const struct json_value *v)
 		snprintf(readiness_buf, sizeof(readiness_buf), "-");
 	}
 
-	printf("%-20s %-8s pid=%-8ld exit_status=%-6s networks=%-20s fwd=%-4s restart=%-8s readiness=%s\n",
+	if (restart_delay != NULL && restart_delay->type == JSON_NUMBER)
+		snprintf(delay_buf, sizeof(delay_buf), "%ld", (long)json_as_number(restart_delay));
+	else
+		snprintf(delay_buf, sizeof(delay_buf), "-");
+
+	printf("%-20s %-8s pid=%-8ld exit_status=%-6s networks=%-20s fwd=%-4s restart=%-15s "
+	       "delay=%-4s stopped=%-5s readiness=%s\n",
 	       name, status, pid, exit_buf, net_buf[0] != '\0' ? net_buf : "-",
 	       (ip_forward != NULL && ip_forward->type == JSON_BOOL && ip_forward->u.boolean) ? "yes"
 	                                                                                        : "no",
-	       restart != NULL ? restart : "no", readiness_buf);
+	       restart != NULL ? restart : "no", delay_buf,
+	       (stopped != NULL && stopped->type == JSON_BOOL && stopped->u.boolean) ? "yes" : "no",
+	       readiness_buf);
 }
 
 static void fmt_list(const struct json_value *v)
@@ -470,6 +483,23 @@ static int cmd_rm(const struct kx_client *c, int json_mode, int argc, char **arg
 	return emit(&r, json_mode, fmt_removed);
 }
 
+static int cmd_stop(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[300];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: stop requires a container name\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/containers/%s/stop", argv[0]);
+	if (kx_client_request(c, "POST", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_health);
+}
+
 /* Matches daemon's CONTAINER_MAX_NETWORKS -- see include/container.h. */
 #define CLI_MAX_NETWORKS 64
 #define CLI_MAX_ROUTES 8
@@ -564,6 +594,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	const char *interfaces[CLI_MAX_INTERFACES];
 	int interface_count = 0;
 	const char *restart = NULL;
+	long restart_delay = -1;
 	const char *depends_on[CLI_MAX_DEPENDS];
 	int depends_on_count = 0;
 	long readiness_tcp_port = -1;
@@ -622,6 +653,8 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 			interfaces[interface_count++] = argv[i] + 12;
 		} else if (strncmp(argv[i], "--restart=", 10) == 0) {
 			restart = argv[i] + 10;
+		} else if (strncmp(argv[i], "--restart-delay=", 16) == 0) {
+			restart_delay = atol(argv[i] + 16);
 		} else if (strncmp(argv[i], "--depends-on=", 13) == 0) {
 			if (depends_on_count >= CLI_MAX_DEPENDS) {
 				fprintf(stderr, "kanxeoctl: too many --depends-on= flags (max %d)\n",
@@ -669,7 +702,8 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		        "[--pids-max=N] [--network=NAME[:IP] ...] [--ip-forward] [--dns-register] "
 		        "[--pki-issue] [--pki-cert-dir=PATH] [--pki-days=N] "
 		        "[--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--interface=IFNAME ...] "
-		        "[--restart=always] [--depends-on=NAME ...] "
+		        "[--restart=always|on-failure|unless-stopped] [--restart-delay=N] "
+		        "[--depends-on=NAME ...] "
 		        "[--readiness-tcp-port=N [--readiness-timeout=N]] -- CMD [ARGS...]\n");
 		return 2;
 	}
@@ -767,6 +801,10 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (restart != NULL) {
 		jw_key(&w, "restart");
 		jw_str(&w, restart);
+	}
+	if (restart_delay >= 0) {
+		jw_key(&w, "restart_delay_seconds");
+		jw_int(&w, restart_delay);
 	}
 	if (depends_on_count > 0) {
 		jw_key(&w, "depends_on");
@@ -1658,6 +1696,8 @@ int main(int argc, char **argv)
 		return cmd_run(&client, json_mode, argc - i, argv + i);
 	if (strcmp(cmd, "inspect") == 0)
 		return cmd_inspect(&client, json_mode, argc - i, argv + i);
+	if (strcmp(cmd, "stop") == 0)
+		return cmd_stop(&client, json_mode, argc - i, argv + i);
 	if (strcmp(cmd, "rm") == 0)
 		return cmd_rm(&client, json_mode, argc - i, argv + i);
 	if (strcmp(cmd, "network") == 0)

@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <signal.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 static struct registry_entry g_entries[REGISTRY_MAX_CONTAINERS];
@@ -58,6 +59,7 @@ enum registry_error registry_create(const char *name, const char *image,
 	strncpy(e->image, image, sizeof(e->image) - 1);
 	e->running = 1;
 	e->exit_status = 0;
+	e->started_at = time(NULL);
 	e->in_use = 1;
 	e->reactor_conn = NULL;
 	memset(e->nets, 0, sizeof(e->nets));
@@ -243,7 +245,14 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 		struct container_def *def = containerdef_find(entry->name);
 
 		jw_key(w, "restart");
-		jw_str(w, def != NULL ? "always" : "no");
+		jw_str(w, def != NULL ? def->restart_policy : "no");
+		jw_key(w, "restart_delay_seconds");
+		if (def != NULL)
+			jw_int(w, def->restart_delay_seconds);
+		else
+			jw_null(w);
+		jw_key(w, "stopped");
+		jw_bool(w, def != NULL && def->stopped);
 		jw_key(w, "depends_on");
 		jw_arr_open(w);
 		if (def != NULL) {

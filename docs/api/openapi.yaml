@@ -765,22 +765,66 @@ paths:
                 $ref: "#/components/schemas/Error"
     delete:
       summary: >
-        Stop (if running) and remove a container. If it was created with
-        "restart": "always", this also permanently removes that persisted
-        definition in the same call -- it will not come back on the next
-        crash-restart (none is pending; this path never triggers one) or
-        on a future daemon restart. There is no separate "just stop it for
-        now, keep the definition" operation in v1. Works even if this
-        container currently isn't live (e.g. a "restart":"always"
-        definition that has never once managed to autostart, due to a
-        depends_on cycle or an unknown dependency) -- 404 only if neither
-        a live instance nor a persisted definition exists for this name.
+        Stop (if running) and remove a container, permanently. If it was
+        created with a "restart" policy, this also permanently removes
+        that persisted definition in the same call -- it will not come
+        back on the next crash-restart (none is pending; this path never
+        triggers one) or on a future daemon restart, regardless of
+        policy. See POST /containers/{name}/stop for stopping without
+        losing the definition. Works even if this container currently
+        isn't live (e.g. a persisted definition that has never once
+        managed to autostart, due to a depends_on cycle or an unknown
+        dependency) -- 404 only if neither a live instance nor a
+        persisted definition exists for this name.
       operationId: deleteContainer
       parameters:
         - $ref: "#/components/parameters/ContainerName"
       responses:
         "204":
           description: Removed
+        "404":
+          description: No container with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /containers/{name}/stop:
+    post:
+      summary: >
+        Stop a container right now, without removing its persisted
+        definition (see ADR-0027).
+      description: >
+        Kills the live process (if any) the same way DELETE does, but
+        unlike DELETE this does not remove the persisted definition, its
+        DNS record, or its PKI cert ownership -- only a "stopped" flag
+        is set. For "restart":"unless-stopped", that flag
+        survives a daemon restart -- the container will not auto-start
+        again until re-POSTed to /containers. For "always"/"on-failure",
+        this only prevents restart for the remainder of this daemon's
+        current uptime; the next daemon restart attempts to start it
+        again unconditionally, same as before this endpoint existed.
+        Idempotent -- calling it twice is 200 both times. A no-op
+        regarding persisted state if this name was created with
+        "restart":"no" (or has no persisted definition at all) -- the
+        live container is still killed if one is running.
+      operationId: stopContainer
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+      responses:
+        "200":
+          description: Stopped
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, status]
+                properties:
+                  name:
+                    type: string
+                  status:
+                    type: string
+                    enum: [stopped]
         "404":
           description: No container with this name
           content:
@@ -1006,36 +1050,75 @@ components:
             container.
         restart:
           type: string
-          enum: [always, no]
+          enum: [always, on-failure, unless-stopped, no]
           default: "no"
           description: >
-            "always": this container's exact create request is persisted
-            (survives a daemon restart) and replayed automatically --
-            once now (if creation succeeds), again at every future daemon
-            startup, and again after any unprompted exit (crash or a
-            clean 0 exit alike), each restart after a real, fixed delay
-            (not instant -- avoids hammering the host if it keeps
-            failing). "no" (the default): today's original behavior,
-            unchanged -- purely in-memory, gone the moment the daemon
-            restarts or this container exits, no persistence at all.
+            Any value other than "no" persists this container's exact
+            create request (survives a daemon restart) and replays it
+            automatically -- once now (if creation succeeds), again at
+            every future daemon startup, and again after an unprompted
+            exit, each restart after a real, exponentially-backed-off
+            delay (see restart_delay_seconds -- not instant, avoids
+            hammering the host if it keeps failing).
+
+            "always": restarts regardless of exit code, including a
+            clean 0 exit -- unaffected by a prior POST .../stop once the
+            daemon itself restarts.
+
+            "on-failure": restarts only after a nonzero-exit-code (or
+            signal-killed) exit, not a clean 0 exit -- but only for the
+            crash-restart timer; boot-time autostart always attempts it
+            regardless of how it last exited, since that fact is never
+            persisted (a stated v1 boundary, see ADR-0027).
+
+            "unless-stopped": behaves like "always", except a prior POST
+            .../stop is remembered across a daemon restart -- it will
+            not auto-start again until explicitly re-POSTed. This is the
+            one policy where a stop actually changes daemon-restart
+            behavior; for "always"/"on-failure" a daemon restart is
+            always a fresh chance.
+
+            "no" (the default): today's original behavior, unchanged --
+            purely in-memory, gone the moment the daemon restarts or
+            this container exits, no persistence at all.
+
             DELETE /containers/{name} removes the persisted definition
-            too, permanently -- see that endpoint's own description.
+            too, permanently, regardless of policy -- see that
+            endpoint's own description, and POST .../stop for stopping
+            without losing it.
+        restart_delay_seconds:
+          type: integer
+          minimum: 1
+          maximum: 300
+          default: 2
+          description: >
+            Base crash-restart delay in seconds, ignored (not an error)
+            when restart is "no". The actual delay applied backs off
+            automatically and uniformly on repeated failures -- doubling
+            per consecutive failure, capped at a fixed 30s -- not itself
+            a further per-container knob. A restart is no longer
+            considered "consecutive" (the backoff resets to this base
+            value) once the container has stayed up at least 30s before
+            exiting again. See ADR-0027 for the full reasoning,
+            including why even a container's own first-ever failure
+            already applies one doubling (consecutive_failures goes 0 ->
+            1 on that first exit, same as any subsequent one).
         depends_on:
           type: array
           items:
             type: string
           maxItems: 16
           description: >
-            Other "restart":"always" container names that must be
-            started -- and, if that dependency's own `readiness` is
-            set, TCP-ready per that check -- before this one, at
-            daemon-boot autostart time only (never for a live POST, and
-            never for crash-restart -- see `readiness` below for both).
-            Ignored for a live POST that isn't itself "restart":"always"
-            (nothing to persist, so no future boot ordering to honor).
-            A dependency naming an unknown or non-"always" definition,
-            or participating in a cycle, is skipped at boot (logged,
-            not fatal to the rest of startup).
+            Other persisted (any restart policy other than "no")
+            container names that must be started -- and, if that
+            dependency's own `readiness` is set, TCP-ready per that
+            check -- before this one, at daemon-boot autostart time only
+            (never for a live POST, and never for crash-restart -- see
+            `readiness` below for both). Ignored for a live POST that
+            isn't itself persisted (nothing to persist, so no future
+            boot ordering to honor). A dependency naming an unknown
+            definition, or one that participates in a cycle, is skipped
+            at boot (logged, not fatal to the rest of startup).
         readiness:
           $ref: "#/components/schemas/Readiness"
 
@@ -1145,18 +1228,29 @@ components:
             this container's own netns at creation. Empty if none.
         restart:
           type: string
-          enum: [always, no]
+          enum: [always, on-failure, unless-stopped, no]
           description: >
-            "always" if this container's create request was persisted
-            (see ContainerCreateRequest.restart) and is auto-restarted on
-            exit / auto-started at daemon boot; "no" otherwise. Sourced
-            live from the persisted definition, not a static echo of
-            what creation was originally given.
+            The persisted restart policy (see
+            ContainerCreateRequest.restart), or "no" if this container's
+            create request was never persisted. Sourced live from the
+            persisted definition, not a static echo of what creation was
+            originally given.
+        restart_delay_seconds:
+          type: integer
+          nullable: true
+          description: Base crash-restart delay; null unless restart is not "no".
+        stopped:
+          type: boolean
+          description: >
+            Whether this definition was explicitly stopped via POST
+            .../stop (see ContainerCreateRequest.restart's
+            "unless-stopped" description). Always false unless restart
+            is not "no".
         depends_on:
           type: array
           items:
             type: string
-          description: Empty unless restart is "always".
+          description: Empty unless restart is not "no".
         readiness:
           allOf:
             - $ref: "#/components/schemas/Readiness"

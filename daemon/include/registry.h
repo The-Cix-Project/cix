@@ -5,6 +5,8 @@
 #include "json.h"
 #include "network.h"
 
+#include <time.h>
+
 #define REGISTRY_MAX_CONTAINERS 256
 #define REGISTRY_NAME_MAX 64
 /* Matches daemon's PKG_IMAGE_NAME_MAX -- see daemon/include/pkg.h. An
@@ -44,6 +46,15 @@ struct registry_entry {
 	struct container_handle handle;
 	int running;       /* 1 while the container's process is alive */
 	int exit_status;   /* valid once running == 0 */
+	/*
+	 * Wall-clock time this entry's process was started -- used by
+	 * handle_container_event() (daemon/src/main.c) to decide whether an
+	 * exiting restart:"always"/"on-failure"/"unless-stopped" container
+	 * had a stable-enough run to reset its own crash-restart backoff
+	 * (see CONTAINER_RESTART_STABILITY_SECONDS, ADR-0027). Not echoed
+	 * over REST -- purely an internal backoff-decision input.
+	 */
+	time_t started_at;
 	int in_use;        /* 0 for free slots */
 	struct registry_network_attachment nets[CONTAINER_MAX_NETWORKS];
 	int net_count;     /* 0 = not attached to any network */

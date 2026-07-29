@@ -52,6 +52,12 @@ static int save_state(void)
 		} else {
 			jw_null(&w);
 		}
+		jw_key(&w, "restart_policy");
+		jw_str(&w, d->restart_policy);
+		jw_key(&w, "restart_delay_seconds");
+		jw_int(&w, d->restart_delay_seconds);
+		jw_key(&w, "stopped");
+		jw_bool(&w, d->stopped);
 		jw_key(&w, "body");
 		jw_str(&w, d->body);
 		jw_obj_close(&w);
@@ -64,7 +70,8 @@ static int save_state(void)
 
 int containerdef_add(const char *name, const char *body, size_t body_len,
                       const char depends_on[][REGISTRY_NAME_MAX], int depends_on_count,
-                      int has_readiness, int readiness_tcp_port, int readiness_timeout_seconds)
+                      int has_readiness, int readiness_tcp_port, int readiness_timeout_seconds,
+                      const char *restart_policy, int restart_delay_seconds)
 {
 	struct container_def *d = containerdef_find(name);
 	int i;
@@ -105,6 +112,11 @@ int containerdef_add(const char *name, const char *body, size_t body_len,
 	d->readiness_tcp_port = readiness_tcp_port;
 	d->readiness_timeout_seconds = readiness_timeout_seconds;
 
+	snprintf(d->restart_policy, sizeof(d->restart_policy), "%s", restart_policy);
+	d->restart_delay_seconds = restart_delay_seconds;
+	d->stopped = 0;              /* a fresh create/redefine is definitionally not stopped */
+	d->consecutive_failures = 0; /* ...and not backed off either */
+
 	d->in_use = 1;
 
 	return save_state();
@@ -118,6 +130,16 @@ int containerdef_remove(const char *name)
 		return 0;
 	free(d->body);
 	memset(d, 0, sizeof(*d));
+	return save_state();
+}
+
+int containerdef_set_stopped(const char *name, int stopped)
+{
+	struct container_def *d = containerdef_find(name);
+
+	if (d == NULL)
+		return 0;
+	d->stopped = stopped;
 	return save_state();
 }
 
@@ -208,6 +230,9 @@ static int parse_persisted_entry(const struct json_value *item, struct container
 	const char *body = json_as_string(json_object_get(item, "body"));
 	const struct json_value *jdeps = json_object_get(item, "depends_on");
 	const struct json_value *jready = json_object_get(item, "readiness");
+	const struct json_value *jrestart_policy = json_object_get(item, "restart_policy");
+	const struct json_value *jrestart_delay = json_object_get(item, "restart_delay_seconds");
+	const struct json_value *jstopped = json_object_get(item, "stopped");
 	size_t i;
 
 	if (name == NULL || name[0] == '\0' || strlen(name) >= REGISTRY_NAME_MAX || body == NULL)
@@ -254,6 +279,29 @@ static int parse_persisted_entry(const struct json_value *item, struct container
 		slot->readiness_timeout_seconds =
 		    jtimeout != NULL ? (int)json_as_number(jtimeout) : 30;
 	}
+
+	if (jrestart_policy != NULL) {
+		const char *rp = json_as_string(jrestart_policy);
+
+		if (rp == NULL || (strcmp(rp, "always") != 0 && strcmp(rp, "on-failure") != 0 &&
+		                    strcmp(rp, "unless-stopped") != 0)) {
+			/* A value we ourselves wrote must be one of these three --
+			 * a present-but-invalid value is real corruption, same
+			 * posture as every other field here. */
+			free(slot->body);
+			return -1;
+		}
+		snprintf(slot->restart_policy, sizeof(slot->restart_policy), "%s", rp);
+	} else {
+		/* Backward compat: a file from Phase 13 parts 1-2 predates this
+		 * field and only ever encoded restart:"always" implicitly, by
+		 * the definition existing at all. */
+		snprintf(slot->restart_policy, sizeof(slot->restart_policy), "always");
+	}
+	slot->restart_delay_seconds = jrestart_delay != NULL
+	                                   ? (int)json_as_number(jrestart_delay)
+	                                   : CONTAINERDEF_DEFAULT_RESTART_DELAY_SECONDS;
+	slot->stopped = (jstopped != NULL && jstopped->type == JSON_BOOL && jstopped->u.boolean);
 
 	slot->in_use = 1;
 	return 0;

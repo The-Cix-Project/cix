@@ -20,6 +20,14 @@
 
 #define CONTAINERDEF_MAX 256 /* matches REGISTRY_MAX_CONTAINERS -- never more defs than containers could exist */
 #define CONTAINERDEF_MAX_DEPENDS 16
+/*
+ * The one place this value is defined (One Source of Truth) -- used
+ * both as create_container_from_body()'s own default when a live
+ * POST omits restart_delay_seconds, and by parse_persisted_entry()
+ * when loading a container_defs.json written before this field
+ * existed (Phase 13 parts 1-2).
+ */
+#define CONTAINERDEF_DEFAULT_RESTART_DELAY_SECONDS 2
 
 struct container_def {
 	char name[REGISTRY_NAME_MAX];
@@ -37,6 +45,32 @@ struct container_def {
 	int has_readiness;
 	int readiness_tcp_port;
 	int readiness_timeout_seconds;
+	/*
+	 * "always" | "on-failure" | "unless-stopped" -- an in-use def is
+	 * never "no": absence of a def already means "no", unchanged since
+	 * Phase 13 part 1 (see ADR-0027).
+	 */
+	char restart_policy[16];
+	/* Base crash-restart delay, seconds, 1-300 -- see CONTAINER_RESTART_
+	 * BACKOFF_CAP_SECONDS/CONTAINER_RESTART_STABILITY_SECONDS in main.c
+	 * for how this seeds the actual (backed-off) delay applied. */
+	int restart_delay_seconds;
+	/*
+	 * Persisted. Set by POST .../stop, cleared by every containerdef_add()
+	 * call (a fresh create/redefine is definitionally not stopped).
+	 * Consulted by containerdef_autostart_all() ONLY when restart_policy
+	 * == "unless-stopped"; consulted by handle_restart_timer_event()
+	 * unconditionally (any policy) -- see ADR-0027 for why these differ.
+	 */
+	int stopped;
+	/*
+	 * NOT persisted -- deliberately absent from save_state()/
+	 * parse_persisted_entry(), so it naturally resets to 0 via
+	 * containerdef_init()'s own memset(g_defs, 0, ...) on every daemon
+	 * boot. A crash-loop history from before a daemon restart isn't
+	 * meaningful afterward.
+	 */
+	int consecutive_failures;
 	int in_use;
 };
 
@@ -55,22 +89,36 @@ struct container_def {
 int containerdef_init(const char *state_path);
 
 /*
- * Persists name's definition (body verbatim, depends_on/readiness
- * already parsed/validated by the caller from that same body -- kept
- * alongside it as a cached index for containerdef_resolve_order()/
- * containerdef_autostart_all(), not a second source of truth: only
- * this function ever writes a definition, and it always receives
- * these from the same request parse). has_readiness == 0 means no
- * readiness check (the other two readiness parameters are then
- * ignored). Overwrites any existing definition for the same name.
- * Returns 0, or -1 on a persist (disk) failure.
+ * Persists name's definition (body verbatim, depends_on/readiness/
+ * restart_policy/restart_delay_seconds already parsed/validated by the
+ * caller from that same body -- kept alongside it as a cached index
+ * for containerdef_resolve_order()/containerdef_autostart_all(), not a
+ * second source of truth: only this function ever writes a
+ * definition, and it always receives these from the same request
+ * parse). has_readiness == 0 means no readiness check (the other two
+ * readiness parameters are then ignored). restart_policy must be
+ * "always", "on-failure", or "unless-stopped" (never "no" -- a "no"
+ * request never reaches this function, see handle_create()).
+ * Overwrites any existing definition for the same name, explicitly
+ * clearing its stopped/consecutive_failures state (a fresh create/
+ * redefine is definitionally not stopped and not backed off). Returns
+ * 0, or -1 on a persist (disk) failure.
  */
 int containerdef_add(const char *name, const char *body, size_t body_len,
                       const char depends_on[][REGISTRY_NAME_MAX], int depends_on_count,
-                      int has_readiness, int readiness_tcp_port, int readiness_timeout_seconds);
+                      int has_readiness, int readiness_tcp_port, int readiness_timeout_seconds,
+                      const char *restart_policy, int restart_delay_seconds);
 
 /* Removes name's definition, if any. A no-op (returns 0) if none exists. */
 int containerdef_remove(const char *name);
+
+/*
+ * Sets (or clears) name's persisted stopped flag -- POST .../stop's
+ * own primitive (daemon/src/main.c's handle_stop()). A no-op (returns
+ * 0) if name has no definition, mirroring containerdef_remove()'s own
+ * shape. Does not touch anything else about the definition.
+ */
+int containerdef_set_stopped(const char *name, int stopped);
 
 struct container_def *containerdef_find(const char *name);
 
