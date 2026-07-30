@@ -28,6 +28,10 @@ static void print_usage(FILE *out)
 	        "               real PID 1 (an installed system) -- a dev/interactive kanxeod\n"
 	        "               just exits, same as it always has on SIGTERM\n"
 	        "  reboot    -- stop kanxeod; restarts the host too when running as PID 1\n"
+	        "  update --image=PATH  -- writes a fresh control-plane squashfs (already\n"
+	        "               transferred onto the box, e.g. via scp) onto this daemon's own\n"
+	        "               inactive A/B slot and stages a fresh loader entry for it; does\n"
+	        "               NOT reboot -- call reboot separately once ready to cut over\n"
 	        "  ps\n"
 	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] [--network=NAME[:IP] ...]\n"
 	        "      [--ip-forward] [--dns-register] [--pki-issue] [--pki-cert-dir=PATH]\n"
@@ -67,7 +71,11 @@ static void print_usage(FILE *out)
 	        "  pkg recipes\n"
 	        "  pkg install --name=NAME [--image=IMAGE] [--upgrade]\n"
 	        "  pkg ls\n"
-	        "  pkg rm NAME[@IMAGE]\n");
+	        "  pkg rm NAME[@IMAGE]\n"
+	        "  pkg update-all  -- starts an upgrade for the first installed package whose\n"
+	        "               recipe version has drifted (one at a time, same v1 single-job\n"
+	        "               constraint as pkg install --upgrade); call again once that job\n"
+	        "               finishes to pick up the next one\n");
 }
 
 static const char *json_str_field(const struct json_value *obj, const char *key)
@@ -444,6 +452,48 @@ static int cmd_reboot(const struct kx_client *c, int json_mode)
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
+}
+
+static void fmt_update(const struct json_value *v)
+{
+	printf("%s slot=%s\n", json_str_field(v, "status"), json_str_field(v, "slot"));
+}
+
+static int cmd_update(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *image = NULL;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--image=", 8) == 0)
+			image = argv[i] + 8;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown update option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (image == NULL) {
+		fprintf(stderr, "usage: kanxeoctl update --image=PATH\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "image_path");
+	jw_str(&w, image);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/system/update", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_update);
 }
 
 static int cmd_ps(const struct kx_client *c, int json_mode)
@@ -1832,6 +1882,32 @@ static int cmd_pkg_rm(const struct kx_client *c, int json_mode, int argc, char *
 	return emit(&r, json_mode, fmt_removed);
 }
 
+/* "status" is only present in the "nothing to update" response --
+ * pkg_get_one()'s own JSON shape (name/image/version/state/...) has no
+ * such field, so its presence alone unambiguously picks which shape
+ * this response is. */
+static void fmt_pkg_update_all(const struct json_value *v)
+{
+	const char *status = json_str_field(v, "status");
+
+	if (status != NULL) {
+		printf("%s\n", status);
+		return;
+	}
+	fmt_pkg_line(v);
+}
+
+static int cmd_pkg_update_all(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "POST", "/v1/pkg/update-all", "{}", &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_pkg_update_all);
+}
+
 static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
@@ -1841,7 +1917,8 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 		                "       kanxeoctl pkg recipes\n"
 		                "       kanxeoctl pkg install --name=NAME [--image=IMAGE] [--upgrade]\n"
 		                "       kanxeoctl pkg ls\n"
-		                "       kanxeoctl pkg rm NAME[@IMAGE]\n");
+		                "       kanxeoctl pkg rm NAME[@IMAGE]\n"
+		                "       kanxeoctl pkg update-all\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -1855,6 +1932,8 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 		return cmd_pkg_ls(c, json_mode);
 	if (strcmp(sub, "rm") == 0)
 		return cmd_pkg_rm(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "update-all") == 0)
+		return cmd_pkg_update_all(c, json_mode);
 
 	fprintf(stderr, "kanxeoctl: unknown pkg subcommand '%s'\n", sub);
 	return 2;
@@ -1898,6 +1977,8 @@ int main(int argc, char **argv)
 		return cmd_shutdown(&client, json_mode);
 	if (strcmp(cmd, "reboot") == 0)
 		return cmd_reboot(&client, json_mode);
+	if (strcmp(cmd, "update") == 0)
+		return cmd_update(&client, json_mode, argc - i, argv + i);
 	if (strcmp(cmd, "ps") == 0)
 		return cmd_ps(&client, json_mode);
 	if (strcmp(cmd, "run") == 0)

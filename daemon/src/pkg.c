@@ -1325,6 +1325,32 @@ void pkg_write_json_list(struct json_writer *w)
 	jw_arr_close(w);
 }
 
+int pkg_find_update_candidate(char *out_name, size_t out_name_size, char *out_image,
+                               size_t out_image_size)
+{
+	int i;
+
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		struct pkg_entry *e = &g_packages[i];
+		char recipe_path[PATH_MAX];
+		struct pkg_recipe recipe;
+
+		if (!e->in_use || e->state != PKG_STATE_INSTALLED)
+			continue;
+
+		/* Same fresh-from-disk drift check write_pkg_json() performs
+		 * per-entry for available_version -- One Source of Truth, no
+		 * second comparison rule to keep in sync. */
+		snprintf(recipe_path, sizeof(recipe_path), "%s/%s.recipe", g_recipes_dir, e->name);
+		if (parse_recipe(recipe_path, &recipe) == 0 && strcmp(recipe.version, e->version) != 0) {
+			snprintf(out_name, out_name_size, "%s", e->name);
+			snprintf(out_image, out_image_size, "%s", e->image);
+			return 1;
+		}
+	}
+	return 0;
+}
+
 int pkg_image_has_packages(const char *image)
 {
 	const char *norm_image = normalize_image(image);

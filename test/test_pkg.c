@@ -716,6 +716,83 @@ int main(void)
 		}
 	}
 
+	/* 14. update-all (Phase 16, ADR-0031): nothing drifted at this point
+	 * (leaf's own upgrade in step 12 already brought it to 2.0; top's
+	 * own version never changed) -> "nothing to update". Then bump
+	 * top's recipe to 2.0 (a real dependency-chain package, not a bare
+	 * one) and confirm update-all itself finds it and starts exactly
+	 * one real upgrade job for it -- no need for the caller to already
+	 * know top drifted. Called again afterwards with the backlog fully
+	 * drained, reports nothing to update once more rather than erroring. */
+	{
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/update-all", "{}", &r) != 0 ||
+		    r.status != 200 || !str_eq(json_str_field(r.json, "status"), "nothing to update")) {
+			fprintf(stderr,
+			        "FAIL: update-all with nothing drifted expected 200 \"nothing to update\", got %d %s\n",
+			        r.status,
+			        json_str_field(r.json, "status") ? json_str_field(r.json, "status") : "(null)");
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		{
+			char top2_tarball[512], top2_sha[128];
+
+			if (stage_fixture_tarball(scratch_dir, "top", "2.0", top2_tarball, sizeof(top2_tarball),
+			                           top2_sha, sizeof(top2_sha)) != 0) {
+				fprintf(stderr, "FAIL: could not stage top 2.0 fixture\n");
+				ok = 0;
+			} else if (write_recipe("top", "2.0", top2_tarball, top2_sha, "leaf") != 0) {
+				fprintf(stderr, "FAIL: could not write top 2.0 recipe\n");
+				ok = 0;
+			} else {
+				memset(&r, 0, sizeof(r));
+				if (kx_client_request(&client, "POST", "/v1/pkg/update-all", "{}", &r) != 0 ||
+				    r.status != 202 || !str_eq(json_str_field(r.json, "name"), "top")) {
+					fprintf(stderr,
+					        "FAIL: update-all with top drifted expected 202 name=top, got %d name=%s\n",
+					        r.status,
+					        json_str_field(r.json, "name") ? json_str_field(r.json, "name") : "(null)");
+					ok = 0;
+				}
+				kx_response_free(&r);
+
+				if (poll_pkg_state(&client, "top", state, sizeof(state), 60) != 0 ||
+				    strcmp(state, "installed") != 0) {
+					fprintf(stderr, "FAIL: top update-all upgrade did not reach installed\n");
+					ok = 0;
+				} else {
+					char run_out[256] = { 0 };
+					FILE *fp = popen(BASE_ROOTFS "/usr/bin/top", "r");
+
+					if (fp == NULL || fgets(run_out, sizeof(run_out), fp) == NULL ||
+					    strstr(run_out, "hello from top v2.0") == NULL) {
+						fprintf(stderr,
+						        "FAIL: top binary after update-all did not reflect the new "
+						        "source, got: %s\n",
+						        run_out);
+						ok = 0;
+					}
+					if (fp != NULL)
+						pclose(fp);
+				}
+
+				memset(&r, 0, sizeof(r));
+				if (kx_client_request(&client, "POST", "/v1/pkg/update-all", "{}", &r) != 0 ||
+				    r.status != 200 ||
+				    !str_eq(json_str_field(r.json, "status"), "nothing to update")) {
+					fprintf(stderr,
+					        "FAIL: update-all after draining backlog expected 200 \"nothing to "
+					        "update\", got %d\n",
+					        r.status);
+					ok = 0;
+				}
+				kx_response_free(&r);
+			}
+		}
+	}
+
 	/* cleanup */
 	run_cmd("rm -rf '%s'", scratch_dir);
 

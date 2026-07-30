@@ -4,6 +4,22 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 16: host OS update mechanism + automatic package updates
+
+Raised directly by the user: a mechanism to update the running host and its packages, matching the existing A/B configuration. The A/B rollback machinery (ADR-0014) existed since Phase 11, but nothing could ever write a new image into the inactive slot on a live system -- root B stayed genuinely empty until now. See ADR-0031.
+
+#### Added
+- `daemon/src/main.c`: `g_slot`/`g_bind_addr` promoted from `main()` locals to file-scope statics (same precedent as `g_epfd`); new `ROOT_A_DEVICE "/dev/vda2"`/`ROOT_B_DEVICE "/dev/vda3"` macros, matching `ESP_DEVICE`/`CONFIG_DEVICE`/`CONTAINERS_DEVICE`'s existing fixed-device precedent; new `write_file_to_device()` (mirrors `kanxeo-install.c`'s `copy_file()`); new `do_system_update()`/`handle_system_update()` implementing `POST /v1/system/update` (writes a fresh squashfs onto the inactive slot, stages a fresh loader entry with a fresh Automatic Boot Assessment counter -- does NOT itself reboot); new `--test-update-image=` daemon flag (same precedent as `--simulate-unhealthy-boot`) making `do_system_update()` observable from a real QEMU guest's serial console for testing.
+- `daemon/src/pkg.c`/`daemon/include/pkg.h`: new `pkg_find_update_candidate()`, reusing `write_pkg_json()`'s own fresh-recipe-vs-installed-version comparison; new `handle_pkg_update_all()` implementing `POST /v1/pkg/update-all` (starts one real upgrade for the first drifted installed package, or reports nothing to update).
+- `cli/src/main.c`: `update --image=PATH` (top-level, alongside `shutdown`/`reboot`); `pkg update-all`.
+- `docs/api/openapi.yaml`: new `/system/update` and `/pkg/update-all` paths.
+- `docs/adr/0031-host-and-package-update-mechanism.md`.
+- `test/test_system_update.c`, new: proves `POST /system/update`'s validation logic (no `--slot=`, missing/unreadable `image_path`, bad squashfs magic) against a plain dev daemon -- none of these checks need a real device.
+- `test/test_boot_update.c`, new: proves the real device-write/loader-entry path inside a real QEMU guest, via `--test-update-image=` against a raw scratch partition holding a genuinely different second squashfs; confirms the written bytes are byte-exact, the loader entry lands on the ESP, and a second, independent QEMU boot actually boots the freshly-updated slot.
+- `test/test_pkg.c`: extended with an `update-all` scenario -- nothing-to-update when no package has drifted, exactly one real upgrade job started once a recipe's version is bumped, nothing-to-update again once drained.
+
+Verified two ways matching the two different risk profiles: the pure validation logic needs no real device at all (`boot_init()`, the only thing that would need one, only runs under `--init-mode`) and is proven against a plain dev daemon; the real write needs a real virtio-blk disk and is proven inside QEMU, including a genuine second, independent boot landing on the freshly-written slot -- not just that the write syscall succeeded. `pkg update-all` proven against a real bumped recipe, respecting (not working around) the existing v1 single-install-in-flight constraint. Full clean rebuild, zero warnings; full pre-existing regression suite, including the QEMU-based tests, re-run clean.
+
 ### Phase 15: per-container config files + generalized sysctls
 
 Raised directly by the user: several containers built from the same image, each needing its own config file and startup script, plus sysctls beyond `ip_forward` (`rp_filter`, for policy-based routing). There was no operator-facing way to put a file into a container at all before this. See ADR-0030.

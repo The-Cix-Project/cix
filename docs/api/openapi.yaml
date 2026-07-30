@@ -70,6 +70,54 @@ paths:
                     type: string
                     enum: [rebooting]
 
+  /system/update:
+    post:
+      summary: >
+        Write a fresh control-plane squashfs onto this daemon's own
+        inactive A/B root slot (see ADR-0014, ADR-0031) and stage a
+        fresh systemd-boot loader entry for it with a fresh Automatic
+        Boot Assessment tries-left counter. image_path is a local path
+        the operator has already transferred the image to (e.g. scp) --
+        no upload is performed. Requires this daemon to be running with
+        --slot=a or --slot=b (a real --init-mode boot); otherwise there
+        is no meaningful "inactive slot" and the request is rejected.
+        Does NOT reboot -- call /system/reboot separately once ready to
+        cut over; the existing boot-counter/confirm_boot() machinery,
+        unchanged, decides whether the fresh slot sticks.
+      operationId: updateSystem
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [image_path]
+              properties:
+                image_path:
+                  type: string
+                  description: Local filesystem path to a squashfs image (checked via its own on-disk magic)
+      responses:
+        "200":
+          description: Image written to the inactive slot and a fresh loader entry staged
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, slot]
+                properties:
+                  status:
+                    type: string
+                    enum: [staged]
+                  slot:
+                    type: string
+                    enum: [a, b]
+                    description: Which slot ("a" or "b") was just written -- always this daemon's own inactive slot
+        "400":
+          description: >
+            No --slot= on this daemon, image_path missing/unreadable, or
+            image_path is not a squashfs image (bad magic) -- the
+            inactive partition is left untouched in every 400 case
+
   /containers:
     get:
       summary: List all containers known to this daemon
@@ -681,6 +729,44 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: Already installed (see upgrade), or another install is already in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /pkg/update-all:
+    post:
+      summary: >
+        The "automagic" package half of Phase 16 (ADR-0031). Finds the
+        first installed package (across every image) whose recipe's
+        pkg_version= has drifted from what's installed (the same check
+        GET /pkg's own available_version field already reports) and
+        starts an upgrade for it, reusing /pkg/install --upgrade's
+        entire existing mechanism. Starts at most one job -- the
+        existing v1 single-install-in-flight constraint still applies,
+        honestly, not parallelized around. Call again once that job
+        finishes to pick up the next drifted package.
+      operationId: pkgUpdateAll
+      responses:
+        "200":
+          description: Nothing to update -- every installed package already matches its recipe
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: ["nothing to update"]
+        "202":
+          description: An upgrade was started for the first drifted package found -- poll GET /pkg/{name} for progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgEntry"
+        "409":
+          description: Another install/upgrade is already in progress
           content:
             application/json:
               schema:

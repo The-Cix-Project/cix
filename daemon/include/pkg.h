@@ -224,6 +224,21 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
  * not yet installed, else the recipe's current version -- re-read
  * from disk on every call, One Source of Truth). */
 void pkg_write_json_list(struct json_writer *w);
+
+/*
+ * Finds the first PKG_STATE_INSTALLED entry whose recipe's own current
+ * pkg_version= differs from what's installed -- the exact same
+ * available_version drift check pkg_write_json_list()'s own per-entry
+ * write_pkg_json() already performs, extracted here so both share one
+ * comparison. Returns 1 with out_name/out_image filled in if one was
+ * found, 0 if every installed package is already up to date. Does NOT
+ * itself start an upgrade -- the caller (handle_pkg_update_all())
+ * passes the result straight to pkg_install_start(..., upgrade=1, ...),
+ * the same v1 single-job-in-flight constraint every other install path
+ * already has (PKG_ERR_BUSY if one is already running).
+ */
+int pkg_find_update_candidate(char *out_name, size_t out_name_size, char *out_image,
+                               size_t out_image_size);
 /* image NULL or "" means PKG_DEFAULT_IMAGE, matching pkg_install_start(). */
 enum pkg_error pkg_get_one(const char *name, const char *image, struct json_writer *w);
 

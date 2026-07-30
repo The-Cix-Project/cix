@@ -75,6 +75,19 @@
 #define ESP_DIR "/boot"
 #define ESP_LOADER_ENTRIES_DIR ESP_DIR "/loader/entries"
 /*
+ * Partitions 2/3 in kanxeo-install's own layout (image/src/kanxeo-
+ * install.c's auto_partition()), same fixed QEMU virtio-blk layout/
+ * posture as ESP_DEVICE above -- a GPT-partition-name-based lookup
+ * (find_partition_device() already exists for this purpose, but only
+ * in kanxeo-install.c, installer-only code the daemon doesn't link)
+ * can wait for part 4's real hardware, the same deferral ESP_DEVICE's
+ * own comment and ADR-0018's Consequences section already state twice
+ * for other partitions. root=%s2/%s3 in populate_esp()'s own loader
+ * entries confirms this exact device-per-slot mapping.
+ */
+#define ROOT_A_DEVICE "/dev/vda2"
+#define ROOT_B_DEVICE "/dev/vda3"
+/*
  * Partition 4 in kanxeo-install's own layout (image/src/kanxeo-install.c)
  * -- absent on parts 1/2's own throwaway 2/3-partition test disks, so
  * mounting it is deliberately non-fatal (boot_init()'s only non-fatal
@@ -129,6 +142,19 @@ static struct conn g_listener_conn;
 static const char *g_web_root;
 static volatile sig_atomic_t g_stop;
 static volatile sig_atomic_t g_shutdown_action = SHUTDOWN_ACTION_POWEROFF;
+/*
+ * This boot's own slot and bind address, set once from argv in main()
+ * -- previously plain locals, read only by confirm_boot()'s call site
+ * and a diagnostic print. Promoted here (same file-scope-static
+ * precedent as g_epfd) so handle_system_update() below can also reach
+ * them: it needs g_slot to compute the *inactive* slot, and g_bind_addr
+ * to embed the same address into the fresh loader entry it writes for
+ * that slot. NULL/unset (g_slot) means this isn't a real --init-mode
+ * boot -- handle_system_update() rejects the request rather than
+ * guessing at an "inactive" slot that doesn't meaningfully exist.
+ */
+static const char *g_slot;
+static const char *g_bind_addr;
 
 static void on_signal(int sig)
 {
@@ -530,6 +556,228 @@ static void handle_reboot(int fd)
 	jw_str(&w, "rebooting");
 	jw_obj_close(&w);
 	respond_json(fd, 202, "Accepted", &w);
+	jw_free(&w);
+}
+
+/*
+ * Tries-left counter for a freshly-staged update's own loader entry --
+ * matches kanxeo-install.c's own ROOT_A_TRIES value (3), the same
+ * Automatic Boot Assessment convention applied uniformly to any fresh
+ * slot, not just the very first install.
+ */
+#define ROOT_UPDATE_TRIES 3
+
+/*
+ * Writes the whole content of src_path onto dst device_path, raw --
+ * mirrors kanxeo-install.c's own copy_file()/write_whole_file_to_
+ * device() shape (plain open/read/write loop, no byte-offset math,
+ * since device_path is a real partition block device here too, not
+ * test/test_disk_image.c's flat-file-at-an-offset case). device_path
+ * already exists as a block device, so unlike copy_file()'s
+ * O_CREAT|O_TRUNC destination, this opens it O_WRONLY only. Kept as
+ * its own small static rather than shared across the daemon/installer
+ * binaries -- genuinely trivial, and the two binaries share no common
+ * library today (the daemon can't link test/test_image_fixture.c,
+ * which is test-scoped).
+ */
+static int write_file_to_device(const char *src_path, const char *device_path)
+{
+	int src, dst;
+	char buf[65536];
+	ssize_t n;
+
+	src = open(src_path, O_RDONLY);
+	if (src < 0) {
+		perror(src_path);
+		return -1;
+	}
+	dst = open(device_path, O_WRONLY);
+	if (dst < 0) {
+		perror(device_path);
+		close(src);
+		return -1;
+	}
+	while ((n = read(src, buf, sizeof(buf))) > 0) {
+		if (write(dst, buf, (size_t)n) != n) {
+			perror("write");
+			close(src);
+			close(dst);
+			return -1;
+		}
+	}
+	if (n < 0)
+		perror(src_path);
+	/* fsync() before returning success -- without it, these bytes can
+	 * still be sitting in the guest's own page cache, not yet flushed
+	 * through to the underlying block device, when do_system_update()
+	 * reports 200 back to the caller. The whole point of this feature
+	 * is a trustworthy "the new image is safely on the inactive slot"
+	 * signal; a crash/power-loss between that response and an eventual
+	 * background writeback could otherwise silently lose it. */
+	if (n == 0 && fsync(dst) != 0) {
+		perror(device_path);
+		n = -1;
+	}
+	close(src);
+	close(dst);
+	return n < 0 ? -1 : 0;
+}
+
+/*
+ * Pure (no fd) core of POST /v1/system/update -- writes a fresh
+ * control-plane squashfs onto whichever root slot ISN'T this boot's
+ * own (g_slot), then stages a fresh systemd-boot loader entry for it
+ * with its own Automatic Boot Assessment tries-left counter -- the
+ * same "write to the inactive slot, let the existing boot-counter/
+ * confirm_boot() machinery decide whether it sticks" shape ADR-0014
+ * already established for the very first install, now reachable on an
+ * already-running system too (see docs/adr/0031). Split out from
+ * handle_system_update() the same way create_container_from_body() is
+ * split from handle_create() -- so test/test_boot_update.c's
+ * --test-update-image= self-test (main(), no live HTTP round trip
+ * needed) can exercise the exact same real device-write/loader-entry
+ * logic a live request would, inside a real QEMU guest with a real
+ * virtio-blk disk attached, without needing the daemon to also be its
+ * own HTTP client.
+ *
+ * image_path is a local path the operator has already transferred the
+ * new image to (e.g. scp) -- no upload/streaming HTTP machinery is
+ * added here; see ADR-0031 for why.
+ *
+ * Deliberately does NOT reboot -- update and reboot stay two separate,
+ * composable actions (ADR-0031). The operator (or a script) calls the
+ * existing POST /v1/system/reboot separately once ready to cut over;
+ * confirm_boot()/the boot counter, both entirely unchanged, decide
+ * whether the fresh slot sticks.
+ *
+ * Returns the HTTP status this operation resolves to (200 on success);
+ * *out_slot is filled in only on success, *out_errmsg only otherwise.
+ */
+static int do_system_update(const char *body, size_t body_len, char *out_slot,
+                             size_t out_slot_size, char *out_errmsg, size_t out_errmsg_size)
+{
+	struct json_value *root;
+	const char *image_path;
+	const char *inactive_slot;
+	const char *device;
+	int src;
+	unsigned char magic[4];
+	char entry_path[PATH_MAX];
+	char entry_conf[512];
+
+	if (g_slot == NULL) {
+		snprintf(out_errmsg, out_errmsg_size,
+		         "this daemon has no --slot=, there is no inactive slot to update");
+		return 400;
+	}
+	if (strcmp(g_slot, "a") == 0) {
+		inactive_slot = "b";
+		device = ROOT_B_DEVICE;
+	} else if (strcmp(g_slot, "b") == 0) {
+		inactive_slot = "a";
+		device = ROOT_A_DEVICE;
+	} else {
+		snprintf(out_errmsg, out_errmsg_size, "unrecognized --slot=, expected \"a\" or \"b\"");
+		return 400;
+	}
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		snprintf(out_errmsg, out_errmsg_size, "invalid JSON body");
+		return 400;
+	}
+	image_path = json_as_string(json_object_get(root, "image_path"));
+	if (image_path == NULL || image_path[0] == '\0') {
+		json_free(root);
+		snprintf(out_errmsg, out_errmsg_size, "image_path missing");
+		return 400;
+	}
+
+	/* Cheap, real safety check before touching the inactive partition
+	 * at all: squashfs's own on-disk magic ("hsqs", the little-endian
+	 * bytes of 0x73717368) turns "wrong path by mistake" into a clean
+	 * 400 instead of silently overwriting the inactive slot with
+	 * garbage. */
+	src = open(image_path, O_RDONLY);
+	if (src < 0) {
+		json_free(root);
+		snprintf(out_errmsg, out_errmsg_size, "image_path does not exist or is not readable");
+		return 400;
+	}
+	if (read(src, magic, sizeof(magic)) != (ssize_t)sizeof(magic) || memcmp(magic, "hsqs", 4) != 0) {
+		close(src);
+		json_free(root);
+		snprintf(out_errmsg, out_errmsg_size, "image_path is not a squashfs image");
+		return 400;
+	}
+	close(src);
+
+	if (write_file_to_device(image_path, device) != 0) {
+		json_free(root);
+		snprintf(out_errmsg, out_errmsg_size, "failed to write image to inactive slot");
+		return 500;
+	}
+
+	snprintf(entry_path, sizeof(entry_path), "%s/kanxeo-%s+%d.conf", ESP_LOADER_ENTRIES_DIR,
+	         inactive_slot, ROOT_UPDATE_TRIES);
+	/* version is this boot's own current timestamp -- always higher
+	 * than whatever's already on disk, so systemd-boot sorts this
+	 * entry first, with no need to parse the existing entry's own
+	 * version back out first. */
+	snprintf(entry_conf, sizeof(entry_conf),
+	         "title Kanxeo (%s)\n"
+	         "sort-key kanxeo\n"
+	         "version %ld\n"
+	         "linux /kanxeo-bzImage\n"
+	         "options console=tty0 console=ttyS0 root=%s rw init=/bin/kanxeod -- --init-mode "
+	         "--slot=%s --bind=%s\n",
+	         inactive_slot[0] == 'a' ? "A" : "B", (long)time(NULL), device, inactive_slot,
+	         g_bind_addr);
+
+	{
+		int efd = open(entry_path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+		size_t len = strlen(entry_conf);
+
+		/* fsync() for the same reason write_file_to_device() does --
+		 * this file is the ONLY thing that makes the just-written
+		 * image bootable at all; it needs to be durable too, not
+		 * still sitting in the page cache when this call returns. */
+		if (efd < 0 || write(efd, entry_conf, len) != (ssize_t)len || fsync(efd) != 0) {
+			if (efd >= 0)
+				close(efd);
+			json_free(root);
+			snprintf(out_errmsg, out_errmsg_size, "failed to write loader entry");
+			return 500;
+		}
+		close(efd);
+	}
+
+	json_free(root);
+	snprintf(out_slot, out_slot_size, "%s", inactive_slot);
+	return 200;
+}
+
+static void handle_system_update(int fd, const char *body, size_t body_len)
+{
+	char slot[8];
+	char errmsg[256];
+	int status;
+	struct json_writer w;
+
+	status = do_system_update(body, body_len, slot, sizeof(slot), errmsg, sizeof(errmsg));
+	if (status != 200) {
+		respond_error(fd, status, http_status_text(status), errmsg);
+		return;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "status");
+	jw_str(&w, "staged");
+	jw_key(&w, "slot");
+	jw_str(&w, slot);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
 
@@ -2238,6 +2486,59 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 	jw_free(&w);
 }
 
+/*
+ * POST /v1/pkg/update-all -- the "automagic" package half of Phase 16
+ * (ADR-0031), reusing pkg install --upgrade's entire existing mechanism
+ * (pkg_install_start(..., upgrade=1, ...)) rather than a second rebuild
+ * path. The only new thing is *finding* what needs it: the first
+ * PKG_STATE_INSTALLED package (across every image) whose recipe's
+ * version has drifted (pkg_find_update_candidate()). Starts exactly
+ * one upgrade, honestly respecting the existing v1 single-job-in-
+ * flight constraint (pkg_install_start() itself would return
+ * PKG_ERR_BUSY otherwise) rather than pretending to parallelize past
+ * it -- an operator or cron entry drains the whole backlog by calling
+ * this again once each job finishes.
+ */
+static void handle_pkg_update_all(int fd)
+{
+	char name[PKG_NAME_MAX];
+	char image[PKG_IMAGE_NAME_MAX];
+	char started_name[PKG_NAME_MAX];
+	pid_t pid;
+	int pidfd;
+	enum pkg_error perr;
+	struct json_writer w;
+
+	if (!pkg_find_update_candidate(name, sizeof(name), image, sizeof(image))) {
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "status");
+		jw_str(&w, "nothing to update");
+		jw_obj_close(&w);
+		respond_json(fd, 200, "OK", &w);
+		jw_free(&w);
+		return;
+	}
+
+	perr = pkg_install_start(name, image, 1, started_name, sizeof(started_name), &pid, &pidfd);
+	if (perr != PKG_OK) {
+		respond_pkg_error(fd, perr);
+		return;
+	}
+
+	jw_init(&w);
+	if (pkg_get_one(started_name, image, &w) != PKG_OK) {
+		/* shouldn't happen -- pkg_install_start() just created it */
+		jw_free(&w);
+		respond_error(fd, 500, "Internal Server Error",
+		              "package started but could not be read back");
+		return;
+	}
+	register_pkg_fetch_pidfd(pid, pidfd);
+	respond_json(fd, 202, "Accepted", &w);
+	jw_free(&w);
+}
+
 static void handle_pkg_list(int fd)
 {
 	struct json_writer w;
@@ -2334,6 +2635,10 @@ static void dispatch(int fd, const struct http_request *req)
 	}
 	if (strcmp(req->method, "POST") == 0 && strcmp(req->path, "/v1/system/reboot") == 0) {
 		handle_reboot(fd);
+		return;
+	}
+	if (strcmp(req->method, "POST") == 0 && strcmp(req->path, "/v1/system/update") == 0) {
+		handle_system_update(fd, req->body, req->body_len);
 		return;
 	}
 	if (strcmp(req->path, "/v1/containers") == 0) {
@@ -2500,13 +2805,13 @@ static void dispatch(int fd, const struct http_request *req)
 		}
 	}
 	/*
-	 * These three reserved paths are checked before the generic
+	 * These four reserved paths are checked before the generic
 	 * PKG_PREFIX/{name} fallback below, exactly like every other
 	 * resource's exact-match-then-prefix ordering in this dispatch --
-	 * a package named "bootstrap"/"recipes"/"install" would be
-	 * unreachable via GET/DELETE /v1/pkg/{name}, a deliberate,
-	 * documented reserved-words boundary (recipes are operator-
-	 * provisioned out of band, easily avoided in practice).
+	 * a package named "bootstrap"/"recipes"/"install"/"update-all"
+	 * would be unreachable via GET/DELETE /v1/pkg/{name}, a
+	 * deliberate, documented reserved-words boundary (recipes are
+	 * operator-provisioned out of band, easily avoided in practice).
 	 */
 	if (strcmp(req->path, "/v1/pkg/bootstrap") == 0) {
 		if (strcmp(req->method, "POST") == 0) {
@@ -2523,6 +2828,12 @@ static void dispatch(int fd, const struct http_request *req)
 	if (strcmp(req->path, "/v1/pkg/install") == 0) {
 		if (strcmp(req->method, "POST") == 0) {
 			handle_pkg_install(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/pkg/update-all") == 0) {
+		if (strcmp(req->method, "POST") == 0) {
+			handle_pkg_update_all(fd);
 			return;
 		}
 	}
@@ -3006,6 +3317,7 @@ int main(int argc, char **argv)
 	int init_mode = 0;
 	int simulate_unhealthy = 0;
 	const char *slot = NULL;
+	const char *test_update_image = NULL;
 	int i;
 	int listen_fd;
 	int opt = 1;
@@ -3026,8 +3338,12 @@ int main(int argc, char **argv)
 			slot = argv[i] + 7;
 		else if (strcmp(argv[i], "--simulate-unhealthy-boot") == 0)
 			simulate_unhealthy = 1;
+		else if (strncmp(argv[i], "--test-update-image=", 20) == 0)
+			test_update_image = argv[i] + 20;
 	}
 	g_web_root = web_root;
+	g_slot = slot;
+	g_bind_addr = bind_addr;
 
 	if (init_mode) {
 		/* The only observable serial-console signal for which slot
@@ -3039,6 +3355,36 @@ int main(int argc, char **argv)
 		fflush(stdout);
 		if (boot_init() != 0)
 			return 1;
+	}
+
+	/*
+	 * Test-only, same precedent as --simulate-unhealthy-boot: makes
+	 * POST /v1/system/update's real device-write/loader-entry logic
+	 * (do_system_update()) observable from the serial console inside a
+	 * real QEMU guest with a real virtio-blk disk attached, where
+	 * ROOT_A_DEVICE/ROOT_B_DEVICE actually exist -- test/test_boot_
+	 * update.c has no other way to reach this code path at all,
+	 * host-to-guest HTTP being unavailable for a statically-addressed
+	 * guest under this project's own test harness (see CLAUDE.md).
+	 * Exercises the exact same function a live request would; only the
+	 * thin JSON-parsing/HTTP-dispatch plumbing above it goes untested
+	 * here, already covered structurally by every other JSON-bodied
+	 * endpoint's own tests.
+	 */
+	if (test_update_image != NULL) {
+		char body[PATH_MAX + 32];
+		char out_slot[8];
+		char out_errmsg[256];
+		int status;
+
+		snprintf(body, sizeof(body), "{\"image_path\":\"%s\"}", test_update_image);
+		status = do_system_update(body, strlen(body), out_slot, sizeof(out_slot), out_errmsg,
+		                           sizeof(out_errmsg));
+		if (status == 200)
+			printf("test-update: status=200 slot=%s\n", out_slot);
+		else
+			printf("test-update: status=%d err=%s\n", status, out_errmsg);
+		fflush(stdout);
 	}
 
 	if (ensure_dir(BASE_DIR) != 0 || ensure_dir(IMAGES_DIR) != 0 ||
