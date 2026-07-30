@@ -104,6 +104,51 @@ struct device_spec {
  */
 #define CONTAINER_IFNAME_MAX 16
 
+/*
+ * A generous fixed bound, same reasoning CONTAINER_MAX_DEVICES already
+ * gives -- enough for a router's config file plus a startup script
+ * plus a few more, without being unbounded.
+ */
+#define CONTAINER_MAX_SYSCTLS 32
+/*
+ * "net." plus every dot-separated component of a real sysctl name
+ * (e.g. "net.ipv4.conf.all.rp_filter") -- generous, no real sysctl
+ * name approaches this.
+ */
+#define CONTAINER_SYSCTL_KEY_MAX 128
+#define CONTAINER_SYSCTL_VALUE_MAX 64
+
+/*
+ * One net.* sysctl to apply inside the container's own netns (see
+ * container_net_apply_sysctl()) -- deliberately restricted to the
+ * net.* tree at validation time (daemon/src/main.c), since that's the
+ * one sysctl subtree the kernel actually namespaces end to end; most
+ * others (vm.*, fs.*, ...) are host-wide regardless of netns and
+ * would be a real container-escape-adjacent primitive if allowed here.
+ */
+struct container_sysctl {
+	char key[CONTAINER_SYSCTL_KEY_MAX];
+	char value[CONTAINER_SYSCTL_VALUE_MAX];
+};
+
+/*
+ * Not part of struct container_spec below -- config-file staging
+ * (POST /v1/containers' own "files" field) is a purely daemon-side,
+ * pre-clone3() host filesystem write straight into the container's
+ * own upperdir, before the runtime library below is ever invoked (see
+ * daemon/src/main.c) -- struct container_spec/container_create() never
+ * see it. Declared here only to keep every container-related size
+ * bound in one place (daemon/include/registry.h already reuses this
+ * file's own CONTAINER_MAX_DEVICES the same way, for the same reason).
+ */
+#define CONTAINER_MAX_FILES 16
+#define CONTAINER_FILE_PATH_MAX 256
+/* Generous for a config file or a shell script; HTTP_MAX_REQUEST_SIZE
+ * (daemon/include/http.h, 1MiB) already caps the whole request body
+ * regardless, so this is a sane per-file ceiling on top of an existing
+ * hard one, not the only bound. */
+#define CONTAINER_FILE_CONTENT_MAX 65536
+
 struct container_spec {
 	struct ns_config ns;
 	struct cgroup_limits cg;
@@ -126,6 +171,15 @@ struct container_spec {
 	 * routes are installed after the primary default route, in order.
 	 */
 	int ip_forward;
+	/*
+	 * Opt-in generalized net.* sysctls, applied inside the container's
+	 * own netns right after ip_forward above (same call site, same
+	 * per-netns reasoning) -- ip_forward stays as its own field since
+	 * it's the single most common case; this is the general escape
+	 * hatch alongside it, not a replacement.
+	 */
+	struct container_sysctl sysctls[CONTAINER_MAX_SYSCTLS];
+	int sysctl_count;
 	struct route_spec routes[CONTAINER_MAX_ROUTES];
 	int route_count;
 	/*

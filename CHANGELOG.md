@@ -4,6 +4,22 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 15: per-container config files + generalized sysctls
+
+Raised directly by the user: several containers built from the same image, each needing its own config file and startup script, plus sysctls beyond `ip_forward` (`rp_filter`, for policy-based routing). There was no operator-facing way to put a file into a container at all before this. See ADR-0030.
+
+#### Added
+- `include/container.h`: `struct container_sysctl`, `CONTAINER_MAX_SYSCTLS`/`CONTAINER_SYSCTL_KEY_MAX`/`CONTAINER_SYSCTL_VALUE_MAX`, `sysctls[]`/`sysctl_count` on `container_spec`; `CONTAINER_MAX_FILES`/`CONTAINER_FILE_PATH_MAX`/`CONTAINER_FILE_CONTENT_MAX` (files never touch `container_spec` -- daemon-side only, see below).
+- `src/container_net.c`/`include/internal.h`: new `container_net_apply_sysctl()`, mirroring `container_net_enable_ip_forward()` exactly (child-side, writes `net.*` sysctls into the container's own already-entered netns).
+- `src/container.c`: child-side loop applying `spec->sysctls[]`, right beside the existing `ip_forward` call.
+- `daemon/src/main.c`: `create_container_from_body()` gains `"files"` (validated -- absolute path, no `.`/`..` components, bounded content/mode -- then written directly into the container's own overlay `upperdir` on the daemon's own host process, before `registry_create()`/`clone3()` ever runs) and `"sysctls"` (validated -- `net.*` keys only, a real security boundary since most other sysctls aren't namespace-isolated -- threaded into `spec`).
+- `daemon/include/registry.h`/`daemon/src/registry.c`: `registry_entry` gains `file_paths[]`/`file_count` (paths only) and `sysctls[]`/`sysctl_count`; `registry_create()` gains `file_paths`/`file_count` parameters; `registry_write_json_one()` echoes both.
+- `cli/src/main.c`: `run --file=CONTAINER_PATH=LOCAL_PATH[:MODE]` (repeatable, reads the local file), `run --sysctl=KEY=VALUE` (repeatable); `ps`/`inspect` gain `files=N`/`sysctls=N` counts.
+- `docs/api/openapi.yaml`: new `ConfigFile` schema; `files`/`sysctls` on `ContainerCreateRequest`/`Container`.
+- `docs/adr/0030-per-container-config-files-and-sysctls.md`.
+
+Verified against a live daemon: a real file lands at the correct host path with the correct content and mode; path-traversal (`../../etc/passwd`) and a missing leading `/` both `400`; a `net.ipv4.conf.all.rp_filter` sysctl confirmed via `nsenter` into the container's own `/proc/<pid>/ns/net` to land inside *that* netns specifically (value `0`) while the host's own value stayed completely untouched (`2`) -- real per-netns isolation, not just a successful write syscall; a non-`net.*` key and a malformed key (`net..foo`) both `400`. Because `restart:"always"` already persists the whole request body verbatim (ADR-0025), `files`/`sysctls` are automatically re-staged/re-applied correctly on every future boot/crash-restart replay, for free. Full pre-existing regression suite re-run clean. Zero compiler warnings.
+
 ### Phase 14 (part 2): GPU kernel driver, firmware staging, KFD discovery
 
 Part 1 built discovery and grants, but the kernel had no GPU driver built in at all, and nothing staged the firmware it needs. See ADR-0029.

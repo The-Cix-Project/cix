@@ -264,3 +264,29 @@ int container_net_enable_ip_forward(void)
 	close(fd);
 	return 0;
 }
+
+int container_net_apply_sysctl(const char *key, const char *value)
+{
+	char path[16 + CONTAINER_SYSCTL_KEY_MAX];
+	char *p;
+	int fd;
+	size_t len;
+
+	if (snprintf(path, sizeof(path), "/proc/sys/%s", key) >= (int)sizeof(path))
+		return -1;
+	for (p = path; *p != '\0'; p++) {
+		if (*p == '.')
+			*p = '/';
+	}
+
+	fd = open(path, O_WRONLY);
+	if (fd < 0)
+		return -1;
+	len = strlen(value);
+	if (write(fd, value, len) != (ssize_t)len) {
+		close(fd);
+		return -1;
+	}
+	close(fd);
+	return 0;
+}

@@ -32,7 +32,9 @@ enum registry_error registry_create(const char *name, const char *image,
                                      const struct registry_network_attachment *nets, int net_count,
                                      int ip_forward,
                                      const struct registry_device_attachment *devices,
-                                     int device_count, struct registry_entry **out)
+                                     int device_count,
+                                     const char file_paths[][CONTAINER_FILE_PATH_MAX],
+                                     int file_count, struct registry_entry **out)
 {
 	int i, slot = -1;
 	struct registry_entry *e;
@@ -75,6 +77,14 @@ enum registry_error registry_create(const char *name, const char *image,
 	e->interface_count = spec->interface_count;
 	for (i = 0; i < spec->interface_count; i++)
 		strncpy(e->interfaces[i], spec->interfaces[i], sizeof(e->interfaces[i]) - 1);
+	memset(e->file_paths, 0, sizeof(e->file_paths));
+	e->file_count = file_count;
+	for (i = 0; i < file_count; i++)
+		strncpy(e->file_paths[i], file_paths[i], sizeof(e->file_paths[i]) - 1);
+	memset(e->sysctls, 0, sizeof(e->sysctls));
+	e->sysctl_count = spec->sysctl_count;
+	for (i = 0; i < spec->sysctl_count; i++)
+		e->sysctls[i] = spec->sysctls[i];
 
 	*out = e;
 	return REGISTRY_OK;
@@ -234,6 +244,18 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 	for (i = 0; i < entry->interface_count; i++)
 		jw_str(w, entry->interfaces[i]);
 	jw_arr_close(w);
+	jw_key(w, "files");
+	jw_arr_open(w);
+	for (i = 0; i < entry->file_count; i++)
+		jw_str(w, entry->file_paths[i]);
+	jw_arr_close(w);
+	jw_key(w, "sysctls");
+	jw_obj_open(w);
+	for (i = 0; i < entry->sysctl_count; i++) {
+		jw_key(w, entry->sysctls[i].key);
+		jw_str(w, entry->sysctls[i].value);
+	}
+	jw_obj_close(w);
 	{
 		/*
 		 * "restart"/"depends_on" are sourced live from containerdef.c,

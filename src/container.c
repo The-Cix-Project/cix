@@ -18,6 +18,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	long ret;
 	int net_pipe[2] = { -1, -1 };
 	int want_net = (spec->net_count > 0);
+	int i;
 
 	if (cgroup_create(&spec->cg, &cgroup_fd) != 0)
 		return -1;
@@ -104,6 +105,12 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		if (spec->ip_forward && container_net_enable_ip_forward() != 0) {
 			perror("child: container_net_enable_ip_forward");
 			_exit(126);
+		}
+		for (i = 0; i < spec->sysctl_count; i++) {
+			if (container_net_apply_sysctl(spec->sysctls[i].key, spec->sysctls[i].value) != 0) {
+				perror("child: container_net_apply_sysctl");
+				_exit(126);
+			}
 		}
 
 		if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0) {

@@ -73,6 +73,26 @@ struct registry_entry {
 	char interfaces[CONTAINER_MAX_INTERFACES][CONTAINER_IFNAME_MAX];
 	int interface_count; /* 0 = no interfaces granted */
 	/*
+	 * Container-relative paths staged into this container's own
+	 * upperdir at creation time (POST /v1/containers' own "files"
+	 * field) -- paths only, for GET/ps/inspect to echo "what's there,"
+	 * not content (echoing full file content back on every list/get
+	 * would be needlessly heavy, and this project's own "id not
+	 * content" precedent already applies to devices too).
+	 */
+	char file_paths[CONTAINER_MAX_FILES][CONTAINER_FILE_PATH_MAX];
+	int file_count; /* 0 = no files staged */
+	/*
+	 * net.* sysctls applied inside this container's own netns at
+	 * creation time -- mirrors container_spec.sysctls[] directly
+	 * (read from spec inside registry_create(), same as interfaces[]
+	 * above; no separate explicit parameter needed since it's already
+	 * part of spec, unlike files above which never touch container_spec
+	 * at all).
+	 */
+	struct container_sysctl sysctls[CONTAINER_MAX_SYSCTLS];
+	int sysctl_count; /* 0 = no sysctls applied */
+	/*
 	 * Opaque; owned exclusively by main.c's epoll bookkeeping
 	 * (registry.c never reads or writes it beyond zeroing it here).
 	 * Holds the reactor's `struct conn *` wrapper for this entry's
@@ -89,21 +109,30 @@ void registry_init(void);
  * a fixed-size in-memory table (in-memory only -- see docs/ROADMAP.md
  * Phase 3 for why that's safe: every container dies automatically via
  * PR_SET_PDEATHSIG if this daemon exits, so there's no restart-orphan
- * state to reconcile). nets/net_count/ip_forward are copied atomically
- * as part of this call, not poked in by the caller afterward -- this
- * table reuses freed slots, and stale values left over from a
- * previous occupant would otherwise leak into a new container. On
- * success returns REGISTRY_OK and *out points at the stored entry
- * (stable for the process lifetime -- the table is a fixed array,
- * never reallocated). On REGISTRY_ERR_CREATE_FAILED, errno is set by
- * the failing container_create()/cgroup_create() call.
+ * state to reconcile). nets/net_count/ip_forward/file_paths/file_count
+ * are copied atomically as part of this call, not poked in by the
+ * caller afterward -- this table reuses freed slots, and stale values
+ * left over from a previous occupant would otherwise leak into a new
+ * container. file_paths/file_count are display-only (the files were
+ * already staged onto disk by the caller before this call -- see
+ * daemon/src/main.c's own "files" handling -- this is purely so GET
+ * can echo what's there); pass NULL/0 if none. spec->sysctls/
+ * spec->sysctl_count are copied the same way interfaces[] already is,
+ * read directly from spec rather than a separate parameter, since
+ * unlike files they're already part of container_spec. On success
+ * returns REGISTRY_OK and *out points at the stored entry (stable for
+ * the process lifetime -- the table is a fixed array, never
+ * reallocated). On REGISTRY_ERR_CREATE_FAILED, errno is set by the
+ * failing container_create()/cgroup_create() call.
  */
 enum registry_error registry_create(const char *name, const char *image,
                                      const struct container_spec *spec,
                                      const struct registry_network_attachment *nets, int net_count,
                                      int ip_forward,
                                      const struct registry_device_attachment *devices,
-                                     int device_count, struct registry_entry **out);
+                                     int device_count,
+                                     const char file_paths[][CONTAINER_FILE_PATH_MAX],
+                                     int file_count, struct registry_entry **out);
 
 struct registry_entry *registry_find(const char *name);
 

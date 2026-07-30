@@ -8,6 +8,7 @@
 #include "linux_compat.h"
 #include "namecheck.h"
 #include "network.h"
+#include "persist.h"
 #include "pki.h"
 #include "pkg.h"
 #include "registry.h"
@@ -663,6 +664,73 @@ static int parse_network_entry(const struct json_value *item, char *name_out, si
 }
 
 /*
+ * Rejects a client-supplied container-relative path (POST /v1/containers'
+ * own "files[].path") with any "." or ".." component, or an empty
+ * component ("//" anywhere) -- the one place in the "files" feature
+ * with real security weight, since a validated path becomes a real
+ * host filesystem write target (see create_container_from_body()'s own
+ * "files" staging). Caller has already checked path[0] == '/'.
+ */
+static int file_path_is_safe(const char *path)
+{
+	const char *p = path;
+
+	while (*p == '/')
+		p++;
+	while (*p != '\0') {
+		const char *start = p;
+		size_t len;
+
+		while (*p != '\0' && *p != '/')
+			p++;
+		len = (size_t)(p - start);
+		if (len == 0 || (len == 1 && start[0] == '.') ||
+		    (len == 2 && start[0] == '.' && start[1] == '.'))
+			return 0;
+		while (*p == '/')
+			p++;
+	}
+	return 1;
+}
+
+/*
+ * Deliberately restricted to the net.* sysctl tree (POST /v1/containers'
+ * own "sysctls" object) -- most non-net.* sysctls (vm.*, fs.*, ...) are
+ * not namespace-isolated at all in Linux, so allowing arbitrary keys
+ * would make this a real host-wide write primitive from inside a
+ * container, not a per-container knob. Requires "net." as the first
+ * dot-separated component and every component non-empty and
+ * [A-Za-z0-9_] only -- this also naturally rejects "net..foo" or
+ * "net.ipv4.." (an empty component from what would otherwise become a
+ * "/proc/sys/net/../.." traversal once '.' is translated to '/', see
+ * container_net_apply_sysctl()).
+ */
+static int sysctl_key_is_safe(const char *key)
+{
+	const char *p = key;
+
+	if (strncmp(p, "net.", 4) != 0)
+		return 0;
+	while (*p != '\0') {
+		const char *start = p;
+
+		while (*p != '\0' && *p != '.')
+			p++;
+		if (p == start)
+			return 0;
+		while (start < p) {
+			if (!((*start >= 'a' && *start <= 'z') || (*start >= 'A' && *start <= 'Z') ||
+			      (*start >= '0' && *start <= '9') || *start == '_'))
+				return 0;
+			start++;
+		}
+		if (*p == '.')
+			p++;
+	}
+	return 1;
+}
+
+/*
  * Core of what POST /v1/containers does: parses+validates body,
  * builds a container_spec, calls registry_create(), calls
  * register_container_pidfd() on success (do NOT also call it at any
@@ -695,6 +763,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	const struct json_value *jname, *jimage, *jcmd, *jmem, *jpids, *jnetworks, *jip_forward, *jroutes;
 	const struct json_value *jdevices;
 	const struct json_value *jinterfaces;
+	const struct json_value *jfiles, *jsysctls;
 	const struct json_value *jrestart, *jrestart_delay, *jdepends_on, *jreadiness;
 	const char *restart_str;
 	long restart_delay;
@@ -719,6 +788,10 @@ static int create_container_from_body(const char *body, size_t body_len,
 	int device_count = 0;
 	char interface_names[CONTAINER_MAX_INTERFACES][CONTAINER_IFNAME_MAX];
 	int interface_count = 0;
+	char file_paths[CONTAINER_MAX_FILES][CONTAINER_FILE_PATH_MAX];
+	int file_count = 0;
+	struct container_sysctl sysctl_specs[CONTAINER_MAX_SYSCTLS];
+	int sysctl_count = 0;
 	const struct json_value *jdns_register;
 	int dns_register = 0;
 	const struct json_value *jpki_issue, *jpki_cert_dir, *jpki_days;
@@ -745,6 +818,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 	jroutes = json_object_get(root, "routes");
 	jdevices = json_object_get(root, "devices");
 	jinterfaces = json_object_get(root, "interfaces");
+	jfiles = json_object_get(root, "files");
+	jsysctls = json_object_get(root, "sysctls");
 	jdns_register = json_object_get(root, "dns_register");
 	jpki_issue = json_object_get(root, "pki_issue");
 	jpki_cert_dir = json_object_get(root, "pki_cert_dir");
@@ -1032,6 +1107,55 @@ static int create_container_from_body(const char *body, size_t body_len,
 			snprintf(interface_names[i], sizeof(interface_names[i]), "%s", ifname);
 		}
 	}
+	if (jfiles != NULL) {
+		if (jfiles->type != JSON_ARRAY || jfiles->u.array.count > CONTAINER_MAX_FILES) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "files must be an array of at most 16 entries");
+			return 400;
+		}
+		for (i = 0; i < jfiles->u.array.count; i++) {
+			const struct json_value *item = jfiles->u.array.items[i];
+			const char *path = json_as_string(json_object_get(item, "path"));
+			const char *content = json_as_string(json_object_get(item, "content"));
+			const char *mode_str = json_as_string(json_object_get(item, "mode"));
+			long mode;
+
+			if (path == NULL || content == NULL || path[0] != '/' ||
+			    strlen(path) >= CONTAINER_FILE_PATH_MAX ||
+			    strlen(content) > CONTAINER_FILE_CONTENT_MAX || !file_path_is_safe(path)) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size, "invalid files entry");
+				return 400;
+			}
+			mode = mode_str != NULL ? strtol(mode_str, NULL, 8) : 0644;
+			if (mode < 0 || mode > 0777) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size, "files mode must be 0-0777 octal");
+				return 400;
+			}
+		}
+	}
+	if (jsysctls != NULL) {
+		if (jsysctls->type != JSON_OBJECT || jsysctls->u.object.count > CONTAINER_MAX_SYSCTLS) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "sysctls must be an object of at most 32 entries");
+			return 400;
+		}
+		sysctl_count = (int)jsysctls->u.object.count;
+		for (i = 0; i < (size_t)sysctl_count; i++) {
+			const char *key = jsysctls->u.object.keys[i];
+			const char *value = json_as_string(jsysctls->u.object.values[i]);
+
+			if (value == NULL || strlen(key) >= CONTAINER_SYSCTL_KEY_MAX ||
+			    strlen(value) >= CONTAINER_SYSCTL_VALUE_MAX || !sysctl_key_is_safe(key)) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size, "invalid sysctls entry");
+				return 400;
+			}
+			snprintf(sysctl_specs[i].key, sizeof(sysctl_specs[i].key), "%s", key);
+			snprintf(sysctl_specs[i].value, sizeof(sysctl_specs[i].value), "%s", value);
+		}
+	}
 
 	argc = jcmd->u.array.count;
 	for (i = 0; i < argc; i++) {
@@ -1092,6 +1216,61 @@ static int create_container_from_body(const char *body, size_t body_len,
 	snprintf(workdir, sizeof(workdir), "%s/work", container_base);
 	snprintf(merged, sizeof(merged), "%s/merged", container_base);
 
+	/*
+	 * Written directly into the container's own upperdir, entirely on
+	 * this (daemon/host) process, before registry_create()/clone3() is
+	 * ever called -- overlay_create() (child-side, post-clone3())
+	 * mkdir()s upperdir EEXIST-tolerant and mounts it unchanged, so
+	 * these files are simply already there the moment the container's
+	 * own process execve()s, unlike a post-hoc write into an already-
+	 * running container's filesystem (ADR-0013's /proc/<pid>/root/
+	 * pattern), which needs a live pid this early creation path doesn't
+	 * have yet. Already fully validated above (path safety, content/
+	 * mode bounds) -- this pass only does I/O.
+	 */
+	if (jfiles != NULL) {
+		for (i = 0; i < jfiles->u.array.count; i++) {
+			const struct json_value *item = jfiles->u.array.items[i];
+			const char *path = json_as_string(json_object_get(item, "path"));
+			const char *content = json_as_string(json_object_get(item, "content"));
+			const char *mode_str = json_as_string(json_object_get(item, "mode"));
+			long mode = mode_str != NULL ? strtol(mode_str, NULL, 8) : 0644;
+			size_t content_len = strlen(content);
+			char target[PATH_MAX];
+			char target_dir[PATH_MAX];
+			char *slash;
+			int fd;
+
+			if (snprintf(target, sizeof(target), "%s%s", upperdir, path) >=
+			    (int)sizeof(target)) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size, "files path too long");
+				return 500;
+			}
+			snprintf(target_dir, sizeof(target_dir), "%s", target);
+			slash = strrchr(target_dir, '/');
+			if (slash != NULL)
+				*slash = '\0';
+			if (persist_mkdir_p(target_dir) != 0) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size, "failed to stage files");
+				return 500;
+			}
+			fd = open(target, O_CREAT | O_TRUNC | O_WRONLY, (mode_t)mode);
+			if (fd < 0 ||
+			    (content_len > 0 && write(fd, content, content_len) != (ssize_t)content_len)) {
+				if (fd >= 0)
+					close(fd);
+				json_free(root);
+				snprintf(err_msg, err_msg_size, "failed to stage files");
+				return 500;
+			}
+			close(fd);
+			snprintf(file_paths[i], sizeof(file_paths[i]), "%s", path);
+		}
+		file_count = (int)jfiles->u.array.count;
+	}
+
 	memset(&spec, 0, sizeof(spec));
 	spec.ns.clone_flags = CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWNET |
 	                       CLONE_NEWCGROUP | CLONE_INTO_CGROUP;
@@ -1117,6 +1296,9 @@ static int create_container_from_body(const char *body, size_t body_len,
 		spec.nets[i].prefix_len = net->prefix_len;
 	}
 	spec.ip_forward = ip_forward;
+	spec.sysctl_count = sysctl_count;
+	for (i = 0; i < (size_t)sysctl_count; i++)
+		spec.sysctls[i] = sysctl_specs[i];
 	spec.route_count = route_count;
 	for (i = 0; i < (size_t)route_count; i++)
 		spec.routes[i] = route_specs[i];
@@ -1130,7 +1312,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	spec.envp = empty_envp;
 
 	rerr = registry_create(name, image, &spec, net_attachments, net_count, ip_forward,
-	                        device_attachments, device_count, &entry);
+	                        device_attachments, device_count, file_paths, file_count, &entry);
 	/*
 	 * Safe to free the JSON tree now even though spec.ns.hostname,
 	 * spec.cg.name and spec.argv[] point into it: registry_create()
@@ -2648,8 +2830,8 @@ static void handle_pkg_fetch_event(struct conn *cc)
 	if (pkg_fetch_completed(exit_status, &spec)) {
 		struct registry_entry *entry;
 		enum registry_error rerr =
-		    registry_create(PKG_BUILD_CONTAINER_NAME, "pkgbuild", &spec, NULL, 0, 0, NULL, 0,
-		                     &entry);
+		    registry_create(PKG_BUILD_CONTAINER_NAME, "pkgbuild", &spec, NULL, 0, 0, NULL, 0, NULL,
+		                     0, &entry);
 
 		if (rerr != REGISTRY_OK)
 			pkg_build_spawn_failed();

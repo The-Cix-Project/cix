@@ -135,6 +135,18 @@ int container_net_install_routes(const struct route_spec *routes, int route_coun
 int container_net_enable_ip_forward(void);
 
 /*
+ * Child side, called once per spec->sysctls[] entry, same call site as
+ * container_net_enable_ip_forward() above and for the same reason
+ * (already validated by the daemon -- daemon/src/main.c -- to start
+ * with "net." and use only a safe key charset before ever reaching
+ * here). Writes value to /proc/sys/<key with every '.' replaced by
+ * '/'>. Returns -1 on any open()/write() failure (e.g. an unknown
+ * sysctl name -- validated shape doesn't guarantee the kernel actually
+ * has that entry).
+ */
+int container_net_apply_sysctl(const char *key, const char *value);
+
+/*
  * Parent side, called right after cgroup_create() and before
  * ns_clone3(). device_count == 0 is a no-op (*out_prog_fd = -1,
  * returns 0 immediately) -- a container that hasn't been granted any

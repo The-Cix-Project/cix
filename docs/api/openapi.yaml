@@ -1063,6 +1063,46 @@ components:
             is independent of, and can be combined with, networks above.
             Set once at creation; not modifiable on an already-running
             container.
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConfigFile"
+          maxItems: 16
+          description: >
+            Config files (or scripts -- see cmd) to write into this
+            container's own filesystem before its process ever starts,
+            so multiple containers built from the same image can each
+            run their own configuration. Written directly into this
+            container's own private overlay upperdir on the daemon's
+            own host process, entirely before the container is created
+            -- unlike a running container's filesystem (no operator-
+            facing way to reach that at all today), the file is already
+            there the moment cmd execve()s, so it can safely be cmd
+            itself (e.g. ["/bin/bash", "/usr/local/bin/pbr.sh"]). Each
+            `path` must be absolute and contain no "." or ".."
+            component (400 otherwise -- the one real security boundary
+            in this field, since a validated path becomes a real host
+            filesystem write target). Persisted and re-staged correctly
+            on every future boot/crash-restart alongside everything
+            else "restart" persists, for free -- no separate mechanism.
+        sysctls:
+          type: object
+          additionalProperties:
+            type: string
+          maxProperties: 32
+          description: >
+            Arbitrary net.* sysctls to apply inside this container's own
+            network namespace at creation time (e.g.
+            "net.ipv4.conf.all.rp_filter": "0"), alongside ip_forward
+            above -- ip_forward stays its own field as a simple shorthand
+            for the single most common case; this is the general escape
+            hatch, not a replacement. Deliberately restricted to keys
+            starting with "net." (400 otherwise): that's the one sysctl
+            subtree the kernel actually namespaces end to end -- most
+            others (vm.*, fs.*, ...) are host-wide regardless of netns,
+            so allowing arbitrary keys here would be a real host-wide
+            write primitive from inside a container, not a per-container
+            knob. See ADR-0030.
         restart:
           type: string
           enum: [always, on-failure, unless-stopped, no]
@@ -1136,6 +1176,26 @@ components:
             at boot (logged, not fatal to the rest of startup).
         readiness:
           $ref: "#/components/schemas/Readiness"
+
+    ConfigFile:
+      type: object
+      required: [path, content]
+      properties:
+        path:
+          type: string
+          description: >
+            Absolute container-relative path (e.g. "/etc/bird.conf").
+            No "." or ".." component (400 otherwise).
+        content:
+          type: string
+          description: >
+            Written verbatim. Bounded per file (a generous 64KiB) on top
+            of the 1MiB whole-request-body limit that already applies
+            regardless.
+        mode:
+          type: string
+          default: "0644"
+          description: Octal permission string, e.g. "0755" for a script.
 
     Readiness:
       type: object
@@ -1241,6 +1301,22 @@ components:
           description: >
             Bare kernel names of every real network interface moved into
             this container's own netns at creation. Empty if none.
+        files:
+          type: array
+          items:
+            type: string
+          description: >
+            Container-relative paths of every config file staged at
+            creation (see ContainerCreateRequest.files) -- paths only,
+            not content. Empty if none.
+        sysctls:
+          type: object
+          additionalProperties:
+            type: string
+          description: >
+            The net.* sysctls applied inside this container's own netns
+            at creation (see ContainerCreateRequest.sysctls). Empty if
+            none.
         restart:
           type: string
           enum: [always, on-failure, unless-stopped, no]

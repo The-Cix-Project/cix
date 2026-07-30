@@ -34,3 +34,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0027](0027-restart-policy-expansion-and-backoff.md) | Restart policy expansion (`on-failure`, `unless-stopped`) and crash-restart backoff | Accepted |
 | [0028](0028-gpu-passthrough-grouped-device-grants.md) | GPU passthrough: grouped multi-node device grants | Accepted |
 | [0029](0029-gpu-kernel-driver-firmware-and-kfd.md) | GPU kernel driver, firmware staging, and KFD discovery | Accepted |
+| [0030](0030-per-container-config-files-and-sysctls.md) | Per-container config files and generalized sysctls | Accepted |

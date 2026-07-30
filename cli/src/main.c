@@ -9,6 +9,7 @@
 #include "httpclient.h"
 #include "json.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -142,6 +143,8 @@ static void fmt_container_line(const struct json_value *v)
 	const struct json_value *restart_delay = json_object_get(v, "restart_delay_seconds");
 	const struct json_value *stopped = json_object_get(v, "stopped");
 	const struct json_value *readiness = json_object_get(v, "readiness");
+	const struct json_value *files = json_object_get(v, "files");
+	const struct json_value *sysctls = json_object_get(v, "sysctls");
 	char exit_buf[16];
 	char net_buf[256];
 	char readiness_buf[32];
@@ -182,13 +185,14 @@ static void fmt_container_line(const struct json_value *v)
 		snprintf(delay_buf, sizeof(delay_buf), "-");
 
 	printf("%-20s %-8s pid=%-8ld exit_status=%-6s networks=%-20s fwd=%-4s restart=%-15s "
-	       "delay=%-4s stopped=%-5s readiness=%s\n",
+	       "delay=%-4s stopped=%-5s readiness=%-10s files=%-3zu sysctls=%zu\n",
 	       name, status, pid, exit_buf, net_buf[0] != '\0' ? net_buf : "-",
 	       (ip_forward != NULL && ip_forward->type == JSON_BOOL && ip_forward->u.boolean) ? "yes"
 	                                                                                        : "no",
 	       restart != NULL ? restart : "no", delay_buf,
 	       (stopped != NULL && stopped->type == JSON_BOOL && stopped->u.boolean) ? "yes" : "no",
-	       readiness_buf);
+	       readiness_buf, files != NULL && files->type == JSON_ARRAY ? files->u.array.count : 0,
+	       sysctls != NULL && sysctls->type == JSON_OBJECT ? sysctls->u.object.count : 0);
 }
 
 static void fmt_list(const struct json_value *v)
@@ -513,6 +517,10 @@ static int cmd_stop(const struct kx_client *c, int json_mode, int argc, char **a
 #define CLI_MAX_INTERFACES 16
 /* Matches daemon's CONTAINERDEF_MAX_DEPENDS -- see daemon/include/containerdef.h. */
 #define CLI_MAX_DEPENDS 16
+/* Matches daemon's CONTAINER_MAX_FILES -- see include/container.h. */
+#define CLI_MAX_FILES 16
+/* Matches daemon's CONTAINER_MAX_SYSCTLS -- see include/container.h. */
+#define CLI_MAX_SYSCTLS 32
 
 struct cli_route {
 	char dest[64];
@@ -587,6 +595,136 @@ static int parse_route_flag(const char *s, struct cli_route *out)
 	return 0;
 }
 
+struct cli_file_attach {
+	char container_path[256]; /* matches daemon's CONTAINER_FILE_PATH_MAX */
+	char local_path[PATH_MAX];
+	char mode[8]; /* e.g. "0755"; empty means "let the daemon default it" */
+};
+
+/*
+ * Parses "CONTAINER_PATH=LOCAL_PATH[:MODE]" -- splits on the FIRST '='
+ * (container_path never contains one; local paths could in principle,
+ * though not in practice on Linux) and, if the text after the LAST
+ * ':' in what remains is 1-4 octal digits, treats it as an explicit
+ * mode override and strips it; otherwise the whole remainder is the
+ * local path (no mode given, daemon defaults to 0644). File content
+ * itself is read from local_path by the caller, not here -- this
+ * function only splits the flag's own text.
+ */
+static int parse_file_flag(const char *s, struct cli_file_attach *out)
+{
+	const char *eq = strchr(s, '=');
+	const char *local_start;
+	const char *colon;
+	size_t container_len, local_len;
+
+	memset(out, 0, sizeof(*out));
+	if (eq == NULL)
+		return -1;
+	container_len = (size_t)(eq - s);
+	if (container_len == 0 || container_len >= sizeof(out->container_path))
+		return -1;
+	memcpy(out->container_path, s, container_len);
+	out->container_path[container_len] = '\0';
+
+	local_start = eq + 1;
+	if (local_start[0] == '\0')
+		return -1;
+
+	colon = strrchr(local_start, ':');
+	local_len = strlen(local_start);
+	if (colon != NULL) {
+		const char *m = colon + 1;
+		size_t mode_len = strlen(m);
+		int looks_octal = mode_len >= 1 && mode_len <= 4;
+		size_t k;
+
+		for (k = 0; looks_octal && k < mode_len; k++) {
+			if (m[k] < '0' || m[k] > '7')
+				looks_octal = 0;
+		}
+		if (looks_octal) {
+			snprintf(out->mode, sizeof(out->mode), "%s", m);
+			local_len = (size_t)(colon - local_start);
+		}
+	}
+	if (local_len == 0 || local_len >= sizeof(out->local_path))
+		return -1;
+	memcpy(out->local_path, local_start, local_len);
+	out->local_path[local_len] = '\0';
+
+	return 0;
+}
+
+/* Reads path's entire content into a malloc'd buffer (NUL-terminated,
+ * *out_len excludes the NUL -- matches json_as_string()'s own "plain C
+ * string" shape everywhere else in this file). Returns 0, or -1 (with
+ * perror on the failing path) if the file can't be opened/stat'd/read. */
+static int read_local_file(const char *path, char **out_buf, size_t *out_len)
+{
+	FILE *f;
+	long size;
+	char *buf;
+
+	f = fopen(path, "rb");
+	if (f == NULL) {
+		perror(path);
+		return -1;
+	}
+	if (fseek(f, 0, SEEK_END) != 0 || (size = ftell(f)) < 0 || fseek(f, 0, SEEK_SET) != 0) {
+		perror(path);
+		fclose(f);
+		return -1;
+	}
+	buf = malloc((size_t)size + 1);
+	if (buf == NULL) {
+		fclose(f);
+		return -1;
+	}
+	if (size > 0 && fread(buf, 1, (size_t)size, f) != (size_t)size) {
+		perror(path);
+		free(buf);
+		fclose(f);
+		return -1;
+	}
+	buf[size] = '\0';
+	fclose(f);
+	*out_buf = buf;
+	*out_len = (size_t)size;
+	return 0;
+}
+
+struct cli_sysctl {
+	char key[128]; /* matches daemon's CONTAINER_SYSCTL_KEY_MAX */
+	char value[64]; /* matches daemon's CONTAINER_SYSCTL_VALUE_MAX */
+};
+
+/* Parses "KEY=VALUE" (e.g. "net.ipv4.conf.all.rp_filter=0") -- whether
+ * KEY is actually a safe net.* sysctl name is the daemon's job to
+ * validate, not duplicated here (same "presentation-syntax split only"
+ * precedent every other parse_*_flag() in this file already has). */
+static int parse_sysctl_flag(const char *s, struct cli_sysctl *out)
+{
+	const char *eq = strchr(s, '=');
+	size_t key_len, value_len;
+
+	memset(out, 0, sizeof(*out));
+	if (eq == NULL)
+		return -1;
+	key_len = (size_t)(eq - s);
+	if (key_len == 0 || key_len >= sizeof(out->key))
+		return -1;
+	memcpy(out->key, s, key_len);
+	out->key[key_len] = '\0';
+
+	value_len = strlen(eq + 1);
+	if (value_len == 0 || value_len >= sizeof(out->value))
+		return -1;
+	strcpy(out->value, eq + 1);
+
+	return 0;
+}
+
 static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
@@ -610,6 +748,10 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	long pki_days = -1;
 	struct cli_route routes[CLI_MAX_ROUTES];
 	int route_count = 0;
+	struct cli_file_attach files[CLI_MAX_FILES];
+	int file_count = 0;
+	struct cli_sysctl sysctls[CLI_MAX_SYSCTLS];
+	int sysctl_count = 0;
 	long memory_max = -1;
 	long pids_max = -1;
 	int i = 0;
@@ -693,6 +835,32 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 				return 2;
 			}
 			route_count++;
+		} else if (strncmp(argv[i], "--file=", 7) == 0) {
+			if (file_count >= CLI_MAX_FILES) {
+				fprintf(stderr, "kanxeoctl: too many --file= flags (max %d)\n", CLI_MAX_FILES);
+				return 2;
+			}
+			if (parse_file_flag(argv[i] + 7, &files[file_count]) != 0) {
+				fprintf(stderr,
+				        "kanxeoctl: invalid --file= value '%s' (expected "
+				        "CONTAINER_PATH=LOCAL_PATH[:MODE])\n",
+				        argv[i] + 7);
+				return 2;
+			}
+			file_count++;
+		} else if (strncmp(argv[i], "--sysctl=", 9) == 0) {
+			if (sysctl_count >= CLI_MAX_SYSCTLS) {
+				fprintf(stderr, "kanxeoctl: too many --sysctl= flags (max %d)\n",
+				        CLI_MAX_SYSCTLS);
+				return 2;
+			}
+			if (parse_sysctl_flag(argv[i] + 9, &sysctls[sysctl_count]) != 0) {
+				fprintf(stderr,
+				        "kanxeoctl: invalid --sysctl= value '%s' (expected KEY=VALUE)\n",
+				        argv[i] + 9);
+				return 2;
+			}
+			sysctl_count++;
 		} else {
 			fprintf(stderr, "kanxeoctl: unknown run option '%s'\n", argv[i]);
 			return 2;
@@ -708,7 +876,9 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		        "[--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--interface=IFNAME ...] "
 		        "[--restart=always|on-failure|unless-stopped] [--restart-delay=N] "
 		        "[--depends-on=NAME ...] "
-		        "[--readiness-tcp-port=N [--readiness-timeout=N]] -- CMD [ARGS...]\n");
+		        "[--readiness-tcp-port=N [--readiness-timeout=N]] "
+		        "[--file=CONTAINER_PATH=LOCAL_PATH[:MODE] ...] [--sysctl=KEY=VALUE ...] "
+		        "-- CMD [ARGS...]\n");
 		return 2;
 	}
 
@@ -825,6 +995,40 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		if (readiness_timeout >= 0) {
 			jw_key(&w, "timeout_seconds");
 			jw_int(&w, readiness_timeout);
+		}
+		jw_obj_close(&w);
+	}
+	if (file_count > 0) {
+		jw_key(&w, "files");
+		jw_arr_open(&w);
+		for (i = 0; i < file_count; i++) {
+			char *content;
+			size_t content_len;
+
+			if (read_local_file(files[i].local_path, &content, &content_len) != 0) {
+				jw_free(&w);
+				return 1;
+			}
+			jw_obj_open(&w);
+			jw_key(&w, "path");
+			jw_str(&w, files[i].container_path);
+			jw_key(&w, "content");
+			jw_str(&w, content);
+			if (files[i].mode[0] != '\0') {
+				jw_key(&w, "mode");
+				jw_str(&w, files[i].mode);
+			}
+			jw_obj_close(&w);
+			free(content);
+		}
+		jw_arr_close(&w);
+	}
+	if (sysctl_count > 0) {
+		jw_key(&w, "sysctls");
+		jw_obj_open(&w);
+		for (i = 0; i < sysctl_count; i++) {
+			jw_key(&w, sysctls[i].key);
+			jw_str(&w, sysctls[i].value);
 		}
 		jw_obj_close(&w);
 	}
