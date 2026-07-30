@@ -107,7 +107,9 @@ int main(void)
 	 * staging -- not reimplemented here). */
 	{
 		char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN, stage_dir,
-			                     (char *)KANXEOD_BIN, "web", root_squashfs, NULL };
+			                     (char *)KANXEOD_BIN, "web", root_squashfs,
+			                     "", /* no real GPU firmware needed for a boot test */
+			                     NULL };
 		if (run_subprocess(MKBOOTROOT_BIN, mkbootroot_argv) != 0)
 			return 1;
 	}

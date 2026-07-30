@@ -65,12 +65,26 @@ openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 7300 \
 openssl x509 -in image/keys/kanxeo-signing.crt -outform DER -out image/keys/kanxeo-signing.cer
 ```
 
+### One-time (optional): AMD GPU firmware, for GPU passthrough
+
+Only needed if you plan to grant a `gpu:N` device to a container (ADR-0028/ADR-0029) — skip this and pass `""` below otherwise. Not vendored into this repo (redistribution/size); fetched fresh from upstream `linux-firmware`, sparse-checked-out to just the `amdgpu/` subtree so only that vendor's blobs (a few hundred MB, not the full multi-vendor firmware set) are actually downloaded:
+
+```sh
+git clone --filter=blob:none --sparse \
+    https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git \
+    /tmp/linux-firmware
+cd /tmp/linux-firmware && git sparse-checkout set amdgpu
+```
+
+This gives you `/tmp/linux-firmware/amdgpu` — pass that path as `mkbootroot`'s new 5th argument below. The kernel's own `CONFIG_DRM_AMDGPU`/`CONFIG_HSA_AMD` drivers load these at boot-time driver-probe, before any container exists, so they have to live on the host root itself, not a container image.
+
 ### Building the ISO
 
 Once `build/kanxeod`, `build/kanxeo-install`, `build/bzImage`, and the signing key above all exist:
 
 ```sh
-sudo build/mkbootroot  /tmp/root_stage build/kanxeod web /tmp/kanxeod-root.squashfs
+sudo build/mkbootroot  /tmp/root_stage build/kanxeod web /tmp/kanxeod-root.squashfs \
+     /tmp/linux-firmware/amdgpu   # or "" to skip GPU firmware entirely
 sudo build/mkinstalleriso build/iso_stage build/kanxeo-install build/bzImage \
      /tmp/kanxeod-root.squashfs \
      image/keys/kanxeo-signing.key image/keys/kanxeo-signing.crt image/keys/kanxeo-signing.cer \
@@ -119,7 +133,7 @@ It then formats, writes the system, and reboots into a running `kanxeod` at the 
 - **CLI:** `kanxeoctl --host=<ip> health`, `... ps`, `... run --name=... --image=... --network=... -- CMD`, `... network create --name=... --subnet=... --prefix=...` (see `docs/api/README.md` for the full walkthrough).
 - **Shutdown/reboot:** `kanxeoctl --host=<ip> shutdown` / `... reboot` — the only clean way to power off or restart (as PID 1, `kanxeod` has no shell to run `shutdown`/`reboot` from; these call the real `reboot(2)` syscall internally, see ADR-0016).
 - **Installing real software:** `kanxeoctl --host=<ip> pkg bootstrap` once (stages a real build toolchain from this host's own `/usr`), then drop `.recipe` files into `/var/lib/kanxeo/pkg/recipes/` (see `pkg/recipes/` in this repo for real, working examples — bash, iproute2, bird) and `kanxeoctl --host=<ip> pkg install --name=<name> [--image=<image>]`. Builds from source, network-less, into the target image (default `base`, the image every container uses unless it names another via `run --image=`) — a package name is tracked independently per image, so e.g. installing `bird`/`bash`/`iproute2` into a `router` image never affects containers running on `base`. The C runtime (`ld.so`/`libc.so.6`/`libtinfo.so.6`) is seeded automatically into whichever image a package lands in (ADR-0019 for `base` at install time, ADR-0023 for every image at first install) — a freshly installed package can always execve().
-- **Real hardware into a container:** `kanxeoctl --host=<ip> device ls` lists host PCI/USB devices (`usb:`/`pci:` ids) *and* real network interfaces (`net:` ids — kanxeo's own bridges/veths never appear here, only physically-backed hardware). Grant a device with `run --device=ID`; hand a whole NIC to a container (moved into its own netns, no rename, no address — bring your own `bird`/`dhclient` inside) with `run --interface=IFNAME` (see ADR-0022).
+- **Real hardware into a container:** `kanxeoctl --host=<ip> device ls` lists host PCI/USB devices (`usb:`/`pci:` ids), real network interfaces (`net:` ids — kanxeo's own bridges/veths never appear here, only physically-backed hardware), and, on a kernel with the GPU firmware staged above, GPU nodes (`gpu:` ids). Grant a device with `run --device=ID`; a GPU's bare logical id (e.g. `gpu:0`, not itself listed — only its individual `gpu:0:card0`/`gpu:0:renderD128`/`gpu:0:kfd` member nodes are) grants everything that GPU needs — display, render, and ROCm compute — in one `--device=gpu:0` (see ADR-0028/ADR-0029). Hand a whole NIC to a container (moved into its own netns, no rename, no address — bring your own `bird`/`dhclient` inside) with `run --interface=IFNAME` (see ADR-0022).
 - **Containers that survive a reboot:** `run --restart=always` persists that container's exact create request and replays it at every future daemon boot, and again (after a real, few-second delay, never instantly) whenever it exits on its own, crash or clean exit alike. `--depends-on=NAME` (repeatable) controls boot start order among your own `--restart=always` containers — a router before what routes through it, a NAS before what mounts its share. `rm NAME` always means gone for good: it also removes the persisted definition, so it won't come back on the next boot either (see ADR-0025).
 
 ### Secure Boot

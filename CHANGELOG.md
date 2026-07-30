@@ -4,6 +4,21 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ## [Unreleased]
 
+### Phase 14 (part 2): GPU kernel driver, firmware staging, KFD discovery
+
+Part 1 built discovery and grants, but the kernel had no GPU driver built in at all, and nothing staged the firmware it needs. See ADR-0029.
+
+#### Added
+- `image/kernel/qemu-part1.config`: `CONFIG_FW_LOADER`/`CONFIG_DRM`/`CONFIG_DRM_KMS_HELPER`/`CONFIG_DRM_AMDGPU`/`CONFIG_HSA_AMD` -- verified via a real kernel source fetch + `make allnoconfig` + `merge_config.sh` + `make olddefconfig`, confirming every fragment symbol (not just the new ones) lands as `=y`, then a full `make bzImage`.
+- `image/src/mkbootroot.c`: new required 5th argv, `firmware_dir` (empty string = skip); stages it into `<image_root>/lib/firmware/amdgpu` via the existing `copy_dir_files()`, reused verbatim.
+- `test/test_boot.c`, `test/test_boot_ab.c`, `test/test_installer.c`: each `mkbootroot` call updated to pass `""` for the new argument.
+- `test/test_mkbootroot_firmware.c`, new: proves the staging mechanism against a synthetic scratch directory -- `firmware_dir=""` is a no-op, a real directory's files land verbatim under `lib/firmware/amdgpu`, an unreadable-but-explicitly-requested path fails the whole build.
+- `daemon/src/device.c`: `enumerate_gpu()` gains a `/sys/class/kfd/kfd` pass, emitting `gpu:<idx>:kfd` -- the shared ROCm/HSA compute device, entirely separate from the DRM nodes part 1 already found -- for every discovered GPU group.
+- `README.md`: new firmware-fetch recipe (`git clone --filter=blob:none --sparse` of upstream `linux-firmware`, `git sparse-checkout set amdgpu`) in the installer-ISO build walkthrough; updated `mkbootroot` example invocation; `device ls`/`--device=` walkthrough mentions `gpu:` ids.
+- `docs/adr/0029-gpu-kernel-driver-firmware-and-kfd.md`.
+
+Firmware is deliberately not vendored into this repo (fetched fresh at build time instead, per this project's own kernel-source-fetch precedent, not automated into `make`) -- confirmed directly with the user after finding this dev sandbox has no amdgpu firmware anywhere and the distro package isn't even available here. `copy_dir_files()` reuse for staging relies on `linux-firmware`'s own `amdgpu/` directory being flat -- confirmed directly against the real upstream repo (675 files, zero nested), not just assumed. Verified to the extent possible without real GPU hardware: the kernel config genuinely compiles (a real `make bzImage`, not just `make olddefconfig`) and the resulting kernel was booted for real -- `test_boot`/`test_boot_ab`/`test_installer` all re-run clean against it; `mkbootroot`'s new staging path proven against a synthetic scratch directory, 3 consecutive clean runs; `firmware_dir=""` confirmed a no-op. Full pre-existing regression suite re-run clean, including the 3 QEMU-based tests this time since `mkbootroot.c` itself changed. Zero compiler warnings.
+
 ### Phase 14 (part 1): GPU passthrough discovery + grouped device grants
 
 ADR-0017 explicitly named GPU passthrough as the next consumer of its own PCI/USB passthrough mechanism; a GPU needs several `/dev` nodes granted together, which the existing strictly-one-id-per-node model couldn't express. See ADR-0028.

@@ -13,6 +13,14 @@
  * The base container image (base/rootfs) and any container/package data
  * are deliberately never part of this image -- Phase 11's root A/B slots
  * are scoped to the control plane only (docs/ROADMAP.md).
+ *
+ * Phase 14 part 2 (ADR-0029): optionally also stages GPU firmware
+ * (amdgpu) into this same root, since the kernel's own request_firmware()
+ * calls happen at driver-probe time, on the host root, before any
+ * container exists -- nowhere else this could live. The firmware itself
+ * isn't fetched by this tool or vendored into the repo; it's an
+ * operator-supplied directory (see README.md's own fetch recipe --
+ * upstream linux-firmware's amdgpu/ subtree, via a sparse clone).
  */
 #include "test_image_fixture.h"
 
@@ -131,9 +139,12 @@ int main(int argc, char **argv)
 	const char *kanxeod_bin;
 	const char *web_dir;
 	const char *out_path;
+	const char *firmware_dir;
 
-	if (argc != 5) {
-		fprintf(stderr, "usage: %s <staging-dir> <build/kanxeod> <web-dir> <out.squashfs>\n",
+	if (argc != 6) {
+		fprintf(stderr,
+		        "usage: %s <staging-dir> <build/kanxeod> <web-dir> <out.squashfs> "
+		        "<amdgpu-firmware-dir-or-\"\">\n",
 		        argv[0]);
 		return 2;
 	}
@@ -141,6 +152,7 @@ int main(int argc, char **argv)
 	kanxeod_bin = argv[2];
 	web_dir = argv[3];
 	out_path = argv[4];
+	firmware_dir = argv[5];
 
 	if (ensure_dir(image_root) != 0)
 		return 1;
@@ -172,6 +184,34 @@ int main(int argc, char **argv)
 			return 1;
 		}
 		if (copy_dir_files(web_dir, web_dst) != 0)
+			return 1;
+	}
+
+	/* Empty string means "skip" -- every test call site passes this,
+	 * since a QEMU/CI boot test needs no real GPU firmware and this
+	 * keeps the test suite's own fast, no-network posture completely
+	 * unaffected. A non-empty firmware_dir is a real, explicit operator
+	 * request, so unlike test_image_fixture_add_lib()'s own tolerant-
+	 * if-missing precedent, copy_dir_files() failing here is fatal, not
+	 * silently skipped -- an operator who asked for firmware staging
+	 * and didn't get it should find out now, not at first GPU use on
+	 * the installed system.
+	 */
+	if (firmware_dir[0] != '\0') {
+		char fw_dst[PATH_MAX];
+
+		if (ensure_dir_under(image_root, "lib") != 0)
+			return 1;
+		if (ensure_dir_under(image_root, "lib/firmware") != 0)
+			return 1;
+		if (ensure_dir_under(image_root, "lib/firmware/amdgpu") != 0)
+			return 1;
+		if (snprintf(fw_dst, sizeof(fw_dst), "%s/lib/firmware/amdgpu", image_root) >=
+		    (int)sizeof(fw_dst)) {
+			fprintf(stderr, "path too long: %s/lib/firmware/amdgpu\n", image_root);
+			return 1;
+		}
+		if (copy_dir_files(firmware_dir, fw_dst) != 0)
 			return 1;
 	}
 

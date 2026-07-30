@@ -14,6 +14,9 @@
 #define PCI_WALK_MAX_DEPTH 4
 #define NET_CLASS_DIR "/sys/class/net"
 #define DRM_CLASS_DIR "/sys/class/drm"
+/* The one shared, system-wide ROCm/HSA compute device -- see
+ * enumerate_gpu()'s own comment on why this isn't a per-card DRM node. */
+#define KFD_CLASS_DEV "/sys/class/kfd/kfd"
 /* A generous fixed bound on distinct physical GPUs in one host --
  * mirrors CONTAINER_MAX_DEVICES's own "generous fixed bound" reasoning
  * (container.h), not a real hardware limit. */
@@ -646,6 +649,49 @@ static void enumerate_gpu(struct discovered_device *out, int cap, int *count)
 		e->assignable = (driver[0] != '\0');
 	}
 	closedir(d);
+
+	/*
+	 * /dev/kfd (ROCm/HSA compute) is one shared, system-wide node --
+	 * not per-card, since the kfd driver's own topology sysfs
+	 * multiplexes across however many GPUs the host has -- rather than
+	 * a DRM node this walk would otherwise find above. Emitted as a
+	 * member of EVERY discovered gpu:<idx> group (mere existence under
+	 * /sys/class/kfd already means the driver registered it -- the same
+	 * "visibility is the availability check" reasoning
+	 * enumerate_net_one() already uses for a netdev, no separate driver-
+	 * binding check needed). A container actually needs this alongside
+	 * its render node for ROCm compute to work at all; granting it via
+	 * any one gpu:<idx> group exposes KFD's queue-submission path host-
+	 * wide -- a real, known ROCm/KFD architectural property on a multi-
+	 * GPU host, not a Kanxeo-specific gap. See ADR-0029.
+	 */
+	if (seen_count > 0) {
+		char attr[PATH_MAX];
+		char devbuf[32];
+		unsigned int major, minor;
+
+		snprintf(attr, sizeof(attr), "%s/dev", KFD_CLASS_DEV);
+		if (read_sysfs_attr(attr, devbuf, sizeof(devbuf)) == 0 &&
+		    sscanf(devbuf, "%u:%u", &major, &minor) == 2) {
+			int idx;
+
+			for (idx = 0; idx < seen_count && *count < cap; idx++) {
+				struct discovered_device *e = &out[(*count)++];
+
+				memset(e, 0, sizeof(*e));
+				snprintf(e->bus, sizeof(e->bus), "gpu");
+				snprintf(e->id, sizeof(e->id), "gpu:%d:kfd", idx);
+				snprintf(e->description, sizeof(e->description),
+				         "ROCm/HSA compute device (gpu %d, shared, %s)", idx,
+				         KFD_CLASS_DEV);
+				e->type = DEVICE_NODE_CHAR;
+				e->major = major;
+				e->minor = minor;
+				snprintf(e->dev_path, sizeof(e->dev_path), "/dev/kfd");
+				e->assignable = 1;
+			}
+		}
+	}
 }
 
 static void enumerate_pci(struct discovered_device *out, int cap, int *count)
