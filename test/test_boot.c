@@ -57,7 +57,7 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 		return -1;
 	if (esp_mcopy_in(esp_img, SYSTEMD_BOOT_EFI, "::/EFI/BOOT/BOOTX64.EFI") != 0)
 		return -1;
-	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/kanxeo-bzImage") != 0)
+	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/kanxeo-bzImage-a") != 0)
 		return -1;
 
 	snprintf(loader_conf_path, sizeof(loader_conf_path), "%s/loader.conf", workdir);
@@ -68,7 +68,7 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 
 	snprintf(loader_conf, sizeof(loader_conf),
 	         "title Kanxeo\n"
-	         "linux /kanxeo-bzImage\n"
+	         "linux /kanxeo-bzImage-a\n"
 	         "options console=ttyS0 root=/dev/vda2 rw init=/bin/kanxeod -- --init-mode\n");
 	if (write_text_file(loader_conf_path, loader_conf) != 0)
 		return -1;

@@ -28,10 +28,12 @@ static void print_usage(FILE *out)
 	        "               real PID 1 (an installed system) -- a dev/interactive kanxeod\n"
 	        "               just exits, same as it always has on SIGTERM\n"
 	        "  reboot    -- stop kanxeod; restarts the host too when running as PID 1\n"
-	        "  update --image=PATH  -- writes a fresh control-plane squashfs (already\n"
-	        "               transferred onto the box, e.g. via scp) onto this daemon's own\n"
-	        "               inactive A/B slot and stages a fresh loader entry for it; does\n"
-	        "               NOT reboot -- call reboot separately once ready to cut over\n"
+	        "  update [--image=PATH] [--kernel=PATH]  -- writes a fresh control-plane\n"
+	        "               squashfs and/or a fresh kernel (already transferred onto the\n"
+	        "               box, e.g. via scp) onto this daemon's own inactive A/B slot and\n"
+	        "               stages a fresh loader entry for it; at least one of --image=/\n"
+	        "               --kernel= required, either or both; does NOT reboot -- call\n"
+	        "               reboot separately once ready to cut over\n"
 	        "  ps\n"
 	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] [--network=NAME[:IP] ...]\n"
 	        "      [--ip-forward] [--dns-register] [--pki-issue] [--pki-cert-dir=PATH]\n"
@@ -456,12 +458,22 @@ static int cmd_reboot(const struct kx_client *c, int json_mode)
 
 static void fmt_update(const struct json_value *v)
 {
-	printf("%s slot=%s\n", json_str_field(v, "status"), json_str_field(v, "slot"));
+	const struct json_value *updated = json_object_get(v, "updated");
+	size_t i;
+
+	printf("%s slot=%s updated=", json_str_field(v, "status"), json_str_field(v, "slot"));
+	if (updated != NULL && updated->type == JSON_ARRAY) {
+		for (i = 0; i < updated->u.array.count; i++) {
+			printf("%s%s", i > 0 ? "," : "", json_as_string(updated->u.array.items[i]));
+		}
+	}
+	printf("\n");
 }
 
 static int cmd_update(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *image = NULL;
+	const char *kernel = NULL;
 	int i;
 	struct json_writer w;
 	struct kx_response r;
@@ -469,20 +481,28 @@ static int cmd_update(const struct kx_client *c, int json_mode, int argc, char *
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--image=", 8) == 0)
 			image = argv[i] + 8;
+		else if (strncmp(argv[i], "--kernel=", 9) == 0)
+			kernel = argv[i] + 9;
 		else {
 			fprintf(stderr, "kanxeoctl: unknown update option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
-	if (image == NULL) {
-		fprintf(stderr, "usage: kanxeoctl update --image=PATH\n");
+	if (image == NULL && kernel == NULL) {
+		fprintf(stderr, "usage: kanxeoctl update [--image=PATH] [--kernel=PATH]\n");
 		return 2;
 	}
 
 	jw_init(&w);
 	jw_obj_open(&w);
-	jw_key(&w, "image_path");
-	jw_str(&w, image);
+	if (image != NULL) {
+		jw_key(&w, "image_path");
+		jw_str(&w, image);
+	}
+	if (kernel != NULL) {
+		jw_key(&w, "kernel_path");
+		jw_str(&w, kernel);
+	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 

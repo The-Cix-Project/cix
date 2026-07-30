@@ -391,7 +391,25 @@ static int populate_esp(const char *esp_mount, const char *ip)
 	if (copy_file(MOKMANAGER_EFI_SRC, path) != 0)
 		return -1;
 
-	snprintf(path, sizeof(path), "%s/kanxeo-bzImage", esp_mount);
+	/*
+	 * Per-slot kernel files, not one shared /kanxeo-bzImage -- a future
+	 * kernel update (like a root update already does) has to be able to
+	 * write the *inactive* slot's own kernel file without touching
+	 * whatever the currently-booted slot references, the same reasoning
+	 * root A/B are already two separate partitions instead of one
+	 * shared one. Both slots get the identical initial kernel here
+	 * (a cheap, small copy) rather than leaving slot B's kernel file
+	 * genuinely absent the way root B's own *content* deliberately
+	 * stays empty -- unlike root, there's nothing to duplicate for free
+	 * that would make emptiness meaningful, and an absent kernel file
+	 * would fail an operator's first root-only update to slot B for a
+	 * reason that has nothing to do with what they actually asked to
+	 * change. See ADR-0032.
+	 */
+	snprintf(path, sizeof(path), "%s/kanxeo-bzImage-a", esp_mount);
+	if (copy_file(BZIMAGE_SRC, path) != 0)
+		return -1;
+	snprintf(path, sizeof(path), "%s/kanxeo-bzImage-b", esp_mount);
 	if (copy_file(BZIMAGE_SRC, path) != 0)
 		return -1;
 
@@ -410,7 +428,7 @@ static int populate_esp(const char *esp_mount, const char *ip)
 	         "title Kanxeo (A)\n"
 	         "sort-key kanxeo\n"
 	         "version 1\n"
-	         "linux /kanxeo-bzImage\n"
+	         "linux /kanxeo-bzImage-a\n"
 	         "options console=tty0 console=ttyS0 root=%s2 rw init=/bin/kanxeod -- --init-mode "
 	         "--slot=a --bind=%s\n",
 	         BOOT_TIME_DISK_PREFIX, ip);

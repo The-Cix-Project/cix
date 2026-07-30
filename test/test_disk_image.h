@@ -62,6 +62,7 @@ int extract_partition(const char *src_path, long offset_bytes, long size_bytes,
 int esp_mkfs(const char *esp_img);
 int esp_mmd(const char *esp_img, const char *esp_dir_path);
 int esp_mcopy_in(const char *esp_img, const char *host_src_path, const char *esp_dest_path);
+int esp_mcopy_out(const char *esp_img, const char *esp_src_path, const char *host_dst_path);
 int esp_mren(const char *esp_img, const char *esp_old_path, const char *esp_new_path);
 
 /* Squashes image_root into out_path via the real mksquashfs -- used by

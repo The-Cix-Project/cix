@@ -73,17 +73,22 @@ paths:
   /system/update:
     post:
       summary: >
-        Write a fresh control-plane squashfs onto this daemon's own
-        inactive A/B root slot (see ADR-0014, ADR-0031) and stage a
-        fresh systemd-boot loader entry for it with a fresh Automatic
-        Boot Assessment tries-left counter. image_path is a local path
-        the operator has already transferred the image to (e.g. scp) --
-        no upload is performed. Requires this daemon to be running with
-        --slot=a or --slot=b (a real --init-mode boot); otherwise there
-        is no meaningful "inactive slot" and the request is rejected.
-        Does NOT reboot -- call /system/reboot separately once ready to
-        cut over; the existing boot-counter/confirm_boot() machinery,
-        unchanged, decides whether the fresh slot sticks.
+        Write a fresh control-plane squashfs and/or a fresh kernel onto
+        this daemon's own inactive A/B slot (see ADR-0014, ADR-0031,
+        ADR-0032) and stage a fresh systemd-boot loader entry for it
+        with a fresh Automatic Boot Assessment tries-left counter.
+        image_path/kernel_path are local paths the operator has already
+        transferred the files to (e.g. scp) -- no upload is performed.
+        Independent and both optional (at least one required): update
+        just the root, just the kernel (both slots already carry a
+        kernel file from install time, so this always has something to
+        replace), or both together in one call. Requires this daemon to
+        be running with --slot=a or --slot=b (a real --init-mode boot);
+        otherwise there is no meaningful "inactive slot" and the
+        request is rejected. Does NOT reboot -- call /system/reboot
+        separately once ready to cut over; the existing boot-counter/
+        confirm_boot() machinery, unchanged, decides whether the fresh
+        slot sticks.
       operationId: updateSystem
       requestBody:
         required: true
@@ -91,19 +96,21 @@ paths:
           application/json:
             schema:
               type: object
-              required: [image_path]
               properties:
                 image_path:
                   type: string
                   description: Local filesystem path to a squashfs image (checked via its own on-disk magic)
+                kernel_path:
+                  type: string
+                  description: Local filesystem path to a bzImage kernel (checked via its own on-disk boot-sector/setup_header magic)
       responses:
         "200":
-          description: Image written to the inactive slot and a fresh loader entry staged
+          description: Whatever was given was written to the inactive slot and a fresh loader entry staged
           content:
             application/json:
               schema:
                 type: object
-                required: [status, slot]
+                required: [status, slot, updated]
                 properties:
                   status:
                     type: string
@@ -112,11 +119,19 @@ paths:
                     type: string
                     enum: [a, b]
                     description: Which slot ("a" or "b") was just written -- always this daemon's own inactive slot
+                  updated:
+                    type: array
+                    items:
+                      type: string
+                      enum: [root, kernel]
+                    description: Which of image_path/kernel_path were actually given and written this call
         "400":
           description: >
-            No --slot= on this daemon, image_path missing/unreadable, or
-            image_path is not a squashfs image (bad magic) -- the
-            inactive partition is left untouched in every 400 case
+            No --slot= on this daemon, neither image_path nor
+            kernel_path given, either path missing/unreadable, or
+            either file fails its own on-disk magic check -- the
+            inactive slot is left completely untouched in every 400
+            case (both files are validated before either is written)
 
   /containers:
     get:

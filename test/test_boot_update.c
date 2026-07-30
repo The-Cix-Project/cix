@@ -1,29 +1,34 @@
 /*
- * Phase 16 part 1 (ADR-0031) demonstrable test: proves POST /v1/system/
- * update's real device-write/loader-entry logic (do_system_update(),
- * daemon/src/main.c) against a real virtio-blk disk inside a real QEMU
- * guest -- the only place ROOT_A_DEVICE/ROOT_B_DEVICE (/dev/vda2,
- * /dev/vda3) actually exist. Reached via kanxeod's own
- * --test-update-image= self-test flag (same --simulate-unhealthy-boot
- * precedent), since host-to-guest HTTP is unavailable for a
+ * Phase 16 (ADR-0031) + the per-slot kernel extension (ADR-0032)
+ * demonstrable test: proves POST /v1/system/update's real device/ESP-
+ * write and loader-entry logic (do_system_update(), daemon/src/
+ * main.c) against a real virtio-blk disk inside a real QEMU guest --
+ * the only place ROOT_A_DEVICE/ROOT_B_DEVICE (/dev/vda2, /dev/vda3)
+ * actually exist. Reached via kanxeod's own --test-update-image=/
+ * --test-update-kernel= self-test flags (same --simulate-unhealthy-
+ * boot precedent), since host-to-guest HTTP is unavailable for a
  * statically-addressed guest under this project's own test harness
  * (see CLAUDE.md's SLIRP note) -- there is no other way to drive a
  * live POST /v1/system/update into a booted guest from this harness.
  *
  * Layout, deliberately a superset of test_boot_ab.c's own minimal one:
- * ESP + root-a + root-b + a fourth "root-c" scratch partition, test-
- * harness-only (not part of the real 5-partition installer layout --
- * see image/src/kanxeo-install.c's auto_partition()), pre-loaded with
- * a second, genuinely different-content squashfs image_path can point
- * at as a raw device path (write_file_to_device()'s open/read/write
- * loop works identically against a whole block device or a regular
- * file -- there is no meaningful difference to that code between the
- * two). Slot A boots normally, self-updates onto slot B (root-c's
- * content -> root-b's device) during that same boot, then a second,
- * fresh QEMU power-on against the same persistent disk (this project's
- * existing poll-and-check style, not an in-VM reboot) proves the
- * freshly-written slot B actually boots -- the real payoff, not just
- * that bytes landed somewhere.
+ * ESP + root-a + root-b + a fourth "root-c" scratch partition + a
+ * fifth "kernel-scratch" partition, all test-harness-only (not part of
+ * the real 5-partition installer layout -- see image/src/kanxeo-
+ * install.c's auto_partition()). root-c holds a second, genuinely
+ * different-content squashfs image_path can point at as a raw device
+ * path; kernel-scratch holds a second copy of the same real build/
+ * bzImage bytes kernel_path can point at (write_file_to_device()'s/
+ * write_file_to_esp()'s open/read/write loops work identically against
+ * a whole block device or a regular file -- there is no meaningful
+ * difference to that code between the two). Slot A boots normally,
+ * self-updates root AND kernel onto slot B mid-boot (root-c's content
+ * -> root-b's device, kernel-scratch's content -> the ESP's own
+ * kanxeo-bzImage-b), then a second, fresh QEMU power-on against the
+ * same persistent disk (this project's existing poll-and-check style,
+ * not an in-VM reboot) proves the freshly-written slot B actually
+ * boots, from its own per-slot kernel file specifically -- the real
+ * payoff, not just that bytes landed somewhere.
  */
 #include "test_disk_image.h"
 #include "test_image_fixture.h"
@@ -43,19 +48,21 @@
 #define SYSTEMD_BOOT_EFI "/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
 #define OVMF_VARS_TEMPLATE "/usr/share/OVMF/OVMF_VARS_4M.fd"
 
-#define DISK_SIZE_BYTES (544 * 1024 * 1024) /* 64MiB ESP + three 160MiB slots */
+#define DISK_SIZE_BYTES (576 * 1024 * 1024) /* 64MiB ESP + three 160MiB slots + 16MiB kernel scratch */
 #define ESP_SIZE_MIB 64
 #define ROOT_SLOT_SIZE_MIB 160
+#define KERNEL_SCRATCH_SIZE_MIB 16
 #define SECTOR_SIZE 512
 
 #define BOOT_TIMEOUT_SECONDS 120
 /* The full expected success line, not just a prefix of it -- qemu_boot_
  * capture() stops the instant its marker substring has fully arrived,
  * so a marker that's only a prefix (e.g. "test-update: status=") stops
- * the capture (and kills qemu) before the actual status/slot digits
- * that follow it have arrived, truncating exactly the information this
- * test needs to check. */
-#define UPDATE_MARKER "test-update: status=200 slot=b"
+ * the capture (and kills qemu) before the actual status/slot/updated
+ * text that follows it have arrived, truncating exactly the
+ * information this test needs to check (here: that BOTH root and
+ * kernel were reported updated, not just one). */
+#define UPDATE_MARKER "test-update: status=200 slot=b updated=root,kernel"
 #define SUCCESS_MARKER "kanxeod listening on"
 #define PANIC_MARKER "Kernel panic"
 #define ROOT_UPDATE_TRIES 3
@@ -77,7 +84,14 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 		return -1;
 	if (esp_mcopy_in(esp_img, SYSTEMD_BOOT_EFI, "::/EFI/BOOT/BOOTX64.EFI") != 0)
 		return -1;
-	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/kanxeo-bzImage") != 0)
+	/* Per-slot kernel file (ADR-0032) -- slot A's own, matching what
+	 * the real installer now stages. Slot B's own kanxeo-bzImage-b
+	 * does NOT get pre-staged here (unlike the real installer, which
+	 * pre-stages both) -- this test's whole point is proving the
+	 * self-update call creates it fresh, so a pre-existing one would
+	 * mask a real bug (e.g. writing to the wrong file) behind stale
+	 * content that happened to already be correct. */
+	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/kanxeo-bzImage-a") != 0)
 		return -1;
 
 	snprintf(loader_conf_path, sizeof(loader_conf_path), "%s/loader.conf", workdir);
@@ -88,16 +102,19 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 
 	/* Slot A's only entry -- a plain, already-confirmed boot (no tries
 	 * counter), low version (1). --test-update-image=/dev/vda4 points
-	 * at the scratch partition holding the "new" squashfs -- real
-	 * raw device path, exactly what an operator's own image_path would
-	 * be if pointed at a whole disk rather than a regular file. */
+	 * at the scratch partition holding the "new" squashfs,
+	 * --test-update-kernel=/dev/vda5 at the one holding the "new"
+	 * kernel -- both real raw device paths, exactly what an operator's
+	 * own image_path/kernel_path would be if pointed at a whole disk
+	 * rather than a regular file. */
 	snprintf(entry, sizeof(entry),
 	         "title Kanxeo (A)\n"
 	         "sort-key kanxeo\n"
 	         "version 1\n"
-	         "linux /kanxeo-bzImage\n"
+	         "linux /kanxeo-bzImage-a\n"
 	         "options console=ttyS0 root=/dev/vda2 rw init=/bin/kanxeod -- "
-	         "--init-mode --slot=a --bind=127.0.0.1 --test-update-image=/dev/vda4\n");
+	         "--init-mode --slot=a --bind=127.0.0.1 --test-update-image=/dev/vda4 "
+	         "--test-update-kernel=/dev/vda5\n");
 	if (write_text_file(loader_conf_path, entry) != 0)
 		return -1;
 	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/entries/kanxeo-a.conf") != 0)
@@ -193,8 +210,14 @@ int main(void)
 	long a_start_sec, a_size_sec;
 	long b_start_sec, b_size_sec;
 	long c_start_sec, c_size_sec;
+	long d_start_sec, d_size_sec;
 	struct stat new_squashfs_st;
+	struct stat bzimage_st;
 	char extracted_root_b[600];
+	char extracted_kernel_a[600];
+	char extracted_kernel_b[600];
+	char extracted_entry_b[600];
+	char esp_drive[700];
 	int ok = 1;
 
 	if (mkdtemp(workdir) == NULL) {
@@ -210,10 +233,16 @@ int main(void)
 	snprintf(esp_img, sizeof(esp_img), "%s/esp.img", workdir);
 	snprintf(ovmf_vars, sizeof(ovmf_vars), "%s/OVMF_VARS.fd", workdir);
 	snprintf(extracted_root_b, sizeof(extracted_root_b), "%s/extracted-root-b", workdir);
+	snprintf(extracted_kernel_a, sizeof(extracted_kernel_a), "%s/extracted-kernel-a", workdir);
+	snprintf(extracted_kernel_b, sizeof(extracted_kernel_b), "%s/extracted-kernel-b", workdir);
+	snprintf(extracted_entry_b, sizeof(extracted_entry_b), "%s/extracted-entry-b", workdir);
 
 	/* 1. Two genuinely different-content squashfs images: slot A's own
 	 * (built from the real web/ dir) and the "update" payload (built
-	 * from web_new/, with one extra marker file). */
+	 * from web_new/, with one extra marker file). The "new" kernel
+	 * reuses the same real, already-built build/bzImage bytes -- see
+	 * this file's own header comment for why a second real kernel
+	 * build isn't needed for what this test is actually proving. */
 	{
 		char *argv_a[] = { (char *)MKBOOTROOT_BIN, stage_dir,
 			           (char *)KANXEOD_BIN, "web", root_squashfs_a,
@@ -236,8 +265,13 @@ int main(void)
 		perror(root_squashfs_new);
 		return 1;
 	}
+	if (stat(BZIMAGE_PATH, &bzimage_st) != 0) {
+		perror(BZIMAGE_PATH);
+		return 1;
+	}
 
-	/* 2. ESP + root-a + root-b + root-c (scratch, holds the "new" image). */
+	/* 2. ESP + root-a + root-b + root-c (scratch, holds the "new" image)
+	 * + kernel-scratch (holds the "new" kernel). */
 	{
 		int fd = open(disk_img, O_CREAT | O_WRONLY, 0644);
 
@@ -258,8 +292,10 @@ int main(void)
 		         "size=%dMiB, type=uefi, name=\"ESP\"\n"
 		         "size=%dMiB, type=linux, name=\"root-a\"\n"
 		         "size=%dMiB, type=linux, name=\"root-b\"\n"
-		         "type=linux, name=\"root-c\"\n",
-		         ESP_SIZE_MIB, ROOT_SLOT_SIZE_MIB, ROOT_SLOT_SIZE_MIB);
+		         "size=%dMiB, type=linux, name=\"root-c\"\n"
+		         "size=%dMiB, type=linux, name=\"kernel-scratch\"\n",
+		         ESP_SIZE_MIB, ROOT_SLOT_SIZE_MIB, ROOT_SLOT_SIZE_MIB, ROOT_SLOT_SIZE_MIB,
+		         KERNEL_SCRATCH_SIZE_MIB);
 		if (run_subprocess_stdin(SFDISK_BIN, sfdisk_argv, script) != 0)
 			return 1;
 	}
@@ -276,6 +312,8 @@ int main(void)
 		if (sfdisk_dump_offset(sfdisk_dump, 3, &b_start_sec, &b_size_sec) != 0)
 			return 1;
 		if (sfdisk_dump_offset(sfdisk_dump, 4, &c_start_sec, &c_size_sec) != 0)
+			return 1;
+		if (sfdisk_dump_offset(sfdisk_dump, 5, &d_start_sec, &d_size_sec) != 0)
 			return 1;
 	}
 
@@ -300,13 +338,26 @@ int main(void)
 	 * real state before the very first update ever writes there. */
 	if (write_at_offset(disk_img, c_start_sec * SECTOR_SIZE, root_squashfs_new) != 0)
 		return 1;
+	if (write_at_offset(disk_img, d_start_sec * SECTOR_SIZE, BZIMAGE_PATH) != 0)
+		return 1;
 
 	if (test_image_fixture_copy_file(OVMF_VARS_TEMPLATE, ovmf_vars) != 0)
 		return 1;
 
-	/* 3. Attempt 1: slot A boots, self-updates onto slot B mid-boot via
-	 * --test-update-image=/dev/vda4 (do_system_update()'s real device
-	 * write + loader-entry write), stops as soon as that's observable. */
+	/* esp_drive addresses the ESP directly inside the assembled disk
+	 * image at its own real partition byte offset -- mtools' own
+	 * "path@@offset_bytes" form, the same addressing list_loader_
+	 * entries() below already uses, needed here too since esp_mcopy_
+	 * out() (step 6) has to read back what the GUEST itself wrote onto
+	 * the real disk, not the throwaway esp_img staging file from step 2
+	 * (which the guest never touches). */
+	snprintf(esp_drive, sizeof(esp_drive), "%s@@%ld", disk_img, esp_start_sec * SECTOR_SIZE);
+
+	/* 3. Attempt 1: slot A boots, self-updates root AND kernel onto
+	 * slot B mid-boot via --test-update-image=/dev/vda4 and
+	 * --test-update-kernel=/dev/vda5 (do_system_update()'s real
+	 * device/ESP write + loader-entry write), stops as soon as that's
+	 * observable. */
 	{
 		struct qemu_boot_opts opts;
 		enum qemu_boot_outcome outcome;
@@ -323,14 +374,13 @@ int main(void)
 			fprintf(stderr, "attempt 1: did not reach the update marker (outcome=%d)\n",
 			        (int)outcome);
 			ok = 0;
-		} else if (strstr(captured, "test-update: status=200 slot=b") == NULL) {
+		} else if (strstr(captured, UPDATE_MARKER) == NULL) {
 			fprintf(stderr,
-			        "attempt 1: expected \"test-update: status=200 slot=b\", captured "
-			        "output:\n%s\n",
+			        "attempt 1: expected \"%s\", captured output:\n%s\n", UPDATE_MARKER,
 			        captured);
 			ok = 0;
 		} else {
-			printf("attempt 1: self-update to slot B reported success\n");
+			printf("attempt 1: self-update to slot B (root + kernel) reported success\n");
 		}
 	}
 	if (!ok) {
@@ -340,7 +390,9 @@ int main(void)
 
 	/* 4. The fresh loader entry now exists on the ESP, with a real
 	 * Automatic Boot Assessment tries-left counter, matching the very
-	 * first install's own convention. */
+	 * first install's own convention -- and its own content, read back
+	 * directly, references kanxeo-bzImage-b specifically, not the old
+	 * shared filename or slot A's own kanxeo-bzImage-a. */
 	if (list_loader_entries(disk_img, esp_start_sec, entries_listing, sizeof(entries_listing)) !=
 	    0) {
 		fprintf(stderr, "FAIL: could not list loader/entries after attempt 1\n");
@@ -355,6 +407,35 @@ int main(void)
 			fprintf(stderr, "FAIL: no fresh kanxeo-b+%d.conf entry found on the ESP\n",
 			        ROOT_UPDATE_TRIES);
 			ok = 0;
+		}
+	}
+	{
+		char entry_src[64];
+		char entry_content[4096] = { 0 };
+		FILE *ef;
+
+		snprintf(entry_src, sizeof(entry_src), "::/loader/entries/kanxeo-b+%d.conf",
+		         ROOT_UPDATE_TRIES);
+		if (esp_mcopy_out(esp_drive, entry_src, extracted_entry_b) != 0) {
+			fprintf(stderr, "FAIL: could not read back the fresh slot-b loader entry\n");
+			ok = 0;
+		} else {
+			ef = fopen(extracted_entry_b, "rb");
+			if (ef == NULL || fread(entry_content, 1, sizeof(entry_content) - 1, ef) == 0) {
+				fprintf(stderr, "FAIL: could not read the extracted loader entry's content\n");
+				ok = 0;
+			}
+			if (ef != NULL)
+				fclose(ef);
+			if (strstr(entry_content, "linux /kanxeo-bzImage-b") == NULL) {
+				fprintf(stderr,
+				        "FAIL: slot-b loader entry does not reference /kanxeo-bzImage-b, "
+				        "content:\n%s\n",
+				        entry_content);
+				ok = 0;
+			} else {
+				printf("slot-b loader entry correctly references /kanxeo-bzImage-b\n");
+			}
 		}
 	}
 
@@ -373,7 +454,32 @@ int main(void)
 		       (long)new_squashfs_st.st_size);
 	}
 
-	/* 6. Attempt 2: a fresh power-on against the same persistent disk --
+	/* 6. Slot B's own kernel file on the ESP is byte-exact with the
+	 * "new" kernel, AND slot A's own kernel file was never touched --
+	 * proves the per-slot write landed at the right file, not just
+	 * that some write happened somewhere on the ESP. */
+	if (esp_mcopy_out(esp_drive, "::/kanxeo-bzImage-b", extracted_kernel_b) != 0) {
+		fprintf(stderr, "FAIL: could not read back kanxeo-bzImage-b\n");
+		ok = 0;
+	} else if (!files_prefix_equal(extracted_kernel_b, BZIMAGE_PATH, bzimage_st.st_size)) {
+		fprintf(stderr, "FAIL: kanxeo-bzImage-b content does not match the update kernel\n");
+		ok = 0;
+	} else {
+		printf("kanxeo-bzImage-b matches the update kernel byte-for-byte (%ld bytes)\n",
+		       (long)bzimage_st.st_size);
+	}
+	if (esp_mcopy_out(esp_drive, "::/kanxeo-bzImage-a", extracted_kernel_a) != 0) {
+		fprintf(stderr, "FAIL: could not read back kanxeo-bzImage-a\n");
+		ok = 0;
+	} else if (!files_prefix_equal(extracted_kernel_a, BZIMAGE_PATH, bzimage_st.st_size)) {
+		fprintf(stderr, "FAIL: kanxeo-bzImage-a was modified -- slot A's own kernel must "
+		                "never be touched by a slot-B update\n");
+		ok = 0;
+	} else {
+		printf("kanxeo-bzImage-a confirmed unchanged\n");
+	}
+
+	/* 7. Attempt 2: a fresh power-on against the same persistent disk --
 	 * the real payoff. The freshly-written slot B entry's version
 	 * (a UNIX timestamp) sorts above slot A's own (version 1), so it
 	 * should now boot by default, and it must actually work: a real
@@ -403,7 +509,8 @@ int main(void)
 			        captured);
 			ok = 0;
 		} else {
-			printf("attempt 2: booted slot B successfully -- the update actually works\n");
+			printf("attempt 2: booted slot B successfully from kanxeo-bzImage-b -- the "
+			       "combined root+kernel update actually works\n");
 		}
 	}
 

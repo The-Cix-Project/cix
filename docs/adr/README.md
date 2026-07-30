@@ -36,3 +36,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0029](0029-gpu-kernel-driver-firmware-and-kfd.md) | GPU kernel driver, firmware staging, and KFD discovery | Accepted |
 | [0030](0030-per-container-config-files-and-sysctls.md) | Per-container config files and generalized sysctls | Accepted |
 | [0031](0031-host-and-package-update-mechanism.md) | Host OS update mechanism (write to inactive A/B slot), and automatic package updates | Accepted |
+| [0032](0032-per-slot-kernel-updates.md) | Per-slot kernel files, extending POST /system/update to cover bzImage | Accepted |

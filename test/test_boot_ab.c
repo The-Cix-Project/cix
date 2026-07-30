@@ -69,7 +69,13 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 		return -1;
 	if (esp_mcopy_in(esp_img, SYSTEMD_BOOT_EFI, "::/EFI/BOOT/BOOTX64.EFI") != 0)
 		return -1;
-	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/kanxeo-bzImage") != 0)
+	/* Per-slot kernel files (ADR-0032), not one shared /kanxeo-bzImage --
+	 * matches what the real installer now stages (both slots pre-
+	 * staged identically), so each loader entry below can reference
+	 * its own slot's file. */
+	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/kanxeo-bzImage-a") != 0)
+		return -1;
+	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/kanxeo-bzImage-b") != 0)
 		return -1;
 
 	snprintf(loader_conf_path, sizeof(loader_conf_path), "%s/loader.conf", workdir);
@@ -92,7 +98,7 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 	         "title Kanxeo (A)\n"
 	         "sort-key kanxeo\n"
 	         "version 2\n"
-	         "linux /kanxeo-bzImage\n"
+	         "linux /kanxeo-bzImage-a\n"
 	         "options console=ttyS0 root=/dev/vda2 rw init=/bin/kanxeod -- "
 	         "--init-mode --slot=a --simulate-unhealthy-boot\n");
 	if (write_text_file(loader_conf_path, entry) != 0)
@@ -104,7 +110,7 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 	         "title Kanxeo (B)\n"
 	         "sort-key kanxeo\n"
 	         "version 1\n"
-	         "linux /kanxeo-bzImage\n"
+	         "linux /kanxeo-bzImage-b\n"
 	         "options console=ttyS0 root=/dev/vda3 rw init=/bin/kanxeod -- "
 	         "--init-mode --slot=b\n");
 	if (write_text_file(loader_conf_path, entry) != 0)

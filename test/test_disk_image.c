@@ -297,6 +297,24 @@ int esp_mcopy_in(const char *esp_img, const char *host_src_path, const char *esp
 	return run_subprocess(MCOPY_BIN, argv);
 }
 
+/* The reverse of esp_mcopy_in() -- reads a file back off the ESP into a
+ * host path, mtools' own argument order swapped accordingly. esp_img
+ * takes mtools' own "-i" addressing exactly like every other function
+ * here, including its "path@@offset_bytes" form (see list_loader_
+ * entries()'s own use of that form against a whole disk image) -- not
+ * limited to a standalone esp_img file. Added once a second real
+ * consumer (test_boot_update.c, verifying a per-slot kernel write
+ * byte-exact after a real boot) needed to read a file back off the
+ * ESP, the same "extract when a second consumer appears" precedent
+ * this module's own header comment already documents. */
+int esp_mcopy_out(const char *esp_img, const char *esp_src_path, const char *host_dst_path)
+{
+	char *argv[] = { (char *)MCOPY_BIN, "-i", (char *)esp_img, (char *)esp_src_path,
+		          (char *)host_dst_path, NULL };
+
+	return run_subprocess(MCOPY_BIN, argv);
+}
+
 int esp_mren(const char *esp_img, const char *esp_old_path, const char *esp_new_path)
 {
 	char *argv[] = { (char *)MREN_BIN, "-i", (char *)esp_img, (char *)esp_old_path,

@@ -2,7 +2,26 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
-### Phase 16: host OS update mechanism + automatic package updates
+## Phase 16 (parts 1-2): host OS update mechanism (root + kernel), and automatic package updates
+
+### Phase 16 (part 2): per-slot kernel updates
+
+Part 1 left the kernel out: both A/B loader entries hardcoded the identical `linux /kanxeo-bzImage`, one file shared by both slots with no way to update it without corrupting whichever was currently booted. Raised directly by the user immediately after part 1 shipped, once they understood `/system/update` didn't cover the kernel. See ADR-0032.
+
+#### Added
+- `image/src/kanxeo-install.c`: `populate_esp()` now stages the kernel to *both* `kanxeo-bzImage-a` and `kanxeo-bzImage-b` (identical content) instead of one shared `kanxeo-bzImage` -- unlike root B's own deliberate emptiness, there's nothing meaningful about slot B lacking a kernel file before its first update, only a real edge case removed at near-zero cost.
+- `daemon/src/main.c`: `write_file_to_device()` split into a shared `copy_bytes()` core (the existing read/write/`fsync` loop) plus two thin, flag-specific callers -- itself unchanged in behavior, plus a new `write_file_to_esp()` (the ESP is a real, already-mounted filesystem, needs `O_CREAT` where a raw device doesn't); `do_system_update()` gains optional `kernel_path` (independent of `image_path`, at least one of the two required), validated via a real bzImage magic check (boot-sector signature at `0x1FE`, `struct setup_header`'s `"HdrS"` at `0x202`) before anything is written, both fields fully validated before either is written; the loader entry's `linux` line is now templated per-slot (`/kanxeo-bzImage-<slot>`) instead of a fixed string; response gains `"updated"` (`["root"]`/`["kernel"]`/`["root","kernel"]`); new `--test-update-kernel=` self-test flag, sibling to the existing `--test-update-image=`.
+- `cli/src/main.c`: `update` gains `--kernel=PATH` (now both `--image=`/`--kernel=` optional, at least one required).
+- `docs/api/openapi.yaml`: `/system/update`'s request schema gains optional `kernel_path`, response gains `"updated"`.
+- `docs/adr/0032-per-slot-kernel-updates.md`.
+- `test/test_disk_image.c`/`.h`: new `esp_mcopy_out()`, the reverse of the existing `esp_mcopy_in()` -- reads a file back off the ESP for byte-exact verification.
+- `test/test_boot.c`, `test/test_boot_ab.c`: updated to stage per-slot `kanxeo-bzImage-a`/`-b` instead of the old shared filename, matching what the real installer now produces.
+- `test/test_boot_update.c`: extended with a fifth scratch partition holding a second copy of the real `build/bzImage`; the self-test call now updates root *and* kernel together, verifying `kanxeo-bzImage-b` byte-exact, the fresh loader entry's own content referencing `/kanxeo-bzImage-b` specifically, `kanxeo-bzImage-a` unchanged, and a second real QEMU boot succeeding from the freshly-written kernel.
+- `test/test_system_update.c`: extended with `kernel_path` validation scenarios (missing/nonexistent/bad-magic, and a valid `image_path` combined with a bad `kernel_path`) -- all `400` against a plain dev daemon, no QEMU needed.
+
+Verified inside a real QEMU guest: a combined root+kernel update reports both updated, lands byte-exact bytes at `kanxeo-bzImage-b`, correctly rewires the loader entry to reference it, leaves `kanxeo-bzImage-a` untouched, and boots successfully from it on a second, independent power-on -- proof the per-slot resolution works, not just that bytes landed somewhere. Deliberately reuses the same real kernel bytes as both the initial slot-A kernel and the "new" `kernel_path` source (mirroring `test_boot_ab.c`'s own precedent for squashfs) rather than requiring a second, genuinely different, real bootable kernel build. 3 consecutive clean runs; full pre-existing regression suite re-run clean, including the QEMU-based `test_boot`/`test_boot_ab`/`test_installer`. Zero compiler warnings.
+
+### Phase 16 (part 1): host + package update mechanism
 
 Raised directly by the user: a mechanism to update the running host and its packages, matching the existing A/B configuration. The A/B rollback machinery (ADR-0014) existed since Phase 11, but nothing could ever write a new image into the inactive slot on a live system -- root B stayed genuinely empty until now. See ADR-0031.
 

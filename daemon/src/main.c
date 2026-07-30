@@ -580,11 +580,47 @@ static void handle_reboot(int fd)
  * library today (the daemon can't link test/test_image_fixture.c,
  * which is test-scoped).
  */
-static int write_file_to_device(const char *src_path, const char *device_path)
+/*
+ * Copies every byte of src_fd onto dst_fd, then fsync()s dst_fd before
+ * returning success -- without that, these bytes can still be sitting
+ * in the page cache, not yet flushed through to the underlying device/
+ * filesystem, when do_system_update() reports 200 back to the caller.
+ * The whole point of this feature is a trustworthy "the new image is
+ * safely on the inactive slot" signal; a crash/power-loss between that
+ * response and an eventual background writeback could otherwise
+ * silently lose it. Shared by write_file_to_device() (a raw partition
+ * device) and write_file_to_esp() (a regular file on the already-
+ * mounted ESP) -- callers own opening/closing both fds, since the
+ * right open() flags genuinely differ between the two (a device
+ * already exists; an ESP file may not).
+ */
+static int copy_bytes(int src_fd, int dst_fd)
 {
-	int src, dst;
 	char buf[65536];
 	ssize_t n;
+
+	while ((n = read(src_fd, buf, sizeof(buf))) > 0) {
+		if (write(dst_fd, buf, (size_t)n) != n) {
+			perror("write");
+			return -1;
+		}
+	}
+	if (n < 0) {
+		perror("read");
+		return -1;
+	}
+	if (fsync(dst_fd) != 0) {
+		perror("fsync");
+		return -1;
+	}
+	return 0;
+}
+
+/* device_path already exists as a block device -- O_WRONLY only, no
+ * O_CREAT (unlike write_file_to_esp() below). */
+static int write_file_to_device(const char *src_path, const char *device_path)
+{
+	int src, dst, rc;
 
 	src = open(src_path, O_RDONLY);
 	if (src < 0) {
@@ -597,52 +633,60 @@ static int write_file_to_device(const char *src_path, const char *device_path)
 		close(src);
 		return -1;
 	}
-	while ((n = read(src, buf, sizeof(buf))) > 0) {
-		if (write(dst, buf, (size_t)n) != n) {
-			perror("write");
-			close(src);
-			close(dst);
-			return -1;
-		}
-	}
-	if (n < 0)
-		perror(src_path);
-	/* fsync() before returning success -- without it, these bytes can
-	 * still be sitting in the guest's own page cache, not yet flushed
-	 * through to the underlying block device, when do_system_update()
-	 * reports 200 back to the caller. The whole point of this feature
-	 * is a trustworthy "the new image is safely on the inactive slot"
-	 * signal; a crash/power-loss between that response and an eventual
-	 * background writeback could otherwise silently lose it. */
-	if (n == 0 && fsync(dst) != 0) {
-		perror(device_path);
-		n = -1;
-	}
+	rc = copy_bytes(src, dst);
 	close(src);
 	close(dst);
-	return n < 0 ? -1 : 0;
+	return rc;
+}
+
+/* esp_path is a plain file on the already-mounted ESP -- it may not
+ * exist yet (first time this slot's kernel file is ever written) or
+ * may already exist (overwriting a prior update), so O_CREAT|O_TRUNC,
+ * unlike write_file_to_device()'s existing-device case above. */
+static int write_file_to_esp(const char *src_path, const char *esp_path)
+{
+	int src, dst, rc;
+
+	src = open(src_path, O_RDONLY);
+	if (src < 0) {
+		perror(src_path);
+		return -1;
+	}
+	dst = open(esp_path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+	if (dst < 0) {
+		perror(esp_path);
+		close(src);
+		return -1;
+	}
+	rc = copy_bytes(src, dst);
+	close(src);
+	close(dst);
+	return rc;
 }
 
 /*
  * Pure (no fd) core of POST /v1/system/update -- writes a fresh
- * control-plane squashfs onto whichever root slot ISN'T this boot's
- * own (g_slot), then stages a fresh systemd-boot loader entry for it
- * with its own Automatic Boot Assessment tries-left counter -- the
- * same "write to the inactive slot, let the existing boot-counter/
- * confirm_boot() machinery decide whether it sticks" shape ADR-0014
- * already established for the very first install, now reachable on an
- * already-running system too (see docs/adr/0031). Split out from
- * handle_system_update() the same way create_container_from_body() is
- * split from handle_create() -- so test/test_boot_update.c's
- * --test-update-image= self-test (main(), no live HTTP round trip
- * needed) can exercise the exact same real device-write/loader-entry
- * logic a live request would, inside a real QEMU guest with a real
- * virtio-blk disk attached, without needing the daemon to also be its
- * own HTTP client.
+ * control-plane squashfs and/or a fresh kernel onto whichever slot
+ * ISN'T this boot's own (g_slot), then stages a fresh systemd-boot
+ * loader entry for it with its own Automatic Boot Assessment
+ * tries-left counter -- the same "write to the inactive slot, let the
+ * existing boot-counter/confirm_boot() machinery decide whether it
+ * sticks" shape ADR-0014 already established for the very first
+ * install, now reachable on an already-running system too (see
+ * docs/adr/0031, docs/adr/0032). Split out from handle_system_update()
+ * the same way create_container_from_body() is split from
+ * handle_create() -- so test/test_boot_update.c's --test-update-
+ * image=/--test-update-kernel= self-test (main(), no live HTTP round
+ * trip needed) can exercise the exact same real device/ESP-write and
+ * loader-entry logic a live request would, inside a real QEMU guest
+ * with a real virtio-blk disk attached, without needing the daemon to
+ * also be its own HTTP client.
  *
- * image_path is a local path the operator has already transferred the
- * new image to (e.g. scp) -- no upload/streaming HTTP machinery is
- * added here; see ADR-0031 for why.
+ * image_path/kernel_path are local paths the operator has already
+ * transferred the new files to (e.g. scp) -- no upload/streaming HTTP
+ * machinery is added here; see ADR-0031 for why. Independent and both
+ * optional (at least one required): a kanxeod security fix needs no
+ * new kernel, and new hardware support needs no new root.
  *
  * Deliberately does NOT reboot -- update and reboot stay two separate,
  * composable actions (ADR-0031). The operator (or a script) calls the
@@ -651,17 +695,22 @@ static int write_file_to_device(const char *src_path, const char *device_path)
  * whether the fresh slot sticks.
  *
  * Returns the HTTP status this operation resolves to (200 on success);
- * *out_slot is filled in only on success, *out_errmsg only otherwise.
+ * *out_slot/*out_updated_root/*out_updated_kernel are filled in only
+ * on success, *out_errmsg only otherwise.
  */
 static int do_system_update(const char *body, size_t body_len, char *out_slot,
-                             size_t out_slot_size, char *out_errmsg, size_t out_errmsg_size)
+                             size_t out_slot_size, int *out_updated_root, int *out_updated_kernel,
+                             char *out_errmsg, size_t out_errmsg_size)
 {
 	struct json_value *root;
 	const char *image_path;
+	const char *kernel_path;
 	const char *inactive_slot;
 	const char *device;
 	int src;
-	unsigned char magic[4];
+	unsigned char magic4[4];
+	unsigned char magic2[2];
+	char kernel_dest[PATH_MAX];
 	char entry_path[PATH_MAX];
 	char entry_conf[512];
 
@@ -680,6 +729,7 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		snprintf(out_errmsg, out_errmsg_size, "unrecognized --slot=, expected \"a\" or \"b\"");
 		return 400;
 	}
+	snprintf(kernel_dest, sizeof(kernel_dest), "%s/kanxeo-bzImage-%s", ESP_DIR, inactive_slot);
 
 	root = json_parse(body, body_len);
 	if (root == NULL) {
@@ -687,34 +737,68 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		return 400;
 	}
 	image_path = json_as_string(json_object_get(root, "image_path"));
-	if (image_path == NULL || image_path[0] == '\0') {
+	kernel_path = json_as_string(json_object_get(root, "kernel_path"));
+	if ((image_path == NULL || image_path[0] == '\0') &&
+	    (kernel_path == NULL || kernel_path[0] == '\0')) {
 		json_free(root);
-		snprintf(out_errmsg, out_errmsg_size, "image_path missing");
+		snprintf(out_errmsg, out_errmsg_size, "image_path and/or kernel_path required");
 		return 400;
 	}
 
-	/* Cheap, real safety check before touching the inactive partition
-	 * at all: squashfs's own on-disk magic ("hsqs", the little-endian
-	 * bytes of 0x73717368) turns "wrong path by mistake" into a clean
-	 * 400 instead of silently overwriting the inactive slot with
-	 * garbage. */
-	src = open(image_path, O_RDONLY);
-	if (src < 0) {
-		json_free(root);
-		snprintf(out_errmsg, out_errmsg_size, "image_path does not exist or is not readable");
-		return 400;
-	}
-	if (read(src, magic, sizeof(magic)) != (ssize_t)sizeof(magic) || memcmp(magic, "hsqs", 4) != 0) {
+	/* Cheap, real safety checks before touching the inactive slot at
+	 * all: squashfs's own on-disk magic ("hsqs", the little-endian
+	 * bytes of 0x73717368) and a bzImage's own on-disk magic (the x86
+	 * boot-sector signature 0x55 0xAA at offset 0x1FE, and "HdrS" --
+	 * struct setup_header's own magic -- at offset 0x202, the same
+	 * check bootloaders use) each turn a wrong path by mistake into a
+	 * clean 400 instead of silently overwriting the inactive slot with
+	 * garbage. Both files are fully validated before either is
+	 * written, so a bad kernel_path never leaves a real image_path
+	 * partially applied. */
+	if (image_path != NULL && image_path[0] != '\0') {
+		src = open(image_path, O_RDONLY);
+		if (src < 0) {
+			json_free(root);
+			snprintf(out_errmsg, out_errmsg_size,
+			         "image_path does not exist or is not readable");
+			return 400;
+		}
+		if (read(src, magic4, 4) != 4 || memcmp(magic4, "hsqs", 4) != 0) {
+			close(src);
+			json_free(root);
+			snprintf(out_errmsg, out_errmsg_size, "image_path is not a squashfs image");
+			return 400;
+		}
 		close(src);
-		json_free(root);
-		snprintf(out_errmsg, out_errmsg_size, "image_path is not a squashfs image");
-		return 400;
 	}
-	close(src);
+	if (kernel_path != NULL && kernel_path[0] != '\0') {
+		src = open(kernel_path, O_RDONLY);
+		if (src < 0) {
+			json_free(root);
+			snprintf(out_errmsg, out_errmsg_size,
+			         "kernel_path does not exist or is not readable");
+			return 400;
+		}
+		if (lseek(src, 0x1FE, SEEK_SET) != 0x1FE || read(src, magic2, 2) != 2 ||
+		    magic2[0] != 0x55 || magic2[1] != 0xAA || lseek(src, 0x202, SEEK_SET) != 0x202 ||
+		    read(src, magic4, 4) != 4 || memcmp(magic4, "HdrS", 4) != 0) {
+			close(src);
+			json_free(root);
+			snprintf(out_errmsg, out_errmsg_size, "kernel_path is not a valid bzImage");
+			return 400;
+		}
+		close(src);
+	}
 
-	if (write_file_to_device(image_path, device) != 0) {
+	if (image_path != NULL && image_path[0] != '\0' && write_file_to_device(image_path, device) != 0) {
 		json_free(root);
 		snprintf(out_errmsg, out_errmsg_size, "failed to write image to inactive slot");
+		return 500;
+	}
+	if (kernel_path != NULL && kernel_path[0] != '\0' &&
+	    write_file_to_esp(kernel_path, kernel_dest) != 0) {
+		json_free(root);
+		snprintf(out_errmsg, out_errmsg_size, "failed to write kernel to inactive slot");
 		return 500;
 	}
 
@@ -723,25 +807,29 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 	/* version is this boot's own current timestamp -- always higher
 	 * than whatever's already on disk, so systemd-boot sorts this
 	 * entry first, with no need to parse the existing entry's own
-	 * version back out first. */
+	 * version back out first. linux always references this slot's own
+	 * kanxeo-bzImage-<slot> (pre-staged for both slots at install
+	 * time, ADR-0032) -- whether or not kernel_path was given this
+	 * call, that file already exists and is exactly what should boot. */
 	snprintf(entry_conf, sizeof(entry_conf),
 	         "title Kanxeo (%s)\n"
 	         "sort-key kanxeo\n"
 	         "version %ld\n"
-	         "linux /kanxeo-bzImage\n"
+	         "linux /kanxeo-bzImage-%s\n"
 	         "options console=tty0 console=ttyS0 root=%s rw init=/bin/kanxeod -- --init-mode "
 	         "--slot=%s --bind=%s\n",
-	         inactive_slot[0] == 'a' ? "A" : "B", (long)time(NULL), device, inactive_slot,
-	         g_bind_addr);
+	         inactive_slot[0] == 'a' ? "A" : "B", (long)time(NULL), inactive_slot, device,
+	         inactive_slot, g_bind_addr);
 
 	{
 		int efd = open(entry_path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
 		size_t len = strlen(entry_conf);
 
-		/* fsync() for the same reason write_file_to_device() does --
-		 * this file is the ONLY thing that makes the just-written
-		 * image bootable at all; it needs to be durable too, not
-		 * still sitting in the page cache when this call returns. */
+		/* fsync() for the same reason write_file_to_device()/write_
+		 * file_to_esp() do -- this file is the ONLY thing that makes
+		 * the just-written image/kernel bootable at all; it needs to
+		 * be durable too, not still sitting in the page cache when
+		 * this call returns. */
 		if (efd < 0 || write(efd, entry_conf, len) != (ssize_t)len || fsync(efd) != 0) {
 			if (efd >= 0)
 				close(efd);
@@ -754,6 +842,8 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 
 	json_free(root);
 	snprintf(out_slot, out_slot_size, "%s", inactive_slot);
+	*out_updated_root = (image_path != NULL && image_path[0] != '\0');
+	*out_updated_kernel = (kernel_path != NULL && kernel_path[0] != '\0');
 	return 200;
 }
 
@@ -762,9 +852,11 @@ static void handle_system_update(int fd, const char *body, size_t body_len)
 	char slot[8];
 	char errmsg[256];
 	int status;
+	int updated_root, updated_kernel;
 	struct json_writer w;
 
-	status = do_system_update(body, body_len, slot, sizeof(slot), errmsg, sizeof(errmsg));
+	status = do_system_update(body, body_len, slot, sizeof(slot), &updated_root, &updated_kernel,
+	                           errmsg, sizeof(errmsg));
 	if (status != 200) {
 		respond_error(fd, status, http_status_text(status), errmsg);
 		return;
@@ -776,6 +868,13 @@ static void handle_system_update(int fd, const char *body, size_t body_len)
 	jw_str(&w, "staged");
 	jw_key(&w, "slot");
 	jw_str(&w, slot);
+	jw_key(&w, "updated");
+	jw_arr_open(&w);
+	if (updated_root)
+		jw_str(&w, "root");
+	if (updated_kernel)
+		jw_str(&w, "kernel");
+	jw_arr_close(&w);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -3318,6 +3417,7 @@ int main(int argc, char **argv)
 	int simulate_unhealthy = 0;
 	const char *slot = NULL;
 	const char *test_update_image = NULL;
+	const char *test_update_kernel = NULL;
 	int i;
 	int listen_fd;
 	int opt = 1;
@@ -3340,6 +3440,8 @@ int main(int argc, char **argv)
 			simulate_unhealthy = 1;
 		else if (strncmp(argv[i], "--test-update-image=", 20) == 0)
 			test_update_image = argv[i] + 20;
+		else if (strncmp(argv[i], "--test-update-kernel=", 21) == 0)
+			test_update_kernel = argv[i] + 21;
 	}
 	g_web_root = web_root;
 	g_slot = slot;
@@ -3371,17 +3473,33 @@ int main(int argc, char **argv)
 	 * here, already covered structurally by every other JSON-bodied
 	 * endpoint's own tests.
 	 */
-	if (test_update_image != NULL) {
-		char body[PATH_MAX + 32];
+	if (test_update_image != NULL || test_update_kernel != NULL) {
+		char body[2 * PATH_MAX + 64];
 		char out_slot[8];
 		char out_errmsg[256];
+		int out_updated_root, out_updated_kernel;
 		int status;
+		size_t len;
 
-		snprintf(body, sizeof(body), "{\"image_path\":\"%s\"}", test_update_image);
-		status = do_system_update(body, strlen(body), out_slot, sizeof(out_slot), out_errmsg,
+		len = (size_t)snprintf(body, sizeof(body), "{");
+		if (test_update_image != NULL)
+			len += (size_t)snprintf(body + len, sizeof(body) - len, "\"image_path\":\"%s\"",
+			                         test_update_image);
+		if (test_update_kernel != NULL) {
+			if (test_update_image != NULL)
+				len += (size_t)snprintf(body + len, sizeof(body) - len, ",");
+			len += (size_t)snprintf(body + len, sizeof(body) - len, "\"kernel_path\":\"%s\"",
+			                         test_update_kernel);
+		}
+		snprintf(body + len, sizeof(body) - len, "}");
+
+		status = do_system_update(body, strlen(body), out_slot, sizeof(out_slot),
+		                           &out_updated_root, &out_updated_kernel, out_errmsg,
 		                           sizeof(out_errmsg));
 		if (status == 200)
-			printf("test-update: status=200 slot=%s\n", out_slot);
+			printf("test-update: status=200 slot=%s updated=%s%s%s\n", out_slot,
+			       out_updated_root ? "root" : "", out_updated_root && out_updated_kernel ? "," : "",
+			       out_updated_kernel ? "kernel" : "");
 		else
 			printf("test-update: status=%d err=%s\n", status, out_errmsg);
 		fflush(stdout);

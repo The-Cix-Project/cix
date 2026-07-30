@@ -1,15 +1,19 @@
 /*
- * Phase 16 part 1 (ADR-0031) fast test: proves POST /v1/system/update's
- * validation logic (do_system_update(), daemon/src/main.c) -- every
- * check that runs BEFORE the real device write (write_file_to_device()
- * onto ROOT_A_DEVICE/ROOT_B_DEVICE, real /dev/vdaN paths that only
- * exist under a real QEMU guest with a virtio-blk disk attached, or on
- * real hardware). None of that requires --init-mode or a real device:
- * kanxeod happily accepts --slot=a without --init-mode (boot_init(),
- * which mounts the ESP, only runs when --init-mode is also given), so
- * every 400 case here is reachable from a plain dev daemon on this
- * dev LXC. The real device-write/loader-entry success path is a
- * separate, genuinely QEMU-dependent test: test/test_boot_update.c.
+ * Phase 16 part 1 (ADR-0031) + the per-slot kernel extension (ADR-0032)
+ * fast test: proves POST /v1/system/update's validation logic
+ * (do_system_update(), daemon/src/main.c) -- every check that runs
+ * BEFORE the real device/ESP write (write_file_to_device() onto
+ * ROOT_A_DEVICE/ROOT_B_DEVICE, write_file_to_esp() onto the mounted
+ * ESP -- real paths that only exist under a real QEMU guest with a
+ * virtio-blk disk attached, or on real hardware). None of that
+ * requires --init-mode or a real device: kanxeod happily accepts
+ * --slot=a without --init-mode (boot_init(), which mounts the ESP,
+ * only runs when --init-mode is also given), so every 400 case here is
+ * reachable from a plain dev daemon on this dev LXC -- both
+ * image_path's and kernel_path's own magic checks run, and fail
+ * cleanly, well before either write is ever attempted. The real
+ * device/ESP-write/loader-entry success path is a separate, genuinely
+ * QEMU-dependent test: test/test_boot_update.c.
  */
 #include "httpclient.h"
 #include "json.h"
@@ -190,6 +194,82 @@ int main(void)
 			}
 			kx_response_free(&r);
 		}
+		/* 2d. kernel_path pointing at a file that doesn't exist */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/system/update",
+		                       "{\"kernel_path\":\"/no/such/kernel/here\"}", &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: update with nonexistent kernel_path expected 400, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 2e. kernel_path pointing at a real, readable file that is NOT
+		 * a valid bzImage -- the same plain-text fixture already proven
+		 * to fail image_path's own magic check works equally well here
+		 * (it fails bzImage's on-disk magic just as cleanly), no second
+		 * fixture needed. */
+		{
+			char body[256];
+
+			snprintf(body, sizeof(body), "{\"kernel_path\":\"%s\"}", not_squashfs_path);
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "POST", "/v1/system/update", body, &r) != 0 ||
+			    r.status != 400) {
+				fprintf(stderr,
+				        "FAIL: update with non-bzImage kernel_path expected 400, got %d\n",
+				        r.status);
+				ok = 0;
+			} else {
+				const char *err = json_str_field(r.json, "error");
+
+				if (err == NULL || strstr(err, "bzImage") == NULL) {
+					fprintf(stderr,
+					        "FAIL: non-bzImage kernel_path error should mention bzImage, got: %s\n",
+					        err != NULL ? err : "(null)");
+					ok = 0;
+				}
+			}
+			kx_response_free(&r);
+		}
+
+		/* 2f. A real, valid-magic image_path combined with a bad
+		 * kernel_path -- both must be validated before either is
+		 * written, so this still 400s cleanly (never touches a real
+		 * device, since kernel_path's own check runs before any write
+		 * regardless of image_path's own validity). A synthetic 4-byte
+		 * "hsqs" fixture is enough here -- only the magic is checked,
+		 * not real squashfs structure. */
+		{
+			char good_image_path[] = "/tmp/kanxeo_test_system_update_goodimage_XXXXXX";
+			char body[512];
+
+			if (mkstemp(good_image_path) < 0) {
+				fprintf(stderr, "FAIL: mkstemp for good-image fixture\n");
+				ok = 0;
+			} else {
+				fd = open(good_image_path, O_WRONLY | O_TRUNC);
+				if (fd >= 0) {
+					write(fd, "hsqs", 4);
+					close(fd);
+				}
+				snprintf(body, sizeof(body), "{\"image_path\":\"%s\",\"kernel_path\":\"%s\"}",
+				         good_image_path, not_squashfs_path);
+				memset(&r, 0, sizeof(r));
+				if (kx_client_request(&client, "POST", "/v1/system/update", body, &r) != 0 ||
+				    r.status != 400) {
+					fprintf(stderr,
+					        "FAIL: update with valid image_path + bad kernel_path expected "
+					        "400, got %d\n",
+					        r.status);
+					ok = 0;
+				}
+				kx_response_free(&r);
+				unlink(good_image_path);
+			}
+		}
+
 		unlink(not_squashfs_path);
 	}
 

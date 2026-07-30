@@ -420,10 +420,11 @@ POST /v1/containers
 
 ```
 POST /v1/system/update
-{"image_path": "/var/tmp/new-root.squashfs"}
+{"image_path": "/var/tmp/new-root.squashfs", "kernel_path": "/var/tmp/new-bzImage"}
 ```
 
-- `image_path` is a local path the operator has already transferred onto the box (e.g. `scp`) — there is no upload endpoint; see ADR-0031 for why. Writes that image onto this daemon's own **inactive** A/B slot (the other one from whichever it's currently running as — `--slot=a` or `--slot=b`) and stages a fresh systemd-boot loader entry with a fresh boot-counter. `400` if this daemon has no `--slot=` (not a real installed system), `image_path` doesn't exist/isn't readable, or it isn't a real squashfs image (checked via its own on-disk magic, before anything is written).
+- `image_path`/`kernel_path` are local paths the operator has already transferred onto the box (e.g. `scp`) — there is no upload endpoint; see ADR-0031 for why. Both are optional, but at least one is required — update just the root, just the kernel, or both together in one call. Writes whatever's given onto this daemon's own **inactive** A/B slot (the other one from whichever it's currently running as — `--slot=a` or `--slot=b`) and stages a fresh systemd-boot loader entry with a fresh boot-counter. The kernel is per-slot too (`kanxeo-bzImage-a`/`kanxeo-bzImage-b` on the ESP, both pre-staged identically at install time, ADR-0032) — a root-only update leaves the inactive slot's own existing kernel file untouched, it's never implicitly replaced. `400` if this daemon has no `--slot=` (not a real installed system), neither path is given, either path doesn't exist/isn't readable, or either file fails its own on-disk magic check (squashfs's `"hsqs"`, or a bzImage's boot-sector/`setup_header` magic) — checked for both before either is written, so a bad `kernel_path` never leaves a good `image_path` half-applied.
+- Response includes `"updated"`, an array of whichever of `["root", "kernel"]` were actually written this call.
 - Deliberately does **not** reboot — call `POST /system/reboot` separately once ready to cut over; the existing boot-counter/`confirm_boot()` machinery, entirely unchanged, decides whether the fresh slot sticks.
 
 ```
