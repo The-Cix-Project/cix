@@ -34,8 +34,13 @@ Kanxeo is more than a distribution — it's a discipline. Complex routing protoc
 | 9 | PKI / certificate management | Done |
 | 10 | Package manager (source-based, dependency resolution, upgrades) | Done |
 | 11 | Bare-metal boot: kernel, bootloader, A/B root, installer | Done |
+| 12 | Device/network/package expansion (PCI/USB passthrough, per-image installs, real NIC passthrough, image lifecycle) | Done |
+| 13 | Container lifecycle durability (restart policies, `depends_on`, readiness checks) | Done |
+| 14 | GPU passthrough (AMD: discovery, grouped grants, kernel driver, KFD) | Done |
+| 15 | Per-container config files + generalized sysctls | Done |
+| 16 | Host OS update mechanism + automatic package updates | Done |
 
-Every phase above is fully implemented, tested end to end, and documented — see the per-phase write-ups (design, verification steps, real bugs found and fixed) in `docs/ROADMAP.md`. Full charter: [`docs/MISSION.md`](docs/MISSION.md). API contract: [`docs/api/openapi.yaml`](docs/api/openapi.yaml), with a narrative walkthrough at [`docs/api/README.md`](docs/api/README.md).
+Every phase above is fully implemented, tested end to end, and documented — see the per-phase write-ups (design, verification steps, real bugs found and fixed) in `docs/ROADMAP.md`. Full charter: [`docs/MISSION.md`](docs/MISSION.md). Architecture diagram: [`docs/architecture.svg`](docs/architecture.svg). API contract: [`docs/api/openapi.yaml`](docs/api/openapi.yaml), with a narrative walkthrough at [`docs/api/README.md`](docs/api/README.md). Why a given significant, hard-to-reverse decision was made: [`docs/adr/`](docs/adr/).
 
 ## Building
 
@@ -170,6 +175,6 @@ web/           browser dashboard: vanilla HTML/CSS/JS, no framework, no build st
 image/         bare-metal boot tooling (Phase 11): kernel config, mkbootroot, kanxeo-install, mkinstalleriso
 pkg/recipes/   .recipe files for `pkg install` (Phase 10) — source URL, sha256, and a real pkg_build()/pkg_install() shell build, per package
 test/          one demonstrable test (+ exec target, where needed) per phase/part
-docs/          mission charter, phased roadmap, ADRs, and the OpenAPI contract
+docs/          mission charter, phased roadmap, ADRs, architecture diagram, and the OpenAPI contract
 build/         compiled output (gitignored)
 ```

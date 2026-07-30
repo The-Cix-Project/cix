@@ -9,10 +9,14 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/health` | Liveness check |
+| POST | `/system/shutdown` | Stop `kanxeod`; powers off the host too when running as real PID 1 |
+| POST | `/system/reboot` | Stop `kanxeod`; restarts the host too when running as real PID 1 |
+| POST | `/system/update` | Write a fresh OS image onto this daemon's own inactive A/B slot |
 | GET | `/containers` | List all containers this daemon knows about |
 | POST | `/containers` | Create and start a container |
 | GET | `/containers/{name}` | Inspect one container |
-| DELETE | `/containers/{name}` | Stop (if running) and remove a container |
+| DELETE | `/containers/{name}` | Stop (if running), remove it, and forget any persisted definition |
+| POST | `/containers/{name}/stop` | Kill it now, keep its persisted definition (for `restart: "unless-stopped"`) |
 | GET | `/networks` | List all networks this daemon knows about |
 | POST | `/networks` | Create a network (a real bridge, persisted across restarts) |
 | GET | `/networks/{name}` | Inspect one network |
@@ -38,6 +42,7 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | POST | `/pkg/bootstrap` | Stage the sandboxed build toolchain image (once; idempotent) |
 | GET | `/pkg/recipes` | List recipes found on disk (provisioned out of band) |
 | POST | `/pkg/install` | Start installing a package (async -- returns immediately) |
+| POST | `/pkg/update-all` | Start an upgrade for the first installed package whose recipe has drifted |
 | GET | `/pkg` | List every known package (installed or in-flight) with its state |
 | GET | `/pkg/{name}` | Inspect one package's current state |
 | DELETE | `/pkg/{name}` | Uninstall a package |
@@ -103,7 +108,7 @@ Response (`201`):
 
 ## Persisted, auto-restarting containers
 
-By default a container is purely in-memory: it dies when its own process exits, and nothing about it survives a daemon restart. Add `"restart": "always"` to make it durable:
+By default a container is purely in-memory: it dies when its own process exits, and nothing about it survives a daemon restart. Add a `restart` policy other than the default `"no"` to make it durable:
 
 ```
 POST /v1/containers
@@ -115,19 +120,25 @@ POST /v1/containers
 }
 ```
 
-This persists the exact request (`/var/lib/kanxeo/container_defs.json`) in addition to creating it live right now. From then on: it's replayed automatically at every future daemon boot, and again — after a real, fixed delay of a few seconds, never instantly — any time it exits on its own, whether that's a crash or a clean `0` exit. The delay exists specifically so a genuinely crash-looping container doesn't hammer the host; there's no backoff policy beyond that fixed delay in v1.
+This persists the exact request (`/var/lib/kanxeo/container_defs.json`) in addition to creating it live right now. From then on it's replayed automatically at every future daemon boot, and again after any unprompted exit — each restart after a real, exponentially-backed-off delay (`restart_delay_seconds`, 1–300, default 2 — doubling per consecutive failure, capped at 30s, reset to the base value once the container has stayed up at least 30s before exiting again — never instant, so a genuinely crash-looping container doesn't hammer the host).
 
-`depends_on` controls the order `restart: "always"` containers start in at boot:
+`restart` has four values:
+- `"always"` — restarts regardless of exit code, including a clean `0` exit.
+- `"on-failure"` — restarts only after a nonzero-exit/signal-killed exit, not a clean `0` exit; this only governs the crash-restart timer, boot-time autostart always attempts it regardless of how it last exited (that fact isn't persisted).
+- `"unless-stopped"` — behaves like `"always"`, except a prior `POST .../stop` is remembered across a daemon restart (it won't auto-start again until re-`POST`ed); the one policy where `stop` changes daemon-restart behavior.
+- `"no"` (default) — today's original behavior, purely in-memory.
+
+`depends_on` controls the order persisted containers start in at boot:
 
 ```json
-{"name": "router1", "image": "router", "cmd": ["/bin/bird", "-f"], "restart": "always", "depends_on": ["dns1"]}
+{"name": "router1", "image": "router", "cmd": ["/bin/bird", "-f"], "restart": "always", "depends_on": ["dns1"], "readiness": {"tcp_port": 53, "timeout_seconds": 10}}
 ```
 
-`dns1` (itself a `restart: "always"` container) is guaranteed to have been *started* before `router1` is. "Started" means its own process has begun — not that it's actually ready to serve; no health-check or readiness-probe concept exists in v1, so a dependent container needing its dependency to be truly up still needs to handle that itself (retry logic, a brief wait loop, etc. — the same boundary every container orchestrator has before real health checks exist). A `depends_on` naming an unknown or non-`"always"` container, or forming a cycle, is skipped at boot (logged, not fatal to anything else starting).
+`dns1` (itself persisted) is guaranteed to have been *started* before `router1` — and, if `dns1` sets its own `readiness` (`{"tcp_port": N, "timeout_seconds": N}`, requires `networks` to be non-empty), genuinely TCP-ready, not just process-started. Readiness is a plain, blocking `connect()` retried until it succeeds or `timeout_seconds` elapses, consulted in exactly one place — daemon-boot autostart, right before a dependent starts — best-effort: if it never succeeds, a warning is logged and boot proceeds anyway, never blocking or failing it. It is never consulted for a live `POST` or for crash-restart. A `depends_on` naming an unknown or non-persisted container, or forming a cycle, is skipped at boot (logged, not fatal to anything else starting).
 
-`DELETE /v1/containers/{name}` always means gone for good — for a `restart: "always"` container, it removes the persisted definition too, in the same call. It won't come back on a pending crash-restart (none exists, since delete never goes through that path) or on the next daemon boot. There's no separate "stop it now but keep it defined for later" operation in v1.
+`POST /v1/containers/{name}/stop` kills it now but keeps its persisted definition — the container comes back on the next daemon restart for `"always"`/`"on-failure"` (a fresh chance every boot), but stays down for `"unless-stopped"` until explicitly re-`POST`ed. `DELETE /v1/containers/{name}` always means gone for good regardless of policy — it removes the persisted definition too, in the same call, and it won't come back on a pending crash-restart or any future boot.
 
-`GET`/inspect responses always report the current `restart`/`depends_on` state, read live from the persisted definition rather than a stale echo of what creation was originally given.
+`GET`/inspect responses always report the current `restart`/`restart_delay_seconds`/`stopped`/`depends_on`/`readiness` state, read live from the persisted definition rather than a stale echo of what creation was originally given.
 
 ## Making a container act as a router
 
@@ -372,6 +383,55 @@ A bare `GET /v1/pkg/bird` still means `bird@base`. `GET /v1/pkg` (the list) incl
 
 Note: the C runtime for dynamically-linked binaries (`ld.so`/`libc.so.6`/`libtinfo.so.6`) is seeded automatically into whichever image a package lands in, `base` or otherwise (ADR-0019 for `base` at install time, ADR-0023 generalizes it to every image at first install).
 
+## Device passthrough (PCI/USB/GPU)
+
+```
+POST /v1/containers
+{
+  "name": "nas",
+  "image": "base",
+  "cmd": ["/bin/some-binary"],
+  "devices": ["usb:1-2", "gpu:0"]
+}
+```
+
+- `devices` is optional: 0–N entries, each a discovered device id from `GET /v1/devices` (`"pci:..."`, `"usb:..."`, or `"gpu:N"` for a whole GPU — `gpu:N` is never itself listed by `GET /v1/devices`, only its individual member nodes are). Real `/dev` nodes are granted via a `BPF_CGROUP_DEVICE` program on the container's own cgroup (ADR-0017) — nothing else on the host can reach them once bound. A bare `gpu:N` id expands into every node that physical GPU needs in one grant (DRM `cardN`/`renderDN` plus the shared `/dev/kfd` compute node) — see ADR-0028/ADR-0029.
+- `interfaces` is optional: 0–N real host network interface names (e.g. `"eth1"`) moved directly into the container's own netns (not a veth pair) — fd-anchored teardown, correct even if the container crashes mid-move. See ADR-0022.
+- `GET /v1/containers` echoes the real, expanded grants actually made, not an echo of what was requested.
+
+## Per-container config files + sysctls
+
+```
+POST /v1/containers
+{
+  "name": "router2",
+  "image": "router",
+  "cmd": ["/bin/bash", "/usr/local/bin/pbr.sh"],
+  "files": [{"path": "/etc/bird.conf", "content": "...", "mode": "0644"}],
+  "sysctls": [{"key": "net.ipv4.conf.all.rp_filter", "value": "0"}]
+}
+```
+
+- `files` is optional: 0–N `{path, content, mode}` entries, staged directly onto the container's own filesystem *before* its process ever `execve()`s — so `cmd` can point straight at a staged script (e.g. `pbr.sh` above). `path` must be absolute with no `.`/`..` component (`400` otherwise); `content` is bounded at 64KiB per file.
+- `sysctls` is optional: 0–N `{key, value}` entries; `key` must start with `net.` (the one sysctl subtree the kernel actually namespaces end to end — `400` for anything else, a real security boundary, not incidental). Applied inside the container's own netns right after `clone3()`, the same mechanism `ip_forward` already uses.
+- Both survive exactly like everything else in `restart: "always"`'s own replay mechanism — no separate persistence work needed. See ADR-0030.
+
+## Host + package updates
+
+```
+POST /v1/system/update
+{"image_path": "/var/tmp/new-root.squashfs"}
+```
+
+- `image_path` is a local path the operator has already transferred onto the box (e.g. `scp`) — there is no upload endpoint; see ADR-0031 for why. Writes that image onto this daemon's own **inactive** A/B slot (the other one from whichever it's currently running as — `--slot=a` or `--slot=b`) and stages a fresh systemd-boot loader entry with a fresh boot-counter. `400` if this daemon has no `--slot=` (not a real installed system), `image_path` doesn't exist/isn't readable, or it isn't a real squashfs image (checked via its own on-disk magic, before anything is written).
+- Deliberately does **not** reboot — call `POST /system/reboot` separately once ready to cut over; the existing boot-counter/`confirm_boot()` machinery, entirely unchanged, decides whether the fresh slot sticks.
+
+```
+POST /v1/pkg/update-all
+```
+
+- Finds the first installed package (across every image) whose recipe's `pkg_version=` has drifted and starts an upgrade for it, reusing `POST /pkg/install {"upgrade": true}`'s entire existing mechanism — `202` with the started package's state, or `200 {"status": "nothing to update"}` if everything's already current. Starts at most one job at a time (the same v1 single-install-in-flight constraint every other install path has, honestly respected rather than worked around); call again once that job finishes to drain the whole backlog.
+
 ## Current scope boundaries (v1, deliberate — see ADR-0007)
 
 - No image build/pull endpoint yet — images are provisioned onto disk out of band.
@@ -381,7 +441,9 @@ Note: the C runtime for dynamically-linked binaries (`ld.so`/`libc.so.6`/`libtin
 - Routes are set-once at creation and not echoed back or introspectable afterward; modifying them on a running container would need a new "enter another netns from outside" primitive, not built yet. See `docs/ROADMAP.md`.
 - DNS server bindings are in-memory only (not persisted, like the container registry itself — a binding referencing a container that dies with the daemon means nothing after a restart anyway). Only one hosts-format record type; no CNAME/MX/TXT/etc.
 - PKI: no certificate revocation/CRL, no CA regeneration/rotation, no CSR-submission flow (the daemon always generates both the keypair and the cert itself) — see `docs/ROADMAP.md` Phase 9.
-- Package manager: only one install in flight at a time (dependency chains still serialize through that same single slot); no version-constrained dependencies (any installed version satisfies a dependency); symlinks in a package's own `DESTDIR` output are skipped (regular files and directories only); no bulk "upgrade everything outdated" — upgrades are per-package, explicit — see `docs/ROADMAP.md` Phase 10.
+- Package manager: only one install in flight at a time (dependency chains, and `POST /pkg/update-all`'s own successive calls, still serialize through that same single slot — see [Host + package updates](#host--package-updates) below); no version-constrained dependencies (any installed version satisfies a dependency); symlinks in a package's own `DESTDIR` output are skipped (regular files and directories only) — see `docs/ROADMAP.md` Phase 10.
+- No scheduled/periodic trigger for `POST /system/update` or `POST /pkg/update-all` — both are on-demand, operator- or cron-invoked; no automatic "update then reboot" chaining — see `docs/ROADMAP.md` Phase 16.
+- No volume/bind-mount concept beyond small, content-inlined `files` (see [Per-container config files + sysctls](#per-container-config-files--sysctls) below) — a large binary asset or directory tree has no home in this model yet — see `docs/ROADMAP.md` Phase 15.
 
 ## Why this file exists alongside `openapi.yaml`
 

@@ -1,0 +1,301 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 1180" font-family="'DejaVu Sans', Verdana, Arial, sans-serif">
+  <title>Kanxeo Architecture (as of Phase 16)</title>
+  <desc>
+    Kanxeo hardware/workload orchestration platform architecture: REST-only client
+    surfaces (kanxeoctl CLI, web dashboard) talking to the kanxeod daemon, which is
+    the sole process with direct access to the container runtime library and every
+    host/network/DNS/PKI/package primitive (API-First Mandate, ADR-0005). Below the
+    daemon: the container runtime it drives, and the A/B boot / on-disk layout it
+    manages as host PID 1.
+  </desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4a5568"/>
+    </marker>
+    <marker id="arrowLight" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8a94a6"/>
+    </marker>
+  </defs>
+
+  <style>
+    .title { font-size: 26px; font-weight: 700; fill: #1a202c; }
+    .subtitle { font-size: 13px; fill: #4a5568; }
+    .layer-label { font-size: 12px; font-weight: 700; fill: #718096; letter-spacing: 1px; }
+    .box { fill: #ffffff; stroke: #2d3748; stroke-width: 1.6; rx: 8; }
+    .box-daemon { fill: #eef2ff; stroke: #4338ca; stroke-width: 2; rx: 10; }
+    .box-module { fill: #f7fafc; stroke: #667eea; stroke-width: 1.2; rx: 6; }
+    .box-client { fill: #f0fff4; stroke: #2f855a; stroke-width: 1.6; rx: 8; }
+    .box-container { fill: #fffaf0; stroke: #c05621; stroke-width: 1.3; rx: 6; }
+    .box-host { fill: #fff5f5; stroke: #c53030; stroke-width: 1.6; rx: 8; }
+    .box-slot { fill: #ffffff; stroke: #c53030; stroke-width: 1.1; stroke-dasharray: 4 2; rx: 5; }
+    .box-title { font-size: 15px; font-weight: 700; fill: #1a202c; }
+    .module-title { font-size: 11.5px; font-weight: 700; fill: #2d3748; }
+    .module-text { font-size: 10px; fill: #4a5568; }
+    .body-text { font-size: 11px; fill: #2d3748; }
+    .small-text { font-size: 9.5px; fill: #718096; }
+    .arrow-label { font-size: 10px; fill: #4a5568; font-style: italic; }
+    .boundary { fill: none; stroke: #a0aec0; stroke-width: 1.4; stroke-dasharray: 6 4; rx: 12; }
+  </style>
+
+  <rect width="1400" height="1180" fill="#fbfbfd"/>
+
+  <text x="30" y="40" class="title">Kanxeo Architecture</text>
+  <text x="30" y="60" class="subtitle">Hardware &amp; workload orchestration platform — client-daemon, REST-first, hand-rolled from source (docs/MISSION.md) — as of Phase 16</text>
+
+  <!-- ============ CLIENT LAYER ============ -->
+  <text x="30" y="95" class="layer-label">CLIENT SURFACES — pure REST clients, zero direct runtime access (ADR-0005)</text>
+
+  <rect x="30" y="105" width="260" height="70" class="box-client"/>
+  <text x="160" y="130" text-anchor="middle" class="box-title">kanxeoctl (CLI)</text>
+  <text x="160" y="148" text-anchor="middle" class="module-text">One subcommand per endpoint</text>
+  <text x="160" y="162" text-anchor="middle" class="module-text">client/src/httpclient.c</text>
+
+  <rect x="330" y="105" width="260" height="70" class="box-client"/>
+  <text x="460" y="130" text-anchor="middle" class="box-title">Web Dashboard</text>
+  <text x="460" y="148" text-anchor="middle" class="module-text">Vanilla HTML/CSS/JS, no build step (ADR-0010)</text>
+  <text x="460" y="162" text-anchor="middle" class="module-text">web/ — served static by kanxeod</text>
+
+  <rect x="1070" y="105" width="300" height="70" class="box" fill="#fefcf3" stroke="#b7791f"/>
+  <text x="1220" y="128" text-anchor="middle" class="box-title">Operator</text>
+  <text x="1220" y="146" text-anchor="middle" class="module-text">scp's new OS/package images onto the box</text>
+  <text x="1220" y="162" text-anchor="middle" class="module-text">out-of-band — no registry, no remote fetch</text>
+
+  <!-- arrows client -> daemon -->
+  <line x1="160" y1="175" x2="160" y2="215" stroke="#4a5568" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="460" y1="175" x2="460" y2="215" stroke="#4a5568" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="475" y="197" class="arrow-label">HTTP / JSON, :7620</text>
+
+  <!-- ============ DAEMON LAYER ============ -->
+  <text x="30" y="242" class="layer-label">kanxeod — THE ONLY PROCESS WITH RUNTIME/NETWORK/DNS/PKI/PKG ACCESS</text>
+
+  <rect x="30" y="252" width="1000" height="330" class="box-daemon"/>
+  <text x="530" y="278" text-anchor="middle" class="box-title">kanxeod — single-threaded, non-blocking epoll reactor (ADR-0007, ADR-0009)</text>
+  <text x="530" y="294" text-anchor="middle" class="small-text">hand-rolled HTTP/1.1 + JSON, no external libraries, dynamically linked against system glibc, TCC-compiled</text>
+
+  <!-- module row 1 -->
+  <rect x="50" y="312" width="150" height="60" class="box-module"/>
+  <text x="125" y="330" text-anchor="middle" class="module-title">Registry</text>
+  <text x="125" y="344" text-anchor="middle" class="module-text">container lifecycle,</text>
+  <text x="125" y="356" text-anchor="middle" class="module-text">restart/depends_on</text>
+
+  <rect x="212" y="312" width="150" height="60" class="box-module"/>
+  <text x="287" y="330" text-anchor="middle" class="module-title">Network</text>
+  <text x="287" y="344" text-anchor="middle" class="module-text">bridges, subnets,</text>
+  <text x="287" y="356" text-anchor="middle" class="module-text">IP allocation</text>
+
+  <rect x="374" y="312" width="150" height="60" class="box-module"/>
+  <text x="449" y="330" text-anchor="middle" class="module-title">DNS / PKI</text>
+  <text x="449" y="344" text-anchor="middle" class="module-text">records, dnsmasq sync,</text>
+  <text x="449" y="356" text-anchor="middle" class="module-text">root CA, leaf certs</text>
+
+  <rect x="536" y="312" width="150" height="60" class="box-module"/>
+  <text x="611" y="330" text-anchor="middle" class="module-title">Pkg / Image</text>
+  <text x="611" y="344" text-anchor="middle" class="module-text">source builds,</text>
+  <text x="611" y="356" text-anchor="middle" class="module-text">image lifecycle</text>
+
+  <rect x="698" y="312" width="150" height="60" class="box-module"/>
+  <text x="773" y="330" text-anchor="middle" class="module-title">Device</text>
+  <text x="773" y="344" text-anchor="middle" class="module-text">PCI/USB/GPU discovery</text>
+  <text x="773" y="356" text-anchor="middle" class="module-text">+ grouped grants (ADR-0028)</text>
+
+  <rect x="860" y="312" width="150" height="60" class="box-module"/>
+  <text x="935" y="330" text-anchor="middle" class="module-title">System</text>
+  <text x="935" y="344" text-anchor="middle" class="module-text">shutdown/reboot/update</text>
+  <text x="935" y="356" text-anchor="middle" class="module-text">(ADR-0016, ADR-0031)</text>
+
+  <!-- module row 2: runtime library -->
+  <rect x="50" y="388" width="960" height="170" class="box" fill="#fffceb" stroke="#b7791f" stroke-width="1.4"/>
+  <text x="530" y="408" text-anchor="middle" class="box-title" fill="#7c5a00">Container Runtime Library (include/container.h) — linked directly into kanxeod only</text>
+
+  <rect x="70" y="422" width="220" height="120" class="box-module"/>
+  <text x="180" y="440" text-anchor="middle" class="module-title">Namespaces + cgroups v2</text>
+  <text x="180" y="458" text-anchor="middle" class="module-text">clone3() + CLONE_INTO_CGROUP</text>
+  <text x="180" y="472" text-anchor="middle" class="module-text">+ CLONE_PIDFD (ADR-0003)</text>
+  <text x="180" y="490" text-anchor="middle" class="module-text">pivot_root, mount namespace</text>
+  <text x="180" y="504" text-anchor="middle" class="module-text">BPF_CGROUP_DEVICE filter</text>
+  <text x="180" y="522" text-anchor="middle" class="module-text">for device passthrough (ADR-0017)</text>
+
+  <rect x="310" y="422" width="220" height="120" class="box-module"/>
+  <text x="420" y="440" text-anchor="middle" class="module-title">OverlayFS</text>
+  <text x="420" y="458" text-anchor="middle" class="module-text">shared, read-only lowerdir</text>
+  <text x="420" y="472" text-anchor="middle" class="module-text">(the image) + per-container</text>
+  <text x="420" y="486" text-anchor="middle" class="module-text">upperdir/workdir (ADR-0004)</text>
+  <text x="420" y="504" text-anchor="middle" class="module-text">config files staged pre-clone3</text>
+  <text x="420" y="518" text-anchor="middle" class="module-text">into upperdir (ADR-0030)</text>
+
+  <rect x="550" y="422" width="220" height="120" class="box-module"/>
+  <text x="660" y="440" text-anchor="middle" class="module-title">netplane (rtnetlink)</text>
+  <text x="660" y="458" text-anchor="middle" class="module-text">100% custom C data plane —</text>
+  <text x="660" y="472" text-anchor="middle" class="module-text">talks to the kernel directly</text>
+  <text x="660" y="486" text-anchor="middle" class="module-text">via rtnetlink sockets</text>
+  <text x="660" y="504" text-anchor="middle" class="module-text">(no OVS, no eBPF dataplane,</text>
+  <text x="660" y="518" text-anchor="middle" class="module-text">never shells out to ip/iproute2)</text>
+
+  <rect x="790" y="422" width="200" height="120" class="box-module"/>
+  <text x="890" y="440" text-anchor="middle" class="module-title">sysctls + device nodes</text>
+  <text x="890" y="458" text-anchor="middle" class="module-text">net.* sysctls only</text>
+  <text x="890" y="472" text-anchor="middle" class="module-text">(namespaced subtree)</text>
+  <text x="890" y="490" text-anchor="middle" class="module-text">real PCI/USB/GPU /dev</text>
+  <text x="890" y="504" text-anchor="middle" class="module-text">nodes granted per-container</text>
+
+  <!-- ============ CONTAINER RUNTIME LAYER ============ -->
+  <text x="30" y="616" class="layer-label">CONTAINERS — each its own namespaces + cgroup, driven by kanxeod, never by CLI/web directly</text>
+
+  <rect x="30" y="626" width="1000" height="130" class="boundary"/>
+
+  <rect x="55" y="648" width="220" height="90" class="box-container"/>
+  <text x="165" y="668" text-anchor="middle" class="module-title">Container A</text>
+  <text x="165" y="684" text-anchor="middle" class="module-text">upperdir (own diff)</text>
+  <text x="165" y="698" text-anchor="middle" class="module-text">netns + pidns + cgroup</text>
+  <text x="165" y="712" text-anchor="middle" class="module-text">veth → bridge (network N)</text>
+  <text x="165" y="726" text-anchor="middle" class="module-text">restart/depends_on/readiness</text>
+
+  <rect x="300" y="648" width="220" height="90" class="box-container"/>
+  <text x="410" y="668" text-anchor="middle" class="module-title">Container B</text>
+  <text x="410" y="684" text-anchor="middle" class="module-text">upperdir (own diff)</text>
+  <text x="410" y="698" text-anchor="middle" class="module-text">netns + pidns + cgroup</text>
+  <text x="410" y="712" text-anchor="middle" class="module-text">real NIC passthrough</text>
+  <text x="410" y="726" text-anchor="middle" class="module-text">(fd-anchored, ADR-0022)</text>
+
+  <rect x="545" y="648" width="220" height="90" class="box-container"/>
+  <text x="655" y="668" text-anchor="middle" class="module-title">Container C</text>
+  <text x="655" y="684" text-anchor="middle" class="module-text">upperdir (own diff)</text>
+  <text x="655" y="698" text-anchor="middle" class="module-text">GPU grant: gpu:0</text>
+  <text x="655" y="712" text-anchor="middle" class="module-text">(DRM + KFD nodes, ADR-0028/29)</text>
+
+  <rect x="790" y="648" width="215" height="90" class="box-module" fill="#f7fafc" stroke="#a0aec0"/>
+  <text x="897" y="668" text-anchor="middle" class="module-title">shared lowerdir</text>
+  <text x="897" y="686" text-anchor="middle" class="module-text">one image on disk,</text>
+  <text x="897" y="700" text-anchor="middle" class="module-text">e.g. /var/lib/kanxeo/</text>
+  <text x="897" y="714" text-anchor="middle" class="module-text">images/&lt;name&gt;/rootfs</text>
+
+  <line x1="165" y1="648" x2="850" y2="738" stroke="#c05621" stroke-width="0.8" stroke-dasharray="2 2" opacity="0.5"/>
+  <line x1="410" y1="648" x2="860" y2="738" stroke="#c05621" stroke-width="0.8" stroke-dasharray="2 2" opacity="0.5"/>
+  <line x1="655" y1="648" x2="880" y2="738" stroke="#c05621" stroke-width="0.8" stroke-dasharray="2 2" opacity="0.5"/>
+
+  <!-- daemon -> containers arrow -->
+  <line x1="530" y1="582" x2="530" y2="620" stroke="#4a5568" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="545" y="605" class="arrow-label">clone3() + overlay mount</text>
+
+  <!-- ============ RIGHT COLUMN: PERSISTENT STATE ============ -->
+  <rect x="1070" y="252" width="300" height="504" class="box" fill="#f7fafc" stroke="#4a5568"/>
+  <text x="1220" y="278" text-anchor="middle" class="box-title">Persistent State (BASE_DIR)</text>
+  <text x="1220" y="294" text-anchor="middle" class="small-text">real kanxeo-containers partition (ADR-0018)</text>
+
+  <rect x="1090" y="308" width="260" height="42" class="box-module"/>
+  <text x="1220" y="328" text-anchor="middle" class="module-text">images/ — one rootfs per image</text>
+  <text x="1220" y="342" text-anchor="middle" class="small-text">shared OverlayFS lowerdirs</text>
+
+  <rect x="1090" y="358" width="260" height="42" class="box-module"/>
+  <text x="1220" y="378" text-anchor="middle" class="module-text">containers/ — per-container upperdir</text>
+  <text x="1220" y="392" text-anchor="middle" class="small-text">config files staged here (ADR-0030)</text>
+
+  <rect x="1090" y="408" width="260" height="42" class="box-module"/>
+  <text x="1220" y="426" text-anchor="middle" class="module-text">*.json state (atomic-rewrite)</text>
+  <text x="1220" y="440" text-anchor="middle" class="small-text">networks/dns/pki/pkg/container_defs</text>
+
+  <rect x="1090" y="458" width="260" height="42" class="box-module"/>
+  <text x="1220" y="478" text-anchor="middle" class="module-text">pkg/recipes + pkg/sources</text>
+  <text x="1220" y="492" text-anchor="middle" class="small-text">source-based package builds</text>
+
+  <rect x="1090" y="510" width="260" height="80" class="box-module" fill="#eef2ff" stroke="#4338ca"/>
+  <text x="1220" y="530" text-anchor="middle" class="module-title">API-First Mandate (ADR-0005)</text>
+  <text x="1220" y="548" text-anchor="middle" class="module-text">Every capability CLI/web offer</text>
+  <text x="1220" y="562" text-anchor="middle" class="module-text">exists as a REST endpoint FIRST.</text>
+  <text x="1220" y="576" text-anchor="middle" class="module-text">No other process links container.h.</text>
+
+  <line x1="1070" y1="140" x2="1070" y2="200" stroke="#8a94a6" stroke-width="1.2" marker-end="url(#arrowLight)"/>
+  <text x="1085" y="180" class="arrow-label" fill="#8a94a6">local file path</text>
+  <line x1="1070" y1="200" x2="900" y2="252" stroke="#8a94a6" stroke-width="1.2" marker-end="url(#arrowLight)"/>
+
+  <!-- ============ HOST OS / BOOT LAYER ============ -->
+  <text x="30" y="792" class="layer-label">HOST OS — kanxeod itself as real PID 1, no initramfs (Phase 11)</text>
+
+  <rect x="30" y="802" width="1340" height="330" class="box-host"/>
+  <text x="700" y="828" text-anchor="middle" class="box-title">Read-only squashfs A/B root, systemd-boot's native boot counting (ADR-0014)</text>
+
+  <!-- ESP -->
+  <rect x="55" y="850" width="300" height="260" class="box" fill="#ffffff" stroke="#c53030"/>
+  <text x="205" y="872" text-anchor="middle" class="module-title">ESP (kanxeo-esp, FAT32)</text>
+  <text x="205" y="892" text-anchor="middle" class="module-text">shim (MS-signed) → systemd-boot</text>
+  <text x="205" y="906" text-anchor="middle" class="module-text">(Kanxeo-signed, ADR-0015)</text>
+  <text x="205" y="922" text-anchor="middle" class="module-text">→ kanxeo-bzImage</text>
+  <text x="205" y="944" text-anchor="middle" class="module-text">loader/entries/kanxeo-{a,b}[+N]</text>
+  <text x="205" y="958" text-anchor="middle" class="module-text">.conf — Automatic Boot</text>
+  <text x="205" y="972" text-anchor="middle" class="module-text">Assessment tries-left counter</text>
+  <text x="205" y="994" text-anchor="middle" class="module-text">confirm_boot(): renames the</text>
+  <text x="205" y="1008" text-anchor="middle" class="module-text">healthy slot's entry once</text>
+  <text x="205" y="1022" text-anchor="middle" class="module-text">serving (drops the counter)</text>
+  <text x="205" y="1044" text-anchor="middle" class="module-text">mounted /boot for the whole</text>
+  <text x="205" y="1058" text-anchor="middle" class="module-text">daemon runtime (writable)</text>
+  <text x="205" y="1080" text-anchor="middle" class="module-text" font-style="italic">POST /system/update writes</text>
+  <text x="205" y="1094" text-anchor="middle" class="module-text" font-style="italic">a fresh entry here (ADR-0031)</text>
+
+  <!-- Slot A / B -->
+  <rect x="380" y="850" width="330" height="260" class="box" fill="#ffffff" stroke="#c53030"/>
+  <text x="545" y="872" text-anchor="middle" class="module-title">Root A / Root B (kanxeo-root-a / -b)</text>
+
+  <rect x="400" y="886" width="135" height="140" class="box-slot"/>
+  <text x="467" y="906" text-anchor="middle" class="module-text" font-weight="700">Slot A</text>
+  <text x="467" y="922" text-anchor="middle" class="small-text">/dev/vda2</text>
+  <text x="467" y="940" text-anchor="middle" class="small-text">read-only</text>
+  <text x="467" y="954" text-anchor="middle" class="small-text">squashfs</text>
+  <text x="467" y="972" text-anchor="middle" class="small-text">control-plane</text>
+  <text x="467" y="986" text-anchor="middle" class="small-text">image (kanxeod</text>
+  <text x="467" y="1000" text-anchor="middle" class="small-text">+ web/ + libs)</text>
+
+  <rect x="545" y="886" width="135" height="140" class="box-slot"/>
+  <text x="612" y="906" text-anchor="middle" class="module-text" font-weight="700">Slot B</text>
+  <text x="612" y="922" text-anchor="middle" class="small-text">/dev/vda3</text>
+  <text x="612" y="940" text-anchor="middle" class="small-text">the OTHER slot —</text>
+  <text x="612" y="954" text-anchor="middle" class="small-text">stays empty until</text>
+  <text x="612" y="968" text-anchor="middle" class="small-text">the first real</text>
+  <text x="612" y="982" text-anchor="middle" class="small-text">update writes here</text>
+  <text x="612" y="1000" text-anchor="middle" class="small-text">(ROOT_B_DEVICE)</text>
+
+  <text x="545" y="1046" text-anchor="middle" class="module-text">One boots, one is the write target for</text>
+  <text x="545" y="1062" text-anchor="middle" class="module-text">the NEXT update — never touched live</text>
+  <text x="545" y="1078" text-anchor="middle" class="module-text">(ADR-0031: "write, verify, cut over")</text>
+
+  <!-- Config + Containers partitions -->
+  <rect x="735" y="850" width="300" height="260" class="box" fill="#ffffff" stroke="#c53030"/>
+  <text x="885" y="872" text-anchor="middle" class="module-title">Config + Containers partitions</text>
+
+  <rect x="755" y="886" width="260" height="90" class="box-module"/>
+  <text x="885" y="906" text-anchor="middle" class="module-text">kanxeo-config (ext4, /dev/vda4)</text>
+  <text x="885" y="924" text-anchor="middle" class="small-text">net.conf — static IP applied at boot</text>
+  <text x="885" y="938" text-anchor="middle" class="small-text">mount is non-fatal if absent</text>
+  <text x="885" y="960" text-anchor="middle" class="small-text">(pre-install/test-only disks)</text>
+
+  <rect x="755" y="986" width="260" height="105" class="box-module"/>
+  <text x="885" y="1006" text-anchor="middle" class="module-text">kanxeo-containers (ext4, /dev/vda5)</text>
+  <text x="885" y="1024" text-anchor="middle" class="small-text">backs BASE_DIR — the right-hand</text>
+  <text x="885" y="1038" text-anchor="middle" class="small-text">column of this diagram — genuinely</text>
+  <text x="885" y="1052" text-anchor="middle" class="small-text">persists across a real reboot</text>
+  <text x="885" y="1066" text-anchor="middle" class="small-text">falls back to tmpfs if absent</text>
+  <text x="885" y="1080" text-anchor="middle" class="small-text">(test-only disks, ADR-0018)</text>
+
+  <!-- kernel -->
+  <rect x="1060" y="850" width="310" height="260" class="box" fill="#ffffff" stroke="#c53030"/>
+  <text x="1215" y="872" text-anchor="middle" class="module-title">Mainline Linux kernel</text>
+  <text x="1215" y="894" text-anchor="middle" class="module-text">EFI stub boot, no initramfs</text>
+  <text x="1215" y="912" text-anchor="middle" class="module-text">/bin/kanxeod runs as init= directly</text>
+  <text x="1215" y="934" text-anchor="middle" class="module-text">clone3, CLONE_INTO_CGROUP,</text>
+  <text x="1215" y="948" text-anchor="middle" class="module-text">CLONE_PIDFD, cgroup v2,</text>
+  <text x="1215" y="962" text-anchor="middle" class="module-text">OverlayFS, rtnetlink, squashfs,</text>
+  <text x="1215" y="976" text-anchor="middle" class="module-text">BPF_CGROUP_DEVICE</text>
+  <text x="1215" y="998" text-anchor="middle" class="module-text">GPU: amdgpu + KFD (mainline,</text>
+  <text x="1215" y="1012" text-anchor="middle" class="module-text">AMD only — no proprietary driver,</text>
+  <text x="1215" y="1026" text-anchor="middle" class="module-text">ADR-0029)</text>
+  <text x="1215" y="1050" text-anchor="middle" class="module-text" font-style="italic">Same kernel builds this project's</text>
+  <text x="1215" y="1064" text-anchor="middle" class="module-text" font-style="italic">own QEMU test target and the</text>
+  <text x="1215" y="1078" text-anchor="middle" class="module-text" font-style="italic">real installed system (Phase 11)</text>
+
+  <!-- daemon -> host os arrow -->
+  <line x1="530" y1="582" x2="205" y2="850" stroke="#8a94a6" stroke-width="1.2" stroke-dasharray="3 3" marker-end="url(#arrowLight)"/>
+  <text x="235" y="700" class="arrow-label" fill="#8a94a6">runs AS the host (PID 1)</text>
+
+  <text x="30" y="1150" class="small-text">Reflects Phase 16 (host OS update mechanism + automatic package updates, ADR-0031). Source of truth for what shipped: docs/ROADMAP.md — for why: docs/adr/.</text>
+  <text x="30" y="1164" class="small-text">Update this diagram whenever a change alters a box or arrow shown here — do not let it drift (see CLAUDE.md's Documentation Map).</text>
+</svg>
