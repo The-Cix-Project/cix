@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define DEFAULT_HOST "127.0.0.1"
 #define DEFAULT_PORT 7620
@@ -2053,6 +2054,142 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 	return 2;
 }
 
+/*
+ * The one dispatch table, shared by main()'s own one-shot invocation
+ * and run_shell()'s interactive loop below -- extracted so both call
+ * exactly the same code per command instead of two copies of this
+ * chain drifting apart over time. argc/argv here are already just the
+ * command's own remaining arguments (the leading "--host="-style
+ * global flags and the command name itself are stripped by the
+ * caller before this is reached).
+ */
+static int dispatch_command(const struct kx_client *client, int json_mode, const char *cmd,
+                             int argc, char **argv)
+{
+	if (strcmp(cmd, "health") == 0)
+		return cmd_health(client, json_mode);
+	if (strcmp(cmd, "shutdown") == 0)
+		return cmd_shutdown(client, json_mode);
+	if (strcmp(cmd, "reboot") == 0)
+		return cmd_reboot(client, json_mode);
+	if (strcmp(cmd, "update") == 0)
+		return cmd_update(client, json_mode, argc, argv);
+	if (strcmp(cmd, "backup") == 0)
+		return cmd_backup(client, json_mode, argc, argv);
+	if (strcmp(cmd, "restore") == 0)
+		return cmd_restore(client, json_mode, argc, argv);
+	if (strcmp(cmd, "ps") == 0)
+		return cmd_ps(client, json_mode);
+	if (strcmp(cmd, "run") == 0)
+		return cmd_run(client, json_mode, argc, argv);
+	if (strcmp(cmd, "inspect") == 0)
+		return cmd_inspect(client, json_mode, argc, argv);
+	if (strcmp(cmd, "stop") == 0)
+		return cmd_stop(client, json_mode, argc, argv);
+	if (strcmp(cmd, "rm") == 0)
+		return cmd_rm(client, json_mode, argc, argv);
+	if (strcmp(cmd, "network") == 0)
+		return cmd_network(client, json_mode, argc, argv);
+	if (strcmp(cmd, "image") == 0)
+		return cmd_image(client, json_mode, argc, argv);
+	if (strcmp(cmd, "device") == 0)
+		return cmd_device(client, json_mode, argc, argv);
+	if (strcmp(cmd, "dns") == 0)
+		return cmd_dns(client, json_mode, argc, argv);
+	if (strcmp(cmd, "pki") == 0)
+		return cmd_pki(client, json_mode, argc, argv);
+	if (strcmp(cmd, "pkg") == 0)
+		return cmd_pkg(client, json_mode, argc, argv);
+
+	fprintf(stderr, "kanxeoctl: unknown command '%s'\n", cmd);
+	print_usage(stderr);
+	return 2;
+}
+
+#define SHELL_MAX_TOKENS 64
+
+/*
+ * Splits line (modified in place) into up to max_tokens whitespace-
+ * separated tokens, treating a "..."/'...' span as one token with the
+ * quotes stripped -- not a full shell grammar (no backslash-escapes
+ * inside quotes), just enough for the one real case that needs it:
+ * "run --name=X --image=Y -- /bin/sh -c \"sleep 1\"", where a CMD arg
+ * needs an embedded space.
+ */
+static int tokenize_line(char *line, char **tokens, int max_tokens)
+{
+	int n = 0;
+	char *p = line;
+
+	while (*p != '\0' && n < max_tokens) {
+		char quote = '\0';
+
+		while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+			p++;
+		if (*p == '\0')
+			break;
+		if (*p == '"' || *p == '\'') {
+			quote = *p;
+			p++;
+		}
+		tokens[n++] = p;
+		if (quote != '\0') {
+			while (*p != '\0' && *p != quote)
+				p++;
+		} else {
+			while (*p != '\0' && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r')
+				p++;
+		}
+		if (*p != '\0') {
+			*p = '\0';
+			p++;
+		}
+	}
+	return n;
+}
+
+/*
+ * Interactive shell: entered when kanxeoctl is invoked with no command
+ * and stdin is a real terminal (see main()) -- one persistent client,
+ * one dispatch_command() call per typed line, no reconnect-per-command
+ * ceremony. Plain fgets(), deliberately no GNU readline (no history/
+ * arrow-key editing) -- this project's own CLI links against nothing
+ * but its own code today, and readline would be its first external
+ * runtime dependency; not warranted for what was asked ("keep it
+ * simple"). A failed command prints its existing error and continues
+ * the loop -- a broken command shouldn't end the session, the same
+ * posture any real shell already has. "exit"/"quit" or EOF (Ctrl-D)
+ * end it; "help" reuses print_usage(), not a second copy of it.
+ */
+static int run_shell(const struct kx_client *client, int json_mode)
+{
+	char line[4096];
+	char *tokens[SHELL_MAX_TOKENS];
+
+	printf("kanxeoctl interactive shell -- type a command (e.g. \"ps\"), \"help\", or \"exit\"\n");
+	for (;;) {
+		int n;
+
+		printf("kanxeo> ");
+		fflush(stdout);
+		if (fgets(line, sizeof(line), stdin) == NULL) {
+			printf("\n");
+			break;
+		}
+		n = tokenize_line(line, tokens, SHELL_MAX_TOKENS);
+		if (n == 0)
+			continue;
+		if (strcmp(tokens[0], "exit") == 0 || strcmp(tokens[0], "quit") == 0)
+			break;
+		if (strcmp(tokens[0], "help") == 0) {
+			print_usage(stdout);
+			continue;
+		}
+		dispatch_command(client, json_mode, tokens[0], n - 1, tokens + 1);
+	}
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	const char *host = DEFAULT_HOST;
@@ -2077,50 +2214,15 @@ int main(int argc, char **argv)
 		i++;
 	}
 
+	kx_client_init(&client, host, port);
+
 	if (i >= argc) {
+		if (isatty(STDIN_FILENO))
+			return run_shell(&client, json_mode);
 		print_usage(stderr);
 		return 2;
 	}
 	cmd = argv[i++];
 
-	kx_client_init(&client, host, port);
-
-	if (strcmp(cmd, "health") == 0)
-		return cmd_health(&client, json_mode);
-	if (strcmp(cmd, "shutdown") == 0)
-		return cmd_shutdown(&client, json_mode);
-	if (strcmp(cmd, "reboot") == 0)
-		return cmd_reboot(&client, json_mode);
-	if (strcmp(cmd, "update") == 0)
-		return cmd_update(&client, json_mode, argc - i, argv + i);
-	if (strcmp(cmd, "backup") == 0)
-		return cmd_backup(&client, json_mode, argc - i, argv + i);
-	if (strcmp(cmd, "restore") == 0)
-		return cmd_restore(&client, json_mode, argc - i, argv + i);
-	if (strcmp(cmd, "ps") == 0)
-		return cmd_ps(&client, json_mode);
-	if (strcmp(cmd, "run") == 0)
-		return cmd_run(&client, json_mode, argc - i, argv + i);
-	if (strcmp(cmd, "inspect") == 0)
-		return cmd_inspect(&client, json_mode, argc - i, argv + i);
-	if (strcmp(cmd, "stop") == 0)
-		return cmd_stop(&client, json_mode, argc - i, argv + i);
-	if (strcmp(cmd, "rm") == 0)
-		return cmd_rm(&client, json_mode, argc - i, argv + i);
-	if (strcmp(cmd, "network") == 0)
-		return cmd_network(&client, json_mode, argc - i, argv + i);
-	if (strcmp(cmd, "image") == 0)
-		return cmd_image(&client, json_mode, argc - i, argv + i);
-	if (strcmp(cmd, "device") == 0)
-		return cmd_device(&client, json_mode, argc - i, argv + i);
-	if (strcmp(cmd, "dns") == 0)
-		return cmd_dns(&client, json_mode, argc - i, argv + i);
-	if (strcmp(cmd, "pki") == 0)
-		return cmd_pki(&client, json_mode, argc - i, argv + i);
-	if (strcmp(cmd, "pkg") == 0)
-		return cmd_pkg(&client, json_mode, argc - i, argv + i);
-
-	fprintf(stderr, "kanxeoctl: unknown command '%s'\n", cmd);
-	print_usage(stderr);
-	return 2;
+	return dispatch_command(&client, json_mode, cmd, argc - i, argv + i);
 }

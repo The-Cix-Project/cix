@@ -2,6 +2,22 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 18: kernel video console + interactive kanxeoctl shell
+
+Raised directly by the user after their first real Proxmox install: no video console on the installed system (only serial ever worked), and no way to stay on the box issuing `kanxeoctl` commands one after another without re-typing `--host=...` each time.
+
+#### Added
+- `image/kernel/qemu-part1.config`: `CONFIG_VT`/`CONFIG_VT_CONSOLE`/`CONFIG_FRAMEBUFFER_CONSOLE`/`CONFIG_SYSFB_SIMPLEFB`/`CONFIG_DRM_SIMPLEDRM`/`CONFIG_DRM_FBDEV_EMULATION` -- rides the EFI GOP framebuffer UEFI firmware already sets up via DRM's `simpledrm` driver, works without any GPU-specific driver bound to anything.
+- `cli/src/main.c`: `dispatch_command()` (the one-shot dispatch chain, extracted so both call paths share it), `tokenize_line()` (quote-aware whitespace tokenizer), `run_shell()` (interactive REPL, entered when `kanxeoctl` is invoked with no command on a real terminal). `exit`/`quit`/EOF end it; `help` reuses `print_usage()`.
+- `README.md`: notes on both.
+
+#### Fixed
+- `tokenize_line()` didn't treat `\n`/`\r` as delimiters, so `fgets()`'s trailing newline stayed attached to the last token -- every typed command, including `exit`, silently fell through to "unknown command." Found via a real `pty`-based interactive test, not just the non-tty gating check.
+
+Verified: real kernel source fetch, `merge_config.sh`, `olddefconfig`, programmatic confirmation every fragment symbol (not just the new ones) landed as `=y`, then a full `make bzImage`. `test_boot`/`test_boot_ab`/`test_installer`/`test_boot_update` each re-run 3 consecutive times against the new kernel; the captured serial log confirms `simpledrm` bound and the console switched to it (`Console: switching to colour frame buffer device 160x50`) -- final confirmation on a real video output is the user's own check, same boundary GPU passthrough/Secure Boot already have. A real `pty`-based interactive session confirmed `health`/unknown-command/`ps`/`exit` all behave as designed. Full clean rebuild, zero warnings; full regression suite (20 non-QEMU + 4 QEMU-based binaries) re-run clean.
+
+**Not designed or built yet:** the larger web dashboard redesign (tree-based navigation, full API parity, splittable into its own container) the user asked about in the same conversation -- deliberately deferred to its own future planning cycle.
+
 ### Phase 17: platform state backup/restore
 
 Kanxeo had no backup, export, or restore mechanism at all. Raised directly by the user while preparing a real, one-shot, no-rollback migration of a production home lab from Proxmox. Scope, confirmed with the user before any code was written: platform configuration state only (container defs, networks, DNS records, pkg install state + recipes) -- not workload data, not image content, never PKI. See ADR-0033.
