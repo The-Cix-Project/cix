@@ -235,6 +235,83 @@ int rtnl_veth_create(int fd, const char *name, const char *peer_name)
 	return nl_msg_send_and_ack(fd, &m);
 }
 
+int rtnl_vlan_create(int fd, const char *name, const char *parent_ifname, int vlan_id)
+{
+	struct nl_msg m;
+	struct nlmsghdr *nh;
+	struct ifinfomsg *ifi;
+	struct rtattr *linkinfo, *infodata;
+	unsigned int parent_ifindex;
+	uint16_t vlan_id_u16 = (uint16_t)vlan_id;
+
+	parent_ifindex = if_nametoindex(parent_ifname);
+	if (parent_ifindex == 0)
+		return -1;
+
+	nl_msg_init(&m);
+	nh = nl_msg_put(&m, sizeof(*nh));
+	ifi = nl_msg_put(&m, sizeof(*ifi));
+	if (nh == NULL || ifi == NULL)
+		return -1;
+	ifi->ifi_family = AF_UNSPEC;
+
+	if (nl_msg_put_attr_str(&m, IFLA_IFNAME, name) == NULL)
+		return -1;
+	/* IFLA_LINK ("this netdev is derived from that one") is a
+	 * top-level attribute, the same level as IFLA_IFNAME -- not
+	 * nested inside IFLA_LINKINFO, unlike the vlan-specific bits
+	 * below. */
+	if (nl_msg_put_attr_u32(&m, IFLA_LINK, parent_ifindex) == NULL)
+		return -1;
+
+	linkinfo = nl_msg_nest_start(&m, IFLA_LINKINFO);
+	if (linkinfo == NULL)
+		return -1;
+	if (nl_msg_put_attr_str(&m, IFLA_INFO_KIND, "vlan") == NULL)
+		return -1;
+
+	infodata = nl_msg_nest_start(&m, IFLA_INFO_DATA);
+	if (infodata == NULL)
+		return -1;
+	if (nl_msg_put_attr(&m, IFLA_VLAN_ID, &vlan_id_u16, sizeof(vlan_id_u16)) == NULL)
+		return -1;
+	nl_msg_nest_end(&m, infodata);
+
+	nl_msg_nest_end(&m, linkinfo);
+
+	nh->nlmsg_type = RTM_NEWLINK;
+	nh->nlmsg_flags = NLM_F_CREATE | NLM_F_EXCL;
+	return nl_msg_send_and_ack(fd, &m);
+}
+
+int rtnl_link_clear_master(int fd, const char *name)
+{
+	struct nl_msg m;
+	struct nlmsghdr *nh;
+	struct ifinfomsg *ifi;
+
+	nl_msg_init(&m);
+	nh = nl_msg_put(&m, sizeof(*nh));
+	ifi = nl_msg_put(&m, sizeof(*ifi));
+	if (nh == NULL || ifi == NULL)
+		return -1;
+	ifi->ifi_family = AF_UNSPEC;
+
+	if (nl_msg_put_attr_str(&m, IFLA_IFNAME, name) == NULL)
+		return -1;
+	/* IFLA_MASTER=0 detaches from whatever bridge (or other master)
+	 * currently owns this link -- confirmed via the kernel's own
+	 * rtnetlink handling (do_setlink() treats a zero IFLA_MASTER as
+	 * "release," symmetric with rtnl_link_set_master()'s nonzero
+	 * ifindex meaning "enslave"). */
+	if (nl_msg_put_attr_u32(&m, IFLA_MASTER, 0) == NULL)
+		return -1;
+
+	nh->nlmsg_type = RTM_NEWLINK;
+	nh->nlmsg_flags = 0;
+	return nl_msg_send_and_ack(fd, &m);
+}
+
 int rtnl_link_set_netns_pid(int fd, const char *name, pid_t pid)
 {
 	struct nl_msg m;

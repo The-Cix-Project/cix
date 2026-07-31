@@ -491,6 +491,10 @@ static int network_error_to_status(enum network_error err, const char **out_msg)
 	case NETWORK_ERR_INVALID_SUBNET:
 		*out_msg = "invalid subnet/prefix_len";
 		return 400;
+	case NETWORK_ERR_INVALID_GATEWAY:
+		*out_msg = "invalid gateway (must be a real address within this subnet, "
+		           "not the network or broadcast address)";
+		return 400;
 	case NETWORK_ERR_DUPLICATE:
 		*out_msg = "a network with this name already exists";
 		return 409;
@@ -512,6 +516,21 @@ static int network_error_to_status(enum network_error err, const char **out_msg)
 	case NETWORK_ERR_IP_TAKEN:
 		*out_msg = "ip is already assigned to a running container";
 		return 409;
+	case NETWORK_ERR_INTERFACE_NOT_FOUND:
+		*out_msg = "unknown or unassignable interface (see GET /v1/devices)";
+		return 400;
+	case NETWORK_ERR_INTERFACE_ATTACHED:
+		*out_msg = "interface is already attached to this network";
+		return 409;
+	case NETWORK_ERR_INTERFACE_NOT_ATTACHED:
+		*out_msg = "interface is not attached to this network";
+		return 404;
+	case NETWORK_ERR_INTERFACE_FULL:
+		*out_msg = "this network's interface table is full";
+		return 500;
+	case NETWORK_ERR_INTERFACE_NAME_TOO_LONG:
+		*out_msg = "ifname.vlan_id would not fit in IFNAMSIZ";
+		return 400;
 	case NETWORK_ERR_CREATE_FAILED:
 	case NETWORK_ERR_DELETE_FAILED:
 	default:
@@ -1968,6 +1987,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 
 		spec.nets[i].bridge = net->name;
 		spec.nets[i].container_ip_be = net_attachments[i].ip_be;
+		spec.nets[i].has_gateway = net->has_gateway;
 		spec.nets[i].gateway_ip_be = net->gateway_be;
 		spec.nets[i].prefix_len = net->prefix_len;
 	}
@@ -2223,7 +2243,7 @@ static void handle_device_list(int fd)
 static void handle_network_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
-	const char *name, *subnet;
+	const char *name, *subnet, *gateway;
 	const struct json_value *jprefix;
 	int prefix_len;
 	struct network_def *net;
@@ -2239,6 +2259,7 @@ static void handle_network_create(int fd, const char *body, size_t body_len)
 	name = json_as_string(json_object_get(root, "name"));
 	subnet = json_as_string(json_object_get(root, "subnet"));
 	jprefix = json_object_get(root, "prefix_len");
+	gateway = json_as_string(json_object_get(root, "gateway")); /* optional; NULL = no gateway */
 
 	if (name == NULL || subnet == NULL || jprefix == NULL) {
 		json_free(root);
@@ -2247,7 +2268,7 @@ static void handle_network_create(int fd, const char *body, size_t body_len)
 	}
 	prefix_len = (int)json_as_number(jprefix);
 
-	nerr = network_create(name, subnet, prefix_len, &net);
+	nerr = network_create(name, subnet, prefix_len, gateway, &net);
 	json_free(root);
 
 	if (nerr != NETWORK_OK) {
@@ -2292,6 +2313,65 @@ static void handle_network_get_one(int fd, const char *name)
 static void handle_network_delete(int fd, const char *name)
 {
 	enum network_error nerr = network_delete(name);
+
+	if (nerr != NETWORK_OK) {
+		respond_network_error(fd, nerr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+static void handle_network_attach_interface(int fd, const char *net_name, const char *body,
+                                             size_t body_len)
+{
+	struct json_value *root;
+	const char *ifname;
+	const struct json_value *jvlan;
+	int vlan_id;
+	struct network_def *net;
+	enum network_error nerr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+
+	ifname = json_as_string(json_object_get(root, "ifname"));
+	jvlan = json_object_get(root, "vlan_id"); /* optional; absent/0 = untagged */
+	vlan_id = jvlan != NULL ? (int)json_as_number(jvlan) : 0;
+
+	if (ifname == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "ifname missing");
+		return;
+	}
+	if (vlan_id < 0 || vlan_id > 4094) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "vlan_id must be in [1,4094], or omitted/0 for untagged");
+		return;
+	}
+
+	nerr = network_attach_interface(net_name, ifname, vlan_id);
+	json_free(root);
+
+	if (nerr != NETWORK_OK) {
+		respond_network_error(fd, nerr);
+		return;
+	}
+
+	net = network_find(net_name);
+	jw_init(&w);
+	network_write_json_one(net, &w);
+	respond_json(fd, 201, "Created", &w);
+	jw_free(&w);
+}
+
+static void handle_network_detach_interface(int fd, const char *net_name, const char *ifname)
+{
+	enum network_error nerr = network_detach_interface(net_name, ifname);
 
 	if (nerr != NETWORK_OK) {
 		respond_network_error(fd, nerr);
@@ -3177,6 +3257,40 @@ static void dispatch(int fd, const struct http_request *req)
 	if (strncmp(req->path, NETWORKS_PREFIX, strlen(NETWORKS_PREFIX)) == 0) {
 		name = req->path + strlen(NETWORKS_PREFIX);
 		if (name[0] != '\0') {
+			/*
+			 * Network and interface names are both [A-Za-z0-9_-] only
+			 * (namecheck.h) -- never contain '/' -- so "/interfaces" and
+			 * "/interfaces/<ifname>" are unambiguous to detect with plain
+			 * suffix/substring checks, the same precedent CONTAINERS_PREFIX's
+			 * own "/stop" suffix check above already established, just one
+			 * level deeper for the DELETE-a-specific-interface case.
+			 */
+			static const char iface_mid[] = "/interfaces/";
+			char *sep = strstr(name, iface_mid);
+			size_t nlen = strlen(name);
+
+			if (sep != NULL && strcmp(req->method, "DELETE") == 0) {
+				size_t net_name_len = (size_t)(sep - name);
+				const char *ifname = sep + (sizeof(iface_mid) - 1);
+
+				if (net_name_len > 0 && net_name_len < NETWORK_NAME_MAX && ifname[0] != '\0') {
+					char net_name[NETWORK_NAME_MAX];
+
+					memcpy(net_name, name, net_name_len);
+					net_name[net_name_len] = '\0';
+					handle_network_detach_interface(fd, net_name, ifname);
+					return;
+				}
+			}
+			if (nlen > 11 && strcmp(name + nlen - 11, "/interfaces") == 0 &&
+			    strcmp(req->method, "POST") == 0 && nlen - 11 < NETWORK_NAME_MAX) {
+				char net_name[NETWORK_NAME_MAX];
+
+				memcpy(net_name, name, nlen - 11);
+				net_name[nlen - 11] = '\0';
+				handle_network_attach_interface(fd, net_name, req->body, req->body_len);
+				return;
+			}
 			if (strcmp(req->method, "GET") == 0) {
 				handle_network_get_one(fd, name);
 				return;

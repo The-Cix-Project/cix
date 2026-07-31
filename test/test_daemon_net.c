@@ -157,11 +157,15 @@ int main(void)
 		return 1;
 	}
 
-	/* 1. create the test networks */
+	/* 1. create the test networks. Explicit --gateway= (ADR-0037): this
+	 * whole file's own verification methodology connect()s from the
+	 * HOST straight at a container's IP (see connect_and_echo() above)
+	 * -- on the new gateway-less default the host has no route into
+	 * either subnet at all (correct, intended behavior, not a bug). */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"" TEST_NETWORK_NAME "\",\"subnet\":\"" TEST_NETWORK_SUBNET
-	                       "\",\"prefix_len\":24}",
+	                       "\",\"prefix_len\":24,\"gateway\":\"172.33.0.1\"}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST /v1/networks, status=%d\n", r.status);
@@ -172,7 +176,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"" TEST_NETWORK_NAME2 "\",\"subnet\":\"" TEST_NETWORK_SUBNET2
-	                       "\",\"prefix_len\":24}",
+	                       "\",\"prefix_len\":24,\"gateway\":\"172.34.0.1\"}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST /v1/networks (2nd), status=%d\n", r.status);

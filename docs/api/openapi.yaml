@@ -360,6 +360,75 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /networks/{name}/interfaces:
+    post:
+      summary: >
+        Attach a real host network interface to this network's bridge --
+        the "physical ethernet on a host-managed switch" mechanism.
+        ifname must be a currently assignable "net:<ifname>" device (see
+        GET /devices) -- not already moved into a container's netns, and
+        not already attached anywhere via this endpoint. vlan_id 0/omitted
+        enslaves ifname directly (untagged); a nonzero vlan_id instead
+        creates and enslaves an 802.1q "<ifname>.<vlan_id>" sub-interface,
+        leaving ifname itself free to attach (with a different vlan_id) to
+        other networks.
+      operationId: attachNetworkInterface
+      parameters:
+        - $ref: "#/components/parameters/NetworkName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NetworkInterfaceAttachRequest"
+      responses:
+        "201":
+          description: Attached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Network"
+        "400":
+          description: Unknown/unassignable interface, invalid vlan_id, or the derived name wouldn't fit IFNAMSIZ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No network with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: This interface is already attached to this network
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /networks/{name}/interfaces/{ifname}:
+    delete:
+      summary: Detach a previously-attached interface -- releases it from the bridge, or deletes its VLAN sub-interface
+      operationId: detachNetworkInterface
+      parameters:
+        - $ref: "#/components/parameters/NetworkName"
+        - name: ifname
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9_-]{1,15}$"
+      responses:
+        "204":
+          description: Detached
+        "404":
+          description: No such network, or this interface isn't attached to it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /images:
     get:
       summary: List every image known to this daemon (each a directory under images_dir with its own rootfs/)
@@ -1700,14 +1769,23 @@ components:
           type: integer
           minimum: 8
           maximum: 30
+          description: CIDR prefix length.
+        gateway:
+          type: string
           description: >
-            CIDR prefix length. The gateway is always the first host
-            address in the range (e.g. "172.31.0.1" for a /24) --
-            there is no separate gateway field on this request.
+            Optional. Omitted (the default): the bridge is created
+            purely L2, with no host-owned IP address at all -- for
+            networks whose own routing is owned by whatever's attached
+            to them (a router pair running a routing protocol, a
+            shared VRRP address, etc.), not the host. When given, must
+            be a real address within subnet (not the network or
+            broadcast address); it's assigned to the bridge device
+            itself and every attached container's primary network
+            attachment gets it as an automatic default route.
 
     Network:
       type: object
-      required: [name, subnet, prefix_len, gateway]
+      required: [name, subnet, prefix_len, has_gateway, gateway]
       properties:
         name:
           type: string
@@ -1715,9 +1793,45 @@ components:
           type: string
         prefix_len:
           type: integer
+        has_gateway:
+          type: boolean
+          description: Whether this network has a host-owned gateway address at all.
         gateway:
           type: string
-          description: Derived as subnet's first host address; never independently settable.
+          nullable: true
+          description: The host-owned gateway address, or null when has_gateway is false.
+        interfaces:
+          type: array
+          items:
+            $ref: "#/components/schemas/NetworkAttachedInterface"
+
+    NetworkAttachedInterface:
+      type: object
+      required: [ifname, vlan_id]
+      properties:
+        ifname:
+          type: string
+          description: >
+            The real interface name the operator attached -- for a VLAN
+            attach, this is the parent link, not the derived
+            "<ifname>.<vlan_id>" sub-interface actually enslaved to the
+            bridge.
+        vlan_id:
+          type: integer
+          description: 0 if ifname itself is enslaved directly (untagged).
+
+    NetworkInterfaceAttachRequest:
+      type: object
+      required: [ifname]
+      properties:
+        ifname:
+          type: string
+          description: A currently assignable "net:<ifname>" device (see GET /devices).
+        vlan_id:
+          type: integer
+          minimum: 0
+          maximum: 4094
+          description: Optional, default 0 (untagged). 1-4094 creates and enslaves an 802.1q sub-interface instead.
 
     ImageCreateRequest:
       type: object

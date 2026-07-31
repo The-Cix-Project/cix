@@ -131,7 +131,8 @@ static int ip_in_use(uint32_t candidate_be)
 	return 0;
 }
 
-int registry_alloc_ip(uint32_t network_base_be, int host_min, int host_max, uint32_t *out_ip_be)
+int registry_alloc_ip(uint32_t network_base_be, int host_min, int host_max, uint32_t exclude_be,
+                       uint32_t *out_ip_be)
 {
 	uint32_t network_base_host = ntohl(network_base_be);
 	int host;
@@ -139,6 +140,8 @@ int registry_alloc_ip(uint32_t network_base_be, int host_min, int host_max, uint
 	for (host = host_min; host <= host_max; host++) {
 		uint32_t candidate_be = htonl(network_base_host | (uint32_t)host);
 
+		if (candidate_be == exclude_be)
+			continue;
 		if (!ip_in_use(candidate_be)) {
 			*out_ip_be = candidate_be;
 			return 0;

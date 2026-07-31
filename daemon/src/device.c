@@ -505,8 +505,23 @@ static int enumerate_net_one(const char *ifname, struct discovered_device *e)
 	 * this netns's own interfaces) -- the same visibility rule that
 	 * makes exclusivity automatic, with no separate "already claimed"
 	 * check needed.
+	 *
+	 * The same visibility-is-exclusivity idea also covers enslavement
+	 * to a Kanxeo-managed bridge (network_attach_interface(),
+	 * daemon/src/network.c): unlike a netns move, an enslaved
+	 * interface stays visible right here under its own name -- but
+	 * the kernel exposes a "master" symlink under its sysfs directory
+	 * for exactly as long as it's enslaved to anything. Its presence
+	 * is reused as the same kind of ground-truth signal, rather than
+	 * inventing a second, separate "already attached" table.
 	 */
-	e->assignable = 1;
+	{
+		char master_path[PATH_MAX];
+		char master_target[PATH_MAX];
+
+		snprintf(master_path, sizeof(master_path), "%s/master", link_path);
+		e->assignable = (readlink(master_path, master_target, sizeof(master_target) - 1) < 0);
+	}
 	return 0;
 }
 

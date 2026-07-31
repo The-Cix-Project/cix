@@ -279,6 +279,64 @@ int main(void)
 		close(child_pidfd);
 	}
 
+	/*
+	 * rtnl_vlan_create()/rtnl_link_clear_master() (ADR-0038): a fresh,
+	 * independent veth pair stands in for "some real parent link" --
+	 * legitimate the same way VETH_HOST/VETH_CTR above already stand
+	 * in for a real NIC+its remote end, since rtnl_vlan_create() only
+	 * needs an existing, resolvable ifindex to attach IFLA_LINK to,
+	 * nothing veth-specific. Proves the sub-interface is a genuinely
+	 * distinct netdev enslaved on its own -- the parent itself never
+	 * becomes a bridge port -- and that clearing the master releases
+	 * it again.
+	 */
+	{
+		static const char *const vlan_parent = "vt-vlanp";
+		static const char *const vlan_peer = "vt-vlanc";
+		static const char *const vlan_sub = "vt-vlanp.100";
+
+		rtnl_link_delete(fd, vlan_sub);
+		rtnl_link_delete(fd, vlan_parent);
+
+		if (rtnl_veth_create(fd, vlan_parent, vlan_peer) != 0) {
+			perror("rtnl_veth_create (vlan parent pair)");
+			ok = 0;
+		} else if (rtnl_link_set_up(fd, vlan_parent) != 0) {
+			perror("rtnl_link_set_up (vlan parent)");
+			ok = 0;
+		} else if (rtnl_vlan_create(fd, vlan_sub, vlan_parent, 100) != 0) {
+			perror("rtnl_vlan_create");
+			ok = 0;
+		} else if (!iface_exists(vlan_sub)) {
+			fprintf(stderr, "FAIL: %s does not exist after rtnl_vlan_create\n", vlan_sub);
+			ok = 0;
+		} else if (rtnl_link_set_up(fd, vlan_sub) != 0) {
+			perror("rtnl_link_set_up (vlan sub-interface)");
+			ok = 0;
+		} else if (rtnl_link_set_master(fd, vlan_sub, BRIDGE_NAME) != 0) {
+			perror("rtnl_link_set_master (vlan sub-interface)");
+			ok = 0;
+		} else if (!bridge_has_port(BRIDGE_NAME, vlan_sub)) {
+			fprintf(stderr, "FAIL: %s not attached to %s\n", vlan_sub, BRIDGE_NAME);
+			ok = 0;
+		} else if (bridge_has_port(BRIDGE_NAME, vlan_parent)) {
+			fprintf(stderr, "FAIL: parent %s became a bridge port too -- only the VLAN "
+			                "sub-interface should have\n",
+			        vlan_parent);
+			ok = 0;
+		} else if (rtnl_link_clear_master(fd, vlan_sub) != 0) {
+			perror("rtnl_link_clear_master");
+			ok = 0;
+		} else if (bridge_has_port(BRIDGE_NAME, vlan_sub)) {
+			fprintf(stderr, "FAIL: %s still attached to %s after rtnl_link_clear_master\n",
+			        vlan_sub, BRIDGE_NAME);
+			ok = 0;
+		}
+
+		rtnl_link_delete(fd, vlan_sub);
+		rtnl_link_delete(fd, vlan_parent);
+	}
+
 	cleanup_leftovers(fd);
 	rtnl_close(fd);
 

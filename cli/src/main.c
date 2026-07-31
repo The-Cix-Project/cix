@@ -53,9 +53,17 @@ static void print_usage(FILE *out)
 	        "  inspect NAME\n"
 	        "  stop NAME  -- kill it now, keep its persisted definition (unlike rm)\n"
 	        "  rm NAME\n"
-	        "  network create --name=NAME --subnet=A.B.C.D --prefix=N\n"
+	        "  network create --name=NAME --subnet=A.B.C.D --prefix=N [--gateway=A.B.C.D]\n"
+	        "               -- no --gateway= means pure L2, no host-owned address (the\n"
+	        "               default); pass it only when the host itself should route for\n"
+	        "               this network\n"
 	        "  network ls\n"
 	        "  network rm NAME\n"
+	        "  network attach-interface NAME --interface=IFNAME [--vlan=N]  -- enslaves a real\n"
+	        "               host interface (see device ls's net: entries) to this network's\n"
+	        "               bridge; --vlan= creates and enslaves an 802.1q sub-interface\n"
+	        "               instead, leaving the parent free for other VLANs/networks\n"
+	        "  network detach-interface NAME --interface=IFNAME\n"
 	        "  image create --name=NAME  -- an empty image, C runtime pre-seeded, ready for\n"
 	        "               pkg install --image=NAME\n"
 	        "  image ls\n"
@@ -240,9 +248,10 @@ static void fmt_network_line(const struct json_value *v)
 	const char *name = json_str_field(v, "name");
 	const char *subnet = json_str_field(v, "subnet");
 	long prefix_len = (long)json_as_number(json_object_get(v, "prefix_len"));
-	const char *gateway = json_str_field(v, "gateway");
+	const char *gateway = json_str_field(v, "gateway"); /* NULL when this network has none */
 
-	printf("%-20s %s/%-3ld gateway=%s\n", name, subnet, prefix_len, gateway);
+	printf("%-20s %s/%-3ld gateway=%s\n", name, subnet, prefix_len,
+	       gateway != NULL ? gateway : "none");
 }
 
 static void fmt_network_list(const struct json_value *v)
@@ -1225,6 +1234,7 @@ static int cmd_network_create(const struct kx_client *c, int json_mode, int argc
 {
 	const char *name = NULL;
 	const char *subnet = NULL;
+	const char *gateway = NULL;
 	long prefix_len = -1;
 	int i;
 	struct json_writer w;
@@ -1237,6 +1247,8 @@ static int cmd_network_create(const struct kx_client *c, int json_mode, int argc
 			subnet = argv[i] + 9;
 		else if (strncmp(argv[i], "--prefix=", 9) == 0)
 			prefix_len = atol(argv[i] + 9);
+		else if (strncmp(argv[i], "--gateway=", 10) == 0)
+			gateway = argv[i] + 10;
 		else {
 			fprintf(stderr, "kanxeoctl: unknown network create option '%s'\n", argv[i]);
 			return 2;
@@ -1245,7 +1257,11 @@ static int cmd_network_create(const struct kx_client *c, int json_mode, int argc
 
 	if (name == NULL || subnet == NULL || prefix_len < 0) {
 		fprintf(stderr,
-		        "usage: kanxeoctl network create --name=NAME --subnet=A.B.C.D --prefix=N\n");
+		        "usage: kanxeoctl network create --name=NAME --subnet=A.B.C.D --prefix=N "
+		        "[--gateway=A.B.C.D]\n"
+		        "  no --gateway= means the bridge stays pure L2 (no host-owned address) --\n"
+		        "  the default. Pass --gateway= only when the host itself should be this\n"
+		        "  network's router.\n");
 		return 2;
 	}
 
@@ -1257,6 +1273,10 @@ static int cmd_network_create(const struct kx_client *c, int json_mode, int argc
 	jw_str(&w, subnet);
 	jw_key(&w, "prefix_len");
 	jw_int(&w, prefix_len);
+	if (gateway != NULL) {
+		jw_key(&w, "gateway");
+		jw_str(&w, gateway);
+	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -1298,15 +1318,107 @@ static int cmd_network_rm(const struct kx_client *c, int json_mode, int argc, ch
 	return emit(&r, json_mode, fmt_removed);
 }
 
+static int cmd_network_attach_interface(const struct kx_client *c, int json_mode, int argc,
+                                         char **argv)
+{
+	const char *net_name;
+	const char *ifname = NULL;
+	long vlan_id = 0;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: network attach-interface requires a network name\n");
+		return 2;
+	}
+	net_name = argv[0];
+	for (i = 1; i < argc; i++) {
+		if (strncmp(argv[i], "--interface=", 12) == 0)
+			ifname = argv[i] + 12;
+		else if (strncmp(argv[i], "--vlan=", 7) == 0)
+			vlan_id = atol(argv[i] + 7);
+		else {
+			fprintf(stderr, "kanxeoctl: unknown network attach-interface option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (ifname == NULL) {
+		fprintf(stderr,
+		        "usage: kanxeoctl network attach-interface NAME --interface=IFNAME [--vlan=N]\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "ifname");
+	jw_str(&w, ifname);
+	if (vlan_id != 0) {
+		jw_key(&w, "vlan_id");
+		jw_int(&w, vlan_id);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	snprintf(path, sizeof(path), "/v1/networks/%s/interfaces", net_name);
+	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_network_line);
+}
+
+static int cmd_network_detach_interface(const struct kx_client *c, int json_mode, int argc,
+                                         char **argv)
+{
+	const char *net_name;
+	const char *ifname = NULL;
+	int i;
+	struct kx_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: network detach-interface requires a network name\n");
+		return 2;
+	}
+	net_name = argv[0];
+	for (i = 1; i < argc; i++) {
+		if (strncmp(argv[i], "--interface=", 12) == 0)
+			ifname = argv[i] + 12;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown network detach-interface option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (ifname == NULL) {
+		fprintf(stderr, "usage: kanxeoctl network detach-interface NAME --interface=IFNAME\n");
+		return 2;
+	}
+
+	snprintf(path, sizeof(path), "/v1/networks/%s/interfaces/%s", net_name, ifname);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
 static int cmd_network(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: kanxeoctl network create --name=NAME --subnet=A.B.C.D --prefix=N\n"
+		        "usage: kanxeoctl network create --name=NAME --subnet=A.B.C.D --prefix=N "
+		        "[--gateway=A.B.C.D]\n"
 		        "       kanxeoctl network ls\n"
-		        "       kanxeoctl network rm NAME\n");
+		        "       kanxeoctl network rm NAME\n"
+		        "       kanxeoctl network attach-interface NAME --interface=IFNAME [--vlan=N]\n"
+		        "       kanxeoctl network detach-interface NAME --interface=IFNAME\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -1316,6 +1428,10 @@ static int cmd_network(const struct kx_client *c, int json_mode, int argc, char 
 		return cmd_network_ls(c, json_mode);
 	if (strcmp(sub, "rm") == 0)
 		return cmd_network_rm(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "attach-interface") == 0)
+		return cmd_network_attach_interface(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "detach-interface") == 0)
+		return cmd_network_detach_interface(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "kanxeoctl: unknown network subcommand '%s'\n", sub);
 	return 2;

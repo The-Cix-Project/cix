@@ -4,7 +4,7 @@
  * (container_create(), not raw rtnetlink primitives -- those were
  * already proven in isolation by test_rtnetlink.c).
  *
- * Three scenarios:
+ * Five scenarios:
  * 1. Two containers concurrently on the same bridge -- real,
  *    simultaneous connectivity to each, then confirms the kernel
  *    tears down both veth ends automatically once each container
@@ -19,6 +19,13 @@
  *    other's subnet. H connects to T *from inside its own netns*,
  *    proving packets actually cross through R's kernel routing --
  *    not just that the syscalls to set it up didn't error.
+ * 4. Real interface passthrough (Phase 12 part 6, ADR-0022) -- a veth
+ *    end standing in for a physical NIC, moved into a container's
+ *    netns and back out again.
+ * 5. Gateway optionality (ADR-0037) -- has_gateway=0/1 on a network
+ *    attachment controls whether container_net_child_configure()
+ *    installs a default route at all, checked directly against each
+ *    container's own /proc/<pid>/net/route.
  */
 #include "container.h"
 #include "internal.h"
@@ -111,6 +118,69 @@ static int connect_and_echo(uint32_t ip_be, int *ok)
 		*ok = 0;
 	}
 	close(fd);
+	return 0;
+}
+
+/*
+ * Reads /proc/<pid>/net/route directly -- readable cross-netns without
+ * setns() (unlike /sys/class/net, this /proc/<pid>/... form is scoped
+ * to that pid's own netns per-access, not captured at mount time; the
+ * same "the mount is stale, the /proc/<pid>/... path isn't" distinction
+ * check_iface_inside_netns()'s own comment above already draws for a
+ * different file). Returns 1 if a default route (destination field
+ * "00000000") is present, 0 if not, -1 on any read error.
+ */
+static int has_default_route(pid_t pid)
+{
+	char path[64];
+	FILE *f;
+	char line[256];
+	int first = 1;
+	int found = 0;
+
+	snprintf(path, sizeof(path), "/proc/%d/net/route", (int)pid);
+	f = fopen(path, "r");
+	if (f == NULL)
+		return -1;
+
+	while (fgets(line, sizeof(line), f) != NULL) {
+		char iface[64], dest[16];
+
+		if (first) {
+			first = 0; /* header line, not a route */
+			continue;
+		}
+		if (sscanf(line, "%63s %15s", iface, dest) == 2 && strcmp(dest, "00000000") == 0) {
+			found = 1;
+			break;
+		}
+	}
+	fclose(f);
+	return found;
+}
+
+/*
+ * container_create() returns once the parent's own host-side setup is
+ * done, not once the child has finished its whole setup sequence
+ * (network config, then routes, then ip_forward/sysctls, then
+ * execve()) -- route installation in particular happens strictly
+ * after network config (src/container.c), so checking has_default_
+ * route() a single time immediately after container_create() races
+ * the child's own in-progress setup. Poll instead, the same bounded-
+ * retry pattern iface_gone_eventually() above already established for
+ * a different genuinely-asynchronous condition.
+ */
+static int has_default_route_eventually(pid_t pid, int max_attempts)
+{
+	int i;
+
+	for (i = 0; i < max_attempts; i++) {
+		int r = has_default_route(pid);
+
+		if (r != 0)
+			return r; /* found (1), or a real read error (-1) -- stop either way */
+		usleep(100000);
+	}
 	return 0;
 }
 
@@ -267,11 +337,13 @@ int main(void)
 
 		net1.bridge = BRIDGE_NAME;
 		net1.container_ip_be = ipv4("172.30.1.10");
+		net1.has_gateway = 1;
 		net1.gateway_ip_be = ipv4("172.30.1.1");
 		net1.prefix_len = 24;
 
 		net2.bridge = BRIDGE_NAME;
 		net2.container_ip_be = ipv4("172.30.1.11");
+		net2.has_gateway = 1;
 		net2.gateway_ip_be = ipv4("172.30.1.1");
 		net2.prefix_len = 24;
 
@@ -344,11 +416,13 @@ int main(void)
 
 		nets3[0].bridge = BRIDGE_NAME;
 		nets3[0].container_ip_be = ipv4("172.30.1.20");
+		nets3[0].has_gateway = 1;
 		nets3[0].gateway_ip_be = ipv4("172.30.1.1");
 		nets3[0].prefix_len = 24;
 
 		nets3[1].bridge = BRIDGE_NAME2;
 		nets3[1].container_ip_be = ipv4("172.30.2.20");
+		nets3[1].has_gateway = 1;
 		nets3[1].gateway_ip_be = ipv4("172.30.2.1");
 		nets3[1].prefix_len = 24;
 
@@ -409,15 +483,18 @@ int main(void)
 
 		netsR[0].bridge = BRIDGE_NAME;
 		netsR[0].container_ip_be = ipv4("172.30.1.30");
+		netsR[0].has_gateway = 1;
 		netsR[0].gateway_ip_be = ipv4("172.30.1.1");
 		netsR[0].prefix_len = 24;
 		netsR[1].bridge = BRIDGE_NAME2;
 		netsR[1].container_ip_be = ipv4("172.30.2.30");
+		netsR[1].has_gateway = 1;
 		netsR[1].gateway_ip_be = ipv4("172.30.2.1");
 		netsR[1].prefix_len = 24;
 
 		netH.bridge = BRIDGE_NAME;
 		netH.container_ip_be = ipv4("172.30.1.40");
+		netH.has_gateway = 1;
 		netH.gateway_ip_be = ipv4("172.30.1.1");
 		netH.prefix_len = 24;
 		routeH.dest_be = ipv4("172.30.2.0");
@@ -426,6 +503,7 @@ int main(void)
 
 		netT.bridge = BRIDGE_NAME2;
 		netT.container_ip_be = ipv4("172.30.2.50");
+		netT.has_gateway = 1;
 		netT.gateway_ip_be = ipv4("172.30.2.1");
 		netT.prefix_len = 24;
 		routeT.dest_be = ipv4("172.30.1.0");
@@ -618,6 +696,98 @@ int main(void)
 	scenario4_cleanup:
 		rtnl_link_delete(bfd, ifname_keep);
 	scenario4_done:;
+	}
+
+	/*
+	 * 5. Gateway-optionality (ADR-0037) at the container_net_child_
+	 * configure() level: has_gateway=0 on the primary attachment must
+	 * install no default route at all, has_gateway=1 must install one
+	 * pointing at gateway_ip_be exactly as before, and an explicit
+	 * 0.0.0.0/0 route_spec (the documented escape hatch for a gateway-
+	 * less network, e.g. pointing at a VRRP address neither Kanxeo nor
+	 * the host owns) still installs one regardless of has_gateway.
+	 * Checked directly against each container's own /proc/<pid>/net/
+	 * route -- readable cross-netns without setns() (a real, standard
+	 * Linux property, not this project's own mechanism) -- rather than
+	 * an indirect connectivity proxy, since what's actually under test
+	 * is a one-line conditional, not end-to-end packet forwarding
+	 * (scenario 3 already proves that part).
+	 */
+	{
+		struct container_spec spec5a, spec5b, spec5c;
+		struct container_handle h5a, h5b, h5c;
+		struct network_spec net5a, net5b, net5c;
+		struct route_spec defroute5c;
+		char *argv5[] = { "/bin/daemon_child", "2", "0", NULL };
+		int exit5;
+
+		net5a.bridge = BRIDGE_NAME;
+		net5a.container_ip_be = ipv4("172.30.1.50");
+		net5a.has_gateway = 0;
+		net5a.gateway_ip_be = ipv4("172.30.1.1"); /* deliberately set but must be ignored */
+		net5a.prefix_len = 24;
+
+		net5b = net5a;
+		net5b.container_ip_be = ipv4("172.30.1.51");
+		net5b.has_gateway = 1;
+
+		net5c = net5a;
+		net5c.container_ip_be = ipv4("172.30.1.52");
+		defroute5c.dest_be = 0;
+		defroute5c.dest_prefix_len = 0;
+		defroute5c.gateway_be = ipv4("172.30.1.53"); /* not actually a live router -- only the
+		                                               * route table entry itself is checked */
+
+		if (build_container_spec(&spec5a, "tcc-net-g1", "/tmp/container_net_test/g1", &net5a, 1, 0,
+		                          NULL, 0, argv5, envp) != 0 ||
+		    build_container_spec(&spec5b, "tcc-net-g2", "/tmp/container_net_test/g2", &net5b, 1, 0,
+		                          NULL, 0, argv5, envp) != 0 ||
+		    build_container_spec(&spec5c, "tcc-net-g3", "/tmp/container_net_test/g3", &net5c, 1, 0,
+		                          &defroute5c, 1, argv5, envp) != 0)
+			return 1;
+
+		if (container_create(&spec5a, &h5a) != 0 || container_create(&spec5b, &h5b) != 0 ||
+		    container_create(&spec5c, &h5c) != 0) {
+			perror("container_create (scenario 5)");
+			return 1;
+		}
+
+		/* h5b/h5c: poll -- their own child hasn't necessarily finished
+		 * installing routes yet the instant container_create() returns
+		 * (see has_default_route_eventually()'s own comment). h5a: a
+		 * fixed settle delay first, long enough that its own sibling
+		 * containers' route-install steps (strictly simpler/faster than
+		 * this poll's own worst case) have certainly finished too, then
+		 * one check -- an absence can't be racily "not there yet" in a
+		 * way a longer wait would ever flip. */
+		if (!has_default_route_eventually(h5b.pid, 20)) {
+			fprintf(stderr, "FAIL: has_gateway=1 did not install a default route\n");
+			ok = 0;
+		}
+		if (!has_default_route_eventually(h5c.pid, 20)) {
+			fprintf(stderr,
+			        "FAIL: explicit 0.0.0.0/0 route_spec on a gateway-less network did not "
+			        "install a default route\n");
+			ok = 0;
+		}
+		usleep(500000);
+		if (has_default_route(h5a.pid)) {
+			fprintf(stderr, "FAIL: has_gateway=0 installed a default route anyway\n");
+			ok = 0;
+		}
+
+		if (container_wait(&h5a, &exit5) != 0)
+			perror("container_wait g1");
+		if (container_wait(&h5b, &exit5) != 0)
+			perror("container_wait g2");
+		if (container_wait(&h5c, &exit5) != 0)
+			perror("container_wait g3");
+		close(h5a.pidfd);
+		close(h5a.cgroup_fd);
+		close(h5b.pidfd);
+		close(h5b.cgroup_fd);
+		close(h5c.pidfd);
+		close(h5c.cgroup_fd);
 	}
 
 	rtnl_link_delete(bfd, BRIDGE_NAME);

@@ -2,6 +2,24 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 22: network gateway becomes optional, VLAN + physical-NIC bridge attachment
+
+A network's host-owned gateway address was always mandatory (hardcoded `.1` on the bridge, every attached container got an unconditional default route toward it) -- impossible to build a router-container topology (a VRRP pair owning the actual gateway, not the host) on top of. See ADR-0037, ADR-0038.
+
+#### Added
+- `daemon/src/network.c`/`network.h`: `network create` gains optional `gateway`/`--gateway=A.B.C.D` -- omitted (new default) means a pure-L2 bridge with no host-owned address at all. `network_spec`/`container_net_child_configure()` (`src/container_net.c`) only install a default route when the primary attachment actually has a gateway. `registry_alloc_ip()` gained an `exclude_be` parameter since a gateway is no longer always host-part 1.
+- `network_attach_interface()`/`network_detach_interface()` (`daemon/src/network.c`): enslaves a real host interface to a network's bridge (untagged, via the existing unchanged `rtnl_link_set_master()`) or, with a `vlan_id`, creates and enslaves an `<ifname>.<vlan_id>` 802.1q sub-interface instead (new `rtnl_vlan_create()`/`rtnl_link_clear_master()`, `netplane/src/rtnetlink.c`). New `POST`/`DELETE /v1/networks/{name}/interfaces[/{ifname}]`, CLI `network attach-interface`/`detach-interface`.
+- `daemon/src/device.c`: `enumerate_net_one()` now reports an interface `assignable=0` if it already has a `master` (enslaved to anything), reusing the same sysfs-visibility-is-exclusivity pattern ADR-0022 established for netns-moved interfaces.
+- `docs/adr/0037-network-gateway-optional.md`, `docs/adr/0038-vlan-and-physical-nic-bridge-attachment.md`.
+- `test/test_network_interfaces.c`, new; `test/test_rtnetlink.c`/`test/test_container_net.c`/`test/test_networks.c` extended.
+
+#### Fixed
+- `test_dns.c`/`test_daemon_net.c`/`test_container_restart.c` each created a network with no gateway and then relied on the host or the daemon itself connecting straight into it (`dig`, `connect()`, readiness checks) -- broken under the new default, not a bug in it. Fixed by giving each of those tests' own networks an explicit `--gateway=` matching what they actually need, not by changing the default.
+
+Verified: full clean rebuild, zero warnings; all new/changed test scenarios 3 consecutive clean runs; full pre-existing non-QEMU regression suite (21 binaries) re-run clean. A real, pre-existing characteristic of this sandbox surfaced along the way (not a regression): `connect()` to a closed port on a container here takes several real seconds to fail rather than an instant refusal, so `test_container_restart.c` needs a longer wall-clock budget than a quick interactive run allows, though it completes correctly given one.
+
+**Not built:** the full positive interface-attach path (real hardware needed, this sandbox has none -- same boundary ADR-0022 already documents); bridge VLAN filtering (a considered non-choice, not a gap).
+
 ### Phase 21: git/gitea recipes, multi-source package recipes, and a real LDAPS deployment
 
 Real git and gitea recipes, a new multi-source recipe mechanism needed for lldap's own real build, and the platform's first genuinely TLS-secured workload service -- Kanxeo's own PKI issuing a real cert an LDAP server actually uses for LDAPS. See ADR-0036.

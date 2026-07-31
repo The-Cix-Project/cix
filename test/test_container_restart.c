@@ -697,10 +697,16 @@ int main(void)
 	}
 	kx_response_free(&r);
 
+	/* Explicit --gateway= (ADR-0037): readiness checks connect() from
+	 * the daemon's own root netns straight at a container's IP
+	 * (do_readiness_check(), daemon/src/main.c) -- on the new gateway-
+	 * less default, the host has no route into this subnet at all
+	 * (correct, intended behavior, not a bug), so the readiness check
+	 * itself would never be able to reach in. */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"" READY_NETWORK_NAME "\",\"subnet\":\"" READY_NETWORK_SUBNET
-	                       "\",\"prefix_len\":24}",
+	                       "\",\"prefix_len\":24,\"gateway\":\"172.60.0.1\"}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST " READY_NETWORK_NAME ", status=%d\n", r.status);

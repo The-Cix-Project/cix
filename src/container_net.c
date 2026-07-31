@@ -84,10 +84,17 @@ int container_net_child_configure(const struct network_spec *nets, int net_count
 		rtnl_close(fd);
 		return -1;
 	}
-	/* nets[0] is "primary": the only attachment that gets the default
-	 * route. Any others already have their subnet's connected route,
-	 * installed automatically by the address assignment above. */
-	if (net_count > 0 && rtnl_route_add_default_ipv4(fd, nets[0].gateway_ip_be) != 0) {
+	/* nets[0] is "primary": the only attachment that could get a
+	 * default route, and only when its network actually has a
+	 * host-owned gateway to route through -- a container on a pure-L2
+	 * network gets no default route at all, same as a real host
+	 * plugged into a real switch with no DHCP (its image/operator owns
+	 * routing entirely, e.g. via an explicit --route=0.0.0.0/0:VIA).
+	 * Any other attachment already has its own subnet's connected
+	 * route, installed automatically by the address assignment above,
+	 * regardless of whether that network has a gateway either. */
+	if (net_count > 0 && nets[0].has_gateway &&
+	    rtnl_route_add_default_ipv4(fd, nets[0].gateway_ip_be) != 0) {
 		rtnl_close(fd);
 		return -1;
 	}

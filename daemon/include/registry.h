@@ -155,16 +155,21 @@ int registry_image_in_use(const char *image);
  * address in [host_min, host_max] within network_base_be (the
  * network's address with its host bits already zero, e.g.
  * htonl-of-172.30.0.0 for a /24 -- this project only ever allocates
- * within a single fixed /24, so only the low octet varies). Returns
- * 0 and fills *out_ip_be, or -1 if every address in range is taken.
- * Deliberately topology-agnostic: the subnet itself is owned by
- * daemon/src/main.c, not hardcoded here, so this table doesn't need
- * to know what network topology the daemon happens to be using.
+ * within a single fixed /24, so only the low octet varies), also
+ * skipping exclude_be if it's nonzero (a network's own gateway
+ * address, when it has one -- no longer always host-part 1, so the
+ * caller can't just start host_min past it the way it used to).
+ * Returns 0 and fills *out_ip_be, or -1 if every address in range is
+ * taken. Deliberately topology-agnostic: the subnet itself, and
+ * *why* exclude_be is reserved, are owned by daemon/src/main.c/
+ * network.c, not hardcoded here -- this table only ever gets told
+ * "skip this one address too," not "what a gateway is."
  * No corresponding "release" call is needed: a failed
  * registry_create() never sets in_use, so this scan never counted
  * that address as spent in the first place.
  */
-int registry_alloc_ip(uint32_t network_base_be, int host_min, int host_max, uint32_t *out_ip_be);
+int registry_alloc_ip(uint32_t network_base_be, int host_min, int host_max, uint32_t exclude_be,
+                       uint32_t *out_ip_be);
 
 /*
  * Pure collision check: true if no in-use entry's network attachment

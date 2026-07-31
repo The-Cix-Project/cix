@@ -48,8 +48,23 @@ int rtnl_link_set_netns_pid(int fd, const char *name, pid_t pid);
  */
 int rtnl_link_set_netns_fd(int fd, const char *name, int target_netns_fd);
 
-/* Attaches (enslaves) the named link to a bridge. */
+/* Attaches (enslaves) the named link to a bridge. Generic -- works for
+ * any already-existing link by name, not just veth ports; this is
+ * also how a real physical NIC gets enslaved to a Kanxeo-managed
+ * bridge (network_attach_interface(), daemon/src/network.c). */
 int rtnl_link_set_master(int fd, const char *name, const char *bridge_name);
+
+/* Releases whatever bridge (or other master) currently owns the named
+ * link -- the reverse of rtnl_link_set_master(). */
+int rtnl_link_clear_master(int fd, const char *name);
+
+/* Creates an 802.1q VLAN sub-interface named `name`, tagged vlan_id,
+ * carried over parent_ifname (a real link, physical or otherwise,
+ * that must already exist and be visible in the caller's current
+ * netns). The sub-interface itself still needs rtnl_link_set_up() and
+ * (usually) rtnl_link_set_master() to actually carry traffic anywhere
+ * -- this call only creates it. */
+int rtnl_vlan_create(int fd, const char *name, const char *parent_ifname, int vlan_id);
 
 /* Brings a link up (IFF_UP). */
 int rtnl_link_set_up(int fd, const char *name);

@@ -102,14 +102,25 @@ int main(void)
 		return 1;
 	}
 
-	/* 1. create two distinct, non-overlapping networks */
+	/* 1. create two distinct, non-overlapping networks. No --gateway=
+	 * means the new default: pure L2, no host-owned address at all
+	 * (ADR-0037) -- has_gateway false, gateway null. */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"neta\",\"subnet\":\"172.40.0.0\",\"prefix_len\":24}",
 	                       &r) != 0 ||
-	    r.status != 201 || !str_eq(json_str_field(r.json, "gateway"), "172.40.0.1")) {
+	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST neta, status=%d\n", r.status);
 		ok = 0;
+	} else {
+		const struct json_value *jhas_gw = json_object_get(r.json, "has_gateway");
+		const struct json_value *jgw = json_object_get(r.json, "gateway");
+
+		if (jhas_gw == NULL || jhas_gw->type != JSON_BOOL || jhas_gw->u.boolean ||
+		    jgw == NULL || jgw->type != JSON_NULL) {
+			fprintf(stderr, "FAIL: neta expected has_gateway=false, gateway=null (new default)\n");
+			ok = 0;
+		}
 	}
 	kx_response_free(&r);
 
@@ -247,14 +258,29 @@ int main(void)
 
 	/* 5.5. explicit, operator-chosen IP override on a container's
 	 * network attachment (Phase 12 part 5b) -- request an address
-	 * instead of letting network_alloc_ip() pick one. */
+	 * instead of letting network_alloc_ip() pick one. This network
+	 * requests an explicit --gateway= (ADR-0037's operator-chosen
+	 * gateway path, exercised end-to-end here) specifically so the
+	 * "reserved gateway address rejected" case below still has a
+	 * reserved address to reject -- a gateway-less network (the new
+	 * default, see neta above) reserves nothing beyond the network/
+	 * broadcast addresses themselves. */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/networks",
-	                       "{\"name\":\"netip\",\"subnet\":\"172.46.0.0\",\"prefix_len\":24}",
+	                       "{\"name\":\"netip\",\"subnet\":\"172.46.0.0\",\"prefix_len\":24,"
+	                       "\"gateway\":\"172.46.0.1\"}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST netip, status=%d\n", r.status);
 		ok = 0;
+	} else {
+		const struct json_value *jhas_gw = json_object_get(r.json, "has_gateway");
+
+		if (jhas_gw == NULL || jhas_gw->type != JSON_BOOL || !jhas_gw->u.boolean ||
+		    !str_eq(json_str_field(r.json, "gateway"), "172.46.0.1")) {
+			fprintf(stderr, "FAIL: netip expected has_gateway=true, gateway=172.46.0.1\n");
+			ok = 0;
+		}
 	}
 	kx_response_free(&r);
 
@@ -375,6 +401,96 @@ int main(void)
 		fprintf(stderr, "FAIL: 'persisted' bridge does not exist after restart\n");
 		ok = 0;
 	}
+
+	/* 7. migration (ADR-0037): a network persisted by code before
+	 * gateways became optional has no "has_gateway" key in its JSON at
+	 * all -- that specific absence must still load as today's exact
+	 * legacy behavior (has_gateway true, gateway = base|1), never
+	 * silently demoted to gateway-less. Simulated directly by splicing
+	 * a hand-written old-format entry into the real persisted state
+	 * file while the daemon is stopped, since the current API can no
+	 * longer produce one itself. */
+	if (stop_daemon(daemon_pid) != 0) {
+		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM (before migration splice)\n");
+		ok = 0;
+	}
+	{
+		static const char *const state_path = "/var/lib/kanxeo/networks.json";
+		static const char *const old_format_entry =
+		    "{\"name\":\"gwmigrate37\",\"subnet\":\"172.47.0.0\",\"prefix_len\":24}";
+		FILE *f = fopen(state_path, "r+");
+		char buf[65536];
+		size_t len = 0;
+		char *close_bracket;
+
+		if (f == NULL) {
+			fprintf(stderr, "FAIL: could not open %s for migration splice\n", state_path);
+			ok = 0;
+		} else {
+			len = fread(buf, 1, sizeof(buf) - 1, f);
+			buf[len] = '\0';
+			close_bracket = strrchr(buf, ']');
+			if (close_bracket == NULL) {
+				fprintf(stderr, "FAIL: %s has no closing ']' to splice before\n", state_path);
+				ok = 0;
+			} else {
+				/* Splice ",<old_format_entry>" right before the array's
+				 * closing bracket -- valid whether the array already had
+				 * entries (a leading ',' before ours) or was genuinely
+				 * empty ("[]", the same splice point works since we're
+				 * inserting immediately before ']' either way, and an
+				 * empty array's own '[' is never itself ']'). */
+				size_t prefix_len = (size_t)(close_bracket - buf);
+				int need_comma = prefix_len > 0 && buf[prefix_len - 1] != '[';
+
+				fseek(f, 0, SEEK_SET);
+				fwrite(buf, 1, prefix_len, f);
+				if (need_comma)
+					fputc(',', f);
+				fputs(old_format_entry, f);
+				fputc(']', f);
+				if (ftruncate(fileno(f), (long)(prefix_len + (need_comma ? 1 : 0) +
+				                                 strlen(old_format_entry) + 1)) != 0) {
+					fprintf(stderr, "FAIL: could not truncate %s after migration splice\n",
+					        state_path);
+					ok = 0;
+				}
+			}
+			fclose(f);
+		}
+	}
+
+	daemon_pid = start_daemon();
+	if (daemon_pid < 0)
+		return 1;
+	if (wait_for_daemon(&client, 50) != 0) {
+		fprintf(stderr, "FAIL: daemon never accepted connections after migration splice\n");
+		kill(daemon_pid, SIGKILL);
+		waitpid(daemon_pid, NULL, 0);
+		return 1;
+	}
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET", "/v1/networks/gwmigrate37", NULL, &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: GET migrated old-format network, status=%d\n", r.status);
+		ok = 0;
+	} else {
+		const struct json_value *jhas_gw = json_object_get(r.json, "has_gateway");
+
+		if (jhas_gw == NULL || jhas_gw->type != JSON_BOOL || !jhas_gw->u.boolean ||
+		    !str_eq(json_str_field(r.json, "gateway"), "172.47.0.1")) {
+			fprintf(stderr,
+			        "FAIL: old-format entry expected has_gateway=true, gateway=172.47.0.1 "
+			        "(today's exact legacy behavior)\n");
+			ok = 0;
+		}
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	kx_client_request(&client, "DELETE", "/v1/networks/gwmigrate37", NULL, &r);
+	kx_response_free(&r);
 
 	/* cleanup */
 	memset(&r, 0, sizeof(r));
