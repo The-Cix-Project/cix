@@ -2,6 +2,19 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 17: platform state backup/restore
+
+Kanxeo had no backup, export, or restore mechanism at all. Raised directly by the user while preparing a real, one-shot, no-rollback migration of a production home lab from Proxmox. Scope, confirmed with the user before any code was written: platform configuration state only (container defs, networks, DNS records, pkg install state + recipes) -- not workload data, not image content, never PKI. See ADR-0033.
+
+#### Added
+- `daemon/src/main.c`: new `do_system_backup()`/`handle_system_backup()` implementing `GET /v1/system/backup` (bundles each state file's raw content as an escaped JSON string via the existing `persist_read_file()`, plus every `*.recipe` file on disk); new `json_string_field_is_valid()`, `do_system_restore()`/`handle_system_restore()` implementing `POST /v1/system/restore` (independent, all-optional fields, every field validated before any file is written via the existing `persist_atomic_write()`; does NOT reboot or hot-reload -- restored state takes effect on the next boot via the existing, unmodified `containerdef_autostart_all()` replay path).
+- `cli/src/main.c`: `backup [--output=PATH]` (saves the bundle verbatim, byte-for-byte) and `restore --input=PATH`.
+- `docs/api/openapi.yaml`: new `/system/backup` (GET) and `/system/restore` (POST) paths, new `SystemBackupBundle` schema.
+- `docs/adr/0033-platform-state-backup-restore.md`.
+- `test/test_system_backup.c`, new: a real persisted container/network/DNS record created, `GET /system/backup` confirmed to embed matching content, the container deleted entirely, `POST /system/restore` with just the captured `container_defs` field, a real daemon restart afterward confirmed the deleted container came back -- proof the existing boot-time replay path genuinely reconstructs state, not just that a write succeeded. Malformed-field restore confirmed rejected `400` with the real file byte-for-byte untouched; restore confirmed to not hot-reload.
+
+Verified end-to-end against a live, twice-restarted daemon, no QEMU needed (pure file I/O + JSON). One real test-hygiene bug found and fixed along the way: a network's own real kernel bridge interface isn't removed just by deleting its JSON state file between test runs -- fixed by following `test_networks.c`'s own already-established convention (real API `DELETE` for cleanup, not filesystem-level state deletion). 3 consecutive clean runs; full pre-existing regression suite re-run clean. Zero compiler warnings.
+
 ## Phase 16 (parts 1-2): host OS update mechanism (root + kernel), and automatic package updates
 
 ### Phase 16 (part 2): per-slot kernel updates

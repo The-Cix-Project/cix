@@ -880,6 +880,317 @@ static void handle_system_update(int fd, const char *body, size_t body_len)
 	jw_free(&w);
 }
 
+/*
+ * Pure (no fd) core of GET /v1/system/backup -- bundles platform
+ * *configuration* state (what containers/networks/DNS records/
+ * packages should exist), not workload data or image content, and
+ * never PKI (see docs/adr/0033). Each file is read via the existing
+ * persist_read_file() (daemon/src/persist.c) exactly as-is and
+ * embedded as an escaped JSON string, the same "raw content as a JSON
+ * string" shape ConfigFile.content already uses -- not a second,
+ * raw-JSON-embedding mechanism. persist_read_file() already treats a
+ * missing file as valid-empty (ENOENT -> 0-length), so a fresh system
+ * with e.g. no DNS records yet needs no special-casing here.
+ *
+ * container_defs alone is already a complete reconstruction source:
+ * ADR-0025 persists a container's entire raw create request verbatim
+ * (including devices/interfaces/files/sysctls), so nothing here needs
+ * its own separate per-feature export logic.
+ *
+ * Always succeeds (200) -- reading local state files cannot fail in a
+ * way that should reject the request the way a bad squashfs/kernel
+ * path can for /system/update; an individual unreadable recipe file
+ * is skipped, not fatal to the whole bundle.
+ */
+static void do_system_backup(struct json_writer *w)
+{
+	char *buf;
+	size_t len;
+	DIR *d;
+	struct dirent *de;
+
+	jw_init(w);
+	jw_obj_open(w);
+	jw_key(w, "version");
+	jw_int(w, 1);
+
+	jw_key(w, "container_defs");
+	if (persist_read_file(CONTAINER_DEFS_STATE_PATH, &buf, &len) == 0 && buf != NULL) {
+		jw_str(w, buf);
+		free(buf);
+	} else {
+		jw_str(w, "");
+	}
+
+	jw_key(w, "networks");
+	if (persist_read_file(NETWORKS_STATE_PATH, &buf, &len) == 0 && buf != NULL) {
+		jw_str(w, buf);
+		free(buf);
+	} else {
+		jw_str(w, "");
+	}
+
+	jw_key(w, "dns_records");
+	if (persist_read_file(DNS_RECORDS_STATE_PATH, &buf, &len) == 0 && buf != NULL) {
+		jw_str(w, buf);
+		free(buf);
+	} else {
+		jw_str(w, "");
+	}
+
+	jw_key(w, "pkg_installed");
+	if (persist_read_file(PKG_INSTALLED_STATE_PATH, &buf, &len) == 0 && buf != NULL) {
+		jw_str(w, buf);
+		free(buf);
+	} else {
+		jw_str(w, "");
+	}
+
+	/* Every recipe on disk, not just currently-installed packages --
+	 * they're cheap, and the operator may want them all preserved.
+	 * Same opendir()/readdir()/".recipe" filtering shape pkg.c's own
+	 * pkg_write_json_recipes() already uses. */
+	jw_key(w, "pkg_recipes");
+	jw_obj_open(w);
+	d = opendir(PKG_DIR "/recipes");
+	if (d != NULL) {
+		while ((de = readdir(d)) != NULL) {
+			size_t nlen = strlen(de->d_name);
+			char path[PATH_MAX];
+			char name[256];
+
+			if (nlen <= 7 || strcmp(de->d_name + nlen - 7, ".recipe") != 0)
+				continue;
+			snprintf(path, sizeof(path), "%s/recipes/%s", PKG_DIR, de->d_name);
+			if (persist_read_file(path, &buf, &len) != 0 || buf == NULL)
+				continue;
+			snprintf(name, sizeof(name), "%.*s", (int)(nlen - 7), de->d_name);
+			jw_key(w, name);
+			jw_str(w, buf);
+			free(buf);
+		}
+		closedir(d);
+	}
+	jw_obj_close(w);
+
+	jw_obj_close(w);
+}
+
+static void handle_system_backup(int fd)
+{
+	struct json_writer w;
+
+	do_system_backup(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * Writes str (a JSON-string field's own already-validated content,
+ * e.g. a whole container_defs.json) to path via the existing
+ * persist_atomic_write() (daemon/src/persist.c) -- same atomic-
+ * rewrite safety every other state file in this codebase already
+ * gets, no new write primitive introduced for restore.
+ */
+static int restore_write_field(const char *path, const char *str)
+{
+	return persist_atomic_write(path, str, strlen(str));
+}
+
+/*
+ * Pure (no fd) core of POST /v1/system/restore -- the reverse of
+ * do_system_backup(): takes the identical bundle shape and writes each
+ * field back to its own real path. Every embedded field is validated
+ * BEFORE any file is written (container_defs/networks/dns_records/
+ * pkg_installed must each themselves parse as valid JSON; pkg_recipes
+ * must be an object of string values) -- one malformed field must
+ * never leave the others half-applied, the same "validate everything,
+ * then write" discipline do_system_update() already established.
+ *
+ * Deliberately does NOT reboot or hot-reload anything -- network_
+ * init()/dns_init()/pkg_init()/containerdef_init() all run once at
+ * daemon startup, so restored state only takes effect on the next
+ * boot, via boot-time logic (containerdef_autostart_all() in
+ * particular) that already exists and is already tested. This
+ * function's whole job is "the files are now correct"; the operator
+ * calls the pre-existing POST /system/reboot separately once ready,
+ * the same "write, don't reboot, caller decides when to cut over"
+ * shape /system/update already established (ADR-0031).
+ *
+ * Returns the HTTP status this operation resolves to (200 on
+ * success); *out_errmsg is filled in only otherwise.
+ */
+/* True if v is a string whose own content is either empty or itself
+ * valid JSON -- used to validate each of restore's JSON-file fields
+ * before any of them are written. */
+static int json_string_field_is_valid(const struct json_value *v)
+{
+	const char *s;
+	struct json_value *check;
+
+	s = json_as_string(v);
+	if (s == NULL)
+		return 0;
+	if (s[0] == '\0')
+		return 1;
+	check = json_parse(s, strlen(s));
+	if (check == NULL)
+		return 0;
+	json_free(check);
+	return 1;
+}
+
+static int do_system_restore(const char *body, size_t body_len, char *out_errmsg,
+                              size_t out_errmsg_size)
+{
+	struct json_value *root;
+	const struct json_value *jcontainer_defs, *jnetworks, *jdns_records, *jpkg_installed;
+	const struct json_value *jpkg_recipes;
+	size_t i;
+	int have_any = 0;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		snprintf(out_errmsg, out_errmsg_size, "invalid JSON body");
+		return 400;
+	}
+
+	jcontainer_defs = json_object_get(root, "container_defs");
+	jnetworks = json_object_get(root, "networks");
+	jdns_records = json_object_get(root, "dns_records");
+	jpkg_installed = json_object_get(root, "pkg_installed");
+	jpkg_recipes = json_object_get(root, "pkg_recipes");
+
+	/* Each present field must be a string whose own content is valid
+	 * JSON -- checked for every field before any file is touched. */
+	if (jcontainer_defs != NULL) {
+		have_any = 1;
+		if (!json_string_field_is_valid(jcontainer_defs)) {
+			json_free(root);
+			snprintf(out_errmsg, out_errmsg_size, "container_defs is not valid JSON");
+			return 400;
+		}
+	}
+	if (jnetworks != NULL) {
+		have_any = 1;
+		if (!json_string_field_is_valid(jnetworks)) {
+			json_free(root);
+			snprintf(out_errmsg, out_errmsg_size, "networks is not valid JSON");
+			return 400;
+		}
+	}
+	if (jdns_records != NULL) {
+		have_any = 1;
+		if (!json_string_field_is_valid(jdns_records)) {
+			json_free(root);
+			snprintf(out_errmsg, out_errmsg_size, "dns_records is not valid JSON");
+			return 400;
+		}
+	}
+	if (jpkg_installed != NULL) {
+		have_any = 1;
+		if (!json_string_field_is_valid(jpkg_installed)) {
+			json_free(root);
+			snprintf(out_errmsg, out_errmsg_size, "pkg_installed is not valid JSON");
+			return 400;
+		}
+	}
+	if (jpkg_recipes != NULL) {
+		have_any = 1;
+		if (jpkg_recipes->type != JSON_OBJECT) {
+			json_free(root);
+			snprintf(out_errmsg, out_errmsg_size, "pkg_recipes must be an object");
+			return 400;
+		}
+		for (i = 0; i < jpkg_recipes->u.object.count; i++) {
+			if (json_as_string(jpkg_recipes->u.object.values[i]) == NULL) {
+				json_free(root);
+				snprintf(out_errmsg, out_errmsg_size,
+				         "pkg_recipes.%s is not a string", jpkg_recipes->u.object.keys[i]);
+				return 400;
+			}
+		}
+	}
+
+	if (!have_any) {
+		json_free(root);
+		snprintf(out_errmsg, out_errmsg_size,
+		         "at least one of container_defs/networks/dns_records/pkg_installed/pkg_recipes "
+		         "required");
+		return 400;
+	}
+
+	/* Every field validated -- now write. */
+	if (jcontainer_defs != NULL &&
+	    restore_write_field(CONTAINER_DEFS_STATE_PATH, json_as_string(jcontainer_defs)) != 0) {
+		json_free(root);
+		snprintf(out_errmsg, out_errmsg_size, "failed to write container_defs.json");
+		return 500;
+	}
+	if (jnetworks != NULL &&
+	    restore_write_field(NETWORKS_STATE_PATH, json_as_string(jnetworks)) != 0) {
+		json_free(root);
+		snprintf(out_errmsg, out_errmsg_size, "failed to write networks.json");
+		return 500;
+	}
+	if (jdns_records != NULL &&
+	    restore_write_field(DNS_RECORDS_STATE_PATH, json_as_string(jdns_records)) != 0) {
+		json_free(root);
+		snprintf(out_errmsg, out_errmsg_size, "failed to write dns_records.json");
+		return 500;
+	}
+	if (jpkg_installed != NULL &&
+	    restore_write_field(PKG_INSTALLED_STATE_PATH, json_as_string(jpkg_installed)) != 0) {
+		json_free(root);
+		snprintf(out_errmsg, out_errmsg_size, "failed to write pkg_installed.json");
+		return 500;
+	}
+	if (jpkg_recipes != NULL) {
+		if (persist_mkdir_p(PKG_DIR "/recipes") != 0) {
+			json_free(root);
+			snprintf(out_errmsg, out_errmsg_size, "failed to create recipes directory");
+			return 500;
+		}
+		for (i = 0; i < jpkg_recipes->u.object.count; i++) {
+			char path[PATH_MAX];
+
+			snprintf(path, sizeof(path), "%s/recipes/%s.recipe", PKG_DIR,
+			         jpkg_recipes->u.object.keys[i]);
+			if (restore_write_field(path, json_as_string(jpkg_recipes->u.object.values[i])) !=
+			    0) {
+				json_free(root);
+				snprintf(out_errmsg, out_errmsg_size, "failed to write recipe %s",
+				         jpkg_recipes->u.object.keys[i]);
+				return 500;
+			}
+		}
+	}
+
+	json_free(root);
+	return 200;
+}
+
+static void handle_system_restore(int fd, const char *body, size_t body_len)
+{
+	char errmsg[256];
+	int status;
+	struct json_writer w;
+
+	status = do_system_restore(body, body_len, errmsg, sizeof(errmsg));
+	if (status != 200) {
+		respond_error(fd, status, http_status_text(status), errmsg);
+		return;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "status");
+	jw_str(&w, "restored");
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_list(int fd)
 {
 	struct json_writer w;
@@ -2738,6 +3049,14 @@ static void dispatch(int fd, const struct http_request *req)
 	}
 	if (strcmp(req->method, "POST") == 0 && strcmp(req->path, "/v1/system/update") == 0) {
 		handle_system_update(fd, req->body, req->body_len);
+		return;
+	}
+	if (strcmp(req->method, "GET") == 0 && strcmp(req->path, "/v1/system/backup") == 0) {
+		handle_system_backup(fd);
+		return;
+	}
+	if (strcmp(req->method, "POST") == 0 && strcmp(req->path, "/v1/system/restore") == 0) {
+		handle_system_restore(fd, req->body, req->body_len);
 		return;
 	}
 	if (strcmp(req->path, "/v1/containers") == 0) {

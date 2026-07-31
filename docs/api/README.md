@@ -433,6 +433,29 @@ POST /v1/pkg/update-all
 
 - Finds the first installed package (across every image) whose recipe's `pkg_version=` has drifted and starts an upgrade for it, reusing `POST /pkg/install {"upgrade": true}`'s entire existing mechanism — `202` with the started package's state, or `200 {"status": "nothing to update"}` if everything's already current. Starts at most one job at a time (the same v1 single-install-in-flight constraint every other install path has, honestly respected rather than worked around); call again once that job finishes to drain the whole backlog.
 
+## Backup and restore
+
+```
+GET /v1/system/backup
+```
+
+Bundles platform *configuration* state — container definitions, networks, DNS records, package install state and recipes — as one response. **Read this carefully before relying on it for disaster recovery:**
+
+- **Does NOT include workload data.** Each container's own persistent data (a git host's repos, a resolver's zone files, a metrics database) is that container's own concern, backed up with its own native tooling. This endpoint has no way to reach into another container's filesystem and never tries to.
+- **Does NOT include image rootfs content.** Since everything is compiled from source, an image's content is reproducible by re-running `pkg install` for whatever `pkg_installed` records — this bundle is the "shopping list" (what should be installed, where), not the built bytes. Getting all the way back to a fully-populated system after a restore means re-running those installs, not something this endpoint does for you automatically.
+- **Never touches PKI, at all.** The CA private key (and every issued leaf certificate's own key) is never returned over the API anywhere in this system, by existing, deliberate design (see [PKI](#pki-a-root-ca-and-issued-leaf-certificates) above) — that rule isn't bent or partially relaxed here. Back up `/var/lib/kanxeo/pki/` separately, directly on the host, outside the API entirely.
+
+```
+POST /v1/system/restore
+{"container_defs": "...", "networks": "...", "dns_records": "...", "pkg_installed": "...", "pkg_recipes": {"hello": "..."}}
+```
+
+The reverse of `GET /system/backup` — same shape, every field optional and independent (at least one required), so you can restore just container definitions, just networks, or the whole bundle. Every field is validated (must itself parse as JSON, or for `pkg_recipes`, must be an object of strings) *before* anything is written, so one bad field can't leave the others half-applied.
+
+**Does not reboot or take effect immediately.** Restored files only get picked up on the next boot — the same startup sequence (including container autostart) that already runs every time. Call the existing `POST /system/reboot` once you're ready to actually cut over. A typical disaster-recovery sequence: boot a fresh install once (normal empty first boot) → `POST /system/restore` with your saved bundle → `POST /system/reboot` → the second boot comes up with your restored state.
+
+`kanxeoctl backup --output=PATH` saves the bundle verbatim (byte-for-byte, not re-serialized) for later use with `kanxeoctl restore --input=PATH` — the same file round-trips exactly. A scheduled backup job (a container with network reachability to `kanxeod`, or a simple host-level cron entry — either is equally valid, this is a plain REST client either way) can run `kanxeoctl backup` on a schedule and ship the result off-host.
+
 ## Current scope boundaries (v1, deliberate — see ADR-0007)
 
 - No image build/pull endpoint yet — images are provisioned onto disk out of band.

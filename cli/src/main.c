@@ -34,6 +34,14 @@ static void print_usage(FILE *out)
 	        "               stages a fresh loader entry for it; at least one of --image=/\n"
 	        "               --kernel= required, either or both; does NOT reboot -- call\n"
 	        "               reboot separately once ready to cut over\n"
+	        "  backup [--output=PATH]  -- bundles platform configuration state (container\n"
+	        "               defs, networks, DNS records, pkg install state + recipes) --\n"
+	        "               NOT workload data, NOT image content, NEVER PKI keys. Prints the\n"
+	        "               bundle (or --json) by default; --output= saves it verbatim for\n"
+	        "               use with restore --input=\n"
+	        "  restore --input=PATH  -- writes a previously-saved backup bundle's fields\n"
+	        "               back to their real state files; does NOT reboot or hot-reload --\n"
+	        "               call reboot separately for it to take effect on the next boot\n"
 	        "  ps\n"
 	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] [--network=NAME[:IP] ...]\n"
 	        "      [--ip-forward] [--dns-register] [--pki-issue] [--pki-cert-dir=PATH]\n"
@@ -762,6 +770,92 @@ static int read_local_file(const char *path, char **out_buf, size_t *out_len)
 	*out_buf = buf;
 	*out_len = (size_t)size;
 	return 0;
+}
+
+static int cmd_backup(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *output = NULL;
+	int i;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--output=", 9) == 0)
+			output = argv[i] + 9;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown backup option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	if (kx_client_request(c, "GET", "/v1/system/backup", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	if (r.status < 200 || r.status >= 300) {
+		const char *msg = json_str_field(r.json, "error");
+
+		fprintf(stderr, "kanxeoctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		        r.status);
+		kx_response_free(&r);
+		return 1;
+	}
+
+	if (output != NULL) {
+		/* The raw response body IS the bundle `restore --input=` expects
+		 * verbatim -- written byte-for-byte, not re-serialized through
+		 * the JSON writer, so a backup/restore round trip is exact. */
+		FILE *f = fopen(output, "wb");
+
+		if (f == NULL || (r.body != NULL &&
+		                   fwrite(r.body, 1, r.body_len, f) != r.body_len)) {
+			perror(output);
+			if (f != NULL)
+				fclose(f);
+			kx_response_free(&r);
+			return 1;
+		}
+		fclose(f);
+		printf("backup written to %s (%zu bytes)\n", output, r.body_len);
+		kx_response_free(&r);
+		return 0;
+	}
+
+	return emit(&r, json_mode, NULL);
+}
+
+static int cmd_restore(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *input = NULL;
+	int i;
+	char *buf;
+	size_t len;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--input=", 8) == 0)
+			input = argv[i] + 8;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown restore option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (input == NULL) {
+		fprintf(stderr, "usage: kanxeoctl restore --input=PATH\n");
+		return 2;
+	}
+	if (read_local_file(input, &buf, &len) != 0) {
+		fprintf(stderr, "kanxeoctl: could not read %s\n", input);
+		return 1;
+	}
+
+	if (kx_client_request(c, "POST", "/v1/system/restore", buf, &r) != 0) {
+		free(buf);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	free(buf);
+
+	return emit(&r, json_mode, fmt_health);
 }
 
 struct cli_sysctl {
@@ -1999,6 +2093,10 @@ int main(int argc, char **argv)
 		return cmd_reboot(&client, json_mode);
 	if (strcmp(cmd, "update") == 0)
 		return cmd_update(&client, json_mode, argc - i, argv + i);
+	if (strcmp(cmd, "backup") == 0)
+		return cmd_backup(&client, json_mode, argc - i, argv + i);
+	if (strcmp(cmd, "restore") == 0)
+		return cmd_restore(&client, json_mode, argc - i, argv + i);
 	if (strcmp(cmd, "ps") == 0)
 		return cmd_ps(&client, json_mode);
 	if (strcmp(cmd, "run") == 0)

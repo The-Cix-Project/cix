@@ -133,6 +133,77 @@ paths:
             inactive slot is left completely untouched in every 400
             case (both files are validated before either is written)
 
+  /system/backup:
+    get:
+      summary: >
+        Bundles platform *configuration* state -- container
+        definitions, networks, DNS records, package install state and
+        recipes (see ADR-0033) -- as one response, for a client to save
+        and later feed back to POST /system/restore. Deliberately does
+        NOT include: workload data (each container's own persistent
+        data -- gitea's repos, a resolver's zone files, a metrics
+        TSDB -- is that container's own concern, with its own native
+        export tooling); image rootfs content (reproducible by
+        re-running pkg install for whatever pkg_installed records,
+        since everything is compiled from source -- this is the
+        "shopping list," not the built bytes); and PKI, which is never
+        referenced by this endpoint at all -- the CA private key (and
+        every issued leaf's own key) is never returned over the API by
+        existing, deliberate design (see /pki/ca, /pki/certs), and
+        backing it up is a separate, host-level concern entirely, not
+        partially folded into this mechanism.
+      operationId: getSystemBackup
+      responses:
+        "200":
+          description: The platform state bundle
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemBackupBundle"
+
+  /system/restore:
+    post:
+      summary: >
+        The reverse of GET /system/backup -- writes each field present
+        in the bundle back to its own real state file. Fields are
+        independent and all optional (at least one required): restore
+        just container definitions, just networks, or the whole
+        bundle. Every field is validated (container_defs/networks/
+        dns_records/pkg_installed must each themselves parse as valid
+        JSON; pkg_recipes must be an object of string values) before
+        any file is written, so one malformed field can never leave
+        the others half-applied. Deliberately does NOT reboot or hot-
+        reload anything -- restored state only takes effect on the
+        next boot (the same daemon-startup replay path, including
+        container autostart, that already runs on every normal boot);
+        call the pre-existing POST /system/reboot separately once
+        ready, the same "write, don't reboot, caller decides when to
+        cut over" shape /system/update already established (ADR-0031).
+      operationId: postSystemRestore
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SystemBackupBundle"
+      responses:
+        "200":
+          description: Every present field written to its real state file
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [restored]
+        "400":
+          description: >
+            No recognized field present, or a present field failed its
+            own validation (not valid JSON / pkg_recipes not an
+            object of strings) -- nothing is written in either case
+
   /containers:
     get:
       summary: List all containers known to this daemon
@@ -1277,6 +1348,40 @@ components:
             at boot (logged, not fatal to the rest of startup).
         readiness:
           $ref: "#/components/schemas/Readiness"
+
+    SystemBackupBundle:
+      type: object
+      description: >
+        The shared request/response shape for GET /system/backup and
+        POST /system/restore. Every field is optional (at least one
+        required on restore) and independent -- each is the raw,
+        already-JSON content of the matching real state file, embedded
+        as an escaped string (not nested raw JSON), so a round trip
+        through this schema is exact. See ADR-0033.
+      properties:
+        version:
+          type: integer
+          description: Bundle format version (currently always 1). Response-only -- ignored on restore.
+        container_defs:
+          type: string
+          description: Raw content of container_defs.json (every persisted container's exact create request, verbatim -- ADR-0025).
+        networks:
+          type: string
+          description: Raw content of networks.json.
+        dns_records:
+          type: string
+          description: Raw content of dns_records.json.
+        pkg_installed:
+          type: string
+          description: Raw content of pkg_installed.json (which packages are installed, into which images, at which version).
+        pkg_recipes:
+          type: object
+          additionalProperties:
+            type: string
+          description: >
+            Every *.recipe file currently on disk, keyed by package
+            name (not just currently-installed packages -- recipes are
+            cheap, and the operator may want them all preserved).
 
     ConfigFile:
       type: object
