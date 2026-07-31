@@ -62,6 +62,7 @@
 
 #define MKBOOTROOT_BIN "build/mkbootroot"
 #define KANXEOD_BIN "build/kanxeod"
+#define KANXEOCTL_BIN "build/kanxeoctl"
 #define KANXEO_INSTALL_BIN "build/kanxeo-install"
 #define MKINSTALLERISO_BIN "build/mkinstalleriso"
 #define BZIMAGE_PATH "build/bzImage"
@@ -189,8 +190,8 @@ int main(void)
 	 * 404'd on every request despite the REST API working fine; found
 	 * live, after a real install). */
 	{
-		char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN, stage_dir, (char *)KANXEOD_BIN, "web",
-			                     control_plane_squashfs,
+		char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN, stage_dir, (char *)KANXEOD_BIN,
+			                     (char *)KANXEOCTL_BIN, "web", control_plane_squashfs,
 			                     "", /* no real GPU firmware needed for a boot test */
 			                     NULL };
 		if (run_subprocess(MKBOOTROOT_BIN, mkbootroot_argv) != 0)

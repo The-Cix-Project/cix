@@ -26,10 +26,10 @@ static int run_mkbootroot(const char *firmware_dir)
 {
 	pid_t pid;
 	int status;
-	char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN, (char *)STAGE_DIR,
-		                     (char *)"build/kanxeod", (char *)"web",
-		                     (char *)OUT_SQUASHFS,     (char *)firmware_dir,
-		                     NULL };
+	char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN,   (char *)STAGE_DIR,
+		                     (char *)"build/kanxeod",   (char *)"build/kanxeoctl",
+		                     (char *)"web",             (char *)OUT_SQUASHFS,
+		                     (char *)firmware_dir,      NULL };
 
 	pid = fork();
 	if (pid < 0) {

@@ -38,3 +38,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0031](0031-host-and-package-update-mechanism.md) | Host OS update mechanism (write to inactive A/B slot), and automatic package updates | Accepted |
 | [0032](0032-per-slot-kernel-updates.md) | Per-slot kernel files, extending POST /system/update to cover bzImage | Accepted |
 | [0033](0033-platform-state-backup-restore.md) | Platform state backup/restore -- configuration only, not workload data, never PKI | Accepted |
+| [0034](0034-console-login-via-supervised-kanxeoctl.md) | Console login via a kanxeod-supervised kanxeoctl, not a general shell | Accepted |

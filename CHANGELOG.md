@@ -2,6 +2,21 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 19: real console login -- keyboard input + PID1-spawned kanxeoctl shell
+
+Phase 18 shipped video output and a REPL, but real Proxmox use surfaced two gaps neither closed: no keyboard input driver at all on the video console, and nothing on the box ever launched `kanxeoctl` on any console. Raised directly by the user immediately after using the Phase 18 ISO for real. See ADR-0034.
+
+#### Added
+- `image/kernel/qemu-part1.config`: PS/2 (`CONFIG_KEYBOARD_ATKBD` + its own `SERIO`/`SERIO_I8042` selects) and USB HID (`CONFIG_USB`/`CONFIG_USB_XHCI_HCD`/`CONFIG_HID`/`CONFIG_USB_HID`) keyboard drivers, plus three menuconfig gates (`CONFIG_INPUT_KEYBOARD`/`CONFIG_USB_SUPPORT`/`CONFIG_HID_SUPPORT`) a first build attempt found silently required.
+- `image/src/mkbootroot.c`: new required `kanxeoctl_bin` argv, stages `/bin/kanxeoctl` into the installed root -- previously absent entirely.
+- `daemon/src/main.c`: `spawn_console_shell()`/`register_console_shell_pidfd()`/`handle_console_shell_event()` (pidfd+epoll reap, mirrors `register_pkg_fetch_pidfd()`), `arm_console_respawn_timer()`/`handle_console_respawn_timer_event()` (timerfd delay, mirrors `arm_restart_timer()`). `kanxeod` (PID 1) now `execve()`s `kanxeoctl` on both `/dev/tty0` and `/dev/ttyS0` once boot is healthy, no login, respawning forever on exit after a 2-second delay.
+- `docs/adr/0034-console-login-via-supervised-kanxeoctl.md`.
+- `test/test_console_shell.c`, new: scripts a real serial-console round-trip (exit the first shell instance, wait for the *respawned* instance's own fresh prompt, confirm it answers `health`) via `qemu_boot_capture()`'s existing `scripted_input` mechanism -- genuine proof the reap+respawn machinery works, not just that it compiles.
+
+Verified: kernel driver binding confirmed in a real boot log (`input: AT Translated Set 2 keyboard`, `usbcore: registered new interface driver usbhid`); `test_console_shell` 3 consecutive clean runs; `test_boot`/`test_boot_ab`/`test_installer`/`test_boot_update` each re-run 3 consecutive times against the new kernel + image; full clean rebuild, zero warnings; full regression suite re-run clean.
+
+**Not built:** actual keyboard-driven interaction on the video console is unverifiable in this sandbox (no QMP channel to synthesize a keypress) -- the user's own final check, same boundary GPU passthrough/Secure Boot already have.
+
 ### Phase 18: kernel video console + interactive kanxeoctl shell
 
 Raised directly by the user after their first real Proxmox install: no video console on the installed system (only serial ever worked), and no way to stay on the box issuing `kanxeoctl` commands one after another without re-typing `--host=...` each time.

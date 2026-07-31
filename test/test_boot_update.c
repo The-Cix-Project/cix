@@ -42,6 +42,7 @@
 
 #define MKBOOTROOT_BIN "build/mkbootroot"
 #define KANXEOD_BIN "build/kanxeod"
+#define KANXEOCTL_BIN "build/kanxeoctl"
 #define BZIMAGE_PATH "build/bzImage"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
 #define MDIR_BIN "/usr/bin/mdir"
@@ -245,7 +246,7 @@ int main(void)
 	 * build isn't needed for what this test is actually proving. */
 	{
 		char *argv_a[] = { (char *)MKBOOTROOT_BIN, stage_dir,
-			           (char *)KANXEOD_BIN, "web", root_squashfs_a,
+			           (char *)KANXEOD_BIN, (char *)KANXEOCTL_BIN, "web", root_squashfs_a,
 			           "", NULL };
 		if (run_subprocess(MKBOOTROOT_BIN, argv_a) != 0)
 			return 1;
@@ -256,7 +257,7 @@ int main(void)
 	}
 	{
 		char *argv_new[] = { (char *)MKBOOTROOT_BIN, stage_dir_new,
-			             (char *)KANXEOD_BIN, web_new_dir, root_squashfs_new,
+			             (char *)KANXEOD_BIN, (char *)KANXEOCTL_BIN, web_new_dir, root_squashfs_new,
 			             "", NULL };
 		if (run_subprocess(MKBOOTROOT_BIN, argv_new) != 0)
 			return 1;

@@ -1,17 +1,25 @@
 /*
- * Phase 11 part 1 demonstrable test: proves the actual boot chain works --
- * kernel -> systemd-boot -> kanxeod --init-mode -- not just that each piece
- * builds. Assembles a throwaway 2-partition disk (ESP + one squashfs root
- * slot; the real 5-partition A/B layout is part 3's installer output, not
- * this test's job), boots it in QEMU (software-emulated -- no /dev/kvm in
- * this dev LXC), and scrapes the serial console for the exact same
- * "kanxeod listening on ..." line every other test in this suite already
- * treats as daemon-ready (daemon/src/main.c) -- proof this is the real
- * startup sequence running for real, not a special-cased boot-mode stub.
+ * Phase 19 demonstrable test: proves kanxeod --init-mode's new console-
+ * login machinery actually works end to end -- not just that it compiles.
+ * Reuses test_boot.c's exact disk-assembly approach (same throwaway
+ * ESP + one squashfs root slot), then scripts a real interactive session
+ * over the serial console via qemu_boot_capture()'s existing
+ * scripted_input mechanism (already proven for MOK-enrollment/fdisk
+ * interaction in test_installer.c): wait for the console shell's own
+ * prompt, exit it, wait for the *respawned* instance's own fresh prompt
+ * (real proof the pidfd-reap + timerfd-respawn path works, not just that
+ * spawn_console_shell() ran once), then confirm the respawned instance
+ * actually answers a real API call.
  *
- * Disk/partition/ESP/QEMU-boot primitives live in test_disk_image.c,
- * shared with test_boot_ab.c (part 2) -- see that file's own header
- * comment for why (no loop devices in this dev LXC, etc.).
+ * Deliberately scoped to the serial path (ttyS0) only -- the one
+ * genuinely end-to-end testable in this sandbox. Video-console (tty0)
+ * *input* needs a real keyboard (PS/2 or USB HID, see the kernel config
+ * changes this same phase added) and this harness has no QMP/monitor
+ * channel to synthesize a keypress even in principle (qemu_boot_capture()
+ * runs with -monitor none, -display none) -- a human actually typing at
+ * Proxmox's console viewer is necessarily the user's own final check,
+ * the same boundary GPU passthrough/Secure Boot/the framebuffer output
+ * itself already have.
  */
 #include "test_disk_image.h"
 #include "test_image_fixture.h"
@@ -30,17 +38,22 @@
 #define SYSTEMD_BOOT_EFI "/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
 #define OVMF_VARS_TEMPLATE "/usr/share/OVMF/OVMF_VARS_4M.fd"
 
-#define DISK_SIZE_BYTES (256 * 1024 * 1024) /* 64MB ESP + ~192MB root -- root.squashfs measures well under 1MB */
+#define DISK_SIZE_BYTES (256 * 1024 * 1024)
 #define ESP_SIZE_MIB 64
 #define SECTOR_SIZE 512
 
-#define BOOT_TIMEOUT_SECONDS 120
-#define SUCCESS_MARKER "kanxeod listening on"
+/* Generous over test_boot.c's own 120s: the respawn round-trip alone
+ * costs a real, deliberate 2s wait (arm_console_respawn_timer()'s own
+ * fixed delay), on top of normal software-emulated boot time. */
+#define BOOT_TIMEOUT_SECONDS 150
 #define PANIC_MARKER "Kernel panic"
+/* Confirmed via a real full boot log grep: the bare word "ok" never
+ * otherwise appears -- safe as a success marker precisely because the
+ * script below never triggers "health" on the *first* shell instance,
+ * only the respawned one, so its first-ever appearance in the captured
+ * buffer can only mean the respawned instance answered a real API call. */
+#define SUCCESS_MARKER "ok"
 
-/* Builds the ESP as a standalone FAT32 file via mtools -- systemd-boot
- * itself, the kernel, and a loader entry pointing init at
- * kanxeod --init-mode on the raw root partition. */
 static int build_esp_image(const char *esp_img, const char *workdir)
 {
 	char loader_conf_path[600];
@@ -81,7 +94,7 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 
 int main(void)
 {
-	char workdir[] = "/tmp/kanxeo_test_boot_XXXXXX";
+	char workdir[] = "/tmp/kanxeo_test_console_shell_XXXXXX";
 	char stage_dir[600];
 	char root_squashfs[600];
 	char disk_img[600];
@@ -92,6 +105,17 @@ int main(void)
 	long esp_start_sec, esp_size_sec;
 	long root_start_sec, root_size_sec;
 	enum qemu_boot_outcome outcome;
+	/* Deliberately skips "health" on the *first* shell instance -- exits
+	 * it immediately, waits for the respawned instance's own genuinely
+	 * new prompt (match_search_from advances past the first "kanxeo> "
+	 * match, so this can only match a second, later occurrence -- real
+	 * proof handle_console_shell_event()/arm_console_respawn_timer()
+	 * actually respawned it), then proves that respawned instance is a
+	 * fully working shell by calling health for real. */
+	struct qemu_scripted_input console_script[] = {
+		{ "kanxeo> ", "exit\n" },
+		{ "kanxeo> ", "health\n" },
+	};
 
 	if (mkdtemp(workdir) == NULL) {
 		perror("mkdtemp");
@@ -103,22 +127,14 @@ int main(void)
 	snprintf(esp_img, sizeof(esp_img), "%s/esp.img", workdir);
 	snprintf(ovmf_vars, sizeof(ovmf_vars), "%s/OVMF_VARS.fd", workdir);
 
-	/* 1. Build the minimal control-plane root (build/mkbootroot already
-	 * reuses test_image_fixture_build() for the kanxeod+ld.so+libc
-	 * staging -- not reimplemented here). */
 	{
 		char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN, stage_dir,
 			                     (char *)KANXEOD_BIN, (char *)KANXEOCTL_BIN, "web", root_squashfs,
-			                     "", /* no real GPU firmware needed for a boot test */
-			                     NULL };
+			                     "", NULL };
 		if (run_subprocess(MKBOOTROOT_BIN, mkbootroot_argv) != 0)
 			return 1;
 	}
 
-	/* 2. Throwaway raw disk: GPT, one ESP + one root partition. Part 1's
-	 * own scope boundary -- the real 5-partition A/B layout is part 3's
-	 * installer output, not this test's job. sfdisk operates on the
-	 * plain file directly, no loop device needed. */
 	{
 		int fd = open(disk_img, O_CREAT | O_WRONLY, 0644);
 
@@ -153,8 +169,6 @@ int main(void)
 			return 1;
 	}
 
-	/* 3. ESP, built standalone via mtools, then dropped into the disk
-	 * image at its real partition offset. */
 	{
 		int fd = open(esp_img, O_CREAT | O_WRONLY, 0644);
 
@@ -171,14 +185,9 @@ int main(void)
 	if (write_at_offset(disk_img, esp_start_sec * SECTOR_SIZE, esp_img) != 0)
 		return 1;
 
-	/* 4. Root partition: the whole squashfs image, written raw at its
-	 * partition offset -- a single atomic block copy, exactly how
-	 * ADR-0014 describes every future A/B slot write working too. */
 	if (write_at_offset(disk_img, root_start_sec * SECTOR_SIZE, root_squashfs) != 0)
 		return 1;
 
-	/* 5. Boot it. Software-emulated (no /dev/kvm in this dev LXC) --
-	 * correct but slow, acceptable for a boot-correctness smoke test. */
 	if (test_image_fixture_copy_file(OVMF_VARS_TEMPLATE, ovmf_vars) != 0)
 		return 1;
 
@@ -191,14 +200,16 @@ int main(void)
 		opts.success_marker = SUCCESS_MARKER;
 		opts.panic_marker = PANIC_MARKER;
 		opts.timeout_seconds = BOOT_TIMEOUT_SECONDS;
+		opts.scripted_input = console_script;
+		opts.n_scripted_input = sizeof(console_script) / sizeof(console_script[0]);
 		outcome = qemu_boot_capture(&opts, captured, sizeof(captured));
 	}
 	if (outcome != QEMU_BOOT_SUCCESS) {
-		fprintf(stderr, "boot did not reach a healthy state (outcome=%d)\n", (int)outcome);
+		fprintf(stderr, "console shell round-trip did not complete (outcome=%d)\n", (int)outcome);
 		return 1;
 	}
 
-	rm_tree(workdir); /* only on success -- a failure's artifacts are worth keeping to debug */
-	printf("BOOT RESULT: PASS\n");
+	rm_tree(workdir);
+	printf("CONSOLE SHELL RESULT: PASS\n");
 	return 0;
 }

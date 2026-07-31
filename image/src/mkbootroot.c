@@ -137,26 +137,39 @@ int main(int argc, char **argv)
 {
 	const char *image_root;
 	const char *kanxeod_bin;
+	const char *kanxeoctl_bin;
 	const char *web_dir;
 	const char *out_path;
 	const char *firmware_dir;
 
-	if (argc != 6) {
+	if (argc != 7) {
 		fprintf(stderr,
-		        "usage: %s <staging-dir> <build/kanxeod> <web-dir> <out.squashfs> "
-		        "<amdgpu-firmware-dir-or-\"\">\n",
+		        "usage: %s <staging-dir> <build/kanxeod> <build/kanxeoctl> <web-dir> "
+		        "<out.squashfs> <amdgpu-firmware-dir-or-\"\">\n",
 		        argv[0]);
 		return 2;
 	}
 	image_root = argv[1];
 	kanxeod_bin = argv[2];
-	web_dir = argv[3];
-	out_path = argv[4];
-	firmware_dir = argv[5];
+	kanxeoctl_bin = argv[3];
+	web_dir = argv[4];
+	out_path = argv[5];
+	firmware_dir = argv[6];
 
 	if (ensure_dir(image_root) != 0)
 		return 1;
 	if (test_image_fixture_build(image_root, kanxeod_bin, "kanxeod") != 0)
+		return 1;
+	/*
+	 * kanxeoctl itself: staged so kanxeod --init-mode (Phase 19) has
+	 * something to execve() when it spawns a managed shell on each
+	 * console -- previously absent from this image entirely, meaning
+	 * even a fully working console-input path would have had nothing to
+	 * launch. Needs no extra runtime libs of its own beyond what's
+	 * already staged above (ld.so/libc.so.6, the same TCC dynamic-link
+	 * dependency kanxeod itself has).
+	 */
+	if (test_image_fixture_build(image_root, kanxeoctl_bin, "kanxeoctl") != 0)
 		return 1;
 	/*
 	 * kanxeod itself never needs libtinfo -- this is staged purely so

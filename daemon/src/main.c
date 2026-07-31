@@ -38,6 +38,8 @@
 #include <time.h>
 #include <unistd.h>
 
+extern char **environ;
+
 #define DEFAULT_PORT 7620
 #define DEFAULT_BIND "127.0.0.1"
 #define DEFAULT_WEB_ROOT "web"
@@ -114,7 +116,15 @@
 #define PKG_PREFIX "/v1/pkg/"
 #define IMAGES_PREFIX "/v1/images/"
 
-enum conn_kind { CONN_LISTENER, CONN_CLIENT, CONN_CONTAINER, CONN_PKG_FETCH, CONN_RESTART_TIMER };
+enum conn_kind {
+	CONN_LISTENER,
+	CONN_CLIENT,
+	CONN_CONTAINER,
+	CONN_PKG_FETCH,
+	CONN_RESTART_TIMER,
+	CONN_CONSOLE_SHELL,
+	CONN_CONSOLE_RESPAWN_TIMER
+};
 
 struct conn {
 	enum conn_kind kind;
@@ -123,6 +133,8 @@ struct conn {
 	struct registry_entry *entry;           /* CONN_CONTAINER only */
 	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH only */
 	char restart_name[REGISTRY_NAME_MAX];   /* CONN_RESTART_TIMER only */
+	pid_t console_pid;                      /* CONN_CONSOLE_SHELL only */
+	char console_tty[32];                   /* CONN_CONSOLE_SHELL / CONN_CONSOLE_RESPAWN_TIMER */
 };
 
 /*
@@ -152,9 +164,15 @@ static volatile sig_atomic_t g_shutdown_action = SHUTDOWN_ACTION_POWEROFF;
  * that slot. NULL/unset (g_slot) means this isn't a real --init-mode
  * boot -- handle_system_update() rejects the request rather than
  * guessing at an "inactive" slot that doesn't meaningfully exist.
+ *
+ * g_port joins them for the same reason (Phase 19): spawn_console_shell()
+ * and its respawn-timer path need the real listening port to hand
+ * kanxeoctl a --port= that actually reaches this daemon, and both are
+ * called from places that don't otherwise have it in scope.
  */
 static const char *g_slot;
 static const char *g_bind_addr;
+static int g_port;
 
 static void on_signal(int sig)
 {
@@ -3569,6 +3587,186 @@ static void handle_pkg_fetch_event(struct conn *cc)
 	}
 }
 
+/*
+ * Same shape as register_pkg_fetch_pidfd(), for the console-shell child
+ * spawn_console_shell() just forked -- its exit (operator typed "exit",
+ * the tty vanished, whatever) needs the same non-blocking "tell me via
+ * epoll" treatment, not a blocking wait or a SIGCHLD handler this
+ * reactor has never needed before.
+ */
+static void register_console_shell_pidfd(pid_t pid, int pidfd, const char *tty_path)
+{
+	struct conn *cc;
+	struct kx_epoll_event ev;
+
+	cc = malloc(sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (console shell reactor conn)");
+		close(pidfd);
+		return;
+	}
+	cc->kind = CONN_CONSOLE_SHELL;
+	cc->fd = pidfd;
+	cc->console_pid = pid;
+	snprintf(cc->console_tty, sizeof(cc->console_tty), "%s", tty_path);
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+		perror("epoll_ctl ADD console shell pidfd");
+		close(pidfd);
+		free(cc);
+	}
+}
+
+/*
+ * Forks a console-login child bound to tty_path and execve()s kanxeoctl
+ * into it with no command -- kanxeoctl's own isatty(STDIN_FILENO) check
+ * (Phase 18) then drops it straight into run_shell(). setsid() detaches
+ * any inherited controlling terminal (moot for a PID 1 caller, which
+ * never had one) so the following open() of tty_path, being this new
+ * session's first tty open without O_NOCTTY, makes it that session's
+ * controlling terminal -- standard Linux tty semantics, no explicit
+ * TIOCSCTTY needed. That isolation is what keeps a Ctrl-C typed at this
+ * console from ever reaching kanxeod itself: it lands on this child's
+ * own, separate session/process group only. Talks to kanxeod over real
+ * HTTP via g_bind_addr/g_port like any other kanxeoctl invocation --
+ * this is still a pure REST client, API-First Mandate intact, just
+ * running on the same host it's talking to.
+ *
+ * A failed open()/execve() (tty genuinely absent, kanxeoctl missing) is
+ * non-fatal: the child just exits, the pidfd event still fires, and
+ * handle_console_shell_event() arms a respawn -- the same "keep trying
+ * forever" a real getty already has for an unready device.
+ */
+static void spawn_console_shell(const char *tty_path)
+{
+	pid_t pid;
+	char host_arg[64], port_arg[32];
+	int pidfd;
+
+	snprintf(host_arg, sizeof(host_arg), "--host=%s", g_bind_addr);
+	snprintf(port_arg, sizeof(port_arg), "--port=%d", g_port);
+
+	pid = fork();
+	if (pid < 0) {
+		perror("fork (console shell)");
+		return;
+	}
+	if (pid == 0) {
+		int fd;
+		char *argv[] = { (char *)"kanxeoctl", host_arg, port_arg, NULL };
+
+		setsid();
+		fd = open(tty_path, O_RDWR);
+		if (fd < 0) {
+			perror(tty_path);
+			_exit(1);
+		}
+		dup2(fd, STDIN_FILENO);
+		dup2(fd, STDOUT_FILENO);
+		dup2(fd, STDERR_FILENO);
+		if (fd > STDERR_FILENO)
+			close(fd);
+		execve("/bin/kanxeoctl", argv, environ);
+		perror("execve /bin/kanxeoctl");
+		_exit(127);
+	}
+
+	pidfd = sys_pidfd_open(pid, 0);
+	if (pidfd < 0) {
+		perror("pidfd_open (console shell)");
+		return;
+	}
+	register_console_shell_pidfd(pid, pidfd, tty_path);
+}
+
+/*
+ * Arms a one-shot delay before respawning a console shell on tty_path --
+ * same timerfd + epoll shape as arm_restart_timer() (container crash-
+ * restart backoff), reused here so a console shell that exits instantly
+ * on every respawn (kanxeoctl missing, tty genuinely broken) can't spin
+ * the reactor in a tight fork loop.
+ */
+static void arm_console_respawn_timer(const char *tty_path, int delay_seconds)
+{
+	int tfd;
+	struct itimerspec its;
+	struct conn *cc;
+	struct kx_epoll_event ev;
+
+	tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+	if (tfd < 0) {
+		perror("timerfd_create (console respawn)");
+		return;
+	}
+
+	memset(&its, 0, sizeof(its));
+	its.it_value.tv_sec = delay_seconds;
+	if (timerfd_settime(tfd, 0, &its, NULL) != 0) {
+		perror("timerfd_settime (console respawn)");
+		close(tfd);
+		return;
+	}
+
+	cc = malloc(sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (console respawn timer conn)");
+		close(tfd);
+		return;
+	}
+	cc->kind = CONN_CONSOLE_RESPAWN_TIMER;
+	cc->fd = tfd;
+	snprintf(cc->console_tty, sizeof(cc->console_tty), "%s", tty_path);
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
+		perror("epoll_ctl ADD console respawn timer");
+		close(tfd);
+		free(cc);
+	}
+}
+
+/* Reaps the exited console-shell child (mirrors handle_pkg_fetch_event()'s
+ * reap shape) and arms a short respawn delay on the same tty -- keeps
+ * console access persistent across "exit"/Ctrl-D the same way a real
+ * getty would, without ever blocking the reactor. */
+static void handle_console_shell_event(struct conn *cc)
+{
+	int status;
+	char tty_path[sizeof(cc->console_tty)];
+
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	waitpid(cc->console_pid, &status, 0);
+	close(cc->fd);
+	snprintf(tty_path, sizeof(tty_path), "%s", cc->console_tty);
+	free(cc);
+
+	arm_console_respawn_timer(tty_path, 2);
+}
+
+/* Fires once arm_console_respawn_timer()'s delay elapses -- drains the
+ * timerfd (same required read() arm_restart_timer()'s own handler
+ * already documents) and forks a fresh console shell on the same tty. */
+static void handle_console_respawn_timer_event(struct conn *cc)
+{
+	uint64_t expirations;
+	char tty_path[sizeof(cc->console_tty)];
+
+	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
+		perror("read (console respawn timerfd)");
+
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	close(cc->fd);
+	snprintf(tty_path, sizeof(tty_path), "%s", cc->console_tty);
+	free(cc);
+
+	spawn_console_shell(tty_path);
+}
+
 static void accept_loop(void)
 {
 	int client_fd;
@@ -3765,6 +3963,7 @@ int main(int argc, char **argv)
 	g_web_root = web_root;
 	g_slot = slot;
 	g_bind_addr = bind_addr;
+	g_port = port;
 
 	if (init_mode) {
 		/* The only observable serial-console signal for which slot
@@ -3937,6 +4136,17 @@ int main(int argc, char **argv)
 
 	containerdef_autostart_all();
 
+	/* Console login (Phase 19): a real console needs something to walk
+	 * up to, once boot is fully healthy -- never for a dev/test kanxeod
+	 * (no --init-mode), which is already running attached to a real
+	 * developer's own terminal and must never fork a second process to
+	 * fight it over. Both consoles get an independent instance -- either
+	 * could be the one an operator is actually watching. */
+	if (init_mode) {
+		spawn_console_shell("/dev/tty0");
+		spawn_console_shell("/dev/ttyS0");
+	}
+
 	while (!g_stop) {
 		struct kx_epoll_event events[MAX_EVENTS];
 		int n = kx_epoll_wait(g_epfd, events, MAX_EVENTS, -1);
@@ -3960,6 +4170,10 @@ int main(int argc, char **argv)
 				handle_pkg_fetch_event(cc);
 			else if (cc->kind == CONN_RESTART_TIMER)
 				handle_restart_timer_event(cc);
+			else if (cc->kind == CONN_CONSOLE_SHELL)
+				handle_console_shell_event(cc);
+			else if (cc->kind == CONN_CONSOLE_RESPAWN_TIMER)
+				handle_console_respawn_timer_event(cc);
 			else
 				handle_client_event(cc);
 		}

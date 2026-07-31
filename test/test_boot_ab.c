@@ -31,6 +31,7 @@
 
 #define MKBOOTROOT_BIN "build/mkbootroot"
 #define KANXEOD_BIN "build/kanxeod"
+#define KANXEOCTL_BIN "build/kanxeoctl"
 #define BZIMAGE_PATH "build/bzImage"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
 #define MDIR_BIN "/usr/bin/mdir"
@@ -167,7 +168,7 @@ int main(void)
 	 * header comment for why. */
 	{
 		char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN, stage_dir,
-			                     (char *)KANXEOD_BIN, "web", root_squashfs,
+			                     (char *)KANXEOD_BIN, (char *)KANXEOCTL_BIN, "web", root_squashfs,
 			                     "", /* no real GPU firmware needed for a boot test */
 			                     NULL };
 		if (run_subprocess(MKBOOTROOT_BIN, mkbootroot_argv) != 0)
