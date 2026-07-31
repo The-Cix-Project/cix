@@ -2,6 +2,26 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 21: git/gitea recipes, multi-source package recipes, and a real LDAPS deployment
+
+Real git and gitea recipes, a new multi-source recipe mechanism needed for lldap's own real build, and the platform's first genuinely TLS-secured workload service -- Kanxeo's own PKI issuing a real cert an LDAP server actually uses for LDAPS. See ADR-0036.
+
+#### Added
+- `pkg/recipes/git.recipe`, `pkg/recipes/gitea.recipe`: real, from-source builds, each individually proven through the real `kanxeod` pipeline.
+- `daemon/src/pkg.c`/`daemon/include/pkg.h`: `pkg_source=`/`pkg_sha256=` become space-separated, positionally-paired lists (`PKG_MAX_SOURCES=16`) -- index 0 extracted as before, indices 1+ copied verbatim into `/build/extra/<basename>`, fetched via nested `fork()`/`execve()`/`waitpid()` (never a shell script). `docs/adr/0036-multi-source-package-recipes.md`.
+- `pkg/recipes/lldap.recipe`: a real, from-source lldap build (chosen over `glauth` for its genuine first-party web UI), doubly verified -- a real local build (every CDN asset's sha256 confirmed and cross-checked against lldap's own SRI hashes) then a full install through `kanxeod`.
+- `test/test_image_fixture.c`: `/usr/local/cargo`'s staged extras now include a pre-populated `wasm-pack-cache` (rides along with the existing wholesale copy, no new staging entry).
+
+#### Fixed
+- `wasm-pack` failing outright inside the isolated `pkg_build()` container ("couldn't find your home directory, is $HOME not set?") -- `g_build_envp` now sets `HOME=/build`.
+- `wasm-pack` needing to `cargo install wasm-bindgen-cli` at build time, which the network-less build container can't do -- pre-populated once via wasm-pack's own `WASM_PACK_CACHE` env var on the real build host; `lldap.recipe` exports it to match.
+- `pkg_seed_image_runtime()`'s `runtime_libs[]` (ADR-0023) missing `libgcc_s.so.1`/`libm.so.6` -- a real Rust binary (`lldap`) failed to even start (`error while loading shared libraries`). Fixed generically, not lldap-specifically: any future Rust/C++ package needs both.
+- `daemon/src/main.c`'s `--pki-issue` handling treated `pki_cert_create()`'s `PKI_ERR_DUPLICATE` (expected on every restart after the first) as a hard failure, skipping `pki_cert_deliver()` -- a container whose process starts fast enough to read its TLS cert before delivery finishes on the *first* attempt would crash-loop **forever** under `restart:"always"`, since every respawn after that hit `DUPLICATE` and never reached delivery again. Now treated as "cert already exists, deliver it." Confirmed fixed against both a real `kill -9` crash and a real daemon restart.
+
+Verified: a real LDAPS deployment (config staged via the pre-existing `--file=` mechanism with every path absolute, sidestepping `run`'s lack of a `--workdir=` option entirely; `--pki-issue --pki-cert-dir=/opt/lldap`; `--restart=always`) -- `openssl s_client -verify_hostname ldapsvc -CAfile ca.crt` returns `Verify return code: 0 (ok)` against Kanxeo's own root CA; `ldapsearch -H ldaps://ldapsvc:6360` performs a real bind and returns real directory entries. Full clean rebuild, zero warnings; full pre-existing non-QEMU regression suite (20 binaries) re-run clean.
+
+**Not built:** DNS registration for the LDAP service (`--dns-register` alongside `--pki-issue`); LDAPS is proven for this one container, not yet adopted as a platform-wide auth convention.
+
 ### Phase 20: fix silent real-install breakage in PKI/pkg, portable build-toolchain artifact
 
 While answering how to get gitea onto a Kanxeo host, checking the user's own build-toolchain-container proposal surfaced two real, live-confirmed bugs: `pki ca bootstrap` failed outright on a genuinely fresh installed image (booted one, ran it on the real console, confirmed `CA genpkey failed`/HTTP 500). See ADR-0035.

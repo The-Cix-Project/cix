@@ -210,7 +210,17 @@ int test_image_fixture_stage_toolchain(const char *image_root)
 	 *   (crates.io / Rust's own distribution server) that the isolated
 	 *   pkg_build() container doesn't have, the same reasoning
 	 *   wasm-pack/the wasm32 target can't be installed at recipe-build
-	 *   time at all, only pre-staged.
+	 *   time at all, only pre-staged. Also includes
+	 *   /usr/local/cargo/wasm-pack-cache -- wasm-pack's own
+	 *   WASM_PACK_CACHE-pointed binary cache (wasm-bindgen-cli, matched
+	 *   to this crate's Cargo.lock-pinned version, plus wasm-opt), found
+	 *   the same way: a real isolated build failed outright
+	 *   ("Could not resolve host: index.crates.io") the first time
+	 *   wasm-pack tried to install wasm-bindgen-cli on demand. Prepopulated
+	 *   once on this build host (`WASM_PACK_CACHE=/usr/local/cargo/wasm-pack-cache
+	 *   wasm-pack build` against lldap's own app/), then rides along for
+	 *   free with the existing wholesale /usr/local/cargo copy above --
+	 *   no separate staging entry needed.
 	 */
 	static const struct {
 		const char *src;

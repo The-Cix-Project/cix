@@ -91,7 +91,7 @@ static char g_build_lowerdir[PATH_MAX], g_build_upperdir[PATH_MAX];
 static char g_build_workdir[PATH_MAX], g_build_merged[PATH_MAX];
 static char g_build_argv_cmd[512];
 static char *g_build_argv[4];
-static char *g_build_envp[3];
+static char *g_build_envp[4];
 
 static int pkg_name_is_valid(const char *name)
 {
@@ -806,6 +806,8 @@ enum pkg_error pkg_seed_image_runtime(const char *image)
 		{ "/lib64/ld-linux-x86-64.so.2", "lib64/ld-linux-x86-64.so.2" },
 		{ "/lib/x86_64-linux-gnu/libc.so.6", "lib/x86_64-linux-gnu/libc.so.6" },
 		{ "/lib/x86_64-linux-gnu/libtinfo.so.6", "lib/x86_64-linux-gnu/libtinfo.so.6" },
+		{ "/lib/x86_64-linux-gnu/libgcc_s.so.1", "lib/x86_64-linux-gnu/libgcc_s.so.1" },
+		{ "/lib/x86_64-linux-gnu/libm.so.6", "lib/x86_64-linux-gnu/libm.so.6" },
 	};
 	char target_rootfs[PATH_MAX];
 	size_t i;
@@ -1238,7 +1240,8 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out)
 	g_build_argv[3] = NULL;
 	g_build_envp[0] = "PKG_DESTDIR=/build/pkg-dest";
 	g_build_envp[1] = "PATH=/usr/bin:/bin";
-	g_build_envp[2] = NULL;
+	g_build_envp[2] = "HOME=/build";
+	g_build_envp[3] = NULL;
 
 	memset(spec_out, 0, sizeof(*spec_out));
 	spec_out->ns.clone_flags =

@@ -2044,7 +2044,20 @@ static int create_container_from_body(const char *body, size_t body_len,
 		perr = pki_cert_create(entry->name, pki_sans, 1, pki_days, entry->name, &scratch);
 		jw_free(&scratch);
 
-		if (perr != PKI_OK) {
+		/* PKI_ERR_DUPLICATE means a cert for this name already exists --
+		 * expected and harmless on every restart-always respawn after the
+		 * first (each respawn gets a fresh pid, so delivery still needs to
+		 * run again even though creation itself is a no-op the second time
+		 * onward). Confirmed as a real, not hypothetical, failure mode:
+		 * without this, a container whose process starts and reads its own
+		 * TLS cert before pki_cert_deliver() finishes writing it (a real
+		 * race -- register_container_pidfd() above runs before this whole
+		 * block) would crash-loop forever under restart-always, since every
+		 * respawn after the first hit DUPLICATE and never reached delivery
+		 * at all. Any other error still aborts -- a genuinely failed
+		 * create (OPENSSL_FAILED, PERSIST_FAILED, ...) has no existing cert
+		 * to fall back to delivering. */
+		if (perr != PKI_OK && perr != PKI_ERR_DUPLICATE) {
 			fprintf(stderr,
 			        "%s: pki_issue requested but cert issuance failed (err=%d)\n",
 			        entry->name, (int)perr);

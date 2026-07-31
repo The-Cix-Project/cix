@@ -61,6 +61,17 @@ pkg_build() {
 	export CARGO_HOME=/usr/local/cargo
 	export RUSTUP_HOME=/usr/local/rustup
 	export PATH="/usr/local/cargo/bin:$PATH"
+	# wasm-pack installs its own wasm-bindgen-cli (a version pinned by
+	# this crate's own Cargo.lock, resolved via "cargo install") into
+	# this cache dir on first use -- confirmed directly needing real
+	# network access (crates.io) to do that install, which the
+	# isolated build container doesn't have. Pointed at a path under
+	# CARGO_HOME specifically so it's pre-populated once on the real
+	# build host (the same host wasm-pack/the wasm32 target themselves
+	# are pre-installed on, for the identical reason) and rides along
+	# automatically with every existing /usr/local/cargo toolchain
+	# staging, no separate mechanism needed.
+	export WASM_PACK_CACHE=/usr/local/cargo/wasm-pack-cache
 
 	cargo build --release -p lldap -p lldap_migration_tool -p lldap_set_password
 	./app/build.sh
