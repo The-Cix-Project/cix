@@ -1,0 +1,27 @@
+# 0036 — multi-source package recipes
+
+## Status
+
+Accepted
+
+## Context
+
+Writing a real `lldap.recipe` (an LDAP server chosen specifically for its genuine, first-party web UI) surfaced a real, verified structural limit, not a speculative one. lldap's web frontend compiles via Rust→WASM (`wasm-pack`, no Node.js involved — confirmed directly against lldap's own `Dockerfile`), but that same `Dockerfile` also fetches 8 small external files at build/image time — Bootstrap CSS/JS, Bootstrap Icons, Font Awesome, and 3 font files, all from CDNs (`cdn.jsdelivr.net`, `cdnjs.cloudflare.com`, `fonts.gstatic.com`, confirmed against `app/static/libraries.txt`/`app/static/fonts/fonts.txt`). `pkg_build()`'s own isolated container has zero network access by design (Phase 10: fetching happens on the host, before the container starts, since this project's networking plane has no outbound NAT). Every recipe format before this one (`pkg_source=`/`pkg_sha256=`) supports exactly one URL — a real gap once a package's own real, upstream-authored build genuinely needs more than its main source tarball.
+
+## Decision
+
+**`pkg_source=`/`pkg_sha256=` become space-separated lists, positionally paired**, parsed inside the same quoting `extract_line_value()` (`daemon/src/pkg.c`) already supports — `pkg_source="url1 url2 url3"` / `pkg_sha256="hash1 hash2 hash3"`. Every recipe before this one (`bash`/`iproute2`/`bird`/`git`/`gitea`) has exactly one unquoted URL per line, which parses as a one-element list unchanged — fully backward compatible, zero existing recipe touched or re-verified beyond the standard regression sweep.
+
+**Index 0 is "the" source, extracted; indices 1+ are plain files, copied verbatim.** Source 0 goes through the exact same `extract_tarball()` call into `/build/src` every recipe already assumes. Sources 1+ are never extracted — each lands as a plain file at `/build/extra/<basename-of-its-own-URL>` (a new `url_basename()` helper, `daemon/src/pkg.c` — the last `/`-separated segment of the URL string, no allocation) for `pkg_build()`/`pkg_install()` to reference directly. Basename collisions across multiple extra URLs are not auto-resolved — a stated recipe-author responsibility, not engineering for a hypothetical: lldap's own real 8 files already have 8 distinct basenames, confirmed directly, not assumed.
+
+**All-or-nothing across every source, matching the existing single-source guarantee exactly.** Any one URL's fetch failure or checksum mismatch fails the whole job — no partial-success state. `pkg_fetch_completed()` verifies every fetched file's own sha256 against its own recipe-declared hash *before* any of them are touched further (extracted or copied), the same "verify everything, then act" discipline `do_system_update()`'s combined image/kernel validation already established elsewhere in this project.
+
+**Fetched sequentially inside the same forked child, via nested `fork()`/`execve()`/`waitpid()` — not a generated shell script.** `start_fetch_for()`'s fetch child now loops over every source URL, spawning one `curl` grandchild per URL in turn, `_exit(0)` only if all succeed. This was chosen deliberately over building a shell command string (`sh -c "curl url1 -o path1 && curl url2 -o path2 && ..."`) specifically so a recipe-supplied URL never passes through shell interpolation — the same posture every other subprocess spawn in this file (`run_subprocess()`, `extract_tarball()`, etc.) already has, direct `execve()` with an explicit `argv`, never a shell. The single pidfd the reactor already tracks for this child covers the whole multi-URL sequence unchanged — `pkg_fetch_completed(exit_status, ...)`'s existing contract (one exit status summarizes the whole fetch) needed no changes to the epoll/pidfd plumbing itself.
+
+**On-disk fetched-file naming changed from `<name>-<version>.tarball` to `<name>-<version>-<index>.src`** (both `start_fetch_for()` and `pkg_fetch_completed()` independently reconstruct this same pattern; confirmed by grep that nothing else in the codebase depends on the old name) — index-based to accommodate N files per install, and no longer implying every source is a tarball, since most of lldap's own extras are plain CSS/JS/font files, not archives.
+
+## Consequences
+
+- Verified two ways: the full existing regression suite (every prior recipe has exactly one source, unaffected) re-run clean; a new synthetic `multisrc` fixture in `test/test_pkg.c` proves the new path for real — a genuine multi-source install succeeding end-to-end, the extra files genuinely present under `/build/extra/` *during* the build (proven by having `pkg_install()` copy one into `$PKG_DESTDIR` and checking its real byte content afterward, not just presence), and a deliberate checksum mismatch on a non-zero-index source failing the whole job exactly like `badsum.recipe` already proves for the single-source case.
+- `PKG_MAX_SOURCES` (`daemon/include/pkg.h`) is a real, bounded cap (16) — lldap's own real need is 9; generous headroom past that without being an unbounded list, the same posture `PKG_MAX_DEP_CHAIN` already established for dependency chains.
+- This is what makes a real, from-source, no-shortcuts `lldap.recipe` possible at all — without it, the only options would have been skipping lldap's own real CDN-fetched styling (a degraded, unstyled web UI) or hand-patching lldap's own build output to remove those references, either a real compromise this ADR's mechanism avoids entirely.

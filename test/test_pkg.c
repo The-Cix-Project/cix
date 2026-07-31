@@ -117,6 +117,33 @@ static int run_cmd(const char *fmt, ...)
 	return (rc == 0) ? 0 : -1;
 }
 
+/* Shared by stage_fixture_tarball() and stage_fixture_plain_file()
+ * (multi-source recipe scenario, ADR-0036) -- computes path's real
+ * sha256 via the real sha256sum binary, not hand-rolled crypto. */
+static int compute_file_sha256(const char *path, char *out_sha256, size_t sha256_size)
+{
+	char shacmd[700];
+	FILE *sp;
+	char buf[128] = { 0 };
+
+	snprintf(shacmd, sizeof(shacmd), "sha256sum '%s'", path);
+	sp = popen(shacmd, "r");
+	if (sp == NULL)
+		return -1;
+	if (fgets(buf, sizeof(buf), sp) == NULL) {
+		pclose(sp);
+		return -1;
+	}
+	pclose(sp);
+	if (strlen(buf) < 64)
+		return -1;
+	if (64 >= sha256_size)
+		return -1;
+	memcpy(out_sha256, buf, 64);
+	out_sha256[64] = '\0';
+	return 0;
+}
+
 /* Stages a tiny synthetic C "hello world" + Makefile source tree at
  * <scratch_dir>/<name>-<version>/, tars it (with the standard
  * <name>-<version>/ wrapper directory every real source tarball has,
@@ -157,28 +184,26 @@ static int stage_fixture_tarball(const char *scratch_dir, const char *name, cons
 	if (run_cmd("tar -cf '%s' -C '%s' '%s-%s'", out_tarball_path, scratch_dir, name, version) != 0)
 		return -1;
 
-	{
-		char shacmd[700];
-		FILE *sp;
-		char buf[128] = { 0 };
+	return compute_file_sha256(out_tarball_path, out_sha256, sha256_size);
+}
 
-		snprintf(shacmd, sizeof(shacmd), "sha256sum '%s'", out_tarball_path);
-		sp = popen(shacmd, "r");
-		if (sp == NULL)
-			return -1;
-		if (fgets(buf, sizeof(buf), sp) == NULL) {
-			pclose(sp);
-			return -1;
-		}
-		pclose(sp);
-		if (strlen(buf) < 64)
-			return -1;
-		if (64 >= sha256_size)
-			return -1;
-		memcpy(out_sha256, buf, 64);
-		out_sha256[64] = '\0';
-	}
-	return 0;
+/* A plain, non-tarball fixture file -- source index 1+ in the
+ * multisrc scenario below (ADR-0036), landing at /build/extra/
+ * <basename> verbatim, never extracted. */
+static int stage_fixture_plain_file(const char *scratch_dir, const char *filename, const char *content,
+                                     char *out_path, size_t out_path_size, char *out_sha256,
+                                     size_t sha256_size)
+{
+	FILE *f;
+
+	snprintf(out_path, out_path_size, "%s/%s", scratch_dir, filename);
+	f = fopen(out_path, "w");
+	if (f == NULL)
+		return -1;
+	fputs(content, f);
+	fclose(f);
+
+	return compute_file_sha256(out_path, out_sha256, sha256_size);
 }
 
 static int write_recipe(const char *name, const char *version, const char *tarball_path,
@@ -199,6 +224,42 @@ static int write_recipe(const char *name, const char *version, const char *tarba
 	fprintf(f, "pkg_build() {\n\tgcc -o hello hello.c\n}\n\n");
 	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
 	           "\"$PKG_DESTDIR/usr/bin/%s\"\n}\n",
+	        name);
+	fclose(f);
+	return 0;
+}
+
+/* Multi-source recipe (ADR-0036): source 0 is the usual fixture
+ * tarball; sources 1/2 are plain files that land at
+ * /build/extra/extra1.txt and /build/extra/extra2.txt. pkg_install()
+ * deliberately copies extra1.txt into PKG_DESTDIR so the caller can
+ * check its real byte content afterward -- proof the file was
+ * genuinely there during the build, not just that the job succeeded. */
+static int write_multisrc_recipe(const char *name, const char *version, const char *tarball_path,
+                                  const char *tarball_sha256, const char *extra1_path,
+                                  const char *extra1_sha256, const char *extra2_path,
+                                  const char *extra2_sha256)
+{
+	char path[256];
+	FILE *f;
+
+	snprintf(path, sizeof(path), "%s/recipes/%s.recipe", PKG_STATE_DIR, name);
+	f = fopen(path, "w");
+	if (f == NULL)
+		return -1;
+	fprintf(f, "pkg_name=%s\n", name);
+	fprintf(f, "pkg_version=%s\n", version);
+	fprintf(f, "pkg_source=\"file://%s file://%s file://%s\"\n", tarball_path, extra1_path,
+	        extra2_path);
+	fprintf(f, "pkg_sha256=\"%s %s %s\"\n", tarball_sha256, extra1_sha256, extra2_sha256);
+	fprintf(f, "pkg_depends=\"\"\n\n");
+	fprintf(f, "pkg_build() {\n\tgcc -o hello hello.c\n}\n\n");
+	fprintf(f,
+	        "pkg_install() {\n"
+	        "\tmkdir -p \"$PKG_DESTDIR/usr/bin\" \"$PKG_DESTDIR/usr/share/multisrc\"\n"
+	        "\tcp hello \"$PKG_DESTDIR/usr/bin/%s\"\n"
+	        "\tcp /build/extra/extra1.txt \"$PKG_DESTDIR/usr/share/multisrc/extra1.txt\"\n"
+	        "}\n",
 	        name);
 	fclose(f);
 	return 0;
@@ -789,6 +850,110 @@ int main(void)
 					ok = 0;
 				}
 				kx_response_free(&r);
+			}
+		}
+	}
+
+	/* 15. multi-source recipes (ADR-0036): a real install with one main
+	 * tarball plus two extra plain files, proving (a) the whole thing
+	 * installs end to end exactly like every single-source recipe
+	 * already does, (b) an extra file was genuinely available under
+	 * /build/extra/ *during* the build -- checked by its real byte
+	 * content post-install, not just its presence -- and (c) a bad
+	 * checksum on a non-zero-index source fails the *whole* job, the
+	 * same all-or-nothing guarantee badsum.recipe already proves for
+	 * index 0. */
+	{
+		char ms_tarball[512], ms_tarball_sha[128];
+		char extra1_path[512], extra1_sha[128];
+		char extra2_path[512], extra2_sha[128];
+
+		if (stage_fixture_tarball(scratch_dir, "multisrc", "1.0", ms_tarball, sizeof(ms_tarball),
+		                           ms_tarball_sha, sizeof(ms_tarball_sha)) != 0 ||
+		    stage_fixture_plain_file(scratch_dir, "extra1.txt", "extra-content-one\n", extra1_path,
+		                              sizeof(extra1_path), extra1_sha, sizeof(extra1_sha)) != 0 ||
+		    stage_fixture_plain_file(scratch_dir, "extra2.txt", "extra-content-two\n", extra2_path,
+		                              sizeof(extra2_path), extra2_sha, sizeof(extra2_sha)) != 0) {
+			fprintf(stderr, "FAIL: could not stage multisrc fixtures\n");
+			ok = 0;
+		} else if (write_multisrc_recipe("multisrc", "1.0", ms_tarball, ms_tarball_sha, extra1_path,
+		                                  extra1_sha, extra2_path, extra2_sha) != 0) {
+			fprintf(stderr, "FAIL: could not write multisrc recipe\n");
+			ok = 0;
+		} else {
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"multisrc\"}", &r) !=
+			        0 ||
+			    r.status != 202) {
+				fprintf(stderr, "FAIL: POST install multisrc, status=%d\n", r.status);
+				ok = 0;
+			}
+			kx_response_free(&r);
+
+			if (poll_pkg_state(&client, "multisrc", state, sizeof(state), 30) != 0 ||
+			    strcmp(state, "installed") != 0) {
+				fprintf(stderr, "FAIL: multisrc ended in state '%s', expected installed\n", state);
+				ok = 0;
+			} else {
+				struct stat st;
+				char content[64] = { 0 };
+				FILE *cf;
+
+				if (stat(BASE_ROOTFS "/usr/bin/multisrc", &st) != 0) {
+					fprintf(stderr, "FAIL: multisrc binary missing from base image\n");
+					ok = 0;
+				}
+				cf = fopen(BASE_ROOTFS "/usr/share/multisrc/extra1.txt", "r");
+				if (cf == NULL || fgets(content, sizeof(content), cf) == NULL ||
+				    strcmp(content, "extra-content-one\n") != 0) {
+					fprintf(stderr,
+					        "FAIL: extra1.txt missing or wrong content in base image, got: %s\n",
+					        content);
+					ok = 0;
+				}
+				if (cf != NULL)
+					fclose(cf);
+			}
+		}
+
+		/* A bad checksum on the *second* extra (index 2, not index 0)
+		 * must still fail the whole job -- confirms verification isn't
+		 * limited to the main source. */
+		if (write_multisrc_recipe("multisrcbad", "1.0", ms_tarball, ms_tarball_sha, extra1_path,
+		                           extra1_sha, extra2_path,
+		                           "0000000000000000000000000000000000000000000000000000000000000000") !=
+		    0) {
+			fprintf(stderr, "FAIL: could not write multisrcbad recipe\n");
+			ok = 0;
+		} else {
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"multisrcbad\"}",
+			                       &r) != 0 ||
+			    r.status != 202) {
+				fprintf(stderr, "FAIL: POST install multisrcbad, status=%d\n", r.status);
+				ok = 0;
+			}
+			kx_response_free(&r);
+
+			if (poll_pkg_state(&client, "multisrcbad", state, sizeof(state), 30) != 0) {
+				fprintf(stderr, "FAIL: multisrcbad never left fetching/building\n");
+				ok = 0;
+			} else if (strcmp(state, "failed") != 0) {
+				fprintf(stderr,
+				        "FAIL: multisrcbad ended in state '%s', expected failed (checksum "
+				        "mismatch on a non-zero-index source)\n",
+				        state);
+				ok = 0;
+			}
+			{
+				struct stat st;
+
+				if (stat(BASE_ROOTFS "/usr/bin/multisrcbad", &st) == 0) {
+					fprintf(stderr,
+					        "FAIL: multisrcbad binary present despite a checksum mismatch on "
+					        "one of its extra sources\n");
+					ok = 0;
+				}
 			}
 		}
 	}

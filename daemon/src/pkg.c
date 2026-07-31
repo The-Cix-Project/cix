@@ -41,8 +41,13 @@ struct pkg_entry {
 struct pkg_recipe {
 	char name[PKG_NAME_MAX];
 	char version[PKG_VERSION_MAX];
-	char source[PKG_URL_MAX];
-	char sha256[PKG_SHA256_MAX];
+	/* source[0]/sha256[0] is "the" source, extracted into /build/src;
+	 * source[1..source_count-1] are plain files copied into
+	 * /build/extra/<basename> (ADR-0036). Every recipe before this one
+	 * has source_count == 1. */
+	char source[PKG_MAX_SOURCES][PKG_URL_MAX];
+	char sha256[PKG_MAX_SOURCES][PKG_SHA256_MAX];
+	int source_count;
 	char depends[PKG_DEPENDS_MAX];
 };
 
@@ -219,11 +224,37 @@ static int extract_line_value(const char *buf, const char *key, char *out, size_
 	return 0;
 }
 
+/* Splits raw (modified in place, same strtok_r(..., " \t", &save)
+ * convention resolve_chain() already uses for pkg_depends) into up to
+ * max_entries fixed-size strings at dest, elem_size apart -- shared by
+ * both pkg_source=/pkg_sha256= tokenizing below (ADR-0036). Returns
+ * the entry count, or -1 on overflow (too many entries, or one too
+ * long for its own fixed-size slot) -- never silently truncates. */
+static int tokenize_into(char *raw, char *dest, size_t elem_size, int max_entries)
+{
+	char *save;
+	char *tok;
+	int n = 0;
+
+	tok = strtok_r(raw, " \t", &save);
+	while (tok != NULL) {
+		if (n >= max_entries || strlen(tok) >= elem_size)
+			return -1;
+		strcpy(dest + (size_t)n * elem_size, tok);
+		n++;
+		tok = strtok_r(NULL, " \t", &save);
+	}
+	return n;
+}
+
 static int parse_recipe(const char *path, struct pkg_recipe *out)
 {
 	char *buf;
 	size_t len;
 	int rc = 0;
+	char raw_source[PKG_MAX_SOURCES * PKG_URL_MAX];
+	char raw_sha256[PKG_MAX_SOURCES * PKG_SHA256_MAX];
+	int sha256_count;
 
 	if (persist_read_file(path, &buf, &len) != 0 || buf == NULL)
 		return -1;
@@ -233,13 +264,25 @@ static int parse_recipe(const char *path, struct pkg_recipe *out)
 		rc = -1;
 	if (extract_line_value(buf, "pkg_version=", out->version, sizeof(out->version)) != 0)
 		rc = -1;
-	if (extract_line_value(buf, "pkg_source=", out->source, sizeof(out->source)) != 0)
+	if (extract_line_value(buf, "pkg_source=", raw_source, sizeof(raw_source)) != 0)
 		rc = -1;
-	if (extract_line_value(buf, "pkg_sha256=", out->sha256, sizeof(out->sha256)) != 0)
+	if (extract_line_value(buf, "pkg_sha256=", raw_sha256, sizeof(raw_sha256)) != 0)
 		rc = -1;
 	/* depends is optional -- fine if absent */
 	extract_line_value(buf, "pkg_depends=", out->depends, sizeof(out->depends));
 	free(buf);
+
+	if (rc == 0) {
+		out->source_count = tokenize_into(raw_source, (char *)out->source, PKG_URL_MAX,
+		                                   PKG_MAX_SOURCES);
+		sha256_count =
+		    tokenize_into(raw_sha256, (char *)out->sha256, PKG_SHA256_MAX, PKG_MAX_SOURCES);
+		/* Positionally paired (ADR-0036) -- a mismatched count is a
+		 * real, non-negotiable recipe error, not silently zipped
+		 * short against whichever list is shorter. */
+		if (out->source_count <= 0 || sha256_count <= 0 || out->source_count != sha256_count)
+			rc = -1;
+	}
 
 	if (rc != 0 || !pkg_name_is_valid(out->name))
 		return -1;
@@ -297,6 +340,16 @@ static int extract_tarball(const char *tarball_path, const char *dest_dir)
 		          "--strip-components=1", "-xf", (char *)tarball_path, NULL };
 
 	return run_subprocess(PKG_TAR_BIN, argv);
+}
+
+/* Last '/'-separated segment of a source URL -- where an extra
+ * (non-index-0) source lands under /build/extra/ (ADR-0036). Pointer
+ * into url itself, never allocates. */
+static const char *url_basename(const char *url)
+{
+	const char *slash = strrchr(url, '/');
+
+	return slash != NULL ? slash + 1 : url;
 }
 
 /*
@@ -949,8 +1002,6 @@ static enum pkg_error start_fetch_for(const char *name, pid_t *out_pid, int *out
 		snprintf(e->error, sizeof(e->error), "could not create sources directory");
 		return PKG_ERR_PERSIST_FAILED;
 	}
-	snprintf(tarball_path, sizeof(tarball_path), "%s/%s-%s.tarball", g_sources_dir, recipe.name,
-	         recipe.version);
 
 	pid = fork();
 	if (pid < 0) {
@@ -960,10 +1011,37 @@ static enum pkg_error start_fetch_for(const char *name, pid_t *out_pid, int *out
 		return PKG_ERR_SPAWN_FAILED;
 	}
 	if (pid == 0) {
-		char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL", "-o", tarball_path, recipe.source, NULL };
+		/* One curl per source entry, sequentially, inside this same
+		 * forked child (ADR-0036) -- a grandchild per URL, not a
+		 * generated shell command, so a recipe-supplied URL never
+		 * passes through shell interpolation. The single pidfd the
+		 * caller registers for *this* child already covers the whole
+		 * sequence; pkg_fetch_completed()'s existing "one exit status
+		 * summarizes the whole fetch" contract needs no change. */
+		int j;
 
-		execve(PKG_CURL_BIN, argv, environ);
-		_exit(127);
+		for (j = 0; j < recipe.source_count; j++) {
+			char src_tarball_path[PATH_MAX];
+			pid_t sub;
+			int status;
+			char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL", "-o", src_tarball_path,
+				          recipe.source[j], NULL };
+
+			snprintf(src_tarball_path, sizeof(src_tarball_path), "%s/%s-%s-%d.src",
+			         g_sources_dir, recipe.name, recipe.version, j);
+
+			sub = fork();
+			if (sub < 0)
+				_exit(1);
+			if (sub == 0) {
+				execve(PKG_CURL_BIN, argv, environ);
+				_exit(127);
+			}
+			if (waitpid(sub, &status, 0) != sub || !WIFEXITED(status) ||
+			    WEXITSTATUS(status) != 0)
+				_exit(1);
+		}
+		_exit(0);
 	}
 
 	pidfd = sys_pidfd_open(pid, 0);
@@ -1039,11 +1117,11 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out)
 	struct pkg_entry *e = pkg_find(g_current_job_name, g_current_job_image);
 	char recipe_path[PATH_MAX];
 	struct pkg_recipe recipe;
-	char tarball_path[PATH_MAX];
 	char sha_out[128];
 	char container_base[PATH_MAX];
-	char src_dir[PATH_MAX], dest_dir[PATH_MAX], recipe_dst[PATH_MAX];
+	char src_dir[PATH_MAX], dest_dir[PATH_MAX], recipe_dst[PATH_MAX], extra_dir[PATH_MAX];
 	int is_final_upgrade;
+	int i;
 
 	if (e == NULL) {
 		g_current_job_name[0] = '\0';
@@ -1068,20 +1146,30 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out)
 		g_dep_queue_count = 0;
 		return 0;
 	}
-	/* recipe.version, not e->version -- during an in-place upgrade
-	 * e->version is deliberately still the OLD version until this job
-	 * actually succeeds; the tarball on disk was fetched under the
-	 * NEW version's name by start_fetch_for(). */
-	snprintf(tarball_path, sizeof(tarball_path), "%s/%s-%s.tarball", g_sources_dir, e->name,
-	         recipe.version);
 
-	if (run_capture_sha256(tarball_path, sha_out, sizeof(sha_out)) != 0 ||
-	    strcasecmp(sha_out, recipe.sha256) != 0) {
-		e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
-		snprintf(e->error, sizeof(e->error), "checksum mismatch");
-		g_current_job_name[0] = '\0';
-		g_dep_queue_count = 0;
-		return 0;
+	/*
+	 * recipe.version, not e->version -- during an in-place upgrade
+	 * e->version is deliberately still the OLD version until this job
+	 * actually succeeds; each source on disk was fetched under the
+	 * NEW version's name by start_fetch_for(). Every fetched source
+	 * (the main one at index 0, and any extras) is verified against
+	 * its own sha256 before any of them are touched further -- one
+	 * bad entry fails the whole job, matching the single-source
+	 * case's own existing all-or-nothing guarantee (ADR-0036).
+	 */
+	for (i = 0; i < recipe.source_count; i++) {
+		char src_path[PATH_MAX];
+
+		snprintf(src_path, sizeof(src_path), "%s/%s-%s-%d.src", g_sources_dir, e->name,
+		         recipe.version, i);
+		if (run_capture_sha256(src_path, sha_out, sizeof(sha_out)) != 0 ||
+		    strcasecmp(sha_out, recipe.sha256[i]) != 0) {
+			e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
+			snprintf(e->error, sizeof(e->error), "checksum mismatch (source %d)", i);
+			g_current_job_name[0] = '\0';
+			g_dep_queue_count = 0;
+			return 0;
+		}
 	}
 
 	snprintf(container_base, sizeof(container_base), "%s/%s", g_containers_dir,
@@ -1094,15 +1182,52 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out)
 	snprintf(src_dir, sizeof(src_dir), "%s/build/src", g_build_upperdir);
 	snprintf(dest_dir, sizeof(dest_dir), "%s/build/pkg-dest", g_build_upperdir);
 	snprintf(recipe_dst, sizeof(recipe_dst), "%s/build/recipe.sh", g_build_upperdir);
+	snprintf(extra_dir, sizeof(extra_dir), "%s/build/extra", g_build_upperdir);
 
-	if (reset_build_container_dir(container_base) != 0 || persist_mkdir_p(src_dir) != 0 ||
-	    persist_mkdir_p(dest_dir) != 0 || copy_file_simple(recipe_path, recipe_dst) != 0 ||
-	    extract_tarball(tarball_path, src_dir) != 0) {
-		e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
-		snprintf(e->error, sizeof(e->error), "could not prepare the build container");
-		g_current_job_name[0] = '\0';
-		g_dep_queue_count = 0;
-		return 0;
+	{
+		char main_src_path[PATH_MAX];
+
+		snprintf(main_src_path, sizeof(main_src_path), "%s/%s-%s-0.src", g_sources_dir, e->name,
+		         recipe.version);
+		if (reset_build_container_dir(container_base) != 0 || persist_mkdir_p(src_dir) != 0 ||
+		    persist_mkdir_p(dest_dir) != 0 || copy_file_simple(recipe_path, recipe_dst) != 0 ||
+		    extract_tarball(main_src_path, src_dir) != 0) {
+			e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
+			snprintf(e->error, sizeof(e->error), "could not prepare the build container");
+			g_current_job_name[0] = '\0';
+			g_dep_queue_count = 0;
+			return 0;
+		}
+	}
+
+	/* Sources beyond index 0 are plain files, never extracted -- copied
+	 * verbatim into /build/extra/<basename-of-their-own-URL> for
+	 * pkg_build()/pkg_install() to reference directly (ADR-0036).
+	 * Basename collisions across multiple extra URLs are a stated
+	 * recipe-author responsibility, not auto-resolved here. */
+	if (recipe.source_count > 1) {
+		if (persist_mkdir_p(extra_dir) != 0) {
+			e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
+			snprintf(e->error, sizeof(e->error), "could not prepare the build container");
+			g_current_job_name[0] = '\0';
+			g_dep_queue_count = 0;
+			return 0;
+		}
+		for (i = 1; i < recipe.source_count; i++) {
+			char src_path[PATH_MAX], extra_dst[PATH_MAX];
+
+			snprintf(src_path, sizeof(src_path), "%s/%s-%s-%d.src", g_sources_dir, e->name,
+			         recipe.version, i);
+			snprintf(extra_dst, sizeof(extra_dst), "%s/%s", extra_dir,
+			         url_basename(recipe.source[i]));
+			if (copy_file_simple(src_path, extra_dst) != 0) {
+				e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
+				snprintf(e->error, sizeof(e->error), "could not prepare the build container");
+				g_current_job_name[0] = '\0';
+				g_dep_queue_count = 0;
+				return 0;
+			}
+		}
 	}
 
 	snprintf(g_build_argv_cmd, sizeof(g_build_argv_cmd),

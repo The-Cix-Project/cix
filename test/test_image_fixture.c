@@ -196,10 +196,21 @@ int test_image_fixture_stage_toolchain(const char *image_root)
 	 *   directory".
 	 * - /usr/local/go: this build host's own real Go toolchain
 	 *   (GOROOT), staged so a recipe's pkg_build() can set
-	 *   PATH=/usr/local/go/bin:$PATH and genuinely build Go packages
-	 *   (e.g. gitea) -- not itself proven end-to-end by any recipe yet,
-	 *   real, separate follow-up work; staging it is the low-cost,
-	 *   tolerant-if-absent part of that story.
+	 *   PATH=/usr/local/go/bin:$PATH and genuinely build Go packages --
+	 *   proven end-to-end by gitea.recipe (a real, offline `make
+	 *   backend` build, confirmed against a live daemon).
+	 * - /usr/local/cargo, /usr/local/rustup: this build host's own real
+	 *   Rust toolchain (CARGO_HOME/RUSTUP_HOME), staged the same way,
+	 *   for a recipe's pkg_build() to set
+	 *   PATH=/usr/local/cargo/bin:$PATH -- needed by lldap.recipe's own
+	 *   Rust->WASM frontend build (ADR-0036). Includes wasm-pack
+	 *   (`cargo install wasm-pack`) and the wasm32-unknown-unknown
+	 *   target (`rustup target add`) pre-installed on this build host
+	 *   before staging -- both need real network access to install
+	 *   (crates.io / Rust's own distribution server) that the isolated
+	 *   pkg_build() container doesn't have, the same reasoning
+	 *   wasm-pack/the wasm32 target can't be installed at recipe-build
+	 *   time at all, only pre-staged.
 	 */
 	static const struct {
 		const char *src;
@@ -210,6 +221,8 @@ int test_image_fixture_stage_toolchain(const char *image_root)
 		{ "/usr/share/autoconf", "usr/share/autoconf" },
 		{ "/usr/share/perl", "usr/share/perl" },
 		{ "/usr/local/go", "usr/local/go" },
+		{ "/usr/local/cargo", "usr/local/cargo" },
+		{ "/usr/local/rustup", "usr/local/rustup" },
 	};
 	static const struct {
 		const char *name;

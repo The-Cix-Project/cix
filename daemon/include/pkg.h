@@ -43,6 +43,21 @@
  * (pkg_build()/pkg_install() bodies) is only ever invoked inside the
  * isolated, network-less build container -- the only place running a
  * recipe's actual logic is safe.
+ *
+ * pkg_source=/pkg_sha256= are each a space-separated list of one or
+ * more entries, positionally paired (ADR-0036) -- a real, verified
+ * need, not speculative: lldap's own web frontend build fetches
+ * several small external CDN assets (CSS/JS/fonts) alongside its main
+ * source tarball, and the isolated build container has no network
+ * access to fetch them itself. Every recipe before this one has
+ * exactly one URL, which parses as a one-element list unchanged.
+ * Index 0 is "the" source, extracted into /build/src exactly as
+ * every recipe already assumes; index 1+ are plain files, copied
+ * verbatim (never extracted) into /build/extra/<basename-of-its-own-
+ * URL> for pkg_build()/pkg_install() to reference directly. Any one
+ * entry's fetch failure or checksum mismatch fails the whole job --
+ * no partial-success state, matching the single-source case's own
+ * existing all-or-nothing guarantee.
  */
 
 #define PKG_MAX_PACKAGES 256
@@ -62,6 +77,11 @@
 /* Max total packages in one resolved install chain (the target plus
  * every transitive dependency) -- a real cap, not an unbounded queue. */
 #define PKG_MAX_DEP_CHAIN 32
+/* Max pkg_source=/pkg_sha256= entries in one recipe -- lldap's own
+ * real need is 9 (one main tarball + 8 CDN assets); generous headroom
+ * past that, the same "bounded but roomy" precedent PKG_MAX_DEP_CHAIN
+ * already sets, not an unbounded list. */
+#define PKG_MAX_SOURCES 16
 
 /* Reserved container name for the single in-flight build (v1
  * serializes installs -- at most one at a time). Shows up in the
