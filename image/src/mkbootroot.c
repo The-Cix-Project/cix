@@ -184,6 +184,138 @@ int main(int argc, char **argv)
 	if (test_image_fixture_add_lib(image_root, "/usr/lib/x86_64-linux-gnu/libtinfo.so.6") != 0)
 		return 1;
 
+	/*
+	 * The real binaries kanxeod itself shells out to at runtime --
+	 * grep-confirmed against daemon/src/pki.c's/daemon/src/pkg.c's own
+	 * hardcoded absolute-path _BIN macros, the authoritative list, not
+	 * docs/ROADMAP.md's own partly-stale "dnsmasq" mention (dnsmasq
+	 * runs inside operator-created containers; kanxeod itself never
+	 * execve()s it). Previously entirely absent from this image --
+	 * confirmed live: booting a fresh install and running "pki ca
+	 * bootstrap" on the console failed outright ("CA genpkey failed")
+	 * because /usr/bin/openssl simply didn't exist there. Each
+	 * binary's real shared-library closure (from a real `ldd` on this
+	 * build host) is staged the same way test_dns.c's own
+	 * DNSMASQ_LIBS[] already does for a real, unmodified third-party
+	 * binary with more dependencies than the bare ld.so+libc pair --
+	 * regenerate via `ldd /usr/bin/<name>` if a newer build of one of
+	 * these ever needs a different dependency set. Unlike firmware_dir
+	 * below, failure here is fatal, not silently skipped: these are
+	 * unconditionally required for kanxeod's own core PKI/pkg
+	 * functionality, not an operator-opt-in extra -- silently
+	 * tolerating their absence is exactly the bug this closes.
+	 */
+	if (ensure_dir_under(image_root, "usr") != 0)
+		return 1;
+	if (ensure_dir_under(image_root, "usr/bin") != 0)
+		return 1;
+	if (ensure_dir_under(image_root, "bin") != 0)
+		return 1;
+	{
+		static const struct {
+			const char *host_path;   /* where this build host has it */
+			const char *rootfs_path; /* relative to image_root, matching the _BIN macro exactly */
+		} shelled_bins[] = {
+			{ "/usr/bin/openssl", "usr/bin/openssl" },     /* PKI_OPENSSL_BIN, daemon/src/pki.c */
+			{ "/usr/bin/curl", "usr/bin/curl" },           /* PKG_CURL_BIN, daemon/src/pkg.c */
+			{ "/usr/bin/tar", "usr/bin/tar" },             /* PKG_TAR_BIN */
+			{ "/usr/bin/sha256sum", "usr/bin/sha256sum" }, /* PKG_SHA256SUM_BIN */
+			{ "/usr/bin/cp", "usr/bin/cp" },               /* PKG_CP_BIN */
+			{ "/usr/bin/rm", "bin/rm" },                   /* PKG_RM_BIN is "/bin/rm", no /usr prefix */
+			{ "/usr/bin/unsquashfs", "usr/bin/unsquashfs" }, /* PKG_UNSQUASHFS_BIN -- the
+			                                                   * pkg_bootstrap_from_toolchain()
+			                                                   * import path, no mount/loop-device
+			                                                   * needed (this dev sandbox's own
+			                                                   * documented "no /dev/loop* at all"
+			                                                   * constraint; real hardware
+			                                                   * shouldn't need one for this either). */
+		};
+		static const char *const shelled_bin_libs[] = {
+			/* openssl */
+			"/lib/x86_64-linux-gnu/libssl.so.3",
+			"/lib/x86_64-linux-gnu/libcrypto.so.3",
+			/* curl */
+			"/lib/x86_64-linux-gnu/libcurl.so.4",
+			"/lib/x86_64-linux-gnu/libz.so.1",
+			"/lib/x86_64-linux-gnu/libnghttp2.so.14",
+			"/lib/x86_64-linux-gnu/libidn2.so.0",
+			"/lib/x86_64-linux-gnu/librtmp.so.1",
+			"/lib/x86_64-linux-gnu/libssh2.so.1",
+			"/lib/x86_64-linux-gnu/libpsl.so.5",
+			"/lib/x86_64-linux-gnu/libgssapi_krb5.so.2",
+			"/lib/x86_64-linux-gnu/libldap-2.5.so.0",
+			"/lib/x86_64-linux-gnu/liblber-2.5.so.0",
+			"/lib/x86_64-linux-gnu/libzstd.so.1",
+			"/lib/x86_64-linux-gnu/libbrotlidec.so.1",
+			"/lib/x86_64-linux-gnu/libunistring.so.2",
+			"/lib/x86_64-linux-gnu/libgnutls.so.30",
+			"/lib/x86_64-linux-gnu/libhogweed.so.6",
+			"/lib/x86_64-linux-gnu/libnettle.so.8",
+			"/lib/x86_64-linux-gnu/libgmp.so.10",
+			"/lib/x86_64-linux-gnu/libkrb5.so.3",
+			"/lib/x86_64-linux-gnu/libk5crypto.so.3",
+			"/lib/x86_64-linux-gnu/libcom_err.so.2",
+			"/lib/x86_64-linux-gnu/libkrb5support.so.0",
+			"/lib/x86_64-linux-gnu/libsasl2.so.2",
+			"/lib/x86_64-linux-gnu/libbrotlicommon.so.1",
+			"/lib/x86_64-linux-gnu/libp11-kit.so.0",
+			"/lib/x86_64-linux-gnu/libtasn1.so.6",
+			"/lib/x86_64-linux-gnu/libkeyutils.so.1",
+			"/lib/x86_64-linux-gnu/libresolv.so.2",
+			"/lib/x86_64-linux-gnu/libffi.so.8",
+			/* tar + cp */
+			"/lib/x86_64-linux-gnu/libacl.so.1",
+			"/lib/x86_64-linux-gnu/libselinux.so.1",
+			"/lib/x86_64-linux-gnu/libpcre2-8.so.0",
+			"/lib/x86_64-linux-gnu/libattr.so.1",
+			/* unsquashfs -- libz.so.1/libzstd.so.1 already listed above (curl) */
+			"/lib/x86_64-linux-gnu/libpthread.so.0",
+			"/lib/x86_64-linux-gnu/libm.so.6",
+			"/lib/x86_64-linux-gnu/liblzma.so.5",
+			"/lib/x86_64-linux-gnu/liblzo2.so.2",
+			"/lib/x86_64-linux-gnu/liblz4.so.1",
+		};
+		size_t i;
+
+		for (i = 0; i < sizeof(shelled_bins) / sizeof(shelled_bins[0]); i++) {
+			char dst[PATH_MAX];
+
+			if (snprintf(dst, sizeof(dst), "%s/%s", image_root, shelled_bins[i].rootfs_path) >=
+			    (int)sizeof(dst)) {
+				fprintf(stderr, "path too long: %s/%s\n", image_root, shelled_bins[i].rootfs_path);
+				return 1;
+			}
+			if (test_image_fixture_copy_file(shelled_bins[i].host_path, dst) != 0)
+				return 1;
+		}
+		for (i = 0; i < sizeof(shelled_bin_libs) / sizeof(shelled_bin_libs[0]); i++) {
+			if (test_image_fixture_add_lib(image_root, shelled_bin_libs[i]) != 0)
+				return 1;
+		}
+
+		/*
+		 * openssl's own default config path -- found by an actual "pki
+		 * ca bootstrap" failing, not guessed at: "req -x509 failed:
+		 * Can't open /usr/lib/ssl/openssl.cnf". On this build host that
+		 * path is itself a symlink chain into /etc/ssl/openssl.cnf --
+		 * test_image_fixture_copy_file()'s plain open()/read()/write()
+		 * transparently follows symlinks, so this lands the real config
+		 * content as one ordinary file at the expected path, no /etc/ssl
+		 * symlink chain needed on the target at all.
+		 */
+		if (ensure_dir_under(image_root, "usr/lib") != 0)
+			return 1;
+		if (ensure_dir_under(image_root, "usr/lib/ssl") != 0)
+			return 1;
+		{
+			char dst[PATH_MAX];
+
+			snprintf(dst, sizeof(dst), "%s/usr/lib/ssl/openssl.cnf", image_root);
+			if (test_image_fixture_copy_file("/usr/lib/ssl/openssl.cnf", dst) != 0)
+				return 1;
+		}
+	}
+
 	/* kanxeod's DEFAULT_WEB_ROOT is "web", resolved relative to its own
 	 * CWD -- PID 1 never chdir()s anywhere, so that's this squashfs
 	 * image's own root, i.e. exactly image_root/web. */

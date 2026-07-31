@@ -2825,6 +2825,9 @@ static void respond_pkg_error(int fd, enum pkg_error err)
 	case PKG_ERR_FULL:
 		respond_error(fd, 500, "Internal Server Error", "package table full");
 		break;
+	case PKG_ERR_INVALID_TOOLCHAIN:
+		respond_error(fd, 400, "Bad Request", "toolchain_path missing, unreadable, or not a regular file");
+		break;
 	case PKG_ERR_SPAWN_FAILED:
 	case PKG_ERR_PERSIST_FAILED:
 	default:
@@ -2833,9 +2836,36 @@ static void respond_pkg_error(int fd, enum pkg_error err)
 	}
 }
 
-static void handle_pkg_bootstrap(int fd)
+/*
+ * body/body_len optional: an empty body (the existing bare
+ * `POST /v1/pkg/bootstrap` contract) keeps the live-copy fallback
+ * unchanged. A JSON body with "toolchain_path" set switches to the
+ * correct production path (pkg_bootstrap_from_toolchain()) instead --
+ * a local path the operator has already scp'd a real toolchain
+ * artifact to, the same "local path, not an HTTP upload" precedent
+ * /system/update's own image_path/kernel_path already established.
+ */
+static void handle_pkg_bootstrap(int fd, const char *body, size_t body_len)
 {
-	enum pkg_error perr = pkg_bootstrap_build_image();
+	enum pkg_error perr;
+	const char *toolchain_path = NULL;
+	struct json_value *root = NULL;
+
+	if (body_len > 0) {
+		root = json_parse(body, body_len);
+		if (root == NULL) {
+			respond_error(fd, 400, "Bad Request", "invalid JSON body");
+			return;
+		}
+		toolchain_path = json_as_string(json_object_get(root, "toolchain_path"));
+	}
+
+	perr = (toolchain_path != NULL && toolchain_path[0] != '\0')
+	           ? pkg_bootstrap_from_toolchain(toolchain_path)
+	           : pkg_bootstrap_build_image();
+
+	if (root != NULL)
+		json_free(root);
 
 	if (perr != PKG_OK) {
 		respond_pkg_error(fd, perr);
@@ -3251,7 +3281,7 @@ static void dispatch(int fd, const struct http_request *req)
 	 */
 	if (strcmp(req->path, "/v1/pkg/bootstrap") == 0) {
 		if (strcmp(req->method, "POST") == 0) {
-			handle_pkg_bootstrap(fd);
+			handle_pkg_bootstrap(fd, req->body, req->body_len);
 			return;
 		}
 	}
@@ -3935,6 +3965,7 @@ int main(int argc, char **argv)
 	const char *slot = NULL;
 	const char *test_update_image = NULL;
 	const char *test_update_kernel = NULL;
+	const char *test_bootstrap_toolchain = NULL;
 	int i;
 	int listen_fd;
 	int opt = 1;
@@ -3959,6 +3990,8 @@ int main(int argc, char **argv)
 			test_update_image = argv[i] + 20;
 		else if (strncmp(argv[i], "--test-update-kernel=", 21) == 0)
 			test_update_kernel = argv[i] + 21;
+		else if (strncmp(argv[i], "--test-bootstrap-toolchain=", 27) == 0)
+			test_bootstrap_toolchain = argv[i] + 27;
 	}
 	g_web_root = web_root;
 	g_slot = slot;
@@ -4036,6 +4069,34 @@ int main(int argc, char **argv)
 		return 1;
 	if (pkg_init(PKG_DIR, PKG_INSTALLED_STATE_PATH, CONTAINERS_DIR, IMAGES_DIR) != 0)
 		return 1;
+
+	/*
+	 * Test-only, same precedent as --test-update-image=: makes
+	 * pkg_bootstrap_from_toolchain() (ADR-0035) observable from the
+	 * serial console inside a real QEMU guest with a real toolchain
+	 * squashfs attached on a scratch partition, where test/test_
+	 * console_pkg_bootstrap.c has no other way to reach this code path
+	 * at all (host-to-guest HTTP being unavailable for a statically-
+	 * addressed guest under this project's own test harness). Placed
+	 * after pkg_init() specifically -- unlike --test-update-image=
+	 * above, this needs g_pkgbuild_rootfs already resolved. Prints a
+	 * concrete, checkable fact (a real toolchain binary's presence
+	 * afterward), not just the call's own return status -- proof
+	 * unsquashfs genuinely extracted real content, not just that the
+	 * function returned OK.
+	 */
+	if (test_bootstrap_toolchain != NULL) {
+		enum pkg_error perr = pkg_bootstrap_from_toolchain(test_bootstrap_toolchain);
+
+		if (perr == PKG_OK) {
+			printf("test-bootstrap-toolchain: status=ok gcc=%s\n",
+			       pkg_toolchain_has_gcc() ? "present" : "MISSING");
+		} else {
+			printf("test-bootstrap-toolchain: status=error(%d)\n", (int)perr);
+		}
+		fflush(stdout);
+	}
+
 	image_init(IMAGES_DIR);
 	if (containerdef_init(CONTAINER_DEFS_STATE_PATH) != 0)
 		return 1;

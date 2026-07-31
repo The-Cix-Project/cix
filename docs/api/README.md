@@ -39,7 +39,7 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | POST | `/pki/certs` | Issue a leaf certificate signed by the root CA |
 | GET | `/pki/certs/{name}` | Inspect one issued certificate (metadata + cert, never the key) |
 | DELETE | `/pki/certs/{name}` | Remove an issued certificate |
-| POST | `/pkg/bootstrap` | Stage the sandboxed build toolchain image (once; idempotent) |
+| POST | `/pkg/bootstrap` | Stage the sandboxed build toolchain image (optional `toolchain_path` for a real install; once; idempotent) |
 | GET | `/pkg/recipes` | List recipes found on disk (provisioned out of band) |
 | POST | `/pkg/install` | Start installing a package (async -- returns immediately) |
 | POST | `/pkg/update-all` | Start an upgrade for the first installed package whose recipe has drifted |
@@ -288,7 +288,7 @@ One-time setup, before installing anything:
 POST /v1/pkg/bootstrap
 ```
 
-Stages a real build toolchain (`gcc`/`make`/`ld`/`as`/`cc1`/`sh`/`tar` and their real headers/libraries) into the sandboxed build image by copying this host's own `/usr/{include,lib,lib64,bin,libexec}` with the real `cp -a`. Idempotent — safe to call again.
+Stages a real build toolchain (`gcc`/`make`/`ld`/`as`/`cc1`/`sh`/`tar` and their real headers/libraries) into the sandboxed build image. No body: copies live from this daemon's own host `/usr/{include,lib,lib64,bin,libexec}` with the real `cp -a` — works for dev/test convenience when `kanxeod` happens to be running somewhere with a real toolchain already, but produces an empty, non-functional toolchain on a real minimal install (nothing under its own `/usr` beyond `kanxeod`/`kanxeoctl` and their bare runtime libs). For a real install, use `{"toolchain_path": "/local/path/to/toolchain.squashfs"}` instead — imports a real, portable artifact (built once, elsewhere, with `image/src/mktoolchainimage.c`, then `scp`'d onto this box, the same "local path, not an upload" precedent `/system/update`'s `image_path`/`kernel_path` already established). Both idempotent — safe to call again.
 
 A recipe (provisioned onto disk at `/var/lib/kanxeo/pkg/recipes/<name>.recipe`, out of band, the same v1 boundary container images already have):
 

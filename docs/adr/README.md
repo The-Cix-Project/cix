@@ -39,3 +39,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0032](0032-per-slot-kernel-updates.md) | Per-slot kernel files, extending POST /system/update to cover bzImage | Accepted |
 | [0033](0033-platform-state-backup-restore.md) | Platform state backup/restore -- configuration only, not workload data, never PKI | Accepted |
 | [0034](0034-console-login-via-supervised-kanxeoctl.md) | Console login via a kanxeod-supervised kanxeoctl, not a general shell | Accepted |
+| [0035](0035-portable-toolchain-artifact-for-pkg-bootstrap.md) | Portable toolchain artifact for pkg bootstrap, not just a live-host copy | Accepted |

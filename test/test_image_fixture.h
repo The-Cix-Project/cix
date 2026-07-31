@@ -40,4 +40,29 @@ int test_image_fixture_add_lib(const char *image_root, const char *host_lib_abs_
  */
 int test_image_fixture_copy_file(const char *src_path, const char *dst_path);
 
+/*
+ * Stages a full package-build toolchain at image_root: this build
+ * host's own /usr/{include,lib,lib64,bin,libexec} (wholesale, real
+ * `cp -a` -- correct symlink/permission handling a hand-rolled copier
+ * would get wrong), the bin/lib/lib64/sbin -> usr/... compatibility
+ * symlinks a merged-/usr host needs, targeted extras found by an
+ * actual package build failing (not guessed at -- /etc/alternatives,
+ * /usr/share/{bison,autoconf,perl}, /usr/local/go), standard /dev
+ * nodes, and a writable/sticky /tmp -- everything a real ./configure
+ * && make && make install sequence needs, run inside an isolated,
+ * network-less build container. Shared by two consumers: kanxeod's
+ * own POST /v1/pkg/bootstrap (a live copy from whatever host kanxeod
+ * happens to be running on -- fine for dev/test convenience, silently
+ * empty on a real minimal install) and image/src/mktoolchainimage.c
+ * (builds one real, portable, durable squashfs artifact from this
+ * exact same content, meant to be imported via `pkg bootstrap
+ * --toolchain=PATH` instead of relying on the live host at all) --
+ * one source of truth for "what a toolchain needs," not two copies
+ * drifting apart. Idempotent (safe to call repeatedly against the
+ * same image_root, and tolerant of anything genuinely absent on this
+ * particular build host -- not every host has every extra). Returns
+ * 0, or -1 (with perror on the failing path) otherwise.
+ */
+int test_image_fixture_stage_toolchain(const char *image_root);
+
 #endif /* TEST_IMAGE_FIXTURE_H */

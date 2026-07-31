@@ -2,6 +2,7 @@
 #include "linux_compat.h"
 #include "namecheck.h"
 #include "persist.h"
+#include "test_image_fixture.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -13,7 +14,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/sysmacros.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -22,8 +22,8 @@ extern char **environ;
 #define PKG_CURL_BIN "/usr/bin/curl"
 #define PKG_TAR_BIN "/usr/bin/tar"
 #define PKG_SHA256SUM_BIN "/usr/bin/sha256sum"
-#define PKG_CP_BIN "/usr/bin/cp"
 #define PKG_RM_BIN "/bin/rm"
+#define PKG_UNSQUASHFS_BIN "/usr/bin/unsquashfs"
 
 struct pkg_entry {
 	char name[PKG_NAME_MAX];
@@ -650,185 +650,109 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
 }
 
 /*
- * Containers get no /dev at all beyond whatever the shared lowerdir
- * image itself contains (confirmed by test/test_dns.c's own
- * ensure_dev_node() precedent -- no devtmpfs exists yet). A real
- * build's own ./configure script routinely redirects to /dev/null
- * while probing the compiler -- confirmed directly: bash's configure
- * failed outright with "cannot create /dev/null: Directory
- * nonexistent" before this existed, a generic blocker for any
- * package's build, not specific to one recipe. The standard
- * major:minor quintet below (all major 1, the kernel's own "mem"
- * driver) covers what a non-interactive build/install actually
- * touches; /dev/tty is deliberately omitted -- nothing in a batch
- * "./configure && make && make install" sequence needs a controlling
- * terminal.
+ * Live-copy fallback: stages a toolchain by copying from whatever host
+ * kanxeod itself happens to be running on. Fine for dev/test convenience
+ * (this build sandbox has a real toolchain); silently produces an empty,
+ * non-functional pkgbuild rootfs on a real minimal install, which has
+ * none of this under its own /usr -- confirmed live (a real `pkg
+ * install` on a fresh install has nothing to build with). The correct
+ * production path is pkg_bootstrap_from_toolchain() below, importing a
+ * real, portable artifact instead -- this fallback stays for the dev/
+ * test case where reaching into the live host genuinely works, and so
+ * the existing bare `POST /v1/pkg/bootstrap` (no body) keeps behaving
+ * exactly as it always has.
  */
-static int ensure_std_dev_nodes(const char *rootfs)
-{
-	static const struct {
-		const char *name;
-		unsigned int major, minor;
-	} nodes[] = {
-		{ "null", 1, 3 }, { "zero", 1, 5 }, { "full", 1, 7 }, { "random", 1, 8 },
-		{ "urandom", 1, 9 },
-	};
-	char dev_dir[PATH_MAX];
-	size_t i;
-
-	snprintf(dev_dir, sizeof(dev_dir), "%s/dev", rootfs);
-	if (persist_mkdir_p(dev_dir) != 0)
-		return -1;
-
-	for (i = 0; i < sizeof(nodes) / sizeof(nodes[0]); i++) {
-		char path[PATH_MAX];
-
-		snprintf(path, sizeof(path), "%s/%s", dev_dir, nodes[i].name);
-		if (mknod(path, S_IFCHR | 0666, makedev(nodes[i].major, nodes[i].minor)) != 0 &&
-		    errno != EEXIST)
-			return -1;
-	}
-	return 0;
-}
-
 enum pkg_error pkg_bootstrap_build_image(void)
 {
-	static const char *const subdirs[] = { "include", "lib", "lib64", "bin", "libexec" };
-	static const struct {
-		const char *link;
-		const char *target;
-	} compat[] = {
-		{ "bin", "usr/bin" }, { "lib", "usr/lib" }, { "lib64", "usr/lib64" }, { "sbin", "usr/bin" },
-	};
-	char usr_dst[PATH_MAX];
-	size_t i;
+	if (test_image_fixture_stage_toolchain(g_pkgbuild_rootfs) != 0)
+		return PKG_ERR_SPAWN_FAILED;
+	return PKG_OK;
+}
+
+enum pkg_error pkg_bootstrap_from_toolchain(const char *toolchain_path)
+{
+	int src;
+	unsigned char magic[4];
+	/*
+	 * -no-xattrs: the pkgbuild rootfs is build tooling, not something
+	 * needing POSIX capabilities/ACLs preserved on its own binaries --
+	 * confirmed directly that without this, unsquashfs exits nonzero
+	 * (PKG_ERR_SPAWN_FAILED) on a destination filesystem that can't
+	 * store xattrs (e.g. tmpfs, boot_init()'s own containers-partition
+	 * fallback) even though the actual extraction fully succeeds; the
+	 * tool's own diagnostic message names this exact flag as the fix.
+	 */
+	char *argv[] = { (char *)PKG_UNSQUASHFS_BIN, "-f", "-no-xattrs", "-d", g_pkgbuild_rootfs,
+		          (char *)toolchain_path, NULL };
+
+	/*
+	 * Real, on-disk squashfs magic check ("hsqs", the little-endian
+	 * bytes of 0x73717368) via a plain open()+read() -- the same
+	 * precedent do_system_update()'s own image_path validation
+	 * already established, deliberately not stat()+S_ISREG: a squashfs
+	 * image's own bytes are equally valid whether backing a regular
+	 * file (the real, intended operator usage -- scp'd onto a real
+	 * filesystem path) or a raw block device (unsquashfs itself
+	 * neither knows nor cares), so this also naturally supports the
+	 * same "write to a raw scratch partition, point kanxeod at the
+	 * device path" self-test technique test_boot_update.c's own
+	 * --test-update-image= already uses for do_system_update().
+	 */
+	if (toolchain_path == NULL || toolchain_path[0] == '\0')
+		return PKG_ERR_INVALID_TOOLCHAIN;
+	src = open(toolchain_path, O_RDONLY);
+	if (src < 0)
+		return PKG_ERR_INVALID_TOOLCHAIN;
+	if (read(src, magic, 4) != 4 || memcmp(magic, "hsqs", 4) != 0) {
+		close(src);
+		return PKG_ERR_INVALID_TOOLCHAIN;
+	}
+	close(src);
 
 	if (persist_mkdir_p(g_pkgbuild_rootfs) != 0)
 		return PKG_ERR_PERSIST_FAILED;
-	snprintf(usr_dst, sizeof(usr_dst), "%s/usr", g_pkgbuild_rootfs);
-	if (persist_mkdir_p(usr_dst) != 0)
-		return PKG_ERR_PERSIST_FAILED;
 
-	for (i = 0; i < sizeof(subdirs) / sizeof(subdirs[0]); i++) {
-		char src[PATH_MAX], dst[PATH_MAX];
-		struct stat src_st, dst_st;
-
-		snprintf(src, sizeof(src), "/usr/%s", subdirs[i]);
-		snprintf(dst, sizeof(dst), "%s/usr/%s", g_pkgbuild_rootfs, subdirs[i]);
-
-		if (stat(src, &src_st) != 0)
-			continue; /* not present on this host -- skip, not fatal */
-		if (stat(dst, &dst_st) == 0)
-			continue; /* already staged -- idempotent */
-
-		{
-			char *argv[] = { (char *)PKG_CP_BIN, "-a", src, dst, NULL };
-
-			if (run_subprocess(PKG_CP_BIN, argv) != 0)
-				return PKG_ERR_SPAWN_FAILED;
-		}
-	}
-
-	for (i = 0; i < sizeof(compat) / sizeof(compat[0]); i++) {
-		char linkpath[PATH_MAX];
-
-		snprintf(linkpath, sizeof(linkpath), "%s/%s", g_pkgbuild_rootfs, compat[i].link);
-		symlink(compat[i].target, linkpath); /* EEXIST tolerated -- idempotent */
-	}
-
-	/*
-	 * Targeted extras beyond the wholesale /usr/{include,lib,lib64,bin,
-	 * libexec} copy above, each found by an actual build failing, not
-	 * guessed at -- staging the *entirety* of e.g. /usr/share (584M on
-	 * this host, almost none of it relevant to building software) just
-	 * to reach one tool's own data files would bloat this image for no
-	 * real benefit. Extend this list as a real build surfaces a real
-	 * need for one, the same "verify empirically, don't speculate"
-	 * discipline this project applies everywhere else:
-	 *
-	 * - /etc/alternatives: Debian's "alternatives" system points many
-	 *   /usr/bin/* tools (awk, and others a real build can reach for)
-	 *   at an *absolute* /etc/alternatives/<name> symlink -- cp -a on
-	 *   /usr/bin above preserves that symlink exactly as-is, target
-	 *   string included, so it still reads /etc/alternatives/<name>
-	 *   once inside the container. Confirmed directly: bash's own
-	 *   config.status failed outright ("awk: command not found")
-	 *   because /etc was never staged at all.
-	 * - /usr/share/bison: bison itself needs its own bundled M4 macro
-	 *   library (m4sugar.m4 and friends) at *run* time, not just build
-	 *   time, to generate a parser from any .y grammar -- confirmed
-	 *   directly building iproute2's tc (its ematch grammar needs
-	 *   bison): "bison: .../m4sugar.m4: cannot open: No such file or
-	 *   directory".
-	 */
-	{
-		static const struct {
-			const char *src;
-			const char *rel_dst;
-		} extras[] = {
-			{ "/etc/alternatives", "etc/alternatives" },
-			{ "/usr/share/bison", "usr/share/bison" },
-			{ "/usr/share/autoconf", "usr/share/autoconf" },
-			{ "/usr/share/perl", "usr/share/perl" },
-		};
-
-		for (i = 0; i < sizeof(extras) / sizeof(extras[0]); i++) {
-			char dst[PATH_MAX], dst_parent[PATH_MAX], *slash;
-			struct stat st;
-
-			snprintf(dst, sizeof(dst), "%s/%s", g_pkgbuild_rootfs, extras[i].rel_dst);
-			if (stat(extras[i].src, &st) != 0 || stat(dst, &st) == 0)
-				continue; /* not present on this host, or already staged */
-
-			snprintf(dst_parent, sizeof(dst_parent), "%s", dst);
-			slash = strrchr(dst_parent, '/');
-			if (slash != NULL)
-				*slash = '\0';
-
-			{
-				char *argv[] = { (char *)PKG_CP_BIN, "-a", (char *)extras[i].src, dst,
-					          NULL };
-
-				if (persist_mkdir_p(dst_parent) != 0 || run_subprocess(PKG_CP_BIN, argv) != 0)
-					return PKG_ERR_SPAWN_FAILED;
-			}
-		}
-	}
-
-	if (ensure_std_dev_nodes(g_pkgbuild_rootfs) != 0)
-		return PKG_ERR_PERSIST_FAILED;
-
-	/*
-	 * Same "the pkgbuild image only ever staged /usr, nothing at the
-	 * real root" gap /dev above already fixed -- confirmed directly
-	 * (autoconf's own config.guess failed outright: "cannot create a
-	 * temporary directory in /tmp"). Real build systems' own temp-file
-	 * handling (config.guess, mktemp, plenty of Makefiles) assumes a
-	 * writable, sticky-bit /tmp exists, the same standard FHS baseline
-	 * assumption /dev/null already covers.
-	 */
-	{
-		char tmp_dir[PATH_MAX];
-
-		snprintf(tmp_dir, sizeof(tmp_dir), "%s/tmp", g_pkgbuild_rootfs);
-		if (persist_mkdir_p(tmp_dir) != 0)
-			return PKG_ERR_PERSIST_FAILED;
-		if (chmod(tmp_dir, 01777) != 0)
-			return PKG_ERR_PERSIST_FAILED;
-	}
+	if (run_subprocess(PKG_UNSQUASHFS_BIN, argv) != 0)
+		return PKG_ERR_SPAWN_FAILED;
 
 	return PKG_OK;
 }
 
+int pkg_toolchain_has_gcc(void)
+{
+	char gcc_path[PATH_MAX];
+	struct stat st;
+
+	snprintf(gcc_path, sizeof(gcc_path), "%s/usr/bin/gcc", g_pkgbuild_rootfs);
+	return stat(gcc_path, &st) == 0;
+}
+
 enum pkg_error pkg_seed_image_runtime(const char *image)
 {
+	/*
+	 * Source paths deliberately have no "/usr" prefix -- they must match
+	 * exactly where mkbootroot.c's test_image_fixture_build()/
+	 * test_image_fixture_add_lib() calls actually write these files on
+	 * the installed control-plane root (lib64/..., lib/x86_64-linux-gnu/...,
+	 * no /usr/lib/... form ever exists there). The previous /usr-prefixed
+	 * paths only ever resolved by accident on a rich dev sandbox (merged-
+	 * /usr symlinks make /lib64/... and /usr/lib/.../... the same file
+	 * there) -- confirmed directly they silently never matched anything
+	 * on a real install, so image create()'s own runtime seeding
+	 * (ADR-0023) was a no-op there: "not present on this host -- skip,
+	 * not fatal" swallowed the failure, leaving every freshly created
+	 * image with no ld.so/libc.so.6 at all. This form is correct on both:
+	 * a real install has these files ONLY at this path; this dev
+	 * sandbox's own /lib64 -> /usr/lib symlink chain (confirmed via
+	 * readlink -f) resolves it to the identical real file either way.
+	 */
 	static const struct {
 		const char *src;
 		const char *rel_dst;
 	} runtime_libs[] = {
-		{ "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", "lib64/ld-linux-x86-64.so.2" },
-		{ "/usr/lib/x86_64-linux-gnu/libc.so.6", "lib/x86_64-linux-gnu/libc.so.6" },
-		{ "/usr/lib/x86_64-linux-gnu/libtinfo.so.6", "lib/x86_64-linux-gnu/libtinfo.so.6" },
+		{ "/lib64/ld-linux-x86-64.so.2", "lib64/ld-linux-x86-64.so.2" },
+		{ "/lib/x86_64-linux-gnu/libc.so.6", "lib/x86_64-linux-gnu/libc.so.6" },
+		{ "/lib/x86_64-linux-gnu/libtinfo.so.6", "lib/x86_64-linux-gnu/libtinfo.so.6" },
 	};
 	char target_rootfs[PATH_MAX];
 	size_t i;

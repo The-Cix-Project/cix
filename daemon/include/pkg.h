@@ -80,7 +80,8 @@ enum pkg_error {
 	PKG_ERR_BUSY, /* another install already in flight (v1: one at a time) */
 	PKG_ERR_FULL,
 	PKG_ERR_SPAWN_FAILED,
-	PKG_ERR_PERSIST_FAILED
+	PKG_ERR_PERSIST_FAILED,
+	PKG_ERR_INVALID_TOOLCHAIN /* toolchain_path missing, unreadable, or not a regular file */
 };
 
 /*
@@ -113,6 +114,34 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
  * explicit, PKI-CA-bootstrap-shaped one-time action instead.
  */
 enum pkg_error pkg_bootstrap_build_image(void);
+
+/*
+ * The correct production path (Phase 20): imports a real, portable
+ * toolchain artifact -- built once, elsewhere, by
+ * image/src/mktoolchainimage.c on a real toolchain-having machine, then
+ * scp'd onto this box -- via a real `unsquashfs -f -d` extraction into
+ * the pkgbuild rootfs (userspace, no mount/loop-device needed). Does
+ * not depend on this daemon's own live host having anything under its
+ * own /usr at all, unlike pkg_bootstrap_build_image()'s live-copy
+ * fallback above -- this is what actually works on a real minimal
+ * install. toolchain_path must already exist as a readable regular
+ * file (PKG_ERR_INVALID_TOOLCHAIN otherwise); the operator is
+ * responsible for getting it onto the box first (scp), the same
+ * "local path, not an HTTP upload" precedent /system/update's own
+ * image_path/kernel_path already established -- a real toolchain
+ * artifact is easily hundreds of MB, far past what this daemon's own
+ * hand-rolled HTTP server should ever stream.
+ */
+enum pkg_error pkg_bootstrap_from_toolchain(const char *toolchain_path);
+
+/*
+ * Test-only concrete-fact check (daemon/src/main.c's own
+ * --test-bootstrap-toolchain= self-test): does the pkgbuild rootfs
+ * genuinely have gcc after a bootstrap call, not just "did the call
+ * return OK" -- g_pkgbuild_rootfs itself is private to pkg.c. Returns
+ * 1 if present, 0 otherwise.
+ */
+int pkg_toolchain_has_gcc(void);
 
 /*
  * Copies the C runtime a dynamically-linked package needs to actually

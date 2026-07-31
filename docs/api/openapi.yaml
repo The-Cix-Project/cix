@@ -748,14 +748,37 @@ paths:
     post:
       summary: >
         Stages a real build toolchain (gcc/make/ld/as/cc1/sh/tar and their real headers
-        and shared libraries) from the daemon's own host into the sandboxed build image,
-        by copying whole /usr/{include,lib,lib64,bin,libexec} directories with the real
-        `cp -a`. Idempotent -- safe to call again, skips a subdirectory already staged.
-        Not automatic at daemon startup; an explicit, one-time action.
+        and shared libraries) into the sandboxed build image. No body (or an empty one):
+        copies live from this daemon's own host -- works when kanxeod happens to be
+        running somewhere with a real toolchain (dev/test), produces an empty,
+        non-functional toolchain on a real minimal install (nothing under its own /usr
+        beyond kanxeod/kanxeoctl and their bare runtime libs). toolchain_path: the
+        correct production path -- imports a real, portable artifact (built once,
+        elsewhere, with image/src/mktoolchainimage.c) via a local path the operator has
+        already transferred it to (e.g. scp), the same "local path, not an upload"
+        precedent /system/update's image_path/kernel_path already established. Both
+        paths are idempotent -- safe to call again. Not automatic at daemon startup; an
+        explicit, one-time action.
       operationId: pkgBootstrap
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                toolchain_path:
+                  type: string
+                  description: Local filesystem path to a toolchain squashfs artifact (image/src/mktoolchainimage.c's own output)
       responses:
         "204":
           description: Build toolchain image staged (or already was)
+        "400":
+          description: toolchain_path given but missing, unreadable, or not a regular file
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           description: Staging failed
           content:

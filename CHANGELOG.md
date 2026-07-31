@@ -2,6 +2,30 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 20: fix silent real-install breakage in PKI/pkg, portable build-toolchain artifact
+
+While answering how to get gitea onto a Kanxeo host, checking the user's own build-toolchain-container proposal surfaced two real, live-confirmed bugs: `pki ca bootstrap` failed outright on a genuinely fresh installed image (booted one, ran it on the real console, confirmed `CA genpkey failed`/HTTP 500). See ADR-0035.
+
+#### Added
+- `image/src/mkbootroot.c`: stages `openssl`/`curl`/`tar`/`sha256sum`/`cp`/`rm`/`unsquashfs` (the exact binaries `kanxeod` shells out to, grep-confirmed) plus each one's real shared-library closure onto the installed root -- previously entirely absent.
+- `test/test_image_fixture.c`: new `test_image_fixture_stage_toolchain()` -- shared toolchain-staging logic (extracted from `daemon/src/pkg.c`), now including `/usr/local/go` when present.
+- `image/src/mktoolchainimage.c`, new: standalone build-time tool producing one real, portable toolchain squashfs artifact.
+- `daemon/src/pkg.c`: new `pkg_bootstrap_from_toolchain()` -- imports a toolchain artifact via `unsquashfs -f -no-xattrs -d`, validated by real squashfs magic bytes (not `stat()`+`S_ISREG`, so a raw scratch-partition device path works too). `POST /v1/pkg/bootstrap` gains an optional `toolchain_path` field; `kanxeoctl pkg bootstrap` gains `--toolchain=PATH`.
+- `daemon/src/main.c`: new `--test-bootstrap-toolchain=` self-test flag, same precedent as `--test-update-image=`.
+- `docs/adr/0035-portable-toolchain-artifact-for-pkg-bootstrap.md`.
+- `test/test_console_pki_bootstrap.c`, new: boots a genuinely fresh install and scripts `pki ca bootstrap` over the console -- the real regression guard for the PKI bug.
+- `test/test_console_pkg_bootstrap.c`, new: builds a real toolchain squashfs, boots fresh, imports it via the new self-test flag, confirms a real `gcc` binary landed.
+- `test/test_disk_image.h`/`.c`: new `mem_mib` field on `qemu_boot_opts` (configurable guest RAM), needed once the real decompressed toolchain content (~2.0GB) exceeded what a default 512MB guest's tmpfs fallback could hold.
+
+#### Fixed
+- `daemon/src/pkg.c`'s `runtime_libs[]` (used by `pkg_seed_image_runtime()`, ADR-0023): read from `/usr/lib/x86_64-linux-gnu/...`, but `mkbootroot.c` only ever writes those files to `/lib64/...`/`/lib/x86_64-linux-gnu/...` on the installed root -- silently broke *every* `image create` on a real install, not just PKI/pkg. This dev sandbox's own merged-`/usr` symlinks masked it locally.
+- `openssl req -x509` additionally needed its own default config file (`/usr/lib/ssl/openssl.cnf`) -- found by a second live failure after the binary itself was staged; now staged too.
+- `unsquashfs` exiting nonzero on a benign "can't write xattrs to this filesystem" warning (tmpfs) -- fixed with `-no-xattrs`, the tool's own diagnostic named the fix.
+
+Verified: `test_console_pki_bootstrap`/`test_console_pkg_bootstrap` each 3 consecutive clean runs; full clean rebuild, zero warnings; full pre-existing regression suite re-run clean.
+
+**Not built:** a real, working gitea recipe -- this phase proves the toolchain-import mechanism, not gitea itself.
+
 ### Phase 19: real console login -- keyboard input + PID1-spawned kanxeoctl shell
 
 Phase 18 shipped video output and a REPL, but real Proxmox use surfaced two gaps neither closed: no keyboard input driver at all on the video console, and nothing on the box ever launched `kanxeoctl` on any console. Raised directly by the user immediately after using the Phase 18 ISO for real. See ADR-0034.

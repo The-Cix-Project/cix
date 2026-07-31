@@ -78,7 +78,11 @@ static void print_usage(FILE *out)
 	        "  pki cert create --name=NAME [--sans=a,b,c] [--days=N]\n"
 	        "  pki cert ls\n"
 	        "  pki cert rm NAME\n"
-	        "  pkg bootstrap\n"
+	        "  pkg bootstrap [--toolchain=PATH]  -- stages a package-build toolchain into the\n"
+	        "               pkgbuild image; no --toolchain= copies live from this daemon's own\n"
+	        "               host (dev/test convenience, empty on a real minimal install);\n"
+	        "               --toolchain=PATH imports a real, portable artifact already scp'd\n"
+	        "               onto this box (build one with image/src/mktoolchainimage.c)\n"
 	        "  pkg recipes\n"
 	        "  pkg install --name=NAME [--image=IMAGE] [--upgrade]\n"
 	        "  pkg ls\n"
@@ -1896,13 +1900,42 @@ static void fmt_pkg_list(const struct json_value *v)
 		fmt_pkg_line(packages->u.array.items[i]);
 }
 
-static int cmd_pkg_bootstrap(const struct kx_client *c, int json_mode)
+static int cmd_pkg_bootstrap(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
+	const char *toolchain = NULL;
+	int i;
 	struct kx_response r;
 
-	if (kx_client_request(c, "POST", "/v1/pkg/bootstrap", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
-		return 1;
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--toolchain=", 12) == 0)
+			toolchain = argv[i] + 12;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown pkg bootstrap option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	if (toolchain == NULL) {
+		if (kx_client_request(c, "POST", "/v1/pkg/bootstrap", NULL, &r) != 0) {
+			fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+			return 1;
+		}
+	} else {
+		struct json_writer w;
+
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "toolchain_path");
+		jw_str(&w, toolchain);
+		jw_obj_close(&w);
+		w.buf[w.len] = '\0';
+
+		if (kx_client_request(c, "POST", "/v1/pkg/bootstrap", w.buf, &r) != 0) {
+			jw_free(&w);
+			fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+			return 1;
+		}
+		jw_free(&w);
 	}
 	return emit(&r, json_mode, fmt_bootstrapped);
 }
@@ -2028,7 +2061,7 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl pkg bootstrap\n"
+		fprintf(stderr, "usage: kanxeoctl pkg bootstrap [--toolchain=PATH]\n"
 		                "       kanxeoctl pkg recipes\n"
 		                "       kanxeoctl pkg install --name=NAME [--image=IMAGE] [--upgrade]\n"
 		                "       kanxeoctl pkg ls\n"
@@ -2038,7 +2071,7 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 	}
 	sub = argv[0];
 	if (strcmp(sub, "bootstrap") == 0)
-		return cmd_pkg_bootstrap(c, json_mode);
+		return cmd_pkg_bootstrap(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "recipes") == 0)
 		return cmd_pkg_recipes(c, json_mode);
 	if (strcmp(sub, "install") == 0)

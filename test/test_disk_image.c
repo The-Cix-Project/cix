@@ -334,7 +334,7 @@ int build_squashfs(const char *image_root, const char *out_path)
 
 enum qemu_boot_outcome qemu_boot_capture(const struct qemu_boot_opts *opts, char *out, size_t out_size)
 {
-	char code_arg[600], vars_arg[600], disk_arg[600], disk2_arg[600];
+	char code_arg[600], vars_arg[600], disk_arg[600], disk2_arg[600], mem_arg[16];
 	int pipefd[2], in_pipefd[2];
 	pid_t pid;
 	enum qemu_boot_outcome outcome;
@@ -355,11 +355,13 @@ enum qemu_boot_outcome qemu_boot_capture(const struct qemu_boot_opts *opts, char
 	else
 		snprintf(disk_arg, sizeof(disk_arg), "file=%s,if=virtio,format=raw", opts->disk_img);
 
+	snprintf(mem_arg, sizeof(mem_arg), "%d", opts->mem_mib > 0 ? opts->mem_mib : 512);
+
 	qemu_argv[argc++] = (char *)QEMU_BIN;
 	qemu_argv[argc++] = "-machine";
 	qemu_argv[argc++] = "q35";
 	qemu_argv[argc++] = "-m";
-	qemu_argv[argc++] = "512";
+	qemu_argv[argc++] = mem_arg;
 	qemu_argv[argc++] = "-cpu";
 	qemu_argv[argc++] = "qemu64";
 	qemu_argv[argc++] = "-display";

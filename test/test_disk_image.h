@@ -108,6 +108,14 @@ struct qemu_boot_opts {
 	int disk_img_is_cdrom;     /* attach disk_img via -cdrom instead of -drive,if=virtio */
 	const char *disk_img2;     /* optional second disk, always a virtio block device, or NULL */
 	int with_nic;              /* attach a virtio-net device */
+	int mem_mib;               /* guest RAM in MiB; 0 means the existing default (512) -- raise
+	                             * this for a test whose own guest-side work sits under real
+	                             * memory pressure (e.g. unsquashfs-ing a large artifact into a
+	                             * tmpfs-backed /var/lib/kanxeo on a disk with no real containers
+	                             * partition -- confirmed directly: extracting a real ~600MB
+	                             * toolchain squashfs into tmpfs on the 512MB default guest
+	                             * exhausted memory and panicked, a real RAM constraint, not a
+	                             * bug in the extraction itself). */
 	int secure_boot;            /* use the .ms.fd OVMF CODE build (Phase 11 part 5) -- real
 	                              * Secure Boot enforcement is actually gated by ovmf_vars's own
 	                              * PK-enrollment state (confirmed empirically: plain CODE +

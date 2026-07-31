@@ -1,6 +1,6 @@
 CC := tcc
 CFLAGS := -Wall -Werror -D_GNU_SOURCE -D_FORTIFY_SOURCE=0 -Iinclude -Inetplane/include
-DAEMON_CFLAGS := $(CFLAGS) -Idaemon/include
+DAEMON_CFLAGS := $(CFLAGS) -Idaemon/include -Itest
 CLIENT_CFLAGS := $(CFLAGS) -Iclient/include -Idaemon/include
 NETPLANE_CFLAGS := $(CFLAGS)
 BUILD := build
@@ -12,7 +12,7 @@ NETPLANE_SRCS := netplane/src/rtnetlink.c
 
 .PHONY: all clean
 
-all: $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/kanxeod $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/kanxeoctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/net_connect $(BUILD)/test_daemon_net $(BUILD)/test_networks $(BUILD)/test_images $(BUILD)/test_container_restart $(BUILD)/test_container_files $(BUILD)/tcp_listen_child $(BUILD)/test_dns $(BUILD)/test_pki $(BUILD)/test_pkg $(BUILD)/mkbootroot $(BUILD)/test_mkbootroot_firmware $(BUILD)/test_boot $(BUILD)/test_boot_ab $(BUILD)/kanxeo-install $(BUILD)/mkinstalleriso $(BUILD)/test_installer $(BUILD)/test_devices $(BUILD)/dev_child $(BUILD)/test_daemon_devices $(BUILD)/test_system_update $(BUILD)/test_boot_update $(BUILD)/test_system_backup $(BUILD)/test_console_shell
+all: $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/kanxeod $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/kanxeoctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/net_connect $(BUILD)/test_daemon_net $(BUILD)/test_networks $(BUILD)/test_images $(BUILD)/test_container_restart $(BUILD)/test_container_files $(BUILD)/tcp_listen_child $(BUILD)/test_dns $(BUILD)/test_pki $(BUILD)/test_pkg $(BUILD)/mkbootroot $(BUILD)/test_mkbootroot_firmware $(BUILD)/test_boot $(BUILD)/test_boot_ab $(BUILD)/kanxeo-install $(BUILD)/mkinstalleriso $(BUILD)/test_installer $(BUILD)/test_devices $(BUILD)/dev_child $(BUILD)/test_daemon_devices $(BUILD)/test_system_update $(BUILD)/test_boot_update $(BUILD)/test_system_backup $(BUILD)/test_console_shell $(BUILD)/mktoolchainimage $(BUILD)/test_console_pki_bootstrap
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -32,7 +32,7 @@ $(BUILD)/test_overlay: test/test_overlay.c test/test_image_fixture.c $(LIB_SRCS)
 $(BUILD)/overlay_child: test/overlay_child.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(BUILD)/kanxeod: daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) | $(BUILD)
+$(BUILD)/kanxeod: daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) test/test_image_fixture.c | $(BUILD)
 	$(CC) $(DAEMON_CFLAGS) $^ -o $@
 
 $(BUILD)/test_daemon: test/test_daemon.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
@@ -122,10 +122,19 @@ $(BUILD)/test_boot_update: test/test_boot_update.c test/test_disk_image.c test/t
 $(BUILD)/test_console_shell: test/test_console_shell.c test/test_disk_image.c test/test_image_fixture.c | $(BUILD)
 	$(CC) $(CFLAGS) -Itest $^ -o $@
 
+$(BUILD)/test_console_pki_bootstrap: test/test_console_pki_bootstrap.c test/test_disk_image.c test/test_image_fixture.c | $(BUILD)
+	$(CC) $(CFLAGS) -Itest $^ -o $@
+
+$(BUILD)/test_console_pkg_bootstrap: test/test_console_pkg_bootstrap.c test/test_disk_image.c test/test_image_fixture.c | $(BUILD)
+	$(CC) $(CFLAGS) -Itest $^ -o $@
+
 $(BUILD)/kanxeo-install: image/src/kanxeo-install.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
 $(BUILD)/mkinstalleriso: image/src/mkinstalleriso.c test/test_image_fixture.c | $(BUILD)
+	$(CC) $(CFLAGS) -Itest $^ -o $@
+
+$(BUILD)/mktoolchainimage: image/src/mktoolchainimage.c test/test_image_fixture.c | $(BUILD)
 	$(CC) $(CFLAGS) -Itest $^ -o $@
 
 $(BUILD)/test_installer: test/test_installer.c test/test_disk_image.c test/test_image_fixture.c | $(BUILD)
