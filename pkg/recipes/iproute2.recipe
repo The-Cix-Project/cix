@@ -24,6 +24,20 @@ pkg_build() {
 	make -j"$(nproc)"
 }
 
+# Once the toolchain actually had libmnl/libelf/libcap-dev available
+# (added for ipset/iptables/keepalived, ADR-0036's own sibling
+# packages), `ip`'s own optional feature detection picked them up too
+# -- confirmed via ldd against a real build: libelf (BPF program
+# loading), libmnl, libcap, and libz (a transitive dep of libelf's own
+# compressed-debug-info support), none of which pkg_seed_image_
+# runtime()'s global bootstrap set covers. Staged the same way every
+# other recipe in this set stages its own real extra runtime deps.
 pkg_install() {
 	make install DESTDIR="$PKG_DESTDIR"
+	mkdir -p "$PKG_DESTDIR/lib/x86_64-linux-gnu"
+	cp -a /lib/x86_64-linux-gnu/libelf.so.1 /lib/x86_64-linux-gnu/libelf-0.188.so \
+	   /lib/x86_64-linux-gnu/libmnl.so.0 /lib/x86_64-linux-gnu/libmnl.so.0.2.0 \
+	   /lib/x86_64-linux-gnu/libcap.so.2 /lib/x86_64-linux-gnu/libcap.so.2.66 \
+	   /lib/x86_64-linux-gnu/libz.so.1 /lib/x86_64-linux-gnu/libz.so.1.2.13 \
+	   "$PKG_DESTDIR/lib/x86_64-linux-gnu/"
 }

@@ -417,11 +417,17 @@ static int run_capture_sha256(const char *path, char *out, size_t out_size)
 }
 
 /* Recursively copies src_root/<relpath> into dst_root/<relpath>,
- * recording every regular file copied into e's manifest. Symlinks are
- * skipped (a documented, narrow v1 boundary -- most real `make
- * install DESTDIR=` output is regular files/directories; a package
- * that installs symlinks needs a later part, not attempted-and-wrong
- * here). */
+ * recording every regular file or symlink copied into e's manifest.
+ * A symlink is recreated verbatim (readlink() the recipe-produced
+ * target string, symlink() it at the destination) rather than
+ * followed/copied-as-a-file -- real, not a hypothetical: iptables'
+ * own `make install` installs iptables/ip6tables/iptables-save/...
+ * as symlinks to a single xtables-legacy-multi binary, and the first
+ * version of this function silently dropped every one of them,
+ * caught by iptables.recipe's own real end-to-end verification, not
+ * anticipated up front. unlink_manifest_files()'s existing unlink()
+ * call already removes a symlink correctly (removes the link itself,
+ * never follows it), so no separate removal-path change was needed. */
 static int merge_tree(const char *src_root, const char *dst_root, const char *relpath,
                        struct pkg_entry *e)
 {
@@ -472,6 +478,36 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 				return -1;
 			}
 			chmod(dst_path, st.st_mode & 0777);
+			if (pkg_entry_add_file(e, child_rel) != 0) {
+				closedir(d);
+				return -1;
+			}
+		} else if (S_ISLNK(st.st_mode)) {
+			char target[PATH_MAX];
+			ssize_t len;
+			char dst_parent[PATH_MAX], *slash;
+
+			len = readlink(src_path, target, sizeof(target) - 1);
+			if (len < 0) {
+				closedir(d);
+				return -1;
+			}
+			target[len] = '\0';
+
+			snprintf(dst_path, sizeof(dst_path), "%s/%s", dst_root, child_rel);
+			snprintf(dst_parent, sizeof(dst_parent), "%s", dst_path);
+			slash = strrchr(dst_parent, '/');
+			if (slash != NULL) {
+				*slash = '\0';
+				persist_mkdir_p(dst_parent);
+			}
+			unlink(dst_path); /* EEXIST tolerance for a re-install/upgrade,
+			                    * same spirit copy_file_simple()'s own
+			                    * O_CREAT|O_TRUNC already has for regular files */
+			if (symlink(target, dst_path) != 0) {
+				closedir(d);
+				return -1;
+			}
 			if (pkg_entry_add_file(e, child_rel) != 0) {
 				closedir(d);
 				return -1;

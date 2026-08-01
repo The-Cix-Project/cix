@@ -2,6 +2,22 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 23: a real router recipe set -- bird, keepalived, iproute2, ipset, iptables, iputils, bash
+
+Four new recipes (keepalived, ipset, iptables, iputils -- bird/iproute2/bash already existed) giving a router container real tools: routing (bird), VRRP failover (keepalived), kernel networking/filtering (ip, ipset, iptables), diagnostics (ping/arping/tracepath), a shell (bash). See `docs/ROADMAP.md` Phase 23 for the full build-constraint reasoning (library version mismatches, toolchain dependency staging).
+
+#### Added
+- `pkg/recipes/keepalived.recipe`, `ipset.recipe`, `iptables.recipe`, `iputils.recipe` -- each real, from-source, doubly verified (real local build, then a full install through the actual `kanxeod` pipeline).
+- This build host gained real `-dev` packages (`libmnl-dev`, `libnftnl-dev`, `libnfnetlink-dev`, `libnl-3-dev`, `libnl-genl-3-dev`, `libiptc-dev`, `libipset-dev`, `libcap-dev`, `libidn2-dev`, `meson`, `ninja-build`) -- flows into the pkgbuild toolchain the same way the Rust/Go toolchains already do.
+
+#### Fixed
+- `daemon/src/pkg.c`'s `merge_tree()` silently dropped every symlink when merging a package's build output into its target image -- a documented but never-exercised "v1 boundary" until iptables' own `make install` (which creates `iptables`/`ip6tables`/... as symlinks to one `xtables-legacy-multi` binary) became the first real recipe to need one. Fixed properly: a real `S_ISLNK` branch (`readlink()`/`symlink()`, manifest-tracked like a regular file).
+- `pkg/recipes/iproute2.recipe` (written in an earlier phase) gained new optional features -- and new, previously-unstaged runtime library deps (`libelf`, `libmnl`, `libcap`, `libz`) -- once this phase's own toolchain additions made them newly detectable at build time. Fixed by staging those real extras in `pkg_install()`, the same pattern every other recipe in this set already uses.
+
+Verified: all seven packages installed for real through `kanxeod` onto a `router` image; every binary confirmed running; genuine kernel-level proof inside a real running container -- a real `iptables -A`/`-L` round-trip, a real `ipset create`/`add`/`list` round-trip, real `ip addr show` output. Full clean rebuild, zero warnings; full pre-existing non-QEMU regression suite (21 binaries) re-run clean.
+
+**Not built:** no standard `/run` (or other FHS runtime dir) convention for minimal images yet -- a real, generic gap (iptables' own locking needs it), not any one recipe's to solve; the actual two-router VRRP+bird topology that motivated Phase 22 hasn't been wired up end-to-end yet -- this phase proves the tools work individually.
+
 ### Phase 22: network gateway becomes optional, VLAN + physical-NIC bridge attachment
 
 A network's host-owned gateway address was always mandatory (hardcoded `.1` on the bridge, every attached container got an unconditional default route toward it) -- impossible to build a router-container topology (a VRRP pair owning the actual gateway, not the host) on top of. See ADR-0037, ADR-0038.
