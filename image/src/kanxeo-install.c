@@ -21,6 +21,8 @@
  * apart: kanxeo-esp, kanxeo-root-a, kanxeo-root-b, kanxeo-config,
  * kanxeo-containers.
  */
+#include "dual_console.h"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -98,20 +100,20 @@ static int run_subprocess(const char *bin, char *const argv[])
 
 	pid = fork();
 	if (pid < 0) {
-		perror("fork");
+		dual_perror("fork");
 		return -1;
 	}
 	if (pid == 0) {
 		execve(bin, argv, environ);
-		perror(bin);
+		dual_perror(bin);
 		_exit(127);
 	}
 	if (waitpid(pid, &status, 0) != pid) {
-		perror("waitpid");
+		dual_perror("waitpid");
 		return -1;
 	}
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-		fprintf(stderr, "%s failed (status 0x%x)\n", bin, (unsigned)status);
+		dual_printf("%s failed (status 0x%x)\n", bin, (unsigned)status);
 		return -1;
 	}
 	return 0;
@@ -189,7 +191,7 @@ static int run_subprocess_stdin(const char *bin, char *const argv[], const char 
 		close(pipefd[0]);
 		close(pipefd[1]);
 		execve(bin, argv, environ);
-		perror(bin);
+		dual_perror(bin);
 		_exit(127);
 	}
 	close(pipefd[0]);
@@ -198,18 +200,18 @@ static int run_subprocess_stdin(const char *bin, char *const argv[], const char 
 		if (n < 0) {
 			if (errno == EINTR)
 				continue;
-			perror("write");
+			dual_perror("write");
 			break;
 		}
 		written += (size_t)n;
 	}
 	close(pipefd[1]);
 	if (waitpid(pid, &status, 0) != pid) {
-		perror("waitpid");
+		dual_perror("waitpid");
 		return -1;
 	}
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-		fprintf(stderr, "%s failed (status 0x%x)\n", bin, (unsigned)status);
+		dual_printf("%s failed (status 0x%x)\n", bin, (unsigned)status);
 		return -1;
 	}
 	return 0;
@@ -218,7 +220,7 @@ static int run_subprocess_stdin(const char *bin, char *const argv[], const char 
 static int ensure_dir(const char *path)
 {
 	if (mkdir(path, 0755) != 0 && errno != EEXIST) {
-		perror(path);
+		dual_perror(path);
 		return -1;
 	}
 	return 0;
@@ -229,11 +231,11 @@ static int write_text_file(const char *path, const char *content)
 	FILE *f = fopen(path, "w");
 
 	if (f == NULL) {
-		perror(path);
+		dual_perror(path);
 		return -1;
 	}
 	if (fputs(content, f) < 0) {
-		perror(path);
+		dual_perror(path);
 		fclose(f);
 		return -1;
 	}
@@ -249,25 +251,25 @@ static int copy_file(const char *src_path, const char *dst_path)
 
 	src = open(src_path, O_RDONLY);
 	if (src < 0) {
-		perror(src_path);
+		dual_perror(src_path);
 		return -1;
 	}
 	dst = open(dst_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 	if (dst < 0) {
-		perror(dst_path);
+		dual_perror(dst_path);
 		close(src);
 		return -1;
 	}
 	while ((n = read(src, buf, sizeof(buf))) > 0) {
 		if (write(dst, buf, (size_t)n) != n) {
-			perror("write");
+			dual_perror("write");
 			close(src);
 			close(dst);
 			return -1;
 		}
 	}
 	if (n < 0)
-		perror(src_path);
+		dual_perror(src_path);
 	close(src);
 	close(dst);
 	return n < 0 ? -1 : 0;
@@ -319,7 +321,7 @@ static int find_partition_device(const char *dump, const char *want_name, char *
 		}
 		line = eol != NULL ? eol + 1 : NULL;
 	}
-	fprintf(stderr, "no partition named \"%s\" found on this disk\n", want_name);
+	dual_printf("no partition named \"%s\" found on this disk\n", want_name);
 	return -1;
 }
 
@@ -455,23 +457,22 @@ static int populate_esp(const char *esp_mount, const char *ip)
 static int enroll_signing_key(void)
 {
 	if (mkdir("/sys/firmware/efi/efivars", 0755) != 0 && errno != EEXIST) {
-		perror("/sys/firmware/efi/efivars");
+		dual_perror("/sys/firmware/efi/efivars");
 		return -1;
 	}
 	if (mount("efivarfs", "/sys/firmware/efi/efivars", "efivarfs", 0, NULL) != 0) {
-		perror("mount efivarfs");
+		dual_perror("mount efivarfs");
 		return -1;
 	}
 
-	printf("kanxeo-install: enrolling the Kanxeo Secure Boot signing key -- choose a "
-	       "temporary password now; you'll need it once more at the very next reboot, in "
-	       "the blue MokManager screen, to confirm it\n");
-	fflush(stdout);
+	dual_printf("kanxeo-install: enrolling the Kanxeo Secure Boot signing key -- choose a "
+	            "temporary password now; you'll need it once more at the very next reboot, in "
+	            "the blue MokManager screen, to confirm it\n");
 
 	{
 		char *argv[] = { (char *)MOKUTIL_BIN, "--import", (char *)SIGNING_CERT_SRC, NULL };
 
-		return run_subprocess(MOKUTIL_BIN, argv);
+		return run_subprocess_dual_console(MOKUTIL_BIN, argv);
 	}
 }
 
@@ -481,16 +482,28 @@ static int enroll_signing_key(void)
  * needs the same minimal proc/sysfs mounts before fdisk/sfdisk/mkfs.*
  * can be trusted to work at all. devtmpfs auto-populates /dev before
  * init ever runs (CONFIG_DEVTMPFS_MOUNT), so no /dev mount here either,
- * same as kanxeod's own boot_init().
+ * same as kanxeod's own boot_init(). devpts (ADR-0042) is the one
+ * genuinely new mount here -- posix_openpt()'s slave device only shows
+ * up under /dev/pts once that filesystem is actually mounted; nothing
+ * else in this from-scratch environment ever does it.
  */
 static int early_mounts(void)
 {
 	if (mount("proc", "/proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) != 0) {
-		perror("/proc");
+		dual_perror("/proc");
 		return -1;
 	}
 	if (mount("sysfs", "/sys", "sysfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) != 0) {
-		perror("/sys");
+		dual_perror("/sys");
+		return -1;
+	}
+	if (mkdir("/dev/pts", 0755) != 0 && errno != EEXIST) {
+		dual_perror("/dev/pts");
+		return -1;
+	}
+	if (mount("devpts", "/dev/pts", "devpts", MS_NOSUID | MS_NOEXEC,
+	          "mode=0620,ptmxmode=0666") != 0) {
+		dual_perror("mount devpts");
 		return -1;
 	}
 	return 0;
@@ -508,6 +521,12 @@ int main(int argc, char **argv)
 	struct stat st;
 	char sfdisk_dump[16384];
 	char esp_dev[64], root_a_dev[64], root_b_dev[64], config_dev[64], containers_dev[64];
+
+	/* Literal first statement (ADR-0042) -- has no dependency on
+	 * early_mounts() (devtmpfs already auto-populates /dev before init
+	 * ever runs), and every diagnostic below this line should reach
+	 * whichever console the operator is actually watching. */
+	dual_console_open("/dev/tty0", "/dev/ttyS0");
 
 	if (early_mounts() != 0)
 		return 1;
@@ -529,35 +548,33 @@ int main(int argc, char **argv)
 
 	if (disk == NULL || ip == NULL || gateway == NULL || prefix <= 0 || prefix > 32 ||
 	    (skip_partition && auto_partition_flag)) {
-		fprintf(stderr,
-		        "usage: %s --disk=/dev/sdX --ip=A.B.C.D --prefix=N --gateway=A.B.C.D "
-		        "[--skip-partition | --auto-partition]\n"
-		        "  (default: interactive fdisk; --skip-partition: disk is already\n"
-		        "  partitioned by other means; --auto-partition: partition it here,\n"
-		        "  non-interactively, with the standard fixed layout -- the two flags\n"
-		        "  are mutually exclusive)\n",
-		        argv[0]);
+		dual_printf("usage: %s --disk=/dev/sdX --ip=A.B.C.D --prefix=N --gateway=A.B.C.D "
+		            "[--skip-partition | --auto-partition]\n"
+		            "  (default: interactive fdisk; --skip-partition: disk is already\n"
+		            "  partitioned by other means; --auto-partition: partition it here,\n"
+		            "  non-interactively, with the standard fixed layout -- the two flags\n"
+		            "  are mutually exclusive)\n",
+		            argv[0]);
 		return 2;
 	}
 
 	if (stat(disk, &st) != 0) {
-		perror(disk);
+		dual_perror(disk);
 		return 1;
 	}
 
-	printf("kanxeo-install: target disk %s -- ALL DATA ON THIS DISK WILL BE DESTROYED\n", disk);
-	fflush(stdout);
+	dual_printf("kanxeo-install: target disk %s -- ALL DATA ON THIS DISK WILL BE DESTROYED\n", disk);
 
 	if (auto_partition_flag) {
 		if (auto_partition(disk) != 0) {
-			fprintf(stderr, "auto-partition did not complete successfully -- aborting\n");
+			dual_printf("auto-partition did not complete successfully -- aborting\n");
 			return 1;
 		}
 	} else if (!skip_partition) {
 		char *fdisk_argv[] = { (char *)FDISK_BIN, (char *)disk, NULL };
 
-		if (run_subprocess(FDISK_BIN, fdisk_argv) != 0) {
-			fprintf(stderr, "fdisk did not complete successfully -- aborting\n");
+		if (run_subprocess_dual_console(FDISK_BIN, fdisk_argv) != 0) {
+			dual_printf("fdisk did not complete successfully -- aborting\n");
 			return 1;
 		}
 	}
@@ -566,7 +583,7 @@ int main(int argc, char **argv)
 		char *dump_argv[] = { (char *)SFDISK_BIN, "-d", (char *)disk, NULL };
 
 		if (run_subprocess_capture(SFDISK_BIN, dump_argv, sfdisk_dump, sizeof(sfdisk_dump)) != 0) {
-			fprintf(stderr, "failed to read the partition table from %s\n", disk);
+			dual_printf("failed to read the partition table from %s\n", disk);
 			return 1;
 		}
 	}
@@ -587,10 +604,9 @@ int main(int argc, char **argv)
 	 * update ever writes there (this part's own confirmed scope). */
 	(void)root_b_dev;
 
-	printf("kanxeo-install: found all 5 partitions (esp=%s root-a=%s root-b=%s config=%s "
-	       "containers=%s)\n",
-	       esp_dev, root_a_dev, root_b_dev, config_dev, containers_dev);
-	fflush(stdout);
+	dual_printf("kanxeo-install: found all 5 partitions (esp=%s root-a=%s root-b=%s config=%s "
+	            "containers=%s)\n",
+	            esp_dev, root_a_dev, root_b_dev, config_dev, containers_dev);
 
 	if (mkfs_vfat(esp_dev) != 0)
 		return 1;
@@ -611,7 +627,7 @@ int main(int argc, char **argv)
 	if (ensure_dir(ESP_MOUNT) != 0)
 		return 1;
 	if (mount(esp_dev, ESP_MOUNT, "vfat", 0, NULL) != 0) {
-		perror("mount esp");
+		dual_perror("mount esp");
 		return 1;
 	}
 	if (populate_esp(ESP_MOUNT, ip) != 0) {
@@ -619,7 +635,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	if (umount(ESP_MOUNT) != 0) {
-		perror("umount esp");
+		dual_perror("umount esp");
 		return 1;
 	}
 
@@ -632,7 +648,7 @@ int main(int argc, char **argv)
 	if (ensure_dir(CONFIG_MOUNT) != 0)
 		return 1;
 	if (mount(config_dev, CONFIG_MOUNT, "ext4", 0, NULL) != 0) {
-		perror("mount config");
+		dual_perror("mount config");
 		return 1;
 	}
 	{
@@ -647,7 +663,7 @@ int main(int argc, char **argv)
 		}
 	}
 	if (umount(CONFIG_MOUNT) != 0) {
-		perror("umount config");
+		dual_perror("umount config");
 		return 1;
 	}
 
@@ -665,7 +681,7 @@ int main(int argc, char **argv)
 	if (ensure_dir(CONTAINERS_MOUNT) != 0)
 		return 1;
 	if (mount(containers_dev, CONTAINERS_MOUNT, "ext4", 0, NULL) != 0) {
-		perror("mount containers");
+		dual_perror("mount containers");
 		return 1;
 	}
 	{
@@ -726,11 +742,10 @@ int main(int argc, char **argv)
 		}
 	}
 	if (umount(CONTAINERS_MOUNT) != 0) {
-		perror("umount containers");
+		dual_perror("umount containers");
 		return 1;
 	}
 
-	printf("kanxeo-install: install complete\n");
-	fflush(stdout);
+	dual_printf("kanxeo-install: install complete\n");
 	return 0;
 }

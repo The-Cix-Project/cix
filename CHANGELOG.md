@@ -2,6 +2,22 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 28: installer dual-console (tty0 + ttyS0) support via a PTY relay
+
+Raised directly by the user: the installer only ever worked interactively over serial, even though its own GRUB kernel command line already requests both `/dev/tty0` and `/dev/ttyS0` -- Linux binds `/dev/console` to whichever is listed last. See ADR-0042.
+
+#### Added
+- `image/src/dual_console.c`/`.h` -- new module, the first PTY usage in this codebase. `dual_console_open()`/`dual_printf()`/`dual_perror()` mirror status output to both consoles; `run_subprocess_dual_console()` relays an interactive child's I/O (via `posix_openpt()`, a `poll()`-based relay loop) across both simultaneously.
+- `test/test_dual_console.c` + `test/dual_console_child.c` -- fully-automated test (no QEMU) proving the real relay logic against two throwaway PTYs standing in for the two real consoles.
+
+#### Fixed
+- `image/src/kanxeo-install.c`: `fdisk`'s interactive partitioning session and `mokutil`'s Secure Boot password prompt now use `run_subprocess_dual_console()`; every other status/error message in the file mirrored to both consoles via `dual_printf()`/`dual_perror()`.
+- `early_mounts()` now also mounts `devpts` -- a genuinely new prerequisite (`posix_openpt()`'s slave device needs it, nothing else in this environment ever mounted it).
+
+Verified: `test_dual_console` -- 3 consecutive clean runs; `test/test_installer.c`'s real 5-session Secure-Boot QEMU flow re-run clean through the new code, no regression on serial.
+
+**Not built:** real video-console confirmation stays the user's own real-hardware/Proxmox check -- this sandbox's QEMU harness has no video backend to automate against.
+
 ### Phase 27: a real container-image baseline FHS layout
 
 Closes the specific gap Phase 23 (`iptables`'s `/run/xtables.lock`) and Phase 24 (`bird` crashing with no `/dev/null`) both hit and fixed by hand on the already-built image, not reproducible from a fresh `pkg install`. See ADR-0041.
