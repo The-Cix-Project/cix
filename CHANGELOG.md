@@ -2,6 +2,21 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 24: the actual VRRP + bird topology, proven end-to-end
+
+Two real router containers, a real VRRP-shared gateway address, real OSPF between them, real client traffic surviving one router's failure with zero config change -- the scenario that started the whole networking-redesign conversation (Phase 22), now genuinely deployed and verified. Pure deployment/configuration, no daemon code changes. See `docs/ROADMAP.md` Phase 24 for the full topology and verification sequence.
+
+#### Fixed
+- `bird` hard-fails with no `/dev/null` -- no image built by this platform ships any baseline `/dev` at all. Standard device nodes staged into the `router` image (same convention `test_image_fixture_stage_toolchain()` already uses for the toolchain image).
+- `birdc`/`birdcl` need `/usr/var/run` to exist for their control socket -- staged the same way.
+- `pkg/recipes/bird.recipe` never staged `libreadline.so.8`, needed by `birdc`'s own interactive client (confirmed via `ldd`) -- fixed in the recipe, the same pattern every other recipe in this set already uses. `birdcl` (no readline) is a real, complete substitute for scripted queries and needed no fix.
+
+Real design lesson from a real failure: the first deployment gave only the client-facing segment (`lan1`) a VRRP address, leaving the "far side" target with no route back -- forwarding worked one-way, replies had nowhere to go. Fixed by making VRRP symmetric (a second `vrrp_instance` on the upstream segment too) -- the more correct design, not a workaround.
+
+Verified end-to-end against live containers: VRRP election, genuine OSPF `Full` adjacency (`birdcl show ospf neighbors` on both sides), real packet forwarding (0% ping loss), and the actual payoff -- stopping the MASTER router makes the BACKUP take over both VRRP addresses within seconds, with the client's own route table never changing and connectivity never dropping; restarting the original router reclaims MASTER via keepalived's default preemption.
+
+**Not built:** no base-image FHS-layout convention yet (`/dev`/`/run`/`/usr/var/run` -- fixed manually on the already-built image this phase, not reproducible from a fresh `pkg install` yet); no VRRP authentication (VRRPv3 doesn't support it, and this is a verification deployment, not hardening); OSPF's dynamic route learning isn't load-bearing in this specific 2-router topology (both routers are already directly connected to both segments) -- real adjacency-forming is genuine proof bird works, a topology where it's actually required is future work.
+
 ### Phase 23: a real router recipe set -- bird, keepalived, iproute2, ipset, iptables, iputils, bash
 
 Four new recipes (keepalived, ipset, iptables, iputils -- bird/iproute2/bash already existed) giving a router container real tools: routing (bird), VRRP failover (keepalived), kernel networking/filtering (ip, ipset, iptables), diagnostics (ping/arping/tracepath), a shell (bash). See `docs/ROADMAP.md` Phase 23 for the full build-constraint reasoning (library version mismatches, toolchain dependency staging).

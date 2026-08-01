@@ -36,6 +36,17 @@ pkg_build() {
 	make -j"$(nproc)"
 }
 
+# `bird`/`birdcl` need nothing beyond what pkg_seed_image_runtime()'s
+# global bootstrap set already covers, but `birdc` (the readline-
+# enabled control client -- interactive line editing/history) links
+# libreadline, confirmed via ldd against the real build -- never
+# exercised until this recipe's own control client was actually run,
+# not caught up front. libtinfo (readline's own transitive dependency)
+# is already part of that global set; only libreadline itself needed
+# staging here.
 pkg_install() {
 	make install DESTDIR="$PKG_DESTDIR"
+	mkdir -p "$PKG_DESTDIR/lib/x86_64-linux-gnu"
+	cp -a /lib/x86_64-linux-gnu/libreadline.so.8 /lib/x86_64-linux-gnu/libreadline.so.8.2 \
+	   "$PKG_DESTDIR/lib/x86_64-linux-gnu/"
 }
