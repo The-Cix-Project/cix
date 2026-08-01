@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -825,7 +826,7 @@ int pkg_toolchain_has_gcc(void)
 	return stat(gcc_path, &st) == 0;
 }
 
-enum pkg_error pkg_seed_image_runtime(const char *image)
+enum pkg_error pkg_seed_image_baseline(const char *image)
 {
 	/*
 	 * Source paths deliberately have no "/usr" prefix -- they must match
@@ -854,6 +855,26 @@ enum pkg_error pkg_seed_image_runtime(const char *image)
 		{ "/lib/x86_64-linux-gnu/libgcc_s.so.1", "lib/x86_64-linux-gnu/libgcc_s.so.1" },
 		{ "/lib/x86_64-linux-gnu/libm.so.6", "lib/x86_64-linux-gnu/libm.so.6" },
 	};
+	/*
+	 * ADR-0041: the same real, generic gap Phase 23 (iptables' own
+	 * /run/xtables.lock) and Phase 24 (bird hard-crashing with no
+	 * /dev/null at all) both hit -- no image this platform builds ever
+	 * shipped a baseline FHS layout beyond what pkg install itself
+	 * produces, and both were fixed by hand, directly on the router
+	 * image's own on-disk files, not reproducible from a fresh install.
+	 * Standard char device nodes, same table/pattern
+	 * test_image_fixture_stage_toolchain()'s own dev_nodes[] (test/
+	 * test_image_fixture.c) already proves safe in this exact sandbox
+	 * (its own ancestor cgroup's BPF_CGROUP_DEVICE policy permits
+	 * exactly this set).
+	 */
+	static const struct {
+		const char *name;
+		unsigned int major, minor;
+	} dev_nodes[] = {
+		{ "null", 1, 3 }, { "zero", 1, 5 }, { "full", 1, 7 }, { "random", 1, 8 },
+		{ "urandom", 1, 9 },
+	};
 	char target_rootfs[PATH_MAX];
 	size_t i;
 
@@ -876,6 +897,40 @@ enum pkg_error pkg_seed_image_runtime(const char *image)
 			*slash = '\0';
 
 		if (persist_mkdir_p(dst_parent) != 0 || copy_file_simple(runtime_libs[i].src, dst) != 0)
+			return PKG_ERR_PERSIST_FAILED;
+	}
+
+	/*
+	 * Dev nodes and /run have no "host source" that might legitimately
+	 * be absent the way a runtime lib does -- a real mknod()/mkdir_p()
+	 * failure here is a genuine I/O or permission problem, not a
+	 * tolerable gap, so unlike the loop above this is fatal (matching
+	 * that loop's own fatal handling of a real copy failure, not its
+	 * tolerant handling of a missing source). Only EEXIST on mknod is
+	 * tolerated, for idempotent re-runs.
+	 */
+	{
+		char dev_dir[PATH_MAX];
+
+		snprintf(dev_dir, sizeof(dev_dir), "%s/dev", target_rootfs);
+		if (persist_mkdir_p(dev_dir) != 0)
+			return PKG_ERR_PERSIST_FAILED;
+		for (i = 0; i < sizeof(dev_nodes) / sizeof(dev_nodes[0]); i++) {
+			char path[PATH_MAX];
+
+			snprintf(path, sizeof(path), "%s/%s", dev_dir, dev_nodes[i].name);
+			if (mknod(path, S_IFCHR | 0666, makedev(dev_nodes[i].major, dev_nodes[i].minor)) !=
+			        0 &&
+			    errno != EEXIST)
+				return PKG_ERR_PERSIST_FAILED;
+		}
+	}
+
+	{
+		char run_dir[PATH_MAX];
+
+		snprintf(run_dir, sizeof(run_dir), "%s/run", target_rootfs);
+		if (persist_mkdir_p(run_dir) != 0)
 			return PKG_ERR_PERSIST_FAILED;
 	}
 
@@ -1427,7 +1482,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 
 		image_rootfs_path(g_current_job_image, target_rootfs, sizeof(target_rootfs));
 		if (persist_mkdir_p(target_rootfs) != 0 ||
-		    pkg_seed_image_runtime(g_current_job_image) != PKG_OK ||
+		    pkg_seed_image_baseline(g_current_job_image) != PKG_OK ||
 		    merge_tree(dest_dir, target_rootfs, "", e) != 0) {
 			e->state = PKG_STATE_FAILED;
 			snprintf(e->error, sizeof(e->error),

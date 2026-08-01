@@ -663,6 +663,23 @@ int main(void)
 				        "FAIL: router image missing its own C runtime after first install\n");
 				ok = 0;
 			}
+			/* ADR-0041: the same first-install baseline seeding must also
+			 * land the standard dev nodes and an empty /run -- the real,
+			 * generic gap Phase 23 (iptables' /run/xtables.lock) and Phase
+			 * 24 (bird crashing with no /dev/null) both hit, previously
+			 * fixed by hand on the already-built image, not reproducible
+			 * from a fresh pkg install until now. */
+			if (stat(ROUTER_ROOTFS "/dev/null", &st) != 0 ||
+			    stat(ROUTER_ROOTFS "/dev/zero", &st) != 0 ||
+			    stat(ROUTER_ROOTFS "/dev/full", &st) != 0 ||
+			    stat(ROUTER_ROOTFS "/dev/random", &st) != 0 ||
+			    stat(ROUTER_ROOTFS "/dev/urandom", &st) != 0 ||
+			    stat(ROUTER_ROOTFS "/run", &st) != 0) {
+				fprintf(stderr,
+				        "FAIL: router image missing its baseline dev nodes/run dir after "
+				        "first install\n");
+				ok = 0;
+			}
 			if (stat(BASE_ROOTFS "/usr/bin/greeter", &st) == 0) {
 				fprintf(stderr,
 				        "FAIL: greeter@router install leaked into the base image "

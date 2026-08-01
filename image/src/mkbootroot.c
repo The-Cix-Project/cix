@@ -130,7 +130,7 @@ int main(int argc, char **argv)
 	/*
 	 * kanxeod itself never needs libtinfo -- this is staged purely so
 	 * the RUNNING system's own root reliably has it available at its
-	 * real, well-known host path, the source pkg_seed_image_runtime()
+	 * real, well-known host path, the source pkg_seed_image_baseline()
 	 * (daemon/src/pkg.c) copies from when seeding a container image's
 	 * own C runtime. Without this, that mechanism would only ever find
 	 * ld.so/libc.so.6 (already staged above) on a real installed

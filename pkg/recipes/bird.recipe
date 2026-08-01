@@ -29,14 +29,23 @@ pkg_depends=""
 # autoheader too). --prefix=/usr matches every other recipe in this
 # set; BIRD's own build otherwise defaults to installing under
 # /usr/local/{sbin,etc}, which would land in the wrong place once
-# merged into the shared base image.
+# merged into the shared base image. --runstatedir=/run: confirmed
+# directly (grep against this exact release's own configure.ac/
+# Makefile.in) that BIRD's own CONTROL_SOCKET is literally
+# "$(runstatedir)/bird.ctl" -- without this override, autoconf's
+# default runstatedir is ${localstatedir}/run, and --prefix=/usr alone
+# makes that /usr/var/run (real, confirmed live, ADR-0041/Phase 24: no
+# image ships that path, so birdc's control socket had nowhere to go).
+# ADR-0041 also gives every image a real, empty /run generically, but
+# fixing BIRD's own default is the actual root fix -- /usr/var/run
+# still wouldn't exist without it even with a populated /run elsewhere.
 pkg_build() {
 	autoreconf -fi
-	./configure --prefix=/usr
+	./configure --prefix=/usr --runstatedir=/run
 	make -j"$(nproc)"
 }
 
-# `bird`/`birdcl` need nothing beyond what pkg_seed_image_runtime()'s
+# `bird`/`birdcl` need nothing beyond what pkg_seed_image_baseline()'s
 # global bootstrap set already covers, but `birdc` (the readline-
 # enabled control client -- interactive line editing/history) links
 # libreadline, confirmed via ldd against the real build -- never

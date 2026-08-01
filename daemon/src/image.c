@@ -76,7 +76,7 @@ enum image_error image_create(const char *name)
 
 	if (persist_mkdir_p(rootfs) != 0)
 		return IMAGE_ERR_CREATE_FAILED;
-	if (pkg_seed_image_runtime(name) != PKG_OK)
+	if (pkg_seed_image_baseline(name) != PKG_OK)
 		return IMAGE_ERR_CREATE_FAILED;
 
 	return IMAGE_OK;

@@ -36,8 +36,9 @@ void image_init(const char *images_dir);
  * Validates name (same charset/length rule pkg.c's own recipe/image
  * names already use), IMAGE_ERR_DUPLICATE if <name>/rootfs already
  * exists. Otherwise creates an empty rootfs directory and seeds its C
- * runtime immediately (pkg_seed_image_runtime(), ADR-0023) so it's
- * usable right away, before any pkg install ever targets it.
+ * runtime and baseline FHS layout immediately (pkg_seed_image_baseline(),
+ * ADR-0023, ADR-0041) so it's usable right away, before any pkg install
+ * ever targets it.
  */
 enum image_error image_create(const char *name);
 

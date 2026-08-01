@@ -122,7 +122,7 @@ int main(void)
 
 	/* 3. an explicitly-requested but unreadable firmware_dir fails
 	 * loudly (nonzero exit), not silently -- unlike
-	 * pkg_seed_image_runtime()'s own tolerant-if-missing precedent,
+	 * pkg_seed_image_baseline()'s own tolerant-if-missing-runtime-lib precedent,
 	 * this was explicitly asked for. */
 	if (run_mkbootroot("/nonexistent/firmware/dir") == 0) {
 		fprintf(stderr, "FAIL: mkbootroot with an unreadable firmware_dir should fail, "

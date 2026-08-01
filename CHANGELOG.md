@@ -2,6 +2,18 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 27: a real container-image baseline FHS layout
+
+Closes the specific gap Phase 23 (`iptables`'s `/run/xtables.lock`) and Phase 24 (`bird` crashing with no `/dev/null`) both hit and fixed by hand on the already-built image, not reproducible from a fresh `pkg install`. See ADR-0041.
+
+#### Fixed
+- `daemon/src/pkg.c`'s `pkg_seed_image_runtime()` renamed to `pkg_seed_image_baseline()` and extended with standard `/dev/{null,zero,full,random,urandom}` char device nodes and a plain, empty `/run` directory -- reuses the same idempotent, self-healing extension point (`image_create()` + every `pkg_build_completed()`) already proven for runtime libs, so every existing image self-heals on its next install too.
+- `pkg/recipes/bird.recipe`: added `--runstatedir=/run`, fixing `birdc`'s control socket at its actual root (confirmed via bird's own `configure.ac`/`Makefile.in`: `CONTROL_SOCKET="$(runstatedir)/bird.ctl"`) instead of leaving it defaulted to `/usr/var/run`. Verified against a real local build -- the compiled binary's own `PATH_CONTROL_SOCKET` is genuinely `/run/bird.ctl`.
+
+Verified: full clean rebuild, zero warnings; `test/test_pkg.c`'s existing per-image seeding scenario extended with `stat()` checks for all 5 dev nodes and `/run`.
+
+**Not built:** still a fixed, hardcoded baseline set, not extensible; `/tmp` and a `/var/run` compat symlink both deliberately deferred (neither has a confirmed real gap behind it -- see ADR-0041's own Consequences).
+
 ### Phase 26: package recipes are a real, live-managed catalog via a REST API
 
 Found live while walking the user through creating their first test container: `pkg install --name=bash` failed on their freshly-installed box because no real install has ever had *any* recipe file staged anywhere -- a total gap, not bash-specific. A first attempt (ADR-0039) baked a fixed recipe set into the installer ISO, mirroring ADR-0019's runtime-lib mechanism -- the user correctly rejected it (updating a package catalog shouldn't require an OS reinstall) and it was reverted in full. See ADR-0040.
