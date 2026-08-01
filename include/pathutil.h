@@ -42,13 +42,17 @@ static inline int kx_mkdir_p(const char *dir_path)
 	for (p = tmp + 1; *p != '\0'; p++) {
 		if (*p == '/') {
 			*p = '\0';
-			if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
+			if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
+				fprintf(stderr, "kx_mkdir_p: mkdir %s failed: %s\n", tmp, strerror(errno));
 				return -1;
+			}
 			*p = '/';
 		}
 	}
-	if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
+	if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
+		fprintf(stderr, "kx_mkdir_p: mkdir %s failed: %s\n", tmp, strerror(errno));
 		return -1;
+	}
 	return 0;
 }
 

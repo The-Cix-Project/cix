@@ -1,5 +1,6 @@
 #include "test_image_fixture.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -110,6 +111,39 @@ int test_image_fixture_build(const char *image_root, const char *child_binary_pa
 	return 0;
 }
 
+int test_image_fixture_copy_dir_files(const char *src_dir, const char *dst_dir)
+{
+	DIR *dir = opendir(src_dir);
+	struct dirent *entry;
+	char src_path[PATH_MAX], dst_path[PATH_MAX];
+	struct stat st;
+
+	if (dir == NULL) {
+		perror(src_dir);
+		return -1;
+	}
+	while ((entry = readdir(dir)) != NULL) {
+		if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+			continue;
+		if (snprintf(src_path, sizeof(src_path), "%s/%s", src_dir, entry->d_name) >=
+		            (int)sizeof(src_path) ||
+		    snprintf(dst_path, sizeof(dst_path), "%s/%s", dst_dir, entry->d_name) >=
+		            (int)sizeof(dst_path)) {
+			fprintf(stderr, "path too long under %s\n", src_dir);
+			closedir(dir);
+			return -1;
+		}
+		if (stat(src_path, &st) != 0 || !S_ISREG(st.st_mode))
+			continue;
+		if (test_image_fixture_copy_file(src_path, dst_path) != 0) {
+			closedir(dir);
+			return -1;
+		}
+	}
+	closedir(dir);
+	return 0;
+}
+
 int test_image_fixture_add_lib(const char *image_root, const char *host_lib_abs_path)
 {
 	char dst_path[PATH_MAX];
@@ -157,7 +191,13 @@ static int run_cp_a(const char *src, const char *dst)
 		perror("waitpid");
 		return -1;
 	}
-	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
+	if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+		return 0;
+	if (WIFEXITED(status))
+		fprintf(stderr, "cp -a %s %s: exited with status %d\n", src, dst, WEXITSTATUS(status));
+	else if (WIFSIGNALED(status))
+		fprintf(stderr, "cp -a %s %s: killed by signal %d\n", src, dst, WTERMSIG(status));
+	return -1;
 }
 
 int test_image_fixture_stage_toolchain(const char *image_root)

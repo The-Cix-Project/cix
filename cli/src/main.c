@@ -92,6 +92,9 @@ static void print_usage(FILE *out)
 	        "               --toolchain=PATH imports a real, portable artifact already scp'd\n"
 	        "               onto this box (build one with image/src/mktoolchainimage.c)\n"
 	        "  pkg recipes\n"
+	        "  pkg recipe add --name=NAME --file=PATH  -- add or update a recipe on this\n"
+	        "               running system directly, no reinstall needed (ADR-0040)\n"
+	        "  pkg recipe rm NAME\n"
 	        "  pkg install --name=NAME [--image=IMAGE] [--upgrade]\n"
 	        "  pkg ls\n"
 	        "  pkg rm NAME[@IMAGE]\n"
@@ -2067,6 +2070,107 @@ static int cmd_pkg_recipes(const struct kx_client *c, int json_mode)
 	return emit(&r, json_mode, fmt_pkg_recipe_list);
 }
 
+/* ADR-0040: add or update a recipe on an already-running system, no
+ * ISO rebuild/reinstall needed -- the real, ongoing way recipes get
+ * onto a system. --name= is the lookup key (must match the .recipe
+ * content's own pkg_name= field, validated server-side); --file= is a
+ * local path to the .recipe file's content, read and embedded the
+ * same way `run --file=` already stages container config files. */
+static int cmd_pkg_recipe_add(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *name = NULL;
+	const char *file = NULL;
+	char *content;
+	size_t content_len;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--name=", 7) == 0)
+			name = argv[i] + 7;
+		else if (strncmp(argv[i], "--file=", 7) == 0)
+			file = argv[i] + 7;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown pkg recipe add option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL || file == NULL) {
+		fprintf(stderr, "usage: kanxeoctl pkg recipe add --name=NAME --file=PATH\n");
+		return 2;
+	}
+	if (read_local_file(file, &content, &content_len) != 0) {
+		fprintf(stderr, "kanxeoctl: could not read %s\n", file);
+		return 1;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "content");
+	jw_str(&w, content);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	free(content);
+
+	if (kx_client_request(c, "POST", "/v1/pkg/recipes", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	if (r.status < 200 || r.status >= 300) {
+		const char *msg = json_str_field(r.json, "error");
+
+		fprintf(stderr, "kanxeoctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		        r.status);
+		kx_response_free(&r);
+		return 1;
+	}
+	printf("recipe '%s' added\n", name);
+	kx_response_free(&r);
+	return 0;
+}
+
+static int cmd_pkg_recipe_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl pkg recipe rm NAME\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/pkg/recipes/%s", argv[0]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static int cmd_pkg_recipe(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl pkg recipe add --name=NAME --file=PATH\n"
+		                "       kanxeoctl pkg recipe rm NAME\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "add") == 0)
+		return cmd_pkg_recipe_add(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "rm") == 0)
+		return cmd_pkg_recipe_rm(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown pkg recipe subcommand '%s'\n", sub);
+	return 2;
+}
+
 static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
@@ -2179,6 +2283,8 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (argc < 1) {
 		fprintf(stderr, "usage: kanxeoctl pkg bootstrap [--toolchain=PATH]\n"
 		                "       kanxeoctl pkg recipes\n"
+		                "       kanxeoctl pkg recipe add --name=NAME --file=PATH\n"
+		                "       kanxeoctl pkg recipe rm NAME\n"
 		                "       kanxeoctl pkg install --name=NAME [--image=IMAGE] [--upgrade]\n"
 		                "       kanxeoctl pkg ls\n"
 		                "       kanxeoctl pkg rm NAME[@IMAGE]\n"
@@ -2190,6 +2296,8 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 		return cmd_pkg_bootstrap(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "recipes") == 0)
 		return cmd_pkg_recipes(c, json_mode);
+	if (strcmp(sub, "recipe") == 0)
+		return cmd_pkg_recipe(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "install") == 0)
 		return cmd_pkg_install(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "ls") == 0)

@@ -857,7 +857,7 @@ paths:
 
   /pkg/recipes:
     get:
-      summary: List recipes found on disk (provisioned out of band -- metadata only, never sourced/executed)
+      summary: List recipes found on disk (metadata only, never sourced/executed)
       operationId: listPkgRecipes
       responses:
         "200":
@@ -872,6 +872,54 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/PkgRecipe"
+    post:
+      summary: >
+        Adds a new recipe, or replaces an existing one with the same name (upsert) --
+        the real, ongoing way a recipe catalog is managed on an already-running system,
+        no ISO rebuild or reinstall needed (ADR-0040). content is validated (must parse,
+        and its own pkg_name= field must equal name) before anything on disk changes --
+        an invalid upload can never clobber a working recipe already there.
+      operationId: addPkgRecipe
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, content]
+              properties:
+                name:
+                  type: string
+                content:
+                  type: string
+                  description: The full text of a .recipe file (pkg_name=/pkg_version=/pkg_source=/pkg_sha256=/pkg_depends=)
+      responses:
+        "204":
+          description: Recipe added or updated
+        "400":
+          description: name/content missing, name invalid, or content failed to parse / its pkg_name= doesn't match name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /pkg/recipes/{name}:
+    delete:
+      summary: >
+        Removes a recipe. Does not affect anything already installed via it -- only
+        future `pkg install`/update-all lookups for this name.
+      operationId: deletePkgRecipe
+      parameters:
+        - $ref: "#/components/parameters/PkgRecipeName"
+      responses:
+        "204":
+          description: Recipe removed
+        "404":
+          description: No recipe with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /pkg/install:
     post:
@@ -1152,6 +1200,14 @@ components:
         A bare package name (targets the default "base" image) or the compound
         "{name}@{image}" form to address a package tracked against a specific,
         non-default target image.
+      schema:
+        type: string
+
+    PkgRecipeName:
+      name: name
+      in: path
+      required: true
+      description: A recipe's name (its pkg_name= field, and the {name}.recipe filename).
       schema:
         type: string
         pattern: "^[A-Za-z0-9_-]+(@[A-Za-z0-9_-]+)?$"

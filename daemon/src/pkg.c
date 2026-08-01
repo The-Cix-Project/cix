@@ -327,11 +327,20 @@ static int run_subprocess(const char *bin, char *const argv[])
 	}
 	if (pid == 0) {
 		execve(bin, argv, environ);
+		perror(bin);
 		_exit(127);
 	}
-	if (waitpid(pid, &status, 0) != pid)
+	if (waitpid(pid, &status, 0) != pid) {
+		perror("waitpid");
 		return -1;
-	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
+	}
+	if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+		return 0;
+	if (WIFEXITED(status))
+		fprintf(stderr, "%s: exited with status %d\n", bin, WEXITSTATUS(status));
+	else if (WIFSIGNALED(status))
+		fprintf(stderr, "%s: killed by signal %d\n", bin, WTERMSIG(status));
+	return -1;
 }
 
 static int extract_tarball(const char *tarball_path, const char *dest_dir)
@@ -903,6 +912,53 @@ void pkg_write_json_recipes(struct json_writer *w)
 		closedir(d);
 	}
 	jw_arr_close(w);
+}
+
+enum pkg_error pkg_recipe_add(const char *name, const char *content)
+{
+	char staging_path[PATH_MAX];
+	char recipe_path[PATH_MAX];
+	struct pkg_recipe parsed;
+
+	if (!pkg_name_is_valid(name))
+		return PKG_ERR_INVALID_NAME;
+
+	if (persist_mkdir_p(g_recipes_dir) != 0)
+		return PKG_ERR_PERSIST_FAILED;
+
+	if (snprintf(staging_path, sizeof(staging_path), "%s/.%s.recipe.new", g_recipes_dir, name) >=
+	    (int)sizeof(staging_path))
+		return PKG_ERR_INVALID_NAME;
+	if (persist_atomic_write(staging_path, content, strlen(content)) != 0)
+		return PKG_ERR_PERSIST_FAILED;
+
+	if (parse_recipe(staging_path, &parsed) != 0 || strcmp(parsed.name, name) != 0) {
+		unlink(staging_path);
+		return PKG_ERR_INVALID_RECIPE;
+	}
+
+	snprintf(recipe_path, sizeof(recipe_path), "%s/%s.recipe", g_recipes_dir, name);
+	if (rename(staging_path, recipe_path) != 0) {
+		unlink(staging_path);
+		return PKG_ERR_PERSIST_FAILED;
+	}
+	return PKG_OK;
+}
+
+enum pkg_error pkg_recipe_delete(const char *name)
+{
+	char recipe_path[PATH_MAX];
+	struct stat st;
+
+	if (!pkg_name_is_valid(name))
+		return PKG_ERR_INVALID_NAME;
+
+	snprintf(recipe_path, sizeof(recipe_path), "%s/%s.recipe", g_recipes_dir, name);
+	if (stat(recipe_path, &st) != 0)
+		return PKG_ERR_NOT_FOUND;
+	if (unlink(recipe_path) != 0)
+		return PKG_ERR_PERSIST_FAILED;
+	return PKG_OK;
 }
 
 /*

@@ -515,12 +515,15 @@ networkForm.addEventListener("submit", async (event) => {
 	const name = document.getElementById("nf-name").value.trim();
 	const subnet = document.getElementById("nf-subnet").value.trim();
 	const prefixText = document.getElementById("nf-prefix").value.trim();
+	const gateway = document.getElementById("nf-gateway").value.trim();
 
 	const body = {
 		name: name,
 		subnet: subnet,
 		prefix_len: parseInt(prefixText, 10),
 	};
+	if (gateway)
+		body.gateway = gateway;
 
 	try {
 		await apiRequest("POST", "/v1/networks", body);
@@ -776,8 +779,11 @@ async function removePkg(name) {
 pkgBootstrapForm.addEventListener("submit", async (event) => {
 	event.preventDefault();
 
+	const toolchainPath = document.getElementById("pkgf-toolchain-path").value.trim();
+	const body = toolchainPath ? { toolchain_path: toolchainPath } : {};
+
 	try {
-		await apiRequest("POST", "/v1/pkg/bootstrap", {});
+		await apiRequest("POST", "/v1/pkg/bootstrap", body);
 		clearStatus();
 		showStatus("Build toolchain image staged.", false);
 		await refreshPkgRecipes();

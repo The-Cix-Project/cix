@@ -2,6 +2,34 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 26: package recipes are a real, live-managed catalog via a REST API
+
+Found live while walking the user through creating their first test container: `pkg install --name=bash` failed on their freshly-installed box because no real install has ever had *any* recipe file staged anywhere -- a total gap, not bash-specific. A first attempt (ADR-0039) baked a fixed recipe set into the installer ISO, mirroring ADR-0019's runtime-lib mechanism -- the user correctly rejected it (updating a package catalog shouldn't require an OS reinstall) and it was reverted in full. See ADR-0040.
+
+#### Added
+- `POST /v1/pkg/recipes` (upsert by name, content validated before anything on disk changes -- an invalid upload can never clobber a working recipe) and `DELETE /v1/pkg/recipes/{name}`, plus `kanxeoctl pkg recipe add --name=NAME --file=PATH` / `pkg recipe rm NAME`. The real, ongoing way a recipe catalog is managed on a running system -- no ISO rebuild, no reinstall.
+
+#### Fixed
+- (Reverted) ADR-0039's install-time recipe staging (`mkinstalleriso.c`/`kanxeo-install.c`/`test_installer.c`/`README.md`) -- confirmed back to byte-for-byte their pre-ADR-0039 shape.
+- `respond_pkg_error()`'s shared wording ("no such package") read wrong reused for a recipe 404 -- found live testing the new endpoints. New, dedicated `respond_pkg_recipe_error()` used only by the two recipe handlers.
+
+Verified: full clean rebuild, zero warnings; an isolated harness proves the core add/delete logic (invalid name, name/`pkg_name=` mismatch, malformed content, and a bad upsert all rejected with nothing clobbered on disk); `test/test_pkg.c` gained a full HTTP-level scenario proving a recipe added purely through the API installs for real end-to-end; then verified live against this sandbox's own restarted daemon (add/list/rm/rm-again-404 over real HTTP). Restarting that daemon briefly killed its real Phase 24 VRRP topology outright (`PR_SET_PDEATHSIG`, not the "survives as an orphan" outcome predicted beforehand) -- self-healed on the very next startup via the daemon's own `restart:"always"` reconciliation, re-verified as a genuine VRRP re-election (not just four processes existing again), not just assumed recovered.
+
+**Not built:** a fresh install still starts with zero recipes -- a deliberate trade-off (ADR-0040), not a gap.
+
+### Phase 25: diagnose real-install PKI/pkg bootstrap failures, fix silent error paths
+
+The user hit generic "PKI operation failed"/"package operation failed" dashboard errors on a real booted install. Traced both to ground and closed the actual gaps found along the way, rather than patching the symptom. See `docs/ROADMAP.md` Phase 25 for the full trace.
+
+#### Fixed
+- `include/pathutil.h`'s `kx_mkdir_p()` and `daemon/src/persist.c`'s `persist_atomic_write()`/`persist_read_file()` failed completely silently on error -- no `fprintf`/`perror` at all, unlike `pki.c`'s own `openssl` subprocess failures, which already logged a real reason. Fixed once at the shared primitive level (used by `pki.c`, `pkg.c`, `network.c`, `dns.c`, `image.c`, `containerdef.c`, `main.c`) rather than per call site.
+- `daemon/src/pkg.c`'s `run_subprocess()` and `test/test_image_fixture.c`'s near-duplicate `run_cp_a()` swallowed `execve()` failures and nonzero exit status/signal with no diagnostic. Both now report the exact reason.
+- The web dashboard's "Bootstrap build image" button (`web/app.js`) always POSTed an empty body, permanently locked into the dev-convenience toolchain-copy fallback that's explicitly empty/non-functional on a real minimal install. `web/index.html`/`web/app.js` gain an optional toolchain artifact path field wired into the existing `toolchain_path` POST field (already supported server-side and via the CLI's `--toolchain=` since Phase 20) -- blank preserves today's exact behavior.
+
+Verified: full clean rebuild, zero warnings. Ran both of Phase 20's own permanent QEMU console regression tests (`test_console_pki_bootstrap`, `test_console_pkg_bootstrap`) fresh against current source -- both PASS. Then built a real, distributable installer `.iso` from that same source and had the user do a genuine fresh install with it on their own real environment: `pki ca bootstrap`, `pkg bootstrap`, and `pki cert create` all confirmed working there -- decisive, real-world proof, not just a sandbox test. New logging verified in isolation against a guaranteed-unwritable path.
+
+**Not built:** the base-image FHS-layout convention itself (still open from Phases 23-24) -- this phase made failures loud, not the convention; the improved diagnostics aren't surfaced through the REST API response itself, only the console, a deliberate scope boundary.
+
 ### Phase 24: the actual VRRP + bird topology, proven end-to-end
 
 Two real router containers, a real VRRP-shared gateway address, real OSPF between them, real client traffic surviving one router's failure with zero config change -- the scenario that started the whole networking-redesign conversation (Phase 22), now genuinely deployed and verified. Pure deployment/configuration, no daemon code changes. See `docs/ROADMAP.md` Phase 24 for the full topology and verification sequence.

@@ -107,6 +107,12 @@ main {
 	font-size: 0.95rem;
 }
 
+.panel .hint {
+	margin: 0.5rem 0 0;
+	font-size: 0.85rem;
+	color: var(--muted);
+}
+
 button {
 	padding: 0.5rem 1rem;
 	border: none;

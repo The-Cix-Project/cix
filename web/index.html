@@ -77,6 +77,10 @@
 				Prefix length
 				<input type="number" id="nf-prefix" min="8" max="30" value="24" required>
 			</label>
+			<label>
+				Gateway (optional)
+				<input type="text" id="nf-gateway" placeholder="(none), or e.g. 172.31.0.1">
+			</label>
 			<button type="submit">Create</button>
 		</form>
 		<table id="networks">
@@ -204,8 +208,16 @@
 	<section class="panel">
 		<h2>Packages: Recipes</h2>
 		<form id="pkg-bootstrap-form">
+			<label class="wide">
+				Toolchain artifact path (optional)
+				<input type="text" id="pkgf-toolchain-path" placeholder="/path/to/toolchain.squashfs">
+			</label>
 			<button type="submit">Bootstrap build image</button>
 		</form>
+		<p class="hint">Leave blank only on a rich dev host: it copies the toolchain live from this
+			daemon's own host, which is empty on a real minimal install. On a real install, build a
+			portable artifact with <code>mktoolchainimage</code>, scp it onto this box, and give its
+			path here.</p>
 		<table id="pkg-recipes">
 			<thead>
 				<tr>

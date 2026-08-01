@@ -186,6 +186,32 @@ enum pkg_error pkg_seed_image_runtime(const char *image);
 void pkg_write_json_recipes(struct json_writer *w);
 
 /*
+ * Adds a new recipe, or replaces an existing one with the same name
+ * (upsert -- the whole point is updating a recipe catalog without a
+ * full OS reinstall, ADR-0040). content is written to a staging file
+ * under pkg_dir/recipes/ first and validated with the same
+ * parse_recipe() every install-time lookup already uses (name must be
+ * a valid package name, AND must match content's own pkg_name= field
+ * -- the same "filename and pkg_name= agree" invariant
+ * resolve_chain()'s own dependency lookups already rely on); only on
+ * success is it atomically renamed over name.recipe, so an invalid
+ * upload can never clobber a working recipe already there.
+ * PKG_ERR_INVALID_NAME / PKG_ERR_INVALID_RECIPE / PKG_ERR_PERSIST_FAILED
+ * on failure.
+ */
+enum pkg_error pkg_recipe_add(const char *name, const char *content);
+
+/*
+ * Removes name.recipe. Does not touch anything already installed via
+ * that recipe (a build's output is merged into an image at install
+ * time -- nothing about a package that's already installed depends on
+ * its own recipe file continuing to exist); only affects future
+ * `pkg install`/update-all lookups for that name.
+ * PKG_ERR_INVALID_NAME / PKG_ERR_NOT_FOUND / PKG_ERR_PERSIST_FAILED.
+ */
+enum pkg_error pkg_recipe_delete(const char *name);
+
+/*
  * Validates name + its recipe, refuses if any install is already in
  * flight (PKG_ERR_BUSY). If name is already PKG_STATE_INSTALLED, this
  * is PKG_ERR_DUPLICATE unless upgrade is true AND the recipe's current

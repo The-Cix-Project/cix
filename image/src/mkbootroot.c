@@ -24,7 +24,6 @@
  */
 #include "test_image_fixture.h"
 
-#include <dirent.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -55,49 +54,6 @@ static int ensure_dir_under(const char *image_root, const char *rel)
 		return -1;
 	}
 	return ensure_dir(path);
-}
-
-/* Copies every regular file directly inside src_dir into dst_dir (flat,
- * not recursive -- web/'s own three files, index.html/app.js/style.css,
- * have no subdirectories, and this project's own "no framework, no
- * build step" dashboard design (ADR-0010) means that's not expected to
- * change). Needed because kanxeod's DEFAULT_WEB_ROOT ("web", relative --
- * daemon/src/main.c) previously only resolved correctly when running
- * from a repo checkout during development; the installed system's own
- * squashfs root never had a web/ directory at all, so every dashboard
- * request 404'd even though the REST API (a separate routing path)
- * worked fine -- found live, after a real install. */
-static int copy_dir_files(const char *src_dir, const char *dst_dir)
-{
-	DIR *dir = opendir(src_dir);
-	struct dirent *entry;
-	char src_path[PATH_MAX], dst_path[PATH_MAX];
-	struct stat st;
-
-	if (dir == NULL) {
-		perror(src_dir);
-		return -1;
-	}
-	while ((entry = readdir(dir)) != NULL) {
-		if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
-			continue;
-		if (snprintf(src_path, sizeof(src_path), "%s/%s", src_dir, entry->d_name) >=
-		            (int)sizeof(src_path) ||
-		    snprintf(dst_path, sizeof(dst_path), "%s/%s", dst_dir, entry->d_name) >=
-		            (int)sizeof(dst_path)) {
-			fprintf(stderr, "path too long under %s\n", src_dir);
-			closedir(dir);
-			return -1;
-		}
-		if (stat(src_path, &st) != 0 || !S_ISREG(st.st_mode))
-			continue;
-		if (test_image_fixture_copy_file(src_path, dst_path) != 0) {
-			closedir(dir);
-			return -1;
-		}
-	}
-	closedir(dir);
-	return 0;
 }
 
 static int run_mksquashfs(const char *image_root, const char *out_path)
@@ -328,7 +284,7 @@ int main(int argc, char **argv)
 			fprintf(stderr, "path too long: %s/web\n", image_root);
 			return 1;
 		}
-		if (copy_dir_files(web_dir, web_dst) != 0)
+		if (test_image_fixture_copy_dir_files(web_dir, web_dst) != 0)
 			return 1;
 	}
 
@@ -337,7 +293,7 @@ int main(int argc, char **argv)
 	 * keeps the test suite's own fast, no-network posture completely
 	 * unaffected. A non-empty firmware_dir is a real, explicit operator
 	 * request, so unlike test_image_fixture_add_lib()'s own tolerant-
-	 * if-missing precedent, copy_dir_files() failing here is fatal, not
+	 * if-missing precedent, test_image_fixture_copy_dir_files() failing here is fatal, not
 	 * silently skipped -- an operator who asked for firmware staging
 	 * and didn't get it should find out now, not at first GPU use on
 	 * the installed system.
@@ -356,7 +312,7 @@ int main(int argc, char **argv)
 			fprintf(stderr, "path too long: %s/lib/firmware/amdgpu\n", image_root);
 			return 1;
 		}
-		if (copy_dir_files(firmware_dir, fw_dst) != 0)
+		if (test_image_fixture_copy_dir_files(firmware_dir, fw_dst) != 0)
 			return 1;
 	}
 

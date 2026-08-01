@@ -41,6 +41,19 @@ int test_image_fixture_add_lib(const char *image_root, const char *host_lib_abs_
 int test_image_fixture_copy_file(const char *src_path, const char *dst_path);
 
 /*
+ * Copies every regular file directly inside src_dir into dst_dir
+ * (flat, not recursive), each via test_image_fixture_copy_file()
+ * above. Shared by mkbootroot.c (web/'s three files, an optional
+ * amdgpu firmware directory) and mkinstalleriso.c (pkg/recipes/'s
+ * .recipe files, staged into the installer's own payload for
+ * kanxeo-install.c to copy onto the containers partition at install
+ * time) -- one real directory-copy implementation, not two drifting
+ * copies. Returns 0, or -1 (with perror on the failing path)
+ * otherwise.
+ */
+int test_image_fixture_copy_dir_files(const char *src_dir, const char *dst_dir);
+
+/*
  * Stages a full package-build toolchain at image_root: this build
  * host's own /usr/{include,lib,lib64,bin,libexec} (wholesale, real
  * `cp -a` -- correct symlink/permission handling a hand-rolled copier

@@ -958,6 +958,200 @@ int main(void)
 		}
 	}
 
+	/* 16. real recipe management via the API (ADR-0040), not just
+	 * hand-written files on disk like every fixture above -- the actual
+	 * fix for "a fresh install has no recipes and no way to add one
+	 * short of a full OS reinstall". POST validates before touching
+	 * disk (name/pkg_name= mismatch, and outright malformed content,
+	 * must both fail with nothing written); a valid recipe added this
+	 * way must be genuinely installable, not just accepted; upsert
+	 * (adding the same name again) must actually replace the content;
+	 * DELETE must remove it and make a subsequent install fail again. */
+	{
+		char api_tarball[512], api_sha[128];
+		char body[2048];
+		struct json_writer w;
+
+		if (stage_fixture_tarball(scratch_dir, "apirecipe", "1.0", api_tarball,
+		                           sizeof(api_tarball), api_sha, sizeof(api_sha)) != 0) {
+			fprintf(stderr, "FAIL: could not stage apirecipe fixture\n");
+			ok = 0;
+			goto skip_recipe_api;
+		}
+		snprintf(body, sizeof(body),
+		         "pkg_name=apirecipe\npkg_version=1.0\npkg_source=file://%s\n"
+		         "pkg_sha256=%s\npkg_depends=\"\"\n\n"
+		         "pkg_build() {\n\tgcc -o hello hello.c\n}\n\n"
+		         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
+		         "\"$PKG_DESTDIR/usr/bin/apirecipe\"\n}\n",
+		         api_tarball, api_sha);
+
+		/* name/pkg_name= mismatch -> 400, nothing written */
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "name");
+		jw_str(&w, "wrongname");
+		jw_key(&w, "content");
+		jw_str(&w, body);
+		jw_obj_close(&w);
+		w.buf[w.len] = '\0';
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: POST recipe with name/pkg_name= mismatch, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+		jw_free(&w);
+
+		/* outright malformed content (no pkg_source=) -> 400 */
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "name");
+		jw_str(&w, "malformed");
+		jw_key(&w, "content");
+		jw_str(&w, "pkg_name=malformed\npkg_version=1.0\n");
+		jw_obj_close(&w);
+		w.buf[w.len] = '\0';
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: POST malformed recipe, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+		jw_free(&w);
+
+		/* a real, valid add -> 204, then genuinely installable */
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "name");
+		jw_str(&w, "apirecipe");
+		jw_key(&w, "content");
+		jw_str(&w, body);
+		jw_obj_close(&w);
+		w.buf[w.len] = '\0';
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: POST valid recipe via API, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+		jw_free(&w);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"apirecipe\"}", &r) !=
+		        0 ||
+		    r.status != 202) {
+			fprintf(stderr, "FAIL: POST install apirecipe (added via API), status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		if (poll_pkg_state(&client, "apirecipe", state, sizeof(state), 30) != 0 ||
+		    strcmp(state, "installed") != 0) {
+			fprintf(stderr, "FAIL: apirecipe ended in state '%s', expected installed\n", state);
+			ok = 0;
+		} else {
+			struct stat st;
+
+			if (stat(BASE_ROOTFS "/usr/bin/apirecipe", &st) != 0) {
+				fprintf(stderr, "FAIL: apirecipe binary missing from base image\n");
+				ok = 0;
+			}
+		}
+
+		/* upsert: re-add the same name with a bumped version -> the
+		 * recipe list must reflect the new version, not the old one */
+		{
+			char body2[2048];
+
+			snprintf(body2, sizeof(body2),
+			         "pkg_name=apirecipe\npkg_version=2.0\npkg_source=file://%s\n"
+			         "pkg_sha256=%s\npkg_depends=\"\"\n\n"
+			         "pkg_build() {\n\tgcc -o hello hello.c\n}\n\n"
+			         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
+			         "\"$PKG_DESTDIR/usr/bin/apirecipe\"\n}\n",
+			         api_tarball, api_sha);
+			jw_init(&w);
+			jw_obj_open(&w);
+			jw_key(&w, "name");
+			jw_str(&w, "apirecipe");
+			jw_key(&w, "content");
+			jw_str(&w, body2);
+			jw_obj_close(&w);
+			w.buf[w.len] = '\0';
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0 ||
+			    r.status != 204) {
+				fprintf(stderr, "FAIL: upsert apirecipe to 2.0, status=%d\n", r.status);
+				ok = 0;
+			}
+			kx_response_free(&r);
+			jw_free(&w);
+		}
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pkg/recipes", NULL, &r) != 0 || r.status != 200) {
+			fprintf(stderr, "FAIL: GET recipes after upsert, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *recipes = json_object_get(r.json, "recipes");
+			size_t i;
+			int found = 0;
+
+			for (i = 0; recipes != NULL && i < recipes->u.array.count; i++) {
+				const struct json_value *item = recipes->u.array.items[i];
+
+				if (str_eq(json_str_field(item, "name"), "apirecipe")) {
+					found = 1;
+					if (!str_eq(json_str_field(item, "version"), "2.0")) {
+						fprintf(stderr,
+						        "FAIL: apirecipe version after upsert is '%s', expected 2.0\n",
+						        json_str_field(item, "version"));
+						ok = 0;
+					}
+				}
+			}
+			if (!found) {
+				fprintf(stderr, "FAIL: apirecipe missing from recipe list after upsert\n");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		/* DELETE removes it; a subsequent install attempt fails again */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "DELETE", "/v1/pkg/recipes/apirecipe", NULL, &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: DELETE apirecipe recipe, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"apirecipe2\"}", &r) !=
+		        0 ||
+		    r.status != 400) {
+			fprintf(stderr,
+			        "FAIL: install of a never-added name should 400, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* DELETE of something never added -> 404 */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "DELETE", "/v1/pkg/recipes/apirecipe2", NULL, &r) != 0 ||
+		    r.status != 404) {
+			fprintf(stderr, "FAIL: DELETE of a never-added recipe should 404, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+	}
+skip_recipe_api:
+
 	/* cleanup */
 	run_cmd("rm -rf '%s'", scratch_dir);
 

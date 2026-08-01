@@ -114,6 +114,7 @@ extern char **environ;
 #define DNS_SERVERS_PREFIX "/v1/dns/servers/"
 #define PKI_CERTS_PREFIX "/v1/pki/certs/"
 #define PKG_PREFIX "/v1/pkg/"
+#define PKG_RECIPES_PREFIX "/v1/pkg/recipes/"
 #define IMAGES_PREFIX "/v1/images/"
 
 enum conn_kind {
@@ -2930,6 +2931,32 @@ static void respond_pkg_error(int fd, enum pkg_error err)
 }
 
 /*
+ * pkg_recipe_add()/pkg_recipe_delete() (ADR-0040) share pkg_error with
+ * every other pkg.c operation, but "no such package"/"invalid package
+ * name" read wrong for a recipe -- a real, user-visible wording gap
+ * found live testing the new endpoints, not worth leaving in.
+ */
+static void respond_pkg_recipe_error(int fd, enum pkg_error err)
+{
+	switch (err) {
+	case PKG_ERR_INVALID_NAME:
+		respond_error(fd, 400, "Bad Request", "invalid recipe name");
+		break;
+	case PKG_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such recipe");
+		break;
+	case PKG_ERR_INVALID_RECIPE:
+		respond_error(fd, 400, "Bad Request",
+		              "recipe content failed to parse, or its pkg_name= doesn't match name");
+		break;
+	case PKG_ERR_PERSIST_FAILED:
+	default:
+		respond_error(fd, 500, "Internal Server Error", "recipe operation failed");
+		break;
+	}
+}
+
+/*
  * body/body_len optional: an empty body (the existing bare
  * `POST /v1/pkg/bootstrap` contract) keeps the live-copy fallback
  * unchanged. A JSON body with "toolchain_path" set switches to the
@@ -2979,6 +3006,56 @@ static void handle_pkg_recipes_list(int fd)
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
+}
+
+/*
+ * Real, ongoing recipe management (ADR-0040) -- an operator can add or
+ * update a recipe on an already-running system, no ISO rebuild/
+ * reinstall needed. Upsert: an existing recipe with this name is
+ * replaced, never duplicated (PKG_ERR_DUPLICATE doesn't apply here,
+ * unlike pkg_install_start()'s own package-installation meaning of
+ * "duplicate").
+ */
+static void handle_pkg_recipe_add(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *name;
+	const char *content;
+	enum pkg_error perr;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	name = json_as_string(json_object_get(root, "name"));
+	content = json_as_string(json_object_get(root, "content"));
+	if (name == NULL || content == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "name and content both required");
+		return;
+	}
+
+	perr = pkg_recipe_add(name, content);
+	json_free(root);
+	if (perr != PKG_OK) {
+		respond_pkg_recipe_error(fd, perr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+static void handle_pkg_recipe_delete(int fd, const char *name)
+{
+	enum pkg_error perr = pkg_recipe_delete(name);
+
+	if (perr != PKG_OK) {
+		respond_pkg_recipe_error(fd, perr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
 static void handle_pkg_install(int fd, const char *body, size_t body_len)
@@ -3398,13 +3475,17 @@ static void dispatch(int fd, const struct http_request *req)
 		}
 	}
 	/*
-	 * These four reserved paths are checked before the generic
+	 * These reserved paths are checked before the generic
 	 * PKG_PREFIX/{name} fallback below, exactly like every other
 	 * resource's exact-match-then-prefix ordering in this dispatch --
 	 * a package named "bootstrap"/"recipes"/"install"/"update-all"
 	 * would be unreachable via GET/DELETE /v1/pkg/{name}, a
-	 * deliberate, documented reserved-words boundary (recipes are
-	 * operator-provisioned out of band, easily avoided in practice).
+	 * deliberate, documented reserved-words boundary. PKG_RECIPES_PREFIX
+	 * (/v1/pkg/recipes/{name}, DELETE) is checked here too, before the
+	 * generic PKG_PREFIX/{name} fallback -- otherwise
+	 * "/v1/pkg/recipes/bash" would wrongly match that fallback with
+	 * name="recipes/bash" instead (ADR-0040: recipes are now a real,
+	 * operator-managed catalog via this API, not baked into the ISO).
 	 */
 	if (strcmp(req->path, "/v1/pkg/bootstrap") == 0) {
 		if (strcmp(req->method, "POST") == 0) {
@@ -3415,6 +3496,17 @@ static void dispatch(int fd, const struct http_request *req)
 	if (strcmp(req->path, "/v1/pkg/recipes") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_pkg_recipes_list(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_pkg_recipe_add(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strncmp(req->path, PKG_RECIPES_PREFIX, strlen(PKG_RECIPES_PREFIX)) == 0) {
+		name = req->path + strlen(PKG_RECIPES_PREFIX);
+		if (name[0] != '\0' && strcmp(req->method, "DELETE") == 0) {
+			handle_pkg_recipe_delete(fd, name);
 			return;
 		}
 	}
