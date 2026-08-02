@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-The mission (`docs/MISSION.md`) mandates the Tiny C Compiler (TCC) for every component, with zero compile warnings. TCC is a far simpler, less-optimizing compiler than GCC/Clang, and its static linking is broken/undocumented — using it naively could mean either falling back to GCC for "hard" parts (a parallel toolchain, forbidden) or fighting static linking indefinitely.
+The mission (`docs/mission/MISSION.md`) mandates the Tiny C Compiler (TCC) for every component, with zero compile warnings. TCC is a far simpler, less-optimizing compiler than GCC/Clang, and its static linking is broken/undocumented — using it naively could mean either falling back to GCC for "hard" parts (a parallel toolchain, forbidden) or fighting static linking indefinitely.
 
 ## Decision
 

@@ -106,7 +106,7 @@ void registry_init(void);
 
 /*
  * Creates and starts a container named `name` per spec, storing it in
- * a fixed-size in-memory table (in-memory only -- see docs/ROADMAP.md
+ * a fixed-size in-memory table (in-memory only -- see docs/roadmap/ROADMAP.md
  * Phase 3 for why that's safe: every container dies automatically via
  * PR_SET_PDEATHSIG if this daemon exits, so there's no restart-orphan
  * state to reconcile). nets/net_count/ip_forward/file_paths/file_count

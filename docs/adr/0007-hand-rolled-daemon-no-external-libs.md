@@ -20,4 +20,4 @@ Everything is hand-rolled in plain C, consistent with the project's "no parallel
 ## Consequences
 
 - No third-party dependency footprint anywhere in the daemon, matching "100% custom" for the parts of the stack the mission calls out explicitly (toolchain, networking) extended here to the control-plane daemon too.
-- Each of the scope boundaries above (no keep-alive, no `\uXXXX`, in-memory-only registry, blocking-write-on-respond) is a real v1 limitation to revisit deliberately if a later phase needs more — not a silent gap. None of them were hit by Phase 3's own verification (`docs/ROADMAP.md` Phase 3), but a future phase (e.g. one needing large log streaming) may need to revisit the blocking-write assumption specifically.
+- Each of the scope boundaries above (no keep-alive, no `\uXXXX`, in-memory-only registry, blocking-write-on-respond) is a real v1 limitation to revisit deliberately if a later phase needs more — not a silent gap. None of them were hit by Phase 3's own verification (`docs/roadmap/ROADMAP.md` Phase 3), but a future phase (e.g. one needing large log streaming) may need to revisit the blocking-write assumption specifically.

@@ -97,7 +97,7 @@ enum dns_server_error {
  * symlink -- writing directly to the container's raw upperdir does
  * NOT work: the kernel does not guarantee an already-mounted overlay
  * notices changes made to the upper layer from outside it; verified
- * empirically before this was built, see docs/ROADMAP.md Phase 8),
+ * empirically before this was built, see docs/roadmap/ROADMAP.md Phase 8),
  * then sends SIGHUP via pidfd (dnsmasq's documented "reload
  * --addn-hosts files" signal) so an already-running dnsmasq picks up
  * this initial write immediately. hosts_path is rejected

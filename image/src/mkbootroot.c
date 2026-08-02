@@ -12,7 +12,7 @@
  *
  * The base container image (base/rootfs) and any container/package data
  * are deliberately never part of this image -- Phase 11's root A/B slots
- * are scoped to the control plane only (docs/ROADMAP.md).
+ * are scoped to the control plane only (docs/roadmap/ROADMAP.md).
  *
  * Phase 14 part 2 (ADR-0029): optionally also stages GPU firmware
  * (amdgpu) into this same root, since the kernel's own request_firmware()
@@ -144,7 +144,7 @@ int main(int argc, char **argv)
 	 * The real binaries kanxeod itself shells out to at runtime --
 	 * grep-confirmed against daemon/src/pki.c's/daemon/src/pkg.c's own
 	 * hardcoded absolute-path _BIN macros, the authoritative list, not
-	 * docs/ROADMAP.md's own partly-stale "dnsmasq" mention (dnsmasq
+	 * docs/roadmap/ROADMAP.md's own partly-stale "dnsmasq" mention (dnsmasq
 	 * runs inside operator-created containers; kanxeod itself never
 	 * execve()s it). Previously entirely absent from this image --
 	 * confirmed live: booting a fresh install and running "pki ca

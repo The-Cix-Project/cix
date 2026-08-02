@@ -12,7 +12,7 @@ Two paths forward at Phase 2: (a) build a dedicated, purpose-built rootfs tree t
 
 ## Decision
 
-(a). The lowerdir is always a dedicated tree under a path the container runtime owns (`/var/lib/kanxeo/images/<image>/rootfs` as of Phase 3 — see `docs/ROADMAP.md` Phase 3), populated deliberately and never auto-created empty by our own code (an auto-created-but-empty lowerdir would mean a silently-broken container, exactly the kind of stop-gap this project forbids). It starts minimal — just enough content to prove the mechanism (a binary plus the dynamic linker/libc it needs) — not a full debootstrapped userland; building out real OS content from source is separate, later scope, not something to smuggle into "prove OverlayFS works."
+(a). The lowerdir is always a dedicated tree under a path the container runtime owns (`/var/lib/kanxeo/images/<image>/rootfs` as of Phase 3 — see `docs/roadmap/ROADMAP.md` Phase 3), populated deliberately and never auto-created empty by our own code (an auto-created-but-empty lowerdir would mean a silently-broken container, exactly the kind of stop-gap this project forbids). It starts minimal — just enough content to prove the mechanism (a binary plus the dynamic linker/libc it needs) — not a full debootstrapped userland; building out real OS content from source is separate, later scope, not something to smuggle into "prove OverlayFS works."
 
 Phase 1's `test_harness.c` still exercises `lowerdir="/"` as a special case, to preserve its original full-host-visible verification without redesigning an already-passing test — but this is that one test's own scope, not the general contract.
 

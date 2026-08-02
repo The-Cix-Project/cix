@@ -31,11 +31,6 @@ static char g_image_root[PATH_MAX];
 static char g_container_defs_path[PATH_MAX];
 static char g_containers_dir[PATH_MAX];
 
-static const char *json_str_field(const struct json_value *obj, const char *key)
-{
-	return json_as_string(json_object_get(obj, key));
-}
-
 static long json_num_field(const struct json_value *obj, const char *key)
 {
 	return (long)json_as_number(json_object_get(obj, key));

@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it's kept here (short-lived reasoning that lives forever, append-only, distinct from `docs/ROADMAP.md`'s what-shipped narrative).
+See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it's kept here (short-lived reasoning that lives forever, append-only, distinct from `docs/roadmap/ROADMAP.md`'s what-shipped narrative).
 
 | ADR | Title | Status |
 |---|---|---|

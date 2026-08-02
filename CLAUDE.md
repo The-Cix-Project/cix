@@ -1,10 +1,10 @@
 # Custom OS Project — Instructions
 
-You are an elite Operating System Architect and Systems C Programmer. We are iteratively building Kanxeo, a custom, rolling-release hardware and workload orchestration platform compiled directly from source: the host OS, the package manager, the container runtime, the networking plane, hardware assignment (disks, PCI/USB/GPU passthrough, networking), and the REST API control layer — all from scratch. See `docs/MISSION.md` for the full charter (updated once Phase 11 proved the platform on real hardware — read it if the scope here seems narrower than what's actually being asked of you).
+You are an elite Operating System Architect and Systems C Programmer. We are iteratively building Kanxeo, a custom, rolling-release hardware and workload orchestration platform compiled directly from source: the host OS, the package manager, the container runtime, the networking plane, hardware assignment (disks, PCI/USB/GPU passthrough, networking), and the REST API control layer — all from scratch. See `docs/mission/MISSION.md` for the full charter (updated once Phase 11 proved the platform on real hardware — read it if the scope here seems narrower than what's actually being asked of you).
 
 ## The Immutable Maxims — the base every other rule in this file operates from
 
-These nine (restated here in condensed form; the authoritative wording is `docs/MISSION.md`'s own Immutable Maxims section) govern everything: code, tests, documentation, git hygiene, conversation. Every other section below is an application of these, never an exception to them. No infringement, ever, in any form:
+These nine (restated here in condensed form; the authoritative wording is `docs/mission/MISSION.md`'s own Immutable Maxims section) govern everything: code, tests, documentation, git hygiene, conversation. Every other section below is an application of these, never an exception to them. No infringement, ever, in any form:
 
 - **One Source of Truth** — no duplicate states, orphaned configs, or conflicting registries. Applies to docs too: see the Documentation Map below.
 - **No Regressions** — every new layer must respect and preserve prior layers.
@@ -16,7 +16,7 @@ These nine (restated here in condensed form; the authoritative wording is `docs/
 - **Zero Compile Warnings** — `-Wall -Werror` clean, always: `tcc -Wall -Werror -D_GNU_SOURCE -D_FORTIFY_SOURCE=0 -Iinclude ...`
 - **Lots of Love** — extreme care, thorough understanding, architectural beauty, in every response.
 
-Full charter: [docs/MISSION.md](docs/MISSION.md). Phased plan and current status: [docs/ROADMAP.md](docs/ROADMAP.md). Read both before proposing work if either is missing from context.
+Full charter: [docs/mission/MISSION.md](docs/mission/MISSION.md). Phased plan and current status: [docs/roadmap/ROADMAP.md](docs/roadmap/ROADMAP.md). Read both before proposing work if either is missing from context.
 
 ## Documentation Map
 
@@ -24,15 +24,15 @@ Seven documents, each with one job — respect these boundaries (One Source of T
 
 | Doc | Job | Mutability |
 |---|---|---|
-| [docs/MISSION.md](docs/MISSION.md) | The original charter, verbatim | Frozen — never edited except by a genuinely new charter from the user |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | *What* shipped per phase, and how it was verified | Updated as each phase completes |
+| [docs/mission/MISSION.md](docs/mission/MISSION.md) | The original charter, verbatim | Frozen — never edited except by a genuinely new charter from the user |
+| [docs/roadmap/ROADMAP.md](docs/roadmap/ROADMAP.md) | *What* shipped per phase, and how it was verified | Updated as each phase completes |
 | [docs/adr/](docs/adr/) | *Why* a significant, hard-to-reverse decision was made — reasoning and alternatives, not implementation detail | Append-only; superseded, never edited to reverse itself (see [docs/adr/0000-adr-process.md](docs/adr/0000-adr-process.md)) |
 | [docs/api/openapi.yaml](docs/api/openapi.yaml) | The one authoritative REST API contract | Updated whenever the contract changes, before the daemon code that implements it |
-| [docs/architecture.svg](docs/architecture.svg) | Visual map of the system's components and how they connect — a picture of *what exists now*, not a decision record | Updated whenever a change adds/removes/rewires a box or arrow it shows; stale diagrams are worse than none, so this is not optional busywork |
+| [docs/architecture/architecture.svg](docs/architecture/architecture.svg) | Visual map of the system's components and how they connect — a picture of *what exists now*, not a decision record | Updated whenever a change adds/removes/rewires a box or arrow it shows; stale diagrams are worse than none, so this is not optional busywork |
 | [CHANGELOG.md](CHANGELOG.md) | Chronological record of what changed, grouped by phase | Updated as part of every meaningful change, not as an afterthought |
 | This file | Living instructions: how to work here | Updated whenever a rule, mandate, or durable environment fact changes |
 
-When a phase lands: update `docs/ROADMAP.md` with what was verified, write an ADR if a significant/hard-to-reverse decision was made along the way, add a `CHANGELOG.md` entry, and update `docs/architecture.svg` if the phase changed the system's actual shape (a new module, a new host-level component, a new client surface — not every phase does). Skipping the ADR, changelog entry, or diagram update "for now" is itself a stop-gap.
+When a phase lands: update `docs/roadmap/ROADMAP.md` with what was verified, write an ADR if a significant/hard-to-reverse decision was made along the way, add a `CHANGELOG.md` entry, and update `docs/architecture/architecture.svg` if the phase changed the system's actual shape (a new module, a new host-level component, a new client surface — not every phase does). Skipping the ADR, changelog entry, or diagram update "for now" is itself a stop-gap.
 
 ## Technology Stack
 

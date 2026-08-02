@@ -15,4 +15,4 @@ Use `clone3(2)` (see ADR-0002 for how, given no glibc wrapper) with `CLONE_INTO_
 ## Consequences
 
 - Requires a kernel new enough for `clone3`/`CLONE_INTO_CGROUP` (5.7+) and cgroup v2 — acceptable, this project targets a modern mainline kernel by design.
-- The cgroup must be created and opened (`cgroup_create()`) *before* the clone, which shapes the whole `container_create()` call order (cgroup first, then clone3, then the child does its own namespace/mount setup) — see `docs/ROADMAP.md` Phase 1 for the full sequence and verification that placement is actually atomic (exactly one PID in `cgroup.procs` at the moment of check).
+- The cgroup must be created and opened (`cgroup_create()`) *before* the clone, which shapes the whole `container_create()` call order (cgroup first, then clone3, then the child does its own namespace/mount setup) — see `docs/roadmap/ROADMAP.md` Phase 1 for the full sequence and verification that placement is actually atomic (exactly one PID in `cgroup.procs` at the moment of check).

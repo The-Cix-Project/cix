@@ -2,7 +2,7 @@
  * kanxeo-install: takes a raw disk (already partitioned by the operator
  * via a real, interactive fdisk session -- or pre-partitioned by other
  * tooling, see --skip-partition) and produces the real Phase 11 layout:
- * ESP, root A, root B, config, containers (docs/ROADMAP.md's Phase 11
+ * ESP, root A, root B, config, containers (docs/roadmap/ROADMAP.md's Phase 11
  * design). Boots as its own init= target, in its own squashfs image
  * bundling the payload it installs (a control-plane squashfs, the
  * kernel, systemd-boot) -- see test/test_installer.c for how that image

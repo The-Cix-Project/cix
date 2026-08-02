@@ -8,7 +8,7 @@
  * connectivity through the resulting topology.
  *
  * Not wired into container_create()/the REST API/any client yet --
- * see docs/ROADMAP.md Phase 6 for why that's deliberately a separate,
+ * see docs/roadmap/ROADMAP.md Phase 6 for why that's deliberately a separate,
  * later step.
  */
 #include "internal.h"

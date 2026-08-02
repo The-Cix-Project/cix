@@ -24,7 +24,7 @@ Root A and root B are each a single, immutable **squashfs** image, mounted read-
 
 Rollback is owned entirely by `systemd-boot`'s existing boot-counter convention, not by any code this project writes:
 
-- The installer (and, later, the update path — see `docs/ROADMAP.md` Phase 11) writes a loader entry for the newly-written slot with a fresh attempt budget.
+- The installer (and, later, the update path — see `docs/roadmap/ROADMAP.md` Phase 11) writes a loader entry for the newly-written slot with a fresh attempt budget.
 - On every boot, `systemd-boot` decrements the counter before handing off to the kernel.
 - `kanxeod`, once it reaches a genuinely healthy running state (detailed in Phase 11 part 2's design), marks the boot as successful with a plain `rename(2)` on the ESP — removing the attempt-counter suffix from its own loader entry's filename. This is deliberately a direct filesystem operation, not a subprocess call to `bootctl`, consistent with ADR-0007's hand-rolled-daemon posture for anything this simple.
 - If `kanxeod` never gets the chance to confirm success (crash, hang, a kernel that doesn't even reach userspace) the counter reaches zero on some future boot attempt, and `systemd-boot` — entirely on its own, no daemon involvement — stops offering that entry and falls back to the other slot.

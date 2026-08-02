@@ -1,6 +1,6 @@
 # Mission
 
-This is the exact charter given at the start of this project, extended by a second, genuinely new charter from the user once the original ten phases (toolchain through package manager) and Phase 11 (bare-metal boot, A/B rollback, a real installer, Secure Boot) were complete and running on real hardware. It governs every decision made in this repository, verbatim, with no paraphrasing. The original charter's own text is preserved in git history (`git log -p -- docs/MISSION.md`) rather than kept as a second, parallel document here — One Source of Truth applies to this file's own history too.
+This is the exact charter given at the start of this project, extended by a second, genuinely new charter from the user once the original ten phases (toolchain through package manager) and Phase 11 (bare-metal boot, A/B rollback, a real installer, Secure Boot) were complete and running on real hardware. It governs every decision made in this repository, verbatim, with no paraphrasing. The original charter's own text is preserved in git history (`git log -p --follow -- docs/mission/MISSION.md`, `--follow` needed since this file moved from `docs/MISSION.md`) rather than kept as a second, parallel document here — One Source of Truth applies to this file's own history too.
 
 ## System Role & Objective
 

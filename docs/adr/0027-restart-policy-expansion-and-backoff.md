@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-ADR-0025 (Phase 13 part 1) shipped `restart: "always"`/`"no"` and a single, fixed 2s crash-restart delay, explicitly deferring both a per-service delay/backoff and Docker-style restart policy variants beyond `always`/`no` (its own Consequences section, and `docs/ROADMAP.md`'s "Not designed or built yet" line for that part). Both gaps are real for the user's own deployment case: a service that should only come back after an actual crash (not a deliberate `0`-exit stop) needs `on-failure`; a service the operator wants to take down for maintenance without losing its definition, and without it silently reappearing on the next reboot, needs `unless-stopped`; and a genuinely crash-looping container shouldn't hammer the host at a fixed 2s cadence forever.
+ADR-0025 (Phase 13 part 1) shipped `restart: "always"`/`"no"` and a single, fixed 2s crash-restart delay, explicitly deferring both a per-service delay/backoff and Docker-style restart policy variants beyond `always`/`no` (its own Consequences section, and `docs/roadmap/ROADMAP.md`'s "Not designed or built yet" line for that part). Both gaps are real for the user's own deployment case: a service that should only come back after an actual crash (not a deliberate `0`-exit stop) needs `on-failure`; a service the operator wants to take down for maintenance without losing its definition, and without it silently reappearing on the next reboot, needs `unless-stopped`; and a genuinely crash-looping container shouldn't hammer the host at a fixed 2s cadence forever.
 
 ## Decision
 

@@ -3700,7 +3700,7 @@ static void dispatch(int fd, const struct http_request *req)
 /*
  * Every real image this daemon has ever actually seen has no /bin at
  * all (packages stage into usr/bin -- confirmed directly against a
- * real running container while building this, see docs/ROADMAP.md);
+ * real running container while building this, see docs/roadmap/ROADMAP.md);
  * "/bin/sh" would fail on every one of them. This is only a default:
  * X-Kanxeo-Exec-Cmd overrides it, and a container whose image has
  * neither this nor an override installed simply fails to exec --

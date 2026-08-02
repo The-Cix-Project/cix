@@ -41,7 +41,7 @@
   <rect width="1400" height="1180" fill="#fbfbfd"/>
 
   <text x="30" y="40" class="title">Kanxeo Architecture</text>
-  <text x="30" y="60" class="subtitle">Hardware &amp; workload orchestration platform — client-daemon, REST-first, hand-rolled from source (docs/MISSION.md) — as of Phase 16</text>
+  <text x="30" y="60" class="subtitle">Hardware &amp; workload orchestration platform — client-daemon, REST-first, hand-rolled from source (docs/mission/MISSION.md) — as of Phase 16</text>
 
   <!-- ============ CLIENT LAYER ============ -->
   <text x="30" y="95" class="layer-label">CLIENT SURFACES — pure REST clients, zero direct runtime access (ADR-0005)</text>
@@ -296,6 +296,6 @@
   <line x1="530" y1="582" x2="205" y2="850" stroke="#8a94a6" stroke-width="1.2" stroke-dasharray="3 3" marker-end="url(#arrowLight)"/>
   <text x="235" y="700" class="arrow-label" fill="#8a94a6">runs AS the host (PID 1)</text>
 
-  <text x="30" y="1150" class="small-text">Reflects Phase 16 (host OS update mechanism + automatic package updates, ADR-0031). Source of truth for what shipped: docs/ROADMAP.md — for why: docs/adr/.</text>
+  <text x="30" y="1150" class="small-text">Reflects Phase 16 (host OS update mechanism + automatic package updates, ADR-0031). Source of truth for what shipped: docs/roadmap/ROADMAP.md — for why: docs/adr/.</text>
   <text x="30" y="1164" class="small-text">Update this diagram whenever a change alters a box or arrow shown here — do not let it drift (see CLAUDE.md's Documentation Map).</text>
 </svg>

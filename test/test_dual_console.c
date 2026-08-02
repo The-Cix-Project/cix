@@ -6,7 +6,7 @@
  * throwaway PTYs standing in for the two real consoles (/dev/tty0,
  * /dev/ttyS0), since this sandbox's own QEMU harness can only scrape
  * serial output and can't exercise a real video console at all (see
- * docs/ROADMAP.md's Phase 14 own already-accepted boundary).
+ * docs/roadmap/ROADMAP.md's Phase 14 own already-accepted boundary).
  *
  * A forked "driver" process plays the role kanxeo-install.c itself
  * plays in production: it opens the two PTY slaves as its own pair of

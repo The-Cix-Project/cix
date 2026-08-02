@@ -10,7 +10,7 @@ The original roadmap had a "minimal container CLI" as Phase 3, wrapping `contain
 
 ## Decision
 
-The REST daemon (`daemon/`, see `docs/ROADMAP.md` Phase 3) is the **only** process with direct access to `include/container.h` or any other host/network/DNS/PKI primitive. Every capability the CLI or web dashboard exposes must exist as a REST endpoint *first* — a client-side feature with no corresponding endpoint is not allowed to exist. This is recorded as a durable rule in `CLAUDE.md`, not just a one-time phase choice, because it constrains every phase from here on (networking, DNS, PKI), not only containers.
+The REST daemon (`daemon/`, see `docs/roadmap/ROADMAP.md` Phase 3) is the **only** process with direct access to `include/container.h` or any other host/network/DNS/PKI primitive. Every capability the CLI or web dashboard exposes must exist as a REST endpoint *first* — a client-side feature with no corresponding endpoint is not allowed to exist. This is recorded as a durable rule in `CLAUDE.md`, not just a one-time phase choice, because it constrains every phase from here on (networking, DNS, PKI), not only containers.
 
 This reordered the roadmap: the REST daemon had to move ahead of the CLI, since the CLI now depends on the daemon's API existing rather than the runtime library directly.
 

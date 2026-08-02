@@ -26,7 +26,7 @@ int persist_atomic_write(const char *path, const char *data, size_t len);
  * persisted state yet" case every caller needs to handle identically
  * (first-ever startup, nothing to load). Returns -1 on any other
  * error (caller should treat this as a hard failure, not silently
- * proceed with an empty table -- see docs/ROADMAP.md Phase 7 part 1
+ * proceed with an empty table -- see docs/roadmap/ROADMAP.md Phase 7 part 1
  * on why silently forgetting persisted state is exactly the bug this
  * module exists to prevent).
  */

@@ -34,7 +34,7 @@ static char g_dnsmasq_image_root[PATH_MAX];
 
 /*
  * dnsmasq (a real, unmodified Debian package binary -- not hand-rolled,
- * see docs/ROADMAP.md Phase 8) needs far more shared libraries than
+ * see docs/roadmap/ROADMAP.md Phase 8) needs far more shared libraries than
  * the minimal ld.so+libc pair every other exec target in this project
  * needs. This is the full dependency closure from `ldd
  * /usr/sbin/dnsmasq` (libc.so.6 itself is already staged by

@@ -4,7 +4,7 @@
  * functions work. Stages one minimal test image, forks and execve's
  * the built daemon on a test port, then drives it via the shared
  * httpclient.c (the same client library kanxeoctl uses -- see
- * ADR-0005/Phase 4 in docs/ROADMAP.md), so there is one implementation
+ * ADR-0005/Phase 4 in docs/roadmap/ROADMAP.md), so there is one implementation
  * of "how to talk to the API," not a test-only copy of it.
  */
 #include "httpclient.h"

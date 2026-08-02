@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-Phase 3's daemon (ADR-0007) intermittently segfaulted (roughly half of runs) on its very first request, with no obvious cause in the C source and no clean reproduction on demand — a genuine Heisenbug requiring `gdb`/`strace` bisection to pin down (see `docs/ROADMAP.md` Phase 3).
+Phase 3's daemon (ADR-0007) intermittently segfaulted (roughly half of runs) on its very first request, with no obvious cause in the C source and no clean reproduction on demand — a genuine Heisenbug requiring `gdb`/`strace` bisection to pin down (see `docs/roadmap/ROADMAP.md` Phase 3).
 
 Root cause: the kernel ABI for `struct epoll_event` is 12 bytes (`uint32_t events` at offset 0, an 8-byte `data` union at offset 4, no padding) — `<sys/epoll.h>` marks it `__attribute__((packed))` specifically because it would otherwise naturally align to 16 bytes with `data` at offset 8. **TCC ignores `__attribute__((packed)) `entirely** — confirmed not just on the system header but on a minimal struct written by hand with the same attribute. Every `epoll_ctl()`/`epoll_wait()` call was therefore silently corrupting its `data` field: the kernel writes/reads 12-byte packed records, while TCC's compiled code was reading/writing them at 16-byte stride with `data` at the wrong offset. The intermittent, timing-dependent nature came from `data` (which we use to carry a `void *` connection pointer) landing on whatever garbage happened to occupy the misaligned bytes.
 
@@ -18,5 +18,5 @@ Root cause: the kernel ABI for `struct epoll_event` is 12 bytes (`uint32_t event
 
 ## Consequences
 
-- Any future kernel-uapi or glibc struct that relies on non-default packing must be checked under TCC before being trusted, and given the same `#pragma pack`-based treatment if needed — this is now a standing checklist item (recorded in `docs/ROADMAP.md`'s locked-in decisions), not just a one-off fix for `epoll_event`.
+- Any future kernel-uapi or glibc struct that relies on non-default packing must be checked under TCC before being trusted, and given the same `#pragma pack`-based treatment if needed — this is now a standing checklist item (recorded in `docs/roadmap/ROADMAP.md`'s locked-in decisions), not just a one-off fix for `epoll_event`.
 - This class of bug is invisible to `-Wall -Werror` and to a correct-looking single test run; it only surfaced under repeated/varied runs. Anything touching raw syscall ABI structs under TCC should be stress-tested (many runs, not one) before being trusted as verified.

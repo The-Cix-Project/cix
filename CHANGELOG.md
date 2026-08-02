@@ -1,6 +1,19 @@
 # Changelog
 
-All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
+All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
+
+### Phase 30 part 5: documentation audit -- `docs/` restructured into one subdirectory per document kind, no orphaned references
+
+A meticulous, user-requested audit of the entire codebase and documentation set: validated git hygiene (nothing uncommitted or unpushed at the start), confirmed no orphaned/stray files and no duplicate implementations (one dead static function found and removed, `test_container_files.c`'s unused `json_str_field()`), confirmed the ADR timeline is already chronologically accurate (all 45 ADRs' dates strictly non-decreasing against `git log`, no gaps, no duplicate numbers), and restructured `docs/` so nothing but `README.md` lives in its root -- `docs/MISSION.md` moved to `docs/mission/MISSION.md`, `docs/ROADMAP.md` to `docs/roadmap/ROADMAP.md`, `docs/architecture.svg` to `docs/architecture/architecture.svg`, joining the pre-existing `docs/adr/` and `docs/api/` as one-subdirectory-per-document-kind.
+
+#### Added
+- `docs/README.md` -- a new top-level index explaining what lives in each `docs/` subdirectory and which document answers which question, without repeating any of their content.
+
+#### Changed
+- Every cross-reference to the three moved files updated across the repo: `CLAUDE.md`, root `README.md`, `docs/roadmap/ROADMAP.md`, `docs/api/README.md`, `docs/adr/README.md`, all 45 ADR bodies, and doc-comments inside `daemon/include/{dns,persist,registry}.h`, `daemon/src/main.c`, `image/src/{kanxeo-install,mkbootroot}.c`, `image/kernel/qemu-part1.config`, and `test/{test_daemon,test_dns,test_dual_console,test_rtnetlink}.c`. `CHANGELOG.md`'s own historical entries (e.g. "`docs/ROADMAP.md`: Phase 11 marked done") were deliberately left referring to the path that was actually correct at the time each entry was written -- rewriting them to the new path would misrepresent when the restructuring happened.
+- Root `README.md`'s own Status table, stale since Phase 16, extended through Phase 30; added a `kanxeoctl console`/web-console usage entry to the "Using the installed system" section (present in the code and API since Phase 30 parts 1-3, absent from this walkthrough until now).
+
+Verified: full clean rebuild, zero warnings; a repo-wide grep confirms zero remaining references to any of the three old paths outside of `CHANGELOG.md`'s own intentionally-preserved historical entries and `docs/mission/MISSION.md`'s own explanatory note about its rename.
 
 ### Phase 30 part 4: `kanxeod --data-dir=` for test/production state isolation
 

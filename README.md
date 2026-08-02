@@ -2,7 +2,7 @@
 
 **The Architecture of Absolute Clarity**
 
-Kanxeo is a rolling-release hardware and workload orchestration platform, compiled entirely from source: a hand-rolled container runtime on raw Linux namespaces and cgroups, OverlayFS-based image layering, a 100% custom C networking data plane, and a REST control layer for the host, containers, hardware, DNS, and PKI — no runc, no Open vSwitch, no eBPF, compiled exclusively with the Tiny C Compiler (TCC). Every capability, including hardware itself, is a first-class API resource; containers are where all real work happens, the host is the thinnest possible layer underneath them. Full charter: [`docs/MISSION.md`](docs/MISSION.md).
+Kanxeo is a rolling-release hardware and workload orchestration platform, compiled entirely from source: a hand-rolled container runtime on raw Linux namespaces and cgroups, OverlayFS-based image layering, a 100% custom C networking data plane, and a REST control layer for the host, containers, hardware, DNS, and PKI — no runc, no Open vSwitch, no eBPF, compiled exclusively with the Tiny C Compiler (TCC). Every capability, including hardware itself, is a first-class API resource; containers are where all real work happens, the host is the thinnest possible layer underneath them. Full charter: [`docs/mission/MISSION.md`](docs/mission/MISSION.md).
 
 ## The Name
 
@@ -39,12 +39,26 @@ Kanxeo is more than a distribution — it's a discipline. Complex routing protoc
 | 14 | GPU passthrough (AMD: discovery, grouped grants, kernel driver, KFD) | Done |
 | 15 | Per-container config files + generalized sysctls | Done |
 | 16 | Host OS update mechanism + automatic package updates | Done |
+| 17 | Platform state backup/restore (config only, never PKI or workload data) | Done |
+| 18 | Kernel video console + interactive `kanxeoctl` shell | Done |
+| 19 | Real console login: keyboard input + PID1-spawned `kanxeoctl` shell | Done |
+| 20 | Fix silent real-install breakage in PKI/pkg; portable build-toolchain artifact | Done |
+| 21 | git/gitea recipes, multi-source package recipes, a real LDAPS deployment | Done |
+| 22 | Network gateway becomes optional; VLAN + physical-NIC bridge attachment | Done |
+| 23 | Real router recipe set: bird, keepalived, iproute2, ipset, iptables, iputils, bash | Done |
+| 24 | The VRRP + bird routing topology, proven end-to-end on real hardware | Done |
+| 25 | Diagnose real-install PKI/pkg bootstrap failures, fix silent error paths | Done |
+| 26 | Package recipes as a real, live-managed catalog (add/update/delete via the API) | Done |
+| 27 | Real container-image baseline FHS layout | Done |
+| 28 | Installer: interactive I/O relayed through a PTY across both consoles at once | Done |
+| 29 | Proxmox-style web dashboard redesign: resource tree, per-resource detail views | Done |
+| 30 | Interactive container console (daemon WebSocket + `kanxeoctl console` + web dashboard); `kanxeod --data-dir=` for test/production state isolation | Done |
 
-Every phase above is fully implemented, tested end to end, and documented — see the per-phase write-ups (design, verification steps, real bugs found and fixed) in `docs/ROADMAP.md`. Full charter: [`docs/MISSION.md`](docs/MISSION.md). Architecture diagram: [`docs/architecture.svg`](docs/architecture.svg). API contract: [`docs/api/openapi.yaml`](docs/api/openapi.yaml), with a narrative walkthrough at [`docs/api/README.md`](docs/api/README.md). Why a given significant, hard-to-reverse decision was made: [`docs/adr/`](docs/adr/).
+Every phase above is fully implemented, tested end to end, and documented — see the per-phase write-ups (design, verification steps, real bugs found and fixed) in `docs/roadmap/ROADMAP.md`. Full charter: [`docs/mission/MISSION.md`](docs/mission/MISSION.md). Architecture diagram: [`docs/architecture/architecture.svg`](docs/architecture/architecture.svg). API contract: [`docs/api/openapi.yaml`](docs/api/openapi.yaml), with a narrative walkthrough at [`docs/api/README.md`](docs/api/README.md). Why a given significant, hard-to-reverse decision was made: [`docs/adr/`](docs/adr/). **[`docs/README.md`](docs/README.md) is the guide to all of the above** — start there if you're not sure which document has what you're looking for.
 
 ## Building
 
-Requires `tcc` and a Linux kernel with cgroup v2 and `clone3`/`CLONE_INTO_CGROUP` support (5.7+). Namespace/mount tests must run as root and require a **privileged** container if run inside one — see `docs/ROADMAP.md` Phase 1 for why.
+Requires `tcc` and a Linux kernel with cgroup v2 and `clone3`/`CLONE_INTO_CGROUP` support (5.7+). Namespace/mount tests must run as root and require a **privileged** container if run inside one — see `docs/roadmap/ROADMAP.md` Phase 1 for why.
 
 ```sh
 make                       # builds everything into build/, -Wall -Werror, zero warnings
@@ -53,7 +67,7 @@ build/kanxeoctl health     # talk to it with the CLI
 make clean
 ```
 
-Every test binary in `build/` is self-contained (each forks and execs its own `kanxeod` instance where needed) and runs standalone as root, e.g. `sudo build/test_pkg`. There is one test binary per phase/part; see `docs/ROADMAP.md` for what each one verifies.
+Every test binary in `build/` is self-contained (each forks and execs its own `kanxeod` instance where needed) and runs standalone as root, e.g. `sudo build/test_pkg`. There is one test binary per phase/part; see `docs/roadmap/ROADMAP.md` for what each one verifies.
 
 `build/bzImage` (the kernel) is a separate, deliberately-not-automated build — not reproduced by `make`/`make clean`. See `image/kernel/qemu-part1.config`'s own header comment for the exact fetch-and-build recipe (mainline source, a hand-curated config fragment, a real GCC toolchain — never TCC, which governs this project's own code, not unmodified upstream software).
 
@@ -104,7 +118,7 @@ This produces `build/kanxeo-install.iso` — attach it as a CD-ROM/optical drive
 **Partitioning** — three ways, pick one via `kanxeo-install`'s own flags (baked into the last argument above):
 
 - **`--auto-partition`** (recommended for VMs / scripted provisioning): partitions the disk itself, non-interactively, with the standard fixed layout below — no typing required. This is what the example above uses, and what `test/test_installer.c`'s own install session actually exercises.
-- **(no flag, the default)**: drops into a real, interactive `fdisk` session (switched from `cfdisk`: `fdisk`'s line-based UI needs no terminal database and can be scripted for testing, unlike `cfdisk`'s full-screen UI) — use this if you need different partition sizes than the standard layout. GPT, five partitions, named exactly (`kanxeo-esp`, `kanxeo-root-a`, `kanxeo-root-b`, `kanxeo-config`, `kanxeo-containers` — see `docs/ROADMAP.md`'s Phase 11 part 3 write-up for the role each one plays):
+- **(no flag, the default)**: drops into a real, interactive `fdisk` session (switched from `cfdisk`: `fdisk`'s line-based UI needs no terminal database and can be scripted for testing, unlike `cfdisk`'s full-screen UI) — use this if you need different partition sizes than the standard layout. GPT, five partitions, named exactly (`kanxeo-esp`, `kanxeo-root-a`, `kanxeo-root-b`, `kanxeo-config`, `kanxeo-containers` — see `docs/roadmap/ROADMAP.md`'s Phase 11 part 3 write-up for the role each one plays):
 
   ```
   g                                  # new GPT label
@@ -136,6 +150,7 @@ It then formats, writes the system, and reboots into a running `kanxeod` at the 
 
 - **Dashboard:** `http://<ip>:7620/` — same daemon and port as the API, no separate process.
 - **CLI:** `kanxeoctl --host=<ip> health`, `... ps`, `... run --name=... --image=... --network=... -- CMD`, `... network create --name=... --subnet=... --prefix=...` (see `docs/api/README.md` for the full walkthrough). Running `kanxeoctl --host=<ip>` with no command, from a real terminal, opens an interactive shell instead — type commands one per line (`ps`, `run --name=... -- CMD`, etc.) without re-typing `kanxeoctl --host=...` each time; `exit`/`quit`/Ctrl-D end it. `--host=`/`--port=`/`--json` are set once at startup and apply to the whole session.
+- **A shell inside a running container:** `kanxeoctl --host=<ip> console NAME` (`[--cmd=/path/to/shell]`, defaulting to `/usr/bin/bash`) opens a real, fully-interactive terminal session inside an already-running container — full raw-mode `termios`, tab completion, Ctrl-C, `vim`/`top`/`less` all work correctly, over a hand-rolled WebSocket (`GET /v1/containers/{name}/console`, ADR-0043). The web dashboard's own Console tab (a container's default view when selected in the tree) offers the same capability from the browser, with one accepted trade-off: it stays deliberately hand-rolled rather than vendoring a terminal-emulation library (ADR-0010), so full-screen redraw programs render wrong there specifically — `kanxeoctl console` has no such limitation.
 - **Console login:** the installed system drops straight into that same interactive `kanxeoctl` shell on both the video console and the serial console once boot completes — no username, no password (this platform has no authentication anywhere yet; physical console access is already at least as privileged as the unauthenticated network API). Typing `exit`/`quit`/Ctrl-D ends the session and a fresh one starts automatically a couple of seconds later, the same "always there" posture a real login prompt has. The video console shows real text (Proxmox's console viewer, a real monitor) via the EFI framebuffer UEFI firmware already sets up, and accepts real keyboard input — both PS/2 (QEMU/Proxmox's typical emulated keyboard) and USB HID (real hardware) are supported.
 - **Shutdown/reboot:** `kanxeoctl --host=<ip> shutdown` / `... reboot` — the only clean way to power off or restart (as PID 1, `kanxeod` has no shell to run `shutdown`/`reboot` from; these call the real `reboot(2)` syscall internally, see ADR-0016).
 - **Installing real software:** `kanxeoctl --host=<ip> pkg bootstrap` once (stages a real build toolchain from this host's own `/usr`), then drop `.recipe` files into `/var/lib/kanxeo/pkg/recipes/` (see `pkg/recipes/` in this repo for real, working examples — bash, iproute2, bird) and `kanxeoctl --host=<ip> pkg install --name=<name> [--image=<image>]`. Builds from source, network-less, into the target image (default `base`, the image every container uses unless it names another via `run --image=`) — a package name is tracked independently per image, so e.g. installing `bird`/`bash`/`iproute2` into a `router` image never affects containers running on `base`. The C runtime (`ld.so`/`libc.so.6`/`libtinfo.so.6`) is seeded automatically into whichever image a package lands in (ADR-0019 for `base` at install time, ADR-0023 for every image at first install) — a freshly installed package can always execve().
@@ -144,7 +159,7 @@ It then formats, writes the system, and reboots into a running `kanxeod` at the 
 
 ### Secure Boot
 
-Also requires **UEFI firmware and a Q35 machine type** — Kanxeo is UEFI-only (see `docs/ROADMAP.md`'s Phase 11 architecture decisions); a legacy-BIOS/i440fx VM has no AHCI CD-ROM controller for this kernel to find and will panic trying to mount root. On Proxmox: VM → Hardware → BIOS → `OVMF (UEFI)`; VM → Options → Machine → `q35`.
+Also requires **UEFI firmware and a Q35 machine type** — Kanxeo is UEFI-only (see `docs/roadmap/ROADMAP.md`'s Phase 11 architecture decisions); a legacy-BIOS/i440fx VM has no AHCI CD-ROM controller for this kernel to find and will panic trying to mount root. On Proxmox: VM → Hardware → BIOS → `OVMF (UEFI)`; VM → Options → Machine → `q35`.
 
 The **installer media itself** always needs Secure Boot **off** for its own one-time, unsigned boot — no different from installing most non-Windows OSes from scratch (see ADR-0015 for why this can't be avoided). Concretely, on Proxmox: when adding the VM's EFI Disk, leave **"Pre-Enroll keys" unchecked** — if Secure Boot's keys are already enrolled before this first boot, it fails with `Access Denied`.
 
@@ -176,6 +191,6 @@ web/           browser dashboard: vanilla HTML/CSS/JS, no framework, no build st
 image/         bare-metal boot tooling (Phase 11): kernel config, mkbootroot, kanxeo-install, mkinstalleriso
 pkg/recipes/   .recipe files for `pkg install` (Phase 10) — source URL, sha256, and a real pkg_build()/pkg_install() shell build, per package
 test/          one demonstrable test (+ exec target, where needed) per phase/part
-docs/          mission charter, phased roadmap, ADRs, architecture diagram, and the OpenAPI contract
+docs/          mission/roadmap/adr/api/architecture -- see docs/README.md for what lives where
 build/         compiled output (gitignored)
 ```
