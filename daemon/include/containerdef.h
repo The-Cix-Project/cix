@@ -138,4 +138,38 @@ struct container_def *containerdef_find(const char *name);
  */
 int containerdef_resolve_order(char out_order[][REGISTRY_NAME_MAX]);
 
+/*
+ * Writes one synthesized, Container-shaped JSON object (ADR-0045) for
+ * every definition currently in the manually-stopped state (stopped
+ * == 1) -- letting GET /v1/containers show a stopped-but-defined
+ * container instead of it simply vanishing from the list once
+ * POST .../stop removes its live registry entry. Not wrapped in its
+ * own array -- the caller (registry_write_json_list(), which already
+ * depends on this module for restart/depends_on/readiness on live
+ * entries too) writes these as extra items inside its own single
+ * array, one list, no second endpoint. Safe to rely on stopped == 1
+ * alone (no separate liveness cross-check needed) because it is now a
+ * true invariant: the only path that sets it, POST .../stop, always
+ * removes the registry entry in the same call, and every path that
+ * revives a definition (POST .../start, containerdef_autostart_all())
+ * clears it again on success -- see those functions' own comments.
+ * image is recovered by parsing the persisted body's own "image"
+ * field (read-only JSON parse, same as every other consumer of a
+ * stored body already does -- never sourced/executed). Every field a
+ * live entry would have but a stopped one genuinely doesn't (pid,
+ * networks, devices, ...) is written as null/empty rather than
+ * guessed.
+ */
+void containerdef_write_json_stopped_list(struct json_writer *w);
+
+/*
+ * Single-name counterpart to containerdef_write_json_stopped_list(),
+ * for GET /v1/containers/{name} (handle_get_one() in main.c) to fall
+ * back to when registry_find() misses -- same synthesized shape, same
+ * stopped == 1 invariant. Returns 1 and writes into w if name has a
+ * stopped definition, 0 (writes nothing) otherwise -- the caller is
+ * then free to fall through to its own 404.
+ */
+int containerdef_write_json_stopped_one(const char *name, struct json_writer *w);
+
 #endif /* CONTAINERDEF_H */

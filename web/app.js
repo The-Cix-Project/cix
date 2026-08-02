@@ -343,18 +343,22 @@ function treeLink(href, text, className) {
 	return a;
 }
 
-/* Containers only -- the only resource with a real running/not-running
- * state (Container.status is exactly [running, exited] per the API,
- * no "paused"/suspend state exists anywhere in this daemon today).
- * green = running, grey = exited/stopped -- same two colors this
- * dashboard's own badges already use elsewhere (--ok/--muted). */
+/* Containers only -- the only resource with a real running/paused/
+ * stopped/exited state (Container.status per the API, ADR-0045).
+ * green = running, amber = paused (cgroup-frozen), grey = stopped
+ * (manually stopped, still defined) or exited (process died, no
+ * restart policy revived it) -- stopped and exited share one color
+ * since both mean "not live" from a glance; the detail view's own
+ * Status field spells out which. */
 function treeItemLinkWithStatus(href, label, status) {
 	const a = document.createElement("a");
 	const dot = document.createElement("span");
+	const dotClass =
+		status === "running" ? "tree-status-running" : status === "paused" ? "tree-status-paused" : "tree-status-stopped";
 
 	a.href = href;
 	a.className = "tree-item";
-	dot.className = "tree-status-dot " + (status === "running" ? "tree-status-running" : "tree-status-stopped");
+	dot.className = "tree-status-dot " + dotClass;
 	a.appendChild(dot);
 	a.appendChild(document.createTextNode(label));
 	return a;
@@ -519,7 +523,8 @@ function renderContainers(containers) {
 		const statusSpan = document.createElement("span");
 
 		statusSpan.textContent = c.status;
-		statusSpan.className = "badge " + (c.status === "running" ? "badge-ok" : "badge-unknown");
+		statusSpan.className =
+			"badge " + (c.status === "running" ? "badge-ok" : c.status === "paused" ? "badge-paused" : "badge-unknown");
 		statusCell.appendChild(statusSpan);
 		row.appendChild(statusCell);
 
@@ -572,6 +577,40 @@ async function stopContainer(name) {
 		renderCurrentView();
 	} catch (e) {
 		showStatus("Failed to stop " + name + ": " + e.message, true);
+	}
+}
+
+async function startContainer(name) {
+	try {
+		await apiRequest("POST", "/v1/containers/" + encodeURIComponent(name) + "/start");
+		clearStatus();
+		await refreshContainers();
+		renderTree();
+		renderCurrentView();
+	} catch (e) {
+		showStatus("Failed to start " + name + ": " + e.message, true);
+	}
+}
+
+async function pauseContainer(name) {
+	try {
+		await apiRequest("POST", "/v1/containers/" + encodeURIComponent(name) + "/pause");
+		clearStatus();
+		await refreshContainers();
+		renderCurrentView();
+	} catch (e) {
+		showStatus("Failed to pause " + name + ": " + e.message, true);
+	}
+}
+
+async function unpauseContainer(name) {
+	try {
+		await apiRequest("POST", "/v1/containers/" + encodeURIComponent(name) + "/unpause");
+		clearStatus();
+		await refreshContainers();
+		renderCurrentView();
+	} catch (e) {
+		showStatus("Failed to unpause " + name + ": " + e.message, true);
 	}
 }
 
@@ -947,8 +986,19 @@ function renderContainerDetail(name) {
 		"No files staged"
 	);
 
+	document.getElementById("cd-start").onclick = () => startContainer(c.name);
+	document.getElementById("cd-pause").onclick = () => pauseContainer(c.name);
+	document.getElementById("cd-unpause").onclick = () => unpauseContainer(c.name);
 	document.getElementById("cd-stop").onclick = () => stopContainer(c.name);
 	document.getElementById("cd-remove").onclick = () => removeContainer(c.name);
+
+	/* Only the action(s) valid for c.status are shown -- e.g. "Pause" on
+	 * an already-stopped container isn't just a no-op, it's a 404 (see
+	 * ADR-0045), so it's hidden rather than left clickable-but-broken. */
+	document.getElementById("cd-start").hidden = c.status !== "stopped";
+	document.getElementById("cd-pause").hidden = c.status !== "running";
+	document.getElementById("cd-unpause").hidden = c.status !== "paused";
+	document.getElementById("cd-stop").hidden = c.status === "stopped";
 }
 
 /* ---------- Networks ---------- */
@@ -2431,11 +2481,18 @@ function addContextMenuItem(label, danger, action) {
  * tree's own per-item-detail-view boundary already established. */
 function contextMenuItemsFor(category, name) {
 	if (category === "containers") {
-		return [
+		const c = cache.containers.find((x) => x.name === name);
+		const status = c ? c.status : "running";
+		const items = [
 			{ label: "Open console", danger: false, action: () => { location.hash = "#containers/" + encodeURIComponent(name); } },
-			{ label: "Stop", danger: false, action: () => stopContainer(name) },
-			{ label: "Remove", danger: true, action: () => removeContainer(name) },
 		];
+
+		if (status === "stopped") items.push({ label: "Start", danger: false, action: () => startContainer(name) });
+		if (status === "running") items.push({ label: "Pause", danger: false, action: () => pauseContainer(name) });
+		if (status === "paused") items.push({ label: "Unpause", danger: false, action: () => unpauseContainer(name) });
+		if (status !== "stopped") items.push({ label: "Stop", danger: false, action: () => stopContainer(name) });
+		items.push({ label: "Remove", danger: true, action: () => removeContainer(name) });
+		return items;
 	}
 	if (category === "networks")
 		return [{ label: "Remove", danger: true, action: () => removeNetwork(name) }];

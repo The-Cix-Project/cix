@@ -2,6 +2,23 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 34: container lifecycle completeness -- start/pause/unpause (ADR-0045)
+
+Direct user report: a stopped container simply vanished from `GET /v1/containers` with no way back short of a full daemon restart. Root cause: `GET` only ever listed the live registry, never persisted-but-stopped definitions. Also confirmed with the user: build real cgroup-freezer pause/resume, not just the start fix.
+
+#### Added
+- `POST /v1/containers/{name}/start` -- replays a persisted definition's stored body through the same `create_container_from_body()` path autostart already uses; idempotent if live, 404 if no definition exists.
+- `POST /v1/containers/{name}/pause` and `.../unpause` -- real cgroup v2 freezer control (`cgroup.freeze`), not `SIGSTOP`, via the container's own already-open `O_PATH` cgroup fd. Double-pause/double-unpause are `409`, not idempotent.
+- `GET /v1/containers`/`GET /v1/containers/{name}` now also report stopped-but-defined containers (`status: "stopped"`), via new `containerdef_write_json_stopped_list()`/`_one()`.
+- `Container.status` gains `"paused"`; new `paused: boolean` field. `kanxeoctl start/pause/unpause NAME`. Web dashboard: gated action buttons, right-click context menu entries, amber paused tree-status dot.
+- New `test/test_container_lifecycle.c` -- stop-then-still-visible, start-without-daemon-restart, real cgroup-freeze/thaw checked against `/sys/fs/cgroup/<name>/cgroup.events` directly, pause-then-delete completing without hanging, autostart stale-flag fix confirmed across a real daemon restart.
+
+#### Fixed
+- **`registry_remove()` (the shared kill path for both `.../stop` and `DELETE`) would hang forever SIGKILLing an already-frozen container** -- a cgroup v2 freezer blocks signal delivery to every task inside it. Fixed by thawing (`registry_set_paused(e, 0)`) immediately before the existing `SIGKILL`.
+- **`containerdef_autostart_all()` never cleared a stale `stopped=1` flag after successfully reviving an `"always"`/`"on-failure"` container** -- `handle_restart_timer_event()` (the crash-restart path) checks that flag unconditionally regardless of policy, so any container manually stopped even once, then revived by a daemon restart, would silently lose its own restart policy forever after. Fixed with the same `containerdef_set_stopped(name, 0)` call `handle_start()` already makes on success.
+- `test_container_restart.c`'s own `fetch_pid()`/`container_exists()` helpers relied on "GET returns 404" as a proxy for "not live" -- broken by the new stopped-container listing above (GET now legitimately 200s for a stopped definition too). Updated both to check the `status` field instead, restoring their real original intent.
+- `srv1`'s own static route back to `lan1` (via the VRRP address) had gone missing from this sandbox's live demo topology, silently breaking the `blah`→`srv1` round-trip (100% loss) -- the exact asymmetric-routing bug Phase 24 already fixed once, dropped by an unrelated mid-session state recreation. Recreated correctly; 0% loss confirmed.
+
 ### Phase 33: a real dev-toolchain recipe set -- gcc, python, coreutils, and 13 supporting packages, proven self-hosting
 
 Direct user request for individual, real from-source dev-tool recipes rather than one bundled image, plus reloading `lldap` (already existed, had fallen out of the live daemon's own catalog after an earlier `--data-dir=` reset). Sixteen packages total, closing with a genuine self-hosting proof: a real Kanxeo container compiling, linking, and running a real C program with its own from-source `gcc`+`libc-dev`, and separately running real Python.

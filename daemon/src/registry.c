@@ -4,6 +4,7 @@
 #include "linux_compat.h"
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <string.h>
 #include <time.h>
@@ -61,6 +62,7 @@ enum registry_error registry_create(const char *name, const char *image,
 	strncpy(e->image, image, sizeof(e->image) - 1);
 	e->running = 1;
 	e->exit_status = 0;
+	e->paused = 0;
 	e->started_at = time(NULL);
 	e->in_use = 1;
 	e->reactor_conn = NULL;
@@ -165,6 +167,38 @@ void registry_mark_exited(struct registry_entry *entry)
 	}
 }
 
+/*
+ * Freezes (freeze=1) or thaws (freeze=0) e via the cgroup v2 freezer:
+ * writes "1"/"0" to cgroup.freeze underneath e->handle.cgroup_fd (an
+ * O_PATH dir fd from cgroup_create() -- see include/container.h;
+ * openat() against an O_PATH dir fd to open a real file underneath it
+ * is standard, well-defined usage, only read/write directly ON the
+ * O_PATH fd itself is disallowed). Real kernel-level freeze, not
+ * SIGSTOP -- uninterceptable/unignorable by the frozen process. On
+ * success also updates e->paused to match. Returns 0 on success, -1
+ * (errno set by whichever syscall failed) otherwise. Not static:
+ * registry_remove() below needs this too (a frozen process can't be
+ * killed by a normal signal -- the freezer blocks delivery -- so
+ * removal must thaw first), and main.c's own POST .../pause and
+ * .../unpause handlers call it directly, one mechanism either way.
+ */
+int registry_set_paused(struct registry_entry *e, int freeze)
+{
+	int freeze_fd;
+	const char *val = freeze ? "1" : "0";
+
+	freeze_fd = openat(e->handle.cgroup_fd, "cgroup.freeze", O_WRONLY);
+	if (freeze_fd < 0)
+		return -1;
+	if (write(freeze_fd, val, 1) != 1) {
+		close(freeze_fd);
+		return -1;
+	}
+	close(freeze_fd);
+	e->paused = freeze;
+	return 0;
+}
+
 int registry_remove(const char *name)
 {
 	struct registry_entry *e = registry_find(name);
@@ -173,6 +207,17 @@ int registry_remove(const char *name)
 		return -1;
 
 	if (e->running) {
+		/*
+		 * A frozen cgroup blocks signal delivery to every task in it --
+		 * SIGKILL sent to a still-frozen container would queue but never
+		 * actually terminate the process, leaving a hung, unkillable
+		 * entry. Thaw first, unconditionally ignoring a failure here
+		 * (best-effort -- if the cgroup is already gone/unfreezable, the
+		 * SIGKILL below is still attempted exactly as before this fix
+		 * existed).
+		 */
+		if (e->paused)
+			registry_set_paused(e, 0);
 		sys_pidfd_send_signal(e->handle.pidfd, SIGKILL);
 		registry_mark_exited(e);
 	}
@@ -205,7 +250,9 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 	jw_key(w, "image");
 	jw_str(w, entry->image);
 	jw_key(w, "status");
-	jw_str(w, entry->running ? "running" : "exited");
+	jw_str(w, !entry->running ? "exited" : (entry->paused ? "paused" : "running"));
+	jw_key(w, "paused");
+	jw_bool(w, entry->running && entry->paused);
 	jw_key(w, "pid");
 	jw_int(w, (long long)entry->handle.pid);
 	jw_key(w, "exit_status");
@@ -309,5 +356,15 @@ void registry_write_json_list(struct json_writer *w)
 		if (g_entries[i].in_use)
 			registry_write_json_one(&g_entries[i], w);
 	}
+	/*
+	 * Stopped-but-defined containers (ADR-0045) have no live entry
+	 * above at all -- without this, POST .../stop makes a name simply
+	 * vanish from this list with no way to find it again short of
+	 * already knowing to POST .../start blind. containerdef.c already
+	 * supplies restart/depends_on/readiness for every live entry above
+	 * (see registry_write_json_one()); this is the same dependency, one
+	 * direction further.
+	 */
+	containerdef_write_json_stopped_list(w);
 	jw_arr_close(w);
 }

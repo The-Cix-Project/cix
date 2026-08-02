@@ -224,6 +224,92 @@ int containerdef_resolve_order(char out_order[][REGISTRY_NAME_MAX])
 	return count;
 }
 
+static void write_stopped_def_json_one(struct container_def *d, struct json_writer *w)
+{
+	struct json_value *root;
+	const char *image;
+	int j;
+
+	root = json_parse(d->body, d->body_len);
+	image = root != NULL ? json_as_string(json_object_get(root, "image")) : NULL;
+
+	jw_obj_open(w);
+	jw_key(w, "name");
+	jw_str(w, d->name);
+	jw_key(w, "image");
+	jw_str(w, image != NULL ? image : "");
+	jw_key(w, "status");
+	jw_str(w, "stopped");
+	jw_key(w, "paused");
+	jw_bool(w, 0);
+	jw_key(w, "pid");
+	jw_null(w);
+	jw_key(w, "exit_status");
+	jw_null(w);
+	jw_key(w, "networks");
+	jw_arr_open(w);
+	jw_arr_close(w);
+	jw_key(w, "ip_forward");
+	jw_bool(w, 0);
+	jw_key(w, "devices");
+	jw_arr_open(w);
+	jw_arr_close(w);
+	jw_key(w, "interfaces");
+	jw_arr_open(w);
+	jw_arr_close(w);
+	jw_key(w, "files");
+	jw_arr_open(w);
+	jw_arr_close(w);
+	jw_key(w, "sysctls");
+	jw_obj_open(w);
+	jw_obj_close(w);
+	jw_key(w, "restart");
+	jw_str(w, d->restart_policy);
+	jw_key(w, "restart_delay_seconds");
+	jw_int(w, d->restart_delay_seconds);
+	jw_key(w, "stopped");
+	jw_bool(w, 1);
+	jw_key(w, "depends_on");
+	jw_arr_open(w);
+	for (j = 0; j < d->depends_on_count; j++)
+		jw_str(w, d->depends_on[j]);
+	jw_arr_close(w);
+	jw_key(w, "readiness");
+	if (d->has_readiness) {
+		jw_obj_open(w);
+		jw_key(w, "tcp_port");
+		jw_int(w, d->readiness_tcp_port);
+		jw_key(w, "timeout_seconds");
+		jw_int(w, d->readiness_timeout_seconds);
+		jw_obj_close(w);
+	} else {
+		jw_null(w);
+	}
+	jw_obj_close(w);
+
+	json_free(root);
+}
+
+void containerdef_write_json_stopped_list(struct json_writer *w)
+{
+	int i;
+
+	for (i = 0; i < CONTAINERDEF_MAX; i++) {
+		if (g_defs[i].in_use && g_defs[i].stopped)
+			write_stopped_def_json_one(&g_defs[i], w);
+	}
+}
+
+int containerdef_write_json_stopped_one(const char *name, struct json_writer *w)
+{
+	struct container_def *d = containerdef_find(name);
+
+	if (d == NULL || !d->stopped)
+		return 0;
+	write_stopped_def_json_one(d, w);
+	return 1;
+}
+
 static int parse_persisted_entry(const struct json_value *item, struct container_def *slot)
 {
 	const char *name = json_as_string(json_object_get(item, "name"));

@@ -1,0 +1,433 @@
+/*
+ * Phase A (ADR-0045) end-to-end test: proves the container lifecycle
+ * completeness fixes over real HTTP against a real kanxeod subprocess
+ * -- POST .../start actually recovers a stopped-but-defined container
+ * without a daemon restart, POST .../pause and .../unpause are a real
+ * cgroup v2 freeze (checked against the real cgroup.events file, not
+ * just a status string), the freeze-before-kill fix in registry_remove()
+ * doesn't hang on DELETE of a paused container, GET now lists a
+ * stopped container instead of it vanishing, and containerdef_
+ * autostart_all() no longer leaves a revived "always" container's
+ * stopped flag permanently stale after a real daemon restart.
+ */
+#include "httpclient.h"
+#include "json.h"
+#include "test_image_fixture.h"
+
+#include <limits.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
+
+extern char **environ;
+
+#define TEST_PORT 7635
+#define PORT_ARG "--port=7635"
+
+static char g_data_dir[PATH_MAX];
+static char g_image_root[PATH_MAX];
+
+static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+{
+	int i;
+	struct kx_response r;
+
+	for (i = 0; i < max_attempts; i++) {
+		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			kx_response_free(&r);
+			return 0;
+		}
+		usleep(100000);
+	}
+	return -1;
+}
+
+static const char *json_str_field(const struct json_value *obj, const char *key)
+{
+	return json_as_string(json_object_get(obj, key));
+}
+
+static long json_num_field(const struct json_value *obj, const char *key)
+{
+	return (long)json_as_number(json_object_get(obj, key));
+}
+
+static int json_bool_field(const struct json_value *obj, const char *key)
+{
+	const struct json_value *v = json_object_get(obj, key);
+
+	return v != NULL && v->type == JSON_BOOL && v->u.boolean;
+}
+
+static int str_eq(const char *a, const char *b)
+{
+	return a != NULL && b != NULL && strcmp(a, b) == 0;
+}
+
+static pid_t start_daemon(void)
+{
+	pid_t pid;
+	char *dargv[4];
+	static char data_dir_arg[PATH_MAX + 11];
+
+	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
+	dargv[0] = "build/kanxeod";
+	dargv[1] = PORT_ARG;
+	dargv[2] = data_dir_arg;
+	dargv[3] = NULL;
+
+	pid = fork();
+	if (pid < 0) {
+		perror("fork");
+		return -1;
+	}
+	if (pid == 0) {
+		execve("build/kanxeod", dargv, environ);
+		perror("execve build/kanxeod");
+		_exit(127);
+	}
+	return pid;
+}
+
+static int stop_daemon(pid_t pid)
+{
+	int status;
+
+	kill(pid, SIGTERM);
+	if (waitpid(pid, &status, 0) != pid)
+		return -1;
+	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
+}
+
+static long fetch_pid(const struct kx_client *c, const char *name)
+{
+	char path[128];
+	struct kx_response r;
+	long pid = -1;
+
+	snprintf(path, sizeof(path), "/v1/containers/%s", name);
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200)
+		pid = json_num_field(r.json, "pid");
+	kx_response_free(&r);
+	return pid;
+}
+
+/* Reads /sys/fs/cgroup/<name>/cgroup.events and returns 1 if "frozen 1"
+ * is present, 0 if "frozen 0", -1 on any read failure -- the real,
+ * kernel-authoritative freeze state, not just what the REST API claims. */
+static int cgroup_is_frozen(const char *name)
+{
+	char path[256];
+	FILE *f;
+	char line[64];
+	int result = -1;
+
+	snprintf(path, sizeof(path), "/sys/fs/cgroup/%s/cgroup.events", name);
+	f = fopen(path, "r");
+	if (f == NULL)
+		return -1;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		if (strncmp(line, "frozen ", 7) == 0) {
+			result = atoi(line + 7);
+			break;
+		}
+	}
+	fclose(f);
+	return result;
+}
+
+int main(void)
+{
+	pid_t daemon_pid;
+	struct kx_client client;
+	int ok = 1;
+	struct kx_response r;
+
+	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
+		return 1;
+	snprintf(g_image_root, sizeof(g_image_root), "%s/images/lifecycletest/rootfs", g_data_dir);
+
+	if (test_image_fixture_build(g_image_root, "build/daemon_child", "daemon_child") != 0) {
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
+
+	daemon_pid = start_daemon();
+	if (daemon_pid < 0) {
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
+
+	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	if (wait_for_daemon(&client, 50) != 0) {
+		fprintf(stderr, "FAIL: daemon never accepted connections\n");
+		kill(daemon_pid, SIGKILL);
+		waitpid(daemon_pid, NULL, 0);
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
+
+	/* 1. Create a long-lived "always" container. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"lc1\",\"image\":\"lifecycletest\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+	                       "\"restart\":\"always\"}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST lc1, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	/* 2. stop -- must still be visible via GET (not 404), status
+	 * "stopped", not just "gone." This is the actual bug reported. */
+	{
+		long pid1 = fetch_pid(&client, "lc1");
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers/lc1/stop", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: POST lc1/stop, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/containers/lc1", NULL, &r) != 0 ||
+		    r.status != 200 || !str_eq(json_str_field(r.json, "status"), "stopped") ||
+		    !json_bool_field(r.json, "stopped")) {
+			fprintf(stderr, "FAIL: GET lc1 after stop should be 200/stopped, got status=%d body=%s\n",
+			        r.status, r.status == 200 ? json_str_field(r.json, "status") : "?");
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* Also confirm it shows up in the plain list, not just single-GET. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/containers", NULL, &r) != 0 || r.status != 200) {
+			fprintf(stderr, "FAIL: GET /v1/containers, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *list = json_object_get(r.json, "containers");
+			size_t i;
+			int found = 0;
+
+			for (i = 0; list != NULL && i < list->u.array.count; i++) {
+				if (str_eq(json_str_field(list->u.array.items[i], "name"), "lc1")) {
+					found = 1;
+					break;
+				}
+			}
+			if (!found) {
+				fprintf(stderr, "FAIL: lc1 missing from GET /v1/containers after stop\n");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		/* 3. start -- brings it back, no daemon restart, fresh pid. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers/lc1/start", NULL, &r) != 0 ||
+		    r.status != 200 || !str_eq(json_str_field(r.json, "status"), "running") ||
+		    json_bool_field(r.json, "stopped")) {
+			fprintf(stderr, "FAIL: POST lc1/start, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		if (fetch_pid(&client, "lc1") == pid1 || fetch_pid(&client, "lc1") < 0) {
+			fprintf(stderr, "FAIL: lc1 should have a fresh pid after start\n");
+			ok = 0;
+		}
+
+		/* Idempotent: starting an already-live container is 200, not an error. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers/lc1/start", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: idempotent re-start, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* start on a name with no definition at all is 404. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers/never-existed/start", NULL, &r) != 0 ||
+		    r.status != 404) {
+			fprintf(stderr, "FAIL: start on unknown name should be 404, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+	}
+
+	/* 4. pause -- real cgroup freeze, checked against the kernel's own
+	 * cgroup.events, not just the REST status string. */
+	{
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers/lc1/pause", NULL, &r) != 0 ||
+		    r.status != 200 || !str_eq(json_str_field(r.json, "status"), "paused") ||
+		    !json_bool_field(r.json, "paused")) {
+			fprintf(stderr, "FAIL: POST lc1/pause, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		if (cgroup_is_frozen("lc1") != 1) {
+			fprintf(stderr, "FAIL: /sys/fs/cgroup/lc1/cgroup.events does not report frozen 1 after pause\n");
+			ok = 0;
+		}
+
+		/* Double-pause is 409, not a silent no-op. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers/lc1/pause", NULL, &r) != 0 ||
+		    r.status != 409) {
+			fprintf(stderr, "FAIL: double-pause should be 409, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 5. unpause -- real thaw. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers/lc1/unpause", NULL, &r) != 0 ||
+		    r.status != 200 || !str_eq(json_str_field(r.json, "status"), "running") ||
+		    json_bool_field(r.json, "paused")) {
+			fprintf(stderr, "FAIL: POST lc1/unpause, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		if (cgroup_is_frozen("lc1") != 0) {
+			fprintf(stderr, "FAIL: /sys/fs/cgroup/lc1/cgroup.events does not report frozen 0 after unpause\n");
+			ok = 0;
+		}
+
+		/* Double-unpause is 409. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers/lc1/unpause", NULL, &r) != 0 ||
+		    r.status != 409) {
+			fprintf(stderr, "FAIL: double-unpause should be 409, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* pause/unpause on a stopped-but-defined (not live) container is 404. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers/lc1/stop", NULL, &r) != 0 || r.status != 200) {
+			fprintf(stderr, "FAIL: POST lc1/stop (pre-pause-404-check), status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers/lc1/pause", NULL, &r) != 0 ||
+		    r.status != 404) {
+			fprintf(stderr, "FAIL: pause on a stopped container should be 404, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers/lc1/start", NULL, &r) != 0 || r.status != 200) {
+			fprintf(stderr, "FAIL: POST lc1/start (post-pause-404-check), status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+	}
+
+	/* 6. Freeze-before-kill: DELETE on a paused container must not hang. */
+	{
+		time_t t0, t1;
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers/lc1/pause", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: pause before delete, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		t0 = time(NULL);
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "DELETE", "/v1/containers/lc1", NULL, &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: DELETE paused lc1, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+		t1 = time(NULL);
+
+		if (t1 - t0 > 5) {
+			fprintf(stderr, "FAIL: DELETE of a paused container took %ld s -- looks hung\n",
+			        (long)(t1 - t0));
+			ok = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/containers/lc1", NULL, &r) != 0 ||
+		    r.status != 404) {
+			fprintf(stderr, "FAIL: lc1 should be fully gone after DELETE, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+	}
+
+	/* 7. Autostart stale-flag fix: an "always" container that was
+	 * manually stopped, then revived by a real daemon restart, must
+	 * come back with stopped == false -- not permanently stuck true
+	 * (which would silently defeat its own crash-restart policy from
+	 * then on -- see ADR-0045). */
+	{
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"lc2\",\"image\":\"lifecycletest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],"
+		                       "\"restart\":\"always\"}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST lc2, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers/lc2/stop", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: POST lc2/stop, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		if (stop_daemon(daemon_pid) != 0) {
+			fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM\n");
+			ok = 0;
+		}
+		daemon_pid = start_daemon();
+		if (daemon_pid < 0 || wait_for_daemon(&client, 50) != 0) {
+			fprintf(stderr, "FAIL: daemon did not come back up after restart\n");
+			test_data_dir_cleanup(g_data_dir);
+			return 1;
+		}
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/containers/lc2", NULL, &r) != 0 ||
+		    r.status != 200 || !str_eq(json_str_field(r.json, "status"), "running") ||
+		    json_bool_field(r.json, "stopped")) {
+			fprintf(stderr,
+			        "FAIL: lc2 should be running with stopped==false after daemon restart "
+			        "(autostart stale-flag fix), got status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+	}
+
+	stop_daemon(daemon_pid);
+	test_data_dir_cleanup(g_data_dir);
+
+	if (ok)
+		printf("test_container_lifecycle: PASS\n");
+	return ok ? 0 : 1;
+}

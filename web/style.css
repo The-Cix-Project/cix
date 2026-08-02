@@ -7,6 +7,8 @@
 	--border: #d8d8dc;
 	--ok: #1e8e3e;
 	--ok-bg: #e6f4ea;
+	--paused: #c77b06;
+	--paused-bg: #fdf0dc;
 	--error: #c5221f;
 	--error-bg: #fce8e6;
 	--unknown-bg: #eeeeee;
@@ -21,6 +23,7 @@
 		--muted: #9a9a9e;
 		--border: #3a3a3c;
 		--ok-bg: #123321;
+		--paused-bg: #3a2a10;
 		--error-bg: #3a1615;
 		--unknown-bg: #2c2c2e;
 		--tree-active-bg: #1a3a5c;
@@ -296,6 +299,10 @@ header h1 {
 
 .tree-status-running {
 	background: var(--ok);
+}
+
+.tree-status-paused {
+	background: var(--paused);
 }
 
 .tree-status-stopped {
@@ -632,6 +639,11 @@ td.empty {
 .badge-ok {
 	background: var(--ok-bg);
 	color: var(--ok);
+}
+
+.badge-paused {
+	background: var(--paused-bg);
+	color: var(--paused);
 }
 
 .badge-error {

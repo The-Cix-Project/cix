@@ -1385,6 +1385,16 @@ static void handle_get_one(int fd, const char *name)
 	struct json_writer w;
 
 	if (e == NULL) {
+		/* Not live -- might still be a stopped-but-defined container
+		 * (ADR-0045), same fallback GET /v1/containers' own list
+		 * already makes via containerdef_write_json_stopped_list(). */
+		jw_init(&w);
+		if (containerdef_write_json_stopped_one(name, &w)) {
+			respond_json(fd, 200, "OK", &w);
+			jw_free(&w);
+			return;
+		}
+		jw_free(&w);
 		respond_error(fd, 404, "Not Found", "no such container");
 		return;
 	}
@@ -2315,6 +2325,137 @@ static void handle_delete(int fd, const char *name)
 	containerdef_remove(name);
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+/*
+ * POST /v1/containers/{name}/start (ADR-0045) -- the counterpart to
+ * .../stop: brings a stopped-but-still-defined container back to life
+ * without a daemon restart, closing the gap .../stop's own comment
+ * above alludes to (what "stopped" means going forward was previously
+ * "wait for containerdef_autostart_all() at the next daemon restart,"
+ * and only for restart:"always"/"on-failure" -- "unless-stopped" or
+ * "no" had no way back at all short of DELETE + a fresh POST, which
+ * itself 409s on a name that already has a persisted definition).
+ *
+ * Idempotent like .../stop: already-live is a plain 200, not an
+ * error. A name with no persisted definition at all is 404 -- this
+ * endpoint only ever replays an existing definition, it does not
+ * accept a body and create a new one (that's POST /v1/containers).
+ * Reuses create_container_from_body() verbatim on the definition's own
+ * stored body -- the exact same replay containerdef_autostart_all()
+ * already does at boot (main(), ~line 4841) -- one source of truth for
+ * "how a definition becomes a live container," not a second bespoke
+ * path. Unlike autostart, this endpoint is explicit and manual, so it
+ * intentionally ignores restart_policy/"unless-stopped" gating
+ * entirely: an operator asking to start a container by name always
+ * means start it, regardless of what a *crash* would have done.
+ */
+static void handle_start(int fd, const char *name)
+{
+	struct registry_entry *entry;
+	struct container_def *def;
+	char restart_policy[16];
+	int restart_delay_seconds;
+	char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
+	int depends_on_count;
+	int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
+	char err_msg[256];
+	int status;
+	struct json_writer w;
+
+	entry = registry_find(name);
+	if (entry != NULL) {
+		jw_init(&w);
+		registry_write_json_one(entry, &w);
+		respond_json(fd, 200, "OK", &w);
+		jw_free(&w);
+		return;
+	}
+
+	def = containerdef_find(name);
+	if (def == NULL) {
+		respond_error(fd, 404, "Not Found", "no such container");
+		return;
+	}
+
+	status = create_container_from_body(def->body, def->body_len, &entry, restart_policy,
+	                                     &restart_delay_seconds, depends_on, &depends_on_count,
+	                                     &has_readiness, &readiness_tcp_port,
+	                                     &readiness_timeout_seconds, err_msg, sizeof(err_msg));
+	if (status != 0) {
+		respond_error(fd, status, http_status_text(status), err_msg);
+		return;
+	}
+
+	containerdef_set_stopped(name, 0);
+
+	jw_init(&w);
+	registry_write_json_one(entry, &w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * POST /v1/containers/{name}/pause and .../unpause (ADR-0045): real
+ * cgroup v2 freezer control, not SIGSTOP -- freezing stops every task
+ * in the cgroup at the kernel level, uninterceptable/unignorable by
+ * the frozen process, unlike SIGSTOP which a process can catch or
+ * handle. Both require an already-live registry entry (404 otherwise
+ * -- pausing a stopped-but-defined or nonexistent container makes no
+ * sense, unlike start/stop which are meaningfully defined over
+ * persisted definitions too). Unlike start/stop's idempotent-200
+ * double-call tolerance, a double-pause or double-unpause is a 409:
+ * "is this container already paused" is state a caller should already
+ * know from its last GET, and silently no-opping it could mask a real
+ * caller bug (e.g. two racing pause requests) that stop/start's own
+ * idempotency never has to worry about hiding.
+ */
+static void handle_pause(int fd, const char *name)
+{
+	struct registry_entry *e = registry_find(name);
+	struct json_writer w;
+
+	if (e == NULL) {
+		respond_error(fd, 404, "Not Found", "no such running container");
+		return;
+	}
+	if (e->paused) {
+		respond_error(fd, 409, "Conflict", "already paused");
+		return;
+	}
+	if (registry_set_paused(e, 1) != 0) {
+		respond_error(fd, 500, "Internal Server Error", "cgroup freeze failed");
+		return;
+	}
+
+	jw_init(&w);
+	registry_write_json_one(e, &w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_unpause(int fd, const char *name)
+{
+	struct registry_entry *e = registry_find(name);
+	struct json_writer w;
+
+	if (e == NULL) {
+		respond_error(fd, 404, "Not Found", "no such running container");
+		return;
+	}
+	if (!e->paused) {
+		respond_error(fd, 409, "Conflict", "not paused");
+		return;
+	}
+	if (registry_set_paused(e, 0) != 0) {
+		respond_error(fd, 500, "Internal Server Error", "cgroup thaw failed");
+		return;
+	}
+
+	jw_init(&w);
+	registry_write_json_one(e, &w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
 }
 
 /*
@@ -3435,6 +3576,15 @@ static void dispatch(int fd, const struct http_request *req)
 			 */
 			size_t nlen = strlen(name);
 
+			if (nlen > 6 && strcmp(name + nlen - 6, "/start") == 0 &&
+			    strcmp(req->method, "POST") == 0 && nlen - 6 < REGISTRY_NAME_MAX) {
+				char container_name[REGISTRY_NAME_MAX];
+
+				memcpy(container_name, name, nlen - 6);
+				container_name[nlen - 6] = '\0';
+				handle_start(fd, container_name);
+				return;
+			}
 			if (nlen > 5 && strcmp(name + nlen - 5, "/stop") == 0 &&
 			    strcmp(req->method, "POST") == 0 && nlen - 5 < REGISTRY_NAME_MAX) {
 				char container_name[REGISTRY_NAME_MAX];
@@ -3442,6 +3592,24 @@ static void dispatch(int fd, const struct http_request *req)
 				memcpy(container_name, name, nlen - 5);
 				container_name[nlen - 5] = '\0';
 				handle_stop(fd, container_name);
+				return;
+			}
+			if (nlen > 8 && strcmp(name + nlen - 8, "/unpause") == 0 &&
+			    strcmp(req->method, "POST") == 0 && nlen - 8 < REGISTRY_NAME_MAX) {
+				char container_name[REGISTRY_NAME_MAX];
+
+				memcpy(container_name, name, nlen - 8);
+				container_name[nlen - 8] = '\0';
+				handle_unpause(fd, container_name);
+				return;
+			}
+			if (nlen > 6 && strcmp(name + nlen - 6, "/pause") == 0 &&
+			    strcmp(req->method, "POST") == 0 && nlen - 6 < REGISTRY_NAME_MAX) {
+				char container_name[REGISTRY_NAME_MAX];
+
+				memcpy(container_name, name, nlen - 6);
+				container_name[nlen - 6] = '\0';
+				handle_pause(fd, container_name);
 				return;
 			}
 			if (strcmp(req->method, "GET") == 0) {
@@ -4577,6 +4745,23 @@ static void containerdef_autostart_all(void)
 		/* create_container_from_body() already registered entry's own
 		 * pidfd with epoll -- exactly the same shape POST /v1/containers'
 		 * own success path relies on, no separate call needed here. */
+
+		/*
+		 * A def whose restart_policy is "always"/"on-failure" and was
+		 * previously stopped=1 (manual POST .../stop, surviving that
+		 * mattering only for "unless-stopped" per the check above) just
+		 * successfully came back live here -- clear stopped now, the
+		 * same thing handle_start() (ADR-0045) already does on its own
+		 * success path. Without this, a real bug: def->stopped stays
+		 * permanently stuck at 1 after this point, which
+		 * handle_restart_timer_event() (the crash-restart path, checked
+		 * unconditionally regardless of policy) would then read as
+		 * "don't restart" forever -- silently defeating this
+		 * container's own restart:"always"/"on-failure" policy for any
+		 * crash after this boot, not just suppressing this one
+		 * autostart. Harmless no-op if it was already 0.
+		 */
+		containerdef_set_stopped(order[i], 0);
 
 		/* def (not the freshly-returned out-params above) is the
 		 * authoritative, already-persisted source for readiness -- see

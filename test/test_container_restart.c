@@ -117,7 +117,18 @@ static void reset_state(void)
 	system(cmd);
 }
 
-/* Fetches container name's current pid, or -1 if it isn't currently known. */
+/*
+ * Fetches container name's current pid, or -1 if it isn't currently
+ * known -- "known" meaning genuinely live, not merely "GET returns
+ * 200." Since ADR-0045, GET also returns 200 for a stopped-but-
+ * defined container (a synthesized entry with pid: null, status:
+ * "stopped") -- excluded here explicitly, since json_num_field() on a
+ * null "pid" would otherwise read back as 0, which every caller in
+ * this file uses (indistinguishable from "not yet observed") to mean
+ * "this is a genuinely new/different pid," a false positive this
+ * test's own crash-restart-suppression scenarios below depend on not
+ * happening.
+ */
 static long fetch_pid(const struct kx_client *c, const char *name)
 {
 	char path[128];
@@ -126,25 +137,34 @@ static long fetch_pid(const struct kx_client *c, const char *name)
 
 	snprintf(path, sizeof(path), "/v1/containers/%s", name);
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200)
+	if (kx_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200 &&
+	    !str_eq(json_str_field(r.json, "status"), "stopped"))
 		pid = json_num_field(r.json, "pid");
 	kx_response_free(&r);
 	return pid;
 }
 
+/*
+ * True if name is genuinely live right now -- not merely persisted.
+ * Since ADR-0045, GET 200 alone no longer implies that (a stopped-but-
+ * defined container is also 200, status "stopped"); every call site in
+ * this file uses this function to mean "live," so that case reads as
+ * not-existing here, matching every call site's actual intent from
+ * before ADR-0045 (this test predates it).
+ */
 static int container_exists(const struct kx_client *c, const char *name)
 {
 	char path[128];
 	struct kx_response r;
-	int status;
+	int result;
 
 	snprintf(path, sizeof(path), "/v1/containers/%s", name);
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(c, "GET", path, NULL, &r) != 0)
 		return -1;
-	status = r.status;
+	result = r.status == 200 && !str_eq(json_str_field(r.json, "status"), "stopped");
 	kx_response_free(&r);
-	return status == 200;
+	return result;
 }
 
 /* POST .../stop; returns the HTTP status, or -1 if the daemon couldn't be reached. */

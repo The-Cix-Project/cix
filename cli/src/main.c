@@ -53,6 +53,9 @@ static void print_usage(FILE *out)
 	        "      [--readiness-tcp-port=N [--readiness-timeout=N]] -- CMD [ARGS...]\n"
 	        "  inspect NAME\n"
 	        "  stop NAME  -- kill it now, keep its persisted definition (unlike rm)\n"
+	        "  start NAME  -- bring a stopped-but-defined container back, no daemon restart needed\n"
+	        "  pause NAME  -- freeze via the cgroup v2 freezer (real kernel freeze, not SIGSTOP)\n"
+	        "  unpause NAME\n"
 	        "  console NAME [--cmd=PATH]  -- interactive shell inside a running container\n"
 	        "               (like `docker exec -it`), over the daemon's own WebSocket\n"
 	        "               upgrade; --cmd= overrides the default /usr/bin/bash\n"
@@ -600,6 +603,57 @@ static int cmd_stop(const struct kx_client *c, int json_mode, int argc, char **a
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/stop", argv[0]);
+	if (kx_client_request(c, "POST", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_health);
+}
+
+static int cmd_start(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[300];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: start requires a container name\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/containers/%s/start", argv[0]);
+	if (kx_client_request(c, "POST", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_health);
+}
+
+static int cmd_pause(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[300];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: pause requires a container name\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/containers/%s/pause", argv[0]);
+	if (kx_client_request(c, "POST", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_health);
+}
+
+static int cmd_unpause(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[300];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: unpause requires a container name\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/containers/%s/unpause", argv[0]);
 	if (kx_client_request(c, "POST", path, NULL, &r) != 0) {
 		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
 		return 1;
@@ -2371,6 +2425,12 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_inspect(client, json_mode, argc, argv);
 	if (strcmp(cmd, "stop") == 0)
 		return cmd_stop(client, json_mode, argc, argv);
+	if (strcmp(cmd, "start") == 0)
+		return cmd_start(client, json_mode, argc, argv);
+	if (strcmp(cmd, "pause") == 0)
+		return cmd_pause(client, json_mode, argc, argv);
+	if (strcmp(cmd, "unpause") == 0)
+		return cmd_unpause(client, json_mode, argc, argv);
 	if (strcmp(cmd, "console") == 0)
 		return cmd_console(client, argc, argv);
 	if (strcmp(cmd, "rm") == 0)

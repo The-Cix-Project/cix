@@ -47,6 +47,17 @@ struct registry_entry {
 	int running;       /* 1 while the container's process is alive */
 	int exit_status;   /* valid once running == 0 */
 	/*
+	 * 1 while frozen via the cgroup v2 freezer (POST .../pause,
+	 * ADR-0045) -- the process itself is still `running` (its pid is
+	 * alive, waitid() would still block on it) but every task in the
+	 * cgroup is stopped at the kernel level via cgroup.freeze, not
+	 * SIGSTOP (SIGSTOP is visible to and can be ignored/handled by the
+	 * traced process; the freezer is not). Only meaningful while
+	 * running == 1 -- cleared, not persisted, on exit/removal, same as
+	 * every other purely-live piece of registry_entry state.
+	 */
+	int paused;
+	/*
 	 * Wall-clock time this entry's process was started -- used by
 	 * handle_container_event() (daemon/src/main.c) to decide whether an
 	 * exiting restart:"always"/"on-failure"/"unless-stopped" container
@@ -135,6 +146,15 @@ enum registry_error registry_create(const char *name, const char *image,
                                      int file_count, struct registry_entry **out);
 
 struct registry_entry *registry_find(const char *name);
+
+/*
+ * Freezes (freeze=1) or thaws (freeze=0) e via the cgroup v2 freezer
+ * (ADR-0045), updating e->paused on success. See registry.c's own
+ * comment for the full rationale (real kernel freeze, not SIGSTOP) and
+ * why registry_remove() also calls this internally before killing a
+ * paused container. Returns 0 on success, -1 (errno set) otherwise.
+ */
+int registry_set_paused(struct registry_entry *e, int freeze);
 
 /*
  * True if any in-use entry currently reports network_name as its own

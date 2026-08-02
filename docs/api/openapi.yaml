@@ -1101,6 +1101,112 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /containers/{name}/start:
+    post:
+      summary: >
+        Bring a stopped-but-still-defined container back to life,
+        without a daemon restart (see ADR-0045).
+      description: >
+        The counterpart to POST .../stop: replays that name's persisted
+        definition (the same body POST /containers originally received)
+        through the same creation path a daemon restart's own autostart
+        already uses -- one source of truth for "how a definition
+        becomes a live container." Idempotent -- already-live is a
+        plain 200, not an error. 404 if no persisted definition exists
+        for this name at all (this endpoint only ever replays an
+        existing definition; POST /containers creates a new one).
+        Ignores restart-policy "unless-stopped" gating entirely, unlike
+        boot-time autostart -- an explicit, manual start always means
+        start it.
+      operationId: startContainer
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+      responses:
+        "200":
+          description: Already running, or successfully started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Container"
+        "404":
+          description: No persisted definition for this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "400":
+          description: The persisted definition itself is now invalid (e.g. its image was deleted)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /containers/{name}/pause:
+    post:
+      summary: Freeze a running container via the cgroup v2 freezer (see ADR-0045).
+      description: >
+        Writes cgroup.freeze=1 for this container's own cgroup leaf --
+        every task in it is stopped at the kernel level, uninterceptable
+        and unignorable by the frozen process, unlike SIGSTOP which a
+        process can catch or handle. Requires an already-live container
+        (404 otherwise -- pausing a stopped-but-defined or nonexistent
+        container makes no sense). Unlike POST .../stop's idempotent
+        double-call tolerance, pausing an already-paused container is a
+        409, not a silent 200 -- the caller should already know this
+        from its last GET.
+      operationId: pauseContainer
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+      responses:
+        "200":
+          description: Paused
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Container"
+        "404":
+          description: No running container with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Already paused
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /containers/{name}/unpause:
+    post:
+      summary: Thaw a paused container (see ADR-0045).
+      description: >
+        Writes cgroup.freeze=0 for this container's own cgroup leaf,
+        the inverse of POST .../pause. 404 if not currently a live
+        container; 409 if it is live but not currently paused.
+      operationId: unpauseContainer
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+      responses:
+        "200":
+          description: Unpaused
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Container"
+        "404":
+          description: No running container with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Not paused
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /containers/{name}/stop:
     post:
       summary: >
@@ -1732,7 +1838,15 @@ components:
           description: The image this container's rootfs was built from (see GET /images).
         status:
           type: string
-          enum: [running, exited]
+          enum: [running, paused, exited]
+        paused:
+          type: boolean
+          description: >
+            True while frozen via the cgroup v2 freezer (ADR-0045, POST
+            .../pause). Always false once status is exited. Redundant
+            with status == "paused" -- provided as a plain boolean too
+            since some clients prefer switching on a flag over a string
+            enum.
         pid:
           type: integer
           description: PID in the daemon's own PID namespace. Meaningless once status is exited.
