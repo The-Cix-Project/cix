@@ -2,6 +2,23 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 33: a real dev-toolchain recipe set -- gcc, python, coreutils, and 13 supporting packages, proven self-hosting
+
+Direct user request for individual, real from-source dev-tool recipes rather than one bundled image, plus reloading `lldap` (already existed, had fallen out of the live daemon's own catalog after an earlier `--data-dir=` reset). Sixteen packages total, closing with a genuine self-hosting proof: a real Kanxeo container compiling, linking, and running a real C program with its own from-source `gcc`+`libc-dev`, and separately running real Python.
+
+#### Added
+- `pkg/recipes/m4.recipe` (1.4.19), `binutils.recipe` (2.42 -- `as`/`ld`/`ar`/`nm`/`ranlib`/`objdump`/`objcopy`/`readelf`/`strip`/etc), `bison.recipe` (3.8.2, `pkg_depends="m4"` -- hardcodes `/usr/bin/m4`), `flex.recipe` (6.17), `make.recipe` (4.4.1), `gawk.recipe` (5.3.0, needed by `autoconf`'s own `AC_PROG_AWK`), `autoconf.recipe` (2.71, `pkg_depends="m4 perl gawk"`), `automake.recipe` (1.16.5), `libtool.recipe` (2.4.7), `pkgconf.recipe` (3.0.5, with a real `pkg-config` compat symlink), `perl.recipe` (5.40.1), `python.recipe` (3.13.5, `--enable-shared`), `gcc.recipe` (16.1.0, real multi-source vendored build with `gmp`/`mpfr`/`mpc`/`isl`), `libc-dev.recipe` (glibc 2.36 headers + `crt1.o`/`crti.o`/`crtn.o`/etc, new recipe class -- the first to stage build-only C-runtime files into a *target* image), `coreutils.recipe` (9.11, `FORCE_UNSAFE_CONFIGURE=1`).
+- A new `dev` target image with all sixteen packages installed.
+
+#### Fixed
+- `gcc.recipe`'s multi-source `pkg_source=`/`pkg_sha256=` were originally written multi-line with embedded newlines -- an instant ~20s parse failure on the real daemon, not a build failure. Fixed to the real single-line, space-separated format (ADR-0036), and `pkg_build()` now extracts the vendored `gmp`/`mpfr`/`mpc`/`isl` tarballs from their real `/build/extra/<basename>` landing spot instead of assuming pre-extraction.
+- `gcc.recipe`'s `pkg_install()` now `strip --strip-unneeded`s every binary (`cc1`/`cc1plus`/`lto1` alone were ~400MB each unstripped, ~1.8GB total; stripped brings the real footprint to ~300MB) and symlinks `/usr/bin/ld` into gcc's own private `usr/libexec/gcc/x86_64-pc-linux-gnu/16.1.0/` prefix directory -- `collect2` (gcc's linker driver) searches for `ld` via the same private `COMPILER_PATH` as `cc1`, never falling back to `$PATH`, even though the real `ld` was on `$PATH` the whole time.
+- Python's `configure` initially reported `ctypes`/`_sqlite3`/`_bz2`/`_lzma`/`_dbm`/`_uuid` all disabled ("necessary bits ... not found"); fixed by installing `libffi-dev`/`libbz2-dev`/`liblzma-dev`/`libgdbm-dev`/`uuid-dev`/`libsqlite3-dev` on the build host (flows into the isolated build sandbox via the existing wholesale toolchain copy) and rebuilding.
+
+#### Notes
+- gcc must be invoked by its absolute path (`/usr/bin/gcc`), not a bare `gcc` via `$PATH` -- bare-name invocation makes gcc compute a wrong *relative* `-iprefix`, breaking `cc1` with a misleading `posix_spawnp: No such file or directory`. Real GCC behavior in this minimal-container environment, not a Kanxeo bug.
+- `coreutils`'s own `cat` was missing from every image before this phase -- self-hosting test scripts using `cat > file << EOF` silently failed with "command not found," producing stale/empty files that briefly looked like a real gcc bug before being traced to the missing `cat` itself.
+
 ### Phase 32: image detail view -- add/install/remove packages inline, tabbed to declutter
 
 Direct user follow-up in the same request as Phase 31: install/remove packages straight from an image's own detail page, and split its two always-both-visible tables into tabs.
