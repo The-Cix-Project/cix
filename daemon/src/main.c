@@ -15,6 +15,7 @@
 #include "pkg.h"
 #include "registry.h"
 #include "rtnetlink.h"
+#include "siteconfig.h"
 #include "staticfile.h"
 #include "websocket.h"
 
@@ -78,6 +79,7 @@ static char PKG_DIR[PATH_MAX];
 static char PKG_INSTALLED_STATE_PATH[PATH_MAX];
 static char PKG_RECIPES_DIR[PATH_MAX];
 static char CONTAINER_DEFS_STATE_PATH[PATH_MAX];
+static char SITE_CONFIG_PATH[PATH_MAX];
 
 /* Computes every path derived from g_base_dir -- called once, right
  * after argv parsing (so --data-dir= has already been applied) and
@@ -97,6 +99,7 @@ static void init_base_dir_paths(void)
 	snprintf(PKG_INSTALLED_STATE_PATH, sizeof(PKG_INSTALLED_STATE_PATH), "%s/pkg_installed.json", PKG_DIR);
 	snprintf(PKG_RECIPES_DIR, sizeof(PKG_RECIPES_DIR), "%s/recipes", PKG_DIR);
 	snprintf(CONTAINER_DEFS_STATE_PATH, sizeof(CONTAINER_DEFS_STATE_PATH), "%s/container_defs.json", g_base_dir);
+	snprintf(SITE_CONFIG_PATH, sizeof(SITE_CONFIG_PATH), "%s/site_config.json", g_base_dir);
 }
 /*
  * Backoff cap and stability-reset threshold for the crash-restart
@@ -1362,6 +1365,70 @@ static void handle_system_restore(int fd, const char *body, size_t body_len)
 	jw_key(&w, "status");
 	jw_str(&w, "restored");
 	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * GET/PUT /v1/system/site (ADR-0046): this install's own declared
+ * site_name/domain_suffix, a real convenience for client tooling to
+ * suggest a default FQDN with, never enforced by anything on the
+ * daemon side -- see siteconfig.h's own comment for the full
+ * rationale. GET always 200s (siteconfig_init() already applied
+ * defaults at startup; there is no "not configured yet" state the way
+ * PKI's bootstrap-gated resources have).
+ */
+static void handle_site_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	siteconfig_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_site_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *site_name, *domain_suffix;
+	enum siteconfig_error serr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	site_name = json_as_string(json_object_get(root, "site_name"));
+	domain_suffix = json_as_string(json_object_get(root, "domain_suffix"));
+	if (domain_suffix == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "domain_suffix is required");
+		return;
+	}
+
+	serr = siteconfig_set(site_name, domain_suffix);
+	json_free(root);
+
+	if (serr != SITECONFIG_OK) {
+		switch (serr) {
+		case SITECONFIG_ERR_INVALID_SITE_NAME:
+			respond_error(fd, 400, "Bad Request", "invalid site_name");
+			break;
+		case SITECONFIG_ERR_INVALID_DOMAIN_SUFFIX:
+			respond_error(fd, 400, "Bad Request", "invalid domain_suffix");
+			break;
+		case SITECONFIG_ERR_PERSIST_FAILED:
+		default:
+			respond_error(fd, 500, "Internal Server Error", "could not persist site config");
+			break;
+		}
+		return;
+	}
+
+	jw_init(&w);
+	siteconfig_write_json(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
@@ -3070,6 +3137,81 @@ static void handle_pki_ca_get(int fd)
 	jw_free(&w);
 }
 
+static void handle_pki_intermediate_create(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = NULL;
+	const char *common_name = "Kanxeo Intermediate CA";
+	int days = 1825;
+	enum pki_error perr;
+
+	if (body_len > 0) {
+		root = json_parse(body, body_len);
+		if (root == NULL) {
+			respond_error(fd, 400, "Bad Request", "invalid JSON body");
+			return;
+		}
+		if (json_as_string(json_object_get(root, "common_name")) != NULL)
+			common_name = json_as_string(json_object_get(root, "common_name"));
+		if (json_object_get(root, "days") != NULL)
+			days = (int)json_as_number(json_object_get(root, "days"));
+	}
+
+	perr = pki_intermediate_create(common_name, days);
+	json_free(root);
+
+	if (perr != PKI_OK) {
+		/*
+		 * respond_pki_error()'s own NOT_BOOTSTRAPPED/ALREADY_BOOTSTRAPPED
+		 * wording is root-CA-specific ("POST /v1/pki/ca first" / "CA is
+		 * already bootstrapped") -- both real but wrong words for this
+		 * endpoint, so handled here instead of falling through to it.
+		 */
+		if (perr == PKI_ERR_NOT_BOOTSTRAPPED)
+			respond_error(fd, 400, "Bad Request", "root CA not bootstrapped -- POST /v1/pki/ca first");
+		else if (perr == PKI_ERR_ALREADY_BOOTSTRAPPED)
+			respond_error(fd, 409, "Conflict", "intermediate is already bootstrapped");
+		else
+			respond_pki_error(fd, perr);
+		return;
+	}
+
+	{
+		struct json_writer w;
+
+		jw_init(&w);
+		if (pki_intermediate_get(&w) != PKI_OK) {
+			jw_free(&w);
+			respond_error(fd, 500, "Internal Server Error",
+			              "intermediate created but could not be read back");
+			return;
+		}
+		respond_json(fd, 201, "Created", &w);
+		jw_free(&w);
+	}
+}
+
+static void handle_pki_intermediate_get(int fd)
+{
+	struct json_writer w;
+	enum pki_error perr;
+
+	jw_init(&w);
+	perr = pki_intermediate_get(&w);
+	if (perr != PKI_OK) {
+		jw_free(&w);
+		/* Same 404-not-400 reasoning as handle_pki_ca_get() above --
+		 * GET-ing an intermediate that doesn't exist yet is a missing
+		 * resource, not a POST-precondition failure. */
+		if (perr == PKI_ERR_NOT_BOOTSTRAPPED)
+			respond_error(fd, 404, "Not Found", "intermediate not bootstrapped yet");
+		else
+			respond_pki_error(fd, perr);
+		return;
+	}
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_pki_cert_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
@@ -3555,6 +3697,16 @@ static void dispatch(int fd, const struct http_request *req)
 		handle_system_restore(fd, req->body, req->body_len);
 		return;
 	}
+	if (strcmp(req->path, "/v1/system/site") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_site_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_site_put(fd, req->body, req->body_len);
+			return;
+		}
+	}
 	if (strcmp(req->path, "/v1/containers") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_list(fd);
@@ -3753,6 +3905,16 @@ static void dispatch(int fd, const struct http_request *req)
 		}
 		if (strcmp(req->method, "POST") == 0) {
 			handle_pki_ca_create(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/pki/intermediate") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_pki_intermediate_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_pki_intermediate_create(fd, req->body, req->body_len);
 			return;
 		}
 	}
@@ -4894,6 +5056,8 @@ int main(int argc, char **argv)
 	if (dns_init(DNS_RECORDS_STATE_PATH) != 0)
 		return 1;
 	if (pki_init(PKI_DIR, PKI_CERTS_STATE_PATH) != 0)
+		return 1;
+	if (siteconfig_init(SITE_CONFIG_PATH) != 0)
 		return 1;
 	if (pkg_init(PKG_DIR, PKG_INSTALLED_STATE_PATH, CONTAINERS_DIR, IMAGES_DIR) != 0)
 		return 1;

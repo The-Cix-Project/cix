@@ -50,3 +50,5 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0043](0043-container-console-exec-websocket.md) | An interactive shell into a running container, over a hand-rolled WebSocket | Accepted |
 | [0044](0044-daemon-data-dir-test-isolation.md) | `kanxeod --data-dir=` for test/production state isolation | Accepted |
 | [0045](0045-container-start-pause-lifecycle.md) | Container start/pause: cgroup-freeze lifecycle completeness | Accepted |
+| [0046](0046-site-scoped-dns-pki-naming.md) | Site-scoped DNS/PKI naming: a real, configurable convenience, not enforcement | Accepted |
+| [0047](0047-two-tier-pki-intermediate-ca.md) | Two-tier PKI: an intermediate CA for day-to-day signing | Accepted |

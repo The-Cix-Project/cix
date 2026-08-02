@@ -31,6 +31,8 @@ struct pki_cert_record {
 static char g_pki_dir[PATH_MAX];
 static char g_ca_key_path[PATH_MAX];
 static char g_ca_cert_path[PATH_MAX];
+static char g_intermediate_key_path[PATH_MAX];
+static char g_intermediate_cert_path[PATH_MAX];
 static char g_certs_dir[PATH_MAX];
 static char g_certs_state_path[PATH_MAX];
 static struct pki_cert_record g_certs[PKI_MAX_CERTS];
@@ -299,6 +301,12 @@ int pki_init(const char *pki_dir, const char *certs_state_path)
 	if (snprintf(g_ca_cert_path, sizeof(g_ca_cert_path), "%s/ca.crt", pki_dir) >=
 	    (int)sizeof(g_ca_cert_path))
 		return -1;
+	if (snprintf(g_intermediate_key_path, sizeof(g_intermediate_key_path), "%s/intermediate.key",
+	             pki_dir) >= (int)sizeof(g_intermediate_key_path))
+		return -1;
+	if (snprintf(g_intermediate_cert_path, sizeof(g_intermediate_cert_path), "%s/intermediate.crt",
+	             pki_dir) >= (int)sizeof(g_intermediate_cert_path))
+		return -1;
 	if (snprintf(g_certs_dir, sizeof(g_certs_dir), "%s/certs", pki_dir) >=
 	    (int)sizeof(g_certs_dir))
 		return -1;
@@ -420,6 +428,161 @@ enum pki_error pki_ca_get(struct json_writer *w)
 	return PKI_OK;
 }
 
+int pki_intermediate_bootstrapped(void)
+{
+	struct stat st;
+
+	return stat(g_intermediate_cert_path, &st) == 0 && stat(g_intermediate_key_path, &st) == 0;
+}
+
+enum pki_error pki_intermediate_create(const char *common_name, int days)
+{
+	char csr_path[PATH_MAX];
+	char subj[PKI_SUBJECT_MAX + 8];
+	char days_str[16];
+	char errbuf[512];
+	char *argv[24];
+
+	if (!common_name_is_valid(common_name))
+		return PKI_ERR_INVALID_NAME;
+	if (!pki_ca_bootstrapped())
+		return PKI_ERR_NOT_BOOTSTRAPPED;
+	if (pki_intermediate_bootstrapped())
+		return PKI_ERR_ALREADY_BOOTSTRAPPED;
+	if (snprintf(csr_path, sizeof(csr_path), "%s/intermediate.csr", g_pki_dir) >=
+	    (int)sizeof(csr_path))
+		return PKI_ERR_PERSIST_FAILED;
+
+	snprintf(subj, sizeof(subj), "/CN=%s", common_name);
+	snprintf(days_str, sizeof(days_str), "%d", days);
+
+	/* 1. intermediate keypair */
+	argv[0] = (char *)PKI_OPENSSL_BIN;
+	argv[1] = "genpkey";
+	argv[2] = "-algorithm";
+	argv[3] = "RSA";
+	argv[4] = "-pkeyopt";
+	argv[5] = "rsa_keygen_bits:2048";
+	argv[6] = "-out";
+	argv[7] = g_intermediate_key_path;
+	argv[8] = NULL;
+	if (run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
+		fprintf(stderr, "pki: intermediate genpkey failed: %s\n", errbuf);
+		unlink(g_intermediate_key_path);
+		return PKI_ERR_OPENSSL_FAILED;
+	}
+	chmod(g_intermediate_key_path, 0600);
+
+	/* 2. CSR, with CA:TRUE + keyCertSign/cRLSign baked in via -addext
+	 * (the same pattern pki_cert_create()'s own leaf CSR already uses
+	 * for its SAN extension) -- this is what makes the signed result a
+	 * real intermediate CA, not just another leaf. */
+	argv[0] = (char *)PKI_OPENSSL_BIN;
+	argv[1] = "req";
+	argv[2] = "-new";
+	argv[3] = "-key";
+	argv[4] = g_intermediate_key_path;
+	argv[5] = "-subj";
+	argv[6] = subj;
+	argv[7] = "-addext";
+	argv[8] = "basicConstraints=critical,CA:TRUE,pathlen:0";
+	argv[9] = "-addext";
+	argv[10] = "keyUsage=critical,keyCertSign,cRLSign";
+	argv[11] = "-out";
+	argv[12] = csr_path;
+	argv[13] = NULL;
+	if (run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
+		fprintf(stderr, "pki: intermediate req failed: %s\n", errbuf);
+		unlink(g_intermediate_key_path);
+		unlink(csr_path);
+		return PKI_ERR_OPENSSL_FAILED;
+	}
+
+	/* 3. sign with the ROOT (not self-signed -- this is the whole
+	 * point: the intermediate's trust derives from the root). */
+	argv[0] = (char *)PKI_OPENSSL_BIN;
+	argv[1] = "x509";
+	argv[2] = "-req";
+	argv[3] = "-in";
+	argv[4] = csr_path;
+	argv[5] = "-CA";
+	argv[6] = g_ca_cert_path;
+	argv[7] = "-CAkey";
+	argv[8] = g_ca_key_path;
+	argv[9] = "-CAcreateserial";
+	argv[10] = "-days";
+	argv[11] = days_str;
+	argv[12] = "-copy_extensions";
+	argv[13] = "copy";
+	argv[14] = "-out";
+	argv[15] = g_intermediate_cert_path;
+	argv[16] = NULL;
+	if (run_openssl(argv, errbuf, sizeof(errbuf)) != 0) {
+		fprintf(stderr, "pki: intermediate x509 sign failed: %s\n", errbuf);
+		unlink(g_intermediate_key_path);
+		unlink(csr_path);
+		unlink(g_intermediate_cert_path);
+		return PKI_ERR_OPENSSL_FAILED;
+	}
+	chmod(g_intermediate_cert_path, 0644);
+	unlink(csr_path);
+
+	return PKI_OK;
+}
+
+enum pki_error pki_intermediate_get(struct json_writer *w)
+{
+	char output[1024];
+	char subject[PKI_SUBJECT_MAX + 8];
+	char serial[PKI_SERIAL_MAX];
+	char not_before[PKI_DATE_MAX];
+	char not_after[PKI_DATE_MAX];
+	char *cert_pem;
+	size_t cert_pem_len;
+	char *argv[24];
+
+	if (!pki_intermediate_bootstrapped())
+		return PKI_ERR_NOT_BOOTSTRAPPED;
+
+	argv[0] = (char *)PKI_OPENSSL_BIN;
+	argv[1] = "x509";
+	argv[2] = "-in";
+	argv[3] = g_intermediate_cert_path;
+	argv[4] = "-noout";
+	argv[5] = "-subject";
+	argv[6] = "-serial";
+	argv[7] = "-startdate";
+	argv[8] = "-enddate";
+	argv[9] = NULL;
+	if (run_openssl(argv, output, sizeof(output)) != 0)
+		return PKI_ERR_OPENSSL_FAILED;
+
+	if (extract_field(output, "subject=", subject, sizeof(subject)) != 0 ||
+	    extract_field(output, "serial=", serial, sizeof(serial)) != 0 ||
+	    extract_field(output, "notBefore=", not_before, sizeof(not_before)) != 0 ||
+	    extract_field(output, "notAfter=", not_after, sizeof(not_after)) != 0)
+		return PKI_ERR_OPENSSL_FAILED;
+
+	if (persist_read_file(g_intermediate_cert_path, &cert_pem, &cert_pem_len) != 0 ||
+	    cert_pem == NULL)
+		return PKI_ERR_PERSIST_FAILED;
+
+	jw_obj_open(w);
+	jw_key(w, "subject");
+	jw_str(w, subject);
+	jw_key(w, "serial");
+	jw_str(w, serial);
+	jw_key(w, "not_before");
+	jw_str(w, not_before);
+	jw_key(w, "not_after");
+	jw_str(w, not_after);
+	jw_key(w, "cert_pem");
+	jw_str(w, cert_pem);
+	jw_obj_close(w);
+	free(cert_pem);
+	return PKI_OK;
+}
+
 enum pki_error pki_cert_create(const char *name, const char *const *sans, int san_count, int days,
                                 const char *owner_container, struct json_writer *w)
 {
@@ -513,16 +676,19 @@ enum pki_error pki_cert_create(const char *name, const char *const *sans, int sa
 		return PKI_ERR_OPENSSL_FAILED;
 	}
 
-	/* 3. sign with the CA */
+	/* 3. sign with the CA -- the intermediate if one has been
+	 * bootstrapped (pki_intermediate_create()), the root directly
+	 * otherwise. Transparent to every existing caller: no signature
+	 * change here, just which key/cert pair actually signs. */
 	argv[0] = (char *)PKI_OPENSSL_BIN;
 	argv[1] = "x509";
 	argv[2] = "-req";
 	argv[3] = "-in";
 	argv[4] = csr_path;
 	argv[5] = "-CA";
-	argv[6] = g_ca_cert_path;
+	argv[6] = pki_intermediate_bootstrapped() ? g_intermediate_cert_path : g_ca_cert_path;
 	argv[7] = "-CAkey";
-	argv[8] = g_ca_key_path;
+	argv[8] = pki_intermediate_bootstrapped() ? g_intermediate_key_path : g_ca_key_path;
 	argv[9] = "-CAcreateserial";
 	argv[10] = "-days";
 	argv[11] = days_str;
@@ -619,8 +785,8 @@ enum pki_error pki_cert_deliver(const char *name, pid_t pid, const char *dest_di
 	char src_key[PATH_MAX], src_crt[PATH_MAX];
 	char dst_key[PATH_MAX], dst_crt[PATH_MAX];
 	char parent[PATH_MAX + 32];
-	char *key_pem = NULL, *cert_pem = NULL;
-	size_t key_pem_len, cert_pem_len;
+	char *key_pem = NULL, *cert_pem = NULL, *intermediate_pem = NULL, *chain_pem = NULL;
+	size_t key_pem_len, cert_pem_len, intermediate_pem_len = 0, chain_len;
 	enum pki_error result = PKI_OK;
 
 	if (cert_find(name) == NULL)
@@ -635,16 +801,44 @@ enum pki_error pki_cert_deliver(const char *name, pid_t pid, const char *dest_di
 		return PKI_ERR_PERSIST_FAILED;
 	}
 
+	/* tls.crt is the real, complete chain a TLS server needs (leaf +
+	 * intermediate, standard fullchain.pem order) when an intermediate
+	 * has been bootstrapped -- the leaf alone otherwise, unchanged from
+	 * before this existed. */
+	if (pki_intermediate_bootstrapped() &&
+	    (persist_read_file(g_intermediate_cert_path, &intermediate_pem, &intermediate_pem_len) !=
+	         0 ||
+	     intermediate_pem == NULL)) {
+		free(key_pem);
+		free(cert_pem);
+		free(intermediate_pem);
+		return PKI_ERR_PERSIST_FAILED;
+	}
+	chain_len = cert_pem_len + intermediate_pem_len;
+	chain_pem = malloc(chain_len + 1);
+	if (chain_pem == NULL) {
+		free(key_pem);
+		free(cert_pem);
+		free(intermediate_pem);
+		return PKI_ERR_PERSIST_FAILED;
+	}
+	memcpy(chain_pem, cert_pem, cert_pem_len);
+	if (intermediate_pem != NULL)
+		memcpy(chain_pem + cert_pem_len, intermediate_pem, intermediate_pem_len);
+	chain_pem[chain_len] = '\0';
+
 	if (snprintf(parent, sizeof(parent), "/proc/%d/root%s", (int)pid, dest_dir) >=
 	        (int)sizeof(parent) ||
 	    snprintf(dst_crt, sizeof(dst_crt), "%s/tls.crt", parent) >= (int)sizeof(dst_crt) ||
 	    snprintf(dst_key, sizeof(dst_key), "%s/tls.key", parent) >= (int)sizeof(dst_key)) {
 		free(key_pem);
 		free(cert_pem);
+		free(intermediate_pem);
+		free(chain_pem);
 		return PKI_ERR_PERSIST_FAILED;
 	}
 
-	if (persist_mkdir_p(parent) != 0 || persist_atomic_write(dst_crt, cert_pem, cert_pem_len) != 0 ||
+	if (persist_mkdir_p(parent) != 0 || persist_atomic_write(dst_crt, chain_pem, chain_len) != 0 ||
 	    persist_atomic_write(dst_key, key_pem, key_pem_len) != 0) {
 		result = PKI_ERR_PERSIST_FAILED;
 	} else {
@@ -653,6 +847,8 @@ enum pki_error pki_cert_deliver(const char *name, pid_t pid, const char *dest_di
 
 	free(key_pem);
 	free(cert_pem);
+	free(intermediate_pem);
+	free(chain_pem);
 	return result;
 }
 

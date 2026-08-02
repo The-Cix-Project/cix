@@ -204,6 +204,50 @@ paths:
             own validation (not valid JSON / pkg_recipes not an
             object of strings) -- nothing is written in either case
 
+  /system/site:
+    get:
+      summary: This install's declared site identity (ADR-0046)
+      description: >
+        A real, operator-configurable site_name/domain_suffix pair
+        client tooling can use to suggest a default FQDN
+        (`<name>.<site_name>.<domain_suffix>`, or
+        `<name>.<domain_suffix>` when site_name is empty) when creating
+        a DNS record or issuing a PKI cert -- a convenience only,
+        never enforced: DNS records and PKI SANs remain plain
+        operator-supplied strings, unaffected by this endpoint's own
+        value. Always 200s -- defaults (site_name "", domain_suffix
+        "internal") apply until the first PUT.
+      operationId: getSystemSite
+      responses:
+        "200":
+          description: Current site config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteConfig"
+    put:
+      summary: Sets this install's site identity
+      operationId: putSystemSite
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SiteConfig"
+      responses:
+        "200":
+          description: Updated site config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteConfig"
+        "400":
+          description: Invalid site_name or domain_suffix, or domain_suffix missing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /containers:
     get:
       summary: List all containers known to this daemon
@@ -725,6 +769,61 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: CA is already bootstrapped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /pki/intermediate:
+    get:
+      summary: Inspect the intermediate CA (never includes the private key)
+      operationId: getPkiIntermediate
+      responses:
+        "200":
+          description: Intermediate CA detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkiCa"
+        "404":
+          description: Intermediate not bootstrapped yet -- POST /pki/intermediate first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      summary: >
+        Bootstraps a second CA tier (ADR-0046): a real intermediate keypair and cert,
+        signed BY the root (not self-signed). Requires the root to already be
+        bootstrapped (400 otherwise); a second call is a 409, same as /pki/ca's own
+        one-shot-only precedent. Once this succeeds, every future POST /pki/certs leaf
+        is signed by the intermediate instead of the root automatically -- transparent
+        to that endpoint, no separate opt-in. GET /pki/certs/{name} and the tls.crt a
+        running container receives via pki_issue both then carry the real, complete
+        chain (leaf + intermediate). The intermediate private key is never returned
+        over the API, same as the root's.
+      operationId: createPkiIntermediate
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PkiIntermediateCreateRequest"
+      responses:
+        "201":
+          description: Intermediate bootstrapped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkiCa"
+        "400":
+          description: Invalid common_name, or the root CA isn't bootstrapped yet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Intermediate is already bootstrapped
           content:
             application/json:
               schema:
@@ -2190,6 +2289,23 @@ components:
         hosts_path:
           type: string
 
+    SiteConfig:
+      type: object
+      required: [site_name, domain_suffix]
+      properties:
+        site_name:
+          type: string
+          description: >
+            Operator-chosen label (e.g. "lab1"). "" is valid, meaning
+            no site tier -- a single-site deployment.
+        domain_suffix:
+          type: string
+          default: internal
+          description: >
+            The private TLD this site's names notionally live under.
+            Defaults to "internal" (IANA-reserved for exactly this
+            use, RFC 9476) but is a real, settable value.
+
     PkiCaCreateRequest:
       type: object
       properties:
@@ -2220,6 +2336,18 @@ components:
         cert_pem:
           type: string
           description: PEM-encoded CA certificate. The CA private key is never included here or anywhere else.
+
+    PkiIntermediateCreateRequest:
+      type: object
+      properties:
+        common_name:
+          type: string
+          default: "Kanxeo Intermediate CA"
+          description: Same free-form display-label rules as PkiCaCreateRequest.common_name.
+        days:
+          type: integer
+          default: 1825
+          description: Validity period in days.
 
     PkiCertCreateRequest:
       type: object

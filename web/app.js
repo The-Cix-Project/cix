@@ -22,9 +22,11 @@ const cache = {
 	dnsRecords: [],
 	dnsServers: [],
 	pkiCa: null,
+	pkiIntermediate: null,
 	pkiCerts: [],
 	pkgRecipes: [],
 	pkgList: [],
+	siteConfig: null,
 };
 
 const healthBadge = document.getElementById("health");
@@ -1636,6 +1638,34 @@ async function refreshPkiCa() {
 	}
 }
 
+async function refreshPkiIntermediate() {
+	const status = document.getElementById("pki-intermediate-status");
+	const form = document.getElementById("pki-intermediate-form");
+
+	try {
+		const intermediate = await apiRequest("GET", "/v1/pki/intermediate");
+
+		cache.pkiIntermediate = intermediate;
+		status.className = "pki-ca-status bootstrapped";
+		status.textContent =
+			"Bootstrapped: " +
+			intermediate.subject +
+			" (serial " +
+			intermediate.serial +
+			", expires " +
+			intermediate.not_after +
+			")";
+		form.hidden = true;
+	} catch (e) {
+		cache.pkiIntermediate = null;
+		status.className = "pki-ca-status";
+		status.textContent = cache.pkiCa
+			? "Not yet bootstrapped."
+			: "Not yet bootstrapped (bootstrap the root CA first).";
+		form.hidden = false;
+	}
+}
+
 function renderPkiCerts(certs) {
 	const body = document.getElementById("pki-certs-body");
 
@@ -2206,6 +2236,28 @@ document.getElementById("pki-ca-form").addEventListener("submit", async (event) 
 	}
 });
 
+document.getElementById("pki-intermediate-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const commonName = document.getElementById("icaf-common-name").value.trim();
+	const daysText = document.getElementById("icaf-days").value.trim();
+	const body = {};
+
+	if (commonName !== "")
+		body.common_name = commonName;
+	if (daysText !== "")
+		body.days = parseInt(daysText, 10);
+
+	try {
+		await apiRequest("POST", "/v1/pki/intermediate", body);
+		clearStatus();
+		document.getElementById("pki-intermediate-form").reset();
+		await refreshPkiIntermediate();
+	} catch (e) {
+		showStatus("Failed to bootstrap intermediate: " + e.message, true);
+	}
+});
+
 document.getElementById("pki-cert-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 
@@ -2340,6 +2392,36 @@ document.getElementById("pkg-update-all").addEventListener("click", async () => 
 
 /* ---------- System ---------- */
 
+async function refreshSiteConfig() {
+	try {
+		const site = await apiRequest("GET", "/v1/system/site");
+
+		cache.siteConfig = site;
+		document.getElementById("sitef-site-name").value = site.site_name;
+		document.getElementById("sitef-domain-suffix").value = site.domain_suffix;
+	} catch (e) {
+		/* Best-effort -- the form just stays at whatever was last typed. */
+	}
+}
+
+document.getElementById("sys-site-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const body = {
+		site_name: document.getElementById("sitef-site-name").value.trim(),
+		domain_suffix: document.getElementById("sitef-domain-suffix").value.trim(),
+	};
+
+	try {
+		await apiRequest("PUT", "/v1/system/site", body);
+		clearStatus();
+		showStatus("Site config saved", false);
+		await refreshSiteConfig();
+	} catch (e) {
+		showStatus("Failed to save site config: " + e.message, true);
+	}
+});
+
 document.getElementById("sys-backup").addEventListener("click", async () => {
 	try {
 		const text = await apiRequestRaw("GET", "/v1/system/backup");
@@ -2439,9 +2521,11 @@ async function poll() {
 		await refreshDnsRecords();
 		await refreshDnsServers();
 		await refreshPkiCa();
+		await refreshPkiIntermediate();
 		await refreshPkiCerts();
 		await refreshPkgRecipes();
 		await refreshPkgList();
+		await refreshSiteConfig();
 	} catch (e) {
 		showStatus("Poll failed: " + e.message, true);
 	}

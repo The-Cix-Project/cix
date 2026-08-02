@@ -287,6 +287,25 @@
 				</label>
 				<button type="submit">Bootstrap CA</button>
 			</form>
+
+			<h2>PKI: Intermediate CA</h2>
+			<p class="hint">
+				Optional second CA tier -- once bootstrapped, every future certificate
+				issuance is signed by it instead of the root, and delivered certs carry
+				the full chain. Requires the root CA above.
+			</p>
+			<div id="pki-intermediate-status" class="pki-ca-status"></div>
+			<form id="pki-intermediate-form">
+				<label>
+					Common name
+					<input type="text" id="icaf-common-name" placeholder="Kanxeo Intermediate CA">
+				</label>
+				<label>
+					Days
+					<input type="number" id="icaf-days" min="1" placeholder="1825">
+				</label>
+				<button type="submit">Bootstrap intermediate</button>
+			</form>
 		</section>
 
 		<!-- PKI: Certificates -->
@@ -358,6 +377,24 @@
 		<!-- System -->
 		<section class="view" id="view-system" hidden>
 			<h2>System</h2>
+
+			<h3>Site</h3>
+			<p class="hint">
+				A real, operator-set site identity, used only to suggest a default FQDN
+				(<code>&lt;name&gt;.&lt;site_name&gt;.&lt;domain_suffix&gt;</code>) when
+				creating a DNS record or issuing a PKI cert -- never enforced.
+			</p>
+			<form id="sys-site-form">
+				<label>
+					Site name (optional)
+					<input type="text" id="sitef-site-name" placeholder="lab1">
+				</label>
+				<label>
+					Domain suffix
+					<input type="text" id="sitef-domain-suffix" placeholder="internal">
+				</label>
+				<button type="submit">Save</button>
+			</form>
 
 			<h3>Backup</h3>
 			<p class="hint">Platform configuration state (container defs, networks, DNS records, pkg install

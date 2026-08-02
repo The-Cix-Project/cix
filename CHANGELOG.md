@@ -2,6 +2,21 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 35: site-scoped DNS/PKI naming + a real intermediate CA (ADR-0046, ADR-0047)
+
+Direct user request in the same batch as Phase 34: a configurable site identity (not hardcoded `.internal`) that affects both DNS and PKI via a real API, plus a real intermediate CA tier.
+
+#### Added
+- New `daemon/src/siteconfig.c`/`.h`: persisted `site_name`/`domain_suffix` (default `"internal"`). `GET`/`PUT /v1/system/site` -- the platform's first `PUT` endpoint. Convenience only (ADR-0046) -- never enforced against DNS records or PKI SANs, which stay plain operator strings; only the web dashboard's own forms compose a suggested FQDN from it, client-side.
+- `pki_intermediate_create()`/`pki_intermediate_bootstrapped()`/`pki_intermediate_get()` (`daemon/src/pki.c`, ADR-0047): a real intermediate keypair and cert, signed by the root (not self-signed), `basicConstraints=CA:TRUE,pathlen:0` + `keyUsage=keyCertSign,cRLSign`. `GET`/`POST /v1/pki/intermediate`, mirroring `/pki/ca`'s own shape.
+- `pki_cert_create()` now signs with the intermediate whenever one is bootstrapped, the root directly otherwise -- transparent, no API change. `pki_cert_deliver()` now writes the real, complete chain (leaf + intermediate) into a running container's `tls.crt` when an intermediate exists.
+- `kanxeoctl site show`/`site set`, `pki intermediate bootstrap`/`show`. Web dashboard: Site settings form under System, Intermediate CA block under PKI.
+- `test/test_pki.c` Part 3/4: real chain verification (leaf fails against root alone, succeeds with the intermediate completing the chain -- proof the leaf was actually signed by the intermediate, not just claimed to be) and site config CRUD/validation coverage.
+
+#### Notes
+- Fully backward-compatible: an operator who never bootstraps an intermediate sees zero behavior change anywhere in existing PKI flows.
+- `srv1`'s missing VRRP return route (found while restoring the live demo topology after Phase 34's own testing) was independently re-confirmed still fixed during this phase's regression sweep.
+
 ### Phase 34: container lifecycle completeness -- start/pause/unpause (ADR-0045)
 
 Direct user report: a stopped container simply vanished from `GET /v1/containers` with no way back short of a full daemon restart. Root cause: `GET` only ever listed the live registry, never persisted-but-stopped definitions. Also confirmed with the user: build real cgroup-freezer pause/resume, not just the start fix.

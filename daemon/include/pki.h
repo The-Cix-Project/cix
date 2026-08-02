@@ -67,6 +67,31 @@ enum pki_error pki_ca_create(const char *common_name, int days);
  * management call so the extra subprocess cost is a non-issue. */
 enum pki_error pki_ca_get(struct json_writer *w);
 
+int pki_intermediate_bootstrapped(void);
+
+/*
+ * Creates a second CA tier (ADR-0046) -- a real intermediate keypair
+ * and cert, signed BY the root (not self-signed), with
+ * basicConstraints=CA:TRUE and keyUsage=keyCertSign,cRLSign baked in
+ * via -addext at CSR-creation time, the same -addext-then-
+ * -copy_extensions-at-signing pattern pki_cert_create()'s own leaf
+ * issuance already established. Requires the root to already be
+ * bootstrapped (PKI_ERR_NOT_BOOTSTRAPPED otherwise);
+ * PKI_ERR_ALREADY_BOOTSTRAPPED if an intermediate already exists --
+ * there is no rotate/replace operation in v1, matching pki_ca_create()'s
+ * own one-shot-only precedent for the root. Once this succeeds,
+ * pki_cert_create() signs every future leaf with the intermediate
+ * instead of the root automatically -- no separate opt-in, and no
+ * change to pki_cert_create()'s own call signature or callers. The
+ * root key's own exposure is unchanged by any of this: it signs
+ * exactly one thing, this intermediate, once.
+ */
+enum pki_error pki_intermediate_create(const char *common_name, int days);
+
+/* Same shape as pki_ca_get(), for the intermediate instead of the
+ * root -- PKI_ERR_NOT_BOOTSTRAPPED if no intermediate exists yet. */
+enum pki_error pki_intermediate_get(struct json_writer *w);
+
 /*
  * Issues a leaf certificate named after `name` (used verbatim as its
  * CN), with the given SANs (san_count must be >=1; every entry,
@@ -75,7 +100,9 @@ enum pki_error pki_ca_get(struct json_writer *w);
  * conceptually a hostname, exactly like a DNS record's name).
  * Writes the full response -- including cert_pem AND key_pem, the
  * only place the leaf private key is ever returned -- straight into
- * w on success.
+ * w on success. Signed by the intermediate CA if one has been
+ * bootstrapped (pki_intermediate_create()), by the root directly
+ * otherwise -- transparent to every existing caller, no API change.
  */
 enum pki_error pki_cert_create(const char *name, const char *const *sans, int san_count, int days,
                                 const char *owner_container, struct json_writer *w);
@@ -100,6 +127,10 @@ void pki_cert_forget_owner(const char *container_name);
  * (ADR-0013) for reaching into a running container from outside it.
  * One-time: unlike DNS server bindings, there is no live-resync
  * mechanism here -- a cert doesn't change after a container starts.
+ * tls.crt is the real, complete chain a TLS server needs to present
+ * (leaf + intermediate, in that order -- the standard fullchain.pem
+ * convention) if an intermediate has been bootstrapped, the leaf
+ * alone otherwise -- transparent to every existing caller.
  */
 enum pki_error pki_cert_deliver(const char *name, pid_t pid, const char *dest_dir);
 

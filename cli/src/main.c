@@ -90,6 +90,10 @@ static void print_usage(FILE *out)
 	        "  dns server unregister CONTAINER\n"
 	        "  pki ca bootstrap [--common-name=NAME] [--days=N]\n"
 	        "  pki ca show\n"
+	        "  pki intermediate bootstrap [--common-name=NAME] [--days=N]  -- second CA tier,\n"
+	        "               root must already be bootstrapped; once done, every future\n"
+	        "               pki cert create is signed by it instead of the root\n"
+	        "  pki intermediate show\n"
 	        "  pki cert create --name=NAME [--sans=a,b,c] [--days=N]\n"
 	        "  pki cert ls\n"
 	        "  pki cert rm NAME\n"
@@ -108,7 +112,10 @@ static void print_usage(FILE *out)
 	        "  pkg update-all  -- starts an upgrade for the first installed package whose\n"
 	        "               recipe version has drifted (one at a time, same v1 single-job\n"
 	        "               constraint as pkg install --upgrade); call again once that job\n"
-	        "               finishes to pick up the next one\n");
+	        "               finishes to pick up the next one\n"
+	        "  site show  -- this install's own site_name/domain_suffix (ADR-0046);\n"
+	        "               convenience for suggesting FQDNs, never enforced\n"
+	        "  site set --domain-suffix=NAME [--site-name=NAME]\n");
 }
 
 static const char *json_str_field(const struct json_value *obj, const char *key)
@@ -955,6 +962,87 @@ static int cmd_restore(const struct kx_client *c, int json_mode, int argc, char 
 	free(buf);
 
 	return emit(&r, json_mode, fmt_health);
+}
+
+static void fmt_site_config(const struct json_value *v)
+{
+	const char *site_name = json_str_field(v, "site_name");
+	const char *domain_suffix = json_str_field(v, "domain_suffix");
+
+	printf("site_name=%s domain_suffix=%s\n", site_name != NULL && site_name[0] != '\0' ? site_name : "(none)",
+	       domain_suffix != NULL ? domain_suffix : "?");
+}
+
+static int cmd_site_show(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/site", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_site_config);
+}
+
+static int cmd_site_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *site_name = "";
+	const char *domain_suffix = NULL;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--site-name=", 12) == 0)
+			site_name = argv[i] + 12;
+		else if (strncmp(argv[i], "--domain-suffix=", 16) == 0)
+			domain_suffix = argv[i] + 16;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown site set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (domain_suffix == NULL) {
+		fprintf(stderr, "usage: kanxeoctl site set --domain-suffix=NAME [--site-name=NAME]\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "site_name");
+	jw_str(&w, site_name);
+	jw_key(&w, "domain_suffix");
+	jw_str(&w, domain_suffix);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "PUT", "/v1/system/site", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_site_config);
+}
+
+static int cmd_site(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl site show\n"
+		                "       kanxeoctl site set --domain-suffix=NAME [--site-name=NAME]\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "show") == 0)
+		return cmd_site_show(c, json_mode);
+	if (strcmp(sub, "set") == 0)
+		return cmd_site_set(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown site subcommand '%s'\n", sub);
+	return 2;
 }
 
 struct cli_sysctl {
@@ -1918,6 +2006,80 @@ static int cmd_pki_ca(const struct kx_client *c, int json_mode, int argc, char *
 	return 2;
 }
 
+static int cmd_pki_intermediate_bootstrap(const struct kx_client *c, int json_mode, int argc,
+                                           char **argv)
+{
+	const char *common_name = NULL;
+	long days = -1;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--common-name=", 14) == 0)
+			common_name = argv[i] + 14;
+		else if (strncmp(argv[i], "--days=", 7) == 0)
+			days = atol(argv[i] + 7);
+		else {
+			fprintf(stderr, "kanxeoctl: unknown pki intermediate bootstrap option '%s'\n",
+			        argv[i]);
+			return 2;
+		}
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	if (common_name != NULL) {
+		jw_key(&w, "common_name");
+		jw_str(&w, common_name);
+	}
+	if (days >= 0) {
+		jw_key(&w, "days");
+		jw_int(&w, days);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/pki/intermediate", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_pki_ca);
+}
+
+static int cmd_pki_intermediate_show(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/pki/intermediate", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_pki_ca);
+}
+
+static int cmd_pki_intermediate(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl pki intermediate bootstrap [--common-name=NAME] [--days=N]\n"
+		                "       kanxeoctl pki intermediate show\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "bootstrap") == 0)
+		return cmd_pki_intermediate_bootstrap(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "show") == 0)
+		return cmd_pki_intermediate_show(c, json_mode);
+
+	fprintf(stderr, "kanxeoctl: unknown pki intermediate subcommand '%s'\n", sub);
+	return 2;
+}
+
 static int cmd_pki_cert_create(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
@@ -2036,12 +2198,15 @@ static int cmd_pki(const struct kx_client *c, int json_mode, int argc, char **ar
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: kanxeoctl pki ca ...\n"
+		                "       kanxeoctl pki intermediate ...\n"
 		                "       kanxeoctl pki cert ...\n");
 		return 2;
 	}
 	sub = argv[0];
 	if (strcmp(sub, "ca") == 0)
 		return cmd_pki_ca(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "intermediate") == 0)
+		return cmd_pki_intermediate(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "cert") == 0)
 		return cmd_pki_cert(c, json_mode, argc - 1, argv + 1);
 
@@ -2417,6 +2582,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_backup(client, json_mode, argc, argv);
 	if (strcmp(cmd, "restore") == 0)
 		return cmd_restore(client, json_mode, argc, argv);
+	if (strcmp(cmd, "site") == 0)
+		return cmd_site(client, json_mode, argc, argv);
 	if (strcmp(cmd, "ps") == 0)
 		return cmd_ps(client, json_mode);
 	if (strcmp(cmd, "run") == 0)

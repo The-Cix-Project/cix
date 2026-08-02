@@ -624,6 +624,195 @@ int main(void)
 	}
 	kx_response_free(&r);
 
+	/*
+	 * Part 3 (ADR-0047): a real intermediate CA -- signed BY the root
+	 * (not self-signed), leaf issuance transparently switches to it
+	 * once bootstrapped, and the resulting 3-tier chain genuinely
+	 * verifies with openssl, not just "cert_pem is non-empty." Reuses
+	 * this same already-restarted daemon (persistence for THIS state
+	 * relies on the exact same persist_atomic_write()/persist_read_file()
+	 * primitive the root CA/certs state above already proved survives a
+	 * restart -- not re-proven a second time here to keep this test's
+	 * own wall-clock cost proportionate).
+	 */
+	{
+		char intermediate_cert_pem[8192] = { 0 };
+		char chainleaf_cert_pem[8192] = { 0 };
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pki/intermediate", NULL, &r) != 0 ||
+		    r.status != 404) {
+			fprintf(stderr, "FAIL: GET intermediate before bootstrap expected 404, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pki/intermediate", "{}", &r) != 0 ||
+		    r.status != 201 ||
+		    !str_eq(json_str_field(r.json, "subject"), "CN = Kanxeo Intermediate CA") ||
+		    json_str_field(r.json, "cert_pem") == NULL) {
+			fprintf(stderr, "FAIL: POST /v1/pki/intermediate, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			snprintf(intermediate_cert_pem, sizeof(intermediate_cert_pem), "%s",
+			         json_str_field(r.json, "cert_pem"));
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pki/intermediate", "{}", &r) != 0 ||
+		    r.status != 409) {
+			fprintf(stderr, "FAIL: second POST /v1/pki/intermediate expected 409, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		if (intermediate_cert_pem[0] != '\0' && ca_cert_pem[0] != '\0') {
+			char scratch_dir[] = "/tmp/kanxeo_test_pki_intermediate_XXXXXX";
+			char root_path[160], intermediate_path[160], chainleaf_path[160];
+
+			if (mkdtemp(scratch_dir) == NULL) {
+				fprintf(stderr, "FAIL: mkdtemp (intermediate scratch)\n");
+				ok = 0;
+			} else {
+				snprintf(root_path, sizeof(root_path), "%s/root.crt", scratch_dir);
+				snprintf(intermediate_path, sizeof(intermediate_path), "%s/intermediate.crt",
+				         scratch_dir);
+				write_file(root_path, ca_cert_pem);
+				write_file(intermediate_path, intermediate_cert_pem);
+
+				/* Real proof #1: the intermediate genuinely chains to
+				 * the root -- it was actually signed by it, not just
+				 * self-signed with CA:TRUE. */
+				{
+					char *argv[] = { "/usr/bin/openssl", "verify", "-CAfile", root_path,
+						          intermediate_path, NULL };
+
+					if (run_openssl_argv(argv) != 0) {
+						fprintf(stderr,
+						        "FAIL: intermediate cert does not verify against the root\n");
+						ok = 0;
+					}
+				}
+
+				/* A leaf issued NOW must be signed by the intermediate,
+				 * transparently -- pki_cert_create()'s own call
+				 * signature/response shape is unchanged. */
+				memset(&r, 0, sizeof(r));
+				if (kx_client_request(&client, "POST", "/v1/pki/certs",
+				                       "{\"name\":\"chainleaf\",\"sans\":[\"chainleaf\"]}",
+				                       &r) != 0 ||
+				    r.status != 201 || json_str_field(r.json, "cert_pem") == NULL) {
+					fprintf(stderr, "FAIL: POST chainleaf, status=%d\n", r.status);
+					ok = 0;
+				} else {
+					snprintf(chainleaf_cert_pem, sizeof(chainleaf_cert_pem), "%s",
+					         json_str_field(r.json, "cert_pem"));
+				}
+				kx_response_free(&r);
+
+				if (chainleaf_cert_pem[0] != '\0') {
+					snprintf(chainleaf_path, sizeof(chainleaf_path), "%s/chainleaf.crt",
+					         scratch_dir);
+					write_file(chainleaf_path, chainleaf_cert_pem);
+
+					/* Real proof #2: chainleaf does NOT verify against
+					 * the root alone (it was signed by the
+					 * intermediate, not the root)... */
+					{
+						char *argv[] = { "/usr/bin/openssl", "verify", "-CAfile", root_path,
+							          chainleaf_path, NULL };
+
+						if (run_openssl_argv(argv) == 0) {
+							fprintf(stderr,
+							        "FAIL: chainleaf verified against the root alone -- "
+							        "it should only verify with the intermediate completing "
+							        "the chain, meaning it was NOT actually signed by the "
+							        "intermediate\n");
+							ok = 0;
+						}
+					}
+					/* ...but DOES verify once the intermediate is
+					 * supplied to complete the chain -- the actual,
+					 * end-to-end trust-chain proof this whole ADR
+					 * exists to deliver. */
+					{
+						char *argv[] = { "/usr/bin/openssl", "verify", "-CAfile", root_path,
+							          "-untrusted", intermediate_path, chainleaf_path,
+							          NULL };
+
+						if (run_openssl_argv(argv) != 0) {
+							fprintf(stderr,
+							        "FAIL: chainleaf does not verify against root+intermediate\n");
+							ok = 0;
+						}
+					}
+				}
+
+				{
+					char cmd[224];
+
+					snprintf(cmd, sizeof(cmd), "rm -rf '%s'", scratch_dir);
+					system(cmd);
+				}
+			}
+		} else {
+			fprintf(stderr, "FAIL: skipping intermediate chain verification, "
+			                "cert_pem was never captured\n");
+			ok = 0;
+		}
+
+		kx_client_request(&client, "DELETE", "/v1/pki/certs/chainleaf", NULL, &r);
+		kx_response_free(&r);
+	}
+
+	/*
+	 * Part 4 (ADR-0046): site config -- real defaults, a real PUT round
+	 * trip, and real validation (not just "the daemon didn't crash").
+	 */
+	{
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/system/site", NULL, &r) != 0 ||
+		    r.status != 200 || !str_eq(json_str_field(r.json, "domain_suffix"), "internal")) {
+			fprintf(stderr, "FAIL: GET /v1/system/site defaults, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/system/site",
+		                       "{\"site_name\":\"lab1\",\"domain_suffix\":\"corp.internal\"}",
+		                       &r) != 0 ||
+		    r.status != 200 || !str_eq(json_str_field(r.json, "site_name"), "lab1") ||
+		    !str_eq(json_str_field(r.json, "domain_suffix"), "corp.internal")) {
+			fprintf(stderr, "FAIL: PUT /v1/system/site, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/system/site", NULL, &r) != 0 ||
+		    r.status != 200 || !str_eq(json_str_field(r.json, "site_name"), "lab1")) {
+			fprintf(stderr, "FAIL: GET /v1/system/site after PUT did not stick, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/system/site",
+		                       "{\"site_name\":\"lab1\",\"domain_suffix\":\"bad/suffix\"}",
+		                       &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: PUT invalid domain_suffix expected 400, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+	}
+
 	/* cleanup */
 	kx_client_request(&client, "DELETE", "/v1/pki/certs/persisted.internal", NULL, &r);
 	kx_response_free(&r);
