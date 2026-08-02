@@ -166,13 +166,57 @@
 		</section>
 
 		<section class="view" id="view-image-detail" hidden>
-			<h2 id="imgd-title"></h2>
-			<h3>Containers using this image</h3>
-			<table id="imgd-containers"><tbody></tbody></table>
-			<h3>Packages installed into this image</h3>
-			<table id="imgd-packages"><tbody></tbody></table>
-			<div class="detail-actions">
-				<button type="button" id="imgd-remove" class="button-danger">Remove image</button>
+			<div class="detail-topbar">
+				<h2 id="imgd-title"></h2>
+				<div class="detail-actions">
+					<button type="button" id="imgd-remove" class="button-danger">Remove image</button>
+				</div>
+			</div>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="containers" id="imgd-tab-containers">Containers using this image</button>
+				<button type="button" class="tab-button" data-tab="packages" id="imgd-tab-packages">Packages installed</button>
+			</div>
+			<div class="tab-panel" id="imgd-panel-containers" data-tab="containers">
+				<table id="imgd-containers">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Status</th>
+						</tr>
+					</thead>
+					<tbody></tbody>
+				</table>
+			</div>
+			<div class="tab-panel" id="imgd-panel-packages" data-tab="packages" hidden>
+				<h3>Installed on this image</h3>
+				<table id="imgd-packages">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Version</th>
+							<th>State</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody></tbody>
+				</table>
+				<h3>Recipe catalog</h3>
+				<p class="hint">Recipes are a shared catalog across every image (ADR-0040) -- installing one
+					here targets this image specifically.</p>
+				<table id="imgd-recipes">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Version</th>
+							<th>Depends</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody></tbody>
+				</table>
+				<div class="detail-actions">
+					<button type="button" id="imgd-add-recipe">Add recipe&hellip;</button>
+				</div>
 			</div>
 		</section>
 

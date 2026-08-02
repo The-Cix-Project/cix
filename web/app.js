@@ -1188,16 +1188,143 @@ function renderImageDetail(name) {
 		"No containers use this image"
 	);
 
-	const pkgs = cache.pkgList.filter((p) => p.image === name);
-
-	simpleTableRows(
-		document.querySelector("#imgd-packages tbody"),
-		pkgs.map((p) => [p.name, p.version, p.state]),
-		3,
-		"No packages installed into this image"
-	);
+	renderImageDetailPackages(name);
+	renderImageDetailRecipes(name);
 
 	document.getElementById("imgd-remove").onclick = () => removeImage(name);
+	document.getElementById("imgd-add-recipe").onclick = () => openModal("pkg-recipe-form", "Add or update a recipe");
+}
+
+/* Installed-on-this-image packages, with a per-row Remove -- same
+ * DELETE /v1/pkg/{name@image} removePkg() already uses from the
+ * Packages section, just scoped to whichever image is on screen. */
+function renderImageDetailPackages(name) {
+	const body = document.querySelector("#imgd-packages tbody");
+	const pkgs = cache.pkgList.filter((p) => p.image === name);
+
+	body.textContent = "";
+	if (pkgs.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 4;
+		cell.className = "empty";
+		cell.textContent = "No packages installed into this image";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+
+	for (const pkg of pkgs) {
+		const row = document.createElement("tr");
+
+		const nameCell = document.createElement("td");
+		nameCell.textContent = pkg.name;
+		row.appendChild(nameCell);
+
+		const versionCell = document.createElement("td");
+		versionCell.textContent = pkg.version;
+		row.appendChild(versionCell);
+
+		const stateCell = document.createElement("td");
+		stateCell.textContent = pkg.state;
+		row.appendChild(stateCell);
+
+		const actionCell = document.createElement("td");
+		if (pkg.state === "installed") {
+			const rmButton = document.createElement("button");
+
+			rmButton.textContent = "Remove";
+			rmButton.className = "button-danger";
+			rmButton.addEventListener("click", async () => {
+				await removePkg(pkg.name, pkg.image);
+				renderImageDetailPackages(name);
+				renderImageDetailRecipes(name);
+			});
+			actionCell.appendChild(rmButton);
+		}
+		row.appendChild(actionCell);
+
+		body.appendChild(row);
+	}
+}
+
+/* The shared recipe catalog (ADR-0040), rendered here with a per-row
+ * Install/Remove scoped to whichever image is on screen -- the "add/
+ * delete recipes from images" convenience the user asked for, without
+ * turning recipes into a per-image concept: POST /v1/pkg/install and
+ * DELETE /v1/pkg/{name@image} already take an image, this just supplies
+ * it for the recipe row being clicked instead of making the user type
+ * a name/image pair into the separate Packages-section modal. */
+function renderImageDetailRecipes(name) {
+	const body = document.querySelector("#imgd-recipes tbody");
+
+	body.textContent = "";
+	if (cache.pkgRecipes.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 4;
+		cell.className = "empty";
+		cell.textContent = "No recipes found";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+
+	const installedNames = new Set(
+		cache.pkgList.filter((p) => p.image === name && p.state === "installed").map((p) => p.name)
+	);
+
+	for (const r of cache.pkgRecipes) {
+		const row = document.createElement("tr");
+
+		const nameCell = document.createElement("td");
+		nameCell.textContent = r.name;
+		row.appendChild(nameCell);
+
+		const versionCell = document.createElement("td");
+		versionCell.textContent = r.version;
+		row.appendChild(versionCell);
+
+		const dependsCell = document.createElement("td");
+		dependsCell.textContent = r.depends || "-";
+		row.appendChild(dependsCell);
+
+		const actionCell = document.createElement("td");
+		if (installedNames.has(r.name)) {
+			const rmButton = document.createElement("button");
+
+			rmButton.textContent = "Remove from image";
+			rmButton.className = "button-danger";
+			rmButton.addEventListener("click", async () => {
+				await removePkg(r.name, name);
+				await refreshPkgList();
+				renderImageDetailPackages(name);
+				renderImageDetailRecipes(name);
+			});
+			actionCell.appendChild(rmButton);
+		} else {
+			const installButton = document.createElement("button");
+
+			installButton.textContent = "Install onto this image";
+			installButton.addEventListener("click", async () => {
+				try {
+					await apiRequest("POST", "/v1/pkg/install", { name: r.name, image: name });
+					clearStatus();
+					await refreshPkgList();
+					renderImageDetailPackages(name);
+					renderImageDetailRecipes(name);
+				} catch (e) {
+					showStatus("Failed to install " + r.name + " onto " + name + ": " + e.message, true);
+				}
+			});
+			actionCell.appendChild(installButton);
+		}
+		row.appendChild(actionCell);
+
+		body.appendChild(row);
+	}
 }
 
 /* ---------- Devices ---------- */

@@ -2,6 +2,16 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 32: image detail view -- add/install/remove packages inline, tabbed to declutter
+
+Direct user follow-up in the same request as Phase 31: install/remove packages straight from an image's own detail page, and split its two always-both-visible tables into tabs.
+
+#### Changed
+- `web/index.html`'s `#view-image-detail` restructured to the same `.detail-topbar`/`.tab-bar`/`.tab-panel` pattern the container detail view already uses (Phase 30 part 3) -- "Containers using this image" and "Packages installed" are now tabs instead of stacked sections; the page's existing generic tab-switching handler picked up the new tabs with no new JS.
+- `web/app.js`: `renderImageDetail()` split into `renderImageDetailPackages()` and a new `renderImageDetailRecipes()` -- the latter lists the full recipe catalog inline with a per-row "Install onto this image" / "Remove from image" action, driven straight from `POST /v1/pkg/install` / `DELETE /v1/pkg/{name@image}` (ADR-0040) rather than requiring the standalone Packages section's separate name/image form. An "Add recipe..." button opens that section's existing upload modal rather than duplicating it.
+
+An "image version" field was asked for alongside this but not built: `Image` (`docs/api/openapi.yaml`) has only a `name`, no version concept exists for images themselves (only individually-installed packages do, already shown per-row).
+
 ### Phase 31: a wireless-tools recipe set -- `procps`, `iw`, `hostapd`
 
 Direct user request, verified the same two-phase way every prior recipe has been -- real build, then a full install through the actual `kanxeod` pipeline, ending with every installed binary confirmed to actually run inside a real running container.
