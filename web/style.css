@@ -10,6 +10,7 @@
 	--error: #c5221f;
 	--error-bg: #fce8e6;
 	--unknown-bg: #eeeeee;
+	--tree-active-bg: #e3f0ff;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -22,6 +23,7 @@
 		--ok-bg: #123321;
 		--error-bg: #3a1615;
 		--unknown-bg: #2c2c2e;
+		--tree-active-bg: #1a3a5c;
 	}
 }
 
@@ -29,11 +31,18 @@
 	box-sizing: border-box;
 }
 
-body {
+html, body {
+	height: 100%;
 	margin: 0;
+	overflow: hidden;
+}
+
+body {
 	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 	background: var(--bg);
 	color: var(--text);
+	display: flex;
+	flex-direction: column;
 }
 
 header {
@@ -42,6 +51,7 @@ header {
 	justify-content: space-between;
 	padding: 1rem 1.5rem;
 	border-bottom: 1px solid var(--border);
+	flex: 0 0 auto;
 }
 
 header h1 {
@@ -49,38 +59,445 @@ header h1 {
 	font-size: 1.25rem;
 }
 
+.header-right {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+}
+
+.create-dropdown {
+	position: relative;
+}
+
+.create-dropdown-toggle {
+	padding: 0.45rem 0.9rem;
+	font-size: 0.85rem;
+}
+
+.create-dropdown-menu {
+	position: absolute;
+	right: 0;
+	top: calc(100% + 0.4rem);
+	list-style: none;
+	margin: 0;
+	padding: 0.3rem 0;
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+	min-width: 200px;
+	z-index: 1000;
+}
+
+.create-dropdown-menu li {
+	display: block;
+}
+
+.create-dropdown-menu button {
+	display: block;
+	width: 100%;
+	text-align: left;
+	background: none;
+	color: var(--text);
+	border: none;
+	border-radius: 0;
+	padding: 0.45rem 1rem;
+	font-size: 0.85rem;
+	cursor: pointer;
+}
+
+.create-dropdown-menu button:hover {
+	background: var(--tree-active-bg);
+}
+
+.modal-overlay {
+	position: fixed;
+	inset: 0;
+	background: rgba(0, 0, 0, 0.5);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	z-index: 2000;
+	padding: 2rem;
+}
+
+/* Without this, the [hidden] attribute alone isn't guaranteed to win
+ * against this rule's own explicit "display: flex" above -- an author
+ * rule at equal-or-higher specificity than the browser's own default
+ * "[hidden] { display: none }" can outrank it, leaving the overlay
+ * rendered (empty, since no panel was ever un-hidden inside it)
+ * regardless of what JS sets .hidden to. Same reason .tab-panel
+ * already needed this exact override below. */
+.modal-overlay[hidden] {
+	display: none;
+}
+
+.modal {
+	background: var(--bg);
+	border-radius: 10px;
+	max-width: 720px;
+	width: 100%;
+	max-height: 100%;
+	display: flex;
+	flex-direction: column;
+	box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+
+.modal-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 1rem 1.25rem;
+	border-bottom: 1px solid var(--border);
+	flex: 0 0 auto;
+}
+
+.modal-header h2 {
+	margin: 0;
+	font-size: 1.05rem;
+}
+
+.modal-close {
+	background: none;
+	color: var(--muted);
+	border: none;
+	border-radius: 4px;
+	font-size: 1.3rem;
+	line-height: 1;
+	padding: 0.2rem 0.5rem;
+	cursor: pointer;
+}
+
+.modal-close:hover {
+	color: var(--text);
+	background: var(--unknown-bg);
+}
+
+.modal-body {
+	padding: 1.25rem;
+	overflow-y: auto;
+}
+
+.layout {
+	display: grid;
+	grid-template-columns: 240px 1fr;
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+@media (max-width: 720px) {
+	html, body {
+		overflow: auto;
+	}
+	.layout {
+		grid-template-columns: 1fr;
+		display: block;
+	}
+	.tree {
+		height: auto;
+		max-height: 40vh;
+		border-right: none;
+		border-bottom: 1px solid var(--border);
+	}
+}
+
+.tree {
+	height: 100%;
+	overflow-y: auto;
+	overflow-x: auto;
+	border-right: 1px solid var(--border);
+	padding: 1rem 0;
+}
+
+.tree ul {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+
+.tree > ul > li {
+	margin-bottom: 0.25rem;
+}
+
+.tree-cat-row {
+	display: flex;
+	align-items: center;
+}
+
+.tree-toggle {
+	flex: 0 0 auto;
+	width: 1.5rem;
+	height: 1.75rem;
+	border: none;
+	background: none;
+	color: var(--muted);
+	cursor: pointer;
+	font-size: 0.7rem;
+	padding: 0;
+}
+
+.tree-toggle:hover {
+	color: var(--text);
+}
+
+.tree-toggle.no-children {
+	visibility: hidden;
+	cursor: default;
+}
+
+.tree-category {
+	flex: 1 1 auto;
+	display: block;
+	padding: 0.4rem 1rem 0.4rem 0;
+	font-size: 0.8rem;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--muted);
+	text-decoration: none;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.tree-category:hover {
+	color: var(--text);
+}
+
+.tree-item {
+	display: block;
+	padding: 0.3rem 1rem 0.3rem 1.75rem;
+	font-size: 0.85rem;
+	color: var(--text);
+	text-decoration: none;
+	cursor: pointer;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.tree-item:hover {
+	background: var(--unknown-bg);
+}
+
+.tree-item.active,
+.tree-category.active {
+	background: var(--tree-active-bg);
+	border-radius: 4px;
+}
+
+.tree-status-dot {
+	display: inline-block;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	margin-right: 0.45rem;
+	vertical-align: middle;
+	flex: 0 0 auto;
+}
+
+.tree-status-running {
+	background: var(--ok);
+}
+
+.tree-status-stopped {
+	background: var(--muted);
+}
+
 main {
-	max-width: 900px;
-	margin: 0 auto;
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	min-height: 0;
+	overflow: hidden;
+}
+
+@media (max-width: 720px) {
+	main {
+		height: auto;
+		overflow: visible;
+	}
+	#content-scroll {
+		overflow: visible;
+	}
+	#log-panel {
+		flex: 0 0 auto;
+		height: 30vh;
+	}
+}
+
+#content-scroll {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
 	padding: 1.5rem;
+}
+
+#log-panel {
+	flex: 0 0 200px;
+	display: flex;
+	flex-direction: column;
+	border-top: 1px solid var(--border);
+	background: var(--panel);
+}
+
+.log-panel-header {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: 0.4rem;
+	padding: 0.4rem 1rem;
+	font-size: 0.75rem;
+	color: var(--muted);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	border-bottom: 1px solid var(--border);
+	cursor: pointer;
+	user-select: none;
+}
+
+.log-panel-header:hover {
+	color: var(--text);
+}
+
+#log-panel.collapsed {
+	flex: 0 0 auto;
+}
+
+#log-panel.collapsed .log-panel-header {
+	border-bottom: none;
+}
+
+#log-panel.collapsed #log-output {
+	display: none;
+}
+
+#log-output {
+	flex: 1 1 auto;
+	overflow-y: auto;
+	padding: 0.4rem 1rem;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: 0.78rem;
+}
+
+.log-entry {
+	white-space: pre-wrap;
+	word-break: break-word;
+	padding: 0.1rem 0;
+	border-bottom: 1px solid var(--border);
+}
+
+.log-entry:last-child {
+	border-bottom: none;
+}
+
+.log-entry-ok .log-entry-status {
+	color: var(--ok);
+}
+
+.log-entry-error .log-entry-status {
+	color: var(--error);
+}
+
+.log-entry-time {
+	color: var(--muted);
+}
+
+.view {
 	display: flex;
 	flex-direction: column;
 	gap: 1.5rem;
 }
 
-.panel {
-	background: var(--panel);
-	border: 1px solid var(--border);
-	border-radius: 8px;
-	padding: 1.25rem;
+/* Without this, [hidden] alone can't reliably win against this rule's
+ * own "display: flex" -- confirmed the hard way: every .view section
+ * was rendering simultaneously, stacked down the page, regardless of
+ * which one renderCurrentView() actually set .hidden=false on. Same
+ * root cause as .modal-overlay's own identical fix above, just never
+ * generalized to every other element with this exact pattern until
+ * the user caught it visually (screenshots) -- see form[hidden] below
+ * for the second, related instance this same sweep found. */
+.view[hidden] {
+	display: none;
 }
 
-.panel h2 {
-	margin-top: 0;
+.view h2 {
+	margin: 0 0 0.75rem;
 	font-size: 1rem;
 	color: var(--muted);
 	text-transform: uppercase;
 	letter-spacing: 0.04em;
 }
 
-.panel form {
+.view h3 {
+	margin: 1.25rem 0 0.5rem;
+	font-size: 0.85rem;
+	color: var(--muted);
+	text-transform: uppercase;
+	letter-spacing: 0.03em;
+}
+
+.view-list,
+.view-create {
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 1.25rem;
+}
+
+/* Create forms are collapsed by default (<details>, closed) -- a
+ * category view should show its list first, not every possible field
+ * a create action might need whether or not you're using it. */
+.view-create > summary {
+	cursor: pointer;
+	font-size: 1rem;
+	color: var(--muted);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	list-style-position: outside;
+}
+
+.view-create > summary:hover {
+	color: var(--text);
+}
+
+.view-create[open] > summary {
+	margin-bottom: 0.75rem;
+}
+
+form {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 1rem;
 	align-items: end;
 }
 
-.panel form label {
+/* #pki-ca-form is the one form whose own .hidden is toggled directly
+ * (JS: pkiCaForm.hidden = ...) rather than via a wrapper div -- same
+ * [hidden]-vs-"display: flex" conflict as .view/.modal-overlay above. */
+form[hidden] {
+	display: none;
+}
+
+fieldset {
+	flex: 1 1 100%;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 0.75rem 1rem 1rem;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 1rem;
+	align-items: end;
+	margin: 0;
+}
+
+fieldset legend {
+	font-size: 0.8rem;
+	color: var(--muted);
+	text-transform: uppercase;
+	letter-spacing: 0.03em;
+	padding: 0 0.4rem;
+}
+
+form label {
 	display: flex;
 	flex-direction: column;
 	font-size: 0.85rem;
@@ -88,17 +505,18 @@ main {
 	gap: 0.25rem;
 }
 
-.panel form label.wide {
+form label.wide {
 	flex: 1 1 100%;
 }
 
-.panel form label.checkbox {
+form label.checkbox {
 	flex-direction: row;
 	align-items: center;
 	gap: 0.4rem;
 }
 
-.panel form input {
+form input,
+form select {
 	padding: 0.5rem;
 	border: 1px solid var(--border);
 	border-radius: 6px;
@@ -107,7 +525,22 @@ main {
 	font-size: 0.95rem;
 }
 
-.panel .hint {
+.file-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.75rem;
+	align-items: end;
+	width: 100%;
+	padding-bottom: 0.5rem;
+	margin-bottom: 0.5rem;
+	border-bottom: 1px solid var(--border);
+}
+
+.file-row label {
+	flex: 1 1 auto;
+}
+
+.hint {
 	margin: 0.5rem 0 0;
 	font-size: 0.85rem;
 	color: var(--muted);
@@ -133,6 +566,11 @@ button:hover {
 	font-size: 0.8rem;
 }
 
+.button-small {
+	padding: 0.3rem 0.7rem;
+	font-size: 0.8rem;
+}
+
 table {
 	width: 100%;
 	border-collapse: collapse;
@@ -154,6 +592,33 @@ td.empty {
 	color: var(--muted);
 	text-align: center;
 	padding: 1.5rem;
+}
+
+.detail-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+	gap: 0.75rem;
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 1rem 1.25rem;
+}
+
+.detail-grid div {
+	font-size: 0.9rem;
+}
+
+.detail-grid .field-label {
+	display: block;
+	font-size: 0.75rem;
+	color: var(--muted);
+	text-transform: uppercase;
+	letter-spacing: 0.03em;
+}
+
+.detail-actions {
+	display: flex;
+	gap: 0.75rem;
 }
 
 .badge {
@@ -233,4 +698,162 @@ td.empty {
 	white-space: pre-wrap;
 	word-break: break-all;
 	margin: 0.25rem 0 0.75rem 0;
+}
+
+.device-group {
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 1rem 1.25rem;
+	margin-bottom: 1rem;
+}
+
+.device-group h3 {
+	margin: 0 0 0.5rem;
+}
+
+.detail-topbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	flex-wrap: wrap;
+	gap: 1rem;
+}
+
+.tab-bar {
+	display: flex;
+	gap: 0.25rem;
+	border-bottom: 1px solid var(--border);
+}
+
+.tab-button {
+	background: none;
+	color: var(--muted);
+	border: none;
+	border-bottom: 2px solid transparent;
+	border-radius: 0;
+	padding: 0.5rem 1rem;
+	font-size: 0.9rem;
+	cursor: pointer;
+}
+
+.tab-button:hover {
+	color: var(--text);
+}
+
+.tab-button.active {
+	color: var(--text);
+	border-bottom-color: #0a84ff;
+	font-weight: 600;
+}
+
+.tab-panel[hidden] {
+	display: none;
+}
+
+.console-toolbar {
+	margin-bottom: 0.5rem;
+}
+
+.console-output {
+	background: #0c0c0e;
+	color: #d8d8dc;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: 0.85rem;
+	line-height: 1.35;
+	padding: 0.75rem 1rem;
+	border-radius: 6px;
+	height: 420px;
+	overflow-y: auto;
+	white-space: pre-wrap;
+	word-break: break-all;
+	outline: none;
+}
+
+.console-output:focus {
+	box-shadow: 0 0 0 2px #0a84ff;
+}
+
+.console-output div {
+	min-height: 1.35em;
+}
+
+.term-bold {
+	font-weight: 700;
+}
+
+.term-fg-30 { color: #4b4b4d; }
+.term-fg-31 { color: #e35555; }
+.term-fg-32 { color: #4fb85a; }
+.term-fg-33 { color: #d2b13a; }
+.term-fg-34 { color: #4d8fdb; }
+.term-fg-35 { color: #b56ad1; }
+.term-fg-36 { color: #46b8b0; }
+.term-fg-37 { color: #d8d8dc; }
+.term-fg-90 { color: #7a7a7e; }
+.term-fg-91 { color: #ff7b7b; }
+.term-fg-92 { color: #7bdb85; }
+.term-fg-93 { color: #eeda6f; }
+.term-fg-94 { color: #7fb1f2; }
+.term-fg-95 { color: #dd9bef; }
+.term-fg-96 { color: #72e0d8; }
+.term-fg-97 { color: #ffffff; }
+.term-bg-40 { background: #1c1c1e; }
+.term-bg-41 { background: #5c2323; }
+.term-bg-42 { background: #234a27; }
+.term-bg-43 { background: #574a1c; }
+.term-bg-44 { background: #223a5c; }
+.term-bg-45 { background: #4a2a57; }
+.term-bg-46 { background: #1f4c49; }
+.term-bg-47 { background: #4a4a4d; }
+.term-bg-100 { background: #3a3a3d; }
+.term-bg-101 { background: #7a2f2f; }
+.term-bg-102 { background: #2f6636; }
+.term-bg-103 { background: #756327; }
+.term-bg-104 { background: #2c4d7a; }
+.term-bg-105 { background: #63397a; }
+.term-bg-106 { background: #29665f; }
+.term-bg-107 { background: #6a6a6d; }
+
+.context-menu {
+	position: fixed;
+	list-style: none;
+	margin: 0;
+	padding: 0.3rem 0;
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+	min-width: 160px;
+	z-index: 1000;
+}
+
+.context-menu li {
+	display: block;
+}
+
+.context-menu button {
+	display: block;
+	width: 100%;
+	text-align: left;
+	background: none;
+	color: var(--text);
+	border: none;
+	border-radius: 0;
+	padding: 0.4rem 1rem;
+	font-size: 0.85rem;
+	cursor: pointer;
+}
+
+.context-menu button:hover {
+	background: var(--tree-active-bg);
+}
+
+.context-menu button.button-danger {
+	color: var(--error);
+	background: none;
+}
+
+.context-menu button.button-danger:hover {
+	background: var(--error-bg);
 }

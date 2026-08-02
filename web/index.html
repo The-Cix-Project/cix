@@ -9,280 +9,613 @@
 <body>
 <header>
 	<h1>Kanxeo</h1>
-	<span id="health" class="badge badge-unknown">checking&hellip;</span>
+	<div class="header-right">
+		<span id="health" class="badge badge-unknown">checking&hellip;</span>
+		<div class="create-dropdown">
+			<button type="button" id="create-dropdown-toggle" class="create-dropdown-toggle">+ Create&nbsp;&#9662;</button>
+			<ul id="create-dropdown-menu" class="create-dropdown-menu" hidden>
+				<li><button type="button" data-modal="run-form" data-title="Run a container">Container</button></li>
+				<li><button type="button" data-modal="network-form" data-title="Create network">Network</button></li>
+				<li><button type="button" data-modal="image-form" data-title="Create image">Image</button></li>
+				<li><button type="button" data-modal="dns-record-form" data-title="Create DNS record">DNS Record</button></li>
+				<li><button type="button" data-modal="dns-server-form" data-title="Register DNS server">DNS Server</button></li>
+				<li><button type="button" data-modal="pki-cert-form" data-title="Issue certificate">PKI Certificate</button></li>
+				<li><button type="button" data-modal="pkg-recipe-form" data-title="Add or update a recipe">Package Recipe</button></li>
+				<li><button type="button" data-modal="pkg-bootstrap-form" data-title="Bootstrap build image">Bootstrap Build Image</button></li>
+				<li><button type="button" data-modal="pkg-install-form" data-title="Install a package">Install Package</button></li>
+			</ul>
+		</div>
+	</div>
 </header>
 
-<main>
-	<section id="status" class="status" hidden></section>
+<div class="layout">
+	<nav id="tree" class="tree"></nav>
 
-	<section class="panel">
-		<h2>Run a container</h2>
-		<form id="run-form">
-			<label>
-				Name
-				<input type="text" id="f-name" pattern="[A-Za-z0-9_-]+" required>
-			</label>
-			<label>
-				Image
-				<input type="text" id="f-image" required>
-			</label>
-			<label class="wide">
-				Command
-				<input type="text" id="f-cmd" placeholder="/bin/echo hello world" required>
-			</label>
-			<label>
-				Memory max (bytes)
-				<input type="number" id="f-memory-max" min="0">
-			</label>
-			<label>
-				PIDs max
-				<input type="number" id="f-pids-max" min="0">
-			</label>
-			<label>
-				Networks
-				<input type="text" id="f-network" placeholder="(none), or comma-separated: internal,dmz">
-			</label>
-			<label class="checkbox">
-				<input type="checkbox" id="f-ip-forward">
-				IP forwarding
-			</label>
-			<label class="checkbox">
-				<input type="checkbox" id="f-dns-register">
-				Register DNS name
-			</label>
-			<label class="checkbox">
-				<input type="checkbox" id="f-pki-issue">
-				Issue TLS cert
-			</label>
-			<label class="wide">
-				Static routes
-				<input type="text" id="f-routes" placeholder="(none), or comma-separated: dest/prefix:via, e.g. 172.32.0.0/24:172.31.0.2">
-			</label>
-			<button type="submit">Run</button>
-		</form>
-	</section>
+	<main>
+	<div id="content-scroll">
+		<section id="status" class="status" hidden></section>
 
-	<section class="panel">
-		<h2>Networks</h2>
-		<form id="network-form">
-			<label>
-				Name
-				<input type="text" id="nf-name" pattern="[A-Za-z0-9_-]{1,15}" required>
-			</label>
-			<label>
-				Subnet
-				<input type="text" id="nf-subnet" placeholder="172.31.0.0" required>
-			</label>
-			<label>
-				Prefix length
-				<input type="number" id="nf-prefix" min="8" max="30" value="24" required>
-			</label>
-			<label>
-				Gateway (optional)
-				<input type="text" id="nf-gateway" placeholder="(none), or e.g. 172.31.0.1">
-			</label>
-			<button type="submit">Create</button>
-		</form>
-		<table id="networks">
-			<thead>
-				<tr>
-					<th>Name</th>
-					<th>Subnet</th>
-					<th>Prefix</th>
-					<th>Gateway</th>
-					<th></th>
-				</tr>
-			</thead>
-			<tbody id="networks-body">
-				<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
-			</tbody>
-		</table>
-	</section>
+		<!-- Containers -->
+		<section class="view" id="view-containers" hidden>
+			<div class="view-list">
+				<h2>Containers</h2>
+				<table id="containers">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Status</th>
+							<th>Image</th>
+							<th>IP</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="containers-body">
+						<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</section>
 
-	<section class="panel">
-		<h2>DNS Records</h2>
-		<form id="dns-record-form">
-			<label>
-				Name
-				<input type="text" id="df-name" placeholder="db.internal" required>
-			</label>
-			<label>
-				IP
-				<input type="text" id="df-ip" placeholder="172.31.0.5" required>
-			</label>
-			<button type="submit">Create</button>
-		</form>
-		<table id="dns-records">
-			<thead>
-				<tr>
-					<th>Name</th>
-					<th>IP</th>
-					<th>Owner</th>
-					<th></th>
-				</tr>
-			</thead>
-			<tbody id="dns-records-body">
-				<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
-			</tbody>
-		</table>
-	</section>
+		<section class="view" id="view-container-detail" hidden>
+			<div class="detail-topbar">
+				<h2 id="cd-title"></h2>
+				<div class="detail-actions">
+					<button type="button" id="cd-stop">Stop</button>
+					<button type="button" id="cd-remove" class="button-danger">Remove</button>
+				</div>
+			</div>
+			<div class="tab-bar">
+				<button type="button" class="tab-button" data-tab="summary" id="cd-tab-summary">Summary</button>
+				<button type="button" class="tab-button" data-tab="hardware" id="cd-tab-hardware">Hardware</button>
+				<button type="button" class="tab-button" data-tab="options" id="cd-tab-options">Options</button>
+				<button type="button" class="tab-button active" data-tab="console" id="cd-tab-console">Console</button>
+				<button type="button" class="tab-button" data-tab="backup" id="cd-tab-backup">Backup</button>
+			</div>
+			<div class="tab-panel" id="cd-panel-summary" data-tab="summary" hidden>
+				<div class="detail-grid" id="cd-fields"></div>
+			</div>
+			<div class="tab-panel" id="cd-panel-hardware" data-tab="hardware" hidden>
+				<h3>Devices</h3>
+				<table id="cd-devices"><tbody></tbody></table>
+				<h3>Interfaces</h3>
+				<table id="cd-interfaces"><tbody></tbody></table>
+				<h3>Networks</h3>
+				<table id="cd-networks"><tbody></tbody></table>
+			</div>
+			<div class="tab-panel" id="cd-panel-options" data-tab="options" hidden>
+				<div class="detail-grid" id="cd-options-fields"></div>
+				<h3>Sysctls</h3>
+				<table id="cd-sysctls"><tbody></tbody></table>
+				<h3>Files</h3>
+				<table id="cd-files"><tbody></tbody></table>
+			</div>
+			<div class="tab-panel" id="cd-panel-console" data-tab="console">
+				<div class="console-toolbar">
+					<span id="cd-console-status" class="hint">&hellip;</span>
+				</div>
+				<div class="console-output" id="cd-console-output" tabindex="0"></div>
+				<p class="hint">Minimal built-in terminal (no framework, per ADR-0010/ADR-0043) -- handles plain output, colors, and basic input. Full-screen programs (vim, top, less) won't render correctly here; use <code>kanxeoctl console</code> for those.</p>
+			</div>
+			<div class="tab-panel" id="cd-panel-backup" data-tab="backup" hidden>
+				<p class="hint">Kanxeo backs up platform configuration as a single whole (container
+					definitions, networks, DNS records, package install state + recipes) -- not
+					per-container, and not this container's own filesystem content (workload data is
+					never included, same boundary the System page's own Backup already documents).</p>
+				<button type="button" id="cd-backup-goto-system">Go to System &rarr; Backup</button>
+			</div>
+		</section>
 
-	<section class="panel">
-		<h2>DNS Servers</h2>
-		<form id="dns-server-form">
-			<label>
-				Container
-				<input type="text" id="sf-container" pattern="[A-Za-z0-9_-]+" required>
-			</label>
-			<label class="wide">
-				Hosts path
-				<input type="text" id="sf-hosts-path" placeholder="/etc/dnsmasq-hosts" required>
-			</label>
-			<button type="submit">Register</button>
-		</form>
-		<table id="dns-servers">
-			<thead>
-				<tr>
-					<th>Container</th>
-					<th>Hosts path</th>
-					<th></th>
-				</tr>
-			</thead>
-			<tbody id="dns-servers-body">
-				<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
-			</tbody>
-		</table>
-	</section>
+		<!-- Networks -->
+		<section class="view" id="view-networks" hidden>
+			<div class="view-list">
+				<h2>Networks</h2>
+				<table id="networks">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Subnet</th>
+							<th>Prefix</th>
+							<th>Gateway</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="networks-body">
+						<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</section>
 
-	<section class="panel">
-		<h2>PKI: Root CA</h2>
-		<div id="pki-ca-status" class="pki-ca-status"></div>
-		<form id="pki-ca-form">
-			<label>
-				Common name
-				<input type="text" id="caf-common-name" placeholder="Kanxeo Root CA">
-			</label>
-			<label>
-				Days
-				<input type="number" id="caf-days" min="1" placeholder="3650">
-			</label>
-			<button type="submit">Bootstrap CA</button>
-		</form>
-	</section>
+		<section class="view" id="view-network-detail" hidden>
+			<h2 id="nd-title"></h2>
+			<div class="detail-grid" id="nd-fields"></div>
+			<h3>Attached interfaces</h3>
+			<table id="nd-interfaces"><tbody></tbody></table>
+			<form id="nd-attach-form">
+				<label class="wide">
+					Interface to attach
+					<select id="nd-attach-ifname"></select>
+				</label>
+				<label>
+					VLAN id (optional)
+					<input type="number" id="nd-attach-vlan" min="1" max="4094">
+				</label>
+				<button type="submit">Attach</button>
+			</form>
+			<div class="detail-actions">
+				<button type="button" id="nd-remove" class="button-danger">Remove network</button>
+			</div>
+		</section>
 
-	<section class="panel">
-		<h2>PKI: Certificates</h2>
-		<form id="pki-cert-form">
-			<label>
-				Name
-				<input type="text" id="pf-name" placeholder="svc.internal" required>
-			</label>
-			<label class="wide">
-				SANs
-				<input type="text" id="pf-sans" placeholder="(defaults to name), or comma-separated: svc.internal,svc">
-			</label>
-			<label>
-				Days
-				<input type="number" id="pf-days" min="1" placeholder="365">
-			</label>
-			<button type="submit">Issue</button>
-		</form>
-		<div id="pki-cert-issued" class="pki-cert-issued" hidden></div>
-		<table id="pki-certs">
-			<thead>
-				<tr>
-					<th>Name</th>
-					<th>Serial</th>
-					<th>Not after</th>
-					<th>SANs</th>
-					<th>Owner</th>
-					<th></th>
-				</tr>
-			</thead>
-			<tbody id="pki-certs-body">
-				<tr><td colspan="6" class="empty">Loading&hellip;</td></tr>
-			</tbody>
-		</table>
-	</section>
+		<!-- Images -->
+		<section class="view" id="view-images" hidden>
+			<div class="view-list">
+				<h2>Images</h2>
+				<table id="images">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="images-body">
+						<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</section>
 
-	<section class="panel">
-		<h2>Packages: Recipes</h2>
-		<form id="pkg-bootstrap-form">
-			<label class="wide">
-				Toolchain artifact path (optional)
-				<input type="text" id="pkgf-toolchain-path" placeholder="/path/to/toolchain.squashfs">
-			</label>
-			<button type="submit">Bootstrap build image</button>
-		</form>
-		<p class="hint">Leave blank only on a rich dev host: it copies the toolchain live from this
-			daemon's own host, which is empty on a real minimal install. On a real install, build a
-			portable artifact with <code>mktoolchainimage</code>, scp it onto this box, and give its
-			path here.</p>
-		<table id="pkg-recipes">
-			<thead>
-				<tr>
-					<th>Name</th>
-					<th>Version</th>
-					<th>Depends</th>
-				</tr>
-			</thead>
-			<tbody id="pkg-recipes-body">
-				<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
-			</tbody>
-		</table>
-	</section>
+		<section class="view" id="view-image-detail" hidden>
+			<h2 id="imgd-title"></h2>
+			<h3>Containers using this image</h3>
+			<table id="imgd-containers"><tbody></tbody></table>
+			<h3>Packages installed into this image</h3>
+			<table id="imgd-packages"><tbody></tbody></table>
+			<div class="detail-actions">
+				<button type="button" id="imgd-remove" class="button-danger">Remove image</button>
+			</div>
+		</section>
 
-	<section class="panel">
-		<h2>Packages: Installed</h2>
-		<form id="pkg-install-form">
-			<label>
-				Name
-				<input type="text" id="pkgf-name" pattern="[A-Za-z0-9_-]+" required>
-			</label>
-			<label class="checkbox">
-				<input type="checkbox" id="pkgf-upgrade">
-				Upgrade
-			</label>
-			<button type="submit">Install</button>
-		</form>
-		<table id="pkg-list">
-			<thead>
-				<tr>
-					<th>Name</th>
-					<th>Version</th>
-					<th>State</th>
-					<th>Available</th>
-					<th>Error</th>
-					<th>Files</th>
-					<th></th>
-				</tr>
-			</thead>
-			<tbody id="pkg-list-body">
-				<tr><td colspan="7" class="empty">Loading&hellip;</td></tr>
-			</tbody>
-		</table>
-	</section>
+		<!-- Devices -->
+		<section class="view" id="view-devices" hidden>
+			<h2>Devices</h2>
+			<p class="hint">Discovered live from host sysfs every poll -- nothing here is persisted. A
+				device is only ever granted to a container at creation time (see the "Container" create
+				action's own Devices section); there is no separate attach step for an already-running
+				container.</p>
+			<div id="devices-groups"></div>
+		</section>
 
-	<section class="panel">
-		<h2>Containers</h2>
-		<table id="containers">
-			<thead>
-				<tr>
-					<th>Name</th>
-					<th>Status</th>
-					<th>PID</th>
-					<th>Exit status</th>
-					<th>IP</th>
-					<th>Fwd</th>
-					<th></th>
-				</tr>
-			</thead>
-			<tbody id="containers-body">
-				<tr><td colspan="7" class="empty">Loading&hellip;</td></tr>
-			</tbody>
-		</table>
-	</section>
-</main>
+		<!-- DNS Records -->
+		<section class="view" id="view-dns-records" hidden>
+			<div class="view-list">
+				<h2>DNS Records</h2>
+				<table id="dns-records">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>IP</th>
+							<th>Owner</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="dns-records-body">
+						<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</section>
+
+		<!-- DNS Servers -->
+		<section class="view" id="view-dns-servers" hidden>
+			<div class="view-list">
+				<h2>DNS Servers</h2>
+				<table id="dns-servers">
+					<thead>
+						<tr>
+							<th>Container</th>
+							<th>Hosts path</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="dns-servers-body">
+						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</section>
+
+		<!-- PKI: Root CA -->
+		<section class="view" id="view-pki-ca" hidden>
+			<h2>PKI: Root CA</h2>
+			<div id="pki-ca-status" class="pki-ca-status"></div>
+			<form id="pki-ca-form">
+				<label>
+					Common name
+					<input type="text" id="caf-common-name" placeholder="Kanxeo Root CA">
+				</label>
+				<label>
+					Days
+					<input type="number" id="caf-days" min="1" placeholder="3650">
+				</label>
+				<button type="submit">Bootstrap CA</button>
+			</form>
+		</section>
+
+		<!-- PKI: Certificates -->
+		<section class="view" id="view-pki-certs" hidden>
+			<div class="view-list">
+				<h2>PKI: Certificates</h2>
+				<table id="pki-certs">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Serial</th>
+							<th>Not after</th>
+							<th>SANs</th>
+							<th>Owner</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="pki-certs-body">
+						<tr><td colspan="6" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</section>
+
+		<!-- Packages: Recipes -->
+		<section class="view" id="view-pkg-recipes" hidden>
+			<div class="view-list">
+				<h2>Packages: Recipes</h2>
+				<table id="pkg-recipes">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Version</th>
+							<th>Depends</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="pkg-recipes-body">
+						<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</section>
+
+		<!-- Packages: Installed -->
+		<section class="view" id="view-pkg-installed" hidden>
+			<div class="view-list">
+				<h2>Packages: Installed</h2>
+				<table id="pkg-list">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Image</th>
+							<th>Version</th>
+							<th>State</th>
+							<th>Available</th>
+							<th>Error</th>
+							<th>Files</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="pkg-list-body">
+						<tr><td colspan="8" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</section>
+
+		<!-- System -->
+		<section class="view" id="view-system" hidden>
+			<h2>System</h2>
+
+			<h3>Backup</h3>
+			<p class="hint">Platform configuration state (container defs, networks, DNS records, pkg install
+				state + recipes) -- not workload data, not image content, never PKI keys.</p>
+			<button type="button" id="sys-backup">Download backup</button>
+
+			<h3>Restore</h3>
+			<form id="sys-restore-form">
+				<label class="wide">
+					Backup bundle
+					<input type="file" id="sys-restore-file" required>
+				</label>
+				<button type="submit">Restore</button>
+			</form>
+			<p class="hint">Writes fields back to their real state files. Does not reboot or hot-reload --
+				reboot separately for it to take effect.</p>
+
+			<h3>Update</h3>
+			<form id="sys-update-form">
+				<label class="wide">
+					Control-plane image path (optional, local to this daemon's host)
+					<input type="text" id="sys-update-image" placeholder="/path/to/kanxeod-root.squashfs">
+				</label>
+				<label class="wide">
+					Kernel path (optional, local to this daemon's host)
+					<input type="text" id="sys-update-kernel" placeholder="/path/to/bzImage">
+				</label>
+				<button type="submit">Stage update</button>
+			</form>
+			<p class="hint">Writes to the inactive A/B slot. Does not reboot -- reboot separately once
+				ready to cut over.</p>
+
+			<h3>Power</h3>
+			<div class="detail-actions">
+				<button type="button" id="sys-reboot" class="button-danger">Reboot</button>
+				<button type="button" id="sys-shutdown" class="button-danger">Shutdown</button>
+			</div>
+		</section>
+	</div>
+
+	<div id="log-panel">
+		<div class="log-panel-header" id="log-panel-header"><span id="log-panel-arrow">▾</span> Log</div>
+		<div id="log-output"></div>
+	</div>
+	</main>
+</div>
+
+<ul id="tree-context-menu" class="context-menu" hidden></ul>
+
+<!-- Create modal: one shared shell, one hidden panel per resource type below --
+     opened via the header's "+ Create" dropdown (see app.js openModal()). -->
+<div id="modal-overlay" class="modal-overlay" hidden>
+	<div class="modal">
+		<div class="modal-header">
+			<h2 id="modal-title"></h2>
+			<button type="button" id="modal-close" class="modal-close" aria-label="Close">&times;</button>
+		</div>
+		<div class="modal-body">
+			<div id="modal-run-form" hidden>
+				<form id="run-form">
+					<fieldset>
+						<legend>Identity</legend>
+						<label>
+							Name
+							<input type="text" id="f-name" pattern="[A-Za-z0-9_-]+" required>
+						</label>
+						<label>
+							Image
+							<input type="text" id="f-image" required>
+						</label>
+						<label class="wide">
+							Command
+							<input type="text" id="f-cmd" placeholder="/bin/echo hello world" required>
+						</label>
+					</fieldset>
+					<fieldset>
+						<legend>Resources</legend>
+						<label>
+							Memory max (bytes)
+							<input type="number" id="f-memory-max" min="0">
+						</label>
+						<label>
+							PIDs max
+							<input type="number" id="f-pids-max" min="0">
+						</label>
+					</fieldset>
+					<fieldset>
+						<legend>Networking</legend>
+						<label class="wide">
+							Networks
+							<input type="text" id="f-network"
+							       placeholder="(none), or comma-separated: internal,dmz:172.31.0.5">
+						</label>
+						<label class="checkbox">
+							<input type="checkbox" id="f-ip-forward">
+							IP forwarding
+						</label>
+						<label class="checkbox">
+							<input type="checkbox" id="f-dns-register">
+							Register DNS name
+						</label>
+						<label class="wide">
+							Static routes
+							<input type="text" id="f-routes"
+							       placeholder="(none), or comma-separated: dest/prefix:via, e.g. 172.32.0.0/24:172.31.0.2">
+						</label>
+					</fieldset>
+					<fieldset>
+						<legend>Devices</legend>
+						<label class="wide">
+							Devices
+							<select id="f-devices" multiple size="4"></select>
+						</label>
+						<label class="wide">
+							Host interfaces (moved into the container's own netns)
+							<select id="f-interfaces" multiple size="4"></select>
+						</label>
+					</fieldset>
+					<fieldset>
+						<legend>Storage &amp; files</legend>
+						<div id="f-files-rows"></div>
+						<button type="button" id="f-files-add">+ Add file</button>
+					</fieldset>
+					<fieldset>
+						<legend>Lifecycle</legend>
+						<label>
+							Restart policy
+							<select id="f-restart">
+								<option value="no" selected>no</option>
+								<option value="always">always</option>
+								<option value="on-failure">on-failure</option>
+								<option value="unless-stopped">unless-stopped</option>
+							</select>
+						</label>
+						<label>
+							Restart delay (seconds)
+							<input type="number" id="f-restart-delay" min="1" max="300" placeholder="2">
+						</label>
+						<label class="wide">
+							Depends on
+							<input type="text" id="f-depends-on" placeholder="(none), or comma-separated: db,cache">
+						</label>
+						<label>
+							Readiness TCP port
+							<input type="number" id="f-readiness-port" min="1" max="65535">
+						</label>
+						<label>
+							Readiness timeout (seconds)
+							<input type="number" id="f-readiness-timeout" min="1" max="300" placeholder="30">
+						</label>
+						<label class="wide">
+							Sysctls
+							<input type="text" id="f-sysctls"
+							       placeholder="(none), or semicolon-separated: net.ipv4.ip_forward=1;net.ipv4.conf.all.rp_filter=0">
+						</label>
+					</fieldset>
+					<fieldset>
+						<legend>TLS</legend>
+						<label class="checkbox">
+							<input type="checkbox" id="f-pki-issue">
+							Issue TLS cert
+						</label>
+						<label>
+							Cert dir
+							<input type="text" id="f-pki-cert-dir" placeholder="/etc/kanxeo-tls">
+						</label>
+						<label>
+							Cert days
+							<input type="number" id="f-pki-days" min="1" placeholder="365">
+						</label>
+					</fieldset>
+					<button type="submit">Run</button>
+				</form>
+			</div>
+
+			<div id="modal-network-form" hidden>
+				<form id="network-form">
+					<label>
+						Name
+						<input type="text" id="nf-name" pattern="[A-Za-z0-9_-]{1,15}" required>
+					</label>
+					<label>
+						Subnet
+						<input type="text" id="nf-subnet" placeholder="172.31.0.0" required>
+					</label>
+					<label>
+						Prefix length
+						<input type="number" id="nf-prefix" min="8" max="30" value="24" required>
+					</label>
+					<label>
+						Gateway (optional)
+						<input type="text" id="nf-gateway" placeholder="(none), or e.g. 172.31.0.1">
+					</label>
+					<button type="submit">Create</button>
+				</form>
+			</div>
+
+			<div id="modal-image-form" hidden>
+				<form id="image-form">
+					<label>
+						Name
+						<input type="text" id="if-name" pattern="[A-Za-z0-9_-]+" required>
+					</label>
+					<button type="submit">Create</button>
+				</form>
+			</div>
+
+			<div id="modal-dns-record-form" hidden>
+				<form id="dns-record-form">
+					<label>
+						Name
+						<input type="text" id="df-name" placeholder="db.internal" required>
+					</label>
+					<label>
+						IP
+						<input type="text" id="df-ip" placeholder="172.31.0.5" required>
+					</label>
+					<button type="submit">Create</button>
+				</form>
+			</div>
+
+			<div id="modal-dns-server-form" hidden>
+				<form id="dns-server-form">
+					<label>
+						Container
+						<input type="text" id="sf-container" pattern="[A-Za-z0-9_-]+" required>
+					</label>
+					<label class="wide">
+						Hosts path
+						<input type="text" id="sf-hosts-path" placeholder="/etc/dnsmasq-hosts" required>
+					</label>
+					<button type="submit">Register</button>
+				</form>
+			</div>
+
+			<div id="modal-pki-cert-form" hidden>
+				<form id="pki-cert-form">
+					<label>
+						Name
+						<input type="text" id="pf-name" placeholder="svc.internal" required>
+					</label>
+					<label class="wide">
+						SANs
+						<input type="text" id="pf-sans" placeholder="(defaults to name), or comma-separated: svc.internal,svc">
+					</label>
+					<label>
+						Days
+						<input type="number" id="pf-days" min="1" placeholder="365">
+					</label>
+					<button type="submit">Issue</button>
+				</form>
+				<div id="pki-cert-issued" class="pki-cert-issued" hidden></div>
+			</div>
+
+			<div id="modal-pkg-recipe-form" hidden>
+				<form id="pkg-recipe-form">
+					<label>
+						Name
+						<input type="text" id="rf-name" pattern="[A-Za-z0-9_-]+" required>
+					</label>
+					<label class="wide">
+						Recipe file
+						<input type="file" id="rf-file" required>
+					</label>
+					<button type="submit">Add / update</button>
+				</form>
+				<p class="hint">Upserts by name -- adding the same name again replaces its content, no ISO
+					rebuild or reinstall needed (ADR-0040).</p>
+			</div>
+
+			<div id="modal-pkg-bootstrap-form" hidden>
+				<form id="pkg-bootstrap-form">
+					<label class="wide">
+						Toolchain artifact path (optional)
+						<input type="text" id="pkgf-toolchain-path" placeholder="/path/to/toolchain.squashfs">
+					</label>
+					<button type="submit">Bootstrap build image</button>
+				</form>
+				<p class="hint">Leave blank only on a rich dev host: it copies the toolchain live from this
+					daemon's own host, which is empty on a real minimal install. On a real install, build a
+					portable artifact with <code>mktoolchainimage</code>, scp it onto this box, and give its
+					path here.</p>
+			</div>
+
+			<div id="modal-pkg-install-form" hidden>
+				<form id="pkg-install-form">
+					<label>
+						Name
+						<input type="text" id="pkgf-name" pattern="[A-Za-z0-9_-]+" required>
+					</label>
+					<label>
+						Image
+						<input type="text" id="pkgf-image" placeholder="base">
+					</label>
+					<label class="checkbox">
+						<input type="checkbox" id="pkgf-upgrade">
+						Upgrade
+					</label>
+					<button type="submit">Install</button>
+				</form>
+				<button type="button" id="pkg-update-all">Update all (one job)</button>
+			</div>
+		</div>
+	</div>
+</div>
 
 <script src="/app.js"></script>
 </body>
