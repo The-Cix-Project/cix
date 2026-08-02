@@ -235,6 +235,24 @@ int test_image_fixture_stage_toolchain(const char *image_root)
 	 *   directly building iproute2's tc (its ematch grammar needs
 	 *   bison): "bison: .../m4sugar.m4: cannot open: No such file or
 	 *   directory".
+	 * - /usr/share/gettext, /usr/share/aclocal, /usr/share/automake-1.16:
+	 *   procps.recipe's own autogen.sh needs `autopoint` (a separate
+	 *   Debian package from "gettext" itself, confirmed the hard way --
+	 *   installing just "gettext" still left autogen.sh failing with the
+	 *   same "you must have autopoint installed" error) to regenerate
+	 *   its build system from a git-archive source snapshot (no
+	 *   pre-generated ./configure ships in one, unlike a real `make
+	 *   dist` release tarball). autopoint's own data files live under
+	 *   /usr/share/gettext; the gettext.m4/iconv.m4/etc. macros
+	 *   autoreconf expands live under /usr/share/aclocal; automake
+	 *   itself (invoked by autogen.sh) is a thin wrapper script whose
+	 *   real Perl implementation (Automake::Config and the rest of the
+	 *   Automake:: package) lives under /usr/share/automake-1.16, not
+	 *   next to the wrapper in /usr/bin -- found the same way as the
+	 *   first two, a real build failing ("Can't locate
+	 *   Automake/Config.pm in @INC") one step further into the same
+	 *   autogen.sh run. None of the three are under the wholesale
+	 *   include/lib/lib64/bin/libexec copy above.
 	 * - /usr/local/go: this build host's own real Go toolchain
 	 *   (GOROOT), staged so a recipe's pkg_build() can set
 	 *   PATH=/usr/local/go/bin:$PATH and genuinely build Go packages --
@@ -262,6 +280,26 @@ int test_image_fixture_stage_toolchain(const char *image_root)
 	 *   wasm-pack build` against lldap's own app/), then rides along for
 	 *   free with the existing wholesale /usr/local/cargo copy above --
 	 *   no separate staging entry needed.
+	 * - /usr/share/libtool, /usr/share/aclocal-1.16, /usr/share/misc:
+	 *   three more procps.recipe autogen.sh gaps, found the same way, one
+	 *   step further still. /usr/share/libtool is libtoolize's own
+	 *   build-aux template directory ("$pkgauxdir is not a directory:
+	 *   '/usr/share/libtool/build-aux'" -- libtoolize --force copies
+	 *   ltmain.sh and the lt*.m4 macros from there, same "not part of the
+	 *   wholesale bin/lib copy, it's a separate share/ data dir" shape as
+	 *   automake-1.16 above). /usr/share/aclocal-1.16 is automake's own
+	 *   version-specific additional-macro search directory ("aclocal:
+	 *   error: couldn't open directory '/usr/share/aclocal-1.16'"),
+	 *   distinct from the already-staged /usr/share/aclocal (which holds
+	 *   gettext's/libtool's own aclocal contributions, not automake's).
+	 *   /usr/share/misc holds the real config.guess/config.sub GNU
+	 *   triplet scripts every autoconf project's `automake --add-missing`
+	 *   step needs; automake's own copies under
+	 *   /usr/share/automake-1.16/config.{guess,sub} (already staged
+	 *   above) are themselves symlinks to ../misc/config.{guess,sub}
+	 *   confirmed via `ls -la`, so staging automake-1.16 alone still left
+	 *   ./configure failing with "cannot find required auxiliary files:
+	 *   config.guess config.sub" until this directory was staged too.
 	 */
 	static const struct {
 		const char *src;
@@ -271,6 +309,12 @@ int test_image_fixture_stage_toolchain(const char *image_root)
 		{ "/usr/share/bison", "usr/share/bison" },
 		{ "/usr/share/autoconf", "usr/share/autoconf" },
 		{ "/usr/share/perl", "usr/share/perl" },
+		{ "/usr/share/gettext", "usr/share/gettext" },
+		{ "/usr/share/aclocal", "usr/share/aclocal" },
+		{ "/usr/share/automake-1.16", "usr/share/automake-1.16" },
+		{ "/usr/share/libtool", "usr/share/libtool" },
+		{ "/usr/share/aclocal-1.16", "usr/share/aclocal-1.16" },
+		{ "/usr/share/misc", "usr/share/misc" },
 		{ "/usr/local/go", "usr/local/go" },
 		{ "/usr/local/cargo", "usr/local/cargo" },
 		{ "/usr/local/rustup", "usr/local/rustup" },

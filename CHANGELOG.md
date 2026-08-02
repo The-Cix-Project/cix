@@ -2,6 +2,21 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 31: a wireless-tools recipe set -- `procps`, `iw`, `hostapd`
+
+Direct user request, verified the same two-phase way every prior recipe has been -- real build, then a full install through the actual `kanxeod` pipeline, ending with every installed binary confirmed to actually run inside a real running container.
+
+#### Added
+- `pkg/recipes/procps.recipe` (4.0.6) -- `ps`/`top`/`free`/`kill`/`pgrep`/`pkill`/`pidof`/`pidwait`/`pmap`/`pwdx`/`slabtop`/`tload`/`uptime`/`vmstat`/`w`/`watch`/`hugetop`, plus `sysctl`.
+- `pkg/recipes/iw.recipe` (6.17) -- the nl80211-based CLI for wireless device configuration.
+- `pkg/recipes/hostapd.recipe` (2.11) -- the IEEE 802.11 AP/authentication daemon, built with `CONFIG_IEEE80211W`/`CONFIG_SAE` added to upstream's `defconfig` for WPA3-Personal support.
+- Six new permanent `extras[]` entries in `test/test_image_fixture.c` (`/usr/share/gettext`, `/usr/share/aclocal`, `/usr/share/automake-1.16`, `/usr/share/libtool`, `/usr/share/aclocal-1.16`, `/usr/share/misc`), found one at a time chasing `procps.recipe`'s `autogen.sh` through a real cascading toolchain-staging gap via direct chroot reproduction against the daemon's own `pkgbuild` sandbox.
+
+#### Fixed
+- **`hostapd.recipe`'s `pkg_install()` silently failed to copy its own binaries**, discovered by comparing the daemon's reported package manifest (missing `usr/sbin/hostapd`/`usr/sbin/hostapd_cli`, present only the unrelated absolute-path `libnl`/`libssl` copies) against a real build's actual output despite a clean "installed" state. Root cause: `pkg_build()`'s first line (`cd hostapd`) persists into `pkg_install()` since both run in the same shell session/cwd (`daemon/src/pkg.c`), so the original `cp hostapd/hostapd hostapd/hostapd_cli "$dir/"` looked for a nonexistent doubly-nested path and failed silently (no `set -e` in this recipe contract). Fixed by making the `cp` paths bare, matching the cwd `pkg_install()` actually inherits.
+
+Verified end-to-end against a live daemon carrying its real 5-container VRRP/OSPF demo topology throughout (restart-survival re-confirmed via `restart: "always"` before each daemon restart this phase needed): all three packages installed for real onto a `wifitools` image through the actual pipeline; every binary confirmed to actually execute inside a real running container via `kanxeoctl console --cmd=` (`ps` printed a real process list, `iw`/`hostapd` printed correct version/usage banners). `top`/`watch` were confirmed (via `strace`) to need a terminfo database no image in this project ships yet -- a real, separate, named gap, not a defect in these recipes; container-liveness verification used `vmstat` instead (no curses dependency). Full clean rebuild, zero warnings; `test_pkg` re-run clean against its own isolated `--data-dir=`.
+
 ### Phase 30 part 6: `architecture.svg` redrawn for real -- content, not just paths
 
 Direct user follow-up to part 5's own named boundary ("the diagram is real, current-format, and now correctly linked to from everywhere -- it just isn't a current picture of the system yet"): the actual diagram content, unchanged since Phase 16, is now current through Phase 30.
