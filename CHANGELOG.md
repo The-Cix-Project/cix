@@ -2,6 +2,23 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 30 part 6: `architecture.svg` redrawn for real -- content, not just paths
+
+Direct user follow-up to part 5's own named boundary ("the diagram is real, current-format, and now correctly linked to from everywhere -- it just isn't a current picture of the system yet"): the actual diagram content, unchanged since Phase 16, is now current through Phase 30.
+
+#### Added
+- A new "Exec / Console" daemon module box (setns + PTY exec, WebSocket relay, ADR-0043), with a new dashed arrow down to the containers layer, routed along the runtime-library box's own right margin so it doesn't cross any box interior.
+- A new "Physical Console" client-surface box (video tty0 + serial ttyS0, PID1-spawned `kanxeoctl`, ADR-0034) -- a real, architecturally distinct way of reaching `kanxeod` that predates this phase (Phases 18-19) but had never been drawn.
+
+#### Changed
+- The daemon module row grew from 6 to 7 boxes (128px each, down from 150px) and every box's text was tightened and refreshed for current capabilities: `Pkg / Image` now says "recipes via API" (Phase 26, ADR-0040) instead of implying static/installer-baked; `Network` gained "VLAN, gateway-opt" (Phase 22); `System` gained "backup" (Phase 17). ADR citations were deliberately dropped from this small row in favor of the larger, roomier boxes that already carry them (runtime library row, Persistent State column, Host OS layer) -- a legibility trade-off, not an accuracy loss.
+- The Persistent State column's `pkg/recipes` box updated to "REST-managed catalog (ADR-0040)".
+- Title/subtitle/footer updated from "Phase 16" to "Phase 30".
+
+Verified by actually rendering it: `librsvg2-bin` was installed specifically for this (no SVG renderer existed in this sandbox before), and every edited region was rendered to PNG and inspected at full and cropped resolution -- confirming no text overflow, no unintended overlap, and the new exec/console arrow's routing genuinely clears every box it passes near, a risk pure coordinate arithmetic couldn't fully rule out on its own.
+
+**Two real, substantive gaps found and fixed in `docs/api/README.md` during this same "are all the docs current" pass, not just the diagram**: `GET /v1/containers/{name}/console` (Phase 30, ADR-0043) was fully documented in `openapi.yaml` but entirely absent from this narrative walkthrough -- zero mentions, not even in the endpoint table -- fixed with a new table row and a full "Interactive container console" section. `/pkg/recipes` was still described as "provisioned out of band" / "the same v1 boundary container images already have" -- accurate before Phase 26, false since (ADR-0040 made recipe management a real, live REST API) -- fixed with corrected table rows for the now-existing `POST`/`DELETE`, and a rewritten paragraph plus a real request/response example replacing the stale claim.
+
 ### Phase 30 part 5: documentation audit -- `docs/` restructured into one subdirectory per document kind, no orphaned references
 
 A meticulous, user-requested audit of the entire codebase and documentation set: validated git hygiene (nothing uncommitted or unpushed at the start), confirmed no orphaned/stray files and no duplicate implementations (one dead static function found and removed, `test_container_files.c`'s unused `json_str_field()`), confirmed the ADR timeline is already chronologically accurate (all 45 ADRs' dates strictly non-decreasing against `git log`, no gaps, no duplicate numbers), and restructured `docs/` so nothing but `README.md` lives in its root -- `docs/MISSION.md` moved to `docs/mission/MISSION.md`, `docs/ROADMAP.md` to `docs/roadmap/ROADMAP.md`, `docs/architecture.svg` to `docs/architecture/architecture.svg`, joining the pre-existing `docs/adr/` and `docs/api/` as one-subdirectory-per-document-kind.

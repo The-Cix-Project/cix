@@ -1,12 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 1180" font-family="'DejaVu Sans', Verdana, Arial, sans-serif">
-  <title>Kanxeo Architecture (as of Phase 16)</title>
+  <title>Kanxeo Architecture (as of Phase 30)</title>
   <desc>
     Kanxeo hardware/workload orchestration platform architecture: REST-only client
-    surfaces (kanxeoctl CLI, web dashboard) talking to the kanxeod daemon, which is
-    the sole process with direct access to the container runtime library and every
-    host/network/DNS/PKI/package primitive (API-First Mandate, ADR-0005). Below the
-    daemon: the container runtime it drives, and the A/B boot / on-disk layout it
-    manages as host PID 1.
+    surfaces (kanxeoctl CLI, web dashboard, the PID1-spawned physical console) talking
+    to the kanxeod daemon, which is the sole process with direct access to the
+    container runtime library and every host/network/DNS/PKI/package/exec primitive
+    (API-First Mandate, ADR-0005). Below the daemon: the container runtime it drives
+    -- including a hand-rolled WebSocket exec/console session into a running
+    container (ADR-0043) -- and the A/B boot / on-disk layout it manages as host PID 1.
   </desc>
 
   <defs>
@@ -41,7 +42,7 @@
   <rect width="1400" height="1180" fill="#fbfbfd"/>
 
   <text x="30" y="40" class="title">Kanxeo Architecture</text>
-  <text x="30" y="60" class="subtitle">Hardware &amp; workload orchestration platform — client-daemon, REST-first, hand-rolled from source (docs/mission/MISSION.md) — as of Phase 16</text>
+  <text x="30" y="60" class="subtitle">Hardware &amp; workload orchestration platform — client-daemon, REST-first, hand-rolled from source (docs/mission/MISSION.md) — as of Phase 30</text>
 
   <!-- ============ CLIENT LAYER ============ -->
   <text x="30" y="95" class="layer-label">CLIENT SURFACES — pure REST clients, zero direct runtime access (ADR-0005)</text>
@@ -49,12 +50,17 @@
   <rect x="30" y="105" width="260" height="70" class="box-client"/>
   <text x="160" y="130" text-anchor="middle" class="box-title">kanxeoctl (CLI)</text>
   <text x="160" y="148" text-anchor="middle" class="module-text">One subcommand per endpoint</text>
-  <text x="160" y="162" text-anchor="middle" class="module-text">client/src/httpclient.c</text>
+  <text x="160" y="162" text-anchor="middle" class="module-text">+ console: real terminal (ADR-43)</text>
 
   <rect x="330" y="105" width="260" height="70" class="box-client"/>
   <text x="460" y="130" text-anchor="middle" class="box-title">Web Dashboard</text>
   <text x="460" y="148" text-anchor="middle" class="module-text">Vanilla HTML/CSS/JS, no build step (ADR-0010)</text>
-  <text x="460" y="162" text-anchor="middle" class="module-text">web/ — served static by kanxeod</text>
+  <text x="460" y="162" text-anchor="middle" class="module-text">left resource tree, Console tab</text>
+
+  <rect x="650" y="105" width="260" height="70" class="box-client"/>
+  <text x="780" y="130" text-anchor="middle" class="box-title">Physical Console</text>
+  <text x="780" y="148" text-anchor="middle" class="module-text">video (tty0) + serial (ttyS0)</text>
+  <text x="780" y="162" text-anchor="middle" class="module-text">PID1-spawned kanxeoctl (ADR-34)</text>
 
   <rect x="1070" y="105" width="300" height="70" class="box" fill="#fefcf3" stroke="#b7791f"/>
   <text x="1220" y="128" text-anchor="middle" class="box-title">Operator</text>
@@ -64,7 +70,9 @@
   <!-- arrows client -> daemon -->
   <line x1="160" y1="175" x2="160" y2="215" stroke="#4a5568" stroke-width="1.6" marker-end="url(#arrow)"/>
   <line x1="460" y1="175" x2="460" y2="215" stroke="#4a5568" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="780" y1="175" x2="780" y2="215" stroke="#4a5568" stroke-width="1.6" marker-end="url(#arrow)"/>
   <text x="475" y="197" class="arrow-label">HTTP / JSON, :7620</text>
+  <text x="795" y="197" class="arrow-label">loopback :7620</text>
 
   <!-- ============ DAEMON LAYER ============ -->
   <text x="30" y="242" class="layer-label">kanxeod — THE ONLY PROCESS WITH RUNTIME/NETWORK/DNS/PKI/PKG ACCESS</text>
@@ -74,35 +82,40 @@
   <text x="530" y="294" text-anchor="middle" class="small-text">hand-rolled HTTP/1.1 + JSON, no external libraries, dynamically linked against system glibc, TCC-compiled</text>
 
   <!-- module row 1 -->
-  <rect x="50" y="312" width="150" height="60" class="box-module"/>
-  <text x="125" y="330" text-anchor="middle" class="module-title">Registry</text>
-  <text x="125" y="344" text-anchor="middle" class="module-text">container lifecycle,</text>
-  <text x="125" y="356" text-anchor="middle" class="module-text">restart/depends_on</text>
+  <rect x="50" y="312" width="128" height="60" class="box-module"/>
+  <text x="114" y="330" text-anchor="middle" class="module-title">Registry</text>
+  <text x="114" y="344" text-anchor="middle" class="module-text">lifecycle mgmt</text>
+  <text x="114" y="356" text-anchor="middle" class="module-text">restart, depends_on</text>
 
-  <rect x="212" y="312" width="150" height="60" class="box-module"/>
-  <text x="287" y="330" text-anchor="middle" class="module-title">Network</text>
-  <text x="287" y="344" text-anchor="middle" class="module-text">bridges, subnets,</text>
-  <text x="287" y="356" text-anchor="middle" class="module-text">IP allocation</text>
+  <rect x="188" y="312" width="128" height="60" class="box-module"/>
+  <text x="252" y="330" text-anchor="middle" class="module-title">Network</text>
+  <text x="252" y="344" text-anchor="middle" class="module-text">bridges, subnets</text>
+  <text x="252" y="356" text-anchor="middle" class="module-text">VLAN, gateway-opt</text>
 
-  <rect x="374" y="312" width="150" height="60" class="box-module"/>
-  <text x="449" y="330" text-anchor="middle" class="module-title">DNS / PKI</text>
-  <text x="449" y="344" text-anchor="middle" class="module-text">records, dnsmasq sync,</text>
-  <text x="449" y="356" text-anchor="middle" class="module-text">root CA, leaf certs</text>
+  <rect x="326" y="312" width="128" height="60" class="box-module"/>
+  <text x="390" y="330" text-anchor="middle" class="module-title">DNS / PKI</text>
+  <text x="390" y="344" text-anchor="middle" class="module-text">records, dnsmasq</text>
+  <text x="390" y="356" text-anchor="middle" class="module-text">CA + leaf certs</text>
 
-  <rect x="536" y="312" width="150" height="60" class="box-module"/>
-  <text x="611" y="330" text-anchor="middle" class="module-title">Pkg / Image</text>
-  <text x="611" y="344" text-anchor="middle" class="module-text">source builds,</text>
-  <text x="611" y="356" text-anchor="middle" class="module-text">image lifecycle</text>
+  <rect x="464" y="312" width="128" height="60" class="box-module"/>
+  <text x="528" y="330" text-anchor="middle" class="module-title">Pkg / Image</text>
+  <text x="528" y="344" text-anchor="middle" class="module-text">recipes via API</text>
+  <text x="528" y="356" text-anchor="middle" class="module-text">image lifecycle</text>
 
-  <rect x="698" y="312" width="150" height="60" class="box-module"/>
-  <text x="773" y="330" text-anchor="middle" class="module-title">Device</text>
-  <text x="773" y="344" text-anchor="middle" class="module-text">PCI/USB/GPU discovery</text>
-  <text x="773" y="356" text-anchor="middle" class="module-text">+ grouped grants (ADR-0028)</text>
+  <rect x="602" y="312" width="128" height="60" class="box-module"/>
+  <text x="666" y="330" text-anchor="middle" class="module-title">Device</text>
+  <text x="666" y="344" text-anchor="middle" class="module-text">PCI/USB/GPU</text>
+  <text x="666" y="356" text-anchor="middle" class="module-text">grouped grants</text>
 
-  <rect x="860" y="312" width="150" height="60" class="box-module"/>
-  <text x="935" y="330" text-anchor="middle" class="module-title">System</text>
-  <text x="935" y="344" text-anchor="middle" class="module-text">shutdown/reboot/update</text>
-  <text x="935" y="356" text-anchor="middle" class="module-text">(ADR-0016, ADR-0031)</text>
+  <rect x="740" y="312" width="128" height="60" class="box-module"/>
+  <text x="804" y="330" text-anchor="middle" class="module-title">System</text>
+  <text x="804" y="344" text-anchor="middle" class="module-text">shutdown, reboot</text>
+  <text x="804" y="356" text-anchor="middle" class="module-text">update, backup</text>
+
+  <rect x="878" y="312" width="128" height="60" class="box-module" fill="#eef2ff" stroke="#4338ca"/>
+  <text x="942" y="330" text-anchor="middle" class="module-title">Exec / Console</text>
+  <text x="942" y="344" text-anchor="middle" class="module-text">setns + PTY exec</text>
+  <text x="942" y="356" text-anchor="middle" class="module-text">WebSocket relay</text>
 
   <!-- module row 2: runtime library -->
   <rect x="50" y="388" width="960" height="170" class="box" fill="#fffceb" stroke="#b7791f" stroke-width="1.4"/>
@@ -178,6 +191,12 @@
   <line x1="530" y1="582" x2="530" y2="620" stroke="#4a5568" stroke-width="1.6" marker-end="url(#arrow)"/>
   <text x="545" y="605" class="arrow-label">clone3() + overlay mount</text>
 
+  <!-- exec/console -> containers arrow (ADR-0043), routed along the right margin
+       so it doesn't cross the runtime-library boxes' interiors -->
+  <line x1="1006" y1="372" x2="1012" y2="372" stroke="#4338ca" stroke-width="1.4"/>
+  <line x1="1012" y1="372" x2="1025" y2="620" stroke="#4338ca" stroke-width="1.4" stroke-dasharray="5 3" marker-end="url(#arrow)"/>
+  <text x="1030" y="500" class="arrow-label" fill="#4338ca">exec</text>
+
   <!-- ============ RIGHT COLUMN: PERSISTENT STATE ============ -->
   <rect x="1070" y="252" width="300" height="504" class="box" fill="#f7fafc" stroke="#4a5568"/>
   <text x="1220" y="278" text-anchor="middle" class="box-title">Persistent State (BASE_DIR)</text>
@@ -197,7 +216,7 @@
 
   <rect x="1090" y="458" width="260" height="42" class="box-module"/>
   <text x="1220" y="478" text-anchor="middle" class="module-text">pkg/recipes + pkg/sources</text>
-  <text x="1220" y="492" text-anchor="middle" class="small-text">source-based package builds</text>
+  <text x="1220" y="492" text-anchor="middle" class="small-text">REST-managed catalog (ADR-0040)</text>
 
   <rect x="1090" y="510" width="260" height="80" class="box-module" fill="#eef2ff" stroke="#4338ca"/>
   <text x="1220" y="530" text-anchor="middle" class="module-title">API-First Mandate (ADR-0005)</text>
@@ -296,6 +315,6 @@
   <line x1="530" y1="582" x2="205" y2="850" stroke="#8a94a6" stroke-width="1.2" stroke-dasharray="3 3" marker-end="url(#arrowLight)"/>
   <text x="235" y="700" class="arrow-label" fill="#8a94a6">runs AS the host (PID 1)</text>
 
-  <text x="30" y="1150" class="small-text">Reflects Phase 16 (host OS update mechanism + automatic package updates, ADR-0031). Source of truth for what shipped: docs/roadmap/ROADMAP.md — for why: docs/adr/.</text>
+  <text x="30" y="1150" class="small-text">Reflects Phase 30 (interactive container console over a hand-rolled WebSocket, ADR-0043; PID1-spawned physical console, ADR-0034). Source of truth for what shipped: docs/roadmap/ROADMAP.md — for why: docs/adr/.</text>
   <text x="30" y="1164" class="small-text">Update this diagram whenever a change alters a box or arrow shown here — do not let it drift (see CLAUDE.md's Documentation Map).</text>
 </svg>

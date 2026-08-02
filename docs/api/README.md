@@ -17,6 +17,7 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | GET | `/containers/{name}` | Inspect one container |
 | DELETE | `/containers/{name}` | Stop (if running), remove it, and forget any persisted definition |
 | POST | `/containers/{name}/stop` | Kill it now, keep its persisted definition (for `restart: "unless-stopped"`) |
+| GET | `/containers/{name}/console` | Upgrade to a WebSocket; an interactive shell inside the running container |
 | GET | `/networks` | List all networks this daemon knows about |
 | POST | `/networks` | Create a network (a real bridge, persisted across restarts) |
 | GET | `/networks/{name}` | Inspect one network |
@@ -40,7 +41,9 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | GET | `/pki/certs/{name}` | Inspect one issued certificate (metadata + cert, never the key) |
 | DELETE | `/pki/certs/{name}` | Remove an issued certificate |
 | POST | `/pkg/bootstrap` | Stage the sandboxed build toolchain image (optional `toolchain_path` for a real install; once; idempotent) |
-| GET | `/pkg/recipes` | List recipes found on disk (provisioned out of band) |
+| GET | `/pkg/recipes` | List recipes known to this daemon (metadata only) |
+| POST | `/pkg/recipes` | Add a recipe, or replace one with the same name (upsert) |
+| DELETE | `/pkg/recipes/{name}` | Remove a recipe (does not affect anything already installed via it) |
 | POST | `/pkg/install` | Start installing a package (async -- returns immediately) |
 | POST | `/pkg/update-all` | Start an upgrade for the first installed package whose recipe has drifted |
 | GET | `/pkg` | List every known package (installed or in-flight) with its state |
@@ -171,6 +174,17 @@ POST /v1/containers
 - `routes` is optional: 0–8 entries, each `{dest, prefix_len, via}` (all required). `dest`/`via` must be well-formed IPv4; `prefix_len` in `[0, 32]`. Only format is validated — whether `via` is actually reachable is the caller's responsibility. Set once at creation; not modifiable on an already-running container.
 - `ip_forward` is optional, default `false`. Per-netns — never affects the host or other containers.
 
+## Interactive container console (`docker exec -it`-style)
+
+`GET /v1/containers/{name}/console` opens a real, fully-interactive shell inside an already-running container (ADR-0043) — not a normal request/response endpoint, an HTTP/1.1 Upgrade to a hand-rolled RFC 6455 WebSocket (no fragmentation, 64KiB payload cap; OpenAPI 3.0 has no first-class way to type this, so `openapi.yaml` documents it as a GET whose success response is `101 Switching Protocols`). The exec'd process joins the target container's own mount/UTS/network/pid namespaces (`setns()`, equivalent to `nsenter --mount --uts --net --pid --target <pid>`) against a PTY allocated in the daemon's own namespace before any `setns()` call, so it never needs a working `devpts` inside the container itself. Command defaults to `/usr/bin/bash` (this project's own images stage everything under `usr/bin/`, never `/bin`); override with the `X-Kanxeo-Exec-Cmd` request header.
+
+Two real, ready-to-use clients — neither requires hand-rolling the handshake yourself:
+
+- **`kanxeoctl console NAME [--cmd=/path/to/shell]`** — a full, `termios` raw-mode terminal: tab completion, Ctrl-C, `vim`/`top`/`less` all work correctly, since it drives a real local terminal end to end.
+- **The web dashboard's own Console tab** (a container's default view when selected in the left tree) — the browser's native `WebSocket` object talks directly to this endpoint, no hand-rolled handshake needed client-side. Deliberately reduced fidelity by design (ADR-0010's "no framework" constraint, confirmed with the user rather than silently accepted): a line-buffer renderer with `\r`/`\n`/backspace/Tab and SGR color support, no cursor-addressable screen model, so full-screen redraw programs (`vim`, `top`, `less`) render wrong there specifically — `kanxeoctl console` has no such limitation.
+
+A WebSocket CLOSE frame from either side, or the exec'd process exiting on its own, ends the session; the exec'd process is `SIGKILL`ed if it's still running when the client disconnects — no leaked processes survive session teardown. No new authentication layer exists for this endpoint — exactly as protected as every other existing mutating endpoint today (network reachability only), a more sensitive capability than most, worth stating plainly rather than leaving implicit.
+
 ## DNS: records + a real dnsmasq container
 
 DNS records are a REST resource; the actual name resolution is done by a real DNS server (dnsmasq recommended) running as a normal containerized workload — not hand-rolled, the same reasoning BIRD wasn't hand-rolled for routing (ADR-0007's "no external libraries" rule is about this project's own platform components, not about workloads a container runs).
@@ -290,7 +304,7 @@ POST /v1/pkg/bootstrap
 
 Stages a real build toolchain (`gcc`/`make`/`ld`/`as`/`cc1`/`sh`/`tar` and their real headers/libraries) into the sandboxed build image. No body: copies live from this daemon's own host `/usr/{include,lib,lib64,bin,libexec}` with the real `cp -a` — works for dev/test convenience when `kanxeod` happens to be running somewhere with a real toolchain already, but produces an empty, non-functional toolchain on a real minimal install (nothing under its own `/usr` beyond `kanxeod`/`kanxeoctl` and their bare runtime libs). For a real install, use `{"toolchain_path": "/local/path/to/toolchain.squashfs"}` instead — imports a real, portable artifact (built once, elsewhere, with `image/src/mktoolchainimage.c`, then `scp`'d onto this box, the same "local path, not an upload" precedent `/system/update`'s `image_path`/`kernel_path` already established). Both idempotent — safe to call again.
 
-A recipe (provisioned onto disk at `/var/lib/kanxeo/pkg/recipes/<name>.recipe`, out of band, the same v1 boundary container images already have):
+A recipe (`pkg_name=`/`pkg_version=`/`pkg_source=`/`pkg_sha256=`/`pkg_depends=`, plus real `pkg_build()`/`pkg_install()` shell functions):
 
 ```sh
 pkg_name=hello
@@ -308,6 +322,15 @@ pkg_install() {
     make DESTDIR="$PKG_DESTDIR" install
 }
 ```
+
+**Recipes are managed live, via the API itself (ADR-0040)** — `POST /v1/pkg/recipes` adds one (or replaces an existing one of the same name, an upsert), no ISO rebuild or reinstall needed:
+
+```
+POST /v1/pkg/recipes
+{"name": "hello", "content": "pkg_name=hello\npkg_version=2.12.1\n..."}
+```
+
+`content` is validated (must parse, and its own `pkg_name=` must equal `name`) *before* anything on disk changes — `400` on a mismatch or a recipe that fails to parse, so a bad upload can never clobber a working recipe already there. `204` on success. `DELETE /v1/pkg/recipes/{name}` removes one; it only affects future `pkg install`/`update-all` lookups, never anything already installed via it. `GET /v1/pkg/recipes` lists what this daemon currently knows about. This project's own git-tracked `pkg/recipes/*.recipe` files (`bash`, `bird`, `iproute2`, etc.) are the *source* for a fresh deployment's initial catalog, uploaded through this same endpoint — never baked into the installer ISO or read directly off some fixed on-disk path by the daemon itself.
 
 Install it:
 
