@@ -16,6 +16,13 @@
  * unknown-id rejection) are always asserted; the "grant a real device
  * to a container" scenario only runs if this host actually has at
  * least one assignable device, and is skipped (not failed) otherwise.
+ *
+ * Also covers Phase 15 (ADR-0048): persistent device name mappings
+ * (daemon/src/devicemap.c) -- exact and vendor_model resolution, a
+ * container referencing a mapping name instead of a raw id, and the
+ * "mapping exists but currently resolves to nothing" case correctly
+ * failing rather than silently retrying as a literal raw id. Same
+ * hardware-dependent guard as the rest of this file.
  */
 #include "httpclient.h"
 #include "json.h"
@@ -104,6 +111,8 @@ int main(void)
 	int ok = 1;
 	struct kx_response r;
 	char first_assignable_id[128];
+	char first_assignable_vendor[16] = "";
+	char first_assignable_product[16] = "";
 	int have_assignable = 0;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
@@ -163,7 +172,16 @@ int main(void)
 				}
 				if (!have_assignable && jassignable->type == JSON_BOOL &&
 				    jassignable->u.boolean) {
+					const char *vendor_id = json_str_field(d, "vendor_id");
+					const char *product_id = json_str_field(d, "product_id");
+
 					snprintf(first_assignable_id, sizeof(first_assignable_id), "%s", id);
+					if (vendor_id != NULL)
+						snprintf(first_assignable_vendor, sizeof(first_assignable_vendor),
+						         "%s", vendor_id);
+					if (product_id != NULL)
+						snprintf(first_assignable_product, sizeof(first_assignable_product),
+						         "%s", product_id);
 					have_assignable = 1;
 				}
 				/* Phase 14 part 1 (ADR-0028): any "gpu" bus entry must be
@@ -294,6 +312,189 @@ int main(void)
 		kx_response_free(&r);
 	} else {
 		printf("(no assignable device discovered on this host -- scenario 3 skipped)\n");
+	}
+
+	/*
+	 * 3b. Phase 15 (ADR-0048): persistent device name mappings -- real
+	 * proof, only if this host has an assignable device (same guard as
+	 * scenario 3 above, same reasoning: this is genuinely
+	 * hardware-dependent, not something to fake).
+	 */
+	if (have_assignable) {
+		char body[256];
+
+		/* exact mapping resolves to the same real id, "present": true */
+		snprintf(body, sizeof(body), "{\"name\":\"mapexact\",\"kind\":\"exact\",\"selector\":\"%s\"}",
+		         first_assignable_id);
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/devicemaps", body, &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST /v1/devicemaps (exact), status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *jpresent = json_object_get(r.json, "present");
+
+			if (jpresent == NULL || jpresent->type != JSON_BOOL || !jpresent->u.boolean) {
+				fprintf(stderr, "FAIL: exact mapping should resolve present=true\n");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		/* a container referencing the MAPPING NAME (not the raw id)
+		 * resolves to the same real device -- the actual point of this
+		 * whole mechanism. */
+		snprintf(body, sizeof(body),
+		         "{\"name\":\"devmapgood\",\"image\":\"devicestest\","
+		         "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"],\"devices\":[\"mapexact\"]}");
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers", body, &r) != 0 || r.status != 201) {
+			fprintf(stderr, "FAIL: POST devmapgood via mapping name, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *devices = json_object_get(r.json, "devices");
+			int found = 0;
+			size_t i;
+
+			if (devices != NULL && devices->type == JSON_ARRAY) {
+				for (i = 0; i < devices->u.array.count; i++) {
+					if (str_eq(json_str_field(devices->u.array.items[i], "id"),
+					           first_assignable_id))
+						found = 1;
+				}
+			}
+			if (!found) {
+				fprintf(stderr,
+				        "FAIL: container created via mapping name did not resolve to "
+				        "the real device id\n");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+		kx_client_request(&client, "DELETE", "/v1/containers/devmapgood", NULL, &r);
+		kx_response_free(&r);
+
+		/* vendor_model mapping, if this device's own vendor/product ids
+		 * were captured (usb/pci entries always have them; a net/gpu
+		 * entry might not) -- resolves to at least the same real id. */
+		if (first_assignable_vendor[0] != '\0' && first_assignable_product[0] != '\0') {
+			snprintf(body, sizeof(body),
+			         "{\"name\":\"mapmodel\",\"kind\":\"vendor_model\",\"selector\":\"%s:%s\"}",
+			         first_assignable_vendor, first_assignable_product);
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "POST", "/v1/devicemaps", body, &r) != 0 ||
+			    r.status != 201) {
+				fprintf(stderr, "FAIL: POST /v1/devicemaps (vendor_model), status=%d\n",
+				        r.status);
+				ok = 0;
+			} else {
+				const struct json_value *resolved = json_object_get(r.json, "resolved_ids");
+				int found = 0;
+				size_t i;
+
+				if (resolved != NULL && resolved->type == JSON_ARRAY) {
+					for (i = 0; i < resolved->u.array.count; i++) {
+						if (str_eq(json_as_string(resolved->u.array.items[i]),
+						           first_assignable_id))
+							found = 1;
+					}
+				}
+				if (!found) {
+					fprintf(stderr,
+					        "FAIL: vendor_model mapping did not resolve the real "
+					        "device id among resolved_ids\n");
+					ok = 0;
+				}
+			}
+			kx_response_free(&r);
+			kx_client_request(&client, "DELETE", "/v1/devicemaps/mapmodel", NULL, &r);
+			kx_response_free(&r);
+		}
+
+		/* GET /v1/devicemaps lists what was created (mapexact still
+		 * present at this point -- mapmodel already cleaned up above). */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/devicemaps", NULL, &r) != 0 || r.status != 200) {
+			fprintf(stderr, "FAIL: GET /v1/devicemaps, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *maps = json_object_get(r.json, "devicemaps");
+			int found = 0;
+			size_t i;
+
+			if (maps != NULL && maps->type == JSON_ARRAY) {
+				for (i = 0; i < maps->u.array.count; i++) {
+					if (str_eq(json_str_field(maps->u.array.items[i], "name"), "mapexact"))
+						found = 1;
+				}
+			}
+			if (!found) {
+				fprintf(stderr, "FAIL: mapexact missing from GET /v1/devicemaps\n");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		/* a mapping that exists but currently resolves to nothing is a
+		 * real 400 at container-creation time -- NOT silently retried
+		 * as a literal raw device id (see main.c's own
+		 * devicemap_resolve()-then-device_find_group() fallback logic). */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/devicemaps",
+		                       "{\"name\":\"mapabsent\",\"kind\":\"exact\","
+		                       "\"selector\":\"usb:ffff:ffff:doesnotexist\"}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST /v1/devicemaps (deliberately absent), status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"devmapabsent\",\"image\":\"devicestest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"],"
+		                       "\"devices\":[\"mapabsent\"]}",
+		                       &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr,
+			        "FAIL: container via a mapping that resolves to nothing should be "
+			        "400, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* duplicate name -> 409; delete -> 204; delete again -> 404. */
+		snprintf(body, sizeof(body), "{\"name\":\"mapexact\",\"kind\":\"exact\",\"selector\":\"%s\"}",
+		         first_assignable_id);
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/devicemaps", body, &r) != 0 || r.status != 409) {
+			fprintf(stderr, "FAIL: duplicate devicemap name expected 409, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		kx_client_request(&client, "DELETE", "/v1/devicemaps/mapabsent", NULL, &r);
+		kx_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "DELETE", "/v1/devicemaps/mapexact", NULL, &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: DELETE mapexact expected 204, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "DELETE", "/v1/devicemaps/mapexact", NULL, &r) != 0 ||
+		    r.status != 404) {
+			fprintf(stderr, "FAIL: DELETE mapexact (already gone) expected 404, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+	} else {
+		printf("(no assignable device discovered on this host -- scenario 3b skipped)\n");
 	}
 
 	/*

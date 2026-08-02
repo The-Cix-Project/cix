@@ -2,6 +2,20 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 36: persistent device name mappings, Proxmox-style (ADR-0048)
+
+Direct user request: name a device (exact bus location, or vendor/model so it follows across USB ports), only named devices appear in the Devices tree.
+
+#### Added
+- New `daemon/src/devicemap.c`/`.h`: persisted `{name, kind, selector}` mappings on top of `device.c`'s own never-persisted discovery. `kind`: `"exact"` (a real device id) or `"vendor_model"` (`"<vendor_id>:<product_id>"`, port-independent). Resolution always re-derived fresh, never cached.
+- `GET`/`POST /v1/devicemaps`, `DELETE /v1/devicemaps/{name}`. A container's own `devices[]` field now resolves a mapping name first, falling back to the existing raw device id path only if no mapping exists by that name -- fully backward-compatible.
+- `kanxeoctl devicemap create/ls/rm`. Web dashboard: Devices tree now lists named mappings only (previously a flat link with no children); Devices view gained a USB/PCI/Network/GPU tab-bar plus a Named mappings table; "Name…" button per unmapped device row.
+- `test/test_daemon_devices.c` extended: exact + vendor_model resolution against this sandbox's own real USB hardware, container creation via a mapping name, and the "mapping exists but resolves to nothing" 400 case.
+
+#### Notes
+- A mapping that exists but currently resolves to no device is a real 400 at container-creation time, deliberately not silently retried as a literal raw device id.
+- Deleting a mapping never affects a container already using it -- device grants are resolved once, at creation time.
+
 ### Phase 35: site-scoped DNS/PKI naming + a real intermediate CA (ADR-0046, ADR-0047)
 
 Direct user request in the same batch as Phase 34: a configurable site identity (not hardcoded `.internal`) that affects both DNS and PKI via a real API, plus a real intermediate CA tier.

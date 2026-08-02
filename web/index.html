@@ -17,6 +17,7 @@
 				<li><button type="button" data-modal="run-form" data-title="Run a container">Container</button></li>
 				<li><button type="button" data-modal="network-form" data-title="Create network">Network</button></li>
 				<li><button type="button" data-modal="image-form" data-title="Create image">Image</button></li>
+				<li><button type="button" data-modal="devicemap-form" data-title="Name a device">Device Mapping</button></li>
 				<li><button type="button" data-modal="dns-record-form" data-title="Create DNS record">DNS Record</button></li>
 				<li><button type="button" data-modal="dns-server-form" data-title="Register DNS server">DNS Server</button></li>
 				<li><button type="button" data-modal="pki-cert-form" data-title="Issue certificate">PKI Certificate</button></li>
@@ -226,11 +227,61 @@
 		<!-- Devices -->
 		<section class="view" id="view-devices" hidden>
 			<h2>Devices</h2>
-			<p class="hint">Discovered live from host sysfs every poll -- nothing here is persisted. A
-				device is only ever granted to a container at creation time (see the "Container" create
-				action's own Devices section); there is no separate attach step for an already-running
-				container.</p>
-			<div id="devices-groups"></div>
+			<p class="hint">Discovered live from host sysfs every poll -- nothing about a raw device is
+				persisted. A device is only ever granted to a container at creation time (see the
+				"Container" create action's own Devices section, where a mapping's name works exactly
+				like a raw device id); there is no separate attach step for an already-running container.</p>
+
+			<h3>Named mappings</h3>
+			<p class="hint">Persisted, operator-named bindings (ADR-0048) -- an exact mapping pins to
+				one specific bus location; a vendor/model mapping follows a device across USB ports.
+				Only named devices appear under Devices in the tree.</p>
+			<table id="devicemaps-table">
+				<thead>
+					<tr>
+						<th>Name</th>
+						<th>Kind</th>
+						<th>Selector</th>
+						<th>Status</th>
+						<th></th>
+					</tr>
+				</thead>
+				<tbody id="devicemaps-body">
+					<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
+				</tbody>
+			</table>
+
+			<h3>Discovered hardware</h3>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="usb" id="dev-tab-usb">USB</button>
+				<button type="button" class="tab-button" data-tab="pci" id="dev-tab-pci">PCI</button>
+				<button type="button" class="tab-button" data-tab="net" id="dev-tab-net">Network</button>
+				<button type="button" class="tab-button" data-tab="gpu" id="dev-tab-gpu">GPU</button>
+			</div>
+			<div class="tab-panel" id="dev-panel-usb" data-tab="usb">
+				<table>
+					<thead><tr><th>ID</th><th>Description</th><th>Driver</th><th>Assignable</th><th>Name</th><th></th></tr></thead>
+					<tbody id="dev-usb-body"><tr><td colspan="6" class="empty">Loading&hellip;</td></tr></tbody>
+				</table>
+			</div>
+			<div class="tab-panel" id="dev-panel-pci" data-tab="pci" hidden>
+				<table>
+					<thead><tr><th>ID</th><th>Description</th><th>Driver</th><th>Assignable</th><th>Name</th><th></th></tr></thead>
+					<tbody id="dev-pci-body"><tr><td colspan="6" class="empty">Loading&hellip;</td></tr></tbody>
+				</table>
+			</div>
+			<div class="tab-panel" id="dev-panel-net" data-tab="net" hidden>
+				<table>
+					<thead><tr><th>ID</th><th>Description</th><th>Driver</th><th>Assignable</th><th>Name</th><th></th></tr></thead>
+					<tbody id="dev-net-body"><tr><td colspan="6" class="empty">Loading&hellip;</td></tr></tbody>
+				</table>
+			</div>
+			<div class="tab-panel" id="dev-panel-gpu" data-tab="gpu" hidden>
+				<table>
+					<thead><tr><th>ID</th><th>Description</th><th>Driver</th><th>Assignable</th><th>Name</th><th></th></tr></thead>
+					<tbody id="dev-gpu-body"><tr><td colspan="6" class="empty">Loading&hellip;</td></tr></tbody>
+				</table>
+			</div>
 		</section>
 
 		<!-- DNS Records -->
@@ -589,6 +640,28 @@
 						<input type="text" id="nf-gateway" placeholder="(none), or e.g. 172.31.0.1">
 					</label>
 					<button type="submit">Create</button>
+				</form>
+			</div>
+
+			<div id="modal-devicemap-form" hidden>
+				<form id="devicemap-form">
+					<label>
+						Name
+						<input type="text" id="dmf-name" pattern="[A-Za-z0-9_-]+" required>
+					</label>
+					<label>
+						Kind
+						<select id="dmf-kind">
+							<option value="exact">Exact device (pinned to this bus location)</option>
+							<option value="vendor_model">Vendor/model (follows the device across ports)</option>
+						</select>
+					</label>
+					<label class="wide">
+						Selector
+						<input type="text" id="dmf-selector" required>
+					</label>
+					<p class="hint" id="dmf-selector-hint">A device id from the Devices tabs below (exact), or "vendor_id:product_id" (vendor/model).</p>
+					<button type="submit">Create mapping</button>
 				</form>
 			</div>
 

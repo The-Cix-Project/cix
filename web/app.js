@@ -19,6 +19,7 @@ const cache = {
 	networks: [],
 	images: [],
 	devices: [],
+	deviceMaps: [],
 	dnsRecords: [],
 	dnsServers: [],
 	pkiCa: null,
@@ -448,7 +449,11 @@ function renderTree() {
 		"images",
 		cache.images.map((i) => ({ label: i.name, hash: "images/" + encodeURIComponent(i.name) }))
 	);
-	addCategory("Devices", "devices", null);
+	addCategory(
+		"Devices",
+		"devices",
+		cache.deviceMaps.map((m) => ({ label: m.name, hash: "devices/" + encodeURIComponent(m.name) }))
+	);
 	addCategory("DNS", "dns-records", [
 		{ label: "Records", hash: "dns-records" },
 		{ label: "Servers", hash: "dns-servers" },
@@ -1389,41 +1394,44 @@ async function refreshDevices() {
 	populateContainerFormDeviceLists();
 }
 
+async function refreshDeviceMaps() {
+	const data = await apiRequest("GET", "/v1/devicemaps");
+	cache.deviceMaps = data.devicemaps;
+	if (parseHash().category === "devices")
+		renderDevices();
+}
+
+const DEVICE_BUS_BODIES = { usb: "dev-usb-body", pci: "dev-pci-body", net: "dev-net-body", gpu: "dev-gpu-body" };
+
 function renderDevices() {
-	const container = document.getElementById("devices-groups");
+	renderDeviceMapsTable();
 
-	container.textContent = "";
+	/* Only "exact" mappings can be shown inline against the one device
+	 * row they pin to; a "vendor_model" mapping's own resolved_ids can
+	 * span several rows (or move between polls), so it's only ever
+	 * shown in the Named mappings table above, not annotated per-row
+	 * here. */
+	const mappedNames = {};
 
-	const busLabels = { pci: "PCI", usb: "USB", net: "Network interfaces", gpu: "GPU" };
-	const buses = ["gpu", "pci", "usb", "net"];
+	for (const m of cache.deviceMaps)
+		if (m.kind === "exact") mappedNames[m.selector] = m.name;
 
-	for (const bus of buses) {
-		let entries = cache.devices.filter((d) => d.bus === bus);
+	for (const bus of Object.keys(DEVICE_BUS_BODIES)) {
+		const tbody = document.getElementById(DEVICE_BUS_BODIES[bus]);
+		const entries = cache.devices.filter((d) => d.bus === bus);
 
-		if (entries.length === 0)
+		tbody.textContent = "";
+		if (entries.length === 0) {
+			const row = document.createElement("tr");
+			const cell = document.createElement("td");
+
+			cell.colSpan = 6;
+			cell.className = "empty";
+			cell.textContent = "No devices discovered on this bus";
+			row.appendChild(cell);
+			tbody.appendChild(row);
 			continue;
-
-		const group = document.createElement("div");
-
-		group.className = "device-group";
-		const heading = document.createElement("h3");
-
-		heading.textContent = busLabels[bus];
-		group.appendChild(heading);
-
-		const table = document.createElement("table");
-		const thead = document.createElement("thead");
-		const headRow = document.createElement("tr");
-
-		for (const h of ["ID", "Description", "Driver", "Assignable"]) {
-			const th = document.createElement("th");
-
-			th.textContent = h;
-			headRow.appendChild(th);
 		}
-		thead.appendChild(headRow);
-		table.appendChild(thead);
-		const tbody = document.createElement("tbody");
 
 		if (bus === "gpu") {
 			/* Group member nodes (gpu:N:card0, gpu:N:renderD128, ...)
@@ -1446,33 +1454,22 @@ function renderDevices() {
 				const groupRow = document.createElement("tr");
 				const groupCell = document.createElement("td");
 
-				groupCell.colSpan = 4;
+				groupCell.colSpan = 6;
 				groupCell.textContent = groupId + " (grant this whole id to a container)";
 				groupCell.style.fontWeight = "600";
 				groupRow.appendChild(groupCell);
 				tbody.appendChild(groupRow);
 				for (const d of groups[groupId])
-					tbody.appendChild(deviceRow(d));
+					tbody.appendChild(deviceRow(d, mappedNames[d.id]));
 			}
 		} else {
 			for (const d of entries)
-				tbody.appendChild(deviceRow(d));
+				tbody.appendChild(deviceRow(d, mappedNames[d.id]));
 		}
-		table.appendChild(tbody);
-		group.appendChild(table);
-		container.appendChild(group);
-	}
-
-	if (container.children.length === 0) {
-		const empty = document.createElement("p");
-
-		empty.className = "hint";
-		empty.textContent = "No devices discovered.";
-		container.appendChild(empty);
 	}
 }
 
-function deviceRow(d) {
+function deviceRow(d, mappedName) {
 	const row = document.createElement("tr");
 	const idCell = document.createElement("td");
 
@@ -1493,7 +1490,92 @@ function deviceRow(d) {
 	badge.textContent = d.assignable ? "yes" : "no";
 	assignableCell.appendChild(badge);
 	row.appendChild(assignableCell);
+
+	const nameCell = document.createElement("td");
+
+	nameCell.textContent = mappedName || "-";
+	row.appendChild(nameCell);
+
+	const actionCell = document.createElement("td");
+
+	if (!mappedName) {
+		const btn = document.createElement("button");
+
+		btn.type = "button";
+		btn.textContent = "Name…";
+		btn.addEventListener("click", () => {
+			document.getElementById("dmf-name").value = "";
+			document.getElementById("dmf-kind").value = "exact";
+			document.getElementById("dmf-selector").value = d.id;
+			openModal("devicemap-form", "Name a device");
+		});
+		actionCell.appendChild(btn);
+	}
+	row.appendChild(actionCell);
 	return row;
+}
+
+function renderDeviceMapsTable() {
+	const body = document.getElementById("devicemaps-body");
+
+	body.textContent = "";
+	if (cache.deviceMaps.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 5;
+		cell.className = "empty";
+		cell.textContent = "No named devices yet";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+	for (const m of cache.deviceMaps) {
+		const row = document.createElement("tr");
+
+		const nameCell = document.createElement("td");
+
+		nameCell.textContent = m.name;
+		row.appendChild(nameCell);
+		const kindCell = document.createElement("td");
+
+		kindCell.textContent = m.kind === "exact" ? "Exact" : "Vendor/model";
+		row.appendChild(kindCell);
+		const selectorCell = document.createElement("td");
+
+		selectorCell.textContent = m.selector;
+		row.appendChild(selectorCell);
+		const statusCell = document.createElement("td");
+		const badge = document.createElement("span");
+
+		badge.className = "badge " + (m.present ? "badge-ok" : "badge-unknown");
+		badge.textContent = m.present ? "present (" + m.resolved_ids.length + ")" : "not present";
+		statusCell.appendChild(badge);
+		row.appendChild(statusCell);
+
+		const actionCell = document.createElement("td");
+		const removeBtn = document.createElement("button");
+
+		removeBtn.type = "button";
+		removeBtn.className = "button-danger";
+		removeBtn.textContent = "Remove";
+		removeBtn.addEventListener("click", () => removeDeviceMap(m.name));
+		actionCell.appendChild(removeBtn);
+		row.appendChild(actionCell);
+
+		body.appendChild(row);
+	}
+}
+
+async function removeDeviceMap(name) {
+	try {
+		await apiRequest("DELETE", "/v1/devicemaps/" + encodeURIComponent(name));
+		clearStatus();
+		await refreshDeviceMaps();
+		renderTree();
+	} catch (e) {
+		showStatus("Failed to remove device mapping " + name + ": " + e.message, true);
+	}
 }
 
 /* ---------- DNS Records ---------- */
@@ -2150,6 +2232,27 @@ document.getElementById("network-form").addEventListener("submit", async (event)
 	}
 });
 
+document.getElementById("devicemap-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const body = {
+		name: document.getElementById("dmf-name").value.trim(),
+		kind: document.getElementById("dmf-kind").value,
+		selector: document.getElementById("dmf-selector").value.trim(),
+	};
+
+	try {
+		await apiRequest("POST", "/v1/devicemaps", body);
+		clearStatus();
+		document.getElementById("devicemap-form").reset();
+		closeModal();
+		await refreshDeviceMaps();
+		renderTree();
+	} catch (e) {
+		showStatus("Failed to create device mapping: " + e.message, true);
+	}
+});
+
 document.getElementById("nd-attach-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 
@@ -2518,6 +2621,7 @@ async function poll() {
 		await refreshNetworks();
 		await refreshImages();
 		await refreshDevices();
+		await refreshDeviceMaps();
 		await refreshDnsRecords();
 		await refreshDnsServers();
 		await refreshPkiCa();

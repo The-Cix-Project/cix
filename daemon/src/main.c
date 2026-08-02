@@ -1,6 +1,7 @@
 #include "container.h"
 #include "containerdef.h"
 #include "device.h"
+#include "devicemap.h"
 #include "dns.h"
 #include "exec.h"
 #include "http.h"
@@ -80,6 +81,7 @@ static char PKG_INSTALLED_STATE_PATH[PATH_MAX];
 static char PKG_RECIPES_DIR[PATH_MAX];
 static char CONTAINER_DEFS_STATE_PATH[PATH_MAX];
 static char SITE_CONFIG_PATH[PATH_MAX];
+static char DEVICEMAP_STATE_PATH[PATH_MAX];
 
 /* Computes every path derived from g_base_dir -- called once, right
  * after argv parsing (so --data-dir= has already been applied) and
@@ -100,6 +102,7 @@ static void init_base_dir_paths(void)
 	snprintf(PKG_RECIPES_DIR, sizeof(PKG_RECIPES_DIR), "%s/recipes", PKG_DIR);
 	snprintf(CONTAINER_DEFS_STATE_PATH, sizeof(CONTAINER_DEFS_STATE_PATH), "%s/container_defs.json", g_base_dir);
 	snprintf(SITE_CONFIG_PATH, sizeof(SITE_CONFIG_PATH), "%s/site_config.json", g_base_dir);
+	snprintf(DEVICEMAP_STATE_PATH, sizeof(DEVICEMAP_STATE_PATH), "%s/devicemaps.json", g_base_dir);
 }
 /*
  * Backoff cap and stability-reset threshold for the crash-restart
@@ -164,6 +167,7 @@ static void init_base_dir_paths(void)
 #define PKG_PREFIX "/v1/pkg/"
 #define PKG_RECIPES_PREFIX "/v1/pkg/recipes/"
 #define IMAGES_PREFIX "/v1/images/"
+#define DEVICEMAPS_PREFIX "/v1/devicemaps/"
 
 enum conn_kind {
 	CONN_LISTENER,
@@ -1947,10 +1951,25 @@ static int create_container_from_body(const char *body, size_t body_len,
 				snprintf(err_msg, err_msg_size, "devices entries must be strings");
 				return 400;
 			}
-			n = device_find_group(id, matches, CONTAINER_MAX_DEVICES - device_count);
+			/*
+			 * A persisted device mapping name (ADR-0048) takes priority
+			 * over the raw device.h id namespace -- mapping names are
+			 * validated with simple_name_is_valid() at creation time,
+			 * which forbids ':', so they can never collide with a real
+			 * id (every real id's own bus prefix always contains one).
+			 * devicemap_resolve() returns -1 (not 0) when id doesn't
+			 * name any mapping at all, which is what falls through to
+			 * the existing raw-id path below -- a mapping that DOES
+			 * exist but currently resolves to nothing (its device is
+			 * unplugged) is a real error here, not silently retried as
+			 * a raw id.
+			 */
+			n = devicemap_resolve(id, matches, CONTAINER_MAX_DEVICES - device_count);
+			if (n < 0)
+				n = device_find_group(id, matches, CONTAINER_MAX_DEVICES - device_count);
 			if (n <= 0) {
 				json_free(root);
-				snprintf(err_msg, err_msg_size, "unknown or unassignable device");
+				snprintf(err_msg, err_msg_size, "unknown, unassignable, or not-currently-present device");
 				return 400;
 			}
 			if (device_count + n > CONTAINER_MAX_DEVICES) {
@@ -2584,6 +2603,105 @@ static void handle_device_list(int fd)
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
+}
+
+static void respond_devicemap_error(int fd, enum devicemap_error err)
+{
+	switch (err) {
+	case DEVICEMAP_ERR_INVALID_NAME:
+		respond_error(fd, 400, "Bad Request", "invalid name");
+		break;
+	case DEVICEMAP_ERR_INVALID_KIND:
+		respond_error(fd, 400, "Bad Request", "kind must be \"exact\" or \"vendor_model\"");
+		break;
+	case DEVICEMAP_ERR_INVALID_SELECTOR:
+		respond_error(fd, 400, "Bad Request", "invalid selector");
+		break;
+	case DEVICEMAP_ERR_DUPLICATE:
+		respond_error(fd, 409, "Conflict", "a device mapping with this name already exists");
+		break;
+	case DEVICEMAP_ERR_FULL:
+		respond_error(fd, 500, "Internal Server Error", "device mapping table full");
+		break;
+	case DEVICEMAP_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such device mapping");
+		break;
+	case DEVICEMAP_ERR_PERSIST_FAILED:
+	default:
+		respond_error(fd, 500, "Internal Server Error", "device mapping operation failed");
+		break;
+	}
+}
+
+static void handle_devicemap_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "devicemaps");
+	devicemap_write_json_list(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_devicemap_create(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *name, *kind, *selector;
+	enum devicemap_error derr;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	name = json_as_string(json_object_get(root, "name"));
+	kind = json_as_string(json_object_get(root, "kind"));
+	selector = json_as_string(json_object_get(root, "selector"));
+	if (name == NULL || kind == NULL || selector == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "name, kind, and selector are required");
+		return;
+	}
+
+	{
+		/* name is a pointer into root's own parsed tree -- copied here
+		 * since devicemap_write_json_one() below needs it again after
+		 * json_free(root) makes the original dangling. */
+		char name_buf[DEVICEMAP_NAME_MAX];
+
+		snprintf(name_buf, sizeof(name_buf), "%s", name);
+		derr = devicemap_create(name, kind, selector);
+		json_free(root);
+
+		if (derr != DEVICEMAP_OK) {
+			respond_devicemap_error(fd, derr);
+			return;
+		}
+
+		{
+			struct json_writer w;
+
+			jw_init(&w);
+			devicemap_write_json_one(name_buf, &w);
+			respond_json(fd, 201, "Created", &w);
+			jw_free(&w);
+		}
+	}
+}
+
+static void handle_devicemap_delete(int fd, const char *name)
+{
+	enum devicemap_error derr = devicemap_delete(name);
+
+	if (derr != DEVICEMAP_OK) {
+		respond_devicemap_error(fd, derr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
 static void handle_network_create(int fd, const char *body, size_t body_len)
@@ -3777,6 +3895,23 @@ static void dispatch(int fd, const struct http_request *req)
 	if (strcmp(req->path, "/v1/devices") == 0 && strcmp(req->method, "GET") == 0) {
 		handle_device_list(fd);
 		return;
+	}
+	if (strcmp(req->path, "/v1/devicemaps") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_devicemap_list(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_devicemap_create(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strncmp(req->path, DEVICEMAPS_PREFIX, strlen(DEVICEMAPS_PREFIX)) == 0) {
+		name = req->path + strlen(DEVICEMAPS_PREFIX);
+		if (name[0] != '\0' && strcmp(req->method, "DELETE") == 0) {
+			handle_devicemap_delete(fd, name);
+			return;
+		}
 	}
 	if (strcmp(req->path, "/v1/networks") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
@@ -5091,6 +5226,8 @@ int main(int argc, char **argv)
 
 	image_init(IMAGES_DIR);
 	if (containerdef_init(CONTAINER_DEFS_STATE_PATH) != 0)
+		return 1;
+	if (devicemap_init(DEVICEMAP_STATE_PATH) != 0)
 		return 1;
 
 	registry_init();

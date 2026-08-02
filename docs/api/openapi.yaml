@@ -318,6 +318,90 @@ paths:
                     items:
                       $ref: "#/components/schemas/Device"
 
+  /devicemaps:
+    get:
+      summary: List persistent, operator-named device mappings (ADR-0048)
+      description: >
+        Unlike /devices (ephemeral, re-enumerated every call, never
+        persisted), a device mapping is a real, named, persisted
+        binding an operator creates once and references by name
+        thereafter -- in a container's own `devices` field, or here.
+        Each entry is still resolved fresh against current hardware on
+        every call (`present`/`resolved_ids`), never cached -- only the
+        *mapping itself* (name -> selector) persists, not a hardware
+        snapshot.
+      operationId: listDeviceMaps
+      responses:
+        "200":
+          description: Mapping list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devicemaps]
+                properties:
+                  devicemaps:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DeviceMap"
+    post:
+      summary: Creates a new device mapping
+      description: >
+        Real and creatable even for hardware that isn't currently
+        plugged in -- an operator predefining a mapping before
+        plugging the device in, or one that's temporarily unplugged,
+        are both legitimate states (`present: false`), not errors.
+      operationId: createDeviceMap
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceMapCreateRequest"
+      responses:
+        "201":
+          description: Mapping created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceMap"
+        "400":
+          description: Invalid name, kind, or selector
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A mapping with this name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /devicemaps/{name}:
+    delete:
+      summary: Removes a device mapping
+      description: >
+        Does not touch anything about a container already using this
+        mapping's name -- device grants are resolved once, at
+        container-creation time, not re-resolved live afterward.
+      operationId: deleteDeviceMap
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Removed
+        "404":
+          description: No mapping with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /networks:
     get:
       summary: List all networks known to this daemon
@@ -1680,6 +1764,14 @@ components:
             individual GPU node can still be named directly (e.g. just
             "gpu:0:renderD128") instead of the whole group, if that's
             all a container needs.
+
+            Each entry may also be a persisted device mapping's own
+            name (see POST /devicemaps, ADR-0048) instead of a raw
+            Device.id -- resolved first; only falls back to the raw id
+            namespace if no mapping exists by that name. A mapping
+            that exists but currently resolves to nothing (its device
+            is unplugged) is a 400, same as an unknown/unassignable
+            raw id -- it is not silently reinterpreted as a literal id.
         interfaces:
           type: array
           items:
@@ -2049,6 +2141,52 @@ components:
         dev_path:
           type: string
           description: Path the device node was mknod()'d at inside this container's own /dev.
+
+    DeviceMapCreateRequest:
+      type: object
+      required: [name, kind, selector]
+      properties:
+        name:
+          type: string
+          description: Same charset as a container/network/package name ([A-Za-z0-9_-]) -- never contains ':', so it can never collide with a real Device.id.
+        kind:
+          type: string
+          enum: [exact, vendor_model]
+          description: >
+            "exact" pins to one specific device's own stable id (a fixed
+            bus location -- e.g. a specific PCI slot, or one exact USB
+            device by serial). "vendor_model" matches by vendor:product
+            ID regardless of port -- follows a USB device that moves
+            around, and can resolve to more than one currently-present
+            device if several identical ones are plugged in (all are
+            granted, the same group-expansion behavior GPU passthrough,
+            ADR-0028, already established).
+        selector:
+          type: string
+          description: >
+            For "exact": a Device.id verbatim, copied from GET /devices.
+            For "vendor_model": "<vendor_id>:<product_id>" (e.g.
+            "1058:2630"), matching Device.vendor_id/product_id.
+
+    DeviceMap:
+      type: object
+      required: [name, kind, selector, present, resolved_ids]
+      properties:
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [exact, vendor_model]
+        selector:
+          type: string
+        present:
+          type: boolean
+          description: Whether this mapping currently resolves to at least one real device -- re-derived fresh on every call, never cached.
+        resolved_ids:
+          type: array
+          items:
+            type: string
+          description: The real Device.id(s) currently matching this mapping (0, 1, or more for "vendor_model").
 
     Device:
       type: object

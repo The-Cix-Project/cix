@@ -82,6 +82,13 @@ static void print_usage(FILE *out)
 	        "               only its individual gpu:N:card0/gpu:N:renderD128/... member\n"
 	        "               nodes are) grants everything that GPU needs in one --device=\n"
 	        "               (see ADR-0028)\n"
+	        "  devicemap create --name=NAME --kind=exact|vendor_model --selector=SELECTOR\n"
+	        "               -- a persisted, named device binding (ADR-0048), usable in place\n"
+	        "               of a raw id in run --device=; \"exact\" selector is a device.id\n"
+	        "               verbatim, \"vendor_model\" selector is \"<vendor_id>:<product_id>\"\n"
+	        "               and follows the device across USB ports\n"
+	        "  devicemap ls  -- shows whether each mapping currently resolves to real hardware\n"
+	        "  devicemap rm NAME\n"
 	        "  dns record create --name=NAME --ip=A.B.C.D\n"
 	        "  dns record ls\n"
 	        "  dns record rm NAME\n"
@@ -324,6 +331,43 @@ static void fmt_device_list(const struct json_value *v)
 		return;
 	for (i = 0; i < devices->u.array.count; i++)
 		fmt_device_line(devices->u.array.items[i]);
+}
+
+static void fmt_devicemap_line(const struct json_value *v)
+{
+	const char *name = json_str_field(v, "name");
+	const char *kind = json_str_field(v, "kind");
+	const char *selector = json_str_field(v, "selector");
+	const struct json_value *jpresent = json_object_get(v, "present");
+	int present = jpresent != NULL && jpresent->type == JSON_BOOL && jpresent->u.boolean;
+	const struct json_value *resolved = json_object_get(v, "resolved_ids");
+	char resolved_buf[256] = "-";
+	size_t i;
+
+	if (resolved != NULL && resolved->type == JSON_ARRAY && resolved->u.array.count > 0) {
+		size_t off = 0;
+
+		for (i = 0; i < resolved->u.array.count && off < sizeof(resolved_buf); i++) {
+			const char *id = json_as_string(resolved->u.array.items[i]);
+
+			off += (size_t)snprintf(resolved_buf + off, sizeof(resolved_buf) - off, "%s%s",
+			                         i > 0 ? "," : "", id != NULL ? id : "?");
+		}
+	}
+
+	printf("%-24s %-13s %-40s %-11s %s\n", name, kind, selector,
+	       present ? "present" : "absent", resolved_buf);
+}
+
+static void fmt_devicemap_list(const struct json_value *v)
+{
+	const struct json_value *maps = json_object_get(v, "devicemaps");
+	size_t i;
+
+	if (maps == NULL || maps->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < maps->u.array.count; i++)
+		fmt_devicemap_line(maps->u.array.items[i]);
 }
 
 static void fmt_dns_record_line(const struct json_value *v)
@@ -1725,6 +1769,107 @@ static int cmd_device(const struct kx_client *c, int json_mode, int argc, char *
 	return 2;
 }
 
+static int cmd_devicemap_create(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *name = NULL;
+	const char *kind = NULL;
+	const char *selector = NULL;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--name=", 7) == 0)
+			name = argv[i] + 7;
+		else if (strncmp(argv[i], "--kind=", 7) == 0)
+			kind = argv[i] + 7;
+		else if (strncmp(argv[i], "--selector=", 11) == 0)
+			selector = argv[i] + 11;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown devicemap create option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL || kind == NULL || selector == NULL) {
+		fprintf(stderr,
+		        "usage: kanxeoctl devicemap create --name=NAME --kind=exact|vendor_model "
+		        "--selector=SELECTOR\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "kind");
+	jw_str(&w, kind);
+	jw_key(&w, "selector");
+	jw_str(&w, selector);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/devicemaps", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_devicemap_line);
+}
+
+static int cmd_devicemap_ls(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/devicemaps", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_devicemap_list);
+}
+
+static int cmd_devicemap_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: devicemap rm requires a mapping name\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/devicemaps/%s", argv[0]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static int cmd_devicemap(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr,
+		        "usage: kanxeoctl devicemap create --name=NAME --kind=exact|vendor_model "
+		        "--selector=SELECTOR\n"
+		        "       kanxeoctl devicemap ls\n"
+		        "       kanxeoctl devicemap rm NAME\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "create") == 0)
+		return cmd_devicemap_create(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "ls") == 0)
+		return cmd_devicemap_ls(c, json_mode);
+	if (strcmp(sub, "rm") == 0)
+		return cmd_devicemap_rm(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown devicemap subcommand '%s'\n", sub);
+	return 2;
+}
+
 static int cmd_dns_record_create(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
@@ -2608,6 +2753,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_image(client, json_mode, argc, argv);
 	if (strcmp(cmd, "device") == 0)
 		return cmd_device(client, json_mode, argc, argv);
+	if (strcmp(cmd, "devicemap") == 0)
+		return cmd_devicemap(client, json_mode, argc, argv);
 	if (strcmp(cmd, "dns") == 0)
 		return cmd_dns(client, json_mode, argc, argv);
 	if (strcmp(cmd, "pki") == 0)
