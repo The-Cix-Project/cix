@@ -43,3 +43,8 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0036](0036-multi-source-package-recipes.md) | Multi-source package recipes | Accepted |
 | [0037](0037-network-gateway-optional.md) | A network's host-owned gateway becomes optional, default flips to gateway-less | Accepted |
 | [0038](0038-vlan-and-physical-nic-bridge-attachment.md) | VLAN via 802.1q sub-interfaces, physical NIC attachment via the existing rtnl_link_set_master | Accepted |
+| [0039](0039-package-recipes-seeded-at-install-time.md) | Package recipes seeded at install time, same mechanism as ADR-0019 | Superseded by [0040](0040-package-recipes-managed-via-rest-api.md) |
+| [0040](0040-package-recipes-managed-via-rest-api.md) | Package recipes are managed via a real REST API, not baked into the installer ISO | Accepted |
+| [0041](0041-container-image-baseline-fhs-layout.md) | Container images get a real, fixed baseline FHS layout at seed time | Accepted |
+| [0042](0042-installer-dual-console-pty-relay.md) | The installer relays interactive I/O through a PTY across both consoles at once | Accepted |
+| [0043](0043-container-console-exec-websocket.md) | An interactive shell into a running container, over a hand-rolled WebSocket | Accepted |

@@ -1,4 +1,5 @@
 #include "httpclient.h"
+#include "iohelpers.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -18,7 +19,7 @@ void kx_client_init(struct kx_client *c, const char *host, int port)
 	c->port = port;
 }
 
-static int connect_to(const struct kx_client *c)
+int kx_client_connect_raw(const struct kx_client *c)
 {
 	int fd;
 	struct sockaddr_in addr;
@@ -40,23 +41,6 @@ static int connect_to(const struct kx_client *c)
 		return -1;
 	}
 	return fd;
-}
-
-static int write_all(int fd, const char *buf, size_t n)
-{
-	size_t written = 0;
-	ssize_t w;
-
-	while (written < n) {
-		w = write(fd, buf + written, n - written);
-		if (w < 0) {
-			if (errno == EINTR)
-				continue;
-			return -1;
-		}
-		written += (size_t)w;
-	}
-	return 0;
 }
 
 /* Dynamically-growing read buffer -- same doubling pattern already
@@ -174,7 +158,7 @@ int kx_client_request(const struct kx_client *c, const char *method, const char 
 	int status;
 	size_t json_len;
 
-	fd = connect_to(c);
+	fd = kx_client_connect_raw(c);
 	if (fd < 0)
 		return -1;
 
@@ -192,11 +176,11 @@ int kx_client_request(const struct kx_client *c, const char *method, const char 
 		return -1;
 	}
 
-	if (write_all(fd, header, (size_t)header_len) != 0) {
+	if (kx_write_all(fd, header, (size_t)header_len) != 0) {
 		close(fd);
 		return -1;
 	}
-	if (body != NULL && write_all(fd, body, strlen(body)) != 0) {
+	if (body != NULL && kx_write_all(fd, body, strlen(body)) != 0) {
 		close(fd);
 		return -1;
 	}

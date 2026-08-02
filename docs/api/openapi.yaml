@@ -1144,6 +1144,116 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /containers/{name}/console:
+    get:
+      summary: >
+        Open an interactive shell inside an already-running container
+        (like `docker exec -it`), over a WebSocket.
+      description: >
+        Not a normal REST request/response -- this is an HTTP/1.1
+        Upgrade to WebSocket (RFC 6455). OpenAPI 3.0 has no first-class
+        way to type a WebSocket endpoint, so this is documented as a
+        GET whose success response is "101 Switching Protocols," not a
+        JSON body. The request MUST carry `Upgrade: websocket`,
+        `Connection: Upgrade` (a comma-separated token list containing
+        "Upgrade" is also accepted, e.g. "keep-alive, Upgrade"),
+        `Sec-WebSocket-Key`, and `Sec-WebSocket-Version: 13` -- any
+        request to this path missing or misusing those is a 400, not
+        treated as an ordinary GET.
+
+
+        Once upgraded, the connection carries raw PTY bytes both ways:
+        client-to-server WebSocket frames (TEXT or BINARY, always
+        masked per RFC 6455 -- the daemon writes 400 and closes on an
+        unmasked client frame) are written verbatim to the exec'd
+        process's stdin; PTY output is relayed back as BINARY frames.
+        A WebSocket CLOSE frame from either side, or the exec'd process
+        exiting on its own, ends the session -- the exec'd process is
+        SIGKILLed if it's still running when the client disconnects.
+        Frame fragmentation (FIN=0) is not supported in either
+        direction -- every frame this daemon sends or accepts is a
+        complete, single-frame message (this endpoint's own traffic
+        shape -- keystrokes and modest output chunks -- never needs it).
+        Payloads are capped at 64KiB per frame.
+
+
+        The exec'd process joins the target container's own mount,
+        UTS, network, and pid namespaces (its IPC namespace is never
+        isolated in the first place, so there's none to join) --
+        equivalent to `nsenter --mount --uts --net --pid --target
+        <container's pid>`, not a fresh container of its own. Command
+        defaults to `/usr/bin/bash` (this project's own package system
+        stages everything under `usr/bin/`, never `/bin` -- see
+        ADR-0043); a container whose image has neither that nor
+        whatever `X-Kanxeo-Exec-Cmd` names installed fails to exec,
+        the same real limitation `docker exec` has against a
+        scratch-based image, not a bug.
+
+
+        No new authentication/authorization boundary: this endpoint is
+        exactly as protected as every other endpoint here (network
+        reachability only) -- a more sensitive capability than most,
+        worth naming even though it isn't a gap this endpoint itself
+        introduces.
+      operationId: consoleContainer
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+        - name: Upgrade
+          in: header
+          required: true
+          schema:
+            type: string
+            enum: [websocket]
+        - name: Connection
+          in: header
+          required: true
+          schema:
+            type: string
+            description: Must contain the token "Upgrade" (case-insensitive), e.g. "Upgrade" or "keep-alive, Upgrade".
+        - name: Sec-WebSocket-Key
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: Sec-WebSocket-Version
+          in: header
+          required: true
+          schema:
+            type: string
+            enum: ["13"]
+        - name: X-Kanxeo-Exec-Cmd
+          in: header
+          required: false
+          schema:
+            type: string
+            default: /usr/bin/bash
+          description: >
+            Absolute path of the program to exec inside the container,
+            in place of the default. No argument splitting -- this is a
+            single executable path (typically another shell), not a
+            full command line; give it interactively once inside.
+      responses:
+        "101":
+          description: Switching Protocols -- the connection is now a WebSocket carrying raw PTY bytes both ways, per this endpoint's own description above.
+        "400":
+          description: Missing/invalid Upgrade, Connection, Sec-WebSocket-Key, or Sec-WebSocket-Version header, or a malformed container name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such container, or it isn't currently running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Failed to start the console session (handshake computation, or the exec/PTY mechanism itself failed).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
 components:
   parameters:
     ContainerName:

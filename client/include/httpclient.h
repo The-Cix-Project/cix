@@ -28,6 +28,16 @@ struct kx_response {
 void kx_client_init(struct kx_client *c, const char *host, int port);
 
 /*
+ * Opens a raw, connected TCP socket to c's host/port -- the same
+ * connect logic kx_client_request() uses internally, exposed for
+ * callers that need the fd itself rather than one request/response
+ * round trip (currently only client/src/console.c's WebSocket upgrade,
+ * which kx_client_request() has no way to express: the connection
+ * outlives a single response). Returns the fd, or -1 on failure.
+ */
+int kx_client_connect_raw(const struct kx_client *c);
+
+/*
  * Performs one request/response round trip: connects, sends method+
  * path+body (body may be NULL for no request body), reads the full
  * response (dynamically-sized -- no fixed cap on response size). On

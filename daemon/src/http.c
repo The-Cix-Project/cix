@@ -1,4 +1,5 @@
 #include "http.h"
+#include "iohelpers.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -95,13 +96,17 @@ static int parse_request_line(const char *buf, size_t line_len, char *method, ch
 
 /* headers_len spans the request line plus every header line, each
  * ending in "\r\n" -- i.e. the full header block excluding the final
- * blank-line "\r\n" that terminates it. */
-static long find_content_length(const char *buf, size_t headers_len)
+ * blank-line "\r\n" that terminates it. Shared by find_content_length()
+ * below and every external caller that needs a specific header (e.g.
+ * the WebSocket upgrade handshake's Upgrade/Connection/Sec-WebSocket-*
+ * headers) -- one header scanner, not one per header name. */
+long http_find_header(const char *headers, size_t headers_len, const char *name,
+                       char *out, size_t out_size)
 {
 	size_t i = 0;
-	long result = -1;
+	size_t name_len = strlen(name);
 
-	while (i < headers_len && !(buf[i] == '\r' && i + 1 < headers_len && buf[i + 1] == '\n'))
+	while (i < headers_len && !(headers[i] == '\r' && i + 1 < headers_len && headers[i + 1] == '\n'))
 		i++;
 	if (i < headers_len)
 		i += 2;
@@ -112,33 +117,44 @@ static long find_content_length(const char *buf, size_t headers_len)
 		size_t colon;
 
 		while (i < headers_len &&
-		       !(buf[i] == '\r' && i + 1 < headers_len && buf[i + 1] == '\n'))
+		       !(headers[i] == '\r' && i + 1 < headers_len && headers[i + 1] == '\n'))
 			i++;
 		line_len = i - line_start;
 
 		colon = 0;
-		while (colon < line_len && buf[line_start + colon] != ':')
+		while (colon < line_len && headers[line_start + colon] != ':')
 			colon++;
 
-		if (colon < line_len && colon == 14 &&
-		    strncasecmp(buf + line_start, "Content-Length", 14) == 0) {
+		if (colon < line_len && colon == name_len &&
+		    strncasecmp(headers + line_start, name, name_len) == 0) {
 			size_t vstart = colon + 1;
-			char tmp[32];
-			size_t vlen;
+			size_t vend = line_len;
 
-			while (vstart < line_len && buf[line_start + vstart] == ' ')
+			while (vstart < line_len && headers[line_start + vstart] == ' ')
 				vstart++;
-			vlen = line_len - vstart;
-			if (vlen < sizeof(tmp)) {
-				memcpy(tmp, buf + line_start + vstart, vlen);
-				tmp[vlen] = '\0';
-				result = atol(tmp);
+			while (vend > vstart && headers[line_start + vend - 1] == ' ')
+				vend--;
+
+			if (vend - vstart + 1 <= out_size) {
+				memcpy(out, headers + line_start + vstart, vend - vstart);
+				out[vend - vstart] = '\0';
+				return (long)(vend - vstart);
 			}
+			return -1;
 		}
 
 		i += 2;
 	}
-	return result;
+	return -1;
+}
+
+static long find_content_length(const char *buf, size_t headers_len)
+{
+	char tmp[32];
+
+	if (http_find_header(buf, headers_len, "Content-Length", tmp, sizeof(tmp)) < 0)
+		return -1;
+	return atol(tmp);
 }
 
 int http_conn_try_parse(struct http_conn *c, struct http_request *req)
@@ -174,24 +190,9 @@ int http_conn_try_parse(struct http_conn *c, struct http_request *req)
 	req->content_length = c->content_length;
 	req->body = c->buf + c->headers_end;
 	req->body_len = (size_t)c->content_length;
+	req->headers = c->buf;
+	req->headers_len = (size_t)c->headers_end - 2;
 	return 1;
-}
-
-static int write_all(int fd, const char *buf, size_t n)
-{
-	size_t written = 0;
-	ssize_t w;
-
-	while (written < n) {
-		w = write(fd, buf + written, n - written);
-		if (w < 0) {
-			if (errno == EINTR)
-				continue;
-			return -1;
-		}
-		written += (size_t)w;
-	}
-	return 0;
 }
 
 int http_write_response(int fd, int status, const char *status_text,
@@ -210,9 +211,9 @@ int http_write_response(int fd, int status, const char *status_text,
 	if (hlen < 0 || (size_t)hlen >= sizeof(header))
 		return -1;
 
-	if (write_all(fd, header, (size_t)hlen) != 0)
+	if (kx_write_all(fd, header, (size_t)hlen) != 0)
 		return -1;
-	if (body_len > 0 && write_all(fd, body, body_len) != 0)
+	if (body_len > 0 && kx_write_all(fd, body, body_len) != 0)
 		return -1;
 	return 0;
 }

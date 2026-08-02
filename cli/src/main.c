@@ -6,6 +6,7 @@
  * client/src/httpclient.c, the same library test_daemon.c uses to
  * verify the daemon.
  */
+#include "console.h"
 #include "httpclient.h"
 #include "json.h"
 
@@ -52,6 +53,9 @@ static void print_usage(FILE *out)
 	        "      [--readiness-tcp-port=N [--readiness-timeout=N]] -- CMD [ARGS...]\n"
 	        "  inspect NAME\n"
 	        "  stop NAME  -- kill it now, keep its persisted definition (unlike rm)\n"
+	        "  console NAME [--cmd=PATH]  -- interactive shell inside a running container\n"
+	        "               (like `docker exec -it`), over the daemon's own WebSocket\n"
+	        "               upgrade; --cmd= overrides the default /usr/bin/bash\n"
 	        "  rm NAME\n"
 	        "  network create --name=NAME --subnet=A.B.C.D --prefix=N [--gateway=A.B.C.D]\n"
 	        "               -- no --gateway= means pure L2, no host-owned address (the\n"
@@ -601,6 +605,30 @@ static int cmd_stop(const struct kx_client *c, int json_mode, int argc, char **a
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
+}
+
+static int cmd_console(const struct kx_client *c, int argc, char **argv)
+{
+	const char *name = NULL;
+	const char *cmd = NULL;
+	int i;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--cmd=", 6) == 0)
+			cmd = argv[i] + 6;
+		else if (name == NULL)
+			name = argv[i];
+		else {
+			fprintf(stderr, "kanxeoctl: unknown console option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL) {
+		fprintf(stderr, "usage: kanxeoctl console NAME [--cmd=PATH]\n");
+		return 2;
+	}
+
+	return kx_console_run(c, name, cmd) == 0 ? 0 : 1;
 }
 
 /* Matches daemon's CONTAINER_MAX_NETWORKS -- see include/container.h. */
@@ -2343,6 +2371,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_inspect(client, json_mode, argc, argv);
 	if (strcmp(cmd, "stop") == 0)
 		return cmd_stop(client, json_mode, argc, argv);
+	if (strcmp(cmd, "console") == 0)
+		return cmd_console(client, argc, argv);
 	if (strcmp(cmd, "rm") == 0)
 		return cmd_rm(client, json_mode, argc, argv);
 	if (strcmp(cmd, "network") == 0)

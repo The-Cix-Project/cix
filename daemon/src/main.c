@@ -2,8 +2,10 @@
 #include "containerdef.h"
 #include "device.h"
 #include "dns.h"
+#include "exec.h"
 #include "http.h"
 #include "image.h"
+#include "iohelpers.h"
 #include "json.h"
 #include "linux_compat.h"
 #include "namecheck.h"
@@ -14,6 +16,7 @@
 #include "registry.h"
 #include "rtnetlink.h"
 #include "staticfile.h"
+#include "websocket.h"
 
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -28,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/epoll.h>
 #include <sys/mount.h>
 #include <sys/reboot.h>
@@ -124,7 +128,17 @@ enum conn_kind {
 	CONN_PKG_FETCH,
 	CONN_RESTART_TIMER,
 	CONN_CONSOLE_SHELL,
-	CONN_CONSOLE_RESPAWN_TIMER
+	CONN_CONSOLE_RESPAWN_TIMER,
+	CONN_CONSOLE_WS,        /* GET /v1/containers/{name}/console -- client-facing WebSocket half */
+	CONN_CONSOLE_PTY,       /* same session's other half -- the exec'd shell's pty master fd */
+	/*
+	 * A conn already torn down mid-batch (console_session_teardown()
+	 * below) but not yet free()'d -- see g_pending_free's own comment
+	 * for why the free is deferred. The event loop skips these
+	 * immediately rather than dispatching on any of their other,
+	 * already-invalid fields.
+	 */
+	CONN_DEAD
 };
 
 struct conn {
@@ -136,6 +150,24 @@ struct conn {
 	char restart_name[REGISTRY_NAME_MAX];   /* CONN_RESTART_TIMER only */
 	pid_t console_pid;                      /* CONN_CONSOLE_SHELL only */
 	char console_tty[32];                   /* CONN_CONSOLE_SHELL / CONN_CONSOLE_RESPAWN_TIMER */
+	struct console_exec_session *exec_session; /* CONN_CONSOLE_WS / CONN_CONSOLE_PTY only -- shared by both halves of one session */
+	struct ws_conn ws;                      /* CONN_CONSOLE_WS only -- incremental client-frame parser */
+};
+
+/*
+ * One exec-console session's shared state, referenced by both its own
+ * conns (the client-facing WS half and the pty-master half) so either
+ * side noticing the other has gone away can tear down the whole pair.
+ * The first time this daemon has needed two independently-epoll-
+ * registered fds to represent one logical session -- see
+ * console_session_teardown() and g_pending_free below for the real
+ * hazard that shape introduces and how it's handled.
+ */
+struct console_exec_session {
+	struct conn *ws_conn;
+	struct conn *pty_conn;
+	pid_t exec_pid;
+	int torn_down;
 };
 
 /*
@@ -155,6 +187,70 @@ static struct conn g_listener_conn;
 static const char *g_web_root;
 static volatile sig_atomic_t g_stop;
 static volatile sig_atomic_t g_shutdown_action = SHUTDOWN_ACTION_POWEROFF;
+
+/*
+ * conns torn down mid-batch are queued here instead of free()'d
+ * immediately. A single kx_epoll_wait() call can report BOTH halves of
+ * one console session's fd pair as ready in the same batch; freeing
+ * the first one processed would leave the second event's own `struct
+ * conn *` dangling for the rest of that same batch's for-loop. Drained
+ * (actually freed) once the whole batch has been dispatched -- see the
+ * main loop below. Sized to MAX_EVENTS since a batch can never report
+ * more events than that, and console_session_teardown() is itself
+ * idempotent (guarded by torn_down), so it can never queue more than
+ * one free per conn regardless of how many events reference it.
+ */
+#define MAX_PENDING_FREE MAX_EVENTS
+static struct conn *g_pending_free[MAX_PENDING_FREE];
+static int g_pending_free_count;
+
+static void queue_conn_free(struct conn *cc)
+{
+	if (g_pending_free_count < MAX_PENDING_FREE)
+		g_pending_free[g_pending_free_count++] = cc;
+	else
+		free(cc); /* unreachable per MAX_PENDING_FREE's own bound -- fail safe rather than leak */
+}
+
+static void drain_pending_free(void)
+{
+	int i;
+
+	for (i = 0; i < g_pending_free_count; i++)
+		free(g_pending_free[i]);
+	g_pending_free_count = 0;
+}
+
+/*
+ * Kills (if still running -- SIGKILL is a harmless no-op/ESRCH if the
+ * shell already exited on its own) and reaps the exec'd process, tears
+ * down both fds/epoll registrations, and queues both conns for
+ * deferred free. Safe to call from either side (the WS client
+ * disconnecting, or the pty hitting EOF/EIO because the shell exited)
+ * and safe to call twice (torn_down guards against it).
+ */
+static void console_session_teardown(struct console_exec_session *sess)
+{
+	if (sess->torn_down)
+		return;
+	sess->torn_down = 1;
+
+	kill(sess->exec_pid, SIGKILL);
+	waitpid(sess->exec_pid, NULL, 0);
+
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, sess->ws_conn->fd, NULL);
+	close(sess->ws_conn->fd);
+	ws_conn_free(&sess->ws_conn->ws);
+	sess->ws_conn->kind = CONN_DEAD;
+	queue_conn_free(sess->ws_conn);
+
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, sess->pty_conn->fd, NULL);
+	close(sess->pty_conn->fd);
+	sess->pty_conn->kind = CONN_DEAD;
+	queue_conn_free(sess->pty_conn);
+
+	free(sess);
+}
 /*
  * This boot's own slot and bind address, set once from argv in main()
  * -- previously plain locals, read only by confirm_boot()'s call site
@@ -3559,6 +3655,281 @@ static void dispatch(int fd, const struct http_request *req)
 	respond_error(fd, 404, "Not Found", "no such endpoint");
 }
 
+#define CONSOLE_SUFFIX "/console"
+/*
+ * Every real image this daemon has ever actually seen has no /bin at
+ * all (packages stage into usr/bin -- confirmed directly against a
+ * real running container while building this, see docs/ROADMAP.md);
+ * "/bin/sh" would fail on every one of them. This is only a default:
+ * X-Kanxeo-Exec-Cmd overrides it, and a container whose image has
+ * neither this nor an override installed simply fails to exec --
+ * a real, expected limitation (see this phase's own ADR), not a bug.
+ */
+#define CONSOLE_DEFAULT_CMD "/usr/bin/bash"
+
+/*
+ * try_console_upgrade()'s own three possible outcomes -- plain 0/1
+ * isn't enough here, unlike every other route: a failure can happen
+ * either before cc has been touched at all (caller must still run its
+ * normal teardown on cc) or after console_session_teardown() has
+ * already closed and queued cc for deferred free (caller must NOT
+ * touch it again -- see CONSOLE_HANDLED's own two cases below).
+ */
+enum console_route_result {
+	CONSOLE_NOT_MATCHED,   /* not this route -- caller falls through to dispatch() as normal */
+	CONSOLE_FAILED,        /* matched, but failed before cc was repurposed -- caller does its normal teardown on cc */
+	CONSOLE_HANDLED        /* fully handled here (success, or already torn down via console_session_teardown()) -- caller must not touch cc again */
+};
+
+/*
+ * GET /v1/containers/{name}/console -- an interactive shell inside an
+ * already-running container, over a hand-rolled minimal WebSocket
+ * (RFC 6455; see daemon/include/websocket.h for exactly what subset is
+ * implemented). Not a normal REST request/response: on success this
+ * repurposes cc in place (CONN_CLIENT -> CONN_CONSOLE_WS) and leaves
+ * it registered in epoll indefinitely instead of the usual
+ * dispatch()-then-close-the-fd path every other request takes.
+ */
+static enum console_route_result try_console_upgrade(struct conn *cc, const struct http_request *req)
+{
+	static const char suffix[] = CONSOLE_SUFFIX;
+	size_t suffix_len = sizeof(suffix) - 1;
+	const char *path_name;
+	size_t path_name_len, name_len;
+	char container_name[REGISTRY_NAME_MAX];
+	struct registry_entry *entry;
+	char upgrade_val[32], connection_val[64], ws_key[256], ws_version[8];
+	char cmd_override[256];
+	char *cmd_argv[2];
+	const char *cmd;
+	char accept_val[64];
+	int master_fd;
+	pid_t exec_pid;
+	char response[512];
+	int rlen;
+	struct console_exec_session *sess;
+	struct conn *pty_cc;
+	struct kx_epoll_event ev;
+
+	if (strcmp(req->method, "GET") != 0)
+		return CONSOLE_NOT_MATCHED;
+	if (strncmp(req->path, CONTAINERS_PREFIX, strlen(CONTAINERS_PREFIX)) != 0)
+		return CONSOLE_NOT_MATCHED;
+
+	path_name = req->path + strlen(CONTAINERS_PREFIX);
+	path_name_len = strlen(path_name);
+	if (path_name_len <= suffix_len || strcmp(path_name + path_name_len - suffix_len, suffix) != 0)
+		return CONSOLE_NOT_MATCHED;
+
+	name_len = path_name_len - suffix_len;
+	if (name_len == 0 || name_len >= REGISTRY_NAME_MAX)
+		return CONSOLE_NOT_MATCHED; /* not a well-formed container name -- let it fall through to the ordinary 404 */
+
+	memcpy(container_name, path_name, name_len);
+	container_name[name_len] = '\0';
+	if (!name_is_valid(container_name))
+		return CONSOLE_NOT_MATCHED;
+
+	/* From here on this really is a console-upgrade request for a
+	 * syntactically valid name -- every further failure gets a real,
+	 * specific error response instead of falling through to a
+	 * confusing generic 404. cc has not been touched yet in any of
+	 * these branches, so CONSOLE_FAILED (caller runs its normal
+	 * teardown on cc) is correct throughout this section. */
+
+	if (http_find_header(req->headers, req->headers_len, "Upgrade", upgrade_val, sizeof(upgrade_val)) < 0 ||
+	    strcasecmp(upgrade_val, "websocket") != 0) {
+		respond_error(cc->fd, 400, "Bad Request", "this endpoint requires Upgrade: websocket");
+		return CONSOLE_FAILED;
+	}
+	/* Connection is a comma-separated token list ("keep-alive, Upgrade"
+	 * is common) -- a substring search for the one token that matters
+	 * here, not an exact match. */
+	if (http_find_header(req->headers, req->headers_len, "Connection", connection_val, sizeof(connection_val)) < 0 ||
+	    strcasestr(connection_val, "upgrade") == NULL) {
+		respond_error(cc->fd, 400, "Bad Request", "this endpoint requires Connection: Upgrade");
+		return CONSOLE_FAILED;
+	}
+	if (http_find_header(req->headers, req->headers_len, "Sec-WebSocket-Key", ws_key, sizeof(ws_key)) < 0) {
+		respond_error(cc->fd, 400, "Bad Request", "missing Sec-WebSocket-Key");
+		return CONSOLE_FAILED;
+	}
+	if (http_find_header(req->headers, req->headers_len, "Sec-WebSocket-Version", ws_version, sizeof(ws_version)) < 0 ||
+	    strcmp(ws_version, "13") != 0) {
+		respond_error(cc->fd, 400, "Bad Request", "requires Sec-WebSocket-Version: 13");
+		return CONSOLE_FAILED;
+	}
+
+	entry = registry_find(container_name);
+	if (entry == NULL || !entry->running) {
+		respond_error(cc->fd, 404, "Not Found", "no such running container");
+		return CONSOLE_FAILED;
+	}
+
+	if (ws_compute_accept(ws_key, accept_val, sizeof(accept_val)) != 0) {
+		respond_error(cc->fd, 500, "Internal Server Error", "failed to compute websocket accept");
+		return CONSOLE_FAILED;
+	}
+
+	if (http_find_header(req->headers, req->headers_len, "X-Kanxeo-Exec-Cmd", cmd_override, sizeof(cmd_override)) >= 0 &&
+	    cmd_override[0] != '\0')
+		cmd = cmd_override;
+	else
+		cmd = CONSOLE_DEFAULT_CMD;
+	cmd_argv[0] = (char *)cmd;
+	cmd_argv[1] = NULL;
+
+	/* Nothing from req is needed past this point -- safe to free
+	 * cc->http's buffer (which req->headers/body point into) once cc
+	 * is repurposed below; every value taken from req has already
+	 * been copied into a local buffer above. */
+
+	if (exec_into_container(entry->handle.pid, cmd_argv, &master_fd, &exec_pid) != 0) {
+		respond_error(cc->fd, 500, "Internal Server Error", "failed to start console session");
+		return CONSOLE_FAILED;
+	}
+
+	rlen = snprintf(response, sizeof(response),
+	                 "HTTP/1.1 101 Switching Protocols\r\n"
+	                 "Upgrade: websocket\r\n"
+	                 "Connection: Upgrade\r\n"
+	                 "Sec-WebSocket-Accept: %s\r\n"
+	                 "\r\n",
+	                 accept_val);
+	if (rlen < 0 || (size_t)rlen >= sizeof(response)) {
+		kill(exec_pid, SIGKILL);
+		waitpid(exec_pid, NULL, 0);
+		close(master_fd);
+		respond_error(cc->fd, 500, "Internal Server Error", "failed to build handshake response");
+		return CONSOLE_FAILED;
+	}
+
+	/* cc is still an untouched, ordinary CONN_CLIENT up through this
+	 * point -- every failure above and below this comment, up until
+	 * cc->kind actually changes further down, is still a CONSOLE_FAILED
+	 * case the caller must tear down normally. */
+	http_set_blocking(cc->fd);
+	if (kx_write_all(cc->fd, response, (size_t)rlen) != 0) {
+		/* Client already gone -- nothing left to respond with. */
+		kill(exec_pid, SIGKILL);
+		waitpid(exec_pid, NULL, 0);
+		close(master_fd);
+		return CONSOLE_FAILED;
+	}
+
+	sess = malloc(sizeof(*sess));
+	pty_cc = malloc(sizeof(*pty_cc));
+	if (sess == NULL || pty_cc == NULL) {
+		free(sess);
+		free(pty_cc);
+		kill(exec_pid, SIGKILL);
+		waitpid(exec_pid, NULL, 0);
+		close(master_fd);
+		/* The 101 response is already on the wire -- there's no
+		 * meaningful HTTP error left to send after a successful
+		 * upgrade, so this just drops the connection (cc is still
+		 * untouched -- CONSOLE_FAILED's normal teardown handles it). */
+		return CONSOLE_FAILED;
+	}
+	memset(pty_cc, 0, sizeof(*pty_cc));
+	pty_cc->kind = CONN_CONSOLE_PTY;
+	pty_cc->fd = master_fd;
+	pty_cc->exec_session = sess;
+
+	/* From here on cc IS repurposed -- any failure past this point must
+	 * return CONSOLE_HANDLED, never CONSOLE_FAILED, since the caller's
+	 * normal cc teardown would now double-free/double-close it. */
+	http_conn_free(&cc->http);
+	cc->kind = CONN_CONSOLE_WS;
+	ws_conn_init(&cc->ws);
+	cc->exec_session = sess;
+
+	sess->ws_conn = cc;
+	sess->pty_conn = pty_cc;
+	sess->exec_pid = exec_pid;
+	sess->torn_down = 0;
+
+	ev.events = EPOLLIN;
+	ev.data.ptr = pty_cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, pty_cc->fd, &ev) != 0) {
+		/* Extremely unlikely (fd/epoll exhaustion) -- tear the whole
+		 * session down the normal way (queues cc for deferred free
+		 * too) rather than leaving half of it dangling. */
+		console_session_teardown(sess);
+		return CONSOLE_HANDLED;
+	}
+
+	/* cc->fd is already registered for EPOLLIN (accept_loop() did that
+	 * when this connection was first accepted, as an ordinary
+	 * CONN_CLIENT) -- only its kind and dispatch target change above;
+	 * no epoll_ctl needed for it here. */
+	return CONSOLE_HANDLED;
+}
+
+static void handle_console_ws_event(struct conn *cc)
+{
+	unsigned char buf[4096];
+	ssize_t n;
+	struct ws_frame frame;
+	int pr;
+
+	n = read(cc->fd, buf, sizeof(buf));
+	if (n <= 0) {
+		console_session_teardown(cc->exec_session);
+		return;
+	}
+	if (ws_conn_feed(&cc->ws, buf, (size_t)n) != 0) {
+		console_session_teardown(cc->exec_session);
+		return;
+	}
+
+	for (;;) {
+		pr = ws_conn_try_parse(&cc->ws, &frame);
+		if (pr == 0)
+			break;
+		if (pr < 0) {
+			console_session_teardown(cc->exec_session);
+			return;
+		}
+
+		if (frame.opcode == WS_OPCODE_TEXT || frame.opcode == WS_OPCODE_BINARY) {
+			if (frame.payload_len > 0 &&
+			    kx_write_all(cc->exec_session->pty_conn->fd, frame.payload, frame.payload_len) != 0) {
+				ws_conn_consume(&cc->ws, frame.frame_len);
+				console_session_teardown(cc->exec_session);
+				return;
+			}
+		} else if (frame.opcode == WS_OPCODE_CLOSE) {
+			ws_conn_consume(&cc->ws, frame.frame_len);
+			console_session_teardown(cc->exec_session);
+			return;
+		} else if (frame.opcode == WS_OPCODE_PING) {
+			ws_write_frame(cc->fd, WS_OPCODE_PONG, frame.payload, frame.payload_len);
+		}
+		/* WS_OPCODE_PONG: nothing to do -- just a keepalive ack. */
+
+		ws_conn_consume(&cc->ws, frame.frame_len);
+	}
+}
+
+static void handle_console_pty_event(struct conn *cc)
+{
+	unsigned char buf[4096];
+	ssize_t n;
+
+	n = read(cc->fd, buf, sizeof(buf));
+	if (n <= 0) {
+		/* Shell exited (EOF) or the pty hung up (EIO, once every
+		 * slave-side reference has closed) -- either way this
+		 * session is over. */
+		console_session_teardown(cc->exec_session);
+		return;
+	}
+
+	if (ws_write_frame(cc->exec_session->ws_conn->fd, WS_OPCODE_BINARY, buf, (size_t)n) != 0)
+		console_session_teardown(cc->exec_session);
+}
+
 static void handle_client_event(struct conn *cc)
 {
 	char buf[4096];
@@ -3594,7 +3965,16 @@ static void handle_client_event(struct conn *cc)
 		return;
 	}
 	if (pr == 1) {
-		dispatch(cc->fd, &req);
+		enum console_route_result cr = try_console_upgrade(cc, &req);
+
+		if (cr == CONSOLE_HANDLED)
+			return; /* cc repurposed into CONN_CONSOLE_WS (or already torn down) -- must not be touched again */
+		if (cr == CONSOLE_NOT_MATCHED)
+			dispatch(cc->fd, &req);
+		/* CONSOLE_FAILED: an error response (or nothing, if the client
+		 * was already gone) was already written by
+		 * try_console_upgrade() itself -- cc still needs the same
+		 * teardown every other handled request gets below. */
 		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 		close(cc->fd);
 		http_conn_free(&cc->http);
@@ -4442,6 +4822,8 @@ int main(int argc, char **argv)
 
 		for (j = 0; j < n; j++) {
 			cc = events[j].data.ptr;
+			if (cc->kind == CONN_DEAD)
+				continue; /* torn down earlier in this same batch -- see g_pending_free's own comment */
 			if (cc->kind == CONN_LISTENER)
 				accept_loop();
 			else if (cc->kind == CONN_CONTAINER)
@@ -4454,9 +4836,15 @@ int main(int argc, char **argv)
 				handle_console_shell_event(cc);
 			else if (cc->kind == CONN_CONSOLE_RESPAWN_TIMER)
 				handle_console_respawn_timer_event(cc);
+			else if (cc->kind == CONN_CONSOLE_WS)
+				handle_console_ws_event(cc);
+			else if (cc->kind == CONN_CONSOLE_PTY)
+				handle_console_pty_event(cc);
 			else
 				handle_client_event(cc);
 		}
+
+		drain_pending_free();
 	}
 
 	close(listen_fd);

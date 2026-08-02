@@ -16,6 +16,8 @@ struct http_request {
 	long content_length;
 	char *body;     /* points into the owning http_conn's buffer */
 	size_t body_len;
+	char *headers;      /* points into the owning http_conn's buffer; request line + every header line, no trailing blank line */
+	size_t headers_len;
 };
 
 /*
@@ -27,7 +29,12 @@ struct http_request {
  * v1 is HTTP/1.1 request-line + headers + fixed-length body only:
  * no chunked transfer-encoding, no keep-alive (every response is
  * followed by closing the connection) -- deliberate scope boundaries
- * for a REST control-plane daemon, not oversights.
+ * for a REST control-plane daemon, not oversights. The one exception
+ * is a WebSocket Upgrade request (see websocket.h): the connection
+ * survives past this one request/response pair, but that's the
+ * caller's own doing once it recognizes the Upgrade header via
+ * http_find_header() below -- this parser itself still only ever
+ * produces exactly one request per connection.
  */
 struct http_conn {
 	char *buf;
@@ -52,6 +59,18 @@ int http_conn_feed(struct http_conn *c, const char *data, size_t n);
  * more data is needed, -1 on a malformed request line/headers.
  */
 int http_conn_try_parse(struct http_conn *c, struct http_request *req);
+
+/*
+ * Scans a raw header block (request-line + header lines, no trailing
+ * blank line -- exactly struct http_request's own headers/headers_len,
+ * or http_conn's equivalent internal state) for a header named `name`
+ * (case-insensitive, matched by exact length so "X-Foo" never matches
+ * "X-Foo-Bar"). On a match, copies the value (leading/trailing spaces
+ * trimmed) plus a NUL into out and returns its length; returns -1 if
+ * the header is absent or its value doesn't fit in out_size.
+ */
+long http_find_header(const char *headers, size_t headers_len, const char *name,
+                       char *out, size_t out_size);
 
 /*
  * Writes a full HTTP/1.1 response (status line, Content-Type,
