@@ -2,6 +2,89 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 30 (web dashboard follow-up): fix `[hidden]` losing to author `display` rules on `.view`/`form`/`.modal-overlay`
+
+A real, significant bug present since Phase 29's very first redesign, caught by the user's own real browser (three screenshots) after every structural check this sandbox could run (tag balance, id cross-referencing, JS syntax) had missed it, because none of them render CSS.
+
+#### Fixed
+- `[hidden]` does not reliably beat an author CSS rule setting `display` on the same selector -- cascade origin outranks specificity, so a normal-priority author `display` rule always wins over the browser's own default `[hidden] { display: none }`, regardless of how low that author rule's specificity is. `.view { display: flex }` had this defect from Phase 29 onward: every view section was rendering simultaneously, stacked down the page, no matter which one `renderCurrentView()` actually set `.hidden = false` on. `form { display: flex }` had the same defect wherever a form's own `.hidden` is toggled directly (`#pki-ca-form`). `.modal-overlay` (added this same day) had it too.
+- Added explicit `<selector>[hidden] { display: none; }` overrides for all four affected selectors: `.view`, `form`, `.modal-overlay`, `.tab-panel` (the last already fixed in part 3 -- noticing that fix was the first clue, not generalized to the others until this bug surfaced visually).
+
+**Lesson, stated plainly**: fixing `.modal-overlay`'s instance of this without immediately sweeping every other selector with the same shape (explicit `display` + JS-toggled `.hidden`) was a real miss, not a one-off. A systematic check now exists for it: cross-reference every CSS selector with an explicit `display` value against every element `app.js` actually toggles via `.hidden`.
+
+### Phase 30 part 1: an interactive shell into a running container, over a hand-rolled WebSocket
+
+Raised directly by the user while reviewing the redesigned dashboard: no exec/attach capability existed anywhere in Kanxeo. Staged in 3 parts; this covers part 1, the daemon mechanism itself. See ADR-0043.
+
+#### Added
+- `daemon/src/websocket.c`/`.h` -- minimal hand-rolled RFC 6455 (no fragmentation, 64KiB payload cap; `Sec-WebSocket-Accept` computed by shelling to `openssl`, same convention `pki.c` already established).
+- `daemon/src/exec.c`/`.h` -- `exec_into_container()`: `setns()` into a running container's mount/UTS/net/pid namespaces (double-fork, mirroring `nsenter`/`docker exec`) and execs against a PTY allocated in the daemon's own namespace before any `setns()` call, so the exec'd process never needs a working `devpts` inside the container.
+- `GET /v1/containers/{name}/console` (`docs/api/openapi.yaml`) -- upgrades to the WebSocket session; optional `X-Kanxeo-Exec-Cmd` header overrides the default `/usr/bin/bash`.
+- `daemon/src/main.c`: `try_console_upgrade()`, new `CONN_CONSOLE_WS`/`CONN_CONSOLE_PTY` conn kinds, a deferred-free queue (`g_pending_free`) for the new hazard of two independently-epoll-registered fds that can tear each other down within the same event batch.
+- `daemon/src/http.c`'s `find_content_length()` generalized into a reusable `http_find_header()`.
+- `test/test_console_exec.c` -- hand-rolled raw-socket WS client against a real daemon and a real running container (`client/src/httpclient.c` has no streaming/Upgrade support to test against); reuses `test/dual_console_child.c` (Phase 28) as the exec target.
+
+#### Fixed
+- (Caught during design, before it shipped) namespace fds must all be opened *before* any `setns()` call, not interleaved -- the first `setns()` (mnt) moves the caller into the container's own mount namespace, so opening later fds by path afterward resolves against the container's own (often proc-less) `/proc`. Confirmed via `ENOENT` against a real running container before the fix.
+
+Verified: full clean rebuild, zero warnings; `exec_into_container()` proven against a real running container (real shell arithmetic evaluating, not just PTY input echo); full handshake+relay via a manual smoke test and `test_console_exec.c` (5 consecutive clean runs); no leaked exec'd process survives teardown.
+
+**A real mistake, caught and fixed the same session**: `test_console_exec.c`'s `reset_state()` (matching every other daemon test's own pattern) wiped `/var/lib/kanxeo/container_defs.json` -- this project's daemon has no test/production state isolation, and running the new test repeatedly against this sandbox's own live daemon deleted its persisted container definitions (the running containers themselves were unaffected; a future daemon restart would have lost them). Fixed by reading each container's real config out of its own still-running `/proc/<pid>/{cmdline,root}` and recreating all 5 through the real API -- confirmed byte-identical, VRRP re-electing correctly afterward.
+
+**Not built:** parts 2 (`kanxeoctl console`) and 3 (web dashboard terminal, deliberately staying hand-rolled rather than vendoring xterm.js -- confirmed with the user); terminal resize propagation.
+
+### Phase 30 part 2: `kanxeoctl console` -- a real, fully-interactive terminal client
+
+#### Added
+- `client/src/console.c`/`.h` -- WebSocket upgrade over a raw socket, a masked client-frame writer (the mirror image of `daemon/src/websocket.c`'s server-side, never-masks writer), a tolerant server-frame reader, and `cfmakeraw()` on the local terminal for the session's duration.
+- `kanxeoctl console NAME [--cmd=PATH]`.
+- `client/src/httpclient.c`'s internal `connect_to()` promoted to a public `kx_client_connect_raw()`; its own `write_all()` consolidated into the shared `kx_write_all()` (`include/iohelpers.h`, introduced in part 1).
+
+#### Fixed
+- (Caught by testing, before it shipped) the relay's `poll()` loop shrank `nfds` to 1 once local stdin hit EOF, which stopped it from ever examining the WebSocket socket again -- `poll(2)` already ignores a negative fd on its own; fixed by always passing `nfds=2`.
+
+Verified: full clean rebuild, zero warnings; a piped (non-tty) session and a real pty-backed session (`pty.fork()`, exercising the full raw-mode path) against this sandbox's own live `cr-1` container -- real bash prompt, real shell arithmetic evaluating, clean exit, 3 consecutive runs, no leaked process.
+
+**Not built:** part 3 (web dashboard terminal); terminal resize propagation.
+
+### Phase 30 part 3: web dashboard console tab, right-click context menu, Proxmox-style container view
+
+#### Added
+- `web/app.js`'s `createTerminal()` -- a minimal, hand-rolled line-buffer terminal renderer (not a full VT100 emulator): `\r`/`\n`/backspace/Tab plus SGR color codes; every other CSI escape sequence recognized structurally and swallowed rather than leaked as garbage text. No cursor-addressable screen model -- `vim`/`top`/`less` render wrong, a stated boundary (see ADR-0043), `kanxeoctl console` has none of it.
+- Container detail view restructured: `.detail-topbar` (Stop/Remove, always visible) + `.tab-bar` (Console/Summary, Console active by default). The browser's native `WebSocket` talks directly to `GET /v1/containers/{name}/console`.
+- Right-click context menu (`#tree-context-menu`) on tree items -- Open console/Stop/Remove for containers, Remove for networks/images, reusing the existing action functions verbatim.
+
+#### Fixed
+- (Caught before it shipped) the existing 2s poll loop re-rendering the container detail view would have reopened -- and reset -- the console's WebSocket every cycle; fixed with an `openConsole()` guard keyed on the currently-connected container name.
+
+Verified: live daemon confirmed serving these exact files; every new DOM id cross-checked between `app.js`/`index.html`; terminal renderer logic verified with a headless Node + DOM-stub unit check against a real captured bash transcript and a synthetic SGR/unsupported-CSI sequence. No browser in this sandbox -- data/logic-level verification, user's own browser session is the remaining check.
+
+**Not built:** a real "start a stopped container" action (no backend support exists -- `cmd` isn't echoed back by the API and there's no `POST .../start`, named rather than faked); terminal resize propagation.
+
+#### Added (same-day follow-up)
+- Tree status dot (`.tree-status-dot`) before each container's name -- green (`running`) / grey (`exited`), the only two states `Container.status` has.
+- Every category view's create form is now a collapsed-by-default `<details>` element -- list shows first, form only on demand. Package recipes' two actions (add recipe, bootstrap build image) split into two independent `<details>`.
+
+#### Added (second same-day follow-up)
+- Header "+ Create" dropdown (Proxmox-style) replacing the just-added inline `<details>` forms entirely -- every creatable resource opens the same shared `#modal-overlay`, which the 8 existing forms were relocated into (not rewritten) as hidden per-form panels. Every submit handler's success path now closes the modal too, except `pki-cert-form` (must stay open so the one-time-shown private key isn't hidden).
+- Container detail view expanded from 2 tabs to 5: Summary (status/image/pid/exit status), Hardware (devices/interfaces/**networks** -- new, had no home before), Options (restart/depends_on/readiness/ip_forward/sysctls/files), Console (unchanged, still default), Backup (honest -- no per-container backup mechanism exists; links to System's own real backup/restore instead of faking one). Tab-switching generalized to a `data-tab`-driven loop instead of two hardcoded panel ids.
+
+Verified: live daemon confirmed serving these exact files; all 101 element ids `app.js` references cross-checked programmatically against `index.html` (present exactly once, no orphans/duplicates); tag balance confirmed. No browser in this sandbox -- structural/logic verification, user's own browser session is the remaining check.
+
+### Phase 29: Proxmox-style web dashboard redesign -- left resource tree, per-resource detail views
+
+Raised directly by the user: the dashboard was a flat column of forms/tables with no navigation, and several real, already-shipped API capabilities had zero UI at all (Images, Devices, System, network interface attach/detach, recipe add/delete, container Stop). The user wanted something closer to Proxmox -- a left-side resource tree, compute wired to hardware/networks -- while staying 100% API-driven and framework-free (ADR-0010, explicitly reconfirmed). Two honest scope boundaries, not glossed over: no live resource-usage graphs (no backing endpoint) and no virtual-disk concept (storage is OverlayFS, not attachable disks) -- neither built, since the API-First Mandate means UI-only work doesn't invent backend capability.
+
+#### Added
+- `web/index.html`/`web/style.css`: full restructure into a `.layout` grid -- a left `<nav id="tree">` resource tree (Containers/Networks/Images/Devices/DNS/PKI/Packages/System) plus a content pane, replacing the single centered column. New detail-view sections for containers, networks, and images; new Images, Devices, and System sections built from scratch (none existed before).
+- `web/app.js`: hash-based router (`location.hash` -> `renderCurrentView()`, no router library) and tree builder, both driven off the same 2s `poll()` cycle already powering the summary tables -- one fetch, two renderings. Detail-view renderers for containers (devices/interfaces/files/sysctls/restart/depends_on/readiness, plus a real Stop action distinct from Remove), networks (attached interfaces with attach/detach against `GET /devices`'s assignable `net` entries), and images (cross-references already-polled container/package data client-side, no new endpoints). Devices view groups by bus, with GPU member nodes grouped under their synthesized `gpu:N` prefix to mirror `device_find_group()`'s own server-side expansion. System view: backup download, restore upload, update (image/kernel path staging), and reboot/shutdown behind a real `confirm()` guard.
+- "Run a container" form extended with every `ContainerCreateRequest` field that had no UI before: devices/interfaces (multi-select, sourced from `GET /devices`), files (repeatable path/content/mode rows), sysctls, restart policy + delay, depends_on, readiness.
+- Recipe add/update-by-file-upload and delete added to the Packages: Recipes section (`POST`/`DELETE /v1/pkg/recipes`, backend already existed since Phase 26, no UI until now).
+
+Verified: full clean rebuild, zero warnings. Every element id `app.js` binds against cross-checked directly against `web/index.html`; every field/endpoint/schema referenced cross-checked directly against `docs/api/openapi.yaml`. Exercised live against this sandbox's own already-running `kanxeod` (serving these exact files with no restart needed) and its real state: container/network/image/device/pkg listings match the new renderers field-for-field, and the real 400/409 error bodies (`DELETE /images/base` -> "the base image cannot be removed"; `DELETE /images/router` -> "image is still referenced by a running container") surface through `apiRequest()`/`showStatus()` exactly as designed.
+
+**Not built:** interactive browser click-through (tree navigation, live form submission) -- this sandbox has no browser or headless-browser tooling available; verification here is build + live-data/schema cross-check, not a human click-test. The user's own browser session against the running daemon is the remaining check.
+
 ### Phase 28: installer dual-console (tty0 + ttyS0) support via a PTY relay
 
 Raised directly by the user: the installer only ever worked interactively over serial, even though its own GRUB kernel command line already requests both `/dev/tty0` and `/dev/ttyS0` -- Linux binds `/dev/console` to whichever is listed last. See ADR-0042.
