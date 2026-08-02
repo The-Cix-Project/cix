@@ -1035,6 +1035,7 @@ int main(void)
 	{
 		char api_tarball[512], api_sha[128];
 		char body[2048];
+		char body2[2048];
 		struct json_writer w;
 
 		if (stage_fixture_tarball(scratch_dir, "apirecipe", "1.0", api_tarball,
@@ -1131,8 +1132,6 @@ int main(void)
 		/* upsert: re-add the same name with a bumped version -> the
 		 * recipe list must reflect the new version, not the old one */
 		{
-			char body2[2048];
-
 			snprintf(body2, sizeof(body2),
 			         "pkg_name=apirecipe\npkg_version=2.0\npkg_source=file://%s\n"
 			         "pkg_sha256=%s\npkg_depends=\"\"\n\n"
@@ -1186,11 +1185,49 @@ int main(void)
 		}
 		kx_response_free(&r);
 
+		/* GET /v1/pkg/recipes/{name} (Phase 16, packages-tree UI): the
+		 * raw .recipe text too, not just the list view's metadata --
+		 * must reflect the 2.0 upsert above, byte for byte. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pkg/recipes/apirecipe", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET recipe content, status=%d\n", r.status);
+			ok = 0;
+		} else if (!str_eq(json_str_field(r.json, "name"), "apirecipe") ||
+		           !str_eq(json_str_field(r.json, "version"), "2.0") ||
+		           !str_eq(json_str_field(r.json, "content"), body2)) {
+			fprintf(stderr, "FAIL: GET recipe content mismatch after upsert\n");
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* An unknown recipe name -> 404, not a raw-id-style fallback
+		 * (there is no such fallback for recipes -- a name either has
+		 * a recipe on file or it doesn't). */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pkg/recipes/never-added-recipe", NULL, &r) != 0 ||
+		    r.status != 404) {
+			fprintf(stderr, "FAIL: GET unknown recipe content expected 404, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
 		/* DELETE removes it; a subsequent install attempt fails again */
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "DELETE", "/v1/pkg/recipes/apirecipe", NULL, &r) != 0 ||
 		    r.status != 204) {
 			fprintf(stderr, "FAIL: DELETE apirecipe recipe, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* GET after DELETE -> 404 too (recipe genuinely gone, not just
+		 * uninstalled). */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pkg/recipes/apirecipe", NULL, &r) != 0 ||
+		    r.status != 404) {
+			fprintf(stderr, "FAIL: GET recipe content after delete expected 404, got %d\n",
+			        r.status);
 			ok = 0;
 		}
 		kx_response_free(&r);

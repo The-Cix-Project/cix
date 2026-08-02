@@ -3596,6 +3596,22 @@ static void handle_pkg_recipe_delete(int fd, const char *name)
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
+static void handle_pkg_recipe_get(int fd, const char *name)
+{
+	struct json_writer w;
+	enum pkg_error perr;
+
+	jw_init(&w);
+	perr = pkg_recipe_get(name, &w);
+	if (perr != PKG_OK) {
+		jw_free(&w);
+		respond_pkg_recipe_error(fd, perr);
+		return;
+	}
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_pkg_install(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
@@ -4109,6 +4125,10 @@ static void dispatch(int fd, const struct http_request *req)
 		name = req->path + strlen(PKG_RECIPES_PREFIX);
 		if (name[0] != '\0' && strcmp(req->method, "DELETE") == 0) {
 			handle_pkg_recipe_delete(fd, name);
+			return;
+		}
+		if (name[0] != '\0' && strcmp(req->method, "GET") == 0) {
+			handle_pkg_recipe_get(fd, name);
 			return;
 		}
 	}

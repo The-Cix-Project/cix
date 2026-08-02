@@ -2,6 +2,19 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 37: Packages tree UI -- recipe tab + installed-versions tab per package
+
+Direct user request, last of the same batch Phase 34-36 came from: list packages under the Packages tree, each with a Recipe tab (view/edit) and an Installed tab (versions across images).
+
+#### Added
+- `GET /v1/pkg/recipes/{name}`: one recipe's own `{name,version,depends,content}` -- the raw `.recipe` text, not just the list view's metadata. New `pkg_recipe_get()` (`daemon/src/pkg.c`), `PkgRecipeDetail` schema. `kanxeoctl pkg recipe show NAME`.
+- Web dashboard: Packages tree now lists one child per package name (union of recipes on file and installed-tracked names); new landing table + per-package detail view with Recipe/Installed tabs, same `.tab-bar` pattern as image/device detail views. Recipe tab supports view + edit-and-resubmit (existing upsert modal gained an optional textarea alongside its file input).
+- `test/test_pkg.c`: recipe-content round-trip after upsert, 404 for an unknown name, 404 again after delete.
+
+#### Notes
+- Pure UI/UX layer over data that already existed -- no ADR, matching Phase 32's own precedent.
+- Recipe content is fetched once per name and cached client-side (not every poll tick), so a poll-driven re-render never clobbers an in-progress edit -- same guard the console tab's own WebSocket already uses.
+
 ### Phase 36: persistent device name mappings, Proxmox-style (ADR-0048)
 
 Direct user request: name a device (exact bus location, or vendor/model so it follows across USB ports), only named devices appear in the Devices tree.

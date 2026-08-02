@@ -253,8 +253,7 @@ const CATEGORY_VIEWS = {
 	"dns-servers": "view-dns-servers",
 	"pki-ca": "view-pki-ca",
 	"pki-certs": "view-pki-certs",
-	"pkg-recipes": "view-pkg-recipes",
-	"pkg-installed": "view-pkg-installed",
+	packages: "view-packages",
 	system: "view-system",
 };
 
@@ -262,6 +261,7 @@ const DETAIL_VIEWS = {
 	containers: "view-container-detail",
 	networks: "view-network-detail",
 	images: "view-image-detail",
+	packages: "view-package-detail",
 };
 
 function renderCurrentView() {
@@ -296,6 +296,8 @@ function renderCurrentView() {
 			renderImageDetail(route.name);
 		else if (route.category === "devices")
 			renderDevices();
+		else if (route.category === "packages")
+			renderPackagesView(route.name);
 	}
 
 	renderTreeActive();
@@ -462,10 +464,11 @@ function renderTree() {
 		{ label: "Root CA", hash: "pki-ca" },
 		{ label: "Certificates", hash: "pki-certs" },
 	]);
-	addCategory("Packages", "pkg-recipes", [
-		{ label: "Recipes", hash: "pkg-recipes" },
-		{ label: "Installed", hash: "pkg-installed" },
-	]);
+	addCategory(
+		"Packages",
+		"packages",
+		allPackageNames().map((name) => ({ label: name, hash: "packages/" + encodeURIComponent(name) }))
+	);
 	addCategory("System", "system", null);
 
 	treeEl.appendChild(root);
@@ -1816,79 +1819,33 @@ async function removePkiCert(name) {
 	}
 }
 
-/* ---------- Packages: Recipes ---------- */
+/* ---------- Packages ---------- */
 
-function renderPkgRecipes(recipes) {
-	const body = document.getElementById("pkg-recipes-body");
+/* Every package name known to this system -- from a recipe on file,
+ * currently tracked/installed somewhere, or both (removing a recipe
+ * never touches what's already installed, so the two sets legitimately
+ * diverge). Drives both the tree's per-package children and the
+ * landing table -- one derivation, not two lists to keep in sync. */
+function allPackageNames() {
+	const names = new Set();
+
+	for (const r of cache.pkgRecipes)
+		names.add(r.name);
+	for (const p of cache.pkgList)
+		names.add(p.name);
+	return Array.from(names).sort();
+}
+
+function renderPackagesList() {
+	const body = document.getElementById("packages-body");
+	const names = allPackageNames();
 
 	body.textContent = "";
-	if (recipes.length === 0) {
+	if (names.length === 0) {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
 
 		cell.colSpan = 4;
-		cell.className = "empty";
-		cell.textContent = "No recipes found";
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-
-	for (const r of recipes) {
-		const row = document.createElement("tr");
-
-		const nameCell = document.createElement("td");
-		nameCell.textContent = r.name;
-		row.appendChild(nameCell);
-
-		const versionCell = document.createElement("td");
-		versionCell.textContent = r.version;
-		row.appendChild(versionCell);
-
-		const dependsCell = document.createElement("td");
-		dependsCell.textContent = r.depends || "-";
-		row.appendChild(dependsCell);
-
-		const actionCell = document.createElement("td");
-		const rmButton = document.createElement("button");
-
-		rmButton.textContent = "Remove";
-		rmButton.className = "button-danger";
-		rmButton.addEventListener("click", () => removePkgRecipe(r.name));
-		actionCell.appendChild(rmButton);
-		row.appendChild(actionCell);
-
-		body.appendChild(row);
-	}
-}
-
-async function refreshPkgRecipes() {
-	const data = await apiRequest("GET", "/v1/pkg/recipes");
-	cache.pkgRecipes = data.recipes;
-	renderPkgRecipes(cache.pkgRecipes);
-}
-
-async function removePkgRecipe(name) {
-	try {
-		await apiRequest("DELETE", "/v1/pkg/recipes/" + encodeURIComponent(name));
-		clearStatus();
-		await refreshPkgRecipes();
-	} catch (e) {
-		showStatus("Failed to remove recipe " + name + ": " + e.message, true);
-	}
-}
-
-/* ---------- Packages: Installed ---------- */
-
-function renderPkgList(packages) {
-	const body = document.getElementById("pkg-list-body");
-
-	body.textContent = "";
-	if (packages.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
-
-		cell.colSpan = 8;
 		cell.className = "empty";
 		cell.textContent = "No packages";
 		row.appendChild(cell);
@@ -1896,12 +1853,137 @@ function renderPkgList(packages) {
 		return;
 	}
 
-	for (const pkg of packages) {
+	for (const name of names) {
 		const row = document.createElement("tr");
+		const recipe = cache.pkgRecipes.find((r) => r.name === name);
+		const installedCount = cache.pkgList.filter((p) => p.name === name).length;
 
 		const nameCell = document.createElement("td");
-		nameCell.textContent = pkg.name;
+		nameCell.appendChild(treeLink("#packages/" + encodeURIComponent(name), name, ""));
 		row.appendChild(nameCell);
+
+		const versionCell = document.createElement("td");
+		versionCell.textContent = recipe ? recipe.version : "-";
+		row.appendChild(versionCell);
+
+		const countCell = document.createElement("td");
+		countCell.textContent = String(installedCount);
+		row.appendChild(countCell);
+
+		row.appendChild(document.createElement("td"));
+		body.appendChild(row);
+	}
+}
+
+/* name is null on the landing list, set on a specific package's own
+ * detail page -- both share the same underlying cache.pkgRecipes/
+ * cache.pkgList, refreshed independently by refreshPkgRecipes()/
+ * refreshPkgList(), so either one completing re-renders whichever of
+ * the two is currently on screen (the same "conditional re-render,
+ * gated on the active route" convention refreshDevices()/
+ * refreshDeviceMaps() already established). */
+function renderPackagesView(name) {
+	if (name === null)
+		renderPackagesList();
+	else
+		renderPackageDetail(name);
+}
+
+/* Recipe *content* (the raw shell script text) isn't part of
+ * cache.pkgRecipes' list-view metadata shape -- fetched separately,
+ * once per name, and cached here so a poll-driven re-render of the
+ * same detail page never re-fetches it every 2s (the same guard
+ * openConsole() already uses for its own per-container WebSocket). */
+let pkgRecipeContentCache = { name: null, content: null };
+
+async function loadPkgRecipeContent(name) {
+	if (pkgRecipeContentCache.name === name)
+		return pkgRecipeContentCache.content;
+	const data = await apiRequest("GET", "/v1/pkg/recipes/" + encodeURIComponent(name));
+
+	pkgRecipeContentCache = { name: name, content: data.content };
+	return pkgRecipeContentCache.content;
+}
+
+function renderPackageDetail(name) {
+	document.getElementById("pkgd-title").textContent = name;
+
+	const recipe = cache.pkgRecipes.find((r) => r.name === name);
+	const missingEl = document.getElementById("pkgd-recipe-missing");
+	const presentEl = document.getElementById("pkgd-recipe-present");
+	const editBtn = document.getElementById("pkgd-edit-recipe");
+	const removeBtn = document.getElementById("pkgd-remove-recipe");
+
+	removeBtn.hidden = !recipe;
+
+	if (recipe) {
+		missingEl.hidden = true;
+		presentEl.hidden = false;
+
+		const fields = document.getElementById("pkgd-recipe-fields");
+
+		fields.textContent = "";
+		fields.appendChild(fieldBlock("Version", recipe.version));
+		fields.appendChild(fieldBlock("Depends", recipe.depends || "-"));
+
+		const contentEl = document.getElementById("pkgd-recipe-content");
+
+		if (pkgRecipeContentCache.name === name) {
+			contentEl.textContent = pkgRecipeContentCache.content;
+		} else {
+			contentEl.textContent = "Loading…";
+			loadPkgRecipeContent(name)
+				.then((content) => {
+					if (parseHash().category === "packages" && parseHash().name === name)
+						document.getElementById("pkgd-recipe-content").textContent = content;
+				})
+				.catch((e) => showStatus("Failed to load recipe content for " + name + ": " + e.message, true));
+		}
+	} else {
+		missingEl.hidden = false;
+		presentEl.hidden = true;
+	}
+
+	editBtn.onclick = async () => {
+		let content = "";
+
+		if (recipe) {
+			try {
+				content = await loadPkgRecipeContent(name);
+			} catch (e) {
+				showStatus("Failed to load recipe content for " + name + ": " + e.message, true);
+				return;
+			}
+		}
+		openModal("pkg-recipe-form", recipe ? "Edit recipe" : "Add recipe");
+		document.getElementById("rf-name").value = name;
+		document.getElementById("rf-file").value = "";
+		document.getElementById("rf-content").value = content;
+	};
+	removeBtn.onclick = () => removePkgRecipe(name);
+
+	renderPackageDetailInstalled(name);
+}
+
+function renderPackageDetailInstalled(name) {
+	const body = document.querySelector("#pkgd-installed tbody");
+	const pkgs = cache.pkgList.filter((p) => p.name === name);
+
+	body.textContent = "";
+	if (pkgs.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 7;
+		cell.className = "empty";
+		cell.textContent = "Not installed on any image";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+
+	for (const pkg of pkgs) {
+		const row = document.createElement("tr");
 
 		const imageCell = document.createElement("td");
 		imageCell.appendChild(treeLink("#images/" + encodeURIComponent(pkg.image), pkg.image, ""));
@@ -1933,7 +2015,10 @@ function renderPkgList(packages) {
 
 			rmButton.textContent = "Remove";
 			rmButton.className = "button-danger";
-			rmButton.addEventListener("click", () => removePkg(pkg.name, pkg.image));
+			rmButton.addEventListener("click", async () => {
+				await removePkg(pkg.name, pkg.image);
+				renderPackageDetailInstalled(name);
+			});
 			actionCell.appendChild(rmButton);
 		}
 		row.appendChild(actionCell);
@@ -1942,10 +2027,29 @@ function renderPkgList(packages) {
 	}
 }
 
+async function refreshPkgRecipes() {
+	const data = await apiRequest("GET", "/v1/pkg/recipes");
+	cache.pkgRecipes = data.recipes;
+	if (parseHash().category === "packages")
+		renderPackagesView(parseHash().name);
+}
+
+async function removePkgRecipe(name) {
+	try {
+		await apiRequest("DELETE", "/v1/pkg/recipes/" + encodeURIComponent(name));
+		clearStatus();
+		await refreshPkgRecipes();
+		renderTree();
+	} catch (e) {
+		showStatus("Failed to remove recipe " + name + ": " + e.message, true);
+	}
+}
+
 async function refreshPkgList() {
 	const data = await apiRequest("GET", "/v1/pkg");
 	cache.pkgList = data.packages;
-	renderPkgList(cache.pkgList);
+	if (parseHash().category === "packages")
+		renderPackagesView(parseHash().name);
 }
 
 async function removePkg(name, image) {
@@ -1955,6 +2059,7 @@ async function removePkg(name, image) {
 		await apiRequest("DELETE", "/v1/pkg/" + encodeURIComponent(key));
 		clearStatus();
 		await refreshPkgList();
+		renderTree();
 	} catch (e) {
 		showStatus("Failed to remove package " + key + ": " + e.message, true);
 	}
@@ -2424,18 +2529,22 @@ document.getElementById("pkg-recipe-form").addEventListener("submit", async (eve
 
 	const name = document.getElementById("rf-name").value.trim();
 	const fileInput = document.getElementById("rf-file");
+	const contentField = document.getElementById("rf-content");
 
-	if (fileInput.files.length === 0)
+	if (fileInput.files.length === 0 && contentField.value.trim() === "")
 		return;
 
 	try {
-		const content = await readFileAsText(fileInput.files[0]);
+		const content = fileInput.files.length > 0 ? await readFileAsText(fileInput.files[0]) : contentField.value;
 
 		await apiRequest("POST", "/v1/pkg/recipes", { name: name, content: content });
 		clearStatus();
 		document.getElementById("pkg-recipe-form").reset();
 		closeModal();
+		if (pkgRecipeContentCache.name === name)
+			pkgRecipeContentCache = { name: null, content: null };
 		await refreshPkgRecipes();
+		renderTree();
 	} catch (e) {
 		showStatus("Failed to add recipe " + name + ": " + e.message, true);
 	}

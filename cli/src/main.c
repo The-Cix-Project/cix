@@ -112,6 +112,7 @@ static void print_usage(FILE *out)
 	        "  pkg recipes\n"
 	        "  pkg recipe add --name=NAME --file=PATH  -- add or update a recipe on this\n"
 	        "               running system directly, no reinstall needed (ADR-0040)\n"
+	        "  pkg recipe show NAME  -- print a recipe's own raw content\n"
 	        "  pkg recipe rm NAME\n"
 	        "  pkg install --name=NAME [--image=IMAGE] [--upgrade]\n"
 	        "  pkg ls\n"
@@ -2527,6 +2528,30 @@ static int cmd_pkg_recipe_add(const struct kx_client *c, int json_mode, int argc
 	return 0;
 }
 
+static void fmt_pkg_recipe_show(const struct json_value *v)
+{
+	const char *content = json_str_field(v, "content");
+
+	printf("%s", content != NULL ? content : "");
+}
+
+static int cmd_pkg_recipe_show(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl pkg recipe show NAME\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/pkg/recipes/%s", argv[0]);
+	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_pkg_recipe_show);
+}
+
 static int cmd_pkg_recipe_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	struct kx_response r;
@@ -2550,12 +2575,15 @@ static int cmd_pkg_recipe(const struct kx_client *c, int json_mode, int argc, ch
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: kanxeoctl pkg recipe add --name=NAME --file=PATH\n"
+		                "       kanxeoctl pkg recipe show NAME\n"
 		                "       kanxeoctl pkg recipe rm NAME\n");
 		return 2;
 	}
 	sub = argv[0];
 	if (strcmp(sub, "add") == 0)
 		return cmd_pkg_recipe_add(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "show") == 0)
+		return cmd_pkg_recipe_show(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "rm") == 0)
 		return cmd_pkg_recipe_rm(c, json_mode, argc - 1, argv + 1);
 
@@ -2676,6 +2704,7 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 		fprintf(stderr, "usage: kanxeoctl pkg bootstrap [--toolchain=PATH]\n"
 		                "       kanxeoctl pkg recipes\n"
 		                "       kanxeoctl pkg recipe add --name=NAME --file=PATH\n"
+		                "       kanxeoctl pkg recipe show NAME\n"
 		                "       kanxeoctl pkg recipe rm NAME\n"
 		                "       kanxeoctl pkg install --name=NAME [--image=IMAGE] [--upgrade]\n"
 		                "       kanxeoctl pkg ls\n"

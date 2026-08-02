@@ -969,6 +969,36 @@ void pkg_write_json_recipes(struct json_writer *w)
 	jw_arr_close(w);
 }
 
+enum pkg_error pkg_recipe_get(const char *name, struct json_writer *w)
+{
+	char recipe_path[PATH_MAX];
+	struct pkg_recipe r;
+	char *content;
+	size_t content_len;
+
+	if (!pkg_name_is_valid(name))
+		return PKG_ERR_INVALID_NAME;
+
+	snprintf(recipe_path, sizeof(recipe_path), "%s/%s.recipe", g_recipes_dir, name);
+	if (parse_recipe(recipe_path, &r) != 0 || strcmp(r.name, name) != 0)
+		return PKG_ERR_NOT_FOUND;
+	if (persist_read_file(recipe_path, &content, &content_len) != 0 || content == NULL)
+		return PKG_ERR_PERSIST_FAILED;
+
+	jw_obj_open(w);
+	jw_key(w, "name");
+	jw_str(w, r.name);
+	jw_key(w, "version");
+	jw_str(w, r.version);
+	jw_key(w, "depends");
+	jw_str(w, r.depends);
+	jw_key(w, "content");
+	jw_str(w, content);
+	jw_obj_close(w);
+	free(content);
+	return PKG_OK;
+}
+
 enum pkg_error pkg_recipe_add(const char *name, const char *content)
 {
 	char staging_path[PATH_MAX];

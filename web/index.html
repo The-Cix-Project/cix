@@ -381,34 +381,54 @@
 			</div>
 		</section>
 
-		<!-- Packages: Recipes -->
-		<section class="view" id="view-pkg-recipes" hidden>
+		<!-- Packages -->
+		<section class="view" id="view-packages" hidden>
 			<div class="view-list">
-				<h2>Packages: Recipes</h2>
-				<table id="pkg-recipes">
+				<h2>Packages</h2>
+				<p class="hint">Every package known to this system -- from a recipe on file, currently
+					installed somewhere, or both. Click a name for its recipe and installed versions.</p>
+				<table id="packages">
 					<thead>
 						<tr>
 							<th>Name</th>
-							<th>Version</th>
-							<th>Depends</th>
+							<th>Recipe version</th>
+							<th>Installed in</th>
 							<th></th>
 						</tr>
 					</thead>
-					<tbody id="pkg-recipes-body">
+					<tbody id="packages-body">
 						<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
 					</tbody>
 				</table>
 			</div>
 		</section>
 
-		<!-- Packages: Installed -->
-		<section class="view" id="view-pkg-installed" hidden>
-			<div class="view-list">
-				<h2>Packages: Installed</h2>
-				<table id="pkg-list">
+		<section class="view" id="view-package-detail" hidden>
+			<div class="detail-topbar">
+				<h2 id="pkgd-title"></h2>
+			</div>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="recipe" id="pkgd-tab-recipe">Recipe</button>
+				<button type="button" class="tab-button" data-tab="installed" id="pkgd-tab-installed">Installed</button>
+			</div>
+			<div class="tab-panel" id="pkgd-panel-recipe" data-tab="recipe">
+				<div id="pkgd-recipe-missing" class="hint" hidden>No recipe on file for this name --
+					only installed-package history remains (removing a recipe never touches what's
+					already installed).</div>
+				<div id="pkgd-recipe-present">
+					<div class="detail-grid" id="pkgd-recipe-fields"></div>
+					<h3>Content</h3>
+					<pre id="pkgd-recipe-content" class="recipe-content"></pre>
+				</div>
+				<div class="detail-actions">
+					<button type="button" id="pkgd-edit-recipe">Edit&hellip;</button>
+					<button type="button" id="pkgd-remove-recipe" class="button-danger">Remove recipe</button>
+				</div>
+			</div>
+			<div class="tab-panel" id="pkgd-panel-installed" data-tab="installed" hidden>
+				<table id="pkgd-installed">
 					<thead>
 						<tr>
-							<th>Name</th>
 							<th>Image</th>
 							<th>Version</th>
 							<th>State</th>
@@ -418,9 +438,7 @@
 							<th></th>
 						</tr>
 					</thead>
-					<tbody id="pkg-list-body">
-						<tr><td colspan="8" class="empty">Loading&hellip;</td></tr>
-					</tbody>
+					<tbody></tbody>
 				</table>
 			</div>
 		</section>
@@ -729,8 +747,12 @@
 						<input type="text" id="rf-name" pattern="[A-Za-z0-9_-]+" required>
 					</label>
 					<label class="wide">
-						Recipe file
-						<input type="file" id="rf-file" required>
+						Recipe file (leave blank to paste/edit content below instead)
+						<input type="file" id="rf-file">
+					</label>
+					<label class="wide">
+						Content
+						<textarea id="rf-content" rows="16" spellcheck="false"></textarea>
 					</label>
 					<button type="submit">Add / update</button>
 				</form>

@@ -195,6 +195,19 @@ enum pkg_error pkg_seed_image_baseline(const char *image);
 void pkg_write_json_recipes(struct json_writer *w);
 
 /*
+ * One recipe's own {name,version,depends,content} -- the raw shell
+ * script text too, unlike pkg_write_json_recipes()'s list-view
+ * metadata-only shape, for the web dashboard's per-package Recipe tab
+ * (view, and edit-then-resubmit through the existing pkg_recipe_add()
+ * upsert -- editing a recipe is exactly "add with the same name," no
+ * separate update path needed). Still never sourced/executed here,
+ * same as every other recipe read in this module -- content is only
+ * ever actually run inside the isolated build container.
+ * PKG_ERR_INVALID_NAME / PKG_ERR_NOT_FOUND (missing or fails to parse).
+ */
+enum pkg_error pkg_recipe_get(const char *name, struct json_writer *w);
+
+/*
  * Adds a new recipe, or replaces an existing one with the same name
  * (upsert -- the whole point is updating a recipe catalog without a
  * full OS reinstall, ADR-0040). content is written to a staging file
