@@ -14,6 +14,7 @@
 #include "test_image_fixture.h"
 
 #include <arpa/inet.h>
+#include <limits.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
@@ -26,8 +27,10 @@ extern char **environ;
 
 #define TEST_PORT 7624
 #define PORT_ARG "--port=7624"
-#define IMAGE_ROOT "/var/lib/kanxeo/images/nettest/rootfs"
 #define NET_CHILD_PORT 17700
+
+static char g_data_dir[PATH_MAX];
+static char g_image_root[PATH_MAX];
 #define TEST_NETWORK_NAME "dnettest"
 #define TEST_NETWORK_SUBNET "172.33.0.0"
 #define TEST_NETWORK_NAME2 "dnettest2"
@@ -120,27 +123,41 @@ static int connect_and_echo(const char *ip)
 int main(void)
 {
 	pid_t daemon_pid;
-	char *dargv[3];
+	char *dargv[4];
+	char data_dir_arg[PATH_MAX + 11];
 	struct kx_client client;
 	int ok = 1;
 	struct kx_response r;
 	char ip1[64] = { 0 };
 	char ip2[64] = { 0 };
 
-	if (test_image_fixture_build(IMAGE_ROOT, "build/net_child", "net_child") != 0)
+	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
-	if (test_image_fixture_build(IMAGE_ROOT, "build/daemon_child", "daemon_child") != 0)
-		return 1;
-	if (test_image_fixture_build(IMAGE_ROOT, "build/net_connect", "net_connect") != 0)
-		return 1;
+	snprintf(g_image_root, sizeof(g_image_root), "%s/images/nettest/rootfs", g_data_dir);
 
+	if (test_image_fixture_build(g_image_root, "build/net_child", "net_child") != 0) {
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
+	if (test_image_fixture_build(g_image_root, "build/daemon_child", "daemon_child") != 0) {
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
+	if (test_image_fixture_build(g_image_root, "build/net_connect", "net_connect") != 0) {
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
+
+	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
 	dargv[0] = "build/kanxeod";
 	dargv[1] = PORT_ARG;
-	dargv[2] = NULL;
+	dargv[2] = data_dir_arg;
+	dargv[3] = NULL;
 
 	daemon_pid = fork();
 	if (daemon_pid < 0) {
 		perror("fork");
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
 	if (daemon_pid == 0) {
@@ -154,6 +171,7 @@ int main(void)
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
 		waitpid(daemon_pid, NULL, 0);
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
 
@@ -511,6 +529,7 @@ int main(void)
 		}
 	}
 
+	test_data_dir_cleanup(g_data_dir);
 	printf(ok ? "DAEMON NET RESULT: PASS\n" : "DAEMON NET RESULT: FAIL\n");
 	return ok ? 0 : 1;
 }

@@ -10,6 +10,7 @@
 #include "json.h"
 #include "test_image_fixture.h"
 
+#include <limits.h>
 #include <net/if.h>
 #include <signal.h>
 #include <stdio.h>
@@ -21,7 +22,9 @@ extern char **environ;
 
 #define TEST_PORT 7625
 #define PORT_ARG "--port=7625"
-#define IMAGE_ROOT "/var/lib/kanxeo/images/networkstest/rootfs"
+
+static char g_data_dir[PATH_MAX];
+static char g_image_root[PATH_MAX];
 
 static int wait_for_daemon(const struct kx_client *c, int max_attempts)
 {
@@ -51,11 +54,14 @@ static int str_eq(const char *a, const char *b)
 static pid_t start_daemon(void)
 {
 	pid_t pid;
-	char *dargv[3];
+	char *dargv[4];
+	static char data_dir_arg[PATH_MAX + 11];
 
+	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
 	dargv[0] = "build/kanxeod";
 	dargv[1] = PORT_ARG;
-	dargv[2] = NULL;
+	dargv[2] = data_dir_arg;
+	dargv[3] = NULL;
 
 	pid = fork();
 	if (pid < 0) {
@@ -87,8 +93,14 @@ int main(void)
 	int ok = 1;
 	struct kx_response r;
 
-	if (test_image_fixture_build(IMAGE_ROOT, "build/daemon_child", "daemon_child") != 0)
+	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
+	snprintf(g_image_root, sizeof(g_image_root), "%s/images/networkstest/rootfs", g_data_dir);
+
+	if (test_image_fixture_build(g_image_root, "build/daemon_child", "daemon_child") != 0) {
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
 
 	daemon_pid = start_daemon();
 	if (daemon_pid < 0)
@@ -415,10 +427,13 @@ int main(void)
 		ok = 0;
 	}
 	{
-		static const char *const state_path = "/var/lib/kanxeo/networks.json";
+		char state_path[PATH_MAX];
 		static const char *const old_format_entry =
 		    "{\"name\":\"gwmigrate37\",\"subnet\":\"172.47.0.0\",\"prefix_len\":24}";
-		FILE *f = fopen(state_path, "r+");
+		FILE *f;
+
+		snprintf(state_path, sizeof(state_path), "%s/networks.json", g_data_dir);
+		f = fopen(state_path, "r+");
 		char buf[65536];
 		size_t len = 0;
 		char *close_bracket;
@@ -504,6 +519,7 @@ int main(void)
 		ok = 0;
 	}
 
+	test_data_dir_cleanup(g_data_dir);
 	printf(ok ? "NETWORKS RESULT: PASS\n" : "NETWORKS RESULT: FAIL\n");
 	return ok ? 0 : 1;
 }

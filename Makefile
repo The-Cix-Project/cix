@@ -47,7 +47,7 @@ $(BUILD)/kanxeoctl: cli/src/main.c client/src/console.c $(CLIENT_SRCS) | $(BUILD
 $(BUILD)/test_cli: test/test_cli.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_web: test/test_web.c client/src/httpclient.c daemon/src/json.c | $(BUILD)
+$(BUILD)/test_web: test/test_web.c test/test_image_fixture.c client/src/httpclient.c daemon/src/json.c | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_rtnetlink: test/test_rtnetlink.c $(NETPLANE_SRCS) src/ns_create.c | $(BUILD)
@@ -86,7 +86,7 @@ $(BUILD)/test_container_files: test/test_container_files.c test/test_image_fixtu
 $(BUILD)/test_system_backup: test/test_system_backup.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_system_update: test/test_system_update.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_system_update: test/test_system_update.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/tcp_listen_child: test/tcp_listen_child.c | $(BUILD)
@@ -107,7 +107,7 @@ $(BUILD)/test_dns: test/test_dns.c test/test_image_fixture.c $(CLIENT_SRCS) | $(
 $(BUILD)/test_pki: test/test_pki.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_pkg: test/test_pkg.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_pkg: test/test_pkg.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/mkbootroot: image/src/mkbootroot.c test/test_image_fixture.c | $(BUILD)

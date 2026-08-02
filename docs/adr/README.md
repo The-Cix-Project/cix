@@ -48,3 +48,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0041](0041-container-image-baseline-fhs-layout.md) | Container images get a real, fixed baseline FHS layout at seed time | Accepted |
 | [0042](0042-installer-dual-console-pty-relay.md) | The installer relays interactive I/O through a PTY across both consoles at once | Accepted |
 | [0043](0043-container-console-exec-websocket.md) | An interactive shell into a running container, over a hand-rolled WebSocket | Accepted |
+| [0044](0044-daemon-data-dir-test-isolation.md) | `kanxeod --data-dir=` for test/production state isolation | Accepted |

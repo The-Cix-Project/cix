@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
@@ -365,4 +366,28 @@ int test_image_fixture_stage_toolchain(const char *image_root)
 	}
 
 	return 0;
+}
+
+int test_data_dir_create(char *out_path, size_t out_size)
+{
+	char tmpl[] = "/tmp/kanxeo_test_data_XXXXXX";
+
+	if (mkdtemp(tmpl) == NULL) {
+		perror("mkdtemp");
+		return -1;
+	}
+	if (snprintf(out_path, out_size, "%s", tmpl) >= (int)out_size) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+	return 0;
+}
+
+void test_data_dir_cleanup(const char *path)
+{
+	char cmd[PATH_MAX + 16];
+
+	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", path);
+	if (system(cmd) != 0)
+		fprintf(stderr, "warning: cleanup of %s failed\n", path);
 }

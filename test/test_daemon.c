@@ -11,6 +11,7 @@
 #include "json.h"
 #include "test_image_fixture.h"
 
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,7 +23,9 @@
 extern char **environ;
 
 #define TEST_PORT 7621
-#define IMAGE_ROOT "/var/lib/kanxeo/images/test/rootfs"
+
+static char g_data_dir[PATH_MAX];
+static char g_image_root[PATH_MAX];
 
 static int wait_for_daemon(const struct kx_client *c, int max_attempts)
 {
@@ -78,21 +81,31 @@ int main(void)
 	int ok = 1;
 	struct kx_response r;
 	struct kx_client client;
-	char *dargv[3];
+	char *dargv[4];
+	char data_dir_arg[PATH_MAX + 11];
 
 	memset(&r, 0, sizeof(r));
 	kx_client_init(&client, "127.0.0.1", TEST_PORT);
 
-	if (test_image_fixture_build(IMAGE_ROOT, "build/daemon_child", "daemon_child") != 0)
+	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
+	snprintf(g_image_root, sizeof(g_image_root), "%s/images/test/rootfs", g_data_dir);
 
+	if (test_image_fixture_build(g_image_root, "build/daemon_child", "daemon_child") != 0) {
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
+
+	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
 	dargv[0] = "build/kanxeod";
 	dargv[1] = "--port=7621";
-	dargv[2] = NULL;
+	dargv[2] = data_dir_arg;
+	dargv[3] = NULL;
 
 	daemon_pid = fork();
 	if (daemon_pid < 0) {
 		perror("fork");
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
 	if (daemon_pid == 0) {
@@ -105,6 +118,7 @@ int main(void)
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
 		waitpid(daemon_pid, NULL, 0);
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
 
@@ -227,6 +241,7 @@ int main(void)
 		}
 	}
 
+	test_data_dir_cleanup(g_data_dir);
 	printf(ok ? "DAEMON RESULT: PASS\n" : "DAEMON RESULT: FAIL\n");
 	return ok ? 0 : 1;
 }

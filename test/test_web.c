@@ -8,7 +8,9 @@
  * something this test (or any tool in this project) can verify.
  */
 #include "httpclient.h"
+#include "test_image_fixture.h"
 
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -74,17 +76,25 @@ static void check(const struct kx_client *c, const char *path, int want_status,
 int main(void)
 {
 	pid_t daemon_pid;
-	char *dargv[3];
+	char *dargv[4];
+	char data_dir[PATH_MAX];
+	char data_dir_arg[PATH_MAX + 11];
 	struct kx_client client;
 	int ok = 1;
 
+	if (test_data_dir_create(data_dir, sizeof(data_dir)) != 0)
+		return 1;
+	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", data_dir);
+
 	dargv[0] = "build/kanxeod";
 	dargv[1] = PORT_ARG;
-	dargv[2] = NULL;
+	dargv[2] = data_dir_arg;
+	dargv[3] = NULL;
 
 	daemon_pid = fork();
 	if (daemon_pid < 0) {
 		perror("fork");
+		test_data_dir_cleanup(data_dir);
 		return 1;
 	}
 	if (daemon_pid == 0) {
@@ -99,6 +109,7 @@ int main(void)
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
 		waitpid(daemon_pid, NULL, 0);
+		test_data_dir_cleanup(data_dir);
 		return 1;
 	}
 
@@ -126,6 +137,7 @@ int main(void)
 		}
 	}
 
+	test_data_dir_cleanup(data_dir);
 	printf(ok ? "WEB RESULT: PASS\n" : "WEB RESULT: FAIL\n");
 	return ok ? 0 : 1;
 }

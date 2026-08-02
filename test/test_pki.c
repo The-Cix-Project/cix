@@ -14,6 +14,7 @@
 #include "json.h"
 #include "test_image_fixture.h"
 
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,8 +27,10 @@ extern char **environ;
 
 #define TEST_PORT 7627
 #define PORT_ARG "--port=7627"
-#define PKI_STATE_DIR "/var/lib/kanxeo/pki"
-#define PKI_IMAGE_ROOT "/var/lib/kanxeo/images/pkitest/rootfs"
+
+static char g_data_dir[PATH_MAX];
+static char g_pki_state_dir[PATH_MAX];
+static char g_pki_image_root[PATH_MAX];
 
 static int wait_for_daemon(const struct kx_client *c, int max_attempts)
 {
@@ -62,11 +65,14 @@ static int json_has_field(const struct json_value *obj, const char *key)
 static pid_t start_daemon(void)
 {
 	pid_t pid;
-	char *dargv[3];
+	char *dargv[4];
+	static char data_dir_arg[PATH_MAX + 11];
 
+	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
 	dargv[0] = "build/kanxeod";
 	dargv[1] = PORT_ARG;
-	dargv[2] = NULL;
+	dargv[2] = data_dir_arg;
+	dargv[3] = NULL;
 
 	pid = fork();
 	if (pid < 0) {
@@ -98,9 +104,9 @@ static int stop_daemon(pid_t pid)
  * for the "before bootstrap" assertions on every run. */
 static void reset_pki_state_dir(void)
 {
-	char cmd[256];
+	char cmd[PATH_MAX + 16];
 
-	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", PKI_STATE_DIR);
+	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_pki_state_dir);
 	system(cmd);
 }
 
@@ -153,22 +159,31 @@ int main(void)
 	char ca_cert_pem[8192] = { 0 };
 	char leaf_cert_pem[8192] = { 0 };
 
+	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
+		return 1;
+	snprintf(g_pki_state_dir, sizeof(g_pki_state_dir), "%s/pki", g_data_dir);
+	snprintf(g_pki_image_root, sizeof(g_pki_image_root), "%s/images/pkitest/rootfs", g_data_dir);
+
 	reset_pki_state_dir();
 
-	if (test_image_fixture_build(PKI_IMAGE_ROOT, "build/daemon_child", "daemon_child") != 0) {
+	if (test_image_fixture_build(g_pki_image_root, "build/daemon_child", "daemon_child") != 0) {
 		fprintf(stderr, "FAIL: could not stage pkitest image\n");
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
 
 	daemon_pid = start_daemon();
-	if (daemon_pid < 0)
+	if (daemon_pid < 0) {
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
+	}
 
 	kx_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
 		waitpid(daemon_pid, NULL, 0);
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
 
@@ -400,9 +415,11 @@ int main(void)
 
 	{
 		struct stat st;
+		char key_path[PATH_MAX], crt_path[PATH_MAX];
 
-		if (stat(PKI_STATE_DIR "/certs/svc.internal.key", &st) == 0 ||
-		    stat(PKI_STATE_DIR "/certs/svc.internal.crt", &st) == 0) {
+		snprintf(key_path, sizeof(key_path), "%s/certs/svc.internal.key", g_pki_state_dir);
+		snprintf(crt_path, sizeof(crt_path), "%s/certs/svc.internal.crt", g_pki_state_dir);
+		if (stat(key_path, &st) == 0 || stat(crt_path, &st) == 0) {
 			fprintf(stderr, "FAIL: svc.internal's key/cert files still exist on disk after delete\n");
 			ok = 0;
 		}
@@ -618,6 +635,7 @@ int main(void)
 		ok = 0;
 	}
 
+	test_data_dir_cleanup(g_data_dir);
 	printf(ok ? "PKI RESULT: PASS\n" : "PKI RESULT: FAIL\n");
 	return ok ? 0 : 1;
 }

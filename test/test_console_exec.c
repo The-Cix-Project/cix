@@ -25,6 +25,7 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <limits.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
@@ -38,8 +39,10 @@ extern char **environ;
 
 #define TEST_PORT 7634
 #define PORT_ARG "--port=7634"
-#define IMAGE_ROOT "/var/lib/kanxeo/images/consoletest/rootfs"
-#define CONTAINER_DEFS_PATH "/var/lib/kanxeo/container_defs.json"
+
+static char g_data_dir[PATH_MAX];
+static char g_image_root[PATH_MAX];
+static char g_container_defs_path[PATH_MAX];
 
 /* RFC 6455's own worked example (section 1.3) -- already independently
  * confirmed correct against a real `openssl dgst -sha1 -binary |
@@ -63,11 +66,14 @@ static int g_failures;
 static pid_t start_daemon(void)
 {
 	pid_t pid;
-	char *dargv[3];
+	char *dargv[4];
+	static char data_dir_arg[PATH_MAX + 11];
 
+	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
 	dargv[0] = "build/kanxeod";
 	dargv[1] = PORT_ARG;
-	dargv[2] = NULL;
+	dargv[2] = data_dir_arg;
+	dargv[3] = NULL;
 
 	pid = fork();
 	if (pid < 0) {
@@ -94,8 +100,12 @@ static int stop_daemon(pid_t pid)
 
 static void reset_state(void)
 {
-	system("rm -rf '" CONTAINER_DEFS_PATH "'");
-	system("rm -rf '" IMAGE_ROOT "'");
+	char cmd[PATH_MAX + 16];
+
+	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_container_defs_path);
+	system(cmd);
+	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_image_root);
+	system(cmd);
 }
 
 static int wait_for_daemon(const struct kx_client *c, int max_attempts)
@@ -262,14 +272,23 @@ int main(void)
 	char *headers_end;
 	size_t got = 0;
 
+	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
+		return 1;
+	snprintf(g_image_root, sizeof(g_image_root), "%s/images/consoletest/rootfs", g_data_dir);
+	snprintf(g_container_defs_path, sizeof(g_container_defs_path), "%s/container_defs.json",
+	         g_data_dir);
+
 	reset_state();
 
-	if (test_image_fixture_build(IMAGE_ROOT, "build/daemon_child", "daemon_child") != 0) {
+	if (test_image_fixture_build(g_image_root, "build/daemon_child", "daemon_child") != 0) {
 		fprintf(stderr, "FAIL: could not stage daemon_child\n");
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
-	if (test_image_fixture_build(IMAGE_ROOT, "build/dual_console_child", "dual_console_child") != 0) {
+	if (test_image_fixture_build(g_image_root, "build/dual_console_child", "dual_console_child") !=
+	    0) {
 		fprintf(stderr, "FAIL: could not stage dual_console_child\n");
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
 
@@ -426,6 +445,7 @@ int main(void)
 
 	stop_daemon(daemon_pid);
 	reset_state();
+	test_data_dir_cleanup(g_data_dir);
 
 	if (g_failures == 0)
 		printf("CONSOLE EXEC TEST: PASS\n");

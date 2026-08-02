@@ -17,8 +17,10 @@
  */
 #include "httpclient.h"
 #include "json.h"
+#include "test_image_fixture.h"
 
 #include <fcntl.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,6 +32,8 @@ extern char **environ;
 
 #define TEST_PORT 7632
 #define PORT_ARG "--port=7632"
+
+static char g_data_dir[PATH_MAX];
 
 static int wait_for_daemon(const struct kx_client *c, int max_attempts)
 {
@@ -54,11 +58,14 @@ static const char *json_str_field(const struct json_value *obj, const char *key)
 static pid_t start_daemon(const char *extra_arg)
 {
 	pid_t pid;
-	char *dargv[4];
+	char *dargv[5];
+	static char data_dir_arg[PATH_MAX + 11];
 	int argc = 0;
 
+	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
 	dargv[argc++] = "build/kanxeod";
 	dargv[argc++] = PORT_ARG;
+	dargv[argc++] = data_dir_arg;
 	if (extra_arg != NULL)
 		dargv[argc++] = (char *)extra_arg;
 	dargv[argc] = NULL;
@@ -94,6 +101,9 @@ int main(void)
 	int ok = 1;
 	char not_squashfs_path[] = "/tmp/kanxeo_test_system_update_notsquashfs_XXXXXX";
 	int fd;
+
+	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
+		return 1;
 
 	kx_client_init(&client, "127.0.0.1", TEST_PORT);
 
@@ -278,6 +288,7 @@ int main(void)
 		ok = 0;
 	}
 
+	test_data_dir_cleanup(g_data_dir);
 	printf(ok ? "SYSTEM UPDATE RESULT: PASS\n" : "SYSTEM UPDATE RESULT: FAIL\n");
 	return ok ? 0 : 1;
 }

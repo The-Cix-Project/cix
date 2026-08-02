@@ -14,7 +14,9 @@
  */
 #include "httpclient.h"
 #include "json.h"
+#include "test_image_fixture.h"
 
+#include <limits.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -28,10 +30,37 @@ extern char **environ;
 
 #define TEST_PORT 7628
 #define PORT_ARG "--port=7628"
-#define PKG_STATE_DIR "/var/lib/kanxeo/pkg"
-#define BASE_ROOTFS "/var/lib/kanxeo/images/base/rootfs"
-#define ROUTER_ROOTFS "/var/lib/kanxeo/images/router/rootfs"
-#define PKGBUILD_ROOTFS "/var/lib/kanxeo/images/pkgbuild"
+
+static char g_data_dir[PATH_MAX];
+static char g_pkg_state_dir[PATH_MAX];
+static char g_base_rootfs[PATH_MAX];
+static char g_router_rootfs[PATH_MAX];
+static char g_pkgbuild_rootfs[PATH_MAX];
+static char g_images_base_dir[PATH_MAX];
+static char g_images_router_dir[PATH_MAX];
+
+/* BASE_ROOTFS/ROUTER_ROOTFS were compile-time macros before --data-dir=
+ * isolation (see CLAUDE.md's test-isolation Environment note); every
+ * call site below concatenated a literal suffix onto them at compile
+ * time, which a runtime g_base_rootfs/g_router_rootfs pair can't do --
+ * these two helpers are the one place that difference is absorbed, so
+ * every call site below just swaps the old BASE_ROOTFS "/x" style
+ * literal concatenation for base_path("/x")/router_path("/x"). */
+static const char *base_path(const char *suffix)
+{
+	static char buf[PATH_MAX];
+
+	snprintf(buf, sizeof(buf), "%s%s", g_base_rootfs, suffix);
+	return buf;
+}
+
+static const char *router_path(const char *suffix)
+{
+	static char buf[PATH_MAX];
+
+	snprintf(buf, sizeof(buf), "%s%s", g_router_rootfs, suffix);
+	return buf;
+}
 
 static int wait_for_daemon(const struct kx_client *c, int max_attempts)
 {
@@ -61,11 +90,14 @@ static int str_eq(const char *a, const char *b)
 static pid_t start_daemon(void)
 {
 	pid_t pid;
-	char *dargv[3];
+	char *dargv[4];
+	static char data_dir_arg[PATH_MAX + 11];
 
+	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
 	dargv[0] = "build/kanxeod";
 	dargv[1] = PORT_ARG;
-	dargv[2] = NULL;
+	dargv[2] = data_dir_arg;
+	dargv[3] = NULL;
 
 	pid = fork();
 	if (pid < 0) {
@@ -98,10 +130,16 @@ static int stop_daemon(pid_t pid)
  * clean runs) meaningful for this phase too. */
 static void reset_pkg_state(void)
 {
-	system("rm -rf '" PKG_STATE_DIR "'");
-	system("rm -rf '/var/lib/kanxeo/images/base'");
-	system("rm -rf '/var/lib/kanxeo/images/router'");
-	system("rm -rf '" PKGBUILD_ROOTFS "'");
+	char cmd[PATH_MAX + 16];
+
+	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_pkg_state_dir);
+	system(cmd);
+	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_images_base_dir);
+	system(cmd);
+	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_images_router_dir);
+	system(cmd);
+	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_pkgbuild_rootfs);
+	system(cmd);
 }
 
 static int run_cmd(const char *fmt, ...)
@@ -212,7 +250,7 @@ static int write_recipe(const char *name, const char *version, const char *tarba
 	char path[256];
 	FILE *f;
 
-	snprintf(path, sizeof(path), "%s/recipes/%s.recipe", PKG_STATE_DIR, name);
+	snprintf(path, sizeof(path), "%s/recipes/%s.recipe", g_pkg_state_dir, name);
 	f = fopen(path, "w");
 	if (f == NULL)
 		return -1;
@@ -243,7 +281,7 @@ static int write_multisrc_recipe(const char *name, const char *version, const ch
 	char path[256];
 	FILE *f;
 
-	snprintf(path, sizeof(path), "%s/recipes/%s.recipe", PKG_STATE_DIR, name);
+	snprintf(path, sizeof(path), "%s/recipes/%s.recipe", g_pkg_state_dir, name);
 	f = fopen(path, "w");
 	if (f == NULL)
 		return -1;
@@ -311,11 +349,21 @@ int main(void)
 	char bad_sha256[128];
 	char state[32];
 
+	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
+		return 1;
+	snprintf(g_pkg_state_dir, sizeof(g_pkg_state_dir), "%s/pkg", g_data_dir);
+	snprintf(g_base_rootfs, sizeof(g_base_rootfs), "%s/images/base/rootfs", g_data_dir);
+	snprintf(g_router_rootfs, sizeof(g_router_rootfs), "%s/images/router/rootfs", g_data_dir);
+	snprintf(g_pkgbuild_rootfs, sizeof(g_pkgbuild_rootfs), "%s/images/pkgbuild", g_data_dir);
+	snprintf(g_images_base_dir, sizeof(g_images_base_dir), "%s/images/base", g_data_dir);
+	snprintf(g_images_router_dir, sizeof(g_images_router_dir), "%s/images/router", g_data_dir);
+
 	reset_pkg_state();
-	run_cmd("mkdir -p '%s/recipes'", PKG_STATE_DIR);
+	run_cmd("mkdir -p '%s/recipes'", g_pkg_state_dir);
 
 	if (mkdtemp(scratch_dir) == NULL) {
 		fprintf(stderr, "FAIL: mkdtemp\n");
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
 	if (stage_fixture_tarball(scratch_dir, "greeter", "1.0", tarball_path, sizeof(tarball_path),
@@ -400,7 +448,7 @@ int main(void)
 		ok = 0;
 	} else {
 		char run_out[256] = { 0 };
-		FILE *fp = popen(BASE_ROOTFS "/usr/bin/greeter", "r");
+		FILE *fp = popen(base_path("/usr/bin/greeter"), "r");
 
 		if (fp == NULL || fgets(run_out, sizeof(run_out), fp) == NULL ||
 		    strstr(run_out, "hello from greeter") == NULL) {
@@ -451,7 +499,7 @@ int main(void)
 	{
 		struct stat st;
 
-		if (stat(BASE_ROOTFS "/usr/bin/greeter", &st) == 0) {
+		if (stat(base_path("/usr/bin/greeter"), &st) == 0) {
 			fprintf(stderr, "FAIL: greeter binary still exists in base image after delete\n");
 			ok = 0;
 		}
@@ -608,7 +656,7 @@ int main(void)
 
 				{
 					char run_out[256] = { 0 };
-					FILE *fp = popen(BASE_ROOTFS "/usr/bin/leaf", "r");
+					FILE *fp = popen(base_path("/usr/bin/leaf"), "r");
 
 					if (fp == NULL || fgets(run_out, sizeof(run_out), fp) == NULL ||
 					    strstr(run_out, "hello from leaf v2.0") == NULL) {
@@ -649,16 +697,16 @@ int main(void)
 		} else {
 			struct stat st;
 
-			if (stat(ROUTER_ROOTFS "/usr/bin/greeter", &st) != 0) {
+			if (stat(router_path("/usr/bin/greeter"), &st) != 0) {
 				fprintf(stderr, "FAIL: greeter@router binary missing from router image\n");
 				ok = 0;
 			}
 			/* Phase 12 part A: runtime seeding is no longer base-only --
 			 * a non-default image's first install must land the same C
 			 * runtime greeter itself needs to execve() at all. */
-			if (stat(ROUTER_ROOTFS "/lib64/ld-linux-x86-64.so.2", &st) != 0 ||
-			    stat(ROUTER_ROOTFS "/lib/x86_64-linux-gnu/libc.so.6", &st) != 0 ||
-			    stat(ROUTER_ROOTFS "/lib/x86_64-linux-gnu/libtinfo.so.6", &st) != 0) {
+			if (stat(router_path("/lib64/ld-linux-x86-64.so.2"), &st) != 0 ||
+			    stat(router_path("/lib/x86_64-linux-gnu/libc.so.6"), &st) != 0 ||
+			    stat(router_path("/lib/x86_64-linux-gnu/libtinfo.so.6"), &st) != 0) {
 				fprintf(stderr,
 				        "FAIL: router image missing its own C runtime after first install\n");
 				ok = 0;
@@ -669,18 +717,18 @@ int main(void)
 			 * 24 (bird crashing with no /dev/null) both hit, previously
 			 * fixed by hand on the already-built image, not reproducible
 			 * from a fresh pkg install until now. */
-			if (stat(ROUTER_ROOTFS "/dev/null", &st) != 0 ||
-			    stat(ROUTER_ROOTFS "/dev/zero", &st) != 0 ||
-			    stat(ROUTER_ROOTFS "/dev/full", &st) != 0 ||
-			    stat(ROUTER_ROOTFS "/dev/random", &st) != 0 ||
-			    stat(ROUTER_ROOTFS "/dev/urandom", &st) != 0 ||
-			    stat(ROUTER_ROOTFS "/run", &st) != 0) {
+			if (stat(router_path("/dev/null"), &st) != 0 ||
+			    stat(router_path("/dev/zero"), &st) != 0 ||
+			    stat(router_path("/dev/full"), &st) != 0 ||
+			    stat(router_path("/dev/random"), &st) != 0 ||
+			    stat(router_path("/dev/urandom"), &st) != 0 ||
+			    stat(router_path("/run"), &st) != 0) {
 				fprintf(stderr,
 				        "FAIL: router image missing its baseline dev nodes/run dir after "
 				        "first install\n");
 				ok = 0;
 			}
-			if (stat(BASE_ROOTFS "/usr/bin/greeter", &st) == 0) {
+			if (stat(base_path("/usr/bin/greeter"), &st) == 0) {
 				fprintf(stderr,
 				        "FAIL: greeter@router install leaked into the base image "
 				        "(greeter was deleted from base in step 8)\n");
@@ -731,7 +779,7 @@ int main(void)
 		} else {
 			struct stat st;
 
-			if (stat(BASE_ROOTFS "/usr/bin/greeter", &st) != 0) {
+			if (stat(base_path("/usr/bin/greeter"), &st) != 0) {
 				fprintf(stderr, "FAIL: greeter (base) binary missing after independent install\n");
 				ok = 0;
 			}
@@ -782,11 +830,11 @@ int main(void)
 		{
 			struct stat st;
 
-			if (stat(ROUTER_ROOTFS "/usr/bin/greeter", &st) == 0) {
+			if (stat(router_path("/usr/bin/greeter"), &st) == 0) {
 				fprintf(stderr, "FAIL: greeter binary still exists in router image after delete\n");
 				ok = 0;
 			}
-			if (stat(BASE_ROOTFS "/usr/bin/greeter", &st) != 0) {
+			if (stat(base_path("/usr/bin/greeter"), &st) != 0) {
 				fprintf(stderr,
 				        "FAIL: deleting greeter@router should not remove greeter@base\n");
 				ok = 0;
@@ -842,7 +890,7 @@ int main(void)
 					ok = 0;
 				} else {
 					char run_out[256] = { 0 };
-					FILE *fp = popen(BASE_ROOTFS "/usr/bin/top", "r");
+					FILE *fp = popen(base_path("/usr/bin/top"), "r");
 
 					if (fp == NULL || fgets(run_out, sizeof(run_out), fp) == NULL ||
 					    strstr(run_out, "hello from top v2.0") == NULL) {
@@ -916,11 +964,11 @@ int main(void)
 				char content[64] = { 0 };
 				FILE *cf;
 
-				if (stat(BASE_ROOTFS "/usr/bin/multisrc", &st) != 0) {
+				if (stat(base_path("/usr/bin/multisrc"), &st) != 0) {
 					fprintf(stderr, "FAIL: multisrc binary missing from base image\n");
 					ok = 0;
 				}
-				cf = fopen(BASE_ROOTFS "/usr/share/multisrc/extra1.txt", "r");
+				cf = fopen(base_path("/usr/share/multisrc/extra1.txt"), "r");
 				if (cf == NULL || fgets(content, sizeof(content), cf) == NULL ||
 				    strcmp(content, "extra-content-one\n") != 0) {
 					fprintf(stderr,
@@ -965,7 +1013,7 @@ int main(void)
 			{
 				struct stat st;
 
-				if (stat(BASE_ROOTFS "/usr/bin/multisrcbad", &st) == 0) {
+				if (stat(base_path("/usr/bin/multisrcbad"), &st) == 0) {
 					fprintf(stderr,
 					        "FAIL: multisrcbad binary present despite a checksum mismatch on "
 					        "one of its extra sources\n");
@@ -1074,7 +1122,7 @@ int main(void)
 		} else {
 			struct stat st;
 
-			if (stat(BASE_ROOTFS "/usr/bin/apirecipe", &st) != 0) {
+			if (stat(base_path("/usr/bin/apirecipe"), &st) != 0) {
 				fprintf(stderr, "FAIL: apirecipe binary missing from base image\n");
 				ok = 0;
 			}
@@ -1177,6 +1225,7 @@ skip_recipe_api:
 		ok = 0;
 	}
 
+	test_data_dir_cleanup(g_data_dir);
 	printf(ok ? "PKG RESULT: PASS\n" : "PKG RESULT: FAIL\n");
 	return ok ? 0 : 1;
 }

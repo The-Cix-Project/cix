@@ -13,6 +13,7 @@
 #include "test_image_fixture.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -25,9 +26,11 @@ extern char **environ;
 
 #define TEST_PORT 7626
 #define PORT_ARG "--port=7626"
-#define DNSMASQ_IMAGE_ROOT "/var/lib/kanxeo/images/dnstest/rootfs"
 #define TEST_NETWORK_NAME "dnstestnet"
 #define TEST_NETWORK_SUBNET "172.35.0.0"
+
+static char g_data_dir[PATH_MAX];
+static char g_dnsmasq_image_root[PATH_MAX];
 
 /*
  * dnsmasq (a real, unmodified Debian package binary -- not hand-rolled,
@@ -238,7 +241,8 @@ static int run_dig(const char *server_ip, const char *qname, char *out, size_t o
 int main(void)
 {
 	pid_t daemon_pid;
-	char *dargv[3];
+	char *dargv[4];
+	char data_dir_arg[PATH_MAX + 11];
 	struct kx_client client;
 	int ok = 1;
 	struct kx_response r;
@@ -246,34 +250,46 @@ int main(void)
 	char dig_out[256];
 	size_t i;
 
-	if (test_image_fixture_build(DNSMASQ_IMAGE_ROOT, "/usr/sbin/dnsmasq", "dnsmasq") != 0) {
+	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
+		return 1;
+	snprintf(g_dnsmasq_image_root, sizeof(g_dnsmasq_image_root), "%s/images/dnstest/rootfs",
+	         g_data_dir);
+
+	if (test_image_fixture_build(g_dnsmasq_image_root, "/usr/sbin/dnsmasq", "dnsmasq") != 0) {
 		fprintf(stderr, "FAIL: could not stage dnsmasq -- is it installed? (apt-get install "
 		                "dnsmasq)\n");
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
 	for (i = 0; i < DNSMASQ_LIBS_COUNT; i++) {
-		if (test_image_fixture_add_lib(DNSMASQ_IMAGE_ROOT, DNSMASQ_LIBS[i]) != 0) {
+		if (test_image_fixture_add_lib(g_dnsmasq_image_root, DNSMASQ_LIBS[i]) != 0) {
 			fprintf(stderr, "FAIL: could not stage %s\n", DNSMASQ_LIBS[i]);
+			test_data_dir_cleanup(g_data_dir);
 			return 1;
 		}
 	}
-	if (ensure_dev_node(DNSMASQ_IMAGE_ROOT, "/dev/urandom", makedev(1, 9)) != 0 ||
-	    ensure_dev_node(DNSMASQ_IMAGE_ROOT, "/dev/null", makedev(1, 3)) != 0) {
+	if (ensure_dev_node(g_dnsmasq_image_root, "/dev/urandom", makedev(1, 9)) != 0 ||
+	    ensure_dev_node(g_dnsmasq_image_root, "/dev/null", makedev(1, 3)) != 0) {
 		fprintf(stderr, "FAIL: could not create /dev nodes in dnsmasq image\n");
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
-	if (write_minimal_passwd_group(DNSMASQ_IMAGE_ROOT) != 0) {
+	if (write_minimal_passwd_group(g_dnsmasq_image_root) != 0) {
 		fprintf(stderr, "FAIL: could not write /etc/passwd,group in dnsmasq image\n");
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
 
+	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
 	dargv[0] = "build/kanxeod";
 	dargv[1] = PORT_ARG;
-	dargv[2] = NULL;
+	dargv[2] = data_dir_arg;
+	dargv[3] = NULL;
 
 	daemon_pid = fork();
 	if (daemon_pid < 0) {
 		perror("fork");
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
 	if (daemon_pid == 0) {
@@ -287,6 +303,7 @@ int main(void)
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
 		waitpid(daemon_pid, NULL, 0);
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
 
@@ -645,6 +662,7 @@ int main(void)
 		}
 	}
 
+	test_data_dir_cleanup(g_data_dir);
 	printf(ok ? "DNS RESULT: PASS\n" : "DNS RESULT: FAIL\n");
 	return ok ? 0 : 1;
 }

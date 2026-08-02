@@ -1,6 +1,8 @@
 #ifndef TEST_IMAGE_FIXTURE_H
 #define TEST_IMAGE_FIXTURE_H
 
+#include <stddef.h>
+
 /*
  * Stages a minimal test image at image_root: child_binary_path (built
  * on the host, e.g. "build/daemon_child") copied to
@@ -77,5 +79,31 @@ int test_image_fixture_copy_dir_files(const char *src_dir, const char *dst_dir);
  * 0, or -1 (with perror on the failing path) otherwise.
  */
 int test_image_fixture_stage_toolchain(const char *image_root);
+
+/*
+ * Creates a fresh, unique directory under /tmp (via mkdtemp(), same
+ * "/tmp/kanxeo_test_<name>_XXXXXX" convention test_pki.c/
+ * test_installer.c/test_boot_ab.c already each hand-roll on their own)
+ * and writes it into out_path. Meant to be passed straight to a test's
+ * own kanxeod subprocess as --data-dir=<out_path>, so that subprocess
+ * never touches the real /var/lib/kanxeo a live daemon on this same
+ * host might be using -- every daemon-linked test's own reset_state()
+ * wipes container/network/DNS/PKI state and image content
+ * unconditionally, and this project's test suite wiping a real
+ * deployment's state has already happened twice for lack of exactly
+ * this isolation. One shared implementation rather than 16 near-
+ * duplicate mkdtemp() call sites. Returns 0, or -1 (with perror on the
+ * failing path) otherwise.
+ */
+int test_data_dir_create(char *out_path, size_t out_size);
+
+/*
+ * Recursively removes a directory created by test_data_dir_create()
+ * above (shells out to `rm -rf`, same precedent test_pki.c's own
+ * cleanup already uses -- this is disposable test scratch space, not
+ * project-managed state, so the "never shell out" rule governing the
+ * daemon's own C code does not apply here).
+ */
+void test_data_dir_cleanup(const char *path);
 
 #endif /* TEST_IMAGE_FIXTURE_H */

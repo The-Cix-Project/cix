@@ -12,6 +12,7 @@
 #include "json.h"
 #include "test_image_fixture.h"
 
+#include <limits.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -25,8 +26,10 @@ extern char **environ;
 
 #define TEST_PORT 7629
 #define PORT_ARG "--port=7629"
-#define PKG_STATE_DIR "/var/lib/kanxeo/pkg"
-#define IMAGES_DIR "/var/lib/kanxeo/images"
+
+static char g_data_dir[PATH_MAX];
+static char g_pkg_state_dir[PATH_MAX];
+static char g_images_dir[PATH_MAX];
 
 static int wait_for_daemon(const struct kx_client *c, int max_attempts)
 {
@@ -56,11 +59,14 @@ static int str_eq(const char *a, const char *b)
 static pid_t start_daemon(void)
 {
 	pid_t pid;
-	char *dargv[3];
+	char *dargv[4];
+	static char data_dir_arg[PATH_MAX + 11];
 
+	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
 	dargv[0] = "build/kanxeod";
 	dargv[1] = PORT_ARG;
-	dargv[2] = NULL;
+	dargv[2] = data_dir_arg;
+	dargv[3] = NULL;
 
 	pid = fork();
 	if (pid < 0) {
@@ -87,10 +93,16 @@ static int stop_daemon(pid_t pid)
 
 static void reset_state(void)
 {
-	system("rm -rf '" PKG_STATE_DIR "'");
-	system("rm -rf '" IMAGES_DIR "/imgtest_empty'");
-	system("rm -rf '" IMAGES_DIR "/imgtest_ctr'");
-	system("rm -rf '" IMAGES_DIR "/imgtest_pkg'");
+	char cmd[PATH_MAX + 16];
+
+	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_pkg_state_dir);
+	system(cmd);
+	snprintf(cmd, sizeof(cmd), "rm -rf '%s/imgtest_empty'", g_images_dir);
+	system(cmd);
+	snprintf(cmd, sizeof(cmd), "rm -rf '%s/imgtest_ctr'", g_images_dir);
+	system(cmd);
+	snprintf(cmd, sizeof(cmd), "rm -rf '%s/imgtest_pkg'", g_images_dir);
+	system(cmd);
 }
 
 static int run_cmd(const char *fmt, ...)
@@ -138,7 +150,7 @@ static int write_recipe(const char *name, const char *tarball_path)
 	char path[256];
 	FILE *f;
 
-	snprintf(path, sizeof(path), "%s/recipes/%s.recipe", PKG_STATE_DIR, name);
+	snprintf(path, sizeof(path), "%s/recipes/%s.recipe", g_pkg_state_dir, name);
 	f = fopen(path, "w");
 	if (f == NULL)
 		return -1;
@@ -195,23 +207,32 @@ int main(void)
 	char scratch_dir[] = "/tmp/kanxeo_test_images_XXXXXX";
 	struct stat st;
 
+	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
+		return 1;
+	snprintf(g_pkg_state_dir, sizeof(g_pkg_state_dir), "%s/pkg", g_data_dir);
+	snprintf(g_images_dir, sizeof(g_images_dir), "%s/images", g_data_dir);
+
 	reset_state();
-	run_cmd("mkdir -p '" PKG_STATE_DIR "/recipes'");
+	run_cmd("mkdir -p '%s/recipes'", g_pkg_state_dir);
 
 	if (mkdtemp(scratch_dir) == NULL) {
 		fprintf(stderr, "FAIL: mkdtemp\n");
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
 
 	daemon_pid = start_daemon();
-	if (daemon_pid < 0)
+	if (daemon_pid < 0) {
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
+	}
 
 	kx_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
 		waitpid(daemon_pid, NULL, 0);
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
 
@@ -267,14 +288,35 @@ int main(void)
 	kx_response_free(&r);
 
 	/* 3. runtime seeded immediately -- ADR-0023 */
-	if (stat(IMAGES_DIR "/imgtest_empty/rootfs/lib64/ld-linux-x86-64.so.2", &st) != 0 ||
-	    stat(IMAGES_DIR "/imgtest_empty/rootfs/lib/x86_64-linux-gnu/libc.so.6", &st) != 0 ||
-	    stat(IMAGES_DIR "/imgtest_empty/rootfs/lib/x86_64-linux-gnu/libtinfo.so.6", &st) != 0) {
-		fprintf(stderr, "FAIL: imgtest_empty missing its own C runtime right after create\n");
-		ok = 0;
+	{
+		char p1[PATH_MAX], p2[PATH_MAX], p3[PATH_MAX];
+
+		snprintf(p1, sizeof(p1), "%s/imgtest_empty/rootfs/lib64/ld-linux-x86-64.so.2",
+		         g_images_dir);
+		snprintf(p2, sizeof(p2), "%s/imgtest_empty/rootfs/lib/x86_64-linux-gnu/libc.so.6",
+		         g_images_dir);
+		snprintf(p3, sizeof(p3), "%s/imgtest_empty/rootfs/lib/x86_64-linux-gnu/libtinfo.so.6",
+		         g_images_dir);
+		if (stat(p1, &st) != 0 || stat(p2, &st) != 0 || stat(p3, &st) != 0) {
+			fprintf(stderr, "FAIL: imgtest_empty missing its own C runtime right after create\n");
+			ok = 0;
+		}
 	}
 
-	/* 4. "base" is protected */
+	/* 4. "base" is protected -- under --data-dir= isolation this daemon
+	 * has never seen a "base" image before (unlike a real deployment,
+	 * where install/pkg-bootstrap always creates one long before any
+	 * test runs), so it has to be created here first for the protected-
+	 * delete check below to actually exercise IMAGE_ERR_PROTECTED rather
+	 * than IMAGE_ERR_NOT_FOUND. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/images", "{\"name\":\"base\"}", &r) != 0 ||
+	    (r.status != 201 && r.status != 409)) {
+		fprintf(stderr, "FAIL: POST base, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "DELETE", "/v1/images/base", NULL, &r) != 0 ||
 	    r.status != 400) {
@@ -310,10 +352,14 @@ int main(void)
 	}
 	kx_response_free(&r);
 
-	if (test_image_fixture_build(IMAGES_DIR "/imgtest_ctr/rootfs", "build/daemon_child",
-	                              "daemon_child") != 0) {
-		fprintf(stderr, "FAIL: could not stage daemon_child into imgtest_ctr\n");
-		ok = 0;
+	{
+		char ctr_rootfs[PATH_MAX];
+
+		snprintf(ctr_rootfs, sizeof(ctr_rootfs), "%s/imgtest_ctr/rootfs", g_images_dir);
+		if (test_image_fixture_build(ctr_rootfs, "build/daemon_child", "daemon_child") != 0) {
+			fprintf(stderr, "FAIL: could not stage daemon_child into imgtest_ctr\n");
+			ok = 0;
+		}
 	}
 
 	memset(&r, 0, sizeof(r));
@@ -352,9 +398,14 @@ int main(void)
 		ok = 0;
 	}
 	kx_response_free(&r);
-	if (stat(IMAGES_DIR "/imgtest_ctr", &st) == 0) {
-		fprintf(stderr, "FAIL: imgtest_ctr directory still exists after delete\n");
-		ok = 0;
+	{
+		char ctr_dir[PATH_MAX];
+
+		snprintf(ctr_dir, sizeof(ctr_dir), "%s/imgtest_ctr", g_images_dir);
+		if (stat(ctr_dir, &st) == 0) {
+			fprintf(stderr, "FAIL: imgtest_ctr directory still exists after delete\n");
+			ok = 0;
+		}
 	}
 
 	/* 7. delete refused while pkg.c still tracks a package against it --
@@ -421,6 +472,7 @@ int main(void)
 		ok = 0;
 	}
 
+	test_data_dir_cleanup(g_data_dir);
 	printf(ok ? "IMAGES RESULT: PASS\n" : "IMAGES RESULT: FAIL\n");
 	return ok ? 0 : 1;
 }

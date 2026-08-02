@@ -10,6 +10,7 @@
 #include "test_image_fixture.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,8 +22,10 @@
 extern char **environ;
 
 #define TEST_PORT 7622
-#define IMAGE_ROOT "/var/lib/kanxeo/images/test/rootfs"
 #define PORT_ARG "--port=7622"
+
+static char g_data_dir[PATH_MAX];
+static char g_image_root[PATH_MAX];
 
 static int wait_for_daemon(int max_attempts)
 {
@@ -106,23 +109,35 @@ static long parse_pid(const char *out)
 int main(void)
 {
 	pid_t daemon_pid;
-	char *dargv[3];
+	char *dargv[4];
+	char data_dir_arg[PATH_MAX + 11];
 	char out[4096];
 	int rc;
 	int ok = 1;
 
-	if (test_image_fixture_build(IMAGE_ROOT, "build/daemon_child", "daemon_child") != 0)
+	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
-	if (test_image_fixture_build(IMAGE_ROOT, "build/net_child", "net_child") != 0)
-		return 1;
+	snprintf(g_image_root, sizeof(g_image_root), "%s/images/test/rootfs", g_data_dir);
 
+	if (test_image_fixture_build(g_image_root, "build/daemon_child", "daemon_child") != 0) {
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
+	if (test_image_fixture_build(g_image_root, "build/net_child", "net_child") != 0) {
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
+
+	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
 	dargv[0] = "build/kanxeod";
 	dargv[1] = PORT_ARG;
-	dargv[2] = NULL;
+	dargv[2] = data_dir_arg;
+	dargv[3] = NULL;
 
 	daemon_pid = fork();
 	if (daemon_pid < 0) {
 		perror("fork");
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
 	if (daemon_pid == 0) {
@@ -135,6 +150,7 @@ int main(void)
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
 		waitpid(daemon_pid, NULL, 0);
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
 
@@ -375,6 +391,7 @@ int main(void)
 
 	kill(daemon_pid, SIGTERM);
 	waitpid(daemon_pid, NULL, 0);
+	test_data_dir_cleanup(g_data_dir);
 
 	printf(ok ? "CLI RESULT: PASS\n" : "CLI RESULT: FAIL\n");
 	return ok ? 0 : 1;

@@ -29,6 +29,7 @@
 #include "rtnetlink.h"
 #include "test_image_fixture.h"
 
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -39,9 +40,11 @@ extern char **environ;
 
 #define TEST_PORT 7633
 #define PORT_ARG "--port=7633"
-#define IMAGE_ROOT "/var/lib/kanxeo/images/netifacetest/rootfs"
 #define VETH_A "kanxeo-nif-a"
 #define VETH_B "kanxeo-nif-b"
+
+static char g_data_dir[PATH_MAX];
+static char g_image_root[PATH_MAX];
 
 static int wait_for_daemon(const struct kx_client *c, int max_attempts)
 {
@@ -61,11 +64,14 @@ static int wait_for_daemon(const struct kx_client *c, int max_attempts)
 static pid_t start_daemon(void)
 {
 	pid_t pid;
-	char *dargv[3];
+	char *dargv[4];
+	static char data_dir_arg[PATH_MAX + 11];
 
+	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
 	dargv[0] = "build/kanxeod";
 	dargv[1] = PORT_ARG;
-	dargv[2] = NULL;
+	dargv[2] = data_dir_arg;
+	dargv[3] = NULL;
 
 	pid = fork();
 	if (pid < 0) {
@@ -98,8 +104,14 @@ int main(void)
 	struct kx_response r;
 	int rtfd;
 
-	if (test_image_fixture_build(IMAGE_ROOT, "build/daemon_child", "daemon_child") != 0)
+	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
+	snprintf(g_image_root, sizeof(g_image_root), "%s/images/netifacetest/rootfs", g_data_dir);
+
+	if (test_image_fixture_build(g_image_root, "build/daemon_child", "daemon_child") != 0) {
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
 
 	/* A real, kernel-backed veth pair -- visible in /sys/class/net,
 	 * genuinely not a made-up name, but still a software netdev
@@ -240,6 +252,7 @@ int main(void)
 		rtnl_close(rtfd);
 	}
 
+	test_data_dir_cleanup(g_data_dir);
 	printf(ok ? "NETWORK INTERFACES RESULT: PASS\n" : "NETWORK INTERFACES RESULT: FAIL\n");
 	return ok ? 0 : 1;
 }

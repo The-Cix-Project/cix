@@ -15,6 +15,7 @@
 #include "json.h"
 #include "test_image_fixture.h"
 
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,10 +28,13 @@ extern char **environ;
 
 #define TEST_PORT 7633
 #define PORT_ARG "--port=7633"
-#define IMAGE_ROOT "/var/lib/kanxeo/images/backuptest/rootfs"
-#define CONTAINER_DEFS_PATH "/var/lib/kanxeo/container_defs.json"
-#define NETWORKS_PATH "/var/lib/kanxeo/networks.json"
-#define DNS_RECORDS_PATH "/var/lib/kanxeo/dns_records.json"
+
+static char g_data_dir[PATH_MAX];
+static char g_image_root[PATH_MAX];
+static char g_container_defs_path[PATH_MAX];
+static char g_networks_path[PATH_MAX];
+static char g_dns_records_path[PATH_MAX];
+static char g_containers_dir[PATH_MAX];
 
 static int wait_for_daemon(const struct kx_client *c, int max_attempts)
 {
@@ -60,11 +64,14 @@ static int str_eq(const char *a, const char *b)
 static pid_t start_daemon(void)
 {
 	pid_t pid;
-	char *dargv[3];
+	char *dargv[4];
+	static char data_dir_arg[PATH_MAX + 11];
 
+	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
 	dargv[0] = "build/kanxeod";
 	dargv[1] = PORT_ARG;
-	dargv[2] = NULL;
+	dargv[2] = data_dir_arg;
+	dargv[3] = NULL;
 
 	pid = fork();
 	if (pid < 0) {
@@ -91,11 +98,18 @@ static int stop_daemon(pid_t pid)
 
 static void reset_state(void)
 {
-	system("rm -rf '" CONTAINER_DEFS_PATH "'");
-	system("rm -rf '" NETWORKS_PATH "'");
-	system("rm -rf '" DNS_RECORDS_PATH "'");
-	system("rm -rf '/var/lib/kanxeo/containers/keeper'");
-	system("rm -rf '/var/lib/kanxeo/containers/restored'");
+	char cmd[PATH_MAX + 16];
+
+	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_container_defs_path);
+	system(cmd);
+	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_networks_path);
+	system(cmd);
+	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_dns_records_path);
+	system(cmd);
+	snprintf(cmd, sizeof(cmd), "rm -rf '%s/keeper'", g_containers_dir);
+	system(cmd);
+	snprintf(cmd, sizeof(cmd), "rm -rf '%s/restored'", g_containers_dir);
+	system(cmd);
 }
 
 static int container_exists(const struct kx_client *c, const char *name)
@@ -136,19 +150,33 @@ int main(void)
 	char *pre_restore_defs = NULL;
 	size_t pre_restore_defs_len = 0;
 
-	reset_state();
-	if (test_image_fixture_build(IMAGE_ROOT, "build/daemon_child", "daemon_child") != 0)
+	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
+	snprintf(g_image_root, sizeof(g_image_root), "%s/images/backuptest/rootfs", g_data_dir);
+	snprintf(g_container_defs_path, sizeof(g_container_defs_path), "%s/container_defs.json",
+	         g_data_dir);
+	snprintf(g_networks_path, sizeof(g_networks_path), "%s/networks.json", g_data_dir);
+	snprintf(g_dns_records_path, sizeof(g_dns_records_path), "%s/dns_records.json", g_data_dir);
+	snprintf(g_containers_dir, sizeof(g_containers_dir), "%s/containers", g_data_dir);
+
+	reset_state();
+	if (test_image_fixture_build(g_image_root, "build/daemon_child", "daemon_child") != 0) {
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
 
 	daemon_pid = start_daemon();
-	if (daemon_pid < 0)
+	if (daemon_pid < 0) {
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
+	}
 
 	kx_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
 		waitpid(daemon_pid, NULL, 0);
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
 
@@ -261,7 +289,7 @@ int main(void)
 	/* Remember the real on-disk container_defs.json content before
 	 * restore ever runs, to prove a bad restore leaves it untouched. */
 	{
-		FILE *f = fopen(CONTAINER_DEFS_PATH, "rb");
+		FILE *f = fopen(g_container_defs_path, "rb");
 
 		if (f != NULL) {
 			fseek(f, 0, SEEK_END);
@@ -288,7 +316,7 @@ int main(void)
 	}
 	kx_response_free(&r);
 	{
-		FILE *f = fopen(CONTAINER_DEFS_PATH, "rb");
+		FILE *f = fopen(g_container_defs_path, "rb");
 		char after[65536] = { 0 };
 		size_t n = 0;
 
@@ -391,6 +419,7 @@ int main(void)
 	free(pre_restore_defs);
 	(void)saved_bundle_len;
 
+	test_data_dir_cleanup(g_data_dir);
 	printf(ok ? "SYSTEM BACKUP RESULT: PASS\n" : "SYSTEM BACKUP RESULT: FAIL\n");
 	return ok ? 0 : 1;
 }

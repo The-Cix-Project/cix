@@ -11,6 +11,7 @@
 #include "test_image_fixture.h"
 
 #include <fcntl.h>
+#include <limits.h>
 #include <sched.h>
 #include <signal.h>
 #include <stdio.h>
@@ -24,9 +25,11 @@ extern char **environ;
 
 #define TEST_PORT 7631
 #define PORT_ARG "--port=7631"
-#define IMAGE_ROOT "/var/lib/kanxeo/images/filestest/rootfs"
-#define CONTAINER_DEFS_PATH "/var/lib/kanxeo/container_defs.json"
-#define CONTAINERS_DIR "/var/lib/kanxeo/containers"
+
+static char g_data_dir[PATH_MAX];
+static char g_image_root[PATH_MAX];
+static char g_container_defs_path[PATH_MAX];
+static char g_containers_dir[PATH_MAX];
 
 static const char *json_str_field(const struct json_value *obj, const char *key)
 {
@@ -56,11 +59,14 @@ static int wait_for_daemon(const struct kx_client *c, int max_attempts)
 static pid_t start_daemon(void)
 {
 	pid_t pid;
-	char *dargv[3];
+	char *dargv[4];
+	static char data_dir_arg[PATH_MAX + 11];
 
+	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
 	dargv[0] = "build/kanxeod";
 	dargv[1] = PORT_ARG;
-	dargv[2] = NULL;
+	dargv[2] = data_dir_arg;
+	dargv[3] = NULL;
 
 	pid = fork();
 	if (pid < 0) {
@@ -87,7 +93,10 @@ static int stop_daemon(pid_t pid)
 
 static void reset_state(void)
 {
-	system("rm -rf '" CONTAINER_DEFS_PATH "'");
+	char cmd[PATH_MAX * 2];
+
+	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_container_defs_path);
+	system(cmd);
 	/*
 	 * registry_remove() never deletes a container's own upper/work/
 	 * merged directories on disk (a real, pre-existing, separate gap --
@@ -98,9 +107,12 @@ static void reset_state(void)
 	 * newly created, never on an existing one), producing a false
 	 * failure that has nothing to do with today's actual behavior.
 	 */
-	system("rm -rf '" CONTAINERS_DIR "/filetest' '" CONTAINERS_DIR "/sysctltest' '" CONTAINERS_DIR
-	       "/badpath1' '" CONTAINERS_DIR "/badpath2' '" CONTAINERS_DIR "/badsysctl1' '"
-	       CONTAINERS_DIR "/badsysctl2' '" CONTAINERS_DIR "/persisttest'");
+	snprintf(cmd, sizeof(cmd),
+	         "rm -rf '%s/filetest' '%s/sysctltest' '%s/badpath1' '%s/badpath2' "
+	         "'%s/badsysctl1' '%s/badsysctl2' '%s/persisttest'",
+	         g_containers_dir, g_containers_dir, g_containers_dir, g_containers_dir,
+	         g_containers_dir, g_containers_dir, g_containers_dir);
+	system(cmd);
 }
 
 static long fetch_pid(const struct kx_client *c, const char *name)
@@ -202,19 +214,31 @@ int main(void)
 	int ok = 1;
 	struct kx_response r;
 
-	reset_state();
-	if (test_image_fixture_build(IMAGE_ROOT, "build/daemon_child", "daemon_child") != 0)
+	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
+	snprintf(g_image_root, sizeof(g_image_root), "%s/images/filestest/rootfs", g_data_dir);
+	snprintf(g_container_defs_path, sizeof(g_container_defs_path), "%s/container_defs.json",
+	         g_data_dir);
+	snprintf(g_containers_dir, sizeof(g_containers_dir), "%s/containers", g_data_dir);
+
+	reset_state();
+	if (test_image_fixture_build(g_image_root, "build/daemon_child", "daemon_child") != 0) {
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
 
 	daemon_pid = start_daemon();
-	if (daemon_pid < 0)
+	if (daemon_pid < 0) {
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
+	}
 
 	kx_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
 		waitpid(daemon_pid, NULL, 0);
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
 
@@ -242,9 +266,14 @@ int main(void)
 	kx_response_free(&r);
 
 	{
-		FILE *f = fopen(CONTAINERS_DIR "/filetest/upper/etc/bird.conf", "r");
+		char bird_conf_path[PATH_MAX];
+		FILE *f;
 		char buf[128];
 		struct stat st;
+
+		snprintf(bird_conf_path, sizeof(bird_conf_path), "%s/filetest/upper/etc/bird.conf",
+		         g_containers_dir);
+		f = fopen(bird_conf_path, "r");
 
 		if (f == NULL) {
 			fprintf(stderr, "FAIL: staged file not found on disk\n");
@@ -257,8 +286,7 @@ int main(void)
 			}
 			fclose(f);
 		}
-		if (stat(CONTAINERS_DIR "/filetest/upper/etc/bird.conf", &st) != 0 ||
-		    (st.st_mode & 0777) != 0640) {
+		if (stat(bird_conf_path, &st) != 0 || (st.st_mode & 0777) != 0640) {
 			fprintf(stderr, "FAIL: staged file mode wrong\n");
 			ok = 0;
 		}
@@ -374,22 +402,35 @@ int main(void)
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM (first instance)\n");
 		ok = 0;
 	}
-	system("rm -rf '" CONTAINERS_DIR "/persisttest'");
+	{
+		char cmd[PATH_MAX + 16];
+
+		snprintf(cmd, sizeof(cmd), "rm -rf '%s/persisttest'", g_containers_dir);
+		system(cmd);
+	}
 
 	daemon_pid = start_daemon();
-	if (daemon_pid < 0)
+	if (daemon_pid < 0) {
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
+	}
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: restarted daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
 		waitpid(daemon_pid, NULL, 0);
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
 	usleep(500000);
 
 	{
-		FILE *f = fopen(CONTAINERS_DIR "/persisttest/upper/etc/pbr.conf", "r");
+		char pbr_conf_path[PATH_MAX];
+		FILE *f;
 		char buf[128];
+
+		snprintf(pbr_conf_path, sizeof(pbr_conf_path), "%s/persisttest/upper/etc/pbr.conf",
+		         g_containers_dir);
+		f = fopen(pbr_conf_path, "r");
 
 		if (f == NULL) {
 			fprintf(stderr, "FAIL: persisttest's file was not re-staged after a daemon "
@@ -413,6 +454,7 @@ int main(void)
 		ok = 0;
 	}
 
+	test_data_dir_cleanup(g_data_dir);
 	printf(ok ? "CONTAINER FILES RESULT: PASS\n" : "CONTAINER FILES RESULT: FAIL\n");
 	return ok ? 0 : 1;
 }

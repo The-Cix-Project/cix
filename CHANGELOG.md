@@ -2,6 +2,23 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 30 part 4: `kanxeod --data-dir=` for test/production state isolation
+
+Raised by a real incident, twice in the same session: running this project's own test suite against this sandbox's own live daemon (a real 5-container VRRP/OSPF demo topology) silently wiped its persisted container/network/DNS/PKI state and, in the worse instance, the `router` image's entire installed-package rootfs -- because every daemon-linked test's own `reset_state()` and every test daemon it spawns shared the exact same hardcoded `/var/lib/kanxeo` default path with any real daemon on the same host. See ADR-0044.
+
+#### Added
+- `kanxeod --data-dir=PATH` (default unchanged: `/var/lib/kanxeo`) -- `daemon/src/main.c`'s compile-time `BASE_DIR`/derived-macro block became a runtime `g_base_dir[PATH_MAX]` plus derived `static char [PATH_MAX]` path buffers, computed once by `init_base_dir_paths()` right after argv parsing and before any subsystem touches them. Two new derived paths (`PKG_RECIPES_DIR`, `PKI_CERTS_DIR`) replace call sites that previously relied on compile-time string-literal concatenation, which a runtime buffer can't do.
+- `test_data_dir_create()`/`test_data_dir_cleanup()` (`test/test_image_fixture.c`/`.h`) -- one shared `mkdtemp("/tmp/kanxeo_test_data_XXXXXX")` helper, matching the naming convention `test_pki.c`/`test_installer.c`/`test_boot_ab.c` already each hand-rolled independently.
+
+#### Changed
+- All 16 daemon-linked tests (`test_daemon.c`, `test_cli.c`, `test_web.c`, `test_daemon_net.c`, `test_networks.c`, `test_network_interfaces.c`, `test_images.c`, `test_container_restart.c`, `test_container_files.c`, `test_dns.c`, `test_pki.c`, `test_pkg.c`, `test_daemon_devices.c`, `test_system_update.c`, `test_system_backup.c`, `test_console_exec.c`) now spawn their own `kanxeod` with `--data-dir=` pointed at a fresh, isolated directory, and derive every direct-filesystem path they touch (fixture image roots, state-file reads for persistence checks, `reset_state()`'s own cleanup targets) from that same directory instead of a hardcoded `/var/lib/kanxeo/...` literal.
+- `Makefile`: `test_web`, `test_pkg`, `test_system_update` now link `test/test_image_fixture.c` (needed for the new shared helper; previously omitted since none of the three used any other fixture function).
+
+#### Fixed
+- `test_images.c`'s "`base` is protected from deletion" check had never actually created a `base` image itself -- it silently depended on one already existing from whatever prior state happened to be on disk, true by accident under the old shared-path setup, never true under a genuinely fresh isolated directory. Surfaced by this same isolation work, not introduced by it; fixed by creating `base` via the real API first.
+
+Verified: full clean rebuild, zero warnings; all 16 daemon-linked tests plus all 7 runtime-library tests pass under isolation; the live daemon's own real state (5 containers, `lan1`/`wan1` networks) confirmed byte-for-byte unaffected by the full test run via direct `curl` before and after.
+
 ### Phase 30 (web dashboard follow-up): fix `[hidden]` losing to author `display` rules on `.view`/`form`/`.modal-overlay`
 
 A real, significant bug present since Phase 29's very first redesign, caught by the user's own real browser (three screenshots) after every structural check this sandbox could run (tag balance, id cross-referencing, JS syntax) had missed it, because none of them render CSS.

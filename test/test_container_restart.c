@@ -20,6 +20,7 @@
 #include "json.h"
 #include "test_image_fixture.h"
 
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,14 +33,16 @@ extern char **environ;
 
 #define TEST_PORT 7630
 #define PORT_ARG "--port=7630"
-#define IMAGE_ROOT "/var/lib/kanxeo/images/restarttest/rootfs"
-#define CONTAINER_DEFS_PATH "/var/lib/kanxeo/container_defs.json"
 #define READY_NETWORK_NAME "readytest"
 #define READY_NETWORK_SUBNET "172.60.0.0"
 #define READY_TCP_PORT 9100
 #define NEVER_READY_TCP_PORT 9999
 #define STR_(x) #x
 #define STR(x) STR_(x)
+
+static char g_data_dir[PATH_MAX];
+static char g_image_root[PATH_MAX];
+static char g_container_defs_path[PATH_MAX];
 
 static int wait_for_daemon(const struct kx_client *c, int max_attempts)
 {
@@ -74,11 +77,14 @@ static long json_num_field(const struct json_value *obj, const char *key)
 static pid_t start_daemon(void)
 {
 	pid_t pid;
-	char *dargv[3];
+	char *dargv[4];
+	static char data_dir_arg[PATH_MAX + 11];
 
+	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
 	dargv[0] = "build/kanxeod";
 	dargv[1] = PORT_ARG;
-	dargv[2] = NULL;
+	dargv[2] = data_dir_arg;
+	dargv[3] = NULL;
 
 	pid = fork();
 	if (pid < 0) {
@@ -105,7 +111,10 @@ static int stop_daemon(pid_t pid)
 
 static void reset_state(void)
 {
-	system("rm -rf '" CONTAINER_DEFS_PATH "'");
+	char cmd[PATH_MAX + 16];
+
+	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_container_defs_path);
+	system(cmd);
 }
 
 /* Fetches container name's current pid, or -1 if it isn't currently known. */
@@ -193,26 +202,40 @@ int main(void)
 	int ok = 1;
 	struct kx_response r;
 
-	reset_state();
-	if (test_image_fixture_build(IMAGE_ROOT, "build/daemon_child", "daemon_child") != 0)
+	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
-	{
-		char tcp_child_path[256];
+	snprintf(g_image_root, sizeof(g_image_root), "%s/images/restarttest/rootfs", g_data_dir);
+	snprintf(g_container_defs_path, sizeof(g_container_defs_path), "%s/container_defs.json",
+	         g_data_dir);
 
-		snprintf(tcp_child_path, sizeof(tcp_child_path), "%s/bin/tcp_listen_child", IMAGE_ROOT);
-		if (test_image_fixture_copy_file("build/tcp_listen_child", tcp_child_path) != 0)
+	reset_state();
+	if (test_image_fixture_build(g_image_root, "build/daemon_child", "daemon_child") != 0) {
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
+	{
+		char tcp_child_path[PATH_MAX];
+
+		snprintf(tcp_child_path, sizeof(tcp_child_path), "%s/bin/tcp_listen_child",
+		         g_image_root);
+		if (test_image_fixture_copy_file("build/tcp_listen_child", tcp_child_path) != 0) {
+			test_data_dir_cleanup(g_data_dir);
 			return 1;
+		}
 	}
 
 	daemon_pid = start_daemon();
-	if (daemon_pid < 0)
+	if (daemon_pid < 0) {
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
+	}
 
 	kx_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
 		waitpid(daemon_pid, NULL, 0);
+		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
 
@@ -995,6 +1018,7 @@ int main(void)
 		ok = 0;
 	}
 
+	test_data_dir_cleanup(g_data_dir);
 	printf(ok ? "CONTAINER RESTART RESULT: PASS\n" : "CONTAINER RESTART RESULT: FAIL\n");
 	return ok ? 0 : 1;
 }

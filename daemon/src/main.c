@@ -47,16 +47,57 @@ extern char **environ;
 #define DEFAULT_PORT 7620
 #define DEFAULT_BIND "127.0.0.1"
 #define DEFAULT_WEB_ROOT "web"
-#define BASE_DIR "/var/lib/kanxeo"
-#define IMAGES_DIR BASE_DIR "/images"
-#define CONTAINERS_DIR BASE_DIR "/containers"
-#define NETWORKS_STATE_PATH BASE_DIR "/networks.json"
-#define DNS_RECORDS_STATE_PATH BASE_DIR "/dns_records.json"
-#define PKI_DIR BASE_DIR "/pki"
-#define PKI_CERTS_STATE_PATH PKI_DIR "/pki_certs.json"
-#define PKG_DIR BASE_DIR "/pkg"
-#define PKG_INSTALLED_STATE_PATH PKG_DIR "/pkg_installed.json"
-#define CONTAINER_DEFS_STATE_PATH BASE_DIR "/container_defs.json"
+#define DEFAULT_BASE_DIR "/var/lib/kanxeo"
+/*
+ * Runtime-overridable via --data-dir=PATH (default DEFAULT_BASE_DIR,
+ * unchanged from every prior release). Every subsystem already takes
+ * its own path as an explicit init-time parameter (network_init(),
+ * pkg_init(), image_init(), ... -- see main()'s own init sequence
+ * below), so this is the ONLY place BASE_DIR needs to become
+ * runtime-computed rather than a compile-time #define; nothing
+ * downstream has a second hardcoded copy to also fix.
+ *
+ * Exists because this project's own test suite has zero isolation
+ * from a live daemon sharing the same default path -- confirmed the
+ * hard way (twice, same session): running the test suite against a
+ * host that also has a real kanxeod on default paths silently wipes
+ * that daemon's container/network/DNS/PKI state and any image content
+ * package installs had built, because every test's own reset_state()
+ * resets these exact same files. --data-dir= lets tests point
+ * somewhere that can never collide with a real install.
+ */
+static char g_base_dir[PATH_MAX] = DEFAULT_BASE_DIR;
+static char IMAGES_DIR[PATH_MAX];
+static char CONTAINERS_DIR[PATH_MAX];
+static char NETWORKS_STATE_PATH[PATH_MAX];
+static char DNS_RECORDS_STATE_PATH[PATH_MAX];
+static char PKI_DIR[PATH_MAX];
+static char PKI_CERTS_STATE_PATH[PATH_MAX];
+static char PKI_CERTS_DIR[PATH_MAX];
+static char PKG_DIR[PATH_MAX];
+static char PKG_INSTALLED_STATE_PATH[PATH_MAX];
+static char PKG_RECIPES_DIR[PATH_MAX];
+static char CONTAINER_DEFS_STATE_PATH[PATH_MAX];
+
+/* Computes every path derived from g_base_dir -- called once, right
+ * after argv parsing (so --data-dir= has already been applied) and
+ * before anything (including boot_init(), which mounts the real
+ * containers partition at g_base_dir under --init-mode) touches any
+ * of them. */
+static void init_base_dir_paths(void)
+{
+	snprintf(IMAGES_DIR, sizeof(IMAGES_DIR), "%s/images", g_base_dir);
+	snprintf(CONTAINERS_DIR, sizeof(CONTAINERS_DIR), "%s/containers", g_base_dir);
+	snprintf(NETWORKS_STATE_PATH, sizeof(NETWORKS_STATE_PATH), "%s/networks.json", g_base_dir);
+	snprintf(DNS_RECORDS_STATE_PATH, sizeof(DNS_RECORDS_STATE_PATH), "%s/dns_records.json", g_base_dir);
+	snprintf(PKI_DIR, sizeof(PKI_DIR), "%s/pki", g_base_dir);
+	snprintf(PKI_CERTS_STATE_PATH, sizeof(PKI_CERTS_STATE_PATH), "%s/pki_certs.json", PKI_DIR);
+	snprintf(PKI_CERTS_DIR, sizeof(PKI_CERTS_DIR), "%s/certs", PKI_DIR);
+	snprintf(PKG_DIR, sizeof(PKG_DIR), "%s/pkg", g_base_dir);
+	snprintf(PKG_INSTALLED_STATE_PATH, sizeof(PKG_INSTALLED_STATE_PATH), "%s/pkg_installed.json", PKG_DIR);
+	snprintf(PKG_RECIPES_DIR, sizeof(PKG_RECIPES_DIR), "%s/recipes", PKG_DIR);
+	snprintf(CONTAINER_DEFS_STATE_PATH, sizeof(CONTAINER_DEFS_STATE_PATH), "%s/container_defs.json", g_base_dir);
+}
 /*
  * Backoff cap and stability-reset threshold for the crash-restart
  * delay (ADR-0027) -- the base delay itself is per-container
@@ -446,8 +487,8 @@ static int boot_init(void)
 		return -1;
 	if (mount_or_fail("cgroup2", "/sys/fs/cgroup", "cgroup2", 0) != 0)
 		return -1;
-	if (mount(CONTAINERS_DEVICE, BASE_DIR, "ext4", MS_NOSUID | MS_NODEV, NULL) != 0 &&
-	    mount_or_fail("tmpfs", BASE_DIR, "tmpfs", MS_NOSUID | MS_NODEV) != 0)
+	if (mount(CONTAINERS_DEVICE, g_base_dir, "ext4", MS_NOSUID | MS_NODEV, NULL) != 0 &&
+	    mount_or_fail("tmpfs", g_base_dir, "tmpfs", MS_NOSUID | MS_NODEV) != 0)
 		return -1;
 	/* Needed to reach the loader entry confirm_boot() renames once this
 	 * boot proves healthy (Phase 11 part 2) -- writable, not read-only
@@ -1086,7 +1127,7 @@ static void do_system_backup(struct json_writer *w)
 	 * pkg_write_json_recipes() already uses. */
 	jw_key(w, "pkg_recipes");
 	jw_obj_open(w);
-	d = opendir(PKG_DIR "/recipes");
+	d = opendir(PKG_RECIPES_DIR);
 	if (d != NULL) {
 		while ((de = readdir(d)) != NULL) {
 			size_t nlen = strlen(de->d_name);
@@ -1280,7 +1321,7 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 		return 500;
 	}
 	if (jpkg_recipes != NULL) {
-		if (persist_mkdir_p(PKG_DIR "/recipes") != 0) {
+		if (persist_mkdir_p(PKG_RECIPES_DIR) != 0) {
 			json_free(root);
 			snprintf(out_errmsg, out_errmsg_size, "failed to create recipes directory");
 			return 500;
@@ -1288,7 +1329,7 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 		for (i = 0; i < jpkg_recipes->u.object.count; i++) {
 			char path[PATH_MAX];
 
-			snprintf(path, sizeof(path), "%s/recipes/%s.recipe", PKG_DIR,
+			snprintf(path, sizeof(path), "%s/%s.recipe", PKG_RECIPES_DIR,
 			         jpkg_recipes->u.object.keys[i]);
 			if (restore_write_field(path, json_as_string(jpkg_recipes->u.object.values[i])) !=
 			    0) {
@@ -4591,7 +4632,10 @@ int main(int argc, char **argv)
 			test_update_kernel = argv[i] + 21;
 		else if (strncmp(argv[i], "--test-bootstrap-toolchain=", 27) == 0)
 			test_bootstrap_toolchain = argv[i] + 27;
+		else if (strncmp(argv[i], "--data-dir=", 11) == 0)
+			snprintf(g_base_dir, sizeof(g_base_dir), "%s", argv[i] + 11);
 	}
+	init_base_dir_paths();
 	g_web_root = web_root;
 	g_slot = slot;
 	g_bind_addr = bind_addr;
@@ -4655,9 +4699,9 @@ int main(int argc, char **argv)
 		fflush(stdout);
 	}
 
-	if (ensure_dir(BASE_DIR) != 0 || ensure_dir(IMAGES_DIR) != 0 ||
+	if (ensure_dir(g_base_dir) != 0 || ensure_dir(IMAGES_DIR) != 0 ||
 	    ensure_dir(CONTAINERS_DIR) != 0 || ensure_dir(PKI_DIR) != 0 ||
-	    ensure_dir(PKI_DIR "/certs") != 0 || ensure_dir(PKG_DIR) != 0)
+	    ensure_dir(PKI_CERTS_DIR) != 0 || ensure_dir(PKG_DIR) != 0)
 		return 1;
 
 	if (network_init(NETWORKS_STATE_PATH) != 0)
