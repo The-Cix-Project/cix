@@ -1065,8 +1065,9 @@ static void handle_system_update(int fd, const char *body, size_t body_len)
 /*
  * Pure (no fd) core of GET /v1/system/backup -- bundles platform
  * *configuration* state (what containers/networks/DNS records/
- * packages should exist), not workload data or image content, and
- * never PKI (see docs/adr/0033). Each file is read via the existing
+ * packages should exist, plus this install's own site config), not
+ * workload data or image content, and never PKI (see docs/adr/0033).
+ * Each file is read via the existing
  * persist_read_file() (daemon/src/persist.c) exactly as-is and
  * embedded as an escaped JSON string, the same "raw content as a JSON
  * string" shape ConfigFile.content already uses -- not a second,
@@ -1122,6 +1123,14 @@ static void do_system_backup(struct json_writer *w)
 
 	jw_key(w, "pkg_installed");
 	if (persist_read_file(PKG_INSTALLED_STATE_PATH, &buf, &len) == 0 && buf != NULL) {
+		jw_str(w, buf);
+		free(buf);
+	} else {
+		jw_str(w, "");
+	}
+
+	jw_key(w, "site_config");
+	if (persist_read_file(SITE_CONFIG_PATH, &buf, &len) == 0 && buf != NULL) {
 		jw_str(w, buf);
 		free(buf);
 	} else {
@@ -1227,7 +1236,7 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 {
 	struct json_value *root;
 	const struct json_value *jcontainer_defs, *jnetworks, *jdns_records, *jpkg_installed;
-	const struct json_value *jpkg_recipes;
+	const struct json_value *jpkg_recipes, *jsite_config;
 	size_t i;
 	int have_any = 0;
 
@@ -1242,6 +1251,7 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 	jdns_records = json_object_get(root, "dns_records");
 	jpkg_installed = json_object_get(root, "pkg_installed");
 	jpkg_recipes = json_object_get(root, "pkg_recipes");
+	jsite_config = json_object_get(root, "site_config");
 
 	/* Each present field must be a string whose own content is valid
 	 * JSON -- checked for every field before any file is touched. */
@@ -1293,12 +1303,20 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 			}
 		}
 	}
+	if (jsite_config != NULL) {
+		have_any = 1;
+		if (!json_string_field_is_valid(jsite_config)) {
+			json_free(root);
+			snprintf(out_errmsg, out_errmsg_size, "site_config is not valid JSON");
+			return 400;
+		}
+	}
 
 	if (!have_any) {
 		json_free(root);
 		snprintf(out_errmsg, out_errmsg_size,
-		         "at least one of container_defs/networks/dns_records/pkg_installed/pkg_recipes "
-		         "required");
+		         "at least one of container_defs/networks/dns_records/pkg_installed/pkg_recipes/"
+		         "site_config required");
 		return 400;
 	}
 
@@ -1325,6 +1343,12 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 	    restore_write_field(PKG_INSTALLED_STATE_PATH, json_as_string(jpkg_installed)) != 0) {
 		json_free(root);
 		snprintf(out_errmsg, out_errmsg_size, "failed to write pkg_installed.json");
+		return 500;
+	}
+	if (jsite_config != NULL &&
+	    restore_write_field(SITE_CONFIG_PATH, json_as_string(jsite_config)) != 0) {
+		json_free(root);
+		snprintf(out_errmsg, out_errmsg_size, "failed to write site_config.json");
 		return 500;
 	}
 	if (jpkg_recipes != NULL) {
@@ -1374,6 +1398,110 @@ static void handle_system_restore(int fd, const char *body, size_t body_len)
 }
 
 /*
+ * Reissues this install's own well-known "host" leaf so its SAN
+ * always matches the current site config (ADR-0050) -- a fixed
+ * record name ("host"), never the FQDN itself, so a rename (any of
+ * instance_name/site_name/domain_suffix changing) is a clean
+ * delete-then-recreate under the identical stable identity rather
+ * than orphaning one differently-named cert per rename. CN ends up
+ * being "host" (pki_cert_create()'s own `name` doubles as CN), which
+ * is fine and arguably correct -- modern TLS verification uses SAN,
+ * not CN, for hostname matching; the SAN is the real, current FQDN.
+ *
+ * Best-effort, never fails the caller: no root CA bootstrapped yet is
+ * the common, expected case on a fresh install with site config set
+ * before PKI ever is -- logged, not surfaced as an error on whatever
+ * unrelated operation (a site PUT, a CA bootstrap, a reset) triggered
+ * this call.
+ */
+static void reissue_host_pki_cert(void)
+{
+	char fqdn[SITECONFIG_NAME_MAX * 3];
+	const char *sans[1];
+	struct json_writer scratch;
+	enum pki_error perr;
+
+	if (!pki_ca_bootstrapped())
+		return;
+
+	siteconfig_host_fqdn(fqdn, sizeof(fqdn));
+	if (!dns_name_is_valid(fqdn)) {
+		fprintf(stderr, "host: composed FQDN '%s' is not a valid DNS name, skipping "
+		                 "PKI (re)issue\n",
+		        fqdn);
+		return;
+	}
+
+	pki_cert_delete("host"); /* PKI_ERR_NOT_FOUND (first time) is fine, ignored */
+
+	sans[0] = fqdn;
+	jw_init(&scratch);
+	perr = pki_cert_create("host", sans, 1, 365, NULL, &scratch);
+	jw_free(&scratch);
+	if (perr != PKI_OK)
+		fprintf(stderr, "host: could not (re)issue PKI cert for %s (err=%d)\n", fqdn,
+		        (int)perr);
+}
+
+/*
+ * Auto-maintains a single DNS record for this install's own qualified
+ * FQDN, pointed at the daemon's own --bind= address (ADR-0053) -- the
+ * "reflects back" design: not a second, independently-editable
+ * record, this record's own name simply tracks whatever the FQDN
+ * currently is, the same relationship reissue_host_pki_cert() already
+ * has with the PKI leaf above.
+ *
+ * Only meaningful when --bind= is a real, specific address the
+ * operator explicitly chose: "0.0.0.0" (bind-everywhere) and
+ * "127.0.0.1" (loopback-only, unreachable from anywhere else) have no
+ * single correct IP to publish, so both are a deliberate no-op here,
+ * never a guess.
+ *
+ * g_last_instance_dns_name tracks what this function itself last
+ * registered, in-process only (not persisted) -- enough to delete the
+ * old name before creating the new one when the FQDN changes while
+ * the daemon keeps running (the actual, tested scenario). A rename
+ * that happens to straddle a daemon restart with no PUT ever
+ * registering the "old" name in this process's own lifetime is a
+ * real, narrow, accepted gap (see ADR-0053's own Consequences), not
+ * solved here.
+ */
+static char g_last_instance_dns_name[DNS_NAME_MAX];
+
+static void reconcile_instance_dns_record(void)
+{
+	char fqdn[SITECONFIG_NAME_MAX * 3];
+	struct in_addr addr;
+	struct dns_record *rec;
+	enum dns_error derr;
+
+	if (strcmp(g_bind_addr, "0.0.0.0") == 0 || strcmp(g_bind_addr, "127.0.0.1") == 0)
+		return;
+	if (inet_pton(AF_INET, g_bind_addr, &addr) != 1)
+		return;
+
+	siteconfig_host_fqdn(fqdn, sizeof(fqdn));
+	if (!dns_name_is_valid(fqdn)) {
+		fprintf(stderr,
+		        "instance DNS record: composed FQDN '%s' is not a valid DNS name, skipping\n",
+		        fqdn);
+		return;
+	}
+
+	if (g_last_instance_dns_name[0] != '\0' && strcmp(g_last_instance_dns_name, fqdn) != 0)
+		dns_record_delete(g_last_instance_dns_name);
+	dns_record_delete(fqdn); /* in case this exact name is already registered (idempotent re-call) */
+
+	derr = dns_record_create(fqdn, addr.s_addr, NULL, &rec);
+	if (derr != DNS_OK) {
+		fprintf(stderr, "instance DNS record: could not (re)create %s (err=%d)\n", fqdn,
+		        (int)derr);
+		return;
+	}
+	snprintf(g_last_instance_dns_name, sizeof(g_last_instance_dns_name), "%s", fqdn);
+}
+
+/*
  * GET/PUT /v1/system/site (ADR-0046): this install's own declared
  * site_name/domain_suffix, a real convenience for client tooling to
  * suggest a default FQDN with, never enforced by anything on the
@@ -1395,7 +1523,7 @@ static void handle_site_get(int fd)
 static void handle_site_put(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
-	const char *site_name, *domain_suffix;
+	const char *instance_name, *site_name, *domain_suffix;
 	enum siteconfig_error serr;
 	struct json_writer w;
 
@@ -1404,19 +1532,28 @@ static void handle_site_put(int fd, const char *body, size_t body_len)
 		respond_error(fd, 400, "Bad Request", "invalid JSON body");
 		return;
 	}
+	instance_name = json_as_string(json_object_get(root, "instance_name"));
 	site_name = json_as_string(json_object_get(root, "site_name"));
 	domain_suffix = json_as_string(json_object_get(root, "domain_suffix"));
+	if (instance_name == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "instance_name is required");
+		return;
+	}
 	if (domain_suffix == NULL) {
 		json_free(root);
 		respond_error(fd, 400, "Bad Request", "domain_suffix is required");
 		return;
 	}
 
-	serr = siteconfig_set(site_name, domain_suffix);
+	serr = siteconfig_set(instance_name, site_name, domain_suffix);
 	json_free(root);
 
 	if (serr != SITECONFIG_OK) {
 		switch (serr) {
+		case SITECONFIG_ERR_INVALID_INSTANCE_NAME:
+			respond_error(fd, 400, "Bad Request", "invalid instance_name");
+			break;
 		case SITECONFIG_ERR_INVALID_SITE_NAME:
 			respond_error(fd, 400, "Bad Request", "invalid site_name");
 			break;
@@ -1430,6 +1567,9 @@ static void handle_site_put(int fd, const char *body, size_t body_len)
 		}
 		return;
 	}
+
+	reissue_host_pki_cert();
+	reconcile_instance_dns_record();
 
 	jw_init(&w);
 	siteconfig_write_json(&w);
@@ -2978,6 +3118,7 @@ static void handle_dns_record_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
 	const char *name, *ip;
+	char qualified_name[DNS_NAME_MAX];
 	struct in_addr addr;
 	struct dns_record *rec;
 	enum dns_error derr;
@@ -2998,7 +3139,12 @@ static void handle_dns_record_create(int fd, const char *body, size_t body_len)
 		return;
 	}
 
-	derr = dns_record_create(name, addr.s_addr, NULL, &rec);
+	/* ADR-0052: a bare label (no dot) gets this site's default suffix
+	 * appended server-side -- a name that already contains a dot is
+	 * left exactly as typed, no daemon-side override, ever. */
+	siteconfig_qualify(name, qualified_name, sizeof(qualified_name));
+
+	derr = dns_record_create(qualified_name, addr.s_addr, NULL, &rec);
 	json_free(root);
 
 	if (derr != DNS_OK) {
@@ -3211,6 +3357,8 @@ static void handle_pki_ca_create(int fd, const char *body, size_t body_len)
 		return;
 	}
 
+	reissue_host_pki_cert();
+
 	{
 		struct json_writer w;
 
@@ -3293,6 +3441,8 @@ static void handle_pki_intermediate_create(int fd, const char *body, size_t body
 		return;
 	}
 
+	reissue_host_pki_cert(); /* now signed by the intermediate instead of the root */
+
 	{
 		struct json_writer w;
 
@@ -3334,6 +3484,7 @@ static void handle_pki_cert_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
 	const char *name;
+	char qualified_name[DNS_NAME_MAX];
 	const struct json_value *jsans, *jdays;
 	const char *sans_buf[PKI_MAX_SANS];
 	int san_count;
@@ -3359,6 +3510,13 @@ static void handle_pki_cert_create(int fd, const char *body, size_t body_len)
 		respond_error(fd, 400, "Bad Request", "name missing");
 		return;
 	}
+
+	/* ADR-0052: same server-side default-qualification rule as DNS
+	 * records above -- only the CN/default-SAN name, never an
+	 * explicitly-supplied sans[] entry (an operator who lists exact
+	 * SANs has already opted into precise control there). */
+	siteconfig_qualify(name, qualified_name, sizeof(qualified_name));
+	name = qualified_name;
 
 	if (jsans != NULL) {
 		if (jsans->type != JSON_ARRAY || jsans->u.array.count == 0 ||
@@ -3434,6 +3592,137 @@ static void handle_pki_cert_delete(int fd, const char *name)
 	}
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+/*
+ * For every currently-live container that owns a just-reissued leaf
+ * (name == the container's own name, owner_container == the
+ * container's own name -- the exact convention create_container_from_
+ * body()'s own pki_issue block always uses, near line 2319),
+ * redeliver it so a running service's tls.crt/tls.key don't go stale
+ * after a CA reset.
+ *
+ * Deliberately enumerated via registry_list_names(), not
+ * containerdef_resolve_order() -- containerdef_add() only persists a
+ * definition for restart != "no" (main.c's own POST /v1/containers
+ * handler, a few hundred lines up); a plain, unpersisted restart:"no"
+ * container is still a real, live pki_issue owner and must not be
+ * silently skipped just because it has no containerdef entry to
+ * enumerate through. pki_cert_owned_by() is checked against the PKI
+ * index itself (the real source of truth for "does this container own
+ * a cert"), not the original create request's own pki_issue flag --
+ * robust regardless of whether a persisted definition happens to
+ * exist to recover that flag from.
+ *
+ * pki_cert_dir is recovered from the persisted definition when one
+ * exists (same field the original pki_issue block reads); a
+ * restart:"no" container that used a non-default --pki-cert-dir= has
+ * no persisted body to recover it from, so the default applies --
+ * a known, narrow gap (documented in ADR-0049) rather than a silent
+ * wrong-path write.
+ */
+static void redeliver_pki_certs_after_reset(void)
+{
+	char names[REGISTRY_MAX_CONTAINERS][REGISTRY_NAME_MAX];
+	int count = registry_list_names(names, REGISTRY_MAX_CONTAINERS);
+	int i;
+
+	for (i = 0; i < count; i++) {
+		struct registry_entry *entry = registry_find(names[i]);
+		struct container_def *def;
+		char cert_dir_buf[PATH_MAX];
+		enum pki_error derr;
+
+		if (entry == NULL || !entry->running)
+			continue;
+		if (!pki_cert_owned_by(names[i], names[i]))
+			continue;
+
+		snprintf(cert_dir_buf, sizeof(cert_dir_buf), "/etc/kanxeo-tls");
+		def = containerdef_find(names[i]);
+		if (def != NULL) {
+			struct json_value *body_root = json_parse(def->body, def->body_len);
+
+			if (body_root != NULL) {
+				const char *dir = json_as_string(json_object_get(body_root, "pki_cert_dir"));
+
+				if (dir != NULL)
+					snprintf(cert_dir_buf, sizeof(cert_dir_buf), "%s", dir);
+				json_free(body_root);
+			}
+		}
+
+		derr = pki_cert_deliver(names[i], entry->handle.pid, cert_dir_buf);
+		if (derr != PKI_OK)
+			fprintf(stderr, "%s: pki reset redelivery failed (err=%d)\n", names[i],
+			        (int)derr);
+	}
+}
+
+static void handle_pki_reset(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = NULL;
+	char root_cn[PKI_SUBJECT_MAX];
+	char intermediate_cn[PKI_SUBJECT_MAX];
+	int root_days = 3650;
+	int intermediate_days = 1825;
+	int leaf_days = 365;
+	enum pki_error perr;
+	struct json_writer w;
+
+	snprintf(root_cn, sizeof(root_cn), "Kanxeo Root CA - %s", siteconfig_domain_suffix());
+	snprintf(intermediate_cn, sizeof(intermediate_cn), "Kanxeo Intermediate CA - %s",
+	         siteconfig_domain_suffix());
+
+	if (body_len > 0) {
+		const char *s;
+
+		root = json_parse(body, body_len);
+		if (root == NULL) {
+			respond_error(fd, 400, "Bad Request", "invalid JSON body");
+			return;
+		}
+		s = json_as_string(json_object_get(root, "root_common_name"));
+		if (s != NULL)
+			snprintf(root_cn, sizeof(root_cn), "%s", s);
+		s = json_as_string(json_object_get(root, "intermediate_common_name"));
+		if (s != NULL)
+			snprintf(intermediate_cn, sizeof(intermediate_cn), "%s", s);
+		if (json_object_get(root, "root_days") != NULL)
+			root_days = (int)json_as_number(json_object_get(root, "root_days"));
+		if (json_object_get(root, "intermediate_days") != NULL)
+			intermediate_days = (int)json_as_number(json_object_get(root, "intermediate_days"));
+		if (json_object_get(root, "leaf_days") != NULL)
+			leaf_days = (int)json_as_number(json_object_get(root, "leaf_days"));
+	}
+
+	jw_init(&w);
+	perr = pki_ca_reset(root_cn, intermediate_cn, root_days, intermediate_days, leaf_days, &w);
+	json_free(root);
+
+	if (perr != PKI_OK) {
+		jw_free(&w);
+		respond_pki_error(fd, perr);
+		return;
+	}
+
+	redeliver_pki_certs_after_reset();
+
+	/*
+	 * Already reissued once above if "host" was tracked before this
+	 * reset (pki_ca_reset()'s own generic per-leaf reissue loop) --
+	 * called again here anyway, for the case where it wasn't (an
+	 * existing chain that predates this feature, or one that was
+	 * bootstrapped without ever going through a site config PUT). The
+	 * redundant reissue in the already-tracked case is harmless (same
+	 * FQDN, freshly signed either way) and keeps this guarantee simple:
+	 * "host" always exists and is current after any PKI-affecting
+	 * operation, full stop.
+	 */
+	reissue_host_pki_cert();
+
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
 }
 
 static void respond_pkg_error(int fd, enum pkg_error err)
@@ -4090,6 +4379,12 @@ static void dispatch(int fd, const struct http_request *req)
 				handle_pki_cert_delete(fd, name);
 				return;
 			}
+		}
+	}
+	if (strcmp(req->path, "/v1/pki/reset") == 0) {
+		if (strcmp(req->method, "POST") == 0) {
+			handle_pki_reset(fd, req->body, req->body_len);
+			return;
 		}
 	}
 	/*
@@ -5214,6 +5509,7 @@ int main(int argc, char **argv)
 		return 1;
 	if (siteconfig_init(SITE_CONFIG_PATH) != 0)
 		return 1;
+	reconcile_instance_dns_record();
 	if (pkg_init(PKG_DIR, PKG_INSTALLED_STATE_PATH, CONTAINERS_DIR, IMAGES_DIR) != 0)
 		return 1;
 

@@ -2,6 +2,90 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 38: a real platform identity -- domain-based CA naming, an auto-issued host cert, image trust, default name qualification, an auto-maintained DNS record (ADR-0049 through ADR-0053)
+
+Direct follow-up to `instance_name`: the root/intermediate CA's common names should reflect this install's own `domain_suffix`, not the fixed placeholder they were bootstrapped with. No existing mechanism could change an already-bootstrapped CA's subject at all (`pki_ca_create()`/`pki_intermediate_create()` are hard one-shots) -- this is the real "start over" operation that design deliberately never provided implicitly.
+
+#### Added
+- `pki_ca_reset()` (`daemon/src/pki.c`): wipes and regenerates root (+ intermediate, if one existed) with new common names, reissuing every currently-tracked leaf under the new chain -- same name/SANs/owner, fresh keypair. Every reissued leaf's `cert_pem`/`key_pem` are included in the response, the same "shown exactly once, right now" treatment a leaf's key gets at first issuance.
+- `POST /v1/pki/reset` (defaults each CN to `"Kanxeo Root/Intermediate CA - <domain_suffix>"`), `kanxeoctl pki reset`, and a destructive web-dashboard action (confirm-gated) under PKI.
+- Any still-live container that owns a reissued leaf gets it automatically redelivered (`pki_cert_deliver()`), so a running service's `tls.crt`/`tls.key` don't go stale.
+- New `registry_list_names()` (`daemon/src/registry.c`) and `pki_cert_owned_by()` (`daemon/src/pki.c`) -- needed after the first redelivery implementation (enumerating via `containerdef_resolve_order()`) turned out to silently skip any `restart:"no"` container, since `containerdef_add()` only persists a definition for `restart != "no"`. Caught by comparing a live container's delivered cert file content before/after reset, not just the reset endpoint's status code.
+- `test/test_pki.c` Part 5: real `openssl verify` proof that an old leaf stops verifying against the new root, a new serial after reissue, and a live container's own on-disk cert confirmed byte-different post-reset (the actual redelivery proof).
+
+#### Fixed
+- `kanxeoctl pki reset`'s own flag-parsing had three off-by-one `strncmp()` prefix lengths (`--root-common-name=`, `--intermediate-common-name=`, `--intermediate-days=`) -- every value-bearing invocation silently fell through to "unknown option" while the REST endpoint itself worked correctly. Caught only by testing the actual CLI command against the live daemon, not just the endpoint it calls.
+
+#### Notes
+- Verified against this project's own live production daemon: reset the real root/intermediate, confirmed the `cr-1`/`cr-2`/`srv1`/`blah` demo topology unaffected via a real `nsenter`+`ping` check.
+- A `restart:"no"` container using a non-default `--pki-cert-dir=` gets redelivered to the default path after a reset, not its actual one -- no persisted body to recover that override from (see ADR-0049).
+
+#### Added (ADR-0050: auto-issued host cert)
+- `siteconfig_host_fqdn()` (`daemon/src/siteconfig.c`/`.h`) composes `<instance_name>.<site_name>.<domain_suffix>`.
+- `reissue_host_pki_cert()` (`daemon/src/main.c`): a fixed `"host"` leaf record name (never the FQDN itself, so a rename doesn't orphan a differently-named cert), real current FQDN as its SAN. Called from `POST /pki/ca`, `POST /pki/intermediate`, `PUT /system/site`, and `POST /pki/reset` -- best-effort, never fails whichever of those actually-requested operations triggered it.
+- `test/test_pki.c` Part 4 extended: `GET /pki/certs/host` carries the just-set FQDN after a site PUT; a second PUT with a different `instance_name` gets a genuinely different serial. Verified live against production (`gibsson.uk.home.arpa`, signed by the intermediate).
+
+#### Added (ADR-0051: CA trust chain staged into every image)
+- `pki_write_trust_bundle_file()` (`daemon/src/pki.c`/`.h`): root + intermediate (if bootstrapped), concatenated to a destination path -- a pure trust-anchor bundle, distinct from `pki_cert_deliver()`'s own order-significant leaf `fullchain.pem`.
+- `pkg_seed_image_baseline()` (`daemon/src/pkg.c`) writes `etc/ssl/certs/kanxeo-ca-bundle.pem` into every new image -- idempotent, tolerant of no CA bootstrapped yet. No image built by this platform has ever shipped any CA trust before this, not even public roots.
+- `test/test_pki.c` Part 6: creates a real image, reads the bundle off disk, `openssl verify`s a live leaf against it -- a genuine working trust anchor, not just "the file exists."
+
+#### Notes (ADR-0051)
+- This project's own `base`/`router`/`dev`/`pkgbuild` images (predating this feature) manually reseeded once and verified live. A CA reset does not retroactively propagate to any already-staged image's bundle -- a real, named gap (the image-level analog of leaf redelivery).
+
+#### Added (ADR-0052, revises ADR-0046: server-side default DNS/PKI name qualification)
+- `siteconfig_qualify()` (`daemon/src/siteconfig.c`/`.h`): a bare label (no `.`) gets `<label>.<site_name>.<domain_suffix>` appended; a dotted label is returned unchanged. Wired into `handle_dns_record_create()` and `handle_pki_cert_create()` (CN + default SAN, never an explicit `sans[]` entry).
+- `web/app.js`'s `suggestedFqdn()` updated to the identical gate in the same pass.
+- `test/test_dns.c` and `test/test_pki.c` extended with real qualify/don't-qualify assertions.
+
+#### Fixed (ADR-0052)
+- The first version gated qualification on `domain_suffix` alone, which defaults to a non-empty `"internal"` on every install regardless of configuration -- silently qualifying every bare name from the very first request, configured or not. Caught by running the full regression sweep: `test_dns.c`'s own bare `"shadow"` record 404'd under its own literal name. Fixed by gating on `site_name` being non-empty instead (defaults to `""`, "no site tier," an already-established ADR-0046 concept) -- a fresh, unconfigured install now behaves identically to before this phase. `suggestedFqdn()` had the same bug, fixed in the same pass before it shipped inconsistent with the server.
+
+#### Notes (ADR-0052)
+- Verified live: `POST /dns/records {"name":"testbox"}` against the production daemon (`site_name=uk` already configured) created `testbox.uk.home.arpa` for real.
+
+#### Added (ADR-0053: auto-maintained instance DNS record)
+- `reconcile_instance_dns_record()` (`daemon/src/main.c`): a single DNS record for this install's own FQDN, auto-maintained (reflects back, not a second editable record) -- deletes the old name and creates the new one on a rename. Skipped entirely when `--bind=` is `"0.0.0.0"` or `"127.0.0.1"` (no single correct address to publish for either). Called once at daemon startup and from `PUT /system/site`'s success path.
+- `test/test_dns.c` extended to start its own daemon with a real, specific bind address (`--bind=127.0.0.2`, needs no host setup) specifically to exercise this -- every other test harness in this project binds to the default `127.0.0.1`, exactly the address this feature treats as "nothing to publish."
+
+#### Notes (ADR-0053)
+- Not verified against this project's own live production daemon -- it runs `--bind=0.0.0.0` (needed for the user's own desktop connectivity, Phase 35), which this feature correctly treats as "no address to publish"; rebinding it just to demonstrate this one feature would have reintroduced the connectivity problem `--bind=0.0.0.0` exists to fix. Verified through the isolated test instead.
+
+#### Added (Part 6: a real management DNS container)
+- `pkg/recipes/dnsmasq.recipe`: real, from-source, Debian's unmodified `dnsmasq_2.90.orig.tar.xz` (matching this sandbox's already-verified dnsmasq -- the exact binary `test/test_dns.c`'s own fixture already proved end-to-end against `dns_server_register()`), zero runtime dependencies beyond libc.
+- Verified live against the production daemon: installed onto a new `dnssvc` image, run as a `dns1` container on a new `dnsnet` network (real `--gateway=`), registered via `POST /dns/servers`, and a real record resolved via the host's own `dig` -- genuine wire-protocol DNS, not a hosts-file check.
+
+#### Fixed (Part 6)
+- The shared `pkgbuild` toolchain image's own persisted rootfs (`images/pkgbuild/rootfs`) carried a stale, fully-built `coreutils` source tree at `build/src/` -- an uncleaned leftover from Phase 33's own self-hosting toolchain capture, not a defect in the new recipe. Since the build container's upperdir overlays *on top of* this lowerdir, the stale `GNUmakefile`/`maint.mk` pair shadowed dnsmasq's own real `Makefile` (`make` prefers `GNUmakefile`), failing every from-source build with `GNUmakefile:43: /maint.mk: No such file or directory` regardless of recipe correctness. Fixed by clearing `build/` from the live image rootfs (confirmed with the user first -- destructive against production daemon state, even though the path is pure internal build tooling).
+
+#### Notes (Part 6)
+- Explicitly out of scope, per the approved plan: reachability from outside Kanxeo's own managed networks (would need either enslaving `eth0`, this box's only reachable interface with no recovery path, or a host-port-forward mechanism this platform doesn't have).
+- No dedicated `test_pkg.c` coverage added -- consistent with every other real, from-source recipe in this project (`bird`, `keepalived`, `lldap`, the full toolchain set): `test_pkg.c` is deliberately network-independent (local synthetic fixtures only), and every real recipe is instead proven live, exactly as this one was.
+
+### Phase 35 (follow-up): instance_name -- a real, persisted identity for this specific install
+
+Direct user request: "would giving the kanxeo instance a name make sense, so it can be managed?" Extends the existing site config subsystem (ADR-0046) rather than starting a new one -- `instance_name` is a third field alongside `site_name`/`domain_suffix`, same persisted file, same PUT-requires-everything-together contract, always non-empty (defaults to `"kanxeo"`).
+
+#### Added
+- `siteconfig.c`/`.h`: `instance_name` field, validated with the same `dns_name_is_valid()` rule as the other two. A persisted `site_config.json` from before this field existed loads cleanly -- the default fills in for just that one missing key, not treated as a malformed file.
+- `GET`/`PUT /v1/system/site`: `instance_name` now required on PUT (matching `domain_suffix`'s existing required treatment) and always present on GET.
+- `GET /v1/system/backup` / `POST /v1/system/restore`: new `site_config` field, same raw-file-content-as-a-JSON-string embedding every other backup field already uses -- this install's identity now actually survives a backup/restore round trip, which it didn't before (a real, if minor, pre-existing gap: site config was never in the backup bundle at all).
+- `kanxeoctl site set` now fetches the current config before PUTting, so `--site-name=` alone no longer silently resets `domain_suffix`/`instance_name` to blank/default -- a latent footgun in the original single-shot PUT, fixed as part of adding the third field rather than left to compound.
+- Web dashboard: instance name is now a real, visible identity -- shown in the header (`Kanxeo — kanxeo1`) and the browser tab title, editable in the same Site settings form, updated live via the existing poll (subject to the same dirty-tracking guard as the other two fields).
+
+#### Notes
+- No ADR -- an additive field on an already-decided subsystem (ADR-0046), not a new hard-to-reverse call.
+
+### Phase 35 (web dashboard follow-up): site config form poll-clobber fix + FQDN suggestion wiring
+
+Two related gaps surfaced by direct user reports against the live dashboard, both in `web/app.js` only -- no daemon/API change, `/v1/system/site` already worked correctly end-to-end.
+
+#### Fixed
+- Site settings form (`refreshSiteConfig()`) was unconditionally overwritten by every ~2s poll tick, stomping whatever the operator had just typed before they could hit Save -- reported as "I cannot change the site/domain." Same class of bug Phase 37's recipe-content editor was already built to avoid; this form never got that guard. Fixed with the same pattern: an `input`-driven dirty flag suppresses the poll-driven overwrite until save.
+
+#### Added
+- The client-side FQDN suggestion Phase 35's own ROADMAP entry already described (`<name>.<site_name>.<domain_suffix>`) was never actually wired into the DNS-record-create or PKI-cert-issue forms -- a documented-but-unbuilt gap. Now real: `df-name`/`pf-name` auto-expand a bare label (no dot typed) to this site's suggested FQDN on blur, still a plain editable text field afterward; their placeholders reflect the real configured suffix instead of a hardcoded `.internal` example.
+
 ### Phase 37: Packages tree UI -- recipe tab + installed-versions tab per package
 
 Direct user request, last of the same batch Phase 34-36 came from: list packages under the Packages tree, each with a Recipe tab (view/edit) and an Installed tab (versions across images).

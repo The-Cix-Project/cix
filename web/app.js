@@ -2466,6 +2466,44 @@ document.getElementById("pki-intermediate-form").addEventListener("submit", asyn
 	}
 });
 
+document.getElementById("pki-reset-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	if (!confirm("Wipe and regenerate the entire CA chain? Every previously-issued " +
+	             "certificate stops verifying against the new root the moment this completes."))
+		return;
+
+	const rootCn = document.getElementById("resetf-root-cn").value.trim();
+	const intermediateCn = document.getElementById("resetf-intermediate-cn").value.trim();
+	const body = {};
+
+	if (rootCn !== "")
+		body.root_common_name = rootCn;
+	if (intermediateCn !== "")
+		body.intermediate_common_name = intermediateCn;
+
+	try {
+		const result = await apiRequest("POST", "/v1/pki/reset", body);
+		clearStatus();
+		document.getElementById("pki-reset-form").reset();
+
+		const resultBox = document.getElementById("pki-reset-result");
+		const reissued = Array.isArray(result.reissued) ? result.reissued : [];
+		const names = reissued.map((c) => c.name).join(", ");
+
+		resultBox.hidden = false;
+		resultBox.textContent = "Reset complete. Root: " + (result.root ? result.root.subject : "?") +
+			(result.intermediate ? " / Intermediate: " + result.intermediate.subject : "") +
+			(reissued.length > 0 ? " / Reissued: " + names : " / No leaves to reissue");
+
+		await refreshPkiCa();
+		await refreshPkiIntermediate();
+		await refreshPkiCerts();
+	} catch (e) {
+		showStatus("Failed to reset CA chain: " + e.message, true);
+	}
+});
+
 document.getElementById("pki-cert-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 
@@ -2604,22 +2642,80 @@ document.getElementById("pkg-update-all").addEventListener("click", async () => 
 
 /* ---------- System ---------- */
 
+let siteConfigDirty = false;
+
+/* Composes this site's own suggested FQDN for a bare label, or null if
+ * no site config has loaded yet OR no site_name is set. Convenience
+ * only (ADR-0046) -- never required, never validated against. Gated
+ * on site_name specifically (matching the server-side
+ * siteconfig_qualify()'s own gate, ADR-0052) -- domain_suffix alone
+ * defaults to a real, non-empty value ("internal") on every install,
+ * so suggesting a qualified name whenever it's merely present would
+ * suggest something the server itself won't actually apply unless a
+ * site has genuinely been configured. */
+function suggestedFqdn(label) {
+	if (!cache.siteConfig || !cache.siteConfig.site_name)
+		return null;
+	return `${label}.${cache.siteConfig.site_name}.${cache.siteConfig.domain_suffix}`;
+}
+
 async function refreshSiteConfig() {
 	try {
 		const site = await apiRequest("GET", "/v1/system/site");
 
 		cache.siteConfig = site;
-		document.getElementById("sitef-site-name").value = site.site_name;
-		document.getElementById("sitef-domain-suffix").value = site.domain_suffix;
+		if (!siteConfigDirty) {
+			document.getElementById("sitef-instance-name").value = site.instance_name;
+			document.getElementById("sitef-site-name").value = site.site_name;
+			document.getElementById("sitef-domain-suffix").value = site.domain_suffix;
+		}
+		document.getElementById("df-name").placeholder = suggestedFqdn("db") || "db.internal";
+		document.getElementById("pf-name").placeholder = suggestedFqdn("svc") || "svc.internal";
+
+		const badge = document.getElementById("header-instance-name");
+
+		badge.textContent = site.instance_name;
+		badge.hidden = false;
+		document.title = "Kanxeo — " + site.instance_name;
 	} catch (e) {
-		/* Best-effort -- the form just stays at whatever was last typed. */
+		/* Best-effort -- the form/header just stay at whatever was last shown. */
 	}
 }
+
+/* On leaving a bare-label name field (no dot typed -- an FQDN the
+ * operator already fully typed is left alone), auto-expand it to this
+ * site's suggested FQDN. Still a plain text field afterward -- fully
+ * editable, never enforced. */
+function qualifyOnBlur(input) {
+	input.addEventListener("blur", () => {
+		const value = input.value.trim();
+
+		if (value === "" || value.includes("."))
+			return;
+		const fqdn = suggestedFqdn(value);
+		if (fqdn)
+			input.value = fqdn;
+	});
+}
+
+qualifyOnBlur(document.getElementById("df-name"));
+qualifyOnBlur(document.getElementById("pf-name"));
+
+document.getElementById("sitef-instance-name").addEventListener("input", () => {
+	siteConfigDirty = true;
+});
+document.getElementById("sitef-site-name").addEventListener("input", () => {
+	siteConfigDirty = true;
+});
+document.getElementById("sitef-domain-suffix").addEventListener("input", () => {
+	siteConfigDirty = true;
+});
 
 document.getElementById("sys-site-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 
 	const body = {
+		instance_name: document.getElementById("sitef-instance-name").value.trim(),
 		site_name: document.getElementById("sitef-site-name").value.trim(),
 		domain_suffix: document.getElementById("sitef-domain-suffix").value.trim(),
 	};
@@ -2628,6 +2724,7 @@ document.getElementById("sys-site-form").addEventListener("submit", async (event
 		await apiRequest("PUT", "/v1/system/site", body);
 		clearStatus();
 		showStatus("Site config saved", false);
+		siteConfigDirty = false;
 		await refreshSiteConfig();
 	} catch (e) {
 		showStatus("Failed to save site config: " + e.message, true);

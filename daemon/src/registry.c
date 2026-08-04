@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -26,6 +27,17 @@ struct registry_entry *registry_find(const char *name)
 			return &g_entries[i];
 	}
 	return NULL;
+}
+
+int registry_list_names(char out_names[][REGISTRY_NAME_MAX], int max)
+{
+	int i, count = 0;
+
+	for (i = 0; i < REGISTRY_MAX_CONTAINERS && count < max; i++) {
+		if (g_entries[i].in_use)
+			snprintf(out_names[count++], REGISTRY_NAME_MAX, "%s", g_entries[i].name);
+	}
+	return count;
 }
 
 enum registry_error registry_create(const char *name, const char *image,

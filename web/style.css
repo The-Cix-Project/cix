@@ -62,6 +62,17 @@ header h1 {
 	font-size: 1.25rem;
 }
 
+.header-instance-name {
+	margin-left: 0.5rem;
+	font-size: 0.85rem;
+	font-weight: normal;
+	color: var(--muted);
+}
+
+.header-instance-name::before {
+	content: "\2014 ";
+}
+
 .header-right {
 	display: flex;
 	align-items: center;

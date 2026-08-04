@@ -169,9 +169,10 @@ paths:
         independent and all optional (at least one required): restore
         just container definitions, just networks, or the whole
         bundle. Every field is validated (container_defs/networks/
-        dns_records/pkg_installed must each themselves parse as valid
-        JSON; pkg_recipes must be an object of string values) before
-        any file is written, so one malformed field can never leave
+        dns_records/pkg_installed/site_config must each themselves
+        parse as valid JSON; pkg_recipes must be an object of string
+        values) before any file is written, so one malformed field can
+        never leave
         the others half-applied. Deliberately does NOT reboot or hot-
         reload anything -- restored state only takes effect on the
         next boot (the same daemon-startup replay path, including
@@ -206,17 +207,21 @@ paths:
 
   /system/site:
     get:
-      summary: This install's declared site identity (ADR-0046)
+      summary: This install's declared identity (ADR-0046)
       description: >
-        A real, operator-configurable site_name/domain_suffix pair
-        client tooling can use to suggest a default FQDN
+        A real, operator-configurable instance_name/site_name/
+        domain_suffix triple. instance_name labels this specific
+        install (dashboard header, CLI, backup bundle) and is always
+        non-empty (defaults to "kanxeo"); site_name/domain_suffix are
+        client tooling's own suggested-FQDN pair
         (`<name>.<site_name>.<domain_suffix>`, or
-        `<name>.<domain_suffix>` when site_name is empty) when creating
-        a DNS record or issuing a PKI cert -- a convenience only,
-        never enforced: DNS records and PKI SANs remain plain
-        operator-supplied strings, unaffected by this endpoint's own
-        value. Always 200s -- defaults (site_name "", domain_suffix
-        "internal") apply until the first PUT.
+        `<name>.<domain_suffix>` when site_name is empty) offered when
+        creating a DNS record or issuing a PKI cert. All three are a
+        convenience only, never enforced: DNS records and PKI SANs
+        remain plain operator-supplied strings, unaffected by this
+        endpoint's own value. Always 200s -- defaults (instance_name
+        "kanxeo", site_name "", domain_suffix "internal") apply until
+        the first PUT.
       operationId: getSystemSite
       responses:
         "200":
@@ -227,6 +232,14 @@ paths:
                 $ref: "#/components/schemas/SiteConfig"
     put:
       summary: Sets this install's site identity
+      description: >
+        On success, also reissues this install's own "host" PKI leaf (ADR-0050) if a
+        root CA is already bootstrapped, and reconciles a single auto-maintained DNS
+        record for the same FQDN (ADR-0053) if this daemon was started with a real,
+        specific --bind= address (not "0.0.0.0"/"127.0.0.1", neither of which has a
+        single correct address to publish) -- both best-effort, never fail this request.
+        The DNS record is also reconciled once at daemon startup, so it exists without
+        needing a PUT after every restart.
       operationId: putSystemSite
       requestBody:
         required: true
@@ -242,7 +255,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/SiteConfig"
         "400":
-          description: Invalid site_name or domain_suffix, or domain_suffix missing
+          description: >
+            Invalid instance_name, site_name, or domain_suffix, or
+            instance_name/domain_suffix missing
           content:
             application/json:
               schema:
@@ -676,6 +691,12 @@ paths:
                       $ref: "#/components/schemas/DnsRecord"
     post:
       summary: Create a DNS record (name -> IPv4 address), persisted across daemon restarts
+      description: >
+        A `name` with no `.` gets this install's own site suffix appended by default
+        (`<name>.<site_name>.<domain_suffix>`, ADR-0052) -- fully overridable by
+        including a `.` in the submitted name, in which case it's stored exactly as
+        given. Convenience only: an already-existing bare record is never retroactively
+        touched.
       operationId: createDnsRecord
       requestBody:
         required: true
@@ -830,7 +851,10 @@ paths:
       summary: >
         Bootstraps the single root CA (self-signed keypair, generated via the system's
         real openssl binary). The CA private key is never returned over the API, in any
-        endpoint, ever. No CA regeneration in v1 -- a second call is a 409.
+        endpoint, ever. A second call is a 409 -- this endpoint never regenerates an
+        existing CA; see POST /pki/reset (ADR-0049) for that. On success, also (re)issues
+        this install's own "host" leaf (ADR-0050) if site config is already set --
+        best-effort, never fails this request.
       operationId: createPkiCa
       requestBody:
         required: false
@@ -885,7 +909,9 @@ paths:
         to that endpoint, no separate opt-in. GET /pki/certs/{name} and the tls.crt a
         running container receives via pki_issue both then carry the real, complete
         chain (leaf + intermediate). The intermediate private key is never returned
-        over the API, same as the root's.
+        over the API, same as the root's. On success, also reissues this install's own
+        "host" leaf (ADR-0050) so it's signed by the intermediate too -- best-effort,
+        never fails this request.
       operationId: createPkiIntermediate
       requestBody:
         required: false
@@ -934,7 +960,10 @@ paths:
       summary: >
         Issues a leaf certificate signed by the root CA. The response is the ONLY place
         the leaf private key is ever returned -- neither the list nor the single-get
-        endpoint includes one again afterward.
+        endpoint includes one again afterward. A `name` with no `.` gets this install's
+        own site suffix appended by default (CN and, when `sans` is omitted, the default
+        SAN too -- ADR-0052), fully overridable by including a `.`. Never applied to an
+        explicitly-supplied `sans` entry.
       operationId: createPkiCert
       requestBody:
         required: true
@@ -991,6 +1020,81 @@ paths:
           description: Removed
         "404":
           description: No cert with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /pki/reset:
+    post:
+      summary: Wipes and regenerates the entire CA chain, reissuing every currently-tracked leaf
+      description: >
+        Destructive. pki_ca_create()/pki_intermediate_create() are one-shot by design and refuse
+        a second call outright (409) -- this is the explicit, real "start over" operation that
+        design deliberately doesn't provide implicitly. Deletes the root (and the intermediate,
+        if one was bootstrapped) and every leaf's on-disk key/cert, then re-bootstraps the root
+        (and intermediate, only if one existed before this call) with new common names, then
+        reissues every leaf that was tracked beforehand -- same name/SANs/owner, a fresh keypair
+        and validity period for each. Every reissued leaf's cert_pem AND key_pem are included in
+        the response -- this is a genuine new issuance moment for each, so it gets the identical
+        "returned exactly once, right now" treatment a leaf's cert_pem/key_pem already gets at
+        first issuance (POST /pki/certs); there is no second chance to retrieve a reissued leaf's
+        private key afterward. A leaf whose reissue itself fails is simply gone, not left in its
+        old state -- its old key/cert are already unlinked before any reissue is attempted, since
+        they were signed by a CA that no longer exists the moment this proceeds. Any leaf owned by
+        a still-live, --pki-issue-created container is automatically redelivered into that
+        container's own filesystem afterward (pki_cert_deliver(), same mechanism container
+        creation's own pki_issue already uses), so a running service's tls.crt/tls.key don't go
+        stale. See ADR-0049.
+      operationId: resetPki
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                root_common_name:
+                  type: string
+                  description: Defaults to "Kanxeo Root CA - <domain_suffix>" (this install's own site config).
+                intermediate_common_name:
+                  type: string
+                  description: >
+                    Defaults to "Kanxeo Intermediate CA - <domain_suffix>". Ignored if no
+                    intermediate was bootstrapped before this call -- resetting the root alone
+                    never creates one that didn't already exist.
+                root_days:
+                  type: integer
+                  default: 3650
+                intermediate_days:
+                  type: integer
+                  default: 1825
+                leaf_days:
+                  type: integer
+                  default: 365
+                  description: Validity period applied to every reissued leaf.
+      responses:
+        "200":
+          description: New chain + every successfully reissued leaf
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [root, reissued]
+                properties:
+                  root:
+                    $ref: "#/components/schemas/PkiCa"
+                  intermediate:
+                    allOf:
+                      - $ref: "#/components/schemas/PkiCa"
+                    nullable: true
+                    description: null if no intermediate was bootstrapped before this call.
+                  reissued:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PkiCertIssued"
+        "400":
+          description: Invalid root_common_name/intermediate_common_name, or the root isn't bootstrapped yet
           content:
             application/json:
               schema:
@@ -1959,6 +2063,13 @@ components:
             Every *.recipe file currently on disk, keyed by package
             name (not just currently-installed packages -- recipes are
             cheap, and the operator may want them all preserved).
+        site_config:
+          type: string
+          description: >
+            Raw content of site_config.json (this install's own
+            instance_name/site_name/domain_suffix, ADR-0046). Restored
+            state takes effect on the daemon's next boot, same as
+            every other field in this bundle.
 
     ConfigFile:
       type: object
@@ -2451,8 +2562,15 @@ components:
 
     SiteConfig:
       type: object
-      required: [site_name, domain_suffix]
+      required: [instance_name, site_name, domain_suffix]
       properties:
+        instance_name:
+          type: string
+          default: kanxeo
+          description: >
+            This specific install's own label (e.g. "kanxeo1") --
+            always non-empty, shown in the dashboard header, CLI
+            output, and backup bundle. Defaults to "kanxeo".
         site_name:
           type: string
           description: >

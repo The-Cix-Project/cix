@@ -26,6 +26,14 @@ extern char **environ;
 
 #define TEST_PORT 7626
 #define PORT_ARG "--port=7626"
+/* A real, specific loopback alias (not 127.0.0.1) -- deliberately
+ * NOT the daemon's own default bind address, since
+ * reconcile_instance_dns_record() (ADR-0053) treats "127.0.0.1" as
+ * "no address to publish" and skips entirely; this test needs a real
+ * address to actually exercise it. 127.0.0.0/8 is entirely loopback on
+ * Linux, so this needs no extra host-side setup. */
+#define TEST_BIND "127.0.0.2"
+#define BIND_ARG "--bind=127.0.0.2"
 #define TEST_NETWORK_NAME "dnstestnet"
 #define TEST_NETWORK_SUBNET "172.35.0.0"
 
@@ -241,7 +249,7 @@ static int run_dig(const char *server_ip, const char *qname, char *out, size_t o
 int main(void)
 {
 	pid_t daemon_pid;
-	char *dargv[4];
+	char *dargv[5];
 	char data_dir_arg[PATH_MAX + 11];
 	struct kx_client client;
 	int ok = 1;
@@ -284,7 +292,8 @@ int main(void)
 	dargv[0] = "build/kanxeod";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
-	dargv[3] = NULL;
+	dargv[3] = BIND_ARG;
+	dargv[4] = NULL;
 
 	daemon_pid = fork();
 	if (daemon_pid < 0) {
@@ -298,7 +307,7 @@ int main(void)
 		_exit(127);
 	}
 
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	kx_client_init(&client, TEST_BIND, TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -306,6 +315,58 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
+
+	/*
+	 * 0. ADR-0053: reconcile_instance_dns_record() runs once at daemon
+	 * startup -- with a real, specific --bind= address (TEST_BIND, not
+	 * the default 127.0.0.1 this function deliberately skips), a
+	 * record for the default FQDN ("kanxeo.internal" -- default
+	 * instance_name/domain_suffix, no site config touched yet) must
+	 * already exist without any PUT ever happening.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET", "/v1/dns/records/kanxeo.internal", NULL, &r) != 0 ||
+	    r.status != 200 || !str_eq(json_str_field(r.json, "ip"), TEST_BIND)) {
+		fprintf(stderr,
+		        "FAIL: instance DNS record for default FQDN missing at startup, status=%d\n",
+		        r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	/* A live rename must delete the old record and create the new one
+	 * -- not leave both, not leave neither. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT", "/v1/system/site",
+	                       "{\"instance_name\":\"dnstesthost2\",\"site_name\":\"\","
+	                       "\"domain_suffix\":\"internal\"}",
+	                       &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: PUT site config (instance rename), status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET", "/v1/dns/records/dnstesthost2.internal", NULL, &r) !=
+	        0 ||
+	    r.status != 200 || !str_eq(json_str_field(r.json, "ip"), TEST_BIND)) {
+		fprintf(stderr, "FAIL: instance DNS record did not follow rename, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET", "/v1/dns/records/kanxeo.internal", NULL, &r) != 0 ||
+	    r.status != 404) {
+		fprintf(stderr, "FAIL: old instance DNS record still present after rename, status=%d\n",
+		        r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	kx_client_request(&client, "DELETE", "/v1/dns/records/dnstesthost2.internal", NULL, &r);
+	kx_response_free(&r);
 
 	/* 1. records CRUD + hostname/ip validation */
 	memset(&r, 0, sizeof(r));
@@ -350,6 +411,61 @@ int main(void)
 		fprintf(stderr, "FAIL: invalid ip expected 400, got %d\n", r.status);
 		ok = 0;
 	}
+	kx_response_free(&r);
+
+	/*
+	 * 1b (ADR-0052): server-side default name qualification -- a bare
+	 * label (no dot) gets this site's suffix appended; a name that
+	 * already has a dot (like "svc.test" above) is left exactly as
+	 * typed, confirmed by that same earlier assertion never expecting
+	 * anything but "svc.test" back.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT", "/v1/system/site",
+	                       "{\"instance_name\":\"dnstesthost\",\"site_name\":\"lab9\","
+	                       "\"domain_suffix\":\"qualify.test\"}",
+	                       &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: PUT site config for qualification test, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/dns/records",
+	                       "{\"name\":\"bareweb\",\"ip\":\"10.9.9.30\"}", &r) != 0 ||
+	    r.status != 201 ||
+	    !str_eq(json_str_field(r.json, "name"), "bareweb.lab9.qualify.test")) {
+		fprintf(stderr, "FAIL: bare name not qualified, got name=%s status=%d\n",
+		        json_str_field(r.json, "name") ? json_str_field(r.json, "name") : "(null)",
+		        r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/dns/records",
+	                       "{\"name\":\"explicit.other\",\"ip\":\"10.9.9.31\"}", &r) != 0 ||
+	    r.status != 201 || !str_eq(json_str_field(r.json, "name"), "explicit.other")) {
+		fprintf(stderr, "FAIL: dotted name was qualified when it shouldn't be, got name=%s\n",
+		        json_str_field(r.json, "name") ? json_str_field(r.json, "name") : "(null)");
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	kx_client_request(&client, "DELETE", "/v1/dns/records/bareweb.lab9.qualify.test", NULL, &r);
+	kx_response_free(&r);
+	kx_client_request(&client, "DELETE", "/v1/dns/records/explicit.other", NULL, &r);
+	kx_response_free(&r);
+
+	/* Restore site_name to "" (no site tier) -- every bare name the
+	 * rest of this test creates below expects to be stored literally,
+	 * exactly like before ADR-0052 existed. */
+	memset(&r, 0, sizeof(r));
+	kx_client_request(&client, "PUT", "/v1/system/site",
+	                   "{\"instance_name\":\"dnstesthost\",\"site_name\":\"\","
+	                   "\"domain_suffix\":\"internal\"}",
+	                   &r);
 	kx_response_free(&r);
 
 	/* 2. create the network the dnsmasq container lives on. Explicit

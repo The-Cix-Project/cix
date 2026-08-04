@@ -53,3 +53,8 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0046](0046-site-scoped-dns-pki-naming.md) | Site-scoped DNS/PKI naming: a real, configurable convenience, not enforcement | Accepted |
 | [0047](0047-two-tier-pki-intermediate-ca.md) | Two-tier PKI: an intermediate CA for day-to-day signing | Accepted |
 | [0048](0048-persistent-device-name-mappings.md) | Persistent device name mappings: exact vs. vendor/model resolution | Accepted |
+| [0049](0049-pki-ca-reset-regeneration.md) | PKI CA reset/regeneration: reissue-in-place, not destroy | Accepted |
+| [0050](0050-auto-issued-host-pki-cert.md) | Auto-issued host PKI cert: a fixed record name, not the FQDN itself | Accepted |
+| [0051](0051-ca-trust-staged-into-images.md) | CA trust chain staged into every image at creation time | Accepted |
+| [0052](0052-server-side-default-name-qualification.md) | Server-side default DNS/PKI name qualification (revises ADR-0046) | Accepted |
+| [0053](0053-auto-maintained-instance-dns-record.md) | Auto-maintained instance DNS record | Accepted |

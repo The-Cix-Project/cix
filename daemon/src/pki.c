@@ -871,6 +871,13 @@ enum pki_error pki_cert_delete(const char *name)
 	return PKI_OK;
 }
 
+int pki_cert_owned_by(const char *name, const char *owner)
+{
+	struct pki_cert_record *rec = cert_find(name);
+
+	return rec != NULL && strcmp(rec->owner_container, owner) == 0;
+}
+
 void pki_cert_forget_owner(const char *container_name)
 {
 	struct pki_cert_record *rec = cert_find(container_name);
@@ -878,6 +885,146 @@ void pki_cert_forget_owner(const char *container_name)
 	if (rec == NULL || strcmp(rec->owner_container, container_name) != 0)
 		return;
 	pki_cert_delete(container_name);
+}
+
+enum pki_error pki_ca_reset(const char *root_common_name, const char *intermediate_common_name,
+                             int root_days, int intermediate_days, int leaf_days,
+                             struct json_writer *w)
+{
+	struct pki_cert_record *snapshot;
+	int snapshot_count = 0;
+	int had_intermediate;
+	char path[PATH_MAX];
+	enum pki_error perr;
+	int i;
+
+	if (!common_name_is_valid(root_common_name))
+		return PKI_ERR_INVALID_NAME;
+	if (!pki_ca_bootstrapped())
+		return PKI_ERR_NOT_BOOTSTRAPPED;
+	had_intermediate = pki_intermediate_bootstrapped();
+	if (had_intermediate && !common_name_is_valid(intermediate_common_name))
+		return PKI_ERR_INVALID_NAME;
+
+	snapshot = malloc(sizeof(*snapshot) * PKI_MAX_CERTS);
+	if (snapshot == NULL)
+		return PKI_ERR_PERSIST_FAILED;
+	for (i = 0; i < PKI_MAX_CERTS; i++) {
+		if (g_certs[i].name[0] != '\0')
+			snapshot[snapshot_count++] = g_certs[i];
+	}
+
+	/* Every leaf's signer is about to stop existing -- their on-disk
+	 * key/cert are unrecoverable-by-design once this proceeds, so wipe
+	 * them and persist the now-empty index before touching the CA
+	 * itself. If reissue below fails partway, the index never points
+	 * at files that no longer exist. */
+	for (i = 0; i < snapshot_count; i++) {
+		snprintf(path, sizeof(path), "%s/%s.key", g_certs_dir, snapshot[i].name);
+		unlink(path);
+		snprintf(path, sizeof(path), "%s/%s.crt", g_certs_dir, snapshot[i].name);
+		unlink(path);
+	}
+	memset(g_certs, 0, sizeof(g_certs));
+	if (save_state() != 0) {
+		free(snapshot);
+		return PKI_ERR_PERSIST_FAILED;
+	}
+
+	unlink(g_ca_key_path);
+	unlink(g_ca_cert_path);
+	unlink(g_intermediate_key_path);
+	unlink(g_intermediate_cert_path);
+	snprintf(path, sizeof(path), "%s/ca.srl", g_pki_dir);
+	unlink(path);
+	snprintf(path, sizeof(path), "%s/intermediate.srl", g_pki_dir);
+	unlink(path);
+
+	perr = pki_ca_create(root_common_name, root_days);
+	if (perr != PKI_OK) {
+		free(snapshot);
+		return perr;
+	}
+	if (had_intermediate) {
+		perr = pki_intermediate_create(intermediate_common_name, intermediate_days);
+		if (perr != PKI_OK) {
+			free(snapshot);
+			return perr;
+		}
+	}
+
+	jw_obj_open(w);
+	jw_key(w, "root");
+	pki_ca_get(w);
+	jw_key(w, "intermediate");
+	if (had_intermediate)
+		pki_intermediate_get(w);
+	else
+		jw_null(w);
+
+	jw_key(w, "reissued");
+	jw_arr_open(w);
+	for (i = 0; i < snapshot_count; i++) {
+		const char *sans_ptrs[PKI_MAX_SANS];
+		int j;
+		enum pki_error rperr;
+
+		for (j = 0; j < snapshot[i].san_count; j++)
+			sans_ptrs[j] = snapshot[i].sans[j];
+		rperr = pki_cert_create(snapshot[i].name, sans_ptrs, snapshot[i].san_count, leaf_days,
+		                         snapshot[i].owner_container[0] != '\0' ?
+		                             snapshot[i].owner_container :
+		                             NULL,
+		                         w);
+		if (rperr != PKI_OK)
+			fprintf(stderr, "pki: reset could not reissue leaf %s (err=%d)\n",
+			        snapshot[i].name, (int)rperr);
+	}
+	jw_arr_close(w);
+	jw_obj_close(w);
+
+	free(snapshot);
+	return PKI_OK;
+}
+
+enum pki_error pki_write_trust_bundle_file(const char *dest_path)
+{
+	char *root_pem = NULL, *intermediate_pem = NULL, *bundle = NULL;
+	size_t root_len, intermediate_len = 0, bundle_len;
+	enum pki_error result = PKI_OK;
+
+	if (!pki_ca_bootstrapped())
+		return PKI_ERR_NOT_BOOTSTRAPPED;
+
+	if (persist_read_file(g_ca_cert_path, &root_pem, &root_len) != 0 || root_pem == NULL)
+		return PKI_ERR_PERSIST_FAILED;
+
+	if (pki_intermediate_bootstrapped() &&
+	    (persist_read_file(g_intermediate_cert_path, &intermediate_pem, &intermediate_len) != 0 ||
+	     intermediate_pem == NULL)) {
+		free(root_pem);
+		return PKI_ERR_PERSIST_FAILED;
+	}
+
+	bundle_len = root_len + intermediate_len;
+	bundle = malloc(bundle_len + 1);
+	if (bundle == NULL) {
+		free(root_pem);
+		free(intermediate_pem);
+		return PKI_ERR_PERSIST_FAILED;
+	}
+	memcpy(bundle, root_pem, root_len);
+	if (intermediate_pem != NULL)
+		memcpy(bundle + root_len, intermediate_pem, intermediate_len);
+	bundle[bundle_len] = '\0';
+
+	if (persist_atomic_write(dest_path, bundle, bundle_len) != 0)
+		result = PKI_ERR_PERSIST_FAILED;
+
+	free(root_pem);
+	free(intermediate_pem);
+	free(bundle);
+	return result;
 }
 
 /* cert_pem may be NULL (list view: metadata only, never a key). */

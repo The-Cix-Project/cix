@@ -7,9 +7,9 @@
  * plain file I/O + JSON, the same class of test as test_system_update.c.
  *
  * Scope matches the ADR exactly: platform configuration state only
- * (container defs, networks, DNS records, pkg install state + recipes)
- * -- never PKI, never image content, never workload data. Nothing here
- * exercises PKI at all, on purpose.
+ * (container defs, networks, DNS records, pkg install state + recipes,
+ * site config) -- never PKI, never image content, never workload data.
+ * Nothing here exercises PKI at all, on purpose.
  */
 #include "httpclient.h"
 #include "json.h"
@@ -213,8 +213,20 @@ int main(void)
 	}
 	kx_response_free(&r);
 
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT", "/v1/system/site",
+	                       "{\"instance_name\":\"backuptest-instance\",\"site_name\":\"\","
+	                       "\"domain_suffix\":\"internal\"}",
+	                       &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: PUT site config, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
 	/* 2. GET /system/backup: confirm the bundle's own container_defs
-	 * field, re-parsed, actually mentions "keeper". */
+	 * field, re-parsed, actually mentions "keeper", and that
+	 * site_config actually carries the instance_name just set. */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "GET", "/v1/system/backup", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET backup, status=%d\n", r.status);
@@ -223,6 +235,7 @@ int main(void)
 		const char *defs = json_str_field(r.json, "container_defs");
 		const char *nets = json_str_field(r.json, "networks");
 		const char *recs = json_str_field(r.json, "dns_records");
+		const char *site = json_str_field(r.json, "site_config");
 		const struct json_value *recipes = json_object_get(r.json, "pkg_recipes");
 
 		if (defs == NULL || strstr(defs, "keeper") == NULL) {
@@ -235,6 +248,10 @@ int main(void)
 		}
 		if (recs == NULL || strstr(recs, "backup.internal") == NULL) {
 			fprintf(stderr, "FAIL: backup dns_records missing \"backup.internal\"\n");
+			ok = 0;
+		}
+		if (site == NULL || strstr(site, "backuptest-instance") == NULL) {
+			fprintf(stderr, "FAIL: backup site_config missing \"backuptest-instance\"\n");
 			ok = 0;
 		}
 		if (recipes == NULL || recipes->type != JSON_OBJECT) {
@@ -331,7 +348,7 @@ int main(void)
 		}
 	}
 
-	/* 4. Restore with neither of the five recognized fields -> 400. */
+	/* 4. Restore with none of the six recognized fields -> 400. */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/system/restore", "{}", &r) != 0 ||
 	    r.status != 400) {

@@ -121,9 +121,10 @@ static void print_usage(FILE *out)
 	        "               recipe version has drifted (one at a time, same v1 single-job\n"
 	        "               constraint as pkg install --upgrade); call again once that job\n"
 	        "               finishes to pick up the next one\n"
-	        "  site show  -- this install's own site_name/domain_suffix (ADR-0046);\n"
-	        "               convenience for suggesting FQDNs, never enforced\n"
-	        "  site set --domain-suffix=NAME [--site-name=NAME]\n");
+	        "  site show  -- this install's own instance_name/site_name/domain_suffix\n"
+	        "               (ADR-0046); convenience for identification + suggesting FQDNs,\n"
+	        "               never enforced\n"
+	        "  site set [--instance-name=NAME] [--site-name=NAME] [--domain-suffix=NAME]\n");
 }
 
 static const char *json_str_field(const struct json_value *obj, const char *key)
@@ -477,6 +478,33 @@ static void fmt_pki_ca(const struct json_value *v)
 	printf("not_before: %s\n", not_before);
 	printf("not_after:  %s\n", not_after);
 	printf("\nCertificate:\n%s\n", cert_pem != NULL ? cert_pem : "");
+}
+
+/* Reissued leaves' own cert_pem/key_pem are real (shown once, same
+ * as a fresh cert create()) but omitted here -- this is a summary
+ * view; kanxeoctl pki cert ls / a saved --json capture is how an
+ * operator gets the full material for every reissued leaf at once. */
+static void fmt_pki_reset(const struct json_value *v)
+{
+	const struct json_value *root = json_object_get(v, "root");
+	const struct json_value *intermediate = json_object_get(v, "intermediate");
+	const struct json_value *reissued = json_object_get(v, "reissued");
+	const char *root_subject = root != NULL ? json_str_field(root, "subject") : NULL;
+	size_t i;
+
+	printf("root:         %s\n", root_subject != NULL ? root_subject : "?");
+	if (intermediate != NULL && intermediate->type == JSON_OBJECT) {
+		const char *isub = json_str_field(intermediate, "subject");
+
+		printf("intermediate: %s\n", isub != NULL ? isub : "?");
+	} else {
+		printf("intermediate: (none)\n");
+	}
+	if (reissued != NULL && reissued->type == JSON_ARRAY) {
+		printf("\nreissued %zu leaf cert(s):\n", reissued->u.array.count);
+		for (i = 0; i < reissued->u.array.count; i++)
+			fmt_pki_cert_line(reissued->u.array.items[i]);
+	}
 }
 
 /*
@@ -1011,10 +1039,13 @@ static int cmd_restore(const struct kx_client *c, int json_mode, int argc, char 
 
 static void fmt_site_config(const struct json_value *v)
 {
+	const char *instance_name = json_str_field(v, "instance_name");
 	const char *site_name = json_str_field(v, "site_name");
 	const char *domain_suffix = json_str_field(v, "domain_suffix");
 
-	printf("site_name=%s domain_suffix=%s\n", site_name != NULL && site_name[0] != '\0' ? site_name : "(none)",
+	printf("instance_name=%s site_name=%s domain_suffix=%s\n",
+	       instance_name != NULL ? instance_name : "?",
+	       site_name != NULL && site_name[0] != '\0' ? site_name : "(none)",
 	       domain_suffix != NULL ? domain_suffix : "?");
 }
 
@@ -1029,31 +1060,73 @@ static int cmd_site_show(const struct kx_client *c, int json_mode)
 	return emit(&r, json_mode, fmt_site_config);
 }
 
+/*
+ * PUT /v1/system/site requires all three fields together (server-side
+ * "never silently drop a field the operator didn't mean to touch"
+ * rule -- see siteconfig.h). So an operator changing just one field
+ * (e.g. only --domain-suffix=) must not blow away the other two: this
+ * fetches the current config first and only overrides what was
+ * actually passed on the command line.
+ */
 static int cmd_site_set(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
-	const char *site_name = "";
-	const char *domain_suffix = NULL;
+	char instance_name[128];
+	char site_name[128];
+	char domain_suffix[128];
+	const char *new_instance_name = NULL;
+	const char *new_site_name = NULL;
+	const char *new_domain_suffix = NULL;
+	const char *cur;
 	int i;
 	struct json_writer w;
 	struct kx_response r;
 
 	for (i = 0; i < argc; i++) {
-		if (strncmp(argv[i], "--site-name=", 12) == 0)
-			site_name = argv[i] + 12;
+		if (strncmp(argv[i], "--instance-name=", 16) == 0)
+			new_instance_name = argv[i] + 16;
+		else if (strncmp(argv[i], "--site-name=", 12) == 0)
+			new_site_name = argv[i] + 12;
 		else if (strncmp(argv[i], "--domain-suffix=", 16) == 0)
-			domain_suffix = argv[i] + 16;
+			new_domain_suffix = argv[i] + 16;
 		else {
 			fprintf(stderr, "kanxeoctl: unknown site set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
-	if (domain_suffix == NULL) {
-		fprintf(stderr, "usage: kanxeoctl site set --domain-suffix=NAME [--site-name=NAME]\n");
+	if (new_instance_name == NULL && new_site_name == NULL && new_domain_suffix == NULL) {
+		fprintf(stderr, "usage: kanxeoctl site set [--instance-name=NAME] [--site-name=NAME] "
+		                "[--domain-suffix=NAME]\n");
 		return 2;
 	}
 
+	if (kx_client_request(c, "GET", "/v1/system/site", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	if (r.status < 200 || r.status >= 300) {
+		fprintf(stderr, "kanxeoctl: could not read current site config (HTTP %d)\n", r.status);
+		kx_response_free(&r);
+		return 1;
+	}
+	cur = json_str_field(r.json, "instance_name");
+	snprintf(instance_name, sizeof(instance_name), "%s", cur != NULL ? cur : "kanxeo");
+	cur = json_str_field(r.json, "site_name");
+	snprintf(site_name, sizeof(site_name), "%s", cur != NULL ? cur : "");
+	cur = json_str_field(r.json, "domain_suffix");
+	snprintf(domain_suffix, sizeof(domain_suffix), "%s", cur != NULL ? cur : "internal");
+	kx_response_free(&r);
+
+	if (new_instance_name != NULL)
+		snprintf(instance_name, sizeof(instance_name), "%s", new_instance_name);
+	if (new_site_name != NULL)
+		snprintf(site_name, sizeof(site_name), "%s", new_site_name);
+	if (new_domain_suffix != NULL)
+		snprintf(domain_suffix, sizeof(domain_suffix), "%s", new_domain_suffix);
+
 	jw_init(&w);
 	jw_obj_open(&w);
+	jw_key(&w, "instance_name");
+	jw_str(&w, instance_name);
 	jw_key(&w, "site_name");
 	jw_str(&w, site_name);
 	jw_key(&w, "domain_suffix");
@@ -1077,7 +1150,8 @@ static int cmd_site(const struct kx_client *c, int json_mode, int argc, char **a
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: kanxeoctl site show\n"
-		                "       kanxeoctl site set --domain-suffix=NAME [--site-name=NAME]\n");
+		                "       kanxeoctl site set [--instance-name=NAME] [--site-name=NAME] "
+		                "[--domain-suffix=NAME]\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -2338,6 +2412,78 @@ static int cmd_pki_cert(const struct kx_client *c, int json_mode, int argc, char
 	return 2;
 }
 
+/*
+ * Destructive: wipes and regenerates the whole CA chain (root, plus
+ * the intermediate if one exists), reissuing every currently-tracked
+ * leaf under the new chain. No separate --yes confirmation flag --
+ * matches every other destructive kanxeoctl subcommand's own direct-
+ * execution convention (pki cert rm, network rm, ...); the web
+ * dashboard's own confirm dialog is where the "are you sure" prompt
+ * lives for this project.
+ */
+static int cmd_pki_reset(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *root_cn = NULL;
+	const char *intermediate_cn = NULL;
+	long root_days = -1;
+	long intermediate_days = -1;
+	long leaf_days = -1;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--root-common-name=", 19) == 0)
+			root_cn = argv[i] + 19;
+		else if (strncmp(argv[i], "--intermediate-common-name=", 27) == 0)
+			intermediate_cn = argv[i] + 27;
+		else if (strncmp(argv[i], "--root-days=", 12) == 0)
+			root_days = atol(argv[i] + 12);
+		else if (strncmp(argv[i], "--intermediate-days=", 20) == 0)
+			intermediate_days = atol(argv[i] + 20);
+		else if (strncmp(argv[i], "--leaf-days=", 12) == 0)
+			leaf_days = atol(argv[i] + 12);
+		else {
+			fprintf(stderr, "kanxeoctl: unknown pki reset option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	if (root_cn != NULL) {
+		jw_key(&w, "root_common_name");
+		jw_str(&w, root_cn);
+	}
+	if (intermediate_cn != NULL) {
+		jw_key(&w, "intermediate_common_name");
+		jw_str(&w, intermediate_cn);
+	}
+	if (root_days >= 0) {
+		jw_key(&w, "root_days");
+		jw_int(&w, root_days);
+	}
+	if (intermediate_days >= 0) {
+		jw_key(&w, "intermediate_days");
+		jw_int(&w, intermediate_days);
+	}
+	if (leaf_days >= 0) {
+		jw_key(&w, "leaf_days");
+		jw_int(&w, leaf_days);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/pki/reset", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_pki_reset);
+}
+
 static int cmd_pki(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
@@ -2345,7 +2491,13 @@ static int cmd_pki(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (argc < 1) {
 		fprintf(stderr, "usage: kanxeoctl pki ca ...\n"
 		                "       kanxeoctl pki intermediate ...\n"
-		                "       kanxeoctl pki cert ...\n");
+		                "       kanxeoctl pki cert ...\n"
+		                "       kanxeoctl pki reset [--root-common-name=NAME]\n"
+		                "               [--intermediate-common-name=NAME] [--root-days=N]\n"
+		                "               [--intermediate-days=N] [--leaf-days=N]  -- wipes and\n"
+		                "               regenerates the whole CA chain, reissuing every leaf\n"
+		                "               currently tracked; defaults name each tier after this\n"
+		                "               install's own domain_suffix (kanxeoctl site show)\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -2355,6 +2507,8 @@ static int cmd_pki(const struct kx_client *c, int json_mode, int argc, char **ar
 		return cmd_pki_intermediate(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "cert") == 0)
 		return cmd_pki_cert(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "reset") == 0)
+		return cmd_pki_reset(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "kanxeoctl: unknown pki subcommand '%s'\n", sub);
 	return 2;

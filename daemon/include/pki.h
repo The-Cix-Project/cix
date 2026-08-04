@@ -109,6 +109,13 @@ enum pki_error pki_cert_create(const char *name, const char *const *sans, int sa
 
 enum pki_error pki_cert_delete(const char *name);
 
+/* 1 if a cert named `name` exists and its owner_container is exactly
+ * `owner`, 0 otherwise (including "no such cert" -- not itself an
+ * error here, just "nothing owned"). For callers deciding whether to
+ * redeliver into a specific live container without needing the full
+ * JSON-serialized metadata shape. */
+int pki_cert_owned_by(const char *name, const char *owner);
+
 /* Best-effort cleanup on container deletion: deletes name's cert iff
  * it exists and its owner_container is name itself (via
  * pki_cert_delete() -- one deletion code path, not two). Safe no-op
@@ -133,6 +140,62 @@ void pki_cert_forget_owner(const char *container_name);
  * alone otherwise -- transparent to every existing caller.
  */
 enum pki_error pki_cert_deliver(const char *name, pid_t pid, const char *dest_dir);
+
+/*
+ * Wipes and regenerates the entire CA chain (root, plus the
+ * intermediate too if one already existed) with new common names,
+ * then reissues every leaf cert currently tracked -- same name/SANs/
+ * owner, a fresh keypair and validity period for each. This is the
+ * only way to change an already-bootstrapped CA's subject:
+ * pki_ca_create()/pki_intermediate_create() are one-shot by design and
+ * refuse a second call outright (PKI_ERR_ALREADY_BOOTSTRAPPED) -- this
+ * is the explicit, real "start over" operation that design
+ * deliberately doesn't provide implicitly (see ADR for this).
+ *
+ * Requires the root to already be bootstrapped (PKI_ERR_NOT_BOOTSTRAPPED
+ * otherwise -- use pki_ca_create() directly for a genuinely first-ever
+ * bootstrap). Re-creates the intermediate only if one existed before
+ * this call; an install that never bootstrapped one doesn't gain one
+ * just by resetting the root.
+ *
+ * Writes {"root": <same shape as pki_ca_get()>, "intermediate":
+ * <same shape as pki_intermediate_get(), or null>, "reissued": [
+ * <same shape as pki_cert_create()'s own response, one per
+ * successfully reissued leaf> ]} into w. Every reissued leaf's
+ * cert_pem AND key_pem are included -- this is a genuine new issuance
+ * moment for each (a brand-new keypair, signed by the new chain), so
+ * it gets the identical "returned exactly once, right now" treatment
+ * pki_cert_create()'s own response already gives a leaf at first
+ * issuance; there is no second chance to retrieve a reissued leaf's
+ * private key after this call returns. A leaf whose reissue itself
+ * fails (logged to stderr, non-fatal to the rest of the batch) is
+ * simply gone afterward, not left in its old state -- its old
+ * key/cert are already unlinked before any reissue is attempted, since
+ * they're signed by a CA that no longer exists the moment this
+ * proceeds.
+ *
+ * Does NOT redeliver a reissued leaf into any live container that
+ * owns it -- pki.c has no dependency on containerdef.c/registry.c to
+ * look up a live pid or that container's own --pki-cert-dir. The REST
+ * handler layer already does exactly this kind of orchestration for
+ * --pki-issue at container-create time and is where it belongs here
+ * too (replay the same check for every currently-live container after
+ * a successful reset).
+ */
+enum pki_error pki_ca_reset(const char *root_common_name, const char *intermediate_common_name,
+                             int root_days, int intermediate_days, int leaf_days,
+                             struct json_writer *w);
+
+/*
+ * Writes the current CA trust chain (root alone, or root+intermediate
+ * if one is bootstrapped -- order doesn't matter for a pure trust-
+ * anchor bundle the way it does for pki_cert_deliver()'s own
+ * leaf-first fullchain.pem) to dest_path. For staging into a
+ * container image's own trust store (ADR-0051) -- a different job
+ * from pki_cert_deliver()'s "hand a running container its own leaf
+ * identity." PKI_ERR_NOT_BOOTSTRAPPED if no root exists yet.
+ */
+enum pki_error pki_write_trust_bundle_file(const char *dest_path);
 
 /* Metadata only (name/serial/not_after/sans/owner) -- no cert_pem, no key_pem. */
 void pki_write_json_list(struct json_writer *w);

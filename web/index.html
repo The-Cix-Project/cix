@@ -8,7 +8,7 @@
 </head>
 <body>
 <header>
-	<h1>Kanxeo</h1>
+	<h1>Kanxeo<span id="header-instance-name" class="header-instance-name" hidden></span></h1>
 	<div class="header-right">
 		<span id="health" class="badge badge-unknown">checking&hellip;</span>
 		<div class="create-dropdown">
@@ -357,6 +357,28 @@
 				</label>
 				<button type="submit">Bootstrap intermediate</button>
 			</form>
+
+			<h2>PKI: Reset CA chain</h2>
+			<p class="hint">
+				Wipes and regenerates the root (and intermediate, if bootstrapped),
+				reissuing every currently-tracked leaf cert under the new chain.
+				<strong>Destructive</strong> -- every previously-issued cert stops
+				verifying against the new root the moment this completes. Leaves
+				empty to default each name to <code>Kanxeo Root/Intermediate CA -
+				&lt;domain_suffix&gt;</code>.
+			</p>
+			<form id="pki-reset-form">
+				<label>
+					Root common name
+					<input type="text" id="resetf-root-cn" placeholder="(default: domain_suffix-based)">
+				</label>
+				<label>
+					Intermediate common name
+					<input type="text" id="resetf-intermediate-cn" placeholder="(default: domain_suffix-based)">
+				</label>
+				<button type="submit" class="button-danger">Reset CA chain</button>
+			</form>
+			<div id="pki-reset-result" class="pki-ca-status" hidden></div>
 		</section>
 
 		<!-- PKI: Certificates -->
@@ -449,11 +471,16 @@
 
 			<h3>Site</h3>
 			<p class="hint">
-				A real, operator-set site identity, used only to suggest a default FQDN
+				A real, operator-set identity for this install, used to label it in the
+				dashboard header and backups, and to suggest a default FQDN
 				(<code>&lt;name&gt;.&lt;site_name&gt;.&lt;domain_suffix&gt;</code>) when
 				creating a DNS record or issuing a PKI cert -- never enforced.
 			</p>
 			<form id="sys-site-form">
+				<label>
+					Instance name
+					<input type="text" id="sitef-instance-name" placeholder="kanxeo">
+				</label>
 				<label>
 					Site name (optional)
 					<input type="text" id="sitef-site-name" placeholder="lab1">
@@ -467,7 +494,7 @@
 
 			<h3>Backup</h3>
 			<p class="hint">Platform configuration state (container defs, networks, DNS records, pkg install
-				state + recipes) -- not workload data, not image content, never PKI keys.</p>
+				state + recipes, site config) -- not workload data, not image content, never PKI keys.</p>
 			<button type="button" id="sys-backup">Download backup</button>
 
 			<h3>Restore</h3>

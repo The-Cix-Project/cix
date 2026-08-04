@@ -148,6 +148,16 @@ enum registry_error registry_create(const char *name, const char *image,
 struct registry_entry *registry_find(const char *name);
 
 /*
+ * Writes up to max in-use entries' own names into out_names (any
+ * order), returns the count. For callers that need to enumerate every
+ * currently-known container regardless of whether it also has a
+ * persisted definition (containerdef.c only persists one for
+ * restart != "no" -- a plain, unpersisted container is still a real,
+ * live registry_entry and must not be invisible to this kind of scan).
+ */
+int registry_list_names(char out_names[][REGISTRY_NAME_MAX], int max);
+
+/*
  * Freezes (freeze=1) or thaws (freeze=0) e via the cgroup v2 freezer
  * (ADR-0045), updating e->paused on success. See registry.c's own
  * comment for the full rationale (real kernel freeze, not SIGSTOP) and

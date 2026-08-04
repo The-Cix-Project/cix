@@ -2,6 +2,7 @@
 #include "linux_compat.h"
 #include "namecheck.h"
 #include "persist.h"
+#include "pki.h"
 #include "test_image_fixture.h"
 
 #include <dirent.h>
@@ -932,6 +933,39 @@ enum pkg_error pkg_seed_image_baseline(const char *image)
 		snprintf(run_dir, sizeof(run_dir), "%s/run", target_rootfs);
 		if (persist_mkdir_p(run_dir) != 0)
 			return PKG_ERR_PERSIST_FAILED;
+	}
+
+	/*
+	 * ADR-0051: stage the platform's own CA trust chain into this
+	 * image, so a TLS client running inside any container built on it
+	 * (curl, openssl, ...) can verify a Kanxeo-issued cert without
+	 * -k/--insecure. No image built by this platform has ever shipped
+	 * ANY CA trust (not even public roots) -- a real, closeable gap,
+	 * not something this seeding step is regressing. Idempotent (skip
+	 * if already staged, same as the runtime-libs loop above) and
+	 * tolerant of no CA existing yet (PKI_ERR_NOT_BOOTSTRAPPED is the
+	 * common state on a fresh install's very first image) -- only a
+	 * real write failure is fatal, matching the dev/run block's own
+	 * "real I/O problem, not a tolerable gap" stance.
+	 */
+	{
+		char bundle_dst[PATH_MAX];
+		struct stat dst_st;
+		enum pki_error perr;
+
+		snprintf(bundle_dst, sizeof(bundle_dst), "%s/etc/ssl/certs/kanxeo-ca-bundle.pem",
+		         target_rootfs);
+		if (stat(bundle_dst, &dst_st) != 0) {
+			char bundle_dir[PATH_MAX];
+
+			snprintf(bundle_dir, sizeof(bundle_dir), "%s/etc/ssl/certs", target_rootfs);
+			if (persist_mkdir_p(bundle_dir) != 0)
+				return PKG_ERR_PERSIST_FAILED;
+
+			perr = pki_write_trust_bundle_file(bundle_dst);
+			if (perr != PKI_OK && perr != PKI_ERR_NOT_BOOTSTRAPPED)
+				return PKG_ERR_PERSIST_FAILED;
+		}
 	}
 
 	return PKG_OK;

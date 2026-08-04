@@ -776,7 +776,8 @@ int main(void)
 	{
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "GET", "/v1/system/site", NULL, &r) != 0 ||
-		    r.status != 200 || !str_eq(json_str_field(r.json, "domain_suffix"), "internal")) {
+		    r.status != 200 || !str_eq(json_str_field(r.json, "instance_name"), "kanxeo") ||
+		    !str_eq(json_str_field(r.json, "domain_suffix"), "internal")) {
 			fprintf(stderr, "FAIL: GET /v1/system/site defaults, status=%d\n", r.status);
 			ok = 0;
 		}
@@ -784,9 +785,11 @@ int main(void)
 
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "PUT", "/v1/system/site",
-		                       "{\"site_name\":\"lab1\",\"domain_suffix\":\"corp.internal\"}",
+		                       "{\"instance_name\":\"kanxeo1\",\"site_name\":\"lab1\","
+		                       "\"domain_suffix\":\"corp.internal\"}",
 		                       &r) != 0 ||
-		    r.status != 200 || !str_eq(json_str_field(r.json, "site_name"), "lab1") ||
+		    r.status != 200 || !str_eq(json_str_field(r.json, "instance_name"), "kanxeo1") ||
+		    !str_eq(json_str_field(r.json, "site_name"), "lab1") ||
 		    !str_eq(json_str_field(r.json, "domain_suffix"), "corp.internal")) {
 			fprintf(stderr, "FAIL: PUT /v1/system/site, status=%d\n", r.status);
 			ok = 0;
@@ -795,21 +798,487 @@ int main(void)
 
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "GET", "/v1/system/site", NULL, &r) != 0 ||
-		    r.status != 200 || !str_eq(json_str_field(r.json, "site_name"), "lab1")) {
+		    r.status != 200 || !str_eq(json_str_field(r.json, "instance_name"), "kanxeo1") ||
+		    !str_eq(json_str_field(r.json, "site_name"), "lab1")) {
 			fprintf(stderr, "FAIL: GET /v1/system/site after PUT did not stick, status=%d\n",
 			        r.status);
 			ok = 0;
 		}
 		kx_response_free(&r);
 
+		/*
+		 * ADR-0050: the site PUT above must have (re)issued this
+		 * install's own "host" leaf -- SAN reflects the FQDN just set,
+		 * fixed record name, owner null (not tied to any container).
+		 */
+		{
+			char first_serial[128] = { 0 };
+
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "GET", "/v1/pki/certs/host", NULL, &r) != 0 ||
+			    r.status != 200) {
+				fprintf(stderr, "FAIL: GET host cert after site PUT, status=%d\n", r.status);
+				ok = 0;
+			} else {
+				const struct json_value *sans = json_object_get(r.json, "sans");
+				int has_fqdn = 0;
+				size_t i;
+
+				if (sans != NULL && sans->type == JSON_ARRAY) {
+					for (i = 0; i < sans->u.array.count; i++) {
+						if (str_eq(json_as_string(sans->u.array.items[i]),
+						           "kanxeo1.lab1.corp.internal"))
+							has_fqdn = 1;
+					}
+				}
+				if (!has_fqdn) {
+					fprintf(stderr,
+					        "FAIL: host cert SAN missing kanxeo1.lab1.corp.internal\n");
+					ok = 0;
+				}
+				if (json_object_get(r.json, "owner") != NULL &&
+				    json_object_get(r.json, "owner")->type != JSON_NULL) {
+					fprintf(stderr, "FAIL: host cert should have owner=null\n");
+					ok = 0;
+				}
+				snprintf(first_serial, sizeof(first_serial), "%s",
+				         json_str_field(r.json, "serial"));
+			}
+			kx_response_free(&r);
+
+			/* Changing instance_name must genuinely reissue "host" --
+			 * new SAN, new serial, not left stale. */
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "PUT", "/v1/system/site",
+			                       "{\"instance_name\":\"kanxeo2\",\"site_name\":\"lab1\","
+			                       "\"domain_suffix\":\"corp.internal\"}",
+			                       &r) != 0 ||
+			    r.status != 200) {
+				fprintf(stderr, "FAIL: PUT site (rename instance), status=%d\n", r.status);
+				ok = 0;
+			}
+			kx_response_free(&r);
+
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "GET", "/v1/pki/certs/host", NULL, &r) != 0 ||
+			    r.status != 200) {
+				fprintf(stderr, "FAIL: GET host cert after rename, status=%d\n", r.status);
+				ok = 0;
+			} else {
+				const struct json_value *sans = json_object_get(r.json, "sans");
+				int has_new_fqdn = 0;
+				size_t i;
+
+				if (sans != NULL && sans->type == JSON_ARRAY) {
+					for (i = 0; i < sans->u.array.count; i++) {
+						if (str_eq(json_as_string(sans->u.array.items[i]),
+						           "kanxeo2.lab1.corp.internal"))
+							has_new_fqdn = 1;
+					}
+				}
+				if (!has_new_fqdn) {
+					fprintf(stderr,
+					        "FAIL: host cert SAN did not follow instance_name rename\n");
+					ok = 0;
+				}
+				if (first_serial[0] != '\0' &&
+				    str_eq(json_str_field(r.json, "serial"), first_serial)) {
+					fprintf(stderr,
+					        "FAIL: host cert has the SAME serial after rename -- not "
+					        "actually reissued\n");
+					ok = 0;
+				}
+			}
+			kx_response_free(&r);
+
+			/* Restore instance_name to what the rest of this test
+			 * expects below. */
+			memset(&r, 0, sizeof(r));
+			kx_client_request(&client, "PUT", "/v1/system/site",
+			                   "{\"instance_name\":\"kanxeo1\",\"site_name\":\"lab1\","
+			                   "\"domain_suffix\":\"corp.internal\"}",
+			                   &r);
+			kx_response_free(&r);
+		}
+
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "PUT", "/v1/system/site",
-		                       "{\"site_name\":\"lab1\",\"domain_suffix\":\"bad/suffix\"}",
+		                       "{\"instance_name\":\"kanxeo1\",\"site_name\":\"lab1\","
+		                       "\"domain_suffix\":\"bad/suffix\"}",
 		                       &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: PUT invalid domain_suffix expected 400, got %d\n", r.status);
 			ok = 0;
 		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/system/site",
+		                       "{\"instance_name\":\"bad/name\",\"site_name\":\"lab1\","
+		                       "\"domain_suffix\":\"internal\"}",
+		                       &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: PUT invalid instance_name expected 400, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/system/site",
+		                       "{\"site_name\":\"lab1\",\"domain_suffix\":\"internal\"}", &r) !=
+		        0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: PUT missing instance_name expected 400, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/*
+		 * ADR-0052: server-side default qualification for POST
+		 * /v1/pki/certs -- site_name is still "lab1" at this point
+		 * (the last successful PUT above). A bare name gets the CN
+		 * qualified (and the default SAN, since none is supplied
+		 * here); an explicit sans[] entry is left untouched.
+		 */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pki/certs", "{\"name\":\"bareleaf\"}", &r) !=
+		        0 ||
+		    r.status != 201 || !str_eq(json_str_field(r.json, "name"), "bareleaf.lab1.corp.internal")) {
+			fprintf(stderr, "FAIL: bare PKI cert name not qualified, got name=%s status=%d\n",
+			        json_str_field(r.json, "name") ? json_str_field(r.json, "name") : "(null)",
+			        r.status);
+			ok = 0;
+		} else {
+			const struct json_value *sans = json_object_get(r.json, "sans");
+			int has_qualified_san = 0;
+			size_t i;
+
+			if (sans != NULL && sans->type == JSON_ARRAY) {
+				for (i = 0; i < sans->u.array.count; i++) {
+					if (str_eq(json_as_string(sans->u.array.items[i]),
+					           "bareleaf.lab1.corp.internal"))
+						has_qualified_san = 1;
+				}
+			}
+			if (!has_qualified_san) {
+				fprintf(stderr, "FAIL: bare PKI cert's default SAN was not qualified\n");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+		kx_client_request(&client, "DELETE", "/v1/pki/certs/bareleaf.lab1.corp.internal", NULL, &r);
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pki/certs",
+		                       "{\"name\":\"explicit.other\",\"sans\":[\"explicit.other\"]}",
+		                       &r) != 0 ||
+		    r.status != 201 || !str_eq(json_str_field(r.json, "name"), "explicit.other")) {
+			fprintf(stderr, "FAIL: dotted PKI cert name was qualified when it shouldn't be\n");
+			ok = 0;
+		}
+		kx_response_free(&r);
+		kx_client_request(&client, "DELETE", "/v1/pki/certs/explicit.other", NULL, &r);
+		kx_response_free(&r);
+
+		/* ADR-0052: siteconfig_qualify() is gated on site_name being
+		 * non-empty -- reset it to "" here (keeping instance_name/
+		 * domain_suffix, which Part 5 below still needs) so the bare
+		 * PKI cert names Part 5/6 create below ("resettest", ...)
+		 * store literally, exactly as their own assertions expect,
+		 * rather than getting silently qualified into
+		 * "resettest.lab1.corp.internal" the way Part 4's own
+		 * successful PUT above would otherwise leave site_name set to
+		 * cause. */
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "PUT", "/v1/system/site",
+		                   "{\"instance_name\":\"kanxeo1\",\"site_name\":\"\","
+		                   "\"domain_suffix\":\"corp.internal\"}",
+		                   &r);
+		kx_response_free(&r);
+	}
+
+	/*
+	 * Part 5 (ADR-0049): CA reset -- real reissue, not just "the
+	 * response looked plausible." The intermediate is already
+	 * bootstrapped (Part 3) and domain_suffix is already "corp.internal"
+	 * (Part 4's successful PUT above), so a bare POST /v1/pki/reset with
+	 * no body exercises both the domain_suffix-based default naming and
+	 * the "only re-create an intermediate if one already existed" rule
+	 * in one shot.
+	 */
+	{
+		char old_root_cert_pem[8192] = { 0 };
+		char old_leaf_cert_pem[8192] = { 0 };
+		char old_leaf_serial[128] = { 0 };
+		char new_leaf_serial[128] = { 0 };
+		char old_delivered_pem[8192] = { 0 };
+		int resetlive_pid = 0;
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pki/ca", NULL, &r) == 0 && r.status == 200) {
+			snprintf(old_root_cert_pem, sizeof(old_root_cert_pem), "%s",
+			         json_str_field(r.json, "cert_pem"));
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pki/certs",
+		                       "{\"name\":\"resettest\",\"sans\":[\"resettest\"]}", &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST resettest, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			snprintf(old_leaf_cert_pem, sizeof(old_leaf_cert_pem), "%s",
+			         json_str_field(r.json, "cert_pem"));
+			snprintf(old_leaf_serial, sizeof(old_leaf_serial), "%s",
+			         json_str_field(r.json, "serial"));
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"resetlive\",\"image\":\"pkitest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"60\"],\"pki_issue\":true}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST resetlive, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			resetlive_pid = (int)json_as_number(json_object_get(r.json, "pid"));
+		}
+		kx_response_free(&r);
+
+		if (resetlive_pid > 0) {
+			char proc_path[160];
+			FILE *f;
+
+			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/kanxeo-tls/tls.crt",
+			         resetlive_pid);
+			f = fopen(proc_path, "r");
+			if (f != NULL) {
+				size_t n = fread(old_delivered_pem, 1, sizeof(old_delivered_pem) - 1, f);
+
+				old_delivered_pem[n] = '\0';
+				fclose(f);
+			}
+		}
+		if (old_delivered_pem[0] == '\0') {
+			fprintf(stderr, "FAIL: could not read resetlive's pre-reset delivered cert\n");
+			ok = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pki/reset", "{}", &r) != 0 || r.status != 200) {
+			fprintf(stderr, "FAIL: POST /v1/pki/reset, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *root_obj = json_object_get(r.json, "root");
+			const struct json_value *intermediate_obj = json_object_get(r.json, "intermediate");
+			const struct json_value *reissued = json_object_get(r.json, "reissued");
+			const char *root_subject = root_obj != NULL ? json_str_field(root_obj, "subject") :
+			                                               NULL;
+			int found_resettest = 0, found_resetlive = 0;
+			size_t i;
+
+			if (root_subject == NULL || strstr(root_subject, "corp.internal") == NULL) {
+				fprintf(stderr, "FAIL: reset root subject missing domain_suffix, got %s\n",
+				        root_subject != NULL ? root_subject : "(null)");
+				ok = 0;
+			}
+			if (intermediate_obj == NULL || intermediate_obj->type != JSON_OBJECT ||
+			    json_str_field(intermediate_obj, "subject") == NULL ||
+			    strstr(json_str_field(intermediate_obj, "subject"), "corp.internal") == NULL) {
+				fprintf(stderr, "FAIL: reset intermediate missing/wrong -- an intermediate "
+				                "existed before reset, so one must exist after\n");
+				ok = 0;
+			}
+			if (reissued == NULL || reissued->type != JSON_ARRAY) {
+				fprintf(stderr, "FAIL: reset response missing reissued array\n");
+				ok = 0;
+			} else {
+				for (i = 0; i < reissued->u.array.count; i++) {
+					const struct json_value *item = reissued->u.array.items[i];
+					const char *name = json_str_field(item, "name");
+
+					if (str_eq(name, "resettest")) {
+						found_resettest = 1;
+						snprintf(new_leaf_serial, sizeof(new_leaf_serial), "%s",
+						         json_str_field(item, "serial"));
+						if (json_str_field(item, "cert_pem") == NULL ||
+						    json_str_field(item, "key_pem") == NULL) {
+							fprintf(stderr,
+							        "FAIL: reissued resettest missing cert_pem/key_pem\n");
+							ok = 0;
+						}
+						if (str_eq(new_leaf_serial, old_leaf_serial)) {
+							fprintf(stderr,
+							        "FAIL: reissued resettest has the SAME serial as "
+							        "before -- not actually reissued\n");
+							ok = 0;
+						}
+					}
+					if (str_eq(name, "resetlive"))
+						found_resetlive = 1;
+				}
+			}
+			if (!found_resettest) {
+				fprintf(stderr, "FAIL: resettest not present in reissued array\n");
+				ok = 0;
+			}
+			if (!found_resetlive) {
+				fprintf(stderr, "FAIL: resetlive (auto-issued via pki_issue) not present "
+				                "in reissued array\n");
+				ok = 0;
+			}
+
+			/* Real proof: the OLD leaf cert no longer verifies against
+			 * the NEW root -- its actual signer is gone, not just
+			 * relabeled. */
+			if (old_root_cert_pem[0] != '\0' && old_leaf_cert_pem[0] != '\0') {
+				char scratch_dir[] = "/tmp/kanxeo_test_pki_reset_XXXXXX";
+
+				if (mkdtemp(scratch_dir) != NULL) {
+					char new_root_path[160], old_leaf_path[160];
+					const char *new_root_pem =
+					    root_obj != NULL ? json_str_field(root_obj, "cert_pem") : NULL;
+
+					snprintf(new_root_path, sizeof(new_root_path), "%s/new_root.crt",
+					         scratch_dir);
+					snprintf(old_leaf_path, sizeof(old_leaf_path), "%s/old_leaf.crt",
+					         scratch_dir);
+					if (new_root_pem != NULL) {
+						char *argv[] = { "/usr/bin/openssl", "verify", "-CAfile",
+							          new_root_path, old_leaf_path, NULL };
+
+						write_file(new_root_path, new_root_pem);
+						write_file(old_leaf_path, old_leaf_cert_pem);
+						if (run_openssl_argv(argv) == 0) {
+							fprintf(stderr,
+							        "FAIL: old resettest cert still verifies against "
+							        "the NEW root -- reset did not actually replace "
+							        "the signing chain\n");
+							ok = 0;
+						}
+					}
+					{
+						char cmd[224];
+
+						snprintf(cmd, sizeof(cmd), "rm -rf '%s'", scratch_dir);
+						system(cmd);
+					}
+				}
+			}
+		}
+		kx_response_free(&r);
+
+		/* GET must reflect the new serial, not a stale index entry. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pki/certs/resettest", NULL, &r) != 0 ||
+		    r.status != 200 || new_leaf_serial[0] == '\0' ||
+		    !str_eq(json_str_field(r.json, "serial"), new_leaf_serial)) {
+			fprintf(stderr, "FAIL: GET resettest after reset does not reflect the new serial\n");
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* Redelivery proof: resetlive's own delivered tls.crt on disk
+		 * must have actually changed -- not left stale after the leaf
+		 * that owns it was reissued. */
+		if (resetlive_pid > 0 && old_delivered_pem[0] != '\0') {
+			char proc_path[160];
+			char new_delivered_pem[8192] = { 0 };
+			FILE *f;
+
+			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/kanxeo-tls/tls.crt",
+			         resetlive_pid);
+			f = fopen(proc_path, "r");
+			if (f != NULL) {
+				size_t n = fread(new_delivered_pem, 1, sizeof(new_delivered_pem) - 1, f);
+
+				new_delivered_pem[n] = '\0';
+				fclose(f);
+			}
+			if (new_delivered_pem[0] == '\0' ||
+			    strcmp(new_delivered_pem, old_delivered_pem) == 0) {
+				fprintf(stderr,
+				        "FAIL: resetlive's delivered tls.crt was not redelivered after reset\n");
+				ok = 0;
+			}
+		}
+
+		kx_client_request(&client, "DELETE", "/v1/containers/resetlive", NULL, &r);
+		kx_response_free(&r);
+		kx_client_request(&client, "DELETE", "/v1/pki/certs/resettest", NULL, &r);
+		kx_response_free(&r);
+	}
+
+	/*
+	 * Part 6 (ADR-0051): CA trust chain staged into a freshly created
+	 * image -- read straight off disk (staging is a pkg_seed_image_
+	 * baseline() side effect of image creation, not its own API), and
+	 * proven as a real, working trust anchor via openssl verify against
+	 * the currently-live "host" leaf, not just "the file exists."
+	 */
+	{
+		char bundle_path[PATH_MAX];
+		struct stat st;
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/images", "{\"name\":\"imgtrust\"}", &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST /v1/images imgtrust, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		snprintf(bundle_path, sizeof(bundle_path),
+		         "%s/images/imgtrust/rootfs/etc/ssl/certs/kanxeo-ca-bundle.pem", g_data_dir);
+		if (stat(bundle_path, &st) != 0 || st.st_size == 0) {
+			fprintf(stderr, "FAIL: kanxeo-ca-bundle.pem missing or empty at %s\n", bundle_path);
+			ok = 0;
+		} else {
+			char host_cert_pem[8192] = { 0 };
+
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "GET", "/v1/pki/certs/host", NULL, &r) == 0 &&
+			    r.status == 200) {
+				snprintf(host_cert_pem, sizeof(host_cert_pem), "%s",
+				         json_str_field(r.json, "cert_pem"));
+			}
+			kx_response_free(&r);
+
+			if (host_cert_pem[0] == '\0') {
+				fprintf(stderr,
+				        "FAIL: could not fetch host cert_pem for trust bundle check\n");
+				ok = 0;
+			} else {
+				char scratch_dir[] = "/tmp/kanxeo_test_pki_trust_XXXXXX";
+
+				if (mkdtemp(scratch_dir) == NULL) {
+					fprintf(stderr, "FAIL: mkdtemp (trust bundle scratch)\n");
+					ok = 0;
+				} else {
+					char leaf_path[192];
+					char *argv[] = { "/usr/bin/openssl", "verify", "-CAfile", bundle_path,
+						          leaf_path, NULL };
+					char cmd[224];
+
+					snprintf(leaf_path, sizeof(leaf_path), "%s/host.crt", scratch_dir);
+					write_file(leaf_path, host_cert_pem);
+					if (run_openssl_argv(argv) != 0) {
+						fprintf(stderr,
+						        "FAIL: host cert does not verify against the "
+						        "staged image trust bundle\n");
+						ok = 0;
+					}
+					snprintf(cmd, sizeof(cmd), "rm -rf '%s'", scratch_dir);
+					system(cmd);
+				}
+			}
+		}
+
+		kx_client_request(&client, "DELETE", "/v1/images/imgtrust", NULL, &r);
 		kx_response_free(&r);
 	}
 

@@ -7,11 +7,13 @@
 #include <string.h>
 
 static char g_state_path[512];
+static char g_instance_name[SITECONFIG_NAME_MAX];
 static char g_site_name[SITECONFIG_NAME_MAX];
 static char g_domain_suffix[SITECONFIG_NAME_MAX];
 
 static void apply_defaults(void)
 {
+	snprintf(g_instance_name, sizeof(g_instance_name), "kanxeo");
 	g_site_name[0] = '\0';
 	snprintf(g_domain_suffix, sizeof(g_domain_suffix), "internal");
 }
@@ -21,7 +23,7 @@ static int load_state(void)
 	char *buf;
 	size_t len;
 	struct json_value *root;
-	const char *site_name, *domain_suffix;
+	const char *instance_name, *site_name, *domain_suffix;
 
 	if (persist_read_file(g_state_path, &buf, &len) != 0)
 		return -1;
@@ -35,15 +37,22 @@ static int load_state(void)
 		return -1;
 	}
 
+	instance_name = json_as_string(json_object_get(root, "instance_name"));
 	site_name = json_as_string(json_object_get(root, "site_name"));
 	domain_suffix = json_as_string(json_object_get(root, "domain_suffix"));
-	if (domain_suffix == NULL || !dns_name_is_valid(domain_suffix) ||
+	/* instance_name absent -- a file persisted before this field existed --
+	 * is not an error, the default already applied by apply_defaults()
+	 * stands; present but invalid is. */
+	if ((instance_name != NULL && !dns_name_is_valid(instance_name)) ||
+	    domain_suffix == NULL || !dns_name_is_valid(domain_suffix) ||
 	    (site_name != NULL && site_name[0] != '\0' && !dns_name_is_valid(site_name))) {
 		json_free(root);
 		fprintf(stderr, "%s: invalid persisted site config\n", g_state_path);
 		return -1;
 	}
 
+	if (instance_name != NULL)
+		snprintf(g_instance_name, sizeof(g_instance_name), "%s", instance_name);
 	snprintf(g_site_name, sizeof(g_site_name), "%s", site_name != NULL ? site_name : "");
 	snprintf(g_domain_suffix, sizeof(g_domain_suffix), "%s", domain_suffix);
 	json_free(root);
@@ -58,12 +67,15 @@ int siteconfig_init(const char *state_path)
 	return load_state();
 }
 
-enum siteconfig_error siteconfig_set(const char *site_name, const char *domain_suffix)
+enum siteconfig_error siteconfig_set(const char *instance_name, const char *site_name,
+                                      const char *domain_suffix)
 {
 	struct json_writer w;
 	char new_site_name[SITECONFIG_NAME_MAX];
 	int rc;
 
+	if (!dns_name_is_valid(instance_name))
+		return SITECONFIG_ERR_INVALID_INSTANCE_NAME;
 	if (site_name != NULL && site_name[0] != '\0' && !dns_name_is_valid(site_name))
 		return SITECONFIG_ERR_INVALID_SITE_NAME;
 	if (!dns_name_is_valid(domain_suffix))
@@ -73,6 +85,8 @@ enum siteconfig_error siteconfig_set(const char *site_name, const char *domain_s
 
 	jw_init(&w);
 	jw_obj_open(&w);
+	jw_key(&w, "instance_name");
+	jw_str(&w, instance_name);
 	jw_key(&w, "site_name");
 	jw_str(&w, new_site_name);
 	jw_key(&w, "domain_suffix");
@@ -83,6 +97,7 @@ enum siteconfig_error siteconfig_set(const char *site_name, const char *domain_s
 	if (rc != 0)
 		return SITECONFIG_ERR_PERSIST_FAILED;
 
+	snprintf(g_instance_name, sizeof(g_instance_name), "%s", instance_name);
 	snprintf(g_site_name, sizeof(g_site_name), "%s", new_site_name);
 	snprintf(g_domain_suffix, sizeof(g_domain_suffix), "%s", domain_suffix);
 	return SITECONFIG_OK;
@@ -91,9 +106,48 @@ enum siteconfig_error siteconfig_set(const char *site_name, const char *domain_s
 void siteconfig_write_json(struct json_writer *w)
 {
 	jw_obj_open(w);
+	jw_key(w, "instance_name");
+	jw_str(w, g_instance_name);
 	jw_key(w, "site_name");
 	jw_str(w, g_site_name);
 	jw_key(w, "domain_suffix");
 	jw_str(w, g_domain_suffix);
 	jw_obj_close(w);
+}
+
+const char *siteconfig_domain_suffix(void)
+{
+	return g_domain_suffix;
+}
+
+void siteconfig_host_fqdn(char *buf, size_t bufsize)
+{
+	if (g_site_name[0] != '\0')
+		snprintf(buf, bufsize, "%s.%s.%s", g_instance_name, g_site_name, g_domain_suffix);
+	else
+		snprintf(buf, bufsize, "%s.%s", g_instance_name, g_domain_suffix);
+}
+
+void siteconfig_qualify(const char *label, char *buf, size_t bufsize)
+{
+	/* Gated on site_name specifically, not domain_suffix alone --
+	 * domain_suffix defaults to a non-empty "internal" (ADR-0046) even
+	 * on a completely fresh, unconfigured install, but site_name
+	 * defaults to "" ("no site tier"). Qualifying by default whenever
+	 * domain_suffix merely has its own default value would mean every
+	 * bare name, on every install, gets silently qualified from the
+	 * very first request with zero operator action -- confirmed the
+	 * hard way against this project's own test suite, which uses bare
+	 * names pervasively and broke immediately under that version.
+	 * site_name only becomes non-empty once an operator has genuinely
+	 * opted into a site identity (PUT /system/site) -- the correct,
+	 * much narrower trigger for a real behavior change, matching this
+	 * project's own "no daemon-side code qualifies a name automatically"
+	 * baseline (ADR-0046) staying true until an operator asks otherwise.
+	 */
+	if (label == NULL || strchr(label, '.') != NULL || g_site_name[0] == '\0') {
+		snprintf(buf, bufsize, "%s", label != NULL ? label : "");
+		return;
+	}
+	snprintf(buf, bufsize, "%s.%s.%s", label, g_site_name, g_domain_suffix);
 }
