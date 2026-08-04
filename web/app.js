@@ -341,13 +341,36 @@ function saveCollapsedCategories() {
 
 const collapsedCategories = loadCollapsedCategories();
 
-/* Maps every reachable route hash to its immediate PARENT hash in the
- * tree (undefined for a top-level category) -- rebuilt fresh by
- * renderTree() every poll, read by ensureActiveCategoryExpanded() to
- * walk the full ancestor chain on navigation (a tree with real nested
- * sub-groups, e.g. System > PKI > Root CA, needs every level along
- * that chain expanded, not just the immediate parent). */
-let hashToParent = {};
+/*
+ * A category and its own "representative" child deliberately share one
+ * route hash (System and PKI and Root CA can all legitimately route to
+ * "pki-ca") -- so route hash alone can never safely stand in for a
+ * tree row's own identity: viewing "Servers" would otherwise also
+ * light up "Records" (DNS's own aliased-to first child), since both
+ * share hash "dns-records". Every row gets its own unique numeric id
+ * instead, rebuilt fresh by renderTree() every poll:
+ *   nodeParent[id]   -- the row's real structural parent id (or
+ *                        undefined for a top-level row) -- unambiguous,
+ *                        independent of whatever hash it happens to share.
+ *   nodeDepth[id]    -- nesting depth, used to pick the most specific
+ *                        of several rows that share one route hash.
+ *   hashToNodeIds[h] -- every row whose own href is exactly hash h.
+ *   nodeToggle[id] / nodeUl[id] -- direct references for
+ *                        ensureActiveCategoryExpanded(), no re-querying.
+ *   nodeAnchor[id]   -- direct reference for renderTreeActive().
+ *   nodeHash[id]     -- the row's own route hash, needed to update
+ *                        collapsedCategories (hash-keyed by design,
+ *                        since collapse state should persist across a
+ *                        renderTree() rebuild, which node ids don't).
+ */
+let nextNodeId = 0;
+let nodeParent = {};
+let nodeDepth = {};
+let hashToNodeIds = {};
+let nodeToggle = {};
+let nodeUl = {};
+let nodeAnchor = {};
+let nodeHash = {};
 
 /*
  * Small hand-rolled inline SVG icons, Proxmox-style -- no external
@@ -450,17 +473,19 @@ function treeItemLinkWithStatus(href, label, status, icon) {
  * it stays correct and explicit regardless of how deep a given branch
  * goes.
  */
-function buildTreeNode(item, parentUl, parentHash, depth) {
-	/* A category commonly aliases its own address to its first child's
-	 * (matching every category-root-has-no-separate-page convention
-	 * already used elsewhere, e.g. "Backup" the group and "Backup" the
-	 * first child both route to hash "backup") -- when that's the
-	 * case, this call is for the CHILD, and it must not clobber the
-	 * correct ancestor mapping the group's own (already-processed)
-	 * call already wrote for that same hash. */
-	if (item.hash !== parentHash)
-		hashToParent[item.hash] = parentHash;
+function buildTreeNode(item, parentUl, parentId, depth) {
+	const nodeId = nextNodeId++;
 
+	nodeParent[nodeId] = parentId;
+	nodeDepth[nodeId] = depth;
+	(hashToNodeIds[item.hash] || (hashToNodeIds[item.hash] = [])).push(nodeId);
+
+	/* Collapse state is still keyed by hash, not node id -- a category
+	 * that aliases its own hash to a child's (e.g. "Backup" the group
+	 * and "Backup" the first child both being hash "backup") should
+	 * collapse/expand as one single toggle in localStorage, which
+	 * matches how they're visually one and the same "row" to a user
+	 * clicking the one toggle button that actually exists there. */
 	const li = document.createElement("li");
 	const row = document.createElement("div");
 	const hasChildren = item.children && item.children.length > 0;
@@ -475,7 +500,6 @@ function buildTreeNode(item, parentUl, parentHash, depth) {
 		const collapsed = collapsedCategories.has(item.hash);
 
 		toggle.className = "tree-toggle";
-		toggle.dataset.hash = item.hash;
 		toggle.textContent = collapsed ? "▸" : "▾";
 		toggle.setAttribute("aria-label", "Toggle " + item.label);
 	} else {
@@ -483,7 +507,8 @@ function buildTreeNode(item, parentUl, parentHash, depth) {
 		toggle.tabIndex = -1;
 	}
 	row.appendChild(toggle);
-	row.appendChild(
+
+	const anchor =
 		item.status !== undefined
 			? treeItemLinkWithStatus("#" + item.hash, item.label, item.status, item.icon)
 			: treeLink(
@@ -492,18 +517,22 @@ function buildTreeNode(item, parentUl, parentHash, depth) {
 					hasChildren ? "tree-category" : "tree-item",
 					item.icon,
 					item.iconColor
-			  )
-	);
+			  );
+
+	row.appendChild(anchor);
 	li.appendChild(row);
+	nodeToggle[nodeId] = hasChildren ? toggle : null;
+	nodeAnchor[nodeId] = anchor;
+	nodeHash[nodeId] = item.hash;
 
 	if (hasChildren) {
 		const ul = document.createElement("ul");
 
-		ul.dataset.hash = item.hash;
 		ul.hidden = collapsedCategories.has(item.hash);
 		for (const child of item.children)
-			buildTreeNode(child, ul, item.hash, depth + 1);
+			buildTreeNode(child, ul, nodeId, depth + 1);
 		li.appendChild(ul);
+		nodeUl[nodeId] = ul;
 
 		toggle.addEventListener("click", (event) => {
 			event.preventDefault();
@@ -523,7 +552,14 @@ function buildTreeNode(item, parentUl, parentHash, depth) {
 
 function renderTree() {
 	treeEl.textContent = "";
-	hashToParent = {};
+	nextNodeId = 0;
+	nodeParent = {};
+	nodeDepth = {};
+	hashToNodeIds = {};
+	nodeToggle = {};
+	nodeUl = {};
+	nodeAnchor = {};
+	nodeHash = {};
 	const root = document.createElement("ul");
 
 	const topLevel = [
@@ -565,8 +601,22 @@ function renderTree() {
 			],
 		},
 		{
+			/* Aliases to its own FIRST child's hash ("pki-ca", same as
+			 * PKI's own address, same as PKI's own first child "Root CA"'s
+			 * address) -- matching the exact convention every other group
+			 * here already uses (Software->images, DNS->dns-records,
+			 * Backup->backup). Aliasing to anything other than the first
+			 * child is a real bug, not just a style choice: whatever hash
+			 * System's own address shares gets highlighted/expanded
+			 * alongside it (renderTreeActive()/ensureActiveCategoryExpanded()
+			 * both walk shared hashes as one identity, by design, since
+			 * they really do route to the identical page) -- aliasing to
+			 * "update" (an unrelated, distant sibling) instead of the
+			 * first child made an unrelated leaf light up any time System
+			 * itself was merely an ancestor of whatever page was actually
+			 * showing, which looked exactly as random as it was. */
 			label: "System",
-			hash: "update",
+			hash: "pki-ca",
 			icon: "system",
 			children: [
 				{
@@ -610,74 +660,68 @@ function renderTree() {
 	renderTreeActive();
 }
 
-/* Highlights whichever link owns the current route -- an exact match
- * for the current page's own link if it has one, or (for a detail
- * page with no tree leaf of its own, e.g. a specific image) a match on
- * the hash's own top-level segment, so its category still lights up
- * rather than nothing. */
-function renderTreeActive() {
+/* Finds the single tree row that most specifically represents the
+ * current route. Several rows can share one href (a category and its
+ * own "representative" child both route to the same hash -- System,
+ * PKI, and Root CA can all be "#pki-ca"), so route hash alone never
+ * uniquely identifies "the thing actually being viewed" -- the
+ * DEEPEST of the candidates sharing that hash always does, since a
+ * more deeply nested row is always the more specific one. Falls back
+ * to the route's own top-level segment when the exact route has no
+ * tree row of its own at all (e.g. a specific image's detail page --
+ * only "images" itself, Software's own child, is a real tree row). */
+function findCurrentNodeId() {
 	const current = location.hash.replace(/^#/, "") || "containers";
 	const topSegment = current.split("/")[0];
-	const has = (h) => Object.prototype.hasOwnProperty.call(hashToParent, h);
-	const owning = new Set([current, topSegment]);
+	const candidates = hashToNodeIds[current] || hashToNodeIds[topSegment];
 
-	/* Every ancestor along the way lights up too, not just the
-	 * immediate parent -- viewing "backup" (nested System > Backup >
-	 * Backup) highlights both "Backup" and "System", the same way
-	 * ensureActiveCategoryExpanded() walks the full chain to expand it. */
-	for (let hash = has(current) ? current : topSegment; has(hash); ) {
-		const parentHash = hashToParent[hash];
+	if (!candidates || candidates.length === 0)
+		return undefined;
 
-		if (parentHash === undefined)
-			break;
-		owning.add(parentHash);
-		hash = parentHash;
-	}
+	let best = candidates[0];
 
-	for (const a of treeEl.querySelectorAll("a")) {
-		const target = a.getAttribute("href").replace(/^#/, "");
+	for (const id of candidates)
+		if (nodeDepth[id] > nodeDepth[best])
+			best = id;
+	return best;
+}
 
-		a.classList.toggle("active", owning.has(target));
-	}
+/* Highlights the current row plus every one of its real structural
+ * ancestors (walking nodeParent, never route-hash matching -- see
+ * findCurrentNodeId()'s own comment for why hash matching alone would
+ * incorrectly light up an unrelated sibling that merely happens to
+ * share an address). */
+function renderTreeActive() {
+	const owning = new Set();
+
+	for (let id = findCurrentNodeId(); id !== undefined; id = nodeParent[id])
+		owning.add(id);
+
+	for (const [id, anchor] of Object.entries(nodeAnchor))
+		anchor.classList.toggle("active", owning.has(Number(id)));
 }
 
 /* Only called on real navigation (hashchange + the very first render),
  * never from the periodic poll -- otherwise a category the user
  * deliberately collapsed while staying on one of its own pages would
- * silently snap back open every 2s. */
+ * silently snap back open every 2s. Expands every real structural
+ * ancestor of the current row (System > PKI > Root CA needs System's
+ * own toggle AND PKI's own toggle both expanded, not just the
+ * immediate parent's) -- not the current row's own toggle, only what
+ * needs opening to reveal it. */
 function ensureActiveCategoryExpanded() {
-	const current = location.hash.replace(/^#/, "") || "containers";
-	const topSegment = current.split("/")[0];
-	const has = (h) => Object.prototype.hasOwnProperty.call(hashToParent, h);
-	let hash = has(current) ? current : topSegment;
 	let changed = false;
 
-	/* Walk the current hash itself, then every ancestor level in turn
-	 * (System > PKI > Root CA needs System's own toggle AND PKI's own
-	 * toggle both expanded, not just the immediate parent's). Checking
-	 * `hash` itself on each iteration -- not just parentHash -- matters
-	 * for a category that aliases its own address to a child's (e.g.
-	 * "Software" IS "images"): its own toggle/ul share that exact
-	 * data-hash, so it would never be reached by only ever expanding
-	 * parentHash. A detail page with no tree leaf of its own (e.g. a
-	 * specific image, which only "images" itself is registered for)
-	 * falls back to topSegment as its own starting point instead. */
-	while (has(hash)) {
-		const toggle = treeEl.querySelector('.tree-toggle[data-hash="' + hash + '"]');
-		const ul = treeEl.querySelector('ul[data-hash="' + hash + '"]');
+	for (let id = nodeParent[findCurrentNodeId()]; id !== undefined; id = nodeParent[id]) {
+		const toggle = nodeToggle[id];
+		const ul = nodeUl[id];
 
 		if (toggle && ul && ul.hidden) {
 			ul.hidden = false;
 			toggle.textContent = "▾";
-			collapsedCategories.delete(hash);
+			collapsedCategories.delete(nodeHash[id]);
 			changed = true;
 		}
-
-		const parentHash = hashToParent[hash];
-
-		if (parentHash === undefined)
-			break;
-		hash = parentHash;
 	}
 	if (changed)
 		saveCollapsedCategories();

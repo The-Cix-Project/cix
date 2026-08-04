@@ -12,7 +12,7 @@
 	--error: #c5221f;
 	--error-bg: #fce8e6;
 	--unknown-bg: #eeeeee;
-	--tree-active-bg: #e3f0ff;
+	--tree-active-bg: rgba(0, 0, 0, 0.06);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -26,7 +26,7 @@
 		--paused-bg: #3a2a10;
 		--error-bg: #3a1615;
 		--unknown-bg: #2c2c2e;
-		--tree-active-bg: #1a3a5c;
+		--tree-active-bg: rgba(255, 255, 255, 0.09);
 	}
 }
 
@@ -278,9 +278,8 @@ header h1 {
 }
 
 .tree-category.active {
-	background: var(--tree-active-bg);
-	border-radius: 4px;
 	font-weight: 600;
+	color: var(--text);
 }
 
 .tree-item {
@@ -317,8 +316,8 @@ header h1 {
 }
 
 .tree-item.active {
-	background: var(--tree-active-bg);
-	border-radius: 4px;
+	font-weight: 600;
+	color: var(--text);
 }
 
 /* Tints the icon itself (stroke="currentColor" inherits it) instead of
