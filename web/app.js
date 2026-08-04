@@ -891,24 +891,93 @@ function formatBytes(n) {
 	return v.toFixed(i === 0 ? 0 : 1) + " " + units[i];
 }
 
-/* Minimal hand-rolled line chart -- no external dependency, same
- * "build it ourselves" posture already established for the console's
- * own terminal renderer and WebSocket codec. series is an array of
- * {values, color}; every series shares one 0..max(all values) scale. */
-function drawSparkline(canvas, series) {
+/* "-1:58" for anything a minute or more old, "-12s" otherwise --
+ * relative to the chart's own newest sample ("now"), not wall-clock
+ * real time, since what matters here is how far back the window
+ * reaches, not an absolute clock reading. */
+function formatRelativeTime(deltaMs) {
+	const totalSec = Math.round(Math.abs(deltaMs) / 1000);
+	const m = Math.floor(totalSec / 60);
+	const s = totalSec % 60;
+
+	return m > 0 ? "-" + m + ":" + String(s).padStart(2, "0") : "-" + s + "s";
+}
+
+/*
+ * Minimal hand-rolled line chart with real axes -- no external
+ * dependency, same "build it ourselves" posture already established
+ * for the console's own terminal renderer and WebSocket codec.
+ *
+ * series: array of {values, color}, all sharing one Y scale.
+ * opts.times: epoch-ms per sample, same length/order as each series'
+ * own values -- drives the X-axis (oldest sample vs. "now").
+ * opts.formatY: number -> label string for the Y-axis ticks.
+ * opts.maxY: fixes the Y scale's ceiling (e.g. 100 for a percentage,
+ * or a container's own configured memory limit) instead of
+ * autoscaling to the largest value currently on screen -- makes a
+ * flat-looking metric (e.g. 2% CPU) still readable at its own real
+ * scale, and shows real headroom against a known limit. Omit to
+ * autoscale to max(all values currently plotted).
+ */
+function drawChart(canvas, series, opts) {
 	const ctx = canvas.getContext("2d");
 	const w = canvas.width;
 	const h = canvas.height;
+	const style = getComputedStyle(document.body);
+	const textColor = style.getPropertyValue("--muted").trim() || "#888";
+	const gridColor = style.getPropertyValue("--border").trim() || "#ccc";
+	const marginLeft = 46;
+	const marginBottom = 16;
+	const marginTop = 6;
+	const marginRight = 6;
+	const plotW = w - marginLeft - marginRight;
+	const plotH = h - marginTop - marginBottom;
 
 	ctx.clearRect(0, 0, w, h);
 
-	let maxV = 0;
-	for (const s of series)
-		for (const v of s.values)
-			if (v > maxV) maxV = v;
+	let maxV = opts.maxY || 0;
+
+	if (!maxV) {
+		for (const s of series)
+			for (const v of s.values)
+				if (v > maxV) maxV = v;
+	}
 	if (maxV <= 0) maxV = 1;
 
-	const padding = 3;
+	ctx.font = "10px -apple-system, BlinkMacSystemFont, sans-serif";
+	ctx.strokeStyle = gridColor;
+	ctx.fillStyle = textColor;
+	ctx.lineWidth = 1;
+
+	/* Y axis: gridlines + labels at 0/half/max. */
+	for (const frac of [0, 0.5, 1]) {
+		const y = marginTop + plotH - frac * plotH;
+
+		ctx.beginPath();
+		ctx.moveTo(marginLeft, Math.round(y) + 0.5);
+		ctx.lineTo(marginLeft + plotW, Math.round(y) + 0.5);
+		ctx.stroke();
+		ctx.textAlign = "right";
+		ctx.textBaseline = frac === 0 ? "bottom" : frac === 1 ? "top" : "middle";
+		ctx.fillText(opts.formatY(frac * maxV), marginLeft - 5, y);
+	}
+	ctx.beginPath();
+	ctx.moveTo(marginLeft + 0.5, marginTop);
+	ctx.lineTo(marginLeft + 0.5, marginTop + plotH);
+	ctx.stroke();
+
+	/* X axis: how far back the window reaches vs. "now" -- only
+	 * meaningful once there are at least two distinct sample times. */
+	if (opts.times && opts.times.length >= 2) {
+		const now = opts.times[opts.times.length - 1];
+
+		ctx.textAlign = "left";
+		ctx.textBaseline = "top";
+		ctx.fillText(formatRelativeTime(opts.times[0] - now), marginLeft, marginTop + plotH + 3);
+		ctx.textAlign = "right";
+		ctx.fillText("now", marginLeft + plotW, marginTop + plotH + 3);
+	}
+
 	for (const s of series) {
 		const vals = s.values;
 
@@ -918,8 +987,8 @@ function drawSparkline(canvas, series) {
 		ctx.lineWidth = 1.5;
 		ctx.beginPath();
 		vals.forEach((v, i) => {
-			const x = padding + (i / (vals.length - 1)) * (w - padding * 2);
-			const y = padding + (h - padding * 2) * (1 - v / maxV);
+			const x = marginLeft + (i / (vals.length - 1)) * plotW;
+			const y = marginTop + plotH - (v / maxV) * plotH;
 
 			if (i === 0)
 				ctx.moveTo(x, y);
@@ -947,7 +1016,13 @@ function renderStatsCharts() {
 
 	/* First sample alone has no prior point to diff a rate against --
 	 * these charts (and their labels) simply stay at "…" until the
-	 * second real poll tick lands. */
+	 * second real poll tick lands. Rate series (CPU%, network) are one
+	 * shorter than h itself; each rate's own timestamp is the *later*
+	 * of the two raw samples it was computed from -- the point in time
+	 * that delta had fully accumulated by. */
+	const rateTimes = h.slice(1).map((s) => s.t);
+	const gaugeTimes = h.map((s) => s.t);
+
 	const cpuPercents = [];
 
 	for (let i = 1; i < h.length; i++) {
@@ -956,13 +1031,22 @@ function renderStatsCharts() {
 
 		cpuPercents.push(dMs > 0 ? Math.max(0, (dUsec / 1000 / dMs) * 100) : 0);
 	}
-	drawSparkline(document.getElementById("cd-stats-cpu"), [{ values: cpuPercents, color: "#0a84ff" }]);
+	drawChart(document.getElementById("cd-stats-cpu"), [{ values: cpuPercents, color: "#0a84ff" }], {
+		times: rateTimes,
+		maxY: 100,
+		formatY: (v) => v.toFixed(0) + "%",
+	});
 	document.getElementById("cd-stats-cpu-label").textContent =
 		cpuPercents.length > 0 ? cpuPercents[cpuPercents.length - 1].toFixed(1) + "% (1 core = 100%)" : "…";
 
 	const memValues = h.map((s) => s.memCurrent);
+	const memMax = h[h.length - 1].memMax;
 
-	drawSparkline(document.getElementById("cd-stats-mem"), [{ values: memValues, color: "#30d158" }]);
+	drawChart(document.getElementById("cd-stats-mem"), [{ values: memValues, color: "#30d158" }], {
+		times: gaugeTimes,
+		maxY: memMax || 0,
+		formatY: formatBytes,
+	});
 	{
 		const last = h[h.length - 1];
 		const limit = last.memMax === null ? "unlimited" : formatBytes(last.memMax);
@@ -973,7 +1057,10 @@ function renderStatsCharts() {
 
 	const diskValues = h.map((s) => s.diskBytes);
 
-	drawSparkline(document.getElementById("cd-stats-disk"), [{ values: diskValues, color: "#ff9f0a" }]);
+	drawChart(document.getElementById("cd-stats-disk"), [{ values: diskValues, color: "#ff9f0a" }], {
+		times: gaugeTimes,
+		formatY: formatBytes,
+	});
 	document.getElementById("cd-stats-disk-label").textContent =
 		formatBytes(h[h.length - 1].diskBytes) + " (overlay diff)";
 
@@ -988,10 +1075,14 @@ function renderStatsCharts() {
 		rxRates.push(dMs > 0 ? Math.max(0, (dRx / dMs) * 1000) : 0);
 		txRates.push(dMs > 0 ? Math.max(0, (dTx / dMs) * 1000) : 0);
 	}
-	drawSparkline(document.getElementById("cd-stats-net"), [
-		{ values: rxRates, color: "#0a84ff" },
-		{ values: txRates, color: "#ff375f" },
-	]);
+	drawChart(
+		document.getElementById("cd-stats-net"),
+		[
+			{ values: rxRates, color: "#0a84ff" },
+			{ values: txRates, color: "#ff375f" },
+		],
+		{ times: rateTimes, formatY: (v) => formatBytes(v) + "/s" }
+	);
 	document.getElementById("cd-stats-net-label").textContent =
 		rxRates.length > 0
 			? formatBytes(rxRates[rxRates.length - 1]) + "/s ↓  " + formatBytes(txRates[txRates.length - 1]) + "/s ↑"
@@ -1117,6 +1208,17 @@ function renderContainerDetail(name) {
 	}
 
 	openConsole(name);
+	/* Keep stats polling pointed at whatever container this view is
+	 * actually showing right now: without this, switching containers
+	 * while the Stats tab stays the active one left the poll loop
+	 * silently stuck on the previously-viewed container's own name
+	 * (startStatsPolling()/stopStatsPolling() otherwise only ever fire
+	 * from an explicit tab click) -- the graphs looked "stuck" because
+	 * they genuinely were still polling someone else's stats. */
+	if (document.getElementById("cd-tab-stats").classList.contains("active"))
+		startStatsPolling(name);
+	else if (statsContainerName !== null)
+		stopStatsPolling();
 	title.textContent = c.name;
 
 	/* Summary -- identity/runtime status only. */
