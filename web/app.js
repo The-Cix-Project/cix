@@ -254,7 +254,11 @@ const CATEGORY_VIEWS = {
 	"pki-ca": "view-pki-ca",
 	"pki-certs": "view-pki-certs",
 	packages: "view-packages",
-	system: "view-system",
+	recipes: "view-recipes",
+	site: "view-site",
+	backup: "view-backup",
+	restore: "view-restore",
+	update: "view-update",
 };
 
 const DETAIL_VIEWS = {
@@ -300,6 +304,8 @@ function renderCurrentView() {
 			renderDevices();
 		else if (route.category === "packages")
 			renderPackagesView(route.name);
+		else if (route.category === "recipes")
+			renderRecipesList();
 	}
 
 	renderTreeActive();
@@ -335,155 +341,303 @@ function saveCollapsedCategories() {
 
 const collapsedCategories = loadCollapsedCategories();
 
-/* Maps every reachable route hash (a category's own hash, and each of
- * its fixed/dynamic children's hashes) back to the top-level category
- * hash that owns it in the tree -- rebuilt fresh by renderTree() every
- * poll, read by ensureActiveCategoryExpanded() on navigation. */
-let hashToCategory = {};
+/* Maps every reachable route hash to its immediate PARENT hash in the
+ * tree (undefined for a top-level category) -- rebuilt fresh by
+ * renderTree() every poll, read by ensureActiveCategoryExpanded() to
+ * walk the full ancestor chain on navigation (a tree with real nested
+ * sub-groups, e.g. System > PKI > Root CA, needs every level along
+ * that chain expanded, not just the immediate parent). */
+let hashToParent = {};
 
-function treeLink(href, text, className) {
+/*
+ * Small hand-rolled inline SVG icons, Proxmox-style -- no external
+ * icon font/library/CDN request (this project's own no-external-
+ * dependencies rule, same posture as the console's hand-rolled
+ * terminal renderer). stroke="currentColor" so each one inherits
+ * whatever color its own link text already has (theme-aware for
+ * free, no separate light/dark icon set needed). Visually verified by
+ * rendering this exact path data via rsvg-convert before wiring it
+ * in, not trusted blind.
+ */
+const TREE_ICONS = {
+	containers:
+		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="1"/><line x1="2" y1="8" x2="14" y2="8"/><circle cx="5" cy="5.5" r="0.6" fill="currentColor" stroke="none"/><circle cx="5" cy="10.5" r="0.6" fill="currentColor" stroke="none"/></g></svg>',
+	networks:
+		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="3" r="1.5"/><circle cx="3" cy="12" r="1.5"/><circle cx="13" cy="12" r="1.5"/><line x1="8" y1="4.5" x2="3" y2="10.5"/><line x1="8" y1="4.5" x2="13" y2="10.5"/></g></svg>',
+	images:
+		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><polyline points="8,2 14,5 8,8 2,5 8,2"/><polyline points="2,8 8,11 14,8"/><polyline points="2,11 8,14 14,11"/></g></svg>',
+	packages:
+		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><polyline points="8,2 14,5 14,11 8,14 2,11 2,5 8,2"/><line x1="8" y1="2" x2="8" y2="8"/><line x1="2" y1="5" x2="8" y2="8"/><line x1="14" y1="5" x2="8" y2="8"/></g></svg>',
+	recipes:
+		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="1.5" width="10" height="13" rx="1"/><line x1="5.5" y1="5" x2="10.5" y2="5"/><line x1="5.5" y1="8" x2="10.5" y2="8"/><line x1="5.5" y1="11" x2="9" y2="11"/></g></svg>',
+	system:
+		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="3"/><line x1="8" y1="1" x2="8" y2="3"/><line x1="8" y1="13" x2="8" y2="15"/><line x1="1" y1="8" x2="3" y2="8"/><line x1="13" y1="8" x2="15" y2="8"/><line x1="3.5" y1="3.5" x2="5" y2="5"/><line x1="11" y1="11" x2="12.5" y2="12.5"/><line x1="3.5" y1="12.5" x2="5" y2="11"/><line x1="11" y1="5" x2="12.5" y2="3.5"/></g></svg>',
+	pki:
+		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="7" width="9" height="7" rx="1"/><path d="M5.5 7 V4.5 a2.5 2.5 0 0 1 5 0 V7"/></g></svg>',
+	dns:
+		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6.5"/><line x1="1.5" y1="8" x2="14.5" y2="8"/><path d="M8 1.5 C5 4.5 5 11.5 8 14.5 C11 11.5 11 4.5 8 1.5"/></g></svg>',
+	backup:
+		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="12" height="12" rx="1"/><line x1="2" y1="5.5" x2="14" y2="5.5"/><line x1="6" y1="9" x2="10" y2="9"/></g></svg>',
+	devices:
+		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="4.5" width="7" height="7" rx="0.5"/><line x1="6" y1="1.5" x2="6" y2="4.5"/><line x1="10" y1="1.5" x2="10" y2="4.5"/><line x1="6" y1="11.5" x2="6" y2="14.5"/><line x1="10" y1="11.5" x2="10" y2="14.5"/><line x1="1.5" y1="6" x2="4.5" y2="6"/><line x1="1.5" y1="10" x2="4.5" y2="10"/><line x1="11.5" y1="6" x2="14.5" y2="6"/><line x1="11.5" y1="10" x2="14.5" y2="10"/></g></svg>',
+	update:
+		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M13 8 A5 5 0 1 1 11 4"/><polyline points="13,2 13,5.5 9.5,5.5"/></g></svg>',
+};
+
+/* colorClass tints the icon itself (via CSS "color", which the icon's
+ * own stroke="currentColor" inherits) instead of a separate status dot
+ * next to it -- one visual signal, not two. */
+function treeIcon(name, colorClass) {
+	const span = document.createElement("span");
+
+	span.className = "tree-icon" + (colorClass ? " " + colorClass : "");
+	span.innerHTML = TREE_ICONS[name] || "";
+	return span;
+}
+
+function treeLink(href, text, className, icon, iconColorClass) {
 	const a = document.createElement("a");
 
 	a.href = href;
-	a.textContent = text;
 	a.className = className;
+	if (icon)
+		a.appendChild(treeIcon(icon, iconColorClass));
+	a.appendChild(document.createTextNode(text));
 	return a;
 }
 
 /* Containers only -- the only resource with a real running/paused/
- * stopped/exited state (Container.status per the API, ADR-0045).
- * green = running, amber = paused (cgroup-frozen), grey = stopped
- * (manually stopped, still defined) or exited (process died, no
- * restart policy revived it) -- stopped and exited share one color
- * since both mean "not live" from a glance; the detail view's own
- * Status field spells out which. */
-function treeItemLinkWithStatus(href, label, status) {
+ * stopped/exited state (Container.status per the API, ADR-0045: the
+ * full real set is these four, not just running/paused/"other" --
+ * "stopped" is a deliberately-stopped-but-still-defined container,
+ * "exited" is its own process dying unexpectedly, a genuinely
+ * different, worth-a-different-color condition). Tints the container
+ * icon itself instead of a separate dot next to it: green = running,
+ * yellow = paused (cgroup-frozen), grey = stopped (deliberate, no
+ * error), red = exited (unexpected -- the one state actually worth
+ * flagging at a glance). */
+function containerStatusColorClass(status) {
+	if (status === "running")
+		return "tree-icon-ok";
+	if (status === "paused")
+		return "tree-icon-paused";
+	if (status === "exited")
+		return "tree-icon-error";
+	return "tree-icon-idle"; /* stopped */
+}
+
+function treeItemLinkWithStatus(href, label, status, icon) {
 	const a = document.createElement("a");
-	const dot = document.createElement("span");
-	const dotClass =
-		status === "running" ? "tree-status-running" : status === "paused" ? "tree-status-paused" : "tree-status-stopped";
 
 	a.href = href;
 	a.className = "tree-item";
-	dot.className = "tree-status-dot " + dotClass;
-	a.appendChild(dot);
+	if (icon)
+		a.appendChild(treeIcon(icon, containerStatusColorClass(status)));
 	a.appendChild(document.createTextNode(label));
 	return a;
 }
 
+/*
+ * Genuinely recursive -- a node can have children that themselves have
+ * children (System > PKI > Root CA), not just one fixed level. Any
+ * node with children gets its own toggle; a childless node is a plain
+ * leaf link. Devices stays childless deliberately: its own individual
+ * named-mapping "leaves" used to resolve to the exact same page as the
+ * Devices category root itself (no scroll, no highlight, nothing to
+ * show a leaf click had done anything), so it's a single flat link
+ * rather than a fake-looking expandable one. Depth-based indent is set
+ * directly (inline style) rather than via nested-ul CSS cascading, so
+ * it stays correct and explicit regardless of how deep a given branch
+ * goes.
+ */
+function buildTreeNode(item, parentUl, parentHash, depth) {
+	/* A category commonly aliases its own address to its first child's
+	 * (matching every category-root-has-no-separate-page convention
+	 * already used elsewhere, e.g. "Backup" the group and "Backup" the
+	 * first child both route to hash "backup") -- when that's the
+	 * case, this call is for the CHILD, and it must not clobber the
+	 * correct ancestor mapping the group's own (already-processed)
+	 * call already wrote for that same hash. */
+	if (item.hash !== parentHash)
+		hashToParent[item.hash] = parentHash;
+
+	const li = document.createElement("li");
+	const row = document.createElement("div");
+	const hasChildren = item.children && item.children.length > 0;
+
+	row.className = "tree-cat-row";
+	row.style.marginLeft = depth + "rem";
+
+	const toggle = document.createElement("button");
+
+	toggle.type = "button";
+	if (hasChildren) {
+		const collapsed = collapsedCategories.has(item.hash);
+
+		toggle.className = "tree-toggle";
+		toggle.dataset.hash = item.hash;
+		toggle.textContent = collapsed ? "▸" : "▾";
+		toggle.setAttribute("aria-label", "Toggle " + item.label);
+	} else {
+		toggle.className = "tree-toggle no-children";
+		toggle.tabIndex = -1;
+	}
+	row.appendChild(toggle);
+	row.appendChild(
+		item.status !== undefined
+			? treeItemLinkWithStatus("#" + item.hash, item.label, item.status, item.icon)
+			: treeLink(
+					"#" + item.hash,
+					item.label,
+					hasChildren ? "tree-category" : "tree-item",
+					item.icon,
+					item.iconColor
+			  )
+	);
+	li.appendChild(row);
+
+	if (hasChildren) {
+		const ul = document.createElement("ul");
+
+		ul.dataset.hash = item.hash;
+		ul.hidden = collapsedCategories.has(item.hash);
+		for (const child of item.children)
+			buildTreeNode(child, ul, item.hash, depth + 1);
+		li.appendChild(ul);
+
+		toggle.addEventListener("click", (event) => {
+			event.preventDefault();
+			const nowCollapsed = !ul.hidden;
+
+			ul.hidden = nowCollapsed;
+			toggle.textContent = nowCollapsed ? "▸" : "▾";
+			if (nowCollapsed)
+				collapsedCategories.add(item.hash);
+			else
+				collapsedCategories.delete(item.hash);
+			saveCollapsedCategories();
+		});
+	}
+	parentUl.appendChild(li);
+}
+
 function renderTree() {
 	treeEl.textContent = "";
-	hashToCategory = {};
+	hashToParent = {};
 	const root = document.createElement("ul");
 
-	const addCategory = (label, hash, children) => {
-		hashToCategory[hash] = hash;
+	const topLevel = [
+		{
+			label: "Containers",
+			hash: "containers",
+			icon: "containers",
+			children: cache.containers.map((c) => ({
+				label: c.name,
+				hash: "containers/" + encodeURIComponent(c.name),
+				status: c.status,
+				icon: "containers",
+			})),
+		},
+		{
+			label: "Networks",
+			hash: "networks",
+			icon: "networks",
+			children: cache.networks.map((n) => ({
+				label: n.name,
+				hash: "networks/" + encodeURIComponent(n.name),
+				icon: "networks",
+				/* No real "status" concept for a network the way a container
+				 * has one -- the closest real, available signal is whether
+				 * anything is actually attached to it right now (green) vs.
+				 * created but currently unused (grey), same "tint the icon,
+				 * not a separate dot" treatment containers get. */
+				iconColor: n.interfaces && n.interfaces.length > 0 ? "tree-icon-ok" : "tree-icon-idle",
+			})),
+		},
+		{
+			label: "Software",
+			hash: "images",
+			icon: "images",
+			children: [
+				{ label: "Images", hash: "images", icon: "images" },
+				{ label: "Packages", hash: "packages", icon: "packages" },
+				{ label: "Recipes", hash: "recipes", icon: "recipes" },
+			],
+		},
+		{
+			label: "System",
+			hash: "update",
+			icon: "system",
+			children: [
+				{
+					label: "PKI",
+					hash: "pki-ca",
+					icon: "pki",
+					children: [
+						{ label: "Root CA", hash: "pki-ca", icon: "pki" },
+						{ label: "Certificates", hash: "pki-certs", icon: "pki" },
+					],
+				},
+				{
+					label: "DNS",
+					hash: "dns-records",
+					icon: "dns",
+					children: [
+						{ label: "Records", hash: "dns-records", icon: "dns" },
+						{ label: "Servers", hash: "dns-servers", icon: "dns" },
+					],
+				},
+				{
+					label: "Backup",
+					hash: "backup",
+					icon: "backup",
+					children: [
+						{ label: "Backup", hash: "backup", icon: "backup" },
+						{ label: "Restore", hash: "restore", icon: "backup" },
+						{ label: "Site", hash: "site", icon: "backup" },
+					],
+				},
+				{ label: "Devices", hash: "devices", icon: "devices" },
+				{ label: "Update", hash: "update", icon: "update" },
+			],
+		},
+	];
 
-		const li = document.createElement("li");
-		const row = document.createElement("div");
-
-		row.className = "tree-cat-row";
-
-		const hasChildren = children && children.length > 0;
-		const toggle = document.createElement("button");
-
-		toggle.type = "button";
-		if (hasChildren) {
-			const collapsed = collapsedCategories.has(hash);
-
-			toggle.className = "tree-toggle";
-			toggle.dataset.hash = hash;
-			toggle.textContent = collapsed ? "▸" : "▾";
-			toggle.setAttribute("aria-label", "Toggle " + label);
-		} else {
-			toggle.className = "tree-toggle no-children";
-			toggle.tabIndex = -1;
-		}
-		row.appendChild(toggle);
-		row.appendChild(treeLink("#" + hash, label, "tree-category"));
-		li.appendChild(row);
-
-		if (hasChildren) {
-			const ul = document.createElement("ul");
-
-			ul.dataset.hash = hash;
-			ul.hidden = collapsedCategories.has(hash);
-			for (const child of children) {
-				hashToCategory[child.hash] = hash;
-
-				const childLi = document.createElement("li");
-
-				childLi.appendChild(
-					child.status !== undefined
-						? treeItemLinkWithStatus("#" + child.hash, child.label, child.status)
-						: treeLink("#" + child.hash, child.label, "tree-item")
-				);
-				ul.appendChild(childLi);
-			}
-			li.appendChild(ul);
-
-			toggle.addEventListener("click", (event) => {
-				event.preventDefault();
-				const nowCollapsed = !ul.hidden;
-
-				ul.hidden = nowCollapsed;
-				toggle.textContent = nowCollapsed ? "▸" : "▾";
-				if (nowCollapsed)
-					collapsedCategories.add(hash);
-				else
-					collapsedCategories.delete(hash);
-				saveCollapsedCategories();
-			});
-		}
-		root.appendChild(li);
-	};
-
-	addCategory(
-		"Containers",
-		"containers",
-		cache.containers.map((c) => ({ label: c.name, hash: "containers/" + encodeURIComponent(c.name), status: c.status }))
-	);
-	addCategory(
-		"Networks",
-		"networks",
-		cache.networks.map((n) => ({ label: n.name, hash: "networks/" + encodeURIComponent(n.name) }))
-	);
-	addCategory(
-		"Images",
-		"images",
-		cache.images.map((i) => ({ label: i.name, hash: "images/" + encodeURIComponent(i.name) }))
-	);
-	addCategory(
-		"Devices",
-		"devices",
-		cache.deviceMaps.map((m) => ({ label: m.name, hash: "devices/" + encodeURIComponent(m.name) }))
-	);
-	addCategory("DNS", "dns-records", [
-		{ label: "Records", hash: "dns-records" },
-		{ label: "Servers", hash: "dns-servers" },
-	]);
-	addCategory("PKI", "pki-ca", [
-		{ label: "Root CA", hash: "pki-ca" },
-		{ label: "Certificates", hash: "pki-certs" },
-	]);
-	addCategory(
-		"Packages",
-		"packages",
-		allPackageNames().map((name) => ({ label: name, hash: "packages/" + encodeURIComponent(name) }))
-	);
-	addCategory("System", "system", null);
+	for (const item of topLevel)
+		buildTreeNode(item, root, undefined, 0);
 
 	treeEl.appendChild(root);
 	renderTreeActive();
 }
 
+/* Highlights whichever link owns the current route -- an exact match
+ * for the current page's own link if it has one, or (for a detail
+ * page with no tree leaf of its own, e.g. a specific image) a match on
+ * the hash's own top-level segment, so its category still lights up
+ * rather than nothing. */
 function renderTreeActive() {
 	const current = location.hash.replace(/^#/, "") || "containers";
+	const topSegment = current.split("/")[0];
+	const has = (h) => Object.prototype.hasOwnProperty.call(hashToParent, h);
+	const owning = new Set([current, topSegment]);
+
+	/* Every ancestor along the way lights up too, not just the
+	 * immediate parent -- viewing "backup" (nested System > Backup >
+	 * Backup) highlights both "Backup" and "System", the same way
+	 * ensureActiveCategoryExpanded() walks the full chain to expand it. */
+	for (let hash = has(current) ? current : topSegment; has(hash); ) {
+		const parentHash = hashToParent[hash];
+
+		if (parentHash === undefined)
+			break;
+		owning.add(parentHash);
+		hash = parentHash;
+	}
 
 	for (const a of treeEl.querySelectorAll("a")) {
 		const target = a.getAttribute("href").replace(/^#/, "");
 
-		a.classList.toggle("active", target === current);
+		a.classList.toggle("active", owning.has(target));
 	}
 }
 
@@ -494,16 +648,39 @@ function renderTreeActive() {
 function ensureActiveCategoryExpanded() {
 	const current = location.hash.replace(/^#/, "") || "containers";
 	const topSegment = current.split("/")[0];
-	const categoryHash = hashToCategory[topSegment] || hashToCategory[current] || topSegment;
-	const toggle = treeEl.querySelector('.tree-toggle[data-hash="' + categoryHash + '"]');
-	const ul = treeEl.querySelector('ul[data-hash="' + categoryHash + '"]');
+	const has = (h) => Object.prototype.hasOwnProperty.call(hashToParent, h);
+	let hash = has(current) ? current : topSegment;
+	let changed = false;
 
-	if (toggle && ul && ul.hidden) {
-		ul.hidden = false;
-		toggle.textContent = "▾";
-		collapsedCategories.delete(categoryHash);
-		saveCollapsedCategories();
+	/* Walk the current hash itself, then every ancestor level in turn
+	 * (System > PKI > Root CA needs System's own toggle AND PKI's own
+	 * toggle both expanded, not just the immediate parent's). Checking
+	 * `hash` itself on each iteration -- not just parentHash -- matters
+	 * for a category that aliases its own address to a child's (e.g.
+	 * "Software" IS "images"): its own toggle/ul share that exact
+	 * data-hash, so it would never be reached by only ever expanding
+	 * parentHash. A detail page with no tree leaf of its own (e.g. a
+	 * specific image, which only "images" itself is registered for)
+	 * falls back to topSegment as its own starting point instead. */
+	while (has(hash)) {
+		const toggle = treeEl.querySelector('.tree-toggle[data-hash="' + hash + '"]');
+		const ul = treeEl.querySelector('ul[data-hash="' + hash + '"]');
+
+		if (toggle && ul && ul.hidden) {
+			ul.hidden = false;
+			toggle.textContent = "▾";
+			collapsedCategories.delete(hash);
+			changed = true;
+		}
+
+		const parentHash = hashToParent[hash];
+
+		if (parentHash === undefined)
+			break;
+		hash = parentHash;
 	}
+	if (changed)
+		saveCollapsedCategories();
 }
 
 /* ---------- Containers ---------- */
@@ -1189,7 +1366,7 @@ for (const tabButton of document.querySelectorAll(".tab-bar .tab-button")) {
 }
 
 document.getElementById("cd-backup-goto-system").addEventListener("click", () => {
-	location.hash = "#system";
+	location.hash = "#backup";
 });
 
 function renderContainerDetail(name) {
@@ -1230,13 +1407,42 @@ function renderContainerDetail(name) {
 		fieldBlock("Exit status", c.exit_status === null || c.exit_status === undefined ? "-" : String(c.exit_status))
 	);
 
-	/* Hardware -- devices/interfaces/network attachments granted at creation. */
-	simpleTableRows(
-		document.querySelector("#cd-devices tbody"),
-		(c.devices || []).map((d) => [d.id, d.dev_path]),
-		2,
-		"No devices granted"
-	);
+	/* Hardware -- devices/interfaces/network attachments granted at creation.
+	 * Links back to Devices when the granted id has a real "exact" name
+	 * mapping ("vendor_model" isn't shown here either, same "only exact
+	 * pins to one row" convention renderDevices() already established). */
+	{
+		const devicesBody = document.querySelector("#cd-devices tbody");
+		const devices = c.devices || [];
+		const mappedNames = exactMappedNames();
+
+		devicesBody.textContent = "";
+		if (devices.length === 0) {
+			const row = document.createElement("tr");
+			const cell = document.createElement("td");
+
+			cell.colSpan = 2;
+			cell.className = "empty";
+			cell.textContent = "No devices granted";
+			row.appendChild(cell);
+			devicesBody.appendChild(row);
+		} else {
+			for (const d of devices) {
+				const row = document.createElement("tr");
+				const idCell = document.createElement("td");
+				const pathCell = document.createElement("td");
+
+				if (mappedNames[d.id])
+					idCell.appendChild(treeLink("#devices", d.id + " (" + mappedNames[d.id] + ")", ""));
+				else
+					idCell.textContent = d.id;
+				pathCell.textContent = d.dev_path;
+				row.appendChild(idCell);
+				row.appendChild(pathCell);
+				devicesBody.appendChild(row);
+			}
+		}
+	}
 	simpleTableRows(
 		document.querySelector("#cd-interfaces tbody"),
 		(c.interfaces || []).map((ifname) => [ifname]),
@@ -1528,13 +1734,31 @@ function renderImageDetail(name) {
 	document.getElementById("imgd-title").textContent = name;
 
 	const usingContainers = cache.containers.filter((c) => c.image === name);
+	const containersBody = document.querySelector("#imgd-containers tbody");
 
-	simpleTableRows(
-		document.querySelector("#imgd-containers tbody"),
-		usingContainers.map((c) => [c.name, c.status]),
-		2,
-		"No containers use this image"
-	);
+	containersBody.textContent = "";
+	if (usingContainers.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 2;
+		cell.className = "empty";
+		cell.textContent = "No containers use this image";
+		row.appendChild(cell);
+		containersBody.appendChild(row);
+	} else {
+		for (const c of usingContainers) {
+			const row = document.createElement("tr");
+			const nameCell = document.createElement("td");
+			const statusCell = document.createElement("td");
+
+			nameCell.appendChild(treeLink("#containers/" + encodeURIComponent(c.name), c.name, ""));
+			statusCell.textContent = c.status;
+			row.appendChild(nameCell);
+			row.appendChild(statusCell);
+			containersBody.appendChild(row);
+		}
+	}
 
 	renderImageDetailPackages(name);
 	renderImageDetailRecipes(name);
@@ -1567,7 +1791,7 @@ function renderImageDetailPackages(name) {
 		const row = document.createElement("tr");
 
 		const nameCell = document.createElement("td");
-		nameCell.textContent = pkg.name;
+		nameCell.appendChild(treeLink("#packages/" + encodeURIComponent(pkg.name), pkg.name, ""));
 		row.appendChild(nameCell);
 
 		const versionCell = document.createElement("td");
@@ -1694,18 +1918,25 @@ async function refreshDeviceMaps() {
 
 const DEVICE_BUS_BODIES = { usb: "dev-usb-body", pci: "dev-pci-body", net: "dev-net-body", gpu: "dev-gpu-body" };
 
-function renderDevices() {
-	renderDeviceMapsTable();
-
-	/* Only "exact" mappings can be shown inline against the one device
-	 * row they pin to; a "vendor_model" mapping's own resolved_ids can
-	 * span several rows (or move between polls), so it's only ever
-	 * shown in the Named mappings table above, not annotated per-row
-	 * here. */
+/* Only "exact" mappings can be shown inline against the one device row
+ * they pin to; a "vendor_model" mapping's own resolved_ids can span
+ * several rows (or move between polls), so it's only ever shown in
+ * the Named mappings table, never annotated per-row on a specific
+ * device. Shared by the Devices page's own per-bus tables and a
+ * container's own Hardware tab (its device grants use the same raw
+ * ids these mappings pin to). */
+function exactMappedNames() {
 	const mappedNames = {};
 
 	for (const m of cache.deviceMaps)
 		if (m.kind === "exact") mappedNames[m.selector] = m.name;
+	return mappedNames;
+}
+
+function renderDevices() {
+	renderDeviceMapsTable();
+
+	const mappedNames = exactMappedNames();
 
 	for (const bus of Object.keys(DEVICE_BUS_BODIES)) {
 		const tbody = document.getElementById(DEVICE_BUS_BODIES[bus]);
@@ -1806,6 +2037,19 @@ function deviceRow(d, mappedName) {
 	return row;
 }
 
+/* Every container currently holding a device whose id is among
+ * resolvedIds -- a mapping's own "present" status only says the
+ * underlying hardware exists, not whether anything's actually using
+ * it right now; this is the one piece client-side cross-referencing
+ * (cache.containers[].devices[].id vs. cache.deviceMaps[].resolved_ids,
+ * both already loaded) can answer that neither list showed on its
+ * own before. */
+function containersUsingDeviceIds(resolvedIds) {
+	const idSet = new Set(resolvedIds);
+
+	return cache.containers.filter((c) => (c.devices || []).some((d) => idSet.has(d.id))).map((c) => c.name);
+}
+
 function renderDeviceMapsTable() {
 	const body = document.getElementById("devicemaps-body");
 
@@ -1814,7 +2058,7 @@ function renderDeviceMapsTable() {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
 
-		cell.colSpan = 5;
+		cell.colSpan = 6;
 		cell.className = "empty";
 		cell.textContent = "No named devices yet";
 		row.appendChild(cell);
@@ -1843,6 +2087,20 @@ function renderDeviceMapsTable() {
 		badge.textContent = m.present ? "present (" + m.resolved_ids.length + ")" : "not present";
 		statusCell.appendChild(badge);
 		row.appendChild(statusCell);
+
+		const usedByCell = document.createElement("td");
+		const usingNames = containersUsingDeviceIds(m.resolved_ids);
+
+		if (usingNames.length === 0) {
+			usedByCell.textContent = "-";
+		} else {
+			usingNames.forEach((cname, i) => {
+				if (i > 0)
+					usedByCell.appendChild(document.createTextNode(", "));
+				usedByCell.appendChild(treeLink("#containers/" + encodeURIComponent(cname), cname, ""));
+			});
+		}
+		row.appendChild(usedByCell);
 
 		const actionCell = document.createElement("td");
 		const removeBtn = document.createElement("button");
@@ -2109,56 +2367,107 @@ async function removePkiCert(name) {
 
 /* ---------- Packages ---------- */
 
-/* Every package name known to this system -- from a recipe on file,
- * currently tracked/installed somewhere, or both (removing a recipe
- * never touches what's already installed, so the two sets legitimately
- * diverge). Drives both the tree's per-package children and the
- * landing table -- one derivation, not two lists to keep in sync. */
-function allPackageNames() {
-	const names = new Set();
-
-	for (const r of cache.pkgRecipes)
-		names.add(r.name);
-	for (const p of cache.pkgList)
-		names.add(p.name);
-	return Array.from(names).sort();
-}
-
+/* One row per real installation (name+image pair) -- what's actually
+ * on disk right now, not the recipe catalog (see renderRecipesList()
+ * for that). Both link a name into the same package detail page
+ * (Recipe + Installed tabs together already), the one place that
+ * shows a given name's full picture -- no separate detail page per
+ * list, matching this project's own single-source-of-truth posture. */
 function renderPackagesList() {
 	const body = document.getElementById("packages-body");
-	const names = allPackageNames();
 
 	body.textContent = "";
-	if (names.length === 0) {
+	if (cache.pkgList.length === 0) {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
 
-		cell.colSpan = 4;
+		cell.colSpan = 5;
 		cell.className = "empty";
-		cell.textContent = "No packages";
+		cell.textContent = "Nothing installed yet";
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
 	}
 
-	for (const name of names) {
+	for (const pkg of cache.pkgList) {
 		const row = document.createElement("tr");
-		const recipe = cache.pkgRecipes.find((r) => r.name === name);
-		const installedCount = cache.pkgList.filter((p) => p.name === name).length;
 
 		const nameCell = document.createElement("td");
-		nameCell.appendChild(treeLink("#packages/" + encodeURIComponent(name), name, ""));
+		nameCell.appendChild(treeLink("#packages/" + encodeURIComponent(pkg.name), pkg.name, ""));
+		row.appendChild(nameCell);
+
+		const imageCell = document.createElement("td");
+		imageCell.textContent = pkg.image;
+		row.appendChild(imageCell);
+
+		const versionCell = document.createElement("td");
+		versionCell.textContent = pkg.version;
+		row.appendChild(versionCell);
+
+		const stateCell = document.createElement("td");
+		stateCell.textContent = pkg.state;
+		row.appendChild(stateCell);
+
+		const actionCell = document.createElement("td");
+		if (pkg.state === "installed") {
+			const rmButton = document.createElement("button");
+
+			rmButton.textContent = "Remove";
+			rmButton.className = "button-danger";
+			rmButton.addEventListener("click", () => removePkg(pkg.name, pkg.image));
+			actionCell.appendChild(rmButton);
+		}
+		row.appendChild(actionCell);
+
+		body.appendChild(row);
+	}
+}
+
+/* The buildable-definition catalog -- a recipe existing here says
+ * nothing about whether it's installed anywhere (see
+ * renderPackagesList() for that); the two lists deliberately show
+ * different, independent sets (cache.pkgRecipes vs. cache.pkgList),
+ * not the same data sliced two ways. */
+function renderRecipesList() {
+	const body = document.getElementById("recipes-body");
+
+	body.textContent = "";
+	if (cache.pkgRecipes.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 4;
+		cell.className = "empty";
+		cell.textContent = "No recipes";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+
+	for (const r of cache.pkgRecipes) {
+		const row = document.createElement("tr");
+
+		const nameCell = document.createElement("td");
+		nameCell.appendChild(treeLink("#packages/" + encodeURIComponent(r.name), r.name, ""));
 		row.appendChild(nameCell);
 
 		const versionCell = document.createElement("td");
-		versionCell.textContent = recipe ? recipe.version : "-";
+		versionCell.textContent = r.version;
 		row.appendChild(versionCell);
 
-		const countCell = document.createElement("td");
-		countCell.textContent = String(installedCount);
-		row.appendChild(countCell);
+		const dependsCell = document.createElement("td");
+		dependsCell.textContent = r.depends || "-";
+		row.appendChild(dependsCell);
 
-		row.appendChild(document.createElement("td"));
+		const actionCell = document.createElement("td");
+		const rmButton = document.createElement("button");
+
+		rmButton.textContent = "Delete";
+		rmButton.className = "button-danger";
+		rmButton.addEventListener("click", () => removePkgRecipe(r.name));
+		actionCell.appendChild(rmButton);
+		row.appendChild(actionCell);
+
 		body.appendChild(row);
 	}
 }

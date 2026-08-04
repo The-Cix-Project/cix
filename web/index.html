@@ -11,6 +11,8 @@
 	<h1>Kanxeo<span id="header-instance-name" class="header-instance-name" hidden></span></h1>
 	<div class="header-right">
 		<span id="health" class="badge badge-unknown">checking&hellip;</span>
+		<button type="button" id="sys-reboot" class="button-danger button-small">Reboot</button>
+		<button type="button" id="sys-shutdown" class="button-danger button-small">Shutdown</button>
 		<div class="create-dropdown">
 			<button type="button" id="create-dropdown-toggle" class="create-dropdown-toggle">+ Create&nbsp;&#9662;</button>
 			<ul id="create-dropdown-menu" class="create-dropdown-menu" hidden>
@@ -132,8 +134,8 @@
 				<p class="hint">Kanxeo backs up platform configuration as a single whole (container
 					definitions, networks, DNS records, package install state + recipes) -- not
 					per-container, and not this container's own filesystem content (workload data is
-					never included, same boundary the System page's own Backup already documents).</p>
-				<button type="button" id="cd-backup-goto-system">Go to System &rarr; Backup</button>
+					never included, same boundary the Backup page's own documentation already covers).</p>
+				<button type="button" id="cd-backup-goto-system">Go to Backup</button>
 			</div>
 		</section>
 
@@ -262,8 +264,7 @@
 
 			<h3>Named mappings</h3>
 			<p class="hint">Persisted, operator-named bindings (ADR-0048) -- an exact mapping pins to
-				one specific bus location; a vendor/model mapping follows a device across USB ports.
-				Only named devices appear under Devices in the tree.</p>
+				one specific bus location; a vendor/model mapping follows a device across USB ports.</p>
 			<table id="devicemaps-table">
 				<thead>
 					<tr>
@@ -271,11 +272,12 @@
 						<th>Kind</th>
 						<th>Selector</th>
 						<th>Status</th>
+						<th>Used by</th>
 						<th></th>
 					</tr>
 				</thead>
 				<tbody id="devicemaps-body">
-					<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
+					<tr><td colspan="6" class="empty">Loading&hellip;</td></tr>
 				</tbody>
 			</table>
 
@@ -435,18 +437,42 @@
 		<section class="view" id="view-packages" hidden>
 			<div class="view-list">
 				<h2>Packages</h2>
-				<p class="hint">Every package known to this system -- from a recipe on file, currently
-					installed somewhere, or both. Click a name for its recipe and installed versions.</p>
+				<p class="hint">What's actually installed, on which image, right now -- one row per real
+					installation. For the recipe catalog itself (add/edit/delete a buildable definition),
+					see Recipes.</p>
 				<table id="packages">
 					<thead>
 						<tr>
 							<th>Name</th>
-							<th>Recipe version</th>
-							<th>Installed in</th>
+							<th>Image</th>
+							<th>Version</th>
+							<th>State</th>
 							<th></th>
 						</tr>
 					</thead>
 					<tbody id="packages-body">
+						<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</section>
+
+		<section class="view" id="view-recipes" hidden>
+			<div class="view-list">
+				<h2>Recipes</h2>
+				<p class="hint">The buildable-definition catalog (ADR-0040) -- a recipe here isn't
+					necessarily installed anywhere yet. Click a name for its full content and every
+					image it's installed on.</p>
+				<table id="recipes">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Version</th>
+							<th>Depends</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="recipes-body">
 						<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
 					</tbody>
 				</table>
@@ -494,10 +520,8 @@
 		</section>
 
 		<!-- System -->
-		<section class="view" id="view-system" hidden>
-			<h2>System</h2>
-
-			<h3>Site</h3>
+		<section class="view" id="view-site" hidden>
+			<h2>Site</h2>
 			<p class="hint">
 				A real, operator-set identity for this install, used to label it in the
 				dashboard header and backups, and to suggest a default FQDN
@@ -519,13 +543,17 @@
 				</label>
 				<button type="submit">Save</button>
 			</form>
+		</section>
 
-			<h3>Backup</h3>
+		<section class="view" id="view-backup" hidden>
+			<h2>Backup</h2>
 			<p class="hint">Platform configuration state (container defs, networks, DNS records, pkg install
 				state + recipes, site config) -- not workload data, not image content, never PKI keys.</p>
 			<button type="button" id="sys-backup">Download backup</button>
+		</section>
 
-			<h3>Restore</h3>
+		<section class="view" id="view-restore" hidden>
+			<h2>Restore</h2>
 			<form id="sys-restore-form">
 				<label class="wide">
 					Backup bundle
@@ -535,8 +563,10 @@
 			</form>
 			<p class="hint">Writes fields back to their real state files. Does not reboot or hot-reload --
 				reboot separately for it to take effect.</p>
+		</section>
 
-			<h3>Update</h3>
+		<section class="view" id="view-update" hidden>
+			<h2>Update</h2>
 			<form id="sys-update-form">
 				<label class="wide">
 					Control-plane image path (optional, local to this daemon's host)
@@ -550,12 +580,6 @@
 			</form>
 			<p class="hint">Writes to the inactive A/B slot. Does not reboot -- reboot separately once
 				ready to cut over.</p>
-
-			<h3>Power</h3>
-			<div class="detail-actions">
-				<button type="button" id="sys-reboot" class="button-danger">Reboot</button>
-				<button type="button" id="sys-shutdown" class="button-danger">Shutdown</button>
-			</div>
 		</section>
 	</div>
 

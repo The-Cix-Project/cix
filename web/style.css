@@ -261,7 +261,8 @@ header h1 {
 
 .tree-category {
 	flex: 1 1 auto;
-	display: block;
+	display: flex;
+	align-items: center;
 	padding: 0.4rem 1rem 0.4rem 0;
 	font-size: 0.8rem;
 	text-transform: uppercase;
@@ -276,9 +277,17 @@ header h1 {
 	color: var(--text);
 }
 
+.tree-category.active {
+	background: var(--tree-active-bg);
+	border-radius: 4px;
+	font-weight: 600;
+}
+
 .tree-item {
-	display: block;
-	padding: 0.3rem 1rem 0.3rem 1.75rem;
+	flex: 1 1 auto;
+	display: flex;
+	align-items: center;
+	padding: 0.3rem 1rem 0.3rem 0;
 	font-size: 0.85rem;
 	color: var(--text);
 	text-decoration: none;
@@ -288,36 +297,48 @@ header h1 {
 	text-overflow: ellipsis;
 }
 
+.tree-icon {
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 14px;
+	height: 14px;
+	margin-right: 0.5rem;
+	color: var(--muted);
+}
+
+.tree-icon svg {
+	display: block;
+}
+
 .tree-item:hover {
 	background: var(--unknown-bg);
 }
 
-.tree-item.active,
-.tree-category.active {
+.tree-item.active {
 	background: var(--tree-active-bg);
 	border-radius: 4px;
 }
 
-.tree-status-dot {
-	display: inline-block;
-	width: 8px;
-	height: 8px;
-	border-radius: 50%;
-	margin-right: 0.45rem;
-	vertical-align: middle;
-	flex: 0 0 auto;
+/* Tints the icon itself (stroke="currentColor" inherits it) instead of
+ * a separate status dot next to it -- containers (running/paused/
+ * stopped/exited) and networks (has anything attached, or not) both
+ * use these same four semantic colors. */
+.tree-icon-ok {
+	color: var(--ok);
 }
 
-.tree-status-running {
-	background: var(--ok);
+.tree-icon-paused {
+	color: var(--paused);
 }
 
-.tree-status-paused {
-	background: var(--paused);
+.tree-icon-idle {
+	color: var(--muted);
 }
 
-.tree-status-stopped {
-	background: var(--muted);
+.tree-icon-error {
+	color: var(--error);
 }
 
 main {
