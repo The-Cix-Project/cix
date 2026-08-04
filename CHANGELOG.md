@@ -2,6 +2,26 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 39: real, host-side per-container stats -- CPU/memory/disk/network, API-first, plus web dashboard graphs (ADR-0054)
+
+Direct user request: out-of-the-box monitoring, per container, pulled entirely from the host side (no in-container agent), exposed through the REST API first, then graphed in the web dashboard.
+
+#### Added
+- `GET /v1/containers/{name}/stats` (`daemon/src/main.c`): a raw, point-in-time snapshot -- cumulative counters (`cpu.*_usec`, `disk.read/write_bytes/ios`, `networks[].rx/tx_bytes/packets`) or gauges (`memory.current/peak/max`, `disk.upper_bytes`), no server-side history. Works for a container that exited on its own, correctly 404s after an explicit `stop` (same `registry_remove()` convention `pause`/`unpause` already use).
+- `src/cgroup.c`: `cgroup_read_stat_key()`/`cgroup_read_single_value()`/`cgroup_read_io_totals()` (work directly off the container's already-open `cgroup_fd`), `cgroup_enable_io_accounting()` (best-effort, called once at daemon startup -- the cgroup v2 `io` controller was not enabled anywhere on this platform before this phase).
+- `src/overlay.c`: `overlay_upperdir_size()` -- an `nftw()` walk of a container's own overlay upperdir, real content only (excludes directory-tree overhead).
+- `kanxeoctl stats NAME` (flat top-level verb, matching `stop`/`start`/`pause`/`unpause`), `docs/api/openapi.yaml`'s new path + `ContainerStats` schema.
+- Web dashboard: a 6th "Stats" tab on the container detail view, four hand-rolled `<canvas>` line charts (CPU/Memory/Disk/Network) -- no charting library. `web/app.js` keeps a small client-side rolling window (60 samples) only while the tab is open, computing CPU%/network-KB/s from consecutive raw-sample deltas.
+- `test/stats_child.c` + `test/test_container_stats.c`: a real fixture that actively burns CPU, touches memory, and appends to an on-disk file in a loop, proving the returned numbers genuinely advance across two real samples.
+
+#### Fixed
+- `stats_child.c`'s first version burned CPU before writing to disk, so an early sample saw genuinely zero disk usage -- fixed by writing first, burning CPU second.
+- `test_container_stats.c` never deleted its own `statsnet` bridge, so a second run collided with the first run's leftover bridge on the host (`EEXIST`) -- fixed with the same explicit `DELETE /v1/networks/...` cleanup every other network-creating test already does.
+
+#### Notes
+- Full clean rebuild (zero warnings), full 18-test regression sweep, all passing. Verified live against the production daemon: real, moving CPU/memory/network numbers, byte-exact disk-space accounting, and real io-controller-recorded I/O -- confirmed to survive a real daemon restart with the entire live topology auto-recovering, no disruption.
+- No real browser click-through of the new Stats tab was possible in this sandboxed dev environment (no headless browser tooling available) -- verified instead via clean JS syntax checks, confirming the daemon serves the exact edited files, and a manual dry-run of the identical CPU%/network-rate math against real live API data. A genuine visual/interactive check is still owed.
+
 ### Phase 38: a real platform identity -- domain-based CA naming, an auto-issued host cert, image trust, default name qualification, an auto-maintained DNS record (ADR-0049 through ADR-0053)
 
 Direct follow-up to `instance_name`: the root/intermediate CA's common names should reflect this install's own `domain_suffix`, not the fixed placeholder they were bootstrapped with. No existing mechanism could change an already-bootstrapped CA's subject at all (`pki_ca_create()`/`pki_intermediate_create()` are hard one-shots) -- this is the real "start over" operation that design deliberately never provided implicitly.

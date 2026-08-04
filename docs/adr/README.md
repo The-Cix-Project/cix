@@ -58,3 +58,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0051](0051-ca-trust-staged-into-images.md) | CA trust chain staged into every image at creation time | Accepted |
 | [0052](0052-server-side-default-name-qualification.md) | Server-side default DNS/PKI name qualification (revises ADR-0046) | Accepted |
 | [0053](0053-auto-maintained-instance-dns-record.md) | Auto-maintained instance DNS record | Accepted |
+| [0054](0054-host-side-container-stats.md) | Host-side per-container stats: raw point-in-time snapshot, no server history | Accepted |

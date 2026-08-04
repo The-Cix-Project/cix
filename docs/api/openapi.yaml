@@ -1516,6 +1516,46 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /containers/{name}/stats:
+    get:
+      summary: >
+        Real, host-side CPU/memory/disk/network usage for one container
+        (see ADR-0054).
+      description: >
+        Gathered entirely from kernel interfaces the daemon already
+        touches -- the container's own cgroup v2 leaf (cpu.stat,
+        memory.current/peak/max, io.stat) and its host-side veth
+        interface's own counters -- never anything queried or agent-run
+        inside the container itself. A raw, point-in-time snapshot on
+        every call: cpu.*_usec and network rx/tx counters are
+        cumulative since the container started, not a rate -- compute a
+        rate by calling this twice and dividing by the wall-clock delta
+        between calls. disk.upper_bytes is a gauge (current space
+        consumed by this container's own overlay diff, content only).
+        disk.read/write_bytes/ios reflect whatever the cgroup v2 io
+        controller has recorded since it was enabled at this daemon's
+        own startup -- genuinely empty/zero for a container that hasn't
+        done tracked block I/O yet, not an error. Works for an exited-
+        but-still-registered container too (a cgroup leaf is never
+        removed while its registry entry exists) -- only a fully
+        removed or never-existing name is a 404.
+      operationId: getContainerStats
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+      responses:
+        "200":
+          description: Current usage snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContainerStats"
+        "404":
+          description: No such container
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /containers/{name}/stop:
     post:
       summary: >
@@ -2252,6 +2292,75 @@ components:
             Sourced live from the persisted definition, same as restart/
             depends_on above; null if none was configured or restart is
             "no".
+
+    ContainerStats:
+      type: object
+      required: [cpu, memory, disk, networks]
+      properties:
+        cpu:
+          type: object
+          required: [usage_usec, user_usec, system_usec]
+          description: Straight from this container's own cgroup v2 cpu.stat -- cumulative since it started.
+          properties:
+            usage_usec:
+              type: integer
+              description: Total CPU time consumed, microseconds.
+            user_usec:
+              type: integer
+            system_usec:
+              type: integer
+        memory:
+          type: object
+          required: [current, peak, max]
+          description: From memory.current/memory.peak/memory.max.
+          properties:
+            current:
+              type: integer
+              description: Bytes in use right now.
+            peak:
+              type: integer
+              description: Highest current has ever been.
+            max:
+              type: integer
+              nullable: true
+              description: The memory_max limit set at creation, or null if unlimited.
+        disk:
+          type: object
+          required: [upper_bytes, read_bytes, write_bytes, read_ios, write_ios]
+          properties:
+            upper_bytes:
+              type: integer
+              description: >
+                Real space consumed by this container's own overlay
+                upperdir (its content diff from the shared image) --
+                content only, not directory-tree overhead.
+            read_bytes:
+              type: integer
+              description: Cumulative bytes read, from cgroup v2 io.stat (0 if no tracked block I/O has happened yet).
+            write_bytes:
+              type: integer
+            read_ios:
+              type: integer
+            write_ios:
+              type: integer
+        networks:
+          type: array
+          items:
+            type: object
+            required: [name, rx_bytes, tx_bytes, rx_packets, tx_packets]
+            properties:
+              name:
+                type: string
+                description: The network name (see Container.networks) -- never the internal host-side veth name.
+              rx_bytes:
+                type: integer
+              tx_bytes:
+                type: integer
+              rx_packets:
+                type: integer
+              tx_packets:
+                type: integer
+          description: One entry per network this container is attached to, same order as Container.networks.
 
     ContainerNetworkAttachment:
       type: object

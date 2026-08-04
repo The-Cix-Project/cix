@@ -622,6 +622,39 @@ td.empty {
 	padding: 1rem 1.25rem;
 }
 
+.stats-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+	gap: 0.75rem;
+}
+
+.stats-card {
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 0.75rem 1rem;
+}
+
+.stats-card h3 {
+	margin: 0 0 0.5rem;
+	font-size: 0.85rem;
+	color: var(--muted);
+	text-transform: uppercase;
+	letter-spacing: 0.03em;
+}
+
+.stats-card canvas {
+	display: block;
+	width: 100%;
+	height: 80px;
+	background: var(--bg);
+	border-radius: 4px;
+}
+
+.stats-card .hint {
+	margin-top: 0.4rem;
+}
+
 .detail-grid div {
 	font-size: 0.9rem;
 }

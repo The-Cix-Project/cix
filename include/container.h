@@ -243,6 +243,28 @@ struct container_handle {
 int cgroup_create(const struct cgroup_limits *lim, int *out_fd);
 
 /*
+ * Best-effort: enables the cgroup v2 io controller at the root's own
+ * subtree_control, once, at daemon startup (see src/cgroup.c's own
+ * comment for the full "why now, why not fatal" rationale). Needed
+ * for cgroup_read_io_totals() below to ever report nonzero I/O.
+ */
+void cgroup_enable_io_accounting(void);
+
+/*
+ * Host-side per-container stats readers (GET /v1/containers/{name}/stats,
+ * ADR-0054): each takes the container's own already-open cgroup_fd
+ * (struct container_handle.cgroup_fd, an O_PATH fd -- openat() against
+ * an O_PATH fd works for regular-file children, no separate open()
+ * needed). All three return 0 with best-effort/zeroed output on a
+ * missing key or empty file (a stat that hasn't accumulated yet is not
+ * an error), -1 only on a real I/O error opening the underlying file.
+ */
+int cgroup_read_stat_key(int cgroup_fd, const char *filename, const char *key, long long *out);
+int cgroup_read_single_value(int cgroup_fd, const char *filename, long long *out, int *out_is_unlimited);
+int cgroup_read_io_totals(int cgroup_fd, long long *out_rbytes, long long *out_wbytes,
+                           long long *out_rios, long long *out_wios);
+
+/*
  * Mounts an overlayfs at ov->merged: lowerdir must already exist and
  * be populated (never auto-created -- a silently-empty lowerdir would
  * mean a silently-broken container); upperdir/workdir/merged are
@@ -250,6 +272,15 @@ int cgroup_create(const struct cgroup_limits *lim, int *out_fd);
  * for mountns_pivot().
  */
 int overlay_create(const struct overlay_spec *ov);
+
+/*
+ * Real space consumed by a container's own overlay upperdir (its
+ * content diff from the shared lowerdir image), for GET
+ * .../stats' "disk.upper_bytes" (ADR-0054). See src/overlay.c's own
+ * comment for exactly what counts (content only, not directory-tree
+ * overhead).
+ */
+int overlay_upperdir_size(const char *upperdir_path, long long *out_bytes);
 
 /*
  * Creates and starts a container per spec: clone3 into new

@@ -290,6 +290,8 @@ function renderCurrentView() {
 		 * WebSocket open once its own view isn't showing. */
 		if (consoleContainerName !== null)
 			closeConsole();
+		if (statsContainerName !== null)
+			stopStatsPolling();
 		if (route.category === "networks" && route.name !== null)
 			renderNetworkDetail(route.name);
 		else if (route.category === "images" && route.name !== null)
@@ -811,6 +813,7 @@ function createTerminal(outputEl) {
 let consoleWs = null;
 let consoleTerminal = null;
 let consoleContainerName = null;
+let currentContainerDetailName = null;
 
 function closeConsole() {
 	if (consoleWs !== null) {
@@ -859,6 +862,182 @@ function openConsole(name) {
 	};
 
 	consoleWs = ws;
+}
+
+/*
+ * ---------- Container stats (ADR-0054) ----------
+ * The daemon returns raw, point-in-time counters only (no rate, no
+ * history) -- this module owns turning that into something graphable:
+ * a small client-side rolling window kept only while the Stats tab is
+ * open, and the CPU%/network-rate math (a delta between consecutive
+ * raw samples divided by the real wall-clock time between them).
+ */
+
+const STATS_HISTORY_MAX = 60;
+
+let statsTimer = null;
+let statsContainerName = null;
+let statsHistory = [];
+
+function formatBytes(n) {
+	const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+	let v = n;
+	let i = 0;
+
+	while (Math.abs(v) >= 1024 && i < units.length - 1) {
+		v /= 1024;
+		i++;
+	}
+	return v.toFixed(i === 0 ? 0 : 1) + " " + units[i];
+}
+
+/* Minimal hand-rolled line chart -- no external dependency, same
+ * "build it ourselves" posture already established for the console's
+ * own terminal renderer and WebSocket codec. series is an array of
+ * {values, color}; every series shares one 0..max(all values) scale. */
+function drawSparkline(canvas, series) {
+	const ctx = canvas.getContext("2d");
+	const w = canvas.width;
+	const h = canvas.height;
+
+	ctx.clearRect(0, 0, w, h);
+
+	let maxV = 0;
+	for (const s of series)
+		for (const v of s.values)
+			if (v > maxV) maxV = v;
+	if (maxV <= 0) maxV = 1;
+
+	const padding = 3;
+	for (const s of series) {
+		const vals = s.values;
+
+		if (vals.length < 2)
+			continue;
+		ctx.strokeStyle = s.color;
+		ctx.lineWidth = 1.5;
+		ctx.beginPath();
+		vals.forEach((v, i) => {
+			const x = padding + (i / (vals.length - 1)) * (w - padding * 2);
+			const y = padding + (h - padding * 2) * (1 - v / maxV);
+
+			if (i === 0)
+				ctx.moveTo(x, y);
+			else
+				ctx.lineTo(x, y);
+		});
+		ctx.stroke();
+	}
+}
+
+function stopStatsPolling() {
+	if (statsTimer !== null) {
+		clearInterval(statsTimer);
+		statsTimer = null;
+	}
+	statsContainerName = null;
+	statsHistory = [];
+}
+
+function renderStatsCharts() {
+	const h = statsHistory;
+
+	if (h.length === 0)
+		return;
+
+	/* First sample alone has no prior point to diff a rate against --
+	 * these charts (and their labels) simply stay at "…" until the
+	 * second real poll tick lands. */
+	const cpuPercents = [];
+
+	for (let i = 1; i < h.length; i++) {
+		const dUsec = h[i].cpuUsageUsec - h[i - 1].cpuUsageUsec;
+		const dMs = h[i].t - h[i - 1].t;
+
+		cpuPercents.push(dMs > 0 ? Math.max(0, (dUsec / 1000 / dMs) * 100) : 0);
+	}
+	drawSparkline(document.getElementById("cd-stats-cpu"), [{ values: cpuPercents, color: "#0a84ff" }]);
+	document.getElementById("cd-stats-cpu-label").textContent =
+		cpuPercents.length > 0 ? cpuPercents[cpuPercents.length - 1].toFixed(1) + "% (1 core = 100%)" : "…";
+
+	const memValues = h.map((s) => s.memCurrent);
+
+	drawSparkline(document.getElementById("cd-stats-mem"), [{ values: memValues, color: "#30d158" }]);
+	{
+		const last = h[h.length - 1];
+		const limit = last.memMax === null ? "unlimited" : formatBytes(last.memMax);
+
+		document.getElementById("cd-stats-mem-label").textContent =
+			formatBytes(last.memCurrent) + " (limit " + limit + ")";
+	}
+
+	const diskValues = h.map((s) => s.diskBytes);
+
+	drawSparkline(document.getElementById("cd-stats-disk"), [{ values: diskValues, color: "#ff9f0a" }]);
+	document.getElementById("cd-stats-disk-label").textContent =
+		formatBytes(h[h.length - 1].diskBytes) + " (overlay diff)";
+
+	const rxRates = [];
+	const txRates = [];
+
+	for (let i = 1; i < h.length; i++) {
+		const dMs = h[i].t - h[i - 1].t;
+		const dRx = h[i].netRx - h[i - 1].netRx;
+		const dTx = h[i].netTx - h[i - 1].netTx;
+
+		rxRates.push(dMs > 0 ? Math.max(0, (dRx / dMs) * 1000) : 0);
+		txRates.push(dMs > 0 ? Math.max(0, (dTx / dMs) * 1000) : 0);
+	}
+	drawSparkline(document.getElementById("cd-stats-net"), [
+		{ values: rxRates, color: "#0a84ff" },
+		{ values: txRates, color: "#ff375f" },
+	]);
+	document.getElementById("cd-stats-net-label").textContent =
+		rxRates.length > 0
+			? formatBytes(rxRates[rxRates.length - 1]) + "/s ↓  " + formatBytes(txRates[txRates.length - 1]) + "/s ↑"
+			: "…";
+}
+
+async function pollStatsOnce(name) {
+	let stats;
+
+	try {
+		stats = await apiRequest("GET", "/v1/containers/" + encodeURIComponent(name) + "/stats");
+	} catch (e) {
+		return; /* container may have just exited/been removed -- the next
+		         * tick (or leaving the tab) resolves it; no need to
+		         * surface a transient error here */
+	}
+	if (statsContainerName !== name)
+		return; /* the tab moved on to a different container mid-request */
+
+	const netRx = (stats.networks || []).reduce((sum, n) => sum + n.rx_bytes, 0);
+	const netTx = (stats.networks || []).reduce((sum, n) => sum + n.tx_bytes, 0);
+
+	statsHistory.push({
+		t: Date.now(),
+		cpuUsageUsec: stats.cpu.usage_usec,
+		memCurrent: stats.memory.current,
+		memMax: stats.memory.max,
+		diskBytes: stats.disk.upper_bytes,
+		netRx: netRx,
+		netTx: netTx,
+	});
+	if (statsHistory.length > STATS_HISTORY_MAX)
+		statsHistory.shift();
+
+	renderStatsCharts();
+}
+
+function startStatsPolling(name) {
+	if (statsContainerName === name && statsTimer !== null)
+		return; /* already polling this exact container -- a poll-driven
+		         * re-render of the same detail view must not reset history */
+
+	stopStatsPolling();
+	statsContainerName = name;
+	pollStatsOnce(name);
+	statsTimer = setInterval(() => pollStatsOnce(name), POLL_INTERVAL_MS);
 }
 
 function consoleKeydown(event) {
@@ -911,6 +1090,10 @@ for (const tabButton of document.querySelectorAll(".tab-bar .tab-button")) {
 			panel.hidden = panel.dataset.tab !== tabName;
 		if (tabName === "console")
 			document.getElementById("cd-console-output").focus();
+		if (tabButton.id === "cd-tab-stats" && currentContainerDetailName !== null)
+			startStatsPolling(currentContainerDetailName);
+		else if (statsContainerName !== null)
+			stopStatsPolling();
 	});
 }
 
@@ -923,10 +1106,13 @@ function renderContainerDetail(name) {
 	const title = document.getElementById("cd-title");
 	const fields = document.getElementById("cd-fields");
 
+	currentContainerDetailName = name;
+
 	if (!c) {
 		title.textContent = name + " (not found)";
 		fields.textContent = "";
 		closeConsole();
+		stopStatsPolling();
 		return;
 	}
 

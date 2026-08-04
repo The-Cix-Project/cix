@@ -56,6 +56,8 @@ static void print_usage(FILE *out)
 	        "  start NAME  -- bring a stopped-but-defined container back, no daemon restart needed\n"
 	        "  pause NAME  -- freeze via the cgroup v2 freezer (real kernel freeze, not SIGSTOP)\n"
 	        "  unpause NAME\n"
+	        "  stats NAME  -- real, host-side CPU/memory/disk/network usage, gathered from\n"
+	        "               cgroups + the host's own veth (no in-container agent)\n"
 	        "  console NAME [--cmd=PATH]  -- interactive shell inside a running container\n"
 	        "               (like `docker exec -it`), over the daemon's own WebSocket\n"
 	        "               upgrade; --cmd= overrides the default /usr/bin/bash\n"
@@ -739,6 +741,77 @@ static int cmd_unpause(const struct kx_client *c, int json_mode, int argc, char 
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
+}
+
+/*
+ * kanxeoctl container stats <name> -- one-shot fetch-and-print, plain
+ * key/value lines. Raw counters exactly as the daemon returns them
+ * (ADR-0054: no rate/percentage computed here) -- a live-refreshing
+ * view belongs to the web dashboard's own Stats tab, not this CLI.
+ */
+static void fmt_container_stats(const struct json_value *v)
+{
+	const struct json_value *cpu = json_object_get(v, "cpu");
+	const struct json_value *mem = json_object_get(v, "memory");
+	const struct json_value *disk = json_object_get(v, "disk");
+	const struct json_value *nets = json_object_get(v, "networks");
+	const struct json_value *max_v;
+	size_t i;
+
+	printf("cpu.usage_usec=%lld cpu.user_usec=%lld cpu.system_usec=%lld\n",
+	       (long long)json_as_number(json_object_get(cpu, "usage_usec")),
+	       (long long)json_as_number(json_object_get(cpu, "user_usec")),
+	       (long long)json_as_number(json_object_get(cpu, "system_usec")));
+
+	max_v = json_object_get(mem, "max");
+	if (max_v == NULL || max_v->type == JSON_NULL) {
+		printf("memory.current=%lld memory.peak=%lld memory.max=unlimited\n",
+		       (long long)json_as_number(json_object_get(mem, "current")),
+		       (long long)json_as_number(json_object_get(mem, "peak")));
+	} else {
+		printf("memory.current=%lld memory.peak=%lld memory.max=%lld\n",
+		       (long long)json_as_number(json_object_get(mem, "current")),
+		       (long long)json_as_number(json_object_get(mem, "peak")),
+		       (long long)json_as_number(max_v));
+	}
+
+	printf("disk.upper_bytes=%lld disk.read_bytes=%lld disk.write_bytes=%lld "
+	       "disk.read_ios=%lld disk.write_ios=%lld\n",
+	       (long long)json_as_number(json_object_get(disk, "upper_bytes")),
+	       (long long)json_as_number(json_object_get(disk, "read_bytes")),
+	       (long long)json_as_number(json_object_get(disk, "write_bytes")),
+	       (long long)json_as_number(json_object_get(disk, "read_ios")),
+	       (long long)json_as_number(json_object_get(disk, "write_ios")));
+
+	if (nets != NULL && nets->type == JSON_ARRAY) {
+		for (i = 0; i < nets->u.array.count; i++) {
+			const struct json_value *n = nets->u.array.items[i];
+
+			printf("network[%s]: rx_bytes=%lld tx_bytes=%lld rx_packets=%lld tx_packets=%lld\n",
+			       json_str_field(n, "name"),
+			       (long long)json_as_number(json_object_get(n, "rx_bytes")),
+			       (long long)json_as_number(json_object_get(n, "tx_bytes")),
+			       (long long)json_as_number(json_object_get(n, "rx_packets")),
+			       (long long)json_as_number(json_object_get(n, "tx_packets")));
+		}
+	}
+}
+
+static int cmd_container_stats(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[300];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: stats requires a container name\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/containers/%s/stats", argv[0]);
+	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_container_stats);
 }
 
 static int cmd_console(const struct kx_client *c, int argc, char **argv)
@@ -2926,6 +2999,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_pause(client, json_mode, argc, argv);
 	if (strcmp(cmd, "unpause") == 0)
 		return cmd_unpause(client, json_mode, argc, argv);
+	if (strcmp(cmd, "stats") == 0)
+		return cmd_container_stats(client, json_mode, argc, argv);
 	if (strcmp(cmd, "console") == 0)
 		return cmd_console(client, argc, argv);
 	if (strcmp(cmd, "rm") == 0)

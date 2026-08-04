@@ -72,6 +72,7 @@
 				<button type="button" class="tab-button" data-tab="summary" id="cd-tab-summary">Summary</button>
 				<button type="button" class="tab-button" data-tab="hardware" id="cd-tab-hardware">Hardware</button>
 				<button type="button" class="tab-button" data-tab="options" id="cd-tab-options">Options</button>
+				<button type="button" class="tab-button" data-tab="stats" id="cd-tab-stats">Stats</button>
 				<button type="button" class="tab-button active" data-tab="console" id="cd-tab-console">Console</button>
 				<button type="button" class="tab-button" data-tab="backup" id="cd-tab-backup">Backup</button>
 			</div>
@@ -92,6 +93,33 @@
 				<table id="cd-sysctls"><tbody></tbody></table>
 				<h3>Files</h3>
 				<table id="cd-files"><tbody></tbody></table>
+			</div>
+			<div class="tab-panel" id="cd-panel-stats" data-tab="stats" hidden>
+				<div class="stats-grid">
+					<div class="stats-card">
+						<h3>CPU</h3>
+						<canvas id="cd-stats-cpu" width="300" height="80"></canvas>
+						<p class="hint" id="cd-stats-cpu-label">&hellip;</p>
+					</div>
+					<div class="stats-card">
+						<h3>Memory</h3>
+						<canvas id="cd-stats-mem" width="300" height="80"></canvas>
+						<p class="hint" id="cd-stats-mem-label">&hellip;</p>
+					</div>
+					<div class="stats-card">
+						<h3>Disk</h3>
+						<canvas id="cd-stats-disk" width="300" height="80"></canvas>
+						<p class="hint" id="cd-stats-disk-label">&hellip;</p>
+					</div>
+					<div class="stats-card">
+						<h3>Network</h3>
+						<canvas id="cd-stats-net" width="300" height="80"></canvas>
+						<p class="hint" id="cd-stats-net-label">&hellip;</p>
+					</div>
+				</div>
+				<p class="hint">Real, host-side usage (ADR-0054) -- gathered from this container's own
+					cgroup and host-side network interface, no in-container agent -- sampled every 2s
+					while this tab stays open. History resets whenever this tab (re)opens.</p>
 			</div>
 			<div class="tab-panel" id="cd-panel-console" data-tab="console">
 				<div class="console-toolbar">

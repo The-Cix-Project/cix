@@ -1,0 +1,36 @@
+# 0054 — Host-side per-container stats (CPU/memory/disk/network)
+
+## Status
+
+Accepted
+
+## Context
+
+Direct user request: real, out-of-the-box monitoring per container -- CPU, memory, disk, and network usage -- pulled from the host side (no in-container agent), exposed through the REST API first, then graphed in the web dashboard. "API driven like everything else" was explicit: whatever this becomes, the daemon's REST surface has to be the one source of truth, not something the dashboard computes on its own.
+
+Researched before designing anything, not assumed:
+
+- CPU and memory are already fully available: `struct container_handle.cgroup_fd` (an `O_PATH` fd on `/sys/fs/cgroup/<name>/`, open for the container's whole life) already exists, and `cpu.stat`/`memory.current`/`memory.stat`/`memory.peak` are already populated by the kernel for every container this project creates. Zero new capability needed.
+- Network needed no new rtnetlink code either: the host-side veth name is deterministically `vh<pid>-<idx>` (`src/container_net.c`), so `/sys/class/net/<veth>/statistics/*` gives real counters with a plain host-file read -- the same category of access `container_net_enable_ip_forward()` already makes against `/proc/sys/net/ipv4/ip_forward`.
+- Disk space consumed needed a new `nftw()`-based walker (`overlay_upperdir_size()`), but reuses the exact same primitive `image.c`'s tree-removal code already established for this codebase.
+- Disk I/O throughput needed something genuinely new: the cgroup v2 `io` controller was not enabled anywhere on this platform (`cgroup.subtree_control` at the root only ever had `cpu memory pids`; `io` was listed as available in `cgroup.controllers` but never turned on). Tested live and reversibly before committing to this design: enabling it (`echo +io >> cgroup.subtree_control`) succeeds cleanly with zero running containers disrupted (root cgroup had no processes directly in it, so no v2 delegation conflict) and retroactively activates on already-running containers' own cgroups with no need to recreate anything.
+
+Confirmed with the user via `AskUserQuestion`: disk usage means **both** space consumed and I/O throughput, not one deferred -- the empirical safety check above is what made committing to both in one pass reasonable rather than a guess.
+
+## Decision
+
+**A single point-in-time snapshot endpoint, `GET /v1/containers/{name}/stats`, with no server-side history.** Every value returned is either a raw cumulative counter (`cpu.*_usec`, `disk.read/write_bytes/ios`, `networks[].rx/tx_bytes/packets` — all monotonically increasing since the container started) or a plain gauge (`memory.current/peak/max`, `disk.upper_bytes`). The daemon computes nothing derived (no CPU %, no MB/s) and keeps no ring buffer, no persisted samples, nothing to reconcile across a restart. A client wanting a rate calls the endpoint twice and divides by the wall-clock delta itself.
+
+This keeps the daemon's own contribution to this feature exactly one thing: an honest, real-time mirror of what the kernel already knows about one container, on demand. "How to turn that into a graph" is entirely a client concern (the web dashboard's own rolling window, built in the same phase but architecturally downstream of this decision, not baked into it) — matches this project's existing division of labor everywhere else (the REST API is the one source of truth for state; presentation logic lives in the clients that consume it).
+
+**`cgroup_enable_io_accounting()` runs once, best-effort, at daemon startup** (`main()`, right before `registry_init()`), not per-container in `cgroup_create()`. cgroup v2 propagates a newly-enabled root controller to every descendant immediately, existing and future, so one root-level write covers every container regardless of when it was (or will be) created. Best-effort and never fatal: if it fails for any reason (already enabled by a prior daemon instance, a restricted host with no `io` controller at all), CPU/memory/network/disk-space stats keep working regardless — `io.stat` simply stays empty for every container, which the reader already treats as a legitimate zero, not an error (a container that hasn't done any tracked block I/O yet has a genuinely empty `io.stat` even with the controller on, so "empty" was already a case every consumer had to handle correctly).
+
+**Works for a container that exited on its own, not just a running one — but not one that was explicitly stopped.** A container whose own process exits stays in the registry with `running == 0` via `registry_mark_exited()` (a non-destructive path — its cgroup leaf is never `rmdir()`'d while that entry exists), so the same `cgroup_fd` stays valid and queryable afterward. `POST .../stop` is different: it calls `registry_remove()`, which really does tear the entry (and `cgroup_fd`) down, the same way it already makes `pause`/`unpause` 404 afterward — `GET .../stats` follows that same, already-established convention rather than inventing a special case for itself. Only a live-or-naturally-exited entry is queryable; a stopped, removed, or never-existing name is a 404.
+
+## Consequences
+
+- The daemon stays stateless for this feature: no new persisted file, no new long-lived in-memory structure beyond what already existed (`cgroup_fd`, `registry_entry.nets[]`). A daemon restart loses nothing this feature is responsible for, because it never held anything beyond a single request's own scratch stack frame.
+- Every rate/percentage a user actually wants to see (CPU load, MB/s) is computed by whichever client asks — today only the web dashboard, but any future client (a real monitoring agent, a second dashboard) gets the same raw, unopinionated counters rather than inheriting whatever windowing/smoothing choice a first client happened to make.
+- `disk.upper_bytes` counts file content only, not directory-tree overhead (`du`'s own accounting includes the fixed per-directory block cost; this walker deliberately doesn't) — a container with only empty mountpoint directories in its own upperdir (e.g. `proc/`, `sys/`) correctly reports 0 bytes even though `du -sb` on the same path reports several KB of pure directory metadata. A real, intentional definition of "usage," not an oversight.
+- `io.stat` accounting only reflects I/O that happened *after* the controller was enabled — historical I/O from before this daemon version's first startup with this code is simply unaccounted for, unrecoverable, and not pretended otherwise.
+- No rtnetlink code was added for network stats, despite this project's own networking plane otherwise being "100% custom C data plane, talk to the kernel via rtnetlink directly." This is a deliberate, narrow exception: these specific numbers (interface RX/TX counters) are already exposed as plain host files with no rtnetlink equivalent this project needs for anything else, and reading them is a read-only host-file access already precedented elsewhere in this codebase (`/proc/sys/net/ipv4/ip_forward`), not a control-plane operation the "own data plane" mandate was written to cover.

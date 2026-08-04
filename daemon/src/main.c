@@ -2685,6 +2685,138 @@ static void handle_unpause(int fd, const char *name)
 }
 
 /*
+ * Reads /sys/class/net/<veth>/statistics/<file> from the HOST netns
+ * (never the container's own -- these are the host-side veth's own
+ * counters, the same numbers a bridge/switch would see). A missing
+ * file (ENOENT -- the veth is gone, e.g. the container already exited
+ * and its netns was torn down) is not a request failure, just a 0 for
+ * that one counter: GET .../stats stays a best-effort snapshot, not
+ * an all-or-nothing report.
+ */
+static long long read_net_stat(const char *veth, const char *file)
+{
+	char path[PATH_MAX];
+	char buf[32];
+	int fd;
+	ssize_t n;
+
+	snprintf(path, sizeof(path), "/sys/class/net/%s/statistics/%s", veth, file);
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return 0;
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return 0;
+	buf[n] = '\0';
+	return strtoll(buf, NULL, 10);
+}
+
+/*
+ * GET /v1/containers/{name}/stats (ADR-0054): real, host-side CPU/
+ * memory/disk/network usage for one container, gathered entirely from
+ * kernel interfaces the daemon already has open (cgroup_fd) or can
+ * derive (the host-side veth name, network.c's own vh<pid>-<idx>
+ * convention) -- no in-container agent. A raw, point-in-time snapshot
+ * on every call, deliberately: no server-side history/ring buffer,
+ * see ADR-0054 for why the daemon stays stateless for this feature.
+ * Works for an exited-but-still-registered container too (cgroup
+ * leaves are never rmdir()'d, see cgroup_create()'s own comment) --
+ * only a fully-removed entry (DELETE'd, or never existed) is a 404.
+ */
+static void handle_container_stats(int fd, const char *name)
+{
+	struct registry_entry *e = registry_find(name);
+	struct json_writer w;
+	long long cpu_usage, cpu_user, cpu_system;
+	long long mem_current, mem_peak, mem_max;
+	int mem_max_unlimited;
+	long long disk_bytes = 0;
+	long long io_rbytes, io_wbytes, io_rios, io_wios;
+	int i;
+
+	if (e == NULL) {
+		respond_error(fd, 404, "Not Found", "no such container");
+		return;
+	}
+
+	cgroup_read_stat_key(e->handle.cgroup_fd, "cpu.stat", "usage_usec", &cpu_usage);
+	cgroup_read_stat_key(e->handle.cgroup_fd, "cpu.stat", "user_usec", &cpu_user);
+	cgroup_read_stat_key(e->handle.cgroup_fd, "cpu.stat", "system_usec", &cpu_system);
+	cgroup_read_single_value(e->handle.cgroup_fd, "memory.current", &mem_current, &mem_max_unlimited);
+	cgroup_read_single_value(e->handle.cgroup_fd, "memory.peak", &mem_peak, &mem_max_unlimited);
+	cgroup_read_single_value(e->handle.cgroup_fd, "memory.max", &mem_max, &mem_max_unlimited);
+	cgroup_read_io_totals(e->handle.cgroup_fd, &io_rbytes, &io_wbytes, &io_rios, &io_wios);
+
+	{
+		char upperdir[PATH_MAX];
+
+		snprintf(upperdir, sizeof(upperdir), "%s/%s/upper", CONTAINERS_DIR, name);
+		overlay_upperdir_size(upperdir, &disk_bytes);
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "cpu");
+	jw_obj_open(&w);
+	jw_key(&w, "usage_usec");
+	jw_int(&w, cpu_usage);
+	jw_key(&w, "user_usec");
+	jw_int(&w, cpu_user);
+	jw_key(&w, "system_usec");
+	jw_int(&w, cpu_system);
+	jw_obj_close(&w);
+	jw_key(&w, "memory");
+	jw_obj_open(&w);
+	jw_key(&w, "current");
+	jw_int(&w, mem_current);
+	jw_key(&w, "peak");
+	jw_int(&w, mem_peak);
+	jw_key(&w, "max");
+	if (mem_max_unlimited)
+		jw_null(&w);
+	else
+		jw_int(&w, mem_max);
+	jw_obj_close(&w);
+	jw_key(&w, "disk");
+	jw_obj_open(&w);
+	jw_key(&w, "upper_bytes");
+	jw_int(&w, disk_bytes);
+	jw_key(&w, "read_bytes");
+	jw_int(&w, io_rbytes);
+	jw_key(&w, "write_bytes");
+	jw_int(&w, io_wbytes);
+	jw_key(&w, "read_ios");
+	jw_int(&w, io_rios);
+	jw_key(&w, "write_ios");
+	jw_int(&w, io_wios);
+	jw_obj_close(&w);
+	jw_key(&w, "networks");
+	jw_arr_open(&w);
+	for (i = 0; i < e->net_count; i++) {
+		char veth[32];
+
+		snprintf(veth, sizeof(veth), "vh%d-%d", (int)e->handle.pid, i);
+		jw_obj_open(&w);
+		jw_key(&w, "name");
+		jw_str(&w, e->nets[i].name);
+		jw_key(&w, "rx_bytes");
+		jw_int(&w, read_net_stat(veth, "rx_bytes"));
+		jw_key(&w, "tx_bytes");
+		jw_int(&w, read_net_stat(veth, "tx_bytes"));
+		jw_key(&w, "rx_packets");
+		jw_int(&w, read_net_stat(veth, "rx_packets"));
+		jw_key(&w, "tx_packets");
+		jw_int(&w, read_net_stat(veth, "tx_packets"));
+		jw_obj_close(&w);
+	}
+	jw_arr_close(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
  * POST /v1/containers/{name}/stop (ADR-0027) -- kills a live container
  * right now, without removing its persisted definition (unlike
  * DELETE): no containerdef_remove(), and deliberately no dns_server_
@@ -4187,6 +4319,15 @@ static void dispatch(int fd, const struct http_request *req)
 				handle_pause(fd, container_name);
 				return;
 			}
+			if (nlen > 6 && strcmp(name + nlen - 6, "/stats") == 0 &&
+			    strcmp(req->method, "GET") == 0 && nlen - 6 < REGISTRY_NAME_MAX) {
+				char container_name[REGISTRY_NAME_MAX];
+
+				memcpy(container_name, name, nlen - 6);
+				container_name[nlen - 6] = '\0';
+				handle_container_stats(fd, container_name);
+				return;
+			}
 			if (strcmp(req->method, "GET") == 0) {
 				handle_get_one(fd, name);
 				return;
@@ -5545,6 +5686,15 @@ int main(int argc, char **argv)
 		return 1;
 	if (devicemap_init(DEVICEMAP_STATE_PATH) != 0)
 		return 1;
+
+	/*
+	 * Best-effort, before any container's cgroup leaf can exist (see
+	 * cgroup_enable_io_accounting()'s own comment for why "best-effort"
+	 * and why here) -- GET .../stats' disk.read_bytes/write_bytes/
+	 * read_ios/write_ios stay 0 for every container if this fails,
+	 * never a fatal startup condition.
+	 */
+	cgroup_enable_io_accounting();
 
 	registry_init();
 
