@@ -13,130 +13,290 @@
   </desc>
 
   <defs>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M0,0 L10,5 L0,10 z" fill="#4a5568"/>
+    <marker id="arrowFlow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3454d1"/>
+    </marker>
+    <marker id="arrowIndigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4338ca"/>
     </marker>
     <marker id="arrowLight" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0,0 L10,5 L0,10 z" fill="#8a94a6"/>
+      <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/>
     </marker>
+
+    <filter id="cardShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2.4" flood-color="#1a202c" flood-opacity="0.11"/>
+    </filter>
+
+    <!-- Hand-rolled line icons, 16x16, stroke=currentColor: no external icon
+         library, matching this project's own no-external-dependencies posture
+         (same convention as the web dashboard's own TREE_ICONS). Tinted per
+         card via style="color:..." on each <use>. -->
+    <symbol id="i-terminal" viewBox="0 0 16 16">
+      <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <path d="M4.2 6.2l2.3 2.1-2.3 2.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <line x1="8.2" y1="10.4" x2="11.5" y2="10.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="i-window" viewBox="0 0 16 16">
+      <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <line x1="1.5" y1="5.6" x2="14.5" y2="5.6" stroke="currentColor" stroke-width="1.4"/>
+      <circle cx="3.6" cy="4.05" r="0.55" fill="currentColor" stroke="none"/>
+      <circle cx="5.2" cy="4.05" r="0.55" fill="currentColor" stroke="none"/>
+    </symbol>
+    <symbol id="i-monitor" viewBox="0 0 16 16">
+      <rect x="2" y="2.5" width="12" height="8" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <line x1="6.5" y1="13.5" x2="9.5" y2="13.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      <line x1="8" y1="10.5" x2="8" y2="13.5" stroke="currentColor" stroke-width="1.4"/>
+    </symbol>
+    <symbol id="i-user" viewBox="0 0 16 16">
+      <circle cx="8" cy="5.6" r="2.6" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <path d="M2.8 14c0-3.1 2.3-5.2 5.2-5.2s5.2 2.1 5.2 5.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="i-server" viewBox="0 0 16 16">
+      <rect x="2" y="2" width="12" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <rect x="2" y="9" width="12" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <circle cx="4.3" cy="4.5" r="0.6" fill="currentColor" stroke="none"/>
+      <circle cx="4.3" cy="11.5" r="0.6" fill="currentColor" stroke="none"/>
+    </symbol>
+    <symbol id="i-list" viewBox="0 0 16 16">
+      <circle cx="2.6" cy="4" r="0.9" fill="currentColor" stroke="none"/>
+      <circle cx="2.6" cy="8" r="0.9" fill="currentColor" stroke="none"/>
+      <circle cx="2.6" cy="12" r="0.9" fill="currentColor" stroke="none"/>
+      <line x1="5.2" y1="4" x2="13.5" y2="4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      <line x1="5.2" y1="8" x2="13.5" y2="8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      <line x1="5.2" y1="12" x2="13.5" y2="12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="i-network" viewBox="0 0 16 16">
+      <circle cx="8" cy="2.8" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <circle cx="3" cy="12.5" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <circle cx="13" cy="12.5" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <line x1="7" y1="4" x2="4" y2="11.2" stroke="currentColor" stroke-width="1.2"/>
+      <line x1="9" y1="4" x2="12" y2="11.2" stroke="currentColor" stroke-width="1.2"/>
+    </symbol>
+    <symbol id="i-shield" viewBox="0 0 16 16">
+      <path d="M8 1.6l5.4 2v4.1c0 4.3-2.5 6.8-5.4 7.7c-2.9-.9-5.4-3.4-5.4-7.7V3.6z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="i-box" viewBox="0 0 16 16">
+      <path d="M2 5.4l6-3 6 3-6 3-6-3z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+      <path d="M2 5.4v6l6 3 6-3v-6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+      <line x1="8" y1="8.4" x2="8" y2="14.4" stroke="currentColor" stroke-width="1.3"/>
+    </symbol>
+    <symbol id="i-chip" viewBox="0 0 16 16">
+      <rect x="4.5" y="4.5" width="7" height="7" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <line x1="6" y1="1.5" x2="6" y2="4.5" stroke="currentColor" stroke-width="1.3"/>
+      <line x1="10" y1="1.5" x2="10" y2="4.5" stroke="currentColor" stroke-width="1.3"/>
+      <line x1="6" y1="11.5" x2="6" y2="14.5" stroke="currentColor" stroke-width="1.3"/>
+      <line x1="10" y1="11.5" x2="10" y2="14.5" stroke="currentColor" stroke-width="1.3"/>
+      <line x1="1.5" y1="6" x2="4.5" y2="6" stroke="currentColor" stroke-width="1.3"/>
+      <line x1="1.5" y1="10" x2="4.5" y2="10" stroke="currentColor" stroke-width="1.3"/>
+      <line x1="11.5" y1="6" x2="14.5" y2="6" stroke="currentColor" stroke-width="1.3"/>
+      <line x1="11.5" y1="10" x2="14.5" y2="10" stroke="currentColor" stroke-width="1.3"/>
+    </symbol>
+    <symbol id="i-sliders" viewBox="0 0 16 16">
+      <line x1="4" y1="2" x2="4" y2="14" stroke="currentColor" stroke-width="1.3"/>
+      <line x1="8" y1="2" x2="8" y2="14" stroke="currentColor" stroke-width="1.3"/>
+      <line x1="12" y1="2" x2="12" y2="14" stroke="currentColor" stroke-width="1.3"/>
+      <circle cx="4" cy="6" r="1.4" fill="currentColor" stroke="none"/>
+      <circle cx="8" cy="10.5" r="1.4" fill="currentColor" stroke="none"/>
+      <circle cx="12" cy="4.5" r="1.4" fill="currentColor" stroke="none"/>
+    </symbol>
+    <symbol id="i-chart" viewBox="0 0 16 16">
+      <line x1="2" y1="14" x2="14" y2="14" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+      <rect x="3.2" y="9.5" width="2.4" height="4.5" fill="currentColor" stroke="none"/>
+      <rect x="6.8" y="6.5" width="2.4" height="7.5" fill="currentColor" stroke="none"/>
+      <rect x="10.4" y="3.5" width="2.4" height="10.5" fill="currentColor" stroke="none"/>
+    </symbol>
+    <symbol id="i-layers" viewBox="0 0 16 16">
+      <path d="M8 2l6 3-6 3-6-3z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+      <path d="M2 8l6 3 6-3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+      <path d="M2 11l6 3 6-3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="i-lock" viewBox="0 0 16 16">
+      <rect x="3.5" y="7" width="9" height="6.5" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <path d="M5.2 7V5a2.8 2.8 0 0 1 5.6 0v2" fill="none" stroke="currentColor" stroke-width="1.4"/>
+    </symbol>
+    <symbol id="i-toggle" viewBox="0 0 16 16">
+      <rect x="1.5" y="5" width="13" height="6" rx="3" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <circle cx="5" cy="8" r="1.9" fill="currentColor" stroke="none"/>
+    </symbol>
+    <symbol id="i-cube" viewBox="0 0 16 16">
+      <path d="M8 1.6l6 3.2v6.4l-6 3.2-6-3.2V4.8z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+      <path d="M2 4.8l6 3.2 6-3.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+      <line x1="8" y1="8" x2="8" y2="14.4" stroke="currentColor" stroke-width="1.3"/>
+    </symbol>
+    <symbol id="i-disk" viewBox="0 0 16 16">
+      <ellipse cx="8" cy="4" rx="5.5" ry="2" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <path d="M2.5 4v8c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2V4" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <path d="M2.5 8c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2" fill="none" stroke="currentColor" stroke-width="1.3"/>
+    </symbol>
+    <symbol id="i-folder" viewBox="0 0 16 16">
+      <path d="M2 4.5h4.2l1.3 1.6H14v7.4H2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="i-doc" viewBox="0 0 16 16">
+      <path d="M4 1.8h5.5L12 4.3v9.9H4z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+      <path d="M9.5 1.8v2.5H12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="i-cpu" viewBox="0 0 16 16">
+      <rect x="4" y="4" width="8" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <line x1="4" y1="1.5" x2="4" y2="4" stroke="currentColor" stroke-width="1.3"/>
+      <line x1="8" y1="1.5" x2="8" y2="4" stroke="currentColor" stroke-width="1.3"/>
+      <line x1="12" y1="1.5" x2="12" y2="4" stroke="currentColor" stroke-width="1.3"/>
+      <line x1="4" y1="12" x2="4" y2="14.5" stroke="currentColor" stroke-width="1.3"/>
+      <line x1="8" y1="12" x2="8" y2="14.5" stroke="currentColor" stroke-width="1.3"/>
+      <line x1="12" y1="12" x2="12" y2="14.5" stroke="currentColor" stroke-width="1.3"/>
+      <line x1="1.5" y1="4" x2="4" y2="4" stroke="currentColor" stroke-width="1.3"/>
+      <line x1="1.5" y1="8" x2="4" y2="8" stroke="currentColor" stroke-width="1.3"/>
+      <line x1="1.5" y1="12" x2="4" y2="12" stroke="currentColor" stroke-width="1.3"/>
+      <line x1="12" y1="4" x2="14.5" y2="4" stroke="currentColor" stroke-width="1.3"/>
+      <line x1="12" y1="8" x2="14.5" y2="8" stroke="currentColor" stroke-width="1.3"/>
+      <line x1="12" y1="12" x2="14.5" y2="12" stroke="currentColor" stroke-width="1.3"/>
+    </symbol>
   </defs>
 
   <style>
-    .title { font-size: 26px; font-weight: 700; fill: #1a202c; }
+    .title { font-size: 27px; font-weight: 700; fill: #1a202c; }
     .subtitle { font-size: 13px; fill: #4a5568; }
-    .layer-label { font-size: 12px; font-weight: 700; fill: #718096; letter-spacing: 1px; }
-    .box { fill: #ffffff; stroke: #2d3748; stroke-width: 1.6; rx: 8; }
-    .box-daemon { fill: #eef2ff; stroke: #4338ca; stroke-width: 2; rx: 10; }
-    .box-module { fill: #f7fafc; stroke: #667eea; stroke-width: 1.2; rx: 6; }
-    .box-client { fill: #f0fff4; stroke: #2f855a; stroke-width: 1.6; rx: 8; }
-    .box-container { fill: #fffaf0; stroke: #c05621; stroke-width: 1.3; rx: 6; }
-    .box-host { fill: #fff5f5; stroke: #c53030; stroke-width: 1.6; rx: 8; }
-    .box-slot { fill: #ffffff; stroke: #c53030; stroke-width: 1.1; stroke-dasharray: 4 2; rx: 5; }
+    .layer-label { font-size: 12px; font-weight: 700; fill: #374151; letter-spacing: 1.1px; }
     .box-title { font-size: 15px; font-weight: 700; fill: #1a202c; }
     .module-title { font-size: 11.5px; font-weight: 700; fill: #2d3748; }
     .module-text { font-size: 10px; fill: #4a5568; }
     .body-text { font-size: 11px; fill: #2d3748; }
     .small-text { font-size: 9.5px; fill: #718096; }
-    .arrow-label { font-size: 10px; fill: #4a5568; font-style: italic; }
-    .boundary { fill: none; stroke: #a0aec0; stroke-width: 1.4; stroke-dasharray: 6 4; rx: 12; }
+    .arrow-label { font-size: 10px; fill: #374151; font-weight: 600; }
+    .card-primary { rx: 12; stroke-width: 1; filter: url(#cardShadow); }
+    .card { rx: 9; stroke-width: 1; filter: url(#cardShadow); }
+    .boundary { fill: none; stroke: #cbd5e0; stroke-width: 1.4; stroke-dasharray: 6 4; rx: 14; }
+    .box-slot { fill: #ffffff; stroke: #e3bcbc; stroke-width: 1.1; stroke-dasharray: 4 2; rx: 5; }
   </style>
 
-  <rect width="1400" height="1200" fill="#fbfbfd"/>
+  <rect width="1400" height="1200" fill="#f7f8fb"/>
 
   <text x="30" y="40" class="title">Kanxeo Architecture</text>
   <text x="30" y="60" class="subtitle">Hardware &amp; workload orchestration platform — client-daemon, REST-first, hand-rolled from source (docs/mission/MISSION.md) — as of Phase 39</text>
 
   <!-- ============ CLIENT LAYER ============ -->
-  <text x="30" y="95" class="layer-label">CLIENT SURFACES — pure REST clients, zero direct runtime access (ADR-0005)</text>
+  <circle cx="36" cy="91" r="4" fill="#2f855a"/>
+  <text x="50" y="95" class="layer-label">CLIENT SURFACES — pure REST clients, zero direct runtime access (ADR-0005)</text>
 
-  <rect x="30" y="105" width="260" height="70" class="box-client"/>
+  <rect x="30" y="105" width="260" height="70" class="card" fill="#f1faf4" stroke="#d3e9dc"/>
+  <rect x="33" y="111" width="5" height="58" rx="2.5" fill="#2f855a"/>
+  <use href="#i-terminal" x="44" y="118" width="18" height="18" style="color:#2f855a"/>
   <text x="160" y="130" text-anchor="middle" class="box-title">kanxeoctl (CLI)</text>
   <text x="160" y="148" text-anchor="middle" class="module-text">One subcommand per endpoint</text>
   <text x="160" y="162" text-anchor="middle" class="module-text">+ console: real terminal (ADR-43)</text>
 
-  <rect x="330" y="105" width="260" height="70" class="box-client"/>
+  <rect x="330" y="105" width="260" height="70" class="card" fill="#f1faf4" stroke="#d3e9dc"/>
+  <rect x="333" y="111" width="5" height="58" rx="2.5" fill="#2f855a"/>
+  <use href="#i-window" x="344" y="118" width="18" height="18" style="color:#2f855a"/>
   <text x="460" y="130" text-anchor="middle" class="box-title">Web Dashboard</text>
   <text x="460" y="148" text-anchor="middle" class="module-text">Vanilla HTML/CSS/JS, no build step (ADR-0010)</text>
   <text x="460" y="162" text-anchor="middle" class="module-text">left resource tree, Console tab</text>
 
-  <rect x="650" y="105" width="260" height="70" class="box-client"/>
+  <rect x="650" y="105" width="260" height="70" class="card" fill="#f1faf4" stroke="#d3e9dc"/>
+  <rect x="653" y="111" width="5" height="58" rx="2.5" fill="#2f855a"/>
+  <use href="#i-monitor" x="664" y="118" width="18" height="18" style="color:#2f855a"/>
   <text x="780" y="130" text-anchor="middle" class="box-title">Physical Console</text>
   <text x="780" y="148" text-anchor="middle" class="module-text">video (tty0) + serial (ttyS0)</text>
   <text x="780" y="162" text-anchor="middle" class="module-text">PID1-spawned kanxeoctl (ADR-34)</text>
 
-  <rect x="1070" y="105" width="300" height="70" class="box" fill="#fefcf3" stroke="#b7791f"/>
+  <rect x="1070" y="105" width="300" height="70" class="card" fill="#fdfaf1" stroke="#eee0bb"/>
+  <rect x="1073" y="111" width="5" height="58" rx="2.5" fill="#b7791f"/>
+  <use href="#i-user" x="1084" y="116" width="18" height="18" style="color:#b7791f"/>
   <text x="1220" y="128" text-anchor="middle" class="box-title">Operator</text>
   <text x="1220" y="146" text-anchor="middle" class="module-text">scp's new OS/package images onto the box</text>
   <text x="1220" y="162" text-anchor="middle" class="module-text">out-of-band — no registry, no remote fetch</text>
 
-  <!-- arrows client -> daemon -->
-  <line x1="160" y1="175" x2="160" y2="215" stroke="#4a5568" stroke-width="1.6" marker-end="url(#arrow)"/>
-  <line x1="460" y1="175" x2="460" y2="215" stroke="#4a5568" stroke-width="1.6" marker-end="url(#arrow)"/>
-  <line x1="780" y1="175" x2="780" y2="215" stroke="#4a5568" stroke-width="1.6" marker-end="url(#arrow)"/>
-  <text x="475" y="197" class="arrow-label">HTTP / JSON, :7620</text>
-  <text x="795" y="197" class="arrow-label">loopback :7620</text>
+  <!-- arrows client -> daemon: the primary request-flow path, bold + colored
+       so it reads as "the main pipeline" against everything structural/
+       secondary below (which stays thin, dashed, and muted gray/indigo). -->
+  <line x1="160" y1="175" x2="160" y2="215" stroke="#3454d1" stroke-width="2.2" marker-end="url(#arrowFlow)"/>
+  <line x1="460" y1="175" x2="460" y2="215" stroke="#3454d1" stroke-width="2.2" marker-end="url(#arrowFlow)"/>
+  <line x1="780" y1="175" x2="780" y2="215" stroke="#3454d1" stroke-width="2.2" marker-end="url(#arrowFlow)"/>
+
+  <rect x="115" y="185" width="90" height="17" rx="8.5" fill="#ffffff" stroke="#c7d2fe"/>
+  <text x="160" y="197" text-anchor="middle" class="arrow-label" fill="#3454d1">HTTP / JSON</text>
+  <rect x="415" y="185" width="90" height="17" rx="8.5" fill="#ffffff" stroke="#c7d2fe"/>
+  <text x="460" y="197" text-anchor="middle" class="arrow-label" fill="#3454d1">HTTP / JSON</text>
+  <rect x="725" y="185" width="110" height="17" rx="8.5" fill="#ffffff" stroke="#c7d2fe"/>
+  <text x="780" y="197" text-anchor="middle" class="arrow-label" fill="#3454d1">loopback :7620</text>
 
   <!-- ============ DAEMON LAYER ============ -->
-  <text x="30" y="242" class="layer-label">kanxeod — THE ONLY PROCESS WITH RUNTIME/NETWORK/DNS/PKI/PKG ACCESS</text>
+  <circle cx="36" cy="238" r="4" fill="#4338ca"/>
+  <text x="50" y="242" class="layer-label">kanxeod — THE ONLY PROCESS WITH RUNTIME/NETWORK/DNS/PKI/PKG ACCESS</text>
 
-  <rect x="30" y="252" width="1000" height="330" class="box-daemon"/>
+  <rect x="30" y="252" width="1000" height="330" class="card-primary" fill="#f3f4fd" stroke="#dcdff8"/>
+  <rect x="33" y="258" width="7" height="318" rx="3.5" fill="#4338ca"/>
+  <use href="#i-server" x="46" y="266" width="20" height="20" style="color:#4338ca"/>
   <text x="530" y="278" text-anchor="middle" class="box-title">kanxeod — single-threaded, non-blocking epoll reactor (ADR-0007, ADR-0009)</text>
   <text x="530" y="294" text-anchor="middle" class="small-text">hand-rolled HTTP/1.1 + JSON, no external libraries, dynamically linked against system glibc, TCC-compiled</text>
 
-  <!-- module row 1 -->
-  <rect x="50" y="312" width="111" height="60" class="box-module"/>
+  <!-- module row 1: eight REST-exposed subsystems, one card each -->
+  <rect x="50" y="312" width="111" height="60" class="card" fill="#ffffff" stroke="#e2e5f7"/>
+  <rect x="53" y="318" width="5" height="48" rx="2.5" fill="#667eea"/>
   <text x="106" y="330" text-anchor="middle" class="module-title">Registry</text>
   <text x="106" y="344" text-anchor="middle" class="module-text">lifecycle mgmt</text>
   <text x="106" y="356" text-anchor="middle" class="module-text">restart, depends</text>
 
-  <rect x="171" y="312" width="111" height="60" class="box-module"/>
+  <rect x="171" y="312" width="111" height="60" class="card" fill="#ffffff" stroke="#e2e5f7"/>
+  <rect x="174" y="318" width="5" height="48" rx="2.5" fill="#667eea"/>
   <text x="227" y="330" text-anchor="middle" class="module-title">Network</text>
   <text x="227" y="344" text-anchor="middle" class="module-text">bridges, subnets</text>
   <text x="227" y="356" text-anchor="middle" class="module-text">VLAN, gateway-opt</text>
 
-  <rect x="292" y="312" width="111" height="60" class="box-module"/>
+  <rect x="292" y="312" width="111" height="60" class="card" fill="#ffffff" stroke="#e2e5f7"/>
+  <rect x="295" y="318" width="5" height="48" rx="2.5" fill="#667eea"/>
   <text x="348" y="330" text-anchor="middle" class="module-title">DNS / PKI</text>
   <text x="348" y="344" text-anchor="middle" class="module-text">records, dnsmasq</text>
   <text x="348" y="356" text-anchor="middle" class="module-text">CA chain + certs</text>
 
-  <rect x="413" y="312" width="111" height="60" class="box-module"/>
+  <rect x="413" y="312" width="111" height="60" class="card" fill="#ffffff" stroke="#e2e5f7"/>
+  <rect x="416" y="318" width="5" height="48" rx="2.5" fill="#667eea"/>
   <text x="469" y="330" text-anchor="middle" class="module-title">Pkg / Image</text>
   <text x="469" y="344" text-anchor="middle" class="module-text">recipes via API</text>
   <text x="469" y="356" text-anchor="middle" class="module-text">image lifecycle</text>
 
-  <rect x="534" y="312" width="111" height="60" class="box-module"/>
+  <rect x="534" y="312" width="111" height="60" class="card" fill="#ffffff" stroke="#e2e5f7"/>
+  <rect x="537" y="318" width="5" height="48" rx="2.5" fill="#667eea"/>
   <text x="590" y="330" text-anchor="middle" class="module-title">Device</text>
   <text x="590" y="344" text-anchor="middle" class="module-text">PCI/USB/GPU</text>
   <text x="590" y="356" text-anchor="middle" class="module-text">grouped grants</text>
 
-  <rect x="655" y="312" width="111" height="60" class="box-module"/>
+  <rect x="655" y="312" width="111" height="60" class="card" fill="#ffffff" stroke="#e2e5f7"/>
+  <rect x="658" y="318" width="5" height="48" rx="2.5" fill="#667eea"/>
   <text x="711" y="330" text-anchor="middle" class="module-title">System</text>
   <text x="711" y="344" text-anchor="middle" class="module-text">shutdown, reboot</text>
   <text x="711" y="356" text-anchor="middle" class="module-text">update, backup</text>
 
-  <rect x="776" y="312" width="111" height="60" class="box-module"/>
+  <rect x="776" y="312" width="111" height="60" class="card" fill="#ffffff" stroke="#e2e5f7"/>
+  <rect x="779" y="318" width="5" height="48" rx="2.5" fill="#667eea"/>
   <text x="832" y="330" text-anchor="middle" class="module-title">Stats</text>
   <text x="832" y="344" text-anchor="middle" class="module-text">CPU/mem/disk/net</text>
   <text x="832" y="356" text-anchor="middle" class="module-text">cgroup+veth reads</text>
 
-  <rect x="897" y="312" width="111" height="60" class="box-module" fill="#eef2ff" stroke="#4338ca"/>
+  <rect x="897" y="312" width="111" height="60" class="card" fill="#f2f3fd" stroke="#d9dcf7"/>
+  <rect x="900" y="318" width="5" height="48" rx="2.5" fill="#4338ca"/>
   <text x="953" y="330" text-anchor="middle" class="module-title">Exec / Console</text>
   <text x="953" y="344" text-anchor="middle" class="module-text">setns + PTY exec</text>
   <text x="953" y="356" text-anchor="middle" class="module-text">WebSocket relay</text>
 
   <!-- module row 2: runtime library -->
-  <rect x="50" y="388" width="960" height="170" class="box" fill="#fffceb" stroke="#b7791f" stroke-width="1.4"/>
+  <rect x="50" y="388" width="960" height="170" class="card-primary" fill="#fffdf6" stroke="#f0e4bd"/>
+  <rect x="53" y="394" width="7" height="158" rx="3.5" fill="#b7791f"/>
+  <use href="#i-layers" x="66" y="402" width="20" height="20" style="color:#b7791f"/>
   <text x="530" y="408" text-anchor="middle" class="box-title" fill="#7c5a00">Container Runtime Library (include/container.h) — linked directly into kanxeod only</text>
 
-  <rect x="70" y="422" width="220" height="120" class="box-module"/>
-  <text x="180" y="440" text-anchor="middle" class="module-title">Namespaces + cgroups v2</text>
+  <rect x="70" y="422" width="220" height="120" class="card" fill="#ffffff" stroke="#efe3c4"/>
+  <rect x="73" y="428" width="5" height="108" rx="2.5" fill="#d69e2e"/>
+  <use href="#i-lock" x="84" y="430" width="15" height="15" style="color:#d69e2e"/>
+  <text x="180" y="440" text-anchor="middle" class="module-title">Namespaces + cgroups</text>
   <text x="180" y="458" text-anchor="middle" class="module-text">clone3() + CLONE_INTO_CGROUP</text>
   <text x="180" y="472" text-anchor="middle" class="module-text">+ CLONE_PIDFD (ADR-0003)</text>
   <text x="180" y="490" text-anchor="middle" class="module-text">pivot_root, mount namespace</text>
   <text x="180" y="504" text-anchor="middle" class="module-text">BPF_CGROUP_DEVICE filter</text>
   <text x="180" y="522" text-anchor="middle" class="module-text">for device passthrough (ADR-0017)</text>
 
-  <rect x="310" y="422" width="220" height="120" class="box-module"/>
+  <rect x="310" y="422" width="220" height="120" class="card" fill="#ffffff" stroke="#efe3c4"/>
+  <rect x="313" y="428" width="5" height="108" rx="2.5" fill="#d69e2e"/>
+  <use href="#i-layers" x="324" y="430" width="15" height="15" style="color:#d69e2e"/>
   <text x="420" y="440" text-anchor="middle" class="module-title">OverlayFS</text>
   <text x="420" y="458" text-anchor="middle" class="module-text">shared, read-only lowerdir</text>
   <text x="420" y="472" text-anchor="middle" class="module-text">(the image) + per-container</text>
@@ -144,7 +304,9 @@
   <text x="420" y="504" text-anchor="middle" class="module-text">config files staged pre-clone3</text>
   <text x="420" y="518" text-anchor="middle" class="module-text">into upperdir (ADR-0030)</text>
 
-  <rect x="550" y="422" width="220" height="120" class="box-module"/>
+  <rect x="550" y="422" width="220" height="120" class="card" fill="#ffffff" stroke="#efe3c4"/>
+  <rect x="553" y="428" width="5" height="108" rx="2.5" fill="#d69e2e"/>
+  <use href="#i-network" x="564" y="430" width="15" height="15" style="color:#d69e2e"/>
   <text x="660" y="440" text-anchor="middle" class="module-title">netplane (rtnetlink)</text>
   <text x="660" y="458" text-anchor="middle" class="module-text">100% custom C data plane —</text>
   <text x="660" y="472" text-anchor="middle" class="module-text">talks to the kernel directly</text>
@@ -152,39 +314,50 @@
   <text x="660" y="504" text-anchor="middle" class="module-text">(no OVS, no eBPF dataplane,</text>
   <text x="660" y="518" text-anchor="middle" class="module-text">never shells out to ip/iproute2)</text>
 
-  <rect x="790" y="422" width="200" height="120" class="box-module"/>
-  <text x="890" y="440" text-anchor="middle" class="module-title">sysctls + device nodes</text>
+  <rect x="790" y="422" width="200" height="120" class="card" fill="#ffffff" stroke="#efe3c4"/>
+  <rect x="793" y="428" width="5" height="108" rx="2.5" fill="#d69e2e"/>
+  <use href="#i-toggle" x="798" y="430" width="14" height="14" style="color:#d69e2e"/>
+  <text x="890" y="440" text-anchor="middle" class="module-title">sysctls + device</text>
   <text x="890" y="458" text-anchor="middle" class="module-text">net.* sysctls only</text>
   <text x="890" y="472" text-anchor="middle" class="module-text">(namespaced subtree)</text>
   <text x="890" y="490" text-anchor="middle" class="module-text">real PCI/USB/GPU /dev</text>
   <text x="890" y="504" text-anchor="middle" class="module-text">nodes granted per-container</text>
 
   <!-- ============ CONTAINER RUNTIME LAYER ============ -->
-  <text x="30" y="616" class="layer-label">CONTAINERS — each its own namespaces + cgroup, driven by kanxeod, never by CLI/web directly</text>
+  <circle cx="36" cy="612" r="4" fill="#c05621"/>
+  <text x="50" y="616" class="layer-label">CONTAINERS — each its own namespaces + cgroup, driven by kanxeod, never by CLI/web directly</text>
 
   <rect x="30" y="626" width="1000" height="130" class="boundary"/>
 
-  <rect x="55" y="648" width="220" height="90" class="box-container"/>
+  <rect x="55" y="648" width="220" height="90" class="card" fill="#fffaf4" stroke="#f4ddc3"/>
+  <rect x="58" y="654" width="5" height="78" rx="2.5" fill="#c05621"/>
+  <use href="#i-cube" x="69" y="656" width="18" height="18" style="color:#c05621"/>
   <text x="165" y="668" text-anchor="middle" class="module-title">Container A</text>
   <text x="165" y="684" text-anchor="middle" class="module-text">upperdir (own diff)</text>
   <text x="165" y="698" text-anchor="middle" class="module-text">netns + pidns + cgroup</text>
   <text x="165" y="712" text-anchor="middle" class="module-text">veth → bridge (network N)</text>
   <text x="165" y="726" text-anchor="middle" class="module-text">restart/depends_on/readiness</text>
 
-  <rect x="300" y="648" width="220" height="90" class="box-container"/>
+  <rect x="300" y="648" width="220" height="90" class="card" fill="#fffaf4" stroke="#f4ddc3"/>
+  <rect x="303" y="654" width="5" height="78" rx="2.5" fill="#c05621"/>
+  <use href="#i-cube" x="314" y="656" width="18" height="18" style="color:#c05621"/>
   <text x="410" y="668" text-anchor="middle" class="module-title">Container B</text>
   <text x="410" y="684" text-anchor="middle" class="module-text">upperdir (own diff)</text>
   <text x="410" y="698" text-anchor="middle" class="module-text">netns + pidns + cgroup</text>
   <text x="410" y="712" text-anchor="middle" class="module-text">real NIC passthrough</text>
   <text x="410" y="726" text-anchor="middle" class="module-text">(fd-anchored, ADR-0022)</text>
 
-  <rect x="545" y="648" width="220" height="90" class="box-container"/>
+  <rect x="545" y="648" width="220" height="90" class="card" fill="#fffaf4" stroke="#f4ddc3"/>
+  <rect x="548" y="654" width="5" height="78" rx="2.5" fill="#c05621"/>
+  <use href="#i-cube" x="559" y="656" width="18" height="18" style="color:#c05621"/>
   <text x="655" y="668" text-anchor="middle" class="module-title">Container C</text>
   <text x="655" y="684" text-anchor="middle" class="module-text">upperdir (own diff)</text>
   <text x="655" y="698" text-anchor="middle" class="module-text">GPU grant: gpu:0</text>
   <text x="655" y="712" text-anchor="middle" class="module-text">(DRM + KFD nodes, ADR-0028/29)</text>
 
-  <rect x="790" y="648" width="215" height="90" class="box-module" fill="#f7fafc" stroke="#a0aec0"/>
+  <rect x="790" y="648" width="215" height="90" class="card" fill="#f8fafc" stroke="#e3e8ee"/>
+  <rect x="793" y="654" width="5" height="78" rx="2.5" fill="#4a5568"/>
+  <use href="#i-disk" x="804" y="656" width="18" height="18" style="color:#4a5568"/>
   <text x="897" y="668" text-anchor="middle" class="module-title">shared lowerdir</text>
   <text x="897" y="686" text-anchor="middle" class="module-text">one image on disk,</text>
   <text x="897" y="700" text-anchor="middle" class="module-text">e.g. /var/lib/kanxeo/</text>
@@ -194,55 +367,76 @@
   <line x1="410" y1="648" x2="860" y2="738" stroke="#c05621" stroke-width="0.8" stroke-dasharray="2 2" opacity="0.5"/>
   <line x1="655" y1="648" x2="880" y2="738" stroke="#c05621" stroke-width="0.8" stroke-dasharray="2 2" opacity="0.5"/>
 
-  <!-- daemon -> containers arrow -->
-  <line x1="530" y1="582" x2="530" y2="620" stroke="#4a5568" stroke-width="1.6" marker-end="url(#arrow)"/>
-  <text x="545" y="605" class="arrow-label">clone3() + overlay mount</text>
+  <!-- daemon -> containers: primary flow, same bold treatment as the client arrows -->
+  <line x1="530" y1="582" x2="530" y2="620" stroke="#3454d1" stroke-width="2.2" marker-end="url(#arrowFlow)"/>
+  <rect x="540" y="584" width="185" height="16" rx="8" fill="#ffffff" stroke="#c7d2fe"/>
+  <text x="547" y="595" class="arrow-label" fill="#3454d1">clone3() + overlay mount</text>
 
   <!-- exec/console -> containers arrow (ADR-0043), routed along the right margin
-       so it doesn't cross the runtime-library boxes' interiors -->
-  <line x1="1008" y1="372" x2="1014" y2="372" stroke="#4338ca" stroke-width="1.4"/>
-  <line x1="1014" y1="372" x2="1025" y2="620" stroke="#4338ca" stroke-width="1.4" stroke-dasharray="5 3" marker-end="url(#arrow)"/>
-  <text x="1030" y="500" class="arrow-label" fill="#4338ca">exec</text>
+       so it doesn't cross the runtime-library boxes' interiors: a secondary,
+       structural relationship (not a request flow), kept in the Exec/Console
+       module's own indigo and clearly dashed to read as "different in kind." -->
+  <line x1="1008" y1="372" x2="1014" y2="372" stroke="#4338ca" stroke-width="1.6"/>
+  <line x1="1014" y1="372" x2="1025" y2="620" stroke="#4338ca" stroke-width="1.6" stroke-dasharray="5 3" marker-end="url(#arrowIndigo)"/>
+  <rect x="1018" y="492" width="30" height="16" rx="8" fill="#ffffff" stroke="#c7d2fe"/>
+  <text x="1033" y="504" text-anchor="middle" class="arrow-label" fill="#4338ca">exec</text>
 
   <!-- ============ RIGHT COLUMN: PERSISTENT STATE ============ -->
-  <rect x="1070" y="252" width="300" height="504" class="box" fill="#f7fafc" stroke="#4a5568"/>
+  <rect x="1070" y="252" width="300" height="504" class="card-primary" fill="#f8fafc" stroke="#e3e8ee"/>
+  <rect x="1073" y="258" width="7" height="492" rx="3.5" fill="#4a5568"/>
+  <use href="#i-disk" x="1080" y="267" width="16" height="16" style="color:#4a5568"/>
   <text x="1220" y="278" text-anchor="middle" class="box-title">Persistent State (BASE_DIR)</text>
   <text x="1220" y="294" text-anchor="middle" class="small-text">real kanxeo-containers partition (ADR-0018)</text>
 
-  <rect x="1090" y="308" width="260" height="42" class="box-module"/>
+  <rect x="1090" y="308" width="260" height="42" class="card" fill="#ffffff" stroke="#e6e9ee"/>
+  <rect x="1093" y="314" width="5" height="30" rx="2.5" fill="#718096"/>
+  <use href="#i-disk" x="1104" y="316" width="14" height="14" style="color:#718096"/>
   <text x="1220" y="328" text-anchor="middle" class="module-text">images/ — one rootfs per image</text>
   <text x="1220" y="342" text-anchor="middle" class="small-text">shared OverlayFS lowerdirs</text>
 
-  <rect x="1090" y="358" width="260" height="42" class="box-module"/>
+  <rect x="1090" y="358" width="260" height="42" class="card" fill="#ffffff" stroke="#e6e9ee"/>
+  <rect x="1093" y="364" width="5" height="30" rx="2.5" fill="#718096"/>
+  <use href="#i-folder" x="1104" y="366" width="13" height="13" style="color:#718096"/>
   <text x="1220" y="378" text-anchor="middle" class="module-text">containers/ — per-container upperdir</text>
   <text x="1220" y="392" text-anchor="middle" class="small-text">config files staged here (ADR-0030)</text>
 
-  <rect x="1090" y="408" width="260" height="42" class="box-module"/>
+  <rect x="1090" y="408" width="260" height="42" class="card" fill="#ffffff" stroke="#e6e9ee"/>
+  <rect x="1093" y="414" width="5" height="30" rx="2.5" fill="#718096"/>
+  <use href="#i-doc" x="1104" y="416" width="14" height="14" style="color:#718096"/>
   <text x="1220" y="426" text-anchor="middle" class="module-text">*.json state (atomic-rewrite)</text>
   <text x="1220" y="440" text-anchor="middle" class="small-text">networks/dns/pki/pkg/site/devices/defs</text>
 
-  <rect x="1090" y="458" width="260" height="42" class="box-module"/>
+  <rect x="1090" y="458" width="260" height="42" class="card" fill="#ffffff" stroke="#e6e9ee"/>
+  <rect x="1093" y="464" width="5" height="30" rx="2.5" fill="#718096"/>
+  <use href="#i-box" x="1104" y="466" width="14" height="14" style="color:#718096"/>
   <text x="1220" y="478" text-anchor="middle" class="module-text">pkg/recipes + pkg/sources</text>
   <text x="1220" y="492" text-anchor="middle" class="small-text">REST-managed catalog (ADR-0040)</text>
 
-  <rect x="1090" y="510" width="260" height="80" class="box-module" fill="#eef2ff" stroke="#4338ca"/>
+  <rect x="1090" y="510" width="260" height="80" class="card" fill="#f2f3fd" stroke="#d9dcf7"/>
+  <rect x="1093" y="516" width="5" height="68" rx="2.5" fill="#4338ca"/>
   <text x="1220" y="530" text-anchor="middle" class="module-title">API-First Mandate (ADR-0005)</text>
   <text x="1220" y="548" text-anchor="middle" class="module-text">Every capability CLI/web offer</text>
   <text x="1220" y="562" text-anchor="middle" class="module-text">exists as a REST endpoint FIRST.</text>
   <text x="1220" y="576" text-anchor="middle" class="module-text">No other process links container.h.</text>
 
-  <line x1="1070" y1="140" x2="1070" y2="200" stroke="#8a94a6" stroke-width="1.2" marker-end="url(#arrowLight)"/>
-  <text x="1085" y="180" class="arrow-label" fill="#8a94a6">local file path</text>
-  <line x1="1070" y1="200" x2="900" y2="252" stroke="#8a94a6" stroke-width="1.2" marker-end="url(#arrowLight)"/>
+  <line x1="1070" y1="140" x2="1070" y2="200" stroke="#94a3b8" stroke-width="1.3" marker-end="url(#arrowLight)"/>
+  <rect x="1080" y="168" width="100" height="16" rx="8" fill="#ffffff" stroke="#e2e8f0"/>
+  <text x="1085" y="180" class="arrow-label" fill="#64748b">local file path</text>
+  <line x1="1070" y1="200" x2="900" y2="252" stroke="#94a3b8" stroke-width="1.3" marker-end="url(#arrowLight)"/>
 
   <!-- ============ HOST OS / BOOT LAYER ============ -->
-  <text x="30" y="792" class="layer-label">HOST OS — kanxeod itself as real PID 1, no initramfs (Phase 11)</text>
+  <circle cx="36" cy="788" r="4" fill="#c53030"/>
+  <text x="50" y="792" class="layer-label">HOST OS — kanxeod itself as real PID 1, no initramfs (Phase 11)</text>
 
-  <rect x="30" y="802" width="1340" height="330" class="box-host"/>
+  <rect x="30" y="802" width="1340" height="330" class="card-primary" fill="#fffbfb" stroke="#f4d9d9"/>
+  <rect x="33" y="808" width="7" height="318" rx="3.5" fill="#c53030"/>
+  <use href="#i-server" x="46" y="816" width="20" height="20" style="color:#c53030"/>
   <text x="700" y="828" text-anchor="middle" class="box-title">Read-only squashfs A/B root, systemd-boot's native boot counting (ADR-0014)</text>
 
   <!-- ESP -->
-  <rect x="55" y="850" width="300" height="260" class="box" fill="#ffffff" stroke="#c53030"/>
+  <rect x="55" y="850" width="300" height="260" class="card" fill="#ffffff" stroke="#f0dbdb"/>
+  <rect x="58" y="856" width="5" height="248" rx="2.5" fill="#c53030"/>
+  <use href="#i-disk" x="69" y="858" width="16" height="16" style="color:#c53030"/>
   <text x="205" y="872" text-anchor="middle" class="module-title">ESP (kanxeo-esp, FAT32)</text>
   <text x="205" y="892" text-anchor="middle" class="module-text">shim (MS-signed) → systemd-boot</text>
   <text x="205" y="906" text-anchor="middle" class="module-text">(Kanxeo-signed, ADR-0015)</text>
@@ -259,7 +453,9 @@
   <text x="205" y="1094" text-anchor="middle" class="module-text" font-style="italic">a fresh entry here (ADR-0031)</text>
 
   <!-- Slot A / B -->
-  <rect x="380" y="850" width="330" height="260" class="box" fill="#ffffff" stroke="#c53030"/>
+  <rect x="380" y="850" width="330" height="260" class="card" fill="#ffffff" stroke="#f0dbdb"/>
+  <rect x="383" y="856" width="5" height="248" rx="2.5" fill="#c53030"/>
+  <use href="#i-disk" x="394" y="858" width="16" height="16" style="color:#c53030"/>
   <text x="545" y="872" text-anchor="middle" class="module-title">Root A / Root B (kanxeo-root-a / -b)</text>
 
   <rect x="400" y="886" width="135" height="140" class="box-slot"/>
@@ -285,16 +481,20 @@
   <text x="545" y="1078" text-anchor="middle" class="module-text">(ADR-0031: "write, verify, cut over")</text>
 
   <!-- Config + Containers partitions -->
-  <rect x="735" y="850" width="300" height="260" class="box" fill="#ffffff" stroke="#c53030"/>
+  <rect x="735" y="850" width="300" height="260" class="card" fill="#ffffff" stroke="#f0dbdb"/>
+  <rect x="738" y="856" width="5" height="248" rx="2.5" fill="#c53030"/>
+  <use href="#i-disk" x="749" y="858" width="16" height="16" style="color:#c53030"/>
   <text x="885" y="872" text-anchor="middle" class="module-title">Config + Containers partitions</text>
 
-  <rect x="755" y="886" width="260" height="90" class="box-module"/>
+  <rect x="755" y="886" width="260" height="90" class="card" fill="#f8fafc" stroke="#e6e9ee"/>
+  <rect x="758" y="892" width="5" height="78" rx="2.5" fill="#718096"/>
   <text x="885" y="906" text-anchor="middle" class="module-text">kanxeo-config (ext4, /dev/vda4)</text>
   <text x="885" y="924" text-anchor="middle" class="small-text">net.conf — static IP applied at boot</text>
   <text x="885" y="938" text-anchor="middle" class="small-text">mount is non-fatal if absent</text>
   <text x="885" y="960" text-anchor="middle" class="small-text">(pre-install/test-only disks)</text>
 
-  <rect x="755" y="986" width="260" height="105" class="box-module"/>
+  <rect x="755" y="986" width="260" height="105" class="card" fill="#f8fafc" stroke="#e6e9ee"/>
+  <rect x="758" y="992" width="5" height="93" rx="2.5" fill="#718096"/>
   <text x="885" y="1006" text-anchor="middle" class="module-text">kanxeo-containers (ext4, /dev/vda5)</text>
   <text x="885" y="1024" text-anchor="middle" class="small-text">backs BASE_DIR — the right-hand</text>
   <text x="885" y="1038" text-anchor="middle" class="small-text">column of this diagram — genuinely</text>
@@ -303,7 +503,9 @@
   <text x="885" y="1080" text-anchor="middle" class="small-text">(test-only disks, ADR-0018)</text>
 
   <!-- kernel -->
-  <rect x="1060" y="850" width="310" height="260" class="box" fill="#ffffff" stroke="#c53030"/>
+  <rect x="1060" y="850" width="310" height="260" class="card" fill="#ffffff" stroke="#f0dbdb"/>
+  <rect x="1063" y="856" width="5" height="248" rx="2.5" fill="#c53030"/>
+  <use href="#i-cpu" x="1074" y="858" width="16" height="16" style="color:#c53030"/>
   <text x="1215" y="872" text-anchor="middle" class="module-title">Mainline Linux kernel</text>
   <text x="1215" y="894" text-anchor="middle" class="module-text">EFI stub boot, no initramfs</text>
   <text x="1215" y="912" text-anchor="middle" class="module-text">/bin/kanxeod runs as init= directly</text>
@@ -318,9 +520,14 @@
   <text x="1215" y="1064" text-anchor="middle" class="module-text" font-style="italic">own QEMU test target and the</text>
   <text x="1215" y="1078" text-anchor="middle" class="module-text" font-style="italic">real installed system (Phase 11)</text>
 
-  <!-- daemon -> host os arrow -->
-  <line x1="530" y1="582" x2="205" y2="850" stroke="#8a94a6" stroke-width="1.2" stroke-dasharray="3 3" marker-end="url(#arrowLight)"/>
-  <text x="235" y="700" class="arrow-label" fill="#8a94a6">runs AS the host (PID 1)</text>
+  <!-- daemon -> host os: a structural "IS" relationship, not a request flow.
+       Kept muted/dashed like the other secondary arrows, not the bold blue
+       used for the primary client/container pipeline. Routed down the left
+       margin (mirroring the exec arrow's own right-margin routing) instead
+       of cutting diagonally through the container cards. No label needed:
+       the HOST OS layer heading below already states "kanxeod itself as
+       real PID 1" in words. -->
+  <polyline points="350,582 20,605 20,820 205,850" fill="none" stroke="#94a3b8" stroke-width="1.3" stroke-dasharray="3 3" marker-end="url(#arrowLight)"/>
 
   <text x="30" y="1150" class="small-text">Reflects Phase 39: interactive container console over a hand-rolled WebSocket (ADR-0043); PID1-spawned physical console (ADR-0034).</text>
   <text x="30" y="1164" class="small-text">Root+intermediate PKI CA tier and site-scoped DNS/PKI naming (ADR-0046/0047, ADR-0049 through ADR-0053); stateless host-side per-container stats (ADR-0054).</text>
