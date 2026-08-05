@@ -1254,6 +1254,196 @@ int main(void)
 	}
 skip_recipe_api:
 
+	/* 17. hostbuild (ADR-0056): a second mode of the same pipeline that
+	 * harvests pkg_install()'s output into ARTIFACTS_DIR/<name>/ instead
+	 * of merging it into any image's rootfs, using a named image's own
+	 * rootfs as the build container's lowerdir instead of the shared
+	 * toolchain sandbox. Proves: a real artifact lands on disk at the
+	 * documented path; PKG_ERR_BUSY is enforced against hostbuild the
+	 * same way it already is between two ordinary installs (step 4);
+	 * a hostbuild recipe with a non-empty pkg_depends is rejected
+	 * outright (dependency resolution has no meaning for a one-shot
+	 * artifact harvest -- every prerequisite must already be in
+	 * build_image's own rootfs). Not a kernel build (far too slow for
+	 * this suite) -- the same trivial gcc-a-hello-world fixture every
+	 * other step here already uses, just routed through the hostbuild
+	 * entry point instead of an ordinary install.
+	 */
+	{
+		char hb_image_rootfs[PATH_MAX];
+		char hb_recipe_path[PATH_MAX];
+		char hb_artifact_file[PATH_MAX];
+		char hb_state[32];
+		FILE *f;
+		int i;
+		struct stat st;
+
+		snprintf(hb_image_rootfs, sizeof(hb_image_rootfs), "%s/images/hbimage/rootfs", g_data_dir);
+		if (test_image_fixture_stage_toolchain(hb_image_rootfs) != 0) {
+			fprintf(stderr, "FAIL: could not stage hostbuild build_image toolchain\n");
+			ok = 0;
+			goto skip_hostbuild;
+		}
+
+		/* A plain hand-written recipe (not stage_fixture_tarball(), no
+		 * DESTDIR/usr/bin convention needed -- pkg_install() below
+		 * just drops its output at a fixed, predictable name). */
+		snprintf(hb_recipe_path, sizeof(hb_recipe_path), "%s/recipes/hbtest.recipe", g_pkg_state_dir);
+		f = fopen(hb_recipe_path, "w");
+		if (f == NULL) {
+			fprintf(stderr, "FAIL: could not write hbtest.recipe\n");
+			ok = 0;
+			goto skip_hostbuild;
+		}
+		fprintf(f, "pkg_name=hbtest\npkg_version=1.0\npkg_source=file://%s\n"
+		           "pkg_sha256=%s\npkg_depends=\"\"\n\n"
+		           "pkg_build() {\n\tgcc -o hello hello.c\n}\n\n"
+		           "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n}\n",
+		        tarball_path, sha256);
+		fclose(f);
+
+		/* start it -> 202, fetching */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/hostbuild",
+		                       "{\"name\":\"hbtest\",\"build_image\":\"hbimage\"}", &r) != 0 ||
+		    r.status != 202) {
+			fprintf(stderr, "FAIL: POST hostbuild hbtest, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* while it's in flight, a concurrent *ordinary* install must
+		 * be rejected with the exact same PKG_ERR_BUSY every other
+		 * job type already shares (step 4's own scenario, mirrored
+		 * here in the other direction: hostbuild busy blocking an
+		 * ordinary install). "badsum" was staged at startup and never
+		 * successfully installed (step 7 left it FAILED), so this
+		 * exercises the busy check itself, not a duplicate-install
+		 * check. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"badsum\"}", &r) != 0 ||
+		    r.status != 409) {
+			fprintf(stderr,
+			        "FAIL: ordinary install while hostbuild in flight expected 409, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* poll GET /v1/pkg/hostbuild/{name} (the dedicated route, not
+		 * the generic /v1/pkg/{name} -- that one has no way to say
+		 * "look under the __hostbuild image" without a name@image
+		 * suffix) until it leaves fetching/building. */
+		hb_state[0] = '\0';
+		for (i = 0; i < 30; i++) {
+			const char *state;
+
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "GET", "/v1/pkg/hostbuild/hbtest", NULL, &r) != 0 ||
+			    r.status != 200) {
+				kx_response_free(&r);
+				break;
+			}
+			state = json_str_field(r.json, "state");
+			if (state == NULL) {
+				kx_response_free(&r);
+				break;
+			}
+			snprintf(hb_state, sizeof(hb_state), "%s", state);
+			kx_response_free(&r);
+			if (strcmp(hb_state, "fetching") != 0 && strcmp(hb_state, "building") != 0)
+				break;
+			usleep(300000);
+		}
+		if (strcmp(hb_state, "installed") != 0) {
+			fprintf(stderr, "FAIL: hbtest hostbuild ended in state '%s', expected installed\n",
+			        hb_state);
+			ok = 0;
+			goto skip_hostbuild;
+		}
+
+		/* the response itself must say is_hostbuild=true and give the
+		 * real artifact_path -- not just that the job finished. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pkg/hostbuild/hbtest", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET hostbuild/hbtest after completion, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *ib = json_object_get(r.json, "is_hostbuild");
+			const char *artifact_path = json_str_field(r.json, "artifact_path");
+
+			if (ib == NULL || ib->type != JSON_BOOL || !ib->u.boolean) {
+				fprintf(stderr, "FAIL: hbtest is_hostbuild not true\n");
+				ok = 0;
+			}
+			if (artifact_path == NULL) {
+				fprintf(stderr, "FAIL: hbtest artifact_path is null after completion\n");
+				ok = 0;
+			} else {
+				snprintf(hb_artifact_file, sizeof(hb_artifact_file), "%s/hello", artifact_path);
+			}
+		}
+		kx_response_free(&r);
+
+		/* the real payoff: a real file landed on disk under
+		 * ARTIFACTS_DIR/hbtest/ -- not merged into any image's
+		 * rootfs (base/router's own rootfs must NOT have gained a
+		 * stray "hello" file from this). */
+		if (stat(hb_artifact_file, &st) != 0 || !S_ISREG(st.st_mode)) {
+			fprintf(stderr, "FAIL: hostbuild artifact missing on disk at '%s'\n",
+			        hb_artifact_file);
+			ok = 0;
+		}
+		if (stat(base_path("/hello"), &st) == 0) {
+			fprintf(stderr, "FAIL: hostbuild output leaked into the base image's rootfs\n");
+			ok = 0;
+		}
+
+		/* a hostbuild recipe with a non-empty pkg_depends must be
+		 * rejected outright -- dependency resolution targets "merge
+		 * into an image," meaningless for a one-shot harvest. The
+		 * prior job is done by now (not busy), so this genuinely
+		 * exercises the depends check, not PKG_ERR_BUSY. */
+		snprintf(hb_recipe_path, sizeof(hb_recipe_path), "%s/recipes/hbdepstest.recipe",
+		         g_pkg_state_dir);
+		f = fopen(hb_recipe_path, "w");
+		if (f == NULL) {
+			fprintf(stderr, "FAIL: could not write hbdepstest.recipe\n");
+			ok = 0;
+			goto skip_hostbuild;
+		}
+		fprintf(f, "pkg_name=hbdepstest\npkg_version=1.0\npkg_source=file://%s\n"
+		           "pkg_sha256=%s\npkg_depends=\"badsum\"\n\n"
+		           "pkg_build() {\n\tgcc -o hello hello.c\n}\n\n"
+		           "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n}\n",
+		        tarball_path, sha256);
+		fclose(f);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/hostbuild",
+		                       "{\"name\":\"hbdepstest\",\"build_image\":\"hbimage\"}", &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr,
+			        "FAIL: hostbuild with non-empty pkg_depends expected 400, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* an unknown build_image -> 404, not a silent fall-through */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/hostbuild",
+		                       "{\"name\":\"hbtest\",\"build_image\":\"no-such-image\"}", &r) != 0 ||
+		    r.status != 404) {
+			fprintf(stderr, "FAIL: hostbuild with unknown build_image expected 404, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+	}
+skip_hostbuild:
+
 	/* cleanup */
 	run_cmd("rm -rf '%s'", scratch_dir);
 

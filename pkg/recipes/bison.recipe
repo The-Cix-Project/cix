@@ -33,7 +33,18 @@ pkg_build() {
 # time. Confirmed via ldd that bison itself links against nothing but
 # libc; yacc is bison's own compatibility wrapper script, not a
 # separate binary.
+#
+# usr/share/bison/ is ALSO a real runtime dependency, not docs -- it
+# holds the m4sugar/skeleton files bison's own grammar generation
+# reads at every real invocation, not just build-time output. The
+# first version of this recipe wiped the whole of usr/share
+# (man/info/locale, genuinely doc-only) and took usr/share/bison down
+# with it by accident -- caught empirically the first time something
+# actually tried to run bison from an image built with this recipe
+# (a real kernel hostbuild, ADR-0056), not by inspection. Only the
+# genuinely doc-only subdirectories are trimmed now.
 pkg_install() {
 	make install DESTDIR="$PKG_DESTDIR" MAKEINFO=true
-	rm -rf "$PKG_DESTDIR/usr/share" "$PKG_DESTDIR/usr/lib"/*.a
+	rm -rf "$PKG_DESTDIR/usr/share/man" "$PKG_DESTDIR/usr/share/info" \
+	       "$PKG_DESTDIR/usr/share/locale" "$PKG_DESTDIR/usr/lib"/*.a
 }

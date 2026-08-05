@@ -80,6 +80,10 @@ static char PKI_CERTS_DIR[PATH_MAX];
 static char PKG_DIR[PATH_MAX];
 static char PKG_INSTALLED_STATE_PATH[PATH_MAX];
 static char PKG_RECIPES_DIR[PATH_MAX];
+/* Where a hostbuild job's own harvested output lands (ADR-0056) --
+ * ARTIFACTS_DIR/<name>/..., a plain host directory, never a container-
+ * visible path. */
+static char ARTIFACTS_DIR[PATH_MAX];
 static char CONTAINER_DEFS_STATE_PATH[PATH_MAX];
 static char SITE_CONFIG_PATH[PATH_MAX];
 static char DEVICEMAP_STATE_PATH[PATH_MAX];
@@ -101,6 +105,7 @@ static void init_base_dir_paths(void)
 	snprintf(PKG_DIR, sizeof(PKG_DIR), "%s/pkg", g_base_dir);
 	snprintf(PKG_INSTALLED_STATE_PATH, sizeof(PKG_INSTALLED_STATE_PATH), "%s/pkg_installed.json", PKG_DIR);
 	snprintf(PKG_RECIPES_DIR, sizeof(PKG_RECIPES_DIR), "%s/recipes", PKG_DIR);
+	snprintf(ARTIFACTS_DIR, sizeof(ARTIFACTS_DIR), "%s/artifacts", g_base_dir);
 	snprintf(CONTAINER_DEFS_STATE_PATH, sizeof(CONTAINER_DEFS_STATE_PATH), "%s/container_defs.json", g_base_dir);
 	snprintf(SITE_CONFIG_PATH, sizeof(SITE_CONFIG_PATH), "%s/site_config.json", g_base_dir);
 	snprintf(DEVICEMAP_STATE_PATH, sizeof(DEVICEMAP_STATE_PATH), "%s/devicemaps.json", g_base_dir);
@@ -4233,6 +4238,78 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 }
 
 /*
+ * POST /v1/pkg/hostbuild (ADR-0056): the second mode of the same
+ * fetch/build pipeline handle_pkg_install() drives above -- builds a
+ * standalone host artifact (a kernel bzImage, a fresh kanxeod-root
+ * squashfs's own components) instead of installing into a container
+ * image's rootfs. Reuses register_pkg_fetch_pidfd()/respond_pkg_error()
+ * completely unmodified; the only new plumbing is pkg_hostbuild_start()
+ * itself.
+ */
+static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *name;
+	const char *build_image;
+	pid_t pid;
+	int pidfd;
+	enum pkg_error perr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	name = json_as_string(json_object_get(root, "name"));
+	build_image = json_as_string(json_object_get(root, "build_image"));
+	if (name == NULL || build_image == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "name and build_image are both required");
+		return;
+	}
+
+	perr = pkg_hostbuild_start(name, build_image, &pid, &pidfd);
+	if (perr != PKG_OK) {
+		json_free(root);
+		respond_pkg_error(fd, perr);
+		return;
+	}
+
+	jw_init(&w);
+	if (pkg_get_one(name, PKG_HOSTBUILD_IMAGE, &w) != PKG_OK) {
+		/* shouldn't happen -- pkg_hostbuild_start() just created it */
+		jw_free(&w);
+		json_free(root);
+		respond_error(fd, 500, "Internal Server Error",
+		              "hostbuild started but could not be read back");
+		return;
+	}
+	json_free(root);
+	register_pkg_fetch_pidfd(pid, pidfd);
+	respond_json(fd, 202, "Accepted", &w);
+	jw_free(&w);
+}
+
+/* GET /v1/pkg/hostbuild/{name} -- status/artifact_path polling for a
+ * hostbuild job, the exact shape kanxeoctl pkg hostbuild --wait polls. */
+static void handle_pkg_hostbuild_get(int fd, const char *name)
+{
+	struct json_writer w;
+	enum pkg_error perr;
+
+	jw_init(&w);
+	perr = pkg_get_one(name, PKG_HOSTBUILD_IMAGE, &w);
+	if (perr != PKG_OK) {
+		jw_free(&w);
+		respond_pkg_error(fd, perr);
+		return;
+	}
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
  * POST /v1/pkg/update-all -- the "automagic" package half of Phase 16
  * (ADR-0031), reusing pkg install --upgrade's entire existing mechanism
  * (pkg_install_start(..., upgrade=1, ...)) rather than a second rebuild
@@ -4747,6 +4824,28 @@ static void dispatch(int fd, const struct http_request *req)
 		if (strcmp(req->method, "POST") == 0) {
 			handle_pkg_update_all(fd);
 			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/pkg/hostbuild") == 0) {
+		if (strcmp(req->method, "POST") == 0) {
+			handle_pkg_hostbuild(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	{
+		/* Checked before the generic PKG_PREFIX fallback below, the
+		 * same "specific route before the catch-all" ordering
+		 * PKG_RECIPES_PREFIX already establishes -- otherwise
+		 * "hostbuild/<name>" would fall through as if it were a
+		 * literal package named that. */
+		static const char hostbuild_prefix[] = "/v1/pkg/hostbuild/";
+
+		if (strncmp(req->path, hostbuild_prefix, sizeof(hostbuild_prefix) - 1) == 0) {
+			name = req->path + sizeof(hostbuild_prefix) - 1;
+			if (name[0] != '\0' && strcmp(req->method, "GET") == 0) {
+				handle_pkg_hostbuild_get(fd, name);
+				return;
+			}
 		}
 	}
 	if (strcmp(req->path, "/v1/pkg") == 0) {
@@ -5808,7 +5907,8 @@ int main(int argc, char **argv)
 
 	if (ensure_dir(g_base_dir) != 0 || ensure_dir(IMAGES_DIR) != 0 ||
 	    ensure_dir(CONTAINERS_DIR) != 0 || ensure_dir(PKI_DIR) != 0 ||
-	    ensure_dir(PKI_CERTS_DIR) != 0 || ensure_dir(PKG_DIR) != 0)
+	    ensure_dir(PKI_CERTS_DIR) != 0 || ensure_dir(PKG_DIR) != 0 ||
+	    ensure_dir(ARTIFACTS_DIR) != 0)
 		return 1;
 
 	if (network_init(NETWORKS_STATE_PATH) != 0)
@@ -5820,7 +5920,7 @@ int main(int argc, char **argv)
 	if (siteconfig_init(SITE_CONFIG_PATH) != 0)
 		return 1;
 	reconcile_instance_dns_record();
-	if (pkg_init(PKG_DIR, PKG_INSTALLED_STATE_PATH, CONTAINERS_DIR, IMAGES_DIR) != 0)
+	if (pkg_init(PKG_DIR, PKG_INSTALLED_STATE_PATH, CONTAINERS_DIR, IMAGES_DIR, ARTIFACTS_DIR) != 0)
 		return 1;
 
 	/*

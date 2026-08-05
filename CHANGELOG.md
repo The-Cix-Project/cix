@@ -2,6 +2,28 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 40 part 2: hostbuild artifact mechanism, plus a real from-scratch Linux 6.18.40 kernel built end-to-end (ADR-0056)
+
+Second part of the self-hosting plan: build a standalone artifact (starting with the kernel `kanxeod` boots) using Kanxeo's own container+recipe mechanism, without merging the output into any image. A second mode of the existing `pkg install` pipeline, reusing its state machine/fetch/build-container machinery almost entirely unmodified.
+
+#### Added
+- `pkg_hostbuild_start()` (`daemon/src/pkg.c`): build container's lowerdir is a named, real image's own rootfs (`--build-image=`) instead of the shared toolchain sandbox; completion harvests output into `ARTIFACTS_DIR/<name>/` instead of merging into any image. Storage reuses `pkg_find()`'s existing per-`(name, image)` slots via a reserved sentinel image name, `PKG_HOSTBUILD_IMAGE = "__hostbuild"`. A hostbuild recipe must have empty `pkg_depends`.
+- `POST /v1/pkg/hostbuild`, `GET /v1/pkg/hostbuild/{name}` (the latter a thin wrapper over the existing `pkg_get_one()`); `kanxeoctl pkg hostbuild <name> --build-image=<image> [--wait] [--deploy]`.
+- New base-tool recipes, each a real gap found by a real build failing at that exact point: `sed`, `grep`, `diffutils`, `bc`, `elfutils` (`libelf`), `zlib`, `findutils` (`xargs`), `gzip`.
+- `test/test_pkg.c` step 17: a trivial (non-kernel) hostbuild fixture proving artifact landing on disk, `PKG_ERR_BUSY` symmetry with ordinary installs, `pkg_depends` rejection, unknown-`build_image` rejection.
+- `docs/adr/0056-hostbuild-artifact-mechanism.md`.
+
+#### Fixed
+- `pkg_entry_add_file()` had no NULL guard; the hostbuild harvest path's `e = NULL` (no manifest needed) would have crashed the daemon the moment any hostbuild's `$PKG_DESTDIR` actually got populated. Latent until now because every earlier attempt failed before reaching that point.
+- `start_fetch_for()`'s curl invocation gained `--retry 8 --retry-all-errors --retry-delay 3 -C -` plus an `unlink()` of the destination before each attempt, fixing real, reproducible mid-transfer connection resets on large downloads in this sandbox. Confirmed empirically that plain `--retry` alone doesn't cover a raw connection reset, and that `-C -` without the `unlink()` causes persistent HTTP 416s against a stale, already-complete file from a prior attempt.
+- `bash.recipe` now installs a `/bin/sh -> /usr/bin/bash` symlink. Root cause: glibc's `popen()` (used by the kernel's own Kconfig `$(shell ...)` macro evaluation) hardcodes `/bin/sh` with no override mechanism at all; its absence surfaced as a misleading "Cannot allocate memory" rather than "No such file or directory."
+- `libc-dev.recipe` now stages `libpthread.a`/`libpthread_nonshared.a` (glibc >= 2.34 dropped the standalone `libpthread.so`, but real build systems still pass `-lpthread` explicitly).
+- `bison.recipe`'s `pkg_install()` was deleting its own required runtime data (`usr/share/bison/`) along with genuinely doc-only content -- a real, previously-undetected bug, caught only once something ran bison from a target image's own copy instead of the toolchain sandbox.
+
+#### Notes
+- Full clean rebuild (zero warnings), full daemon-linked regression sweep including the new hostbuild fixture, 3 consecutive clean runs. Real-world verification: a genuine, from-scratch Linux 6.18.40 kernel built end-to-end against a real "dev" image, producing a valid `bzImage` (confirmed via `file` and boot-sector magic bytes `55 aa` at offset `0x1fe`) -- not part of the automated suite (too slow to run repeatedly), verified live against a real running daemon instead.
+- Part 3 of the self-hosting plan (`tcc.recipe`, `kanxeo.recipe` self-building the control plane, server-side `mkbootroot` assembly) not started.
+
 ### Phase 40 part 1: general container file-read REST endpoint (ADR-0055)
 
 First part of a plan aimed at eventual full self-hosting (rebuilding both the kernel and Kanxeo's own control plane entirely on-box). Designing that surfaced a genuinely missing, independently useful capability: Kanxeo's `files[]` mechanism has always been write-only, host-to-container -- there was no way to read a file back out of a container over the API at all.

@@ -2984,6 +2984,132 @@ static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, c
 	return emit(&r, json_mode, fmt_pkg_line);
 }
 
+/* Polls GET /v1/pkg/hostbuild/name until state leaves "fetching"/
+ * "building" (--wait's own loop, and --deploy's own prerequisite --
+ * it needs the finished artifact_path, not the 202's own in-flight
+ * snapshot). Prints nothing itself; *out is the final response,
+ * caller-owned (kx_response_free()'d by the caller). Returns 0 on a
+ * real terminal state (installed/failed), -1 if the daemon became
+ * unreachable mid-poll. */
+static int poll_hostbuild(const struct kx_client *c, const char *name, struct kx_response *out)
+{
+	char path[300];
+
+	snprintf(path, sizeof(path), "/v1/pkg/hostbuild/%s", name);
+	for (;;) {
+		const char *state;
+
+		if (kx_client_request(c, "GET", path, NULL, out) != 0) {
+			fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+			return -1;
+		}
+		state = json_str_field(out->json, "state");
+		if (state == NULL || (strcmp(state, "fetching") != 0 && strcmp(state, "building") != 0))
+			return 0;
+		kx_response_free(out);
+		usleep(500000);
+	}
+}
+
+static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *name = NULL;
+	const char *build_image = NULL;
+	int wait = 0, deploy = 0;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--build-image=", 14) == 0)
+			build_image = argv[i] + 14;
+		else if (strcmp(argv[i], "--wait") == 0)
+			wait = 1;
+		else if (strcmp(argv[i], "--deploy") == 0)
+			deploy = 1; /* implies --wait -- a not-yet-finished artifact has no path to deploy */
+		else if (name == NULL)
+			name = argv[i];
+		else {
+			fprintf(stderr, "kanxeoctl: unknown pkg hostbuild option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL || build_image == NULL) {
+		fprintf(stderr,
+		        "usage: kanxeoctl pkg hostbuild NAME --build-image=IMAGE [--wait] [--deploy]\n");
+		return 2;
+	}
+	if (deploy)
+		wait = 1;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "build_image");
+	jw_str(&w, build_image);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/pkg/hostbuild", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	if (r.status < 200 || r.status >= 300)
+		return emit(&r, json_mode, fmt_pkg_line);
+
+	if (!wait)
+		return emit(&r, json_mode, fmt_pkg_line);
+	kx_response_free(&r);
+
+	if (poll_hostbuild(c, name, &r) != 0)
+		return 1;
+
+	/* emit() frees r internally -- can't use it after, so only call it
+	 * on the terminal "we're done, nothing more to read out of r" path
+	 * (an error response, or no --deploy requested). --deploy still
+	 * needs artifact_path out of r afterward, so that path prints
+	 * manually instead and keeps r alive a little longer. */
+	if (r.status < 200 || r.status >= 300 || !deploy)
+		return emit(&r, json_mode, fmt_pkg_line);
+
+	if (json_mode)
+		print_raw_json(r.json);
+	else
+		fmt_pkg_line(r.json);
+
+	{
+		const char *state = json_str_field(r.json, "state");
+		const char *artifact_path = json_str_field(r.json, "artifact_path");
+		char deploy_arg[PATH_MAX + 16];
+		char *deploy_argv[1];
+		int rc;
+
+		if (state == NULL || strcmp(state, "installed") != 0 || artifact_path == NULL) {
+			kx_response_free(&r);
+			fprintf(stderr, "kanxeoctl: hostbuild did not produce an artifact to deploy\n");
+			return 1;
+		}
+		/* Honest, explicit per-name handling -- only what this
+		 * mechanism has real recipes for today gets a real deploy
+		 * path, not a fake-generic dispatcher pretending to support
+		 * every possible hostbuild recipe name. */
+		if (strcmp(name, "kernel") == 0)
+			snprintf(deploy_arg, sizeof(deploy_arg), "--kernel=%s/bzImage", artifact_path);
+		else {
+			kx_response_free(&r);
+			fprintf(stderr, "kanxeoctl: --deploy has no rule for hostbuild '%s' yet\n", name);
+			return 1;
+		}
+		kx_response_free(&r);
+		deploy_argv[0] = deploy_arg;
+		rc = cmd_update(c, json_mode, 1, deploy_argv);
+		return rc;
+	}
+}
+
 static int cmd_pkg_ls(const struct kx_client *c, int json_mode)
 {
 	struct kx_response r;
@@ -3049,6 +3175,7 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 		                "       kanxeoctl pkg recipe show NAME\n"
 		                "       kanxeoctl pkg recipe rm NAME\n"
 		                "       kanxeoctl pkg install --name=NAME [--image=IMAGE] [--upgrade]\n"
+		                "       kanxeoctl pkg hostbuild NAME --build-image=IMAGE [--wait] [--deploy]\n"
 		                "       kanxeoctl pkg ls\n"
 		                "       kanxeoctl pkg rm NAME[@IMAGE]\n"
 		                "       kanxeoctl pkg update-all\n");
@@ -3063,6 +3190,8 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 		return cmd_pkg_recipe(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "install") == 0)
 		return cmd_pkg_install(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "hostbuild") == 0)
+		return cmd_pkg_hostbuild(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "ls") == 0)
 		return cmd_pkg_ls(c, json_mode);
 	if (strcmp(sub, "rm") == 0)

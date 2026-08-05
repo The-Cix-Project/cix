@@ -89,6 +89,22 @@
  * of truth for "what's running," not a second hidden tracking path. */
 #define PKG_BUILD_CONTAINER_NAME "__pkgbuild"
 
+/*
+ * Reserved-by-convention sentinel "image" a hostbuild job's own
+ * struct pkg_entry is filed under (pkg_find(name, PKG_HOSTBUILD_IMAGE))
+ * -- the same soft-reservation precedent PKG_BUILD_CONTAINER_NAME
+ * above already relies on for container names (simple_name_is_valid()
+ * has no notion of "reserved," so nothing stops an operator naming a
+ * real image "__hostbuild" too; this is a convention, not a structural
+ * guarantee). Lets a hostbuild job reuse every existing pkg_entry/
+ * state/error/fetch/build code path completely unmodified; the only
+ * place that actually branches on it is the one lowerdir-selection
+ * line in pkg_fetch_completed() and the one merge-vs-harvest line in
+ * pkg_build_completed() (see pkg_hostbuild_start()'s own doc comment
+ * below, ADR-0056).
+ */
+#define PKG_HOSTBUILD_IMAGE "__hostbuild"
+
 enum pkg_state { PKG_STATE_FETCHING, PKG_STATE_BUILDING, PKG_STATE_INSTALLED, PKG_STATE_FAILED };
 
 enum pkg_error {
@@ -116,9 +132,13 @@ enum pkg_error {
  * image every installed package's files land in -- the thing that
  * makes "the same 100% for host and containers" true: every container
  * built on image "base" gets everything installed, no separate path).
+ * artifacts_dir is where a hostbuild job's own harvested output lands
+ * (artifacts_dir/<name>/..., ADR-0056) -- a plain host directory, never
+ * a container-visible path (a bare bzImage or kanxeod/kanxeoctl/web/
+ * has no business inside a normal container image's rootfs).
  */
 int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *containers_dir,
-              const char *images_dir);
+              const char *images_dir, const char *artifacts_dir);
 
 /*
  * Stages a real build toolchain (gcc/make/ld/as/cc1/sh/tar/coreutils
@@ -269,6 +289,47 @@ enum pkg_error pkg_recipe_delete(const char *name);
 enum pkg_error pkg_install_start(const char *name, const char *image, int upgrade,
                                   char *out_started_name, size_t out_started_name_size,
                                   pid_t *out_pid, int *out_pidfd);
+
+/*
+ * A second mode of the same fetch/build pipeline pkg_install_start()
+ * drives, for building a standalone HOST artifact (a kernel bzImage, a
+ * fresh kanxeod/kanxeoctl/web/ control-plane) rather than installing
+ * into a container image's rootfs (ADR-0056). Reuses fetch/verify/
+ * stage/build completely unmodified -- the build container gets the
+ * exact same offline, no-network isolation every ordinary install
+ * already gets. Two real differences from pkg_install_start():
+ *
+ *   - The build container's own lowerdir is build_image's rootfs
+ *     (an ordinary image, built up via completely normal `pkg install
+ *     --image=<build_image>` calls beforehand -- e.g. installing
+ *     "tcc"/"make" into a "kanxeo-builder" image), never the shared
+ *     g_pkgbuild_rootfs toolchain sandbox every ordinary install uses.
+ *     build_image must already exist (PKG_ERR_NOT_FOUND if its rootfs
+ *     doesn't).
+ *   - On success the build's $PKG_DESTDIR contents are copied
+ *     (recursively, verbatim, no manifest) to a plain host directory
+ *     under BASE_DIR/artifacts/<name>/ instead of being merged into
+ *     any image -- readable back via GET /v1/pkg/hostbuild/<name>'s
+ *     own artifact_path field, then handed to /system/update as an
+ *     ordinary local path (no new deploy mechanism -- that endpoint
+ *     already accepts any local image_path/kernel_path).
+ *
+ * name's own recipe must have an EMPTY pkg_depends -- dependency
+ * resolution targets "merge into an image," a concept with no meaning
+ * for a one-shot artifact harvest; every prerequisite the build needs
+ * must already be baked into build_image's own rootfs, which is
+ * exactly why that image gets built up via the ordinary install path
+ * first (PKG_ERR_INVALID_RECIPE if pkg_depends is non-empty). Same
+ * PKG_ERR_BUSY serialization as every other install -- a hostbuild
+ * job occupies the one v1 in-flight slot exactly like an ordinary one.
+ * PKG_ERR_DUPLICATE if name is already a hostbuild entry in
+ * PKG_STATE_INSTALLED (re-run with a bumped pkg_version= to rebuild;
+ * there is no separate "upgrade" flag here, a hostbuild has no
+ * container depending on its own continued installed-ness the way a
+ * package does).
+ */
+enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, pid_t *out_pid,
+                                    int *out_pidfd);
 
 /*
  * Called once the tracked fetch subprocess's pidfd fires (caller has

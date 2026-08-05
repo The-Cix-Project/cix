@@ -1307,6 +1307,81 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /pkg/hostbuild:
+    post:
+      summary: >
+        Starts a hostbuild job (ADR-0056): a second mode of the same fetch/build
+        pipeline /pkg/install uses, except the build container's lowerdir is
+        build_image's own rootfs (not the shared toolchain sandbox), and the
+        completed output is harvested to a host artifact directory instead of
+        being merged into any image. The named recipe's pkg_depends= must be
+        empty -- dependency resolution has no meaning for a one-shot artifact
+        harvest; every prerequisite must already be present in build_image's own
+        rootfs. Subject to the same v1 single-job-in-flight constraint as
+        /pkg/install (they share one job slot).
+      operationId: pkgHostbuild
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, build_image]
+              properties:
+                name:
+                  type: string
+                  description: The recipe to build.
+                build_image:
+                  type: string
+                  description: >
+                    The already-existing image whose rootfs supplies the build
+                    container's lowerdir. No default -- always explicit.
+      responses:
+        "202":
+          description: Hostbuild started -- poll GET /pkg/hostbuild/{name} for progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgEntry"
+        "400":
+          description: name/build_image missing; no such recipe / it failed to parse; or the recipe has a non-empty pkg_depends=
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: build_image does not exist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Already installed under this name, or another install/hostbuild is already in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /pkg/hostbuild/{name}:
+    get:
+      summary: Inspect one hostbuild job's current state -- a thin wrapper over the same lookup GET /pkg/{name} uses, scoped to the reserved "__hostbuild" image
+      operationId: getPkgHostbuild
+      parameters:
+        - $ref: "#/components/parameters/PkgName"
+      responses:
+        "200":
+          description: Hostbuild entry detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgEntry"
+        "404":
+          description: No such hostbuild job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /pkg:
     get:
       summary: List every known package (installed or in-flight) with its current state
@@ -2956,6 +3031,20 @@ components:
             Paths (relative to the base image root) this package installed. Empty until
             state is "installed". Symlinks in a package's own DESTDIR output are skipped
             in v1 (a documented boundary) -- only regular files are copied and manifested.
+        is_hostbuild:
+          type: boolean
+          description: >
+            true if this entry was started via POST /pkg/hostbuild (ADR-0056) rather than
+            an ordinary /pkg/install -- derived from image=="__hostbuild", never a
+            separately stored flag.
+        artifact_path:
+          type: string
+          nullable: true
+          description: >
+            Only meaningful for a hostbuild entry (is_hostbuild=true) once state is
+            "installed": the host directory its harvested output landed in
+            (ARTIFACTS_DIR/<name>/), never merged into any image's rootfs. null for
+            every ordinary install, and for a hostbuild entry that hasn't finished yet.
 
     Error:
       type: object

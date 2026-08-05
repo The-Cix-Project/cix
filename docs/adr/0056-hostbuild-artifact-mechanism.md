@@ -1,0 +1,68 @@
+# 0056 — Hostbuild artifact mechanism
+
+## Status
+
+Accepted
+
+## Context
+
+Part of a larger self-hosted rebuild goal: once Kanxeo is running with no separate dev machine at all, an operator needs to rebuild the Linux kernel it boots (and, in a later phase, `kanxeod`/`kanxeoctl` themselves) from inside Kanxeo's own container+recipe mechanism, using its own hardware. The existing `pkg install` pipeline (`daemon/src/pkg.c`) only ever does one thing with a build's output: merge it into a target *image's* rootfs, for containers to later run. A kernel build's output isn't runtime content for a container image at all — it's a standalone file (`bzImage`) an operator needs to hand to `/system/update`. Nothing in the existing mechanism had a way to say "build this, but hand me the result directly instead of merging it anywhere."
+
+## Decision
+
+**A second mode of the exact same pipeline, not a parallel one.** `pkg_hostbuild_start()` (`daemon/src/pkg.c`) reuses `pkg_find()`/state machine/fetch/build-container machinery almost entirely unmodified, diverging only at two points:
+
+- **Lowerdir selection**: an ordinary install always builds inside the shared toolchain sandbox (`g_pkgbuild_rootfs`); a hostbuild job builds inside a *named, real image's own rootfs* instead (`--build-image=`), since the artifact needs to be produced by (and often depended on the toolchain baked into) that specific image — a kernel build needs `gcc`/`make`/`bison`/etc. actually present in the image doing the building, not just in an ephemeral shared sandbox.
+- **Completion**: an ordinary install's output gets `pkg_seed_image_baseline()` + `merge_tree()`'d into the target image's rootfs, with a manifest entry recorded (so `pkg delete` can later remove it). A hostbuild job's output gets `merge_tree()`'d into `ARTIFACTS_DIR/<name>/` instead — a plain host directory, never container-visible, with `e = NULL` (no manifest — there's nothing to ever `pkg delete`, a hostbuild artifact is just a file for an operator to pick up).
+
+**Storage reuses `pkg_find()`'s existing per-`(name, image)` slot mechanism via a reserved sentinel image name**, `PKG_HOSTBUILD_IMAGE = "__hostbuild"` — soft-reserved by convention (`simple_name_is_valid()` has no reserved-prefix concept, same posture the existing `PKG_BUILD_CONTAINER_NAME = "__pkgbuild"` already relies on), not structurally guaranteed. Every existing lookup/state/error path in `start_fetch_for()`/`pkg_fetch_completed()` keeps working completely unmodified. `is_hostbuild`/`artifact_path` in the JSON response are derived from `strcmp(e->image, PKG_HOSTBUILD_IMAGE) == 0`, never stored as a separate flag — One Source of Truth, nothing that could drift from what `pkg_find(name, PKG_HOSTBUILD_IMAGE)` itself already means.
+
+**A hostbuild recipe must have empty `pkg_depends`.** Dependency resolution targets "merge into an image" (each dependency gets installed there too) — meaningless for a one-shot artifact harvest. Every prerequisite must already be baked into `build_image`'s own rootfs, built up via ordinary `pkg install` first. Rejected outright at `pkg_hostbuild_start()` time (400), not discovered mid-build.
+
+**`GET /v1/pkg/hostbuild/{name}`** is a thin wrapper over the existing `pkg_get_one(name, PKG_HOSTBUILD_IMAGE, w)` — no new lookup logic, same response shape every other package entry already has, plus the two derived fields above.
+
+## A real, load-bearing gap found and fixed along the way: `pkg_entry_add_file()` had no NULL guard
+
+`merge_tree()`'s two call sites (`pkg_entry_add_file(e, child_rel)`, for regular files and symlinks) always assumed a real manifest struct; `e = NULL` for the hostbuild harvest path dereferenced `e->file_count` unconditionally — a real, unguarded null-pointer crash waiting for the first hostbuild whose `$PKG_DESTDIR` actually got populated (every attempt up to that point had failed earlier in the pipeline, so the bug was latent, never yet triggered). Fixed with a guard at the top of `pkg_entry_add_file()`: `if (e == NULL) return 0;` — matching the documented contract ("NULL means plain recursive copy, no manifest") at the one place that contract is actually enforced, rather than requiring every future caller to remember to check first.
+
+## A second real gap: fetch reliability against large sources
+
+This sandbox's own outbound network has real, reproducible mid-transfer connection resets on large downloads (confirmed directly: a single `curl` fetch of a ~150MB kernel tarball failed identically whether forced to HTTP/1.1 or left on default HTTP/2, always at a different byte offset — a genuine transport-layer flakiness, not an HTTP version bug). `start_fetch_for()`'s curl invocation gained `--retry 8 --retry-all-errors --retry-delay 3 -C -`, plus an `unlink()` of the destination path immediately before each attempt.
+
+Two sub-findings, both confirmed empirically before committing to the fix:
+- Plain `--retry` alone is **not** sufficient — curl only auto-retries a curated list of transient conditions (timeouts, HTTP 408/429/5xx) and does **not** cover a raw connection reset (curl exit 56) by default. A `--retry`-only run still failed outright on the first reset. `--retry-all-errors` (curl ≥ 7.71) widens that to every failure.
+- `-C -` (resume) without the `unlink()` is actively harmful across *separate* top-level attempts: if a prior attempt had already fully downloaded the file, curl's own resume logic requests a byte range starting past EOF, and the server correctly answers with HTTP 416 — which every one of curl's own internal retries then hits identically, since the file never changes. `-C -` is only ever safe to resume *within* a single curl invocation's own retry cycle (recovering from a mid-transfer reset), never across wholly separate `pkg install`/`pkg hostbuild` attempts reusing the same fixed on-disk path. The `unlink()` guarantees every fresh top-level attempt starts clean, while `-C -` still provides its real benefit inside that one invocation's retry loop.
+
+sha256 verification downstream in `pkg_fetch_completed()` still catches any corrupt resume regardless — this fix only ever helps, never masks a bad download.
+
+## A third, harder-to-find gap: `/bin/sh` and glibc's `popen()`
+
+The Linux kernel's own `scripts/kconfig/preprocess.c` calls `popen()` to evaluate Kconfig's `$(shell ...)` macros (used throughout `arch/x86/Kconfig` and friends for toolchain auto-detection). glibc's `popen()` is POSIX-specified to always exec `/bin/sh` literally — **no override mechanism exists**: not `$SHELL`, not a `SHELL=` make variable (that only affects GNU Make's own recipe-line execution, a completely different code path from `$(shell ...)` macro evaluation inside a tool `make` merely invokes). This project's own images deliberately have no `/bin` at all (`usr/bin`-only FHS convention, `CONSOLE_DEFAULT_CMD` in `main.c`) — fine for a minimal runtime container, a real gap for any image meant to actually build software.
+
+Confirmed the hard way, not guessed at: the failure did **not** surface as the expected `ENOENT`/"No such file or directory". It surfaced as `Cannot allocate memory` (ENOMEM) — a misleading symptom traced through several dead ends (checked real memory pressure via `free -h`/`/proc/meminfo` during the failure: none; checked cgroup `memory.max`/`pids.max` at every level: unset; wrote a throwaway diagnostic recipe that ran the exact failing shell command directly, which succeeded, isolating the bug specifically to *GNU Make's own* internal invocation, not a generic fork/exec problem) before a direct `ls /bin/sh` inside the same container context confirmed it simply didn't exist. `bash.recipe` now installs a `/bin/sh -> /usr/bin/bash` symlink as part of its own `pkg_install()` — any image that installs bash now also gets this one standard path every real Linux distribution guarantees exists, matching the same "this is what a real build-toolchain image needs, not what a minimal runtime container needs" reasoning `libc-dev.recipe`'s `-lpthread` fix below shares.
+
+## A fourth gap: glibc ≥ 2.34 dropped the standalone `libpthread.so`
+
+`libc-dev.recipe` cherry-picks specific files out of the toolchain sandbox's own real glibc-dev rather than staging the whole `/usr/lib/x86_64-linux-gnu` wholesale (see that recipe's own header comment for why). It never included `libpthread.a`/`libpthread_nonshared.a` — real, legitimate static compat archives glibc ≥ 2.34 still ships (pthread's own functions were folded into `libc.so.6` itself; no shared `libpthread.so` exists on this exact host at all anymore, confirmed via `dpkg -L libc6-dev` and a direct `find`) for exactly this case: real-world build systems (the Linux kernel's own `scripts/Makefile.host` among them) still pass `-lpthread` explicitly. Without them, the first HOSTCC tool linked with `-lpthread` (`scripts/sorttable`) failed outright with `cannot find -lpthread`. Fixed by extending `libc-dev.recipe`'s `pkg_install()` to also copy those two archives.
+
+## Fifth: a real, previously-undetected bug in `bison.recipe`
+
+`bison.recipe`'s original `pkg_install()` stripped `$PKG_DESTDIR/usr/share` wholesale, intending to trim man/info/locale data — but took bison's own required *runtime* data (`usr/share/bison/`, the m4sugar/skeleton files bison's own grammar generation reads at every real invocation, not just build-time output) down with it by accident. Caught empirically the first time something actually tried to *run* bison from an image built with this recipe (this kernel hostbuild, generating `parser.tab.c` via YACC), not by inspection — every earlier use of bison in this recipe catalog happened to only ever need it once, at the exact point it was freshly built inside the toolchain sandbox itself (which still had the real, unstripped `/usr/share/bison`), never from a *target* image's own copy. Fixed to trim only the genuinely doc-only subdirectories (`man`, `info`, `locale`).
+
+## Sixth: several genuinely missing base tools
+
+A recipe catalog built up incrementally, package by package, as real builds actually needed them (this project's own established discipline — never speculatively pre-installing something "just in case"). A real, from-scratch kernel build is the single most demanding thing this catalog has been asked to build yet, and surfaced eight tools nothing before it had ever needed: `sed`, `grep`, `diffutils` (`diff`), `bc`, `elfutils` (`libelf`, needed by `tools/objtool` for ORC/stack-validation metadata), `zlib` (a real runtime dependency of `elfutils`' own `libelf.so` — linked at build time only because the shared toolchain sandbox happens to carry the real host's own zlib, but never staged into any *target* image until now, so `libelf.so` had an unresolvable runtime dependency the moment it was actually loaded from a target image), `findutils` (`xargs`, used by the kernel's own `built-in.a` archiving step), and `gzip` (the very last step of a `bzImage` build, compressing the linked `vmlinux`). Each was found and fixed one at a time, by a real build failing at that exact point, never spec­ulatively bundled in ahead of need.
+
+## Verification
+
+An automated `test_pkg.c` fixture (step 17) proves the mechanism itself: a real hostbuild job (trivial `gcc -o hello hello.c`, not the kernel — far too slow for this suite) lands a real file on disk at the documented `ARTIFACTS_DIR/<name>/` path (and confirms it did **not** leak into any image's rootfs); `PKG_ERR_BUSY` is enforced between an in-flight hostbuild and a concurrent ordinary install, symmetrically with the existing ordinary-install-vs-ordinary-install case (`test_pkg.c` step 4); a hostbuild recipe with a non-empty `pkg_depends` is rejected with 400; an unknown `build_image` is rejected with 404.
+
+The real payoff — an actual from-scratch Linux 6.18.40 kernel building end-to-end against a real, from-recipe-built "dev" image and producing a genuine, valid `bzImage` (confirmed via `file` and its boot-sector magic bytes `55 aa` at offset `0x1fe`) — was proven live against a real running daemon, not just the automated fixture; no automated test in this suite builds a real kernel (build time alone makes that impractical for a suite meant to run repeatedly).
+
+## Consequences
+
+- `pkg_init()` gained a new `artifacts_dir` parameter; `ARTIFACTS_DIR` follows the exact same runtime-resolved, `--data-dir=`-isolated pattern `IMAGES_DIR`/`CONTAINERS_DIR` already established (ADR-0044).
+- `merge_tree()` is now genuinely dual-purpose (manifested image-merge, or plain unmanifested copy) rather than a second, parallel tree-copier being written for the harvest case — one function, two callers, matching this project's own "solve a problem once" standard.
+- `kanxeoctl pkg hostbuild <name> --build-image=<image> [--wait] [--deploy]` is the CLI surface; `--deploy` (for `name=="kernel"` specifically, an honest explicit case rather than a fake-generic dispatcher) reads the artifact and calls the existing, unmodified `cmd_update()`.
+- Concurrent hostbuilds are out of scope (the existing v1 one-job-at-a-time invariant, unchanged); so is any change to `/system/update`/`/system/reboot` themselves.
+- The eight new base-tool recipes and the `bash`/`bison`/`libc-dev` fixes are real, general improvements to this project's own recipe catalog — every one of them benefits any future recipe with the same real-world need, not just `kernel.recipe`.

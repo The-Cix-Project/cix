@@ -65,14 +65,31 @@ static char g_containers_dir[PATH_MAX];
  * per install call. */
 static char g_images_dir[PATH_MAX];
 static char g_pkgbuild_rootfs[PATH_MAX];
+/* Where a hostbuild job's own harvested output lands (ADR-0056) --
+ * <g_artifacts_dir>/<name>/..., a plain host directory, never
+ * container-visible. */
+static char g_artifacts_dir[PATH_MAX];
 
 /* v1 serializes installs: at most one job in flight. Empty = idle. */
 static char g_current_job_name[PKG_NAME_MAX];
 /* The target image the in-flight job (name above, plus every
  * dependency it pulls in) merges into -- always normalized (never
  * empty; see normalize_image()), valid exactly when g_current_job_name
- * is non-empty. */
+ * is non-empty. For a hostbuild job this is always PKG_HOSTBUILD_IMAGE
+ * (where the resulting pkg_entry is filed, not where the build
+ * container's own lowerdir comes from -- see g_current_job_build_image
+ * below). */
 static char g_current_job_image[PKG_IMAGE_NAME_MAX];
+/* True exactly while the in-flight job is a hostbuild (ADR-0056) --
+ * set explicitly at the start of every job (pkg_install_start() clears
+ * it, pkg_hostbuild_start() sets it), never left stale from a prior
+ * job, so it's safe to read any time g_current_job_name is non-empty. */
+static int g_current_job_is_hostbuild;
+/* Only meaningful while g_current_job_is_hostbuild is true: the real
+ * image whose rootfs supplies the build container's own lowerdir
+ * (e.g. "kanxeo-builder"), as opposed to the always-shared
+ * g_pkgbuild_rootfs every ordinary install uses. */
+static char g_current_job_build_image[PKG_IMAGE_NAME_MAX];
 
 /* The resolved install order for the current job: dependencies first
  * (post-order), the originally-requested package last. g_dep_queue_pos
@@ -166,6 +183,14 @@ static void unlink_manifest_files(const struct pkg_entry *e)
 
 static int pkg_entry_add_file(struct pkg_entry *e, const char *relpath)
 {
+	/*
+	 * NULL means "plain recursive copy, no manifest" -- merge_tree()'s
+	 * hostbuild caller (ADR-0056) passes e=NULL since a harvested
+	 * artifact has nothing to ever pkg_delete(), so there's no
+	 * manifest to record it in.
+	 */
+	if (e == NULL)
+		return 0;
 	if (e->file_count >= e->files_cap) {
 		int new_cap = e->files_cap == 0 ? 32 : e->files_cap * 2;
 		char **new_files = realloc(e->files, (size_t)new_cap * sizeof(char *));
@@ -576,6 +601,21 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 	jw_str(w, e->version);
 	jw_key(w, "state");
 	jw_str(w, state_str);
+	/* is_hostbuild/artifact_path are derived from e->image, never
+	 * stored -- One Source of Truth, no separate flag that could drift
+	 * from what pkg_find(name, PKG_HOSTBUILD_IMAGE) itself already
+	 * means (ADR-0056). */
+	jw_key(w, "is_hostbuild");
+	jw_bool(w, strcmp(e->image, PKG_HOSTBUILD_IMAGE) == 0);
+	jw_key(w, "artifact_path");
+	if (strcmp(e->image, PKG_HOSTBUILD_IMAGE) == 0 && e->state == PKG_STATE_INSTALLED) {
+		char artifact_dir[PATH_MAX];
+
+		snprintf(artifact_dir, sizeof(artifact_dir), "%s/%s", g_artifacts_dir, e->name);
+		jw_str(w, artifact_dir);
+	} else {
+		jw_null(w);
+	}
 	jw_key(w, "error");
 	if (e->error[0] != '\0')
 		jw_str(w, e->error);
@@ -719,7 +759,7 @@ static int load_state(void)
 }
 
 int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *containers_dir,
-              const char *images_dir)
+              const char *images_dir, const char *artifacts_dir)
 {
 	if (snprintf(g_pkg_dir, sizeof(g_pkg_dir), "%s", pkg_dir) >= (int)sizeof(g_pkg_dir))
 		return -1;
@@ -740,9 +780,13 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
 	if (snprintf(g_pkgbuild_rootfs, sizeof(g_pkgbuild_rootfs), "%s/pkgbuild/rootfs", images_dir) >=
 	    (int)sizeof(g_pkgbuild_rootfs))
 		return -1;
+	if (snprintf(g_artifacts_dir, sizeof(g_artifacts_dir), "%s", artifacts_dir) >=
+	    (int)sizeof(g_artifacts_dir))
+		return -1;
 
 	memset(g_packages, 0, sizeof(g_packages));
 	g_current_job_name[0] = '\0';
+	g_current_job_is_hostbuild = 0;
 	g_dep_queue_count = 0;
 	g_dep_queue_pos = 0;
 	g_dep_queue_is_upgrade = 0;
@@ -1237,11 +1281,47 @@ static enum pkg_error start_fetch_for(const char *name, pid_t *out_pid, int *out
 			char src_tarball_path[PATH_MAX];
 			pid_t sub;
 			int status;
-			char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL", "-o", src_tarball_path,
-				          recipe.source[j], NULL };
+			/*
+			 * --retry/--retry-all-errors/-C -: large sources
+			 * (e.g. kernel.recipe's ~150MB tarball) hit real,
+			 * reproducible mid-transfer connection resets in
+			 * this project's own dev sandbox (ADR-0056) --
+			 * confirmed independent of HTTP version (both
+			 * default HTTP/2 and --http1.1 reset at different
+			 * offsets). Plain --retry alone is not enough: curl
+			 * only auto-retries a curated list of transient
+			 * conditions (timeouts, HTTP 5xx/408/429) and does
+			 * NOT cover a raw connection reset (curl exit 56)
+			 * by default -- confirmed the hard way when a
+			 * --retry-only run still failed outright on the
+			 * first reset. --retry-all-errors (curl >= 7.71)
+			 * widens that to every failure. sha256 verification
+			 * downstream in pkg_fetch_completed() still catches
+			 * any corrupt resume, so this only ever helps, never
+			 * masks a bad download.
+			 */
+			char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL", "--retry", "8",
+				          "--retry-all-errors", "--retry-delay", "3", "-C", "-",
+				          "-o", src_tarball_path, recipe.source[j], NULL };
 
 			snprintf(src_tarball_path, sizeof(src_tarball_path), "%s/%s-%s-%d.src",
 			         g_sources_dir, recipe.name, recipe.version, j);
+
+			/*
+			 * -C - only makes sense resuming *this* attempt's
+			 * own partial download (recovering from a transient
+			 * mid-transfer reset within curl's own retry loop
+			 * above). A stale, already-fully-downloaded file left
+			 * over from an earlier, separate fetch attempt at
+			 * this same fixed path makes curl request a byte
+			 * range starting past EOF, which the server correctly
+			 * answers with HTTP 416 -- confirmed the hard way
+			 * (ADR-0056): every retry hit the identical 416 since
+			 * the file never changed. Starting every fresh
+			 * top-level attempt from a clean slate avoids this;
+			 * ENOENT is expected and fine.
+			 */
+			unlink(src_tarball_path);
 
 			sub = fork();
 			if (sub < 0)
@@ -1297,6 +1377,7 @@ enum pkg_error pkg_install_start(const char *name, const char *image, int upgrad
 		return PKG_ERR_INVALID_RECIPE;
 
 	snprintf(g_current_job_image, sizeof(g_current_job_image), "%s", normalize_image(image));
+	g_current_job_is_hostbuild = 0;
 
 	e = pkg_find(name, g_current_job_image);
 	if (e != NULL && e->state == PKG_STATE_INSTALLED &&
@@ -1322,6 +1403,65 @@ enum pkg_error pkg_install_start(const char *name, const char *image, int upgrad
 		return perr;
 	}
 	snprintf(out_started_name, out_started_name_size, "%s", g_dep_queue[0]);
+	return PKG_OK;
+}
+
+enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, pid_t *out_pid,
+                                    int *out_pidfd)
+{
+	struct pkg_recipe recipe;
+	char recipe_path[PATH_MAX];
+	struct pkg_entry *e;
+	char build_rootfs[PATH_MAX];
+	struct stat st;
+	enum pkg_error perr;
+
+	if (!pkg_name_is_valid(name))
+		return PKG_ERR_INVALID_NAME;
+	if (build_image == NULL || build_image[0] == '\0' || !pkg_image_is_valid(build_image))
+		return PKG_ERR_INVALID_NAME;
+	if (g_current_job_name[0] != '\0')
+		return PKG_ERR_BUSY;
+
+	snprintf(recipe_path, sizeof(recipe_path), "%s/%s.recipe", g_recipes_dir, name);
+	if (parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
+		return PKG_ERR_INVALID_RECIPE;
+	/* Dependency resolution targets "merge into an image" -- meaningless
+	 * for a one-shot artifact harvest. Every prerequisite must already
+	 * be baked into build_image's own rootfs (built up via ordinary
+	 * `pkg install` first). */
+	if (recipe.depends[0] != '\0')
+		return PKG_ERR_INVALID_RECIPE;
+
+	/* build_image must already exist -- there is no sane default the
+	 * way PKG_DEFAULT_IMAGE is for an ordinary install. */
+	image_rootfs_path(build_image, build_rootfs, sizeof(build_rootfs));
+	if (stat(build_rootfs, &st) != 0 || !S_ISDIR(st.st_mode))
+		return PKG_ERR_NOT_FOUND;
+
+	e = pkg_find(name, PKG_HOSTBUILD_IMAGE);
+	if (e != NULL && e->state == PKG_STATE_INSTALLED)
+		return PKG_ERR_DUPLICATE;
+
+	snprintf(g_current_job_image, sizeof(g_current_job_image), "%s", PKG_HOSTBUILD_IMAGE);
+	snprintf(g_current_job_build_image, sizeof(g_current_job_build_image), "%s", build_image);
+	g_current_job_is_hostbuild = 1;
+
+	/* A hostbuild job is always a single, standalone entry -- no
+	 * resolve_chain(), pkg_depends is required empty above. */
+	g_dep_queue_count = 0;
+	strncpy(g_dep_queue[0], name, PKG_NAME_MAX - 1);
+	g_dep_queue[0][PKG_NAME_MAX - 1] = '\0';
+	g_dep_queue_count = 1;
+	g_dep_queue_pos = 0;
+	g_dep_queue_is_upgrade = 0;
+
+	perr = start_fetch_for(name, out_pid, out_pidfd);
+	if (perr != PKG_OK) {
+		g_dep_queue_count = 0;
+		g_current_job_is_hostbuild = 0;
+		return perr;
+	}
 	return PKG_OK;
 }
 
@@ -1387,7 +1527,14 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out)
 
 	snprintf(container_base, sizeof(container_base), "%s/%s", g_containers_dir,
 	         PKG_BUILD_CONTAINER_NAME);
-	snprintf(g_build_lowerdir, sizeof(g_build_lowerdir), "%s", g_pkgbuild_rootfs);
+	/* A hostbuild job's own build container is rooted on build_image's
+	 * rootfs (built up via ordinary `pkg install` beforehand), never
+	 * the shared toolchain sandbox every regular install uses
+	 * (ADR-0056). */
+	if (g_current_job_is_hostbuild)
+		image_rootfs_path(g_current_job_build_image, g_build_lowerdir, sizeof(g_build_lowerdir));
+	else
+		snprintf(g_build_lowerdir, sizeof(g_build_lowerdir), "%s", g_pkgbuild_rootfs);
 	snprintf(g_build_upperdir, sizeof(g_build_upperdir), "%s/upper", container_base);
 	snprintf(g_build_workdir, sizeof(g_build_workdir), "%s/work", container_base);
 	snprintf(g_build_merged, sizeof(g_build_merged), "%s/merged", container_base);
@@ -1399,11 +1546,28 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out)
 
 	{
 		char main_src_path[PATH_MAX];
+		char tmp_dir[PATH_MAX];
 
 		snprintf(main_src_path, sizeof(main_src_path), "%s/%s-%s-0.src", g_sources_dir, e->name,
 		         recipe.version);
+		/*
+		 * /tmp -- caught empirically (ADR-0056), same session as the
+		 * /bin/sh discovery above: this project's own from-recipe
+		 * images have no /tmp at all (CLAUDE.md's own documented
+		 * fact), and some real build systems assume it exists
+		 * unconditionally regardless of $TMPDIR (GNU Make's own
+		 * parallel-job FIFO, mkfifo("/tmp/GMfifoN"), confirmed
+		 * directly -- not derived from any env var this project
+		 * could instead set). A plain, always-present, empty
+		 * directory in the build container's own upperdir, exactly
+		 * the same "just make sure it exists" posture build/pkg-dest
+		 * and build/src already have -- benefits every future
+		 * recipe run against a minimal image, not just this one.
+		 */
+		snprintf(tmp_dir, sizeof(tmp_dir), "%s/tmp", g_build_upperdir);
 		if (reset_build_container_dir(container_base) != 0 || persist_mkdir_p(src_dir) != 0 ||
-		    persist_mkdir_p(dest_dir) != 0 || copy_file_simple(recipe_path, recipe_dst) != 0 ||
+		    persist_mkdir_p(dest_dir) != 0 || persist_mkdir_p(tmp_dir) != 0 ||
+		    copy_file_simple(recipe_path, recipe_dst) != 0 ||
 		    extract_tarball(main_src_path, src_dir) != 0) {
 			e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
 			snprintf(e->error, sizeof(e->error), "could not prepare the build container");
@@ -1445,7 +1609,23 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out)
 
 	snprintf(g_build_argv_cmd, sizeof(g_build_argv_cmd),
 	         ". /build/recipe.sh; cd /build/src && pkg_build && pkg_install");
-	g_build_argv[0] = "/bin/sh";
+	/*
+	 * /usr/bin/bash, not /bin/sh -- caught empirically (ADR-0056) the
+	 * first time a hostbuild job's own build_image was one of this
+	 * project's OWN from-recipe images rather than the shared
+	 * g_pkgbuild_rootfs toolchain sandbox: every from-recipe image
+	 * follows this project's own no-/bin, usr/bin-only FHS convention
+	 * (the exact same reasoning CONSOLE_DEFAULT_CMD in main.c already
+	 * documents), so "/bin/sh" -- which happened to work for years
+	 * only because the toolchain sandbox is a wholesale host /usr copy
+	 * with a real bin -> usr/bin symlink -- fails outright
+	 * (execve: No such file or directory) the moment the lowerdir is
+	 * a real, minimal Kanxeo-built image instead. bash accepts the
+	 * identical "-c <script>" invocation sh does, and every image this
+	 * project has ever built (dev, base, router, ...) has it at this
+	 * exact path -- confirmed directly, not assumed.
+	 */
+	g_build_argv[0] = "/usr/bin/bash";
 	g_build_argv[1] = "-c";
 	g_build_argv[2] = g_build_argv_cmd;
 	g_build_argv[3] = NULL;
@@ -1541,7 +1721,26 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		}
 	}
 
-	{
+	if (g_current_job_is_hostbuild) {
+		/* A hostbuild's output is a standalone host artifact (a
+		 * bzImage, a kanxeod-root squashfs's own components), not
+		 * something that belongs inside any container image's
+		 * rootfs -- harvested to a plain host directory instead of
+		 * merged into an image, and with no manifest (NULL) since
+		 * there is no image install to ever unlink it from
+		 * (ADR-0056). */
+		char artifact_dir[PATH_MAX];
+
+		snprintf(artifact_dir, sizeof(artifact_dir), "%s/%s", g_artifacts_dir, e->name);
+		if (persist_mkdir_p(artifact_dir) != 0 || merge_tree(dest_dir, artifact_dir, "", NULL) != 0) {
+			e->state = PKG_STATE_FAILED;
+			snprintf(e->error, sizeof(e->error), "failed to harvest the built artifact");
+			g_current_job_name[0] = '\0';
+			g_dep_queue_count = 0;
+			g_current_job_is_hostbuild = 0;
+			return 0;
+		}
+	} else {
 		char target_rootfs[PATH_MAX];
 
 		image_rootfs_path(g_current_job_image, target_rootfs, sizeof(target_rootfs));

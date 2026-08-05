@@ -33,6 +33,24 @@ pkg_build() {
 # PKG_DESTDIR is set by kanxeod itself (daemon/src/pkg.c) -- everything
 # written under it is what actually gets merged into the shared "base"
 # image once this build container exits successfully.
+#
+# /bin/sh: this project's own images deliberately have no /bin at all
+# (usr/bin-only FHS convention, see CONSOLE_DEFAULT_CMD in main.c) --
+# fine for a minimal runtime container, but a real, load-bearing gap
+# for any image meant to actually build software: glibc's popen()/
+# system() are POSIX-specified to always exec "/bin/sh" literally,
+# with NO override mechanism (not $SHELL, not a SHELL= make variable,
+# nothing) -- confirmed empirically the hard way (ADR-0056) via the
+# Linux kernel's own scripts/kconfig/preprocess.c, which calls
+# popen() to evaluate Kconfig's $(shell ...) macros. Without /bin/sh,
+# that popen() call fails deep inside glibc's posix_spawn fast path
+# and (misleadingly) surfaces as ENOMEM, not the expected ENOENT --
+# not a Kanxeo bug, a real gap in any build-toolchain image. Any
+# image that installs bash now also gets a standard /bin/sh symlink,
+# matching how every real Linux distribution guarantees this exact
+# path exists.
 pkg_install() {
 	make install DESTDIR="$PKG_DESTDIR"
+	mkdir -p "$PKG_DESTDIR/bin"
+	ln -sf /usr/bin/bash "$PKG_DESTDIR/bin/sh"
 }

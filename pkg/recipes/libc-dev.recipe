@@ -104,4 +104,16 @@ pkg_install() {
 	   "$PKG_DESTDIR/lib/x86_64-linux-gnu/"
 	sed 's|/usr/lib/x86_64-linux-gnu/|/lib/x86_64-linux-gnu/|' /usr/lib/x86_64-linux-gnu/libc.so \
 	   > "$PKG_DESTDIR/lib/x86_64-linux-gnu/libc.so"
+	# -lpthread compat archives: glibc >= 2.34 folded libpthread's
+	# functions into libc.so.6 itself and ships no libpthread.so at
+	# all anymore (confirmed on this exact host -- only the .a/
+	# _nonshared.a static compat archives remain), but real-world
+	# build systems (the Linux kernel's own scripts/Makefile.host
+	# among them) still pass -lpthread explicitly. Confirmed missing
+	# the hard way (ADR-0056): a real kernel hostbuild failed on
+	# `cannot find -lpthread` the moment it built its first HOSTCC
+	# tool linked with -lpthread (scripts/sorttable).
+	cp -a /usr/lib/x86_64-linux-gnu/libpthread.a \
+	   /usr/lib/x86_64-linux-gnu/libpthread_nonshared.a \
+	   "$PKG_DESTDIR/lib/x86_64-linux-gnu/"
 }
