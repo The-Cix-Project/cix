@@ -373,8 +373,21 @@ void pkg_build_spawn_failed(void);
  * to pkg_fetch_completed() returning 1 to start a build. Returns 0 if
  * there's nothing more to chain (queue exhausted, this container
  * wasn't the tracked job, or the build failed).
+ *
+ * out_hostbuild_done_name (a caller-owned buffer of at least
+ * PKG_NAME_MAX bytes) is written with the completed package's own
+ * name if -- and only if -- this specific completion was a hostbuild
+ * job (ADR-0056) that just reached PKG_STATE_INSTALLED; left as an
+ * empty string otherwise (ordinary install, mid-chain, or a failure).
+ * This is pkg.c's only hostbuild-completion signal to the rest of the
+ * daemon -- deliberately just a name, not a dispatch decision: pkg.c
+ * itself stays completely agnostic to what any particular package
+ * *means* (ADR-0057's own ARTIFACTS_DIR/<name>/kanxeod-root.squashfs
+ * assembly for name=="kanxeo" specifically is main.c's business, not
+ * this module's).
  */
-int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_pid, int *out_pidfd);
+int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_pid, int *out_pidfd,
+                         char *out_hostbuild_done_name);
 
 /* Metadata for every known package (installed or in-flight): name,
  * image, version, state, error (null unless FAILED), files (manifest,

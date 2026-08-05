@@ -3098,6 +3098,21 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 		 * every possible hostbuild recipe name. */
 		if (strcmp(name, "kernel") == 0)
 			snprintf(deploy_arg, sizeof(deploy_arg), "--kernel=%s/bzImage", artifact_path);
+		else if (strcmp(name, "kanxeo") == 0)
+			/* kanxeod-root.squashfs is assembled server-side by the
+			 * daemon itself (ADR-0057), asynchronously, once this
+			 * hostbuild's own artifacts finish harvesting -- may not
+			 * exist yet the instant --wait's own poll sees
+			 * state=="installed" (that only means pkg_build_completed()
+			 * ran, not that the follow-on mkbootroot child has
+			 * finished). This CLI never invokes mkbootroot itself
+			 * (API-First Mandate) -- if the squashfs isn't there yet,
+			 * /system/update's own real, existing 400 for a missing/
+			 * unreadable image_path is the honest answer, not a second
+			 * polling loop bolted on here for one recipe name.
+			 */
+			snprintf(deploy_arg, sizeof(deploy_arg), "--image=%s/kanxeod-root.squashfs",
+			         artifact_path);
 		else {
 			kx_response_free(&r);
 			fprintf(stderr, "kanxeoctl: --deploy has no rule for hostbuild '%s' yet\n", name);

@@ -895,6 +895,22 @@ enum pkg_error pkg_seed_image_baseline(const char *image)
 		const char *rel_dst;
 	} runtime_libs[] = {
 		{ "/lib64/ld-linux-x86-64.so.2", "lib64/ld-linux-x86-64.so.2" },
+		/*
+		 * Second copy of the same file, ADR-0057: glibc >= 2.34's own
+		 * libc.so.6 carries a DT_NEEDED entry on "ld-linux-x86-64.so.2"
+		 * itself (confirmed via tinycc's own tccelf.c load_dll() walking
+		 * libc.so.6's DT_NEEDED list and calling tcc_add_dll() on each
+		 * name found) -- TCC resolves that lookup through its ordinary,
+		 * general library-search-path list, which does NOT include
+		 * /lib64 (confirmed via `tcc -vv`; only its separate, single-path
+		 * ELF-interpreter default does). A hostbuild inside a container
+		 * whose only libc.so.6 is this staged one therefore needs this
+		 * exact file reachable from a path TCC's general search actually
+		 * covers too, not just /lib64 (GCC never hit this because it
+		 * never needs to resolve its own runtime linker as a DT_NEEDED
+		 * lookup at build time the way TCC's loader does).
+		 */
+		{ "/lib64/ld-linux-x86-64.so.2", "lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" },
 		{ "/lib/x86_64-linux-gnu/libc.so.6", "lib/x86_64-linux-gnu/libc.so.6" },
 		{ "/lib/x86_64-linux-gnu/libtinfo.so.6", "lib/x86_64-linux-gnu/libtinfo.so.6" },
 		{ "/lib/x86_64-linux-gnu/libgcc_s.so.1", "lib/x86_64-linux-gnu/libgcc_s.so.1" },
@@ -1666,12 +1682,14 @@ void pkg_build_spawn_failed(void)
 }
 
 int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_pid,
-                         int *out_pidfd)
+                         int *out_pidfd, char *out_hostbuild_done_name)
 {
 	struct pkg_entry *e;
 	char container_base[PATH_MAX];
 	char dest_dir[PATH_MAX];
 	int is_final, is_upgrade;
+
+	out_hostbuild_done_name[0] = '\0';
 
 	if (strcmp(container_name, PKG_BUILD_CONTAINER_NAME) != 0)
 		return 0;
@@ -1759,6 +1777,9 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	e->state = PKG_STATE_INSTALLED;
 	e->error[0] = '\0';
 	save_state();
+
+	if (g_current_job_is_hostbuild)
+		snprintf(out_hostbuild_done_name, PKG_NAME_MAX, "%s", e->name);
 
 	if (!is_final) {
 		enum pkg_error perr;

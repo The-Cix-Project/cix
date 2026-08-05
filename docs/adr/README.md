@@ -61,3 +61,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0054](0054-host-side-container-stats.md) | Host-side per-container stats: raw point-in-time snapshot, no server history | Accepted |
 | [0055](0055-container-file-read-endpoint.md) | Container file-read REST endpoint: raw bytes, running-vs-exited path resolution | Accepted |
 | [0056](0056-hostbuild-artifact-mechanism.md) | Hostbuild artifact mechanism: a second pkg-install mode that harvests a standalone artifact instead of merging into an image | Accepted |
+| [0057](0057-self-hosted-toolchain-and-control-plane-rebuild.md) | Self-hosted toolchain and control-plane rebuild: tcc.recipe, kanxeo.recipe, server-side mkbootroot | Accepted |

@@ -180,6 +180,7 @@ enum conn_kind {
 	CONN_CLIENT,
 	CONN_CONTAINER,
 	CONN_PKG_FETCH,
+	CONN_BOOTROOT_ASSEMBLE, /* server-side mkbootroot invocation (ADR-0057) */
 	CONN_RESTART_TIMER,
 	CONN_CONSOLE_SHELL,
 	CONN_CONSOLE_RESPAWN_TIMER,
@@ -200,7 +201,7 @@ struct conn {
 	int fd;
 	struct http_conn http;                 /* CONN_CLIENT only */
 	struct registry_entry *entry;           /* CONN_CONTAINER only */
-	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH only */
+	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE */
 	char restart_name[REGISTRY_NAME_MAX];   /* CONN_RESTART_TIMER only */
 	pid_t console_pid;                      /* CONN_CONSOLE_SHELL only */
 	char console_tty[32];                   /* CONN_CONSOLE_SHELL / CONN_CONSOLE_RESPAWN_TIMER */
@@ -1682,6 +1683,96 @@ static void register_pkg_fetch_pidfd(pid_t pid, int pidfd)
 		perror("epoll_ctl ADD pkg fetch pidfd");
 		abort();
 	}
+}
+
+/* Same shape as register_pkg_fetch_pidfd(), for the mkbootroot child
+ * spawn_kanxeo_bootroot_assembly() below just forked. */
+static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
+{
+	struct conn *cc;
+	struct kx_epoll_event ev;
+
+	cc = malloc(sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (bootroot assemble reactor conn)");
+		abort();
+	}
+	cc->kind = CONN_BOOTROOT_ASSEMBLE;
+	cc->fd = pidfd;
+	cc->pkg_fetch_pid = pid;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+		perror("epoll_ctl ADD bootroot assemble pidfd");
+		abort();
+	}
+}
+
+/*
+ * ADR-0057: when a hostbuild job named "kanxeo" completes, assembles a
+ * fresh control-plane squashfs from its own just-harvested artifacts
+ * by forking+exec'ing the real, unmodified build/mkbootroot binary --
+ * server-side, entirely within the daemon, never CLI-invoked (the
+ * API-First Mandate rules out the CLI shelling out to a build tool
+ * directly). Mirrors start_fetch_for()'s own "daemon already forks
+ * subprocesses for curl" precedent -- this is the same class of
+ * capability, not a new one. Uses THIS SAME hostbuild round's own
+ * freshly built mkbootroot (kanxeo.recipe now stages one alongside
+ * kanxeod/kanxeoctl/web/) rather than assuming some earlier round's
+ * copy is still present anywhere -- self-contained, no bootstrap-order
+ * dependency. Failure here (missing mkbootroot, fork failure) is
+ * logged, never fatal to the daemon -- the hostbuild itself already
+ * succeeded and its own artifacts are still there for a later retry.
+ */
+static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
+{
+	char mkbootroot_bin[PATH_MAX];
+	char kanxeod_bin[PATH_MAX];
+	char kanxeoctl_bin[PATH_MAX];
+	char web_dir[PATH_MAX];
+	char out_squashfs[PATH_MAX];
+	char stage_dir[PATH_MAX];
+	char *argv[8];
+	pid_t pid;
+	int pidfd;
+
+	snprintf(mkbootroot_bin, sizeof(mkbootroot_bin), "%s/mkbootroot", artifact_dir);
+	snprintf(kanxeod_bin, sizeof(kanxeod_bin), "%s/kanxeod", artifact_dir);
+	snprintf(kanxeoctl_bin, sizeof(kanxeoctl_bin), "%s/kanxeoctl", artifact_dir);
+	snprintf(web_dir, sizeof(web_dir), "%s/web", artifact_dir);
+	snprintf(out_squashfs, sizeof(out_squashfs), "%s/kanxeod-root.squashfs", artifact_dir);
+	snprintf(stage_dir, sizeof(stage_dir), "%s/.bootroot-stage", artifact_dir);
+
+	argv[0] = mkbootroot_bin;
+	argv[1] = stage_dir;
+	argv[2] = kanxeod_bin;
+	argv[3] = kanxeoctl_bin;
+	argv[4] = web_dir;
+	argv[5] = out_squashfs;
+	argv[6] = ""; /* firmware dir -- a control-plane-only rebuild needs no GPU firmware re-staging */
+	argv[7] = NULL;
+
+	pid = fork();
+	if (pid < 0) {
+		perror("fork (bootroot assembly)");
+		return;
+	}
+	if (pid == 0) {
+		execve(mkbootroot_bin, argv, environ);
+		perror("child: execve mkbootroot");
+		_exit(127);
+	}
+
+	pidfd = sys_pidfd_open(pid, 0);
+	if (pidfd < 0) {
+		perror("pidfd_open (bootroot assembly)");
+		kill(pid, SIGKILL);
+		waitpid(pid, NULL, 0);
+		return;
+	}
+	register_bootroot_assemble_pidfd(pid, pidfd);
 }
 
 /*
@@ -5331,6 +5422,7 @@ static void handle_container_event(struct conn *cc)
 	pid_t pkg_pid;
 	int pkg_pidfd;
 	int chained;
+	char hostbuild_done_name[PKG_NAME_MAX];
 
 	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	registry_mark_exited(entry);
@@ -5353,11 +5445,26 @@ static void handle_container_event(struct conn *cc)
 	 * fetch -- register its pidfd exactly like a fresh top-level
 	 * install already does.
 	 */
-	chained = pkg_build_completed(entry->name, entry->exit_status, &pkg_pid, &pkg_pidfd);
+	chained = pkg_build_completed(entry->name, entry->exit_status, &pkg_pid, &pkg_pidfd,
+	                               hostbuild_done_name);
 	if (strcmp(entry->name, PKG_BUILD_CONTAINER_NAME) == 0)
 		registry_remove(entry->name);
 	if (chained)
 		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd);
+
+	/*
+	 * ADR-0057: "kanxeo" is the one hostbuild name this daemon gives
+	 * any further meaning to -- everything else pkg.c handles is
+	 * completely generic. Deliberately a plain string match here in
+	 * main.c, not a flag/callback registered in pkg.c itself: pkg.c
+	 * stays fully agnostic to what any package *means*.
+	 */
+	if (hostbuild_done_name[0] != '\0' && strcmp(hostbuild_done_name, "kanxeo") == 0) {
+		char artifact_dir[PATH_MAX];
+
+		snprintf(artifact_dir, sizeof(artifact_dir), "%s/%s", ARTIFACTS_DIR, hostbuild_done_name);
+		spawn_kanxeo_bootroot_assembly(artifact_dir);
+	}
 
 	/*
 	 * An unprompted exit (never reached for an explicit DELETE or
@@ -5444,6 +5551,29 @@ static void handle_pkg_fetch_event(struct conn *cc)
 		else
 			register_container_pidfd(entry);
 	}
+}
+
+/*
+ * Reaps spawn_kanxeo_bootroot_assembly()'s own mkbootroot child.
+ * Nothing further to dispatch on completion -- either
+ * <artifact_dir>/kanxeod-root.squashfs now exists (success, ready for
+ * `pkg hostbuild kanxeo --deploy` to pick up) or it doesn't (logged
+ * failure, the hostbuild's own artifacts are still there to retry
+ * from). No REST response is waiting on this -- the original POST
+ * /v1/pkg/hostbuild already returned 202 long before this fires.
+ */
+static void handle_bootroot_assemble_event(struct conn *cc)
+{
+	int status;
+
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status) &&
+	    WEXITSTATUS(status) == 0)
+		fprintf(stderr, "kanxeo bootroot assembly: succeeded\n");
+	else
+		fprintf(stderr, "kanxeo bootroot assembly: failed\n");
+	close(cc->fd);
+	free(cc);
 }
 
 /*
@@ -6095,6 +6225,8 @@ int main(int argc, char **argv)
 				handle_container_event(cc);
 			else if (cc->kind == CONN_PKG_FETCH)
 				handle_pkg_fetch_event(cc);
+			else if (cc->kind == CONN_BOOTROOT_ASSEMBLE)
+				handle_bootroot_assemble_event(cc);
 			else if (cc->kind == CONN_RESTART_TIMER)
 				handle_restart_timer_event(cc);
 			else if (cc->kind == CONN_CONSOLE_SHELL)

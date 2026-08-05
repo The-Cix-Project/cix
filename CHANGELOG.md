@@ -2,6 +2,28 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 40 part 3: `tcc.recipe`, `kanxeo.recipe`, server-side `mkbootroot` assembly -- the self-hosting plan closes (ADR-0057)
+
+Third and final part: rebuilding `kanxeod`/`kanxeoctl`/`web` from inside Kanxeo's own container+recipe mechanism, with TCC (never GCC, per this project's own Immutable Maxim) doing the building.
+
+#### Added
+- `pkg/recipes/tcc.recipe`: ordinary recipe, installs real upstream tinycc 0.9.27, patches a real confirmed upstream bug (`lib/bcheck.c`'s glibc `__malloc_hook` reference, removed in glibc 2.34) with a version-guarded `sed` patch matching real downstream distro practice.
+- `pkg/recipes/kanxeo.recipe`: `pkg_source` is Kanxeo's own self-hosted gitea archive-download endpoint, pinned to a real annotated tag (`v1.4.0`), authenticated via a scoped read-only access token embedded in the URL (the committed recipe carries only a placeholder, never a real token). Also builds+stages `build/mkbootroot` itself, alongside `kanxeod`/`kanxeoctl`/`web/`.
+- `daemon/src/pkg.c`: `pkg_build_completed()` gains a new `out_hostbuild_done_name` out-parameter, populated only when a hostbuild job just completed -- keeps `pkg.c` itself agnostic to what any package name means.
+- `daemon/src/main.c`: new `CONN_BOOTROOT_ASSEMBLE` conn kind, forks+execs+pidfd-tracks `mkbootroot` server-side exactly like the existing `CONN_PKG_FETCH` pattern, triggered when the hostbuild-done name is `"kanxeo"` -- the CLI never invokes `mkbootroot` itself, per the API-First Mandate.
+- `cli/src/main.c`: `--deploy` support for `name=="kanxeo"` (second honest explicit case, alongside `kernel`'s) -- reads `kanxeod-root.squashfs` and calls the existing, unmodified `cmd_update()`.
+- `docs/adr/0057-self-hosted-toolchain-and-control-plane-rebuild.md`.
+
+#### Fixed
+- `libc-dev.recipe` now stages a second copy of the six crt startup objects (`crt1.o`/`crti.o`/`crtn.o`/`Scrt1.o`/`gcrt1.o`/`Mcrt1.o`) at `/usr/lib/x86_64-linux-gnu`. Root cause: TCC maintains a separate, single-path search list for CRT objects, defaulting to that exact path -- confirmed against vanilla upstream tinycc source, distinct from GCC's own `LIBRARY_PATH` convention the files were originally staged for at `/lib/x86_64-linux-gnu`.
+- `pkg_seed_image_baseline()`'s `runtime_libs[]` table (`daemon/src/pkg.c`) now stages a second copy of `ld-linux-x86-64.so.2` at `/lib/x86_64-linux-gnu/`. Root cause: glibc >= 2.34's own `libc.so.6` carries a `DT_NEEDED` entry on `ld-linux-x86-64.so.2` itself, which TCC resolves through its general library-search list, not the separate path the real dynamic loader lives at (`/lib64`).
+- `kanxeo-builder`'s minimal image needed `bash` and `coreutils` in addition to `tcc`/`make`/`libc-dev`, each found by a real build failure (`execve failed` with no `/usr/bin/bash`; `mkdir: No such file or directory` for the root `Makefile`'s own `mkdir -p build`).
+- This sandbox's own `/etc/ssl/certs/ca-certificates.crt` was stale relative to an individually-present CA cert -- `git`'s GnuTLS-backed fetches worked, plain `curl`'s OpenSSL-backed ones didn't. Fixed, with explicit user approval, by appending the missing cert to the bundle.
+
+#### Notes
+- Proven with one real, live, end-to-end operational round trip against a scratch, `--data-dir=`-isolated verify daemon -- no automated test can safely exercise "rebuild the box running the test suite with itself." `pkg hostbuild kanxeo --build-image=kanxeo-builder --wait` fetched the real tagged, token-authenticated archive, built `kanxeod`/`kanxeoctl`/`mkbootroot` entirely with the just-installed TCC (zero warnings, confirmed via the daemon's own log) and reached `state=installed`; the async `mkbootroot` assembly step logged `kanxeo bootroot assembly: succeeded`; the resulting `kanxeod-root.squashfs` confirmed via `file` to be a genuine, valid squashfs image.
+- The final deploy-and-reboot step against a real box was not performed this phase -- a live, consequential action deliberately left for an operator to trigger explicitly. `GET /v1/health` still has no build-identifying field.
+
 ### Phase 40 part 2: hostbuild artifact mechanism, plus a real from-scratch Linux 6.18.40 kernel built end-to-end (ADR-0056)
 
 Second part of the self-hosting plan: build a standalone artifact (starting with the kernel `kanxeod` boots) using Kanxeo's own container+recipe mechanism, without merging the output into any image. A second mode of the existing `pkg install` pipeline, reusing its state machine/fetch/build-container machinery almost entirely unmodified.
