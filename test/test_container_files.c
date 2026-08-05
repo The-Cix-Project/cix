@@ -104,9 +104,9 @@ static void reset_state(void)
 	 */
 	snprintf(cmd, sizeof(cmd),
 	         "rm -rf '%s/filetest' '%s/sysctltest' '%s/badpath1' '%s/badpath2' "
-	         "'%s/badsysctl1' '%s/badsysctl2' '%s/persisttest'",
+	         "'%s/badsysctl1' '%s/badsysctl2' '%s/persisttest' '%s/readtest'",
 	         g_containers_dir, g_containers_dir, g_containers_dir, g_containers_dir,
-	         g_containers_dir, g_containers_dir, g_containers_dir);
+	         g_containers_dir, g_containers_dir, g_containers_dir, g_containers_dir);
 	system(cmd);
 }
 
@@ -287,6 +287,23 @@ int main(void)
 		}
 	}
 
+	/* 1b. GET .../files?path=... (ADR-0055) while the container is
+	 * still running returns the exact staged bytes, via the daemon's
+	 * own /proc/<pid>/root branch -- proven with a real byte-for-byte
+	 * comparison, not just a 200. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET", "/v1/containers/filetest/files?path=%2Fetc%2Fbird.conf",
+	                       NULL, &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: GET files (running) status=%d\n", r.status);
+		ok = 0;
+	} else if (r.body == NULL || r.body_len != strlen("router id 1.1.1.1;\n") ||
+	           memcmp(r.body, "router id 1.1.1.1;\n", r.body_len) != 0) {
+		fprintf(stderr, "FAIL: GET files (running) wrong content\n");
+		ok = 0;
+	}
+	kx_response_free(&r);
+
 	memset(&r, 0, sizeof(r));
 	kx_client_request(&client, "DELETE", "/v1/containers/filetest", NULL, &r);
 	kx_response_free(&r);
@@ -442,6 +459,101 @@ int main(void)
 
 	memset(&r, 0, sizeof(r));
 	kx_client_request(&client, "DELETE", "/v1/containers/persisttest", NULL, &r);
+	kx_response_free(&r);
+
+	/* 6. GET .../files?path=... (ADR-0055) once a container has exited
+	 * on its own (registry_mark_exited() -- a natural process exit,
+	 * never DELETE, which really does remove the entry) still resolves
+	 * a file, falling back first to the real, host-visible upper/ dir,
+	 * then to the image's own read-only rootfs/ -- both fallback
+	 * branches proven for real, not just one. Also proves 400 on an
+	 * unsafe path and 404 for both a missing container and a missing
+	 * file. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"readtest\",\"image\":\"filestest\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"],"
+	                       "\"files\":[{\"path\":\"/etc/only-in-upper.conf\","
+	                       "\"content\":\"from-upper\\n\"}]}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST readtest, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	/* A real wait for the child to actually exit and for
+	 * handle_container_event() to call registry_mark_exited() -- not
+	 * assumed instantaneous. */
+	usleep(500000);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET",
+	                       "/v1/containers/readtest/files?path=%2Fetc%2Fonly-in-upper.conf", NULL,
+	                       &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: GET files (exited, upper/) status=%d\n", r.status);
+		ok = 0;
+	} else if (r.body == NULL || r.body_len != strlen("from-upper\n") ||
+	           memcmp(r.body, "from-upper\n", r.body_len) != 0) {
+		fprintf(stderr, "FAIL: GET files (exited, upper/) wrong content\n");
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET", "/v1/containers/readtest/files?path=%2Fbin%2Fdaemon_child",
+	                       NULL, &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: GET files (exited, rootfs/ fallback) status=%d\n", r.status);
+		ok = 0;
+	} else if (r.body == NULL || r.body_len == 0) {
+		fprintf(stderr, "FAIL: GET files (exited, rootfs/ fallback) empty body\n");
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET",
+	                       "/v1/containers/readtest/files?path=%2F..%2F..%2Fetc%2Fpasswd", NULL,
+	                       &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: GET files traversal expected 400, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET", "/v1/containers/readtest/files?path=etc%2Fhosts", NULL,
+	                       &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: GET files no-leading-slash expected 400, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET",
+	                       "/v1/containers/nosuchcontainer/files?path=%2Fetc%2Fhosts", NULL,
+	                       &r) != 0 ||
+	    r.status != 404) {
+		fprintf(stderr, "FAIL: GET files unknown container expected 404, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET",
+	                       "/v1/containers/readtest/files?path=%2Fno%2Fsuch%2Ffile", NULL,
+	                       &r) != 0 ||
+	    r.status != 404) {
+		fprintf(stderr, "FAIL: GET files missing file expected 404, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	kx_client_request(&client, "DELETE", "/v1/containers/readtest", NULL, &r);
 	kx_response_free(&r);
 
 	if (stop_daemon(daemon_pid) != 0) {

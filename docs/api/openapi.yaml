@@ -1709,6 +1709,70 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /containers/{name}/files:
+    get:
+      summary: >
+        Read one file's raw bytes back out of a container's rootfs (see
+        ADR-0055).
+      description: >
+        The read-path counterpart to POST /containers' own "files[]"
+        (which is write-only, host-to-container, staged before the
+        container's own clone3()). Response is raw bytes
+        (application/octet-stream), not JSON -- this is the daemon's
+        only other non-JSON response body besides the web dashboard's
+        own static assets.
+
+
+        Path resolution depends on whether the container is currently
+        running: while running, the file is read through
+        /proc/<pid>/root/<path> (the container's own mount namespace and
+        root, no privilege boundary crossed since the daemon already
+        runs as real root). Once the container has exited on its own
+        (but not been DELETEd -- an exited-but-still-registered
+        container is a valid target, same as GET .../stats already
+        allows) the file is read from the container's own real,
+        host-visible overlay upperdir first, falling back to the
+        image's own read-only rootfs if the path was never written by
+        the container itself.
+
+
+        The path query parameter must be an absolute, "/"-leading,
+        traversal-free path (no "." or ".." component, no empty "//"
+        component) -- the exact same validation POST .../containers'
+        own "files[].path" already applies, reused verbatim rather than
+        a second set of rules. A path resolving to a directory is a 400,
+        not a directory listing -- this endpoint reads one file, it does
+        not browse a tree.
+      operationId: getContainerFile
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Absolute, container-relative file path, e.g. "/etc/hosts".
+      responses:
+        "200":
+          description: The file's raw content.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: Missing/unsafe path (not absolute, or contains a "." or ".." component), or the path resolves to a directory.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such container, or no such file at that path.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
 components:
   parameters:
     ContainerName:

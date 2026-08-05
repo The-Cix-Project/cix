@@ -21,6 +21,7 @@
 #include "websocket.h"
 
 #include <arpa/inet.h>
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -1748,6 +1749,59 @@ static int file_path_is_safe(const char *path)
 }
 
 /*
+ * This daemon's first (and, deliberately, narrowest-possible) query
+ * string parser: GET .../files?path=... is the first route that ever
+ * needs one. One key only, no repeated-key/array semantics, %XX
+ * percent-decoding only (no "+" -> space -- this project has never had
+ * a form-encoded body, no reason to invent that convention here).
+ * full_path is the request's own req->path, "?"-and-all; key is looked
+ * up among the "&"-separated pairs after the first "?". Returns 0 and
+ * fills out[] on a match, -1 if the key is absent or the value doesn't
+ * fit in out_size.
+ */
+static int url_query_param(const char *full_path, const char *key, char *out, size_t out_size)
+{
+	const char *q = strchr(full_path, '?');
+	size_t key_len = strlen(key);
+
+	if (q == NULL)
+		return -1;
+	q++;
+	while (*q != '\0') {
+		const char *amp = strchr(q, '&');
+		size_t pair_len = amp != NULL ? (size_t)(amp - q) : strlen(q);
+
+		if (pair_len > key_len && q[key_len] == '=' && strncmp(q, key, key_len) == 0) {
+			const char *v = q + key_len + 1;
+			size_t vlen = pair_len - key_len - 1;
+			size_t oi = 0;
+			size_t vi = 0;
+
+			while (vi < vlen) {
+				char c = v[vi];
+
+				if (c == '%' && vi + 2 < vlen && isxdigit((unsigned char)v[vi + 1]) &&
+				    isxdigit((unsigned char)v[vi + 2])) {
+					char hex[3] = { v[vi + 1], v[vi + 2], '\0' };
+
+					c = (char)strtol(hex, NULL, 16);
+					vi += 3;
+				} else {
+					vi++;
+				}
+				if (oi + 1 >= out_size)
+					return -1;
+				out[oi++] = c;
+			}
+			out[oi] = '\0';
+			return 0;
+		}
+		q = amp != NULL ? amp + 1 : q + pair_len;
+	}
+	return -1;
+}
+
+/*
  * Deliberately restricted to the net.* sysctl tree (POST /v1/containers'
  * own "sysctls" object) -- most non-net.* sysctls (vm.*, fs.*, ...) are
  * not namespace-isolated at all in Linux, so allowing arbitrary keys
@@ -2710,6 +2764,95 @@ static long long read_net_stat(const char *veth, const char *file)
 		return 0;
 	buf[n] = '\0';
 	return strtoll(buf, NULL, 10);
+}
+
+/*
+ * GET /v1/containers/{name}/files?path=... (ADR-0055): the read-path
+ * counterpart to the create-time "files[]" staging (which is write-
+ * only, host->container, pre-clone3()) -- reads one file's raw bytes
+ * back out of a container's rootfs, running or exited-but-not-removed.
+ *
+ * Path resolution branches on liveness, same reasoning ADR-0013's own
+ * write path already established for a *running* container (a stale
+ * registry_entry.handle.pid is never safe to trust once running==0 --
+ * pids get reused -- so /proc/<pid>/root only applies while running==1):
+ *   running   -> /proc/<pid>/root<path>  (kernel resolves through the
+ *                container's own mount namespace/root, no setns())
+ *   !running  -> <CONTAINERS_DIR>/<name>/upper<path> first (the COW
+ *                upper layer the container itself wrote to -- still a
+ *                real host directory even after every process in the
+ *                overlay's own mount namespace has exited), falling
+ *                back to <IMAGES_DIR>/<image>/rootfs<path> (the shared,
+ *                read-only lowerdir -- entry->image survives exit).
+ *
+ * Response is this daemon's first non-JSON body: raw bytes via
+ * http_write_response(), same primitive/pattern staticfile.c's own
+ * static_serve() already uses for the web dashboard's static assets.
+ */
+static void handle_container_file_read(int fd, const char *name, const char *rel_path)
+{
+	struct registry_entry *e = registry_find(name);
+	char full_path[PATH_MAX];
+	int file_fd;
+	struct stat st;
+	char *buf;
+	size_t total;
+
+	if (e == NULL) {
+		respond_error(fd, 404, "Not Found", "no such container");
+		return;
+	}
+	if (rel_path == NULL || rel_path[0] != '/' || strlen(rel_path) >= CONTAINER_FILE_PATH_MAX ||
+	    !file_path_is_safe(rel_path)) {
+		respond_error(fd, 400, "Bad Request", "invalid or missing path");
+		return;
+	}
+
+	if (e->running) {
+		snprintf(full_path, sizeof(full_path), "/proc/%d/root%s", (int)e->handle.pid, rel_path);
+		file_fd = open(full_path, O_RDONLY);
+	} else {
+		snprintf(full_path, sizeof(full_path), "%s/%s/upper%s", CONTAINERS_DIR, name, rel_path);
+		file_fd = open(full_path, O_RDONLY);
+		if (file_fd < 0) {
+			snprintf(full_path, sizeof(full_path), "%s/%s/rootfs%s", IMAGES_DIR, e->image, rel_path);
+			file_fd = open(full_path, O_RDONLY);
+		}
+	}
+	if (file_fd < 0) {
+		respond_error(fd, 404, "Not Found", "no such file");
+		return;
+	}
+	if (fstat(file_fd, &st) != 0) {
+		close(file_fd);
+		respond_error(fd, 500, "Internal Server Error", "stat failed");
+		return;
+	}
+	if (S_ISDIR(st.st_mode)) {
+		close(file_fd);
+		respond_error(fd, 400, "Bad Request", "path is a directory, not a file");
+		return;
+	}
+
+	buf = st.st_size > 0 ? malloc((size_t)st.st_size) : NULL;
+	if (st.st_size > 0 && buf == NULL) {
+		close(file_fd);
+		respond_error(fd, 500, "Internal Server Error", "out of memory");
+		return;
+	}
+	total = 0;
+	while (total < (size_t)st.st_size) {
+		ssize_t n = read(file_fd, buf + total, (size_t)st.st_size - total);
+
+		if (n <= 0)
+			break;
+		total += (size_t)n;
+	}
+	close(file_fd);
+
+	http_set_blocking(fd);
+	http_write_response(fd, 200, "OK", "application/octet-stream", buf, total);
+	free(buf);
 }
 
 /*
@@ -4327,6 +4470,32 @@ static void dispatch(int fd, const struct http_request *req)
 				container_name[nlen - 6] = '\0';
 				handle_container_stats(fd, container_name);
 				return;
+			}
+			{
+				/*
+				 * Unlike every other suffix here, "/files" can carry a
+				 * trailing "?path=..." query string -- container names
+				 * are still '/'-free, but qlen (not nlen) is the part
+				 * that actually ends in "/files"; the raw, un-truncated
+				 * name (with its "?..." intact) is what url_query_param()
+				 * needs to find "path" in.
+				 */
+				size_t qlen = strcspn(name, "?");
+
+				if (qlen > 6 && strncmp(name + qlen - 6, "/files", 6) == 0 &&
+				    strcmp(req->method, "GET") == 0 && qlen - 6 < REGISTRY_NAME_MAX) {
+					char container_name[REGISTRY_NAME_MAX];
+					char rel_path[CONTAINER_FILE_PATH_MAX];
+
+					memcpy(container_name, name, qlen - 6);
+					container_name[qlen - 6] = '\0';
+					if (url_query_param(req->path, "path", rel_path, sizeof(rel_path)) != 0) {
+						respond_error(fd, 400, "Bad Request", "missing path query parameter");
+						return;
+					}
+					handle_container_file_read(fd, container_name, rel_path);
+					return;
+				}
 			}
 			if (strcmp(req->method, "GET") == 0) {
 				handle_get_one(fd, name);

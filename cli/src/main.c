@@ -10,6 +10,7 @@
 #include "httpclient.h"
 #include "json.h"
 
+#include <ctype.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1022,6 +1023,120 @@ static int read_local_file(const char *path, char **out_buf, size_t *out_len)
 	*out_buf = buf;
 	*out_len = (size_t)size;
 	return 0;
+}
+
+/*
+ * Percent-encodes a query-string value (this CLI's first one -- see
+ * daemon/src/main.c's own url_query_param(), the first query-string
+ * *parser* this project has ever needed either). Only "/" needs
+ * encoding for the file-read endpoint's own "path" values in practice
+ * (container-relative paths are always "/"-leading), but every
+ * non-alphanumeric byte is encoded for real correctness rather than
+ * hand-picking just the one character known to matter today.
+ */
+static void url_encode_query_value(const char *in, char *out, size_t out_size)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	size_t oi = 0;
+
+	while (*in != '\0' && oi + 1 < out_size) {
+		unsigned char c = (unsigned char)*in;
+
+		if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+			out[oi++] = (char)c;
+		} else if (oi + 3 < out_size) {
+			out[oi++] = '%';
+			out[oi++] = hex[c >> 4];
+			out[oi++] = hex[c & 0xf];
+		} else {
+			break;
+		}
+		in++;
+	}
+	out[oi] = '\0';
+}
+
+static int cmd_files_get(const struct kx_client *c, int argc, char **argv)
+{
+	const char *name = NULL;
+	const char *path_arg = NULL;
+	const char *output = NULL;
+	char encoded_path[256 * 3]; /* 256 matches daemon's CONTAINER_FILE_PATH_MAX */
+	char path[400];
+	struct kx_response r;
+	int i;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--path=", 7) == 0)
+			path_arg = argv[i] + 7;
+		else if (strncmp(argv[i], "--output=", 9) == 0)
+			output = argv[i] + 9;
+		else if (name == NULL)
+			name = argv[i];
+		else {
+			fprintf(stderr, "kanxeoctl: unknown files get option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL || path_arg == NULL) {
+		fprintf(stderr, "usage: kanxeoctl files get NAME --path=/some/path [--output=PATH]\n");
+		return 2;
+	}
+
+	url_encode_query_value(path_arg, encoded_path, sizeof(encoded_path));
+	snprintf(path, sizeof(path), "/v1/containers/%s/files?path=%s", name, encoded_path);
+
+	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	if (r.status < 200 || r.status >= 300) {
+		const char *msg = json_str_field(r.json, "error");
+
+		fprintf(stderr, "kanxeoctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed", r.status);
+		kx_response_free(&r);
+		return 1;
+	}
+
+	/* Raw bytes, not JSON -- this is the CLI's one non-JSON response
+	 * body (mirrors the daemon's own single non-JSON response
+	 * primitive, http_write_response(), used only for this endpoint
+	 * and the web dashboard's static assets). Written byte-for-byte,
+	 * same "exact round trip" discipline cmd_backup()'s own --output=
+	 * already established. */
+	if (output != NULL) {
+		FILE *f = fopen(output, "wb");
+
+		if (f == NULL || (r.body != NULL && fwrite(r.body, 1, r.body_len, f) != r.body_len)) {
+			perror(output);
+			if (f != NULL)
+				fclose(f);
+			kx_response_free(&r);
+			return 1;
+		}
+		fclose(f);
+	} else if (r.body != NULL) {
+		fwrite(r.body, 1, r.body_len, stdout);
+	}
+
+	kx_response_free(&r);
+	return 0;
+}
+
+static int cmd_files(const struct kx_client *c, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl files get NAME --path=/some/path [--output=PATH]\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "get") == 0)
+		return cmd_files_get(c, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown files subcommand '%s'\n", sub);
+	return 2;
 }
 
 static int cmd_backup(const struct kx_client *c, int json_mode, int argc, char **argv)
@@ -3003,6 +3118,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_container_stats(client, json_mode, argc, argv);
 	if (strcmp(cmd, "console") == 0)
 		return cmd_console(client, argc, argv);
+	if (strcmp(cmd, "files") == 0)
+		return cmd_files(client, argc, argv);
 	if (strcmp(cmd, "rm") == 0)
 		return cmd_rm(client, json_mode, argc, argv);
 	if (strcmp(cmd, "network") == 0)

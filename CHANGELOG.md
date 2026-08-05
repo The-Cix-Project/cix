@@ -2,6 +2,23 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5; Phase 11 part 6 onward is untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Phase 40 part 1: general container file-read REST endpoint (ADR-0055)
+
+First part of a plan aimed at eventual full self-hosting (rebuilding both the kernel and Kanxeo's own control plane entirely on-box). Designing that surfaced a genuinely missing, independently useful capability: Kanxeo's `files[]` mechanism has always been write-only, host-to-container -- there was no way to read a file back out of a container over the API at all.
+
+#### Added
+- `GET /v1/containers/{name}/files?path=...` (`handle_container_file_read()`, `daemon/src/main.c`): raw bytes (`application/octet-stream`), not JSON. Running containers read via `/proc/<pid>/root<path>` (the same ADR-0013 pattern `dns.c`/`pki.c` already use); exited-but-not-removed containers fall back to the real overlay upperdir, then the image's own read-only rootfs. Path validation reuses `file_path_is_safe()` verbatim, the same function `files[].path` already validates against.
+- `url_query_param()` (`daemon/src/main.c`): this daemon's first query-string parser, deliberately narrow (one key, `%XX`-only decoding).
+- `kanxeoctl files get NAME --path=/some/path [--output=PATH]` -- needed no new HTTP client primitive, `kx_client_request()` already captures raw response bytes regardless of Content-Type.
+- `test/test_container_files.c` extended with real read-while-running, read-after-exit (both the upperdir and image-rootfs fallback paths), 400-on-traversal, and 404 test cases.
+- `docs/api/openapi.yaml`'s new path entry; `docs/adr/0055-container-file-read-endpoint.md`.
+
+#### Fixed
+- The new route's suffix-match used `strcmp()` against the container name's own tail, but that name still carries its `?path=...` query string attached -- every request 404'd by falling through to the generic get-one handler until switched to `strncmp()` against just the fixed-length suffix that matters. Caught by actually running the daemon, not by review.
+
+#### Notes
+- Full clean rebuild (zero warnings), full 18-test daemon-linked regression sweep, all passing -- no regressions from the shared `main.c` route-dispatch changes. Verified through the real, compiled `kanxeoctl` binary end-to-end (not just the test harness's own HTTP client) against a real daemon and a real running container.
+
 ### Phase 39: real, host-side per-container stats -- CPU/memory/disk/network, API-first, plus web dashboard graphs (ADR-0054)
 
 Direct user request: out-of-the-box monitoring, per container, pulled entirely from the host side (no in-container agent), exposed through the REST API first, then graphed in the web dashboard.
