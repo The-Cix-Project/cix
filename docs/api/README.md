@@ -16,6 +16,8 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | POST | `/system/restore` | Write a previously-backed-up bundle back to its real state files |
 | GET | `/system/site` | This install's declared identity (`instance_name`/`site_name`/`domain_suffix`) |
 | PUT | `/system/site` | Set this install's site identity |
+| GET | `/system/daemon-config` | kanxeod's own listen port, HTTP/HTTPS exposure, and which network is currently its management one |
+| PUT | `/system/daemon-config` | Live-reconfigure the listen port, HTTP/HTTPS listeners, or repoint the management network -- no restart |
 | GET | `/containers` | List all containers this daemon knows about |
 | POST | `/containers` | Create and start a container |
 | GET | `/containers/{name}` | Inspect one container |
@@ -34,9 +36,9 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | GET | `/networks` | List all networks this daemon knows about |
 | POST | `/networks` | Create a network (a real bridge, persisted across restarts) |
 | GET | `/networks/{name}` | Inspect one network |
-| DELETE | `/networks/{name}` | Remove a network (refused if any container is still attached) |
+| DELETE | `/networks/{name}` | Remove a network (refused if any container is still attached, or if it's the management network) |
 | POST | `/networks/{name}/interfaces` | Attach a real host network interface to this network's bridge |
-| DELETE | `/networks/{name}/interfaces/{ifname}` | Detach a previously-attached interface |
+| DELETE | `/networks/{name}/interfaces/{ifname}` | Detach a previously-attached interface (refused for the management network) |
 | GET | `/images` | List every image this daemon knows about |
 | POST | `/images` | Create an empty image (runtime pre-seeded, ready for `pkg install`) |
 | GET | `/images/{name}` | Inspect one image |
@@ -100,6 +102,38 @@ POST /v1/networks/internal/interfaces
 ```
 
 Enslaves a real, currently-assignable host interface (`GET /devices`'s own `"net:<ifname>"` entries — not already moved into a container's netns, not already attached anywhere via this endpoint) directly into this network's bridge — the "physical ethernet on a host-managed switch" mechanism, distinct from `interfaces` on `POST /containers` (which moves a NIC straight into one container's own netns instead). `vlan_id` 0 or omitted enslaves `eth1` itself, untagged; a nonzero `vlan_id` instead creates and enslaves an 802.1q `eth1.<vlan_id>` sub-interface, leaving `eth1` free to attach (with a different `vlan_id`) to other networks too. `DELETE /v1/networks/internal/interfaces/eth1` detaches it — releasing the interface from the bridge, or deleting the VLAN sub-interface, whichever this call originally created.
+
+## The management network and kanxeod's own listeners
+
+At install time (`kanxeo-install`'s `--ip=`/`--prefix=`/`--gateway=`/`--interface=` flags — see [`installing.md`](../guides/installing.md)), kanxeod bootstraps a real, ordinary network named `mgmt`: the given physical interface is attached to it exactly like `POST /networks/{name}/interfaces` above, and its gateway address (`--ip=`/`--prefix=`) becomes kanxeod's own bind address. This is a deliberate design choice (Part 0.5) — the host's own management IP lives on a bridge device via the same `network_def` mechanism every other network already uses, visible at `GET /networks`, not a separate GRUB-only address invisible to the API. (`--gateway=` means something different and unrelated: the box's own *upstream* default route, i.e. the home router this box's outbound traffic egresses through — not to be confused with `mgmt`'s own `gateway` field, which is kanxeod's bind address.)
+
+Exactly one network has `is_management: true` at a time (`Network`'s own field, in every `GET /networks` response). Because deleting or detaching from that network's bridge would sever the connection you're managing the box through, `DELETE /networks/{name}` and `DELETE /networks/{name}/interfaces/{ifname}` both unconditionally refuse (`409`) while `is_management` is set — there is deliberately no override/force flag on either generic endpoint. Repointing management to a different network first is the only way past this:
+
+```
+GET /v1/system/daemon-config
+```
+
+```json
+{"port": 7620, "bind": "192.168.50.10", "management_network": "mgmt", "http_enabled": true, "https_enabled": false, "https_port": 8443}
+```
+
+```
+PUT /v1/system/daemon-config
+{"management_network": "lan1"}
+```
+
+Resolves `lan1`'s own existing gateway address (it must already have one — `has_gateway: true`, `400` otherwise) and performs a live listen-socket rebind to it — the new socket is created, bound, and added to `epoll` *before* the old one is torn down, so a failure rolls back to the still-working previous listener rather than leaving a gap. Only once the rebind succeeds does `is_management` actually move from the old network to `lan1`. This works identically whether `lan1` has a physical NIC attached directly or gets its connectivity entirely from a container (e.g. a WiFi-AP container bridging a passed-through wireless radio) — kanxeod only ever cares about the network's own gateway address, never how it's fed.
+
+`port`, `http_enabled`, `https_enabled`, and `https_port` are independently settable in the same request or separately:
+
+```
+PUT /v1/system/daemon-config
+{"https_enabled": true}
+```
+
+Starts a second, independent listener on `https_port` (default `8443`), reusing the already-issued PKI `"host"` leaf certificate (see [PKI](#pki-a-ca-chain-and-issued-leaf-certificates) below) — `500` if no root CA has been bootstrapped yet (`POST /pki/ca`), since there's no certificate to serve TLS with. `http_enabled` and `https_enabled` can each be toggled off, but never both in the same request (`400`) — kanxeod must always have at least one live listener, since (installed) it runs as real PID 1 with no "restart" to fall back on. Every change here — port, network repoint, HTTP/HTTPS toggle — is live immediately and also persisted, so it survives a real reboot.
+
+Since kanxeod is PID 1 on an installed system, there is no way to reach it again over the network if it's ever pointed at an address you can't get to — double-check reachability of a new `management_network` (or a firewalled `https_port`) before relying on it as your only way in; physical console access (`docs/guides/installing.md`'s "Console login") is always the fallback.
 
 ## Creating a container
 

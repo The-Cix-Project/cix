@@ -37,10 +37,12 @@ sudo build/mkinstalleriso build/iso_stage build/kanxeo-install build/bzImage \
      /tmp/kanxeod-root.squashfs \
      image/keys/kanxeo-signing.key image/keys/kanxeo-signing.crt image/keys/kanxeo-signing.cer \
      build/kanxeo-install.iso \
-     "--disk=/dev/CHANGEME --ip=CHANGEME --prefix=24 --gateway=CHANGEME --auto-partition"
+     "--disk=/dev/CHANGEME --ip=CHANGEME --prefix=24 --gateway=CHANGEME --interface=CHANGEME --auto-partition"
 ```
 
-This produces `build/kanxeo-install.iso` — attach it as a CD-ROM/optical drive to a VM (or a real machine) and boot from it. The placeholder args are deliberate: at the GRUB boot menu (it waits 10s before auto-booting, giving you a real chance to interrupt it), press `e` to edit the boot entry, replace `/dev/CHANGEME`/`CHANGEME`/`CHANGEME` with the real target disk, IP address, and gateway for this install, then `Ctrl-X` to boot. If you forget, `kanxeo-install`'s own disk check fails safely — it refuses to touch a disk that doesn't exist rather than silently doing the wrong thing.
+This produces `build/kanxeo-install.iso` — attach it as a CD-ROM/optical drive to a VM (or a real machine) and boot from it. The placeholder args are deliberate: at the GRUB boot menu (it waits 10s before auto-booting, giving you a real chance to interrupt it), press `e` to edit the boot entry, replace `/dev/CHANGEME`/`CHANGEME`/`CHANGEME`/`CHANGEME` with the real target disk, IP address, gateway, and physical interface name (e.g. `eth0` — check `ls /sys/class/net` from a rescue shell if you're not sure which one is which) for this install, then `Ctrl-X` to boot. If you forget, `kanxeo-install`'s own disk check fails safely — it refuses to touch a disk that doesn't exist rather than silently doing the wrong thing.
+
+**Why an interface name at all**: this is a one-time bootstrap value only, used to attach a physical NIC to the `mgmt` network `kanxeod` binds to at first boot — it does *not* need to be perfect. If it's wrong, or your NIC layout changes later, the management network is an ordinary, API-managed `network_def` afterward (`GET /v1/networks`) and can be repointed to a different interface without reinstalling.
 
 **Target disk**: currently only **VirtIO Block** disks work (`/dev/vda`) — the kernel doesn't have the SCSI-disk driver needed for SATA/IDE/VirtIO-SCSI-attached disks (only the CD-ROM driver, for the installer media itself). On Proxmox, attach the target disk with Bus/Device: `VirtIO Block`.
 
@@ -76,6 +78,22 @@ This produces `build/kanxeo-install.iso` — attach it as a CD-ROM/optical drive
 It then formats, writes the system, and reboots into a running `kanxeod` at the IP you gave it — reachable at that address directly (`kanxeod` binds to the exact IP given via `--ip=`, not just loopback).
 
 **Console login**: the installed system drops straight into an interactive `kanxeoctl` shell on both the video console and the serial console once boot completes — no username, no password (this platform has no authentication anywhere yet; physical console access is already at least as privileged as the unauthenticated network API). Typing `exit`/`quit`/Ctrl-D ends the session and a fresh one starts automatically a couple of seconds later.
+
+## Changing the management network, port, or enabling HTTPS after install
+
+The `--ip=`/`--gateway=`/`--interface=` values above are a one-time bootstrap only — everything they set up is a real, ordinary, API-managed network named `mgmt` (`GET /v1/networks`), and `kanxeod`'s own listen port/HTTP/HTTPS exposure is a small, dedicated, live-reconfigurable resource, `GET`/`PUT /v1/system/daemon-config` (see [`docs/api/README.md`](../api/README.md#the-management-network-and-kanxeods-own-listeners) for the full contract). No CLI or web dashboard support exists for this resource yet — reach it with `curl` directly:
+
+```sh
+curl http://<install-ip>:7620/v1/system/daemon-config
+curl -X PUT http://<install-ip>:7620/v1/system/daemon-config \
+     -d '{"port": 8080}'
+curl -X PUT http://<install-ip>:7620/v1/system/daemon-config \
+     -d '{"https_enabled": true}'
+curl -X PUT http://<install-ip>:7620/v1/system/daemon-config \
+     -d '{"management_network": "lan1"}'
+```
+
+Every change here is applied live (no reboot, no restart — `kanxeod` runs as real PID 1 on an installed system, so there is no restart to fall back on) and persisted, so it survives a real one too. Enabling HTTPS needs a bootstrapped PKI root CA first (`POST /v1/pki/ca`) — it reuses the already-issued `"host"` leaf certificate rather than a separate cert. Repointing `management_network` needs the target network to already have a gateway address (`has_gateway: true`, e.g. created via `POST /v1/networks` with a `gateway` field, or another network attached to a physical NIC via `POST /v1/networks/{name}/interfaces`) — double-check you can actually reach the new address before relying on it, since a mistake here has no remote undo, only physical console access (above).
 
 ## Secure Boot
 

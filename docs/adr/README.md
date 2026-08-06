@@ -62,3 +62,5 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0055](0055-container-file-read-endpoint.md) | Container file-read REST endpoint: raw bytes, running-vs-exited path resolution | Accepted |
 | [0056](0056-hostbuild-artifact-mechanism.md) | Hostbuild artifact mechanism: a second pkg-install mode that harvests a standalone artifact instead of merging into an image | Accepted |
 | [0057](0057-self-hosted-toolchain-and-control-plane-rebuild.md) | Self-hosted toolchain and control-plane rebuild: tcc.recipe, kanxeo.recipe, server-side mkbootroot | Accepted |
+| [0058](0058-host-management-network-unification.md) | The host's own management address becomes a real, API-managed network | Accepted |
+| [0059](0059-openssl-https-listener.md) | OpenSSL-backed HTTPS listener, reusing the PKI host cert, via a small TLS side-table | Accepted |

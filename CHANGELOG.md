@@ -2,6 +2,28 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 0.5: host management networking unified into a real, API-managed network, plus a live-reconfigurable daemon port and an OpenSSL-backed HTTPS listener (ADR-0058, ADR-0059)
+
+First step of the bare-metal-readiness effort. Real-world use of a freshly rebuilt/boot-tested installer ISO on the user's own test VM surfaced a genuine design gap: `kanxeod`'s own management IP was a one-shot, GRUB-boot-parameter-driven `rtnetlink` call straight against the physical NIC, invisible to `GET /networks` and un-repointable without a reinstall.
+
+#### Added
+- `kanxeo-install.c`: new `--interface=<name>` flag, threaded into `net.conf`. `main()` bootstraps a reserved `mgmt` network at first boot via the existing `network_create()`/`network_attach_interface()` mechanism, replacing `apply_static_ip()` (removed from `boot_init()`, which stays purely about mounts).
+- `network.h`/`network.c`: `network_def.is_management` field, `network_set_management()`/`network_find_management()`. `network_delete()`/`network_detach_interface()` unconditionally refuse (`409`, `NETWORK_ERR_IS_MANAGEMENT`) while set on the target network -- no override/force flag.
+- New `daemon_config` module + `GET`/`PUT /v1/system/daemon-config`: listen port, HTTP/HTTPS toggles, and the management-network repoint operation -- each a live, in-process listen-socket rebind (new socket bound + added to `epoll` before the old one is torn down), persisted only once the real change succeeds.
+- `daemon/src/tlsconn.c`/`tlsconn.h`: a small, additive fd -> `SSL*` side table, letting `http_write_response()`, the WebSocket frame sender, and the `main.c` read loop become TLS-aware without threading TLS through this daemon's ~100 request handlers.
+- `daemon/src/main.c`: a second, independent HTTPS listener (`CONN_LISTENER_TLS`), reusing the PKI-issued `"host"` leaf certificate. Non-blocking `SSL_accept()` driven step-by-step from the existing `epoll` loop (`EPOLLOUT` widened/narrowed on `WANT_WRITE`); an explicit `SSL_pending()` re-check-and-loop after every read handles OpenSSL's own internal buffering correctly.
+- `Makefile`: `-lssl -lcrypto` linked into `kanxeod`.
+- `docs/adr/0058-host-management-network-unification.md`, `docs/adr/0059-openssl-https-listener.md`.
+
+#### Fixed
+- `g_tls_conns[]`'s BSS zero-init meant every slot's `.fd` started at `0`, not the intended `-1` "free" sentinel -- `tls_register()` silently registered nothing, and TLS connections silently fell back to raw, undecrypted wire bytes. Fixed with an explicit `tls_init()` setting every slot to `-1`, called once early in `main()`.
+- `rebind_https_listener()` was missing the no-op short-circuit its HTTP counterpart already had, causing a spurious `EADDRINUSE` on any `daemon-config` PUT touching an unrelated field (e.g. only `http_enabled`) while HTTPS was already bound to the same address:port.
+
+#### Notes
+- Verified: full daemon-linked regression suite (24 binaries) green; a real manual end-to-end HTTPS check (`curl`/`openssl s_client` against the PKI host cert, live HTTP/HTTPS independent toggling); the definitive `test_installer` QEMU run, including a second, fully independent reboot within the same test, confirming `mgmt`/`daemon_config`/TLS-listener state persists correctly across a real reboot.
+- No CLI or web dashboard surface exists for `daemon-config` yet -- a real, tracked gap, not a violation of the API-First Mandate (which only requires the REST endpoint to exist first).
+- Parts 1-5 of the bare-metal-readiness plan (`cpu.max`, `cpuset`, kernel modules, disk quotas, ISO self-build) not started. A separate, previously reported dashboard-reachability bug (unrelated to this phase) remains open.
+
 ### Phase 40 part 3: `tcc.recipe`, `kanxeo.recipe`, server-side `mkbootroot` assembly -- the self-hosting plan closes (ADR-0057)
 
 Third and final part: rebuilding `kanxeod`/`kanxeoctl`/`web` from inside Kanxeo's own container+recipe mechanism, with TCC (never GCC, per this project's own Immutable Maxim) doing the building.
