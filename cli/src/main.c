@@ -128,7 +128,12 @@ static void print_usage(FILE *out)
 	        "  site show  -- this install's own instance_name/site_name/domain_suffix\n"
 	        "               (ADR-0046); convenience for identification + suggesting FQDNs,\n"
 	        "               never enforced\n"
-	        "  site set [--instance-name=NAME] [--site-name=NAME] [--domain-suffix=NAME]\n");
+	        "  site set [--instance-name=NAME] [--site-name=NAME] [--domain-suffix=NAME]\n"
+	        "  daemon-config show  -- kanxeod's own listen port, HTTP/HTTPS exposure, and\n"
+	        "               which network is currently its management one\n"
+	        "  daemon-config set [--port=N] [--https-port=N] [--enable-http] [--disable-http]\n"
+	        "               [--enable-https] [--disable-https] [--management-network=NAME]\n"
+	        "               -- live, no-restart; only the fields given are changed\n");
 }
 
 static const char *json_str_field(const struct json_value *obj, const char *key)
@@ -1350,6 +1355,136 @@ static int cmd_site(const struct kx_client *c, int json_mode, int argc, char **a
 		return cmd_site_set(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "kanxeoctl: unknown site subcommand '%s'\n", sub);
+	return 2;
+}
+
+static void fmt_daemon_config(const struct json_value *v)
+{
+	const char *bind = json_str_field(v, "bind");
+	const char *mgmt = json_str_field(v, "management_network");
+	const struct json_value *jhttp = json_object_get(v, "http_enabled");
+	const struct json_value *jhttps = json_object_get(v, "https_enabled");
+
+	printf("port=%ld bind=%s management_network=%s http_enabled=%s "
+	       "https_enabled=%s https_port=%ld\n",
+	       (long)json_as_number(json_object_get(v, "port")), bind != NULL ? bind : "?",
+	       mgmt != NULL ? mgmt : "(none)",
+	       (jhttp != NULL && jhttp->type == JSON_BOOL && jhttp->u.boolean) ? "true" : "false",
+	       (jhttps != NULL && jhttps->type == JSON_BOOL && jhttps->u.boolean) ? "true" : "false",
+	       (long)json_as_number(json_object_get(v, "https_port")));
+}
+
+static int cmd_daemon_config_show(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/daemon-config", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_daemon_config);
+}
+
+/*
+ * Unlike PUT /v1/system/site, the daemon-config PUT is a genuine
+ * partial update server-side (handle_daemon_config_put(), daemon/src/
+ * main.c) -- fields not present in the body are left exactly as they
+ * are. So this sends only what the operator actually gave on the
+ * command line, no fetch-then-merge dance needed.
+ */
+static int cmd_daemon_config_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *port = NULL;
+	const char *https_port = NULL;
+	const char *management_network = NULL;
+	int want_http = -1;  /* -1: untouched, 0: disable, 1: enable */
+	int want_https = -1;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--port=", 7) == 0)
+			port = argv[i] + 7;
+		else if (strncmp(argv[i], "--https-port=", 13) == 0)
+			https_port = argv[i] + 13;
+		else if (strncmp(argv[i], "--management-network=", 21) == 0)
+			management_network = argv[i] + 21;
+		else if (strcmp(argv[i], "--enable-http") == 0)
+			want_http = 1;
+		else if (strcmp(argv[i], "--disable-http") == 0)
+			want_http = 0;
+		else if (strcmp(argv[i], "--enable-https") == 0)
+			want_https = 1;
+		else if (strcmp(argv[i], "--disable-https") == 0)
+			want_https = 0;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown daemon-config set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (port == NULL && https_port == NULL && management_network == NULL &&
+	    want_http == -1 && want_https == -1) {
+		fprintf(stderr,
+		        "usage: kanxeoctl daemon-config set [--port=N] [--https-port=N] "
+		        "[--enable-http] [--disable-http] [--enable-https] [--disable-https] "
+		        "[--management-network=NAME]\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	if (port != NULL) {
+		jw_key(&w, "port");
+		jw_int(&w, atol(port));
+	}
+	if (https_port != NULL) {
+		jw_key(&w, "https_port");
+		jw_int(&w, atol(https_port));
+	}
+	if (management_network != NULL) {
+		jw_key(&w, "management_network");
+		jw_str(&w, management_network);
+	}
+	if (want_http != -1) {
+		jw_key(&w, "http_enabled");
+		jw_bool(&w, want_http);
+	}
+	if (want_https != -1) {
+		jw_key(&w, "https_enabled");
+		jw_bool(&w, want_https);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "PUT", "/v1/system/daemon-config", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_daemon_config);
+}
+
+static int cmd_daemon_config(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl daemon-config show\n"
+		                "       kanxeoctl daemon-config set [--port=N] [--https-port=N] "
+		                "[--enable-http] [--disable-http] [--enable-https] [--disable-https] "
+		                "[--management-network=NAME]\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "show") == 0)
+		return cmd_daemon_config_show(c, json_mode);
+	if (strcmp(sub, "set") == 0)
+		return cmd_daemon_config_set(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown daemon-config subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -3253,6 +3388,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_restore(client, json_mode, argc, argv);
 	if (strcmp(cmd, "site") == 0)
 		return cmd_site(client, json_mode, argc, argv);
+	if (strcmp(cmd, "daemon-config") == 0)
+		return cmd_daemon_config(client, json_mode, argc, argv);
 	if (strcmp(cmd, "ps") == 0)
 		return cmd_ps(client, json_mode);
 	if (strcmp(cmd, "run") == 0)

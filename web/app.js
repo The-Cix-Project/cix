@@ -28,6 +28,7 @@ const cache = {
 	pkgRecipes: [],
 	pkgList: [],
 	siteConfig: null,
+	daemonConfig: null,
 };
 
 const healthBadge = document.getElementById("health");
@@ -256,6 +257,7 @@ const CATEGORY_VIEWS = {
 	packages: "view-packages",
 	recipes: "view-recipes",
 	site: "view-site",
+	"daemon-config": "view-daemon-config",
 	backup: "view-backup",
 	restore: "view-restore",
 	update: "view-update",
@@ -645,6 +647,7 @@ function renderTree() {
 						{ label: "Backup", hash: "backup", icon: "backup" },
 						{ label: "Restore", hash: "restore", icon: "backup" },
 						{ label: "Site", hash: "site", icon: "backup" },
+						{ label: "Daemon", hash: "daemon-config", icon: "system" },
 					],
 				},
 				{ label: "Devices", hash: "devices", icon: "devices" },
@@ -3372,6 +3375,98 @@ document.getElementById("sys-site-form").addEventListener("submit", async (event
 	}
 });
 
+let daemonConfigDirty = false;
+
+/* Rebuilds the management-network <select> from cache.networks -- only
+ * has_gateway networks are valid repoint targets (network_set_management()
+ * refuses otherwise, see daemon/src/network.c), but the currently-active
+ * one is always included even if that were somehow false, so the form
+ * never silently shows a value that isn't actually selected. */
+function populateManagementNetworkSelect(currentName) {
+	const select = document.getElementById("dcf-management-network");
+	const names = cache.networks
+		.filter((n) => n.has_gateway || n.name === currentName)
+		.map((n) => n.name);
+
+	if (currentName && !names.includes(currentName))
+		names.push(currentName);
+
+	select.textContent = "";
+	for (const name of names) {
+		const option = document.createElement("option");
+
+		option.value = name;
+		option.textContent = name;
+		select.appendChild(option);
+	}
+	select.value = currentName || "";
+}
+
+async function refreshDaemonConfig() {
+	try {
+		const dc = await apiRequest("GET", "/v1/system/daemon-config");
+
+		cache.daemonConfig = dc;
+		populateManagementNetworkSelect(dc.management_network);
+		if (!daemonConfigDirty) {
+			document.getElementById("dcf-port").value = dc.port;
+			document.getElementById("dcf-https-port").value = dc.https_port;
+			document.getElementById("dcf-http-enabled").checked = dc.http_enabled;
+			document.getElementById("dcf-https-enabled").checked = dc.https_enabled;
+		}
+		document.getElementById("dcf-bind-hint").textContent =
+			"Currently bound to " + dc.bind + ".";
+	} catch (e) {
+		/* Best-effort -- the form just stays at whatever was last shown. */
+	}
+}
+
+for (const id of ["dcf-port", "dcf-https-port", "dcf-http-enabled", "dcf-https-enabled",
+                   "dcf-management-network"]) {
+	document.getElementById(id).addEventListener("input", () => {
+		daemonConfigDirty = true;
+	});
+}
+
+document.getElementById("sys-daemon-config-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const body = {
+		port: parseInt(document.getElementById("dcf-port").value, 10),
+		https_port: parseInt(document.getElementById("dcf-https-port").value, 10),
+		http_enabled: document.getElementById("dcf-http-enabled").checked,
+		https_enabled: document.getElementById("dcf-https-enabled").checked,
+		management_network: document.getElementById("dcf-management-network").value,
+	};
+
+	/* This dashboard's own fetch() calls are relative to the page's own
+	 * origin (host:port it was loaded from) -- changing the plain-HTTP
+	 * port, or repointing the management network to a different
+	 * address, disconnects this exact page the moment it takes effect.
+	 * Confirmed explicitly here, same as the reboot/shutdown buttons'
+	 * own confirm() guard, since there's no way back short of
+	 * navigating to the new address by hand. */
+	const cur = cache.daemonConfig;
+	const reconnectNeeded = cur &&
+		(body.port !== cur.port || body.management_network !== cur.management_network);
+
+	if (reconnectNeeded &&
+	    !confirm("This will change the address/port this dashboard is served on -- " +
+	             "this page will lose its connection once it takes effect. You'll need to " +
+	             "reload at the new address. Continue?"))
+		return;
+
+	try {
+		await apiRequest("PUT", "/v1/system/daemon-config", body);
+		clearStatus();
+		showStatus("Daemon config saved", false);
+		daemonConfigDirty = false;
+		await refreshDaemonConfig();
+	} catch (e) {
+		showStatus("Failed to save daemon config: " + e.message, true);
+	}
+});
+
 document.getElementById("sys-backup").addEventListener("click", async () => {
 	try {
 		const text = await apiRequestRaw("GET", "/v1/system/backup");
@@ -3477,6 +3572,7 @@ async function poll() {
 		await refreshPkgRecipes();
 		await refreshPkgList();
 		await refreshSiteConfig();
+		await refreshDaemonConfig();
 	} catch (e) {
 		showStatus("Poll failed: " + e.message, true);
 	}

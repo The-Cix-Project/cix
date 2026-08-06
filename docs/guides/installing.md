@@ -81,7 +81,16 @@ It then formats, writes the system, and reboots into a running `kanxeod` at the 
 
 ## Changing the management network, port, or enabling HTTPS after install
 
-The `--ip=`/`--gateway=`/`--interface=` values above are a one-time bootstrap only — everything they set up is a real, ordinary, API-managed network named `mgmt` (`GET /v1/networks`), and `kanxeod`'s own listen port/HTTP/HTTPS exposure is a small, dedicated, live-reconfigurable resource, `GET`/`PUT /v1/system/daemon-config` (see [`docs/api/README.md`](../api/README.md#the-management-network-and-kanxeods-own-listeners) for the full contract). No CLI or web dashboard support exists for this resource yet — reach it with `curl` directly:
+The `--ip=`/`--gateway=`/`--interface=` values above are a one-time bootstrap only — everything they set up is a real, ordinary, API-managed network named `mgmt` (`GET /v1/networks`), and `kanxeod`'s own listen port/HTTP/HTTPS exposure is a small, dedicated, live-reconfigurable resource, `GET`/`PUT /v1/system/daemon-config` (see [`docs/api/README.md`](../api/README.md#the-management-network-and-kanxeods-own-listeners) for the full contract). Also reachable from the web dashboard's System > Daemon page, or directly with `kanxeoctl daemon-config` (see [`docs/guides/cli-reference.md`](cli-reference.md)):
+
+```sh
+kanxeoctl --host=<install-ip> daemon-config show
+kanxeoctl --host=<install-ip> daemon-config set --port=8080
+kanxeoctl --host=<install-ip> daemon-config set --enable-https
+kanxeoctl --host=<install-ip> daemon-config set --management-network=lan1
+```
+
+Or, equivalently, straight `curl` (every `kanxeoctl` subcommand is exactly one HTTP call, per the API-First Mandate):
 
 ```sh
 curl http://<install-ip>:7620/v1/system/daemon-config

@@ -30,6 +30,7 @@ System
     Backup
     Restore
     Site
+    Daemon
   Devices
   Update
 ```
@@ -53,6 +54,7 @@ Six tabs, Proxmox-style: **Summary**, **Hardware**, **Options**, **Stats**, **Co
 - **Devices** — four tabs grouped by bus: USB, PCI, Network, GPU.
 - **Package detail** — two tabs: **Recipe** (the raw `.recipe` text, viewable and editable — resubmitting goes through the same upsert `POST /pkg/recipes` every other recipe update uses) and **Installed** (every image this package is tracked against, independently).
 - **Network detail** — attached interfaces (attach/detach directly from here) and IP allocation.
+- **System > Daemon** — `kanxeod`'s own listen port, HTTP/HTTPS toggles, and which network it's currently bound to (Part 0.5). The management-network dropdown only lists networks with a gateway address (repointing anywhere else is refused server-side). Since the dashboard's own requests are relative to the page it was loaded from, saving a change to the port or the management network disconnects the page the moment it takes effect — confirmed with a dialog before submitting either.
 
 ## What's deliberately not here
 

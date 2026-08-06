@@ -2,6 +2,21 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 0.5 follow-up: `daemon-config` CLI + web dashboard
+
+Closes the CLI/web gap Part 0.5 itself flagged when it shipped -- every other daemon capability in this project ships CLI+web alongside its REST endpoint.
+
+#### Added
+- `cli/src/main.c`: `kanxeoctl daemon-config show`/`daemon-config set [--port=N] [--https-port=N] [--enable-http] [--disable-http] [--enable-https] [--disable-https] [--management-network=NAME]`. Unlike `site set`, the PUT is a genuine server-side partial update, so only the fields actually given are sent -- no fetch-then-merge needed.
+- `web/index.html`/`web/app.js`: new "Daemon" leaf under System > Backup, `view-daemon-config` with port/https-port/enabled-toggle/management-network fields, refreshed on the same poll-loop + dirty-flag pattern `refreshSiteConfig()` already established. The management-network `<select>` only offers `has_gateway` networks. Changing the port or management network shows a `confirm()` first, since this dashboard's own requests are relative to the page's own origin and either change disconnects the page the instant it takes effect.
+- `docs/guides/cli-reference.md`/`docs/guides/web-dashboard.md`/`docs/guides/installing.md`: document the new CLI subcommand and dashboard panel.
+
+#### Fixed
+- CLI's `--management-network=` flag parsing used an off-by-one prefix length (22 instead of the real 21 characters), so the flag was never recognized at all -- found by running the command against a live daemon and getting "unknown option" instead of the expected 404 for a bogus network name.
+
+#### Notes
+- Verified: `kanxeoctl daemon-config show`/`set` against a real daemon, including a full live repoint to a real network confirming the daemon actually rebinds, and the `--enable-https`-with-no-PKI 500 path. Dashboard verified via `node --check`, an HTML tag-balance check, and confirming a real daemon serves the edited files with `GET /v1/system/daemon-config` reachable underneath -- no real browser click-through was possible in this sandboxed environment (no headless browser tooling available), so a genuine visual/interactive check is still owed.
+
 ### Part 1: `cpu.max` API/CLI wiring
 
 The mechanism already existed end to end in the runtime library (`struct cgroup_limits.cpu_max`, written by `src/cgroup.c`) but was hardcoded `NULL` in the daemon, with no API/CLI surface at all.

@@ -545,6 +545,42 @@
 			</form>
 		</section>
 
+		<section class="view" id="view-daemon-config" hidden>
+			<h2>Daemon</h2>
+			<p class="hint">
+				kanxeod's own listen port, HTTP/HTTPS exposure, and which network
+				it's currently bound to (Part 0.5). Changes apply live -- no
+				restart -- and persist across a reboot. Repointing the
+				management network only works to a network that already has a
+				gateway address; double-check you can actually reach the new
+				address before saving, since a mistake here has no remote undo.
+			</p>
+			<form id="sys-daemon-config-form">
+				<label>
+					Port
+					<input type="number" id="dcf-port" min="1" max="65535" required>
+				</label>
+				<label>
+					HTTPS port
+					<input type="number" id="dcf-https-port" min="1" max="65535" required>
+				</label>
+				<label class="checkbox">
+					<input type="checkbox" id="dcf-http-enabled">
+					HTTP enabled
+				</label>
+				<label class="checkbox">
+					<input type="checkbox" id="dcf-https-enabled">
+					HTTPS enabled (needs a bootstrapped PKI root CA)
+				</label>
+				<label>
+					Management network
+					<select id="dcf-management-network"></select>
+				</label>
+				<button type="submit">Save</button>
+			</form>
+			<p class="hint" id="dcf-bind-hint"></p>
+		</section>
+
 		<section class="view" id="view-backup" hidden>
 			<h2>Backup</h2>
 			<p class="hint">Platform configuration state (container defs, networks, DNS records, pkg install

@@ -25,6 +25,8 @@ kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `restore --input=PATH` | Write a previously-saved bundle back; does not reboot or hot-reload |
 | `site show` | This install's `instance_name`/`site_name`/`domain_suffix` |
 | `site set [--instance-name=NAME] [--site-name=NAME] [--domain-suffix=NAME]` | Set them |
+| `daemon-config show` | `kanxeod`'s own listen port, HTTP/HTTPS exposure, and which network is currently its management one |
+| `daemon-config set [--port=N] [--https-port=N] [--enable-http] [--disable-http] [--enable-https] [--disable-https] [--management-network=NAME]` | Live, no-restart change — only the fields given are touched |
 
 See [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) and [`docs/guides/staying-updated.md`](staying-updated.md) for `update`'s real operator runbooks, not just the flag syntax.
 
