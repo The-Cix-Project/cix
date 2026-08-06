@@ -97,11 +97,14 @@ int main(int argc, char **argv)
 	const char *web_dir;
 	const char *out_path;
 	const char *firmware_dir;
+	const char *modules_dir;
+	const char *kmod_bin_dir;
 
-	if (argc != 7) {
+	if (argc != 9) {
 		fprintf(stderr,
 		        "usage: %s <staging-dir> <build/kanxeod> <build/kanxeoctl> <web-dir> "
-		        "<out.squashfs> <amdgpu-firmware-dir-or-\"\">\n",
+		        "<out.squashfs> <amdgpu-firmware-dir-or-\"\"> <modules-dir-or-\"\"> "
+		        "<kmod-bin-dir-or-\"\">\n",
 		        argv[0]);
 		return 2;
 	}
@@ -111,6 +114,21 @@ int main(int argc, char **argv)
 	web_dir = argv[4];
 	out_path = argv[5];
 	firmware_dir = argv[6];
+	/*
+	 * Part 3 (bare-metal-readiness plan): modules_dir is a real kernel
+	 * hostbuild's own harvested "lib/modules" directory (pkg/recipes/
+	 * kernel.recipe's pkg_install(), INSTALL_MOD_PATH= + a real depmod
+	 * already run there) -- containing exactly one <kernelrelease>
+	 * subdirectory, copied wholesale below. kmod_bin_dir is a real
+	 * kmod build's own "usr/bin" (pkg/recipes/kmod.recipe, e.g.
+	 * extracted from wherever it was pkg-installed) -- modprobe/depmod/
+	 * insmod/lsmod/modinfo/rmmod, all symlinks to one real "kmod"
+	 * binary. Both default to "" (skip), the exact same tolerant-
+	 * default shape firmware_dir above already established -- a plain
+	 * QEMU/CI boot test needs neither.
+	 */
+	modules_dir = argv[7];
+	kmod_bin_dir = argv[8];
 
 	if (ensure_dir(image_root) != 0)
 		return 1;
@@ -313,6 +331,59 @@ int main(int argc, char **argv)
 			return 1;
 		}
 		if (test_image_fixture_copy_dir_files(firmware_dir, fw_dst) != 0)
+			return 1;
+	}
+
+	/* Same "empty means skip, non-empty is a real explicit request and
+	 * fatal if it fails" posture as firmware_dir above -- an operator
+	 * who asked for module support and didn't get it should find out
+	 * now, not at first real modprobe on the installed system.
+	 * test_image_fixture_copy_dir_recursive() (real `cp -a`) is used
+	 * here, not the flat copy_dir_files() above, since modules_dir
+	 * nests by kernel/drivers/... -- its own contract requires the
+	 * destination to not already exist, so unlike firmware_dir's own
+	 * lib/firmware/amdgpu (pre-created via ensure_dir_under so a
+	 * second run can add more files into the same directory), only
+	 * "lib" itself is pre-created here; "lib/modules" is created BY
+	 * the copy, fresh, every run (mksquashfs's own -noappend already
+	 * means every run starts from a clean image_root regardless). */
+	if (modules_dir[0] != '\0') {
+		char modules_dst[PATH_MAX];
+
+		if (ensure_dir_under(image_root, "lib") != 0)
+			return 1;
+		if (snprintf(modules_dst, sizeof(modules_dst), "%s/lib/modules", image_root) >=
+		    (int)sizeof(modules_dst)) {
+			fprintf(stderr, "path too long: %s/lib/modules\n", image_root);
+			return 1;
+		}
+		if (test_image_fixture_copy_dir_recursive(modules_dir, modules_dst) != 0)
+			return 1;
+	}
+
+	/* modprobe/depmod/insmod/lsmod/modinfo/rmmod -- all symlinks to one
+	 * real "kmod" binary (pkg/recipes/kmod.recipe). copy_dir_files()'s
+	 * own stat() (not lstat()) dereferences each symlink and copies the
+	 * real bytes it points at -- a real, working "kmod" binary landing
+	 * at each of the 6 tool names instead of a preserved symlink, a few
+	 * extra hundred KB on disk in exchange for needing no new symlink-
+	 * aware copy primitive. modprobe invoked under any of these names
+	 * still works correctly either way -- kmod's own tools dispatch on
+	 * argv[0], which is identical regardless of whether that path was
+	 * reached via a symlink or a real file. usr/bin already exists
+	 * (kanxeod/kanxeoctl staged there above), so the flat copy merges
+	 * into it rather than needing test_image_fixture_copy_dir_recursive()'s
+	 * own "destination must not exist" contract.
+	 */
+	if (kmod_bin_dir[0] != '\0') {
+		char kmod_dst[PATH_MAX];
+
+		if (snprintf(kmod_dst, sizeof(kmod_dst), "%s/usr/bin", image_root) >=
+		    (int)sizeof(kmod_dst)) {
+			fprintf(stderr, "path too long: %s/usr/bin\n", image_root);
+			return 1;
+		}
+		if (test_image_fixture_copy_dir_files(kmod_bin_dir, kmod_dst) != 0)
 			return 1;
 	}
 

@@ -201,6 +201,11 @@ static int run_cp_a(const char *src, const char *dst)
 	return -1;
 }
 
+int test_image_fixture_copy_dir_recursive(const char *src_dir, const char *dst_dir)
+{
+	return run_cp_a(src_dir, dst_dir);
+}
+
 int test_image_fixture_stage_toolchain(const char *image_root)
 {
 	static const char *const subdirs[] = { "include", "lib", "lib64", "bin", "libexec" };

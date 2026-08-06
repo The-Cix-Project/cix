@@ -65,3 +65,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0058](0058-host-management-network-unification.md) | The host's own management address becomes a real, API-managed network | Accepted |
 | [0059](0059-openssl-https-listener.md) | OpenSSL-backed HTTPS listener, reusing the PKI host cert, via a small TLS side-table | Accepted |
 | [0060](0060-cpu-bandwidth-and-affinity-api-exposure.md) | Expose cpu.max and cpuset.cpus through the API/CLI, no reinterpretation layer | Accepted |
+| [0061](0061-kernel-module-loading.md) | Kernel module loading: root-critical drivers stay built-in, only network/USB become modules | Accepted |

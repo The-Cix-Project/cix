@@ -2,6 +2,27 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 3: kernel module loading (ADR-0061)
+
+The largest, most novel part of the bare-metal-readiness plan -- real target hardware needs broader driver coverage than this project's fixed QEMU/VirtIO set, but the no-initramfs constraint (ADR-0014) means whichever controller could hold root can never be a loadable module.
+
+#### Added
+- `pkg/recipes/kmod.recipe`: real, unmodified upstream kmod 34.2 (modprobe/depmod/insmod/lsmod/modinfo/rmmod).
+- `pkg/recipes/kernel.recipe`: `pkg_build()` now runs `make bzImage modules` in a single invocation (see Notes); `pkg_install()` runs `make INSTALL_MOD_PATH=$PKG_DESTDIR modules_install` + a real, explicitly-version-pinned `depmod -b $PKG_DESTDIR "$(make -s kernelrelease)"`.
+- `image/kernel/qemu-part1.config`: root-critical storage block (`CONFIG_BLK_DEV_NVME=y`, `CONFIG_BLK_DEV_MD=y` + RAID0/1/10/456, `CONFIG_SCSI=y`, `CONFIG_BLK_DEV_SD=y`, alongside the already-`=y` `CONFIG_SATA_AHCI`); loadable-module block (`CONFIG_MODULES=y`, `CONFIG_E1000E`, `CONFIG_IGB`, `CONFIG_IXGBE`, `CONFIG_R8169`, `CONFIG_TIGON3` [module `tg3.ko`], `CONFIG_USB_EHCI_HCD`, `CONFIG_USB_STORAGE`, all `=m`).
+- `image/src/mkbootroot.c`: two new optional (`""` = skip) trailing args, `modules-dir` and `kmod-bin-dir`, mirroring `firmware-dir`'s (ADR-0029) tolerant-default shape.
+- `test/test_image_fixture.c`/`.h`: `test_image_fixture_copy_dir_recursive()` (real `cp -a`), needed because a `.ko` tree nests and the existing `copy_dir_files()` is flat-only.
+- `daemon/src/main.c`: `load_boot_modules()`, a curated, best-effort `modprobe` of the network/USB driver list above, called from `main()` before `bootstrap_management_network()` (that function needs the kernel to have already detected the named interface, which requires its driver already loaded) and not from inside `boot_init()` (stays purely about mounts, per Part 0.5's established boundary).
+- `docs/adr/0061-kernel-module-loading.md`.
+- `test/test_mkbootroot_firmware.c`: new scenario proving the two new `mkbootroot` args' staging (real recursive nested-directory copy + real symlink-dereferencing flat copy landing a working `modprobe`).
+- Six test files' (`test_boot.c`, `test_boot_ab.c`, `test_console_shell.c`, `test_console_pki_bootstrap.c`, `test_console_pkg_bootstrap.c`, `test_installer.c`) `mkbootroot` argv literals extended with the two new trailing `""` args.
+
+#### Notes
+- Getting a real, end-to-end kernel-with-modules hostbuild to succeed took eleven attempts against this project's own long-lived "dev" build image -- ten distinct, previously-unexposed gaps found and fixed one at a time via the real build's own failure output (full list in ADR-0061): `sed`, `grep`, `bc`, `diffutils`, `findutils`, `gzip` were never installed at all; `bison`/`bash`/`libc-dev` needed reinstalling to pick up fixes that postdate this image; `zlib`/`elfutils` are new dependencies `CONFIG_MODULES=y` itself introduces via `objtool`; and a genuine `kernel.recipe` bug -- building `bzImage` and `modules` as two separate `make` invocations left modpost unable to resolve kernel-exported symbols against a missing `vmlinux.o`, fixed by combining both into one `make bzImage modules` invocation.
+- Verified real, end to end: the 11th hostbuild attempt produced a genuine `bzImage` plus 18 real `.ko` files (all curated drivers plus real dependencies like `mdio-bus`/`libphy`) with correct `depmod` metadata. That artifact's `lib/modules/` tree plus a real extracted `kmod`-tools directory were fed through a real `mkbootroot` invocation, confirming the assembled staging root contains the identical module tree and seven real, independent, correctly-dereferenced kmod tool binaries.
+- Broadcom `bnx2` deliberately excluded from the module list -- it cannot function at all without a firmware blob, unlike the others here; staging `linux-firmware` blobs is separate, unstarted scope.
+- **Not verified, per Zen:** a real QEMU boot with `load_boot_modules()` actually running against a real assembled squashfs -- deliberately deferred and batched with Part 2's and Part 4's own kernel config additions into one combined rebuild+boot cycle. Real bare-metal driver behavior can't be fully proven by QEMU alone regardless.
+
 ### Part 2: CPU affinity (`cpuset`) (ADR-0060)
 
 A new mechanism, not just plumbing -- `cpuset.cpus` didn't exist anywhere in this codebase before.

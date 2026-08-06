@@ -7,6 +7,11 @@
  * isn't. No QEMU needed -- inspects mkbootroot's own staging directory
  * directly, before it's squashed, rather than the final squashfs
  * image.
+ *
+ * Part 3 (bare-metal-readiness plan, ADR-0060 family) extends this
+ * same file with the analogous modules_dir/kmod_bin_dir staging path --
+ * same synthetic-stand-in reasoning (a real kernel module tree needs a
+ * real kernel build, not practical inside an automated test either).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,17 +24,21 @@ extern char **environ;
 
 #define STAGE_DIR "/tmp/kanxeo_test_mkbootroot_stage"
 #define FW_SRC_DIR "/tmp/kanxeo_test_mkbootroot_fwsrc"
+#define MODULES_SRC_DIR "/tmp/kanxeo_test_mkbootroot_modsrc"
+#define KMOD_BIN_SRC_DIR "/tmp/kanxeo_test_mkbootroot_kmodbinsrc"
 #define OUT_SQUASHFS "/tmp/kanxeo_test_mkbootroot_out.squashfs"
 #define MKBOOTROOT_BIN "build/mkbootroot"
 
-static int run_mkbootroot(const char *firmware_dir)
+static int run_mkbootroot2(const char *firmware_dir, const char *modules_dir,
+                            const char *kmod_bin_dir)
 {
 	pid_t pid;
 	int status;
 	char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN,   (char *)STAGE_DIR,
 		                     (char *)"build/kanxeod",   (char *)"build/kanxeoctl",
 		                     (char *)"web",             (char *)OUT_SQUASHFS,
-		                     (char *)firmware_dir,      NULL };
+		                     (char *)firmware_dir,      (char *)modules_dir,
+		                     (char *)kmod_bin_dir,      NULL };
 
 	pid = fork();
 	if (pid < 0) {
@@ -44,6 +53,11 @@ static int run_mkbootroot(const char *firmware_dir)
 	if (waitpid(pid, &status, 0) != pid)
 		return -1;
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
+}
+
+static int run_mkbootroot(const char *firmware_dir)
+{
+	return run_mkbootroot2(firmware_dir, "", "");
 }
 
 static int file_exists(const char *path)
@@ -75,7 +89,8 @@ int main(void)
 	int ok = 1;
 	char path[512];
 
-	system("rm -rf " STAGE_DIR " " FW_SRC_DIR " " OUT_SQUASHFS);
+	system("rm -rf " STAGE_DIR " " FW_SRC_DIR " " MODULES_SRC_DIR " " KMOD_BIN_SRC_DIR " "
+	       OUT_SQUASHFS);
 
 	/* 1. firmware_dir="" (every real call site's own value) is a
 	 * complete no-op for firmware specifically -- lib/ itself already
@@ -129,8 +144,76 @@ int main(void)
 		                "not silently succeed\n");
 		ok = 0;
 	}
-
 	system("rm -rf " STAGE_DIR " " FW_SRC_DIR " " OUT_SQUASHFS);
+
+	/* 4. modules_dir/kmod_bin_dir="" (every existing call site's own
+	 * value) is a complete no-op -- lib/modules and the kmod tool names
+	 * under usr/bin are only ever created by this new staging path. */
+	if (run_mkbootroot2("", "", "") != 0) {
+		fprintf(stderr, "FAIL: mkbootroot with modules_dir/kmod_bin_dir=\"\" failed\n");
+		ok = 0;
+	}
+	snprintf(path, sizeof(path), "%s/lib/modules", STAGE_DIR);
+	if (dir_exists(path)) {
+		fprintf(stderr, "FAIL: modules_dir=\"\" created a lib/modules dir anyway\n");
+		ok = 0;
+	}
+	snprintf(path, sizeof(path), "%s/usr/bin/modprobe", STAGE_DIR);
+	if (file_exists(path)) {
+		fprintf(stderr, "FAIL: kmod_bin_dir=\"\" staged a modprobe anyway\n");
+		ok = 0;
+	}
+	system("rm -rf " STAGE_DIR " " OUT_SQUASHFS);
+
+	/* 5. a real (synthetic) modules_dir/kmod_bin_dir pair stages the
+	 * module tree recursively (nested by kernel/drivers/..., proving
+	 * test_image_fixture_copy_dir_recursive() actually walks it, unlike
+	 * the flat copy_dir_files() firmware_dir above uses) and the kmod
+	 * tool names into usr/bin (merged alongside the kanxeod/kanxeoctl
+	 * already staged there, proving the flat copy correctly dereferences
+	 * "modprobe -> kmod"-style symlinks into a real, independently
+	 * readable file rather than skipping them). */
+	{
+		char modules_dst_dir[512];
+
+		snprintf(modules_dst_dir, sizeof(modules_dst_dir), "%s/6.18.40/kernel/drivers/net",
+		         MODULES_SRC_DIR);
+		system("mkdir -p " MODULES_SRC_DIR "/6.18.40/kernel/drivers/net");
+		snprintf(path, sizeof(path), "%s/e1000e.ko", modules_dst_dir);
+		write_fake_blob(path, "fake module blob");
+		snprintf(path, sizeof(path), "%s/6.18.40/modules.dep", MODULES_SRC_DIR);
+		write_fake_blob(path, "kernel/drivers/net/e1000e.ko:\n");
+
+		mkdir(KMOD_BIN_SRC_DIR, 0755);
+		snprintf(path, sizeof(path), "%s/kmod", KMOD_BIN_SRC_DIR);
+		write_fake_blob(path, "fake kmod binary");
+		snprintf(path, sizeof(path), "%s/modprobe", KMOD_BIN_SRC_DIR);
+		symlink("kmod", path);
+	}
+
+	if (run_mkbootroot2("", MODULES_SRC_DIR, KMOD_BIN_SRC_DIR) != 0) {
+		fprintf(stderr, "FAIL: mkbootroot with a real modules_dir/kmod_bin_dir failed\n");
+		ok = 0;
+	}
+	snprintf(path, sizeof(path), "%s/lib/modules/6.18.40/kernel/drivers/net/e1000e.ko", STAGE_DIR);
+	if (!file_exists(path)) {
+		fprintf(stderr, "FAIL: e1000e.ko not staged (recursively) to lib/modules/6.18.40/"
+		                "kernel/drivers/net\n");
+		ok = 0;
+	}
+	snprintf(path, sizeof(path), "%s/lib/modules/6.18.40/modules.dep", STAGE_DIR);
+	if (!file_exists(path)) {
+		fprintf(stderr, "FAIL: modules.dep not staged to lib/modules/6.18.40\n");
+		ok = 0;
+	}
+	snprintf(path, sizeof(path), "%s/usr/bin/modprobe", STAGE_DIR);
+	if (!file_exists(path)) {
+		fprintf(stderr, "FAIL: modprobe not staged (dereferenced) to usr/bin\n");
+		ok = 0;
+	}
+
+	system("rm -rf " STAGE_DIR " " FW_SRC_DIR " " MODULES_SRC_DIR " " KMOD_BIN_SRC_DIR " "
+	       OUT_SQUASHFS);
 
 	printf(ok ? "MKBOOTROOT FIRMWARE RESULT: PASS\n" : "MKBOOTROOT FIRMWARE RESULT: FAIL\n");
 	return ok ? 0 : 1;

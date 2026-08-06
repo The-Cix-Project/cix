@@ -440,6 +440,65 @@ static int parse_net_conf(const char *path, char *out_ip, size_t ip_size, int *o
 }
 
 /*
+ * Part 3 (bare-metal-readiness plan, ADR-0061): loads a curated,
+ * boot-critical module list via the real, freshly-staged
+ * /usr/bin/modprobe (kmod.recipe, staged onto this control-plane
+ * squashfs by mkbootroot.c's own kmod_bin_dir argument) -- run before
+ * bootstrap_management_network() below, not after: that function
+ * attaches a *named* physical interface (net.conf's own --interface=),
+ * which the kernel must have already detected as a real netdev by
+ * then, and on real hardware that detection only happens once the
+ * matching driver is loaded. The storage controller that might hold
+ * root is never in this list -- see image/kernel/qemu-part1.config's
+ * own comment on why that has to stay built directly into the kernel
+ * instead, never a module.
+ *
+ * Best-effort per module, same "a real machine this project has never
+ * seen before might simply not have this exact hardware" posture
+ * cgroup_enable_io_accounting() already established for an unrelated
+ * optional capability -- covers several different vendors' NIC
+ * chipsets in one list, no single real machine has all of them, so a
+ * missing driver here is the overwhelmingly common, expected case, not
+ * a real error worth failing boot over (or even logging on every
+ * single boot). A --data-dir= test invocation never reaches this at
+ * all (init_mode is false), so it never needs a real /usr/bin/modprobe
+ * to exist.
+ */
+static void load_boot_modules(void)
+{
+	static const char *const boot_modules[] = {
+		/* NICs -- covers common real-hardware chipsets bootstrap_
+		 * management_network() below might need probed first. */
+		"e1000e", "igb", "ixgbe", "r8169", "tg3",
+		/* USB -- never needed for root or the mgmt network itself,
+		 * loaded here anyway since this is the one, single curated
+		 * list this daemon ever runs modprobe against. */
+		"ehci-hcd", "usb-storage",
+	};
+	size_t i;
+
+	for (i = 0; i < sizeof(boot_modules) / sizeof(boot_modules[0]); i++) {
+		pid_t pid;
+		int status;
+		char *argv[] = { (char *)"modprobe", (char *)boot_modules[i], NULL };
+
+		pid = fork();
+		if (pid < 0) {
+			perror("fork (modprobe)");
+			continue;
+		}
+		if (pid == 0) {
+			execve("/usr/bin/modprobe", argv, environ);
+			_exit(127);
+		}
+		waitpid(pid, &status, 0);
+		/* Exit status deliberately unchecked/unlogged -- see the
+		 * function-level comment above for why "no such hardware
+		 * present" isn't a real error here. */
+	}
+}
+
+/*
  * Bootstraps the "mgmt" network from the static IP/gateway/interface
  * configured at install time (Part 0.5, superseding the old, invisible
  * apply_static_ip()) -- creates a real, persisted network_def (visible
@@ -2272,7 +2331,7 @@ static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
 	char web_dir[PATH_MAX];
 	char out_squashfs[PATH_MAX];
 	char stage_dir[PATH_MAX];
-	char *argv[8];
+	char *argv[10];
 	pid_t pid;
 	int pidfd;
 
@@ -2290,7 +2349,10 @@ static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
 	argv[4] = web_dir;
 	argv[5] = out_squashfs;
 	argv[6] = ""; /* firmware dir -- a control-plane-only rebuild needs no GPU firmware re-staging */
-	argv[7] = NULL;
+	argv[7] = ""; /* modules dir -- a control-plane-only rebuild (kanxeod/kanxeoctl/web only,
+	               * ADR-0057) touches no kernel module tree at all */
+	argv[8] = ""; /* kmod bin dir -- same reasoning */
+	argv[9] = NULL;
 
 	pid = fork();
 	if (pid < 0) {
@@ -6733,6 +6795,12 @@ int main(int argc, char **argv)
 
 	if (network_init(NETWORKS_STATE_PATH) != 0)
 		return 1;
+	/* Part 3: real hardware's NIC driver (needed for the interface
+	 * attach below) may be a module -- must run before bootstrap_
+	 * management_network(), not after. Same init_mode gate: a plain/
+	 * test invocation has no real /usr/bin/modprobe to run at all. */
+	if (init_mode)
+		load_boot_modules();
 	/* Only a real --init-mode boot has a GRUB-supplied net.conf to
 	 * bootstrap from (Part 0.5) -- a plain/test invocation has no
 	 * "mgmt" network and simply keeps whatever --bind= it was given. */

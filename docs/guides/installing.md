@@ -32,7 +32,9 @@ Once `build/kanxeod`, `build/kanxeo-install`, `build/bzImage`, and the signing k
 
 ```sh
 sudo build/mkbootroot  /tmp/root_stage build/kanxeod build/kanxeoctl web /tmp/kanxeod-root.squashfs \
-     /tmp/linux-firmware/amdgpu   # or "" to skip GPU firmware entirely
+     /tmp/linux-firmware/amdgpu \  # or "" to skip GPU firmware entirely
+     /path/to/kernel-hostbuild-artifact/lib/modules \  # or "" to skip kernel modules
+     /path/to/kmod-usr-bin                             # or "" to skip modprobe/depmod/etc
 sudo build/mkinstalleriso build/iso_stage build/kanxeo-install build/bzImage \
      /tmp/kanxeod-root.squashfs \
      image/keys/kanxeo-signing.key image/keys/kanxeo-signing.crt image/keys/kanxeo-signing.cer \
@@ -44,7 +46,9 @@ This produces `build/kanxeo-install.iso` — attach it as a CD-ROM/optical drive
 
 **Why an interface name at all**: this is a one-time bootstrap value only, used to attach a physical NIC to the `mgmt` network `kanxeod` binds to at first boot — it does *not* need to be perfect. If it's wrong, or your NIC layout changes later, the management network is an ordinary, API-managed `network_def` afterward (`GET /v1/networks`) and can be repointed to a different interface without reinstalling.
 
-**Target disk**: currently only **VirtIO Block** disks work (`/dev/vda`) — the kernel doesn't have the SCSI-disk driver needed for SATA/IDE/VirtIO-SCSI-attached disks (only the CD-ROM driver, for the installer media itself). On Proxmox, attach the target disk with Bus/Device: `VirtIO Block`.
+**Kernel modules** (Part 3 of the bare-metal-readiness plan, ADR-0061): the two new `mkbootroot` arguments above stage a real kernel module tree and `kmod`'s own tools onto the installed system, so `kanxeod`'s own boot-time `modprobe` (a curated set of common real-hardware NICs/USB controllers — see the ADR for exactly which) has something real to load on hardware whose driver isn't built directly into the kernel. Both come from real Kanxeo build artifacts, not anything fetched by `mkbootroot` itself: `/path/to/kernel-hostbuild-artifact/lib/modules` is `kernel.recipe`'s own hostbuild output (`kanxeoctl pkg hostbuild kernel --build-image=dev --wait`, see [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md)); `/path/to/kmod-usr-bin` is wherever `pkg/recipes/kmod.recipe` was installed (e.g. extracted from a real image's own `usr/bin/{kmod,modprobe,depmod,...}`). Omit both (`""`) for a QEMU/CI boot test, same as GPU firmware above — no real target hardware means nothing needs a driver module at all.
+
+**Target disk**: **VirtIO Block** disks (`/dev/vda`) and real **SATA/PATA** disks (`/dev/sda`, `CONFIG_BLK_DEV_SD`, ADR-0061/Part 3) both work — NVMe (`/dev/nvme0n1`) and software RAID (`/dev/mdN`) too. VirtIO-SCSI-attached disks specifically are not yet covered (no `CONFIG_SCSI_VIRTIO`). On Proxmox, attach the target disk with Bus/Device: `VirtIO Block` (simplest) or `SATA`.
 
 **Partitioning** — three ways, pick one via `kanxeo-install`'s own flags (baked into the last argument above):
 

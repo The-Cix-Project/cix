@@ -56,6 +56,28 @@ int test_image_fixture_copy_file(const char *src_path, const char *dst_path);
 int test_image_fixture_copy_dir_files(const char *src_dir, const char *dst_dir);
 
 /*
+ * Recursively copies src_dir's own contents into dst_dir (real `cp -a`,
+ * correct symlink/permission handling a hand-rolled walker would get
+ * wrong -- the same reasoning test_image_fixture_stage_toolchain()'s
+ * own internal run_cp_a() already established, exposed here as a
+ * public entry point for a second caller). Part 3 of the bare-metal-
+ * readiness plan: mkbootroot.c uses this to stage a real kernel module
+ * tree (/lib/modules/<version>/, nested by kernel/drivers/...) into the
+ * control-plane squashfs -- test_image_fixture_copy_dir_files() above
+ * is flat-only and cannot walk that structure. Same contract `cp -a
+ * SRC DST` itself has: dst_dir's own parent must already exist, but
+ * dst_dir itself must NOT -- `cp -a` creates dst_dir as an exact copy
+ * of src_dir's contents only when dst_dir doesn't already exist; if it
+ * does, it instead nests a copy of src_dir *inside* dst_dir, which is
+ * never what a caller here wants (confirmed against this same
+ * project's own test_image_fixture_stage_toolchain(), which already
+ * relies on this exact contract via its own "skip if dst already
+ * exists" idempotency check). Returns 0, or -1 (with a message on the
+ * failing path) otherwise.
+ */
+int test_image_fixture_copy_dir_recursive(const char *src_dir, const char *dst_dir);
+
+/*
  * Stages a full package-build toolchain at image_root: this build
  * host's own /usr/{include,lib,lib64,bin,libexec} (wholesale, real
  * `cp -a` -- correct symlink/permission handling a hand-rolled copier

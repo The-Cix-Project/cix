@@ -19,20 +19,23 @@ make allnoconfig ARCH=x86_64
 ./scripts/kconfig/merge_config.sh -m .config ../image/kernel/qemu-part1.config
 make olddefconfig ARCH=x86_64
 make -j$(nproc) ARCH=x86_64 bzImage
+make -j$(nproc) ARCH=x86_64 modules
 cp arch/x86/boot/bzImage <repo>/build/bzImage
+make ARCH=x86_64 INSTALL_MOD_PATH=<repo>/build modules_install
+depmod -b <repo>/build "$(make -s ARCH=x86_64 kernelrelease)"
 ```
 
-A real GCC toolchain, not TCC — this is unmodified upstream software, not this project's own code, so the TCC mandate doesn't apply to it (same split as any other real software this platform runs as a workload rather than authors itself).
+A real GCC toolchain, not TCC — this is unmodified upstream software, not this project's own code, so the TCC mandate doesn't apply to it (same split as any other real software this platform runs as a workload rather than authors itself). The last two lines (Part 3, bare-metal-readiness plan) harvest a real `.ko` tree for the `=m` drivers `image/kernel/qemu-part1.config` enables (a curated set of common real-hardware NICs/USB controllers, see ADR-0061 for exactly which and why) — needs a real `depmod` (`kmod`, any distro package or `pkg/recipes/kmod.recipe`) on this dev machine's own `PATH`.
 
 ### Self-hosted, from a running Kanxeo box
 
-Using the [hostbuild](writing-recipes.md#the-hostbuild-variant) mechanism against `pkg/recipes/kernel.recipe`, which reproduces the identical sequence above inside a build container:
+Using the [hostbuild](writing-recipes.md#the-hostbuild-variant) mechanism against `pkg/recipes/kernel.recipe`, which reproduces the identical sequence above (including the modules build + a real `depmod`) inside a build container:
 
 ```
 kanxeoctl pkg hostbuild kernel --build-image=dev --wait
 ```
 
-`--build-image=dev` needs a real image with a working GCC toolchain already installed (this project's own "Phase 33" `dev` image, built up via ordinary `pkg install` calls the same way any build image is — see [`building-kanxeo.md`](building-kanxeo.md#1-build-a-toolchain-image) for the general pattern, substituting `gcc`/`make`/etc. for the TCC-specific set used there). Once `--wait` returns with `state: "installed"`, the finished `bzImage` is at that job's own `artifact_path` (`GET /pkg/hostbuild/kernel`).
+`--build-image=dev` needs a real image with a working GCC toolchain **and `kmod` (`modprobe`/`depmod`/...)** already installed (this project's own "Phase 33" `dev` image, built up via ordinary `pkg install` calls the same way any build image is — see [`building-kanxeo.md`](building-kanxeo.md#1-build-a-toolchain-image) for the general pattern, substituting `gcc`/`make`/`kmod`/etc. for the TCC-specific set used there). Once `--wait` returns with `state: "installed"`, the finished `bzImage` is at that job's own `artifact_path` (`GET /pkg/hostbuild/kernel`), alongside a real `lib/modules/<kernelrelease>/` tree in the same artifact directory — `build/mkbootroot`'s own `<modules-dir>`/`<kmod-bin-dir>` arguments (see [`installing.md`](installing.md#building-the-iso)) stage both onto a real control-plane squashfs, so `kanxeod`'s own boot-time `modprobe` (ADR-0061) has something real to load on an installed system.
 
 ## Step 2: write it to the inactive slot
 
