@@ -2502,7 +2502,7 @@ static int create_container_from_body(const char *body, size_t body_len,
                                        size_t err_msg_size)
 {
 	struct json_value *root;
-	const struct json_value *jname, *jimage, *jcmd, *jmem, *jpids, *jnetworks, *jip_forward, *jroutes;
+	const struct json_value *jname, *jimage, *jcmd, *jmem, *jpids, *jcpu, *jnetworks, *jip_forward, *jroutes;
 	const struct json_value *jdevices;
 	const struct json_value *jinterfaces;
 	const struct json_value *jfiles, *jsysctls;
@@ -3037,7 +3037,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 	spec.cg.memory_max = jmem != NULL ? (long long)json_as_number(jmem) : 0;
 	jpids = json_object_get(root, "pids_max");
 	spec.cg.pids_max = jpids != NULL ? (long long)json_as_number(jpids) : 0;
-	spec.cg.cpu_max = NULL;
+	jcpu = json_object_get(root, "cpu_max");
+	spec.cg.cpu_max = json_as_string(jcpu);
 	spec.ov.lowerdir = lowerdir;
 	spec.ov.upperdir = upperdir;
 	spec.ov.workdir = workdir;

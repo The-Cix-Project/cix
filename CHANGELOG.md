@@ -2,6 +2,20 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 1: `cpu.max` API/CLI wiring
+
+The mechanism already existed end to end in the runtime library (`struct cgroup_limits.cpu_max`, written by `src/cgroup.c`) but was hardcoded `NULL` in the daemon, with no API/CLI surface at all.
+
+#### Added
+- `daemon/src/main.c`: `create_container_from_body()` parses an optional `cpu_max` string field, mirroring the existing `memory_max`/`pids_max` block exactly -- a raw cgroup-native `"<quota> <period>"` value, passed straight through, not reinterpreted.
+- `cli/src/main.c`: `kanxeoctl run --cpu-max="QUOTA PERIOD"`, next to `--memory-max=`/`--pids-max=`.
+- `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/cli-reference.md`: document the new field/flag.
+- `test/test_container_lifecycle.c`: new step creating a container with a real `cpu_max`, then reading `/sys/fs/cgroup/<name>/cpu.max` directly to confirm the kernel-authoritative value matches (this daemon doesn't echo `cpu_max`/`memory_max`/`pids_max` back in any response).
+
+#### Notes
+- Full clean rebuild (zero warnings); 23-binary fast regression set (QEMU-boot-based tests excluded -- this change touches neither install nor boot code) all green, 3 consecutive clean runs of the new test step. Also manually verified through the real `kanxeoctl --cpu-max=` flag against a live daemon.
+- `GET .../stats` still has no `cpu.max`-reporting field -- `cpu_max` stays create-time-only, matching `memory_max`/`pids_max`'s own existing scope.
+
 ### Part 0.5: host management networking unified into a real, API-managed network, plus a live-reconfigurable daemon port and an OpenSSL-backed HTTPS listener (ADR-0058, ADR-0059)
 
 First step of the bare-metal-readiness effort. Real-world use of a freshly rebuilt/boot-tested installer ISO on the user's own test VM surfaced a genuine design gap: `kanxeod`'s own management IP was a one-shot, GRUB-boot-parameter-driven `rtnetlink` call straight against the physical NIC, invisible to `GET /networks` and un-repointable without a reinstall.

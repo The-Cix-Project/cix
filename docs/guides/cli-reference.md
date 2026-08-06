@@ -47,7 +47,7 @@ See [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.m
 
 ```
 run --name=NAME --image=IMAGE
-    [--memory-max=BYTES] [--pids-max=N]
+    [--memory-max=BYTES] [--pids-max=N] [--cpu-max="QUOTA PERIOD"]
     [--network=NAME[:IP] ...] [--ip-forward]
     [--dns-register]
     [--pki-issue] [--pki-cert-dir=PATH] [--pki-days=N]

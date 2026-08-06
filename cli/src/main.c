@@ -46,7 +46,8 @@ static void print_usage(FILE *out)
 	        "               back to their real state files; does NOT reboot or hot-reload --\n"
 	        "               call reboot separately for it to take effect on the next boot\n"
 	        "  ps\n"
-	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] [--network=NAME[:IP] ...]\n"
+	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] [--cpu-max=\"Q P\"]\n"
+	        "      [--network=NAME[:IP] ...]\n"
 	        "      [--ip-forward] [--dns-register] [--pki-issue] [--pki-cert-dir=PATH]\n"
 	        "      [--pki-days=N] [--route=DEST/PREFIX:VIA ...] [--device=ID ...]\n"
 	        "      [--interface=IFNAME ...] [--restart=always|on-failure|unless-stopped]\n"
@@ -1412,6 +1413,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	int sysctl_count = 0;
 	long memory_max = -1;
 	long pids_max = -1;
+	const char *cpu_max = NULL;
 	int i = 0;
 	int cmd_start = -1;
 	struct json_writer w;
@@ -1430,6 +1432,8 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 			memory_max = atol(argv[i] + 13);
 		else if (strncmp(argv[i], "--pids-max=", 11) == 0)
 			pids_max = atol(argv[i] + 11);
+		else if (strncmp(argv[i], "--cpu-max=", 10) == 0)
+			cpu_max = argv[i] + 10;
 		else if (strncmp(argv[i], "--network=", 10) == 0) {
 			if (network_count >= CLI_MAX_NETWORKS) {
 				fprintf(stderr, "kanxeoctl: too many --network= flags (max %d)\n",
@@ -1529,7 +1533,8 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (name == NULL || image == NULL || cmd_start < 0 || cmd_start >= argc) {
 		fprintf(stderr,
 		        "usage: kanxeoctl run --name=NAME --image=IMAGE [--memory-max=N] "
-		        "[--pids-max=N] [--network=NAME[:IP] ...] [--ip-forward] [--dns-register] "
+		        "[--pids-max=N] [--cpu-max=\"QUOTA PERIOD\"] "
+		        "[--network=NAME[:IP] ...] [--ip-forward] [--dns-register] "
 		        "[--pki-issue] [--pki-cert-dir=PATH] [--pki-days=N] "
 		        "[--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--interface=IFNAME ...] "
 		        "[--restart=always|on-failure|unless-stopped] [--restart-delay=N] "
@@ -1563,6 +1568,10 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (pids_max >= 0) {
 		jw_key(&w, "pids_max");
 		jw_int(&w, pids_max);
+	}
+	if (cpu_max != NULL) {
+		jw_key(&w, "cpu_max");
+		jw_str(&w, cpu_max);
 	}
 	if (network_count > 0) {
 		jw_key(&w, "networks");

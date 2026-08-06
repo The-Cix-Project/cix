@@ -2309,6 +2309,15 @@ components:
           type: integer
           format: int64
           description: cgroup v2 pids.max. Omit for no limit.
+        cpu_max:
+          type: string
+          description: >
+            Raw cgroup v2 cpu.max value, "<quota> <period>" in
+            microseconds (e.g. "50000 100000" = 50% of one CPU,
+            "max 100000" = unlimited quota with a 100ms period).
+            Passed through verbatim, not reinterpreted -- same
+            convention as memory_max's bytes and pids_max's raw count.
+            Omit for no limit.
         networks:
           type: array
           items:

@@ -117,6 +117,31 @@ static long fetch_pid(const struct kx_client *c, const char *name)
 	return pid;
 }
 
+/* Reads /sys/fs/cgroup/<name>/cpu.max verbatim (trailing newline
+ * stripped) -- the real, kernel-authoritative value cgroup_create()
+ * wrote via struct cgroup_limits.cpu_max, not just what POST echoed
+ * back (this daemon doesn't echo cpu_max/memory_max/pids_max at all). */
+static int read_cgroup_cpu_max(const char *name, char *out, size_t out_size)
+{
+	char path[256];
+	FILE *f;
+	size_t n;
+
+	snprintf(path, sizeof(path), "/sys/fs/cgroup/%s/cpu.max", name);
+	f = fopen(path, "r");
+	if (f == NULL)
+		return -1;
+	if (fgets(out, (int)out_size, f) == NULL) {
+		fclose(f);
+		return -1;
+	}
+	fclose(f);
+	n = strlen(out);
+	if (n > 0 && out[n - 1] == '\n')
+		out[n - 1] = '\0';
+	return 0;
+}
+
 /* Reads /sys/fs/cgroup/<name>/cgroup.events and returns 1 if "frozen 1"
  * is present, 0 if "frozen 0", -1 on any read failure -- the real,
  * kernel-authoritative freeze state, not just what the REST API claims. */
@@ -419,6 +444,45 @@ int main(void)
 			        "FAIL: lc2 should be running with stopped==false after daemon restart "
 			        "(autostart stale-flag fix), got status=%d\n",
 			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+	}
+
+	/* 8. cpu_max (Part 1 of the bare-metal-readiness plan): a real
+	 * cpu.max value round-trips into the container's own real cgroup,
+	 * not just accepted and silently dropped. cgroup_create() (src/
+	 * cgroup.c) already had this mechanism -- this proves the daemon's
+	 * own JSON-to-spec.cg.cpu_max wiring (create_container_from_body(),
+	 * daemon/src/main.c) actually reaches it. */
+	{
+		char cpu_max[64];
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"lc3\",\"image\":\"lifecycletest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"],"
+		                       "\"cpu_max\":\"50000 100000\"}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST lc3 with cpu_max, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		if (read_cgroup_cpu_max("lc3", cpu_max, sizeof(cpu_max)) != 0) {
+			fprintf(stderr, "FAIL: could not read /sys/fs/cgroup/lc3/cpu.max\n");
+			ok = 0;
+		} else if (strcmp(cpu_max, "50000 100000") != 0) {
+			fprintf(stderr, "FAIL: /sys/fs/cgroup/lc3/cpu.max = \"%s\", expected \"50000 100000\"\n",
+			        cpu_max);
+			ok = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "DELETE", "/v1/containers/lc3", NULL, &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: DELETE lc3, status=%d\n", r.status);
 			ok = 0;
 		}
 		kx_response_free(&r);
