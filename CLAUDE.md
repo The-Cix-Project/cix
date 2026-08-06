@@ -20,19 +20,22 @@ Full charter: [docs/mission/MISSION.md](docs/mission/MISSION.md). Phased plan an
 
 ## Documentation Map
 
-Seven documents, each with one job — respect these boundaries (One Source of Truth: information lives in exactly one of them, the others link to it rather than repeating it):
+Ten documents, each with one job — respect these boundaries (One Source of Truth: information lives in exactly one of them, the others link to it rather than repeating it). This table itself is the fix for the one real doc-drift incident this project has had: `docs/api/README.md` and root `README.md` used to sit outside this map entirely, with no assigned owner or mutability rule, and both drifted stale as a direct result (confirmed during the Phase 41 documentation audit). Every document that exists now has a row here — "not in the map" is no longer a valid state for a doc to be in.
 
 | Doc | Job | Mutability |
 |---|---|---|
 | [docs/mission/MISSION.md](docs/mission/MISSION.md) | The original charter, verbatim | Frozen — never edited except by a genuinely new charter from the user |
 | [docs/roadmap/ROADMAP.md](docs/roadmap/ROADMAP.md) | *What* shipped per phase, and how it was verified | Updated as each phase completes |
-| [docs/adr/](docs/adr/) | *Why* a significant, hard-to-reverse decision was made — reasoning and alternatives, not implementation detail | Append-only; superseded, never edited to reverse itself (see [docs/adr/0000-adr-process.md](docs/adr/0000-adr-process.md)) |
+| [docs/adr/](docs/adr/) | *Why* a significant, hard-to-reverse decision was made — reasoning and alternatives, not implementation detail | Append-only; superseded, never edited to reverse itself (see [docs/adr/0000-adr-process.md](docs/adr/0000-adr-process.md)) — a factual correction (a typo, a claim that's gone stale) is not "reversing" a decision and may be fixed in place; only a genuinely reversed decision gets a new superseding ADR |
 | [docs/api/openapi.yaml](docs/api/openapi.yaml) | The one authoritative REST API contract | Updated whenever the contract changes, before the daemon code that implements it |
+| [docs/api/README.md](docs/api/README.md) | Human-readable narrative walkthrough of the REST contract — an index into `openapi.yaml`, not a second copy of it | Updated **in the same change** as any `openapi.yaml` edit, never after — this is the rule that was missing when it drifted 10 phases stale |
 | [docs/architecture/architecture.svg](docs/architecture/architecture.svg) | Visual map of the system's components and how they connect — a picture of *what exists now*, not a decision record | Updated whenever a change adds/removes/rewires a box or arrow it shows; stale diagrams are worse than none, so this is not optional busywork |
+| [docs/guides/](docs/guides/) | Task-oriented operator/user how-to instructions (build, install, update, write a recipe, use the CLI/dashboard) — one guide per distinct task, each linking to the ADR/API doc that owns the "why"/"contract" rather than restating it | Updated whenever the underlying mechanism a guide documents changes (a new endpoint, recipe field, or CLI flag) |
 | [CHANGELOG.md](CHANGELOG.md) | Chronological record of what changed, grouped by phase | Updated as part of every meaningful change, not as an afterthought |
+| [README.md](README.md) (root) | The project's front door — pitch, quickstart pointer, links out to everything else | Updated when a new top-level capability or link target appears; **never** carries phase-status detail — link to `docs/roadmap/ROADMAP.md` instead of duplicating it (a duplicated status table is exactly what drifted stale before) |
 | This file | Living instructions: how to work here | Updated whenever a rule, mandate, or durable environment fact changes |
 
-When a phase lands: update `docs/roadmap/ROADMAP.md` with what was verified, write an ADR if a significant/hard-to-reverse decision was made along the way, add a `CHANGELOG.md` entry, and update `docs/architecture/architecture.svg` if the phase changed the system's actual shape (a new module, a new host-level component, a new client surface — not every phase does). Skipping the ADR, changelog entry, or diagram update "for now" is itself a stop-gap.
+When a phase lands: update `docs/roadmap/ROADMAP.md` with what was verified, write an ADR if a significant/hard-to-reverse decision was made along the way, add a `CHANGELOG.md` entry, update `docs/architecture/architecture.svg` if the phase changed the system's actual shape (a new module, a new host-level component, a new client surface — not every phase does), update `docs/api/openapi.yaml` + `docs/api/README.md` together if the REST contract changed, and update the relevant `docs/guides/*.md` if an operator-facing workflow changed. Skipping the ADR, changelog entry, diagram update, or guide update "for now" is itself a stop-gap.
 
 ## Technology Stack
 
