@@ -49,15 +49,12 @@
  * need, not speculative: lldap's own web frontend build fetches
  * several small external CDN assets (CSS/JS/fonts) alongside its main
  * source tarball, and the isolated build container has no network
- * access to fetch them itself. Every recipe before this one has
- * exactly one URL, which parses as a one-element list unchanged.
- * Index 0 is "the" source, extracted into /build/src exactly as
- * every recipe already assumes; index 1+ are plain files, copied
- * verbatim (never extracted) into /build/extra/<basename-of-its-own-
- * URL> for pkg_build()/pkg_install() to reference directly. Any one
- * entry's fetch failure or checksum mismatch fails the whole job --
- * no partial-success state, matching the single-source case's own
- * existing all-or-nothing guarantee.
+ * access to fetch them itself.
+ *
+ * Full recipe format (every field, the multi-source mechanics above,
+ * the pkg_build()/pkg_install() environment contract, and a complete
+ * worked example) is documented once, for humans, at
+ * docs/guides/writing-recipes.md -- not repeated here.
  */
 
 #define PKG_MAX_PACKAGES 256
