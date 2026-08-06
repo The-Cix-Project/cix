@@ -2318,6 +2318,14 @@ components:
             Passed through verbatim, not reinterpreted -- same
             convention as memory_max's bytes and pids_max's raw count.
             Omit for no limit.
+        cpuset_cpus:
+          type: string
+          description: >
+            Raw cgroup v2 cpuset.cpus range-list value (e.g. "0-1,3"),
+            restricting which host CPUs this container's processes may
+            run on. Passed through verbatim, not reinterpreted -- same
+            pass-through convention as cpu_max. Omit for no
+            restriction (every online CPU).
         networks:
           type: array
           items:

@@ -2,6 +2,24 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 2: CPU affinity (`cpuset`) (ADR-0060)
+
+A new mechanism, not just plumbing -- `cpuset.cpus` didn't exist anywhere in this codebase before.
+
+#### Added
+- `include/container.h`: `struct cgroup_limits.cpuset_cpus`; `src/cgroup.c`'s `cgroup_create()` writes it to `cpuset.cpus` when given, mirroring `cpu_max`'s own conditional-write shape.
+- `src/cgroup.c`: `cgroup_enable_cpuset()`, mirroring `cgroup_enable_io_accounting()` line for line -- best-effort `+cpuset` written to the cgroup v2 root's `cgroup.subtree_control`, called once at daemon startup.
+- `image/kernel/qemu-part1.config`: `CONFIG_CPUSETS=y`.
+- `daemon/src/main.c`: `create_container_from_body()` parses an optional `cpuset_cpus` string field, same shape as `cpu_max`.
+- `cli/src/main.c`: `kanxeoctl run --cpuset=0-1,3`, next to `--cpu-max=`.
+- `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/cli-reference.md`: document the new field/flag.
+- `docs/adr/0060-cpu-bandwidth-and-affinity-api-exposure.md` (covers Part 1 and Part 2 together).
+- `test/test_container_lifecycle.c`: generalized `read_cgroup_cpu_max()` into `read_cgroup_value(name, file, ...)`; new step proving a real `cpuset_cpus` value lands in the container's actual `cpuset.cpus`.
+
+#### Notes
+- Full clean rebuild (zero warnings); fast 23-binary regression set green, 3 consecutive clean runs of the new test step. Also manually verified through the real `kanxeoctl --cpuset=` flag against a live daemon, including confirming `cpuset` actually appears in the root's own `cgroup.subtree_control` after startup.
+- `CONFIG_CPUSETS=y` has not yet been verified by an actual kernel rebuild + boot test -- deliberately deferred and batched with Part 3's and Part 4's own kernel config additions, rather than three separate rebuild cycles. This dev sandbox's own (non-Kanxeo-built) kernel already has cpuset support, which is what the live verification above actually exercised.
+
 ### Part 0.5 follow-up: `daemon-config` CLI + web dashboard
 
 Closes the CLI/web gap Part 0.5 itself flagged when it shipped -- every other daemon capability in this project ships CLI+web alongside its REST endpoint.

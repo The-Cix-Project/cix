@@ -2502,7 +2502,8 @@ static int create_container_from_body(const char *body, size_t body_len,
                                        size_t err_msg_size)
 {
 	struct json_value *root;
-	const struct json_value *jname, *jimage, *jcmd, *jmem, *jpids, *jcpu, *jnetworks, *jip_forward, *jroutes;
+	const struct json_value *jname, *jimage, *jcmd, *jmem, *jpids, *jcpu, *jcpuset, *jnetworks,
+	    *jip_forward, *jroutes;
 	const struct json_value *jdevices;
 	const struct json_value *jinterfaces;
 	const struct json_value *jfiles, *jsysctls;
@@ -3039,6 +3040,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 	spec.cg.pids_max = jpids != NULL ? (long long)json_as_number(jpids) : 0;
 	jcpu = json_object_get(root, "cpu_max");
 	spec.cg.cpu_max = json_as_string(jcpu);
+	jcpuset = json_object_get(root, "cpuset_cpus");
+	spec.cg.cpuset_cpus = json_as_string(jcpuset);
 	spec.ov.lowerdir = lowerdir;
 	spec.ov.upperdir = upperdir;
 	spec.ov.workdir = workdir;
@@ -6795,6 +6798,9 @@ int main(int argc, char **argv)
 	 * never a fatal startup condition.
 	 */
 	cgroup_enable_io_accounting();
+	/* Same shape, same call site -- see cgroup_enable_cpuset()'s own
+	 * comment. Needed for cpuset_cpus (Part 2) to ever take effect. */
+	cgroup_enable_cpuset();
 
 	registry_init();
 

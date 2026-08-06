@@ -14,6 +14,12 @@ struct cgroup_limits {
 	long long memory_max;
 	long long pids_max;
 	const char *cpu_max;
+	/* Raw cgroup v2 cpuset.cpus range-list syntax (e.g. "0-1,3"),
+	 * passed straight through to the real cgroup file -- same
+	 * pass-through convention as cpu_max, no reinterpretation. NULL
+	 * means no CPU affinity restriction (every online CPU, the
+	 * default cpuset.cpus already inherits from the root). */
+	const char *cpuset_cpus;
 };
 
 struct mount_spec {
@@ -237,8 +243,8 @@ struct container_handle {
 
 /*
  * Creates the cgroup v2 leaf described by lim, applying memory.max,
- * pids.max and cpu.max. On success *out_fd is an O_PATH descriptor
- * on the leaf directory, suitable for clone_args.cgroup.
+ * pids.max, cpu.max and cpuset.cpus. On success *out_fd is an O_PATH
+ * descriptor on the leaf directory, suitable for clone_args.cgroup.
  */
 int cgroup_create(const struct cgroup_limits *lim, int *out_fd);
 
@@ -249,6 +255,17 @@ int cgroup_create(const struct cgroup_limits *lim, int *out_fd);
  * for cgroup_read_io_totals() below to ever report nonzero I/O.
  */
 void cgroup_enable_io_accounting(void);
+
+/*
+ * Best-effort, same shape and same call site as cgroup_enable_io_
+ * accounting() (enables "+cpuset" at the root's own subtree_control,
+ * once, at daemon startup) -- needed for cgroup_limits.cpuset_cpus to
+ * ever take effect. Not fatal on failure: a container with a requested
+ * cpuset_cpus simply keeps running on every online CPU instead, same
+ * "degrade to unrestricted, never fail container creation over it"
+ * posture the io controller already has.
+ */
+void cgroup_enable_cpuset(void);
 
 /*
  * Host-side per-container stats readers (GET /v1/containers/{name}/stats,

@@ -74,6 +74,11 @@ int cgroup_create(const struct cgroup_limits *lim, int *out_fd)
 			return -1;
 	}
 
+	if (lim->cpuset_cpus != NULL) {
+		if (write_cgroup_file(dir, "cpuset.cpus", lim->cpuset_cpus) != 0)
+			return -1;
+	}
+
 	/*
 	 * O_CLOEXEC: this fd is only needed by the kernel at clone3() time
 	 * (CLONE_INTO_CGROUP reads it during the syscall itself); the
@@ -108,6 +113,22 @@ void cgroup_enable_io_accounting(void)
 {
 	if (write_cgroup_file(CGROUP_ROOT, "cgroup.subtree_control", "+io") != 0)
 		perror("cgroup_enable_io_accounting: write +io to cgroup.subtree_control");
+}
+
+/*
+ * Best-effort, same shape as cgroup_enable_io_accounting() above:
+ * enables the cpuset controller in the cgroup v2 root's own
+ * subtree_control, once, at daemon startup, so cgroup_limits.
+ * cpuset_cpus can take effect on any container's leaf. Not fatal on
+ * failure (already enabled from a prior daemon instance, or a
+ * restricted host with no cpuset controller at all) -- a container
+ * with a requested cpuset_cpus simply runs unrestricted across every
+ * online CPU in that case, never a failed container creation.
+ */
+void cgroup_enable_cpuset(void)
+{
+	if (write_cgroup_file(CGROUP_ROOT, "cgroup.subtree_control", "+cpuset") != 0)
+		perror("cgroup_enable_cpuset: write +cpuset to cgroup.subtree_control");
 }
 
 /* Reads filename (relative to dir_fd, e.g. a container's own cgroup_fd)

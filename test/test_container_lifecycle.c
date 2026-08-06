@@ -117,17 +117,19 @@ static long fetch_pid(const struct kx_client *c, const char *name)
 	return pid;
 }
 
-/* Reads /sys/fs/cgroup/<name>/cpu.max verbatim (trailing newline
+/* Reads /sys/fs/cgroup/<name>/<file> verbatim (trailing newline
  * stripped) -- the real, kernel-authoritative value cgroup_create()
- * wrote via struct cgroup_limits.cpu_max, not just what POST echoed
- * back (this daemon doesn't echo cpu_max/memory_max/pids_max at all). */
-static int read_cgroup_cpu_max(const char *name, char *out, size_t out_size)
+ * wrote via struct cgroup_limits, not just what POST echoed back
+ * (this daemon doesn't echo cpu_max/cpuset_cpus/memory_max/pids_max
+ * back in any response). Used for both cpu.max (Part 1) and
+ * cpuset.cpus (Part 2). */
+static int read_cgroup_value(const char *name, const char *file, char *out, size_t out_size)
 {
 	char path[256];
 	FILE *f;
 	size_t n;
 
-	snprintf(path, sizeof(path), "/sys/fs/cgroup/%s/cpu.max", name);
+	snprintf(path, sizeof(path), "/sys/fs/cgroup/%s/%s", name, file);
 	f = fopen(path, "r");
 	if (f == NULL)
 		return -1;
@@ -470,7 +472,7 @@ int main(void)
 		}
 		kx_response_free(&r);
 
-		if (read_cgroup_cpu_max("lc3", cpu_max, sizeof(cpu_max)) != 0) {
+		if (read_cgroup_value("lc3", "cpu.max", cpu_max, sizeof(cpu_max)) != 0) {
 			fprintf(stderr, "FAIL: could not read /sys/fs/cgroup/lc3/cpu.max\n");
 			ok = 0;
 		} else if (strcmp(cpu_max, "50000 100000") != 0) {
@@ -483,6 +485,44 @@ int main(void)
 		if (kx_client_request(&client, "DELETE", "/v1/containers/lc3", NULL, &r) != 0 ||
 		    r.status != 204) {
 			fprintf(stderr, "FAIL: DELETE lc3, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+	}
+
+	/* 9. cpuset_cpus (Part 2 of the bare-metal-readiness plan): same
+	 * shape as step 8's cpu_max check -- a real cpuset.cpus value
+	 * round-trips into the container's own real cgroup. Uses "0" only
+	 * (not a range) so this passes on a single-vCPU test host too. */
+	{
+		char cpuset_cpus[64];
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"lc4\",\"image\":\"lifecycletest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"],"
+		                       "\"cpuset_cpus\":\"0\"}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST lc4 with cpuset_cpus, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		if (read_cgroup_value("lc4", "cpuset.cpus", cpuset_cpus, sizeof(cpuset_cpus)) != 0) {
+			fprintf(stderr, "FAIL: could not read /sys/fs/cgroup/lc4/cpuset.cpus\n");
+			ok = 0;
+		} else if (strcmp(cpuset_cpus, "0") != 0) {
+			fprintf(stderr,
+			        "FAIL: /sys/fs/cgroup/lc4/cpuset.cpus = \"%s\", expected \"0\"\n",
+			        cpuset_cpus);
+			ok = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "DELETE", "/v1/containers/lc4", NULL, &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: DELETE lc4, status=%d\n", r.status);
 			ok = 0;
 		}
 		kx_response_free(&r);
