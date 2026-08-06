@@ -446,7 +446,7 @@ Verified: full clean rebuild, zero warnings; an isolated harness proves the core
 The user hit generic "PKI operation failed"/"package operation failed" dashboard errors on a real booted install. Traced both to ground and closed the actual gaps found along the way, rather than patching the symptom. See `docs/ROADMAP.md` Phase 25 for the full trace.
 
 #### Fixed
-- `include/pathutil.h`'s `kx_mkdir_p()` and `daemon/src/persist.c`'s `persist_atomic_write()`/`persist_read_file()` failed completely silently on error -- no `fprintf`/`perror` at all, unlike `pki.c`'s own `openssl` subprocess failures, which already logged a real reason. Fixed once at the shared primitive level (used by `pki.c`, `pkg.c`, `network.c`, `dns.c`, `image.c`, `containerdef.c`, `main.c`) rather than per call site.
+- `include/pathutil.h`'s `kx_mkdir_p()` and `daemon/src/persist.c`'s `persist_atomic_write()`/`persist_read_file()` failed completely silently on error -- no `fprintf`/`perror` at all, unlike `pki.c`'s own `openssl` subprocess failures, which already logged a real reason. Fixed once at the shared primitive level (used at the time by `pki.c`, `pkg.c`, `dns.c`, `image.c`, `main.c` -- `network.c`/`containerdef.c` hadn't yet adopted these primitives themselves at this point, and only started using them in later phases) rather than per call site.
 - `daemon/src/pkg.c`'s `run_subprocess()` and `test/test_image_fixture.c`'s near-duplicate `run_cp_a()` swallowed `execve()` failures and nonzero exit status/signal with no diagnostic. Both now report the exact reason.
 - The web dashboard's "Bootstrap build image" button (`web/app.js`) always POSTed an empty body, permanently locked into the dev-convenience toolchain-copy fallback that's explicitly empty/non-functional on a real minimal install. `web/index.html`/`web/app.js` gain an optional toolchain artifact path field wired into the existing `toolchain_path` POST field (already supported server-side and via the CLI's `--toolchain=` since Phase 20) -- blank preserves today's exact behavior.
 
@@ -883,7 +883,7 @@ Two more findings from the same real install, after Secure Boot itself was confi
 #### Fixed
 - `image/src/kanxeo-install.c`: `kanxeod` has a working `--bind=ADDR` flag (defaults to `127.0.0.1`), but the generated loader entry never passed it — so a freshly-installed system always listened on loopback only, unreachable from the network, even though `apply_static_ip()` had already configured the real address on `eth0` moments earlier. `populate_esp()` now takes the install's own `--ip=` value and bakes `--bind=<ip>` into the loader entry, binding exactly the one real address this install is for. Confirmed directly (spiked, not assumed): `kanxeod listening on 192.168.77.77:7620`.
 
-#### Documented
+#### Added
 - `README.md` / `docs/adr/0015-shim-mok-secure-boot-signing.md`: a real firmware-level trap found live during the user's own MOK confirmation — selecting **"Continue boot"** at `MokManager`'s main menu doesn't defer the pending enrollment request, it **permanently discards it** (confirmed by booting the scenario twice: the "Enroll MOK" option is simply gone from every later boot's menu). Not something in this project's own code to fix. `README.md` now warns loudly and documents the recovery path the user actually used successfully: hash-enrolling `\EFI\BOOT\grubx64.efi` and `\kanxeo-bzImage` individually via the same menu's "Enroll hash from disk" — narrower than the cert-based path (tied to exact file hashes, doesn't survive a kernel rebuild) but works without a reinstall.
 
 Zero warnings; `test_installer`/`test_boot`/`test_boot_ab` re-verified (3 consecutive `test_installer` passes); the `--bind=` fix confirmed via a dedicated spike, not just inferred from the existing test's own (differently-scoped) success marker.
@@ -1022,8 +1022,8 @@ A meticulous line-by-line audit of the entire codebase and documentation set, ru
 - **`copy_file()` duplicated across `test/test_overlay.c` and `test/test_image_fixture.c`**: `test_image_fixture.c`'s own header comment already documented this as "the same content test_overlay.c pioneered for its own lowerdir" — an acknowledgment, in the code itself, that `test_overlay.c` (Phase 2, predates `test_image_fixture.c`) was never migrated onto the shared staging module `test_image_fixture.c` (Phase 4) was built to consolidate onto. Exported it as `test_image_fixture_copy_file()` in `test/test_image_fixture.h`/`.c`; `test_overlay.c` now includes the header and calls the shared function, its own copy deleted. `Makefile`'s `test_overlay` build rule gained `test/test_image_fixture.c` as a build input (a pure, dependency-free utility file — no new coupling introduced).
 - Two other flagged candidates were investigated and confirmed **not** to be violations, left as-is: `pkg.c`'s `run_subprocess()` vs. `pki.c`'s `run_openssl()` capture the child's stdout/stderr through a pipe for parsing (PKI needs to read back `openssl`'s output; `run_subprocess()` only needs an exit code) — genuinely different capabilities, not the same logic twice. `test_pkg.c`'s `run_cmd()` (shell-based, `system()` + format string, used only for building test fixtures) vs. `test_pki.c`'s `run_openssl_argv()` (direct `execve()` with an argv array, no shell) likewise solve different problems with deliberately different mechanisms.
 
-#### Verified (no code change required)
-- Git state: clean, fully pushed, no stashes, no dangling branches, no stray backup/patch files anywhere in the tree.
+#### Notes
+- Verified, no code change required. Git state: clean, fully pushed, no stashes, no dangling branches, no stray backup/patch files anywhere in the tree.
 - File mtimes match commit history exactly — no edit was ever made outside the normal commit flow.
 - Full clean rebuild (`rm -rf build && make`): zero warnings across every one of the 19 build targets.
 - All 13 test binaries (`test_toolchain` through `test_pkg`) re-run 3 consecutive times, back to back: 100% pass, identical results each run.
@@ -1248,7 +1248,7 @@ A meticulous line-by-line audit of the entire codebase and documentation set, ru
 #### Changed
 - `docs/ROADMAP.md`: Phase 6 marked in progress (part 1 done); part 2 (wiring this into real containers, the REST API, the CLI, and the dashboard) explicitly scoped as separate, not-yet-started follow-up work, per Zen.
 
-#### Verification note
+#### Notes
 - Before writing `rtnetlink.c`, per ADR-0008's lesson, confirmed via a throwaway `sizeof`/`offsetof` check that TCC lays out every kernel-ABI struct this module touches (`nlmsghdr`, `ifinfomsg`, `ifaddrmsg`, `rtmsg`, `rtattr`, `nlmsgerr`) identically to GCC, and that the relevant `<linux/*.h>` headers don't conflict with glibc's own networking headers — verified, not assumed.
 
 ### Phase 5: Web dashboard, pure REST API client
@@ -1264,8 +1264,8 @@ A meticulous line-by-line audit of the entire codebase and documentation set, ru
 #### Changed
 - `docs/ROADMAP.md`: Phase 5 marked done.
 
-#### Scope boundary (stated, not silently skipped)
-- Whether the dashboard renders and behaves correctly in a real browser wasn't automated-tested — no headless-browser/Node toolchain exists in this project, and adding one for one small dashboard would repeat the exact dependency-cost trade-off ADR-0010 decided against. Checked instead: `node --check` (pre-installed system tool, not a new project dependency) on `app.js`, and every DOM ID it references confirmed present in `index.html`. A real browser check at `http://127.0.0.1:7620/` is the remaining step.
+#### Notes
+- Scope boundary, stated not silently skipped: whether the dashboard renders and behaves correctly in a real browser wasn't automated-tested — no headless-browser/Node toolchain exists in this project, and adding one for one small dashboard would repeat the exact dependency-cost trade-off ADR-0010 decided against. Checked instead: `node --check` (pre-installed system tool, not a new project dependency) on `app.js`, and every DOM ID it references confirmed present in `index.html`. A real browser check at `http://127.0.0.1:7620/` is the remaining step.
 
 ## Phase 4: CLI, pure REST API client
 

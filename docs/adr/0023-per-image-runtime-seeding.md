@@ -18,6 +18,8 @@ Investigating where a *runtime* (not install-time) seeding step could source the
 
 This is a genuine *addition*, not a supersession of ADR-0019: `base`'s own install-time mechanism (sourced from the ISO's *build* machine, at install time, before the daemon has ever run) is untouched, still correct, still exactly what `test/test_installer.c` verifies. The new mechanism is the direct follow-up ADR-0019 itself predicted — closing the gap for every *other* image, sourced from wherever the daemon is actually running, at the moment it's actually needed.
 
+*(Correction, found during the Phase 41 documentation audit: `pkg_seed_image_runtime()` above was later renamed to `pkg_seed_image_baseline()` — ADR-0041 documents the rename directly, alongside expanding its own scope to dev nodes and `/run`. The behavior this ADR describes is otherwise unchanged; only the function's name has moved.)*
+
 ## Consequences
 
 - Verified: `test/test_pkg.c`'s existing per-image scenario (installs `greeter` into a freshly created `router` image) now also confirms all three runtime files land in `router`'s own rootfs after that first install — not just `base`'s. 3 consecutive clean runs. `kanxeo-install.c`/`mkinstalleriso.c` are byte-for-byte untouched by this change, so `base`'s own install-time path carries no regression risk; a full QEMU-level re-verification via `test/test_installer.c` was not run this session (no kernel image cached, and the change never touches that code path at all) — a known, low-risk, explicitly-noted gap rather than a silent skip.

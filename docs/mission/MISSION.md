@@ -46,4 +46,4 @@ When asked to begin or advance to the next step:
 
 Do not generate code for multiple systems at once.
 
-See [ROADMAP.md](ROADMAP.md) for the phased breakdown of how this mission is being executed, and current progress against it.
+See [ROADMAP.md](../roadmap/ROADMAP.md) for the phased breakdown of how this mission is being executed, and current progress against it.

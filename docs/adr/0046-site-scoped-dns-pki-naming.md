@@ -18,6 +18,8 @@ New minimal module, `daemon/src/siteconfig.c`/`daemon/include/siteconfig.h`: two
 
 This module has **no effect on DNS record creation or PKI cert issuance** — no daemon-side code ever reads `site_name`/`domain_suffix` to validate, qualify, or reject a name. Its only consumer is the web dashboard's own DNS-record-create and cert-issue forms, which read `GET /v1/system/site` once and pre-fill a suggested FQDN (`<typed-name>.<site_name>.<domain_suffix>`, or `<typed-name>.<domain_suffix>` when `site_name` is empty) — editable, never forced. This composition happens entirely client-side; no server-side "qualify a name" function exists, since nothing server-side needs one (avoiding a speculative, unused C function per this project's own "No Stop-Gaps" discipline).
 
+*(Superseded in substance, found during the Phase 41 documentation audit: ADR-0052 later added `siteconfig_qualify()` — a real, server-side default-qualification function, called from both DNS record creation and PKI cert issuance for a bare, dot-free name. This paragraph's "no server-side function, nothing server-side needs one" claim is no longer accurate; see ADR-0052 for the current mechanism and why it was added. This ADR's own site-config module, `GET`/`PUT /v1/system/site`, and the rest of this Decision remain accurate and unchanged.)*
+
 ## Consequences
 
 - Real, working today: an operator can declare `lab1`/`corp.internal` (or any valid pair) via a real API, and it survives a daemon restart, verified directly against this session's own live daemon.

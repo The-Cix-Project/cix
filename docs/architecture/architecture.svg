@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 1200" font-family="'DejaVu Sans', Verdana, Arial, sans-serif">
-  <title>Kanxeo Architecture (as of Phase 39)</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 1220" font-family="'DejaVu Sans', Verdana, Arial, sans-serif">
+  <title>Kanxeo Architecture (as of Phase 40)</title>
   <desc>
     Kanxeo hardware/workload orchestration platform architecture: REST-only client
     surfaces (kanxeoctl CLI, web dashboard, the PID1-spawned physical console) talking
@@ -168,10 +168,10 @@
     .box-slot { fill: #ffffff; stroke: #e3bcbc; stroke-width: 1.1; stroke-dasharray: 4 2; rx: 5; }
   </style>
 
-  <rect width="1400" height="1200" fill="#f7f8fb"/>
+  <rect width="1400" height="1220" fill="#f7f8fb"/>
 
   <text x="30" y="40" class="title">Kanxeo Architecture</text>
-  <text x="30" y="60" class="subtitle">Hardware &amp; workload orchestration platform — client-daemon, REST-first, hand-rolled from source (docs/mission/MISSION.md) — as of Phase 39</text>
+  <text x="30" y="60" class="subtitle">Hardware &amp; workload orchestration platform — client-daemon, REST-first, hand-rolled from source (docs/mission/MISSION.md) — as of Phase 40</text>
 
   <!-- ============ CLIENT LAYER ============ -->
   <circle cx="36" cy="91" r="4" fill="#2f855a"/>
@@ -419,6 +419,12 @@
   <text x="1220" y="562" text-anchor="middle" class="module-text">exists as a REST endpoint FIRST.</text>
   <text x="1220" y="576" text-anchor="middle" class="module-text">No other process links container.h.</text>
 
+  <rect x="1090" y="600" width="260" height="42" class="card" fill="#ffffff" stroke="#e6e9ee"/>
+  <rect x="1093" y="606" width="5" height="30" rx="2.5" fill="#718096"/>
+  <use href="#i-box" x="1104" y="608" width="14" height="14" style="color:#718096"/>
+  <text x="1220" y="618" text-anchor="middle" class="module-text">artifacts/ — hostbuild output</text>
+  <text x="1220" y="632" text-anchor="middle" class="small-text">kernel bzImage, self-built squashfs (ADR-0056/57)</text>
+
   <line x1="1070" y1="140" x2="1070" y2="200" stroke="#94a3b8" stroke-width="1.8" marker-end="url(#arrowLight)"/>
   <rect x="1080" y="168" width="100" height="16" rx="8" fill="#ffffff" stroke="#e2e8f0"/>
   <text x="1085" y="180" class="arrow-label" fill="#64748b">local file path</text>
@@ -531,5 +537,7 @@
 
   <text x="30" y="1150" class="small-text">Reflects Phase 39: interactive container console over a hand-rolled WebSocket (ADR-0043); PID1-spawned physical console (ADR-0034).</text>
   <text x="30" y="1164" class="small-text">Root+intermediate PKI CA tier and site-scoped DNS/PKI naming (ADR-0046/0047, ADR-0049 through ADR-0053); stateless host-side per-container stats (ADR-0054).</text>
-  <text x="30" y="1178" class="small-text">Source of truth for what shipped: docs/roadmap/ROADMAP.md — for why: docs/adr/. Update this diagram whenever a change alters a box or arrow shown here (CLAUDE.md).</text>
+  <text x="30" y="1178" class="small-text">Reflects Phase 40: container file-read endpoint (ADR-0055); the hostbuild artifact mechanism, a second pkg-install mode writing to artifacts/ instead of an image (ADR-0056);</text>
+  <text x="30" y="1192" class="small-text">and self-hosted rebuild — kanxeod builds its own successor (tcc.recipe/kanxeo.recipe) and assembles a fresh squashfs itself, server-side, via a spawned mkbootroot (ADR-0057).</text>
+  <text x="30" y="1206" class="small-text">Source of truth for what shipped: docs/roadmap/ROADMAP.md — for why: docs/adr/. Update this diagram whenever a change alters a box or arrow shown here (CLAUDE.md).</text>
 </svg>
