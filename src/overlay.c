@@ -1,10 +1,13 @@
 #include "container.h"
 #include "internal.h"
+#include "linux_compat.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <ftw.h>
 #include <limits.h>
 #include <stdio.h>
+#include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -27,6 +30,44 @@ int overlay_create(const struct overlay_spec *ov)
 	if (mkdir(ov->upperdir, 0755) != 0 && errno != EEXIST) {
 		perror("overlay_create: mkdir(upperdir)");
 		return -1;
+	}
+
+	/*
+	 * Real ext4 project-quota tagging (Part 4, ADR-0062): FS_IOC_FSSETXATTR
+	 * with fsx_projid set and FS_XFLAG_PROJINHERIT on -- the modern,
+	 * XFS-originated project-quota API ext4 also implements, distinct
+	 * from the older, deprecated single-flags-word FS_IOC_SETFLAGS/
+	 * FS_PROJINHERIT_FL pair. PROJINHERIT is not optional: without it,
+	 * only upperdir itself would carry the project id, and every file
+	 * a container later creates *inside* it (the overlay's whole reason
+	 * to exist) would carry no project id at all, silently exempting
+	 * all real container disk usage from the very quota this call
+	 * exists to enforce. Deliberately fails loud (unlike, say,
+	 * cgroup_enable_io_accounting()'s own best-effort posture): a quota
+	 * that was requested but silently not applied is a correctness bug
+	 * wearing a false promise, not a missing optional capability.
+	 */
+	if (ov->project_id != 0) {
+		int fd = open(ov->upperdir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+		struct kx_fsxattr fsx;
+
+		if (fd < 0) {
+			perror("overlay_create: open(upperdir) for project-quota tagging");
+			return -1;
+		}
+		if (ioctl(fd, KX_FS_IOC_FSGETXATTR, &fsx) != 0) {
+			perror("overlay_create: FS_IOC_FSGETXATTR");
+			close(fd);
+			return -1;
+		}
+		fsx.fsx_projid = ov->project_id;
+		fsx.fsx_xflags |= KX_FS_XFLAG_PROJINHERIT;
+		if (ioctl(fd, KX_FS_IOC_FSSETXATTR, &fsx) != 0) {
+			perror("overlay_create: FS_IOC_FSSETXATTR");
+			close(fd);
+			return -1;
+		}
+		close(fd);
 	}
 
 	if (mkdir(ov->workdir, 0700) != 0 && errno != EEXIST) {

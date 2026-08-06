@@ -66,6 +66,17 @@ struct overlay_spec {
 	const char *upperdir;
 	const char *workdir;
 	const char *merged;
+	/*
+	 * Real ext4 project-quota id (Part 4, bare-metal-readiness plan,
+	 * ADR-0062) to tag upperdir with via FS_IOC_FSSETXATTR, so every
+	 * file this container's overlay ever writes counts against it.
+	 * 0 means "no quota requested" -- skip tagging entirely, the same
+	 * zero-means-off convention cgroup_limits' own optional fields
+	 * already use. See src/overlay.c's own comment for exactly what
+	 * the ioctl does and why FS_XFLAG_PROJINHERIT is required, not
+	 * optional.
+	 */
+	uint32_t project_id;
 };
 
 /*

@@ -2326,6 +2326,21 @@ components:
             run on. Passed through verbatim, not reinterpreted -- same
             pass-through convention as cpu_max. Omit for no
             restriction (every online CPU).
+        disk_quota_bytes:
+          type: integer
+          format: int64
+          description: >
+            Real, kernel-enforced ext4 project-quota hard limit in
+            bytes for this container's own overlay upperdir (rounded
+            up to the nearest 1KiB quota block). Writes past the limit
+            fail with EDQUOT at the filesystem level, not just a
+            reported/advisory number. Requires the backing filesystem
+            to have been created with ext4 project-quota support
+            (kanxeo-install.c's own mkfs.ext4 -O quota -E
+            quotatype=prjquota, the default for a real installed
+            system's containers partition) -- if it doesn't, container
+            creation fails with a clear error rather than silently
+            not enforcing the requested limit. Omit for no limit.
         networks:
           type: array
           items:

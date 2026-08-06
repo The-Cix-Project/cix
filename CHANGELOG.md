@@ -2,6 +2,28 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 4: disk quotas -- real ext4 project-quota enforcement (ADR-0062)
+
+Real, kernel-enforced per-container disk-usage limits -- nothing enforced this before (`overlay_upperdir_size()`, ADR-0054, only ever reported usage).
+
+#### Added
+- `image/kernel/qemu-part1.config`: `CONFIG_QUOTA=y`, `CONFIG_QFMT_V2=y`.
+- `image/src/kanxeo-install.c`: `mkfs_ext4()` gains a `with_quota` parameter -- `mkfs.ext4 -O quota -E quotatype=prjquota` on the containers partition only (verified empirically: both feature flags land correctly in a real test filesystem image).
+- `include/container.h`: `struct overlay_spec.project_id` (0 = no quota tagging).
+- `include/linux_compat.h`: `struct kx_fsxattr` + `KX_FS_IOC_FSGETXATTR`/`KX_FS_IOC_FSSETXATTR`/`KX_FS_XFLAG_PROJINHERIT` -- declared here rather than `<linux/fs.h>` directly, which clashes with glibc's own `<fcntl.h>` (confirmed: `SYNC_FILE_RANGE_WRITE_AND_WAIT` defined differently by each). Ioctl numeric values and `struct fsxattr`'s real 28-byte size verified empirically, not hand-computed and trusted blind.
+- `src/overlay.c`: `overlay_create()` performs real `FS_IOC_FSSETXATTR` project-id tagging (with `FS_XFLAG_PROJINHERIT`) right after `mkdir(ov->upperdir, ...)` -- fails loud on error, unlike this codebase's usual best-effort cgroup-enablement posture.
+- `daemon/src/quotamap.c`/`.h`: new, small, persisted name-to-project-id module (`quotamap_get_or_assign()`) -- deliberately separate from the in-memory-only `registry.c`.
+- `daemon/src/main.c`: `resolve_backing_device()` (real `/proc/mounts` longest-match resolution, the `findmnt`/`df` algorithm) and `set_disk_quota()` (real `quotactl(2)` `Q_SETQUOTA`); `create_container_from_body()` parses `disk_quota_bytes`.
+- `cli/src/main.c`: `kanxeoctl run --disk-quota=BYTES`.
+- `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/cli-reference.md`: document the new field/flag.
+- `docs/adr/0062-ext4-project-disk-quotas.md`.
+- `test/test_disk_quota.c`: real HTTP end-to-end test -- `disk_quota_bytes` parsing, `quotamap_get_or_assign()`'s real persisted allocation (same name -> same id across two requests, verified by reading the real state file; different name -> distinct id), correct `500` propagation when the backing filesystem lacks project-quota support, no container left behind after a failed quota create, and zero regression for ordinary no-quota creation.
+
+#### Notes
+- Project ids are deliberately never reclaimed or reused, even after `DELETE` -- `DELETE /v1/containers/{name}` does not remove the container's own upperdir at all (ADR-0054's pre-existing backup/restore design), so the quota data those files count against must keep pointing at the same id indefinitely.
+- Full clean rebuild (zero warnings); fast regression set green (24 daemon-linked/unit tests including the new one), 3 consecutive clean runs.
+- **Not verified, per Zen:** a real write past the quota genuinely failing with `EDQUOT` -- this sandbox has no loop devices and no raw block-device access, so a real quota-enabled ext4 mount cannot be exercised here at all (confirmed: `FS_IOC_FSSETXATTR` against this sandbox's own real root ext4 returns `EOPNOTSUPP`, the correct behavior for a filesystem never given the quota feature). The same class of gap already documented for Part 3's kernel-module boot test and Part 5's ISO self-build. `CONFIG_QUOTA`/`CONFIG_QFMT_V2` deferred to the same combined rebuild+boot cycle as Parts 2/3's own kernel config additions.
+
 ### Part 3: kernel module loading (ADR-0061)
 
 The largest, most novel part of the bare-metal-readiness plan -- real target hardware needs broader driver coverage than this project's fixed QEMU/VirtIO set, but the no-initramfs constraint (ADR-0014) means whichever controller could hold root can never be a loadable module.

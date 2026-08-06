@@ -47,7 +47,7 @@ static void print_usage(FILE *out)
 	        "               call reboot separately for it to take effect on the next boot\n"
 	        "  ps\n"
 	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] [--cpu-max=\"Q P\"]\n"
-	        "      [--cpuset=0-1,3] [--network=NAME[:IP] ...]\n"
+	        "      [--cpuset=0-1,3] [--disk-quota=BYTES] [--network=NAME[:IP] ...]\n"
 	        "      [--ip-forward] [--dns-register] [--pki-issue] [--pki-cert-dir=PATH]\n"
 	        "      [--pki-days=N] [--route=DEST/PREFIX:VIA ...] [--device=ID ...]\n"
 	        "      [--interface=IFNAME ...] [--restart=always|on-failure|unless-stopped]\n"
@@ -1550,6 +1550,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	long pids_max = -1;
 	const char *cpu_max = NULL;
 	const char *cpuset_cpus = NULL;
+	long long disk_quota_bytes = -1;
 	int i = 0;
 	int cmd_start = -1;
 	struct json_writer w;
@@ -1572,6 +1573,8 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 			cpu_max = argv[i] + 10;
 		else if (strncmp(argv[i], "--cpuset=", 9) == 0)
 			cpuset_cpus = argv[i] + 9;
+		else if (strncmp(argv[i], "--disk-quota=", 13) == 0)
+			disk_quota_bytes = atoll(argv[i] + 13);
 		else if (strncmp(argv[i], "--network=", 10) == 0) {
 			if (network_count >= CLI_MAX_NETWORKS) {
 				fprintf(stderr, "kanxeoctl: too many --network= flags (max %d)\n",
@@ -1672,6 +1675,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		fprintf(stderr,
 		        "usage: kanxeoctl run --name=NAME --image=IMAGE [--memory-max=N] "
 		        "[--pids-max=N] [--cpu-max=\"QUOTA PERIOD\"] [--cpuset=0-1,3] "
+		        "[--disk-quota=BYTES] "
 		        "[--network=NAME[:IP] ...] [--ip-forward] [--dns-register] "
 		        "[--pki-issue] [--pki-cert-dir=PATH] [--pki-days=N] "
 		        "[--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--interface=IFNAME ...] "
@@ -1714,6 +1718,10 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (cpuset_cpus != NULL) {
 		jw_key(&w, "cpuset_cpus");
 		jw_str(&w, cpuset_cpus);
+	}
+	if (disk_quota_bytes >= 0) {
+		jw_key(&w, "disk_quota_bytes");
+		jw_int(&w, disk_quota_bytes);
 	}
 	if (network_count > 0) {
 		jw_key(&w, "networks");

@@ -14,6 +14,7 @@
 #include "persist.h"
 #include "pki.h"
 #include "pkg.h"
+#include "quotamap.h"
 #include "registry.h"
 #include "rtnetlink.h"
 #include "siteconfig.h"
@@ -41,7 +42,9 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/epoll.h>
+#include <sys/ioctl.h>
 #include <sys/mount.h>
+#include <sys/quota.h>
 #include <sys/reboot.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -93,6 +96,7 @@ static char CONTAINER_DEFS_STATE_PATH[PATH_MAX];
 static char SITE_CONFIG_PATH[PATH_MAX];
 static char DEVICEMAP_STATE_PATH[PATH_MAX];
 static char DAEMON_CONFIG_PATH[PATH_MAX];
+static char QUOTAMAP_STATE_PATH[PATH_MAX];
 
 /* Computes every path derived from g_base_dir -- called once, right
  * after argv parsing (so --data-dir= has already been applied) and
@@ -116,6 +120,7 @@ static void init_base_dir_paths(void)
 	snprintf(SITE_CONFIG_PATH, sizeof(SITE_CONFIG_PATH), "%s/site_config.json", g_base_dir);
 	snprintf(DEVICEMAP_STATE_PATH, sizeof(DEVICEMAP_STATE_PATH), "%s/devicemaps.json", g_base_dir);
 	snprintf(DAEMON_CONFIG_PATH, sizeof(DAEMON_CONFIG_PATH), "%s/daemon_config.json", g_base_dir);
+	snprintf(QUOTAMAP_STATE_PATH, sizeof(QUOTAMAP_STATE_PATH), "%s/quota_projids.json", g_base_dir);
 }
 /*
  * Backoff cap and stability-reset threshold for the crash-restart
@@ -171,6 +176,124 @@ static void init_base_dir_paths(void)
  * "not a real installed system" case in this function.
  */
 #define CONTAINERS_DEVICE "/dev/vda5"
+
+/*
+ * Real ext4 project-quota device resolution (Part 4, bare-metal-
+ * readiness plan, ADR-0062). quotactl(2)'s own "special" argument
+ * needs the real block device backing wherever CONTAINERS_DIR actually
+ * lives -- which is CONTAINERS_DEVICE only under a real --init-mode
+ * boot; every daemon-linked test and any --data-dir= override instead
+ * points g_base_dir at an ordinary directory on whatever filesystem the
+ * host/test environment's own root happens to be (see CONTAINERS_
+ * DEVICE's own comment above for the tmpfs-fallback case, which is a
+ * third possibility again). Hardcoding CONTAINERS_DEVICE here would be
+ * silently wrong in both of those cases -- this project's own bare-
+ * metal-readiness plan flagged this exact question explicitly ("device-
+ * path resolution... must be confirmed, not assumed"), so it's resolved
+ * for real instead: walk /proc/mounts and pick the longest-matching
+ * mount point for `path` (the same "find the owning mount" algorithm
+ * findmnt/df use internally), returning 0 and filling out_device on
+ * success. -1 (errno set) if /proc/mounts can't be read or path isn't
+ * under any mount point at all (should never happen for a legitimately
+ * mounted directory).
+ *
+ * Deliberately does not decode octal-escaped whitespace in /proc/mounts'
+ * own mountpoint field (e.g. "\040" for a literal space) -- no path this
+ * project ever mounts anything at (CONTAINERS_DIR, PKI_DIR, or any
+ * --data-dir=/mkdtemp() test path) contains a space, so handling that
+ * general case would be real, unexercised complexity for a scenario
+ * that can't occur here.
+ */
+static int resolve_backing_device(const char *path, char *out_device, size_t out_size)
+{
+	char real_path[PATH_MAX];
+	FILE *f;
+	char line[PATH_MAX * 2];
+	size_t best_len = 0;
+	int found = 0;
+
+	if (realpath(path, real_path) == NULL)
+		return -1;
+
+	f = fopen("/proc/mounts", "r");
+	if (f == NULL)
+		return -1;
+
+	while (fgets(line, sizeof(line), f) != NULL) {
+		char device[PATH_MAX];
+		char mountpoint[PATH_MAX];
+		size_t mp_len;
+
+		if (sscanf(line, "%4095s %4095s", device, mountpoint) != 2)
+			continue;
+
+		mp_len = strlen(mountpoint);
+		if (strncmp(real_path, mountpoint, mp_len) != 0)
+			continue;
+		/* Exact match, or the next real_path char must be '/' -- so a
+		 * mountpoint of "/var" never matches a real_path of
+		 * "/variant". */
+		if (real_path[mp_len] != '\0' && real_path[mp_len] != '/')
+			continue;
+		if (mp_len < best_len)
+			continue;
+
+		best_len = mp_len;
+		if (snprintf(out_device, out_size, "%s", device) >= (int)out_size) {
+			fclose(f);
+			errno = ENAMETOOLONG;
+			return -1;
+		}
+		found = 1;
+	}
+	fclose(f);
+
+	if (!found) {
+		errno = ENOENT;
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * Sets a real, kernel-enforced hard limit of quota_bytes for project id
+ * projid on whatever device backs CONTAINERS_DIR, via a real
+ * quotactl(2) Q_SETQUOTA call -- independent of and order-agnostic with
+ * src/overlay.c's own FS_IOC_FSSETXATTR tagging (that call says "these
+ * files belong to project X"; this one says "project X's own limit is
+ * Y" -- setting a limit for a project id the kernel has never seen an
+ * inode tagged with yet is a completely normal, harmless no-op until
+ * one shows up). dqb_bhardlimit is in real quota *blocks* (always
+ * 1024 bytes each, regardless of the filesystem's own block size --
+ * see /usr/include/x86_64-linux-gnu/sys/quota.h's own struct dqblk
+ * comment), not raw bytes, hence the rounding-up conversion. No soft
+ * limit / grace-period policy -- dqb_bsoftlimit is set equal to the
+ * hard limit, so writes are refused (EDQUOT) the instant the real limit
+ * is hit, not merely warned about after some grace period this project
+ * has no mechanism to surface to an operator anyway. Returns 0 on
+ * success, -1 (errno set by quotactl(2) -- ENOTSUP/EOPNOTSUPP if the
+ * backing filesystem doesn't have the project-quota feature enabled at
+ * all, exactly what a filesystem kanxeo-install.c didn't create via
+ * mkfs.ext4 -O quota -E quotatype=prjquota reports) otherwise.
+ */
+static int set_disk_quota(uint32_t projid, long long quota_bytes)
+{
+	char device[PATH_MAX];
+	struct dqblk dq;
+
+	if (resolve_backing_device(CONTAINERS_DIR, device, sizeof(device)) != 0)
+		return -1;
+
+	memset(&dq, 0, sizeof(dq));
+	dq.dqb_bhardlimit = (uint64_t)((quota_bytes + 1023) / 1024);
+	dq.dqb_bsoftlimit = dq.dqb_bhardlimit;
+	dq.dqb_valid = QIF_BLIMITS;
+
+	if (quotactl(QCMD(Q_SETQUOTA, PRJQUOTA), device, (int)projid, (caddr_t)&dq) != 0)
+		return -1;
+	return 0;
+}
+
 #define MAX_EVENTS 64
 #define CONTAINERS_PREFIX "/v1/containers/"
 #define NETWORKS_PREFIX "/v1/networks/"
@@ -2566,6 +2689,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 	struct json_value *root;
 	const struct json_value *jname, *jimage, *jcmd, *jmem, *jpids, *jcpu, *jcpuset, *jnetworks,
 	    *jip_forward, *jroutes;
+	const struct json_value *jdisk_quota;
+	long long disk_quota_bytes;
 	const struct json_value *jdevices;
 	const struct json_value *jinterfaces;
 	const struct json_value *jfiles, *jsysctls;
@@ -3104,6 +3229,32 @@ static int create_container_from_body(const char *body, size_t body_len,
 	spec.cg.cpu_max = json_as_string(jcpu);
 	jcpuset = json_object_get(root, "cpuset_cpus");
 	spec.cg.cpuset_cpus = json_as_string(jcpuset);
+	jdisk_quota = json_object_get(root, "disk_quota_bytes");
+	disk_quota_bytes = jdisk_quota != NULL ? (long long)json_as_number(jdisk_quota) : 0;
+	if (disk_quota_bytes > 0) {
+		uint32_t projid;
+
+		if (quotamap_get_or_assign(name, &projid) != 0) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "failed to assign a disk-quota project id");
+			return 500;
+		}
+		/*
+		 * Set before the container (and its overlay_create()'s own
+		 * FS_IOC_FSSETXATTR tagging) is created -- order-agnostic per
+		 * this call's own comment, but doing it first means the limit
+		 * is already in force by the moment any file could possibly
+		 * be tagged with this project id.
+		 */
+		if (set_disk_quota(projid, disk_quota_bytes) != 0) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size,
+			         "failed to set disk quota (backing filesystem may not have "
+			         "project-quota support enabled)");
+			return 500;
+		}
+		spec.ov.project_id = projid;
+	}
 	spec.ov.lowerdir = lowerdir;
 	spec.ov.upperdir = upperdir;
 	spec.ov.workdir = workdir;
@@ -6856,6 +7007,8 @@ int main(int argc, char **argv)
 	if (containerdef_init(CONTAINER_DEFS_STATE_PATH) != 0)
 		return 1;
 	if (devicemap_init(DEVICEMAP_STATE_PATH) != 0)
+		return 1;
+	if (quotamap_init(QUOTAMAP_STATE_PATH) != 0)
 		return 1;
 
 	/*

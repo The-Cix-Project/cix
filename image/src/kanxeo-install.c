@@ -332,11 +332,34 @@ static int mkfs_vfat(const char *device)
 	return run_subprocess(MKFS_VFAT_BIN, argv);
 }
 
-static int mkfs_ext4(const char *device, const char *label)
+/*
+ * with_quota enables ext4's real project-quota feature at mkfs time
+ * (Part 4, bare-metal-readiness plan, ADR-0062) -- "-O quota -E
+ * quotatype=prjquota" bakes the hidden quota inode and RO_COMPAT_QUOTA
+ * feature bit directly into the filesystem, which the kernel then
+ * honors automatically on every mount with no mount-time option
+ * needed at all ("grpquota|noquota|quota|usrquota" are real, but
+ * ignored no-ops on ext4's own mount(8) man page -- confirmed, not
+ * assumed -- this is the modern journaled-quota-via-feature-bit
+ * mechanism, not the legacy mount-option-driven one). Only the
+ * containers partition needs this -- the ESP and kanxeo-config
+ * partitions never hold container overlay data, so quota tracking on
+ * them would be real, unexercised scope.
+ */
+static int mkfs_ext4(const char *device, const char *label, int with_quota)
 {
-	char *argv[] = { (char *)MKFS_EXT4_BIN, "-q", "-F", "-L", (char *)label, (char *)device, NULL };
+	if (with_quota) {
+		char *argv[] = { (char *)MKFS_EXT4_BIN, "-q", "-F", "-L", (char *)label,
+			          "-O", "quota", "-E", "quotatype=prjquota", (char *)device, NULL };
 
-	return run_subprocess(MKFS_EXT4_BIN, argv);
+		return run_subprocess(MKFS_EXT4_BIN, argv);
+	}
+	{
+		char *argv[] = { (char *)MKFS_EXT4_BIN, "-q", "-F", "-L", (char *)label,
+			          (char *)device, NULL };
+
+		return run_subprocess(MKFS_EXT4_BIN, argv);
+	}
 }
 
 /* --auto-partition: sfdisk, scripted, no operator interaction -- the same
@@ -615,7 +638,7 @@ int main(int argc, char **argv)
 
 	if (mkfs_vfat(esp_dev) != 0)
 		return 1;
-	if (mkfs_ext4(config_dev, "kanxeo-config") != 0)
+	if (mkfs_ext4(config_dev, "kanxeo-config", 0) != 0)
 		return 1;
 	/* "kanxeo-containers" is 17 characters -- one over ext4's 16-char
 	 * label limit (EXT2_LABEL_LEN), which mke2fs would otherwise
@@ -626,7 +649,7 @@ int main(int argc, char **argv)
 	 * above, via sfdisk -d), never this label, so truncation here has
 	 * no functional effect either way; picking the fit deliberately
 	 * just avoids the warning. */
-	if (mkfs_ext4(containers_dev, "kanxeo-container") != 0)
+	if (mkfs_ext4(containers_dev, "kanxeo-container", 1) != 0)
 		return 1;
 
 	if (ensure_dir(ESP_MOUNT) != 0)

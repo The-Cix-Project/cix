@@ -1,7 +1,7 @@
 pkg_name="kernel"
 pkg_version="6.18.40"
 pkg_source="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.40.tar.xz http://127.0.0.1:8901/qemu-part1.config"
-pkg_sha256="3712fc1ec839e4daac981176c8518912e8f452650aaedfe4381da4419613a431 d2e5ff0a75726d43c1c1da8d40a3043039d5d7496e96f10a506d37c9dc9e07a8"
+pkg_sha256="3712fc1ec839e4daac981176c8518912e8f452650aaedfe4381da4419613a431 a7c0f454fecec70388ea2790bad5d8eb898d247be9854fe27a865d548faa8f7f"
 pkg_depends=""
 
 # A hostbuild recipe (ADR-0056) -- pkg_install() places its output at a

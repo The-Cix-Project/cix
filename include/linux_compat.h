@@ -215,4 +215,29 @@ static inline int kx_epoll_wait(int epfd, struct kx_epoll_event *events, int max
 	return epoll_wait(epfd, (struct epoll_event *)events, maxevents, timeout);
 }
 
+/*
+ * Real ext4/XFS-style project-quota tagging (Part 4, bare-metal-
+ * readiness plan, ADR-0062) needs struct fsxattr and the
+ * FS_IOC_FSGETXATTR/FS_IOC_FSSETXATTR ioctls -- declared here rather
+ * than pulling in the kernel uapi <linux/fs.h> directly, which clashes
+ * with glibc's own <fcntl.h> (SYNC_FILE_RANGE_WRITE_AND_WAIT defined
+ * with a different value by each -- confirmed directly, the same class
+ * of kernel-uapi-vs-glibc clash this file already works around for
+ * clone3/epoll_event). ABI-stable, taken verbatim from the real kernel
+ * header.
+ */
+struct kx_fsxattr {
+	uint32_t fsx_xflags;
+	uint32_t fsx_extsize;
+	uint32_t fsx_nextents;
+	uint32_t fsx_projid;
+	uint32_t fsx_cowextsize;
+	unsigned char fsx_pad[8];
+};
+
+#define KX_FS_XFLAG_PROJINHERIT 0x00000200
+
+#define KX_FS_IOC_FSGETXATTR 0x801c581f
+#define KX_FS_IOC_FSSETXATTR 0x401c5820
+
 #endif /* LINUX_COMPAT_H */
