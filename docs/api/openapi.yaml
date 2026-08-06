@@ -132,6 +132,20 @@ paths:
             either file fails its own on-disk magic check -- the
             inactive slot is left completely untouched in every 400
             case (both files are validated before either is written)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: >
+            A real disk write failed after validation passed: writing
+            image_path to the inactive slot device, writing kernel_path
+            to the ESP, or writing the fresh systemd-boot loader entry
+            itself. Whichever step failed is named in the error message.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /system/backup:
     get:
@@ -204,6 +218,21 @@ paths:
             No recognized field present, or a present field failed its
             own validation (not valid JSON / pkg_recipes not an
             object of strings) -- nothing is written in either case
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: >
+            Every field passed validation but a real disk write failed
+            while applying one of them (its own state file, or, for
+            pkg_recipes, the recipes directory/an individual .recipe
+            file) -- the specific field is named in the error message.
+            Fields written before the failing one are NOT rolled back.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /system/site:
     get:
@@ -262,6 +291,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500":
+          description: Validated but persisting the new site config to disk failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /containers:
     get:
@@ -304,6 +339,17 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: A container with this name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: >
+            A real internal failure partway through creation: no free IP
+            addresses left on an auto-allocated network, the container
+            table is full, the container's own on-disk directory or its
+            staged files[] content could not be written, or the
+            underlying clone3()/registry create itself failed
           content:
             application/json:
               schema:
@@ -392,6 +438,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500":
+          description: The mapping table is full, or persisting the new mapping to disk failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /devicemaps/{name}:
     delete:
@@ -412,6 +464,12 @@ paths:
           description: Removed
         "404":
           description: No mapping with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The mapping exists but persisting its removal to disk failed
           content:
             application/json:
               schema:
@@ -462,6 +520,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500":
+          description: The network table is full, or creating the real bridge failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /networks/{name}:
     get:
@@ -498,6 +562,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: Still in use by at least one container
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The network exists but deleting its real bridge failed
           content:
             application/json:
               schema:
@@ -549,6 +619,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500":
+          description: This network's own interface table is full, or the real attach operation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /networks/{name}/interfaces/{ifname}:
     delete:
@@ -567,6 +643,12 @@ paths:
           description: Detached
         "404":
           description: No such network, or this interface isn't attached to it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Attached but the real detach operation failed
           content:
             application/json:
               schema:
@@ -621,6 +703,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500":
+          description: Creating the rootfs directory or seeding its C runtime failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /images/{name}:
     get:
@@ -637,6 +725,12 @@ paths:
                 $ref: "#/components/schemas/Image"
         "404":
           description: No image with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The image exists but reading its detail back failed
           content:
             application/json:
               schema:
@@ -667,6 +761,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: Still referenced by a running container, or still has packages installed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The image exists and is otherwise removable, but deleting its rootfs directory failed
           content:
             application/json:
               schema:
@@ -723,6 +823,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500":
+          description: The record table is full, or persisting the new record to disk failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /dns/records/{name}:
     get:
@@ -753,6 +859,12 @@ paths:
           description: Removed
         "404":
           description: No record with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The record exists but persisting its removal to disk failed
           content:
             application/json:
               schema:
@@ -813,6 +925,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500":
+          description: The binding table is full, or the initial hosts_path write failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /dns/servers/{container}:
     delete:
@@ -843,6 +961,12 @@ paths:
                 $ref: "#/components/schemas/PkiCa"
         "404":
           description: CA not bootstrapped yet -- POST /pki/ca first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The CA is bootstrapped but reading it back from disk failed
           content:
             application/json:
               schema:
@@ -881,6 +1005,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500":
+          description: The underlying openssl keypair/cert generation or the resulting write to disk failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /pki/intermediate:
     get:
@@ -895,6 +1025,12 @@ paths:
                 $ref: "#/components/schemas/PkiCa"
         "404":
           description: Intermediate not bootstrapped yet -- POST /pki/intermediate first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The intermediate is bootstrapped but reading it back from disk failed
           content:
             application/json:
               schema:
@@ -934,6 +1070,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: Intermediate is already bootstrapped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The underlying openssl keypair/cert generation or the resulting write to disk failed
           content:
             application/json:
               schema:
@@ -990,6 +1132,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500":
+          description: >
+            The cert table is full, or the underlying openssl signing
+            operation or the resulting write to disk failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /pki/certs/{name}:
     get:
@@ -1010,6 +1160,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500":
+          description: The cert is tracked but reading its files back from disk failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     delete:
       summary: Remove an issued certificate (deletes its key and cert files on disk)
       operationId: deletePkiCert
@@ -1020,6 +1176,12 @@ paths:
           description: Removed
         "404":
           description: No cert with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Tracked but deleting its key/cert files from disk failed
           content:
             application/json:
               schema:
@@ -1095,6 +1257,17 @@ paths:
                       $ref: "#/components/schemas/PkiCertIssued"
         "400":
           description: Invalid root_common_name/intermediate_common_name, or the root isn't bootstrapped yet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: >
+            The underlying openssl regeneration, or a reissue of one of
+            the previously-tracked leaves, failed partway through -- the
+            old chain and leaves are already unlinked by this point (see
+            the destructive-reissue note above), so a 500 here leaves the
+            install with a partially-rebuilt PKI state, not the old one
           content:
             application/json:
               schema:
@@ -1189,6 +1362,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500":
+          description: Validated but writing the .recipe file to disk failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /pkg/recipes/{name}:
     get:
@@ -1213,6 +1392,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500":
+          description: The recipe exists but reading its file back from disk failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     delete:
       summary: >
         Removes a recipe. Does not affect anything already installed via it -- only
@@ -1225,6 +1410,12 @@ paths:
           description: Recipe removed
         "404":
           description: No recipe with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The recipe exists but deleting its file from disk failed
           content:
             application/json:
               schema:
@@ -1268,6 +1459,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500":
+          description: The package table is full, or spawning/tracking the fetch subprocess failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /pkg/update-all:
     post:
@@ -1302,6 +1499,12 @@ paths:
                 $ref: "#/components/schemas/PkgEntry"
         "409":
           description: Another install/upgrade is already in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The package table is full, or spawning/tracking the fetch subprocess failed
           content:
             application/json:
               schema:
@@ -1361,6 +1564,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500":
+          description: The package table is full, or spawning/tracking the fetch subprocess failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /pkg/hostbuild/{name}:
     get:
@@ -1377,6 +1586,12 @@ paths:
                 $ref: "#/components/schemas/PkgEntry"
         "404":
           description: No such hostbuild job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The hostbuild entry exists but reading it back failed
           content:
             application/json:
               schema:
@@ -1419,6 +1634,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500":
+          description: The package is tracked but reading its entry back failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     delete:
       summary: Uninstalls a package (unlinks its manifested files from its target image)
       operationId: deletePkg
@@ -1435,6 +1656,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: This package is currently mid-install
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Tracked but unlinking its manifested files from the target image failed
           content:
             application/json:
               schema:
@@ -1524,6 +1751,17 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500":
+          description: >
+            Replaying the definition hit a real internal failure -- the
+            same set create_container_from_body() can produce for POST
+            /containers itself (no free IPs, container table full, a
+            directory/file write failed, or the underlying clone3()/
+            registry create failed)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /containers/{name}/pause:
     post:
@@ -1560,6 +1798,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500":
+          description: The cgroup.freeze write itself failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /containers/{name}/unpause:
     post:
@@ -1586,6 +1830,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: Not paused
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The cgroup.freeze write itself failed
           content:
             application/json:
               schema:
@@ -1694,12 +1944,16 @@ paths:
 
         Once upgraded, the connection carries raw PTY bytes both ways:
         client-to-server WebSocket frames (TEXT or BINARY, always
-        masked per RFC 6455 -- the daemon writes 400 and closes on an
-        unmasked client frame) are written verbatim to the exec'd
+        masked per RFC 6455) are written verbatim to the exec'd
         process's stdin; PTY output is relayed back as BINARY frames.
-        A WebSocket CLOSE frame from either side, or the exec'd process
-        exiting on its own, ends the session -- the exec'd process is
-        SIGKILLed if it's still running when the client disconnects.
+        Any frame-parse failure post-upgrade -- including an unmasked
+        client frame, which RFC 6455 5.1 requires a server to reject --
+        SIGKILLs the exec'd process and closes the raw connection
+        immediately; there is no HTTP status to write once the
+        connection is a WebSocket, and no WebSocket CLOSE frame is sent
+        either, just a raw close. A WebSocket CLOSE frame from either
+        side, or the exec'd process exiting on its own, ends the
+        session the same way -- SIGKILL, then close.
         Frame fragmentation (FIN=0) is not supported in either
         direction -- every frame this daemon sends or accepts is a
         complete, single-frame message (this endpoint's own traffic
@@ -1847,6 +2101,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500":
+          description: The file exists but stat()ing it or allocating a buffer to hold it failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
 components:
   parameters:
@@ -1911,10 +2171,14 @@ components:
       name: name
       in: path
       required: true
-      description: A recipe's name (its pkg_name= field, and the {name}.recipe filename).
+      description: >
+        A recipe's name (its pkg_name= field, and the {name}.recipe
+        filename). Unlike PkgName, this has no "{name}@{image}" compound
+        form -- a recipe is not tracked per-image, so an "@" is simply
+        rejected as an invalid name.
       schema:
         type: string
-        pattern: "^[A-Za-z0-9_-]+(@[A-Za-z0-9_-]+)?$"
+        pattern: "^[A-Za-z0-9_-]+$"
 
   schemas:
     ContainerCreateRequest:
@@ -2810,7 +3074,7 @@ components:
 
     SiteConfig:
       type: object
-      required: [instance_name, site_name, domain_suffix]
+      required: [instance_name, domain_suffix]
       properties:
         instance_name:
           type: string
@@ -2822,8 +3086,10 @@ components:
         site_name:
           type: string
           description: >
-            Operator-chosen label (e.g. "lab1"). "" is valid, meaning
-            no site tier -- a single-site deployment.
+            Operator-chosen label (e.g. "lab1"). Optional on PUT (a
+            request that omits it entirely defaults to "" server-side,
+            same as an explicit ""); always present in a GET response.
+            "" means no site tier -- a single-site deployment.
         domain_suffix:
           type: string
           default: internal
@@ -2947,8 +3213,14 @@ components:
         depends:
           type: string
           description: >
-            Raw pkg_depends= value from the recipe. Parsed and surfaced for visibility
-            only in v1 -- not acted on (no automatic dependency installation yet).
+            Raw pkg_depends= value from the recipe: a whitespace-separated
+            list of other recipe names. Real and acted on -- POST
+            /pkg/install and /pkg/update-all both recursively resolve and
+            install any of these not already satisfied in the target
+            image before this recipe's own build starts, with cycle and
+            diamond-dependency handling. A hostbuild recipe (POST
+            /pkg/hostbuild) must leave this empty -- dependency
+            resolution has no meaning for a one-shot artifact harvest.
 
     PkgRecipeDetail:
       allOf:

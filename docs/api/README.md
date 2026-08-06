@@ -11,18 +11,32 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | GET | `/health` | Liveness check |
 | POST | `/system/shutdown` | Stop `kanxeod`; powers off the host too when running as real PID 1 |
 | POST | `/system/reboot` | Stop `kanxeod`; restarts the host too when running as real PID 1 |
-| POST | `/system/update` | Write a fresh OS image onto this daemon's own inactive A/B slot |
+| POST | `/system/update` | Write a fresh control-plane squashfs and/or a fresh kernel onto this daemon's own inactive A/B slot |
+| GET | `/system/backup` | Bundle platform configuration state (container defs, networks, DNS, package state, site config) |
+| POST | `/system/restore` | Write a previously-backed-up bundle back to its real state files |
+| GET | `/system/site` | This install's declared identity (`instance_name`/`site_name`/`domain_suffix`) |
+| PUT | `/system/site` | Set this install's site identity |
 | GET | `/containers` | List all containers this daemon knows about |
 | POST | `/containers` | Create and start a container |
 | GET | `/containers/{name}` | Inspect one container |
 | DELETE | `/containers/{name}` | Stop (if running), remove it, and forget any persisted definition |
+| POST | `/containers/{name}/start` | Bring a stopped-but-still-defined container back to life |
 | POST | `/containers/{name}/stop` | Kill it now, keep its persisted definition (for `restart: "unless-stopped"`) |
+| POST | `/containers/{name}/pause` | Freeze a running container via the cgroup v2 freezer |
+| POST | `/containers/{name}/unpause` | Thaw a paused container |
+| GET | `/containers/{name}/stats` | Real, host-side CPU/memory/disk/network usage, a point-in-time snapshot |
+| GET | `/containers/{name}/files` | Read one file's raw bytes back out of a container's rootfs |
 | GET | `/containers/{name}/console` | Upgrade to a WebSocket; an interactive shell inside the running container |
+| GET | `/devices` | List host PCI/USB/net devices discoverable via sysfs, available for passthrough |
+| GET | `/devicemaps` | List persistent, operator-named device mappings |
+| POST | `/devicemaps` | Create a persistent device mapping (name -> selector) |
+| DELETE | `/devicemaps/{name}` | Remove a device mapping |
 | GET | `/networks` | List all networks this daemon knows about |
 | POST | `/networks` | Create a network (a real bridge, persisted across restarts) |
 | GET | `/networks/{name}` | Inspect one network |
 | DELETE | `/networks/{name}` | Remove a network (refused if any container is still attached) |
-| GET | `/devices` | List host PCI/USB/net devices discoverable via sysfs, available for passthrough |
+| POST | `/networks/{name}/interfaces` | Attach a real host network interface to this network's bridge |
+| DELETE | `/networks/{name}/interfaces/{ifname}` | Detach a previously-attached interface |
 | GET | `/images` | List every image this daemon knows about |
 | POST | `/images` | Create an empty image (runtime pre-seeded, ready for `pkg install`) |
 | GET | `/images/{name}` | Inspect one image |
@@ -35,34 +49,40 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | POST | `/dns/servers` | Register a running container as a DNS-serving target |
 | DELETE | `/dns/servers/{container}` | Unregister a DNS server binding |
 | GET | `/pki/ca` | Inspect the root CA (never includes the private key) |
-| POST | `/pki/ca` | Bootstrap the root CA (once; no regeneration in v1) |
+| POST | `/pki/ca` | Bootstrap the root CA (once; see `/pki/reset` for regeneration) |
+| GET | `/pki/intermediate` | Inspect the intermediate CA (never includes the private key) |
+| POST | `/pki/intermediate` | Bootstrap a second CA tier, signed by the root |
 | GET | `/pki/certs` | List all issued leaf certificates (metadata only) |
-| POST | `/pki/certs` | Issue a leaf certificate signed by the root CA |
+| POST | `/pki/certs` | Issue a leaf certificate signed by the root (or intermediate, if bootstrapped) |
 | GET | `/pki/certs/{name}` | Inspect one issued certificate (metadata + cert, never the key) |
 | DELETE | `/pki/certs/{name}` | Remove an issued certificate |
+| POST | `/pki/reset` | Wipe and regenerate the entire CA chain, reissuing every currently-tracked leaf |
 | POST | `/pkg/bootstrap` | Stage the sandboxed build toolchain image (optional `toolchain_path` for a real install; once; idempotent) |
 | GET | `/pkg/recipes` | List recipes known to this daemon (metadata only) |
 | POST | `/pkg/recipes` | Add a recipe, or replace one with the same name (upsert) |
+| GET | `/pkg/recipes/{name}` | One recipe's full detail, including its raw `.recipe` text |
 | DELETE | `/pkg/recipes/{name}` | Remove a recipe (does not affect anything already installed via it) |
-| POST | `/pkg/install` | Start installing a package (async -- returns immediately) |
+| POST | `/pkg/install` | Start installing a package (async — returns immediately) |
 | POST | `/pkg/update-all` | Start an upgrade for the first installed package whose recipe has drifted |
+| POST | `/pkg/hostbuild` | Start a hostbuild job — build a standalone artifact instead of merging into an image |
+| GET | `/pkg/hostbuild/{name}` | Inspect one hostbuild job's current state |
 | GET | `/pkg` | List every known package (installed or in-flight) with its state |
 | GET | `/pkg/{name}` | Inspect one package's current state |
 | DELETE | `/pkg/{name}` | Uninstall a package |
 
-Every error response is `{"error": "message"}` with an appropriate 4xx/5xx status.
+Every error response is `{"error": "message"}` with an appropriate 4xx/5xx status. Every mutating endpoint that touches disk or spawns a subprocess can in principle also return `500` (a real I/O or subprocess failure, not a client mistake) — see `openapi.yaml`'s own per-path `"500"` response for exactly which internal failure each one covers; the specific set differs per endpoint and isn't repeated here.
 
 ## Creating a network
 
 ```
 POST /v1/networks
-{"name": "internal", "subnet": "172.31.0.0", "prefix_len": 24}
+{"name": "internal", "subnet": "172.31.0.0", "prefix_len": 24, "gateway": "172.31.0.1"}
 ```
 
 - `name` must match `[A-Za-z0-9_-]{1,15}` — it's used verbatim as the Linux bridge interface's name (IFNAMSIZ is 15 chars).
 - `subnet` must be the exact network address for `prefix_len` (host bits zero) — `"172.31.0.5"` with `prefix_len: 24` is rejected, only `"172.31.0.0"` is valid. It must also not overlap any existing network's range.
 - `prefix_len` must be in `[8, 30]`.
-- The gateway is always the subnet's first host address (`.1`) — there's no separate gateway field.
+- `gateway` is optional (ADR-0037). Omitted (the default): the bridge is created purely L2, with no host-owned IP address at all — for networks whose own routing is owned by whatever's attached to them (a router pair running a routing protocol, a shared VRRP address, etc.), not the host; containers on it get no default route from this network. Given, it must be a real address within `subnet` (not the network/broadcast address) — it's assigned to the bridge device itself, and every attached container's *primary* network attachment gets it as an automatic default route.
 
 Response (`201`):
 
@@ -71,6 +91,15 @@ Response (`201`):
 ```
 
 Creating a network creates its bridge immediately via rtnetlink and persists the definition to `/var/lib/kanxeo/networks.json` — unlike containers (safe to be in-memory-only, since they die with the daemon), a bridge outlives this process, so the daemon reloads and recreates every persisted network's bridge idempotently at startup.
+
+### Attaching a real host interface
+
+```
+POST /v1/networks/internal/interfaces
+{"ifname": "eth1", "vlan_id": 0}
+```
+
+Enslaves a real, currently-assignable host interface (`GET /devices`'s own `"net:<ifname>"` entries — not already moved into a container's netns, not already attached anywhere via this endpoint) directly into this network's bridge — the "physical ethernet on a host-managed switch" mechanism, distinct from `interfaces` on `POST /containers` (which moves a NIC straight into one container's own netns instead). `vlan_id` 0 or omitted enslaves `eth1` itself, untagged; a nonzero `vlan_id` instead creates and enslaves an 802.1q `eth1.<vlan_id>` sub-interface, leaving `eth1` free to attach (with a different `vlan_id`) to other networks too. `DELETE /v1/networks/internal/interfaces/eth1` detaches it — releasing the interface from the bridge, or deleting the VLAN sub-interface, whichever this call originally created.
 
 ## Creating a container
 
@@ -139,9 +168,50 @@ This persists the exact request (`/var/lib/kanxeo/container_defs.json`) in addit
 
 `dns1` (itself persisted) is guaranteed to have been *started* before `router1` — and, if `dns1` sets its own `readiness` (`{"tcp_port": N, "timeout_seconds": N}`, requires `networks` to be non-empty), genuinely TCP-ready, not just process-started. Readiness is a plain, blocking `connect()` retried until it succeeds or `timeout_seconds` elapses, consulted in exactly one place — daemon-boot autostart, right before a dependent starts — best-effort: if it never succeeds, a warning is logged and boot proceeds anyway, never blocking or failing it. It is never consulted for a live `POST` or for crash-restart. A `depends_on` naming an unknown or non-persisted container, or forming a cycle, is skipped at boot (logged, not fatal to anything else starting).
 
+`GET`/inspect responses always report the current `restart`/`restart_delay_seconds`/`stopped`/`depends_on`/`readiness` state, read live from the persisted definition rather than a stale echo of what creation was originally given.
+
+## Container lifecycle: start, stop, pause, unpause
+
 `POST /v1/containers/{name}/stop` kills it now but keeps its persisted definition — the container comes back on the next daemon restart for `"always"`/`"on-failure"` (a fresh chance every boot), but stays down for `"unless-stopped"` until explicitly re-`POST`ed. `DELETE /v1/containers/{name}` always means gone for good regardless of policy — it removes the persisted definition too, in the same call, and it won't come back on a pending crash-restart or any future boot.
 
-`GET`/inspect responses always report the current `restart`/`restart_delay_seconds`/`stopped`/`depends_on`/`readiness` state, read live from the persisted definition rather than a stale echo of what creation was originally given.
+`POST /v1/containers/{name}/start` is the counterpart: brings a stopped-but-still-defined container back to life without a daemon restart, replaying its persisted definition through the same creation path a daemon restart's own autostart already uses — one source of truth for "how a definition becomes a live container." Idempotent — already-running is a plain `200`, not an error. `404` if no persisted definition exists for this name at all (this endpoint only ever replays an existing definition; `POST /containers` creates a new one). Unlike boot-time autostart, this endpoint ignores `restart: "unless-stopped"` gating entirely — an explicit, manual start always means start it.
+
+`POST /v1/containers/{name}/pause` and `.../unpause` freeze/thaw a running container via the cgroup v2 freezer (`cgroup.freeze`) — every task in it is stopped at the kernel level, uninterceptable and unignorable, unlike `SIGSTOP` which a process can catch or handle. Both require an already-live container (`404` otherwise — pausing a stopped-but-defined or nonexistent container makes no sense); unlike `.../stop`'s idempotent double-call tolerance, pausing an already-paused container (or unpausing an already-running one) is a `409`, not a silent `200` — the caller should already know this from its last `GET`. A paused container's own on-disk state (cgroup leaf, upperdir, everything) is otherwise completely untouched — no stop/delete/recreate is involved, it's purely a freeze/thaw of already-running tasks.
+
+`GET`/inspect responses report the current `"status"` (`"running"`/`"paused"`/`"stopped"`) live, not a stale echo.
+
+## Container stats
+
+```
+GET /v1/containers/{name}/stats
+```
+
+A real, host-side, point-in-time snapshot — no in-container agent, no server-side history (the daemon never stores a sample; call again to get a fresh one, and compute rates/percentages client-side from consecutive samples, exactly what `kanxeoctl stats` and the web dashboard's own Stats tab both do). Response shape:
+
+```json
+{
+  "cpu": {"usage_usec": 1234567, "user_usec": 900000, "system_usec": 334567},
+  "memory": {"current": 8388608, "peak": 12582912, "max": null},
+  "disk": {"upper_bytes": 4096, "read_bytes": 0, "write_bytes": 16384, "read_ios": 0, "write_ios": 4},
+  "networks": [{"name": "internal", "rx_bytes": 1024, "tx_bytes": 2048, "rx_packets": 12, "tx_packets": 9}]
+}
+```
+
+- `cpu`/`disk.read_*`/`disk.write_*`/`networks[].*_bytes`/`networks[].*_packets` are cumulative counters (since the container started); `memory.*`/`disk.upper_bytes` are gauges (current value, not a delta). `disk.upper_bytes` is the real, current size of the container's own overlay upperdir content (its actual on-disk footprint, not including the shared, read-only image layer beneath it).
+- Works for a container that exited on its own (it stays queryable, same as `GET /containers/{name}` itself does, until a real `DELETE`); `404`s once actually removed.
+- `networks[].name` is always the container-facing network name (`"internal"`), never the host-side veth implementation name — a host implementation detail this API never leaks.
+
+## Reading a file back out of a container
+
+```
+GET /v1/containers/{name}/files?path=/etc/hosts
+```
+
+The read-path counterpart to `POST /containers`' own `files[]` (write-only, host-to-container, staged before the container's own `clone3()`). Response is raw bytes (`application/octet-stream`), not JSON — this daemon's only other non-JSON response besides the web dashboard's own static assets and the console WebSocket upgrade.
+
+Path resolution depends on whether the container is currently running: while running, the file is read through `/proc/<pid>/root/<path>` (the container's own mount namespace and root, no privilege boundary crossed since the daemon already runs as real root). Once the container has exited on its own (but not been `DELETE`d — an exited-but-still-registered container is a valid target, same as `GET .../stats` above), the file is read from the container's own real, host-visible overlay upperdir first, falling back to the image's own read-only rootfs if the path was never written by the container itself.
+
+`path` must be an absolute, `/`-leading, traversal-free path (no `.`/`..` component, no empty `//` component) — the exact same validation `POST /containers`' own `files[].path` already applies, reused verbatim. A path resolving to a directory is `400`, not a directory listing — this endpoint reads one file, it does not browse a tree. `kanxeoctl files get NAME --path=/some/path [--output=PATH]` is the CLI surface (stdout if `--output=` is omitted).
 
 ## Making a container act as a router
 
@@ -183,7 +253,7 @@ Two real, ready-to-use clients — neither requires hand-rolling the handshake y
 - **`kanxeoctl console NAME [--cmd=/path/to/shell]`** — a full, `termios` raw-mode terminal: tab completion, Ctrl-C, `vim`/`top`/`less` all work correctly, since it drives a real local terminal end to end.
 - **The web dashboard's own Console tab** (a container's default view when selected in the left tree) — the browser's native `WebSocket` object talks directly to this endpoint, no hand-rolled handshake needed client-side. Deliberately reduced fidelity by design (ADR-0010's "no framework" constraint, confirmed with the user rather than silently accepted): a line-buffer renderer with `\r`/`\n`/backspace/Tab and SGR color support, no cursor-addressable screen model, so full-screen redraw programs (`vim`, `top`, `less`) render wrong there specifically — `kanxeoctl console` has no such limitation.
 
-A WebSocket CLOSE frame from either side, or the exec'd process exiting on its own, ends the session; the exec'd process is `SIGKILL`ed if it's still running when the client disconnects — no leaked processes survive session teardown. No new authentication layer exists for this endpoint — exactly as protected as every other existing mutating endpoint today (network reachability only), a more sensitive capability than most, worth stating plainly rather than leaving implicit.
+Any frame-parse failure post-upgrade (including an unmasked client frame, which RFC 6455 requires a server to reject) — or a WebSocket CLOSE frame from either side, or the exec'd process exiting on its own — ends the session the same way: `SIGKILL` the exec'd process, then close the raw connection immediately (no WS CLOSE frame is sent back, no HTTP status is possible once the connection is a WebSocket at all) — no leaked processes survive session teardown. No new authentication layer exists for this endpoint — exactly as protected as every other existing mutating endpoint today (network reachability only), a more sensitive capability than most, worth stating plainly rather than leaving implicit.
 
 ## DNS: records + a real dnsmasq container
 
@@ -194,7 +264,7 @@ POST /v1/dns/records
 {"name": "db.internal", "ip": "172.31.0.5"}
 ```
 
-- `name` is a hostname (dot-separated labels, `[A-Za-z0-9-]`, RFC 1035 length limits) — a different charset from network/container names, which don't allow dots.
+- `name` is a hostname (dot-separated labels, `[A-Za-z0-9-]`, RFC 1035 length limits) — a different charset from network/container names, which don't allow dots. A `name` with no `.` at all gets this install's own site suffix appended by default (`<name>.<site_name>.<domain_suffix>`, see [This install's identity](#this-installs-identity-site-config) below) — fully overridable by including a `.`.
 - `ip` must be well-formed IPv4.
 
 Once a container running dnsmasq exists (e.g. `cmd: ["/usr/sbin/dnsmasq", "-k", "-u", "root", "-p", "53", "-H", "/etc/dnsmasq-hosts", "-R", "-h"]` — `-u root` since a minimal container image typically has no `/etc/passwd` for dnsmasq's default privilege drop to resolve; `-R`/`-h` skip `/etc/resolv.conf`/`/etc/hosts`, which likely don't exist either), register it:
@@ -227,18 +297,29 @@ This creates a record named `db` pointing at `db`'s IP on its primary (first) ne
 
 Registration is best-effort and non-fatal to container creation: if a record named `db` already exists (e.g. a stale one persisted from a previous container of the same name — DNS records outlive a daemon restart, containers don't), registration is silently skipped rather than overwriting it, and the container is still created successfully.
 
-## PKI: a root CA and issued leaf certificates
+Also auto-maintained: this install's own instance DNS record (its FQDN pointing at its own `--bind=` address), reconciled at daemon startup and again on every `PUT /system/site` — see [This install's identity](#this-installs-identity-site-config) below.
 
-A single internal root CA plus leaf certificate issuance. Actual cryptography (keypair generation, CSR signing) is done by the daemon shelling out to the system's real, unmodified `openssl` binary as a short-lived subprocess — the same "real software, not hand-rolled" reasoning BIRD and dnsmasq were chosen under (ADR-0007's "no external libraries" rule governs this project's own platform components, not real software it invokes or runs as a workload).
+## PKI: a CA chain and issued leaf certificates
 
-Bootstrap the CA once:
+A single internal root CA, an optional second intermediate tier, and leaf certificate issuance. Actual cryptography (keypair generation, CSR signing) is done by the daemon shelling out to the system's real, unmodified `openssl` binary as a short-lived subprocess — the same "real software, not hand-rolled" reasoning BIRD and dnsmasq were chosen under (ADR-0007's "no external libraries" rule governs this project's own platform components, not real software it invokes or runs as a workload).
+
+Bootstrap the root CA once:
 
 ```
 POST /v1/pki/ca
 {"common_name": "Kanxeo Root CA", "days": 3650}
 ```
 
-Both fields are optional (shown defaults). **The CA private key is never returned over the API, in any endpoint, ever** — it's the root of trust and must never leave the host. A second `POST /v1/pki/ca` is a `409`; there's no CA regeneration in v1.
+Both fields are optional (shown defaults). **The CA private key is never returned over the API, in any endpoint, ever** — it's the root of trust and must never leave the host. A second `POST /v1/pki/ca` is a `409` — `pki_ca_create()` is a one-shot by design; see [Regenerating the whole chain](#regenerating-the-whole-chain-post-pkireset) below for the real "start over" operation.
+
+### A second, intermediate CA tier
+
+```
+POST /v1/pki/intermediate
+{"common_name": "Kanxeo Intermediate CA", "days": 1825}
+```
+
+Requires the root to already be bootstrapped (`400` otherwise); a second call is `409`, the same one-shot-only precedent as `/pki/ca`. Once this succeeds, every future `POST /pki/certs` leaf is signed by the intermediate instead of the root automatically — transparent to that endpoint, no separate opt-in — and `GET /pki/certs/{name}` plus any `pki_issue`-delivered `tls.crt` then carries the real, complete chain (leaf + intermediate). The intermediate's own private key is never returned over the API either, same as the root's.
 
 Issue a leaf certificate:
 
@@ -247,8 +328,8 @@ POST /v1/pki/certs
 {"name": "svc.internal", "sans": ["svc.internal", "svc"], "days": 365}
 ```
 
-- `name` is a hostname (same RFC 1035 rules as `DnsRecord.name`) — it becomes the certificate's CN and this endpoint's REST identifier.
-- `sans` is optional and defaults to `[name]` — a cert always carries at least its own name as a Subject Alternative Name.
+- `name` is a hostname (same RFC 1035 rules as `DnsRecord.name`) — it becomes the certificate's CN and this endpoint's REST identifier. A `name` with no `.` gets this install's own site suffix appended by default, same rule as DNS records — fully overridable by including a `.`.
+- `sans` is optional and defaults to `[name]` — a cert always carries at least its own name as a Subject Alternative Name. The default-qualification rule above is never applied to an explicitly-supplied `sans` entry, only to `name` and the default SAN derived from it.
 - `days` is optional, default 365.
 
 The `201` response (`PkiCertIssued`) is the **only** place the leaf's private key is ever returned:
@@ -284,13 +365,70 @@ POST /v1/containers
 }
 ```
 
-`pki_cert_dir` and `pki_days` are optional (shown defaults). This issues a cert named `web` (CN and sole SAN) and writes `tls.crt`/`tls.key` (chmod 0600) into `/etc/kanxeo-tls` **inside the `web` container's own filesystem** — the same `/proc/<pid>/root/<path>` mechanism `POST /v1/dns/servers` already uses to reach into a running container (ADR-0013), just delivering a cert+key instead of a hosts file. Unlike DNS server bindings, delivery is **one-time**: there's no live resync, since a cert doesn't change after a container starts. `GET /v1/pki/certs/web` shows `"owner": "web"`; deleting the `web` container automatically removes its cert (both the index entry and the on-disk key/cert files) — a manually-created cert is never touched by any container's deletion, even if it happens to share that container's name but wasn't the one that created it.
+`pki_cert_dir` and `pki_days` are optional (shown defaults). This issues a cert named `web` (CN and sole SAN) and writes `tls.crt`/`tls.key` (chmod 0600) into `/etc/kanxeo-tls` **inside the `web` container's own filesystem** — the same `/proc/<pid>/root/<path>` mechanism `POST /v1/dns/servers` already uses to reach into a running container (ADR-0013), just delivering a cert+key instead of a hosts file. Unlike DNS server bindings, delivery is **one-time**: there's no live resync, since a cert doesn't change after a container starts — except after a `/pki/reset` (below), which explicitly redelivers to every still-live container that owns a reissued leaf. `GET /v1/pki/certs/web` shows `"owner": "web"`; deleting the `web` container automatically removes its cert (both the index entry and the on-disk key/cert files) — a manually-created cert is never touched by any container's deletion, even if it happens to share that container's name but wasn't the one that created it.
 
 Unlike `dns_register`, `pki_issue` does **not** require `networks` — the cert identifies the container by name, not by IP, and delivery works for any running container regardless of networking. It **does** require the CA to already be bootstrapped, checked upfront as a `400` (you can't issue a cert with no CA). A *name collision* discovered only at issuance time (e.g. a stale cert persisted from a same-named container created before a daemon restart) is best-effort instead: issuance is silently skipped rather than overwriting it, and the container is still created successfully.
 
+This install also always keeps a `"host"` leaf current for itself, auto-(re)issued whenever `PUT /system/site` changes this install's identity, or whenever the CA chain changes at all — nothing an operator needs to request separately.
+
+### Regenerating the whole chain: `POST /pki/reset`
+
+`pki_ca_create()`/`pki_intermediate_create()` are one-shot by design and refuse a second call outright (`409`) — this is the explicit, real "start over" operation that design deliberately doesn't provide implicitly:
+
+```
+POST /v1/pki/reset
+{"root_common_name": "Kanxeo Root CA - lab.internal", "intermediate_common_name": "Kanxeo Intermediate CA - lab.internal"}
+```
+
+Destructive: deletes the root (and the intermediate, if one was bootstrapped) and every leaf's on-disk key/cert, then re-bootstraps the root (and intermediate, only if one existed before this call) with new common names (each defaults to `"Kanxeo Root/Intermediate CA - <domain_suffix>"` if omitted), then reissues every leaf that was tracked beforehand — same name/SANs/owner, a fresh keypair and validity period for each. Every reissued leaf's `cert_pem` **and** `key_pem` are included in the response — a genuine new issuance moment for each, the identical "returned exactly once, right now" treatment a leaf's key already gets at first issuance. A leaf whose reissue itself fails is simply gone, not left in its old state, since its old key/cert (signed by a CA that no longer exists the instant this proceeds) are already unlinked before any reissue is attempted. Any leaf owned by a still-live, `pki_issue`-created container is automatically redelivered into that container's own filesystem afterward, so a running service's `tls.crt`/`tls.key` don't go stale.
+
+## Device passthrough (PCI/USB/GPU)
+
+```
+POST /v1/containers
+{
+  "name": "nas",
+  "image": "base",
+  "cmd": ["/bin/some-binary"],
+  "devices": ["usb:1-2", "gpu:0"]
+}
+```
+
+- `devices` is optional: 0–N entries, each a discovered device id from `GET /v1/devices` (`"pci:..."`, `"usb:..."`, or `"gpu:N"` for a whole GPU — `gpu:N` is never itself listed by `GET /v1/devices`, only its individual member nodes are), **or** the name of a persistent device mapping (below). Real `/dev` nodes are granted via a `BPF_CGROUP_DEVICE` program on the container's own cgroup (ADR-0017) — nothing else on the host can reach them once bound. A bare `gpu:N` id expands into every node that physical GPU needs in one grant (DRM `cardN`/`renderDN` plus the shared `/dev/kfd` compute node) — see ADR-0028/ADR-0029.
+- `interfaces` is optional: 0–N real host network interface names (e.g. `"eth1"`) moved directly into the container's own netns (not a veth pair) — fd-anchored teardown, correct even if the container crashes mid-move. See ADR-0022.
+- `GET /v1/containers` echoes the real, expanded grants actually made, not an echo of what was requested.
+
+### Persistent, named device mappings
+
+`GET /devices`'s own ids are ephemeral — re-enumerated fresh from sysfs on every call, never persisted, and a USB device's bus/port-derived id can change if it's ever plugged into a different port. A device mapping is a real, named, persisted binding an operator creates once and references by a stable name thereafter, in a container's own `devices` field or here:
+
+```
+POST /v1/devicemaps
+{"name": "backup-drive", "kind": "exact", "selector": "usb:1-2"}
+```
+
+`kind` is `"exact"` (pins one specific bus/port location) or `"vendor_model"` (matches by USB vendor:product id or PCI vendor:device id, following whichever physical port the matching device is actually plugged into — the more useful choice for a device that might move ports, like a specific model of USB drive). Real and creatable even for hardware that isn't currently plugged in — an operator predefining a mapping before plugging the device in, or one that's temporarily unplugged, are both legitimate states (`"present": false` on `GET`), not errors. Each mapping is still resolved fresh against current hardware on every `GET` (`present`/`resolved_ids`), never cached — only the *mapping itself* (name → selector) persists, not a hardware snapshot. `DELETE /devicemaps/{name}` does not touch anything about a container already using this mapping's name — device grants are resolved once, at container-creation time, never re-resolved live afterward.
+
+## Per-container config files + sysctls
+
+```
+POST /v1/containers
+{
+  "name": "router2",
+  "image": "router",
+  "cmd": ["/bin/bash", "/usr/local/bin/pbr.sh"],
+  "files": [{"path": "/etc/bird.conf", "content": "...", "mode": "0644"}],
+  "sysctls": [{"key": "net.ipv4.conf.all.rp_filter", "value": "0"}]
+}
+```
+
+- `files` is optional: 0–N `{path, content, mode}` entries, staged directly onto the container's own filesystem *before* its process ever `execve()`s — so `cmd` can point straight at a staged script (e.g. `pbr.sh` above). `path` must be absolute with no `.`/`..` component (`400` otherwise); `content` is bounded at 64KiB per file. `GET /containers/{name}/files?path=...` (above) is the read-path counterpart, for after the container is running.
+- `sysctls` is optional: 0–N `{key, value}` entries; `key` must start with `net.` (the one sysctl subtree the kernel actually namespaces end to end — `400` for anything else, a real security boundary, not incidental). Applied inside the container's own netns right after `clone3()`, the same mechanism `ip_forward` already uses.
+- Both survive exactly like everything else in `restart: "always"`'s own replay mechanism — no separate persistence work needed. See ADR-0030.
+
 ## Package manager: source-based, asynchronous installs
 
-A package manager built from scratch: recipes are shell scripts (the same format Gentoo ebuilds/Arch PKGBUILDs/CRUX Pkgfiles use), builds happen inside this project's own container runtime, and the daemon **never sources or executes a recipe on the host** — recipe metadata (`pkg_name=`, `pkg_version=`, `pkg_source=`, `pkg_sha256=`, `pkg_depends=`) is read with a strict, non-executing line scanner; the recipe's real shell code (`pkg_build()`/`pkg_install()`) only ever runs inside the isolated, network-less build container.
+A package manager built from scratch: recipes are shell scripts (the same format Gentoo ebuilds/Arch PKGBUILDs/CRUX Pkgfiles use), builds happen inside this project's own container runtime, and the daemon **never sources or executes a recipe on the host** — recipe metadata (`pkg_name=`, `pkg_version=`, `pkg_source=`, `pkg_sha256=`, `pkg_depends=`) is read with a strict, non-executing line scanner; the recipe's real shell code (`pkg_build()`/`pkg_install()`) only ever runs inside the isolated, network-less build container. See [`docs/guides/writing-recipes.md`](../guides/writing-recipes.md) for the full recipe-authoring contract.
 
 **Every install targets one image**, `/var/lib/kanxeo/images/{image}/rootfs` — `"base"` by default (any container created with `"image": "base"` gets everything installed there, no separate host/container package paths to keep in sync), or an explicit other one (see [Per-image installs](#per-image-installs) below) for software that shouldn't be part of every container's baseline.
 
@@ -304,25 +442,6 @@ POST /v1/pkg/bootstrap
 
 Stages a real build toolchain (`gcc`/`make`/`ld`/`as`/`cc1`/`sh`/`tar` and their real headers/libraries) into the sandboxed build image. No body: copies live from this daemon's own host `/usr/{include,lib,lib64,bin,libexec}` with the real `cp -a` — works for dev/test convenience when `kanxeod` happens to be running somewhere with a real toolchain already, but produces an empty, non-functional toolchain on a real minimal install (nothing under its own `/usr` beyond `kanxeod`/`kanxeoctl` and their bare runtime libs). For a real install, use `{"toolchain_path": "/local/path/to/toolchain.squashfs"}` instead — imports a real, portable artifact (built once, elsewhere, with `image/src/mktoolchainimage.c`, then `scp`'d onto this box, the same "local path, not an upload" precedent `/system/update`'s `image_path`/`kernel_path` already established). Both idempotent — safe to call again.
 
-A recipe (`pkg_name=`/`pkg_version=`/`pkg_source=`/`pkg_sha256=`/`pkg_depends=`, plus real `pkg_build()`/`pkg_install()` shell functions):
-
-```sh
-pkg_name=hello
-pkg_version=2.12.1
-pkg_source=https://ftp.gnu.org/gnu/hello/hello-2.12.1.tar.gz
-pkg_sha256=8d99142afd92576f30b0cd7cb42a8dc6809998bc5d607d88761f512e26c7db8
-pkg_depends=""
-
-pkg_build() {
-    ./configure --prefix=/usr
-    make -j"$(nproc)"
-}
-
-pkg_install() {
-    make DESTDIR="$PKG_DESTDIR" install
-}
-```
-
 **Recipes are managed live, via the API itself (ADR-0040)** — `POST /v1/pkg/recipes` adds one (or replaces an existing one of the same name, an upsert), no ISO rebuild or reinstall needed:
 
 ```
@@ -330,7 +449,7 @@ POST /v1/pkg/recipes
 {"name": "hello", "content": "pkg_name=hello\npkg_version=2.12.1\n..."}
 ```
 
-`content` is validated (must parse, and its own `pkg_name=` must equal `name`) *before* anything on disk changes — `400` on a mismatch or a recipe that fails to parse, so a bad upload can never clobber a working recipe already there. `204` on success. `DELETE /v1/pkg/recipes/{name}` removes one; it only affects future `pkg install`/`update-all` lookups, never anything already installed via it. `GET /v1/pkg/recipes` lists what this daemon currently knows about. This project's own git-tracked `pkg/recipes/*.recipe` files (`bash`, `bird`, `iproute2`, etc.) are the *source* for a fresh deployment's initial catalog, uploaded through this same endpoint — never baked into the installer ISO or read directly off some fixed on-disk path by the daemon itself.
+`content` is validated (must parse, and its own `pkg_name=` must equal `name`) *before* anything on disk changes — `400` on a mismatch or a recipe that fails to parse, so a bad upload can never clobber a working recipe already there. `204` on success. `GET /v1/pkg/recipes/{name}` returns one recipe's full detail (including its raw `.recipe` text, unlike the list view's metadata-only shape) — powers the web dashboard's per-package Recipe tab. `DELETE /v1/pkg/recipes/{name}` removes one; it only affects future `pkg install`/`update-all` lookups, never anything already installed via it. `GET /v1/pkg/recipes` lists what this daemon currently knows about. This project's own git-tracked `pkg/recipes/*.recipe` files (`bash`, `bird`, `iproute2`, etc.) are the *source* for a fresh deployment's initial catalog, uploaded through this same endpoint — never baked into the installer ISO or read directly off some fixed on-disk path by the daemon itself.
 
 Install it:
 
@@ -353,18 +472,18 @@ Poll `GET /v1/pkg/hello` until `state` leaves `fetching`/`building`:
 
 `state: "failed"` populates `error` (checksum mismatch, build failure, etc.) — the package stays visible via `GET` so the failure is diagnosable, not silently dropped. `DELETE /v1/pkg/hello` unlinks every file in its manifest from the base image, not just the registry entry.
 
-v1 serializes installs — only one may be in flight at a time (`POST /v1/pkg/install` for a second package while another is still `fetching`/`building` is a `409`).
+v1 serializes installs — only one may be in flight at a time (`POST /v1/pkg/install` for a second package while another is still `fetching`/`building` is a `409`). Hostbuild jobs (below) share this exact same job slot.
 
 ### Dependencies
 
-A recipe's `pkg_depends` (space-separated names) is resolved automatically. Given a `top` recipe with `pkg_depends="leaf"`:
+A recipe's `pkg_depends` (space-separated names) is resolved automatically and recursively. Given a `top` recipe with `pkg_depends="leaf"`:
 
 ```
 POST /v1/pkg/install
 {"name": "top"}
 ```
 
-Installs `leaf` first (skipped entirely if already installed), then `top` — one `POST`, both packages end up `installed`, visible individually via `GET /v1/pkg`. **The `202` response describes whichever package actually started fetching first** — here, `leaf`, not `top`, since `top` can't start until its dependency is done. Poll by name (`GET /v1/pkg/leaf`, then `GET /v1/pkg/top`) to follow the whole chain. A dependency with no matching recipe, or a circular dependency (`A` needs `B` needs `A`), is a `400` — nothing is fetched.
+Installs `leaf` first (skipped entirely if already installed), then `top` — one `POST`, both packages end up `installed`, visible individually via `GET /v1/pkg`. **The `202` response describes whichever package actually started fetching first** — here, `leaf`, not `top`, since `top` can't start until its dependency is done. Poll by name (`GET /v1/pkg/leaf`, then `GET /v1/pkg/top`) to follow the whole chain. A dependency with no matching recipe, or a circular dependency (`A` needs `B` needs `A`), is a `400` — nothing is fetched. A diamond (`top` needs both `mid1` and `mid2`, both need `leaf`) installs `leaf` exactly once, not twice.
 
 ### Upgrades
 
@@ -393,7 +512,7 @@ POST /v1/pkg/install
 {"name": "bird", "image": "router"}
 ```
 
-`bird` (and its dependencies, resolved the same way as always) builds into `/var/lib/kanxeo/images/router/rootfs` — containers created with `"image": "base"` never see it. The same package name is tracked independently per image: `bash` installed into both `base` and `router` are two separate entries, each independently upgradable/removable. `router` above doesn't need to exist beforehand — the first install into a name never seen before creates it implicitly; `POST /v1/images {"name": "router"}` creates one explicitly instead, useful when you want an image to exist (and be immediately usable — its C runtime is seeded right away) before installing anything into it. See [Image lifecycle](#endpoints-at-a-glance) in the endpoint table above, or `openapi.yaml`'s own `/images` paths for the full contract.
+`bird` (and its dependencies, resolved the same way as always) builds into `/var/lib/kanxeo/images/router/rootfs` — containers created with `"image": "base"` never see it. The same package name is tracked independently per image: `bash` installed into both `base` and `router` are two separate entries, each independently upgradable/removable. `router` above doesn't need to exist beforehand — the first install into a name never seen before creates it implicitly; `POST /v1/images {"name": "router"}` creates one explicitly instead, useful when you want an image to exist (and be immediately usable — its C runtime is seeded right away) before installing anything into it.
 
 `GET`/`DELETE` on a non-default image use the compound `{name}@{image}` path form:
 
@@ -402,42 +521,20 @@ GET /v1/pkg/bird@router
 DELETE /v1/pkg/bird@router
 ```
 
-A bare `GET /v1/pkg/bird` still means `bird@base`. `GET /v1/pkg` (the list) includes every `(name, image)` entry, each with its own `"image"` field.
+A bare `GET /v1/pkg/bird` still means `bird@base`. `GET /v1/pkg` (the list) includes every `(name, image)` entry, each with its own `"image"` field. Note this compound form applies to `/pkg/{name}` only, not `/pkg/recipes/{name}` — a recipe isn't tracked per-image, so its own name parameter never accepts an `@` suffix.
 
 Note: the C runtime for dynamically-linked binaries (`ld.so`/`libc.so.6`/`libtinfo.so.6`) is seeded automatically into whichever image a package lands in, `base` or otherwise (ADR-0019 for `base` at install time, ADR-0023 generalizes it to every image at first install).
 
-## Device passthrough (PCI/USB/GPU)
+### Hostbuild: standalone artifacts instead of merging into an image
+
+Most installs merge their build output into a target image's rootfs. A hostbuild job is the second mode of the exact same pipeline: it harvests the output as a standalone artifact on the host instead — used to build the Linux kernel `kanxeod` boots, and to self-build `kanxeod`/`kanxeoctl`/`web` themselves from a running Kanxeo host (see [`docs/guides/kernel-build-and-ab-updates.md`](../guides/kernel-build-and-ab-updates.md) and [`docs/guides/building-kanxeo.md`](../guides/building-kanxeo.md) for the full operator runbooks).
 
 ```
-POST /v1/containers
-{
-  "name": "nas",
-  "image": "base",
-  "cmd": ["/bin/some-binary"],
-  "devices": ["usb:1-2", "gpu:0"]
-}
+POST /v1/pkg/hostbuild
+{"name": "kernel", "build_image": "kanxeo-builder"}
 ```
 
-- `devices` is optional: 0–N entries, each a discovered device id from `GET /v1/devices` (`"pci:..."`, `"usb:..."`, or `"gpu:N"` for a whole GPU — `gpu:N` is never itself listed by `GET /v1/devices`, only its individual member nodes are). Real `/dev` nodes are granted via a `BPF_CGROUP_DEVICE` program on the container's own cgroup (ADR-0017) — nothing else on the host can reach them once bound. A bare `gpu:N` id expands into every node that physical GPU needs in one grant (DRM `cardN`/`renderDN` plus the shared `/dev/kfd` compute node) — see ADR-0028/ADR-0029.
-- `interfaces` is optional: 0–N real host network interface names (e.g. `"eth1"`) moved directly into the container's own netns (not a veth pair) — fd-anchored teardown, correct even if the container crashes mid-move. See ADR-0022.
-- `GET /v1/containers` echoes the real, expanded grants actually made, not an echo of what was requested.
-
-## Per-container config files + sysctls
-
-```
-POST /v1/containers
-{
-  "name": "router2",
-  "image": "router",
-  "cmd": ["/bin/bash", "/usr/local/bin/pbr.sh"],
-  "files": [{"path": "/etc/bird.conf", "content": "...", "mode": "0644"}],
-  "sysctls": [{"key": "net.ipv4.conf.all.rp_filter", "value": "0"}]
-}
-```
-
-- `files` is optional: 0–N `{path, content, mode}` entries, staged directly onto the container's own filesystem *before* its process ever `execve()`s — so `cmd` can point straight at a staged script (e.g. `pbr.sh` above). `path` must be absolute with no `.`/`..` component (`400` otherwise); `content` is bounded at 64KiB per file.
-- `sysctls` is optional: 0–N `{key, value}` entries; `key` must start with `net.` (the one sysctl subtree the kernel actually namespaces end to end — `400` for anything else, a real security boundary, not incidental). Applied inside the container's own netns right after `clone3()`, the same mechanism `ip_forward` already uses.
-- Both survive exactly like everything else in `restart: "always"`'s own replay mechanism — no separate persistence work needed. See ADR-0030.
+`build_image` is always explicit (no default) — the already-existing image whose rootfs supplies the build container's own toolchain (must already have whatever the recipe's `pkg_build()` needs actually installed, via ordinary `pkg install` first; a hostbuild recipe cannot itself declare `pkg_depends`, since dependency resolution has no meaning for a one-shot harvest). `202`, polled via `GET /pkg/hostbuild/{name}` (a thin wrapper over the same `GET /pkg/{name}` lookup, scoped to a reserved internal image name) exactly like an ordinary install. Once `state: "installed"`, the artifact lives on the host at a fixed, well-known path per recipe (`kernel.recipe` → a `bzImage`; `kanxeo.recipe` → `kanxeod`/`kanxeoctl`/`web/` plus a server-side-assembled `kanxeod-root.squashfs`) — never merged into any container image's rootfs. `kanxeoctl pkg hostbuild <name> --build-image=<image> [--wait] [--deploy]` is the CLI surface; `--deploy` reads the finished artifact and calls the existing, unmodified `/system/update` for you.
 
 ## Host + package updates
 
@@ -446,9 +543,11 @@ POST /v1/system/update
 {"image_path": "/var/tmp/new-root.squashfs", "kernel_path": "/var/tmp/new-bzImage"}
 ```
 
-- `image_path`/`kernel_path` are local paths the operator has already transferred onto the box (e.g. `scp`) — there is no upload endpoint; see ADR-0031 for why. Both are optional, but at least one is required — update just the root, just the kernel, or both together in one call. Writes whatever's given onto this daemon's own **inactive** A/B slot (the other one from whichever it's currently running as — `--slot=a` or `--slot=b`) and stages a fresh systemd-boot loader entry with a fresh boot-counter. The kernel is per-slot too (`kanxeo-bzImage-a`/`kanxeo-bzImage-b` on the ESP, both pre-staged identically at install time, ADR-0032) — a root-only update leaves the inactive slot's own existing kernel file untouched, it's never implicitly replaced. `400` if this daemon has no `--slot=` (not a real installed system), neither path is given, either path doesn't exist/isn't readable, or either file fails its own on-disk magic check (squashfs's `"hsqs"`, or a bzImage's boot-sector/`setup_header` magic) — checked for both before either is written, so a bad `kernel_path` never leaves a good `image_path` half-applied.
+- `image_path`/`kernel_path` are local paths the operator has already transferred onto the box (e.g. `scp`, or a hostbuild artifact already sitting on this same host — see [Hostbuild](#hostbuild-standalone-artifacts-instead-of-merging-into-an-image) above) — there is no upload endpoint; see ADR-0031 for why. Both are optional, but at least one is required — update just the root, just the kernel, or both together in one call. Writes whatever's given onto this daemon's own **inactive** A/B slot (the other one from whichever it's currently running as — `--slot=a` or `--slot=b`) and stages a fresh systemd-boot loader entry with a fresh boot-counter. The kernel is per-slot too (`kanxeo-bzImage-a`/`kanxeo-bzImage-b` on the ESP, both pre-staged identically at install time, ADR-0032) — a root-only update leaves the inactive slot's own existing kernel file untouched, it's never implicitly replaced. `400` if this daemon has no `--slot=` (not a real installed system), neither path is given, either path doesn't exist/isn't readable, or either file fails its own on-disk magic check (squashfs's `"hsqs"`, or a bzImage's boot-sector/`setup_header` magic) — checked for both before either is written, so a bad `kernel_path` never leaves a good `image_path` half-applied.
 - Response includes `"updated"`, an array of whichever of `["root", "kernel"]` were actually written this call.
 - Deliberately does **not** reboot — call `POST /system/reboot` separately once ready to cut over; the existing boot-counter/`confirm_boot()` machinery, entirely unchanged, decides whether the fresh slot sticks.
+
+See [`docs/guides/kernel-build-and-ab-updates.md`](../guides/kernel-build-and-ab-updates.md) for the full build → write → reboot → confirm runbook, and [`docs/guides/staying-updated.md`](../guides/staying-updated.md) for the day-to-day operational picture (this endpoint plus package updates below, together).
 
 ```
 POST /v1/pkg/update-all
@@ -456,24 +555,39 @@ POST /v1/pkg/update-all
 
 - Finds the first installed package (across every image) whose recipe's `pkg_version=` has drifted and starts an upgrade for it, reusing `POST /pkg/install {"upgrade": true}`'s entire existing mechanism — `202` with the started package's state, or `200 {"status": "nothing to update"}` if everything's already current. Starts at most one job at a time (the same v1 single-install-in-flight constraint every other install path has, honestly respected rather than worked around); call again once that job finishes to drain the whole backlog.
 
+## This install's identity (site config)
+
+```
+GET /v1/system/site
+```
+
+A real, operator-configurable `instance_name`/`site_name`/`domain_suffix` triple (ADR-0046). `instance_name` labels this specific install (dashboard header, CLI, backup bundle) and is always non-empty (defaults to `"kanxeo"`); `site_name`/`domain_suffix` are client tooling's own suggested-FQDN pair (`<name>.<site_name>.<domain_suffix>`, or `<name>.<domain_suffix>` when `site_name` is empty) offered by default when creating a DNS record or issuing a PKI cert with a bare (dot-free) name — a convenience only, never enforced: DNS records and PKI SANs remain plain operator-supplied strings, unaffected by this endpoint's own value once explicitly given with a `.`. Always `200`s — defaults (`"kanxeo"`/`""`/`"internal"`) apply until the first `PUT`.
+
+```
+PUT /v1/system/site
+{"instance_name": "kanxeo1", "site_name": "lab1", "domain_suffix": "internal"}
+```
+
+`instance_name`/`domain_suffix` are required; `site_name` is optional (omitting it entirely is equivalent to `""`, meaning no site tier — a single-site deployment). On success, also best-effort reissues this install's own `"host"` PKI leaf if a root CA is already bootstrapped, and reconciles a single auto-maintained DNS record for the same FQDN if this daemon was started with a real, specific `--bind=` address (not `"0.0.0.0"`/`"127.0.0.1"`, neither of which has one single correct address to publish) — both never fail this request even if they themselves fail. The DNS record is also reconciled once at every daemon startup, so it exists without needing a `PUT` after every restart.
+
 ## Backup and restore
 
 ```
 GET /v1/system/backup
 ```
 
-Bundles platform *configuration* state — container definitions, networks, DNS records, package install state and recipes — as one response. **Read this carefully before relying on it for disaster recovery:**
+Bundles platform *configuration* state — container definitions, networks, DNS records, package install state and recipes, and site config — as one response. **Read this carefully before relying on it for disaster recovery:**
 
 - **Does NOT include workload data.** Each container's own persistent data (a git host's repos, a resolver's zone files, a metrics database) is that container's own concern, backed up with its own native tooling. This endpoint has no way to reach into another container's filesystem and never tries to.
 - **Does NOT include image rootfs content.** Since everything is compiled from source, an image's content is reproducible by re-running `pkg install` for whatever `pkg_installed` records — this bundle is the "shopping list" (what should be installed, where), not the built bytes. Getting all the way back to a fully-populated system after a restore means re-running those installs, not something this endpoint does for you automatically.
-- **Never touches PKI, at all.** The CA private key (and every issued leaf certificate's own key) is never returned over the API anywhere in this system, by existing, deliberate design (see [PKI](#pki-a-root-ca-and-issued-leaf-certificates) above) — that rule isn't bent or partially relaxed here. Back up `/var/lib/kanxeo/pki/` separately, directly on the host, outside the API entirely.
+- **Never touches PKI, at all.** The CA private key (and every issued leaf certificate's own key) is never returned over the API anywhere in this system, by existing, deliberate design (see [PKI](#pki-a-ca-chain-and-issued-leaf-certificates) above) — that rule isn't bent or partially relaxed here. Back up `/var/lib/kanxeo/pki/` separately, directly on the host, outside the API entirely.
 
 ```
 POST /v1/system/restore
-{"container_defs": "...", "networks": "...", "dns_records": "...", "pkg_installed": "...", "pkg_recipes": {"hello": "..."}}
+{"container_defs": "...", "networks": "...", "dns_records": "...", "pkg_installed": "...", "pkg_recipes": {"hello": "..."}, "site_config": "..."}
 ```
 
-The reverse of `GET /system/backup` — same shape, every field optional and independent (at least one required), so you can restore just container definitions, just networks, or the whole bundle. Every field is validated (must itself parse as JSON, or for `pkg_recipes`, must be an object of strings) *before* anything is written, so one bad field can't leave the others half-applied.
+The reverse of `GET /system/backup` — same shape, every field optional and independent (at least one required), so you can restore just container definitions, just networks, or the whole bundle. Every field is validated (must itself parse as JSON, or for `pkg_recipes`, must be an object of strings) *before* anything is written, so one bad field can't leave the others half-applied — but a real disk-write failure partway through (checked separately, after validation) can: fields already written before a failing one are not rolled back.
 
 **Does not reboot or take effect immediately.** Restored files only get picked up on the next boot — the same startup sequence (including container autostart) that already runs every time. Call the existing `POST /system/reboot` once you're ready to actually cut over. A typical disaster-recovery sequence: boot a fresh install once (normal empty first boot) → `POST /system/restore` with your saved bundle → `POST /system/reboot` → the second boot comes up with your restored state.
 
@@ -487,11 +601,11 @@ The reverse of `GET /system/backup` — same shape, every field optional and ind
 - HTTP: no keep-alive/pipelining (`Connection: close` on every response), no chunked bodies.
 - Routes are set-once at creation and not echoed back or introspectable afterward; modifying them on a running container would need a new "enter another netns from outside" primitive, not built yet. See `docs/roadmap/ROADMAP.md`.
 - DNS server bindings are in-memory only (not persisted, like the container registry itself — a binding referencing a container that dies with the daemon means nothing after a restart anyway). Only one hosts-format record type; no CNAME/MX/TXT/etc.
-- PKI: no certificate revocation/CRL, no CA regeneration/rotation, no CSR-submission flow (the daemon always generates both the keypair and the cert itself) — see `docs/roadmap/ROADMAP.md` Phase 9.
-- Package manager: only one install in flight at a time (dependency chains, and `POST /pkg/update-all`'s own successive calls, still serialize through that same single slot — see [Host + package updates](#host--package-updates) below); no version-constrained dependencies (any installed version satisfies a dependency); symlinks in a package's own `DESTDIR` output are skipped (regular files and directories only) — see `docs/roadmap/ROADMAP.md` Phase 10.
-- No scheduled/periodic trigger for `POST /system/update` or `POST /pkg/update-all` — both are on-demand, operator- or cron-invoked; no automatic "update then reboot" chaining — see `docs/roadmap/ROADMAP.md` Phase 16.
-- No volume/bind-mount concept beyond small, content-inlined `files` (see [Per-container config files + sysctls](#per-container-config-files--sysctls) below) — a large binary asset or directory tree has no home in this model yet — see `docs/roadmap/ROADMAP.md` Phase 15.
+- PKI: no certificate revocation/CRL, no CSR-submission flow (the daemon always generates both the keypair and the cert itself). CA regeneration/rotation **is** built (`POST /pki/reset`, above) — that gap has closed since this list was first written.
+- Package manager: only one install/hostbuild in flight at a time (dependency chains, and `POST /pkg/update-all`'s own successive calls, still serialize through that same single slot — see [Host + package updates](#host--package-updates) above); no version-constrained dependencies (any installed version satisfies a dependency); symlinks in a package's own `DESTDIR` output are skipped (regular files and directories only).
+- No scheduled/periodic trigger for `POST /system/update` or `POST /pkg/update-all` — both are on-demand, operator- or cron-invoked; no automatic "update then reboot" chaining.
+- No volume/bind-mount concept beyond small, content-inlined `files` (see [Per-container config files + sysctls](#per-container-config-files--sysctls) above) — a large binary asset or directory tree has no home in this model yet.
 
 ## Why this file exists alongside `openapi.yaml`
 
-One Source of Truth means the *schema* lives in exactly one place (`openapi.yaml`). This page exists only so a human (or a future CLI/web implementer) can get oriented quickly without parsing YAML first — if the two ever disagree, `openapi.yaml` wins and this page is out of date and should be fixed.
+One Source of Truth means the *schema* lives in exactly one place (`openapi.yaml`). This page exists only so a human (or a future CLI/web implementer) can get oriented quickly without parsing YAML first — if the two ever disagree, `openapi.yaml` wins and this page is out of date and should be fixed. Per `CLAUDE.md`'s Documentation Map, this file is updated in the same change as any `openapi.yaml` edit, never after.
