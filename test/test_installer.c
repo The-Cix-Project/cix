@@ -90,6 +90,12 @@
 #define TEST_IP "192.168.50.10"
 #define TEST_PREFIX 24
 #define TEST_GATEWAY "192.168.50.1"
+/* This project's own qemu-part1.config disables predictable network
+ * interface naming, so a virtio-net device always shows up as "eth0"
+ * in a fresh QEMU guest (confirmed live, not assumed -- this is the
+ * exact --interface= value kanxeo-install.c needs to pass through,
+ * Part 0.5). */
+#define TEST_IFACE "eth0"
 
 /* A blank disk file of the standard test size -- shared by the real
  * GRUB-path smoke test and the main Secure Boot flow below, each
@@ -207,8 +213,8 @@ int main(void)
 	 * by hand for every VM/scripted install proved to be pure friction --
 	 * gets exercised for real right here, this session's own install). */
 	snprintf(kernel_args, sizeof(kernel_args),
-	         "--disk=/dev/vda --ip=%s --prefix=%d --gateway=%s --auto-partition", TEST_IP,
-	         TEST_PREFIX, TEST_GATEWAY);
+	         "--disk=/dev/vda --ip=%s --prefix=%d --gateway=%s --interface=%s --auto-partition", TEST_IP,
+	         TEST_PREFIX, TEST_GATEWAY, TEST_IFACE);
 	{
 		char *mkiso_argv[] = { (char *)MKINSTALLERISO_BIN, installer_stage,
 			                (char *)KANXEO_INSTALL_BIN,    (char *)BZIMAGE_PATH,
@@ -348,8 +354,8 @@ int main(void)
 		snprintf(fdisk_smoke_vars, sizeof(fdisk_smoke_vars), "%s/fdisk_smoke_vars.fd", workdir);
 		snprintf(fdisk_kernel_args, sizeof(fdisk_kernel_args),
 		         "console=ttyS0 root=/dev/sr0 rootfstype=iso9660 ro init=/bin/kanxeo-install -- "
-		         "--disk=/dev/vda --ip=%s --prefix=%d --gateway=%s",
-		         TEST_IP, TEST_PREFIX, TEST_GATEWAY);
+		         "--disk=/dev/vda --ip=%s --prefix=%d --gateway=%s --interface=%s",
+		         TEST_IP, TEST_PREFIX, TEST_GATEWAY, TEST_IFACE);
 		{
 			int fd = open(fdisk_smoke_disk, O_CREAT | O_WRONLY, 0644);
 
@@ -606,8 +612,9 @@ int main(void)
 	/* 9. Session 3: the actual end-to-end proof -- boot the target disk
 	 * alone, for real, with Secure Boot still enforced (secure_boot=1)
 	 * and a real NIC attached this time, and confirm it comes up as a
-	 * genuinely working kanxeod that actually applied the static IP
-	 * configured at install time. Nothing here is test-built; this is
+	 * genuinely working kanxeod that actually bootstrapped its "mgmt"
+	 * network from the static IP/gateway/interface configured at
+	 * install time (Part 0.5). Nothing here is test-built; this is
 	 * exactly what an operator would see after rebooting a freshly
 	 * installed, MOK-confirmed machine -- shim -> the Kanxeo-signed
 	 * grubx64.efi (systemd-boot) -> the Kanxeo-signed kernel, all now
@@ -630,9 +637,9 @@ int main(void)
 		printf("INSTALLER RESULT: FAIL\n");
 		return 1;
 	}
-	if (strstr(captured, "applied static ip") == NULL ||
-	    strstr(captured, TEST_IP) == NULL || strstr(captured, TEST_GATEWAY) == NULL) {
-		fprintf(stderr, "installed system booted but never applied its static ip config\n");
+	if (strstr(captured, "init-mode: mgmt network") == NULL || strstr(captured, TEST_IP) == NULL ||
+	    strstr(captured, TEST_GATEWAY) == NULL || strstr(captured, TEST_IFACE) == NULL) {
+		fprintf(stderr, "installed system booted but never bootstrapped its mgmt network\n");
 		printf("INSTALLER RESULT: FAIL\n");
 		return 1;
 	}

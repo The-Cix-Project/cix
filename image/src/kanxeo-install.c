@@ -514,6 +514,7 @@ int main(int argc, char **argv)
 	const char *disk = NULL;
 	const char *ip = NULL;
 	const char *gateway = NULL;
+	const char *iface = NULL;
 	int prefix = -1;
 	int skip_partition = 0;
 	int auto_partition_flag = 0;
@@ -540,20 +541,24 @@ int main(int argc, char **argv)
 			gateway = argv[i] + 10;
 		else if (strncmp(argv[i], "--prefix=", 9) == 0)
 			prefix = atoi(argv[i] + 9);
+		else if (strncmp(argv[i], "--interface=", 12) == 0)
+			iface = argv[i] + 12;
 		else if (strcmp(argv[i], "--skip-partition") == 0)
 			skip_partition = 1;
 		else if (strcmp(argv[i], "--auto-partition") == 0)
 			auto_partition_flag = 1;
 	}
 
-	if (disk == NULL || ip == NULL || gateway == NULL || prefix <= 0 || prefix > 32 ||
-	    (skip_partition && auto_partition_flag)) {
+	if (disk == NULL || ip == NULL || gateway == NULL || iface == NULL || prefix <= 0 ||
+	    prefix > 32 || (skip_partition && auto_partition_flag)) {
 		dual_printf("usage: %s --disk=/dev/sdX --ip=A.B.C.D --prefix=N --gateway=A.B.C.D "
-		            "[--skip-partition | --auto-partition]\n"
-		            "  (default: interactive fdisk; --skip-partition: disk is already\n"
-		            "  partitioned by other means; --auto-partition: partition it here,\n"
-		            "  non-interactively, with the standard fixed layout -- the two flags\n"
-		            "  are mutually exclusive)\n",
+		            "--interface=IFNAME [--skip-partition | --auto-partition]\n"
+		            "  (--interface=: the physical NIC to bind the management IP to, e.g.\n"
+		            "  eth0 -- see `ip link`/`ls /sys/class/net` from a rescue shell if\n"
+		            "  unsure; default: interactive fdisk; --skip-partition: disk is\n"
+		            "  already partitioned by other means; --auto-partition: partition it\n"
+		            "  here, non-interactively, with the standard fixed layout -- the two\n"
+		            "  partition flags are mutually exclusive)\n",
 		            argv[0]);
 		return 2;
 	}
@@ -653,10 +658,11 @@ int main(int argc, char **argv)
 	}
 	{
 		char net_conf_path[600];
-		char net_conf[256];
+		char net_conf[320];
 
 		snprintf(net_conf_path, sizeof(net_conf_path), "%s/net.conf", CONFIG_MOUNT);
-		snprintf(net_conf, sizeof(net_conf), "ip=%s\nprefix=%d\ngateway=%s\n", ip, prefix, gateway);
+		snprintf(net_conf, sizeof(net_conf), "ip=%s\nprefix=%d\ngateway=%s\ninterface=%s\n", ip, prefix,
+		         gateway, iface);
 		if (write_text_file(net_conf_path, net_conf) != 0) {
 			umount(CONFIG_MOUNT);
 			return 1;

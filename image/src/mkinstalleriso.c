@@ -161,7 +161,8 @@ int main(int argc, char **argv)
 		        "  GRUB boot stays unsigned (see ADR-0015).\n"
 		        "  kernel-args: everything after 'init=/bin/kanxeo-install --' on the\n"
 		        "  kernel command line, e.g. for the real, shippable ISO:\n"
-		        "  \"--disk=/dev/CHANGEME --ip=CHANGEME --prefix=24 --gateway=CHANGEME\"\n"
+		        "  \"--disk=/dev/CHANGEME --ip=CHANGEME --prefix=24 --gateway=CHANGEME "
+		        "--interface=CHANGEME\"\n"
 		        "  (a deliberately-invalid placeholder -- edit it at the GRUB boot menu\n"
 		        "  with 'e' before booting; kanxeo-install's own stat() check on --disk=\n"
 		        "  fails safely if it's left unedited)\n",

@@ -1,5 +1,6 @@
 #include "websocket.h"
 #include "iohelpers.h"
+#include "tlsconn.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -148,9 +149,9 @@ int ws_write_frame(int fd, enum ws_opcode opcode, const void *payload, size_t le
 		hlen = 4;
 	}
 
-	if (kx_write_all(fd, header, hlen) != 0)
+	if (tls_write_all(fd, header, hlen) != 0)
 		return -1;
-	if (len > 0 && kx_write_all(fd, payload, len) != 0)
+	if (len > 0 && tls_write_all(fd, payload, len) != 0)
 		return -1;
 	return 0;
 }

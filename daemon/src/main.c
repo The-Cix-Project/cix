@@ -17,6 +17,11 @@
 #include "registry.h"
 #include "rtnetlink.h"
 #include "siteconfig.h"
+#include "daemon_config.h"
+#include "tlsconn.h"
+
+#include <openssl/err.h>
+#include <openssl/ssl.h>
 #include "staticfile.h"
 #include "websocket.h"
 
@@ -87,6 +92,7 @@ static char ARTIFACTS_DIR[PATH_MAX];
 static char CONTAINER_DEFS_STATE_PATH[PATH_MAX];
 static char SITE_CONFIG_PATH[PATH_MAX];
 static char DEVICEMAP_STATE_PATH[PATH_MAX];
+static char DAEMON_CONFIG_PATH[PATH_MAX];
 
 /* Computes every path derived from g_base_dir -- called once, right
  * after argv parsing (so --data-dir= has already been applied) and
@@ -109,6 +115,7 @@ static void init_base_dir_paths(void)
 	snprintf(CONTAINER_DEFS_STATE_PATH, sizeof(CONTAINER_DEFS_STATE_PATH), "%s/container_defs.json", g_base_dir);
 	snprintf(SITE_CONFIG_PATH, sizeof(SITE_CONFIG_PATH), "%s/site_config.json", g_base_dir);
 	snprintf(DEVICEMAP_STATE_PATH, sizeof(DEVICEMAP_STATE_PATH), "%s/devicemaps.json", g_base_dir);
+	snprintf(DAEMON_CONFIG_PATH, sizeof(DAEMON_CONFIG_PATH), "%s/daemon_config.json", g_base_dir);
 }
 /*
  * Backoff cap and stability-reset threshold for the crash-restart
@@ -177,6 +184,10 @@ static void init_base_dir_paths(void)
 
 enum conn_kind {
 	CONN_LISTENER,
+	CONN_LISTENER_TLS, /* the HTTPS listener (Part 0.5) -- same accept4()
+	                     * loop as CONN_LISTENER, distinguished only by
+	                     * whether accept_loop() wraps the accepted fd in
+	                     * a fresh SSL* before registering it */
 	CONN_CLIENT,
 	CONN_CONTAINER,
 	CONN_PKG_FETCH,
@@ -199,6 +210,11 @@ enum conn_kind {
 struct conn {
 	enum conn_kind kind;
 	int fd;
+	SSL *ssl; /* CONN_CLIENT only, and only when accepted on the HTTPS
+	           * listener -- NULL for every plain-HTTP connection (the
+	           * overwhelming majority). Non-NULL but !SSL_is_init_
+	           * finished() means the TLS handshake is still in
+	           * progress; see handle_client_event(). */
 	struct http_conn http;                 /* CONN_CLIENT only */
 	struct registry_entry *entry;           /* CONN_CONTAINER only */
 	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE */
@@ -239,6 +255,8 @@ enum shutdown_action { SHUTDOWN_ACTION_POWEROFF, SHUTDOWN_ACTION_REBOOT };
 
 static int g_epfd;
 static struct conn g_listener_conn;
+static struct conn g_https_listener_conn; /* .fd == -1 when HTTPS is disabled */
+static SSL_CTX *g_tls_ctx;                 /* NULL when HTTPS is disabled */
 static const char *g_web_root;
 static volatile sig_atomic_t g_stop;
 static volatile sig_atomic_t g_shutdown_action = SHUTDOWN_ACTION_POWEROFF;
@@ -294,6 +312,10 @@ static void console_session_teardown(struct console_exec_session *sess)
 	waitpid(sess->exec_pid, NULL, 0);
 
 	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, sess->ws_conn->fd, NULL);
+	if (sess->ws_conn->ssl != NULL) {
+		tls_unregister(sess->ws_conn->fd);
+		SSL_free(sess->ws_conn->ssl);
+	}
 	close(sess->ws_conn->fd);
 	ws_conn_free(&sess->ws_conn->ws);
 	sess->ws_conn->kind = CONN_DEAD;
@@ -324,6 +346,11 @@ static void console_session_teardown(struct console_exec_session *sess)
  */
 static const char *g_slot;
 static const char *g_bind_addr;
+/* Backing storage for g_bind_addr when it's derived from the "mgmt"
+ * network's own gateway address (Part 0.5) rather than taken directly
+ * from argv's --bind= -- g_bind_addr has to remain valid for the rest
+ * of the process's life, so this can't be a stack buffer. */
+static char g_bind_addr_buf[INET_ADDRSTRLEN];
 static int g_port;
 
 static void on_signal(int sig)
@@ -374,55 +401,20 @@ static int mount_or_fail(const char *source, const char *target, const char *fst
  * but the swap itself never actually happened until now -- see
  * ADR-0018.
  */
-/*
- * Finds the first real, non-loopback network interface -- not hardcoded
- * to a specific kernel-assigned name. Confirmed empirically that QEMU's
- * virtio-net gets "eth0" with no udev/systemd predictable-naming running
- * (this environment's own boot never printed a registration line, so
- * this was checked with a throwaway diagnostic init, not assumed from
- * dmesg silence), but a fixed name could differ on part 4's real target
- * hardware. "sit0" is always present once IPv6/SIT is compiled in -- a
- * pseudo-interface, never a real NIC, explicitly skipped.
- */
-static int find_nic(char *out_name, size_t out_size)
-{
-	DIR *d;
-	struct dirent *de;
-	int found = 0;
-
-	d = opendir("/sys/class/net");
-	if (d == NULL) {
-		perror("/sys/class/net");
-		return -1;
-	}
-	while ((de = readdir(d)) != NULL) {
-		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
-			continue;
-		if (strcmp(de->d_name, "lo") == 0)
-			continue;
-		if (strncmp(de->d_name, "sit", 3) == 0)
-			continue;
-		snprintf(out_name, out_size, "%s", de->d_name);
-		found = 1;
-		break;
-	}
-	closedir(d);
-	if (!found) {
-		fprintf(stderr, "find_nic: no real network interface found\n");
-		return -1;
-	}
-	return 0;
-}
 
 /* Parses the simple key=value net.conf kanxeo-install writes to the
  * config partition (image/src/kanxeo-install.c's populate step) --
- * ip=/prefix=/gateway=, one per line. */
+ * ip=/prefix=/gateway=/interface=, one per line. interface= (Part 0.5)
+ * is the physical NIC to attach to the "mgmt" network -- an explicit,
+ * operator-chosen GRUB field rather than find_nic()'s old "whichever
+ * readdir() returns first" guess. */
 static int parse_net_conf(const char *path, char *out_ip, size_t ip_size, int *out_prefix,
-                           char *out_gateway, size_t gateway_size)
+                           char *out_gateway, size_t gateway_size, char *out_interface,
+                           size_t interface_size)
 {
 	FILE *f;
 	char line[256];
-	int have_ip = 0, have_prefix = 0, have_gateway = 0;
+	int have_ip = 0, have_prefix = 0, have_gateway = 0, have_interface = 0;
 
 	f = fopen(path, "r");
 	if (f == NULL)
@@ -438,55 +430,113 @@ static int parse_net_conf(const char *path, char *out_ip, size_t ip_size, int *o
 		} else if (strncmp(line, "gateway=", 8) == 0) {
 			snprintf(out_gateway, gateway_size, "%s", line + 8);
 			have_gateway = 1;
+		} else if (strncmp(line, "interface=", 10) == 0) {
+			snprintf(out_interface, interface_size, "%s", line + 10);
+			have_interface = 1;
 		}
 	}
 	fclose(f);
-	return (have_ip && have_prefix && have_gateway) ? 0 : -1;
+	return (have_ip && have_prefix && have_gateway && have_interface) ? 0 : -1;
 }
 
 /*
- * Applies the static IP configured at install time (Phase 11 part 3) --
- * the concrete answer to "static IP configured at install time" from
- * this phase's own design. A missing or incomplete net.conf is not an
- * error (0, not -1): parts 1/2's own test disks never write one, and
- * that must stay a normal, inert boot, not a failure.
+ * Bootstraps the "mgmt" network from the static IP/gateway/interface
+ * configured at install time (Part 0.5, superseding the old, invisible
+ * apply_static_ip()) -- creates a real, persisted network_def (visible
+ * at GET /v1/networks like any other), attaches the GRUB-chosen
+ * physical interface to it, and designates it the daemon's own
+ * management network (network_set_management()). g_bind_addr is then
+ * derived from that network's own gateway address -- the network is
+ * the one authoritative source for it from this point on, not a
+ * separately-carried --bind= argument. A missing or incomplete
+ * net.conf is not an error (0, not -1): parts 1/2's own test disks
+ * never write one, and that must stay a normal, inert boot, not a
+ * failure.
+ *
+ * Two distinct "gateway" concepts here, not to be confused (see the
+ * ADR): the mgmt network's own gateway_be -- an address living
+ * directly on its bridge, now doing double duty as kanxeod's own bind
+ * address -- versus net.conf's "gateway=", the box's *upstream*
+ * default route (the next-hop router this box's own outbound traffic
+ * egresses through), which keeps its existing, unrelated meaning and
+ * mechanism (rtnl_route_add_default_ipv4()) below.
  */
-static int apply_static_ip(void)
+static int bootstrap_management_network(void)
 {
-	char ip[64], gateway[64], nic[IFNAMSIZ];
+	char ip[64], upstream_gateway[64], iface[IFNAMSIZ];
 	int prefix = 0;
-	struct in_addr addr, gw;
+	struct in_addr addr, gw, subnet;
+	char subnet_str[INET_ADDRSTRLEN];
+	uint32_t mask;
+	struct network_def *net;
+	enum network_error nerr;
 	int rtfd;
 
-	if (parse_net_conf(NET_CONF_PATH, ip, sizeof(ip), &prefix, gateway, sizeof(gateway)) != 0)
+	if (parse_net_conf(NET_CONF_PATH, ip, sizeof(ip), &prefix, upstream_gateway,
+	                    sizeof(upstream_gateway), iface, sizeof(iface)) != 0)
 		return 0;
 
-	if (find_nic(nic, sizeof(nic)) != 0)
-		return -1;
-
 	if (inet_pton(AF_INET, ip, &addr) != 1) {
-		fprintf(stderr, "apply_static_ip: invalid ip %s\n", ip);
+		fprintf(stderr, "bootstrap_management_network: invalid ip %s\n", ip);
 		return -1;
 	}
-	if (inet_pton(AF_INET, gateway, &gw) != 1) {
-		fprintf(stderr, "apply_static_ip: invalid gateway %s\n", gateway);
+	if (inet_pton(AF_INET, upstream_gateway, &gw) != 1) {
+		fprintf(stderr, "bootstrap_management_network: invalid gateway %s\n", upstream_gateway);
 		return -1;
 	}
+	if (prefix < 8 || prefix > 30) {
+		fprintf(stderr, "bootstrap_management_network: invalid prefix %d\n", prefix);
+		return -1;
+	}
+
+	mask = (uint32_t)0xFFFFFFFFu << (32 - prefix);
+	subnet.s_addr = htonl(ntohl(addr.s_addr) & mask);
+	if (inet_ntop(AF_INET, &subnet, subnet_str, sizeof(subnet_str)) == NULL) {
+		perror("bootstrap_management_network: inet_ntop");
+		return -1;
+	}
+
+	net = network_find("mgmt");
+	if (net == NULL) {
+		nerr = network_create("mgmt", subnet_str, prefix, ip, &net);
+		if (nerr != NETWORK_OK) {
+			fprintf(stderr, "bootstrap_management_network: network_create failed (%d)\n", (int)nerr);
+			return -1;
+		}
+		nerr = network_attach_interface("mgmt", iface, 0);
+		if (nerr != NETWORK_OK) {
+			fprintf(stderr, "bootstrap_management_network: network_attach_interface failed (%d)\n",
+			        (int)nerr);
+			return -1;
+		}
+	}
+	/* Already exists on every boot after the first (network_init()
+	 * already reloaded and re-applied it) -- only the first-ever boot
+	 * actually creates it here. */
+	nerr = network_set_management("mgmt");
+	if (nerr != NETWORK_OK) {
+		fprintf(stderr, "bootstrap_management_network: network_set_management failed (%d)\n",
+		        (int)nerr);
+		return -1;
+	}
+
+	snprintf(g_bind_addr_buf, sizeof(g_bind_addr_buf), "%s", ip);
+	g_bind_addr = g_bind_addr_buf;
 
 	rtfd = rtnl_open();
 	if (rtfd < 0) {
 		perror("rtnl_open");
 		return -1;
 	}
-	if (rtnl_link_set_up(rtfd, nic) != 0 || rtnl_addr_add_ipv4(rtfd, nic, addr.s_addr, prefix) != 0 ||
-	    rtnl_route_add_default_ipv4(rtfd, gw.s_addr) != 0) {
-		perror("apply_static_ip");
+	if (rtnl_route_add_default_ipv4(rtfd, gw.s_addr) != 0) {
+		perror("bootstrap_management_network: default route");
 		rtnl_close(rtfd);
 		return -1;
 	}
 	rtnl_close(rtfd);
 
-	printf("init-mode: applied static ip %s/%d via %s, gateway %s\n", ip, prefix, nic, gateway);
+	printf("init-mode: mgmt network %s/%d via %s, bind=%s, upstream gateway %s\n", subnet_str, prefix,
+	       iface, ip, upstream_gateway);
 	fflush(stdout);
 	return 0;
 }
@@ -510,9 +560,12 @@ static int boot_init(void)
 	if (mount_or_fail(ESP_DEVICE, ESP_DIR, "vfat", MS_NOSUID | MS_NODEV | MS_NOEXEC) != 0)
 		return -1;
 	/* Deliberately non-fatal, unlike every mount above -- see
-	 * CONFIG_DEVICE's own comment. */
-	if (mount(CONFIG_DEVICE, CONFIG_DIR, "ext4", 0, NULL) == 0)
-		apply_static_ip();
+	 * CONFIG_DEVICE's own comment. Left mounted (not unmounted here) --
+	 * bootstrap_management_network() reads net.conf from it later in
+	 * main(), once network_init() has made network_create()/
+	 * network_attach_interface() usable (Part 0.5) -- boot_init() itself
+	 * stays purely about mounts and bringing lo up, as its name implies. */
+	mount(CONFIG_DEVICE, CONFIG_DIR, "ext4", 0, NULL);
 
 	/*
 	 * A fresh kernel boot brings lo up as a device but leaves it
@@ -683,6 +736,10 @@ static int network_error_to_status(enum network_error err, const char **out_msg)
 	case NETWORK_ERR_INTERFACE_NAME_TOO_LONG:
 		*out_msg = "ifname.vlan_id would not fit in IFNAMSIZ";
 		return 400;
+	case NETWORK_ERR_IS_MANAGEMENT:
+		*out_msg = "refused: this network carries kanxeod's own bind address -- "
+		           "repoint the management network first (see /v1/system/daemon-config)";
+		return 409;
 	case NETWORK_ERR_CREATE_FAILED:
 	case NETWORK_ERR_DELETE_FAILED:
 	default:
@@ -1582,6 +1639,487 @@ static void handle_site_put(int fd, const char *body, size_t body_len)
 	siteconfig_write_json(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
+}
+
+/*
+ * Builds a fresh SSL_CTX from the PKI subsystem's already-issued
+ * "host" leaf certificate (PKI_CERTS_DIR/host.{crt,key}, reissue_host_
+ * pki_cert()) -- reusing that existing cert-issuance path rather than
+ * inventing a second one, per Part 0.5's design. Returns NULL (with a
+ * diagnostic already printed) if the CA hasn't been bootstrapped yet,
+ * or the host cert/key can't be loaded/don't match -- HTTPS simply
+ * isn't available yet in that case, exactly the same "not configured"
+ * posture other PKI-gated resources in this daemon already have.
+ */
+static SSL_CTX *create_tls_ctx(void)
+{
+	SSL_CTX *ctx;
+	char crt_path[PATH_MAX], key_path[PATH_MAX];
+
+	if (!pki_ca_bootstrapped()) {
+		fprintf(stderr, "create_tls_ctx: PKI not bootstrapped yet -- no host cert to serve HTTPS with\n");
+		return NULL;
+	}
+	snprintf(crt_path, sizeof(crt_path), "%s/host.crt", PKI_CERTS_DIR);
+	snprintf(key_path, sizeof(key_path), "%s/host.key", PKI_CERTS_DIR);
+
+	ctx = SSL_CTX_new(TLS_server_method());
+	if (ctx == NULL) {
+		ERR_print_errors_fp(stderr);
+		return NULL;
+	}
+	if (SSL_CTX_use_certificate_file(ctx, crt_path, SSL_FILETYPE_PEM) != 1 ||
+	    SSL_CTX_use_PrivateKey_file(ctx, key_path, SSL_FILETYPE_PEM) != 1 ||
+	    SSL_CTX_check_private_key(ctx) != 1) {
+		ERR_print_errors_fp(stderr);
+		SSL_CTX_free(ctx);
+		return NULL;
+	}
+	return ctx;
+}
+
+/*
+ * Creates, binds, and listens a real TCP socket at bind_addr:port --
+ * the one source of truth for that sequence, shared by main()'s own
+ * initial bind and rebind_listener()'s live-rebind path below (Part
+ * 0.5). SOCK_NONBLOCK/SOCK_CLOEXEC for the same reason every other fd
+ * this daemon holds open is CLOEXEC -- see main()'s own comment at its
+ * call site. Returns a ready-to-epoll fd, or -1 (already logged) on
+ * any failure -- never partially bound.
+ */
+static int create_listen_socket(const char *bind_addr, int port)
+{
+	int fd;
+	int opt = 1;
+	struct sockaddr_in addr;
+
+	fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+	if (fd < 0) {
+		perror("socket");
+		return -1;
+	}
+	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons((uint16_t)port);
+	if (inet_pton(AF_INET, bind_addr, &addr.sin_addr) != 1) {
+		fprintf(stderr, "create_listen_socket: invalid bind address %s\n", bind_addr);
+		close(fd);
+		return -1;
+	}
+
+	if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+		perror("create_listen_socket: bind");
+		close(fd);
+		return -1;
+	}
+	if (listen(fd, 128) != 0) {
+		perror("create_listen_socket: listen");
+		close(fd);
+		return -1;
+	}
+	return fd;
+}
+
+/*
+ * Live listen-socket rebind (Part 0.5) -- kanxeod is real PID 1 under
+ * --init-mode (confirmed: image/src/kanxeo-install.c's loader entry
+ * uses "init=/bin/kanxeod"), so there is no "restart the daemon" to
+ * pick up a new bind address or port; this closes the old listening
+ * socket and opens a new one in-process instead. Already-accept()ed
+ * connections (a separate fd from the listening socket) are completely
+ * unaffected -- the request that triggered this rebind (e.g. PUT
+ * /v1/system/daemon-config) finishes normally over its own connection.
+ *
+ * Ordering matters: the new socket is created and added to epoll
+ * *before* the old one is torn down, so any failure rolls back to the
+ * still-working old listener -- this daemon must never be left with
+ * zero listeners, even transiently. A no-op (new == current) is
+ * detected up front rather than relying on SO_REUSEADDR semantics for
+ * an identical rebind.
+ */
+static int rebind_listener(const char *new_bind_addr, int new_port)
+{
+	int new_fd;
+	int old_fd;
+	struct kx_epoll_event ev;
+
+	if (strcmp(new_bind_addr, g_bind_addr) == 0 && new_port == g_port)
+		return 0;
+
+	new_fd = create_listen_socket(new_bind_addr, new_port);
+	if (new_fd < 0)
+		return -1;
+
+	old_fd = g_listener_conn.fd;
+	g_listener_conn.fd = new_fd;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = &g_listener_conn;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, new_fd, &ev) != 0) {
+		perror("rebind_listener: epoll_ctl ADD");
+		g_listener_conn.fd = old_fd;
+		close(new_fd);
+		return -1;
+	}
+
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, old_fd, NULL);
+	close(old_fd);
+
+	snprintf(g_bind_addr_buf, sizeof(g_bind_addr_buf), "%s", new_bind_addr);
+	g_bind_addr = g_bind_addr_buf;
+	g_port = new_port;
+
+	printf("kanxeod rebound listener to %s:%d\n", new_bind_addr, new_port);
+	fflush(stdout);
+	return 0;
+}
+
+static int start_http_listener(const char *bind_addr, int port)
+{
+	struct kx_epoll_event ev;
+	int fd = create_listen_socket(bind_addr, port);
+
+	if (fd < 0)
+		return -1;
+	g_listener_conn.kind = CONN_LISTENER;
+	g_listener_conn.fd = fd;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = &g_listener_conn;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+		perror("start_http_listener: epoll_ctl ADD");
+		close(fd);
+		g_listener_conn.fd = -1;
+		return -1;
+	}
+	printf("kanxeod listening on %s:%d\n", bind_addr, port);
+	fflush(stdout);
+	return 0;
+}
+
+static void stop_http_listener(void)
+{
+	if (g_listener_conn.fd < 0)
+		return;
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_listener_conn.fd, NULL);
+	close(g_listener_conn.fd);
+	g_listener_conn.fd = -1;
+}
+
+/*
+ * The four HTTPS listener lifecycle operations (Part 0.5), mirroring
+ * the plain-HTTP ones above -- start/stop/rebind, plus create_tls_ctx()
+ * itself for the cert-loading half. g_tls_ctx, once successfully
+ * built, is deliberately kept alive across a later stop/restart cycle
+ * (stop_https_listener() only tears down the socket) -- re-enabling
+ * HTTPS doesn't need to re-read the host cert off disk every time.
+ */
+static int start_https_listener(const char *bind_addr, int port)
+{
+	struct kx_epoll_event ev;
+	int fd;
+
+	if (g_tls_ctx == NULL) {
+		g_tls_ctx = create_tls_ctx();
+		if (g_tls_ctx == NULL)
+			return -1;
+	}
+	fd = create_listen_socket(bind_addr, port);
+	if (fd < 0)
+		return -1;
+
+	g_https_listener_conn.kind = CONN_LISTENER_TLS;
+	g_https_listener_conn.fd = fd;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = &g_https_listener_conn;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+		perror("start_https_listener: epoll_ctl ADD");
+		close(fd);
+		g_https_listener_conn.fd = -1;
+		return -1;
+	}
+	printf("kanxeod listening (https) on %s:%d\n", bind_addr, port);
+	fflush(stdout);
+	return 0;
+}
+
+static void stop_https_listener(void)
+{
+	if (g_https_listener_conn.fd < 0)
+		return;
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_https_listener_conn.fd, NULL);
+	close(g_https_listener_conn.fd);
+	g_https_listener_conn.fd = -1;
+}
+
+static int rebind_https_listener(const char *new_bind_addr, int new_port)
+{
+	int new_fd;
+	int old_fd;
+	struct kx_epoll_event ev;
+
+	/* Same no-op short-circuit rebind_listener() has, and for the same
+	 * reason: binding new_bind_addr:new_port a second time while the
+	 * existing https listener is still open on that identical tuple
+	 * fails with EADDRINUSE even with SO_REUSEADDR (that only helps
+	 * across a TIME_WAIT teardown, not two simultaneously-open
+	 * listeners) -- a real, reproducible failure this project's own
+	 * "verify before trusting" testing actually hit, not a hypothetical
+	 * edge case. */
+	if (strcmp(new_bind_addr, g_bind_addr) == 0 && new_port == daemon_config_https_port())
+		return 0;
+
+	new_fd = create_listen_socket(new_bind_addr, new_port);
+	if (new_fd < 0)
+		return -1;
+
+	old_fd = g_https_listener_conn.fd;
+	g_https_listener_conn.fd = new_fd;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = &g_https_listener_conn;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, new_fd, &ev) != 0) {
+		perror("rebind_https_listener: epoll_ctl ADD");
+		g_https_listener_conn.fd = old_fd;
+		close(new_fd);
+		return -1;
+	}
+
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, old_fd, NULL);
+	close(old_fd);
+
+	printf("kanxeod rebound https listener to %s:%d\n", new_bind_addr, new_port);
+	fflush(stdout);
+	return 0;
+}
+
+/*
+ * GET/PUT /v1/system/daemon-config (Part 0.5): kanxeod's own listen
+ * port and which network is currently its management one -- a
+ * dedicated resource, distinct from generic network CRUD, since
+ * changing either has a real side effect (a live listen-socket
+ * rebind) that plain PUT /v1/networks/... was never meant to trigger.
+ * Which network is management is NOT this module's own state (see
+ * daemon_config.h) -- reported here by querying network_find_
+ * management() live, the one source of truth network.c already owns.
+ * PUT accepts a partial body (only the fields being changed); "port"
+ * and "management_network" may be given together, applied as a
+ * single rebind rather than two.
+ */
+static void handle_daemon_config_get(int fd)
+{
+	struct json_writer w;
+	struct network_def *mgmt;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "port");
+	jw_int(&w, g_port);
+	jw_key(&w, "bind");
+	jw_str(&w, g_bind_addr);
+	mgmt = network_find_management();
+	jw_key(&w, "management_network");
+	if (mgmt != NULL)
+		jw_str(&w, mgmt->name);
+	else
+		jw_null(&w);
+	jw_key(&w, "http_enabled");
+	jw_bool(&w, g_listener_conn.fd >= 0);
+	jw_key(&w, "https_enabled");
+	jw_bool(&w, g_https_listener_conn.fd >= 0);
+	jw_key(&w, "https_port");
+	jw_int(&w, daemon_config_https_port());
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const struct json_value *jport, *jnetwork, *jhttp, *jhttps, *jhttps_port;
+	int new_port = g_port;
+	int new_https_port = daemon_config_https_port();
+	char new_bind[INET_ADDRSTRLEN];
+	char network_name[NETWORK_NAME_MAX];
+	int have_network = 0;
+	int want_http = daemon_config_http_enabled();
+	int want_https = daemon_config_https_enabled();
+	int have_http_req = 0, have_https_req = 0;
+	enum daemon_config_error derr;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+
+	snprintf(new_bind, sizeof(new_bind), "%s", g_bind_addr);
+
+	jport = json_object_get(root, "port");
+	if (jport != NULL) {
+		new_port = (int)json_as_number(jport);
+		if (new_port < 1 || new_port > 65535) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "port must be 1-65535");
+			return;
+		}
+	}
+
+	jhttps_port = json_object_get(root, "https_port");
+	if (jhttps_port != NULL) {
+		new_https_port = (int)json_as_number(jhttps_port);
+		if (new_https_port < 1 || new_https_port > 65535) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "https_port must be 1-65535");
+			return;
+		}
+	}
+
+	jhttp = json_object_get(root, "http_enabled");
+	if (jhttp != NULL && jhttp->type == JSON_BOOL) {
+		want_http = jhttp->u.boolean;
+		have_http_req = 1;
+	}
+	jhttps = json_object_get(root, "https_enabled");
+	if (jhttps != NULL && jhttps->type == JSON_BOOL) {
+		want_https = jhttps->u.boolean;
+		have_https_req = 1;
+	}
+	if (!want_http && !want_https) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "refusing to leave both http and https disabled");
+		return;
+	}
+
+	jnetwork = json_object_get(root, "management_network");
+	if (jnetwork != NULL) {
+		const char *raw_name = json_as_string(jnetwork);
+		struct network_def *target;
+
+		if (raw_name == NULL) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "management_network must be a string");
+			return;
+		}
+		target = network_find(raw_name);
+		if (target == NULL) {
+			json_free(root);
+			respond_error(fd, 404, "Not Found", "no such network");
+			return;
+		}
+		if (!target->has_gateway) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request",
+			              "network has no gateway address for kanxeod to bind to");
+			return;
+		}
+		{
+			struct in_addr a;
+
+			a.s_addr = target->gateway_be;
+			inet_ntop(AF_INET, &a, new_bind, sizeof(new_bind));
+		}
+		/* Copied out before json_free() below -- both raw_name and
+		 * target->name point into memory that call (or a future
+		 * network_set_management()-driven mutation) could invalidate. */
+		snprintf(network_name, sizeof(network_name), "%s", raw_name);
+		have_network = 1;
+	}
+	json_free(root);
+
+	/* HTTP transition: start/stop/rebind depending on what's currently
+	 * running versus what's being asked for. */
+	if (want_http) {
+		if (g_listener_conn.fd < 0) {
+			if (start_http_listener(new_bind, new_port) != 0) {
+				respond_error(fd, 500, "Internal Server Error", "could not start http listener");
+				return;
+			}
+			/* rebind_listener() normally owns updating g_bind_addr/
+			 * g_port; mirrored here for the freshly-started case,
+			 * which never goes through rebind_listener() at all. */
+			snprintf(g_bind_addr_buf, sizeof(g_bind_addr_buf), "%s", new_bind);
+			g_bind_addr = g_bind_addr_buf;
+			g_port = new_port;
+		} else if (rebind_listener(new_bind, new_port) != 0) {
+			respond_error(fd, 500, "Internal Server Error", "listener rebind failed");
+			return;
+		}
+	} else if (g_listener_conn.fd >= 0) {
+		stop_http_listener();
+	}
+
+	/* HTTPS transition, same shape. g_bind_addr is already authoritative
+	 * (either unchanged, or just updated by the HTTP branch above --
+	 * both listeners always share the same address, only the port
+	 * differs) by the time this runs. */
+	if (want_https) {
+		if (g_https_listener_conn.fd < 0) {
+			if (start_https_listener(g_bind_addr, new_https_port) != 0) {
+				respond_error(fd, 500, "Internal Server Error",
+				              "could not start https listener (no usable host cert yet?)");
+				return;
+			}
+		} else if (rebind_https_listener(g_bind_addr, new_https_port) != 0) {
+			respond_error(fd, 500, "Internal Server Error", "https listener rebind failed");
+			return;
+		}
+	} else if (g_https_listener_conn.fd >= 0) {
+		stop_https_listener();
+	}
+
+	if (have_network && network_set_management(network_name) != NETWORK_OK) {
+		/* The socket(s) already moved -- this would be a genuinely
+		 * inconsistent state (bound to target's address without
+		 * target actually being the recorded management network).
+		 * Not expected in practice (has_gateway was already confirmed
+		 * above), but reported plainly rather than silently claiming
+		 * success. */
+		respond_error(fd, 500, "Internal Server Error",
+		              "listener(s) rebound but could not persist management network");
+		return;
+	}
+
+	/* https_enabled persisted before http_enabled deliberately -- see
+	 * daemon_config_set_http_enabled()'s own guard: it refuses to
+	 * persist http_enabled=0 unless https_enabled is *already*
+	 * persisted true, so a single request disabling http while
+	 * enabling https has to land https first. */
+	if (have_https_req) {
+		derr = daemon_config_set_https_enabled(want_https);
+		if (derr != DAEMON_CONFIG_OK) {
+			respond_error(fd, 500, "Internal Server Error",
+			              "listener(s) changed but could not persist https_enabled");
+			return;
+		}
+	}
+	if (have_http_req) {
+		derr = daemon_config_set_http_enabled(want_http);
+		if (derr != DAEMON_CONFIG_OK) {
+			respond_error(fd, 500, "Internal Server Error",
+			              "listener(s) changed but could not persist http_enabled");
+			return;
+		}
+	}
+	if (jhttps_port != NULL) {
+		derr = daemon_config_set_https_port(new_https_port);
+		if (derr != DAEMON_CONFIG_OK) {
+			respond_error(fd, 500, "Internal Server Error",
+			              "listener(s) changed but could not persist https_port");
+			return;
+		}
+	}
+	derr = daemon_config_set_port(new_port);
+	if (derr != DAEMON_CONFIG_OK) {
+		respond_error(fd, 500, "Internal Server Error", "listener rebound but could not persist port");
+		return;
+	}
+
+	handle_daemon_config_get(fd);
 }
 
 static void handle_list(int fd)
@@ -4573,6 +5111,16 @@ static void dispatch(int fd, const struct http_request *req)
 			return;
 		}
 	}
+	if (strcmp(req->path, "/v1/system/daemon-config") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_daemon_config_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_daemon_config_put(fd, req->body, req->body_len);
+			return;
+		}
+	}
 	if (strcmp(req->path, "/v1/containers") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_list(fd);
@@ -5130,7 +5678,7 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	 * cc->kind actually changes further down, is still a CONSOLE_FAILED
 	 * case the caller must tear down normally. */
 	http_set_blocking(cc->fd);
-	if (kx_write_all(cc->fd, response, (size_t)rlen) != 0) {
+	if (tls_write_all(cc->fd, response, (size_t)rlen) != 0) {
 		/* Client already gone -- nothing left to respond with. */
 		kill(exec_pid, SIGKILL);
 		waitpid(exec_pid, NULL, 0);
@@ -5194,42 +5742,55 @@ static void handle_console_ws_event(struct conn *cc)
 	struct ws_frame frame;
 	int pr;
 
-	n = read(cc->fd, buf, sizeof(buf));
-	if (n <= 0) {
-		console_session_teardown(cc->exec_session);
-		return;
-	}
-	if (ws_conn_feed(&cc->ws, buf, (size_t)n) != 0) {
-		console_session_teardown(cc->exec_session);
-		return;
-	}
-
 	for (;;) {
-		pr = ws_conn_try_parse(&cc->ws, &frame);
-		if (pr == 0)
-			break;
-		if (pr < 0) {
+		n = tls_read(cc->fd, buf, sizeof(buf));
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+			return; /* no more data ready this event -- wait for the next one */
+		if (n <= 0) {
+			console_session_teardown(cc->exec_session);
+			return;
+		}
+		if (ws_conn_feed(&cc->ws, buf, (size_t)n) != 0) {
 			console_session_teardown(cc->exec_session);
 			return;
 		}
 
-		if (frame.opcode == WS_OPCODE_TEXT || frame.opcode == WS_OPCODE_BINARY) {
-			if (frame.payload_len > 0 &&
-			    kx_write_all(cc->exec_session->pty_conn->fd, frame.payload, frame.payload_len) != 0) {
-				ws_conn_consume(&cc->ws, frame.frame_len);
+		for (;;) {
+			pr = ws_conn_try_parse(&cc->ws, &frame);
+			if (pr == 0)
+				break;
+			if (pr < 0) {
 				console_session_teardown(cc->exec_session);
 				return;
 			}
-		} else if (frame.opcode == WS_OPCODE_CLOSE) {
-			ws_conn_consume(&cc->ws, frame.frame_len);
-			console_session_teardown(cc->exec_session);
-			return;
-		} else if (frame.opcode == WS_OPCODE_PING) {
-			ws_write_frame(cc->fd, WS_OPCODE_PONG, frame.payload, frame.payload_len);
-		}
-		/* WS_OPCODE_PONG: nothing to do -- just a keepalive ack. */
 
-		ws_conn_consume(&cc->ws, frame.frame_len);
+			if (frame.opcode == WS_OPCODE_TEXT || frame.opcode == WS_OPCODE_BINARY) {
+				if (frame.payload_len > 0 &&
+				    kx_write_all(cc->exec_session->pty_conn->fd, frame.payload, frame.payload_len) !=
+				        0) {
+					ws_conn_consume(&cc->ws, frame.frame_len);
+					console_session_teardown(cc->exec_session);
+					return;
+				}
+			} else if (frame.opcode == WS_OPCODE_CLOSE) {
+				ws_conn_consume(&cc->ws, frame.frame_len);
+				console_session_teardown(cc->exec_session);
+				return;
+			} else if (frame.opcode == WS_OPCODE_PING) {
+				ws_write_frame(cc->fd, WS_OPCODE_PONG, frame.payload, frame.payload_len);
+			}
+			/* WS_OPCODE_PONG: nothing to do -- just a keepalive ack. */
+
+			ws_conn_consume(&cc->ws, frame.frame_len);
+		}
+
+		/* Same real, non-blocking-TLS reason handle_client_event() has
+		 * to re-check this: a TLS connection's kernel socket buffer
+		 * being empty doesn't mean OpenSSL has no more decrypted data
+		 * already buffered internally -- level-triggered epoll won't
+		 * fire again on its own in that case. */
+		if (cc->ssl == NULL || SSL_pending(cc->ssl) <= 0)
+			return;
 	}
 }
 
@@ -5251,6 +5812,65 @@ static void handle_console_pty_event(struct conn *cc)
 		console_session_teardown(cc->exec_session);
 }
 
+/*
+ * Shared teardown for a CONN_CLIENT conn, from any of handle_client_
+ * event()'s several exit points -- consolidated here (Part 0.5) since
+ * TLS cleanup (tls_unregister()/SSL_free()) needs to happen at every
+ * one of them, not just some.
+ */
+static void client_conn_teardown(struct conn *cc)
+{
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	if (cc->ssl != NULL) {
+		tls_unregister(cc->fd);
+		SSL_free(cc->ssl);
+	}
+	close(cc->fd);
+	http_conn_free(&cc->http);
+	free(cc);
+}
+
+/*
+ * Drives cc's still-in-progress TLS handshake one step (Part 0.5) --
+ * called instead of an ordinary HTTP read whenever cc->ssl != NULL and
+ * the handshake hasn't finished yet. A non-blocking SSL_accept() can
+ * legitimately need several round trips (WANT_READ: wait for the next
+ * EPOLLIN and try again -- no epoll interest change needed; WANT_WRITE:
+ * the one case this daemon's otherwise-EPOLLIN-only client connections
+ * ever need EPOLLOUT too, so the epoll registration is widened, then
+ * narrowed back down once the handshake actually completes). Returns
+ * 1 once the handshake has completed (caller should fall through to
+ * ordinary request processing in the same event, since SSL_pending()
+ * may already have buffered application data no future epoll wakeup
+ * is guaranteed to announce -- see the real, well-known non-blocking-
+ * TLS gotcha this guards against), 0 if still in progress (caller
+ * should simply return and wait for the next event), or -1 on a
+ * genuine handshake failure (caller should tear down).
+ */
+static int client_conn_advance_handshake(struct conn *cc)
+{
+	int r;
+	int err;
+	struct kx_epoll_event ev;
+
+	r = SSL_accept(cc->ssl);
+	if (r == 1)
+		return 1;
+
+	err = SSL_get_error(cc->ssl, r);
+	if (err == SSL_ERROR_WANT_READ)
+		return 0;
+	if (err == SSL_ERROR_WANT_WRITE) {
+		memset(&ev, 0, sizeof(ev));
+		ev.events = EPOLLIN | EPOLLOUT;
+		ev.data.ptr = cc;
+		kx_epoll_ctl(g_epfd, EPOLL_CTL_MOD, cc->fd, &ev);
+		return 0;
+	}
+	ERR_print_errors_fp(stderr);
+	return -1;
+}
+
 static void handle_client_event(struct conn *cc)
 {
 	char buf[4096];
@@ -5258,50 +5878,82 @@ static void handle_client_event(struct conn *cc)
 	struct http_request req;
 	int pr;
 
-	n = read(cc->fd, buf, sizeof(buf));
-	if (n <= 0) {
-		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
-		close(cc->fd);
-		http_conn_free(&cc->http);
-		free(cc);
-		return;
+	if (cc->ssl != NULL && !SSL_is_init_finished(cc->ssl)) {
+		int hr = client_conn_advance_handshake(cc);
+
+		if (hr < 0) {
+			client_conn_teardown(cc);
+			return;
+		}
+		if (hr == 0)
+			return; /* still mid-handshake -- wait for the next event */
+
+		/* Just completed: narrow epoll interest back down to plain
+		 * EPOLLIN if client_conn_advance_handshake() had widened it
+		 * for a WANT_WRITE step above -- every ordinary CONN_CLIENT
+		 * conn is EPOLLIN-only otherwise. Falls through to read
+		 * application data immediately below, not on the next event
+		 * (SSL_pending() may already be nonzero). */
+		{
+			struct kx_epoll_event ev;
+
+			memset(&ev, 0, sizeof(ev));
+			ev.events = EPOLLIN;
+			ev.data.ptr = cc;
+			kx_epoll_ctl(g_epfd, EPOLL_CTL_MOD, cc->fd, &ev);
+		}
 	}
 
-	if (http_conn_feed(&cc->http, buf, (size_t)n) != 0) {
-		respond_error(cc->fd, 400, "Bad Request", "request too large");
-		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
-		close(cc->fd);
-		http_conn_free(&cc->http);
-		free(cc);
-		return;
-	}
+	for (;;) {
+		n = tls_read(cc->fd, buf, sizeof(buf));
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+			return; /* no more data ready this event -- wait for the next one */
+		if (n <= 0) {
+			client_conn_teardown(cc);
+			return;
+		}
 
-	pr = http_conn_try_parse(&cc->http, &req);
-	if (pr < 0) {
-		respond_error(cc->fd, 400, "Bad Request", "malformed request");
-		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
-		close(cc->fd);
-		http_conn_free(&cc->http);
-		free(cc);
-		return;
-	}
-	if (pr == 1) {
-		enum console_route_result cr = try_console_upgrade(cc, &req);
+		if (http_conn_feed(&cc->http, buf, (size_t)n) != 0) {
+			respond_error(cc->fd, 400, "Bad Request", "request too large");
+			client_conn_teardown(cc);
+			return;
+		}
 
-		if (cr == CONSOLE_HANDLED)
-			return; /* cc repurposed into CONN_CONSOLE_WS (or already torn down) -- must not be touched again */
-		if (cr == CONSOLE_NOT_MATCHED)
-			dispatch(cc->fd, &req);
-		/* CONSOLE_FAILED: an error response (or nothing, if the client
-		 * was already gone) was already written by
-		 * try_console_upgrade() itself -- cc still needs the same
-		 * teardown every other handled request gets below. */
-		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
-		close(cc->fd);
-		http_conn_free(&cc->http);
-		free(cc);
+		pr = http_conn_try_parse(&cc->http, &req);
+		if (pr < 0) {
+			respond_error(cc->fd, 400, "Bad Request", "malformed request");
+			client_conn_teardown(cc);
+			return;
+		}
+		if (pr == 1) {
+			enum console_route_result cr = try_console_upgrade(cc, &req);
+
+			if (cr == CONSOLE_HANDLED)
+				return; /* cc repurposed into CONN_CONSOLE_WS (or already torn down) -- must not be touched again */
+			if (cr == CONSOLE_NOT_MATCHED)
+				dispatch(cc->fd, &req);
+			/* CONSOLE_FAILED: an error response (or nothing, if the
+			 * client was already gone) was already written by
+			 * try_console_upgrade() itself -- cc still needs the
+			 * same teardown every other handled request gets. */
+			client_conn_teardown(cc);
+			return;
+		}
+		/* pr == 0: request incomplete so far. A plain-fd connection
+		 * always stops here and waits for the next EPOLLIN (matches
+		 * this daemon's existing, unchanged behavior). A TLS
+		 * connection additionally re-checks SSL_pending(): OpenSSL may
+		 * have already buffered more decrypted application data
+		 * internally than fit in one read (or the client's whole
+		 * request rode in on the same TCP segment as the final
+		 * handshake message above) -- the kernel socket buffer being
+		 * empty in that case means level-triggered epoll will *not*
+		 * fire again on its own, so that data has to be drained now,
+		 * not assumed to arrive via a future wakeup that may never
+		 * come. */
+		if (cc->ssl == NULL || SSL_pending(cc->ssl) <= 0)
+			return;
 	}
-	/* pr == 0: request incomplete, keep waiting on this fd. */
 }
 
 /*
@@ -5756,14 +6408,24 @@ static void handle_console_respawn_timer_event(struct conn *cc)
 	spawn_console_shell(tty_path);
 }
 
-static void accept_loop(void)
+/*
+ * listener is either &g_listener_conn (plain HTTP) or &g_https_
+ * listener_conn (Part 0.5) -- both accept4() loops are identical
+ * except that a connection accepted on the HTTPS listener additionally
+ * gets a fresh SSL* wrapped around it (SSL_accept() itself happens
+ * later, driven from handle_client_event() the same way ordinary HTTP
+ * request parsing is already driven from there -- non-blocking, one
+ * epoll wakeup at a time, never a blocking call in this loop).
+ */
+static void accept_loop(struct conn *listener)
 {
 	int client_fd;
 	struct conn *cc;
 	struct kx_epoll_event ev;
+	int is_tls = (listener->kind == CONN_LISTENER_TLS);
 
 	for (;;) {
-		client_fd = accept4(g_listener_conn.fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+		client_fd = accept4(listener->fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
 		if (client_fd < 0) {
 			if (errno == EAGAIN || errno == EWOULDBLOCK)
 				break;
@@ -5784,13 +6446,32 @@ static void accept_loop(void)
 		}
 		cc->kind = CONN_CLIENT;
 		cc->fd = client_fd;
+		cc->ssl = NULL;
 		http_conn_init(&cc->http);
+
+		if (is_tls) {
+			cc->ssl = SSL_new(g_tls_ctx);
+			if (cc->ssl == NULL || SSL_set_fd(cc->ssl, client_fd) != 1) {
+				ERR_print_errors_fp(stderr);
+				if (cc->ssl != NULL)
+					SSL_free(cc->ssl);
+				close(client_fd);
+				free(cc);
+				continue;
+			}
+			SSL_set_accept_state(cc->ssl);
+			tls_register(client_fd, cc->ssl);
+		}
 
 		memset(&ev, 0, sizeof(ev));
 		ev.events = EPOLLIN;
 		ev.data.ptr = cc;
 		if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, client_fd, &ev) != 0) {
 			perror("epoll_ctl ADD client");
+			if (cc->ssl != NULL) {
+				tls_unregister(client_fd);
+				SSL_free(cc->ssl);
+			}
 			close(client_fd);
 			free(cc);
 		}
@@ -5934,6 +6615,8 @@ static void containerdef_autostart_all(void)
 int main(int argc, char **argv)
 {
 	int port = DEFAULT_PORT;
+	int port_explicit = 0; /* --port= was actually passed on argv -- see
+	                         * daemon_config_port()'s override below */
 	const char *bind_addr = DEFAULT_BIND;
 	const char *web_root = DEFAULT_WEB_ROOT;
 	int init_mode = 0;
@@ -5944,14 +6627,14 @@ int main(int argc, char **argv)
 	const char *test_bootstrap_toolchain = NULL;
 	int i;
 	int listen_fd;
-	int opt = 1;
-	struct sockaddr_in addr;
 	struct kx_epoll_event ev;
 	struct sigaction sa;
 
 	for (i = 1; i < argc; i++) {
-		if (strncmp(argv[i], "--port=", 7) == 0)
+		if (strncmp(argv[i], "--port=", 7) == 0) {
 			port = atoi(argv[i] + 7);
+			port_explicit = 1;
+		}
 		else if (strncmp(argv[i], "--bind=", 7) == 0)
 			bind_addr = argv[i] + 7;
 		else if (strncmp(argv[i], "--web-root=", 11) == 0)
@@ -5972,10 +6655,13 @@ int main(int argc, char **argv)
 			snprintf(g_base_dir, sizeof(g_base_dir), "%s", argv[i] + 11);
 	}
 	init_base_dir_paths();
+	tls_init();
 	g_web_root = web_root;
 	g_slot = slot;
 	g_bind_addr = bind_addr;
-	g_port = port;
+	/* g_port is finalized later, once daemon_config_init() has had a
+	 * chance to apply a persisted port override (Part 0.5) -- nothing
+	 * between here and there reads it. */
 
 	if (init_mode) {
 		/* The only observable serial-console signal for which slot
@@ -6043,6 +6729,20 @@ int main(int argc, char **argv)
 
 	if (network_init(NETWORKS_STATE_PATH) != 0)
 		return 1;
+	/* Only a real --init-mode boot has a GRUB-supplied net.conf to
+	 * bootstrap from (Part 0.5) -- a plain/test invocation has no
+	 * "mgmt" network and simply keeps whatever --bind= it was given. */
+	if (init_mode && bootstrap_management_network() != 0)
+		return 1;
+	if (daemon_config_init(DAEMON_CONFIG_PATH) != 0)
+		return 1;
+	/* A persisted port change (PUT /v1/system/daemon-config) survives a
+	 * real reboot -- but an explicit --port= on argv (every test/dev
+	 * invocation always passes one, to avoid colliding with other
+	 * parallel test daemons) always wins over it. */
+	if (!port_explicit && daemon_config_port() != 0)
+		port = daemon_config_port();
+	g_port = port;
 	if (dns_init(DNS_RECORDS_STATE_PATH) != 0)
 		return 1;
 	if (pki_init(PKI_DIR, PKI_CERTS_STATE_PATH) != 0)
@@ -6125,7 +6825,7 @@ int main(int argc, char **argv)
 	sigaction(SIGINT, &sa, NULL);
 
 	/*
-	 * SOCK_CLOEXEC/EPOLL_CLOEXEC everywhere below: container_create()
+	 * SOCK_CLOEXEC everywhere below: container_create()
 	 * clone3()'s a new process for every container this daemon runs.
 	 * Without close-on-exec, that child inherits a duplicate of every
 	 * fd we hold open at the moment of the clone -- including the
@@ -6135,49 +6835,36 @@ int main(int argc, char **argv)
 	 * so an un-CLOEXEC'd fd would silently stall that HTTP response
 	 * until the container itself exits, defeating the entire
 	 * non-blocking reactor. The container's own execve() closes any
-	 * CLOEXEC fd immediately, well before it does real work.
+	 * CLOEXEC fd immediately, well before it does real work. See
+	 * create_listen_socket() for the socket/bind/listen sequence
+	 * itself -- shared with rebind_listener()'s live-rebind path
+	 * (Part 0.5), one source of truth for both.
 	 */
-	listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-	if (listen_fd < 0) {
-		perror("socket");
-		return 1;
-	}
-	setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-	memset(&addr, 0, sizeof(addr));
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons((uint16_t)port);
-	if (inet_pton(AF_INET, bind_addr, &addr.sin_addr) != 1) {
-		fprintf(stderr, "invalid --bind address: %s\n", bind_addr);
-		return 1;
-	}
-
-	if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-		perror("bind");
-		return 1;
-	}
-	if (listen(listen_fd, 128) != 0) {
-		perror("listen");
-		return 1;
-	}
-
 	g_epfd = epoll_create1(EPOLL_CLOEXEC);
 	if (g_epfd < 0) {
 		perror("epoll_create1");
 		return 1;
 	}
 
-	g_listener_conn.kind = CONN_LISTENER;
-	g_listener_conn.fd = listen_fd;
-	memset(&ev, 0, sizeof(ev));
-	ev.events = EPOLLIN;
-	ev.data.ptr = &g_listener_conn;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, listen_fd, &ev) != 0) {
-		perror("epoll_ctl ADD listener");
+	/*
+	 * Part 0.5: http_enabled/https_enabled are each independently
+	 * optional, but at least one must actually come up -- daemon_
+	 * config.c's own setters already refuse a persisted state that
+	 * would leave both off, so reaching this point with neither
+	 * enabled would mean corrupted state, not a reachable operator
+	 * choice; fail loudly rather than silently starting unreachable.
+	 */
+	g_listener_conn.fd = -1;
+	g_https_listener_conn.fd = -1;
+	if (daemon_config_http_enabled() && start_http_listener(bind_addr, port) != 0)
+		return 1;
+	if (daemon_config_https_enabled() && start_https_listener(bind_addr, daemon_config_https_port()) != 0)
+		fprintf(stderr, "https_enabled but could not start the HTTPS listener -- continuing without it\n");
+	listen_fd = g_listener_conn.fd;
+	if (listen_fd < 0 && g_https_listener_conn.fd < 0) {
+		fprintf(stderr, "no working listener (http and https both unavailable) -- refusing to start\n");
 		return 1;
 	}
-
-	printf("kanxeod listening on %s:%d\n", bind_addr, port);
 	fflush(stdout);
 
 	/* "About to serve traffic" is the honest definition of healthy this
@@ -6219,8 +6906,8 @@ int main(int argc, char **argv)
 			cc = events[j].data.ptr;
 			if (cc->kind == CONN_DEAD)
 				continue; /* torn down earlier in this same batch -- see g_pending_free's own comment */
-			if (cc->kind == CONN_LISTENER)
-				accept_loop();
+			if (cc->kind == CONN_LISTENER || cc->kind == CONN_LISTENER_TLS)
+				accept_loop(cc);
 			else if (cc->kind == CONN_CONTAINER)
 				handle_container_event(cc);
 			else if (cc->kind == CONN_PKG_FETCH)
@@ -6244,7 +6931,12 @@ int main(int argc, char **argv)
 		drain_pending_free();
 	}
 
-	close(listen_fd);
+	if (listen_fd >= 0)
+		close(listen_fd);
+	if (g_https_listener_conn.fd >= 0) {
+		close(g_https_listener_conn.fd);
+		SSL_CTX_free(g_tls_ctx);
+	}
 	close(g_epfd);
 	printf("kanxeod shutting down\n");
 	fflush(stdout);

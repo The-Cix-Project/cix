@@ -1,5 +1,6 @@
 #include "http.h"
 #include "iohelpers.h"
+#include "tlsconn.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -211,9 +212,9 @@ int http_write_response(int fd, int status, const char *status_text,
 	if (hlen < 0 || (size_t)hlen >= sizeof(header))
 		return -1;
 
-	if (kx_write_all(fd, header, (size_t)hlen) != 0)
+	if (tls_write_all(fd, header, (size_t)hlen) != 0)
 		return -1;
-	if (body_len > 0 && kx_write_all(fd, body, body_len) != 0)
+	if (body_len > 0 && tls_write_all(fd, body, body_len) != 0)
 		return -1;
 	return 0;
 }

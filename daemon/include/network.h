@@ -35,7 +35,9 @@ enum network_error {
 	NETWORK_ERR_INTERFACE_ATTACHED,    /* already attached to this network */
 	NETWORK_ERR_INTERFACE_NOT_ATTACHED, /* detach requested for one that isn't attached here */
 	NETWORK_ERR_INTERFACE_FULL,        /* this network's own interfaces[] table is full */
-	NETWORK_ERR_INTERFACE_NAME_TOO_LONG /* "<ifname>.<vlan_id>" wouldn't fit IFNAMSIZ */
+	NETWORK_ERR_INTERFACE_NAME_TOO_LONG, /* "<ifname>.<vlan_id>" wouldn't fit IFNAMSIZ */
+	NETWORK_ERR_IS_MANAGEMENT /* refused: this network currently carries kanxeod's own
+	                            * bind address -- see network_set_management() */
 };
 
 struct network_attached_interface {
@@ -56,7 +58,10 @@ struct network_def {
 	                       * base|1 */
 	struct network_attached_interface interfaces[NETWORK_MAX_INTERFACES];
 	int interface_count;
-	int in_use; /* 0 for free slots */
+	int in_use;         /* 0 for free slots */
+	int is_management; /* this network's gateway is kanxeod's own bind address --
+	                     * see network_set_management(); at most one network has
+	                     * this set at a time */
 };
 
 /*
@@ -171,5 +176,30 @@ enum network_error network_attach_interface(const char *name, const char *ifname
  * none of that ADR's netns-fd/kernel-fallback-name hazards apply here.
  */
 enum network_error network_detach_interface(const char *name, const char *ifname);
+
+/*
+ * Designates name as the one network whose gateway address kanxeod
+ * itself binds to -- the API-managed counterpart to what used to be a
+ * GRUB-only, invisible apply_static_ip() call (Part 0.5). Requires
+ * name to already have a gateway (has_gateway, network_create()'s
+ * gateway_str) -- that address becomes the daemon's own bind address.
+ * Clears is_management from whichever other network previously held
+ * it (at most one at a time) and sets it on name, in that order, then
+ * persists -- never a window with zero or two management networks.
+ * Does *not* itself perform the listen-socket rebind; that's the
+ * caller's job once this returns NETWORK_OK (see daemon_config.c).
+ * NETWORK_ERR_NOT_FOUND if no such network; NETWORK_ERR_INVALID_
+ * GATEWAY if it has no gateway address to bind to.
+ */
+enum network_error network_set_management(const char *name);
+
+/*
+ * The network currently designated by network_set_management(), or
+ * NULL if none has been set yet (e.g. a --data-dir= test invocation
+ * with no boot-time bootstrap). At most one entry ever has
+ * is_management set -- this is a linear scan, not a cached pointer,
+ * since g_networks[] can be reloaded wholesale by network_init().
+ */
+struct network_def *network_find_management(void);
 
 #endif /* NETWORK_H */

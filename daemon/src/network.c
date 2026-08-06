@@ -81,6 +81,7 @@ static int parse_persisted_entry(const struct json_value *item, struct network_d
 	const char *subnet = json_as_string(json_object_get(item, "subnet"));
 	const struct json_value *jprefix = json_object_get(item, "prefix_len");
 	const struct json_value *jhas_gw = json_object_get(item, "has_gateway");
+	const struct json_value *jis_mgmt = json_object_get(item, "is_management");
 	const struct json_value *jinterfaces = json_object_get(item, "interfaces");
 	int prefix_len;
 	int has_gateway;
@@ -129,6 +130,11 @@ static int parse_persisted_entry(const struct json_value *item, struct network_d
 	slot->prefix_len = prefix_len;
 	slot->has_gateway = has_gateway;
 	slot->gateway_be = gateway_be;
+	/* Absent on any entry predating this field (Part 0.5) -- no network
+	 * was ever "management" before this existed, so absence simply
+	 * means not-management, no legacy-default reasoning needed here
+	 * the way has_gateway's own absence-handling above requires. */
+	slot->is_management = (jis_mgmt != NULL && jis_mgmt->type == JSON_BOOL && jis_mgmt->u.boolean);
 
 	if (jinterfaces != NULL) {
 		size_t j;
@@ -440,6 +446,8 @@ enum network_error network_delete(const char *name)
 
 	if (e == NULL)
 		return NETWORK_ERR_NOT_FOUND;
+	if (e->is_management)
+		return NETWORK_ERR_IS_MANAGEMENT;
 	if (registry_network_in_use(name))
 		return NETWORK_ERR_IN_USE;
 
@@ -563,6 +571,8 @@ enum network_error network_detach_interface(const char *name, const char *ifname
 
 	if (net == NULL)
 		return NETWORK_ERR_NOT_FOUND;
+	if (net->is_management)
+		return NETWORK_ERR_IS_MANAGEMENT;
 	for (i = 0; i < net->interface_count; i++) {
 		if (strcmp(net->interfaces[i].ifname, ifname) == 0) {
 			idx = i;
@@ -598,6 +608,45 @@ enum network_error network_detach_interface(const char *name, const char *ifname
 
 	if (save_state() != 0)
 		return NETWORK_ERR_DELETE_FAILED;
+	return NETWORK_OK;
+}
+
+struct network_def *network_find_management(void)
+{
+	int i;
+
+	for (i = 0; i < NETWORK_MAX; i++) {
+		if (g_networks[i].in_use && g_networks[i].is_management)
+			return &g_networks[i];
+	}
+	return NULL;
+}
+
+enum network_error network_set_management(const char *name)
+{
+	struct network_def *e = network_find(name);
+	struct network_def *prev;
+
+	if (e == NULL)
+		return NETWORK_ERR_NOT_FOUND;
+	if (!e->has_gateway)
+		return NETWORK_ERR_INVALID_GATEWAY;
+	if (e->is_management)
+		return NETWORK_OK; /* already the management network -- idempotent */
+
+	prev = network_find_management();
+	if (prev != NULL)
+		prev->is_management = 0;
+	e->is_management = 1;
+
+	if (save_state() != 0) {
+		/* Roll back, same "never report success on a lie" discipline
+		 * every other mutator in this file already follows. */
+		e->is_management = 0;
+		if (prev != NULL)
+			prev->is_management = 1;
+		return NETWORK_ERR_CREATE_FAILED;
+	}
 	return NETWORK_OK;
 }
 
@@ -663,6 +712,8 @@ void network_write_json_one(const struct network_def *net, struct json_writer *w
 	jw_int(w, net->prefix_len);
 	jw_key(w, "has_gateway");
 	jw_bool(w, net->has_gateway);
+	jw_key(w, "is_management");
+	jw_bool(w, net->is_management);
 	jw_key(w, "gateway");
 	if (net->has_gateway) {
 		char gateway_str[INET_ADDRSTRLEN];
