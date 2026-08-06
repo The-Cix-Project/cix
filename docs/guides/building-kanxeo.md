@@ -1,0 +1,59 @@
+# Building Kanxeo
+
+Two ways to produce `kanxeod`/`kanxeoctl`/`web/`: the ordinary way, on a ordinary Linux dev machine with a system TCC already installed, and the self-hosted way, from inside a running Kanxeo install with no separate dev machine at all. Both produce byte-for-byte the same kind of artifact; the self-hosted path exists specifically so an operator with only a Kanxeo box, no laptop/dev-server, can still rebuild it.
+
+## From a dev machine
+
+Requires `tcc` and a Linux kernel with cgroup v2 and `clone3`/`CLONE_INTO_CGROUP` support (5.7+). Namespace/mount tests must run as root, and need a **privileged** container if run inside one (see `docs/roadmap/ROADMAP.md` Phase 1 for why).
+
+```sh
+make                       # builds everything into build/, -Wall -Werror, zero warnings
+sudo build/kanxeod         # start the daemon (REST API + web dashboard on :7620)
+build/kanxeoctl health     # talk to it with the CLI
+make clean
+```
+
+`make` builds every binary this repo produces — `kanxeod`, `kanxeoctl`, the installer tools (`mkbootroot`, `mkinstalleriso`, `kanxeo-install`), and one test binary per phase/part (each self-contained, forking and `exec`ing its own `kanxeod` instance where needed — e.g. `sudo build/test_pkg` runs standalone). There is no `make install` target and no other named target beyond `all`/`clean` — everything beyond `make`/`make clean` is a manually-invoked binary out of `build/`.
+
+`build/bzImage` (the kernel Kanxeo boots) is intentionally **not** part of this build — see [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) for how that's produced, on a dev machine or self-hosted.
+
+## From a running Kanxeo host (self-hosted rebuild)
+
+An operator with no separate dev machine can rebuild `kanxeod`/`kanxeoctl`/`web/` from inside Kanxeo's own container+recipe mechanism, using the [hostbuild](writing-recipes.md#the-hostbuild-variant) pipeline (ADR-0057) — the same mechanism [kernel builds](kernel-build-and-ab-updates.md) use, applied to Kanxeo's own source instead. TCC ships as an ordinary recipe rather than being baked into any shared toolchain, since it's this project's own Immutable Maxim that `kanxeod`/`kanxeoctl` are built with TCC, never GCC — nothing about that changes just because the build is happening on the target box itself.
+
+### 1. Build a toolchain image
+
+```
+kanxeoctl image create --name=kanxeo-builder
+kanxeoctl pkg install --name=tcc --image=kanxeo-builder
+kanxeoctl pkg install --name=make --image=kanxeo-builder
+kanxeoctl pkg install --name=libc-dev --image=kanxeo-builder
+kanxeoctl pkg install --name=bash --image=kanxeo-builder
+kanxeoctl pkg install --name=coreutils --image=kanxeo-builder
+```
+
+An image is just an ordinary image, built up with ordinary installs — no special "builder image" concept exists beyond having the right packages present. This exact set (`tcc`, `make`, `libc-dev`, `bash`, `coreutils`) is the minimum a plain Makefile build of this repo needs: `tcc` to compile, `make` to drive the build, `libc-dev` for headers and the CRT startup objects (`crt1.o`/`crti.o`/`crtn.o` — see the note on TCC's own CRT search path below), `bash` because glibc's `popen()` hardcodes `/bin/sh` with no override and the kernel's own Kconfig-style patterns some build steps use need a real shell present, and `coreutils` because the root `Makefile`'s own `mkdir -p build` needs a real `mkdir`. If a future change to this repo's own build needs something more, that surfaces as a real, specific build failure naming exactly what's missing — install it onto `kanxeo-builder` the same way, one real gap at a time, never speculatively.
+
+### 2. Point `kanxeo.recipe` at a real source snapshot
+
+`pkg/recipes/kanxeo.recipe`'s `pkg_source` is this repo's own self-hosted git remote's archive-download endpoint, pinned to a real tag — never floating `main`, the same fixed-version discipline every other recipe in this catalog follows:
+
+```sh
+pkg_source="https://<user>:<TOKEN>@<git-host>/api/v1/repos/<org>/kanxeo/archive/<tag>.tar.gz"
+```
+
+The committed recipe carries a placeholder in place of a real token — substitute a real, scoped, read-only access token for the account this daemon should fetch as before uploading it (`kanxeoctl pkg recipe add --name=kanxeo --file=...`), the same "generate locally, never commit" posture this project's own installer signing key already established. Cut a fresh tag and bump `pkg_version`/`pkg_source`/`pkg_sha256` whenever you want a newer self-build available — a tag bump is the deliberate, auditable signal that a new self-build snapshot exists, not an automatic floating-HEAD fetch.
+
+### 3. Run the hostbuild
+
+```
+kanxeoctl pkg hostbuild kanxeo --build-image=kanxeo-builder --wait --deploy
+```
+
+This fetches the tagged source (host-side, before the build container starts — the build container itself has no network access, same as every other install), builds `kanxeod`/`kanxeoctl`/`web/` **and** `mkbootroot` itself with the just-installed TCC, then hands off to the daemon's own server-side assembly step: `kanxeod` forks and execs the freshly-built `mkbootroot` (the same non-blocking, pidfd-tracked pattern it already uses for `curl` fetches) to package those artifacts into a fresh `kanxeod-root.squashfs` — never the CLI invoking `mkbootroot` itself, which the API-First Mandate rules out. `mkbootroot` is built by this same hostbuild round, not reused from any earlier one, so a box that's never had a self-build before (every real deployed box, since `mkbootroot` was previously only ever a dev-machine tool) has everything it needs in one self-contained round.
+
+`--wait` polls until the hostbuild job itself reaches `installed` — that only means the compile finished, not that the async squashfs assembly has too. `--deploy` (only meaningful once assembly has actually finished) reads the resulting `kanxeod-root.squashfs` and calls the existing `/system/update` with it, exactly as if you'd `scp`'d it from a dev machine. From here, follow the same write → reboot → confirm sequence as any other update — see [`staying-updated.md`](staying-updated.md).
+
+### A real, TCC-specific gap worth knowing about
+
+If a from-scratch build image reports `tcc: error: file 'crt1.o' not found` even though `crt1.o` genuinely exists on disk: TCC maintains a separate, single-path search list for CRT startup objects (`crt1.o`/`crti.o`/`crtn.o`/`Scrt1.o`/`gcrt1.o`/`Mcrt1.o`), defaulting to `/usr/lib/x86_64-linux-gnu` — distinct from its broader `-l`/library search list, and distinct from GCC's own `LIBRARY_PATH` convention. This project's `libc-dev.recipe` already stages both locations (fixed during this mechanism's own development, ADR-0057) — this note exists so the symptom is recognizable if it ever resurfaces in some other build-image combination, not because it's an open problem today.
