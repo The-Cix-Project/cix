@@ -2,6 +2,29 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 5 (core toolchain): ISO self-build -- a real, from-source GRUB2/xorriso/mtools/sbsigntools toolchain (ADR-0063)
+
+Nine new real, from-source recipes closing the "largest, most uncertain part" of the bare-metal-readiness plan, all verified end to end against the real daemon pipeline.
+
+#### Added
+- `pkg/recipes/patch.recipe`, `pkg/recipes/gettext.recipe` -- real GRUB2 build-time dependencies (confirmed against GRUB's own upstream `INSTALL` file).
+- `pkg/recipes/gnu-efi.recipe` -- needed by sbsigntools, not GRUB2 (GRUB2 has its own self-contained in-tree EFI headers).
+- `pkg/recipes/xorriso.recipe`, `pkg/recipes/mtools.recipe` -- real *runtime-only* dependencies of `grub-mkrescue` (confirmed via its own source: invoked by literal name via fork/exec, never linked), not build dependencies of GRUB itself.
+- `pkg/recipes/libuuid.recipe` -- util-linux's own real `--disable-all-programs --enable-libuuid` standalone build.
+- `pkg/recipes/binutils-dev.recipe` -- new package splitting binutils' dev files (`bfd.h` and friends) out of `binutils.recipe`'s own runtime-only install, mirroring `libc.recipe`/`libc-dev.recipe`'s existing split.
+- `pkg/recipes/sbsigntools.recipe` -- canonical upstream confirmed as James Bottomley's fork (`git.kernel.org/.../jejb/sbsigntools.git`, tag `v0.9.5`); no release tarball exists, fetched as a real git-archive snapshot; its vendored CCAN git submodule spliced in via a second multi-source entry; `autogen.sh` replicated directly (two of its steps need a live `.git` history a tarball fetch doesn't have).
+- `pkg/recipes/grub.recipe` -- GRUB 2.14, a single `./configure --target=x86_64 --with-platform=efi` pass builds everything (no second "target platform" tree needed, contrary to the plan's own earlier speculation); BIOS/`i386-pc` deliberately skipped (Kanxeo is UEFI-only, ADR-0031).
+- `docs/adr/0063-iso-self-build-toolchain.md`.
+
+#### Changed
+- `daemon/src/pkg.c`: `pkg_build_completed()` now also merges every ordinary install's own output into the shared build sandbox (`g_pkgbuild_rootfs`), not just the target image -- a genuine architectural gap found and fixed, not routed around. Every ordinary package build previously ran inside one fixed, shared toolchain sandbox that recipe-installed packages never became part of, so a package installed via this project's own recipe mechanism was permanently invisible to any *other* recipe's own build step, even a formally-declared `pkg_depends`. Masked until now because every prior cross-recipe dependency happened to already exist on this sandbox's real host OS.
+- `pkg/recipes/README.md`: recipe count updated 41 -> 50.
+
+#### Notes
+- Verified real, end to end: all 9 recipes installed successfully through the real daemon pipeline (3 real build failures found and fixed along the way, each root-caused via the real build's own failure output, never guessed).
+- **A real, complete, self-built ISO was produced and a real Secure Boot signature verified**, using *only* the freshly pkg-installed toolchain: `grub-mkrescue` produced a genuine, valid, bootable ISO 9660 image; `sbsign` (Kanxeo's own real signing key) signed a real EFI binary; `sbverify` confirmed the signature.
+- **Not verified, per Zen:** the daemon-side, REST-triggered ISO-assembly mechanism (a `CONN_BOOTROOT_ASSEMBLE`-shaped addition mirroring ADR-0057's `mkbootroot`) remains a distinct, deliberately deferred follow-on -- `image/src/mkinstalleriso.c` is still a dev-machine-only manual tool, not yet reachable via REST/CLI.
+
 ### Part 4: disk quotas -- real ext4 project-quota enforcement (ADR-0062)
 
 Real, kernel-enforced per-container disk-usage limits -- nothing enforced this before (`overlay_upperdir_size()`, ADR-0054, only ever reported usage).

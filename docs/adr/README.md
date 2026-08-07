@@ -67,3 +67,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0060](0060-cpu-bandwidth-and-affinity-api-exposure.md) | Expose cpu.max and cpuset.cpus through the API/CLI, no reinterpretation layer | Accepted |
 | [0061](0061-kernel-module-loading.md) | Kernel module loading: root-critical drivers stay built-in, only network/USB become modules | Accepted |
 | [0062](0062-ext4-project-disk-quotas.md) | Disk quotas: real ext4 project-quota enforcement, permanent project-id assignment | Accepted |
+| [0063](0063-iso-self-build-toolchain.md) | ISO self-build: a real, from-source GRUB2/xorriso/mtools/sbsigntools toolchain | Accepted |

@@ -1772,6 +1772,36 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			g_dep_queue_count = 0;
 			return 0;
 		}
+
+		/*
+		 * ALSO merge into g_pkgbuild_rootfs (the one shared, persistent
+		 * toolchain sandbox every ordinary install's own build container
+		 * uses as its lowerdir -- see g_pkgbuild_rootfs's own comment)
+		 * -- not just the target image above. Found as a real, genuine
+		 * gap, not speculative: sbsigntools.recipe (Part 5, bare-metal-
+		 * readiness plan) needs bfd.h/uuid.h/efi.h from binutils-dev/
+		 * libuuid/gnu-efi, each already merged into the "dev" target
+		 * image by an earlier install -- but g_pkgbuild_rootfs is a
+		 * fixed snapshot, staged once from this host's own real
+		 * toolchain (pkg_bootstrap_build_image()) and never otherwise
+		 * touched by a package install, so it never had bfd.h at all.
+		 * Every prior recipe with a real pkg_depends (gcc on m4/
+		 * binutils, autoconf on m4, ...) happened not to expose this:
+		 * those dependencies' own tools already existed in this
+		 * sandbox's real host toolchain, masking the gap until a
+		 * recipe needed a header/library that only this project's own
+		 * package manager -- never the bare host OS -- had ever
+		 * installed. e=NULL: g_pkgbuild_rootfs is a build-time-only
+		 * sandbox, never itself an installed image a manifest could
+		 * ever need to unlink from (the same NULL-manifest shape the
+		 * hostbuild-artifact merge above already uses). A failure here
+		 * is deliberately non-fatal (best-effort) -- the real,
+		 * authoritative install (the target-image merge just above)
+		 * already succeeded; a future recipe losing this particular
+		 * build-time visibility is a real but strictly smaller problem
+		 * than unwinding an otherwise-successful install over it.
+		 */
+		merge_tree(dest_dir, g_pkgbuild_rootfs, "", NULL);
 	}
 
 	e->state = PKG_STATE_INSTALLED;
