@@ -222,7 +222,11 @@ static void print_raw_json(const struct json_value *v)
 
 static void fmt_health(const struct json_value *v)
 {
+	const char *slot = json_str_field(v, "slot");
+
 	printf("%s\n", json_str_field(v, "status"));
+	printf("build:   %s (%s)\n", json_str_field(v, "build_version"), json_str_field(v, "build_time"));
+	printf("slot:    %s\n", (slot != NULL) ? slot : "(none)");
 }
 
 static void fmt_container_line(const struct json_value *v)

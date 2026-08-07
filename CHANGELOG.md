@@ -2,6 +2,24 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 11 (done): merged, wider errno-encoding range for the container-launch diagnostic, build-version/A/B-slot self-reporting on `GET /health`
+
+Continuing Part 10's still-open thread: a real server-side `hostbuild` on `192.168.15.95`, using `kanxeo-builder`'s own rootfs as the container's overlay lowerdir, surfaced an `execve()` errno Part 10's own encoding scheme couldn't represent -- twice in a row (capped at 54, widened to 84, still insufficient).
+
+#### Added
+- `Makefile`: new `.PHONY: $(BUILD)/version.h` rule, regenerated on every invocation from `git describe --tags --always --dirty` + a UTC build timestamp; `$(BUILD)/kanxeod` now depends on it and includes `-I$(BUILD)`.
+- `daemon/src/main.c`: `handle_health()` now reports `build_version`/`build_time`/`slot` (the existing `g_slot` global, previously write-only outside `confirm_boot()`) alongside `status`.
+- `cli/src/main.c`: `fmt_health()` prints the new fields; `--json` mode passes them through unchanged.
+- `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/kernel-build-and-ab-updates.md`: documented the new `/health` fields; the guide's own "confirm it stuck" step now tells an operator to check `build_version`/`slot` directly rather than trusting a bare `200`.
+
+#### Changed
+- `include/container.h`/`src/container.c`/`daemon/src/pkg.c`: `overlay_create()`'s own mount(2)-errno range and the final `execve()`'s errno range -- previously two separate, disjoint exit-code ranges -- merged into one shared range covering errno 1-115 (`exit = 140 + errno`, exit codes 141-255), since the two failure modes are mutually exclusive within a single run. `OVERLAY_ERR_MOUNT_ERRNO_MAX` widened back to 115; `pkg_build_completed()`'s two decode branches merged into one unified message.
+
+#### Notes
+- The widening was directly motivated by a real, live-confirmed hypothesis: `ELIBBAD` (80, "Accessing a corrupted shared library") -- everything using `kanxeo-builder`'s own rootfs as overlay lowerdir failing to `execve()`, even the ELF interpreter invoked directly, while identical binaries succeeded via the shared toolchain sandbox. Rather than guess a third arbitrary cap after 84 also proved insufficient, the two ranges were merged into one 115-wide shared range instead.
+- The `build_version`/`slot` reporting was requested directly by the user mid-investigation, after several deploy/reboot cycles were spent on uncertainty about whether a given change had actually taken effect and on which kernel/root pairing -- exactly the class of confusion this closes. Also documents, in the same guide edit, a real separately-discovered gap in Part 10's own workflow: `POST /system/update` only updates whichever of `image_path`/`kernel_path` is actually supplied, so a one-sided update can leave a stale, mismatched file in the slot about to be booted -- worked around throughout this session by always supplying both together, now written down for future operators.
+- Full clean rebuild (`-Wall -Werror`, zero warnings); full local regression sweep (29 binaries) clean. Live-verified against this sandbox's own local `kanxeod`: `GET /health` returns the new fields, `kanxeoctl health` renders them.
+
 ### Part 10 (done): kanxeod-source log diagnostics, a real mkbootroot packaging bug, a missing CONFIG_OVERLAY_FS kernel gap, three proven in-place update round trips
 
 Resuming the still-open "build a `kanxeo-builder` image on `192.168.15.95`" work from Part 9, in service of the user's "permanent solution" ask (develop/maintain Kanxeo from a container running Claude Code, pushing changes over the API, no more manual ISO reinstalls).

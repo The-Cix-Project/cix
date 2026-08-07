@@ -1,9 +1,9 @@
 CC := tcc
+BUILD := build
 CFLAGS := -Wall -Werror -D_GNU_SOURCE -D_FORTIFY_SOURCE=0 -Iinclude -Inetplane/include
-DAEMON_CFLAGS := $(CFLAGS) -Idaemon/include -Itest
+DAEMON_CFLAGS := $(CFLAGS) -Idaemon/include -Itest -I$(BUILD)
 CLIENT_CFLAGS := $(CFLAGS) -Iclient/include -Idaemon/include
 NETPLANE_CFLAGS := $(CFLAGS)
-BUILD := build
 
 LIB_SRCS := src/cgroup.c src/mountns.c src/ns_create.c src/container.c src/overlay.c src/container_net.c src/container_dev.c netplane/src/rtnetlink.c
 DAEMON_SRCS := daemon/src/json.c daemon/src/http.c daemon/src/websocket.c daemon/src/exec.c daemon/src/registry.c daemon/src/staticfile.c daemon/src/network.c daemon/src/persist.c daemon/src/dns.c daemon/src/pki.c daemon/src/pkg.c daemon/src/device.c daemon/src/devicemap.c daemon/src/image.c daemon/src/containerdef.c daemon/src/siteconfig.c daemon/src/daemon_config.c daemon/src/tlsconn.c daemon/src/quotamap.c daemon/src/swap.c daemon/src/logstore.c
@@ -16,6 +16,17 @@ all: $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUIL
 
 $(BUILD):
 	mkdir -p $(BUILD)
+
+# Regenerated on every `make` invocation (.PHONY, not a real file dependency)
+# so kanxeod always reports the commit it was actually built from -- a stale
+# version string would be worse than none, and this project has no other
+# build-system layer (Makefile shelling out to git here is the one place
+# that happens; the actual C compilation stays TCC-only per CLAUDE.md).
+.PHONY: $(BUILD)/version.h
+$(BUILD)/version.h: | $(BUILD)
+	@printf '#ifndef KANXEO_VERSION_H\n#define KANXEO_VERSION_H\n#define KANXEO_BUILD_VERSION "%s"\n#define KANXEO_BUILD_TIME "%s"\n#endif\n' \
+		"$$(git -C $(CURDIR) describe --tags --always --dirty 2>/dev/null || echo unknown)" \
+		"$$(date -u +%Y-%m-%dT%H:%M:%SZ)" > $@
 
 $(BUILD)/test_toolchain: test/test_toolchain.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
@@ -32,8 +43,8 @@ $(BUILD)/test_overlay: test/test_overlay.c test/test_image_fixture.c $(LIB_SRCS)
 $(BUILD)/overlay_child: test/overlay_child.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(BUILD)/kanxeod: daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) test/test_image_fixture.c | $(BUILD)
-	$(CC) $(DAEMON_CFLAGS) $^ -lssl -lcrypto -o $@
+$(BUILD)/kanxeod: daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) test/test_image_fixture.c $(BUILD)/version.h | $(BUILD)
+	$(CC) $(DAEMON_CFLAGS) daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) test/test_image_fixture.c -lssl -lcrypto -o $@
 
 $(BUILD)/test_daemon: test/test_daemon.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@

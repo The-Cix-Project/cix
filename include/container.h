@@ -301,9 +301,17 @@ int cgroup_read_io_totals(int cgroup_fd, long long *out_rbytes, long long *out_w
  * itself) most likely to need it -- e.g. EINVAL is the classic symptom
  * of lowerdir's filesystem not returning real d_type from readdir(), a
  * well-known overlayfs mount precondition. OVERLAY_ERR_MOUNT_OVERLAY is
- * the fallback for an errno too large to encode this way (none of the
- * realistic mount(2) failure codes are, but the fallback exists so this
- * can never silently misencode one as a smaller, wrong errno).
+ * the fallback for an errno too large to encode this way.
+ *
+ * The cap here is deliberately generous (115, not just the handful of
+ * errnos mount(2) itself realistically returns) because src/container.c
+ * reuses this exact same numeric encoding for its own final execve()
+ * failure too, in the same shared exit-status byte range (140-254) --
+ * the two are mutually exclusive within a single run (execve() is only
+ * ever reached once overlay_create() has already succeeded), so this
+ * is unambiguous, not a collision. A narrower cap already missed a
+ * real, confirmed-live case: ELIBBAD (80, "corrupted shared library"),
+ * found investigating a real hostbuild failure on 192.168.15.95.
  */
 enum overlay_error {
 	OVERLAY_ERR_STAT_LOWERDIR = -1,
@@ -313,17 +321,7 @@ enum overlay_error {
 	OVERLAY_ERR_MKDIR_MERGED = -5,
 	OVERLAY_ERR_OPTS_TOO_LONG = -6,
 	OVERLAY_ERR_MOUNT_OVERLAY = -7,
-	/*
-	 * Deliberately narrow (30, not the full realistic errno space) --
-	 * mount(2) itself only ever plausibly fails with a handful of
-	 * small errnos (EPERM/ENOENT/EBUSY/EINVAL/ENODEV/ENOSPC/ENOMEM/
-	 * ELOOP, all <=40), and container.c's own final execve() needs the
-	 * much wider remaining span of the same single exit-status byte
-	 * far more -- ELIBBAD (80, "corrupted shared library") is a real,
-	 * confirmed-live execve()-class failure a narrower range would
-	 * have missed entirely.
-	 */
-	OVERLAY_ERR_MOUNT_ERRNO_MAX = 30,
+	OVERLAY_ERR_MOUNT_ERRNO_MAX = 115,
 	OVERLAY_ERR_MOUNT_ERRNO_BASE = -100,
 };
 

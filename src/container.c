@@ -97,11 +97,12 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			 * named steps plus (for the actual mount(2) call) the
 			 * real errno -- translated here into its own small,
 			 * disjoint exit-code range (130-136 for the six named
-			 * steps, 141-200 for a mount(2) errno in [1,60]) so a
-			 * daemon-layer caller with log-store access (pkg.c)
-			 * doesn't just learn "overlay_create failed" but
-			 * exactly which of its own six steps, and for the
-			 * mount itself, the kernel's own real reason.
+			 * steps, 141-255 for a mount(2) errno in [1,115], the
+			 * same shared range the final execve() below also uses)
+			 * so a daemon-layer caller with log-store access (pkg.c)
+			 * doesn't just learn "overlay_create failed" but exactly
+			 * which of its own six steps, and for the mount itself,
+			 * the kernel's own real reason.
 			 */
 			if (overlay_ret != 0) {
 				perror("child: overlay_create");
@@ -156,32 +157,28 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		execve(spec->argv[0], spec->argv, spec->envp);
 		{
 			/*
-			 * Same technique as overlay_create()'s own mount(2)
-			 * errno encoding (src/overlay.c) -- this final execve()
-			 * is the last, and most likely to actually matter, spot
-			 * where a bare "_exit(127)" hid real information: ENOENT
-			 * (the interpreter or binary genuinely missing),
-			 * EACCES (not executable -- lost +x bit, or a noexec
-			 * mount), ENOEXEC (bad ELF format), and ELIBBAD (80,
-			 * "corrupted shared library" -- a real, confirmed-live
-			 * case a narrower range would have missed) all look
-			 * identical from a caller only checking WEXITSTATUS().
-			 * 170 + errno (errno in [1,84]) leaves 127 itself free
-			 * as the fallback for an errno too large to encode this
-			 * way, preserving its own existing meaning as "some
-			 * exec-class failure" for that rare case. Deliberately
-			 * starts right after overlay_create()'s own (now
-			 * narrower, 141-170) mount-errno range -- the two never
-			 * both apply to the same run (execve() is never reached
-			 * unless overlay_create() already succeeded), so this
-			 * exit-status byte's remaining space is reused, not
-			 * shared ambiguously.
+			 * The exact same encoding overlay_create()'s own mount(2)
+			 * errno already uses (140 + errno, 141-255) -- deliberately
+			 * the SAME shared range, not a second disjoint one: the
+			 * two are mutually exclusive within a single run (this
+			 * execve() is only ever reached once overlay_create() has
+			 * already succeeded), so reusing it is unambiguous, and it
+			 * gives this, the last and most likely to actually matter
+			 * spot where a bare "_exit(127)" hid real information
+			 * (ENOENT the interpreter/binary genuinely missing, EACCES
+			 * not executable -- lost +x bit or a noexec mount, ENOEXEC
+			 * bad ELF format, ELIBBAD 80 "corrupted shared library" --
+			 * a real, confirmed-live case that needed exactly this
+			 * wide a range), the full width of the byte rather than a
+			 * cramped half of it. 127 itself stays the fallback for an
+			 * errno too large even for this, preserving its own
+			 * existing meaning as "some exec-class failure."
 			 */
 			int exec_errno = errno;
 
 			perror("child: execve");
-			if (exec_errno > 0 && exec_errno <= 84)
-				_exit(170 + exec_errno);
+			if (exec_errno > 0 && exec_errno <= OVERLAY_ERR_MOUNT_ERRNO_MAX)
+				_exit(140 + exec_errno);
 			_exit(127);
 		}
 	}

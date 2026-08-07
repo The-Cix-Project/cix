@@ -22,6 +22,7 @@
 #include "siteconfig.h"
 #include "daemon_config.h"
 #include "tlsconn.h"
+#include "version.h"
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -1026,6 +1027,15 @@ static void handle_health(int fd)
 	jw_obj_open(&w);
 	jw_key(&w, "status");
 	jw_str(&w, "ok");
+	jw_key(&w, "build_version");
+	jw_str(&w, KANXEO_BUILD_VERSION);
+	jw_key(&w, "build_time");
+	jw_str(&w, KANXEO_BUILD_TIME);
+	jw_key(&w, "slot");
+	if (g_slot != NULL)
+		jw_str(&w, g_slot);
+	else
+		jw_null(&w);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);

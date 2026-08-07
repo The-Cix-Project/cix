@@ -16,6 +16,13 @@ paths:
   /health:
     get:
       summary: Liveness check
+      description: >
+        Also reports which build is actually running and, on an
+        installed A/B system, which slot it booted from -- the
+        deploy/reboot verification signal referenced throughout
+        docs/guides/kernel-build-and-ab-updates.md, so a
+        `system/update` + `system/reboot` round trip can be confirmed
+        against the real running daemon instead of inferred.
       operationId: getHealth
       responses:
         "200":
@@ -24,11 +31,29 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [status]
+                required: [status, build_version, build_time, slot]
                 properties:
                   status:
                     type: string
                     enum: [ok]
+                  build_version:
+                    type: string
+                    description: >
+                      `git describe --tags --always --dirty` at build
+                      time (e.g. `v1.6.0-7-g66265a5-dirty`), or
+                      `unknown` if built outside a git checkout.
+                  build_time:
+                    type: string
+                    description: UTC build timestamp, RFC 3339 (e.g. `2026-08-08T00:00:00Z`).
+                  slot:
+                    type: string
+                    nullable: true
+                    enum: ["a", "b", null]
+                    description: >
+                      The A/B slot this boot's `--slot=` was started
+                      with, or `null` for a dev/test daemon started
+                      without one (see `kanxeo-install.c`'s A/B
+                      mechanism).
 
   /system/shutdown:
     post:

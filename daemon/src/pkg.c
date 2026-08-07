@@ -1818,36 +1818,32 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			logstore_write("kanxeod", "error", "pkg %s@%s: build container setup failed (%s)",
 			                e->name, g_current_job_image, step);
 			snprintf(e->error, sizeof(e->error), "build container setup failed (%s)", step);
-		} else if (exit_status >= 141 && exit_status <= 170) {
-			/* mount(overlay)'s own real errno (encoded by
-			 * src/container.c/src/overlay.c, deliberately narrow --
-			 * see include/container.h's own comment), e.g. EINVAL is
-			 * the classic symptom of lowerdir's filesystem not
-			 * returning real d_type from readdir() -- a well-known
-			 * overlayfs mount precondition. */
-			int mount_errno = exit_status - 140;
+		} else if (exit_status >= 141 && exit_status <= 255) {
+			/*
+			 * A real errno (encoded by src/container.c/src/overlay.c,
+			 * 140 + errno, deliberately one single shared range --
+			 * see include/container.h's own comment for why that's
+			 * safe) from either of the two syscalls in this pipeline
+			 * that can fail with a genuinely informative one:
+			 * overlay_create()'s own mount(2) (e.g. EINVAL is the
+			 * classic symptom of lowerdir's filesystem not returning
+			 * real d_type from readdir()), or the final execve() that
+			 * actually runs the recipe's build script (ENOENT
+			 * genuinely missing, EACCES not executable -- lost +x bit
+			 * or a noexec mount, ENOEXEC bad ELF format, ELIBBAD
+			 * corrupted/incompatible shared library) -- none of which
+			 * a bare exit 127 could ever distinguish, and the two
+			 * cases are mutually exclusive within a single run
+			 * (execve() is only ever reached once overlay_create()
+			 * has already succeeded).
+			 */
+			int real_errno = exit_status - 140;
 
 			logstore_write("kanxeod", "error",
-			                "pkg %s@%s: build container setup failed (overlay_create: "
-			                "mount(overlay): %s)",
-			                e->name, g_current_job_image, strerror(mount_errno));
-			snprintf(e->error, sizeof(e->error), "build container setup failed (mount(overlay): %s)",
-			         strerror(mount_errno));
-		} else if (exit_status >= 171 && exit_status <= 254) {
-			/* The final execve() itself failed (src/container.c) --
-			 * the real errno (ENOENT/EACCES/ENOEXEC/ELIBBAD/...)
-			 * tells apart "genuinely missing" from "not executable"
-			 * (lost +x, or a noexec mount) from "bad ELF format" from
-			 * "corrupted/incompatible shared library", none of which
-			 * a bare exit 127 could ever distinguish. */
-			int exec_errno = exit_status - 170;
-
-			logstore_write("kanxeod", "error",
-			                "pkg %s@%s: build failed -- recipe's build script could not be "
-			                "exec'd: %s",
-			                e->name, g_current_job_image, strerror(exec_errno));
-			snprintf(e->error, sizeof(e->error), "build failed (could not exec: %s)",
-			         strerror(exec_errno));
+			                "pkg %s@%s: build container setup/exec failed: %s", e->name,
+			                g_current_job_image, strerror(real_errno));
+			snprintf(e->error, sizeof(e->error), "build container setup/exec failed: %s",
+			         strerror(real_errno));
 		} else if (exit_status == 127) {
 			logstore_write(
 			    "kanxeod", "error",
