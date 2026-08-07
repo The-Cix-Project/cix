@@ -16,8 +16,12 @@ Part 11's widened errno range (1-115) didn't change the observed remote hostbuil
 #### Changed
 - The exit-127 decode message in `pkg_build_completed()` reworded to name the real ambiguity honestly (container.c's own fallback vs. a real bash exit code) instead of asserting a single cause, and points at the captured output logged alongside it.
 
+#### Fixed
+- **A real, previously-undiscovered bug in `image/src/mkbootroot.c`'s own `libtinfo.so.6` staging (ADR-0023), found via the capture mechanism the moment it was deployed**: the source path passed to `test_image_fixture_add_lib()` also doubles as the file's destination inside the assembled squashfs, and `/usr/lib/x86_64-linux-gnu/libtinfo.so.6` landed it under `usr/lib/...` instead of the bare `lib/x86_64-linux-gnu/...` `pkg_seed_image_baseline()` actually looks for on a real installed root -- `ld.so`/`libc.so.6`/`libgcc_s`/`libm` all used the correct bare-path form already, `libtinfo` alone didn't. Invisible in every local test since a locally-run `kanxeod` reads this dev sandbox's own real `/lib`/`/usr/lib` directly, where a merged-usr symlink resolves both forms identically. Fixed by using the bare path for both source and destination; documented as a new Consequences bullet on ADR-0023.
+
 #### Notes
 - Verified locally first, deliberately, before touching the remote box: a scratch recipe whose `pkg_build()` invokes a genuinely nonexistent command produced the expected real bash text end to end -- `GET /system/logs?source=kanxeod` showed `"build output: /build/recipe.sh: line 8: this_command_does_not_exist: command not found"` verbatim.
+- **Verified fully resolved, live, end to end on `192.168.15.95`**: after redeploying the fixed control-plane image and re-seeding `kanxeo-builder` (a side effect of a trivial real ordinary install, since `pkg_seed_image_baseline()` only runs as part of a successful merge), `POST /pkg/hostbuild {"name":"kanxeo","build_image":"kanxeo-builder"}` completed with `state: "installed"` -- a real, freshly self-compiled `kanxeod` harvested to `/var/lib/kanxeo/artifacts/kanxeo`. This is the actual goal of the entire Part 10-12 investigation and Task #640: Kanxeo rebuilding itself entirely on a real running box, no cross-compilation, no ISO reinstall.
 - Full clean rebuild (`-Wall -Werror`, zero warnings); full local regression sweep (29 binaries, all passing), `test_pkg` in particular re-verified clean.
 
 ### Part 11 (done): merged, wider errno-encoding range for the container-launch diagnostic, build-version/A/B-slot self-reporting on `GET /health`
