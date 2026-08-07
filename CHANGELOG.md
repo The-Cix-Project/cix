@@ -2,6 +2,27 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 5 follow-on: REST-driven ISO assembly, closing the API-First Mandate gap (ADR-0064)
+
+Closes the one honest gap Part 5 itself flagged: `image/src/mkinstalleriso.c` was a dev-machine-only tool, not reachable via REST/CLI. Requested explicitly, with an explicit instruction that this project's capabilities be API-driven "with no exceptions unless explicitly called out for valid reasons."
+
+#### Added
+- `pkg/recipes/isotools.recipe` -- a hostbuild aggregator (not a fifth from-source build): copies the already-installed `grub-mkrescue`/`sbsign`/`sbverify`/`xorriso`/`mformat`/`mcopy` binaries, grub's own real 601-file `x86_64-efi` module tree, and their confirmed real shared-library closure into a single, self-contained, portable artifact. Verified: every harvested binary runs correctly under `env -i` with an explicit `ld.so --library-path` invocation, no inherited host environment at all.
+- `pkg/recipes/openssl-dev.recipe` -- real gap found while re-verifying `kanxeo.recipe`'s own hostbuild: `kanxeod` has linked `-lssl -lcrypto` since the HTTPS listener (ADR-0059), but no recipe had ever staged the link-time `libssl.so`/`libcrypto.so` dev symlinks, so the self-hosted round-trip had been silently broken since HTTPS landed. Mirrors `libc-dev.recipe`'s own "stage the real host copy, real tarball for provenance" shape.
+- `daemon/src/main.c`: `CONN_ISO_ASSEMBLE` conn kind, `iso_build_start()`/`handle_iso_assemble_event()` (fork+`pidfd_open()`+epoll, non-blocking, mirroring `spawn_kanxeo_bootroot_assembly()`), `POST`/`GET /v1/system/iso`. New `SIGNING_KEYS_DIR` (`<data-dir>/keys/`, operator-populated out of band -- deliberately never generated/fetched/copied by `kanxeod` itself) and `ISO_DIR` (`<data-dir>/iso/`).
+- `cli/src/main.c`: `kanxeoctl iso build [--disk=... --ip=... --prefix=... --gateway=... --interface=...] [--wait]` / `kanxeoctl iso status`.
+- `docs/adr/0064-rest-driven-iso-assembly.md`.
+
+#### Changed
+- `pkg/recipes/kanxeo.recipe`: the same hostbuild round now also builds `kanxeo-install`/`mkinstalleriso`, not just `kanxeod`/`kanxeoctl`/`mkbootroot`.
+- `image/src/mkinstalleriso.c`: `grub-mkrescue`/`sbsign` paths are no longer hardcoded `/usr/bin/...` -- a new required `isotools-root` argument computes them, plus grub's own `--directory=`/`--xorriso=` flags and a `PATH`/`LD_LIBRARY_PATH` `setenv()` for `grub-mkrescue`'s own un-overridable `mformat`/`mcopy` child fork/execs. A bare `/usr` still reproduces the tool's original host-borrowed dev-machine behavior.
+- `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/building-kanxeo.md`: document the new endpoint, the `isotools`/`openssl-dev` recipes, and the updated `kanxeo-builder` minimum package set.
+- `pkg/recipes/README.md`: recipe count updated 50 -> 52.
+
+#### Notes
+- Verified real, end to end: `isotools` hostbuilt from a real `dev` image; `kanxeo.recipe`'s hostbuild re-run for real through a genuine fetch+extract+build+harvest round (surfacing and fixing the `openssl-dev` gap); the parameterized `mkinstalleriso` producing a real bootable ISO standalone; the full `POST /system/iso` -> poll -> `GET /system/iso` round-trip against a live daemon, with custom `--disk=`/`--ip=`/`--prefix=`/`--gateway=`/`--interface=` values confirmed present verbatim in the resulting ISO's own `grub.cfg`; and the `kanxeoctl iso build --wait`/`iso status` CLI surface.
+- **Not verified, per Zen:** a real hardware/QEMU boot of a REST-produced ISO specifically (Part 5's own ADR-0063 already established grub-mkrescue's output boots correctly in general). Downloading the finished ISO over REST was deliberately not built -- `iso_path` stays a host filesystem path, the same convention `GET /pkg/hostbuild/{name}`'s own `artifact_path` already established.
+
 ### Part 5 (core toolchain): ISO self-build -- a real, from-source GRUB2/xorriso/mtools/sbsigntools toolchain (ADR-0063)
 
 Nine new real, from-source recipes closing the "largest, most uncertain part" of the bare-metal-readiness plan, all verified end to end against the real daemon pipeline.

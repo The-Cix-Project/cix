@@ -133,7 +133,13 @@ static void print_usage(FILE *out)
 	        "               which network is currently its management one\n"
 	        "  daemon-config set [--port=N] [--https-port=N] [--enable-http] [--disable-http]\n"
 	        "               [--enable-https] [--disable-https] [--management-network=NAME]\n"
-	        "               -- live, no-restart; only the fields given are changed\n");
+	        "               -- live, no-restart; only the fields given are changed\n"
+	        "  iso build [--disk=DEV --ip=A.B.C.D --prefix=N --gateway=A.B.C.D\n"
+	        "               --interface=IFNAME] [--wait]  -- assembles a fresh installer ISO\n"
+	        "               server-side (ADR-0064), from the most recent \"kanxeo\"/\"kernel\"/\n"
+	        "               \"isotools\" hostbuild artifacts; every flag is optional, an empty\n"
+	        "               call reproduces the original edit-at-the-GRUB-menu placeholder ISO\n"
+	        "  iso status  -- state/iso_path/error of the most recent ISO build\n");
 }
 
 static const char *json_str_field(const struct json_value *obj, const char *key)
@@ -3377,6 +3383,142 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 	return 2;
 }
 
+static void fmt_iso_status(const struct json_value *v)
+{
+	const char *state = json_str_field(v, "state");
+	const char *iso_path = json_str_field(v, "iso_path");
+	const char *error = json_str_field(v, "error");
+
+	printf("state=%s", state != NULL ? state : "?");
+	if (iso_path != NULL)
+		printf(" iso_path=%s", iso_path);
+	if (error != NULL)
+		printf(" error=%s", error);
+	printf("\n");
+}
+
+/* Polls GET /v1/system/iso until state leaves "building" -- --wait's own
+ * loop, the same shape poll_hostbuild() already established. */
+static int poll_iso(const struct kx_client *c, struct kx_response *out)
+{
+	for (;;) {
+		const char *state;
+
+		if (kx_client_request(c, "GET", "/v1/system/iso", NULL, out) != 0) {
+			fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+			return -1;
+		}
+		state = json_str_field(out->json, "state");
+		if (state == NULL || strcmp(state, "building") != 0)
+			return 0;
+		kx_response_free(out);
+		usleep(500000);
+	}
+}
+
+static int cmd_iso_status(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/iso", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_iso_status);
+}
+
+static int cmd_iso_build(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *disk = NULL;
+	const char *ip = NULL;
+	const char *prefix = NULL;
+	const char *gateway = NULL;
+	const char *interface = NULL;
+	int wait = 0;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--disk=", 7) == 0)
+			disk = argv[i] + 7;
+		else if (strncmp(argv[i], "--ip=", 5) == 0)
+			ip = argv[i] + 5;
+		else if (strncmp(argv[i], "--prefix=", 9) == 0)
+			prefix = argv[i] + 9;
+		else if (strncmp(argv[i], "--gateway=", 10) == 0)
+			gateway = argv[i] + 10;
+		else if (strncmp(argv[i], "--interface=", 12) == 0)
+			interface = argv[i] + 12;
+		else if (strcmp(argv[i], "--wait") == 0)
+			wait = 1;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown iso build option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	if (disk != NULL) {
+		jw_key(&w, "disk");
+		jw_str(&w, disk);
+	}
+	if (ip != NULL) {
+		jw_key(&w, "ip");
+		jw_str(&w, ip);
+	}
+	if (prefix != NULL) {
+		jw_key(&w, "prefix");
+		jw_str(&w, prefix);
+	}
+	if (gateway != NULL) {
+		jw_key(&w, "gateway");
+		jw_str(&w, gateway);
+	}
+	if (interface != NULL) {
+		jw_key(&w, "interface");
+		jw_str(&w, interface);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/system/iso", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	if (r.status < 200 || r.status >= 300 || !wait)
+		return emit(&r, json_mode, fmt_iso_status);
+	kx_response_free(&r);
+
+	if (poll_iso(c, &r) != 0)
+		return 1;
+	return emit(&r, json_mode, fmt_iso_status);
+}
+
+static int cmd_iso(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr,
+		        "usage: kanxeoctl iso build [--disk=DEV --ip=A.B.C.D --prefix=N "
+		        "--gateway=A.B.C.D --interface=IFNAME] [--wait]\n"
+		        "       kanxeoctl iso status\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "build") == 0)
+		return cmd_iso_build(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "status") == 0)
+		return cmd_iso_status(c, json_mode);
+
+	fprintf(stderr, "kanxeoctl: unknown iso subcommand '%s'\n", sub);
+	return 2;
+}
+
 /*
  * The one dispatch table, shared by main()'s own one-shot invocation
  * and run_shell()'s interactive loop below -- extracted so both call
@@ -3405,6 +3547,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_site(client, json_mode, argc, argv);
 	if (strcmp(cmd, "daemon-config") == 0)
 		return cmd_daemon_config(client, json_mode, argc, argv);
+	if (strcmp(cmd, "iso") == 0)
+		return cmd_iso(client, json_mode, argc, argv);
 	if (strcmp(cmd, "ps") == 0)
 		return cmd_ps(client, json_mode);
 	if (strcmp(cmd, "run") == 0)

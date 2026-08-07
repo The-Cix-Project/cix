@@ -30,9 +30,10 @@ kanxeoctl pkg install --name=make --image=kanxeo-builder
 kanxeoctl pkg install --name=libc-dev --image=kanxeo-builder
 kanxeoctl pkg install --name=bash --image=kanxeo-builder
 kanxeoctl pkg install --name=coreutils --image=kanxeo-builder
+kanxeoctl pkg install --name=openssl-dev --image=kanxeo-builder
 ```
 
-An image is just an ordinary image, built up with ordinary installs — no special "builder image" concept exists beyond having the right packages present. This exact set (`tcc`, `make`, `libc-dev`, `bash`, `coreutils`) is the minimum a plain Makefile build of this repo needs: `tcc` to compile, `make` to drive the build, `libc-dev` for headers and the CRT startup objects (`crt1.o`/`crti.o`/`crtn.o` — see the note on TCC's own CRT search path below), `bash` because glibc's `popen()` hardcodes `/bin/sh` with no override and the kernel's own Kconfig-style patterns some build steps use need a real shell present, and `coreutils` because the root `Makefile`'s own `mkdir -p build` needs a real `mkdir`. If a future change to this repo's own build needs something more, that surfaces as a real, specific build failure naming exactly what's missing — install it onto `kanxeo-builder` the same way, one real gap at a time, never speculatively.
+An image is just an ordinary image, built up with ordinary installs — no special "builder image" concept exists beyond having the right packages present. This exact set (`tcc`, `make`, `libc-dev`, `bash`, `coreutils`, `openssl-dev`) is the minimum a plain Makefile build of this repo needs: `tcc` to compile, `make` to drive the build, `libc-dev` for headers and the CRT startup objects (`crt1.o`/`crti.o`/`crtn.o` — see the note on TCC's own CRT search path below), `bash` because glibc's `popen()` hardcodes `/bin/sh` with no override and the kernel's own Kconfig-style patterns some build steps use need a real shell present, `coreutils` because the root `Makefile`'s own `mkdir -p build` needs a real `mkdir`, and `openssl-dev` because `kanxeod` itself has linked `-lssl -lcrypto` since the HTTPS listener landed (ADR-0059) — its own link-time `libssl.so`/`libcrypto.so` symlinks aren't part of `libc-dev.recipe`'s own wholesale header copy. If a future change to this repo's own build needs something more, that surfaces as a real, specific build failure naming exactly what's missing — install it onto `kanxeo-builder` the same way, one real gap at a time, never speculatively.
 
 ### 2. Point `kanxeo.recipe` at a real source snapshot
 
@@ -53,6 +54,27 @@ kanxeoctl pkg hostbuild kanxeo --build-image=kanxeo-builder --wait --deploy
 This fetches the tagged source (host-side, before the build container starts — the build container itself has no network access, same as every other install), builds `kanxeod`/`kanxeoctl`/`web/` **and** `mkbootroot` itself with the just-installed TCC, then hands off to the daemon's own server-side assembly step: `kanxeod` forks and execs the freshly-built `mkbootroot` (the same non-blocking, pidfd-tracked pattern it already uses for `curl` fetches) to package those artifacts into a fresh `kanxeod-root.squashfs` — never the CLI invoking `mkbootroot` itself, which the API-First Mandate rules out. `mkbootroot` is built by this same hostbuild round, not reused from any earlier one, so a box that's never had a self-build before (every real deployed box, since `mkbootroot` was previously only ever a dev-machine tool) has everything it needs in one self-contained round.
 
 `--wait` polls until the hostbuild job itself reaches `installed` — that only means the compile finished, not that the async squashfs assembly has too. `--deploy` (only meaningful once assembly has actually finished) reads the resulting `kanxeod-root.squashfs` and calls the existing `/system/update` with it, exactly as if you'd `scp`'d it from a dev machine. From here, follow the same write → reboot → confirm sequence as any other update — see [`staying-updated.md`](staying-updated.md).
+
+### 4. Build a fresh installer ISO, server-side
+
+The same round above also produces `kanxeo-install` and `mkinstalleriso` — enough to assemble a brand-new installer ISO (see [`installing.md`](installing.md) for what that ISO actually contains and how an operator boots it) without a separate dev machine at all, via `POST /system/iso` (ADR-0064). That endpoint also needs `grub-mkrescue`/`sbsign`/`xorriso`/`mformat`/`mcopy`, self-built the same hostbuild way rather than borrowed from whatever happens to be installed on the box:
+
+```
+kanxeoctl pkg install --name=grub --image=dev
+kanxeoctl pkg install --name=sbsigntools --image=dev
+kanxeoctl pkg install --name=xorriso --image=dev
+kanxeoctl pkg install --name=mtools --image=dev
+kanxeoctl pkg hostbuild isotools --build-image=dev
+```
+
+(`dev` here is any image that already carries the full toolchain those four recipes themselves need to build from source — gcc/binutils/autotools, see [`writing-recipes.md`](writing-recipes.md); `isotools.recipe` itself doesn't rebuild them, it harvests the four binaries + their real shared-library closure the four installs above just produced into a single, portable, host-executable artifact.) Then, with a real Secure Boot signing key pair staged out of band at `<data-dir>/keys/kanxeo-signing.{key,crt,cer}` (never generated or fetched by `kanxeod` itself — see `POST /system/iso`'s own entry in [`../api/README.md`](../api/README.md) for why):
+
+```
+kanxeoctl iso build --disk=/dev/CHANGEME --wait
+kanxeoctl iso status
+```
+
+An empty `iso build` (no flags at all) works too — it just leaves every kernel argument as the `CHANGEME` placeholder, editable at the GRUB boot menu before installing, exactly like a manually-run `mkinstalleriso` always has.
 
 ### A real, TCC-specific gap worth knowing about
 

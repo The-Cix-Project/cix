@@ -382,6 +382,72 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/iso:
+    get:
+      summary: Status of the most recent server-side installer ISO build (ADR-0064)
+      description: >
+        Polling endpoint for POST /system/iso's own async job -- the
+        exact shape GET /pkg/hostbuild/{name} already established for
+        its own fire-and-forget job. state is "none" until the first
+        POST this daemon has ever handled.
+      operationId: getSystemIso
+      responses:
+        "200":
+          description: Current ISO build status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IsoStatus"
+    post:
+      summary: Assembles a fresh installer ISO server-side, non-blocking (ADR-0064)
+      description: >
+        Closes the API-First Mandate gap ADR-0063 deliberately left
+        open: image/src/mkinstalleriso.c was a dev-machine-only tool an
+        operator had to run by hand; this makes ISO assembly a real
+        daemon capability, forked and pidfd-tracked exactly like POST
+        /pkg/hostbuild's own async jobs (the response is 202, poll GET
+        /system/iso for the result). Reuses whatever the most recent
+        "kanxeo"/"kernel"/"isotools" hostbuild rounds already harvested
+        (POST /pkg/hostbuild) -- it does not trigger any of them itself.
+        Every field is optional; an empty body reproduces mkinstalleriso's
+        own original default, a generic ISO with kernel_args left as the
+        "CHANGEME" placeholder an operator edits at the GRUB boot menu.
+        Requires a real Secure Boot signing key pair, staged out of band
+        by the operator at <data-dir>/keys/kanxeo-signing.{key,crt,cer}
+        -- deliberately never generated, fetched, or copied there by
+        kanxeod itself (the same real security posture this project's
+        own image/keys/ already has: a release-signing private key must
+        never propagate onto every deployed box).
+      operationId: postSystemIso
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IsoBuildRequest"
+      responses:
+        "202":
+          description: ISO build started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IsoStatus"
+        "400":
+          description: >
+            Invalid JSON body, or a real precondition is missing --
+            the "kanxeo"/"kernel"/"isotools" hostbuild artifacts, or
+            the operator-provided signing key pair
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: An ISO build is already in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /containers:
     get:
       summary: List all containers known to this daemon
@@ -3236,6 +3302,53 @@ components:
             The private TLD this site's names notionally live under.
             Defaults to "internal" (IANA-reserved for exactly this
             use, RFC 9476) but is a real, settable value.
+
+    IsoStatus:
+      type: object
+      required: [state, iso_path, error]
+      properties:
+        state:
+          type: string
+          enum: [none, building, ready, failed]
+          description: >
+            "none" until the first POST /system/iso this daemon has
+            ever handled. Only one build is ever in flight -- a POST
+            while state is "building" gets 409, not a second job.
+        iso_path:
+          type: string
+          nullable: true
+          description: Host filesystem path to the finished ISO. Non-null only when state is "ready".
+        error:
+          type: string
+          nullable: true
+          description: Non-null only when state is "failed".
+
+    IsoBuildRequest:
+      type: object
+      description: >
+        Every field is optional and independent -- composed server-side
+        into the exact kernel-command-line flags kanxeo-install.c itself
+        parses (--disk=/--ip=/--prefix=/--gateway=/--interface=). An
+        omitted field becomes the literal placeholder "CHANGEME",
+        mkinstalleriso's own original default -- editable at the GRUB
+        boot menu with 'e' before booting; kanxeo-install's own stat()
+        check on --disk= fails safely if left unedited.
+      properties:
+        disk:
+          type: string
+          description: Target block device, e.g. "/dev/sda".
+        ip:
+          type: string
+          description: Static management IP to assign at install time.
+        prefix:
+          type: string
+          description: CIDR prefix length for ip, e.g. "24".
+        gateway:
+          type: string
+          description: Upstream default-route address (distinct from a network's own gateway -- see ADR-0058).
+        interface:
+          type: string
+          description: Physical NIC name to attach to the "mgmt" network, e.g. "eth0".
 
     DaemonConfig:
       type: object

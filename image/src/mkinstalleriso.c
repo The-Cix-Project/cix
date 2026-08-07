@@ -38,8 +38,20 @@
 
 extern char **environ;
 
-#define GRUB_MKRESCUE_BIN "/usr/bin/grub-mkrescue"
-#define SBSIGN_BIN "/usr/bin/sbsign"
+/*
+ * grub-mkrescue/sbsign/xorriso/mformat/mcopy are no longer a hardcoded
+ * /usr/bin path -- ADR-0064 closes the API-First Mandate gap ADR-0063
+ * left open (kanxeod itself can now assemble an ISO server-side, via
+ * POST /v1/system/iso) by pointing these at a real, self-built
+ * isotools hostbuild artifact (pkg/recipes/isotools.recipe) instead of
+ * whatever happens to be pre-installed on the machine running this
+ * tool. g_isotools_root is set once in main() from argv and used by
+ * every helper below; a bare manual/dev invocation passes a plain
+ * /usr prefix (e.g. "/usr") and gets the exact same host-borrowed
+ * behavior this tool always had. */
+static char g_isotools_root[512];
+static char g_grub_mkrescue_bin[600];
+static char g_sbsign_bin[600];
 #define SYSTEMD_BOOT_EFI "/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
 
 /* Secure Boot chain for the *target* disk's ESP (kanxeo-install.c's own
@@ -127,10 +139,10 @@ static int run_subprocess(const char *bin, char *const argv[])
 
 static int sbsign_to(const char *key, const char *cert, const char *src, const char *dst)
 {
-	char *argv_sbsign[] = { (char *)SBSIGN_BIN, "--key",  (char *)key, "--cert", (char *)cert,
+	char *argv_sbsign[] = { g_sbsign_bin, "--key",  (char *)key, "--cert", (char *)cert,
 		                 "--output", (char *)dst, (char *)src,  NULL };
 
-	return run_subprocess(SBSIGN_BIN, argv_sbsign);
+	return run_subprocess(g_sbsign_bin, argv_sbsign);
 }
 
 int main(int argc, char **argv)
@@ -147,13 +159,17 @@ int main(int argc, char **argv)
 	char dst[600];
 	char grub_cfg_path[600];
 	char grub_cfg[1024];
+	char grub_module_dir[600];
+	char xorriso_bin[600];
+	char isotools_bin_dir[600];
+	char isotools_lib_dir[600];
 	int i;
 
-	if (argc != 10) {
+	if (argc != 11) {
 		fprintf(stderr,
 		        "usage: %s <staging-dir> <kanxeo-install-bin> <bzImage> "
 		        "<control-plane-squashfs> <signing-key> <signing-cert.crt> "
-		        "<signing-cert.cer> <out.iso> <kernel-args>\n"
+		        "<signing-cert.cer> <out.iso> <kernel-args> <isotools-root>\n"
 		        "  signing-key/signing-cert.crt/signing-cert.cer: the Kanxeo Secure Boot\n"
 		        "  signing key pair (image/keys/kanxeo-signing.{key,crt,cer} -- .crt is\n"
 		        "  PEM, for sbsign; .cer is DER, for mokutil) -- used to sign systemd-boot\n"
@@ -165,7 +181,12 @@ int main(int argc, char **argv)
 		        "--interface=CHANGEME\"\n"
 		        "  (a deliberately-invalid placeholder -- edit it at the GRUB boot menu\n"
 		        "  with 'e' before booting; kanxeo-install's own stat() check on --disk=\n"
-		        "  fails safely if it's left unedited)\n",
+		        "  fails safely if it's left unedited)\n"
+		        "  isotools-root: directory holding <root>/bin/{grub-mkrescue,sbsign,\n"
+		        "  xorriso,mcopy,mformat} and <root>/lib/grub/x86_64-efi/ (pkg/recipes/\n"
+		        "  isotools.recipe's own hostbuild artifact layout, ADR-0064) -- a plain\n"
+		        "  \"/usr\" reproduces this tool's original host-borrowed behavior for\n"
+		        "  manual/dev use.\n",
 		        argv[0]);
 		return 2;
 	}
@@ -178,6 +199,31 @@ int main(int argc, char **argv)
 	signing_cert_der = argv[7];
 	out_iso = argv[8];
 	kernel_args = argv[9];
+	snprintf(g_isotools_root, sizeof(g_isotools_root), "%s", argv[10]);
+
+	snprintf(g_grub_mkrescue_bin, sizeof(g_grub_mkrescue_bin), "%s/bin/grub-mkrescue",
+	         g_isotools_root);
+	snprintf(g_sbsign_bin, sizeof(g_sbsign_bin), "%s/bin/sbsign", g_isotools_root);
+	snprintf(grub_module_dir, sizeof(grub_module_dir), "%s/lib/grub/x86_64-efi", g_isotools_root);
+	snprintf(xorriso_bin, sizeof(xorriso_bin), "%s/bin/xorriso", g_isotools_root);
+	snprintf(isotools_bin_dir, sizeof(isotools_bin_dir), "%s/bin", g_isotools_root);
+	snprintf(isotools_lib_dir, sizeof(isotools_lib_dir), "%s/lib/x86_64-linux-gnu",
+	         g_isotools_root);
+	/*
+	 * grub-mkrescue itself is always invoked by full explicit path
+	 * below (never PATH-searched), but it in turn fork/execs "xorriso"
+	 * (overridable via --xorriso=, set explicitly below anyway) and
+	 * "mformat"/"mcopy" (no override flag exists for either, confirmed
+	 * directly against grub-mkrescue's own --help output and ADR-0063's
+	 * own research) by literal name via $PATH -- these child processes
+	 * inherit this process's own environ, so PATH must include
+	 * isotools_bin_dir before grub-mkrescue ever runs.
+	 * LD_LIBRARY_PATH covers isotools.recipe's own real, confirmed
+	 * shared-library closure for a deployed host whose own system
+	 * paths don't otherwise carry it (e.g. liblzma.so.5, libbz2.so.1.0).
+	 */
+	setenv("PATH", isotools_bin_dir, 1);
+	setenv("LD_LIBRARY_PATH", isotools_lib_dir, 1);
 
 	if (ensure_dir(stage_dir) != 0)
 		return 1;
@@ -333,10 +379,23 @@ int main(int argc, char **argv)
 		return 1;
 
 	{
-		char *argv_grub[] = { (char *)GRUB_MKRESCUE_BIN, "-o", (char *)out_iso, (char *)stage_dir,
-			               "--", "-volid", "KANXEO", NULL };
+		char directory_flag[600];
+		char xorriso_flag[600];
+		char *argv_grub[] = { g_grub_mkrescue_bin,
+			               directory_flag,
+			               xorriso_flag,
+			               "-o",
+			               (char *)out_iso,
+			               (char *)stage_dir,
+			               "--",
+			               "-volid",
+			               "KANXEO",
+			               NULL };
 
-		if (run_subprocess(GRUB_MKRESCUE_BIN, argv_grub) != 0)
+		snprintf(directory_flag, sizeof(directory_flag), "--directory=%s", grub_module_dir);
+		snprintf(xorriso_flag, sizeof(xorriso_flag), "--xorriso=%s", xorriso_bin);
+
+		if (run_subprocess(g_grub_mkrescue_bin, argv_grub) != 0)
 			return 1;
 	}
 

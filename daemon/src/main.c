@@ -97,6 +97,25 @@ static char SITE_CONFIG_PATH[PATH_MAX];
 static char DEVICEMAP_STATE_PATH[PATH_MAX];
 static char DAEMON_CONFIG_PATH[PATH_MAX];
 static char QUOTAMAP_STATE_PATH[PATH_MAX];
+/*
+ * Where POST /v1/system/iso (ADR-0064) looks for the Secure Boot
+ * signing key pair and writes its own output -- both new with this
+ * mechanism, since building a *new* installer ISO server-side is the
+ * first time kanxeod itself, rather than a dev machine's own manual
+ * mkinstalleriso invocation, has ever needed either. SIGNING_KEYS_DIR
+ * is deliberately operator-populated out of band (never fetched,
+ * generated, or copied here by kanxeod itself, and never staged onto
+ * any container image or target-disk install) -- the same real
+ * security posture image/keys/ already has in this repo: a release-
+ * signing private key must never propagate onto every deployed box,
+ * only the specific build/release instance actually cutting installer
+ * media. A box with nothing at SIGNING_KEYS_DIR simply can't serve
+ * this endpoint, exactly like `pkg hostbuild kanxeo` can't complete
+ * without a real git token -- a real, environment-specific
+ * precondition, not a gap.
+ */
+static char SIGNING_KEYS_DIR[PATH_MAX];
+static char ISO_DIR[PATH_MAX];
 
 /* Computes every path derived from g_base_dir -- called once, right
  * after argv parsing (so --data-dir= has already been applied) and
@@ -121,6 +140,8 @@ static void init_base_dir_paths(void)
 	snprintf(DEVICEMAP_STATE_PATH, sizeof(DEVICEMAP_STATE_PATH), "%s/devicemaps.json", g_base_dir);
 	snprintf(DAEMON_CONFIG_PATH, sizeof(DAEMON_CONFIG_PATH), "%s/daemon_config.json", g_base_dir);
 	snprintf(QUOTAMAP_STATE_PATH, sizeof(QUOTAMAP_STATE_PATH), "%s/quota_projids.json", g_base_dir);
+	snprintf(SIGNING_KEYS_DIR, sizeof(SIGNING_KEYS_DIR), "%s/keys", g_base_dir);
+	snprintf(ISO_DIR, sizeof(ISO_DIR), "%s/iso", g_base_dir);
 }
 /*
  * Backoff cap and stability-reset threshold for the crash-restart
@@ -315,6 +336,7 @@ enum conn_kind {
 	CONN_CONTAINER,
 	CONN_PKG_FETCH,
 	CONN_BOOTROOT_ASSEMBLE, /* server-side mkbootroot invocation (ADR-0057) */
+	CONN_ISO_ASSEMBLE,      /* server-side mkinstalleriso invocation (ADR-0064) */
 	CONN_RESTART_TIMER,
 	CONN_CONSOLE_SHELL,
 	CONN_CONSOLE_RESPAWN_TIMER,
@@ -340,7 +362,7 @@ struct conn {
 	           * progress; see handle_client_event(). */
 	struct http_conn http;                 /* CONN_CLIENT only */
 	struct registry_entry *entry;           /* CONN_CONTAINER only */
-	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE */
+	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE / CONN_ISO_ASSEMBLE */
 	char restart_name[REGISTRY_NAME_MAX];   /* CONN_RESTART_TIMER only */
 	pid_t console_pid;                      /* CONN_CONSOLE_SHELL only */
 	char console_tty[32];                   /* CONN_CONSOLE_SHELL / CONN_CONSOLE_RESPAWN_TIMER */
@@ -2496,6 +2518,287 @@ static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
 		return;
 	}
 	register_bootroot_assemble_pidfd(pid, pidfd);
+}
+
+/*
+ * POST/GET /v1/system/iso (ADR-0064): closes the API-First Mandate gap
+ * ADR-0063 deliberately left open -- image/src/mkinstalleriso.c was a
+ * dev-machine-only tool an operator had to run by hand; this makes ISO
+ * assembly a real, REST/CLI-reachable daemon capability, the same
+ * fork+exec+pidfd-tracked, non-blocking shape spawn_kanxeo_bootroot_
+ * assembly() above already established for mkbootroot. Unlike that
+ * mechanism (auto-triggered the moment a "kanxeo" hostbuild completes),
+ * ISO assembly is explicitly, separately triggered -- it has real
+ * inputs of its own (the target's disk/ip/prefix/gateway/interface)
+ * a hostbuild completion has no way to supply, and reuses whatever the
+ * most recent "kanxeo"/"kernel"/"isotools" hostbuild rounds already
+ * harvested rather than forcing a fresh rebuild of any of them.
+ *
+ * Only one ISO build is ever in flight at a time (the same v1 single-
+ * job constraint pkg.c's own install/hostbuild pipeline already has) --
+ * g_iso_build_state is this mechanism's entire piece of state, never
+ * persisted (an in-progress build that the daemon restarts through is
+ * simply lost, exactly like an in-progress pkg install already is).
+ */
+enum iso_build_state { ISO_BUILD_NONE, ISO_BUILD_BUILDING, ISO_BUILD_READY, ISO_BUILD_FAILED };
+static enum iso_build_state g_iso_build_state = ISO_BUILD_NONE;
+static char g_iso_build_error[256];
+static char ISO_OUTPUT_PATH[PATH_MAX];
+
+static void register_iso_assemble_pidfd(pid_t pid, int pidfd)
+{
+	struct conn *cc;
+	struct kx_epoll_event ev;
+
+	cc = malloc(sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (iso assemble reactor conn)");
+		abort();
+	}
+	cc->kind = CONN_ISO_ASSEMBLE;
+	cc->fd = pidfd;
+	cc->pkg_fetch_pid = pid;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+		perror("epoll_ctl ADD iso assemble pidfd");
+		abort();
+	}
+}
+
+/*
+ * Validates every real precondition (the "kanxeo"/"kernel" hostbuild
+ * artifacts, the "isotools" hostbuild artifact, and the operator-
+ * populated signing key pair at SIGNING_KEYS_DIR) up front, so a
+ * missing one fails the POST itself with a specific, actionable
+ * message -- never a background failure the caller has to poll for
+ * to discover. Returns 0 and forks the real build (state -> BUILDING)
+ * on success; -1 with err_msg filled otherwise. err_msg_size must be
+ * at least 256. Caller (handle_system_iso_post()) is responsible for
+ * the "already building" check -- kept there, not here, so it maps to
+ * its own distinct 409 rather than this function's 400-shaped
+ * "missing precondition" errors, mirroring respond_pkg_error()'s own
+ * PKG_ERR_BUSY (409) vs. PKG_ERR_INVALID_TOOLCHAIN (400) split.
+ */
+static int iso_build_start(const char *disk, const char *ip, const char *prefix,
+                            const char *gateway, const char *interface, char *err_msg,
+                            size_t err_msg_size)
+{
+	char mkinstalleriso_bin[PATH_MAX];
+	char kanxeo_install_bin[PATH_MAX];
+	char bzimage_path[PATH_MAX];
+	char squashfs_path[PATH_MAX];
+	char isotools_root[PATH_MAX];
+	char signing_key[PATH_MAX];
+	char signing_cert_pem[PATH_MAX];
+	char signing_cert_der[PATH_MAX];
+	char stage_dir[PATH_MAX];
+	char kernel_args[512];
+	char *argv[12];
+	pid_t pid;
+	int pidfd;
+	struct {
+		const char *path;
+		const char *what;
+	} required[] = {
+	    {mkinstalleriso_bin, "mkinstalleriso (from a \"kanxeo\" hostbuild)"},
+	    {kanxeo_install_bin, "kanxeo-install (from a \"kanxeo\" hostbuild)"},
+	    {bzimage_path, "bzImage (from a \"kernel\" hostbuild)"},
+	    {squashfs_path, "kanxeod-root.squashfs (from a \"kanxeo\" hostbuild)"},
+	    {isotools_root, "isotools artifact directory (from an \"isotools\" hostbuild)"},
+	    {signing_key, "signing key (operator-provided at SIGNING_KEYS_DIR)"},
+	    {signing_cert_pem, "signing cert .crt (operator-provided at SIGNING_KEYS_DIR)"},
+	    {signing_cert_der, "signing cert .cer (operator-provided at SIGNING_KEYS_DIR)"},
+	};
+	size_t i;
+
+	snprintf(mkinstalleriso_bin, sizeof(mkinstalleriso_bin), "%s/kanxeo/mkinstalleriso",
+	         ARTIFACTS_DIR);
+	snprintf(kanxeo_install_bin, sizeof(kanxeo_install_bin), "%s/kanxeo/kanxeo-install",
+	         ARTIFACTS_DIR);
+	snprintf(bzimage_path, sizeof(bzimage_path), "%s/kernel/bzImage", ARTIFACTS_DIR);
+	snprintf(squashfs_path, sizeof(squashfs_path), "%s/kanxeo/kanxeod-root.squashfs",
+	         ARTIFACTS_DIR);
+	snprintf(isotools_root, sizeof(isotools_root), "%s/isotools", ARTIFACTS_DIR);
+	snprintf(signing_key, sizeof(signing_key), "%s/kanxeo-signing.key", SIGNING_KEYS_DIR);
+	snprintf(signing_cert_pem, sizeof(signing_cert_pem), "%s/kanxeo-signing.crt", SIGNING_KEYS_DIR);
+	snprintf(signing_cert_der, sizeof(signing_cert_der), "%s/kanxeo-signing.cer", SIGNING_KEYS_DIR);
+
+	for (i = 0; i < sizeof(required) / sizeof(required[0]); i++) {
+		if (access(required[i].path, R_OK) != 0) {
+			snprintf(err_msg, err_msg_size, "missing %s: %s", required[i].what, required[i].path);
+			return -1;
+		}
+	}
+
+	snprintf(kernel_args, sizeof(kernel_args),
+	         "--disk=%s --ip=%s --prefix=%s --gateway=%s --interface=%s",
+	         (disk != NULL && disk[0] != '\0') ? disk : "CHANGEME",
+	         (ip != NULL && ip[0] != '\0') ? ip : "CHANGEME",
+	         (prefix != NULL && prefix[0] != '\0') ? prefix : "CHANGEME",
+	         (gateway != NULL && gateway[0] != '\0') ? gateway : "CHANGEME",
+	         (interface != NULL && interface[0] != '\0') ? interface : "CHANGEME");
+
+	snprintf(stage_dir, sizeof(stage_dir), "%s/.stage", ISO_DIR);
+	snprintf(ISO_OUTPUT_PATH, sizeof(ISO_OUTPUT_PATH), "%s/kanxeo-install.iso", ISO_DIR);
+
+	argv[0] = mkinstalleriso_bin;
+	argv[1] = stage_dir;
+	argv[2] = kanxeo_install_bin;
+	argv[3] = bzimage_path;
+	argv[4] = squashfs_path;
+	argv[5] = signing_key;
+	argv[6] = signing_cert_pem;
+	argv[7] = signing_cert_der;
+	argv[8] = ISO_OUTPUT_PATH;
+	argv[9] = kernel_args;
+	argv[10] = isotools_root;
+	argv[11] = NULL;
+
+	pid = fork();
+	if (pid < 0) {
+		snprintf(err_msg, err_msg_size, "fork failed: %s", strerror(errno));
+		return -1;
+	}
+	if (pid == 0) {
+		execve(mkinstalleriso_bin, argv, environ);
+		perror("child: execve mkinstalleriso");
+		_exit(127);
+	}
+
+	pidfd = sys_pidfd_open(pid, 0);
+	if (pidfd < 0) {
+		snprintf(err_msg, err_msg_size, "pidfd_open failed: %s", strerror(errno));
+		kill(pid, SIGKILL);
+		waitpid(pid, NULL, 0);
+		return -1;
+	}
+	register_iso_assemble_pidfd(pid, pidfd);
+	g_iso_build_state = ISO_BUILD_BUILDING;
+	g_iso_build_error[0] = '\0';
+	return 0;
+}
+
+/* Reaps iso_build_start()'s own mkinstalleriso child, same shape as
+ * handle_bootroot_assemble_event() -- updates g_iso_build_state for
+ * GET /v1/system/iso to report back, since no REST response is waiting
+ * on this (the original POST already returned 202 long before this
+ * fires). */
+static void handle_iso_assemble_event(struct conn *cc)
+{
+	int status;
+
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status) &&
+	    WEXITSTATUS(status) == 0) {
+		g_iso_build_state = ISO_BUILD_READY;
+		fprintf(stderr, "iso assembly: succeeded (%s)\n", ISO_OUTPUT_PATH);
+	} else {
+		g_iso_build_state = ISO_BUILD_FAILED;
+		snprintf(g_iso_build_error, sizeof(g_iso_build_error), "mkinstalleriso failed (status 0x%x)",
+		         (unsigned)status);
+		fprintf(stderr, "iso assembly: failed\n");
+	}
+	close(cc->fd);
+	free(cc);
+}
+
+static const char *iso_build_state_str(enum iso_build_state s)
+{
+	switch (s) {
+	case ISO_BUILD_BUILDING:
+		return "building";
+	case ISO_BUILD_READY:
+		return "ready";
+	case ISO_BUILD_FAILED:
+		return "failed";
+	case ISO_BUILD_NONE:
+	default:
+		return "none";
+	}
+}
+
+static void write_iso_status(struct json_writer *w)
+{
+	jw_obj_open(w);
+	jw_key(w, "state");
+	jw_str(w, iso_build_state_str(g_iso_build_state));
+	jw_key(w, "iso_path");
+	if (g_iso_build_state == ISO_BUILD_READY)
+		jw_str(w, ISO_OUTPUT_PATH);
+	else
+		jw_null(w);
+	jw_key(w, "error");
+	if (g_iso_build_state == ISO_BUILD_FAILED)
+		jw_str(w, g_iso_build_error);
+	else
+		jw_null(w);
+	jw_obj_close(w);
+}
+
+/* GET /v1/system/iso -- status/iso_path polling, the exact shape GET
+ * /v1/pkg/hostbuild/{name} already established for its own async job. */
+static void handle_system_iso_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	write_iso_status(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * POST /v1/system/iso (ADR-0064) -- every field is optional; an empty
+ * body reproduces this tool's original default (a generic, edit-at-
+ * the-GRUB-menu ISO, kernel_args left as the "CHANGEME" placeholder
+ * image/src/mkinstalleriso.c's own usage text has always documented).
+ */
+static void handle_system_iso_post(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = NULL;
+	const char *disk = NULL;
+	const char *ip = NULL;
+	const char *prefix = NULL;
+	const char *gateway = NULL;
+	const char *interface = NULL;
+	char err_msg[256];
+	struct json_writer w;
+
+	if (body != NULL && body_len > 0) {
+		root = json_parse(body, body_len);
+		if (root == NULL) {
+			respond_error(fd, 400, "Bad Request", "invalid JSON body");
+			return;
+		}
+		disk = json_as_string(json_object_get(root, "disk"));
+		ip = json_as_string(json_object_get(root, "ip"));
+		prefix = json_as_string(json_object_get(root, "prefix"));
+		gateway = json_as_string(json_object_get(root, "gateway"));
+		interface = json_as_string(json_object_get(root, "interface"));
+	}
+
+	if (g_iso_build_state == ISO_BUILD_BUILDING) {
+		if (root != NULL)
+			json_free(root);
+		respond_error(fd, 409, "Conflict", "an ISO build is already in progress");
+		return;
+	}
+	if (iso_build_start(disk, ip, prefix, gateway, interface, err_msg, sizeof(err_msg)) != 0) {
+		if (root != NULL)
+			json_free(root);
+		respond_error(fd, 400, "Bad Request", err_msg);
+		return;
+	}
+	if (root != NULL)
+		json_free(root);
+
+	jw_init(&w);
+	write_iso_status(&w);
+	respond_json(fd, 202, "Accepted", &w);
+	jw_free(&w);
 }
 
 /*
@@ -5338,6 +5641,16 @@ static void dispatch(int fd, const struct http_request *req)
 			return;
 		}
 	}
+	if (strcmp(req->path, "/v1/system/iso") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_system_iso_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_system_iso_post(fd, req->body, req->body_len);
+			return;
+		}
+	}
 	if (strcmp(req->path, "/v1/containers") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_list(fd);
@@ -6941,7 +7254,8 @@ int main(int argc, char **argv)
 	if (ensure_dir(g_base_dir) != 0 || ensure_dir(IMAGES_DIR) != 0 ||
 	    ensure_dir(CONTAINERS_DIR) != 0 || ensure_dir(PKI_DIR) != 0 ||
 	    ensure_dir(PKI_CERTS_DIR) != 0 || ensure_dir(PKG_DIR) != 0 ||
-	    ensure_dir(ARTIFACTS_DIR) != 0)
+	    ensure_dir(ARTIFACTS_DIR) != 0 || ensure_dir(SIGNING_KEYS_DIR) != 0 ||
+	    ensure_dir(ISO_DIR) != 0)
 		return 1;
 
 	if (network_init(NETWORKS_STATE_PATH) != 0)
@@ -7142,6 +7456,8 @@ int main(int argc, char **argv)
 				handle_pkg_fetch_event(cc);
 			else if (cc->kind == CONN_BOOTROOT_ASSEMBLE)
 				handle_bootroot_assemble_event(cc);
+			else if (cc->kind == CONN_ISO_ASSEMBLE)
+				handle_iso_assemble_event(cc);
 			else if (cc->kind == CONN_RESTART_TIMER)
 				handle_restart_timer_event(cc);
 			else if (cc->kind == CONN_CONSOLE_SHELL)

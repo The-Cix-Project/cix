@@ -61,12 +61,22 @@ pkg_depends=""
 # system). Self-contained, no bootstrap-order dependency on some
 # earlier round's own mkbootroot still being present anywhere: this
 # round's freshly built copy assembles this exact round's own output.
+#
+# build/kanxeo-install and build/mkinstalleriso join the same round
+# for the identical reason (ADR-0064): closing the REST-driven-ISO-
+# assembly gap ADR-0063 deliberately left open needs a real, on-box
+# mkinstalleriso binary (the daemon's own POST /v1/system/iso handler
+# execve()s it server-side, same shape as spawn_kanxeo_bootroot_
+# assembly() already established) and a real kanxeo-install binary to
+# embed into the ISO it produces -- neither has ever had a reason to
+# be staged onto a running system before now either.
 pkg_build() {
-	make build/kanxeod build/kanxeoctl build/mkbootroot
+	make build/kanxeod build/kanxeoctl build/mkbootroot build/kanxeo-install build/mkinstalleriso
 }
 
 pkg_install() {
-	cp build/kanxeod build/kanxeoctl build/mkbootroot "$PKG_DESTDIR/"
+	cp build/kanxeod build/kanxeoctl build/mkbootroot build/kanxeo-install build/mkinstalleriso \
+	   "$PKG_DESTDIR/"
 	mkdir -p "$PKG_DESTDIR/web"
 	cp -r web/* "$PKG_DESTDIR/web/"
 }

@@ -18,6 +18,8 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | PUT | `/system/site` | Set this install's site identity |
 | GET | `/system/daemon-config` | kanxeod's own listen port, HTTP/HTTPS exposure, and which network is currently its management one |
 | PUT | `/system/daemon-config` | Live-reconfigure the listen port, HTTP/HTTPS listeners, or repoint the management network -- no restart |
+| GET | `/system/iso` | Status of the most recent server-side installer ISO build |
+| POST | `/system/iso` | Assemble a fresh installer ISO server-side, non-blocking |
 | GET | `/containers` | List all containers this daemon knows about |
 | POST | `/containers` | Create and start a container |
 | GET | `/containers/{name}` | Inspect one container |
@@ -572,7 +574,18 @@ POST /v1/pkg/hostbuild
 {"name": "kernel", "build_image": "kanxeo-builder"}
 ```
 
-`build_image` is always explicit (no default) — the already-existing image whose rootfs supplies the build container's own toolchain (must already have whatever the recipe's `pkg_build()` needs actually installed, via ordinary `pkg install` first; a hostbuild recipe cannot itself declare `pkg_depends`, since dependency resolution has no meaning for a one-shot harvest). `202`, polled via `GET /pkg/hostbuild/{name}` (a thin wrapper over the same `GET /pkg/{name}` lookup, scoped to a reserved internal image name) exactly like an ordinary install. Once `state: "installed"`, the artifact lives on the host at a fixed, well-known path per recipe (`kernel.recipe` → a `bzImage`; `kanxeo.recipe` → `kanxeod`/`kanxeoctl`/`web/` plus a server-side-assembled `kanxeod-root.squashfs`) — never merged into any container image's rootfs. `kanxeoctl pkg hostbuild <name> --build-image=<image> [--wait] [--deploy]` is the CLI surface; `--deploy` reads the finished artifact and calls the existing, unmodified `/system/update` for you.
+`build_image` is always explicit (no default) — the already-existing image whose rootfs supplies the build container's own toolchain (must already have whatever the recipe's `pkg_build()` needs actually installed, via ordinary `pkg install` first; a hostbuild recipe cannot itself declare `pkg_depends`, since dependency resolution has no meaning for a one-shot harvest). `202`, polled via `GET /pkg/hostbuild/{name}` (a thin wrapper over the same `GET /pkg/{name}` lookup, scoped to a reserved internal image name) exactly like an ordinary install. Once `state: "installed"`, the artifact lives on the host at a fixed, well-known path per recipe (`kernel.recipe` → a `bzImage`; `kanxeo.recipe` → `kanxeod`/`kanxeoctl`/`web/`/`kanxeo-install`/`mkinstalleriso` plus a server-side-assembled `kanxeod-root.squashfs`; `isotools.recipe` → a self-contained `grub-mkrescue`/`sbsign`/`sbverify`/`xorriso`/`mformat`/`mcopy` toolchain) — never merged into any container image's rootfs. `kanxeoctl pkg hostbuild <name> --build-image=<image> [--wait] [--deploy]` is the CLI surface; `--deploy` reads the finished artifact and calls the existing, unmodified `/system/update` for you.
+
+### Building a fresh installer ISO server-side
+
+`POST /system/iso` closes the one gap the hostbuild mechanism above deliberately left open: assembling those artifacts into a bootable, Secure-Boot-signed installer `.iso` used to be a dev-machine-only tool (`image/src/mkinstalleriso.c`) an operator had to run by hand. It's now a real daemon capability, non-blocking and pidfd-tracked exactly like `POST /pkg/hostbuild`'s own async jobs:
+
+```
+POST /v1/system/iso
+{"disk": "/dev/sda", "ip": "10.0.0.5", "prefix": "24", "gateway": "10.0.0.1", "interface": "eth0"}
+```
+
+Every field is optional — an empty body reproduces the tool's original default, a generic ISO with its kernel arguments left as the `CHANGEME` placeholder an operator edits at the GRUB boot menu. `202`, polled via `GET /system/iso` (`state`: `none`/`building`/`ready`/`failed`, `iso_path` once ready). Reuses whatever the most recent `kanxeo`/`kernel`/`isotools` hostbuild rounds already harvested — it does not trigger any of them itself, and fails fast (`400`) naming exactly which one is missing rather than a background failure the caller has to poll for to discover. Requires a real Secure Boot signing key pair, staged out of band by the operator at `<data-dir>/keys/kanxeo-signing.{key,crt,cer}` — deliberately never generated, fetched, or copied there by `kanxeod` itself (see ADR-0064: a release-signing private key must never propagate onto every deployed box, only whichever specific instance is actually cutting installer media). `kanxeoctl iso build [--disk=... --ip=... --prefix=... --gateway=... --interface=...] [--wait]` / `kanxeoctl iso status` is the CLI surface.
 
 ## Host + package updates
 
