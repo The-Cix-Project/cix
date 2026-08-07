@@ -154,8 +154,31 @@ int main(int argc, char **argv)
 	 * ld.so/libc.so.6 (already staged above) on a real installed
 	 * system -- this dev sandbox's own rich /usr made that gap easy to
 	 * miss (see ADR-0023).
+	 *
+	 * The path passed here is BOTH the read source on this build host
+	 * AND (via test_image_fixture_add_lib()'s own "image_root + this
+	 * path" convention) the destination inside the assembled image --
+	 * it must be the bare "/lib/..." form, not "/usr/lib/...", to
+	 * match exactly where pkg_seed_image_baseline()'s own
+	 * runtime_libs[] table looks for it later on the real installed
+	 * system's own root. Confirmed live as a real, previously-
+	 * undiscovered bug (not just a theoretical mismatch): the wrong,
+	 * "/usr/lib/..."-prefixed destination silently landed this file
+	 * where nothing ever looked for it, so every hostbuild whose
+	 * build_image needed bash (which needs libtinfo) failed with
+	 * "libtinfo.so.6: cannot open shared object file" -- invisible in
+	 * every local test, since a locally-run kanxeod reads its own
+	 * sandbox's real /lib and /usr/lib directly (merged-usr symlinks
+	 * here make both forms resolve identically for the READ side),
+	 * never from an assembled squashfs mounted as root the way a real
+	 * install does. Same "this dev sandbox's own rich /usr masks a
+	 * real-install-only path bug" pattern as CONFIG_OVERLAY_FS/
+	 * CONFIG_SWAP/the mkbootroot gzip-bzip2-xz gap earlier this
+	 * session -- found this time via the new build-output capture
+	 * mechanism reading the real "cannot open shared object file"
+	 * error straight out of a live remote hostbuild attempt.
 	 */
-	if (test_image_fixture_add_lib(image_root, "/usr/lib/x86_64-linux-gnu/libtinfo.so.6") != 0)
+	if (test_image_fixture_add_lib(image_root, "/lib/x86_64-linux-gnu/libtinfo.so.6") != 0)
 		return 1;
 
 	/*
