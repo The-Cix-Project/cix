@@ -82,18 +82,18 @@ Every error response is `{"error": "message"}` with an appropriate 4xx/5xx statu
 
 ```
 POST /v1/networks
-{"name": "internal", "subnet": "172.31.0.0", "prefix_len": 24, "gateway": "172.31.0.1"}
+{"name": "internal", "subnet": "172.31.0.0", "prefix_len": 24, "address": "172.31.0.1"}
 ```
 
 - `name` must match `[A-Za-z0-9_-]{1,15}` — it's used verbatim as the Linux bridge interface's name (IFNAMSIZ is 15 chars).
 - `subnet` must be the exact network address for `prefix_len` (host bits zero) — `"172.31.0.5"` with `prefix_len: 24` is rejected, only `"172.31.0.0"` is valid. It must also not overlap any existing network's range.
 - `prefix_len` must be in `[8, 30]`.
-- `gateway` is optional (ADR-0037). Omitted (the default): the bridge is created purely L2, with no host-owned IP address at all — for networks whose own routing is owned by whatever's attached to them (a router pair running a routing protocol, a shared VRRP address, etc.), not the host; containers on it get no default route from this network. Given, it must be a real address within `subnet` (not the network/broadcast address) — it's assigned to the bridge device itself, and every attached container's *primary* network attachment gets it as an automatic default route.
+- `address` is optional (ADR-0037, renamed by ADR-0067). Omitted (the default): the bridge is created purely L2, with no host-owned IP address at all — for networks whose own routing is owned by whatever's attached to them (a router pair running a routing protocol, a shared VRRP address, etc.), not the host; containers on it get no default route from this network. Given, it must be a real address within `subnet` (not the network/broadcast address) — it's assigned to the bridge device itself, and every attached container's *primary* network attachment gets it as an automatic default route.
 
 Response (`201`):
 
 ```json
-{"name": "internal", "subnet": "172.31.0.0", "prefix_len": 24, "gateway": "172.31.0.1"}
+{"name": "internal", "subnet": "172.31.0.0", "prefix_len": 24, "address": "172.31.0.1"}
 ```
 
 Creating a network creates its bridge immediately via rtnetlink and persists the definition to `/var/lib/kanxeo/networks.json` — unlike containers (safe to be in-memory-only, since they die with the daemon), a bridge outlives this process, so the daemon reloads and recreates every persisted network's bridge idempotently at startup.
@@ -109,7 +109,7 @@ Enslaves a real, currently-assignable host interface (`GET /devices`'s own `"net
 
 ## The management network and kanxeod's own listeners
 
-At install time (`kanxeo-install`'s `--ip=`/`--prefix=`/`--gateway=`/`--interface=` flags — see [`installing.md`](../guides/installing.md)), kanxeod bootstraps a real, ordinary network named `management`: the given physical interface is attached to it exactly like `POST /networks/{name}/interfaces` above, and its gateway address (`--ip=`/`--prefix=`) becomes kanxeod's own bind address. This is a deliberate design choice (Part 0.5) — the host's own management IP lives on a bridge device via the same `network_def` mechanism every other network already uses, visible at `GET /networks`, not a separate GRUB-only address invisible to the API. (`--gateway=` means something different and unrelated: the box's own *upstream* default route, i.e. the home router this box's outbound traffic egresses through — not to be confused with the management network's own `gateway` field, which is kanxeod's bind address.)
+At install time (`kanxeo-install`'s `--ip=`/`--prefix=`/`--gateway=`/`--interface=` flags — see [`installing.md`](../guides/installing.md)), kanxeod bootstraps a real, ordinary network named `management`: the given physical interface is attached to it exactly like `POST /networks/{name}/interfaces` above, and its own address (`--ip=`/`--prefix=`) becomes kanxeod's own bind address. This is a deliberate design choice (Part 0.5) — the host's own management IP lives on a bridge device via the same `network_def` mechanism every other network already uses, visible at `GET /networks`, not a separate GRUB-only address invisible to the API. (`--gateway=` means something different and unrelated: the box's own *upstream* default route, i.e. the home router this box's outbound traffic egresses through — not to be confused with the management network's own `address` field, which is kanxeod's bind address.)
 
 Exactly one network has `is_management: true` at a time (`Network`'s own field, in every `GET /networks` response). Because deleting or detaching from that network's bridge would sever the connection you're managing the box through, `DELETE /networks/{name}` and `DELETE /networks/{name}/interfaces/{ifname}` both unconditionally refuse (`409`) while `is_management` is set — there is deliberately no override/force flag on either generic endpoint. Repointing management to a different network first is the only way past this:
 
@@ -118,7 +118,7 @@ GET /v1/system/daemon-config
 ```
 
 ```json
-{"port": 7620, "bind": "192.168.50.10", "management_network": "management", "http_enabled": true, "https_enabled": false, "https_port": 8443}
+{"port": 7620, "bind": "192.168.50.10", "bind_ip": null, "management_network": "management", "http_enabled": true, "https_enabled": false, "https_port": 8443}
 ```
 
 ```
@@ -126,7 +126,23 @@ PUT /v1/system/daemon-config
 {"management_network": "lan1"}
 ```
 
-Resolves `lan1`'s own existing gateway address (it must already have one — `has_gateway: true`, `400` otherwise) and performs a live listen-socket rebind to it — the new socket is created, bound, and added to `epoll` *before* the old one is torn down, so a failure rolls back to the still-working previous listener rather than leaving a gap. Only once the rebind succeeds does `is_management` actually move from the old network to `lan1`. This works identically whether `lan1` has a physical NIC attached directly or gets its connectivity entirely from a container (e.g. a WiFi-AP container bridging a passed-through wireless radio) — kanxeod only ever cares about the network's own gateway address, never how it's fed.
+Resolves `lan1`'s own existing address (it must already have one — `has_address: true`, `400` otherwise) and performs a live listen-socket rebind to it — the new socket is created, bound, and added to `epoll` *before* the old one is torn down, so a failure rolls back to the still-working previous listener rather than leaving a gap. Only once the rebind succeeds does `is_management` actually move from the old network to `lan1`. This works identically whether `lan1` has a physical NIC attached directly or gets its connectivity entirely from a container (e.g. a WiFi-AP container bridging a passed-through wireless radio) — kanxeod only ever cares about the network's own address, never how it's fed.
+
+### A dedicated bind IP, decoupled from the management network's own address
+
+```
+PUT /v1/system/daemon-config
+{"bind_ip": "192.168.50.20"}
+```
+
+`bind_ip` (ADR-0068) is a *second*, dedicated address on the management network's own bridge — kanxeod binds there instead of that network's own address, without the two being the same thing. Useful when the bridge is shared with other traffic (containers, a routing daemon) and the operator wants kanxeod itself pinned to a specific, separate address on it. Must be a real, unused address within the management network's own subnet (`400` otherwise); added to the bridge via a real `rtnl_addr_add_ipv4()` *before* the listener rebinds to it. Any previously-set `bind_ip` is removed from the bridge a couple of seconds *after* the response for this same request has already gone out, not synchronously — confirmed necessary the hard way (see ADR-0068): deleting it immediately can race the kernel's own delivery of the response when this exact request arrived over a connection whose local address *is* the one being removed, which is the common case for an operator reaching the daemon at wherever it's currently bound. Set explicitly to `null` to clear it and revert to the management network's own address:
+
+```
+PUT /v1/system/daemon-config
+{"bind_ip": null}
+```
+
+Repointing `management_network` without also giving a fresh `bind_ip` in the same request implicitly clears any previously-set one — a dedicated `bind_ip` only ever makes sense relative to whichever network is management at the time, so it doesn't silently follow a repoint onto a bridge it was never validated against.
 
 `port`, `http_enabled`, `https_enabled`, and `https_port` are independently settable in the same request or separately:
 
@@ -154,6 +170,20 @@ GET /v1/system/routes
 
 A real, read-only `RTM_GETROUTE` dump (ADR-0066) — not a Kanxeo-managed resource of its own, just a window onto real kernel state. Exists purely because a real installed box has no SSH and no general shell at all (ADR-0034): before this, there was no way to ever confirm what the kernel actually did with the `--gateway=` value given at install time (fed into a real route add, `rtnl_route_add_default_ipv4()`, that otherwise runs invisibly at boot). `gateway`/`interface` are `null` for on-link routes the kernel derives automatically from each network's own assigned address (`GET /networks`) — only routes with a real next-hop (like the upstream default route) carry a `gateway`. `protocol`/`scope` are the kernel's own raw `rtm_protocol`/`rtm_scope` values, not reinterpreted into names.
 
+### Adding and removing routes
+
+```
+POST /v1/system/routes
+{"dest": "172.40.0.0", "prefix": 24, "gateway": "172.30.1.1"}
+```
+
+```
+DELETE /v1/system/routes
+{"dest": "172.40.0.0", "prefix": 24}
+```
+
+`204` on success. Thin wrappers over `rtnl_route_add_ipv4()`/the new `rtnl_route_del_ipv4()` (ADR-0067 Part 3) — like the `GET` above, neither call touches persisted state; a route added this way is gone on the next reboot, same as any other kernel route not re-applied at boot. Every field is optional: an empty body (or `prefix` omitted/`0`) identifies the default route, the same convention `rtnl_route_add_ipv4()` itself already uses; `gateway` omitted means a direct/on-link route. `POST` `400`s if the kernel itself rejects the route (already exists, unreachable gateway, malformed input); `DELETE` `404`s if no matching route exists to remove. Scoped to exactly what the existing primitives support — no interface/`RTA_OIF` binding, no route-replace semantics.
+
 ## Creating a container
 
 ```
@@ -175,7 +205,7 @@ POST /v1/containers
 - `image` must already exist and be populated at `/var/lib/kanxeo/images/{image}/rootfs` — the daemon never creates image content itself (see ADR-0004); a missing image is a `400`, not a silently-empty container.
 - `memory_max`/`pids_max`/`cpu_max`/`cpuset_cpus` are optional cgroup v2 limits; omit for no limit. `cpu_max` is the raw cgroup-native `"<quota> <period>"` string in microseconds (e.g. `"50000 100000"` = 50% of one CPU); `cpuset_cpus` is the raw `cpuset.cpus` range-list value (e.g. `"0-1,3"`), restricting which host CPUs this container's processes may run on. Both are passed straight through, not reinterpreted into a percentage or another unit — the same pass-through convention `memory_max`'s bytes and `pids_max`'s raw count already use.
 - `disk_quota_bytes` is an optional, real, kernel-enforced ext4 project-quota hard limit on this container's own overlay upperdir (see [ADR-0062](../adr/0062-ext4-project-disk-quotas.md)) — writes past it fail with `EDQUOT` at the filesystem level. Requires the containers partition to have real project-quota support (the default for a system installed via `kanxeo-install.c`, `mkfs.ext4 -O quota -E quotatype=prjquota`); if it doesn't, creation fails `500` with a clear error rather than silently not enforcing the limit. Omit for no limit.
-- `networks` is optional: 1–64 entries, each either a bare name (auto-allocated IP) or `{"name": "internal", "ip": "172.31.0.50"}` for an explicit, operator-chosen address — each network must already exist via `POST /v1/networks` (`400` if unknown), and an explicit `ip` must be a usable address on that network: in its subnet, not the reserved gateway/network address, and not already taken (`400`/`409`). Omit `networks` entirely for no networking (isolated netns, only `lo` — same as before this field existed). The **first** entry is primary and gets the default route; the rest only get their own subnet's connected route.
+- `networks` is optional: 1–64 entries, each either a bare name (auto-allocated IP) or `{"name": "internal", "ip": "172.31.0.50"}` for an explicit, operator-chosen address — each network must already exist via `POST /v1/networks` (`400` if unknown), and an explicit `ip` must be a usable address on that network: in its subnet, not the reserved address/network address, and not already taken (`400`/`409`). Omit `networks` entirely for no networking (isolated netns, only `lo` — same as before this field existed). The **first** entry is primary and gets the default route; the rest only get their own subnet's connected route.
 - `dns_register` is optional, default `false` — see [DNS: records + a real dnsmasq container](#dns-records--a-real-dnsmasq-container) below. Requires `networks` to be set (`400` otherwise).
 - `pki_issue`/`pki_cert_dir`/`pki_days` are optional, default `false`/`/etc/kanxeo-tls`/`365` — see [PKI: a root CA and issued leaf certificates](#pki-a-root-ca-and-issued-leaf-certificates) below. Requires the CA to already be bootstrapped (`400` otherwise); does **not** require `networks`.
 

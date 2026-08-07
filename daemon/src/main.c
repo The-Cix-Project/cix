@@ -351,6 +351,8 @@ enum conn_kind {
 	CONN_ISO_ASSEMBLE,      /* server-side mkinstalleriso invocation (ADR-0064) */
 	CONN_BOOTSTRAP_FETCH,   /* pkg/bootstrap's own toolchain_url curl fetch (ADR-0065) */
 	CONN_RESTART_TIMER,
+	CONN_BIND_IP_CLEANUP, /* deferred rtnl_addr_del_ipv4() of a superseded/cleared
+	                        * bind_ip (ADR-0068) -- see arm_bind_ip_cleanup_timer() */
 	CONN_CONSOLE_SHELL,
 	CONN_CONSOLE_RESPAWN_TIMER,
 	CONN_CONSOLE_WS,        /* GET /v1/containers/{name}/console -- client-facing WebSocket half */
@@ -377,6 +379,9 @@ struct conn {
 	struct registry_entry *entry;           /* CONN_CONTAINER only */
 	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE / CONN_ISO_ASSEMBLE / CONN_BOOTSTRAP_FETCH */
 	char restart_name[REGISTRY_NAME_MAX];   /* CONN_RESTART_TIMER only */
+	char cleanup_ifname[NETWORK_NAME_MAX];  /* CONN_BIND_IP_CLEANUP only */
+	uint32_t cleanup_addr_be;               /* CONN_BIND_IP_CLEANUP only */
+	int cleanup_prefix_len;                 /* CONN_BIND_IP_CLEANUP only */
 	pid_t console_pid;                      /* CONN_CONSOLE_SHELL only */
 	char console_tty[32];                   /* CONN_CONSOLE_SHELL / CONN_CONSOLE_RESPAWN_TIMER */
 	struct console_exec_session *exec_session; /* CONN_CONSOLE_WS / CONN_CONSOLE_PTY only -- shared by both halves of one session */
@@ -505,7 +510,7 @@ static void console_session_teardown(struct console_exec_session *sess)
 static const char *g_slot;
 static const char *g_bind_addr;
 /* Backing storage for g_bind_addr when it's derived from the
- * management network's own gateway address (Part 0.5) rather than taken directly
+ * management network's own address (Part 0.5) rather than taken directly
  * from argv's --bind= -- g_bind_addr has to remain valid for the rest
  * of the process's life, so this can't be a stack buffer. */
 static char g_bind_addr_buf[INET_ADDRSTRLEN];
@@ -663,20 +668,23 @@ static void load_boot_modules(void)
  * at GET /v1/networks like any other), attaches the GRUB-chosen
  * physical interface to it, and designates it the daemon's own
  * management network (network_set_management()). g_bind_addr is then
- * derived from that network's own gateway address -- the network is
- * the one authoritative source for it from this point on, not a
+ * derived from that network's own address -- the network is the one
+ * authoritative source for it from this point on, not a
  * separately-carried --bind= argument. A missing or incomplete
  * net.conf is not an error (0, not -1): parts 1/2's own test disks
  * never write one, and that must stay a normal, inert boot, not a
  * failure.
  *
- * Two distinct "gateway" concepts here, not to be confused (see the
- * ADR): the mgmt network's own gateway_be -- an address living
- * directly on its bridge, now doing double duty as kanxeod's own bind
- * address -- versus net.conf's "gateway=", the box's *upstream*
- * default route (the next-hop router this box's own outbound traffic
- * egresses through), which keeps its existing, unrelated meaning and
- * mechanism (rtnl_route_add_default_ipv4()) below.
+ * Two genuinely different concepts here, not to be confused (ADR-0058,
+ * ADR-0067): the management network's own address_be -- an address
+ * living directly on its bridge, now doing double duty as kanxeod's
+ * own bind address -- versus net.conf's own "gateway=" field, the
+ * box's *upstream* default route (the next-hop router this box's own
+ * outbound traffic egresses through), which keeps its existing,
+ * unrelated meaning and mechanism (rtnl_route_add_default_ipv4())
+ * below. The former was itself once called "gateway" too (ADR-0037);
+ * ADR-0067 renamed it specifically to stop it colliding with this
+ * second, real gateway concept in name as well as in fact.
  */
 static int bootstrap_management_network(void)
 {
@@ -927,8 +935,8 @@ static int network_error_to_status(enum network_error err, const char **out_msg)
 	case NETWORK_ERR_INVALID_SUBNET:
 		*out_msg = "invalid subnet/prefix_len";
 		return 400;
-	case NETWORK_ERR_INVALID_GATEWAY:
-		*out_msg = "invalid gateway (must be a real address within this subnet, "
+	case NETWORK_ERR_INVALID_ADDRESS:
+		*out_msg = "invalid address (must be a real address within this subnet, "
 		           "not the network or broadcast address)";
 		return 400;
 	case NETWORK_ERR_DUPLICATE:
@@ -2128,6 +2136,93 @@ static int rebind_https_listener(const char *new_bind_addr, int new_port)
 }
 
 /*
+ * Deferred rtnl_addr_del_ipv4() of a stale bind_ip (ADR-0068), arm'd by
+ * handle_daemon_config_put() below instead of deleting synchronously --
+ * a real hazard was confirmed the hard way, not assumed: when the very
+ * connection carrying the PUT request that clears/replaces bind_ip has
+ * that address as its own local endpoint (the common case, since an
+ * operator naturally reaches the daemon at whatever it's currently
+ * bound to), the response write() succeeds at the socket-buffer level
+ * but the address disappearing before the kernel actually transmits it
+ * leaves the client hanging forever, never receiving bytes that were
+ * already "successfully" written. A short, fixed delay -- long enough
+ * for a same-host TCP round trip under any real scheduler load, utterly
+ * negligible for a background bridge address cleanup that has no
+ * user-visible deadline -- sidesteps the whole class of problem without
+ * needing to reason about exact ACK timing. Same one-shot timerfd +
+ * conn shape as arm_restart_timer() (below, container restart/backoff)
+ * uses -- this codebase's own existing precedent for "do something
+ * shortly after, without blocking the event loop."
+ */
+#define BIND_IP_CLEANUP_DELAY_SECONDS 2
+
+static void arm_bind_ip_cleanup_timer(const char *ifname, uint32_t addr_be, int prefix_len)
+{
+	int tfd;
+	struct itimerspec its;
+	struct conn *cc;
+	struct kx_epoll_event ev;
+
+	tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+	if (tfd < 0) {
+		perror("timerfd_create (bind_ip cleanup)");
+		return;
+	}
+
+	memset(&its, 0, sizeof(its));
+	its.it_value.tv_sec = BIND_IP_CLEANUP_DELAY_SECONDS;
+	if (timerfd_settime(tfd, 0, &its, NULL) != 0) {
+		perror("timerfd_settime (bind_ip cleanup)");
+		close(tfd);
+		return;
+	}
+
+	cc = malloc(sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (bind_ip cleanup timer conn)");
+		close(tfd);
+		return;
+	}
+	cc->kind = CONN_BIND_IP_CLEANUP;
+	cc->fd = tfd;
+	snprintf(cc->cleanup_ifname, sizeof(cc->cleanup_ifname), "%s", ifname);
+	cc->cleanup_addr_be = addr_be;
+	cc->cleanup_prefix_len = prefix_len;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
+		perror("epoll_ctl ADD bind_ip cleanup timer");
+		close(tfd);
+		free(cc);
+	}
+}
+
+static void handle_bind_ip_cleanup_timer_event(struct conn *cc)
+{
+	uint64_t expirations;
+	int rtfd;
+
+	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
+		perror("read (bind_ip cleanup timerfd)");
+
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	close(cc->fd);
+
+	rtfd = rtnl_open();
+	if (rtfd >= 0) {
+		rtnl_addr_del_ipv4(rtfd, cc->cleanup_ifname, cc->cleanup_addr_be, cc->cleanup_prefix_len);
+		rtnl_close(rtfd);
+	}
+	/* Best-effort, same as before this became a deferred timer: a
+	 * failure here leaves a harmless leftover address on the bridge,
+	 * never persisted or bound to by kanxeod itself. */
+
+	free(cc);
+}
+
+/*
  * GET/PUT /v1/system/daemon-config (Part 0.5): kanxeod's own listen
  * port and which network is currently its management one -- a
  * dedicated resource, distinct from generic network CRUD, since
@@ -2163,6 +2258,11 @@ static void handle_daemon_config_get(int fd)
 	jw_bool(&w, g_https_listener_conn.fd >= 0);
 	jw_key(&w, "https_port");
 	jw_int(&w, daemon_config_https_port());
+	jw_key(&w, "bind_ip");
+	if (daemon_config_bind_ip() != NULL)
+		jw_str(&w, daemon_config_bind_ip());
+	else
+		jw_null(&w);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -2171,15 +2271,22 @@ static void handle_daemon_config_get(int fd)
 static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
-	const struct json_value *jport, *jnetwork, *jhttp, *jhttps, *jhttps_port;
+	const struct json_value *jport, *jnetwork, *jhttp, *jhttps, *jhttps_port, *jbind_ip;
 	int new_port = g_port;
 	int new_https_port = daemon_config_https_port();
 	char new_bind[INET_ADDRSTRLEN];
 	char network_name[NETWORK_NAME_MAX];
 	int have_network = 0;
+	struct network_def *mgmt_target = NULL;
 	int want_http = daemon_config_http_enabled();
 	int want_https = daemon_config_https_enabled();
 	int have_http_req = 0, have_https_req = 0;
+	int have_bind_ip_key = 0, bind_ip_is_null = 0, applying_new_bind_ip = 0;
+	char new_bind_ip_str[INET_ADDRSTRLEN];
+	uint32_t new_bind_ip_be = 0;
+	struct network_def *old_mgmt;
+	char old_bind_ip[INET_ADDRSTRLEN];
+	int had_old_bind_ip;
 	enum daemon_config_error derr;
 
 	root = json_parse(body, body_len);
@@ -2229,38 +2336,117 @@ static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
 	jnetwork = json_object_get(root, "management_network");
 	if (jnetwork != NULL) {
 		const char *raw_name = json_as_string(jnetwork);
-		struct network_def *target;
 
 		if (raw_name == NULL) {
 			json_free(root);
 			respond_error(fd, 400, "Bad Request", "management_network must be a string");
 			return;
 		}
-		target = network_find(raw_name);
-		if (target == NULL) {
+		mgmt_target = network_find(raw_name);
+		if (mgmt_target == NULL) {
 			json_free(root);
 			respond_error(fd, 404, "Not Found", "no such network");
 			return;
 		}
-		if (!target->has_gateway) {
+		if (!mgmt_target->has_address) {
 			json_free(root);
 			respond_error(fd, 400, "Bad Request",
-			              "network has no gateway address for kanxeod to bind to");
+			              "network has no address for kanxeod to bind to");
 			return;
 		}
 		{
 			struct in_addr a;
 
-			a.s_addr = target->gateway_be;
+			a.s_addr = mgmt_target->address_be;
 			inet_ntop(AF_INET, &a, new_bind, sizeof(new_bind));
 		}
 		/* Copied out before json_free() below -- both raw_name and
-		 * target->name point into memory that call (or a future
+		 * mgmt_target->name point into memory that call (or a future
 		 * network_set_management()-driven mutation) could invalidate. */
 		snprintf(network_name, sizeof(network_name), "%s", raw_name);
 		have_network = 1;
 	}
+
+	/* bind_ip (ADR-0068): a dedicated second address on the management
+	 * bridge, decoupled from that network's own address. A JSON `null`
+	 * explicitly clears it; the key omitted entirely means "don't touch
+	 * it". Syntax/subnet validation happens below, once the effective
+	 * target network (mgmt_target if repointing this same call, else
+	 * whichever network is already management) is known. */
+	jbind_ip = json_object_get(root, "bind_ip");
+	if (jbind_ip != NULL) {
+		have_bind_ip_key = 1;
+		if (jbind_ip->type == JSON_NULL) {
+			bind_ip_is_null = 1;
+		} else {
+			const char *raw_ip = json_as_string(jbind_ip);
+
+			if (raw_ip == NULL) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request", "bind_ip must be a string or null");
+				return;
+			}
+			snprintf(new_bind_ip_str, sizeof(new_bind_ip_str), "%s", raw_ip);
+		}
+	}
 	json_free(root);
+
+	/* Captured before any mutation below -- old_mgmt is whichever
+	 * network is management *right now* (before this request's own
+	 * repoint, if any), which is exactly where any currently-persisted
+	 * bind_ip actually lives on the real bridge. */
+	old_mgmt = network_find_management();
+	had_old_bind_ip = daemon_config_bind_ip() != NULL;
+	if (had_old_bind_ip)
+		snprintf(old_bind_ip, sizeof(old_bind_ip), "%s", daemon_config_bind_ip());
+
+	if (have_bind_ip_key && !bind_ip_is_null) {
+		struct network_def *effective_mgmt = have_network ? mgmt_target : old_mgmt;
+
+		if (effective_mgmt == NULL) {
+			respond_error(fd, 400, "Bad Request", "no management network to bind bind_ip within");
+			return;
+		}
+		if (network_address_str_is_valid(effective_mgmt, new_bind_ip_str, &new_bind_ip_be) != 0) {
+			respond_error(fd, 400, "Bad Request",
+			              "bind_ip not a valid address within the management network's subnet");
+			return;
+		}
+		/* Idempotent short-circuit: rtnl_addr_add_ipv4() uses NLM_F_EXCL,
+		 * so re-submitting the address that's already assigned would
+		 * otherwise fail as a spurious duplicate. */
+		if (!had_old_bind_ip || strcmp(old_bind_ip, new_bind_ip_str) != 0) {
+			int rtfd = rtnl_open();
+
+			if (rtfd < 0) {
+				respond_error(fd, 500, "Internal Server Error", "could not open rtnetlink socket");
+				return;
+			}
+			if (rtnl_addr_add_ipv4(rtfd, effective_mgmt->name, new_bind_ip_be,
+			                        effective_mgmt->prefix_len) != 0) {
+				rtnl_close(rtfd);
+				respond_error(fd, 500, "Internal Server Error",
+				              "could not assign bind_ip to the management bridge");
+				return;
+			}
+			rtnl_close(rtfd);
+		}
+		snprintf(new_bind, sizeof(new_bind), "%s", new_bind_ip_str);
+		applying_new_bind_ip = 1;
+	} else if (bind_ip_is_null && !have_network) {
+		/* Explicit clear, no repoint in the same call -- fall back to
+		 * the current management network's own address. */
+		if (old_mgmt != NULL) {
+			struct in_addr a;
+
+			a.s_addr = old_mgmt->address_be;
+			inet_ntop(AF_INET, &a, new_bind, sizeof(new_bind));
+		}
+	}
+	/* Neither branch: bind_ip untouched and no repoint (new_bind already
+	 * carries forward g_bind_addr unchanged), or a repoint with no fresh
+	 * bind_ip (new_bind already set to mgmt_target's own address above)
+	 * -- both leave new_bind exactly where it needs to be. */
 
 	/* HTTP transition: start/stop/rebind depending on what's currently
 	 * running versus what's being asked for. */
@@ -2307,7 +2493,7 @@ static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
 		/* The socket(s) already moved -- this would be a genuinely
 		 * inconsistent state (bound to target's address without
 		 * target actually being the recorded management network).
-		 * Not expected in practice (has_gateway was already confirmed
+		 * Not expected in practice (has_address was already confirmed
 		 * above), but reported plainly rather than silently claiming
 		 * success. */
 		respond_error(fd, 500, "Internal Server Error",
@@ -2350,7 +2536,52 @@ static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
 		return;
 	}
 
+	/*
+	 * bind_ip persistence + stale-address cleanup (ADR-0068), last of
+	 * all -- the real bridge address was already added (if any) and
+	 * the listener already rebound to it above, so nothing below this
+	 * point can fail the request; only the old, now-unused address (if
+	 * this call replaced or cleared one) gets torn down, mirroring the
+	 * "create the new thing before removing the old one" ordering this
+	 * whole handler already uses for listeners.
+	 */
+	if (applying_new_bind_ip) {
+		derr = daemon_config_set_bind_ip(new_bind_ip_str);
+		if (derr != DAEMON_CONFIG_OK) {
+			respond_error(fd, 500, "Internal Server Error",
+			              "bridge address changed but could not persist bind_ip");
+			return;
+		}
+	} else if (bind_ip_is_null || (have_network && had_old_bind_ip)) {
+		derr = daemon_config_set_bind_ip(NULL);
+		if (derr != DAEMON_CONFIG_OK) {
+			respond_error(fd, 500, "Internal Server Error", "could not clear persisted bind_ip");
+			return;
+		}
+	}
+
 	handle_daemon_config_get(fd);
+
+	/*
+	 * Stale bind_ip cleanup is deferred (arm_bind_ip_cleanup_timer(),
+	 * ADR-0068), not done here synchronously -- confirmed the hard way,
+	 * not assumed: this exact request's own accepted connection can
+	 * have the about-to-be-removed address as its own *local* endpoint
+	 * (e.g. clearing bind_ip via a client connected to that very
+	 * bind_ip, the natural way an operator would do it), and deleting
+	 * the address immediately after writing the response above still
+	 * races the kernel's own async transmission of those bytes -- the
+	 * client can hang forever waiting for a response that was
+	 * "successfully" written but never actually delivered. See
+	 * arm_bind_ip_cleanup_timer()'s own comment for the full story.
+	 */
+	if (had_old_bind_ip && old_mgmt != NULL &&
+	    (!applying_new_bind_ip || strcmp(old_bind_ip, new_bind_ip_str) != 0)) {
+		struct in_addr old_addr;
+
+		if (inet_pton(AF_INET, old_bind_ip, &old_addr) == 1)
+			arm_bind_ip_cleanup_timer(old_mgmt->name, old_addr.s_addr, old_mgmt->prefix_len);
+	}
 }
 
 /* GET /v1/system/routes (ADR-0066): the box's own real kernel IPv4
@@ -2372,6 +2603,160 @@ static void handle_route_list(int fd)
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
+}
+
+/* POST /v1/system/routes (ADR-0067 Part 3): adds a real IPv4 route to
+ * the host's own kernel routing table via rtnl_route_add_ipv4() --
+ * the write-side counterpart to handle_route_list() above. dest/
+ * prefix are optional together (omitted or prefix 0 means the
+ * default route, matching rtnl_route_add_ipv4()'s own convention);
+ * gateway is optional (omitted means a direct/on-link route). Scoped
+ * to exactly what that primitive supports -- no RTA_OIF/interface
+ * binding, no route replace semantics beyond what NLM_F_CREATE
+ * already gives it. Not a persisted Kanxeo resource (see
+ * network_write_routes_json()'s own comment) -- nothing here is
+ * remembered across a reboot, same as this whole endpoint family. */
+static void handle_route_add(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = NULL;
+	const char *dest_str = NULL;
+	const char *gateway_str = NULL;
+	const struct json_value *jprefix;
+	int prefix_len = 0;
+	struct in_addr dest_addr;
+	struct in_addr gateway_addr;
+	uint32_t dest_be = 0;
+	uint32_t gateway_be = 0;
+	int rtfd;
+
+	if (body != NULL && body_len > 0) {
+		root = json_parse(body, body_len);
+		if (root == NULL) {
+			respond_error(fd, 400, "Bad Request", "invalid JSON body");
+			return;
+		}
+		dest_str = json_as_string(json_object_get(root, "dest"));
+		gateway_str = json_as_string(json_object_get(root, "gateway"));
+		jprefix = json_object_get(root, "prefix");
+		if (jprefix != NULL)
+			prefix_len = (int)json_as_number(jprefix);
+	}
+
+	if (prefix_len < 0 || prefix_len > 32) {
+		if (root != NULL)
+			json_free(root);
+		respond_error(fd, 400, "Bad Request", "prefix must be in [0, 32]");
+		return;
+	}
+	if (prefix_len > 0) {
+		if (dest_str == NULL || inet_pton(AF_INET, dest_str, &dest_addr) != 1) {
+			if (root != NULL)
+				json_free(root);
+			respond_error(fd, 400, "Bad Request", "dest missing or not a valid IPv4 address");
+			return;
+		}
+		dest_be = dest_addr.s_addr;
+	}
+	if (gateway_str != NULL) {
+		if (inet_pton(AF_INET, gateway_str, &gateway_addr) != 1) {
+			if (root != NULL)
+				json_free(root);
+			respond_error(fd, 400, "Bad Request", "gateway not a valid IPv4 address");
+			return;
+		}
+		gateway_be = gateway_addr.s_addr;
+	}
+	if (root != NULL)
+		json_free(root);
+
+	rtfd = rtnl_open();
+	if (rtfd < 0) {
+		respond_error(fd, 500, "Internal Server Error", "could not open rtnetlink socket");
+		return;
+	}
+	if (rtnl_route_add_ipv4(rtfd, dest_be, prefix_len, gateway_be) != 0) {
+		rtnl_close(rtfd);
+		respond_error(fd, 400, "Bad Request",
+		              "kernel rejected the route (already exists, unreachable gateway, or invalid)");
+		return;
+	}
+	rtnl_close(rtfd);
+
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+/* DELETE /v1/system/routes: the mirror-image of handle_route_add()
+ * above, via the new rtnl_route_del_ipv4(). Same body shape and same
+ * default-route convention (prefix 0 or omitted means the default
+ * route) identifies which route to remove. */
+static void handle_route_del(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = NULL;
+	const char *dest_str = NULL;
+	const char *gateway_str = NULL;
+	const struct json_value *jprefix;
+	int prefix_len = 0;
+	struct in_addr dest_addr;
+	struct in_addr gateway_addr;
+	uint32_t dest_be = 0;
+	uint32_t gateway_be = 0;
+	int rtfd;
+
+	if (body != NULL && body_len > 0) {
+		root = json_parse(body, body_len);
+		if (root == NULL) {
+			respond_error(fd, 400, "Bad Request", "invalid JSON body");
+			return;
+		}
+		dest_str = json_as_string(json_object_get(root, "dest"));
+		gateway_str = json_as_string(json_object_get(root, "gateway"));
+		jprefix = json_object_get(root, "prefix");
+		if (jprefix != NULL)
+			prefix_len = (int)json_as_number(jprefix);
+	}
+
+	if (prefix_len < 0 || prefix_len > 32) {
+		if (root != NULL)
+			json_free(root);
+		respond_error(fd, 400, "Bad Request", "prefix must be in [0, 32]");
+		return;
+	}
+	if (prefix_len > 0) {
+		if (dest_str == NULL || inet_pton(AF_INET, dest_str, &dest_addr) != 1) {
+			if (root != NULL)
+				json_free(root);
+			respond_error(fd, 400, "Bad Request", "dest missing or not a valid IPv4 address");
+			return;
+		}
+		dest_be = dest_addr.s_addr;
+	}
+	if (gateway_str != NULL) {
+		if (inet_pton(AF_INET, gateway_str, &gateway_addr) != 1) {
+			if (root != NULL)
+				json_free(root);
+			respond_error(fd, 400, "Bad Request", "gateway not a valid IPv4 address");
+			return;
+		}
+		gateway_be = gateway_addr.s_addr;
+	}
+	if (root != NULL)
+		json_free(root);
+
+	rtfd = rtnl_open();
+	if (rtfd < 0) {
+		respond_error(fd, 500, "Internal Server Error", "could not open rtnetlink socket");
+		return;
+	}
+	if (rtnl_route_del_ipv4(rtfd, dest_be, prefix_len, gateway_be) != 0) {
+		rtnl_close(rtfd);
+		respond_error(fd, 404, "Not Found", "no matching route to delete");
+		return;
+	}
+	rtnl_close(rtfd);
+
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
 static void handle_list(int fd)
@@ -3780,8 +4165,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 
 		spec.nets[i].bridge = net->name;
 		spec.nets[i].container_ip_be = net_attachments[i].ip_be;
-		spec.nets[i].has_gateway = net->has_gateway;
-		spec.nets[i].gateway_ip_be = net->gateway_be;
+		spec.nets[i].has_address = net->has_address;
+		spec.nets[i].address_ip_be = net->address_be;
 		spec.nets[i].prefix_len = net->prefix_len;
 	}
 	spec.ip_forward = ip_forward;
@@ -4487,7 +4872,7 @@ static void handle_devicemap_delete(int fd, const char *name)
 static void handle_network_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
-	const char *name, *subnet, *gateway;
+	const char *name, *subnet, *address;
 	const struct json_value *jprefix;
 	int prefix_len;
 	struct network_def *net;
@@ -4503,7 +4888,7 @@ static void handle_network_create(int fd, const char *body, size_t body_len)
 	name = json_as_string(json_object_get(root, "name"));
 	subnet = json_as_string(json_object_get(root, "subnet"));
 	jprefix = json_object_get(root, "prefix_len");
-	gateway = json_as_string(json_object_get(root, "gateway")); /* optional; NULL = no gateway */
+	address = json_as_string(json_object_get(root, "address")); /* optional; NULL = no address */
 
 	if (name == NULL || subnet == NULL || jprefix == NULL) {
 		json_free(root);
@@ -4512,7 +4897,7 @@ static void handle_network_create(int fd, const char *body, size_t body_len)
 	}
 	prefix_len = (int)json_as_number(jprefix);
 
-	nerr = network_create(name, subnet, prefix_len, gateway, &net);
+	nerr = network_create(name, subnet, prefix_len, address, &net);
 	json_free(root);
 
 	if (nerr != NETWORK_OK) {
@@ -5933,9 +6318,19 @@ static void dispatch(int fd, const struct http_request *req)
 			return;
 		}
 	}
-	if (strcmp(req->method, "GET") == 0 && strcmp(req->path, "/v1/system/routes") == 0) {
-		handle_route_list(fd);
-		return;
+	if (strcmp(req->path, "/v1/system/routes") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_route_list(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_route_add(fd, req->body, req->body_len);
+			return;
+		}
+		if (strcmp(req->method, "DELETE") == 0) {
+			handle_route_del(fd, req->body, req->body_len);
+			return;
+		}
 	}
 	if (strcmp(req->path, "/v1/system/iso") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
@@ -7762,6 +8157,8 @@ int main(int argc, char **argv)
 				handle_bootstrap_fetch_event(cc);
 			else if (cc->kind == CONN_RESTART_TIMER)
 				handle_restart_timer_event(cc);
+			else if (cc->kind == CONN_BIND_IP_CLEANUP)
+				handle_bind_ip_cleanup_timer_event(cc);
 			else if (cc->kind == CONN_CONSOLE_SHELL)
 				handle_console_shell_event(cc);
 			else if (cc->kind == CONN_CONSOLE_RESPAWN_TIMER)

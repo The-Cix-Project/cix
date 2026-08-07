@@ -116,7 +116,7 @@ int main(void)
 
 	/* 1. create two distinct, non-overlapping networks. No --gateway=
 	 * means the new default: pure L2, no host-owned address at all
-	 * (ADR-0037) -- has_gateway false, gateway null. */
+	 * (ADR-0037) -- has_address false, gateway null. */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"neta\",\"subnet\":\"172.40.0.0\",\"prefix_len\":24}",
@@ -125,12 +125,12 @@ int main(void)
 		fprintf(stderr, "FAIL: POST neta, status=%d\n", r.status);
 		ok = 0;
 	} else {
-		const struct json_value *jhas_gw = json_object_get(r.json, "has_gateway");
-		const struct json_value *jgw = json_object_get(r.json, "gateway");
+		const struct json_value *jhas_gw = json_object_get(r.json, "has_address");
+		const struct json_value *jgw = json_object_get(r.json, "address");
 
 		if (jhas_gw == NULL || jhas_gw->type != JSON_BOOL || jhas_gw->u.boolean ||
 		    jgw == NULL || jgw->type != JSON_NULL) {
-			fprintf(stderr, "FAIL: neta expected has_gateway=false, gateway=null (new default)\n");
+			fprintf(stderr, "FAIL: neta expected has_address=false, address=null (new default)\n");
 			ok = 0;
 		}
 	}
@@ -271,26 +271,26 @@ int main(void)
 	/* 5.5. explicit, operator-chosen IP override on a container's
 	 * network attachment (Phase 12 part 5b) -- request an address
 	 * instead of letting network_alloc_ip() pick one. This network
-	 * requests an explicit --gateway= (ADR-0037's operator-chosen
-	 * gateway path, exercised end-to-end here) specifically so the
-	 * "reserved gateway address rejected" case below still has a
-	 * reserved address to reject -- a gateway-less network (the new
-	 * default, see neta above) reserves nothing beyond the network/
-	 * broadcast addresses themselves. */
+	 * requests an explicit --address= (ADR-0037's operator-chosen
+	 * address path, renamed by ADR-0067, exercised end-to-end here)
+	 * specifically so the "reserved address rejected" case below
+	 * still has a reserved address to reject -- an address-less
+	 * network (the new default, see neta above) reserves nothing
+	 * beyond the network/broadcast addresses themselves. */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"netip\",\"subnet\":\"172.46.0.0\",\"prefix_len\":24,"
-	                       "\"gateway\":\"172.46.0.1\"}",
+	                       "\"address\":\"172.46.0.1\"}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST netip, status=%d\n", r.status);
 		ok = 0;
 	} else {
-		const struct json_value *jhas_gw = json_object_get(r.json, "has_gateway");
+		const struct json_value *jhas_gw = json_object_get(r.json, "has_address");
 
 		if (jhas_gw == NULL || jhas_gw->type != JSON_BOOL || !jhas_gw->u.boolean ||
-		    !str_eq(json_str_field(r.json, "gateway"), "172.46.0.1")) {
-			fprintf(stderr, "FAIL: netip expected has_gateway=true, gateway=172.46.0.1\n");
+		    !str_eq(json_str_field(r.json, "address"), "172.46.0.1")) {
+			fprintf(stderr, "FAIL: netip expected has_address=true, address=172.46.0.1\n");
 			ok = 0;
 		}
 	}
@@ -415,9 +415,9 @@ int main(void)
 	}
 
 	/* 7. migration (ADR-0037): a network persisted by code before
-	 * gateways became optional has no "has_gateway" key in its JSON at
+	 * gateways became optional has no "has_address" key in its JSON at
 	 * all -- that specific absence must still load as today's exact
-	 * legacy behavior (has_gateway true, gateway = base|1), never
+	 * legacy behavior (has_address true, gateway = base|1), never
 	 * silently demoted to gateway-less. Simulated directly by splicing
 	 * a hand-written old-format entry into the real persisted state
 	 * file while the daemon is stopped, since the current API can no
@@ -491,12 +491,12 @@ int main(void)
 		fprintf(stderr, "FAIL: GET migrated old-format network, status=%d\n", r.status);
 		ok = 0;
 	} else {
-		const struct json_value *jhas_gw = json_object_get(r.json, "has_gateway");
+		const struct json_value *jhas_gw = json_object_get(r.json, "has_address");
 
 		if (jhas_gw == NULL || jhas_gw->type != JSON_BOOL || !jhas_gw->u.boolean ||
-		    !str_eq(json_str_field(r.json, "gateway"), "172.47.0.1")) {
+		    !str_eq(json_str_field(r.json, "address"), "172.47.0.1")) {
 			fprintf(stderr,
-			        "FAIL: old-format entry expected has_gateway=true, gateway=172.47.0.1 "
+			        "FAIL: old-format entry expected has_address=true, address=172.47.0.1 "
 			        "(today's exact legacy behavior)\n");
 			ok = 0;
 		}

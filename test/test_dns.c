@@ -469,18 +469,19 @@ int main(void)
 	kx_response_free(&r);
 
 	/* 2. create the network the dnsmasq container lives on. Explicit
-	 * --gateway= (ADR-0037): this test's own verification methodology
-	 * runs `dig` from the HOST straight at a container's IP, which
-	 * needs the host to have a real route into this subnet at all --
-	 * on the new gateway-less default, the bridge carries no host-
-	 * owned address, so the host has no such route (correct, intended
-	 * behavior for the new default, not a bug: this project's own
-	 * routing model no longer assumes the host is ever a participant
-	 * on a network unless explicitly asked to be, ADR-0037). */
+	 * --address= (ADR-0037, renamed by ADR-0067): this test's own
+	 * verification methodology runs `dig` from the HOST straight at a
+	 * container's IP, which needs the host to have a real route into
+	 * this subnet at all -- on the new address-less default, the
+	 * bridge carries no host-owned address, so the host has no such
+	 * route (correct, intended behavior for the new default, not a
+	 * bug: this project's own routing model no longer assumes the
+	 * host is ever a participant on a network unless explicitly asked
+	 * to be, ADR-0037). */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"" TEST_NETWORK_NAME "\",\"subnet\":\"" TEST_NETWORK_SUBNET
-	                       "\",\"prefix_len\":24,\"gateway\":\"172.35.0.1\"}",
+	                       "\",\"prefix_len\":24,\"address\":\"172.35.0.1\"}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST /v1/networks, status=%d\n", r.status);

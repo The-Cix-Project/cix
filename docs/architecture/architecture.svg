@@ -240,7 +240,7 @@
   <rect x="174" y="318" width="5" height="48" rx="2.5" fill="#667eea"/>
   <text x="227" y="330" text-anchor="middle" class="module-title">Network</text>
   <text x="227" y="344" text-anchor="middle" class="module-text">bridges, subnets</text>
-  <text x="227" y="356" text-anchor="middle" class="module-text">VLAN, gateway-opt</text>
+  <text x="227" y="356" text-anchor="middle" class="module-text">VLAN, address-opt</text>
 
   <rect x="292" y="312" width="111" height="60" class="card" fill="#ffffff" stroke="#e2e5f7"/>
   <rect x="295" y="318" width="5" height="48" rx="2.5" fill="#667eea"/>

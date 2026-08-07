@@ -61,15 +61,21 @@ static int save_state(void)
  * forgets a live bridge" bug this module exists to prevent. Returns 0
  * on success, -1 on any validation failure.
  *
- * Migration (No Regressions): every network persisted before gateways
- * became optional has no "has_gateway" key at all -- current code
- * always writes one (see network_write_json_one()). Its *absence* is
- * therefore the reliable signal this is an old-format entry, created
- * back when every network unconditionally got a host-owned gateway at
- * base|1 -- so it's loaded exactly that way, not silently demoted to
- * gateway-less. Only entries written by the current code (which always
- * includes "has_gateway") can describe a genuinely gateway-less
- * network.
+ * Migration (No Regressions): every network persisted before this
+ * address became optional has no "has_address" key at all (ADR-0037
+ * called this "has_gateway" at the time -- ADR-0067 renamed the field,
+ * this migration is about a point in time before *either* key name
+ * existed) -- current code always writes one (see
+ * network_write_json_one()). Its *absence* is therefore the reliable
+ * signal this is that original old-format entry, created back when
+ * every network unconditionally got a host-owned address at base|1 --
+ * so it's loaded exactly that way, not silently demoted to
+ * address-less. Only entries written by current code (which always
+ * includes "has_address") can describe a genuinely address-less
+ * network -- per this project's own clean-cut-over posture, a
+ * persisted entry still using ADR-0037's original "has_gateway"/
+ * "gateway" key names from between that ADR and ADR-0067 is not
+ * separately migrated.
  */
 static int network_ifname_is_valid(const char *ifname)
 {
@@ -81,12 +87,12 @@ static int parse_persisted_entry(const struct json_value *item, struct network_d
 	const char *name = json_as_string(json_object_get(item, "name"));
 	const char *subnet = json_as_string(json_object_get(item, "subnet"));
 	const struct json_value *jprefix = json_object_get(item, "prefix_len");
-	const struct json_value *jhas_gw = json_object_get(item, "has_gateway");
+	const struct json_value *jhas_addr = json_object_get(item, "has_address");
 	const struct json_value *jis_mgmt = json_object_get(item, "is_management");
 	const struct json_value *jinterfaces = json_object_get(item, "interfaces");
 	int prefix_len;
-	int has_gateway;
-	uint32_t gateway_be = 0;
+	int has_address;
+	uint32_t address_be = 0;
 	struct in_addr addr;
 	int i;
 
@@ -100,20 +106,20 @@ static int parse_persisted_entry(const struct json_value *item, struct network_d
 	if ((ntohl(addr.s_addr) & ~mask_for_prefix(prefix_len)) != 0)
 		return -1;
 
-	if (jhas_gw == NULL) {
+	if (jhas_addr == NULL) {
 		/* Old-format entry, predating this field: today's exact
-		 * legacy behavior, always a host-owned gateway at base|1. */
-		has_gateway = 1;
-		gateway_be = htonl(ntohl(addr.s_addr) | 1);
+		 * legacy behavior, always a host-owned address at base|1. */
+		has_address = 1;
+		address_be = htonl(ntohl(addr.s_addr) | 1);
 	} else {
-		has_gateway = (jhas_gw->type == JSON_BOOL && jhas_gw->u.boolean);
-		if (has_gateway) {
-			const char *gw = json_as_string(json_object_get(item, "gateway"));
-			struct in_addr gwaddr;
+		has_address = (jhas_addr->type == JSON_BOOL && jhas_addr->u.boolean);
+		if (has_address) {
+			const char *a = json_as_string(json_object_get(item, "address"));
+			struct in_addr aaddr;
 
-			if (gw == NULL || inet_pton(AF_INET, gw, &gwaddr) != 1)
+			if (a == NULL || inet_pton(AF_INET, a, &aaddr) != 1)
 				return -1;
-			gateway_be = gwaddr.s_addr;
+			address_be = aaddr.s_addr;
 		}
 	}
 
@@ -129,12 +135,12 @@ static int parse_persisted_entry(const struct json_value *item, struct network_d
 	strncpy(slot->name, name, sizeof(slot->name) - 1);
 	slot->base_be = addr.s_addr;
 	slot->prefix_len = prefix_len;
-	slot->has_gateway = has_gateway;
-	slot->gateway_be = gateway_be;
+	slot->has_address = has_address;
+	slot->address_be = address_be;
 	/* Absent on any entry predating this field (Part 0.5) -- no network
 	 * was ever "management" before this existed, so absence simply
 	 * means not-management, no legacy-default reasoning needed here
-	 * the way has_gateway's own absence-handling above requires. */
+	 * the way has_address's own absence-handling above requires. */
 	slot->is_management = (jis_mgmt != NULL && jis_mgmt->type == JSON_BOOL && jis_mgmt->u.boolean);
 
 	if (jinterfaces != NULL) {
@@ -199,7 +205,7 @@ static int load_state(void)
 /*
  * The mechanical half of attaching one interface to a bridge, shared
  * between network_init() (re-applying persisted state on every daemon
- * restart, the same idempotent-reapply posture the bridge/gateway
+ * restart, the same idempotent-reapply posture the bridge/address
  * setup above already has) and network_attach_interface() (a fresh
  * attach). vlan_id 0 enslaves ifc->ifname directly; nonzero creates
  * "<ifname>.<vlan_id>" and enslaves that instead, leaving ifname
@@ -260,11 +266,11 @@ int network_init(const char *state_path)
 			rtnl_close(fd);
 			return -1;
 		}
-		if (g_networks[i].has_gateway &&
-		    rtnl_addr_add_ipv4(fd, g_networks[i].name, g_networks[i].gateway_be,
+		if (g_networks[i].has_address &&
+		    rtnl_addr_add_ipv4(fd, g_networks[i].name, g_networks[i].address_be,
 		                        g_networks[i].prefix_len) != 0 &&
 		    errno != EEXIST) {
-			perror("rtnl_addr_add_ipv4 (bridge gateway)");
+			perror("rtnl_addr_add_ipv4 (bridge address)");
 			rtnl_close(fd);
 			return -1;
 		}
@@ -276,7 +282,7 @@ int network_init(const char *state_path)
 	}
 
 	/*
-	 * Unlike the bridge/gateway above (pure software, always
+	 * Unlike the bridge/address above (pure software, always
 	 * reconstructible), a persisted physical-interface attachment
 	 * depends on real host hardware actually being present on THIS
 	 * boot -- deliberately best-effort, not a hard startup failure,
@@ -320,21 +326,21 @@ struct network_def *network_find(const char *name)
 }
 
 /*
- * Validates an operator-supplied gateway address for a not-yet-created
+ * Validates an operator-supplied address for a not-yet-created
  * network: parses as IPv4, falls within [base_be, base_be|prefix]'s
  * subnet, and isn't the network address (host-part 0) or the
  * broadcast address (host-part host_max+1) -- the only two addresses
  * that are never valid for anything on this subnet regardless of
- * whether it has a gateway at all.
+ * whether it has one at all.
  */
-static int gateway_str_is_valid(const char *gateway_str, uint32_t base_be, int prefix_len,
-                                 uint32_t *out_gateway_be)
+static int address_str_is_valid(const char *address_str, uint32_t base_be, int prefix_len,
+                                 uint32_t *out_address_be)
 {
 	struct in_addr addr;
 	uint32_t mask, ip_host, base_host;
 	int host_part;
 
-	if (inet_pton(AF_INET, gateway_str, &addr) != 1)
+	if (inet_pton(AF_INET, address_str, &addr) != 1)
 		return -1;
 
 	mask = mask_for_prefix(prefix_len);
@@ -347,16 +353,22 @@ static int gateway_str_is_valid(const char *gateway_str, uint32_t base_be, int p
 	if (host_part < 1 || host_part > host_max_for_prefix(prefix_len) + 1)
 		return -1;
 
-	*out_gateway_be = addr.s_addr;
+	*out_address_be = addr.s_addr;
 	return 0;
 }
 
+int network_address_str_is_valid(const struct network_def *net, const char *address_str,
+                                  uint32_t *out_address_be)
+{
+	return address_str_is_valid(address_str, net->base_be, net->prefix_len, out_address_be);
+}
+
 enum network_error network_create(const char *name, const char *subnet_str, int prefix_len,
-                                   const char *gateway_str, struct network_def **out)
+                                   const char *address_str, struct network_def **out)
 {
 	struct in_addr addr;
-	uint32_t gateway_be = 0;
-	int has_gateway;
+	uint32_t address_be = 0;
+	int has_address;
 	int i, slot = -1;
 	int fd;
 	struct network_def *e;
@@ -371,9 +383,9 @@ enum network_error network_create(const char *name, const char *subnet_str, int 
 	if ((ntohl(addr.s_addr) & ~mask_for_prefix(prefix_len)) != 0)
 		return NETWORK_ERR_INVALID_SUBNET;
 
-	has_gateway = (gateway_str != NULL && gateway_str[0] != '\0');
-	if (has_gateway && gateway_str_is_valid(gateway_str, addr.s_addr, prefix_len, &gateway_be) != 0)
-		return NETWORK_ERR_INVALID_GATEWAY;
+	has_address = (address_str != NULL && address_str[0] != '\0');
+	if (has_address && address_str_is_valid(address_str, addr.s_addr, prefix_len, &address_be) != 0)
+		return NETWORK_ERR_INVALID_ADDRESS;
 
 	for (i = 0; i < NETWORK_MAX; i++) {
 		if (g_networks[i].in_use &&
@@ -396,8 +408,8 @@ enum network_error network_create(const char *name, const char *subnet_str, int 
 	strncpy(e->name, name, sizeof(e->name) - 1);
 	e->base_be = addr.s_addr;
 	e->prefix_len = prefix_len;
-	e->has_gateway = has_gateway;
-	e->gateway_be = gateway_be;
+	e->has_address = has_address;
+	e->address_be = address_be;
 
 	fd = rtnl_open();
 	if (fd < 0)
@@ -406,7 +418,7 @@ enum network_error network_create(const char *name, const char *subnet_str, int 
 		rtnl_close(fd);
 		return NETWORK_ERR_CREATE_FAILED;
 	}
-	if (has_gateway && rtnl_addr_add_ipv4(fd, e->name, e->gateway_be, e->prefix_len) != 0) {
+	if (has_address && rtnl_addr_add_ipv4(fd, e->name, e->address_be, e->prefix_len) != 0) {
 		rtnl_link_delete(fd, e->name);
 		rtnl_close(fd);
 		return NETWORK_ERR_CREATE_FAILED;
@@ -630,8 +642,8 @@ enum network_error network_set_management(const char *name)
 
 	if (e == NULL)
 		return NETWORK_ERR_NOT_FOUND;
-	if (!e->has_gateway)
-		return NETWORK_ERR_INVALID_GATEWAY;
+	if (!e->has_address)
+		return NETWORK_ERR_INVALID_ADDRESS;
 	if (e->is_management)
 		return NETWORK_OK; /* already the management network -- idempotent */
 
@@ -658,10 +670,11 @@ int network_alloc_ip(const char *name, uint32_t *out_ip_be)
 
 	if (net == NULL)
 		return -1;
-	/* Host-part 1 is no longer implicitly the gateway -- it's only
-	 * excluded (via exclude_be) when this network actually has one,
-	 * and then at whatever address the operator chose, not always .1. */
-	exclude_be = net->has_gateway ? net->gateway_be : 0;
+	/* Host-part 1 is no longer implicitly this network's own address --
+	 * it's only excluded (via exclude_be) when this network actually
+	 * has one, and then at whatever address the operator chose, not
+	 * always .1. */
+	exclude_be = net->has_address ? net->address_be : 0;
 	return registry_alloc_ip(net->base_be, 1, host_max_for_prefix(net->prefix_len), exclude_be,
 	                          out_ip_be);
 }
@@ -683,13 +696,13 @@ enum network_error network_ip_available(const char *name, uint32_t ip_be)
 	/* Same masked network, and a host part in [1, host_max] -- .0 is
 	 * the network address, the top address is the broadcast address.
 	 * .1 is only excluded below, and only when this network actually
-	 * has a gateway there (or wherever the operator put it). */
+	 * has its own address there (or wherever the operator put it). */
 	if ((ip_host & mask) != base_host)
 		return NETWORK_ERR_IP_OUT_OF_RANGE;
 	host_part = ip_host - base_host;
 	if (host_part < 1 || (int)host_part > host_max)
 		return NETWORK_ERR_IP_OUT_OF_RANGE;
-	if (net->has_gateway && ip_be == net->gateway_be)
+	if (net->has_address && ip_be == net->address_be)
 		return NETWORK_ERR_IP_OUT_OF_RANGE;
 
 	if (!registry_ip_available(ip_be))
@@ -711,17 +724,17 @@ void network_write_json_one(const struct network_def *net, struct json_writer *w
 	jw_str(w, subnet_str);
 	jw_key(w, "prefix_len");
 	jw_int(w, net->prefix_len);
-	jw_key(w, "has_gateway");
-	jw_bool(w, net->has_gateway);
+	jw_key(w, "has_address");
+	jw_bool(w, net->has_address);
 	jw_key(w, "is_management");
 	jw_bool(w, net->is_management);
-	jw_key(w, "gateway");
-	if (net->has_gateway) {
-		char gateway_str[INET_ADDRSTRLEN];
+	jw_key(w, "address");
+	if (net->has_address) {
+		char address_str[INET_ADDRSTRLEN];
 
-		a.s_addr = net->gateway_be;
-		inet_ntop(AF_INET, &a, gateway_str, sizeof(gateway_str));
-		jw_str(w, gateway_str);
+		a.s_addr = net->address_be;
+		inet_ntop(AF_INET, &a, address_str, sizeof(address_str));
+		jw_str(w, address_str);
 	} else {
 		jw_null(w);
 	}

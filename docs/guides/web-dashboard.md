@@ -15,6 +15,7 @@ Containers
   <one leaf per container>
 Networks
   <one leaf per network>
+  Routes
 Software
   Images
   Packages
@@ -53,8 +54,9 @@ Six tabs, Proxmox-style: **Summary**, **Hardware**, **Options**, **Stats**, **Co
 - **Image detail** — two tabs: containers currently using this image, and packages installed into it. Recipes and packages can be added or removed directly from here.
 - **Devices** — four tabs grouped by bus: USB, PCI, Network, GPU.
 - **Package detail** — two tabs: **Recipe** (the raw `.recipe` text, viewable and editable — resubmitting goes through the same upsert `POST /pkg/recipes` every other recipe update uses) and **Installed** (every image this package is tracked against, independently).
-- **Network detail** — attached interfaces (attach/detach directly from here) and IP allocation.
-- **System > Daemon** — `kanxeod`'s own listen port, HTTP/HTTPS toggles, and which network it's currently bound to (Part 0.5). The management-network dropdown only lists networks with a gateway address (repointing anywhere else is refused server-side). Since the dashboard's own requests are relative to the page it was loaded from, saving a change to the port or the management network disconnects the page the moment it takes effect — confirmed with a dialog before submitting either.
+- **Network detail** — attached interfaces (attach/detach directly from here), IP allocation, and a "Routes on this network" sub-table (routes the kernel resolves to this network's own bridge as their outgoing interface — read-only filter, remove still works from here).
+- **Networks > Routes** — the box's own real kernel IPv4 routing table (ADR-0066), moved here from the Daemon page since it's genuinely network state, not daemon state. Add/remove real routes directly (ADR-0067 Part 3) — a route added or removed here is gone on the next reboot unless something else re-applies it, same as any kernel route not backed by persisted Kanxeo state.
+- **System > Daemon** — `kanxeod`'s own listen port, HTTP/HTTPS toggles, and which network it's currently bound to (Part 0.5). The management-network dropdown only lists networks with their own address (repointing anywhere else is refused server-side). A "Bind IP (optional)" field sets a dedicated second address on the management network's own bridge (ADR-0068) — kanxeod binds there instead of that network's own address; a "Clear bind IP" checkbox reverts to it. Since the dashboard's own requests are relative to the page it was loaded from, saving a change to the port, the management network, or the bind IP disconnects the page the moment it takes effect — confirmed with a dialog before submitting any of them.
 
 ## What's deliberately not here
 

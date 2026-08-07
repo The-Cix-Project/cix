@@ -149,7 +149,7 @@
 							<th>Name</th>
 							<th>Subnet</th>
 							<th>Prefix</th>
-							<th>Gateway</th>
+							<th>Address</th>
 							<th></th>
 						</tr>
 					</thead>
@@ -176,8 +176,51 @@
 				</label>
 				<button type="submit">Attach</button>
 			</form>
+			<h3>Routes on this network</h3>
+			<p class="hint">Filtered from the box's own real kernel routing table (ADR-0066) -- routes the kernel resolves to this network's own bridge interface as their outgoing route.</p>
+			<table id="nd-routes"><tbody></tbody></table>
 			<div class="detail-actions">
 				<button type="button" id="nd-remove" class="button-danger">Remove network</button>
+			</div>
+		</section>
+
+		<!-- Routes -->
+		<section class="view" id="view-routes" hidden>
+			<div class="view-list">
+				<h2>Routes</h2>
+				<p class="hint">The box's own real kernel IPv4 routing table (ADR-0066) -- not a persisted Kanxeo resource; a route added or removed here is gone on the next reboot unless re-applied by whatever set it up in the first place.</p>
+				<table id="routes">
+					<thead>
+						<tr>
+							<th>Destination</th>
+							<th>Gateway</th>
+							<th>Interface</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="routes-body">
+						<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+				<form id="route-add-form">
+					<label class="checkbox">
+						<input type="checkbox" id="rf-default">
+						Default route
+					</label>
+					<label>
+						Destination
+						<input type="text" id="rf-dest" placeholder="172.40.0.0">
+					</label>
+					<label>
+						Prefix
+						<input type="number" id="rf-prefix" min="0" max="32" placeholder="24">
+					</label>
+					<label>
+						Gateway (optional)
+						<input type="text" id="rf-gateway" placeholder="172.30.1.1">
+					</label>
+					<button type="submit">Add route</button>
+				</form>
 			</div>
 		</section>
 
@@ -551,8 +594,8 @@
 				kanxeod's own listen port, HTTP/HTTPS exposure, and which network
 				it's currently bound to (Part 0.5). Changes apply live -- no
 				restart -- and persist across a reboot. Repointing the
-				management network only works to a network that already has a
-				gateway address; double-check you can actually reach the new
+				management network only works to a network that already has its
+				own address; double-check you can actually reach the new
 				address before saving, since a mistake here has no remote undo.
 			</p>
 			<form id="sys-daemon-config-form">
@@ -576,22 +619,18 @@
 					Management network
 					<select id="dcf-management-network"></select>
 				</label>
+				<label>
+					Bind IP (optional)
+					<input type="text" id="dcf-bind-ip" placeholder="(none -- use the management network's own address)">
+				</label>
+				<label class="checkbox">
+					<input type="checkbox" id="dcf-clear-bind-ip">
+					Clear bind IP (revert to the management network's own address)
+				</label>
 				<button type="submit">Save</button>
 			</form>
 			<p class="hint" id="dcf-bind-hint"></p>
-			<h3>Routes</h3>
-			<p class="hint">The box's own real kernel IPv4 routing table (ADR-0066) -- read-only, the only
-				way to see this on a real install with no SSH/general shell.</p>
-			<table>
-				<thead>
-					<tr>
-						<th>Destination</th>
-						<th>Gateway</th>
-						<th>Interface</th>
-					</tr>
-				</thead>
-				<tbody id="routes-body"></tbody>
-			</table>
+			<p class="hint">Bind IP (ADR-0068) is a second, dedicated address on the management network's own bridge -- kanxeod binds there instead of that network's own address. Leave blank to make no change; check "Clear bind IP" to revert to the network's own address.</p>
 		</section>
 
 		<section class="view" id="view-backup" hidden>
@@ -779,8 +818,8 @@
 						<input type="number" id="nf-prefix" min="8" max="30" value="24" required>
 					</label>
 					<label>
-						Gateway (optional)
-						<input type="text" id="nf-gateway" placeholder="(none), or e.g. 172.31.0.1">
+						Address (optional)
+						<input type="text" id="nf-address" placeholder="(none), or e.g. 172.31.0.1">
 					</label>
 					<button type="submit">Create</button>
 				</form>

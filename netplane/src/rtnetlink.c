@@ -439,6 +439,36 @@ int rtnl_addr_add_ipv4(int fd, const char *link_name, uint32_t addr_be, int pref
 	return nl_msg_send_and_ack(fd, &m);
 }
 
+int rtnl_addr_del_ipv4(int fd, const char *link_name, uint32_t addr_be, int prefix_len)
+{
+	struct nl_msg m;
+	struct nlmsghdr *nh;
+	struct ifaddrmsg *ifa;
+	unsigned int ifindex;
+
+	ifindex = if_nametoindex(link_name);
+	if (ifindex == 0)
+		return -1;
+
+	nl_msg_init(&m);
+	nh = nl_msg_put(&m, sizeof(*nh));
+	ifa = nl_msg_put(&m, sizeof(*ifa));
+	if (nh == NULL || ifa == NULL)
+		return -1;
+	ifa->ifa_family = AF_INET;
+	ifa->ifa_prefixlen = (unsigned char)prefix_len;
+	ifa->ifa_index = ifindex;
+
+	if (nl_msg_put_attr(&m, IFA_LOCAL, &addr_be, sizeof(addr_be)) == NULL)
+		return -1;
+	if (nl_msg_put_attr(&m, IFA_ADDRESS, &addr_be, sizeof(addr_be)) == NULL)
+		return -1;
+
+	nh->nlmsg_type = RTM_DELADDR;
+	nh->nlmsg_flags = 0;
+	return nl_msg_send_and_ack(fd, &m);
+}
+
 int rtnl_route_add_ipv4(int fd, uint32_t dest_be, int dest_prefix_len, uint32_t gateway_be)
 {
 	struct nl_msg m;
@@ -472,6 +502,36 @@ int rtnl_route_add_ipv4(int fd, uint32_t dest_be, int dest_prefix_len, uint32_t 
 int rtnl_route_add_default_ipv4(int fd, uint32_t gateway_be)
 {
 	return rtnl_route_add_ipv4(fd, 0, 0, gateway_be);
+}
+
+int rtnl_route_del_ipv4(int fd, uint32_t dest_be, int dest_prefix_len, uint32_t gateway_be)
+{
+	struct nl_msg m;
+	struct nlmsghdr *nh;
+	struct rtmsg *rtm;
+
+	nl_msg_init(&m);
+	nh = nl_msg_put(&m, sizeof(*nh));
+	rtm = nl_msg_put(&m, sizeof(*rtm));
+	if (nh == NULL || rtm == NULL)
+		return -1;
+	rtm->rtm_family = AF_INET;
+	rtm->rtm_dst_len = (unsigned char)dest_prefix_len;
+	rtm->rtm_src_len = 0;
+	rtm->rtm_tos = 0;
+	rtm->rtm_table = RT_TABLE_MAIN;
+	rtm->rtm_protocol = RTPROT_STATIC;
+	rtm->rtm_scope = RT_SCOPE_UNIVERSE;
+	rtm->rtm_type = RTN_UNICAST;
+
+	if (dest_prefix_len > 0 && nl_msg_put_attr(&m, RTA_DST, &dest_be, sizeof(dest_be)) == NULL)
+		return -1;
+	if (gateway_be != 0 && nl_msg_put_attr(&m, RTA_GATEWAY, &gateway_be, sizeof(gateway_be)) == NULL)
+		return -1;
+
+	nh->nlmsg_type = RTM_DELROUTE;
+	nh->nlmsg_flags = 0;
+	return nl_msg_send_and_ack(fd, &m);
 }
 
 int rtnl_route_dump_ipv4(int fd, struct kernel_route *out, int max, int *out_count)

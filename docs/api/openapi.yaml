@@ -334,14 +334,22 @@ paths:
         always have at least one working listener. https_enabled=true
         fails (500) if no PKI host certificate exists yet to serve TLS
         with (see POST /pki/ca). management_network, if given, must
-        name an existing network with has_gateway true (400/404
+        name an existing network with has_address true (400/404
         otherwise); repointing clears is_management from whichever
         network previously held it and sets it on the new one, in a
         single all-or-nothing rebind alongside any port/http/https
-        change in the same request. port/https_port/http_enabled/
-        https_enabled/https_port are only persisted once their real
-        listener change has actually succeeded, so a stored value never
-        claims a state that isn't really running.
+        change in the same request. bind_ip (ADR-0068), if given, must
+        be a real address within the (possibly just-repointed)
+        management network's own subnet -- added to that network's
+        bridge before the rebind. Any previous bind_ip is removed from
+        its own bridge a couple of seconds later rather than
+        immediately, to avoid a real race with this same request's own
+        response delivery (see ADR-0068) -- the response itself
+        already reflects the fully-applied new state by the time it's
+        sent. port/https_port/http_enabled/https_enabled/https_port/
+        bind_ip are only persisted once their real listener/bridge
+        change has actually succeeded, so a stored value never claims
+        a state that isn't really running.
       operationId: putDaemonConfig
       requestBody:
         required: true
@@ -359,9 +367,11 @@ paths:
         "400":
           description: >
             port/https_port out of range, both http_enabled and
-            https_enabled false, management_network not a string, or
-            the named network has no gateway address for kanxeod to
-            bind to
+            https_enabled false, management_network not a string, the
+            named network has no address for kanxeod to bind to,
+            bind_ip not a string/null, bind_ip not a valid address
+            within the management network's subnet, or bind_ip given
+            with no management network to bind it within
           content:
             application/json:
               schema:
@@ -375,8 +385,10 @@ paths:
         "500":
           description: >
             A listener failed to start/rebind (including https_enabled
-            with no usable host certificate yet), or listener(s) changed
-            live but the new state could not be persisted to disk
+            with no usable host certificate yet), the rtnetlink socket
+            could not be opened or bind_ip could not be assigned to the
+            bridge, or listener(s)/bridge changed live but the new
+            state could not be persisted to disk
           content:
             application/json:
               schema:
@@ -409,6 +421,72 @@ paths:
                       $ref: "#/components/schemas/KernelRoute"
         "500":
           description: The rtnetlink dump itself failed (transport-level, not a "no routes" case)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      summary: Add a real IPv4 route to the host's own kernel routing table (ADR-0067 Part 3)
+      description: >
+        A thin wrapper over rtnl_route_add_ipv4() -- not a persisted
+        Kanxeo resource, same as the GET above: nothing added here
+        survives a reboot. Scoped to exactly what that primitive
+        supports -- no interface/RTA_OIF binding, no route-replace
+        semantics beyond plain NLM_F_CREATE.
+      operationId: postSystemRoute
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RouteMutationRequest"
+      responses:
+        "204":
+          description: Route added
+        "400":
+          description: >
+            Invalid JSON body, prefix out of [0, 32], dest missing/invalid
+            when prefix > 0, gateway invalid, or the kernel itself rejected
+            the route (already exists, unreachable gateway, etc.)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Could not open the rtnetlink socket
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Remove a route from the host's own kernel routing table (ADR-0067 Part 3)
+      description: >
+        The mirror-image of the POST above, via rtnl_route_del_ipv4() --
+        same body shape identifies which route to remove.
+      operationId: deleteSystemRoute
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RouteMutationRequest"
+      responses:
+        "204":
+          description: Route removed
+        "400":
+          description: Invalid JSON body, prefix out of [0, 32], dest missing/invalid when prefix > 0, or gateway invalid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No matching route found to delete
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Could not open the rtnetlink socket
           content:
             application/json:
               schema:
@@ -2495,7 +2573,7 @@ components:
             original v1 behavior) or a {name, ip} object naming an
             explicit, operator-chosen address instead -- 400 if ip isn't
             a usable address on that network (wrong subnet, the reserved
-            gateway/network address, or out of the network's host range),
+            address/network address, or out of the network's host range),
             409 if it's already assigned to a running container. Omit
             networks entirely for no networking at all (an isolated netns
             with only lo, the same as every container got before this
@@ -2843,7 +2921,7 @@ components:
           description: >
             An explicit, operator-chosen IPv4 address on this network
             (dotted-quad) instead of an auto-allocated one. Must be
-            within the network's own subnet, not its reserved gateway
+            within the network's own subnet, not its reserved address
             or network address, and not already assigned to a running
             container.
 
@@ -3200,7 +3278,7 @@ components:
           minimum: 8
           maximum: 30
           description: CIDR prefix length.
-        gateway:
+        address:
           type: string
           description: >
             Optional. Omitted (the default): the bridge is created
@@ -3215,7 +3293,7 @@ components:
 
     Network:
       type: object
-      required: [name, subnet, prefix_len, has_gateway, gateway, is_management]
+      required: [name, subnet, prefix_len, has_address, address, is_management]
       properties:
         name:
           type: string
@@ -3223,17 +3301,17 @@ components:
           type: string
         prefix_len:
           type: integer
-        has_gateway:
+        has_address:
           type: boolean
-          description: Whether this network has a host-owned gateway address at all.
-        gateway:
+          description: Whether this network has a host-owned address at all.
+        address:
           type: string
           nullable: true
-          description: The host-owned gateway address, or null when has_gateway is false.
+          description: The host-owned address, or null when has_address is false.
         is_management:
           type: boolean
           description: >
-            Whether this network's gateway address is kanxeod's own bind
+            Whether this network's own address is kanxeod's own bind
             address (Part 0.5). At most one network has this set at a
             time; see GET /system/daemon-config for which one. While
             true, DELETE on this network and DELETE on any of its
@@ -3435,14 +3513,14 @@ components:
           description: CIDR prefix length for ip, e.g. "24".
         gateway:
           type: string
-          description: Upstream default-route address (distinct from a network's own gateway -- see ADR-0058).
+          description: Upstream default-route address (distinct from a network's own address -- see ADR-0058).
         interface:
           type: string
           description: Physical NIC name to attach to the "management" network, e.g. "eth0".
 
     DaemonConfig:
       type: object
-      required: [port, bind, management_network, http_enabled, https_enabled, https_port]
+      required: [port, bind, bind_ip, management_network, http_enabled, https_enabled, https_port]
       properties:
         port:
           type: integer
@@ -3451,10 +3529,22 @@ components:
         bind:
           type: string
           description: >
-            kanxeod's own current bind address -- always the
-            management_network's own gateway address (both listeners,
-            HTTP and HTTPS, always share this same address; only the
-            port differs).
+            kanxeod's own current bind address -- the management_
+            network's own address, unless bind_ip is set, in which case
+            this equals bind_ip instead (both listeners, HTTP and
+            HTTPS, always share this same address; only the port
+            differs).
+        bind_ip:
+          type: string
+          nullable: true
+          description: >
+            A dedicated second address on the management network's own
+            bridge that kanxeod binds to instead of that network's own
+            address (ADR-0068), or null when unset (the default --
+            kanxeod binds to the management network's own address,
+            same as before this field existed). Decoupling the two
+            lets an operator dedicate a specific address to kanxeod
+            itself on a bridge shared with other traffic.
         management_network:
           type: string
           nullable: true
@@ -3482,9 +3572,13 @@ components:
       type: object
       description: >
         Every field is optional -- PUT accepts a partial body, only the
-        fields actually being changed. port and management_network may
-        be given together and are applied as a single rebind rather
-        than two.
+        fields actually being changed. port, management_network, and
+        bind_ip may all be given together and are applied as a single
+        rebind rather than several. Repointing management_network
+        without also giving a fresh bind_ip in the same request
+        implicitly clears any previously-set bind_ip (ADR-0068) -- a
+        dedicated bind_ip only ever makes sense relative to whichever
+        network is management at the time.
       properties:
         port:
           type: integer
@@ -3493,9 +3587,21 @@ components:
         management_network:
           type: string
           description: >
-            Name of an existing network with has_gateway true (see
-            POST /networks). Its gateway address becomes kanxeod's new
-            bind address for both HTTP and HTTPS.
+            Name of an existing network with has_address true (see
+            POST /networks). Its own address becomes kanxeod's new
+            bind address for both HTTP and HTTPS, unless bind_ip is
+            also given in the same request.
+        bind_ip:
+          type: string
+          nullable: true
+          description: >
+            Set to a real IPv4 address within the (possibly just-
+            repointed) management network's own subnet to make kanxeod
+            bind there instead of that network's own address (ADR-
+            0068) -- added to the bridge via rtnl_addr_add_ipv4()
+            before the listener rebinds to it. Set explicitly to null
+            to clear it and revert to the management network's own
+            address. Omit the key entirely to leave it unchanged.
         http_enabled:
           type: boolean
         https_enabled:
@@ -3531,6 +3637,27 @@ components:
         scope:
           type: integer
           description: Raw rtm_scope value -- not reinterpreted into a name.
+
+    RouteMutationRequest:
+      type: object
+      description: >
+        Shared body shape for POST/DELETE /system/routes (ADR-0067
+        Part 3). Every field is optional; an empty body identifies the
+        default route (prefix 0, no gateway) -- the same convention
+        rtnl_route_add_ipv4() itself uses.
+      properties:
+        dest:
+          type: string
+          description: Destination network address (dotted-quad). Required when prefix is given and nonzero; ignored otherwise.
+        prefix:
+          type: integer
+          minimum: 0
+          maximum: 32
+          description: Destination prefix length. Omitted or 0 means the default route (dest is then ignored).
+        gateway:
+          type: string
+          nullable: true
+          description: Next-hop IPv4 address. Omitted means a direct/on-link route with no gateway.
 
     PkiCaCreateRequest:
       type: object

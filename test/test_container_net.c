@@ -22,7 +22,7 @@
  * 4. Real interface passthrough (Phase 12 part 6, ADR-0022) -- a veth
  *    end standing in for a physical NIC, moved into a container's
  *    netns and back out again.
- * 5. Gateway optionality (ADR-0037) -- has_gateway=0/1 on a network
+ * 5. Gateway optionality (ADR-0037) -- has_address=0/1 on a network
  *    attachment controls whether container_net_child_configure()
  *    installs a default route at all, checked directly against each
  *    container's own /proc/<pid>/net/route.
@@ -337,14 +337,14 @@ int main(void)
 
 		net1.bridge = BRIDGE_NAME;
 		net1.container_ip_be = ipv4("172.30.1.10");
-		net1.has_gateway = 1;
-		net1.gateway_ip_be = ipv4("172.30.1.1");
+		net1.has_address = 1;
+		net1.address_ip_be = ipv4("172.30.1.1");
 		net1.prefix_len = 24;
 
 		net2.bridge = BRIDGE_NAME;
 		net2.container_ip_be = ipv4("172.30.1.11");
-		net2.has_gateway = 1;
-		net2.gateway_ip_be = ipv4("172.30.1.1");
+		net2.has_address = 1;
+		net2.address_ip_be = ipv4("172.30.1.1");
 		net2.prefix_len = 24;
 
 		if (build_container_spec(&spec1, "tcc-net-c1", "/tmp/container_net_test/c1", &net1, 1, 0,
@@ -416,14 +416,14 @@ int main(void)
 
 		nets3[0].bridge = BRIDGE_NAME;
 		nets3[0].container_ip_be = ipv4("172.30.1.20");
-		nets3[0].has_gateway = 1;
-		nets3[0].gateway_ip_be = ipv4("172.30.1.1");
+		nets3[0].has_address = 1;
+		nets3[0].address_ip_be = ipv4("172.30.1.1");
 		nets3[0].prefix_len = 24;
 
 		nets3[1].bridge = BRIDGE_NAME2;
 		nets3[1].container_ip_be = ipv4("172.30.2.20");
-		nets3[1].has_gateway = 1;
-		nets3[1].gateway_ip_be = ipv4("172.30.2.1");
+		nets3[1].has_address = 1;
+		nets3[1].address_ip_be = ipv4("172.30.2.1");
 		nets3[1].prefix_len = 24;
 
 		if (build_container_spec(&spec3, "tcc-net-c3", "/tmp/container_net_test/c3", nets3, 2, 0,
@@ -483,19 +483,19 @@ int main(void)
 
 		netsR[0].bridge = BRIDGE_NAME;
 		netsR[0].container_ip_be = ipv4("172.30.1.30");
-		netsR[0].has_gateway = 1;
-		netsR[0].gateway_ip_be = ipv4("172.30.1.1");
+		netsR[0].has_address = 1;
+		netsR[0].address_ip_be = ipv4("172.30.1.1");
 		netsR[0].prefix_len = 24;
 		netsR[1].bridge = BRIDGE_NAME2;
 		netsR[1].container_ip_be = ipv4("172.30.2.30");
-		netsR[1].has_gateway = 1;
-		netsR[1].gateway_ip_be = ipv4("172.30.2.1");
+		netsR[1].has_address = 1;
+		netsR[1].address_ip_be = ipv4("172.30.2.1");
 		netsR[1].prefix_len = 24;
 
 		netH.bridge = BRIDGE_NAME;
 		netH.container_ip_be = ipv4("172.30.1.40");
-		netH.has_gateway = 1;
-		netH.gateway_ip_be = ipv4("172.30.1.1");
+		netH.has_address = 1;
+		netH.address_ip_be = ipv4("172.30.1.1");
 		netH.prefix_len = 24;
 		routeH.dest_be = ipv4("172.30.2.0");
 		routeH.dest_prefix_len = 24;
@@ -503,8 +503,8 @@ int main(void)
 
 		netT.bridge = BRIDGE_NAME2;
 		netT.container_ip_be = ipv4("172.30.2.50");
-		netT.has_gateway = 1;
-		netT.gateway_ip_be = ipv4("172.30.2.1");
+		netT.has_address = 1;
+		netT.address_ip_be = ipv4("172.30.2.1");
 		netT.prefix_len = 24;
 		routeT.dest_be = ipv4("172.30.1.0");
 		routeT.dest_prefix_len = 24;
@@ -700,12 +700,12 @@ int main(void)
 
 	/*
 	 * 5. Gateway-optionality (ADR-0037) at the container_net_child_
-	 * configure() level: has_gateway=0 on the primary attachment must
-	 * install no default route at all, has_gateway=1 must install one
-	 * pointing at gateway_ip_be exactly as before, and an explicit
+	 * configure() level: has_address=0 on the primary attachment must
+	 * install no default route at all, has_address=1 must install one
+	 * pointing at address_ip_be exactly as before, and an explicit
 	 * 0.0.0.0/0 route_spec (the documented escape hatch for a gateway-
 	 * less network, e.g. pointing at a VRRP address neither Kanxeo nor
-	 * the host owns) still installs one regardless of has_gateway.
+	 * the host owns) still installs one regardless of has_address.
 	 * Checked directly against each container's own /proc/<pid>/net/
 	 * route -- readable cross-netns without setns() (a real, standard
 	 * Linux property, not this project's own mechanism) -- rather than
@@ -723,13 +723,13 @@ int main(void)
 
 		net5a.bridge = BRIDGE_NAME;
 		net5a.container_ip_be = ipv4("172.30.1.50");
-		net5a.has_gateway = 0;
-		net5a.gateway_ip_be = ipv4("172.30.1.1"); /* deliberately set but must be ignored */
+		net5a.has_address = 0;
+		net5a.address_ip_be = ipv4("172.30.1.1"); /* deliberately set but must be ignored */
 		net5a.prefix_len = 24;
 
 		net5b = net5a;
 		net5b.container_ip_be = ipv4("172.30.1.51");
-		net5b.has_gateway = 1;
+		net5b.has_address = 1;
 
 		net5c = net5a;
 		net5c.container_ip_be = ipv4("172.30.1.52");
@@ -761,7 +761,7 @@ int main(void)
 		 * one check -- an absence can't be racily "not there yet" in a
 		 * way a longer wait would ever flip. */
 		if (!has_default_route_eventually(h5b.pid, 20)) {
-			fprintf(stderr, "FAIL: has_gateway=1 did not install a default route\n");
+			fprintf(stderr, "FAIL: has_address=1 did not install a default route\n");
 			ok = 0;
 		}
 		if (!has_default_route_eventually(h5c.pid, 20)) {
@@ -772,7 +772,7 @@ int main(void)
 		}
 		usleep(500000);
 		if (has_default_route(h5a.pid)) {
-			fprintf(stderr, "FAIL: has_gateway=0 installed a default route anyway\n");
+			fprintf(stderr, "FAIL: has_address=0 installed a default route anyway\n");
 			ok = 0;
 		}
 

@@ -26,8 +26,10 @@ kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `site show` | This install's `instance_name`/`site_name`/`domain_suffix` |
 | `site set [--instance-name=NAME] [--site-name=NAME] [--domain-suffix=NAME]` | Set them |
 | `daemon-config show` | `kanxeod`'s own listen port, HTTP/HTTPS exposure, and which network is currently its management one |
-| `daemon-config set [--port=N] [--https-port=N] [--enable-http] [--disable-http] [--enable-https] [--disable-https] [--management-network=NAME]` | Live, no-restart change — only the fields given are touched |
+| `daemon-config set [--port=N] [--https-port=N] [--enable-http] [--disable-http] [--enable-https] [--disable-https] [--management-network=NAME] [--bind-ip=A.B.C.D \| --clear-bind-ip]` | Live, no-restart change — only the fields given are touched. `bind_ip` (ADR-0068) is a dedicated second address on the management network's own bridge; `--clear-bind-ip` reverts to that network's own address |
 | `routes` | The box's own real kernel IPv4 routing table (ADR-0066) — the only way to see this on a real install, no SSH/general shell |
+| `routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]` | Add a real kernel route (ADR-0067 Part 3); or `--default --gateway=A.B.C.D` for the default route |
+| `routes rm --dest=A.B.C.D --prefix=N` | Remove one; or `--default` for the default route |
 
 See [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) and [`docs/guides/staying-updated.md`](staying-updated.md) for `update`'s real operator runbooks, not just the flag syntax.
 
@@ -69,7 +71,7 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 
 | Command | |
 |---|---|
-| `network create --name=NAME --subnet=A.B.C.D --prefix=N [--gateway=A.B.C.D]` | Create a network — no `--gateway=` means pure L2, no host-owned address (the default) |
+| `network create --name=NAME --subnet=A.B.C.D --prefix=N [--address=A.B.C.D]` | Create a network — no `--address=` means pure L2, no host-owned address (the default) |
 | `network ls` / `network rm NAME` | List / remove |
 | `network attach-interface NAME --interface=IFNAME [--vlan=N]` | Enslave a real host interface to this network's bridge; `--vlan=` creates an 802.1q sub-interface instead |
 | `network detach-interface NAME --interface=IFNAME` | Detach |

@@ -72,6 +72,11 @@ int rtnl_link_set_up(int fd, const char *name);
 /* Assigns an IPv4 address/prefix to a link. */
 int rtnl_addr_add_ipv4(int fd, const char *link_name, uint32_t addr_be, int prefix_len);
 
+/* Removes an IPv4 address/prefix from a link -- the mirror-image of
+ * rtnl_addr_add_ipv4() above (ADR-0068), same address/prefix must be
+ * given to identify which one to remove. */
+int rtnl_addr_del_ipv4(int fd, const char *link_name, uint32_t addr_be, int prefix_len);
+
 /* Adds an IPv4 route to dest_be/dest_prefix_len via gateway_be (0 for
  * a direct/gateway-less route). dest_prefix_len == 0 means the
  * default route, and dest_be is ignored (no RTA_DST attribute). */
@@ -80,6 +85,14 @@ int rtnl_route_add_ipv4(int fd, uint32_t dest_be, int dest_prefix_len, uint32_t 
 /* rtnl_route_add_ipv4(fd, 0, 0, gateway_be) -- kept as its own name
  * since "the default route" is the common case every container gets. */
 int rtnl_route_add_default_ipv4(int fd, uint32_t gateway_be);
+
+/* Deletes an IPv4 route matching dest_be/dest_prefix_len/gateway_be --
+ * same argument shape and default-route convention (dest_prefix_len
+ * == 0 means the default route, dest_be ignored) as
+ * rtnl_route_add_ipv4(), the mirror-image RTM_DELROUTE of it. Unlike
+ * the add side there is no NLM_F_CREATE/NLM_F_EXCL to reason about --
+ * nothing is being created. */
+int rtnl_route_del_ipv4(int fd, uint32_t dest_be, int dest_prefix_len, uint32_t gateway_be);
 
 /* One IPv4 route as reported by the kernel's own routing table --
  * gateway_be/oif_index are 0 when the kernel didn't report that

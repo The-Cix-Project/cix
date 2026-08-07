@@ -64,10 +64,10 @@ static void print_usage(FILE *out)
 	        "               (like `docker exec -it`), over the daemon's own WebSocket\n"
 	        "               upgrade; --cmd= overrides the default /usr/bin/bash\n"
 	        "  rm NAME\n"
-	        "  network create --name=NAME --subnet=A.B.C.D --prefix=N [--gateway=A.B.C.D]\n"
-	        "               -- no --gateway= means pure L2, no host-owned address (the\n"
-	        "               default); pass it only when the host itself should route for\n"
-	        "               this network\n"
+	        "  network create --name=NAME --subnet=A.B.C.D --prefix=N [--address=A.B.C.D]\n"
+	        "               -- no --address= means pure L2, no host-owned address (the\n"
+	        "               default); pass it only when the host itself should have an\n"
+	        "               address on this network\n"
 	        "  network ls\n"
 	        "  network rm NAME\n"
 	        "  network attach-interface NAME --interface=IFNAME [--vlan=N]  -- enslaves a real\n"
@@ -138,7 +138,11 @@ static void print_usage(FILE *out)
 	        "               which network is currently its management one\n"
 	        "  daemon-config set [--port=N] [--https-port=N] [--enable-http] [--disable-http]\n"
 	        "               [--enable-https] [--disable-https] [--management-network=NAME]\n"
-	        "               -- live, no-restart; only the fields given are changed\n"
+	        "               [--bind-ip=A.B.C.D | --clear-bind-ip]\n"
+	        "               -- live, no-restart; only the fields given are changed. bind_ip\n"
+	        "               (ADR-0068) is a second, dedicated address on the management\n"
+	        "               network's own bridge -- kanxeod binds there instead of that\n"
+	        "               network's own address; --clear-bind-ip reverts to it\n"
 	        "  iso build [--disk=DEV --ip=A.B.C.D --prefix=N --gateway=A.B.C.D\n"
 	        "               --interface=IFNAME] [--wait]  -- assembles a fresh installer ISO\n"
 	        "               server-side (ADR-0064), from the most recent \"kanxeo\"/\"kernel\"/\n"
@@ -146,7 +150,10 @@ static void print_usage(FILE *out)
 	        "               call reproduces the original edit-at-the-GRUB-menu placeholder ISO\n"
 	        "  iso status  -- state/iso_path/error of the most recent ISO build\n"
 	        "  routes  -- the box's own real kernel IPv4 routing table (ADR-0066); the\n"
-	        "               only way to see this on a real install, no SSH/general shell\n");
+	        "               only way to see this on a real install, no SSH/general shell\n"
+	        "  routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]  -- add a real\n"
+	        "               kernel route (ADR-0067 Part 3); or --default --gateway=A.B.C.D\n"
+	        "  routes rm --dest=A.B.C.D --prefix=N  -- remove one; or --default\n");
 }
 
 static const char *json_str_field(const struct json_value *obj, const char *key)
@@ -291,15 +298,21 @@ static void fmt_removed(const struct json_value *v)
 	printf("removed\n");
 }
 
+static void fmt_added(const struct json_value *v)
+{
+	(void)v;
+	printf("added\n");
+}
+
 static void fmt_network_line(const struct json_value *v)
 {
 	const char *name = json_str_field(v, "name");
 	const char *subnet = json_str_field(v, "subnet");
 	long prefix_len = (long)json_as_number(json_object_get(v, "prefix_len"));
-	const char *gateway = json_str_field(v, "gateway"); /* NULL when this network has none */
+	const char *address = json_str_field(v, "address"); /* NULL when this network has none */
 
-	printf("%-20s %s/%-3ld gateway=%s\n", name, subnet, prefix_len,
-	       gateway != NULL ? gateway : "none");
+	printf("%-20s %s/%-3ld address=%s\n", name, subnet, prefix_len,
+	       address != NULL ? address : "none");
 }
 
 static void fmt_network_list(const struct json_value *v)
@@ -595,7 +608,7 @@ static int cmd_health(const struct kx_client *c, int json_mode)
 	return emit(&r, json_mode, fmt_health);
 }
 
-static int cmd_routes(const struct kx_client *c, int json_mode)
+static int cmd_routes_ls(const struct kx_client *c, int json_mode)
 {
 	struct kx_response r;
 
@@ -604,6 +617,137 @@ static int cmd_routes(const struct kx_client *c, int json_mode)
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_route_list);
+}
+
+static int cmd_routes_add(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *dest = NULL;
+	const char *gateway = NULL;
+	const char *prefix = NULL;
+	int is_default = 0;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--dest=", 7) == 0)
+			dest = argv[i] + 7;
+		else if (strncmp(argv[i], "--prefix=", 9) == 0)
+			prefix = argv[i] + 9;
+		else if (strncmp(argv[i], "--gateway=", 10) == 0)
+			gateway = argv[i] + 10;
+		else if (strcmp(argv[i], "--default") == 0)
+			is_default = 1;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown routes add option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	if (!is_default && (dest == NULL || prefix == NULL)) {
+		fprintf(stderr,
+		        "usage: kanxeoctl routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]\n"
+		        "       kanxeoctl routes add --default --gateway=A.B.C.D\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	if (!is_default) {
+		jw_key(&w, "dest");
+		jw_str(&w, dest);
+		jw_key(&w, "prefix");
+		jw_int(&w, atol(prefix));
+	}
+	if (gateway != NULL) {
+		jw_key(&w, "gateway");
+		jw_str(&w, gateway);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/system/routes", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_added);
+}
+
+static int cmd_routes_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *dest = NULL;
+	const char *prefix = NULL;
+	int is_default = 0;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--dest=", 7) == 0)
+			dest = argv[i] + 7;
+		else if (strncmp(argv[i], "--prefix=", 9) == 0)
+			prefix = argv[i] + 9;
+		else if (strcmp(argv[i], "--default") == 0)
+			is_default = 1;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown routes rm option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	if (!is_default && (dest == NULL || prefix == NULL)) {
+		fprintf(stderr,
+		        "usage: kanxeoctl routes rm --dest=A.B.C.D --prefix=N\n"
+		        "       kanxeoctl routes rm --default\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	if (!is_default) {
+		jw_key(&w, "dest");
+		jw_str(&w, dest);
+		jw_key(&w, "prefix");
+		jw_int(&w, atol(prefix));
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "DELETE", "/v1/system/routes", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static int cmd_routes(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1)
+		return cmd_routes_ls(c, json_mode);
+
+	sub = argv[0];
+	if (strcmp(sub, "add") == 0)
+		return cmd_routes_add(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "rm") == 0)
+		return cmd_routes_rm(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "ls") == 0)
+		return cmd_routes_ls(c, json_mode);
+
+	fprintf(stderr,
+	        "usage: kanxeoctl routes [ls]\n"
+	        "       kanxeoctl routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]\n"
+	        "       kanxeoctl routes add --default --gateway=A.B.C.D\n"
+	        "       kanxeoctl routes rm --dest=A.B.C.D --prefix=N\n"
+	        "       kanxeoctl routes rm --default\n");
+	return 2;
 }
 
 static int cmd_shutdown(const struct kx_client *c, int json_mode)
@@ -1413,12 +1557,14 @@ static void fmt_daemon_config(const struct json_value *v)
 {
 	const char *bind = json_str_field(v, "bind");
 	const char *mgmt = json_str_field(v, "management_network");
+	const char *bind_ip = json_str_field(v, "bind_ip");
 	const struct json_value *jhttp = json_object_get(v, "http_enabled");
 	const struct json_value *jhttps = json_object_get(v, "https_enabled");
 
-	printf("port=%ld bind=%s management_network=%s http_enabled=%s "
+	printf("port=%ld bind=%s bind_ip=%s management_network=%s http_enabled=%s "
 	       "https_enabled=%s https_port=%ld\n",
 	       (long)json_as_number(json_object_get(v, "port")), bind != NULL ? bind : "?",
+	       bind_ip != NULL ? bind_ip : "(none -- using management network's own address)",
 	       mgmt != NULL ? mgmt : "(none)",
 	       (jhttp != NULL && jhttp->type == JSON_BOOL && jhttp->u.boolean) ? "true" : "false",
 	       (jhttps != NULL && jhttps->type == JSON_BOOL && jhttps->u.boolean) ? "true" : "false",
@@ -1448,6 +1594,8 @@ static int cmd_daemon_config_set(const struct kx_client *c, int json_mode, int a
 	const char *port = NULL;
 	const char *https_port = NULL;
 	const char *management_network = NULL;
+	const char *bind_ip = NULL;
+	int clear_bind_ip = 0;
 	int want_http = -1;  /* -1: untouched, 0: disable, 1: enable */
 	int want_https = -1;
 	int i;
@@ -1461,6 +1609,10 @@ static int cmd_daemon_config_set(const struct kx_client *c, int json_mode, int a
 			https_port = argv[i] + 13;
 		else if (strncmp(argv[i], "--management-network=", 21) == 0)
 			management_network = argv[i] + 21;
+		else if (strncmp(argv[i], "--bind-ip=", 10) == 0)
+			bind_ip = argv[i] + 10;
+		else if (strcmp(argv[i], "--clear-bind-ip") == 0)
+			clear_bind_ip = 1;
 		else if (strcmp(argv[i], "--enable-http") == 0)
 			want_http = 1;
 		else if (strcmp(argv[i], "--disable-http") == 0)
@@ -1474,12 +1626,16 @@ static int cmd_daemon_config_set(const struct kx_client *c, int json_mode, int a
 			return 2;
 		}
 	}
-	if (port == NULL && https_port == NULL && management_network == NULL &&
-	    want_http == -1 && want_https == -1) {
+	if (bind_ip != NULL && clear_bind_ip) {
+		fprintf(stderr, "kanxeoctl: --bind-ip= and --clear-bind-ip are mutually exclusive\n");
+		return 2;
+	}
+	if (port == NULL && https_port == NULL && management_network == NULL && bind_ip == NULL &&
+	    !clear_bind_ip && want_http == -1 && want_https == -1) {
 		fprintf(stderr,
 		        "usage: kanxeoctl daemon-config set [--port=N] [--https-port=N] "
 		        "[--enable-http] [--disable-http] [--enable-https] [--disable-https] "
-		        "[--management-network=NAME]\n");
+		        "[--management-network=NAME] [--bind-ip=A.B.C.D | --clear-bind-ip]\n");
 		return 2;
 	}
 
@@ -1496,6 +1652,13 @@ static int cmd_daemon_config_set(const struct kx_client *c, int json_mode, int a
 	if (management_network != NULL) {
 		jw_key(&w, "management_network");
 		jw_str(&w, management_network);
+	}
+	if (bind_ip != NULL) {
+		jw_key(&w, "bind_ip");
+		jw_str(&w, bind_ip);
+	} else if (clear_bind_ip) {
+		jw_key(&w, "bind_ip");
+		jw_null(&w);
 	}
 	if (want_http != -1) {
 		jw_key(&w, "http_enabled");
@@ -1526,7 +1689,7 @@ static int cmd_daemon_config(const struct kx_client *c, int json_mode, int argc,
 		fprintf(stderr, "usage: kanxeoctl daemon-config show\n"
 		                "       kanxeoctl daemon-config set [--port=N] [--https-port=N] "
 		                "[--enable-http] [--disable-http] [--enable-https] [--disable-https] "
-		                "[--management-network=NAME]\n");
+		                "[--management-network=NAME] [--bind-ip=A.B.C.D | --clear-bind-ip]\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -1924,7 +2087,7 @@ static int cmd_network_create(const struct kx_client *c, int json_mode, int argc
 {
 	const char *name = NULL;
 	const char *subnet = NULL;
-	const char *gateway = NULL;
+	const char *address = NULL;
 	long prefix_len = -1;
 	int i;
 	struct json_writer w;
@@ -1937,8 +2100,8 @@ static int cmd_network_create(const struct kx_client *c, int json_mode, int argc
 			subnet = argv[i] + 9;
 		else if (strncmp(argv[i], "--prefix=", 9) == 0)
 			prefix_len = atol(argv[i] + 9);
-		else if (strncmp(argv[i], "--gateway=", 10) == 0)
-			gateway = argv[i] + 10;
+		else if (strncmp(argv[i], "--address=", 10) == 0)
+			address = argv[i] + 10;
 		else {
 			fprintf(stderr, "kanxeoctl: unknown network create option '%s'\n", argv[i]);
 			return 2;
@@ -1948,10 +2111,10 @@ static int cmd_network_create(const struct kx_client *c, int json_mode, int argc
 	if (name == NULL || subnet == NULL || prefix_len < 0) {
 		fprintf(stderr,
 		        "usage: kanxeoctl network create --name=NAME --subnet=A.B.C.D --prefix=N "
-		        "[--gateway=A.B.C.D]\n"
-		        "  no --gateway= means the bridge stays pure L2 (no host-owned address) --\n"
-		        "  the default. Pass --gateway= only when the host itself should be this\n"
-		        "  network's router.\n");
+		        "[--address=A.B.C.D]\n"
+		        "  no --address= means the bridge stays pure L2 (no host-owned address) --\n"
+		        "  the default. Pass --address= only when the host itself should have an\n"
+		        "  address on this network (e.g. to route through it).\n");
 		return 2;
 	}
 
@@ -1963,9 +2126,9 @@ static int cmd_network_create(const struct kx_client *c, int json_mode, int argc
 	jw_str(&w, subnet);
 	jw_key(&w, "prefix_len");
 	jw_int(&w, prefix_len);
-	if (gateway != NULL) {
-		jw_key(&w, "gateway");
-		jw_str(&w, gateway);
+	if (address != NULL) {
+		jw_key(&w, "address");
+		jw_str(&w, address);
 	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
@@ -2104,7 +2267,7 @@ static int cmd_network(const struct kx_client *c, int json_mode, int argc, char 
 	if (argc < 1) {
 		fprintf(stderr,
 		        "usage: kanxeoctl network create --name=NAME --subnet=A.B.C.D --prefix=N "
-		        "[--gateway=A.B.C.D]\n"
+		        "[--address=A.B.C.D]\n"
 		        "       kanxeoctl network ls\n"
 		        "       kanxeoctl network rm NAME\n"
 		        "       kanxeoctl network attach-interface NAME --interface=IFNAME [--vlan=N]\n"
@@ -3679,7 +3842,7 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 	if (strcmp(cmd, "iso") == 0)
 		return cmd_iso(client, json_mode, argc, argv);
 	if (strcmp(cmd, "routes") == 0)
-		return cmd_routes(client, json_mode);
+		return cmd_routes(client, json_mode, argc, argv);
 	if (strcmp(cmd, "ps") == 0)
 		return cmd_ps(client, json_mode);
 	if (strcmp(cmd, "run") == 0)

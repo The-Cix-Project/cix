@@ -17,6 +17,7 @@ const POLL_INTERVAL_MS = 2000;
 const cache = {
 	containers: [],
 	networks: [],
+	routes: [],
 	images: [],
 	devices: [],
 	deviceMaps: [],
@@ -248,6 +249,7 @@ function parseHash() {
 const CATEGORY_VIEWS = {
 	containers: "view-containers",
 	networks: "view-networks",
+	routes: "view-routes",
 	images: "view-images",
 	devices: "view-devices",
 	"dns-records": "view-dns-records",
@@ -299,6 +301,8 @@ function renderCurrentView() {
 			stopStatsPolling();
 		if (route.category === "networks" && route.name !== null)
 			renderNetworkDetail(route.name);
+		else if (route.category === "routes")
+			renderRoutesList();
 		else if (route.category === "images" && route.name !== null)
 			renderImageDetail(route.name);
 		else if (route.category === "devices")
@@ -359,10 +363,16 @@ const collapsedCategories = loadCollapsedCategories();
  *   nodeToggle[id] / nodeUl[id] -- direct references for
  *                        ensureActiveCategoryExpanded(), no re-querying.
  *   nodeAnchor[id]   -- direct reference for renderTreeActive().
- *   nodeHash[id]     -- the row's own route hash, needed to update
- *                        collapsedCategories (hash-keyed by design,
- *                        since collapse state should persist across a
- *                        renderTree() rebuild, which node ids don't).
+ *   nodeHash[id]     -- the row's own route hash (for renderTreeActive()'s
+ *                        own hash-based highlight walk -- see its own
+ *                        comment for why that direction is fine to
+ *                        share across aliased nodes).
+ *   nodePath[id]     -- the row's own label-built path, needed to
+ *                        update collapsedCategories (path-keyed, not
+ *                        hash-keyed -- see buildTreeNode()'s own
+ *                        comment for why; collapse state still needs
+ *                        to persist across a renderTree() rebuild,
+ *                        which node ids themselves don't).
  */
 let nextNodeId = 0;
 let nodeParent = {};
@@ -372,6 +382,7 @@ let nodeToggle = {};
 let nodeUl = {};
 let nodeAnchor = {};
 let nodeHash = {};
+let nodePath = {};
 
 /*
  * Small hand-rolled inline SVG icons, Proxmox-style -- no external
@@ -474,19 +485,28 @@ function treeItemLinkWithStatus(href, label, status, icon) {
  * it stays correct and explicit regardless of how deep a given branch
  * goes.
  */
-function buildTreeNode(item, parentUl, parentId, depth) {
+function buildTreeNode(item, parentUl, parentId, depth, parentPath) {
 	const nodeId = nextNodeId++;
+	const path = (parentPath !== undefined ? parentPath + "/" : "") + item.label;
 
 	nodeParent[nodeId] = parentId;
 	nodeDepth[nodeId] = depth;
 	(hashToNodeIds[item.hash] || (hashToNodeIds[item.hash] = [])).push(nodeId);
 
-	/* Collapse state is still keyed by hash, not node id -- a category
-	 * that aliases its own hash to a child's (e.g. "Backup" the group
-	 * and "Backup" the first child both being hash "backup") should
-	 * collapse/expand as one single toggle in localStorage, which
-	 * matches how they're visually one and the same "row" to a user
-	 * clicking the one toggle button that actually exists there. */
+	/* Collapse state is keyed by this label-built path, not by
+	 * item.hash: several groups deliberately alias their own hash to a
+	 * child's for ROUTING purposes (System/PKI/Root CA all share
+	 * "pki-ca") so highlighting/auto-expand treat them as one
+	 * identity -- correct there, since they really do route to related
+	 * pages. But when BOTH sides of such an alias have their own
+	 * children (System and PKI both do), they're two genuinely
+	 * separate, independently-clickable toggles, and hash-keying
+	 * collapse state made clicking either one collapse both (a real,
+	 * reported bug). A path built from each ancestor's own label is
+	 * unique per row regardless of hash aliasing, and doesn't need to
+	 * survive across renders as an id would -- it's recomputed
+	 * identically every render since it only depends on each static
+	 * item's own label. */
 	const li = document.createElement("li");
 	const row = document.createElement("div");
 	const hasChildren = item.children && item.children.length > 0;
@@ -498,7 +518,7 @@ function buildTreeNode(item, parentUl, parentId, depth) {
 
 	toggle.type = "button";
 	if (hasChildren) {
-		const collapsed = collapsedCategories.has(item.hash);
+		const collapsed = collapsedCategories.has(path);
 
 		toggle.className = "tree-toggle";
 		toggle.textContent = collapsed ? "▸" : "▾";
@@ -525,13 +545,14 @@ function buildTreeNode(item, parentUl, parentId, depth) {
 	nodeToggle[nodeId] = hasChildren ? toggle : null;
 	nodeAnchor[nodeId] = anchor;
 	nodeHash[nodeId] = item.hash;
+	nodePath[nodeId] = path;
 
 	if (hasChildren) {
 		const ul = document.createElement("ul");
 
-		ul.hidden = collapsedCategories.has(item.hash);
+		ul.hidden = collapsedCategories.has(path);
 		for (const child of item.children)
-			buildTreeNode(child, ul, nodeId, depth + 1);
+			buildTreeNode(child, ul, nodeId, depth + 1, path);
 		li.appendChild(ul);
 		nodeUl[nodeId] = ul;
 
@@ -542,9 +563,9 @@ function buildTreeNode(item, parentUl, parentId, depth) {
 			ul.hidden = nowCollapsed;
 			toggle.textContent = nowCollapsed ? "▸" : "▾";
 			if (nowCollapsed)
-				collapsedCategories.add(item.hash);
+				collapsedCategories.add(path);
 			else
-				collapsedCategories.delete(item.hash);
+				collapsedCategories.delete(path);
 			saveCollapsedCategories();
 		});
 	}
@@ -561,6 +582,7 @@ function renderTree() {
 	nodeUl = {};
 	nodeAnchor = {};
 	nodeHash = {};
+	nodePath = {};
 	const root = document.createElement("ul");
 
 	const topLevel = [
@@ -589,7 +611,7 @@ function renderTree() {
 				 * created but currently unused (grey), same "tint the icon,
 				 * not a separate dot" treatment containers get. */
 				iconColor: n.interfaces && n.interfaces.length > 0 ? "tree-icon-ok" : "tree-icon-idle",
-			})),
+			})).concat([{ label: "Routes", hash: "routes", icon: "networks" }]),
 		},
 		{
 			label: "Software",
@@ -722,7 +744,7 @@ function ensureActiveCategoryExpanded() {
 		if (toggle && ul && ul.hidden) {
 			ul.hidden = false;
 			toggle.textContent = "▾";
-			collapsedCategories.delete(nodeHash[id]);
+			collapsedCategories.delete(nodePath[id]);
 			changed = true;
 		}
 	}
@@ -1585,9 +1607,9 @@ function renderNetworks(networks) {
 		prefixCell.textContent = n.prefix_len;
 		row.appendChild(prefixCell);
 
-		const gatewayCell = document.createElement("td");
-		gatewayCell.textContent = n.has_gateway ? n.gateway : "(none)";
-		row.appendChild(gatewayCell);
+		const addressCell = document.createElement("td");
+		addressCell.textContent = n.has_address ? n.address : "(none)";
+		row.appendChild(addressCell);
 
 		const actionCell = document.createElement("td");
 		const rmButton = document.createElement("button");
@@ -1636,7 +1658,7 @@ function renderNetworkDetail(name) {
 	fields.textContent = "";
 	fields.appendChild(fieldBlock("Subnet", n.subnet));
 	fields.appendChild(fieldBlock("Prefix length", String(n.prefix_len)));
-	fields.appendChild(fieldBlock("Gateway", n.has_gateway ? n.gateway : "(none -- pure L2)"));
+	fields.appendChild(fieldBlock("Address", n.has_address ? n.address : "(none -- pure L2)"));
 
 	const ifBody = document.querySelector("#nd-interfaces tbody");
 
@@ -1686,6 +1708,17 @@ function renderNetworkDetail(name) {
 		opt.value = d.id.replace(/^net:/, "");
 		opt.textContent = opt.value;
 		select.appendChild(opt);
+	}
+
+	const routeBody = document.querySelector("#nd-routes tbody");
+	const netRoutes = cache.routes.filter((r) => r.interface === n.name);
+
+	routeBody.textContent = "";
+	if (netRoutes.length === 0) {
+		routeBody.innerHTML = '<tr><td colspan="4" class="empty">No routes on this network</td></tr>';
+	} else {
+		for (const route of netRoutes)
+			appendRouteRow(routeBody, route);
 	}
 
 	document.getElementById("nd-remove").onclick = () => removeNetwork(n.name);
@@ -2959,15 +2992,15 @@ document.getElementById("network-form").addEventListener("submit", async (event)
 	const name = document.getElementById("nf-name").value.trim();
 	const subnet = document.getElementById("nf-subnet").value.trim();
 	const prefixText = document.getElementById("nf-prefix").value.trim();
-	const gateway = document.getElementById("nf-gateway").value.trim();
+	const address = document.getElementById("nf-address").value.trim();
 
 	const body = {
 		name: name,
 		subnet: subnet,
 		prefix_len: parseInt(prefixText, 10),
 	};
-	if (gateway)
-		body.gateway = gateway;
+	if (address)
+		body.address = address;
 
 	try {
 		await apiRequest("POST", "/v1/networks", body);
@@ -3013,6 +3046,50 @@ document.getElementById("nd-attach-form").addEventListener("submit", async (even
 		return;
 	await attachInterface(route.name, ifname, vlanText !== "" ? parseInt(vlanText, 10) : undefined);
 	document.getElementById("nd-attach-form").reset();
+});
+
+async function addRoute(isDefault, dest, prefix, gateway) {
+	try {
+		const body = {};
+
+		if (!isDefault) {
+			body.dest = dest;
+			body.prefix = prefix;
+		}
+		if (gateway)
+			body.gateway = gateway;
+		await apiRequest("POST", "/v1/system/routes", body);
+		clearStatus();
+		await refreshRoutes();
+		renderCurrentView();
+	} catch (e) {
+		showStatus("Failed to add route: " + e.message, true);
+	}
+}
+
+document.getElementById("rf-default").addEventListener("change", (event) => {
+	const disabled = event.target.checked;
+
+	document.getElementById("rf-dest").disabled = disabled;
+	document.getElementById("rf-prefix").disabled = disabled;
+});
+
+document.getElementById("route-add-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const isDefault = document.getElementById("rf-default").checked;
+	const dest = document.getElementById("rf-dest").value.trim();
+	const prefixText = document.getElementById("rf-prefix").value.trim();
+	const gateway = document.getElementById("rf-gateway").value.trim();
+
+	if (!isDefault && (dest === "" || prefixText === "")) {
+		showStatus("Destination and prefix are required unless Default route is checked.", true);
+		return;
+	}
+	await addRoute(isDefault, dest, prefixText !== "" ? parseInt(prefixText, 10) : undefined, gateway);
+	document.getElementById("route-add-form").reset();
+	document.getElementById("rf-dest").disabled = false;
+	document.getElementById("rf-prefix").disabled = false;
 });
 
 document.getElementById("image-form").addEventListener("submit", async (event) => {
@@ -3378,14 +3455,14 @@ document.getElementById("sys-site-form").addEventListener("submit", async (event
 let daemonConfigDirty = false;
 
 /* Rebuilds the management-network <select> from cache.networks -- only
- * has_gateway networks are valid repoint targets (network_set_management()
+ * has_address networks are valid repoint targets (network_set_management()
  * refuses otherwise, see daemon/src/network.c), but the currently-active
  * one is always included even if that were somehow false, so the form
  * never silently shows a value that isn't actually selected. */
 function populateManagementNetworkSelect(currentName) {
 	const select = document.getElementById("dcf-management-network");
 	const names = cache.networks
-		.filter((n) => n.has_gateway || n.name === currentName)
+		.filter((n) => n.has_address || n.name === currentName)
 		.map((n) => n.name);
 
 	if (currentName && !names.includes(currentName))
@@ -3405,26 +3482,63 @@ function populateManagementNetworkSelect(currentName) {
 async function refreshRoutes() {
 	try {
 		const r = await apiRequest("GET", "/v1/system/routes");
-		const tbody = document.getElementById("routes-body");
 
-		tbody.textContent = "";
-		for (const route of r.routes) {
-			const row = document.createElement("tr");
-			const dest = document.createElement("td");
-			const gw = document.createElement("td");
-			const iface = document.createElement("td");
-
-			dest.textContent = route.dest === "default" ? "default" : route.dest + "/" + route.prefix;
-			gw.textContent = route.gateway !== null ? route.gateway : "-";
-			iface.textContent = route.interface !== null ? route.interface : "-";
-			row.appendChild(dest);
-			row.appendChild(gw);
-			row.appendChild(iface);
-			tbody.appendChild(row);
-		}
+		cache.routes = r.routes;
 	} catch (e) {
-		/* Best-effort -- the table just stays at whatever was last shown. */
+		/* Best-effort -- cache.routes just stays at whatever was last shown. */
 	}
+}
+
+/* Renders one route row into tbody, with Remove wired to DELETE
+ * /v1/system/routes -- shared by the full table (renderRoutesList())
+ * and the per-network filtered sub-table (renderNetworkDetail()). */
+function appendRouteRow(tbody, route) {
+	const row = document.createElement("tr");
+	const dest = document.createElement("td");
+	const gw = document.createElement("td");
+	const iface = document.createElement("td");
+	const actionCell = document.createElement("td");
+	const rmButton = document.createElement("button");
+
+	dest.textContent = route.dest === "default" ? "default" : route.dest + "/" + route.prefix;
+	gw.textContent = route.gateway !== null ? route.gateway : "-";
+	iface.textContent = route.interface !== null ? route.interface : "-";
+	row.appendChild(dest);
+	row.appendChild(gw);
+	row.appendChild(iface);
+
+	rmButton.textContent = "Remove";
+	rmButton.className = "button-danger";
+	rmButton.addEventListener("click", () => removeRoute(route));
+	actionCell.appendChild(rmButton);
+	row.appendChild(actionCell);
+
+	tbody.appendChild(row);
+}
+
+async function removeRoute(route) {
+	const body = route.dest === "default" ? {} : { dest: route.dest, prefix: route.prefix };
+
+	try {
+		await apiRequest("DELETE", "/v1/system/routes", body);
+		clearStatus();
+		await refreshRoutes();
+		renderCurrentView();
+	} catch (e) {
+		showStatus("Failed to remove route: " + e.message, true);
+	}
+}
+
+function renderRoutesList() {
+	const tbody = document.getElementById("routes-body");
+
+	tbody.textContent = "";
+	if (cache.routes.length === 0) {
+		tbody.innerHTML = '<tr><td colspan="4" class="empty">No routes.</td></tr>';
+		return;
+	}
+	for (const route of cache.routes)
+		appendRouteRow(tbody, route);
 }
 
 async function refreshDaemonConfig() {
@@ -3438,16 +3552,18 @@ async function refreshDaemonConfig() {
 			document.getElementById("dcf-https-port").value = dc.https_port;
 			document.getElementById("dcf-http-enabled").checked = dc.http_enabled;
 			document.getElementById("dcf-https-enabled").checked = dc.https_enabled;
+			document.getElementById("dcf-bind-ip").value = dc.bind_ip || "";
 		}
-		document.getElementById("dcf-bind-hint").textContent =
-			"Currently bound to " + dc.bind + ".";
+		document.getElementById("dcf-bind-hint").textContent = dc.bind_ip
+			? "Currently bound to " + dc.bind + " (dedicated bind_ip -- not the management network's own address)."
+			: "Currently bound to " + dc.bind + " (the management network's own address).";
 	} catch (e) {
 		/* Best-effort -- the form just stays at whatever was last shown. */
 	}
 }
 
 for (const id of ["dcf-port", "dcf-https-port", "dcf-http-enabled", "dcf-https-enabled",
-                   "dcf-management-network"]) {
+                   "dcf-management-network", "dcf-bind-ip", "dcf-clear-bind-ip"]) {
 	document.getElementById(id).addEventListener("input", () => {
 		daemonConfigDirty = true;
 	});
@@ -3455,6 +3571,9 @@ for (const id of ["dcf-port", "dcf-https-port", "dcf-http-enabled", "dcf-https-e
 
 document.getElementById("sys-daemon-config-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
+
+	const bindIpValue = document.getElementById("dcf-bind-ip").value.trim();
+	const clearBindIp = document.getElementById("dcf-clear-bind-ip").checked;
 
 	const body = {
 		port: parseInt(document.getElementById("dcf-port").value, 10),
@@ -3464,16 +3583,23 @@ document.getElementById("sys-daemon-config-form").addEventListener("submit", asy
 		management_network: document.getElementById("dcf-management-network").value,
 	};
 
+	if (clearBindIp)
+		body.bind_ip = null;
+	else if (bindIpValue)
+		body.bind_ip = bindIpValue;
+
 	/* This dashboard's own fetch() calls are relative to the page's own
 	 * origin (host:port it was loaded from) -- changing the plain-HTTP
-	 * port, or repointing the management network to a different
-	 * address, disconnects this exact page the moment it takes effect.
-	 * Confirmed explicitly here, same as the reboot/shutdown buttons'
-	 * own confirm() guard, since there's no way back short of
-	 * navigating to the new address by hand. */
+	 * port, repointing the management network to a different address,
+	 * or setting/clearing bind_ip (ADR-0068), disconnects this exact
+	 * page the moment it takes effect. Confirmed explicitly here, same
+	 * as the reboot/shutdown buttons' own confirm() guard, since
+	 * there's no way back short of navigating to the new address by
+	 * hand. */
 	const cur = cache.daemonConfig;
 	const reconnectNeeded = cur &&
-		(body.port !== cur.port || body.management_network !== cur.management_network);
+		(body.port !== cur.port || body.management_network !== cur.management_network ||
+		 "bind_ip" in body);
 
 	if (reconnectNeeded &&
 	    !confirm("This will change the address/port this dashboard is served on -- " +
@@ -3486,6 +3612,7 @@ document.getElementById("sys-daemon-config-form").addEventListener("submit", asy
 		clearStatus();
 		showStatus("Daemon config saved", false);
 		daemonConfigDirty = false;
+		document.getElementById("dcf-clear-bind-ip").checked = false;
 		await refreshDaemonConfig();
 	} catch (e) {
 		showStatus("Failed to save daemon config: " + e.message, true);

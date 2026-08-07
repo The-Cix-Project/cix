@@ -2,6 +2,33 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 7: gateway -> address rename, route CRUD + UI reorg, dedicated daemon bind IP (ADR-0067, ADR-0068)
+
+Reopened from Part 6's own review: reinstalling `192.168.15.95` with Part 6's fix showed a network listed as "subnet 15.0/24 gateway 15.95," which the user called "terrible and untrue." A real architecture discussion confirmed a network's address is always host-bound by construction (verified via code, not assumed), resolving this as a rename rather than a display patch. Five parts, smallest/foundational first.
+
+#### Added
+- `netplane/src/rtnetlink.c`/`netplane/include/rtnetlink.h`: `rtnl_addr_del_ipv4()` (the first address-removal primitive this codebase has needed) and `rtnl_route_del_ipv4()` (`RTM_DELROUTE`, mirroring the existing `rtnl_route_add_ipv4()`).
+- `daemon/include/network.h`/`daemon/src/network.c`: `network_address_str_is_valid()`, exposing the existing `address_str_is_valid()` subnet-membership check publicly so a second address on the same subnet (bind_ip) can reuse the identical rule.
+- `daemon/src/main.c`: `handle_route_add()`/`handle_route_del()` (`POST`/`DELETE /v1/system/routes`); `daemon_config.c` gains a persisted `bind_ip` field (`daemon_config_bind_ip()`/`daemon_config_set_bind_ip()`); `CONN_BIND_IP_CLEANUP` conn kind + `arm_bind_ip_cleanup_timer()`/`handle_bind_ip_cleanup_timer_event()`, a one-shot deferred-delete timer for a superseded/cleared `bind_ip`.
+- `cli/src/main.c`: `kanxeoctl routes add`/`routes rm`; `daemon-config set --bind-ip=`/`--clear-bind-ip`.
+- `web/app.js`/`web/index.html`: a "Routes" leaf under the Networks tree (full table, Add/Remove controls); a "Routes on this network" sub-table in `renderNetworkDetail()`; a "Bind IP (optional)" field + "Clear bind IP" checkbox on the Daemon page.
+- New `test/test_routes.c`: a real add->dump->duplicate-reject->invalid-reject->delete->dump->delete-again-404 round trip against a live daemon.
+- New `test/test_daemon_bind_ip.c`: a real repoint->set-bind_ip->clear-bind_ip round trip, verified via `getifaddrs()` directly against the real bridge, independent of the daemon's own API claims.
+- `docs/adr/0067-network-address-field-rename.md`, `docs/adr/0068-dedicated-daemon-bind-ip.md`.
+
+#### Changed
+- `daemon/include/network.h`/`network.c`, `include/container.h`/`src/container_net.c`, `daemon/src/main.c`, `cli/src/main.c`, `web/app.js`/`web/index.html`, every affected test file: `gateway`/`has_gateway` renamed to `address`/`has_address` everywhere it means a network's own field. Deliberately left unchanged (confirmed genuinely distinct concepts): net.conf's/GRUB's upstream `--gateway=`, a container's own static-route `route_spec.gateway_be`, the kernel route dump's `KernelRoute.gateway` (ADR-0066).
+- `web/app.js`: `buildTreeNode()` now keys `collapsedCategories` by a stable, label-built `path` string instead of `item.hash` -- fixes System/PKI/Root CA's shared routing-alias hash collapsing all three together when only one was clicked.
+- `web/index.html`: the Daemon page's read-only Routes panel removed (moved under Networks, see Added).
+- `daemon/src/main.c`: `handle_daemon_config_put()` -- `bind_ip`, if given, is validated against the (possibly just-repointed) management network's own subnet and added to its bridge before the rebind; repointing `management_network` without a fresh `bind_ip` in the same request implicitly clears any previously-set one.
+- `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/cli-reference.md`/`docs/guides/web-dashboard.md`/`docs/architecture/architecture.svg`: updated for the rename, the new routes endpoints, and `bind_ip`.
+
+#### Notes
+- A real gap in the first rename pass's own variable-name-only sweep was caught by a second, broader grep: raw JSON literals in test HTTP request bodies (`"gateway":"..."`) don't match a `has_gateway`/`gateway_ip_be` pattern and would have silently broken those tests' own network setup with no build-time signal.
+- **A genuine bug found only by live testing, not code review:** the first `bind_ip` cleanup implementation deleted the superseded address synchronously, right after writing the response. Reordering the C statements so the write happened first still hung indefinitely in real testing -- a successful `write()` doesn't mean the kernel has transmitted the bytes yet, and deleting the connection's own local address in that window can permanently strand them. Fixed by deferring the actual deletion via a new one-shot timer (`CONN_BIND_IP_CLEANUP`), reusing this codebase's own existing `arm_restart_timer()` pattern.
+- Verified real, end to end: full clean rebuild (zero warnings) after every part; the full 27-binary fast daemon-linked regression suite green after the whole batch, including both new test files run directly against a real daemon and real kernel/bridge state.
+- **Not resolved in this phase:** the original `192.168.15.95` connectivity investigation itself, tracked separately.
+
 ### Part 6: kernel routing-table diagnostic, mgmt -> management rename, dashboard Server/DNS reorg (ADR-0066)
 
 Continuing from Part 5 follow-on 2's still-open connectivity bug on `192.168.15.95` (git/gitea install fetch failing despite a correct upstream gateway) plus a batch of dashboard/naming feedback surfaced during the same investigation.

@@ -106,7 +106,7 @@ curl -X PUT http://<install-ip>:7620/v1/system/daemon-config \
      -d '{"management_network": "lan1"}'
 ```
 
-Every change here is applied live (no reboot, no restart — `kanxeod` runs as real PID 1 on an installed system, so there is no restart to fall back on) and persisted, so it survives a real one too. Enabling HTTPS needs a bootstrapped PKI root CA first (`POST /v1/pki/ca`) — it reuses the already-issued `"host"` leaf certificate rather than a separate cert. Repointing `management_network` needs the target network to already have a gateway address (`has_gateway: true`, e.g. created via `POST /v1/networks` with a `gateway` field, or another network attached to a physical NIC via `POST /v1/networks/{name}/interfaces`) — double-check you can actually reach the new address before relying on it, since a mistake here has no remote undo, only physical console access (above).
+Every change here is applied live (no reboot, no restart — `kanxeod` runs as real PID 1 on an installed system, so there is no restart to fall back on) and persisted, so it survives a real one too. Enabling HTTPS needs a bootstrapped PKI root CA first (`POST /v1/pki/ca`) — it reuses the already-issued `"host"` leaf certificate rather than a separate cert. Repointing `management_network` needs the target network to already have its own address (`has_address: true`, e.g. created via `POST /v1/networks` with an `address` field, or another network attached to a physical NIC via `POST /v1/networks/{name}/interfaces`) — double-check you can actually reach the new address before relying on it, since a mistake here has no remote undo, only physical console access (above).
 
 ## Secure Boot
 

@@ -40,9 +40,9 @@ struct mount_spec {
 struct network_spec {
 	const char *bridge;
 	uint32_t container_ip_be;
-	int has_gateway; /* 0: this network is pure L2 -- gateway_ip_be is
+	int has_address; /* 0: this network is pure L2 -- address_ip_be is
 	                   * meaningless, no default route gets installed */
-	uint32_t gateway_ip_be;
+	uint32_t address_ip_be;
 	int prefix_len;
 };
 

@@ -142,7 +142,7 @@ int main(void)
 		return 1;
 	}
 
-	/* 1. a gateway-less network (the new default) to attach to */
+	/* 1. an address-less network (the new default) to attach to */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"nifnet\",\"subnet\":\"172.48.0.0\",\"prefix_len\":24}",
