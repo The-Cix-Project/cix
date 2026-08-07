@@ -113,6 +113,11 @@ static void print_usage(FILE *out)
 	        "               host (dev/test convenience, empty on a real minimal install);\n"
 	        "               --toolchain=PATH imports a real, portable artifact already scp'd\n"
 	        "               onto this box (build one with image/src/mktoolchainimage.c)\n"
+	        "  pkg bootstrap --toolchain-url=URL --toolchain-sha256=SHA256 [--wait]  -- the\n"
+	        "               daemon fetches the artifact itself, host-side (ADR-0065) -- for a\n"
+	        "               real minimal install with no SSH server and no other way to get a\n"
+	        "               real toolchain onto the box; async, 202, poll with bootstrap-status\n"
+	        "  pkg bootstrap-status  -- state/error of the most recent toolchain_url fetch\n"
 	        "  pkg recipes\n"
 	        "  pkg recipe add --name=NAME --file=PATH  -- add or update a recipe on this\n"
 	        "               running system directly, no reinstall needed (ADR-0040)\n"
@@ -2873,6 +2878,37 @@ static void fmt_bootstrapped(const struct json_value *v)
 	printf("bootstrapped\n");
 }
 
+static void fmt_bootstrap_fetch_status(const struct json_value *v)
+{
+	const char *state = json_str_field(v, "state");
+	const char *error = json_str_field(v, "error");
+
+	printf("state=%s", state != NULL ? state : "?");
+	if (error != NULL)
+		printf(" error=%s", error);
+	printf("\n");
+}
+
+/* Polls GET /v1/pkg/bootstrap until state leaves "fetching" -- --wait's
+ * own loop for the toolchain_url mode, the same shape poll_hostbuild()/
+ * poll_iso() already established. */
+static int poll_bootstrap_fetch(const struct kx_client *c, struct kx_response *out)
+{
+	for (;;) {
+		const char *state;
+
+		if (kx_client_request(c, "GET", "/v1/pkg/bootstrap", NULL, out) != 0) {
+			fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+			return -1;
+		}
+		state = json_str_field(out->json, "state");
+		if (state == NULL || strcmp(state, "fetching") != 0)
+			return 0;
+		kx_response_free(out);
+		usleep(500000);
+	}
+}
+
 static void fmt_pkg_recipe_line(const struct json_value *v)
 {
 	const char *name = json_str_field(v, "name");
@@ -2919,19 +2955,68 @@ static void fmt_pkg_list(const struct json_value *v)
 		fmt_pkg_line(packages->u.array.items[i]);
 }
 
+static int cmd_pkg_bootstrap_status(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/pkg/bootstrap", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_bootstrap_fetch_status);
+}
+
 static int cmd_pkg_bootstrap(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *toolchain = NULL;
+	const char *toolchain_url = NULL;
+	const char *toolchain_sha256 = NULL;
+	int wait = 0;
 	int i;
 	struct kx_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--toolchain=", 12) == 0)
 			toolchain = argv[i] + 12;
+		else if (strncmp(argv[i], "--toolchain-url=", 16) == 0)
+			toolchain_url = argv[i] + 16;
+		else if (strncmp(argv[i], "--toolchain-sha256=", 19) == 0)
+			toolchain_sha256 = argv[i] + 19;
+		else if (strcmp(argv[i], "--wait") == 0)
+			wait = 1;
 		else {
 			fprintf(stderr, "kanxeoctl: unknown pkg bootstrap option '%s'\n", argv[i]);
 			return 2;
 		}
+	}
+
+	if (toolchain_url != NULL) {
+		struct json_writer w;
+
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "toolchain_url");
+		jw_str(&w, toolchain_url);
+		if (toolchain_sha256 != NULL) {
+			jw_key(&w, "toolchain_sha256");
+			jw_str(&w, toolchain_sha256);
+		}
+		jw_obj_close(&w);
+		w.buf[w.len] = '\0';
+
+		if (kx_client_request(c, "POST", "/v1/pkg/bootstrap", w.buf, &r) != 0) {
+			jw_free(&w);
+			fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+			return 1;
+		}
+		jw_free(&w);
+		if (r.status < 200 || r.status >= 300 || !wait)
+			return emit(&r, json_mode, fmt_bootstrap_fetch_status);
+		kx_response_free(&r);
+
+		if (poll_bootstrap_fetch(c, &r) != 0)
+			return 1;
+		return emit(&r, json_mode, fmt_bootstrap_fetch_status);
 	}
 
 	if (toolchain == NULL) {
@@ -3350,6 +3435,8 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: kanxeoctl pkg bootstrap [--toolchain=PATH]\n"
+		                "       kanxeoctl pkg bootstrap --toolchain-url=URL --toolchain-sha256=SHA256 [--wait]\n"
+		                "       kanxeoctl pkg bootstrap-status\n"
 		                "       kanxeoctl pkg recipes\n"
 		                "       kanxeoctl pkg recipe add --name=NAME --file=PATH\n"
 		                "       kanxeoctl pkg recipe show NAME\n"
@@ -3364,6 +3451,8 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 	sub = argv[0];
 	if (strcmp(sub, "bootstrap") == 0)
 		return cmd_pkg_bootstrap(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "bootstrap-status") == 0)
+		return cmd_pkg_bootstrap_status(c, json_mode);
 	if (strcmp(sub, "recipes") == 0)
 		return cmd_pkg_recipes(c, json_mode);
 	if (strcmp(sub, "recipe") == 0)

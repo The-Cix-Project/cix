@@ -21,7 +21,8 @@
 
 extern char **environ;
 
-#define PKG_CURL_BIN "/usr/bin/curl"
+/* PKG_CURL_BIN now lives in pkg.h -- shared with main.c's own
+ * bootstrap-fetch mechanism (ADR-0065), one real definition. */
 #define PKG_TAR_BIN "/usr/bin/tar"
 #define PKG_SHA256SUM_BIN "/usr/bin/sha256sum"
 #define PKG_RM_BIN "/bin/rm"
@@ -404,7 +405,7 @@ static int reset_build_container_dir(const char *container_base)
 	return run_subprocess(PKG_RM_BIN, argv);
 }
 
-static int run_capture_sha256(const char *path, char *out, size_t out_size)
+int pkg_run_capture_sha256(const char *path, char *out, size_t out_size)
 {
 	int pipefd[2];
 	pid_t pid;
@@ -1531,7 +1532,7 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out)
 
 		snprintf(src_path, sizeof(src_path), "%s/%s-%s-%d.src", g_sources_dir, e->name,
 		         recipe.version, i);
-		if (run_capture_sha256(src_path, sha_out, sizeof(sha_out)) != 0 ||
+		if (pkg_run_capture_sha256(src_path, sha_out, sizeof(sha_out)) != 0 ||
 		    strcasecmp(sha_out, recipe.sha256[i]) != 0) {
 			e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
 			snprintf(e->error, sizeof(e->error), "checksum mismatch (source %d)", i);

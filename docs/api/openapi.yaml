@@ -1444,12 +1444,20 @@ paths:
         copies live from this daemon's own host -- works when kanxeod happens to be
         running somewhere with a real toolchain (dev/test), produces an empty,
         non-functional toolchain on a real minimal install (nothing under its own /usr
-        beyond kanxeod/kanxeoctl and their bare runtime libs). toolchain_path: the
-        correct production path -- imports a real, portable artifact (built once,
-        elsewhere, with image/src/mktoolchainimage.c) via a local path the operator has
-        already transferred it to (e.g. scp), the same "local path, not an upload"
-        precedent /system/update's image_path/kernel_path already established. Both
-        paths are idempotent -- safe to call again. Not automatic at daemon startup; an
+        beyond kanxeod/kanxeoctl and their bare runtime libs). toolchain_path: imports a
+        real, portable artifact (built once, elsewhere, with image/src/mktoolchainimage.c)
+        via a local path the operator has already transferred it to (e.g. scp), the same
+        "local path, not an upload" precedent /system/update's image_path/kernel_path
+        already established. toolchain_url (+ required toolchain_sha256): the daemon
+        fetches the artifact itself, host-side, the same real curl primitive every
+        recipe's own pkg_source already uses (ADR-0065) -- closes a real gap the other
+        two modes both rest on: a genuinely fresh, minimal Kanxeo install has no SSH
+        server and no general shell at all (ADR-0034), so "the operator transfers it
+        onto the box" was never actually possible without this. The no-body and
+        toolchain_path modes stay synchronous (204 on success, unchanged); toolchain_url
+        is async (202, poll GET /pkg/bootstrap) since a real network fetch of a real,
+        large artifact cannot block this daemon's single-threaded event loop. All modes
+        are idempotent -- safe to call again. Not automatic at daemon startup; an
         explicit, one-time action.
       operationId: pkgBootstrap
       requestBody:
@@ -1462,11 +1470,29 @@ paths:
                 toolchain_path:
                   type: string
                   description: Local filesystem path to a toolchain squashfs artifact (image/src/mktoolchainimage.c's own output)
+                toolchain_url:
+                  type: string
+                  description: URL the daemon fetches the toolchain squashfs from itself, host-side (ADR-0065). Requires toolchain_sha256.
+                toolchain_sha256:
+                  type: string
+                  description: Required alongside toolchain_url -- a 64-char hex sha256 the fetched artifact must match before it's ever staged.
       responses:
         "204":
-          description: Build toolchain image staged (or already was)
+          description: Build toolchain image staged (or already was) -- no-body or toolchain_path modes only
+        "202":
+          description: toolchain_url fetch started -- poll GET /pkg/bootstrap
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgBootstrapStatus"
         "400":
-          description: toolchain_path given but missing, unreadable, or not a regular file
+          description: toolchain_path given but missing/unreadable/not a regular file, or toolchain_url given without a valid 64-char toolchain_sha256
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A toolchain_url fetch is already in progress
           content:
             application/json:
               schema:
@@ -1477,6 +1503,21 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+    get:
+      summary: Status of the most recent toolchain_url fetch (ADR-0065)
+      description: >
+        Polling endpoint for POST /pkg/bootstrap's own toolchain_url mode -- the exact
+        shape GET /system/iso already established for its own fire-and-forget job. state
+        is "none" until the first toolchain_url POST this daemon has ever handled; the
+        no-body/toolchain_path modes are synchronous and never touch this state at all.
+      operationId: getPkgBootstrapStatus
+      responses:
+        "200":
+          description: Current bootstrap-fetch status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgBootstrapStatus"
 
   /pkg/recipes:
     get:
@@ -3302,6 +3343,23 @@ components:
             The private TLD this site's names notionally live under.
             Defaults to "internal" (IANA-reserved for exactly this
             use, RFC 9476) but is a real, settable value.
+
+    PkgBootstrapStatus:
+      type: object
+      required: [state, error]
+      properties:
+        state:
+          type: string
+          enum: [none, fetching, ready, failed]
+          description: >
+            "none" until the first toolchain_url POST /pkg/bootstrap
+            this daemon has ever handled. Only one fetch is ever in
+            flight -- a POST while state is "fetching" gets 409, not
+            a second job.
+        error:
+          type: string
+          nullable: true
+          description: Non-null only when state is "failed" (curl failure, checksum mismatch, or staging failure).
 
     IsoStatus:
       type: object

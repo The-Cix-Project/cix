@@ -61,7 +61,8 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | GET | `/pki/certs/{name}` | Inspect one issued certificate (metadata + cert, never the key) |
 | DELETE | `/pki/certs/{name}` | Remove an issued certificate |
 | POST | `/pki/reset` | Wipe and regenerate the entire CA chain, reissuing every currently-tracked leaf |
-| POST | `/pkg/bootstrap` | Stage the sandboxed build toolchain image (optional `toolchain_path` for a real install; once; idempotent) |
+| POST | `/pkg/bootstrap` | Stage the sandboxed build toolchain image (`toolchain_path` local import, or `toolchain_url`+`toolchain_sha256` for the daemon to fetch it itself; once; idempotent) |
+| GET | `/pkg/bootstrap` | Status of the most recent `toolchain_url` fetch |
 | GET | `/pkg/recipes` | List recipes known to this daemon (metadata only) |
 | POST | `/pkg/recipes` | Add a recipe, or replace one with the same name (upsert) |
 | GET | `/pkg/recipes/{name}` | One recipe's full detail, including its raw `.recipe` text |
@@ -480,7 +481,9 @@ One-time setup, before installing anything:
 POST /v1/pkg/bootstrap
 ```
 
-Stages a real build toolchain (`gcc`/`make`/`ld`/`as`/`cc1`/`sh`/`tar` and their real headers/libraries) into the sandboxed build image. No body: copies live from this daemon's own host `/usr/{include,lib,lib64,bin,libexec}` with the real `cp -a` — works for dev/test convenience when `kanxeod` happens to be running somewhere with a real toolchain already, but produces an empty, non-functional toolchain on a real minimal install (nothing under its own `/usr` beyond `kanxeod`/`kanxeoctl` and their bare runtime libs). For a real install, use `{"toolchain_path": "/local/path/to/toolchain.squashfs"}` instead — imports a real, portable artifact (built once, elsewhere, with `image/src/mktoolchainimage.c`, then `scp`'d onto this box, the same "local path, not an upload" precedent `/system/update`'s `image_path`/`kernel_path` already established). Both idempotent — safe to call again.
+Stages a real build toolchain (`gcc`/`make`/`ld`/`as`/`cc1`/`sh`/`tar` and their real headers/libraries) into the sandboxed build image. No body: copies live from this daemon's own host `/usr/{include,lib,lib64,bin,libexec}` with the real `cp -a` — works for dev/test convenience when `kanxeod` happens to be running somewhere with a real toolchain already, but produces an empty, non-functional toolchain on a real minimal install (nothing under its own `/usr` beyond `kanxeod`/`kanxeoctl` and their bare runtime libs). `{"toolchain_path": "/local/path/to/toolchain.squashfs"}` imports a real, portable artifact (built once, elsewhere, with `image/src/mktoolchainimage.c`) via a local path already `scp`'d onto this box. Both of those are synchronous (`204`), unchanged.
+
+**`{"toolchain_url": "...", "toolchain_sha256": "..."}` is a third mode (ADR-0065): the daemon fetches the artifact itself, host-side** — the same real `curl` primitive every recipe's own `pkg_source` already uses, not a second fetch mechanism. Closes a real gap the other two modes both rest on: a genuinely fresh, minimal Kanxeo install has no SSH server and no general shell at all (ADR-0034), so "the operator transfers it onto the box" was never actually possible for a from-scratch install with nothing else already on the network to reach it via — confirmed the hard way (`nc -z <box> 22` closed) rather than assumed. Async (`202`, since a real network fetch of a real, large artifact can't block this daemon's single-threaded event loop) — poll `GET /v1/pkg/bootstrap` (`state`: `none`/`fetching`/`ready`/`failed`) the same shape `GET /system/iso` already established. `409` if a fetch is already in flight; `400` if `toolchain_url` is given without a valid 64-char `toolchain_sha256`. All three modes are idempotent — safe to call again.
 
 **Recipes are managed live, via the API itself (ADR-0040)** — `POST /v1/pkg/recipes` adds one (or replaces an existing one of the same name, an upsert), no ISO rebuild or reinstall needed:
 

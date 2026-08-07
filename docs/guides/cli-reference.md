@@ -112,6 +112,8 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | Command | |
 |---|---|
 | `pkg bootstrap [--toolchain=PATH]` | Stage a build toolchain into the shared build sandbox — see [`docs/guides/writing-recipes.md`](writing-recipes.md#build-images) |
+| `pkg bootstrap --toolchain-url=URL --toolchain-sha256=SHA256 [--wait]` | The daemon fetches the toolchain itself, host-side — for a real minimal install with no SSH server (ADR-0065) |
+| `pkg bootstrap-status` | State/error of the most recent `--toolchain-url=` fetch |
 | `pkg recipes` | List recipes |
 | `pkg recipe add --name=NAME --file=PATH` | Add or update a recipe on this running system directly, no reinstall needed |
 | `pkg recipe show NAME` | Print a recipe's own raw content |

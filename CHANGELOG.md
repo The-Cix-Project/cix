@@ -2,6 +2,23 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 5 follow-on 2: pkg bootstrap URL-fetch, closing a real gap in ADR-0031's own "operator scp's it" assumption (ADR-0065)
+
+Found directly from real-world use: getting `gitea` running on a genuinely separate, freshly-installed box (`192.168.15.95`) surfaced that `pkg_bootstrap`'s `toolchain_path` mode assumed an operator could `scp` an artifact onto the box out-of-band. Confirmed false by direct testing (`nc -z <box> 22` closed) -- a real Kanxeo install has no SSH server and no general shell at all (ADR-0034 by design). Explicitly requested to be solved architecturally, "no hacks, no workarounds," after three proposed stopgaps were rejected.
+
+#### Added
+- `daemon/src/main.c`: `CONN_BOOTSTRAP_FETCH` conn kind, `bootstrap_fetch_start()`/`handle_bootstrap_fetch_event()` (fork+`pidfd_open()`+epoll, non-blocking, mirroring `iso_build_start()`), new `GET /v1/pkg/bootstrap` polling `{state, error}`. `POST /v1/pkg/bootstrap` gains a third mode: `{"toolchain_url": "...", "toolchain_sha256": "..."}`, reusing `pkg.c`'s own existing recipe-source curl-fetch primitive rather than inventing a second one.
+- `daemon/include/pkg.h`/`daemon/src/pkg.c`: `pkg_run_capture_sha256()` exported (was `static run_capture_sha256()`), reused by `main.c`'s fetch-completion handler for the identical real checksum check every recipe source already gets. `PKG_CURL_BIN` moved from `pkg.c`'s own private `#define` into `pkg.h`, shared rather than duplicated.
+- `cli/src/main.c`: `kanxeoctl pkg bootstrap --toolchain-url=URL --toolchain-sha256=SHA256 [--wait]`, new `kanxeoctl pkg bootstrap-status`.
+- `docs/adr/0065-pkg-bootstrap-url-fetch.md`.
+
+#### Changed
+- `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/cli-reference.md`: document the new mode, the new `GET` operation, and the new `PkgBootstrapStatus` schema.
+
+#### Notes
+- Verified real, end to end, twice, against a genuinely separate running `kanxeod`: a real ~1.25GB toolchain squashfs fetched via `toolchain_url`/`toolchain_sha256` reaching `state: "ready"` with `gcc` confirmed present afterward; a deliberately wrong checksum correctly reaching `state: "failed"`/`error: "checksum mismatch"` without touching the build sandbox. The two pre-existing modes (no body / `toolchain_path`) re-tested unchanged, still synchronous `204`. A fresh installer ISO was rolled from the fixed `kanxeod` so the fix ships to any new install.
+- **Not resolved, per Zen -- an honest, accepted limitation:** `192.168.15.95` itself cannot retroactively receive this fix (the same "no transfer path" problem the fix solves, a genuine chicken-and-egg) -- the clean resolution is reinstalling that box from the freshly-built ISO. `/system/update`'s own `image_path`/`kernel_path` deliberately **not** extended in this pass -- a fresh install never needs them, since the fix ships inside the ISO itself.
+
 ### Part 5 follow-on: REST-driven ISO assembly, closing the API-First Mandate gap (ADR-0064)
 
 Closes the one honest gap Part 5 itself flagged: `image/src/mkinstalleriso.c` was a dev-machine-only tool, not reachable via REST/CLI. Requested explicitly, with an explicit instruction that this project's capabilities be API-driven "with no exceptions unless explicitly called out for valid reasons."

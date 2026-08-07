@@ -69,6 +69,10 @@
 #define PKG_VERSION_MAX 64
 #define PKG_URL_MAX 512
 #define PKG_SHA256_MAX 65
+/* Shared with main.c's own bootstrap-fetch mechanism (ADR-0065) -- the
+ * exact same host-side curl binary every recipe source fetch already
+ * uses, one real path, not two copies of the literal string. */
+#define PKG_CURL_BIN "/usr/bin/curl"
 #define PKG_DEPENDS_MAX 256
 #define PKG_ERROR_MAX 256
 /* Max total packages in one resolved install chain (the target plus
@@ -170,6 +174,19 @@ enum pkg_error pkg_bootstrap_build_image(void);
  * hand-rolled HTTP server should ever stream.
  */
 enum pkg_error pkg_bootstrap_from_toolchain(const char *toolchain_path);
+
+/*
+ * Real sha256 of a real on-disk file (forks/execs sha256sum, captures
+ * its stdout) -- exported so main.c's own bootstrap-fetch mechanism
+ * (ADR-0065: fetching the toolchain artifact itself over HTTP, not
+ * just importing an already-local one) can verify a freshly curl'd
+ * artifact the same way pkg_fetch_completed() already verifies every
+ * recipe source, one real implementation, not a second copy of it.
+ * out_size must be at least 65 (64 hex chars + NUL); returns 0 with
+ * out null-terminated on success, -1 on any failure (spawn, short
+ * read, non-hex-looking output).
+ */
+int pkg_run_capture_sha256(const char *path, char *out, size_t out_size);
 
 /*
  * Test-only concrete-fact check (daemon/src/main.c's own

@@ -116,6 +116,10 @@ static char QUOTAMAP_STATE_PATH[PATH_MAX];
  */
 static char SIGNING_KEYS_DIR[PATH_MAX];
 static char ISO_DIR[PATH_MAX];
+/* POST /v1/pkg/bootstrap's own toolchain_url mode (ADR-0065) -- a
+ * fixed scratch path for the curl'd artifact, same "one fixed spot,
+ * overwritten each time" convention ISO_OUTPUT_PATH already uses. */
+static char PKGBUILD_TOOLCHAIN_FETCH_PATH[PATH_MAX];
 
 /* Computes every path derived from g_base_dir -- called once, right
  * after argv parsing (so --data-dir= has already been applied) and
@@ -142,6 +146,8 @@ static void init_base_dir_paths(void)
 	snprintf(QUOTAMAP_STATE_PATH, sizeof(QUOTAMAP_STATE_PATH), "%s/quota_projids.json", g_base_dir);
 	snprintf(SIGNING_KEYS_DIR, sizeof(SIGNING_KEYS_DIR), "%s/keys", g_base_dir);
 	snprintf(ISO_DIR, sizeof(ISO_DIR), "%s/iso", g_base_dir);
+	snprintf(PKGBUILD_TOOLCHAIN_FETCH_PATH, sizeof(PKGBUILD_TOOLCHAIN_FETCH_PATH),
+	         "%s/pkg/bootstrap_toolchain.squashfs", g_base_dir);
 }
 /*
  * Backoff cap and stability-reset threshold for the crash-restart
@@ -337,6 +343,7 @@ enum conn_kind {
 	CONN_PKG_FETCH,
 	CONN_BOOTROOT_ASSEMBLE, /* server-side mkbootroot invocation (ADR-0057) */
 	CONN_ISO_ASSEMBLE,      /* server-side mkinstalleriso invocation (ADR-0064) */
+	CONN_BOOTSTRAP_FETCH,   /* pkg/bootstrap's own toolchain_url curl fetch (ADR-0065) */
 	CONN_RESTART_TIMER,
 	CONN_CONSOLE_SHELL,
 	CONN_CONSOLE_RESPAWN_TIMER,
@@ -362,7 +369,7 @@ struct conn {
 	           * progress; see handle_client_event(). */
 	struct http_conn http;                 /* CONN_CLIENT only */
 	struct registry_entry *entry;           /* CONN_CONTAINER only */
-	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE / CONN_ISO_ASSEMBLE */
+	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE / CONN_ISO_ASSEMBLE / CONN_BOOTSTRAP_FETCH */
 	char restart_name[REGISTRY_NAME_MAX];   /* CONN_RESTART_TIMER only */
 	pid_t console_pid;                      /* CONN_CONSOLE_SHELL only */
 	char console_tty[32];                   /* CONN_CONSOLE_SHELL / CONN_CONSOLE_RESPAWN_TIMER */
@@ -2703,6 +2710,169 @@ static void handle_iso_assemble_event(struct conn *cc)
 	}
 	close(cc->fd);
 	free(cc);
+}
+
+/*
+ * POST /v1/pkg/bootstrap's own toolchain_url mode (ADR-0065): closes a
+ * real gap ADR-0031's own "the operator transfers it onto the box
+ * out-of-band (scp)" assumption turned out to rest on -- a real,
+ * freshly-installed Kanxeo box has no SSH server and no general shell
+ * at all (deliberately, ADR-0034), so there was never actually a way
+ * to get a multi-hundred-MB toolchain artifact onto one over the
+ * network. Reuses the exact host-side curl-fetch primitive pkg.c's own
+ * recipe pkg_source already relies on (a plain fork+execve of curl,
+ * never the daemon's own hand-rolled HTTP server) rather than
+ * inventing a second fetch mechanism -- the only new code is fetching
+ * into a fixed scratch path and, once it lands, handing off to the
+ * exact same pkg_bootstrap_from_toolchain() the toolchain_path mode
+ * already uses for staging.
+ */
+enum bootstrap_fetch_state {
+	BOOTSTRAP_FETCH_NONE,
+	BOOTSTRAP_FETCH_FETCHING,
+	BOOTSTRAP_FETCH_READY,
+	BOOTSTRAP_FETCH_FAILED
+};
+static enum bootstrap_fetch_state g_bootstrap_fetch_state = BOOTSTRAP_FETCH_NONE;
+static char g_bootstrap_fetch_error[256];
+static char g_bootstrap_fetch_sha256_expected[PKG_SHA256_MAX];
+
+static void register_bootstrap_fetch_pidfd(pid_t pid, int pidfd)
+{
+	struct conn *cc;
+	struct kx_epoll_event ev;
+
+	cc = malloc(sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (bootstrap fetch reactor conn)");
+		abort();
+	}
+	cc->kind = CONN_BOOTSTRAP_FETCH;
+	cc->fd = pidfd;
+	cc->pkg_fetch_pid = pid;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+		perror("epoll_ctl ADD bootstrap fetch pidfd");
+		abort();
+	}
+}
+
+/*
+ * Returns 0 and forks the fetch (state -> FETCHING) on success; -1
+ * with err_msg filled otherwise (both url and sha256 are required --
+ * unlike a recipe's own pkg_source, there is no "trust whatever
+ * shows up" mode for something that gets unsquashfs'd wholesale into
+ * the build sandbox). err_msg_size must be at least 256. Caller is
+ * responsible for the "already fetching" check, same split as
+ * iso_build_start()'s own doc comment explains.
+ */
+static int bootstrap_fetch_start(const char *url, const char *sha256, char *err_msg,
+                                  size_t err_msg_size)
+{
+	static char out_path[PATH_MAX];
+	static char url_buf[PKG_URL_MAX];
+	char *argv[8];
+	pid_t pid;
+	int pidfd;
+
+	if (url == NULL || url[0] == '\0') {
+		snprintf(err_msg, err_msg_size, "toolchain_url is required");
+		return -1;
+	}
+	if (sha256 == NULL || strlen(sha256) != 64) {
+		snprintf(err_msg, err_msg_size, "toolchain_sha256 is required and must be a 64-char hex sha256");
+		return -1;
+	}
+
+	snprintf(out_path, sizeof(out_path), "%s", PKGBUILD_TOOLCHAIN_FETCH_PATH);
+	snprintf(url_buf, sizeof(url_buf), "%s", url);
+
+	argv[0] = (char *)PKG_CURL_BIN;
+	argv[1] = "-fsSL";
+	argv[2] = "--retry";
+	argv[3] = "8";
+	argv[4] = "-o";
+	argv[5] = out_path;
+	argv[6] = url_buf;
+	argv[7] = NULL;
+
+	pid = fork();
+	if (pid < 0) {
+		snprintf(err_msg, err_msg_size, "fork failed: %s", strerror(errno));
+		return -1;
+	}
+	if (pid == 0) {
+		execve(PKG_CURL_BIN, argv, environ);
+		perror("child: execve curl (bootstrap fetch)");
+		_exit(127);
+	}
+
+	pidfd = sys_pidfd_open(pid, 0);
+	if (pidfd < 0) {
+		snprintf(err_msg, err_msg_size, "pidfd_open failed: %s", strerror(errno));
+		kill(pid, SIGKILL);
+		waitpid(pid, NULL, 0);
+		return -1;
+	}
+	register_bootstrap_fetch_pidfd(pid, pidfd);
+	snprintf(g_bootstrap_fetch_sha256_expected, sizeof(g_bootstrap_fetch_sha256_expected), "%s", sha256);
+	g_bootstrap_fetch_state = BOOTSTRAP_FETCH_FETCHING;
+	g_bootstrap_fetch_error[0] = '\0';
+	return 0;
+}
+
+/*
+ * Reaps bootstrap_fetch_start()'s own curl child. On a real, clean
+ * exit, verifies the fetched artifact's checksum (pkg_run_capture_
+ * sha256(), the exact same real check every recipe source already
+ * gets, ADR-0036) before ever handing it to pkg_bootstrap_from_
+ * toolchain() -- a corrupt or wrong-URL fetch must never get
+ * unsquashfs'd into the build sandbox silently.
+ */
+static void handle_bootstrap_fetch_event(struct conn *cc)
+{
+	int status;
+	char sha_out[PKG_SHA256_MAX];
+
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	if (waitpid(cc->pkg_fetch_pid, &status, 0) != cc->pkg_fetch_pid || !WIFEXITED(status) ||
+	    WEXITSTATUS(status) != 0) {
+		g_bootstrap_fetch_state = BOOTSTRAP_FETCH_FAILED;
+		snprintf(g_bootstrap_fetch_error, sizeof(g_bootstrap_fetch_error), "curl fetch failed (status 0x%x)",
+		         (unsigned)status);
+		fprintf(stderr, "bootstrap fetch: curl failed\n");
+		close(cc->fd);
+		free(cc);
+		return;
+	}
+	close(cc->fd);
+	free(cc);
+
+	if (pkg_run_capture_sha256(PKGBUILD_TOOLCHAIN_FETCH_PATH, sha_out, sizeof(sha_out)) != 0 ||
+	    strcasecmp(sha_out, g_bootstrap_fetch_sha256_expected) != 0) {
+		g_bootstrap_fetch_state = BOOTSTRAP_FETCH_FAILED;
+		snprintf(g_bootstrap_fetch_error, sizeof(g_bootstrap_fetch_error), "checksum mismatch");
+		fprintf(stderr, "bootstrap fetch: checksum mismatch\n");
+		return;
+	}
+
+	{
+		enum pkg_error perr = pkg_bootstrap_from_toolchain(PKGBUILD_TOOLCHAIN_FETCH_PATH);
+
+		if (perr != PKG_OK) {
+			g_bootstrap_fetch_state = BOOTSTRAP_FETCH_FAILED;
+			snprintf(g_bootstrap_fetch_error, sizeof(g_bootstrap_fetch_error),
+			         "fetched toolchain failed to stage (invalid squashfs?)");
+			fprintf(stderr, "bootstrap fetch: staging failed\n");
+			return;
+		}
+	}
+
+	g_bootstrap_fetch_state = BOOTSTRAP_FETCH_READY;
+	fprintf(stderr, "bootstrap fetch: succeeded, toolchain staged\n");
 }
 
 static const char *iso_build_state_str(enum iso_build_state s)
@@ -5212,19 +5382,72 @@ static void respond_pkg_recipe_error(int fd, enum pkg_error err)
 	}
 }
 
+static const char *bootstrap_fetch_state_str(enum bootstrap_fetch_state s)
+{
+	switch (s) {
+	case BOOTSTRAP_FETCH_FETCHING:
+		return "fetching";
+	case BOOTSTRAP_FETCH_READY:
+		return "ready";
+	case BOOTSTRAP_FETCH_FAILED:
+		return "failed";
+	case BOOTSTRAP_FETCH_NONE:
+	default:
+		return "none";
+	}
+}
+
+static void write_bootstrap_fetch_status(struct json_writer *w)
+{
+	jw_obj_open(w);
+	jw_key(w, "state");
+	jw_str(w, bootstrap_fetch_state_str(g_bootstrap_fetch_state));
+	jw_key(w, "error");
+	if (g_bootstrap_fetch_state == BOOTSTRAP_FETCH_FAILED)
+		jw_str(w, g_bootstrap_fetch_error);
+	else
+		jw_null(w);
+	jw_obj_close(w);
+}
+
+/* GET /v1/pkg/bootstrap (ADR-0065) -- polling for the toolchain_url
+ * mode's own async fetch, the same shape GET /system/iso already
+ * established. state is "none" until the first toolchain_url POST
+ * this daemon has ever handled (the plain/toolchain_path modes below
+ * are synchronous and never touch this state at all). */
+static void handle_pkg_bootstrap_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	write_bootstrap_fetch_status(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 /*
  * body/body_len optional: an empty body (the existing bare
  * `POST /v1/pkg/bootstrap` contract) keeps the live-copy fallback
  * unchanged. A JSON body with "toolchain_path" set switches to the
  * correct production path (pkg_bootstrap_from_toolchain()) instead --
  * a local path the operator has already scp'd a real toolchain
- * artifact to, the same "local path, not an HTTP upload" precedent
- * /system/update's own image_path/kernel_path already established.
+ * artifact to. Both of these stay exactly as they always were:
+ * synchronous, 204 on success.
+ *
+ * A JSON body with "toolchain_url" (+ required "toolchain_sha256")
+ * is the third mode ADR-0065 adds: the daemon fetches the artifact
+ * itself, host-side, the same real curl primitive every recipe
+ * source already uses -- closing the real gap the other two modes
+ * both rest on (an operator "transferring it onto the box out-of-
+ * band" assumes an SSH server a real, freshly-installed Kanxeo box
+ * simply doesn't have, ADR-0034). Async, 202, poll GET /pkg/bootstrap.
  */
 static void handle_pkg_bootstrap(int fd, const char *body, size_t body_len)
 {
 	enum pkg_error perr;
 	const char *toolchain_path = NULL;
+	const char *toolchain_url = NULL;
+	const char *toolchain_sha256 = NULL;
 	struct json_value *root = NULL;
 
 	if (body_len > 0) {
@@ -5234,6 +5457,34 @@ static void handle_pkg_bootstrap(int fd, const char *body, size_t body_len)
 			return;
 		}
 		toolchain_path = json_as_string(json_object_get(root, "toolchain_path"));
+		toolchain_url = json_as_string(json_object_get(root, "toolchain_url"));
+		toolchain_sha256 = json_as_string(json_object_get(root, "toolchain_sha256"));
+	}
+
+	if (toolchain_url != NULL && toolchain_url[0] != '\0') {
+		char err_msg[256];
+		struct json_writer w;
+
+		if (g_bootstrap_fetch_state == BOOTSTRAP_FETCH_FETCHING) {
+			if (root != NULL)
+				json_free(root);
+			respond_error(fd, 409, "Conflict", "a toolchain fetch is already in progress");
+			return;
+		}
+		if (bootstrap_fetch_start(toolchain_url, toolchain_sha256, err_msg, sizeof(err_msg)) != 0) {
+			if (root != NULL)
+				json_free(root);
+			respond_error(fd, 400, "Bad Request", err_msg);
+			return;
+		}
+		if (root != NULL)
+			json_free(root);
+
+		jw_init(&w);
+		write_bootstrap_fetch_status(&w);
+		respond_json(fd, 202, "Accepted", &w);
+		jw_free(&w);
+		return;
 	}
 
 	perr = (toolchain_path != NULL && toolchain_path[0] != '\0')
@@ -5959,6 +6210,10 @@ static void dispatch(int fd, const struct http_request *req)
 	if (strcmp(req->path, "/v1/pkg/bootstrap") == 0) {
 		if (strcmp(req->method, "POST") == 0) {
 			handle_pkg_bootstrap(fd, req->body, req->body_len);
+			return;
+		}
+		if (strcmp(req->method, "GET") == 0) {
+			handle_pkg_bootstrap_get(fd);
 			return;
 		}
 	}
@@ -7458,6 +7713,8 @@ int main(int argc, char **argv)
 				handle_bootroot_assemble_event(cc);
 			else if (cc->kind == CONN_ISO_ASSEMBLE)
 				handle_iso_assemble_event(cc);
+			else if (cc->kind == CONN_BOOTSTRAP_FETCH)
+				handle_bootstrap_fetch_event(cc);
 			else if (cc->kind == CONN_RESTART_TIMER)
 				handle_restart_timer_event(cc);
 			else if (cc->kind == CONN_CONSOLE_SHELL)
