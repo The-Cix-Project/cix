@@ -73,3 +73,5 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0066](0066-kernel-routing-table-diagnostic.md) | A real kernel routing-table diagnostic: closing the last blind spot in "the daemon is the only way to inspect a running box" | Accepted |
 | [0067](0067-network-address-field-rename.md) | Rename a network's `gateway`/`has_gateway` field to `address`/`has_address` | Accepted |
 | [0068](0068-dedicated-daemon-bind-ip.md) | A dedicated daemon bind IP, decoupled from the management network's own address | Accepted |
+| [0069](0069-host-swap-file.md) | A single, on-demand host swap file: direct swap-header write, no `mkswap` dependency | Accepted |
+| [0070](0070-consolidated-log-store.md) | A consolidated, API-accessible, size-capped log store: kernel dmesg + kanxeod diagnostics + per-request audit trail | Accepted |

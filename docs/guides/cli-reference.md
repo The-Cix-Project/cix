@@ -30,6 +30,11 @@ kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `routes` | The box's own real kernel IPv4 routing table (ADR-0066) — the only way to see this on a real install, no SSH/general shell |
 | `routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]` | Add a real kernel route (ADR-0067 Part 3); or `--default --gateway=A.B.C.D` for the default route |
 | `routes rm --dest=A.B.C.D --prefix=N` | Remove one; or `--default` for the default route |
+| `swap` | Whether the host swap file is enabled (ADR-0069) |
+| `swap enable --size-mb=N` | Create and activate a swap file of this size |
+| `swap disable` | Deactivate and remove it |
+| `logs [--source=kernel\|kanxeod\|audit] [--level=...] [--tail=N] [--since=UNIXTS]` | The consolidated log (kernel dmesg + kanxeod diagnostics + per-request audit trail, ADR-0070) |
+| `logs config [--max-bytes=N]` | Show or set the log's total size cap |
 
 See [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) and [`docs/guides/staying-updated.md`](staying-updated.md) for `update`'s real operator runbooks, not just the flag syntax.
 

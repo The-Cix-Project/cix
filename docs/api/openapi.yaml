@@ -492,6 +492,172 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/swap:
+    get:
+      summary: Whether the host swap file is enabled (ADR-0069)
+      operationId: getSystemSwap
+      responses:
+        "200":
+          description: Current swap state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SwapStatus"
+    post:
+      summary: Create and activate a host swap file of the given size (ADR-0069)
+      description: >
+        Creates size_mb megabytes' worth of real, fallocate()'d disk
+        space (never sparse), writes a real kernel swap-file header
+        directly, and activates it via swapon(2). 409 if swap is
+        already enabled -- disable it first to resize.
+      operationId: postSystemSwap
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [size_mb]
+              properties:
+                size_mb:
+                  type: integer
+                  minimum: 64
+                  maximum: 1048576
+      responses:
+        "200":
+          description: Swap enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SwapStatus"
+        "400":
+          description: Invalid JSON body or size_mb out of range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Swap is already enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Swap file creation or activation failed (fallocate/swapon)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Deactivate and remove the host swap file (ADR-0069)
+      operationId: deleteSystemSwap
+      responses:
+        "204":
+          description: Swap disabled
+        "409":
+          description: Swap was not enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: swapoff(2) failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /system/logs:
+    get:
+      summary: Tail the consolidated log (kernel dmesg + kanxeod diagnostics + per-request audit trail, ADR-0070)
+      description: >
+        Every kanxeoctl command and every web UI action is, underneath,
+        a REST call this daemon already handles -- one entry is logged
+        per request (source "audit"), except GET /system/logs and
+        GET /health, which are excluded as low-value polling noise.
+        Combined with real kernel dmesg (source "kernel") and
+        kanxeod's own internal diagnostics (source "kanxeod") in one
+        chronologically-ordered store.
+      operationId: getSystemLogs
+      parameters:
+        - name: source
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [kernel, kanxeod, audit]
+        - name: level
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: tail
+          in: query
+          required: false
+          description: Max entries to return, newest last. Defaults to 1000 if omitted or out of [1, 5000].
+          schema:
+            type: integer
+        - name: since
+          in: query
+          required: false
+          description: Unix seconds -- only entries at or after this time.
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Matching entries, oldest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LogEntry"
+
+  /system/logs/config:
+    get:
+      summary: The log store's current total size cap (ADR-0070)
+      operationId: getSystemLogsConfig
+      responses:
+        "200":
+          description: Current config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogsConfig"
+    put:
+      summary: Set the log store's total size cap (ADR-0070)
+      description: >
+        Enforced at segment granularity (8 rotating segments), not
+        byte-exact -- a few percent of slop against this value is
+        expected. Affects future segment rotation only, never
+        retroactively shrinks an already-large segment.
+      operationId: putSystemLogsConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LogsConfig"
+      responses:
+        "200":
+          description: Config updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogsConfig"
+        "400":
+          description: max_bytes missing or out of [1 MB, 100 GB]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Could not persist the new config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /system/iso:
     get:
       summary: Status of the most recent server-side installer ISO build (ADR-0064)
@@ -3610,6 +3776,43 @@ components:
           type: integer
           minimum: 1
           maximum: 65535
+
+    LogEntry:
+      type: object
+      required: [ts, source, level, msg]
+      properties:
+        ts:
+          type: integer
+          description: Unix seconds.
+        source:
+          type: string
+          enum: [kernel, kanxeod, audit]
+        level:
+          type: string
+        msg:
+          type: string
+
+    LogsConfig:
+      type: object
+      required: [max_bytes]
+      properties:
+        max_bytes:
+          type: integer
+          minimum: 1048576
+          maximum: 107374182400
+
+    SwapStatus:
+      type: object
+      required: [enabled, size_mb, path]
+      properties:
+        enabled:
+          type: boolean
+        size_mb:
+          type: integer
+          description: 0 when not enabled.
+        path:
+          type: string
+          description: The swap file's real path on the host, or "" when not enabled.
 
     KernelRoute:
       type: object

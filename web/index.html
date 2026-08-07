@@ -631,6 +631,67 @@
 			</form>
 			<p class="hint" id="dcf-bind-hint"></p>
 			<p class="hint">Bind IP (ADR-0068) is a second, dedicated address on the management network's own bridge -- kanxeod binds there instead of that network's own address. Leave blank to make no change; check "Clear bind IP" to revert to the network's own address.</p>
+
+			<h3>Host swap</h3>
+			<p class="hint" id="swap-status">Swap: unknown</p>
+			<form id="swap-enable-form">
+				<label>
+					Size (MB)
+					<input type="number" id="swap-size-mb" min="64" max="1048576" value="4096">
+				</label>
+				<button type="submit">Enable</button>
+				<button type="button" id="swap-disable">Disable</button>
+			</form>
+			<p class="hint">A single on-demand swap file (ADR-0069), off by default -- useful for memory-heavy package builds (e.g. Rust/wasm) on a box with limited RAM. File-backed swap performs identically to a partition on SSD/NVMe-backed storage.</p>
+		</section>
+
+		<section class="view" id="view-logs" hidden>
+			<div class="view-list">
+				<h2>Logs</h2>
+				<p class="hint">A consolidated log (ADR-0070): real kernel dmesg, kanxeod's own diagnostics, and a per-request audit trail (every kanxeoctl command and every web UI action, since both are pure REST clients) -- all in one place, size-capped with the oldest entries dropped first once the cap is reached.</p>
+				<form id="logs-filter-form">
+					<label>
+						Source
+						<select id="lf-source">
+							<option value="">(all)</option>
+							<option value="kernel">kernel</option>
+							<option value="kanxeod">kanxeod</option>
+							<option value="audit">audit</option>
+						</select>
+					</label>
+					<label>
+						Level
+						<input type="text" id="lf-level" placeholder="(any)">
+					</label>
+					<label>
+						Tail
+						<input type="number" id="lf-tail" min="1" max="5000" value="200">
+					</label>
+					<button type="submit">Refresh</button>
+				</form>
+				<table id="logs">
+					<thead>
+						<tr>
+							<th>Time</th>
+							<th>Source</th>
+							<th>Level</th>
+							<th>Message</th>
+						</tr>
+					</thead>
+					<tbody id="logs-body">
+						<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+				<h3>Size cap</h3>
+				<form id="logs-config-form">
+					<label>
+						Max bytes
+						<input type="number" id="lcf-max-bytes" min="1048576" max="107374182400" step="1048576">
+					</label>
+					<button type="submit">Save</button>
+				</form>
+				<p class="hint">Enforced at segment granularity (8 rotating segments, oldest dropped whole when a new one is needed), not byte-exact -- a few percent of slop against this cap is expected.</p>
+			</div>
 		</section>
 
 		<section class="view" id="view-backup" hidden>

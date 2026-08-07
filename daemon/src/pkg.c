@@ -1,5 +1,6 @@
 #include "pkg.h"
 #include "linux_compat.h"
+#include "logstore.h"
 #include "namecheck.h"
 #include "persist.h"
 #include "pki.h"
@@ -351,6 +352,8 @@ static int run_subprocess(const char *bin, char *const argv[])
 	pid = fork();
 	if (pid < 0) {
 		perror("fork");
+		logstore_write("kanxeod", "error", "run_subprocess %s: fork failed: %s", bin,
+		                strerror(errno));
 		return -1;
 	}
 	if (pid == 0) {
@@ -360,14 +363,33 @@ static int run_subprocess(const char *bin, char *const argv[])
 	}
 	if (waitpid(pid, &status, 0) != pid) {
 		perror("waitpid");
+		logstore_write("kanxeod", "error", "run_subprocess %s: waitpid failed: %s", bin,
+		                strerror(errno));
 		return -1;
 	}
 	if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
 		return 0;
-	if (WIFEXITED(status))
+	if (WIFEXITED(status)) {
 		fprintf(stderr, "%s: exited with status %d\n", bin, WEXITSTATUS(status));
-	else if (WIFSIGNALED(status))
+		/* Status 127 is execve()'s own _exit(127) above -- bin itself
+		 * could not be run at all (missing/not executable/bad
+		 * interpreter), distinct from bin running and failing on its
+		 * own terms. Worth calling out explicitly since it's the
+		 * class of bug this project has hit before (ADR-0056's
+		 * /bin/sh -> /usr/bin/bash lesson): a wrong hardcoded path is
+		 * invisible from the exit status alone otherwise. */
+		if (WEXITSTATUS(status) == 127)
+			logstore_write("kanxeod", "error",
+			                "run_subprocess %s: exec failed (missing binary or bad path?)",
+			                bin);
+		else
+			logstore_write("kanxeod", "error", "run_subprocess %s: exited with status %d",
+			                bin, WEXITSTATUS(status));
+	} else if (WIFSIGNALED(status)) {
 		fprintf(stderr, "%s: killed by signal %d\n", bin, WTERMSIG(status));
+		logstore_write("kanxeod", "error", "run_subprocess %s: killed by signal %d", bin,
+		                WTERMSIG(status));
+	}
 	return -1;
 }
 
@@ -1582,15 +1604,60 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out)
 		 * recipe run against a minimal image, not just this one.
 		 */
 		snprintf(tmp_dir, sizeof(tmp_dir), "%s/tmp", g_build_upperdir);
-		if (reset_build_container_dir(container_base) != 0 || persist_mkdir_p(src_dir) != 0 ||
-		    persist_mkdir_p(dest_dir) != 0 || persist_mkdir_p(tmp_dir) != 0 ||
-		    copy_file_simple(recipe_path, recipe_dst) != 0 ||
-		    extract_tarball(main_src_path, src_dir) != 0) {
-			e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
-			snprintf(e->error, sizeof(e->error), "could not prepare the build container");
-			g_current_job_name[0] = '\0';
-			g_dep_queue_count = 0;
-			return 0;
+
+		/*
+		 * A sequential if/else-if chain rather than the equivalent
+		 * single ||-chain condition -- functionally identical, but
+		 * this way pkg_fetch_completed() itself knows (and can log)
+		 * exactly which of the six sub-steps failed instead of
+		 * bucketing all of them into one opaque message. run_subprocess()
+		 * already logs its own subprocess-level detail (exit status/
+		 * signal/exec failure) for the two steps that shell out
+		 * (reset_build_container_dir(), extract_tarball()); the
+		 * errno here covers the two direct-syscall steps
+		 * (persist_mkdir_p(), copy_file_simple()), captured
+		 * immediately after each one's own failing call so nothing
+		 * else can clobber it first.
+		 */
+		{
+			const char *prep_step = NULL;
+			int prep_errno = 0;
+
+			if (reset_build_container_dir(container_base) != 0) {
+				prep_step = "reset build container dir";
+			} else if (persist_mkdir_p(src_dir) != 0) {
+				prep_step = "create src dir";
+				prep_errno = errno;
+			} else if (persist_mkdir_p(dest_dir) != 0) {
+				prep_step = "create dest dir";
+				prep_errno = errno;
+			} else if (persist_mkdir_p(tmp_dir) != 0) {
+				prep_step = "create tmp dir";
+				prep_errno = errno;
+			} else if (copy_file_simple(recipe_path, recipe_dst) != 0) {
+				prep_step = "copy recipe.sh";
+				prep_errno = errno;
+			} else if (extract_tarball(main_src_path, src_dir) != 0) {
+				prep_step = "extract source tarball";
+			}
+
+			if (prep_step != NULL) {
+				if (prep_errno != 0)
+					logstore_write("kanxeod", "error",
+					                "pkg %s@%s: could not prepare build container (%s): %s",
+					                e->name, g_current_job_image, prep_step,
+					                strerror(prep_errno));
+				else
+					logstore_write("kanxeod", "error",
+					                "pkg %s@%s: could not prepare build container (%s) -- see run_subprocess detail above",
+					                e->name, g_current_job_image, prep_step);
+				e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
+				snprintf(e->error, sizeof(e->error),
+				         "could not prepare the build container (%s failed)", prep_step);
+				g_current_job_name[0] = '\0';
+				g_dep_queue_count = 0;
+				return 0;
+			}
 		}
 	}
 
@@ -1601,8 +1668,11 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out)
 	 * recipe-author responsibility, not auto-resolved here. */
 	if (recipe.source_count > 1) {
 		if (persist_mkdir_p(extra_dir) != 0) {
+			logstore_write("kanxeod", "error",
+			                "pkg %s@%s: could not prepare build container (create extra dir): %s",
+			                e->name, g_current_job_image, strerror(errno));
 			e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
-			snprintf(e->error, sizeof(e->error), "could not prepare the build container");
+			snprintf(e->error, sizeof(e->error), "could not prepare the build container (create extra dir failed)");
 			g_current_job_name[0] = '\0';
 			g_dep_queue_count = 0;
 			return 0;
@@ -1615,8 +1685,12 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out)
 			snprintf(extra_dst, sizeof(extra_dst), "%s/%s", extra_dir,
 			         url_basename(recipe.source[i]));
 			if (copy_file_simple(src_path, extra_dst) != 0) {
+				logstore_write("kanxeod", "error",
+				                "pkg %s@%s: could not prepare build container (copy extra source %d): %s",
+				                e->name, g_current_job_image, i, strerror(errno));
 				e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
-				snprintf(e->error, sizeof(e->error), "could not prepare the build container");
+				snprintf(e->error, sizeof(e->error),
+				         "could not prepare the build container (copy extra source %d failed)", i);
 				g_current_job_name[0] = '\0';
 				g_dep_queue_count = 0;
 				return 0;

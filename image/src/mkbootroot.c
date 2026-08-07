@@ -203,6 +203,32 @@ int main(int argc, char **argv)
 			                                                   * documented "no /dev/loop* at all"
 			                                                   * constraint; real hardware
 			                                                   * shouldn't need one for this either). */
+			/*
+			 * gzip/bzip2/xz -- not a _BIN macro of their own anywhere in
+			 * daemon/src/pkg.c; needed because GNU tar (PKG_TAR_BIN)
+			 * itself has no compression libraries linked in at all
+			 * (confirmed via `ldd /usr/bin/tar`: libacl/libselinux/
+			 * libc/libpcre2 only) -- it shells out to a bare "gzip"/
+			 * "bzip2"/"xz" resolved via $PATH for every compressed
+			 * tarball, confirmed via strace on a real extraction
+			 * (execve("bzip2", ["bzip2","-d"], ...)). Previously
+			 * entirely absent from this image: every recipe using a
+			 * .tar.gz/.tar.bz2/.tar.xz source (nearly all of them)
+			 * failed extract_tarball() on a genuinely fresh/minimal
+			 * install with the opaque "could not prepare the build
+			 * container" bucket error -- confirmed live on
+			 * 192.168.15.95's tcc.recipe (.tar.bz2) install, invisible
+			 * until pkg.c's own build-container-prep diagnostics were
+			 * wired into the log store. Never caught by this sandbox's
+			 * own dev-loop testing because a locally-run kanxeod here
+			 * always had this rich dev host's own real /usr/bin/{gzip,
+			 * bzip2,xz} reachable via $PATH -- the same "this dev
+			 * sandbox's own rich /usr made the gap easy to miss"
+			 * pattern ADR-0023 already names for libtinfo above.
+			 */
+			{ "/usr/bin/gzip", "usr/bin/gzip" },
+			{ "/usr/bin/bzip2", "usr/bin/bzip2" },
+			{ "/usr/bin/xz", "usr/bin/xz" },
 		};
 		static const char *const shelled_bin_libs[] = {
 			/* openssl */
@@ -248,6 +274,9 @@ int main(int argc, char **argv)
 			"/lib/x86_64-linux-gnu/liblzma.so.5",
 			"/lib/x86_64-linux-gnu/liblzo2.so.2",
 			"/lib/x86_64-linux-gnu/liblz4.so.1",
+			/* bzip2 -- gzip needs only libc (already staged); xz needs
+			 * only liblzma.so.5 (already staged above, for unsquashfs) */
+			"/lib/x86_64-linux-gnu/libbz2.so.1.0",
 		};
 		size_t i;
 

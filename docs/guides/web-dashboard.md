@@ -15,7 +15,6 @@ Containers
   <one leaf per container>
 Networks
   <one leaf per network>
-  Routes
 Software
   Images
   Packages
@@ -27,13 +26,14 @@ System
   DNS
     Records
     Servers
-  Backup
-    Backup
-    Restore
     Site
+  Server
     Daemon
-  Devices
-  Update
+    Devices
+    Routes
+    Logs
+    Update
+    Backup
 ```
 
 Container leaves are colored by live status (running/paused/stopped — tinted icon, not a separate dot); network leaves are tinted by whether anything is currently attached. Right-clicking a container or network or image leaf opens a context menu with the relevant quick actions (a container's own menu is status-aware: `Start` only appears when stopped, `Pause`/`Unpause`/`Stop` only when applicable, `Remove` always last and marked destructive).
@@ -55,8 +55,9 @@ Six tabs, Proxmox-style: **Summary**, **Hardware**, **Options**, **Stats**, **Co
 - **Devices** — four tabs grouped by bus: USB, PCI, Network, GPU.
 - **Package detail** — two tabs: **Recipe** (the raw `.recipe` text, viewable and editable — resubmitting goes through the same upsert `POST /pkg/recipes` every other recipe update uses) and **Installed** (every image this package is tracked against, independently).
 - **Network detail** — attached interfaces (attach/detach directly from here), IP allocation, and a "Routes on this network" sub-table (routes the kernel resolves to this network's own bridge as their outgoing interface — read-only filter, remove still works from here).
-- **Networks > Routes** — the box's own real kernel IPv4 routing table (ADR-0066), moved here from the Daemon page since it's genuinely network state, not daemon state. Add/remove real routes directly (ADR-0067 Part 3) — a route added or removed here is gone on the next reboot unless something else re-applies it, same as any kernel route not backed by persisted Kanxeo state.
-- **System > Daemon** — `kanxeod`'s own listen port, HTTP/HTTPS toggles, and which network it's currently bound to (Part 0.5). The management-network dropdown only lists networks with their own address (repointing anywhere else is refused server-side). A "Bind IP (optional)" field sets a dedicated second address on the management network's own bridge (ADR-0068) — kanxeod binds there instead of that network's own address; a "Clear bind IP" checkbox reverts to it. Since the dashboard's own requests are relative to the page it was loaded from, saving a change to the port, the management network, or the bind IP disconnects the page the moment it takes effect — confirmed with a dialog before submitting any of them.
+- **System > Server > Routes** — the box's own real kernel IPv4 routing table (ADR-0066); moved here (under System's Server group) from the Networks tree, since it reads as system-level diagnostic state, not a Kanxeo-managed network resource. Add/remove real routes directly (ADR-0067 Part 3) — a route added or removed here is gone on the next reboot unless something else re-applies it, same as any kernel route not backed by persisted Kanxeo state.
+- **System > Server > Daemon** — `kanxeod`'s own listen port, HTTP/HTTPS toggles, and which network it's currently bound to (Part 0.5). The management-network dropdown only lists networks with their own address (repointing anywhere else is refused server-side). A "Bind IP (optional)" field sets a dedicated second address on the management network's own bridge (ADR-0068) — kanxeod binds there instead of that network's own address; a "Clear bind IP" checkbox reverts to it. Since the dashboard's own requests are relative to the page it was loaded from, saving a change to the port, the management network, or the bind IP disconnects the page the moment it takes effect — confirmed with a dialog before submitting any of them. A "Host swap" block on the same page (ADR-0069) shows whether a swap file is currently enabled, with a size field + Enable button and a Disable button — useful for memory-heavy package builds on a box with limited RAM.
+- **System > Server > Logs** — the consolidated log (ADR-0070): real kernel `dmesg`, kanxeod's own internal diagnostics, and a per-request audit trail of every CLI/web action (both are pure REST clients, so this needs no client-side instrumentation) — all in one chronologically-ordered table. Filter controls for source/level/tail count, and a size-cap field (8 rotating segments, enforced at segment granularity — not byte-exact) with its own Save button.
 
 ## What's deliberately not here
 

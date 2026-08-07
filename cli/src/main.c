@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <termios.h>
 #include <unistd.h>
 
 #define DEFAULT_HOST "127.0.0.1"
@@ -153,7 +154,14 @@ static void print_usage(FILE *out)
 	        "               only way to see this on a real install, no SSH/general shell\n"
 	        "  routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]  -- add a real\n"
 	        "               kernel route (ADR-0067 Part 3); or --default --gateway=A.B.C.D\n"
-	        "  routes rm --dest=A.B.C.D --prefix=N  -- remove one; or --default\n");
+	        "  routes rm --dest=A.B.C.D --prefix=N  -- remove one; or --default\n"
+	        "  swap  -- show whether the host swap file is enabled (ADR-0069)\n"
+	        "  swap enable --size-mb=N  -- create and activate a swap file of this size\n"
+	        "  swap disable  -- deactivate and remove it\n"
+	        "  logs [--source=kernel|kanxeod|audit] [--level=...] [--tail=N] [--since=UNIXTS]\n"
+	        "               -- the consolidated log (kernel dmesg + kanxeod's own\n"
+	        "               diagnostics + a per-request audit trail, ADR-0070)\n"
+	        "  logs config [--max-bytes=N]  -- show or set the log's total size cap\n");
 }
 
 static const char *json_str_field(const struct json_value *obj, const char *key)
@@ -302,6 +310,44 @@ static void fmt_added(const struct json_value *v)
 {
 	(void)v;
 	printf("added\n");
+}
+
+static void fmt_swap(const struct json_value *v)
+{
+	int enabled = json_object_get(v, "enabled") != NULL &&
+	              json_object_get(v, "enabled")->type == JSON_BOOL &&
+	              json_object_get(v, "enabled")->u.boolean;
+	long size_mb = (long)json_as_number(json_object_get(v, "size_mb"));
+	const char *path = json_str_field(v, "path");
+
+	if (!enabled) {
+		printf("swap: disabled\n");
+		return;
+	}
+	printf("swap: enabled size_mb=%ld path=%s\n", size_mb, path != NULL ? path : "");
+}
+
+static void fmt_logs(const struct json_value *v)
+{
+	size_t i;
+
+	if (v == NULL || v->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < v->u.array.count; i++) {
+		const struct json_value *e = v->u.array.items[i];
+		long long ts = (long long)json_as_number(json_object_get(e, "ts"));
+		const char *source = json_str_field(e, "source");
+		const char *level = json_str_field(e, "level");
+		const char *msg = json_str_field(e, "msg");
+
+		printf("[%lld] %-8s %-7s %s\n", ts, source != NULL ? source : "", level != NULL ? level : "",
+		       msg != NULL ? msg : "");
+	}
+}
+
+static void fmt_logs_config(const struct json_value *v)
+{
+	printf("max_bytes=%lld\n", (long long)json_as_number(json_object_get(v, "max_bytes")));
 }
 
 static void fmt_network_line(const struct json_value *v)
@@ -747,6 +793,180 @@ static int cmd_routes(const struct kx_client *c, int json_mode, int argc, char *
 	        "       kanxeoctl routes add --default --gateway=A.B.C.D\n"
 	        "       kanxeoctl routes rm --dest=A.B.C.D --prefix=N\n"
 	        "       kanxeoctl routes rm --default\n");
+	return 2;
+}
+
+static int cmd_swap_status(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/swap", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_swap);
+}
+
+static int cmd_swap_enable(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *size_mb = NULL;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--size-mb=", 10) == 0)
+			size_mb = argv[i] + 10;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown swap enable option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (size_mb == NULL) {
+		fprintf(stderr, "usage: kanxeoctl swap enable --size-mb=N\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "size_mb");
+	jw_int(&w, atol(size_mb));
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/system/swap", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_swap);
+}
+
+static int cmd_swap_disable(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "DELETE", "/v1/system/swap", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static int cmd_logs(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *source = NULL;
+	const char *level = NULL;
+	const char *tail = NULL;
+	const char *since = NULL;
+	char path[320];
+	int i;
+	size_t o;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--source=", 9) == 0)
+			source = argv[i] + 9;
+		else if (strncmp(argv[i], "--level=", 8) == 0)
+			level = argv[i] + 8;
+		else if (strncmp(argv[i], "--tail=", 7) == 0)
+			tail = argv[i] + 7;
+		else if (strncmp(argv[i], "--since=", 8) == 0)
+			since = argv[i] + 8;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown logs option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	o = (size_t)snprintf(path, sizeof(path), "/v1/system/logs?");
+	if (source != NULL)
+		o += (size_t)snprintf(path + o, sizeof(path) - o, "source=%s&", source);
+	if (level != NULL)
+		o += (size_t)snprintf(path + o, sizeof(path) - o, "level=%s&", level);
+	if (tail != NULL)
+		o += (size_t)snprintf(path + o, sizeof(path) - o, "tail=%s&", tail);
+	if (since != NULL)
+		(void)snprintf(path + o, sizeof(path) - o, "since=%s&", since);
+
+	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_logs);
+}
+
+static int cmd_logs_config(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *max_bytes = NULL;
+	int i;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--max-bytes=", 12) == 0)
+			max_bytes = argv[i] + 12;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown logs config option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	if (max_bytes == NULL) {
+		if (kx_client_request(c, "GET", "/v1/system/logs/config", NULL, &r) != 0) {
+			fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_logs_config);
+	}
+
+	{
+		struct json_writer w;
+
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "max_bytes");
+		jw_int(&w, atoll(max_bytes));
+		jw_obj_close(&w);
+		w.buf[w.len] = '\0';
+
+		if (kx_client_request(c, "PUT", "/v1/system/logs/config", w.buf, &r) != 0) {
+			jw_free(&w);
+			fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+			return 1;
+		}
+		jw_free(&w);
+	}
+	return emit(&r, json_mode, fmt_logs_config);
+}
+
+static int cmd_logs_top(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	if (argc > 0 && strcmp(argv[0], "config") == 0)
+		return cmd_logs_config(c, json_mode, argc - 1, argv + 1);
+	return cmd_logs(c, json_mode, argc, argv);
+}
+
+static int cmd_swap(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1)
+		return cmd_swap_status(c, json_mode);
+
+	sub = argv[0];
+	if (strcmp(sub, "status") == 0)
+		return cmd_swap_status(c, json_mode);
+	if (strcmp(sub, "enable") == 0)
+		return cmd_swap_enable(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "disable") == 0)
+		return cmd_swap_disable(c, json_mode);
+
+	fprintf(stderr,
+	        "usage: kanxeoctl swap [status]\n"
+	        "       kanxeoctl swap enable --size-mb=N\n"
+	        "       kanxeoctl swap disable\n");
 	return 2;
 }
 
@@ -3843,6 +4063,10 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_iso(client, json_mode, argc, argv);
 	if (strcmp(cmd, "routes") == 0)
 		return cmd_routes(client, json_mode, argc, argv);
+	if (strcmp(cmd, "logs") == 0)
+		return cmd_logs_top(client, json_mode, argc, argv);
+	if (strcmp(cmd, "swap") == 0)
+		return cmd_swap(client, json_mode, argc, argv);
 	if (strcmp(cmd, "ps") == 0)
 		return cmd_ps(client, json_mode);
 	if (strcmp(cmd, "run") == 0)
@@ -3927,29 +4151,320 @@ static int tokenize_line(char *line, char **tokens, int max_tokens)
 	return n;
 }
 
-/*
- * Interactive shell: entered when kanxeoctl is invoked with no command
- * and stdin is a real terminal (see main()) -- one persistent client,
- * one dispatch_command() call per typed line, no reconnect-per-command
- * ceremony. Plain fgets(), deliberately no GNU readline (no history/
- * arrow-key editing) -- this project's own CLI links against nothing
- * but its own code today, and readline would be its first external
- * runtime dependency; not warranted for what was asked ("keep it
- * simple"). A failed command prints its existing error and continues
- * the loop -- a broken command shouldn't end the session, the same
- * posture any real shell already has. "exit"/"quit" or EOF (Ctrl-D)
- * end it; "help" reuses print_usage(), not a second copy of it.
- */
-static int run_shell(const struct kx_client *client, int json_mode)
+#define SHELL_PROMPT "kanxeo> "
+#define SHELL_LINE_MAX 4096
+#define SHELL_HISTORY_MAX 100
+
+/* Every top-level command dispatch_command() recognizes, plus the
+ * shell's own "help"/"exit"/"quit" builtins -- kept as one literal
+ * array specifically so a newly added command elsewhere in this file
+ * doesn't silently stay uncompletable; there's no way to derive this
+ * list from dispatch_command()'s own if-chain without parsing C, so
+ * it's a second, explicit copy -- the same tradeoff CATEGORY_VIEWS
+ * makes on the web dashboard side (web/app.js) for the identical
+ * reason (a route table that can't be enumerated by walking code). */
+static const char *const SHELL_COMMANDS[] = {
+	"backup", "console",  "daemon-config", "device", "devicemap", "dns",
+	"exit",   "files",    "health",        "help",   "image",     "inspect",
+	"iso",    "logs",     "network",       "pause",  "pkg",       "pki",
+	"ps",     "quit",     "reboot",        "restore", "rm",       "routes",
+	"run",    "shutdown", "site",          "start",  "stats",     "stop",
+	"swap",   "unpause",  "update",        NULL
+};
+
+static char g_shell_history[SHELL_HISTORY_MAX][SHELL_LINE_MAX];
+static int g_shell_history_count;
+
+static void shell_history_add(const char *line)
 {
-	char line[4096];
+	if (line[0] == '\0')
+		return;
+	if (g_shell_history_count > 0 &&
+	    strcmp(g_shell_history[g_shell_history_count - 1], line) == 0)
+		return; /* no consecutive duplicates, matching real shells */
+	if (g_shell_history_count == SHELL_HISTORY_MAX) {
+		memmove(g_shell_history[0], g_shell_history[1],
+		        (size_t)(SHELL_HISTORY_MAX - 1) * SHELL_LINE_MAX);
+		g_shell_history_count--;
+	}
+	snprintf(g_shell_history[g_shell_history_count], SHELL_LINE_MAX, "%s", line);
+	g_shell_history_count++;
+}
+
+/* hist_pos == -1 means "editing a fresh, not-yet-submitted line";
+ * 0..count-1 means "currently showing g_shell_history[hist_pos]".
+ * pending holds the fresh line being edited so Down-ing back past the
+ * newest history entry restores exactly what was there before Up was
+ * first pressed, the same behavior bash's own readline has. */
+static void shell_history_up(int *hist_pos, char *pending, char *buf, size_t *len)
+{
+	if (g_shell_history_count == 0)
+		return;
+	if (*hist_pos == -1) {
+		snprintf(pending, SHELL_LINE_MAX, "%.*s", (int)*len, buf);
+		*hist_pos = g_shell_history_count - 1;
+	} else if (*hist_pos > 0) {
+		(*hist_pos)--;
+	} else {
+		return; /* already at the oldest entry */
+	}
+	snprintf(buf, SHELL_LINE_MAX, "%s", g_shell_history[*hist_pos]);
+	*len = strlen(buf);
+}
+
+static void shell_history_down(int *hist_pos, const char *pending, char *buf, size_t *len)
+{
+	if (*hist_pos == -1)
+		return;
+	(*hist_pos)++;
+	if (*hist_pos >= g_shell_history_count) {
+		*hist_pos = -1;
+		snprintf(buf, SHELL_LINE_MAX, "%s", pending);
+	} else {
+		snprintf(buf, SHELL_LINE_MAX, "%s", g_shell_history[*hist_pos]);
+	}
+	*len = strlen(buf);
+}
+
+static void shell_write_all(const char *data, size_t len)
+{
+	size_t off = 0;
+
+	while (off < len) {
+		ssize_t n = write(STDOUT_FILENO, data + off, len - off);
+
+		if (n <= 0)
+			return;
+		off += (size_t)n;
+	}
+}
+
+/* Tab completion is scoped to the command name only (the first word) --
+ * completing flags/args per-subcommand would need this shell to carry
+ * a model of every subcommand's own flag shape, which is real, separate
+ * scope (and each subcommand's own usage banner, printed on a parse
+ * error, already documents those). A space anywhere in the line means
+ * this isn't that word anymore, so completion is a no-op past that point. */
+static void shell_complete(char *buf, size_t *len, size_t *cursor)
+{
+	const char *matches[64];
+	int match_count = 0;
+	size_t i, match_len;
+
+	for (i = 0; i < *len; i++) {
+		if (buf[i] == ' ')
+			return;
+	}
+
+	for (i = 0; SHELL_COMMANDS[i] != NULL && match_count < 64; i++) {
+		if (strncmp(SHELL_COMMANDS[i], buf, *len) == 0)
+			matches[match_count++] = SHELL_COMMANDS[i];
+	}
+	if (match_count == 0)
+		return;
+	if (match_count == 1) {
+		match_len = strlen(matches[0]);
+		if (match_len < SHELL_LINE_MAX) {
+			memcpy(buf, matches[0], match_len);
+			*len = match_len;
+			*cursor = match_len;
+		}
+		return;
+	}
+
+	shell_write_all("\r\n", 2);
+	for (i = 0; i < (size_t)match_count; i++) {
+		shell_write_all(matches[i], strlen(matches[i]));
+		shell_write_all("  ", 2);
+	}
+	shell_write_all("\r\n", 2);
+}
+
+/* Full-line redraw on every edit -- simplest way to stay correct
+ * regardless of where the cursor is (mid-line insert/delete, history
+ * recall, completion), and command lines are short enough that
+ * redrawing the whole thing per keystroke has no visible cost. Moves
+ * the cursor back from the end of the freshly drawn line to its real
+ * position via a raw cursor-left escape, same as \x1b[K (clear to end
+ * of line) for erasing whatever a shorter new line left behind. */
+static void shell_redraw(const char *buf, size_t len, size_t cursor)
+{
+	char tail[32];
+
+	shell_write_all("\r" SHELL_PROMPT, 1 + strlen(SHELL_PROMPT));
+	shell_write_all(buf, len);
+	shell_write_all("\x1b[K", 3);
+	if (cursor < len) {
+		int n = snprintf(tail, sizeof(tail), "\x1b[%zuD", len - cursor);
+
+		shell_write_all(tail, (size_t)n);
+	}
+}
+
+enum shell_key {
+	SHELL_KEY_UP = 256,
+	SHELL_KEY_DOWN,
+	SHELL_KEY_RIGHT,
+	SHELL_KEY_LEFT
+};
+
+/* Reads one logical keypress: a plain byte, or one of the arrow keys
+ * decoded from their real 3-byte terminal escape sequence
+ * (ESC '[' <letter>, the VT100/xterm encoding every terminal this
+ * project's own users run -- a real Linux/macOS terminal emulator or
+ * PuTTY -- already sends). Any other escape sequence (function keys,
+ * Home/End, ...) is swallowed silently and reported as a bare ESC --
+ * out of scope, the same "command name completion only" scoping
+ * shell_complete() already applies. Returns -1 on EOF/read error. */
+static int shell_read_key(void)
+{
+	unsigned char c;
+	unsigned char seq[2];
+
+	if (read(STDIN_FILENO, &c, 1) <= 0)
+		return -1;
+	if (c != 0x1b)
+		return c;
+	if (read(STDIN_FILENO, &seq[0], 1) <= 0)
+		return 0x1b;
+	if (seq[0] != '[')
+		return 0x1b;
+	if (read(STDIN_FILENO, &seq[1], 1) <= 0)
+		return 0x1b;
+	switch (seq[1]) {
+	case 'A':
+		return SHELL_KEY_UP;
+	case 'B':
+		return SHELL_KEY_DOWN;
+	case 'C':
+		return SHELL_KEY_RIGHT;
+	case 'D':
+		return SHELL_KEY_LEFT;
+	default:
+		return 0; /* unrecognized escape -- ignore, not a bare ESC */
+	}
+}
+
+/* Reads one line with real editing: history (Up/Down), cursor movement
+ * (Left/Right), Tab completion of the command name, Backspace, Ctrl-C
+ * (abort the current line, matching a real shell -- raw mode disables
+ * ISIG, so this process never sees it as SIGINT), and Ctrl-D on an
+ * empty line (EOF). Returns 0 with buf filled on Enter, -1 on EOF. The
+ * caller's own terminal must already be in raw mode (run_shell() below
+ * toggles it around this call, not this function itself, so normal
+ * \n-only stdio output from command results doesn't need any \r
+ * translation of its own in between lines). */
+static int shell_read_line(char *buf, size_t buf_size)
+{
+	size_t len = 0, cursor = 0;
+	int hist_pos = -1;
+	char pending[SHELL_LINE_MAX];
+
+	pending[0] = '\0';
+	buf[0] = '\0';
+
+	for (;;) {
+		int key = shell_read_key();
+
+		if (key < 0)
+			return -1;
+		if (key == '\r' || key == '\n') {
+			shell_write_all("\r\n", 2);
+			buf[len] = '\0';
+			return 0;
+		}
+		if (key == 0x7f || key == 0x08) { /* Backspace */
+			if (cursor > 0) {
+				memmove(buf + cursor - 1, buf + cursor, len - cursor);
+				cursor--;
+				len--;
+				shell_redraw(buf, len, cursor);
+			}
+			continue;
+		}
+		if (key == 0x03) { /* Ctrl-C: abort this line, start a fresh one */
+			shell_write_all("^C\r\n", 4);
+			len = 0;
+			cursor = 0;
+			hist_pos = -1;
+			shell_write_all(SHELL_PROMPT, strlen(SHELL_PROMPT));
+			continue;
+		}
+		if (key == 0x04) { /* Ctrl-D */
+			if (len == 0)
+				return -1;
+			continue; /* mid-line: ignored, matching bash */
+		}
+		if (key == '\t') {
+			shell_complete(buf, &len, &cursor);
+			shell_redraw(buf, len, cursor);
+			continue;
+		}
+		if (key == SHELL_KEY_LEFT) {
+			if (cursor > 0) {
+				cursor--;
+				shell_redraw(buf, len, cursor);
+			}
+			continue;
+		}
+		if (key == SHELL_KEY_RIGHT) {
+			if (cursor < len) {
+				cursor++;
+				shell_redraw(buf, len, cursor);
+			}
+			continue;
+		}
+		if (key == SHELL_KEY_UP) {
+			shell_history_up(&hist_pos, pending, buf, &len);
+			cursor = len;
+			shell_redraw(buf, len, cursor);
+			continue;
+		}
+		if (key == SHELL_KEY_DOWN) {
+			shell_history_down(&hist_pos, pending, buf, &len);
+			cursor = len;
+			shell_redraw(buf, len, cursor);
+			continue;
+		}
+		if (key >= 0x20 && key < 0x7f && len + 1 < buf_size) {
+			memmove(buf + cursor + 1, buf + cursor, len - cursor);
+			buf[cursor] = (char)key;
+			cursor++;
+			len++;
+			shell_redraw(buf, len, cursor);
+			continue;
+		}
+		/* Any other control byte or an unrecognized escape -- ignore. */
+	}
+}
+
+static int shell_set_raw_mode(struct termios *saved)
+{
+	struct termios raw;
+
+	if (tcgetattr(STDIN_FILENO, saved) != 0)
+		return -1;
+	raw = *saved;
+	cfmakeraw(&raw);
+	if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0)
+		return -1;
+	return 0;
+}
+
+/* Plain fgets(), no line editing -- only reached if this terminal's
+ * own termios couldn't be put into raw mode (shell_set_raw_mode()
+ * failed), a real but rare case (e.g. stdin is a tty by isatty()'s
+ * own check yet the underlying device rejects termios calls). Keeps
+ * the shell usable rather than failing outright. */
+static int run_shell_fallback(const struct kx_client *client, int json_mode)
+{
+	char line[SHELL_LINE_MAX];
 	char *tokens[SHELL_MAX_TOKENS];
 
-	printf("kanxeoctl interactive shell -- type a command (e.g. \"ps\"), \"help\", or \"exit\"\n");
 	for (;;) {
 		int n;
 
-		printf("kanxeo> ");
+		printf(SHELL_PROMPT);
 		fflush(stdout);
 		if (fgets(line, sizeof(line), stdin) == NULL) {
 			printf("\n");
@@ -3966,6 +4481,70 @@ static int run_shell(const struct kx_client *client, int json_mode)
 		}
 		dispatch_command(client, json_mode, tokens[0], n - 1, tokens + 1);
 	}
+	return 0;
+}
+
+/*
+ * Interactive shell: entered when kanxeoctl is invoked with no command
+ * and stdin is a real terminal (see main()) -- one persistent client,
+ * one dispatch_command() call per typed line, no reconnect-per-command
+ * ceremony. A real, if minimal, line editor: history (Up/Down),
+ * cursor movement (Left/Right), and Tab completion of the command
+ * name -- no external dependency (no GNU readline), matching how this
+ * project already built its own PTY relay (client/src/console.c) and
+ * web terminal renderer (web/app.js) by hand rather than reaching for
+ * a library. A failed command prints its existing error and continues
+ * the loop -- a broken command shouldn't end the session, the same
+ * posture any real shell already has. "exit"/"quit" or EOF (Ctrl-D on
+ * an empty line) end it; "help" reuses print_usage(), not a second
+ * copy of it.
+ */
+static int run_shell(const struct kx_client *client, int json_mode)
+{
+	struct termios saved;
+	char line[SHELL_LINE_MAX];
+	char *tokens[SHELL_MAX_TOKENS];
+
+	printf("kanxeoctl interactive shell -- type a command (e.g. \"ps\"), \"help\", or \"exit\"\n");
+
+	if (shell_set_raw_mode(&saved) != 0)
+		return run_shell_fallback(client, json_mode);
+
+	for (;;) {
+		int n, rc;
+		struct termios raw = saved;
+
+		/* Raw only while reading this one line -- dispatch_command()'s
+		 * own printf("...\n") result output needs OPOST's \n -> \r\n
+		 * translation, which cfmakeraw() disables; restoring to saved
+		 * (cooked) mode before running the command, then re-entering
+		 * raw mode here for the next prompt, keeps both halves correct
+		 * without threading a "raw vs cooked" flag through every print
+		 * call this shell's commands already make. */
+		cfmakeraw(&raw);
+		tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+		shell_write_all(SHELL_PROMPT, strlen(SHELL_PROMPT));
+		rc = shell_read_line(line, sizeof(line));
+		tcsetattr(STDIN_FILENO, TCSANOW, &saved); /* cooked mode for command output */
+
+		if (rc != 0) {
+			printf("\n");
+			break;
+		}
+		shell_history_add(line);
+		n = tokenize_line(line, tokens, SHELL_MAX_TOKENS);
+		if (n == 0)
+			continue;
+		if (strcmp(tokens[0], "exit") == 0 || strcmp(tokens[0], "quit") == 0)
+			break;
+		if (strcmp(tokens[0], "help") == 0) {
+			print_usage(stdout);
+			continue;
+		}
+		dispatch_command(client, json_mode, tokens[0], n - 1, tokens + 1);
+	}
+
+	tcsetattr(STDIN_FILENO, TCSANOW, &saved);
 	return 0;
 }
 

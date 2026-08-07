@@ -2,6 +2,60 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 10 (in progress): kanxeod-source log diagnostics, a real mkbootroot packaging bug fix, first proven in-place update round trip
+
+Resuming the still-open "build a `kanxeo-builder` image on `192.168.15.95`" work from Part 9, in service of the user's "permanent solution" ask (develop/maintain Kanxeo from a container running Claude Code, pushing changes over the API, no more manual ISO reinstalls).
+
+#### Added
+- `daemon/src/pkg.c`: `run_subprocess()` now calls `logstore_write("kanxeod", "error", ...)` for every failure branch (fork/waitpid/non-zero-exit/signal/exec-failure-127), alongside its existing `fprintf(stderr, ...)`. `pkg_fetch_completed()`'s three bucketed `"could not prepare the build container"` sites rewritten to identify and log exactly which sub-step failed, with `errno` captured immediately for the two direct-syscall steps. Closes a real gap where ADR-0070's log store never actually captured kanxeod's own internal diagnostics, only the audit trail and kmsg.
+- `image/src/mkbootroot.c`: stages `gzip`/`bzip2`/`xz` onto the control-plane rootfs (`bzip2` also needs a new `libbz2.so.1.0` in the shared-lib closure; `gzip`/`xz` need nothing beyond what's already staged).
+
+#### Fixed
+- **A real, previously-undiscovered packaging bug**: GNU `tar` on this build host links no compression libraries at all and shells out to a bare `gzip`/`bzip2`/`xz` via `$PATH` for every compressed archive -- none of the three were ever staged onto the control-plane rootfs `mkbootroot.c` assembles, so `pkg install` of any recipe using a `.tar.gz`/`.tar.bz2`/`.tar.xz` source has always failed on a genuinely fresh, minimal real deployment (invisible until now: every recipe-writing session to date ran against a `kanxeod` on this dev sandbox, where the real host `/usr/bin/{gzip,bzip2,xz}` was always reachable via `$PATH` regardless of what the image itself staged).
+
+#### Notes
+- Root-caused by reproducing the exact same `tcc` install locally first (succeeded cleanly, proving the code was sound and the failure was specific to `192.168.15.95`'s own environment), then getting the diagnostics-enhanced `kanxeod` onto that box and reading the real error via the now-working log store.
+- **First real, proven `POST /v1/system/update` + reboot round trip with no ISO reinstall**, done twice: `mkbootroot` assembled the fixed squashfs locally, staged via this sandbox's LAN `http.server` and pulled onto the target's own local disk via a throwaway scratch package recipe (harmlessly expected to fail at the build step, since a squashfs isn't a tarball, but only after the fetch+checksum step it actually needed had already succeeded), then `POST /v1/system/update` (confirmed staged to the correct alternating A/B slot each time) + `POST /v1/system/reboot`. Verified live both times via the new diagnostics actually appearing post-reboot, and via a genuine mid-reboot connection drop on the second round trip.
+- Full clean rebuild (`-Wall -Werror`, zero warnings) + full regression sweep after the diagnostics change (only the pre-existing, documented `build/bzImage`-missing gap and the known `test_container_restart` flake, both unrelated).
+- **Not yet resolved**: past the extraction fix, `tcc`'s build now fails differently (`exit status 126`, a synthesized signal from one of ~10 possible `src/container.c` child-setup steps after `clone3()` -- `perror()`-only diagnostics, and that file is runtime-library code that must not take a `logstore.h` dependency). Tracked as a separate follow-on.
+
+### Part 9: consolidated log store (ADR-0070), hand-rolled interactive-shell line editor
+
+Two more real gaps raised directly by the user in the same session as Part 8.
+
+#### Added
+- New `daemon/src/logstore.c`/`daemon/include/logstore.h`: JSON-lines entries (`ts`/`source`/`level`/`msg`), 8 rotating segment files bounded by a configurable total-byte cap (oldest segment dropped whole when a new one is needed). `/dev/kmsg` read directly (non-blocking, new `CONN_KMSG` conn kind in the daemon's existing epoll loop) for real kernel dmesg capture.
+- `daemon/src/main.c`: `handle_logs_get()`/`handle_logs_config_get()`/`handle_logs_config_put()` (`GET /v1/system/logs`, `GET`/`PUT /v1/system/logs/config`); one `logstore_write("audit", ...)` call at the top of `dispatch()` -- a complete per-request audit trail with zero client-side instrumentation, since every kanxeoctl command and every web UI action is already a REST call this exact function handles. `GET /health` and `GET /system/logs` excluded from the audit trail.
+- `cli/src/main.c`: `kanxeoctl logs [--source=] [--level=] [--tail=N] [--since=]` and `logs config [--max-bytes=N]`.
+- `web/app.js`/`web/index.html`: a "Logs" page (filter form + table + size-cap field) under System > Server.
+- `cli/src/main.c`: a real, hand-rolled line editor for `kanxeoctl`'s own interactive shell (`run_shell()`) -- raw-mode input, Up/Down command history (with the in-progress line preserved across browsing), Left/Right cursor editing, Tab completion of the command name, Ctrl-C line-abort. No external dependency (no GNU readline), matching how this project already hand-built its PTY relay and web terminal renderer.
+- `docs/adr/0070-consolidated-log-store.md`.
+
+#### Changed
+- `web/app.js`: the Routes page moved from under Networks to under System's Server group (a small nav reorg the user asked for alongside the logging work) -- it reads as system-level diagnostic state, not a Kanxeo-managed network resource.
+- `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/cli-reference.md`/`docs/guides/web-dashboard.md`: updated for the new logs endpoints and the Routes nav move; `web-dashboard.md`'s own nav-tree diagram, found stale from an earlier reorg, corrected to match the dashboard's actual current structure.
+
+#### Notes
+- Verified real, end to end: audit entries appear for real requests and are correctly excluded for health-check polling; `source`/`level`/`tail`/`since` filtering round-trips correctly through both the REST API and the CLI; `PUT .../config` validates bounds (`400` on an out-of-range value) and persists. The line editor was verified with a real pty-driven test (`pty.openpty()`, since raw-mode input needs a real terminal) -- Tab on an ambiguous prefix (`he`) correctly listed both real matches (`health`, `help`) rather than guessing one; history/cursor-editing/Ctrl-C all round-tripped correctly.
+- Full clean rebuild (`-Wall -Werror`, zero warnings) after every change.
+- **Queued, not started in this phase, per the user's own explicit sequencing:** real multi-disk management (add/remove disks, per-disk role assignment, movable container storage) -- a genuinely large feature needing its own design pass first.
+
+### Part 8: on-demand host swap file (ADR-0069), DNS-resolution finding on installed boxes
+
+Triggered directly by the user while a real Rust/wasm package build (lldap.recipe, continuing Part 7's `192.168.15.95` work) ran the box out of RAM mid-build.
+
+#### Added
+- New `daemon/src/swap.c`/`daemon/include/swap.h`: a single on-demand host swap file. Writes a real kernel swap-file header directly via offset-based writes into a flat buffer (no C struct, no `mkswap` dependency); `fallocate(2)` guarantees the file is never sparse; `swapon(2)`/`swapoff(2)` called directly.
+- `daemon/src/main.c`: `GET`/`POST`/`DELETE /v1/system/swap` (`handle_swap_get()`/`handle_swap_enable()`/`handle_swap_disable()`); `swap_init()` wired into daemon startup, re-applying persisted enabled state (best-effort, non-fatal on failure).
+- `cli/src/main.c`: `kanxeoctl swap [status] / enable --size-mb=N / disable`.
+- `web/app.js`/`web/index.html`: a "Host swap" block on the Daemon page (status line, size field + Enable button, Disable button).
+- `docs/adr/0069-host-swap-file.md`.
+
+#### Notes
+- **A real, previously-undiscovered architectural gap found while diagnosing the lldap build's own fetch failure**: an installed Kanxeo host has no outbound DNS resolution at all -- confirmed directly (`POST /v1/pkg/bootstrap` against a real internet hostname hung 150+ seconds before failing with `curl exit status 6`, `CURLE_COULDNT_RESOLVE_HOST`), and a full repo grep for `resolv.conf`/`nameserver` found zero hits anywhere in host-level code. Not fixed in this phase -- worked around for this session's own lldap deployment by re-serving its already-cached sources over LAN by raw IP (the same pattern already established earlier this session for `kanxeo.recipe`'s own source fetch).
+- Verified: full clean rebuild (zero warnings); a local smoke test against a real `kanxeod` subprocess confirmed the full enable/get/409-on-double-enable/disable/get round trip. `/proc/swaps` inside this project's own dev LXC sandbox is `lxcfs`-virtualized and was not used as a verification signal; the `swapon(2)`/`swapoff(2)` syscalls' own return codes were.
+- **A second real gap, found only on the actual target VM**: the first real deployment attempt returned `500` from a genuinely correct swap file and correct daemon code -- the target kernel had `CONFIG_SWAP` unset (never needed before this ADR), so `swapon(2)` returned a bare `ENOSYS`. This dev sandbox's own local verification (a normal Debian host kernel, swap already built in) could never have caught it. Fixed by adding `CONFIG_SWAP=y` to `image/kernel/qemu-part1.config` and rebuilding the kernel.
+
 ### Part 7: gateway -> address rename, route CRUD + UI reorg, dedicated daemon bind IP (ADR-0067, ADR-0068)
 
 Reopened from Part 6's own review: reinstalling `192.168.15.95` with Part 6's fix showed a network listed as "subnet 15.0/24 gateway 15.95," which the user called "terrible and untrue." A real architecture discussion confirmed a network's address is always host-bound by construction (verified via code, not assumed), resolving this as a rename rather than a display patch. Five parts, smallest/foundational first.

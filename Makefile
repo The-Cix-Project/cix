@@ -6,7 +6,7 @@ NETPLANE_CFLAGS := $(CFLAGS)
 BUILD := build
 
 LIB_SRCS := src/cgroup.c src/mountns.c src/ns_create.c src/container.c src/overlay.c src/container_net.c src/container_dev.c netplane/src/rtnetlink.c
-DAEMON_SRCS := daemon/src/json.c daemon/src/http.c daemon/src/websocket.c daemon/src/exec.c daemon/src/registry.c daemon/src/staticfile.c daemon/src/network.c daemon/src/persist.c daemon/src/dns.c daemon/src/pki.c daemon/src/pkg.c daemon/src/device.c daemon/src/devicemap.c daemon/src/image.c daemon/src/containerdef.c daemon/src/siteconfig.c daemon/src/daemon_config.c daemon/src/tlsconn.c daemon/src/quotamap.c
+DAEMON_SRCS := daemon/src/json.c daemon/src/http.c daemon/src/websocket.c daemon/src/exec.c daemon/src/registry.c daemon/src/staticfile.c daemon/src/network.c daemon/src/persist.c daemon/src/dns.c daemon/src/pki.c daemon/src/pkg.c daemon/src/device.c daemon/src/devicemap.c daemon/src/image.c daemon/src/containerdef.c daemon/src/siteconfig.c daemon/src/daemon_config.c daemon/src/tlsconn.c daemon/src/quotamap.c daemon/src/swap.c daemon/src/logstore.c
 CLIENT_SRCS := client/src/httpclient.c daemon/src/json.c
 NETPLANE_SRCS := netplane/src/rtnetlink.c
 

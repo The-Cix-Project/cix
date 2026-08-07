@@ -184,6 +184,47 @@ DELETE /v1/system/routes
 
 `204` on success. Thin wrappers over `rtnl_route_add_ipv4()`/the new `rtnl_route_del_ipv4()` (ADR-0067 Part 3) — like the `GET` above, neither call touches persisted state; a route added this way is gone on the next reboot, same as any other kernel route not re-applied at boot. Every field is optional: an empty body (or `prefix` omitted/`0`) identifies the default route, the same convention `rtnl_route_add_ipv4()` itself already uses; `gateway` omitted means a direct/on-link route. `POST` `400`s if the kernel itself rejects the route (already exists, unreachable gateway, malformed input); `DELETE` `404`s if no matching route exists to remove. Scoped to exactly what the existing primitives support — no interface/`RTA_OIF` binding, no route-replace semantics.
 
+## A host swap file
+
+```
+GET /v1/system/swap
+```
+
+```json
+{"enabled": false, "size_mb": 0, "path": ""}
+```
+
+```
+POST /v1/system/swap
+{"size_mb": 8192}
+```
+
+```
+DELETE /v1/system/swap
+```
+
+One on-demand swap file, off by default (ADR-0069) — raised after a real Rust/wasm package build ran a freshly-installed box out of RAM. `POST` creates a real, fully-backed (never sparse) file of exactly `size_mb` megabytes, writes a genuine kernel swap-file header into it directly (no dependency on an external `mkswap` binary), and activates it via `swapon(2)`; `409` if swap is already enabled — `DELETE` (swapoff + remove) first to resize. `size_mb` must be in `[64, 1048576]`. Enabled state is persisted and re-applied automatically on every daemon start (including a real reboot) — best-effort, never blocks startup if the file is somehow missing or stale. On modern SSD/NVMe-backed storage, file-backed swap performs identically to a raw partition; a partition was deliberately not pursued here since this project's own install-time partition layout is fixed and repartitioning a live disk on demand is not a risk worth taking for this.
+
+## A consolidated log
+
+```
+GET /v1/system/logs?source=audit&level=info&tail=50&since=1700000000
+```
+
+```json
+[{"ts": 1700000012, "source": "audit", "level": "info", "msg": "POST /v1/networks"}]
+```
+
+```
+GET /v1/system/logs/config
+PUT /v1/system/logs/config
+{"max_bytes": 5368709120}
+```
+
+One consolidated, size-capped log (ADR-0070): real kernel `dmesg` (source `kernel`, read directly from `/dev/kmsg`), kanxeod's own internal diagnostics (source `kanxeod`, mirrored to stderr too — stderr is still the only channel during boot, before the API is reachable), and a per-request audit trail (source `audit`) — one entry per REST request this daemon handles, method + path, covering every action either `kanxeoctl` or the web dashboard takes since both are pure REST clients. `GET /health` and `GET /system/logs` itself are excluded from the audit trail as low-value polling noise. All three sources interleave into one chronologically-ordered store, not siloed per-source streams.
+
+Storage is 8 rotating segment files, not a byte-exact ring buffer — the oldest whole segment is dropped once the configured `max_bytes` cap is reached (enforced at segment granularity, so expect a few percent of slop against the exact number, the same tradeoff `logrotate`/`journald` already make). `tail` defaults to 1000 and is capped at 5000; `since` is Unix seconds.
+
 ## Creating a container
 
 ```

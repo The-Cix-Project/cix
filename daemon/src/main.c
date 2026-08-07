@@ -2,6 +2,8 @@
 #include "containerdef.h"
 #include "device.h"
 #include "devicemap.h"
+#include "logstore.h"
+#include "swap.h"
 #include "dns.h"
 #include "exec.h"
 #include "http.h"
@@ -120,6 +122,20 @@ static char ISO_DIR[PATH_MAX];
  * fixed scratch path for the curl'd artifact, same "one fixed spot,
  * overwritten each time" convention ISO_OUTPUT_PATH already uses. */
 static char PKGBUILD_TOOLCHAIN_FETCH_PATH[PATH_MAX];
+/* ADR-0069: a single host-level swap file, off by default, enabled
+ * on demand via POST /v1/system/swap. SWAP_DIR keeps the file and its
+ * tiny persisted enabled/size state together, out of g_base_dir's own
+ * root (the same "own subdirectory per subsystem" convention PKI_DIR/
+ * PKG_DIR already use). */
+static char SWAP_DIR[PATH_MAX];
+static char SWAP_FILE_PATH[PATH_MAX];
+static char SWAP_STATE_PATH[PATH_MAX];
+/* Consolidated log store (kernel dmesg + kanxeod's own diagnostics +
+ * a per-request audit trail, ADR-0070) -- its own subdirectory,
+ * matching every other subsystem's "own directory under the base
+ * data dir" convention (PKI_DIR/PKG_DIR/SWAP_DIR above). */
+static char LOG_DIR[PATH_MAX];
+static char LOG_STATE_PATH[PATH_MAX];
 
 /* Computes every path derived from g_base_dir -- called once, right
  * after argv parsing (so --data-dir= has already been applied) and
@@ -148,6 +164,11 @@ static void init_base_dir_paths(void)
 	snprintf(ISO_DIR, sizeof(ISO_DIR), "%s/iso", g_base_dir);
 	snprintf(PKGBUILD_TOOLCHAIN_FETCH_PATH, sizeof(PKGBUILD_TOOLCHAIN_FETCH_PATH),
 	         "%s/pkg/bootstrap_toolchain.squashfs", g_base_dir);
+	snprintf(SWAP_DIR, sizeof(SWAP_DIR), "%s/swap", g_base_dir);
+	snprintf(SWAP_FILE_PATH, sizeof(SWAP_FILE_PATH), "%s/swapfile", SWAP_DIR);
+	snprintf(SWAP_STATE_PATH, sizeof(SWAP_STATE_PATH), "%s/state.json", SWAP_DIR);
+	snprintf(LOG_DIR, sizeof(LOG_DIR), "%s/logs", g_base_dir);
+	snprintf(LOG_STATE_PATH, sizeof(LOG_STATE_PATH), "%s/state.json", LOG_DIR);
 }
 /*
  * Backoff cap and stability-reset threshold for the crash-restart
@@ -357,6 +378,7 @@ enum conn_kind {
 	CONN_CONSOLE_RESPAWN_TIMER,
 	CONN_CONSOLE_WS,        /* GET /v1/containers/{name}/console -- client-facing WebSocket half */
 	CONN_CONSOLE_PTY,       /* same session's other half -- the exec'd shell's pty master fd */
+	CONN_KMSG,              /* /dev/kmsg -- feeds real kernel dmesg lines into the consolidated log store */
 	/*
 	 * A conn already torn down mid-batch (console_session_teardown()
 	 * below) but not yet free()'d -- see g_pending_free's own comment
@@ -418,6 +440,7 @@ enum shutdown_action { SHUTDOWN_ACTION_POWEROFF, SHUTDOWN_ACTION_REBOOT };
 
 static int g_epfd;
 static struct conn g_listener_conn;
+static struct conn g_kmsg_conn;
 static struct conn g_https_listener_conn; /* .fd == -1 when HTTPS is disabled */
 static SSL_CTX *g_tls_ctx;                 /* NULL when HTTPS is disabled */
 static const char *g_web_root;
@@ -2015,6 +2038,34 @@ static int rebind_listener(const char *new_bind_addr, int new_port)
 	return 0;
 }
 
+/* Best-effort, same "never block daemon startup" posture as every
+ * other non-critical reconciliation step (cgroup_enable_io_
+ * accounting(), swap_init()'s own swapon() retry) -- a test/dev
+ * invocation, or a kernel with /dev/kmsg unreadable for any other
+ * reason, simply never gets kernel-source log entries; every other
+ * source (kanxeod's own diagnostics, the audit trail) is unaffected. */
+static void start_kmsg_watch(void)
+{
+	struct kx_epoll_event ev;
+	int fd = logstore_kmsg_fd();
+
+	if (fd < 0)
+		return;
+	g_kmsg_conn.kind = CONN_KMSG;
+	g_kmsg_conn.fd = fd;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = &g_kmsg_conn;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0)
+		g_kmsg_conn.fd = -1;
+}
+
+static void handle_kmsg_event(struct conn *cc)
+{
+	(void)cc;
+	logstore_kmsg_readable();
+}
+
 static int start_http_listener(const char *bind_addr, int port)
 {
 	struct kx_epoll_event ev;
@@ -2755,6 +2806,85 @@ static void handle_route_del(int fd, const char *body, size_t body_len)
 	}
 	rtnl_close(rtfd);
 
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+static void respond_swap_error(int fd, enum swap_error serr)
+{
+	switch (serr) {
+	case SWAP_ERR_ALREADY_ENABLED:
+		respond_error(fd, 409, "Conflict", "swap is already enabled -- disable it first to resize");
+		return;
+	case SWAP_ERR_NOT_ENABLED:
+		respond_error(fd, 409, "Conflict", "swap is not enabled");
+		return;
+	case SWAP_ERR_INVALID_SIZE:
+		respond_error(fd, 400, "Bad Request", "size_mb out of range");
+		return;
+	case SWAP_ERR_IO:
+		respond_error(fd, 500, "Internal Server Error", "swap file creation or activation failed");
+		return;
+	case SWAP_ERR_PERSIST_FAILED:
+		respond_error(fd, 500, "Internal Server Error", "swap state could not be persisted");
+		return;
+	case SWAP_OK:
+		return;
+	}
+}
+
+static void handle_swap_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	swap_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_swap_enable(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const struct json_value *jsize;
+	int64_t size_mb;
+	enum swap_error serr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	jsize = json_object_get(root, "size_mb");
+	if (jsize == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "size_mb missing");
+		return;
+	}
+	size_mb = (int64_t)json_as_number(jsize);
+	json_free(root);
+
+	serr = swap_enable(size_mb);
+	if (serr != SWAP_OK) {
+		respond_swap_error(fd, serr);
+		return;
+	}
+
+	jw_init(&w);
+	swap_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_swap_disable(int fd)
+{
+	enum swap_error serr = swap_disable();
+
+	if (serr != SWAP_OK) {
+		respond_swap_error(fd, serr);
+		return;
+	}
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
@@ -4539,6 +4669,84 @@ static long long read_net_stat(const char *veth, const char *file)
  * http_write_response(), same primitive/pattern staticfile.c's own
  * static_serve() already uses for the web dashboard's static assets.
  */
+static void handle_logs_get(int fd, const struct http_request *req)
+{
+	char source[LOGSTORE_SOURCE_MAX];
+	char level[LOGSTORE_LEVEL_MAX];
+	char tail_str[32], since_str[32];
+	const char *source_filter = NULL;
+	const char *level_filter = NULL;
+	int64_t since = 0;
+	int limit = 0;
+	struct json_writer w;
+
+	if (url_query_param(req->path, "source", source, sizeof(source)) == 0)
+		source_filter = source;
+	if (url_query_param(req->path, "level", level, sizeof(level)) == 0)
+		level_filter = level;
+	if (url_query_param(req->path, "tail", tail_str, sizeof(tail_str)) == 0)
+		limit = atoi(tail_str);
+	if (url_query_param(req->path, "since", since_str, sizeof(since_str)) == 0)
+		since = (int64_t)atoll(since_str);
+
+	jw_init(&w);
+	logstore_tail(source_filter, level_filter, since, limit, &w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_logs_config_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "max_bytes");
+	jw_int(&w, logstore_max_bytes());
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_logs_config_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const struct json_value *jmax;
+	enum logstore_error lerr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	jmax = json_object_get(root, "max_bytes");
+	if (jmax == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "max_bytes missing");
+		return;
+	}
+
+	lerr = logstore_set_max_bytes((int64_t)json_as_number(jmax));
+	json_free(root);
+	if (lerr != LOGSTORE_OK) {
+		respond_error(fd, lerr == LOGSTORE_ERR_INVALID_MAX_BYTES ? 400 : 500,
+		              lerr == LOGSTORE_ERR_INVALID_MAX_BYTES ? "Bad Request" : "Internal Server Error",
+		              lerr == LOGSTORE_ERR_INVALID_MAX_BYTES
+		                  ? "max_bytes out of range"
+		                  : "log config could not be persisted");
+		return;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "max_bytes");
+	jw_int(&w, logstore_max_bytes());
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_container_file_read(int fd, const char *name, const char *rel_path)
 {
 	struct registry_entry *e = registry_find(name);
@@ -6274,6 +6482,17 @@ static void dispatch(int fd, const struct http_request *req)
 {
 	const char *name;
 
+	/* Every kanxeoctl command and every web UI action already goes
+	 * through this exact function (API-First Mandate, no exceptions)
+	 * -- one log call here is a complete audit trail of every real
+	 * action taken via either client, with zero client-side
+	 * instrumentation needed (ADR for the consolidated log store).
+	 * GET /v1/health excluded: both clients poll it every few
+	 * seconds purely for a status dot, and logging that would drown
+	 * every real action in noise for no diagnostic value. */
+	if (!(strcmp(req->method, "GET") == 0 && strcmp(req->path, "/v1/health") == 0))
+		logstore_write("audit", "info", "%s %s", req->method, req->path);
+
 	if (strcmp(req->method, "GET") == 0 && strcmp(req->path, "/v1/health") == 0) {
 		handle_health(fd);
 		return;
@@ -6329,6 +6548,46 @@ static void dispatch(int fd, const struct http_request *req)
 		}
 		if (strcmp(req->method, "DELETE") == 0) {
 			handle_route_del(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/system/swap") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_swap_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_swap_enable(fd, req->body, req->body_len);
+			return;
+		}
+		if (strcmp(req->method, "DELETE") == 0) {
+			handle_swap_disable(fd);
+			return;
+		}
+	}
+	{
+		/* "/v1/system/logs" may carry a trailing "?tail=.../source=..."
+		 * query string (this codebase's own established shape for a
+		 * GET route with query params, matching .../files' own
+		 * "?path=..." handling above) -- matched by base-path length,
+		 * not a raw strcmp against the full req->path. */
+		size_t qlen = strcspn(req->path, "?");
+
+		if (qlen == strlen("/v1/system/logs") &&
+		    strncmp(req->path, "/v1/system/logs", qlen) == 0) {
+			if (strcmp(req->method, "GET") == 0) {
+				handle_logs_get(fd, req);
+				return;
+			}
+		}
+	}
+	if (strcmp(req->path, "/v1/system/logs/config") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_logs_config_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_logs_config_put(fd, req->body, req->body_len);
 			return;
 		}
 	}
@@ -7950,7 +8209,7 @@ int main(int argc, char **argv)
 	    ensure_dir(CONTAINERS_DIR) != 0 || ensure_dir(PKI_DIR) != 0 ||
 	    ensure_dir(PKI_CERTS_DIR) != 0 || ensure_dir(PKG_DIR) != 0 ||
 	    ensure_dir(ARTIFACTS_DIR) != 0 || ensure_dir(SIGNING_KEYS_DIR) != 0 ||
-	    ensure_dir(ISO_DIR) != 0)
+	    ensure_dir(ISO_DIR) != 0 || ensure_dir(SWAP_DIR) != 0 || ensure_dir(LOG_DIR) != 0)
 		return 1;
 
 	if (network_init(NETWORKS_STATE_PATH) != 0)
@@ -8018,6 +8277,10 @@ int main(int argc, char **argv)
 	if (devicemap_init(DEVICEMAP_STATE_PATH) != 0)
 		return 1;
 	if (quotamap_init(QUOTAMAP_STATE_PATH) != 0)
+		return 1;
+	if (swap_init(SWAP_STATE_PATH, SWAP_FILE_PATH) != 0)
+		return 1;
+	if (logstore_init(LOG_DIR, LOG_STATE_PATH) != 0)
 		return 1;
 
 	/*
@@ -8102,6 +8365,7 @@ int main(int argc, char **argv)
 		fprintf(stderr, "no working listener (http and https both unavailable) -- refusing to start\n");
 		return 1;
 	}
+	start_kmsg_watch(); /* needs g_epfd, only just created above -- best-effort, see its own comment */
 	fflush(stdout);
 
 	/* "About to serve traffic" is the honest definition of healthy this
@@ -8167,6 +8431,8 @@ int main(int argc, char **argv)
 				handle_console_ws_event(cc);
 			else if (cc->kind == CONN_CONSOLE_PTY)
 				handle_console_pty_event(cc);
+			else if (cc->kind == CONN_KMSG)
+				handle_kmsg_event(cc);
 			else
 				handle_client_event(cc);
 		}

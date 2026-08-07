@@ -30,6 +30,8 @@ const cache = {
 	pkgList: [],
 	siteConfig: null,
 	daemonConfig: null,
+	swap: null,
+	logs: [],
 };
 
 const healthBadge = document.getElementById("health");
@@ -260,6 +262,7 @@ const CATEGORY_VIEWS = {
 	recipes: "view-recipes",
 	site: "view-site",
 	"daemon-config": "view-daemon-config",
+	logs: "view-logs",
 	backup: "view-backup",
 	update: "view-update",
 };
@@ -303,6 +306,8 @@ function renderCurrentView() {
 			renderNetworkDetail(route.name);
 		else if (route.category === "routes")
 			renderRoutesList();
+		else if (route.category === "logs")
+			renderLogsList();
 		else if (route.category === "images" && route.name !== null)
 			renderImageDetail(route.name);
 		else if (route.category === "devices")
@@ -611,7 +616,7 @@ function renderTree() {
 				 * created but currently unused (grey), same "tint the icon,
 				 * not a separate dot" treatment containers get. */
 				iconColor: n.interfaces && n.interfaces.length > 0 ? "tree-icon-ok" : "tree-icon-idle",
-			})).concat([{ label: "Routes", hash: "routes", icon: "networks" }]),
+			})),
 		},
 		{
 			label: "Software",
@@ -670,6 +675,8 @@ function renderTree() {
 					children: [
 						{ label: "Daemon", hash: "daemon-config", icon: "system" },
 						{ label: "Devices", hash: "devices", icon: "devices" },
+						{ label: "Routes", hash: "routes", icon: "networks" },
+						{ label: "Logs", hash: "logs", icon: "system" },
 						{ label: "Update", hash: "update", icon: "update" },
 						{ label: "Backup", hash: "backup", icon: "backup" },
 					],
@@ -3541,6 +3548,87 @@ function renderRoutesList() {
 		appendRouteRow(tbody, route);
 }
 
+/* Fetch-on-demand, not folded into the global poll() loop the way
+ * routes/daemon-config are -- this view has real filters (source/
+ * level/tail) that change what's actually fetched, and a diagnostic
+ * log view has no reason to keep re-polling the server every few
+ * seconds while nobody's looking at it. */
+async function refreshLogs() {
+	const source = document.getElementById("lf-source").value;
+	const level = document.getElementById("lf-level").value.trim();
+	const tail = document.getElementById("lf-tail").value;
+	let path = "/v1/system/logs?tail=" + encodeURIComponent(tail || "200");
+
+	if (source)
+		path += "&source=" + encodeURIComponent(source);
+	if (level)
+		path += "&level=" + encodeURIComponent(level);
+
+	try {
+		cache.logs = await apiRequest("GET", path);
+	} catch (e) {
+		cache.logs = [];
+	}
+	renderLogsTable();
+}
+
+function renderLogsTable() {
+	const tbody = document.getElementById("logs-body");
+
+	tbody.textContent = "";
+	if (!cache.logs || cache.logs.length === 0) {
+		tbody.innerHTML = '<tr><td colspan="4" class="empty">No log entries.</td></tr>';
+		return;
+	}
+	for (const entry of cache.logs) {
+		const tr = document.createElement("tr");
+		const tsCell = document.createElement("td");
+		const sourceCell = document.createElement("td");
+		const levelCell = document.createElement("td");
+		const msgCell = document.createElement("td");
+
+		tsCell.textContent = new Date(entry.ts * 1000).toLocaleString();
+		sourceCell.textContent = entry.source;
+		levelCell.textContent = entry.level;
+		msgCell.textContent = entry.msg;
+		tr.append(tsCell, sourceCell, levelCell, msgCell);
+		tbody.appendChild(tr);
+	}
+}
+
+async function refreshLogsConfig() {
+	try {
+		const cfg = await apiRequest("GET", "/v1/system/logs/config");
+
+		document.getElementById("lcf-max-bytes").value = cfg.max_bytes;
+	} catch (e) {
+		/* Best-effort -- the field just stays at whatever was last shown. */
+	}
+}
+
+function renderLogsList() {
+	refreshLogs();
+	refreshLogsConfig();
+}
+
+document.getElementById("logs-filter-form").addEventListener("submit", (event) => {
+	event.preventDefault();
+	refreshLogs();
+});
+
+document.getElementById("logs-config-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+	try {
+		await apiRequest("PUT", "/v1/system/logs/config", {
+			max_bytes: parseInt(document.getElementById("lcf-max-bytes").value, 10),
+		});
+		clearStatus();
+		showStatus("Log size cap saved", false);
+	} catch (e) {
+		showStatus("Failed to save log size cap: " + e.message, true);
+	}
+});
+
 async function refreshDaemonConfig() {
 	try {
 		const dc = await apiRequest("GET", "/v1/system/daemon-config");
@@ -3616,6 +3704,45 @@ document.getElementById("sys-daemon-config-form").addEventListener("submit", asy
 		await refreshDaemonConfig();
 	} catch (e) {
 		showStatus("Failed to save daemon config: " + e.message, true);
+	}
+});
+
+async function refreshSwap() {
+	try {
+		const s = await apiRequest("GET", "/v1/system/swap");
+
+		cache.swap = s;
+		document.getElementById("swap-status").textContent = s.enabled
+			? "Swap: enabled (" + s.size_mb + " MB at " + s.path + ")"
+			: "Swap: disabled";
+	} catch (e) {
+		/* Best-effort -- the status line just stays at whatever was last shown. */
+	}
+}
+
+document.getElementById("swap-enable-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const sizeMb = parseInt(document.getElementById("swap-size-mb").value, 10);
+
+	try {
+		await apiRequest("POST", "/v1/system/swap", { size_mb: sizeMb });
+		clearStatus();
+		showStatus("Swap enabled", false);
+		await refreshSwap();
+	} catch (e) {
+		showStatus("Failed to enable swap: " + e.message, true);
+	}
+});
+
+document.getElementById("swap-disable").addEventListener("click", async () => {
+	try {
+		await apiRequest("DELETE", "/v1/system/swap");
+		clearStatus();
+		showStatus("Swap disabled", false);
+		await refreshSwap();
+	} catch (e) {
+		showStatus("Failed to disable swap: " + e.message, true);
 	}
 });
 
@@ -3726,6 +3853,7 @@ async function poll() {
 		await refreshSiteConfig();
 		await refreshDaemonConfig();
 		await refreshRoutes();
+		await refreshSwap();
 	} catch (e) {
 		showStatus("Poll failed: " + e.message, true);
 	}
