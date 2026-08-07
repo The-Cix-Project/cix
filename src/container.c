@@ -162,18 +162,26 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			 * where a bare "_exit(127)" hid real information: ENOENT
 			 * (the interpreter or binary genuinely missing),
 			 * EACCES (not executable -- lost +x bit, or a noexec
-			 * mount), and ENOEXEC (bad ELF format) all look
+			 * mount), ENOEXEC (bad ELF format), and ELIBBAD (80,
+			 * "corrupted shared library" -- a real, confirmed-live
+			 * case a narrower range would have missed) all look
 			 * identical from a caller only checking WEXITSTATUS().
-			 * 200 + errno (errno in [1,54]) leaves 127 itself free
+			 * 170 + errno (errno in [1,84]) leaves 127 itself free
 			 * as the fallback for an errno too large to encode this
 			 * way, preserving its own existing meaning as "some
-			 * exec-class failure" for that rare case.
+			 * exec-class failure" for that rare case. Deliberately
+			 * starts right after overlay_create()'s own (now
+			 * narrower, 141-170) mount-errno range -- the two never
+			 * both apply to the same run (execve() is never reached
+			 * unless overlay_create() already succeeded), so this
+			 * exit-status byte's remaining space is reused, not
+			 * shared ambiguously.
 			 */
 			int exec_errno = errno;
 
 			perror("child: execve");
-			if (exec_errno > 0 && exec_errno <= 54)
-				_exit(200 + exec_errno);
+			if (exec_errno > 0 && exec_errno <= 84)
+				_exit(170 + exec_errno);
 			_exit(127);
 		}
 	}

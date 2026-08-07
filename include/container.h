@@ -313,7 +313,17 @@ enum overlay_error {
 	OVERLAY_ERR_MKDIR_MERGED = -5,
 	OVERLAY_ERR_OPTS_TOO_LONG = -6,
 	OVERLAY_ERR_MOUNT_OVERLAY = -7,
-	OVERLAY_ERR_MOUNT_ERRNO_MAX = 60,
+	/*
+	 * Deliberately narrow (30, not the full realistic errno space) --
+	 * mount(2) itself only ever plausibly fails with a handful of
+	 * small errnos (EPERM/ENOENT/EBUSY/EINVAL/ENODEV/ENOSPC/ENOMEM/
+	 * ELOOP, all <=40), and container.c's own final execve() needs the
+	 * much wider remaining span of the same single exit-status byte
+	 * far more -- ELIBBAD (80, "corrupted shared library") is a real,
+	 * confirmed-live execve()-class failure a narrower range would
+	 * have missed entirely.
+	 */
+	OVERLAY_ERR_MOUNT_ERRNO_MAX = 30,
 	OVERLAY_ERR_MOUNT_ERRNO_BASE = -100,
 };
 

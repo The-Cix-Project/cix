@@ -1818,12 +1818,13 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			logstore_write("kanxeod", "error", "pkg %s@%s: build container setup failed (%s)",
 			                e->name, g_current_job_image, step);
 			snprintf(e->error, sizeof(e->error), "build container setup failed (%s)", step);
-		} else if (exit_status >= 141 && exit_status <= 200) {
+		} else if (exit_status >= 141 && exit_status <= 170) {
 			/* mount(overlay)'s own real errno (encoded by
-			 * src/container.c/src/overlay.c), e.g. EINVAL is the
-			 * classic symptom of lowerdir's filesystem not returning
-			 * real d_type from readdir() -- a well-known overlayfs
-			 * mount precondition. */
+			 * src/container.c/src/overlay.c, deliberately narrow --
+			 * see include/container.h's own comment), e.g. EINVAL is
+			 * the classic symptom of lowerdir's filesystem not
+			 * returning real d_type from readdir() -- a well-known
+			 * overlayfs mount precondition. */
 			int mount_errno = exit_status - 140;
 
 			logstore_write("kanxeod", "error",
@@ -1832,13 +1833,14 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			                e->name, g_current_job_image, strerror(mount_errno));
 			snprintf(e->error, sizeof(e->error), "build container setup failed (mount(overlay): %s)",
 			         strerror(mount_errno));
-		} else if (exit_status >= 201 && exit_status <= 254) {
+		} else if (exit_status >= 171 && exit_status <= 254) {
 			/* The final execve() itself failed (src/container.c) --
-			 * the real errno (ENOENT/EACCES/ENOEXEC/...) tells apart
-			 * "genuinely missing" from "not executable" (lost +x, or
-			 * a noexec mount) from "bad ELF format", none of which a
-			 * bare exit 127 could ever distinguish. */
-			int exec_errno = exit_status - 200;
+			 * the real errno (ENOENT/EACCES/ENOEXEC/ELIBBAD/...)
+			 * tells apart "genuinely missing" from "not executable"
+			 * (lost +x, or a noexec mount) from "bad ELF format" from
+			 * "corrupted/incompatible shared library", none of which
+			 * a bare exit 127 could ever distinguish. */
+			int exec_errno = exit_status - 170;
 
 			logstore_write("kanxeod", "error",
 			                "pkg %s@%s: build failed -- recipe's build script could not be "
