@@ -7677,6 +7677,7 @@ static void handle_pkg_fetch_event(struct conn *cc)
 	int status;
 	int exit_status;
 	struct container_spec spec;
+	int stdio_write_fd;
 
 	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
@@ -7686,11 +7687,21 @@ static void handle_pkg_fetch_event(struct conn *cc)
 	close(cc->fd);
 	free(cc);
 
-	if (pkg_fetch_completed(exit_status, &spec)) {
+	if (pkg_fetch_completed(exit_status, &spec, &stdio_write_fd)) {
 		struct registry_entry *entry;
 		enum registry_error rerr =
 		    registry_create(PKG_BUILD_CONTAINER_NAME, "pkgbuild", &spec, NULL, 0, 0, NULL, 0, NULL,
 		                     0, &entry);
+
+		/*
+		 * The child (if registry_create() actually forked one)
+		 * already inherited its own copy of the write end via
+		 * clone3 -- this is the daemon's own now-redundant copy,
+		 * closed immediately regardless of outcome so a failed
+		 * spawn doesn't leak it.
+		 */
+		if (stdio_write_fd >= 0)
+			close(stdio_write_fd);
 
 		if (rerr != REGISTRY_OK)
 			pkg_build_spawn_failed();

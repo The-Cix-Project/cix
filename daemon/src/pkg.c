@@ -113,6 +113,30 @@ static char g_build_workdir[PATH_MAX], g_build_merged[PATH_MAX];
 static char g_build_argv_cmd[512];
 static char *g_build_argv[4];
 static char *g_build_envp[4];
+/*
+ * The build container's own stdout/stderr, captured via a pipe (see
+ * struct container_spec's capture_output field) since there is no
+ * other way to see a recipe's real build-script output: the async
+ * pipeline captures no logs of its own, and this project's minimal
+ * install has no SSH/console access to read the daemon's own
+ * inherited stdout on a real remote box (ADR-0034). g_build_output_rd
+ * is read by pkg_build_completed() once the container exits;
+ * g_build_output_wr is the caller's (main.c's) own copy of the write
+ * end, returned via pkg_fetch_completed()'s out-param so it can be
+ * closed right after the child inherits its own duplicate -- an open
+ * write end left in the daemon's own fd table would make an EOF-based
+ * read block forever, though the bounded, non-blocking read below
+ * doesn't depend on it. -1 when no build is in flight or the pipe()
+ * call itself failed (capture is a diagnostic nicety, never a reason
+ * to fail the build).
+ */
+static int g_build_output_rd = -1;
+/* Left with headroom under LOGSTORE_MSG_MAX (512) once the surrounding
+ * "pkg %s@%s: build output: " prefix and name/image (up to
+ * PKG_NAME_MAX/PKG_IMAGE_NAME_MAX, 64 each) are accounted for --
+ * logstore_write() truncates safely via vsnprintf() regardless, this
+ * just keeps that truncation rare rather than routine. */
+#define PKG_BUILD_OUTPUT_CAPTURE_MAX 300
 
 static int pkg_name_is_valid(const char *name)
 {
@@ -1504,7 +1528,7 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, pi
 	return PKG_OK;
 }
 
-int pkg_fetch_completed(int exit_status, struct container_spec *spec_out)
+int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *out_stdio_write_fd)
 {
 	struct pkg_entry *e = pkg_find(g_current_job_name, g_current_job_image);
 	char recipe_path[PATH_MAX];
@@ -1738,6 +1762,21 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out)
 	spec_out->argv = g_build_argv;
 	spec_out->envp = g_build_envp;
 
+	{
+		int output_pipe[2];
+
+		if (pipe(output_pipe) == 0) {
+			spec_out->capture_output = 1;
+			spec_out->stdout_fd = output_pipe[1];
+			spec_out->stderr_fd = output_pipe[1];
+			g_build_output_rd = output_pipe[0];
+			*out_stdio_write_fd = output_pipe[1];
+		} else {
+			g_build_output_rd = -1;
+			*out_stdio_write_fd = -1;
+		}
+	}
+
 	e->state = PKG_STATE_BUILDING;
 	return 1;
 }
@@ -1780,6 +1819,32 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	is_upgrade = is_final && g_dep_queue_is_upgrade;
 
 	if (exit_status != 0) {
+		/*
+		 * Read back whatever the build container's own stdout/stderr
+		 * actually said (see pkg_fetch_completed()'s pipe setup) --
+		 * the one piece of information no exit-status decode below
+		 * can ever substitute for: the exit code says WHICH syscall
+		 * or exec attempt failed, this says WHY in the recipe
+		 * script's own words (e.g. a real "make: not found" from
+		 * bash itself, indistinguishable from container.c's own
+		 * exit-127 fallback by exit status alone). Bounded, one
+		 * non-blocking-by-construction read (the container has
+		 * already exited, so the write end is closed and any
+		 * buffered data is immediately available; anything beyond
+		 * the cap is simply not read, capture is diagnostic only).
+		 */
+		char captured[PKG_BUILD_OUTPUT_CAPTURE_MAX + 1];
+		int captured_len = 0;
+
+		if (g_build_output_rd >= 0) {
+			ssize_t n = read(g_build_output_rd, captured, PKG_BUILD_OUTPUT_CAPTURE_MAX);
+
+			captured_len = (n > 0) ? (int)n : 0;
+			close(g_build_output_rd);
+			g_build_output_rd = -1;
+		}
+		captured[captured_len] = '\0';
+
 		/*
 		 * 110-119 are src/container.c's own distinct pre-exec setup
 		 * failure codes (mount/overlay/network/etc., one of ~10 steps
@@ -1845,20 +1910,47 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			snprintf(e->error, sizeof(e->error), "build container setup/exec failed: %s",
 			         strerror(real_errno));
 		} else if (exit_status == 127) {
-			logstore_write(
-			    "kanxeod", "error",
-			    "pkg %s@%s: build failed -- recipe's build script could not be exec'd (exit 127, "
-			    "errno too large to encode)",
-			    e->name, g_current_job_image);
-			snprintf(e->error, sizeof(e->error), "build failed (recipe script could not be exec'd)");
+			/*
+			 * Genuinely ambiguous by exit status alone: either
+			 * container.c's own fallback for an execve() errno too
+			 * large even for the shared 1-115 range above, OR a
+			 * real, legitimate exit 127 from bash itself (its own
+			 * "command not found" convention) once bash was
+			 * successfully execve()'d and something INSIDE the
+			 * recipe's build script -- make, a compiler, whatever
+			 * -- failed to run. The captured output logged below is
+			 * how to actually tell the two apart: container.c's own
+			 * pre-execve perror() calls never reach the pipe (they
+			 * go to the daemon's own stderr, unrelated), so any real
+			 * captured text here means bash did launch and this is
+			 * its own real exit code, not the fallback.
+			 */
+			logstore_write("kanxeod", "error",
+			                "pkg %s@%s: build failed with exit 127 (ambiguous: either an "
+			                "execve() errno too large to encode, or a real \"command not "
+			                "found\" from inside the recipe's own build script -- check the "
+			                "build output logged separately)",
+			                e->name, g_current_job_image);
+			snprintf(e->error, sizeof(e->error), "build failed (exit 127 -- see build output in logs)");
 		} else {
 			snprintf(e->error, sizeof(e->error), "build failed (exit status %d)", exit_status);
 		}
+		if (captured_len > 0)
+			logstore_write("kanxeod", "error", "pkg %s@%s: build output: %s", e->name,
+			                g_current_job_image, captured);
 		e->state = is_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
 		g_current_job_name[0] = '\0';
 		g_dep_queue_count = 0; /* abort the rest of the chain -- a failed dependency
 		                        * means the top-level install can't complete either */
 		return 0;
+	}
+
+	/* Clean success -- the captured pipe (opened regardless of outcome
+	 * in pkg_fetch_completed()) is never read on this path, just
+	 * closed, matching the failure branch's own close above. */
+	if (g_build_output_rd >= 0) {
+		close(g_build_output_rd);
+		g_build_output_rd = -1;
 	}
 
 	snprintf(container_base, sizeof(container_base), "%s/%s", g_containers_dir,

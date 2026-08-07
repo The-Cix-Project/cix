@@ -154,6 +154,22 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			_exit(119);
 		}
 
+		if (spec->capture_output) {
+			dup2(spec->stdout_fd, STDOUT_FILENO);
+			dup2(spec->stderr_fd, STDERR_FILENO);
+			/* Close the original fds once dup2()'d onto 1/2 --
+			 * both often alias the same pipe write end (see
+			 * pkg.c), so a bare close() without the guard would
+			 * double-close a already-closed fd if stderr_fd ==
+			 * stdout_fd and both already collapsed onto the same
+			 * number as one of the standard streams. */
+			if (spec->stdout_fd != STDOUT_FILENO && spec->stdout_fd != STDERR_FILENO)
+				close(spec->stdout_fd);
+			if (spec->stderr_fd != STDOUT_FILENO && spec->stderr_fd != STDERR_FILENO &&
+			    spec->stderr_fd != spec->stdout_fd)
+				close(spec->stderr_fd);
+		}
+
 		execve(spec->argv[0], spec->argv, spec->envp);
 		{
 			/*

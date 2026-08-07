@@ -224,6 +224,21 @@ struct container_spec {
 	int interface_count;
 	char *const *argv;
 	char *const *envp;
+	/*
+	 * Opt-in stdout/stderr redirection: capture_output == 0 (the
+	 * default for every memset(&spec, 0, ...) caller, unchanged
+	 * behavior) means the child inherits the daemon's own stdout/
+	 * stderr exactly as before. When set, stdout_fd/stderr_fd
+	 * (caller-owned, typically both ends of the same pipe -- see
+	 * pkg.c's build-container diagnostic capture) are dup2()'d onto
+	 * the child's fd 1/2 immediately before the final execve(), so a
+	 * caller with no other way to see a launched program's real
+	 * output (no console attached, no shared filesystem to tee into)
+	 * can still capture it.
+	 */
+	int capture_output;
+	int stdout_fd;
+	int stderr_fd;
 };
 
 struct container_handle {

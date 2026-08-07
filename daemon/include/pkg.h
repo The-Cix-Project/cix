@@ -353,11 +353,22 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, pi
  * fills *spec_out (pointers into pkg.c's own static storage, valid
  * until the next pkg_* call -- safe given v1's one-job-at-a-time
  * serialization) ready for the caller to registry_create() the build
- * container itself. Returns 1 if the caller should do that, 0 if the
- * job already ended (FAILED -- bad exit status or checksum mismatch)
- * and there is nothing to build.
+ * container itself, including a pipe wired up to capture its real
+ * stdout/stderr (struct container_spec's capture_output field) --
+ * pkg_build_completed() reads it back once the container exits, so a
+ * build failure's actual diagnostic output reaches the log store
+ * even though this project has no SSH/console access to a real
+ * remote box's own inherited stdout (ADR-0034). *out_stdio_write_fd
+ * is set to the pipe's write end; only meaningful when this function
+ * returns 1 (same conditional validity as *spec_out itself) -- the
+ * caller must close it right after registry_create() (the child
+ * already inherited its own copy via clone3, so closing the parent's
+ * copy is safe and necessary hygiene). Returns 1 if the caller should
+ * registry_create() the build container, 0 if the job already ended
+ * (FAILED -- bad exit status or checksum mismatch) and there is
+ * nothing to build.
  */
-int pkg_fetch_completed(int exit_status, struct container_spec *spec_out);
+int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *out_stdio_write_fd);
 
 /* Called if registry_create() itself fails for the build container
  * pkg_fetch_completed() just prepared -- transitions the in-flight

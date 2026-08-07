@@ -2,6 +2,24 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 12 (done): real build-container stdout/stderr capture, closing the exit-127 ambiguity Part 11 left open
+
+Part 11's widened errno range (1-115) didn't change the observed remote hostbuild failure at all -- still the exact same exit 127, unchanged. That non-result was the clue: exit 127 is genuinely ambiguous between container.c's own out-of-range-errno fallback and bash's own real "command not found" exit code, indistinguishable from the outside no matter how wide the errno range gets.
+
+#### Added
+- `include/container.h`: `struct container_spec` gains `capture_output`/`stdout_fd`/`stderr_fd` (zero-init safe, default behavior unchanged for every existing caller).
+- `src/container.c`: the child `dup2()`s them onto fd 1/2 immediately before the final `execve()` when set, closing the originals afterward.
+- `daemon/src/pkg.c`: `pkg_fetch_completed()` opens a real pipe for the build container, wires the write end into the spec, and returns it via a new out-param; `pkg_build_completed()` reads the captured output (bounded, non-blocking by construction) and logs it via the existing log store alongside the exit-code decode message.
+- `daemon/include/pkg.h`: `pkg_fetch_completed()`'s signature updated (`int *out_stdio_write_fd`), documented with the same conditional-validity contract `*spec_out` itself already has.
+- `daemon/src/main.c`: `handle_pkg_fetch_event()` closes its own copy of the write end right after `registry_create()` (the child already has an independent copy via `clone3`).
+
+#### Changed
+- The exit-127 decode message in `pkg_build_completed()` reworded to name the real ambiguity honestly (container.c's own fallback vs. a real bash exit code) instead of asserting a single cause, and points at the captured output logged alongside it.
+
+#### Notes
+- Verified locally first, deliberately, before touching the remote box: a scratch recipe whose `pkg_build()` invokes a genuinely nonexistent command produced the expected real bash text end to end -- `GET /system/logs?source=kanxeod` showed `"build output: /build/recipe.sh: line 8: this_command_does_not_exist: command not found"` verbatim.
+- Full clean rebuild (`-Wall -Werror`, zero warnings); full local regression sweep (29 binaries, all passing), `test_pkg` in particular re-verified clean.
+
 ### Part 11 (done): merged, wider errno-encoding range for the container-launch diagnostic, build-version/A/B-slot self-reporting on `GET /health`
 
 Continuing Part 10's still-open thread: a real server-side `hostbuild` on `192.168.15.95`, using `kanxeo-builder`'s own rootfs as the container's overlay lowerdir, surfaced an `execve()` errno Part 10's own encoding scheme couldn't represent -- twice in a row (capped at 54, widened to 84, still insufficient).
