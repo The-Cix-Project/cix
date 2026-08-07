@@ -195,6 +195,12 @@ static void init_base_dir_paths(void)
 #define CONFIG_DEVICE "/dev/vda4"
 #define CONFIG_DIR "/config"
 #define NET_CONF_PATH CONFIG_DIR "/net.conf"
+/* The reserved network name bootstrap_management_network() creates on
+ * a genuinely fresh install (ADR-0066's rename note) -- never used to
+ * look up an already-flagged network on a pre-rename box, which keeps
+ * whatever it's actually named (network_find_management() finds it by
+ * its is_management flag, not by this string). */
+#define MGMT_NETWORK_NAME "management"
 /*
  * Partition 5, same fixed QEMU virtio-blk layout as ESP_DEVICE/
  * CONFIG_DEVICE above -- also absent on parts 1/2's throwaway 2/3-
@@ -498,8 +504,8 @@ static void console_session_teardown(struct console_exec_session *sess)
  */
 static const char *g_slot;
 static const char *g_bind_addr;
-/* Backing storage for g_bind_addr when it's derived from the "mgmt"
- * network's own gateway address (Part 0.5) rather than taken directly
+/* Backing storage for g_bind_addr when it's derived from the
+ * management network's own gateway address (Part 0.5) rather than taken directly
  * from argv's --bind= -- g_bind_addr has to remain valid for the rest
  * of the process's life, so this can't be a stack buffer. */
 static char g_bind_addr_buf[INET_ADDRSTRLEN];
@@ -557,7 +563,7 @@ static int mount_or_fail(const char *source, const char *target, const char *fst
 /* Parses the simple key=value net.conf kanxeo-install writes to the
  * config partition (image/src/kanxeo-install.c's populate step) --
  * ip=/prefix=/gateway=/interface=, one per line. interface= (Part 0.5)
- * is the physical NIC to attach to the "mgmt" network -- an explicit,
+ * is the physical NIC to attach to the management network -- an explicit,
  * operator-chosen GRUB field rather than find_nic()'s old "whichever
  * readdir() returns first" guess. */
 static int parse_net_conf(const char *path, char *out_ip, size_t ip_size, int *out_prefix,
@@ -651,7 +657,7 @@ static void load_boot_modules(void)
 }
 
 /*
- * Bootstraps the "mgmt" network from the static IP/gateway/interface
+ * Bootstraps the management network from the static IP/gateway/interface
  * configured at install time (Part 0.5, superseding the old, invisible
  * apply_static_ip()) -- creates a real, persisted network_def (visible
  * at GET /v1/networks like any other), attaches the GRUB-chosen
@@ -707,24 +713,38 @@ static int bootstrap_management_network(void)
 		return -1;
 	}
 
-	net = network_find("mgmt");
+	/* Flag-based lookup first, not by name (ADR-0066's rename note):
+	 * an already-flagged network -- including a pre-rename box's own
+	 * legacy "mgmt" network, reloaded from persisted state by
+	 * network_init() before this ever runs -- is found here and the
+	 * create-with-the-current-default-name branch below is never
+	 * entered, so an existing box's own network is never orphaned or
+	 * duplicated by a future rename of MGMT_NETWORK_NAME. Only a
+	 * genuinely fresh install (nothing flagged yet) falls through to
+	 * create one under today's default name. */
+	net = network_find_management();
 	if (net == NULL) {
-		nerr = network_create("mgmt", subnet_str, prefix, ip, &net);
-		if (nerr != NETWORK_OK) {
-			fprintf(stderr, "bootstrap_management_network: network_create failed (%d)\n", (int)nerr);
-			return -1;
-		}
-		nerr = network_attach_interface("mgmt", iface, 0);
-		if (nerr != NETWORK_OK) {
-			fprintf(stderr, "bootstrap_management_network: network_attach_interface failed (%d)\n",
-			        (int)nerr);
-			return -1;
+		net = network_find(MGMT_NETWORK_NAME);
+		if (net == NULL) {
+			nerr = network_create(MGMT_NETWORK_NAME, subnet_str, prefix, ip, &net);
+			if (nerr != NETWORK_OK) {
+				fprintf(stderr, "bootstrap_management_network: network_create failed (%d)\n",
+				        (int)nerr);
+				return -1;
+			}
+			nerr = network_attach_interface(MGMT_NETWORK_NAME, iface, 0);
+			if (nerr != NETWORK_OK) {
+				fprintf(stderr,
+				        "bootstrap_management_network: network_attach_interface failed (%d)\n",
+				        (int)nerr);
+				return -1;
+			}
 		}
 	}
-	/* Already exists on every boot after the first (network_init()
-	 * already reloaded and re-applied it) -- only the first-ever boot
-	 * actually creates it here. */
-	nerr = network_set_management("mgmt");
+	/* Idempotent re-affirmation on every boot after the first --
+	 * net->name is whatever this network is actually called (a legacy
+	 * "mgmt" or today's "management"), never a fixed literal. */
+	nerr = network_set_management(net->name);
 	if (nerr != NETWORK_OK) {
 		fprintf(stderr, "bootstrap_management_network: network_set_management failed (%d)\n",
 		        (int)nerr);
@@ -746,8 +766,8 @@ static int bootstrap_management_network(void)
 	}
 	rtnl_close(rtfd);
 
-	printf("init-mode: mgmt network %s/%d via %s, bind=%s, upstream gateway %s\n", subnet_str, prefix,
-	       iface, ip, upstream_gateway);
+	printf("init-mode: %s network %s/%d via %s, bind=%s, upstream gateway %s\n", net->name, subnet_str,
+	       prefix, iface, ip, upstream_gateway);
 	fflush(stdout);
 	return 0;
 }
@@ -2331,6 +2351,27 @@ static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
 	}
 
 	handle_daemon_config_get(fd);
+}
+
+/* GET /v1/system/routes (ADR-0066): the box's own real kernel IPv4
+ * routing table -- see network_write_routes_json()'s own comment for
+ * why this exists (no SSH/general shell, the daemon is the only way
+ * to ever see this). */
+static void handle_route_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "routes");
+	if (network_write_routes_json(&w) != 0) {
+		jw_free(&w);
+		respond_error(fd, 500, "Internal Server Error", "failed to read kernel routing table");
+		return;
+	}
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
 }
 
 static void handle_list(int fd)
@@ -5892,6 +5933,10 @@ static void dispatch(int fd, const struct http_request *req)
 			return;
 		}
 	}
+	if (strcmp(req->method, "GET") == 0 && strcmp(req->path, "/v1/system/routes") == 0) {
+		handle_route_list(fd);
+		return;
+	}
 	if (strcmp(req->path, "/v1/system/iso") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_system_iso_get(fd);
@@ -7523,7 +7568,7 @@ int main(int argc, char **argv)
 		load_boot_modules();
 	/* Only a real --init-mode boot has a GRUB-supplied net.conf to
 	 * bootstrap from (Part 0.5) -- a plain/test invocation has no
-	 * "mgmt" network and simply keeps whatever --bind= it was given. */
+	 * management network and simply keeps whatever --bind= it was given. */
 	if (init_mode && bootstrap_management_network() != 0)
 		return 1;
 	if (daemon_config_init(DAEMON_CONFIG_PATH) != 0)

@@ -20,6 +20,7 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | PUT | `/system/daemon-config` | Live-reconfigure the listen port, HTTP/HTTPS listeners, or repoint the management network -- no restart |
 | GET | `/system/iso` | Status of the most recent server-side installer ISO build |
 | POST | `/system/iso` | Assemble a fresh installer ISO server-side, non-blocking |
+| GET | `/system/routes` | The box's own real kernel IPv4 routing table |
 | GET | `/containers` | List all containers this daemon knows about |
 | POST | `/containers` | Create and start a container |
 | GET | `/containers/{name}` | Inspect one container |
@@ -108,7 +109,7 @@ Enslaves a real, currently-assignable host interface (`GET /devices`'s own `"net
 
 ## The management network and kanxeod's own listeners
 
-At install time (`kanxeo-install`'s `--ip=`/`--prefix=`/`--gateway=`/`--interface=` flags — see [`installing.md`](../guides/installing.md)), kanxeod bootstraps a real, ordinary network named `mgmt`: the given physical interface is attached to it exactly like `POST /networks/{name}/interfaces` above, and its gateway address (`--ip=`/`--prefix=`) becomes kanxeod's own bind address. This is a deliberate design choice (Part 0.5) — the host's own management IP lives on a bridge device via the same `network_def` mechanism every other network already uses, visible at `GET /networks`, not a separate GRUB-only address invisible to the API. (`--gateway=` means something different and unrelated: the box's own *upstream* default route, i.e. the home router this box's outbound traffic egresses through — not to be confused with `mgmt`'s own `gateway` field, which is kanxeod's bind address.)
+At install time (`kanxeo-install`'s `--ip=`/`--prefix=`/`--gateway=`/`--interface=` flags — see [`installing.md`](../guides/installing.md)), kanxeod bootstraps a real, ordinary network named `management`: the given physical interface is attached to it exactly like `POST /networks/{name}/interfaces` above, and its gateway address (`--ip=`/`--prefix=`) becomes kanxeod's own bind address. This is a deliberate design choice (Part 0.5) — the host's own management IP lives on a bridge device via the same `network_def` mechanism every other network already uses, visible at `GET /networks`, not a separate GRUB-only address invisible to the API. (`--gateway=` means something different and unrelated: the box's own *upstream* default route, i.e. the home router this box's outbound traffic egresses through — not to be confused with the management network's own `gateway` field, which is kanxeod's bind address.)
 
 Exactly one network has `is_management: true` at a time (`Network`'s own field, in every `GET /networks` response). Because deleting or detaching from that network's bridge would sever the connection you're managing the box through, `DELETE /networks/{name}` and `DELETE /networks/{name}/interfaces/{ifname}` both unconditionally refuse (`409`) while `is_management` is set — there is deliberately no override/force flag on either generic endpoint. Repointing management to a different network first is the only way past this:
 
@@ -117,7 +118,7 @@ GET /v1/system/daemon-config
 ```
 
 ```json
-{"port": 7620, "bind": "192.168.50.10", "management_network": "mgmt", "http_enabled": true, "https_enabled": false, "https_port": 8443}
+{"port": 7620, "bind": "192.168.50.10", "management_network": "management", "http_enabled": true, "https_enabled": false, "https_port": 8443}
 ```
 
 ```
@@ -137,6 +138,21 @@ PUT /v1/system/daemon-config
 Starts a second, independent listener on `https_port` (default `8443`), reusing the already-issued PKI `"host"` leaf certificate (see [PKI](#pki-a-ca-chain-and-issued-leaf-certificates) below) — `500` if no root CA has been bootstrapped yet (`POST /pki/ca`), since there's no certificate to serve TLS with. `http_enabled` and `https_enabled` can each be toggled off, but never both in the same request (`400`) — kanxeod must always have at least one live listener, since (installed) it runs as real PID 1 with no "restart" to fall back on. Every change here — port, network repoint, HTTP/HTTPS toggle — is live immediately and also persisted, so it survives a real reboot.
 
 Since kanxeod is PID 1 on an installed system, there is no way to reach it again over the network if it's ever pointed at an address you can't get to — double-check reachability of a new `management_network` (or a firewalled `https_port`) before relying on it as your only way in; physical console access (`docs/guides/installing.md`'s "Console login") is always the fallback.
+
+## The box's own kernel routing table
+
+```
+GET /v1/system/routes
+```
+
+```json
+{"routes": [
+  {"dest": "default", "prefix": 0, "gateway": "192.168.15.254", "interface": "eth0", "protocol": 3, "scope": 0},
+  {"dest": "192.168.15.0", "prefix": 24, "gateway": null, "interface": "eth0", "protocol": 2, "scope": 253}
+]}
+```
+
+A real, read-only `RTM_GETROUTE` dump (ADR-0066) — not a Kanxeo-managed resource of its own, just a window onto real kernel state. Exists purely because a real installed box has no SSH and no general shell at all (ADR-0034): before this, there was no way to ever confirm what the kernel actually did with the `--gateway=` value given at install time (fed into a real route add, `rtnl_route_add_default_ipv4()`, that otherwise runs invisibly at boot). `gateway`/`interface` are `null` for on-link routes the kernel derives automatically from each network's own assigned address (`GET /networks`) — only routes with a real next-hop (like the upstream default route) carry a `gateway`. `protocol`/`scope` are the kernel's own raw `rtm_protocol`/`rtm_scope` values, not reinterpreted into names.
 
 ## Creating a container
 

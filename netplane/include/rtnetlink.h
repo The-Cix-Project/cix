@@ -81,6 +81,33 @@ int rtnl_route_add_ipv4(int fd, uint32_t dest_be, int dest_prefix_len, uint32_t 
  * since "the default route" is the common case every container gets. */
 int rtnl_route_add_default_ipv4(int fd, uint32_t gateway_be);
 
+/* One IPv4 route as reported by the kernel's own routing table --
+ * gateway_be/oif_index are 0 when the kernel didn't report that
+ * attribute for a given route (e.g. an on-link route with no
+ * gateway). */
+struct kernel_route {
+	uint32_t dst_be;
+	int dst_prefix_len;
+	uint32_t gateway_be;
+	int oif_index;
+	unsigned char protocol;
+	unsigned char scope;
+};
+
+/*
+ * Dumps the kernel's real IPv4 routing table (RTM_GETROUTE, NLM_F_DUMP)
+ * into out[] (caller-provided, capacity max) -- the first multi-message
+ * rtnetlink consumer in this file (every other function here sends one
+ * request and gets back a single NLMSG_ERROR ack; a dump gets back a
+ * sequence of RTM_NEWROUTE messages terminated by NLMSG_DONE, which
+ * needs its own receive loop rather than nl_msg_send_and_ack()).
+ * *out_count is always set to the real number of routes the kernel
+ * reported, even if that's more than max (out[] itself is only filled
+ * up to max) -- so a caller can tell "truncated" from "that's really
+ * all of them." Returns -1 on any transport/parse failure.
+ */
+int rtnl_route_dump_ipv4(int fd, struct kernel_route *out, int max, int *out_count);
+
 /* Deletes the named link. Deleting either end of a veth pair removes
  * both, kernel-side. */
 int rtnl_link_delete(int fd, const char *name);

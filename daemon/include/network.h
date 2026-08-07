@@ -141,6 +141,13 @@ enum network_error network_ip_available(const char *name, uint32_t ip_be);
 void network_write_json_one(const struct network_def *net, struct json_writer *w);
 void network_write_json_list(struct json_writer *w);
 
+/* ADR-0066: a real, read-only view of the box's own kernel IPv4
+ * routing table, via rtnl_route_dump_ipv4() -- the only way to ever
+ * inspect a running Kanxeo install's actual routing state (ADR-0034,
+ * no SSH/general shell). Returns -1 (nothing written to w) only on a
+ * genuine rtnetlink transport/parse failure. */
+int network_write_routes_json(struct json_writer *w);
+
 /*
  * Attaches a real host network interface to name's bridge -- the
  * "physical ethernet on a host-managed switch" half of what a

@@ -8,6 +8,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <limits.h>
+#include <net/if.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -752,4 +753,77 @@ void network_write_json_list(struct json_writer *w)
 			network_write_json_one(&g_networks[i], w);
 	}
 	jw_arr_close(w);
+}
+
+/* ADR-0066: a real, read-only view of the box's own kernel routing
+ * table -- the daemon is the only way to ever inspect a running
+ * Kanxeo install (ADR-0034, no SSH/general shell), and until now
+ * there was no way to see this at all. */
+#define ROUTE_DUMP_MAX 64
+
+static void route_write_json_one(const struct kernel_route *r, struct json_writer *w)
+{
+	struct in_addr a;
+	char buf[INET_ADDRSTRLEN];
+	char ifname[IF_NAMESIZE];
+
+	jw_obj_open(w);
+	jw_key(w, "dest");
+	if (r->dst_prefix_len > 0) {
+		a.s_addr = r->dst_be;
+		inet_ntop(AF_INET, &a, buf, sizeof(buf));
+		jw_str(w, buf);
+	} else {
+		jw_str(w, "default");
+	}
+	jw_key(w, "prefix");
+	jw_int(w, r->dst_prefix_len);
+	jw_key(w, "gateway");
+	if (r->gateway_be != 0) {
+		a.s_addr = r->gateway_be;
+		inet_ntop(AF_INET, &a, buf, sizeof(buf));
+		jw_str(w, buf);
+	} else {
+		jw_null(w);
+	}
+	jw_key(w, "interface");
+	if (r->oif_index > 0 && if_indextoname((unsigned int)r->oif_index, ifname) != NULL)
+		jw_str(w, ifname);
+	else
+		jw_null(w);
+	jw_key(w, "protocol");
+	jw_int(w, r->protocol);
+	jw_key(w, "scope");
+	jw_int(w, r->scope);
+	jw_obj_close(w);
+}
+
+/* Returns -1 (nothing written to w) only if the rtnetlink socket
+ * itself or the dump request/response fails outright -- caller turns
+ * that into a 500, matching every other host-state read in this
+ * daemon that has no sane "empty but successful" fallback for a
+ * genuine transport failure. */
+int network_write_routes_json(struct json_writer *w)
+{
+	struct kernel_route routes[ROUTE_DUMP_MAX];
+	int count = 0;
+	int fd;
+	int i;
+	int n;
+
+	fd = rtnl_open();
+	if (fd < 0)
+		return -1;
+	if (rtnl_route_dump_ipv4(fd, routes, ROUTE_DUMP_MAX, &count) != 0) {
+		rtnl_close(fd);
+		return -1;
+	}
+	rtnl_close(fd);
+
+	n = count < ROUTE_DUMP_MAX ? count : ROUTE_DUMP_MAX;
+	jw_arr_open(w);
+	for (i = 0; i < n; i++)
+		route_write_json_one(&routes[i], w);
+	jw_arr_close(w);
+	return 0;
 }

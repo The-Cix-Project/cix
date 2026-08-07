@@ -2,6 +2,32 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 6: kernel routing-table diagnostic, mgmt -> management rename, dashboard Server/DNS reorg (ADR-0066)
+
+Continuing from Part 5 follow-on 2's still-open connectivity bug on `192.168.15.95` (git/gitea install fetch failing despite a correct upstream gateway) plus a batch of dashboard/naming feedback surfaced during the same investigation.
+
+#### Added
+- `netplane/src/rtnetlink.c`/`netplane/include/rtnetlink.h`: `rtnl_route_dump_ipv4()` -- the first multi-message rtnetlink consumer in this codebase (`RTM_GETROUTE`/`NLM_F_DUMP`, its own receive loop over `NLMSG_OK()`/`NLMSG_NEXT()` up to `NLMSG_DONE`, distinct from every other function's single-request/single-ack `nl_msg_send_and_ack()`), plus `struct kernel_route`.
+- `daemon/src/network.c`/`daemon/include/network.h`: `network_write_routes_json()`, mirroring `network_write_json_one/list()`'s own shape.
+- `daemon/src/main.c`: `handle_route_list()`, `GET /v1/system/routes`.
+- `cli/src/main.c`: `kanxeoctl routes` (bare top-level verb, matching `health`/`update`/`backup`/`iso`'s own convention).
+- `docs/adr/0066-kernel-routing-table-diagnostic.md`.
+- `daemon/src/main.c`: `MGMT_NETWORK_NAME` (`"management"`) constant, replacing 4 scattered `"mgmt"` literals in `bootstrap_management_network()`.
+- Web dashboard: read-only "Routes" panel on the Daemon page (`web/index.html`/`web/app.js`'s `refreshRoutes()`).
+
+#### Changed
+- `daemon/src/main.c`: `bootstrap_management_network()` now looks up the management network **by its `is_management` flag first** (`network_find_management()`), falling back to name-based find/create only for a genuinely fresh install -- keeps an already-running box's own legacy `"mgmt"`-named network intact across this rename, verified via a real QEMU boot rather than assumed. The boot printf now prints the network's real, current name (`net->name`) dynamically instead of a hardcoded literal.
+- `test/test_installer.c`: updated its boot-log assertion from `"init-mode: mgmt network"` to `"init-mode: management network"`, in lockstep with the printf change above.
+- `docs/adr/0058-host-management-network-unification.md`, `docs/guides/installing.md`, `docs/api/README.md`, `docs/api/openapi.yaml`: `"mgmt"` prose references updated to `"management"` (factual/naming correction, not a reversal of ADR-0058's actual decision).
+- `web/app.js`: nav tree reorg -- `Site` moved from the old `Backup` group (under `System`) to a third child of `DNS`; the `Backup` group renamed/repurposed to `Server`, gaining `Devices` and `Update` (moved from flat `System`-level leaves) alongside `Daemon` and a single combined `Backup` page.
+- `web/index.html`: the former separate `#view-backup`/`#view-restore` sections merged into one `#view-backup`, keeping `sys-backup`/`sys-restore-form`/`sys-restore-file` element ids and their JS handlers unchanged.
+- `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/cli-reference.md`: document the new `/system/routes` endpoint and `routes`/`KernelRoute` schema.
+
+#### Notes
+- Verified real, end to end: the routes dump cross-checked entry-by-entry against this dev sandbox's own independently-known-correct `ip route show default`; a full QEMU `test_installer` boot showing the real kernel bridge literally named `management` (`management: port 1(eth0) entered forwarding state`, `init-mode: management network 192.168.50.0/24 via eth0, ...`) on a fresh install; the dashboard reorg verified via `node --check`, a full HTML tag-balance walk, and confirming a real running `kanxeod` serves the expected merged/reorganized structure.
+- **Not resolved, per Zen:** the original `192.168.15.95` connectivity bug itself -- this phase built the diagnostic needed to finally read that box's real routing table, not the fix. The user's separate "dedicated daemon bind IP" request was deliberately not built -- a real architectural departure from ADR-0058, and the existing "point daemon-config at any network, including a fresh container-free one" mechanism already covers the stated need.
+- **Not verified, per Zen:** a real interactive browser click-through of the dashboard reorg -- no headless-browser tooling in this sandbox, the same documented limitation prior dashboard phases already flagged.
+
 ### Part 5 follow-on 2: pkg bootstrap URL-fetch, closing a real gap in ADR-0031's own "operator scp's it" assumption (ADR-0065)
 
 Found directly from real-world use: getting `gitea` running on a genuinely separate, freshly-installed box (`192.168.15.95`) surfaced that `pkg_bootstrap`'s `toolchain_path` mode assumed an operator could `scp` an artifact onto the box out-of-band. Confirmed false by direct testing (`nc -z <box> 22` closed) -- a real Kanxeo install has no SSH server and no general shell at all (ADR-0034 by design). Explicitly requested to be solved architecturally, "no hacks, no workarounds," after three proposed stopgaps were rejected.

@@ -474,6 +474,101 @@ int rtnl_route_add_default_ipv4(int fd, uint32_t gateway_be)
 	return rtnl_route_add_ipv4(fd, 0, 0, gateway_be);
 }
 
+int rtnl_route_dump_ipv4(int fd, struct kernel_route *out, int max, int *out_count)
+{
+	struct nl_msg m;
+	struct nlmsghdr *nh;
+	struct rtmsg *rtm;
+	/* A dump's response can span several recv()s worth of messages --
+	 * generously sized for a real routing table, not just the single
+	 * request/single-ack NL_MSG_MAX every other function here needs. */
+	char rbuf[8192];
+	ssize_t n;
+	int count = 0;
+	int done = 0;
+
+	nl_msg_init(&m);
+	nh = nl_msg_put(&m, sizeof(*nh));
+	rtm = nl_msg_put(&m, sizeof(*rtm));
+	if (nh == NULL || rtm == NULL)
+		return -1;
+	rtm->rtm_family = AF_INET;
+
+	nh->nlmsg_len = (uint32_t)m.len;
+	nh->nlmsg_type = RTM_GETROUTE;
+	/* NLM_F_DUMP, not NLM_F_ACK -- a dump's response is the sequence
+	 * of RTM_NEWROUTE messages itself, terminated by NLMSG_DONE, never
+	 * a single NLMSG_ERROR ack. */
+	nh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+	nh->nlmsg_seq = 1;
+	nh->nlmsg_pid = 0;
+
+	n = send(fd, m.buf, m.len, 0);
+	if (n < 0 || (size_t)n != m.len)
+		return -1;
+
+	while (!done) {
+		struct nlmsghdr *rnh;
+		int len;
+
+		n = recv(fd, rbuf, sizeof(rbuf), 0);
+		if (n < 0)
+			return -1;
+
+		rnh = (struct nlmsghdr *)rbuf;
+		len = (int)n;
+		for (; NLMSG_OK(rnh, len); rnh = NLMSG_NEXT(rnh, len)) {
+			struct rtmsg *r;
+			struct rtattr *rta;
+			int rtal;
+			struct kernel_route kr;
+
+			if (rnh->nlmsg_type == NLMSG_DONE) {
+				done = 1;
+				break;
+			}
+			if (rnh->nlmsg_type == NLMSG_ERROR)
+				return -1;
+			if (rnh->nlmsg_type != RTM_NEWROUTE)
+				continue;
+
+			r = (struct rtmsg *)NLMSG_DATA(rnh);
+			if (r->rtm_family != AF_INET)
+				continue;
+
+			memset(&kr, 0, sizeof(kr));
+			kr.dst_prefix_len = r->rtm_dst_len;
+			kr.protocol = r->rtm_protocol;
+			kr.scope = r->rtm_scope;
+
+			rta = (struct rtattr *)RTM_RTA(r);
+			rtal = (int)RTM_PAYLOAD(rnh);
+			for (; RTA_OK(rta, rtal); rta = RTA_NEXT(rta, rtal)) {
+				switch (rta->rta_type) {
+				case RTA_DST:
+					memcpy(&kr.dst_be, RTA_DATA(rta), sizeof(kr.dst_be));
+					break;
+				case RTA_GATEWAY:
+					memcpy(&kr.gateway_be, RTA_DATA(rta), sizeof(kr.gateway_be));
+					break;
+				case RTA_OIF:
+					memcpy(&kr.oif_index, RTA_DATA(rta), sizeof(kr.oif_index));
+					break;
+				default:
+					break;
+				}
+			}
+
+			if (count < max)
+				out[count] = kr;
+			count++;
+		}
+	}
+
+	*out_count = count;
+	return 0;
+}
+
 int rtnl_link_delete(int fd, const char *name)
 {
 	struct nl_msg m;

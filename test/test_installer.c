@@ -619,8 +619,8 @@ int main(void)
 	/* 9. Session 3: the actual end-to-end proof -- boot the target disk
 	 * alone, for real, with Secure Boot still enforced (secure_boot=1)
 	 * and a real NIC attached this time, and confirm it comes up as a
-	 * genuinely working kanxeod that actually bootstrapped its "mgmt"
-	 * network from the static IP/gateway/interface configured at
+	 * genuinely working kanxeod that actually bootstrapped its
+	 * management network from the static IP/gateway/interface configured at
 	 * install time (Part 0.5). Nothing here is test-built; this is
 	 * exactly what an operator would see after rebooting a freshly
 	 * installed, MOK-confirmed machine -- shim -> the Kanxeo-signed
@@ -644,9 +644,9 @@ int main(void)
 		printf("INSTALLER RESULT: FAIL\n");
 		return 1;
 	}
-	if (strstr(captured, "init-mode: mgmt network") == NULL || strstr(captured, TEST_IP) == NULL ||
+	if (strstr(captured, "init-mode: management network") == NULL || strstr(captured, TEST_IP) == NULL ||
 	    strstr(captured, TEST_GATEWAY) == NULL || strstr(captured, TEST_IFACE) == NULL) {
-		fprintf(stderr, "installed system booted but never bootstrapped its mgmt network\n");
+		fprintf(stderr, "installed system booted but never bootstrapped its management network\n");
 		printf("INSTALLER RESULT: FAIL\n");
 		return 1;
 	}

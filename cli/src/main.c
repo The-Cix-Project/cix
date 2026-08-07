@@ -144,7 +144,9 @@ static void print_usage(FILE *out)
 	        "               server-side (ADR-0064), from the most recent \"kanxeo\"/\"kernel\"/\n"
 	        "               \"isotools\" hostbuild artifacts; every flag is optional, an empty\n"
 	        "               call reproduces the original edit-at-the-GRUB-menu placeholder ISO\n"
-	        "  iso status  -- state/iso_path/error of the most recent ISO build\n");
+	        "  iso status  -- state/iso_path/error of the most recent ISO build\n"
+	        "  routes  -- the box's own real kernel IPv4 routing table (ADR-0066); the\n"
+	        "               only way to see this on a real install, no SSH/general shell\n");
 }
 
 static const char *json_str_field(const struct json_value *obj, const char *key)
@@ -309,6 +311,33 @@ static void fmt_network_list(const struct json_value *v)
 		return;
 	for (i = 0; i < networks->u.array.count; i++)
 		fmt_network_line(networks->u.array.items[i]);
+}
+
+static void fmt_route_line(const struct json_value *v)
+{
+	const char *dest = json_str_field(v, "dest");
+	long prefix = (long)json_as_number(json_object_get(v, "prefix"));
+	const char *gateway = json_str_field(v, "gateway"); /* NULL for an on-link/gateway-less route */
+	const char *iface = json_str_field(v, "interface"); /* NULL if the kernel didn't report one */
+	int is_default = dest != NULL && strcmp(dest, "default") == 0;
+	char dest_buf[40];
+
+	if (is_default)
+		snprintf(dest_buf, sizeof(dest_buf), "default");
+	else
+		snprintf(dest_buf, sizeof(dest_buf), "%s/%ld", dest != NULL ? dest : "", prefix);
+	printf("%-20s via %-16s dev %s\n", dest_buf, gateway != NULL ? gateway : "-", iface != NULL ? iface : "-");
+}
+
+static void fmt_route_list(const struct json_value *v)
+{
+	const struct json_value *routes = json_object_get(v, "routes");
+	size_t i;
+
+	if (routes == NULL || routes->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < routes->u.array.count; i++)
+		fmt_route_line(routes->u.array.items[i]);
 }
 
 static void fmt_image_line(const struct json_value *v)
@@ -564,6 +593,17 @@ static int cmd_health(const struct kx_client *c, int json_mode)
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
+}
+
+static int cmd_routes(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/routes", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_route_list);
 }
 
 static int cmd_shutdown(const struct kx_client *c, int json_mode)
@@ -3638,6 +3678,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_daemon_config(client, json_mode, argc, argv);
 	if (strcmp(cmd, "iso") == 0)
 		return cmd_iso(client, json_mode, argc, argv);
+	if (strcmp(cmd, "routes") == 0)
+		return cmd_routes(client, json_mode);
 	if (strcmp(cmd, "ps") == 0)
 		return cmd_ps(client, json_mode);
 	if (strcmp(cmd, "run") == 0)

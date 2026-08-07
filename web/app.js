@@ -259,7 +259,6 @@ const CATEGORY_VIEWS = {
 	site: "view-site",
 	"daemon-config": "view-daemon-config",
 	backup: "view-backup",
-	restore: "view-restore",
 	update: "view-update",
 };
 
@@ -637,21 +636,22 @@ function renderTree() {
 					children: [
 						{ label: "Records", hash: "dns-records", icon: "dns" },
 						{ label: "Servers", hash: "dns-servers", icon: "dns" },
+						{ label: "Site", hash: "site", icon: "dns" },
 					],
 				},
 				{
-					label: "Backup",
-					hash: "backup",
-					icon: "backup",
+					/* Aliases to its own first child's hash ("daemon-config"),
+					 * same convention as System's own alias above. */
+					label: "Server",
+					hash: "daemon-config",
+					icon: "system",
 					children: [
-						{ label: "Backup", hash: "backup", icon: "backup" },
-						{ label: "Restore", hash: "restore", icon: "backup" },
-						{ label: "Site", hash: "site", icon: "backup" },
 						{ label: "Daemon", hash: "daemon-config", icon: "system" },
+						{ label: "Devices", hash: "devices", icon: "devices" },
+						{ label: "Update", hash: "update", icon: "update" },
+						{ label: "Backup", hash: "backup", icon: "backup" },
 					],
 				},
-				{ label: "Devices", hash: "devices", icon: "devices" },
-				{ label: "Update", hash: "update", icon: "update" },
 			],
 		},
 	];
@@ -3402,6 +3402,31 @@ function populateManagementNetworkSelect(currentName) {
 	select.value = currentName || "";
 }
 
+async function refreshRoutes() {
+	try {
+		const r = await apiRequest("GET", "/v1/system/routes");
+		const tbody = document.getElementById("routes-body");
+
+		tbody.textContent = "";
+		for (const route of r.routes) {
+			const row = document.createElement("tr");
+			const dest = document.createElement("td");
+			const gw = document.createElement("td");
+			const iface = document.createElement("td");
+
+			dest.textContent = route.dest === "default" ? "default" : route.dest + "/" + route.prefix;
+			gw.textContent = route.gateway !== null ? route.gateway : "-";
+			iface.textContent = route.interface !== null ? route.interface : "-";
+			row.appendChild(dest);
+			row.appendChild(gw);
+			row.appendChild(iface);
+			tbody.appendChild(row);
+		}
+	} catch (e) {
+		/* Best-effort -- the table just stays at whatever was last shown. */
+	}
+}
+
 async function refreshDaemonConfig() {
 	try {
 		const dc = await apiRequest("GET", "/v1/system/daemon-config");
@@ -3573,6 +3598,7 @@ async function poll() {
 		await refreshPkgList();
 		await refreshSiteConfig();
 		await refreshDaemonConfig();
+		await refreshRoutes();
 	} catch (e) {
 		showStatus("Poll failed: " + e.message, true);
 	}

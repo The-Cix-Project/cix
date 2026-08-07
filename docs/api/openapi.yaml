@@ -382,6 +382,38 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/routes:
+    get:
+      summary: The box's own real kernel IPv4 routing table (ADR-0066)
+      description: >
+        A read-only rtnetlink dump (RTM_GETROUTE), not a Kanxeo-managed
+        resource -- this exists purely so a real, installed box (no
+        SSH, no general shell, ADR-0034) can be diagnosed at all. The
+        "default" dest entry (if present) is the box's own upstream
+        default route; gateway/interface are null for on-link routes
+        the kernel derives automatically from each network's own
+        assigned address (see GET /networks).
+      operationId: getSystemRoutes
+      responses:
+        "200":
+          description: The kernel's current IPv4 routing table
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [routes]
+                properties:
+                  routes:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/KernelRoute"
+        "500":
+          description: The rtnetlink dump itself failed (transport-level, not a "no routes" case)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /system/iso:
     get:
       summary: Status of the most recent server-side installer ISO build (ADR-0064)
@@ -3406,7 +3438,7 @@ components:
           description: Upstream default-route address (distinct from a network's own gateway -- see ADR-0058).
         interface:
           type: string
-          description: Physical NIC name to attach to the "mgmt" network, e.g. "eth0".
+          description: Physical NIC name to attach to the "management" network, e.g. "eth0".
 
     DaemonConfig:
       type: object
@@ -3472,6 +3504,33 @@ components:
           type: integer
           minimum: 1
           maximum: 65535
+
+    KernelRoute:
+      type: object
+      required: [dest, prefix, gateway, interface, protocol, scope]
+      properties:
+        dest:
+          type: string
+          description: >
+            An IPv4 address (no prefix suffix), or the literal string
+            "default" for the default route (prefix is 0 in that case).
+        prefix:
+          type: integer
+          description: Destination prefix length (0 for the default route).
+        gateway:
+          type: string
+          nullable: true
+          description: Null for an on-link route the kernel derives automatically from an interface's own assigned address.
+        interface:
+          type: string
+          nullable: true
+          description: Null only if the kernel didn't report an outgoing interface for this route.
+        protocol:
+          type: integer
+          description: Raw rtm_protocol value (e.g. 2 = kernel-derived on-link route, 3 = boot-time static route) -- not reinterpreted into a name.
+        scope:
+          type: integer
+          description: Raw rtm_scope value -- not reinterpreted into a name.
 
     PkiCaCreateRequest:
       type: object

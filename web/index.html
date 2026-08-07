@@ -579,6 +579,19 @@
 				<button type="submit">Save</button>
 			</form>
 			<p class="hint" id="dcf-bind-hint"></p>
+			<h3>Routes</h3>
+			<p class="hint">The box's own real kernel IPv4 routing table (ADR-0066) -- read-only, the only
+				way to see this on a real install with no SSH/general shell.</p>
+			<table>
+				<thead>
+					<tr>
+						<th>Destination</th>
+						<th>Gateway</th>
+						<th>Interface</th>
+					</tr>
+				</thead>
+				<tbody id="routes-body"></tbody>
+			</table>
 		</section>
 
 		<section class="view" id="view-backup" hidden>
@@ -586,10 +599,7 @@
 			<p class="hint">Platform configuration state (container defs, networks, DNS records, pkg install
 				state + recipes, site config) -- not workload data, not image content, never PKI keys.</p>
 			<button type="button" id="sys-backup">Download backup</button>
-		</section>
-
-		<section class="view" id="view-restore" hidden>
-			<h2>Restore</h2>
+			<h3>Restore</h3>
 			<form id="sys-restore-form">
 				<label class="wide">
 					Backup bundle
