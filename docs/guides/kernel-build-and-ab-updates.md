@@ -31,7 +31,10 @@ A real GCC toolchain, not TCC — this is unmodified upstream software, not this
 
 Using the [hostbuild](writing-recipes.md#the-hostbuild-variant) mechanism against `pkg/recipes/kernel.recipe`, which reproduces the identical sequence above (including the modules build + a real `depmod`) inside a build container:
 
+`kernel.recipe`'s own `pkg_source` fetches `image/kernel/qemu-part1.config` from `http://127.0.0.1:8901/qemu-part1.config` (curl'd host-side, before the build container starts, same as the kernel tarball itself) — that address is never automatically served by anything, so start a plain local HTTP server pointed at the config's own directory first, from wherever this daemon's own host filesystem has the repo checked out:
+
 ```
+cd image/kernel && python3 -m http.server 8901 --bind 127.0.0.1 &
 kanxeoctl pkg hostbuild kernel --build-image=dev --wait
 ```
 

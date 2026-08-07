@@ -72,6 +72,11 @@
 #define SIGNING_KEY "image/keys/kanxeo-signing.key"
 #define SIGNING_CERT_PEM "image/keys/kanxeo-signing.crt"
 #define SIGNING_CERT_DER "image/keys/kanxeo-signing.cer"
+/* ADR-0064: mkinstalleriso now takes an explicit isotools-root rather
+ * than a hardcoded /usr/bin/grub-mkrescue -- "/usr" reproduces this
+ * tool's original host-borrowed behavior, exactly what this dev
+ * sandbox's own real grub-mkrescue/sbsign install already is. */
+#define ISOTOOLS_ROOT "/usr"
 #define MOK_PASSWORD "kanxeotest"
 
 #define E2FSCK_BIN "/sbin/e2fsck"
@@ -223,7 +228,7 @@ int main(void)
 			                control_plane_squashfs,        (char *)SIGNING_KEY,
 			                (char *)SIGNING_CERT_PEM,      (char *)SIGNING_CERT_DER,
 			                installer_iso,                 kernel_args,
-			                NULL };
+			                (char *)ISOTOOLS_ROOT,         NULL };
 		if (run_subprocess(MKINSTALLERISO_BIN, mkiso_argv) != 0)
 			return 1;
 	}
