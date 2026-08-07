@@ -12,6 +12,17 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/*
+ * Distinct negative return codes per failure branch (OVERLAY_ERR_*,
+ * container.h), not a bare -1 -- overlay_create()'s own single caller
+ * (src/container.c, the clone3'd child) already maps its own ~10
+ * pre-exec setup steps to distinct process exit codes so a daemon-layer
+ * caller with real log-store access (pkg.c) can report specifically
+ * which one failed; a bare -1 here would have collapsed six genuinely
+ * different overlay-mount failure modes back into that single
+ * "overlay_create" bucket. Every existing caller already only ever
+ * checked `!= 0`, so this is a pure refinement, not a behavior change.
+ */
 int overlay_create(const struct overlay_spec *ov)
 {
 	struct stat st;
@@ -24,12 +35,12 @@ int overlay_create(const struct overlay_spec *ov)
 	 */
 	if (stat(ov->lowerdir, &st) != 0) {
 		perror("overlay_create: stat(lowerdir)");
-		return -1;
+		return OVERLAY_ERR_STAT_LOWERDIR;
 	}
 
 	if (mkdir(ov->upperdir, 0755) != 0 && errno != EEXIST) {
 		perror("overlay_create: mkdir(upperdir)");
-		return -1;
+		return OVERLAY_ERR_MKDIR_UPPERDIR;
 	}
 
 	/*
@@ -53,42 +64,60 @@ int overlay_create(const struct overlay_spec *ov)
 
 		if (fd < 0) {
 			perror("overlay_create: open(upperdir) for project-quota tagging");
-			return -1;
+			return OVERLAY_ERR_QUOTA;
 		}
 		if (ioctl(fd, KX_FS_IOC_FSGETXATTR, &fsx) != 0) {
 			perror("overlay_create: FS_IOC_FSGETXATTR");
 			close(fd);
-			return -1;
+			return OVERLAY_ERR_QUOTA;
 		}
 		fsx.fsx_projid = ov->project_id;
 		fsx.fsx_xflags |= KX_FS_XFLAG_PROJINHERIT;
 		if (ioctl(fd, KX_FS_IOC_FSSETXATTR, &fsx) != 0) {
 			perror("overlay_create: FS_IOC_FSSETXATTR");
 			close(fd);
-			return -1;
+			return OVERLAY_ERR_QUOTA;
 		}
 		close(fd);
 	}
 
 	if (mkdir(ov->workdir, 0700) != 0 && errno != EEXIST) {
 		perror("overlay_create: mkdir(workdir)");
-		return -1;
+		return OVERLAY_ERR_MKDIR_WORKDIR;
 	}
 
 	if (mkdir(ov->merged, 0755) != 0 && errno != EEXIST) {
 		perror("overlay_create: mkdir(merged)");
-		return -1;
+		return OVERLAY_ERR_MKDIR_MERGED;
 	}
 
 	if (snprintf(opts, sizeof(opts), "lowerdir=%s,upperdir=%s,workdir=%s",
 	             ov->lowerdir, ov->upperdir, ov->workdir) >= (int)sizeof(opts)) {
 		errno = ENAMETOOLONG;
-		return -1;
+		return OVERLAY_ERR_OPTS_TOO_LONG;
 	}
 
 	if (mount("overlay", ov->merged, "overlay", 0, opts) != 0) {
+		/*
+		 * The real mount(2) errno (EINVAL/ENOSPC/ENODEV/E2BIG/...) is
+		 * the single most useful piece of information overlay_create()
+		 * can hand back here -- e.g. EINVAL is the classic symptom of
+		 * lowerdir's filesystem not returning real d_type from
+		 * readdir(), a well-known overlayfs mount precondition this
+		 * project had never actually had a live counter-example for
+		 * before. Encoded directly (OVERLAY_ERR_MOUNT_ERRNO_BASE -
+		 * errno, container.h) rather than collapsed into the same
+		 * generic bucket every other overlay_create() failure gets,
+		 * since container.c's caller has no other channel back to a
+		 * daemon-layer diagnostic than this function's own return
+		 * value -> process exit code.
+		 */
+		int mount_errno = errno;
+
 		perror("overlay_create: mount(overlay)");
-		return -1;
+		if (mount_errno > 0 && mount_errno <= OVERLAY_ERR_MOUNT_ERRNO_MAX)
+			return OVERLAY_ERR_MOUNT_ERRNO_BASE - mount_errno;
+		return OVERLAY_ERR_MOUNT_OVERLAY;
 	}
 
 	return 0;

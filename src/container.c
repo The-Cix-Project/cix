@@ -67,55 +67,90 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		if (want_net)
 			close(net_pipe[1]);
 
+		/*
+		 * Each pre-exec setup step gets its own exit code (110-119)
+		 * rather than a single uniform 126 -- the parent (and anything
+		 * further up the chain that only ever sees a plain wait()
+		 * exit status, e.g. pkg_build_completed()'s "build failed
+		 * (exit status N)") had no way to tell these ten completely
+		 * different failure modes apart otherwise. perror() here still
+		 * goes to the daemon's own stderr as before (this is
+		 * runtime-library code, shared with kanxeoctl console and
+		 * others -- it must not take a daemon-layer logstore.h
+		 * dependency the way daemon/src/pkg.c's own subprocess
+		 * diagnostics do), but a distinct code lets a caller that DOES
+		 * have log-store access (pkg.c) report specifically which
+		 * step failed using information it already receives for free.
+		 * 127 is deliberately left alone: it's execve()'s own existing
+		 * code below, already a recognizable, conventional "exec
+		 * failed" signal independent of this scheme.
+		 */
 		if (mountns_make_private() != 0) {
 			perror("child: mountns_make_private");
-			_exit(126);
+			_exit(110);
 		}
-		if (overlay_create(&spec->ov) != 0) {
-			perror("child: overlay_create");
-			_exit(126);
+		{
+			int overlay_ret = overlay_create(&spec->ov);
+
+			/*
+			 * overlay_create() itself already distinguishes six
+			 * named steps plus (for the actual mount(2) call) the
+			 * real errno -- translated here into its own small,
+			 * disjoint exit-code range (130-136 for the six named
+			 * steps, 141-200 for a mount(2) errno in [1,60]) so a
+			 * daemon-layer caller with log-store access (pkg.c)
+			 * doesn't just learn "overlay_create failed" but
+			 * exactly which of its own six steps, and for the
+			 * mount itself, the kernel's own real reason.
+			 */
+			if (overlay_ret != 0) {
+				perror("child: overlay_create");
+				if (overlay_ret <= OVERLAY_ERR_MOUNT_ERRNO_BASE)
+					_exit(140 + (OVERLAY_ERR_MOUNT_ERRNO_BASE - overlay_ret));
+				_exit(129 - overlay_ret);
+			}
 		}
 		if (mountns_pivot(spec->ov.merged, &spec->mnt) != 0) {
 			perror("child: mountns_pivot");
-			_exit(126);
+			_exit(112);
 		}
 		if (container_dev_mknod(spec->devices, spec->device_count) != 0) {
 			perror("child: container_dev_mknod");
-			_exit(126);
+			_exit(113);
 		}
 
 		if (spec->ns.hostname != NULL &&
 		    sethostname(spec->ns.hostname, strlen(spec->ns.hostname)) != 0) {
 			perror("child: sethostname");
-			_exit(126);
+			_exit(114);
 		}
 
 		if (want_net) {
 			if (container_net_child_configure(spec->nets, spec->net_count, net_pipe[0]) != 0) {
 				perror("child: container_net_child_configure");
-				_exit(126);
+				_exit(115);
 			}
 			close(net_pipe[0]);
 		}
 
 		if (container_net_install_routes(spec->routes, spec->route_count) != 0) {
 			perror("child: container_net_install_routes");
-			_exit(126);
+			_exit(116);
 		}
 		if (spec->ip_forward && container_net_enable_ip_forward() != 0) {
 			perror("child: container_net_enable_ip_forward");
-			_exit(126);
+			_exit(117);
 		}
 		for (i = 0; i < spec->sysctl_count; i++) {
 			if (container_net_apply_sysctl(spec->sysctls[i].key, spec->sysctls[i].value) != 0) {
 				perror("child: container_net_apply_sysctl");
-				_exit(126);
+				_exit(118);
 			}
 		}
 
 		if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0) {
 			perror("child: prctl(PR_SET_PDEATHSIG)");
-			_exit(126);
+			_exit(119);
 		}
 
 		execve(spec->argv[0], spec->argv, spec->envp);
@@ -131,7 +166,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			 * The child is already blocked reading net_pipe[0]
 			 * waiting for the veth name; closing our write end
 			 * without writing makes its read() see EOF and fail
-			 * cleanly (_exit(126)) instead of hanging forever.
+			 * cleanly (_exit(115)) instead of hanging forever.
 			 */
 			int saved_errno = errno;
 			siginfo_t info;

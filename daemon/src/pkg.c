@@ -1780,8 +1780,68 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	is_upgrade = is_final && g_dep_queue_is_upgrade;
 
 	if (exit_status != 0) {
+		/*
+		 * 110-119 are src/container.c's own distinct pre-exec setup
+		 * failure codes (mount/overlay/network/etc., one of ~10 steps
+		 * that all ran before the recipe's own script ever got to
+		 * execve()), 127 is execve() itself failing -- both far more
+		 * specific and useful than the bare "exit status N" every
+		 * other value already gets, and container.c (runtime-library
+		 * code, no logstore.h dependency of its own) has no other way
+		 * to surface which step failed than through this same exit
+		 * status pkg.c already receives.
+		 */
+		static const char *const setup_step_names[] = {
+			"mountns_make_private", "overlay_create", "mountns_pivot", "container_dev_mknod",
+			"sethostname",          "net_configure",   "net_install_routes",
+			"net_enable_ip_forward", "net_apply_sysctl", "prctl(PDEATHSIG)",
+		};
+		/* overlay_create()'s own six named sub-steps (include/container.h's
+		 * enum overlay_error, translated by src/container.c into exit
+		 * codes 130-136 -- see that translation's own comment). */
+		static const char *const overlay_step_names[] = {
+			"overlay_create: stat(lowerdir)", "overlay_create: mkdir(upperdir)",
+			"overlay_create: quota tagging",  "overlay_create: mkdir(workdir)",
+			"overlay_create: mkdir(merged)",  "overlay_create: options string too long",
+			"overlay_create: mount(overlay)",
+		};
+
+		if (exit_status >= 110 && exit_status <= 119) {
+			const char *step = setup_step_names[exit_status - 110];
+
+			logstore_write("kanxeod", "error", "pkg %s@%s: build container setup failed (%s)",
+			                e->name, g_current_job_image, step);
+			snprintf(e->error, sizeof(e->error), "build container setup failed (%s)", step);
+		} else if (exit_status >= 130 && exit_status <= 136) {
+			const char *step = overlay_step_names[exit_status - 130];
+
+			logstore_write("kanxeod", "error", "pkg %s@%s: build container setup failed (%s)",
+			                e->name, g_current_job_image, step);
+			snprintf(e->error, sizeof(e->error), "build container setup failed (%s)", step);
+		} else if (exit_status >= 141 && exit_status <= 200) {
+			/* mount(overlay)'s own real errno (encoded by
+			 * src/container.c/src/overlay.c), e.g. EINVAL is the
+			 * classic symptom of lowerdir's filesystem not returning
+			 * real d_type from readdir() -- a well-known overlayfs
+			 * mount precondition. */
+			int mount_errno = exit_status - 140;
+
+			logstore_write("kanxeod", "error",
+			                "pkg %s@%s: build container setup failed (overlay_create: "
+			                "mount(overlay): %s)",
+			                e->name, g_current_job_image, strerror(mount_errno));
+			snprintf(e->error, sizeof(e->error), "build container setup failed (mount(overlay): %s)",
+			         strerror(mount_errno));
+		} else if (exit_status == 127) {
+			logstore_write(
+			    "kanxeod", "error",
+			    "pkg %s@%s: build failed -- recipe's build script could not be exec'd (exit 127)",
+			    e->name, g_current_job_image);
+			snprintf(e->error, sizeof(e->error), "build failed (recipe script could not be exec'd)");
+		} else {
+			snprintf(e->error, sizeof(e->error), "build failed (exit status %d)", exit_status);
+		}
 		e->state = is_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
-		snprintf(e->error, sizeof(e->error), "build failed (exit status %d)", exit_status);
 		g_current_job_name[0] = '\0';
 		g_dep_queue_count = 0; /* abort the rest of the chain -- a failed dependency
 		                        * means the top-level install can't complete either */

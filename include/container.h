@@ -293,11 +293,39 @@ int cgroup_read_io_totals(int cgroup_fd, long long *out_rbytes, long long *out_w
                            long long *out_rios, long long *out_wios);
 
 /*
+ * overlay_create()'s own distinct failure codes -- every current caller
+ * only ever checks `!= 0`, so these are additive, not a behavior
+ * change. OVERLAY_ERR_MOUNT_ERRNO_BASE - errno (for errno in
+ * [1, OVERLAY_ERR_MOUNT_ERRNO_MAX]) encodes the real mount(2) errno
+ * directly for the one failure mode (the actual overlay mount syscall
+ * itself) most likely to need it -- e.g. EINVAL is the classic symptom
+ * of lowerdir's filesystem not returning real d_type from readdir(), a
+ * well-known overlayfs mount precondition. OVERLAY_ERR_MOUNT_OVERLAY is
+ * the fallback for an errno too large to encode this way (none of the
+ * realistic mount(2) failure codes are, but the fallback exists so this
+ * can never silently misencode one as a smaller, wrong errno).
+ */
+enum overlay_error {
+	OVERLAY_ERR_STAT_LOWERDIR = -1,
+	OVERLAY_ERR_MKDIR_UPPERDIR = -2,
+	OVERLAY_ERR_QUOTA = -3,
+	OVERLAY_ERR_MKDIR_WORKDIR = -4,
+	OVERLAY_ERR_MKDIR_MERGED = -5,
+	OVERLAY_ERR_OPTS_TOO_LONG = -6,
+	OVERLAY_ERR_MOUNT_OVERLAY = -7,
+	OVERLAY_ERR_MOUNT_ERRNO_MAX = 60,
+	OVERLAY_ERR_MOUNT_ERRNO_BASE = -100,
+};
+
+/*
  * Mounts an overlayfs at ov->merged: lowerdir must already exist and
  * be populated (never auto-created -- a silently-empty lowerdir would
  * mean a silently-broken container); upperdir/workdir/merged are
  * created if missing. On success ov->merged is a mount point ready
- * for mountns_pivot().
+ * for mountns_pivot(). On failure, returns a negative enum
+ * overlay_error value identifying which step failed (see above) --
+ * every current caller treats any nonzero return as failure, so this
+ * refines rather than changes existing behavior.
  */
 int overlay_create(const struct overlay_spec *ov);
 
