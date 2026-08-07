@@ -154,8 +154,28 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		}
 
 		execve(spec->argv[0], spec->argv, spec->envp);
-		perror("child: execve");
-		_exit(127);
+		{
+			/*
+			 * Same technique as overlay_create()'s own mount(2)
+			 * errno encoding (src/overlay.c) -- this final execve()
+			 * is the last, and most likely to actually matter, spot
+			 * where a bare "_exit(127)" hid real information: ENOENT
+			 * (the interpreter or binary genuinely missing),
+			 * EACCES (not executable -- lost +x bit, or a noexec
+			 * mount), and ENOEXEC (bad ELF format) all look
+			 * identical from a caller only checking WEXITSTATUS().
+			 * 200 + errno (errno in [1,54]) leaves 127 itself free
+			 * as the fallback for an errno too large to encode this
+			 * way, preserving its own existing meaning as "some
+			 * exec-class failure" for that rare case.
+			 */
+			int exec_errno = errno;
+
+			perror("child: execve");
+			if (exec_errno > 0 && exec_errno <= 54)
+				_exit(200 + exec_errno);
+			_exit(127);
+		}
 	}
 
 	/* Parent. */
