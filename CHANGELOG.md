@@ -2,6 +2,20 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 31 (done): stopping __pkgbuild via POST .../stop left pkg.c's job lock stuck forever (ADR-0086)
+
+Found live while building the host-tools image (perl/openssl/zlib/curl/tar/bzip2/xz/squashfs-tools/e2fsprogs/gzip) needed to finish Part 30's own mksquashfs fix: a `perl` build stalled (`cpu.usage_usec` frozen identically across 30+ seconds, host `load1`/`load5`/`load15` near zero -- a genuine stall, confirmed via repeated `kanxeoctl stats`, not just a lull between compile steps). `POST /v1/containers/__pkgbuild/stop` killed it correctly at the container level (`ps`/`inspect` both confirmed it gone), but every subsequent `pkg install` then 409'd "another package install is already in progress" indefinitely.
+
+Root cause: `handle_stop()` kills and reaps directly via `registry_remove()`, deliberately bypassing the epoll-driven `handle_container_event()` path (it explicitly removes the pidfd from epoll first) -- but that's the *only* place `pkg_build_completed()` normally runs, and therefore the only place `pkg.c`'s own job-lock state ever gets cleared. `__pkgbuild` had never been manually stopped before this session.
+
+#### Fixed
+- `daemon/src/main.c`: `handle_stop()` now calls `pkg_build_completed()` itself when the stopped name is `PKG_BUILD_CONTAINER_NAME`, using the real `exit_status` `registry_remove()`'s own `registry_mark_exited()` call already set -- no new mechanism, reuses the same completion/cleanup logic the normal exit path already has.
+- `docs/adr/0086-pkgbuild-stop-bypasses-pkg-completion.md`.
+
+#### Notes
+- Full clean rebuild (`-Wall -Werror`, zero warnings); `test_container_lifecycle`/`test_pkg` both pass locally.
+- Distinct from the already-tracked task #668 (hostbuild retry/upgrade 409) -- that's about retrying a *completed* job; this is about a job whose container was killed by a path that never told `pkg.c`.
+
 ### Part 30 (done, live-verified end-to-end): the real, final mkbootroot root cause -- source paths assumed a merged-usr host (ADR-0085)
 
 Part 29's own fix didn't resolve the live symptom either -- redeploying and re-triggering a hostbuild produced the identical bare `ld-linux-x86-64.so.2: No such file or directory` text. Reproduced precisely this time via `strace -f` against a genuinely non-merged-usr chroot built to match 192.168.15.95's own real root exactly: the failing call was `test_image_fixture_build()`'s own `openat(AT_FDCWD, "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", ...)`, not the dynamic linker and not `mksquashfs`. All three source reads in that function used `/usr/lib/x86_64-linux-gnu/...` -- resolves fine on this dev sandbox (`/lib` is itself a symlink to `usr/lib` here) but doesn't exist at all on this project's own deliberately non-merged-usr produced roots, which is exactly what `mkbootroot` runs on during a self-hosted build. ADR-0083's own fix got the destination right and the source wrong.

@@ -5723,12 +5723,35 @@ static void handle_container_stats(int fd, const char *name)
  * *means* going forward is entirely up to the two sites that consult
  * it (containerdef_autostart_all(), handle_restart_timer_event()), not
  * this handler. Idempotent: calling twice is both 200.
+ *
+ * A stop targeting PKG_BUILD_CONTAINER_NAME ("__pkgbuild") is a real,
+ * previously-undiscovered special case: this path kills and reaps the
+ * container directly via registry_remove() -- it never goes through
+ * handle_container_event()'s own epoll-driven exit path (the pidfd is
+ * explicitly pulled from epoll first, precisely so this synchronous
+ * stop doesn't race a live event for the same fd), which is the ONLY
+ * place pkg_build_completed() normally gets called. Without the check
+ * below, manually stopping a stuck build left pkg.c's own
+ * g_current_job_name lock permanently set (confirmed live: the
+ * container was fully gone from the registry, but every subsequent
+ * pkg install kept 409-ing "another package install is already in
+ * progress" indefinitely) -- __pkgbuild was never expected to be
+ * stopped this way before now. Fixed by calling pkg_build_completed()
+ * here too, exactly like the normal exit path would have, using the
+ * real exit_status registry_remove()'s own registry_mark_exited()
+ * call just set on e (read after removal -- the slot is only flagged
+ * not-in-use, not freed, so this is the same "read the entry once
+ * more before something else can reuse it" pattern
+ * handle_container_event() already relies on). A manually-killed
+ * build's exit_status is never 0, so pkg_build_completed()'s own
+ * success-only chaining logic correctly never triggers here.
  */
 static void handle_stop(int fd, const char *name)
 {
 	struct registry_entry *e = registry_find(name);
 	struct conn *cc;
 	struct json_writer w;
+	int was_pkgbuild = (strcmp(name, PKG_BUILD_CONTAINER_NAME) == 0);
 
 	if (e == NULL && containerdef_find(name) == NULL) {
 		respond_error(fd, 404, "Not Found", "no such container");
@@ -5743,6 +5766,15 @@ static void handle_stop(int fd, const char *name)
 			e->reactor_conn = NULL;
 		}
 		registry_remove(name);
+		if (was_pkgbuild) {
+			pid_t pkg_pid;
+			int pkg_pidfd;
+			char hostbuild_done_name[PKG_NAME_MAX];
+
+			if (pkg_build_completed(name, e->exit_status, &pkg_pid, &pkg_pidfd,
+			                         hostbuild_done_name))
+				register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd);
+		}
 	}
 	containerdef_set_stopped(name, 1);
 
