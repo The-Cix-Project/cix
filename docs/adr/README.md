@@ -89,3 +89,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0082](0082-kernel-smp-missing.md) | CONFIG_SMP was never enabled -- uniprocessor kernel, and the real root cause of the cpuset gap | Accepted |
 | [0083](0083-mkbootroot-ld-linux-second-copy.md) | mkbootroot's own control-plane root was missing the second ld-linux copy | Accepted |
 | [0084](0084-mkbootroot-mksquashfs-unreachable-on-real-host.md) | mkbootroot's own mksquashfs exec target was never reachable on a real installed host | Accepted |
+| [0085](0085-mkbootroot-source-paths-not-merged-usr.md) | The real, final root cause: mkbootroot's own source reads assumed a merged-usr host | Accepted |

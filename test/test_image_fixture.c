@@ -99,14 +99,14 @@ int test_image_fixture_build(const char *image_root, const char *child_binary_pa
 	if (mkdir_p(path) != 0)
 		return -1;
 	snprintf(path, sizeof(path), "%s/lib64/ld-linux-x86-64.so.2", image_root);
-	if (test_image_fixture_copy_file("/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", path) != 0)
+	if (test_image_fixture_copy_file("/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", path) != 0)
 		return -1;
 
 	snprintf(path, sizeof(path), "%s/lib/x86_64-linux-gnu", image_root);
 	if (mkdir_p(path) != 0)
 		return -1;
 	snprintf(path, sizeof(path), "%s/lib/x86_64-linux-gnu/libc.so.6", image_root);
-	if (test_image_fixture_copy_file("/usr/lib/x86_64-linux-gnu/libc.so.6", path) != 0)
+	if (test_image_fixture_copy_file("/lib/x86_64-linux-gnu/libc.so.6", path) != 0)
 		return -1;
 	/*
 	 * Second copy of ld-linux itself, same file as lib64/ above but at
@@ -114,19 +114,31 @@ int test_image_fixture_build(const char *image_root, const char *child_binary_pa
 	 * libc.so.6 carries a DT_NEEDED entry on ld-linux-x86-64.so.2
 	 * itself, resolved via the ordinary runtime library search path
 	 * (which does not include /lib64), not the one-time PT_INTERP
-	 * lookup lib64/ld-linux-x86-64.so.2 above already satisfies. The
-	 * exact same gap pkg_seed_image_baseline() (daemon/src/pkg.c,
-	 * ADR-0057) already carries this identical second copy for --
-	 * confirmed missing here specifically, on 192.168.15.95, via
-	 * ADR-0080's own mkbootroot output-capture diagnostics: every
-	 * from-scratch-hostbuilt tool this function's own callers spawn
-	 * (mkbootroot itself, and anything IT shells out to, e.g.
-	 * mksquashfs) failed at runtime with a bare
-	 * "ld-linux-x86-64.so.2: No such file or directory" the whole time
-	 * this function only ever staged the first copy.
+	 * lookup lib64/ld-linux-x86-64.so.2 above already satisfies.
+	 *
+	 * All three reads in this function (this one, libc.so.6 above, and
+	 * lib64/ld-linux above) source from "/lib/x86_64-linux-gnu/", never
+	 * "/usr/lib/x86_64-linux-gnu/" -- the real, final root cause of the
+	 * "ld-linux-x86-64.so.2: No such file or directory" failure this
+	 * function has produced on every self-hosted mkbootroot run all
+	 * along, confirmed via strace against a genuinely non-merged-usr
+	 * chroot: this function's own SOURCE reads used the "/usr/lib/..."
+	 * form, which only resolves on a merged-usr dev sandbox (where
+	 * /lib is itself a symlink to usr/lib) -- this project's own
+	 * produced roots are deliberately NOT merged-usr (CLAUDE.md), so
+	 * that path is simply absent when mkbootroot runs on one of its own
+	 * prior builds (the self-hosted case, ADR-0057) -- the ONE case
+	 * that matters, since a plain local dev-sandbox invocation never
+	 * exercises this failure at all. "/lib/x86_64-linux-gnu/" resolves
+	 * correctly in both environments: via the symlink here, and as the
+	 * real, actual location there (matching exactly where this same
+	 * function's own destination writes already place these files for
+	 * the next generation). A prior attempt at this fix (superseded
+	 * ADR-0083) got the destination right but left these three source
+	 * reads on the wrong path -- see ADR-0085.
 	 */
 	snprintf(path, sizeof(path), "%s/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", image_root);
-	if (test_image_fixture_copy_file("/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", path) != 0)
+	if (test_image_fixture_copy_file("/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", path) != 0)
 		return -1;
 
 	return 0;

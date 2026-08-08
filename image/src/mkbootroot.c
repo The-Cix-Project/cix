@@ -345,6 +345,23 @@ int main(int argc, char **argv)
 			"/lib/x86_64-linux-gnu/liblzma.so.5",
 			"/lib/x86_64-linux-gnu/liblzo2.so.2",
 			"/lib/x86_64-linux-gnu/liblz4.so.1",
+			/*
+			 * libpthread's own pthread_exit()/pthread_cancel() lazily
+			 * dlopen() this for stack-unwinding support -- never a
+			 * DT_NEEDED entry (confirmed via readelf -d: absent from
+			 * every ldd-based closure this file's own comments already
+			 * derived), so it was invisible to every prior "regenerate
+			 * via ldd" pass. Confirmed missing the hard way: mksquashfs
+			 * (host_tools_dir's own copy, ADR-0084) starts and runs
+			 * fine, then aborts at its own normal pthread_exit() with
+			 * "libgcc_s.so.1 must be installed for pthread_exit to
+			 * work" -- reproduced via strace against a genuinely
+			 * non-merged-usr chroot during the same investigation that
+			 * found ADR-0085's ld-linux source-path bug. Needed by any
+			 * shelled-out binary linking libpthread that actually exits
+			 * a thread normally, not just unsquashfs/mksquashfs.
+			 */
+			"/lib/x86_64-linux-gnu/libgcc_s.so.1",
 			/* bzip2 -- gzip needs only libc (already staged); xz needs
 			 * only liblzma.so.5 (already staged above, for unsquashfs) */
 			"/lib/x86_64-linux-gnu/libbz2.so.1.0",
@@ -389,8 +406,20 @@ int main(int argc, char **argv)
 			} host_tool_bins[] = {
 				{ "/usr/bin/sha256sum", "usr/bin/sha256sum", "usr/bin/sha256sum" }, /* PKG_SHA256SUM_BIN */
 				{ "/usr/bin/cp", "usr/bin/cp", "usr/bin/cp" },                       /* PKG_CP_BIN */
-				{ "/usr/bin/rm", "usr/bin/rm", "bin/rm" }, /* PKG_RM_BIN is "/bin/rm"; coreutils.recipe
-				                                             * itself installs rm under usr/bin/rm */
+				/*
+				 * PKG_RM_BIN is "/bin/rm" -- rm's own rootfs_path below
+				 * is "bin/rm", not "usr/bin/rm" like its three siblings
+				 * here, so its dev_host_path fallback has to match: "/bin/rm",
+				 * not "/usr/bin/rm" (which doesn't exist at all on this
+				 * project's own non-merged-usr roots -- confirmed via
+				 * strace against a genuinely non-merged-usr chroot,
+				 * the same real-root-only gap ADR-0085 already found
+				 * and fixed for test_image_fixture_build()'s own
+				 * ld-linux/libc.so.6 source reads). "/bin/rm" resolves
+				 * correctly on the dev sandbox too (bin -> usr/bin
+				 * there), same reasoning as ADR-0085.
+				 */
+				{ "/bin/rm", "usr/bin/rm", "bin/rm" }, /* coreutils.recipe itself installs rm under usr/bin/rm */
 				{ "/usr/bin/gzip", "usr/bin/gzip", "usr/bin/gzip" },
 			};
 
