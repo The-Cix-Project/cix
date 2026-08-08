@@ -155,6 +155,8 @@ static void print_usage(FILE *out)
 	        "  routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]  -- add a real\n"
 	        "               kernel route (ADR-0067 Part 3); or --default --gateway=A.B.C.D\n"
 	        "  routes rm --dest=A.B.C.D --prefix=N  -- remove one; or --default\n"
+	        "  disks  -- real host block devices (whole disks only); which one is the\n"
+	        "               fixed OS disk vs. assignable is flagged per entry\n"
 	        "  swap  -- show whether the host swap file is enabled (ADR-0069)\n"
 	        "  swap enable --size-mb=N  -- create and activate a swap file of this size\n"
 	        "  swap disable  -- deactivate and remove it\n"
@@ -445,6 +447,34 @@ static void fmt_device_list(const struct json_value *v)
 		return;
 	for (i = 0; i < devices->u.array.count; i++)
 		fmt_device_line(devices->u.array.items[i]);
+}
+
+static void fmt_disk_line(const struct json_value *v)
+{
+	const char *name = json_str_field(v, "name");
+	const char *dev_path = json_str_field(v, "dev_path");
+	const char *model = json_str_field(v, "model");
+	long long size_bytes = (long long)json_as_number(json_object_get(v, "size_bytes"));
+	const struct json_value *jremovable = json_object_get(v, "removable");
+	const struct json_value *jos = json_object_get(v, "is_os_disk");
+	int removable = jremovable != NULL && jremovable->type == JSON_BOOL && jremovable->u.boolean;
+	int is_os_disk = jos != NULL && jos->type == JSON_BOOL && jos->u.boolean;
+	double size_gib = (double)size_bytes / (1024.0 * 1024.0 * 1024.0);
+
+	printf("%-12s %-16s %8.1f GiB  %-32s %-9s %s\n", dev_path, name, size_gib,
+	       model != NULL && model[0] != '\0' ? model : "-", removable ? "removable" : "fixed",
+	       is_os_disk ? "os-disk" : "assignable");
+}
+
+static void fmt_disk_list(const struct json_value *v)
+{
+	const struct json_value *disks = json_object_get(v, "disks");
+	size_t i;
+
+	if (disks == NULL || disks->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < disks->u.array.count; i++)
+		fmt_disk_line(disks->u.array.items[i]);
 }
 
 static void fmt_devicemap_line(const struct json_value *v)
@@ -797,6 +827,36 @@ static int cmd_routes(const struct kx_client *c, int json_mode, int argc, char *
 	        "       kanxeoctl routes add --default --gateway=A.B.C.D\n"
 	        "       kanxeoctl routes rm --dest=A.B.C.D --prefix=N\n"
 	        "       kanxeoctl routes rm --default\n");
+	return 2;
+}
+
+static int cmd_disks_ls(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/disks", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_disk_list);
+}
+
+/* No subcommands yet (Phase A: read-only enumeration) -- dispatcher
+ * kept in the same shape cmd_routes()/cmd_swap() already use so a
+ * later role-assignment phase (ROADMAP.md's own queued follow-up) adds
+ * a real subcommand here rather than restructuring this one. */
+static int cmd_disks(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1)
+		return cmd_disks_ls(c, json_mode);
+
+	sub = argv[0];
+	if (strcmp(sub, "ls") == 0)
+		return cmd_disks_ls(c, json_mode);
+
+	fprintf(stderr, "usage: kanxeoctl disks [ls]\n");
 	return 2;
 }
 
@@ -4067,6 +4127,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_iso(client, json_mode, argc, argv);
 	if (strcmp(cmd, "routes") == 0)
 		return cmd_routes(client, json_mode, argc, argv);
+	if (strcmp(cmd, "disks") == 0)
+		return cmd_disks(client, json_mode, argc, argv);
 	if (strcmp(cmd, "logs") == 0)
 		return cmd_logs_top(client, json_mode, argc, argv);
 	if (strcmp(cmd, "swap") == 0)
@@ -4168,12 +4230,12 @@ static int tokenize_line(char *line, char **tokens, int max_tokens)
  * makes on the web dashboard side (web/app.js) for the identical
  * reason (a route table that can't be enumerated by walking code). */
 static const char *const SHELL_COMMANDS[] = {
-	"backup", "console",  "daemon-config", "device", "devicemap", "dns",
-	"exit",   "files",    "health",        "help",   "image",     "inspect",
-	"iso",    "logs",     "network",       "pause",  "pkg",       "pki",
-	"ps",     "quit",     "reboot",        "restore", "rm",       "routes",
-	"run",    "shutdown", "site",          "start",  "stats",     "stop",
-	"swap",   "unpause",  "update",        NULL
+	"backup", "console",  "daemon-config", "device", "devicemap", "disks",
+	"dns",    "exit",     "files",         "health", "help",      "image",
+	"inspect", "iso",     "logs",          "network", "pause",    "pkg",
+	"pki",    "ps",       "quit",          "reboot", "restore",   "rm",
+	"routes", "run",      "shutdown",      "site",   "start",     "stats",
+	"stop",   "swap",     "unpause",       "update", NULL
 };
 
 static char g_shell_history[SHELL_HISTORY_MAX][SHELL_LINE_MAX];

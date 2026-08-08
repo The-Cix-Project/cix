@@ -2,6 +2,22 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 13 (done): multi-disk management, Phase A -- real disk enumeration (`GET /v1/disks`)
+
+The next standing queued item (Task #638) -- broken into phases per its own "needs a design pass first" flag in ROADMAP.md; this is Phase A only (read-only enumeration, no persisted state).
+
+#### Added
+- `daemon/src/disk.c`/`daemon/include/disk.h`: `disk_enumerate()` walks `/sys/class/block`, skipping partitions (anything with its own `partition` sysfs attribute), reading `size`/`device/model`/`removable`; resolves `os_containers_dir` to its backing whole disk via a `/proc/mounts` walk to flag `is_os_disk`.
+- `daemon/src/main.c`: `handle_disk_list()`, `GET /v1/disks` route.
+- `cli/src/main.c`: `kanxeoctl disks [ls]`.
+- `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/cli-reference.md`: documented the new endpoint/schema/command.
+
+#### Notes
+- Follows `device.c`/`devicemap.c`'s own established template (enumerate live from sysfs every call, never persist the hardware itself) and `quotamap.c`'s `resolve_backing_device()` pattern (duplicated, not shared -- `disk.c` has no daemon-layer state of its own to reach for).
+- Verified live against this dev sandbox's own real host (an LXC container sharing its Proxmox host's full `/sys/class/block`): correctly enumerated every whole disk (NVMe/SATA/USB card reader/optical drive) while excluding dozens of real LVM `dm-N` mappings, correctly flagged removable media, correctly reported model strings.
+- Phase B (persisted role assignment, mirroring `devicemap.c`'s exact/pattern-selector shape), Phase C (mount/format), and Phase D (container-storage migration) are queued follow-ups, each getting its own outline pass when started.
+- Full clean rebuild (`-Wall -Werror`, zero warnings); full local regression sweep (29 binaries, all passing).
+
 ### Part 12 (done): real build-container stdout/stderr capture, closing the exit-127 ambiguity Part 11 left open
 
 Part 11's widened errno range (1-115) didn't change the observed remote hostbuild failure at all -- still the exact same exit 127, unchanged. That non-result was the clue: exit 127 is genuinely ambiguous between container.c's own out-of-range-errno fallback and bash's own real "command not found" exit code, indistinguishable from the outside no matter how wide the errno range gets.

@@ -2,6 +2,7 @@
 #include "containerdef.h"
 #include "device.h"
 #include "devicemap.h"
+#include "disk.h"
 #include "logstore.h"
 #include "swap.h"
 #include "dns.h"
@@ -4988,6 +4989,27 @@ static void handle_device_list(int fd)
 	jw_free(&w);
 }
 
+/*
+ * Real host block devices (Phase A, multi-disk management -- see
+ * ROADMAP.md's own queue entry). Read-only, live-enumerated exactly
+ * like GET /devices above (no persisted state yet -- role assignment
+ * is a later phase). CONTAINERS_DIR is passed straight through so
+ * disk.c can flag which one disk is the fixed OS disk without needing
+ * any daemon-layer state of its own.
+ */
+static void handle_disk_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "disks");
+	disk_write_json_list(&w, CONTAINERS_DIR);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void respond_devicemap_error(int fd, enum devicemap_error err)
 {
 	switch (err) {
@@ -6715,6 +6737,10 @@ static void dispatch(int fd, const struct http_request *req)
 	}
 	if (strcmp(req->path, "/v1/devices") == 0 && strcmp(req->method, "GET") == 0) {
 		handle_device_list(fd);
+		return;
+	}
+	if (strcmp(req->path, "/v1/disks") == 0 && strcmp(req->method, "GET") == 0) {
+		handle_disk_list(fd);
 		return;
 	}
 	if (strcmp(req->path, "/v1/devicemaps") == 0) {

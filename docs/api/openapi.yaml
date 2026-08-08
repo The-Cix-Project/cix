@@ -830,6 +830,35 @@ paths:
                     items:
                       $ref: "#/components/schemas/Device"
 
+  /disks:
+    get:
+      summary: List real host block devices (whole disks only), for multi-disk management
+      description: >
+        Read-only, live-enumerated from /sys/class/block on every call
+        (never persisted), the same real-hardware convention /devices
+        already established -- partitions are never listed, only
+        independently assignable whole disks. `is_os_disk` flags the
+        one disk holding this platform's own fixed ESP/root-a/root-b/
+        config/containers partition layout (never a candidate for role
+        assignment); every other disk is available for a future role
+        (this is Phase A of multi-disk management -- enumeration only;
+        role assignment and container-storage migration are queued
+        follow-ups, see docs/roadmap/ROADMAP.md).
+      operationId: listDisks
+      responses:
+        "200":
+          description: Disk list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [disks]
+                properties:
+                  disks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Disk"
+
   /devicemaps:
     get:
       summary: List persistent, operator-named device mappings (ADR-0048)
@@ -3445,6 +3474,33 @@ components:
             with assignable=false still appears (so an operator can see
             it exists and why it isn't offered), but referencing its id
             in a container's own devices/interfaces field is a 400.
+
+    Disk:
+      type: object
+      required: [name, dev_path, model, size_bytes, removable, is_os_disk]
+      properties:
+        name:
+          type: string
+          description: sysfs block device name with no "/dev/" prefix (e.g. "sda", "nvme0n1").
+        dev_path:
+          type: string
+          description: '"/dev/" + name.'
+        model:
+          type: string
+          description: From sysfs device/model; empty string if the kernel has none for this device.
+        size_bytes:
+          type: integer
+          description: Real capacity, computed from sysfs's own 512-byte-sector "size" attribute.
+        removable:
+          type: boolean
+        is_os_disk:
+          type: boolean
+          description: >
+            True for the one disk backing this platform's own fixed
+            ESP/root-a/root-b/config/containers partition layout --
+            never a candidate for a future role assignment. False
+            (including for every disk) on a dev/test daemon with no
+            real containers partition to resolve.
 
     NetworkCreateRequest:
       type: object
