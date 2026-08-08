@@ -54,7 +54,7 @@ int overlay_create(const struct overlay_spec *ov)
 	 * to exist) would carry no project id at all, silently exempting
 	 * all real container disk usage from the very quota this call
 	 * exists to enforce. Deliberately fails loud (unlike, say,
-	 * cgroup_enable_io_accounting()'s own best-effort posture): a quota
+	 * cgroup_enable_controllers()'s own best-effort posture): a quota
 	 * that was requested but silently not applied is a correctness bug
 	 * wearing a false promise, not a missing optional capability.
 	 */

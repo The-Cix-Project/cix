@@ -83,3 +83,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0076](0076-host-dns-resolver-config.md) | Host DNS resolver config (GET/PUT /v1/system/resolv) + a real /etc/resolv.conf bind-mount fix | Accepted |
 | [0077](0077-health-boot-identity-split.md) | Split GET /health into liveness + GET /system/boot identity | Accepted |
 | [0078](0078-from-source-host-tools-bootstrap.md) | From-source host tools bootstrap (mkbootroot.c's shelled-out binaries) | Accepted |
+| [0079](0079-cgroup-controller-delegation.md) | cgroup v2 controller delegation at daemon startup (real-PID-1/no-systemd container-create 500 fix) | Accepted |

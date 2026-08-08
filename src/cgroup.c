@@ -96,39 +96,40 @@ int cgroup_create(const struct cgroup_limits *lim, int *out_fd)
 
 /*
  * Best-effort, called once at daemon startup (main()'s init sequence,
- * before any container's cgroup leaf can exist): enables the io
- * controller in the cgroup v2 root's own subtree_control, so every
- * container's leaf -- existing and future, cgroup v2 propagates a
- * newly-enabled controller to all descendants immediately, no
- * recreation needed -- gains a populated io.stat for GET .../stats.
- * Not fatal on failure (e.g. already enabled from a prior daemon
- * instance, or a restricted host with no io controller at all): CPU/
- * memory/network/disk-space stats must keep working regardless --
- * io.stat simply stays absent for every container in that case,
- * exactly the same "absence is zero" case cgroup_read_io_totals()
- * already has to handle for a container with no tracked block I/O
- * yet.
+ * before any container's cgroup leaf can exist): enables every cgroup
+ * v2 controller this project's own container/host-stats code needs,
+ * in the root's own subtree_control -- io/cpuset (this function's own
+ * original scope) plus memory/pids/cpu, added after a real, confirmed
+ * gap: a genuinely fresh cgroup v2 hierarchy (kanxeod running as real
+ * PID 1, no systemd ever pre-delegating anything to its own default
+ * slices, unlike every dev/test environment this project had
+ * exercised so far) starts with a completely EMPTY root
+ * subtree_control -- the kernel itself never auto-populates it,
+ * regardless of what cgroup.controllers lists as merely *available*.
+ * Confirmed live on 192.168.15.95 (this project's first genuine
+ * bare-metal/real-PID-1 install to actually try a resource-limited
+ * container): a bare `run` with no cgroup_limits succeeded outright
+ * (creating a child cgroup directory needs no delegated controller at
+ * all), while `--memory-max=`/`--pids-max=` both failed with a bare,
+ * undiagnosed 500 -- cgroup_create()'s own write_cgroup_file() calls
+ * for memory.max/pids.max simply found no such file to open, since
+ * those controllers were never delegated down from the root in the
+ * first place. Every dev/test environment up to this point ran under
+ * a real distro's own systemd, which pre-delegates memory/pids/cpu to
+ * its own hierarchy by default -- masking this gap entirely until now.
+ *
+ * One write: cgroup v2 accepts multiple space-separated +controller
+ * tokens in a single subtree_control write. Not fatal on failure
+ * (already enabled from a prior daemon instance, or a restricted host
+ * missing one of these controllers entirely) -- containers requesting
+ * an unavailable limit simply run unrestricted for that one resource,
+ * the same "degrade, never fail container creation over it" posture
+ * this function's own io/cpuset handling already established.
  */
-void cgroup_enable_io_accounting(void)
+void cgroup_enable_controllers(void)
 {
-	if (write_cgroup_file(CGROUP_ROOT, "cgroup.subtree_control", "+io") != 0)
-		perror("cgroup_enable_io_accounting: write +io to cgroup.subtree_control");
-}
-
-/*
- * Best-effort, same shape as cgroup_enable_io_accounting() above:
- * enables the cpuset controller in the cgroup v2 root's own
- * subtree_control, once, at daemon startup, so cgroup_limits.
- * cpuset_cpus can take effect on any container's leaf. Not fatal on
- * failure (already enabled from a prior daemon instance, or a
- * restricted host with no cpuset controller at all) -- a container
- * with a requested cpuset_cpus simply runs unrestricted across every
- * online CPU in that case, never a failed container creation.
- */
-void cgroup_enable_cpuset(void)
-{
-	if (write_cgroup_file(CGROUP_ROOT, "cgroup.subtree_control", "+cpuset") != 0)
-		perror("cgroup_enable_cpuset: write +cpuset to cgroup.subtree_control");
+	if (write_cgroup_file(CGROUP_ROOT, "cgroup.subtree_control", "+io +cpuset +memory +pids +cpu") != 0)
+		perror("cgroup_enable_controllers: write to cgroup.subtree_control");
 }
 
 /* Reads filename (relative to dir_fd, e.g. a container's own cgroup_fd)
@@ -229,7 +230,7 @@ int cgroup_read_single_value(int cgroup_fd, const char *filename, long long *out
  * Sums rbytes/wbytes/rios/wios across every device line in io.stat via
  * cgroup_fd. A container with no tracked block I/O yet has a genuinely
  * empty io.stat (or the io controller might not be enabled at all, see
- * cgroup_enable_io_accounting()) -- zero lines is not an error, all
+ * cgroup_enable_controllers()) -- zero lines is not an error, all
  * four outputs are simply 0. Returns -1 only if the file itself
  * couldn't be opened (a real I/O error).
  */

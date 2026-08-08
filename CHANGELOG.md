@@ -2,6 +2,19 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 24 (done): cgroup v2 controller delegation fix (real-PID-1 container-create 500 regression, ADR-0079)
+
+Root-caused and fixed the container-creation 500 regression found live during Part 23: `--memory-max=`/`--pids-max=`/`--cpuset-cpus=` all failed on 192.168.15.95 (a flagless `run` succeeded) because that box's `kanxeod` runs as real PID 1 with no systemd ever pre-delegating `memory`/`pids`/`cpu` to its own hierarchy -- every prior dev/test environment ran under a distro's own systemd, which does this delegation automatically, masking the gap entirely until now.
+
+#### Fixed
+- `src/cgroup.c`: `cgroup_enable_io_accounting()`/`cgroup_enable_cpuset()` consolidated into one `cgroup_enable_controllers(void)`, writing `"+io +cpuset +memory +pids +cpu"` to the root's `cgroup.subtree_control` in a single call at daemon startup -- clean cut-over, not a third function kept alongside the old two.
+- `include/container.h`, `daemon/src/main.c` (call site + stray comment references), `daemon/include/swap.h`, `src/overlay.c`: updated to the new function name.
+- `docs/adr/0079-cgroup-controller-delegation.md`: documents the root cause, the fix, and the still-open follow-on (`registry_create()`/`create_container_from_body()` collapsing every `container_create()` failure into a generic, undiagnosed 500 -- the silent-failure gap that made this regression hard to diagnose from the API alone).
+
+#### Notes
+- Diagnosed via local-vs-remote reproduction: `--memory-max=`/`--pids-max=` worked perfectly on this dev sandbox (a privileged LXC under a normal systemd install) with the identical binary, ruling out a code logic bug and pointing at an environment-specific condition unique to a real-PID-1 install.
+- Full clean rebuild (`-Wall -Werror`, zero warnings); full local regression sweep (all daemon-linked tests plus `test_container_lifecycle`/`test_container_stats`/`test_devices`/`test_container_net`, which actually exercise resource-limited container creation) passing.
+
 ### Part 23 (done): Final live validation on 192.168.15.95
 
 Rebuilt+redeployed+rebooted into the full ADR-0075..0078 body of work on the real target box, confirming every new endpoint live.

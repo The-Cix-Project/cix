@@ -51,7 +51,7 @@ enum swap_error {
  * swap was last left enabled, re-activates file_path via swapon(2) --
  * best-effort, matching every other subsystem's "never fail daemon
  * startup over a non-fatal reconciliation step" posture (e.g.
- * cgroup_enable_io_accounting()): a daemon restart or a real reboot
+ * cgroup_enable_controllers()): a daemon restart or a real reboot
  * both land here, and swap coming back automatically either time is
  * the whole point of persisting it at all.
  */

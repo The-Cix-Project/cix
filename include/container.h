@@ -275,23 +275,18 @@ struct container_handle {
 int cgroup_create(const struct cgroup_limits *lim, int *out_fd);
 
 /*
- * Best-effort: enables the cgroup v2 io controller at the root's own
- * subtree_control, once, at daemon startup (see src/cgroup.c's own
- * comment for the full "why now, why not fatal" rationale). Needed
- * for cgroup_read_io_totals() below to ever report nonzero I/O.
+ * Best-effort: enables every cgroup v2 controller this project's own
+ * container/host-stats code needs (io, cpuset, memory, pids, cpu) at
+ * the root's own subtree_control, once, at daemon startup -- see
+ * src/cgroup.c's own comment for the full "why now, why not fatal,
+ * and why memory/pids/cpu specifically" rationale (a real gap found
+ * live: a genuinely fresh, systemd-less cgroup v2 hierarchy delegates
+ * nothing by default). Needed for cgroup_read_io_totals() to ever
+ * report nonzero I/O, and for cgroup_limits.memory_max/pids_max/
+ * cpu_max/cpuset_cpus to ever actually take effect rather than fail
+ * container creation outright.
  */
-void cgroup_enable_io_accounting(void);
-
-/*
- * Best-effort, same shape and same call site as cgroup_enable_io_
- * accounting() (enables "+cpuset" at the root's own subtree_control,
- * once, at daemon startup) -- needed for cgroup_limits.cpuset_cpus to
- * ever take effect. Not fatal on failure: a container with a requested
- * cpuset_cpus simply keeps running on every online CPU instead, same
- * "degrade to unrestricted, never fail container creation over it"
- * posture the io controller already has.
- */
-void cgroup_enable_cpuset(void);
+void cgroup_enable_controllers(void);
 
 /*
  * Host-side per-container stats readers (GET /v1/containers/{name}/stats,

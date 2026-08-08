@@ -670,7 +670,7 @@ static int parse_net_conf(const char *path, char *out_ip, size_t ip_size, int *o
  *
  * Best-effort per module, same "a real machine this project has never
  * seen before might simply not have this exact hardware" posture
- * cgroup_enable_io_accounting() already established for an unrelated
+ * cgroup_enable_controllers() already established for an unrelated
  * optional capability -- covers several different vendors' NIC
  * chipsets in one list, no single real machine has all of them, so a
  * missing driver here is the overwhelmingly common, expected case, not
@@ -9349,15 +9349,16 @@ int main(int argc, char **argv)
 
 	/*
 	 * Best-effort, before any container's cgroup leaf can exist (see
-	 * cgroup_enable_io_accounting()'s own comment for why "best-effort"
-	 * and why here) -- GET .../stats' disk.read_bytes/write_bytes/
-	 * read_ios/write_ios stay 0 for every container if this fails,
-	 * never a fatal startup condition.
+	 * cgroup_enable_controllers()'s own comment for why "best-effort",
+	 * why here, and why io/cpuset/memory/pids/cpu all need this) --
+	 * without it, GET .../stats' disk.read_bytes/write_bytes/read_ios/
+	 * write_ios stay 0 for every container, cpuset_cpus never takes
+	 * effect, and on a real-PID-1 install with no systemd ever
+	 * pre-delegating anything (confirmed live on 192.168.15.95),
+	 * memory_max/pids_max/cpu_max fail container creation outright.
+	 * Never a fatal startup condition.
 	 */
-	cgroup_enable_io_accounting();
-	/* Same shape, same call site -- see cgroup_enable_cpuset()'s own
-	 * comment. Needed for cpuset_cpus (Part 2) to ever take effect. */
-	cgroup_enable_cpuset();
+	cgroup_enable_controllers();
 
 	registry_init();
 
