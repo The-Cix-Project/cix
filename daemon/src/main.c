@@ -3721,6 +3721,8 @@ static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
 	pid = fork();
 	if (pid < 0) {
 		perror("fork (bootroot assembly)");
+		logstore_write("kanxeod", "error", "kanxeo bootroot assembly: fork failed: %s",
+		                strerror(errno));
 		return;
 	}
 	if (pid == 0) {
@@ -3732,6 +3734,8 @@ static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
 	pidfd = sys_pidfd_open(pid, 0);
 	if (pidfd < 0) {
 		perror("pidfd_open (bootroot assembly)");
+		logstore_write("kanxeod", "error", "kanxeo bootroot assembly: pidfd_open failed: %s",
+		                strerror(errno));
 		kill(pid, SIGKILL);
 		waitpid(pid, NULL, 0);
 		return;
@@ -8727,17 +8731,42 @@ static void handle_pkg_fetch_event(struct conn *cc)
  * failure, the hostbuild's own artifacts are still there to retry
  * from). No REST response is waiting on this -- the original POST
  * /v1/pkg/hostbuild already returned 202 long before this fires.
+ *
+ * logstore_write() alongside the original fprintf(stderr, ...) --
+ * confirmed the hard way (this exact code path) that stderr-only
+ * reporting here is a real, REST-invisible gap: nothing about this
+ * assembly's own success/failure ever reached GET /system/logs, so an
+ * operator with no serial console/SSH access (this project's own real
+ * deployment target) had no way to tell a failed assembly from one
+ * still running. WEXITSTATUS/WTERMSIG included so a real failure's
+ * *reason* (not just "it failed") is visible remotely too.
  */
 static void handle_bootroot_assemble_event(struct conn *cc)
 {
 	int status;
+	pid_t reaped;
 
 	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
-	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status) &&
-	    WEXITSTATUS(status) == 0)
+	reaped = waitpid(cc->pkg_fetch_pid, &status, 0);
+	if (reaped == cc->pkg_fetch_pid && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
 		fprintf(stderr, "kanxeo bootroot assembly: succeeded\n");
-	else
+		logstore_write("kanxeod", "info", "kanxeo bootroot assembly: succeeded");
+	} else if (reaped != cc->pkg_fetch_pid) {
+		fprintf(stderr, "kanxeo bootroot assembly: waitpid failed\n");
+		logstore_write("kanxeod", "error", "kanxeo bootroot assembly: waitpid failed: %s",
+		                strerror(errno));
+	} else if (WIFEXITED(status)) {
+		fprintf(stderr, "kanxeo bootroot assembly: failed (exit %d)\n", WEXITSTATUS(status));
+		logstore_write("kanxeod", "error", "kanxeo bootroot assembly: mkbootroot exited %d",
+		                WEXITSTATUS(status));
+	} else if (WIFSIGNALED(status)) {
+		fprintf(stderr, "kanxeo bootroot assembly: killed by signal %d\n", WTERMSIG(status));
+		logstore_write("kanxeod", "error", "kanxeo bootroot assembly: mkbootroot killed by signal %d",
+		                WTERMSIG(status));
+	} else {
 		fprintf(stderr, "kanxeo bootroot assembly: failed\n");
+		logstore_write("kanxeod", "error", "kanxeo bootroot assembly: failed");
+	}
 	close(cc->fd);
 	free(cc);
 }
