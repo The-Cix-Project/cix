@@ -1638,3 +1638,19 @@ Root cause: ADR-0079's own `cgroup_enable_controllers()` wrote all five wanted c
 Also resolved as a byproduct of Part 25's own diagnostics: the earlier-suspected "every container after the first one fails to exec" regression on 192.168.15.95 was never a real code regression at all -- `base` is a genuinely empty, zero-package image, and every container run against it (the very first one included, never actually verified before assuming success) failed identically on a missing `/usr/bin/sleep`. Confirmed by rerunning against `kanxeo-builder`, a real image with installed coreutils, where flagless containers succeed cleanly and the resource-limit flags now succeed too with this fix.
 
 Full clean rebuild (`-Wall -Werror`, zero warnings); full local regression sweep passing.
+
+## Part 27 (in progress): kernel SMP + virtio-balloon (ADR-0082)
+
+User-reported: Proxmox's own view of 192.168.15.95's memory kept climbing while idle. Traced to a missing `CONFIG_VIRTIO_BALLOON` -- guest-internal accounting (`GET /v1/system/stats`) stayed flat at ~62MB "used" across repeated polls, so there was never a real leak; a KVM guest with no balloon driver simply can't hand physical pages back to the host once touched, so QEMU's own reported RSS for the VM can only grow.
+
+While separately chasing the still-open `--cpuset=` regression (ADR-0081's fix didn't resolve it), found the real cause: `init/Kconfig`'s own `config CPUSETS` has `depends on SMP`, and `CONFIG_SMP` was never present anywhere in `image/kernel/qemu-part1.config` -- every kernel this project has ever built has been running strictly uniprocessor, on every deployment, regardless of vCPU count. Not just the cpuset bug's real cause -- silently wasted capacity on every workload this project has ever run.
+
+Fixed by adding `CONFIG_SMP=y` and `CONFIG_VIRTIO_BALLOON=y` to `image/kernel/qemu-part1.config`, rebuilt from a clean `allnoconfig` (not layered onto the stale non-SMP `.config`, since SMP makes many previously-hidden Kconfig symbols reachable). Deployment + live verification (both `--cpuset=` and memory ballooning) to follow once the rebuild completes.
+
+## Part 28 (done): the real mkbootroot fix -- second ld-linux copy (ADR-0083)
+
+With Part 25's own mkbootroot output-capture diagnostics now deployed, triggered a real `kanxeo` hostbuild round on 192.168.15.95 and read `GET /system/logs` for the actual failure text at last: `/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: No such file or directory`. Root cause: `test_image_fixture_build()` (the control-plane root's own runtime-lib staging function `mkbootroot.c` uses) only ever staged `ld-linux-x86-64.so.2` at `lib64/` -- never the second copy at `lib/x86_64-linux-gnu/` that glibc >= 2.34's own `libc.so.6` needs for its own `DT_NEEDED` on `ld-linux-x86-64.so.2` -- the exact same gap ADR-0057 already fixed for `pkg_seed_image_baseline()` (container images), just never applied to this sibling function serving the control-plane root instead.
+
+Fixed by adding the identical second-copy staging to `test_image_fixture_build()`. Confirmed locally: a fresh `mkbootroot` run now produces both copies in the staged control-plane root. This is the real, final root cause of Part 23's own long-open "kanxeo bootroot assembly: mkbootroot exited 1" failure -- not a workaround, and only findable once ADR-0080's own diagnostics existed to actually read what `mkbootroot` was saying.
+
+Full clean rebuild (`-Wall -Werror`, zero warnings); full local regression sweep passing.

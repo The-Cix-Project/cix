@@ -108,6 +108,26 @@ int test_image_fixture_build(const char *image_root, const char *child_binary_pa
 	snprintf(path, sizeof(path), "%s/lib/x86_64-linux-gnu/libc.so.6", image_root);
 	if (test_image_fixture_copy_file("/usr/lib/x86_64-linux-gnu/libc.so.6", path) != 0)
 		return -1;
+	/*
+	 * Second copy of ld-linux itself, same file as lib64/ above but at
+	 * the path glibc >= 2.34's own libc.so.6 needs it reachable from --
+	 * libc.so.6 carries a DT_NEEDED entry on ld-linux-x86-64.so.2
+	 * itself, resolved via the ordinary runtime library search path
+	 * (which does not include /lib64), not the one-time PT_INTERP
+	 * lookup lib64/ld-linux-x86-64.so.2 above already satisfies. The
+	 * exact same gap pkg_seed_image_baseline() (daemon/src/pkg.c,
+	 * ADR-0057) already carries this identical second copy for --
+	 * confirmed missing here specifically, on 192.168.15.95, via
+	 * ADR-0080's own mkbootroot output-capture diagnostics: every
+	 * from-scratch-hostbuilt tool this function's own callers spawn
+	 * (mkbootroot itself, and anything IT shells out to, e.g.
+	 * mksquashfs) failed at runtime with a bare
+	 * "ld-linux-x86-64.so.2: No such file or directory" the whole time
+	 * this function only ever staged the first copy.
+	 */
+	snprintf(path, sizeof(path), "%s/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", image_root);
+	if (test_image_fixture_copy_file("/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", path) != 0)
+		return -1;
 
 	return 0;
 }

@@ -86,3 +86,5 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0079](0079-cgroup-controller-delegation.md) | cgroup v2 controller delegation at daemon startup (real-PID-1/no-systemd container-create 500 fix) | Accepted |
 | [0080](0080-container-diagnostics-visibility.md) | Container creation/exit diagnostics visibility -- real errno text, not just numeric codes | Accepted |
 | [0081](0081-cgroup-controller-delegation-atomic-write-fix.md) | cgroup controller delegation: fix the atomic-write regression ADR-0079 introduced | Accepted |
+| [0082](0082-kernel-smp-missing.md) | CONFIG_SMP was never enabled -- uniprocessor kernel, and the real root cause of the cpuset gap | Accepted |
+| [0083](0083-mkbootroot-ld-linux-second-copy.md) | mkbootroot's own control-plane root was missing the second ld-linux copy | Accepted |

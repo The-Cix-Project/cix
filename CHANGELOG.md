@@ -2,6 +2,32 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 27 (in progress): kernel SMP + virtio-balloon (ADR-0082)
+
+User-reported: Proxmox's own view of 192.168.15.95's memory usage kept climbing while idle (460MB at boot toward 546MB). Investigating traced this to a missing `CONFIG_VIRTIO_BALLOON` (a KVM guest with no balloon driver can only ever grow the host's own reported RSS for it, regardless of what the guest frees internally -- confirmed via `GET /v1/system/stats`: guest-internal "used" memory stayed flat at ~62MB the whole time, so there was never a real leak).
+
+While separately still chasing the open `--cpuset=` regression (ADR-0081's fix didn't resolve it), found the real root cause: `init/Kconfig`'s own `config CPUSETS` has `depends on SMP`, and `CONFIG_SMP` was never present anywhere in `image/kernel/qemu-part1.config` at all -- every kernel this project has ever built has been running strictly uniprocessor, on every deployment, regardless of vCPU count. Not just the cpuset bug's real cause -- silently wasted capacity on every single-core-confined workload this whole project has ever run.
+
+#### Fixed
+- `image/kernel/qemu-part1.config`: added `CONFIG_SMP=y` and `CONFIG_VIRTIO_BALLOON=y`.
+- `docs/adr/0082-kernel-smp-missing.md`.
+
+#### Notes
+- Kernel rebuild (from a clean `allnoconfig`, not layered onto the stale non-SMP `.config` -- SMP makes many previously-hidden Kconfig symbols reachable) in progress; deployment + live verification of `--cpuset=` and memory ballooning to follow.
+
+### Part 28 (done): the real mkbootroot fix -- second ld-linux copy (ADR-0083)
+
+With Part 25's mkbootroot output-capture diagnostics now deployed, triggered a real `kanxeo` hostbuild round on 192.168.15.95 and read `GET /system/logs` for the actual, long-missing failure text: `/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: No such file or directory`. Root cause: `test_image_fixture_build()` (`test/test_image_fixture.c`, the control-plane root's own runtime-lib staging, used by `mkbootroot.c`) only ever staged `ld-linux-x86-64.so.2` at `lib64/` -- never the second copy at `lib/x86_64-linux-gnu/` that glibc >= 2.34's own `libc.so.6` needs (its own `DT_NEEDED` on `ld-linux-x86-64.so.2` itself) -- the exact same gap ADR-0057 already fixed for `pkg_seed_image_baseline()` (container images), just never applied to this sibling function.
+
+#### Fixed
+- `test/test_image_fixture.c`: `test_image_fixture_build()` now stages both copies, matching `pkg_seed_image_baseline()`'s own established pattern.
+- `docs/adr/0083-mkbootroot-ld-linux-second-copy.md`.
+
+#### Notes
+- Confirmed locally: a fresh `mkbootroot` run now produces both `lib64/ld-linux-x86-64.so.2` and `lib/x86_64-linux-gnu/ld-linux-x86-64.so.2` in the staged control-plane root.
+- This closes the real, long-open "kanxeo bootroot assembly: mkbootroot exited 1" gap from Part 23 -- not a workaround, the actual root cause, only findable once real diagnostics existed to read.
+- Full clean rebuild (`-Wall -Werror`, zero warnings); full local regression sweep passing.
+
 ### Part 26 (done): cgroup atomic-write regression fix (ADR-0081)
 
 Direct fallout from Part 25's own new diagnostics: with real error text finally visible, `--memory-max=`/`--pids-max=`/`--cpuset=` on 192.168.15.95 all showed the identical `cgroup_create: No such file or directory` -- including `--cpuset=`, which had worked fine under the OLD two-separate-writes code earlier in this same investigation. Root cause: `cgroup_enable_controllers()` (ADR-0079) wrote all five wanted controllers in one combined `subtree_control` write; that write is atomic across every token, so one unavailable controller on this kernel failed the *entire* write, silently regressing `io`/`cpuset` back to undelegated too.
