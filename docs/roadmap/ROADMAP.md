@@ -1628,3 +1628,13 @@ Root cause of the *visibility* gap: `src/container.c`'s child process already ha
 Verified locally: a container given a genuinely missing binary now reports `exit_reason: "child: execve(/usr/bin/does-not-exist): No such file or directory"` instead of a bare `exit_status: 142`. Also ran 5 sequential local container creations with the exact `run` shape that failed on 192.168.15.95 -- all succeeded cleanly, confirming that box's own "every container after the first fails" symptom is environment-specific to it, not a general code bug; this diagnostics work is the tooling needed to root-cause it there next, not a fix for it itself.
 
 Full clean rebuild (`-Wall -Werror`, zero warnings); full local regression sweep passing. Redeploying to 192.168.15.95 and continuing the live investigation with the new visibility is the immediate next step.
+
+## Part 26 (done): cgroup atomic-write regression fix (ADR-0081)
+
+Redeploying Part 25's diagnostics and testing live against `kanxeo-builder` (a real image with genuine coreutils, unlike the empty `base` image the earlier confusion involved) surfaced the real root cause immediately: `--memory-max=`, `--pids-max=`, and `--cpuset=` all failed identically with `cgroup_create: No such file or directory` -- including `--cpuset=`, which had worked fine under the pre-ADR-0079 code just hours earlier in this same investigation.
+
+Root cause: ADR-0079's own `cgroup_enable_controllers()` wrote all five wanted controllers (`io`/`cpuset`/`memory`/`pids`/`cpu`) in one combined `cgroup.subtree_control` write. That write is atomic across every token it contains -- if even one of the five is unavailable on the running kernel, the kernel rejects the whole write, silently regressing `io`/`cpuset` back to undelegated alongside `memory`/`pids`/`cpu` never actually getting fixed. Fixed by reading `cgroup.controllers` first and only requesting tokens genuinely listed there, in `src/cgroup.c` (ADR-0081) -- guarantees every actually-available controller gets delegated regardless of what any given kernel happens to lack.
+
+Also resolved as a byproduct of Part 25's own diagnostics: the earlier-suspected "every container after the first one fails to exec" regression on 192.168.15.95 was never a real code regression at all -- `base` is a genuinely empty, zero-package image, and every container run against it (the very first one included, never actually verified before assuming success) failed identically on a missing `/usr/bin/sleep`. Confirmed by rerunning against `kanxeo-builder`, a real image with installed coreutils, where flagless containers succeed cleanly and the resource-limit flags now succeed too with this fix.
+
+Full clean rebuild (`-Wall -Werror`, zero warnings); full local regression sweep passing.

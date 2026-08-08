@@ -118,17 +118,79 @@ int cgroup_create(const struct cgroup_limits *lim, int *out_fd)
  * a real distro's own systemd, which pre-delegates memory/pids/cpu to
  * its own hierarchy by default -- masking this gap entirely until now.
  *
- * One write: cgroup v2 accepts multiple space-separated +controller
- * tokens in a single subtree_control write. Not fatal on failure
- * (already enabled from a prior daemon instance, or a restricted host
- * missing one of these controllers entirely) -- containers requesting
- * an unavailable limit simply run unrestricted for that one resource,
- * the same "degrade, never fail container creation over it" posture
- * this function's own io/cpuset handling already established.
+ * A first version of this fix wrote a single fixed
+ * "+io +cpuset +memory +pids +cpu" unconditionally -- wrong, confirmed
+ * live on the same box (ADR-0080's own diagnostics investigation): a
+ * cgroup v2 subtree_control write is atomic across every token it
+ * contains, so if even one of the five was ever unavailable on this
+ * kernel, the WHOLE write failed with EINVAL, silently regressing
+ * io/cpuset back to undelegated too -- they'd worked fine moments
+ * earlier under the OLD code's two separate single-controller writes.
+ * Reading cgroup.controllers first and only requesting tokens actually
+ * listed there removes this failure mode entirely: every genuinely
+ * available controller gets delegated in one write regardless of what
+ * this particular kernel happens to be missing, matching the "degrade
+ * per-resource, never fail the whole thing" posture the doc comment
+ * below already promises but the first version didn't actually keep.
+ *
+ * Not fatal on failure to read/write either file (already enabled from
+ * a prior daemon instance, or open()/read() itself failing) --
+ * containers requesting an unavailable limit simply run unrestricted
+ * for that one resource, never blocked from being created at all over
+ * a controller this daemon couldn't delegate.
  */
 void cgroup_enable_controllers(void)
 {
-	if (write_cgroup_file(CGROUP_ROOT, "cgroup.subtree_control", "+io +cpuset +memory +pids +cpu") != 0)
+	static const char *const wanted[] = { "io", "cpuset", "memory", "pids", "cpu" };
+	char path[PATH_MAX];
+	char avail[256];
+	char request[64];
+	size_t request_len = 0;
+	size_t i;
+	int fd;
+	ssize_t n;
+
+	if (snprintf(path, sizeof(path), "%s/cgroup.controllers", CGROUP_ROOT) >= (int)sizeof(path))
+		return;
+
+	fd = open(path, O_RDONLY);
+	if (fd < 0) {
+		perror("cgroup_enable_controllers: open cgroup.controllers");
+		return;
+	}
+	n = read(fd, avail, sizeof(avail) - 1);
+	close(fd);
+	if (n < 0) {
+		perror("cgroup_enable_controllers: read cgroup.controllers");
+		return;
+	}
+	avail[n] = '\0';
+
+	request[0] = '\0';
+	for (i = 0; i < sizeof(wanted) / sizeof(wanted[0]); i++) {
+		char *saveptr, *tok, avail_copy[sizeof(avail)];
+		int found = 0;
+
+		snprintf(avail_copy, sizeof(avail_copy), "%s", avail);
+		for (tok = strtok_r(avail_copy, " \n", &saveptr); tok != NULL;
+		     tok = strtok_r(NULL, " \n", &saveptr)) {
+			if (strcmp(tok, wanted[i]) == 0) {
+				found = 1;
+				break;
+			}
+		}
+		if (!found)
+			continue;
+		if (request_len > 0 && request_len + 1 < sizeof(request))
+			request[request_len++] = ' ';
+		request_len += (size_t)snprintf(request + request_len, sizeof(request) - request_len,
+		                                 "+%s", wanted[i]);
+	}
+
+	if (request[0] == '\0')
+		return;
+
+	if (write_cgroup_file(CGROUP_ROOT, "cgroup.subtree_control", request) != 0)
 		perror("cgroup_enable_controllers: write to cgroup.subtree_control");
 }
 

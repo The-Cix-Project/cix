@@ -2,6 +2,19 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 26 (done): cgroup atomic-write regression fix (ADR-0081)
+
+Direct fallout from Part 25's own new diagnostics: with real error text finally visible, `--memory-max=`/`--pids-max=`/`--cpuset=` on 192.168.15.95 all showed the identical `cgroup_create: No such file or directory` -- including `--cpuset=`, which had worked fine under the OLD two-separate-writes code earlier in this same investigation. Root cause: `cgroup_enable_controllers()` (ADR-0079) wrote all five wanted controllers in one combined `subtree_control` write; that write is atomic across every token, so one unavailable controller on this kernel failed the *entire* write, silently regressing `io`/`cpuset` back to undelegated too.
+
+#### Fixed
+- `src/cgroup.c`: `cgroup_enable_controllers()` now reads `cgroup.controllers` first and only requests tokens genuinely listed there, guaranteeing every actually-available controller gets delegated regardless of what this kernel happens to be missing.
+- `docs/adr/0081-cgroup-controller-delegation-atomic-write-fix.md`.
+
+#### Notes
+- Confirmed live against `kanxeo-builder` (a real image with genuine executables): `--memory-max=`, `--pids-max=`, and `--cpuset=` all now succeed on 192.168.15.95.
+- Also resolved, as a byproduct of Part 25's own diagnostics: the earlier-suspected "every container after the first fails" regression was never real -- it was `base` (an empty, zero-package image) genuinely never having `/usr/bin/sleep`; every container failed identically on a missing binary, not a code regression from redeploying.
+- Full clean rebuild (`-Wall -Werror`, zero warnings); full local regression sweep passing.
+
 ### Part 25 (done): container creation/exit diagnostics visibility (ADR-0080)
 
 Direct follow-on to Part 24's own live redeploy: after the cgroup fix, a *new*, more severe symptom surfaced on 192.168.15.95 -- every container after the first one failed to exec, with nothing beyond a bare numeric `exit_status` to go on. User's own direction: close the visibility gap first, redeploy with it, then keep digging.
