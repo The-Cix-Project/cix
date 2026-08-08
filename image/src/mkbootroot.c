@@ -56,12 +56,28 @@ static int ensure_dir_under(const char *image_root, const char *rel)
 	return ensure_dir(path);
 }
 
-static int run_mksquashfs(const char *image_root, const char *out_path)
+static int run_mksquashfs(const char *mksquashfs_bin, const char *image_root, const char *out_path)
 {
 	pid_t pid;
 	int status;
-	char *argv[] = { (char *)MKSQUASHFS_BIN, (char *)image_root, (char *)out_path,
+	struct stat st;
+	char *argv[] = { (char *)mksquashfs_bin, (char *)image_root, (char *)out_path,
 		          "-noappend", "-comp", "xz", "-quiet", NULL };
+
+	/*
+	 * A precise, disambiguating check before exec -- ADR-0083's own
+	 * "ld-linux-x86-64.so.2: No such file or directory" symptom was
+	 * bare ENOENT text with no indication of *which* of "the binary
+	 * itself is missing" vs "the binary exists but can't resolve its
+	 * own dynamic linker" was actually true. stat() answers the first
+	 * question directly, so a future failure here reads unambiguously
+	 * instead of needing another investigation like this one.
+	 */
+	if (stat(mksquashfs_bin, &st) != 0) {
+		fprintf(stderr, "mksquashfs binary not found at %s: %s\n", mksquashfs_bin,
+		        strerror(errno));
+		return -1;
+	}
 
 	/* A stale image from a prior run must not silently linger under a
 	 * new build -- mksquashfs itself refuses to overwrite without
@@ -74,8 +90,8 @@ static int run_mksquashfs(const char *image_root, const char *out_path)
 		return -1;
 	}
 	if (pid == 0) {
-		execve(MKSQUASHFS_BIN, argv, environ);
-		perror("execve mksquashfs");
+		execve(mksquashfs_bin, argv, environ);
+		fprintf(stderr, "execve %s: %s\n", mksquashfs_bin, strerror(errno));
 		_exit(127);
 	}
 	if (waitpid(pid, &status, 0) != pid) {
@@ -581,8 +597,46 @@ int main(int argc, char **argv)
 	if (ensure_dir_under(image_root, "var/lib/kanxeo") != 0)
 		return 1;
 
-	if (run_mksquashfs(image_root, out_path) != 0)
-		return 1;
+	/*
+	 * mksquashfs itself is a build-time-only tool (assembles image_root
+	 * into out_path) -- nothing inside the assembled control-plane root
+	 * ever shells out to it (unlike unsquashfs/openssl/curl/tar above,
+	 * which kanxeod itself invokes at runtime and which are therefore
+	 * staged INTO image_root via shelled_bins[]). The hardcoded
+	 * "/usr/bin/mksquashfs" this used to exec unconditionally only ever
+	 * existed on this dev sandbox's own rich /usr -- when this same
+	 * binary runs for real, server-side, via
+	 * spawn_kanxeo_bootroot_assembly() (daemon/src/main.c) on an
+	 * installed host whose root IS a prior-generation assembled
+	 * control-plane squashfs, "/usr/bin/mksquashfs" simply doesn't
+	 * exist there (confirmed: never one of the shelled_bins[] staged
+	 * above), and execve() fails outright. host_tools_dir (when built --
+	 * squashfs-tools.recipe, ADR-0078) already has a real mksquashfs at
+	 * a real, ordinary filesystem path outside the transient assembled
+	 * root entirely (BASE_DIR/images/.../rootfs, not part of what gets
+	 * squashed or what's mounted as /), so it's used directly, no
+	 * staging-into-image_root needed for a tool nothing else consumes.
+	 * "" (host_tools_dir never built) falls back to this dev sandbox's
+	 * own copy, matching every other host_tools_dir-aware call site's
+	 * tolerant-default shape above.
+	 */
+	{
+		char mksquashfs_bin[PATH_MAX];
+		const char *use_mksquashfs;
+
+		if (host_tools_dir[0] != '\0') {
+			if (snprintf(mksquashfs_bin, sizeof(mksquashfs_bin), "%s/usr/bin/mksquashfs",
+			             host_tools_dir) >= (int)sizeof(mksquashfs_bin)) {
+				fprintf(stderr, "path too long: %s/usr/bin/mksquashfs\n", host_tools_dir);
+				return 1;
+			}
+			use_mksquashfs = mksquashfs_bin;
+		} else {
+			use_mksquashfs = MKSQUASHFS_BIN;
+		}
+		if (run_mksquashfs(use_mksquashfs, image_root, out_path) != 0)
+			return 1;
+	}
 
 	printf("wrote %s\n", out_path);
 	return 0;

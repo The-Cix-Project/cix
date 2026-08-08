@@ -2,6 +2,19 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 29 (done locally, not yet live-verified): mkbootroot's mksquashfs was unreachable on a real host (ADR-0084)
+
+Part 28's own `ld-linux` fix didn't resolve the live symptom after redeploy -- re-reading `image/src/mkbootroot.c` in full found a second, independent bug in the same function family: `run_mksquashfs()` execs a hardcoded `/usr/bin/mksquashfs`, which is real on this dev sandbox but was never one of `shelled_bins[]`'s staged binaries and is therefore simply absent on any real installed host's own root (`spawn_kanxeo_bootroot_assembly()` runs `mkbootroot` directly on the daemon's own process, no chroot -- its root *is* the previously-deployed control-plane squashfs). `squashfs-tools.recipe`'s own header comment asserted this binary was "already staged" -- confirmed false by inspection, an unverified assumption from when that recipe was written (ADR-0078).
+
+#### Fixed
+- `image/src/mkbootroot.c`: `run_mksquashfs()` now takes an explicit binary path and does a `stat()`-based precheck before `execve()` for a disambiguating diagnostic. `main()` resolves the real exec target dynamically -- `<host_tools_dir>/usr/bin/mksquashfs` (built by `squashfs-tools.recipe`, ADR-0078) when available, falling back to the dev-sandbox `/usr/bin/mksquashfs` otherwise -- matching the existing `host_tool_bins[]` tolerant-default pattern exactly, no new mechanism.
+- `docs/adr/0084-mkbootroot-mksquashfs-unreachable-on-real-host.md`.
+
+#### Notes
+- Full clean rebuild (`-Wall -Werror`, zero warnings); `test_mkbootroot_firmware` passes locally.
+- Not yet verified against a real hostbuild+assembly round on 192.168.15.95 -- the box is currently unreachable (kanxeod not listening on any port while still answering ICMP; see Part 27's own still-open kernel deployment note, blocked by the same outage).
+- The real, complete Part 23 fix needed both ADR-0083 and this ADR -- two independent bugs in the same code path, not one bug with two symptoms.
+
 ### Part 27 (in progress): kernel SMP + virtio-balloon (ADR-0082)
 
 User-reported: Proxmox's own view of 192.168.15.95's memory usage kept climbing while idle (460MB at boot toward 546MB). Investigating traced this to a missing `CONFIG_VIRTIO_BALLOON` (a KVM guest with no balloon driver can only ever grow the host's own reported RSS for it, regardless of what the guest frees internally -- confirmed via `GET /v1/system/stats`: guest-internal "used" memory stayed flat at ~62MB the whole time, so there was never a real leak).
