@@ -3,6 +3,7 @@
 #include "device.h"
 #include "devicemap.h"
 #include "disk.h"
+#include "diskrole.h"
 #include "logstore.h"
 #include "swap.h"
 #include "dns.h"
@@ -99,6 +100,7 @@ static char ARTIFACTS_DIR[PATH_MAX];
 static char CONTAINER_DEFS_STATE_PATH[PATH_MAX];
 static char SITE_CONFIG_PATH[PATH_MAX];
 static char DEVICEMAP_STATE_PATH[PATH_MAX];
+static char DISKROLE_STATE_PATH[PATH_MAX];
 static char DAEMON_CONFIG_PATH[PATH_MAX];
 static char QUOTAMAP_STATE_PATH[PATH_MAX];
 /*
@@ -160,6 +162,7 @@ static void init_base_dir_paths(void)
 	snprintf(CONTAINER_DEFS_STATE_PATH, sizeof(CONTAINER_DEFS_STATE_PATH), "%s/container_defs.json", g_base_dir);
 	snprintf(SITE_CONFIG_PATH, sizeof(SITE_CONFIG_PATH), "%s/site_config.json", g_base_dir);
 	snprintf(DEVICEMAP_STATE_PATH, sizeof(DEVICEMAP_STATE_PATH), "%s/devicemaps.json", g_base_dir);
+	snprintf(DISKROLE_STATE_PATH, sizeof(DISKROLE_STATE_PATH), "%s/diskroles.json", g_base_dir);
 	snprintf(DAEMON_CONFIG_PATH, sizeof(DAEMON_CONFIG_PATH), "%s/daemon_config.json", g_base_dir);
 	snprintf(QUOTAMAP_STATE_PATH, sizeof(QUOTAMAP_STATE_PATH), "%s/quota_projids.json", g_base_dir);
 	snprintf(SIGNING_KEYS_DIR, sizeof(SIGNING_KEYS_DIR), "%s/keys", g_base_dir);
@@ -360,6 +363,7 @@ static int set_disk_quota(uint32_t projid, long long quota_bytes)
 #define PKG_RECIPES_PREFIX "/v1/pkg/recipes/"
 #define IMAGES_PREFIX "/v1/images/"
 #define DEVICEMAPS_PREFIX "/v1/devicemaps/"
+#define DISKROLES_PREFIX "/v1/diskroles/"
 
 enum conn_kind {
 	CONN_LISTENER,
@@ -5109,6 +5113,114 @@ static void handle_devicemap_delete(int fd, const char *name)
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
+/*
+ * Multi-disk management Phase B (ROADMAP.md): persisted disk role
+ * assignment, the direct follow-up to Phase A's read-only GET /disks.
+ * CONTAINERS_DIR is threaded through exactly like handle_disk_list()'s
+ * own os_containers_dir param, so diskrole.c can reject assigning a
+ * role to the real OS disk without needing any daemon-layer state of
+ * its own.
+ */
+static void respond_diskrole_error(int fd, enum diskrole_error err)
+{
+	switch (err) {
+	case DISKROLE_ERR_INVALID_DISK_NAME:
+		respond_error(fd, 400, "Bad Request", "invalid disk_name");
+		break;
+	case DISKROLE_ERR_INVALID_ROLE:
+		respond_error(fd, 400, "Bad Request", "role must be \"container-storage\" or \"backup\"");
+		break;
+	case DISKROLE_ERR_IS_OS_DISK:
+		respond_error(fd, 400, "Bad Request",
+		              "this disk holds the fixed OS layout -- it is never a role-assignment candidate");
+		break;
+	case DISKROLE_ERR_DUPLICATE:
+		respond_error(fd, 409, "Conflict", "this disk already has a role assigned");
+		break;
+	case DISKROLE_ERR_FULL:
+		respond_error(fd, 500, "Internal Server Error", "disk role table full");
+		break;
+	case DISKROLE_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no role assigned to this disk");
+		break;
+	case DISKROLE_ERR_PERSIST_FAILED:
+	default:
+		respond_error(fd, 500, "Internal Server Error", "disk role operation failed");
+		break;
+	}
+}
+
+static void handle_diskrole_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "diskroles");
+	diskrole_write_json_list(&w, CONTAINERS_DIR);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_diskrole_create(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *disk_name, *role;
+	enum diskrole_error derr;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	disk_name = json_as_string(json_object_get(root, "disk_name"));
+	role = json_as_string(json_object_get(root, "role"));
+	if (disk_name == NULL || role == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "disk_name and role are required");
+		return;
+	}
+
+	{
+		/* disk_name is a pointer into root's own parsed tree --
+		 * copied here since diskrole_write_json_one() below needs
+		 * it again after json_free(root) makes the original
+		 * dangling. */
+		char disk_name_buf[DISKROLE_DISK_NAME_MAX];
+
+		snprintf(disk_name_buf, sizeof(disk_name_buf), "%s", disk_name);
+		derr = diskrole_create(disk_name, role, CONTAINERS_DIR);
+		json_free(root);
+
+		if (derr != DISKROLE_OK) {
+			respond_diskrole_error(fd, derr);
+			return;
+		}
+
+		{
+			struct json_writer w;
+
+			jw_init(&w);
+			diskrole_write_json_one(disk_name_buf, &w, CONTAINERS_DIR);
+			respond_json(fd, 201, "Created", &w);
+			jw_free(&w);
+		}
+	}
+}
+
+static void handle_diskrole_delete(int fd, const char *disk_name)
+{
+	enum diskrole_error derr = diskrole_delete(disk_name);
+
+	if (derr != DISKROLE_OK) {
+		respond_diskrole_error(fd, derr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
 static void handle_network_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
@@ -6743,6 +6855,23 @@ static void dispatch(int fd, const struct http_request *req)
 		handle_disk_list(fd);
 		return;
 	}
+	if (strcmp(req->path, "/v1/diskroles") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_diskrole_list(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_diskrole_create(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strncmp(req->path, DISKROLES_PREFIX, strlen(DISKROLES_PREFIX)) == 0) {
+		name = req->path + strlen(DISKROLES_PREFIX);
+		if (name[0] != '\0' && strcmp(req->method, "DELETE") == 0) {
+			handle_diskrole_delete(fd, name);
+			return;
+		}
+	}
 	if (strcmp(req->path, "/v1/devicemaps") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_devicemap_list(fd);
@@ -8322,6 +8451,8 @@ int main(int argc, char **argv)
 	if (containerdef_init(CONTAINER_DEFS_STATE_PATH) != 0)
 		return 1;
 	if (devicemap_init(DEVICEMAP_STATE_PATH) != 0)
+		return 1;
+	if (diskrole_init(DISKROLE_STATE_PATH) != 0)
 		return 1;
 	if (quotamap_init(QUOTAMAP_STATE_PATH) != 0)
 		return 1;

@@ -37,6 +37,9 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | POST | `/devicemaps` | Create a persistent device mapping (name -> selector) |
 | DELETE | `/devicemaps/{name}` | Remove a device mapping |
 | GET | `/disks` | List real host block devices (whole disks only), for multi-disk management |
+| GET | `/diskroles` | List persisted disk role assignments |
+| POST | `/diskroles` | Assign a role (container-storage/backup) to a disk |
+| DELETE | `/diskroles/{disk_name}` | Remove a disk's role assignment |
 | GET | `/networks` | List all networks this daemon knows about |
 | POST | `/networks` | Create a network (a real bridge, persisted across restarts) |
 | GET | `/networks/{name}` | Inspect one network |
@@ -538,13 +541,24 @@ POST /v1/devicemaps
 
 `kind` is `"exact"` (pins one specific bus/port location) or `"vendor_model"` (matches by USB vendor:product id or PCI vendor:device id, following whichever physical port the matching device is actually plugged into — the more useful choice for a device that might move ports, like a specific model of USB drive). Real and creatable even for hardware that isn't currently plugged in — an operator predefining a mapping before plugging the device in, or one that's temporarily unplugged, are both legitimate states (`"present": false` on `GET`), not errors. Each mapping is still resolved fresh against current hardware on every `GET` (`present`/`resolved_ids`), never cached — only the *mapping itself* (name → selector) persists, not a hardware snapshot. `DELETE /devicemaps/{name}` does not touch anything about a container already using this mapping's name — device grants are resolved once, at container-creation time, never re-resolved live afterward.
 
-## Disks (multi-disk management, Phase A: enumeration)
+## Disks (multi-disk management)
 
 ```
 GET /v1/disks
 ```
 
-Real host block devices, whole disks only (partitions are never listed independently — they aren't independently assignable), live-enumerated from `/sys/class/block` on every call, the same "real hardware, never persisted" convention `GET /devices` already established. `is_os_disk` flags the one disk holding this platform's own fixed ESP/root-a/root-b/config/containers layout — never a candidate for a role of its own; every other disk is available for a future role assignment. This is enumeration only: role assignment (container-storage/swap/backup) and container-storage migration between disks are queued follow-up phases (`docs/roadmap/ROADMAP.md`), not yet implemented — there is no `POST`/`DELETE` here yet.
+Real host block devices, whole disks only (partitions are never listed independently — they aren't independently assignable), live-enumerated from `/sys/class/block` on every call, the same "real hardware, never persisted" convention `GET /devices` already established. `is_os_disk` flags the one disk holding this platform's own fixed ESP/root-a/root-b/config/containers layout — never a candidate for a role of its own; every other disk is available for a role assignment.
+
+### Persisted disk roles
+
+```
+POST /v1/diskroles
+{"disk_name": "sdb", "role": "backup"}
+```
+
+`role` is `"container-storage"` or `"backup"` — a small, fixed, closed vocabulary, not an arbitrary operator-chosen string the way a `devicemap` name is, since a role only means something insofar as a later phase (mount/format, container-storage migration — both still queued, `docs/roadmap/ROADMAP.md`) actually understands and acts on it. `"swap"` is deliberately not a role: this platform already has a dedicated, working, on-demand host swap *file* mechanism (`POST /system/swap`, ADR-0069) with no disk-level equivalent defined yet — adding a same-named disk role would either duplicate or need reconciling with it, a real design question with no answer, so it's left out rather than added as a role nothing can act on.
+
+Real and creatable even for a `disk_name` that isn't currently present (`present: false` on `GET`, not an error — the same tolerant convention `/devicemaps` already established for hardware that might be temporarily absent). Always rejected (`400`) for the disk currently flagged `is_os_disk` on `GET /disks` — the fixed OS-disk layout is never a role-assignment candidate. `409` if `disk_name` already has a role (`DELETE` it first to reassign, the same no-silent-overwrite convention `/devicemaps` already established).
 
 ## Per-container config files + sysctls
 

@@ -95,7 +95,9 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | `device ls` | Host PCI/USB/GPU devices from sysfs, with each one's `id` (pass to `run --device=`) and whether it's assignable |
 | `devicemap create --name=NAME --kind=exact\|vendor_model --selector=SELECTOR` | A persisted, named device binding, usable in place of a raw id in `run --device=` |
 | `devicemap ls` / `devicemap rm NAME` | List (shows whether each mapping currently resolves to real hardware) / remove |
-| `disks [ls]` | Real host block devices (whole disks only), flagging which one is the fixed OS disk — enumeration only, Phase A of multi-disk management (`docs/roadmap/ROADMAP.md`) |
+| `disks [ls]` | Real host block devices (whole disks only), flagging which one is the fixed OS disk |
+| `diskrole create --disk=NAME --role=container-storage\|backup` | Assign a persisted role to a disk (never the OS disk) |
+| `diskrole ls` / `diskrole rm NAME` | List assigned roles (with whether each disk is currently present) / remove one |
 
 ## DNS
 

@@ -2,6 +2,22 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 14 (done): multi-disk management, Phase B -- persisted disk role assignment (`GET`/`POST`/`DELETE /v1/diskroles`)
+
+Direct follow-up to Part 13's read-only enumeration, mirroring `devicemap.c`'s own persistence shape but with the binding direction inverted: a disk already has a real, stable-enough kernel name, so this binds that name directly to a role instead of inventing an alias layer.
+
+#### Added
+- `daemon/src/diskrole.c`/`daemon/include/diskrole.h`: persisted disk-name -> role table (`container-storage`/`backup`, a small fixed vocabulary -- `swap` deliberately excluded, already owned by `daemon/src/swap.c`'s dedicated file-based mechanism), same atomic-JSON persistence every other simple state module uses.
+- `daemon/src/main.c`: `handle_diskrole_list/create/delete()`, `GET`/`POST /v1/diskroles` + `DELETE /v1/diskroles/{disk_name}`.
+- `cli/src/main.c`: `kanxeoctl diskrole create/ls/rm`.
+- `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/cli-reference.md`: documented the new endpoints, `DiskRole`/`DiskRoleCreateRequest` schemas.
+
+#### Notes
+- Always rejects assigning a role to `disk.c`'s own `is_os_disk`-flagged disk -- re-checked live, not cached. Tolerant of a currently-absent `disk_name` (mirrors `devicemap`'s own tolerance), reporting `present` fresh on every `GET`.
+- Confirmed `POST /system/backup`'s bundle excludes `devicemaps.json` today (a pre-existing gap), so `diskroles.json` following the same boundary is consistency with existing precedent, not a new regression -- fixing both together is a real, separate future decision.
+- Verified live: create/duplicate(`409`)/invalid-role(`400`)/list/delete/not-found(`404`) round-tripped against real disk names; persisted state confirmed to survive a real daemon restart.
+- Full clean rebuild (`-Wall -Werror`, zero warnings); full local regression sweep (29 binaries, all passing).
+
 ### Part 13 (done): multi-disk management, Phase A -- real disk enumeration (`GET /v1/disks`)
 
 The next standing queued item (Task #638) -- broken into phases per its own "needs a design pass first" flag in ROADMAP.md; this is Phase A only (read-only enumeration, no persisted state).

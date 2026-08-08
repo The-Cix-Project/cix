@@ -157,6 +157,10 @@ static void print_usage(FILE *out)
 	        "  routes rm --dest=A.B.C.D --prefix=N  -- remove one; or --default\n"
 	        "  disks  -- real host block devices (whole disks only); which one is the\n"
 	        "               fixed OS disk vs. assignable is flagged per entry\n"
+	        "  diskrole create --disk=NAME --role=container-storage|backup  -- assign a\n"
+	        "               persisted role to a disk (never the OS disk)\n"
+	        "  diskrole ls / diskrole rm NAME  -- list assigned roles (with whether each\n"
+	        "               disk is currently present) / remove one\n"
 	        "  swap  -- show whether the host swap file is enabled (ADR-0069)\n"
 	        "  swap enable --size-mb=N  -- create and activate a swap file of this size\n"
 	        "  swap disable  -- deactivate and remove it\n"
@@ -475,6 +479,27 @@ static void fmt_disk_list(const struct json_value *v)
 		return;
 	for (i = 0; i < disks->u.array.count; i++)
 		fmt_disk_line(disks->u.array.items[i]);
+}
+
+static void fmt_diskrole_line(const struct json_value *v)
+{
+	const char *disk_name = json_str_field(v, "disk_name");
+	const char *role = json_str_field(v, "role");
+	const struct json_value *jpresent = json_object_get(v, "present");
+	int present = jpresent != NULL && jpresent->type == JSON_BOOL && jpresent->u.boolean;
+
+	printf("%-16s %-20s %s\n", disk_name, role, present ? "present" : "absent");
+}
+
+static void fmt_diskrole_list(const struct json_value *v)
+{
+	const struct json_value *roles = json_object_get(v, "diskroles");
+	size_t i;
+
+	if (roles == NULL || roles->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < roles->u.array.count; i++)
+		fmt_diskrole_line(roles->u.array.items[i]);
 }
 
 static void fmt_devicemap_line(const struct json_value *v)
@@ -2689,6 +2714,99 @@ static int cmd_device(const struct kx_client *c, int json_mode, int argc, char *
 	return 2;
 }
 
+static int cmd_diskrole_create(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *disk_name = NULL;
+	const char *role = NULL;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--disk=", 7) == 0)
+			disk_name = argv[i] + 7;
+		else if (strncmp(argv[i], "--role=", 7) == 0)
+			role = argv[i] + 7;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown diskrole create option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (disk_name == NULL || role == NULL) {
+		fprintf(stderr,
+		        "usage: kanxeoctl diskrole create --disk=NAME --role=container-storage|backup\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "disk_name");
+	jw_str(&w, disk_name);
+	jw_key(&w, "role");
+	jw_str(&w, role);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/diskroles", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_diskrole_line);
+}
+
+static int cmd_diskrole_ls(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/diskroles", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_diskrole_list);
+}
+
+static int cmd_diskrole_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: diskrole rm requires a disk name\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/diskroles/%s", argv[0]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static int cmd_diskrole(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl diskrole create --disk=NAME --role=container-storage|backup\n"
+		                "       kanxeoctl diskrole ls\n"
+		                "       kanxeoctl diskrole rm NAME\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "create") == 0)
+		return cmd_diskrole_create(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "ls") == 0)
+		return cmd_diskrole_ls(c, json_mode);
+	if (strcmp(sub, "rm") == 0)
+		return cmd_diskrole_rm(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown diskrole subcommand '%s'\n", sub);
+	return 2;
+}
+
 static int cmd_devicemap_create(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
@@ -4129,6 +4247,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_routes(client, json_mode, argc, argv);
 	if (strcmp(cmd, "disks") == 0)
 		return cmd_disks(client, json_mode, argc, argv);
+	if (strcmp(cmd, "diskrole") == 0)
+		return cmd_diskrole(client, json_mode, argc, argv);
 	if (strcmp(cmd, "logs") == 0)
 		return cmd_logs_top(client, json_mode, argc, argv);
 	if (strcmp(cmd, "swap") == 0)
@@ -4230,12 +4350,12 @@ static int tokenize_line(char *line, char **tokens, int max_tokens)
  * makes on the web dashboard side (web/app.js) for the identical
  * reason (a route table that can't be enumerated by walking code). */
 static const char *const SHELL_COMMANDS[] = {
-	"backup", "console",  "daemon-config", "device", "devicemap", "disks",
-	"dns",    "exit",     "files",         "health", "help",      "image",
-	"inspect", "iso",     "logs",          "network", "pause",    "pkg",
-	"pki",    "ps",       "quit",          "reboot", "restore",   "rm",
-	"routes", "run",      "shutdown",      "site",   "start",     "stats",
-	"stop",   "swap",     "unpause",       "update", NULL
+	"backup", "console",  "daemon-config", "device", "devicemap", "diskrole",
+	"disks",  "dns",      "exit",          "files",  "health",    "help",
+	"image",  "inspect",  "iso",           "logs",   "network",   "pause",
+	"pkg",    "pki",      "ps",            "quit",   "reboot",    "restore",
+	"rm",     "routes",   "run",           "shutdown", "site",    "start",
+	"stats",  "stop",     "swap",          "unpause", "update",   NULL
 };
 
 static char g_shell_history[SHELL_HISTORY_MAX][SHELL_LINE_MAX];

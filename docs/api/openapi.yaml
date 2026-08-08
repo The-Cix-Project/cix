@@ -955,6 +955,100 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /diskroles:
+    get:
+      summary: List persisted disk role assignments -- multi-disk management Phase B (ROADMAP.md)
+      description: >
+        Unlike /disks (ephemeral, re-enumerated every call, never
+        persisted), a disk role is a real, persisted binding an
+        operator assigns once to a real disk name (from GET /disks)
+        and that role stays assigned until explicitly removed. Each
+        entry is still resolved fresh against currently-present disks
+        on every call (`present`), never cached -- only the binding
+        itself (disk_name -> role) persists, not a hardware snapshot.
+      operationId: listDiskRoles
+      responses:
+        "200":
+          description: Disk role list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [diskroles]
+                properties:
+                  diskroles:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DiskRole"
+    post:
+      summary: Assigns a role to a disk
+      description: >
+        Real and creatable even for a disk_name that isn't currently
+        present (`present: false` on GET, not an error -- the same
+        tolerant convention /devicemaps already established for
+        hardware that might be temporarily absent). Always rejected
+        for the one disk currently holding this platform's own fixed
+        OS-disk layout (`is_os_disk` on GET /disks) -- it is never a
+        role-assignment candidate.
+      operationId: createDiskRole
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DiskRoleCreateRequest"
+      responses:
+        "201":
+          description: Role assigned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiskRole"
+        "400":
+          description: Invalid disk_name, invalid role, or disk_name is the real OS disk
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: This disk already has a role assigned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The role table is full, or persisting the new assignment to disk failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /diskroles/{disk_name}:
+    delete:
+      summary: Removes a disk's role assignment
+      operationId: deleteDiskRole
+      parameters:
+        - name: disk_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Removed
+        "404":
+          description: No role assigned to this disk
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The role exists but persisting its removal to disk failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /networks:
     get:
       summary: List all networks known to this daemon
@@ -3501,6 +3595,38 @@ components:
             never a candidate for a future role assignment. False
             (including for every disk) on a dev/test daemon with no
             real containers partition to resolve.
+
+    DiskRole:
+      type: object
+      required: [disk_name, role, present]
+      properties:
+        disk_name:
+          type: string
+          description: A Disk.name from GET /disks (e.g. "sdb") -- not an operator-chosen alias, the real disk's own kernel name.
+        role:
+          type: string
+          enum: [container-storage, backup]
+          description: >
+            A small, fixed, closed vocabulary -- not free-form, since a
+            role is only meaningful insofar as a later phase (mount/
+            format, container-storage migration) actually understands
+            and acts on it. "swap" is deliberately not a role here:
+            this platform already has a dedicated on-demand host swap
+            FILE mechanism (POST /system/swap, ADR-0069) with no
+            disk-level equivalent defined yet.
+        present:
+          type: boolean
+          description: Whether disk_name currently resolves to a real disk (GET /disks) -- re-derived fresh on every call, never cached.
+
+    DiskRoleCreateRequest:
+      type: object
+      required: [disk_name, role]
+      properties:
+        disk_name:
+          type: string
+        role:
+          type: string
+          enum: [container-storage, backup]
 
     NetworkCreateRequest:
       type: object
