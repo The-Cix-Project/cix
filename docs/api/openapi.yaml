@@ -3540,6 +3540,20 @@ components:
           type: integer
           nullable: true
           description: Exit status once status is exited; null while running.
+        exit_reason:
+          type: string
+          nullable: true
+          description: >
+            Human-readable why, once status is exited; null while running
+            (ADR-0080). Either the real diagnostic text the container's
+            own pre-exec setup or final exec wrote before failing (e.g.
+            "child: execve(/usr/bin/foo): No such file or directory"), or
+            a fixed category string (e.g. "clean exit", "overlay: mount(2)
+            itself failed") when that text isn't available. exit_status
+            alone was never enough to act on -- this is the same numeric
+            scheme documented in src/container.c decoded into something
+            an operator can actually read, without needing serial console
+            or shell access to the host.
         networks:
           type: array
           items:

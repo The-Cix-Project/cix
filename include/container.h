@@ -265,6 +265,16 @@ struct container_handle {
 	 * it. -1 when spec->interface_count was 0 at creation time.
 	 */
 	int interfaces_netns_fd;
+	/*
+	 * Read end of an internal, always-on diagnostic pipe (see
+	 * container_create()'s own comment): the child's pre-exec setup
+	 * failures and a failed final execve() both write a human-readable
+	 * "step: strerror(errno)" line here instead of (or in addition to)
+	 * the bare numeric exit code every caller already sees. -1 once
+	 * container_read_diag() has consumed it (one-shot; see that
+	 * function's own comment for why a single read is always enough).
+	 */
+	int diag_fd;
 };
 
 /*
@@ -388,7 +398,33 @@ int overlay_upperdir_size(const char *upperdir_path, long long *out_bytes);
  * PID/MNT/UTS/NET/CGROUP namespaces, places the child atomically
  * into the cgroup opened by cgroup_create, mounts spec->ov and
  * pivot_roots into it, and execve's argv[0] with argv/envp. On
- * success fills out with the child's pid, cgroup fd and pidfd.
+ * success fills out with the child's pid, cgroup fd, pidfd and
+ * diag_fd.
+ *
+ * A real, previously-silent gap this diag_fd closes: every one of the
+ * child's own pre-exec setup steps (mountns_make_private,
+ * overlay_create's six named steps plus a real mount(2) errno,
+ * mountns_pivot, container_dev_mknod, sethostname, network
+ * configuration, prctl) and the final execve() itself already had a
+ * rich, disjoint numeric exit-code encoding (see the child branch's
+ * own comments) -- but the ONLY place that encoding was ever
+ * explained in human terms was a perror() to this process's own
+ * stdin/stderr, which on a real installed box (kanxeod as PID 1, no
+ * attached console, no systemd journal) reaches nobody. On failure of
+ * ANY of those steps, before exit()ing with its own numeric code, the
+ * child now ALSO writes one "step: strerror(errno)" line to this
+ * pipe -- container_read_diag() below is how a caller turns "why did
+ * my container die" from "decode this exit code by hand against a
+ * table in a comment" into a real, readable answer, with zero extra
+ * ceremony on the caller's part (this pipe is unconditional, not an
+ * opt-in like capture_output above, which is a different feature: it
+ * captures the RUNNING container's own stdout/stderr for build
+ * logging, not this process's own setup diagnostics, and only starts
+ * capturing right before the final execve -- too late for every
+ * earlier step this pipe covers). On success, its write end is
+ * O_CLOEXEC and simply vanishes at the exec() that made it
+ * unnecessary -- no attempt to also capture the actual container
+ * workload's own output through it.
  */
 int container_create(const struct container_spec *spec, struct container_handle *out);
 
@@ -397,5 +433,37 @@ int container_create(const struct container_spec *spec, struct container_handle 
  * holds the child's exit status as reported by waitid().
  */
 int container_wait(const struct container_handle *h, int *exit_status);
+
+/*
+ * Reads whatever diagnostic text (if any) h->diag_fd's write end
+ * received before it closed -- always true by the time a caller
+ * reaches this, since container_wait() already reaped the process
+ * (closing it directly on a setup/exec failure) or the process
+ * exec'd successfully (closing it via O_CLOEXEC) -- so this never
+ * blocks. NUL-terminates into buf (truncating, never overflowing, if
+ * the real message somehow exceeds bufsize). Closes and invalidates
+ * h->diag_fd itself (set to -1) -- a one-shot read, matching every
+ * other place in this codebase that reads a diagnostic pipe exactly
+ * once after reaping its writer (see pkg.c's own build-output
+ * capture). Returns the number of bytes read (0 if the container
+ * exited cleanly via a successful exec, with nothing ever written),
+ * or -1 on a genuine read(2) error.
+ */
+ssize_t container_read_diag(struct container_handle *h, char *buf, size_t bufsize);
+
+/*
+ * Decodes a container's raw exit_status (container_wait()'s own
+ * output, the same 0-119/127/130-136/141-255 numeric scheme
+ * container_create()'s own comment documents) into a short, fixed
+ * category string ("clean exit", "mountns_make_private failed",
+ * "overlay: lowerdir stat failed", "exec: file not found", etc.).
+ * Deliberately just the CATEGORY, not the real errno text (that part
+ * comes from container_read_diag() above when available, and this
+ * function's own output is the fallback for the rarer case -- a
+ * daemon restart losing an already-exited container's diag pipe, or
+ * a genuinely exhausted diag pipe -- where it isn't). Always fills
+ * buf with something non-empty; never fails.
+ */
+void container_decode_exit_status(int exit_status, char *buf, size_t bufsize);
 
 #endif /* CONTAINER_H */

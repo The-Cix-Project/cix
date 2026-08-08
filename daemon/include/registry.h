@@ -47,6 +47,18 @@ struct registry_entry {
 	int running;       /* 1 while the container's process is alive */
 	int exit_status;   /* valid once running == 0 */
 	/*
+	 * Human-readable "why," valid once running == 0 alongside
+	 * exit_status above -- either the child's own real diagnostic text
+	 * (container_read_diag(), e.g. "child: execve(/usr/bin/sleep): No
+	 * such file or directory") when the container's own diag pipe still
+	 * had something in it, or container_decode_exit_status()'s own
+	 * fixed category text as a fallback otherwise. Not persisted (like
+	 * exit_status itself, and for the same reason: purely a live-run
+	 * diagnostic, meaningless across a daemon restart since the process
+	 * that produced it is long gone either way).
+	 */
+	char last_exit_reason[256];
+	/*
 	 * 1 while frozen via the cgroup v2 freezer (POST .../pause,
 	 * ADR-0045) -- the process itself is still `running` (its pid is
 	 * alive, waitid() would still block on it) but every task in the

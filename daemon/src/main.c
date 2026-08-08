@@ -429,6 +429,14 @@ struct conn {
 	struct http_conn http;                 /* CONN_CLIENT only */
 	struct registry_entry *entry;           /* CONN_CONTAINER only */
 	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE / CONN_ISO_ASSEMBLE / CONN_BOOTSTRAP_FETCH / CONN_DISK_FORMAT */
+	int output_fd;                          /* CONN_BOOTROOT_ASSEMBLE only -- read end of a pipe2(O_CLOEXEC)
+	                                          * the spawned mkbootroot's own stdout/stderr were dup2()'d onto;
+	                                          * read once in the reaper (handle_bootroot_assemble_event()) and
+	                                          * logged alongside its exit status, closing the same real-vs-
+	                                          * generic-failure-message gap container_read_diag() (see
+	                                          * container.h) closes for containers -- "mkbootroot exited 1"
+	                                          * alone was never enough to root-cause a real assembly failure
+	                                          * without serial console access. -1 once consumed. */
 	char restart_name[REGISTRY_NAME_MAX];   /* CONN_RESTART_TIMER only */
 	char cleanup_ifname[NETWORK_NAME_MAX];  /* CONN_BIND_IP_CLEANUP only */
 	uint32_t cleanup_addr_be;               /* CONN_BIND_IP_CLEANUP only */
@@ -3619,8 +3627,10 @@ static void register_pkg_fetch_pidfd(pid_t pid, int pidfd)
 }
 
 /* Same shape as register_pkg_fetch_pidfd(), for the mkbootroot child
- * spawn_kanxeo_bootroot_assembly() below just forked. */
-static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
+ * spawn_kanxeo_bootroot_assembly() below just forked. output_fd is the
+ * read end of its captured stdout/stderr (-1 if the capture pipe
+ * itself couldn't be created) -- see handle_bootroot_assemble_event(). */
+static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd, int output_fd)
 {
 	struct conn *cc;
 	struct kx_epoll_event ev;
@@ -3633,6 +3643,7 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
 	cc->kind = CONN_BOOTROOT_ASSEMBLE;
 	cc->fd = pidfd;
 	cc->pkg_fetch_pid = pid;
+	cc->output_fd = output_fd;
 
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
@@ -3686,6 +3697,7 @@ static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
 	char *argv[11];
 	pid_t pid;
 	int pidfd;
+	int output_pipe[2];
 
 	snprintf(mkbootroot_bin, sizeof(mkbootroot_bin), "%s/mkbootroot", artifact_dir);
 	snprintf(kanxeod_bin, sizeof(kanxeod_bin), "%s/kanxeod", artifact_dir);
@@ -3718,29 +3730,59 @@ static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
 	argv[9] = host_tools_dir; /* "" if kanxeo-hosttools was never built on this box */
 	argv[10] = NULL;
 
+	/*
+	 * O_CLOEXEC on both ends, same reasoning as container_create()'s own
+	 * diag pipe (include/container.h): the write end vanishes on its own
+	 * at a successful execve() below, and the read end (kept open here
+	 * past this fork) shouldn't leak into any later child this daemon
+	 * spawns either. Not fatal on failure -- assembly still proceeds
+	 * exactly as before this capture existed, just back to only the
+	 * bare exit-status logging.
+	 */
+	if (pipe2(output_pipe, O_CLOEXEC) != 0) {
+		perror("pipe2 (bootroot assembly output capture)");
+		logstore_write("kanxeod", "error",
+		                "kanxeo bootroot assembly: output capture pipe failed: %s",
+		                strerror(errno));
+		output_pipe[0] = output_pipe[1] = -1;
+	}
+
 	pid = fork();
 	if (pid < 0) {
 		perror("fork (bootroot assembly)");
 		logstore_write("kanxeod", "error", "kanxeo bootroot assembly: fork failed: %s",
 		                strerror(errno));
+		if (output_pipe[0] >= 0) {
+			close(output_pipe[0]);
+			close(output_pipe[1]);
+		}
 		return;
 	}
 	if (pid == 0) {
+		if (output_pipe[1] >= 0) {
+			dup2(output_pipe[1], STDOUT_FILENO);
+			dup2(output_pipe[1], STDERR_FILENO);
+		}
 		execve(mkbootroot_bin, argv, environ);
 		perror("child: execve mkbootroot");
 		_exit(127);
 	}
+
+	if (output_pipe[1] >= 0)
+		close(output_pipe[1]);
 
 	pidfd = sys_pidfd_open(pid, 0);
 	if (pidfd < 0) {
 		perror("pidfd_open (bootroot assembly)");
 		logstore_write("kanxeod", "error", "kanxeo bootroot assembly: pidfd_open failed: %s",
 		                strerror(errno));
+		if (output_pipe[0] >= 0)
+			close(output_pipe[0]);
 		kill(pid, SIGKILL);
 		waitpid(pid, NULL, 0);
 		return;
 	}
-	register_bootroot_assemble_pidfd(pid, pidfd);
+	register_bootroot_assemble_pidfd(pid, pidfd, output_pipe[0]);
 }
 
 /*
@@ -4446,6 +4488,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	struct container_spec spec;
 	struct registry_entry *entry;
 	enum registry_error rerr;
+	int create_errno;
 	char *argv_buf[64];
 	char *empty_envp[1];
 	size_t argc, i;
@@ -5030,6 +5073,20 @@ static int create_container_from_body(const char *body, size_t body_len,
 	rerr = registry_create(name, image, &spec, net_attachments, net_count, ip_forward,
 	                        device_attachments, device_count, file_paths, file_count, &entry);
 	/*
+	 * Captured immediately, before json_free() below -- container_create()
+	 * (via registry_create()) always preserves errno across every one of
+	 * its own failure paths (each does `errno = saved_errno;` right
+	 * before returning -1), but free()'s own internal bookkeeping isn't
+	 * guaranteed to leave errno alone, so this is the last safe point to
+	 * read it. This closes a real, previously-silent gap: every
+	 * REGISTRY_ERR_CREATE_FAILED used to collapse into one generic
+	 * "failed to create container" regardless of cause (a missing image,
+	 * a cgroup controller the kernel never delegated -- see ADR-0079 --
+	 * or anything else container_create() itself might fail on), giving
+	 * an operator nothing to act on beyond a bare 500.
+	 */
+	create_errno = errno;
+	/*
 	 * Safe to free the JSON tree now even though spec.ns.hostname,
 	 * spec.cg.name and spec.argv[] point into it: registry_create()
 	 * has already returned, meaning container_create()'s clone3() has
@@ -5050,7 +5107,9 @@ static int create_container_from_body(const char *body, size_t body_len,
 		return 500;
 	}
 	if (rerr == REGISTRY_ERR_CREATE_FAILED) {
-		snprintf(err_msg, err_msg_size, "failed to create container");
+		snprintf(err_msg, err_msg_size, "failed to create container: %s", strerror(create_errno));
+		logstore_write("kanxeod", "error", "container %s: failed to create: %s", name,
+		                strerror(create_errno));
 		return 500;
 	}
 
@@ -8745,9 +8804,28 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 {
 	int status;
 	pid_t reaped;
+	char output[2048] = { 0 };
+	ssize_t output_len = 0;
 
 	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	reaped = waitpid(cc->pkg_fetch_pid, &status, 0);
+	/*
+	 * One read, right after waitpid(): mkbootroot's own write end is
+	 * already closed by now either way (O_CLOEXEC on a successful
+	 * execve() before this, or the process simply exited), so this
+	 * never blocks -- same one-shot pattern container_read_diag()
+	 * (src/container.c) uses for a container's own setup diagnostics.
+	 * Read regardless of exit status: real, useful stdout (e.g. a
+	 * progress line) isn't exclusively a failure-path signal, though
+	 * only the failure branches below actually log it.
+	 */
+	if (cc->output_fd >= 0) {
+		output_len = read(cc->output_fd, output, sizeof(output) - 1);
+		if (output_len < 0)
+			output_len = 0;
+		output[output_len] = '\0';
+		close(cc->output_fd);
+	}
 	if (reaped == cc->pkg_fetch_pid && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
 		fprintf(stderr, "kanxeo bootroot assembly: succeeded\n");
 		logstore_write("kanxeod", "info", "kanxeo bootroot assembly: succeeded");
@@ -8759,10 +8837,14 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 		fprintf(stderr, "kanxeo bootroot assembly: failed (exit %d)\n", WEXITSTATUS(status));
 		logstore_write("kanxeod", "error", "kanxeo bootroot assembly: mkbootroot exited %d",
 		                WEXITSTATUS(status));
+		if (output_len > 0)
+			logstore_write("kanxeod", "error", "kanxeo bootroot assembly: output: %s", output);
 	} else if (WIFSIGNALED(status)) {
 		fprintf(stderr, "kanxeo bootroot assembly: killed by signal %d\n", WTERMSIG(status));
 		logstore_write("kanxeod", "error", "kanxeo bootroot assembly: mkbootroot killed by signal %d",
 		                WTERMSIG(status));
+		if (output_len > 0)
+			logstore_write("kanxeod", "error", "kanxeo bootroot assembly: output: %s", output);
 	} else {
 		fprintf(stderr, "kanxeo bootroot assembly: failed\n");
 		logstore_write("kanxeod", "error", "kanxeo bootroot assembly: failed");

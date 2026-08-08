@@ -84,3 +84,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0077](0077-health-boot-identity-split.md) | Split GET /health into liveness + GET /system/boot identity | Accepted |
 | [0078](0078-from-source-host-tools-bootstrap.md) | From-source host tools bootstrap (mkbootroot.c's shelled-out binaries) | Accepted |
 | [0079](0079-cgroup-controller-delegation.md) | cgroup v2 controller delegation at daemon startup (real-PID-1/no-systemd container-create 500 fix) | Accepted |
+| [0080](0080-container-diagnostics-visibility.md) | Container creation/exit diagnostics visibility -- real errno text, not just numeric codes | Accepted |

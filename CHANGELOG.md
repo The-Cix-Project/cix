@@ -2,6 +2,23 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 25 (done): container creation/exit diagnostics visibility (ADR-0080)
+
+Direct follow-on to Part 24's own live redeploy: after the cgroup fix, a *new*, more severe symptom surfaced on 192.168.15.95 -- every container after the first one failed to exec, with nothing beyond a bare numeric `exit_status` to go on. User's own direction: close the visibility gap first, redeploy with it, then keep digging.
+
+#### Added
+- `src/container.c`: an always-on diagnostic pipe (`container_create()`'s child writes a real `"step: strerror(errno)"` line on any pre-exec/exec failure via a new `child_diag()` helper, replacing bare `perror()`), `container_read_diag()`, `container_decode_exit_status()`.
+- `daemon/src/registry.c`: `registry_entry.last_exit_reason`, populated in `registry_mark_exited()` and logged to `GET /system/logs` on any non-zero exit; new `exit_reason` field on every container JSON response.
+- `daemon/src/main.c`: `create_container_from_body()`'s `REGISTRY_ERR_CREATE_FAILED` path now surfaces the real `strerror(errno)` (captured before `json_free()`, which isn't guaranteed to preserve it) in both the 500 response and the log store, instead of a bare "failed to create container".
+- `daemon/src/main.c`: `spawn_kanxeo_bootroot_assembly()`/`handle_bootroot_assemble_event()` now capture `mkbootroot`'s own stdout/stderr (same `pipe2(O_CLOEXEC)`+`dup2` pattern) and log it alongside the exit status -- direct progress toward finally root-causing Part 23's still-open "mkbootroot exited 1" gap.
+- `docs/adr/0080-container-diagnostics-visibility.md`; `openapi.yaml`/`api/README.md` for the new `exit_reason` field.
+
+#### Notes
+- Verified end-to-end locally: a container given a genuinely missing binary now reports `exit_reason: "child: execve(/usr/bin/does-not-exist): No such file or directory"` instead of a bare `exit_status: 142`.
+- Also confirms the numeric-only ambiguity ADR-0080 itself names (overlay mount(2) errno and exec errno share one exit-code range by design) is resolved in practice by the diag text's own distinct message prefixes.
+- 5 sequential local container creations (including the exact `run` shape that failed on 192.168.15.95) all succeeded cleanly here, confirming the live box's "every container after the first fails" symptom is environment-specific to that box, not a general code bug -- this diagnostics work is what's needed to root-cause it there next.
+- Full clean rebuild (`-Wall -Werror`, zero warnings); full local regression sweep passing.
+
 ### Part 24 (done): cgroup v2 controller delegation fix (real-PID-1 container-create 500 regression, ADR-0079)
 
 Root-caused and fixed the container-creation 500 regression found live during Part 23: `--memory-max=`/`--pids-max=`/`--cpuset-cpus=` all failed on 192.168.15.95 (a flagless `run` succeeded) because that box's `kanxeod` runs as real PID 1 with no systemd ever pre-delegating `memory`/`pids`/`cpu` to its own hierarchy -- every prior dev/test environment ran under a distro's own systemd, which does this delegation automatically, masking the gap entirely until now.

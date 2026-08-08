@@ -2,6 +2,7 @@
 #include "containerdef.h"
 #include "internal.h"
 #include "linux_compat.h"
+#include "logstore.h"
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -74,6 +75,7 @@ enum registry_error registry_create(const char *name, const char *image,
 	strncpy(e->image, image, sizeof(e->image) - 1);
 	e->running = 1;
 	e->exit_status = 0;
+	e->last_exit_reason[0] = '\0';
 	e->paused = 0;
 	e->started_at = time(NULL);
 	e->in_use = 1;
@@ -174,8 +176,33 @@ void registry_mark_exited(struct registry_entry *entry)
 	int status;
 
 	if (container_wait(&entry->handle, &status) == 0) {
+		char diag[256];
+		ssize_t diag_len;
+
 		entry->running = 0;
 		entry->exit_status = status;
+
+		/*
+		 * Prefer the child's own real diagnostic text (the ONLY thing
+		 * that can tell "overlay mount failed" apart from "the exec'd
+		 * program's own real exit code happened to land in the same
+		 * numeric range," see container_decode_exit_status()'s own
+		 * comment) -- fall back to the fixed category decode only when
+		 * the pipe had nothing (a genuinely clean exit, or a container
+		 * whose diag pipe was already consumed/unavailable).
+		 */
+		diag_len = container_read_diag(&entry->handle, diag, sizeof(diag));
+		if (diag_len > 0) {
+			snprintf(entry->last_exit_reason, sizeof(entry->last_exit_reason), "%s", diag);
+		} else {
+			container_decode_exit_status(status, entry->last_exit_reason,
+			                              sizeof(entry->last_exit_reason));
+		}
+
+		if (status != 0) {
+			logstore_write("kanxeod", "error", "container %s exited (status=%d): %s",
+			                entry->name, status, entry->last_exit_reason);
+		}
 	}
 }
 
@@ -272,6 +299,11 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 		jw_null(w);
 	else
 		jw_int(w, entry->exit_status);
+	jw_key(w, "exit_reason");
+	if (entry->running)
+		jw_null(w);
+	else
+		jw_str(w, entry->last_exit_reason);
 	jw_key(w, "networks");
 	jw_arr_open(w);
 	for (i = 0; i < entry->net_count; i++) {

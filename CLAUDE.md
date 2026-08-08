@@ -41,7 +41,7 @@ When a phase lands: update `docs/roadmap/ROADMAP.md` with what was verified, wri
 
 - **Kernel:** Mainline Linux.
 - **Isolation Core:** Native Linux namespaces and cgroups (no runc/libcontainer).
-- **Filesystem Layering:** OverlayFS. The host OS is the shared lowerdir for all containers; running instances only own their upperdir diffs.
+- **Filesystem Layering:** OverlayFS. Each named image's own seeded rootfs (`IMAGES_DIR/<image>/rootfs`) is the shared lowerdir for every container built from that image; running instances only own their upperdir diffs. (This line used to say "the host OS is the shared lowerdir for all containers" — a stale simplification from Phase 2, before the later `pkg install`/image system gave each image its own independently-seeded tree; confirmed against `daemon/src/main.c`'s actual `lowerdir` computation during the ADR-0079/0080 live investigation.)
 - **Toolchain:** Tiny C Compiler (TCC), exclusively, for every component. Dynamic linking against system glibc always — never `-static`, never TCC's bundled headers.
 - **Networking Plane:** 100% custom C virtual switching/routing data plane (no Open vSwitch, no eBPF) — talk to the kernel via rtnetlink sockets directly, never shell out to `ip`/iproute2.
 - **API & IPC:** REST for host/container/DNS/PKI control, event loop on `epoll` (not `io_uring` — no glibc wrapper).

@@ -272,6 +272,7 @@ Response (`201`):
   "status": "running",
   "pid": 12345,
   "exit_status": null,
+  "exit_reason": null,
   "networks": [
     {"name": "internal", "ip": "172.31.0.2"},
     {"name": "dmz", "ip": "172.32.0.2"}
@@ -279,6 +280,8 @@ Response (`201`):
   "ip_forward": false
 }
 ```
+
+`exit_reason` (ADR-0080) is a human-readable why once `exit_status` is non-null — either the container's own real diagnostic text (e.g. `"child: execve(/usr/bin/foo): No such file or directory"`) or, when that text isn't available, a fixed category string (e.g. `"clean exit"`, `"overlay: mount(2) itself failed"`). `GET .../{name}` and `GET /v1/containers` both include it the same way; a failure that also reaches `500` at creation time (before any process exists) is instead surfaced directly in that response's own error message and in `GET /system/logs`.
 
 ## Persisted, auto-restarting containers
 
