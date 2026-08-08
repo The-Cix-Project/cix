@@ -517,6 +517,24 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/stats:
+    get:
+      summary: Host-wide load/CPU/memory/disk/network snapshot (ADR-0073)
+      description: >
+        The host-level counterpart to GET /containers/{name}/stats,
+        mirroring its own conventions exactly: nested per-category
+        objects, raw cumulative/monotonic counters only (never a
+        pre-computed rate -- callers compute their own deltas). Every
+        field is best-effort: a missing/unreadable source leaves that
+        section zeroed rather than failing the whole request.
+      operationId: getSystemStats
+      responses:
+        "200":
+          description: Current host stats snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStats"
   /system/swap:
     get:
       summary: Whether the host swap file is enabled (ADR-0069)
@@ -3459,13 +3477,142 @@ components:
             depends_on above; null if none was configured or restart is
             "no".
 
+    Pressure:
+      type: object
+      required: [some, full]
+      description: >
+        One cgroup v2 PSI file's own "some"/"full" lines (ADR-0074).
+        avg10/avg60/avg300 are percentages (0-100): the share of the
+        last N seconds some/all tasks in this cgroup were stalled
+        waiting on this resource. total_usec is cumulative stalled
+        microseconds since the cgroup was created. Zeroed (not an
+        error) on a kernel without CONFIG_PSI.
+      properties:
+        some:
+          $ref: "#/components/schemas/PressureLine"
+        full:
+          $ref: "#/components/schemas/PressureLine"
+          description: >
+            Always near-zero for cpu.pressure specifically on a
+            lightly-threaded cgroup -- the kernel only populates it
+            when every runnable task is stalled simultaneously, which
+            a single task can't produce.
+    PressureLine:
+      type: object
+      required: [avg10, avg60, avg300, total_usec]
+      properties:
+        avg10:
+          type: number
+        avg60:
+          type: number
+        avg300:
+          type: number
+        total_usec:
+          type: integer
+    SystemStats:
+      type: object
+      required: [load, cpu, memory, disk, networks]
+      properties:
+        load:
+          type: object
+          required: [load1, load5, load15]
+          description: /proc/loadavg's own 1/5/15-minute load averages.
+          properties:
+            load1:
+              type: number
+            load5:
+              type: number
+            load15:
+              type: number
+        cpu:
+          type: object
+          required:
+            [user_jiffies, nice_jiffies, system_jiffies, idle_jiffies,
+             iowait_jiffies, irq_jiffies, softirq_jiffies, steal_jiffies, pressure]
+          description: /proc/stat's own first "cpu" line -- cumulative jiffies since boot, in the kernel's own fixed field order.
+          properties:
+            user_jiffies:
+              type: integer
+            nice_jiffies:
+              type: integer
+            system_jiffies:
+              type: integer
+            idle_jiffies:
+              type: integer
+            iowait_jiffies:
+              type: integer
+            irq_jiffies:
+              type: integer
+            softirq_jiffies:
+              type: integer
+            steal_jiffies:
+              type: integer
+            pressure:
+              $ref: "#/components/schemas/Pressure"
+              description: Host-wide cpu.pressure, from the cgroup v2 root (not any single container's own).
+        memory:
+          type: object
+          required:
+            [total_bytes, free_bytes, available_bytes, buffers_bytes,
+             cached_bytes, swap_total_bytes, swap_free_bytes, pressure]
+          description: From /proc/meminfo (kB in the source file, converted to bytes here).
+          properties:
+            total_bytes:
+              type: integer
+            free_bytes:
+              type: integer
+            available_bytes:
+              type: integer
+              description: The kernel's own best estimate of reclaimable-and-usable memory -- the number that actually answers "is the box under real memory pressure."
+            buffers_bytes:
+              type: integer
+            cached_bytes:
+              type: integer
+            swap_total_bytes:
+              type: integer
+            swap_free_bytes:
+              type: integer
+            pressure:
+              $ref: "#/components/schemas/Pressure"
+              description: Host-wide memory.pressure, from the cgroup v2 root.
+        disk:
+          type: object
+          required: [total_bytes, free_bytes, avail_bytes, pressure]
+          description: statvfs() on the daemon's own data directory.
+          properties:
+            total_bytes:
+              type: integer
+            free_bytes:
+              type: integer
+            avail_bytes:
+              type: integer
+            pressure:
+              $ref: "#/components/schemas/Pressure"
+              description: Host-wide io.pressure, from the cgroup v2 root.
+        networks:
+          type: array
+          description: Every real interface under /sys/class/net (not scoped to containers).
+          items:
+            type: object
+            required: [name, rx_bytes, tx_bytes, rx_packets, tx_packets]
+            properties:
+              name:
+                type: string
+              rx_bytes:
+                type: integer
+              tx_bytes:
+                type: integer
+              rx_packets:
+                type: integer
+              tx_packets:
+                type: integer
     ContainerStats:
       type: object
       required: [cpu, memory, disk, networks]
       properties:
         cpu:
           type: object
-          required: [usage_usec, user_usec, system_usec]
+          required: [usage_usec, user_usec, system_usec, pressure]
           description: Straight from this container's own cgroup v2 cpu.stat -- cumulative since it started.
           properties:
             usage_usec:
@@ -3475,9 +3622,12 @@ components:
               type: integer
             system_usec:
               type: integer
+            pressure:
+              $ref: "#/components/schemas/Pressure"
+              description: This container's own cpu.pressure (ADR-0074).
         memory:
           type: object
-          required: [current, peak, max]
+          required: [current, peak, max, pressure]
           description: From memory.current/memory.peak/memory.max.
           properties:
             current:
@@ -3490,9 +3640,12 @@ components:
               type: integer
               nullable: true
               description: The memory_max limit set at creation, or null if unlimited.
+            pressure:
+              $ref: "#/components/schemas/Pressure"
+              description: This container's own memory.pressure.
         disk:
           type: object
-          required: [upper_bytes, read_bytes, write_bytes, read_ios, write_ios]
+          required: [upper_bytes, read_bytes, write_bytes, read_ios, write_ios, pressure]
           properties:
             upper_bytes:
               type: integer
@@ -3509,6 +3662,9 @@ components:
               type: integer
             write_ios:
               type: integer
+            pressure:
+              $ref: "#/components/schemas/Pressure"
+              description: This container's own io.pressure.
         networks:
           type: array
           items:

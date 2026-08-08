@@ -308,6 +308,33 @@ int cgroup_read_io_totals(int cgroup_fd, long long *out_rbytes, long long *out_w
                            long long *out_rios, long long *out_wios);
 
 /*
+ * One cgroup v2 pressure-stall (PSI) file's own "some"/"full" lines
+ * (cpu.pressure/io.pressure/memory.pressure) -- avg10/avg60/avg300 are
+ * percentages (0-100, e.g. "3.03" means 3.03% of the last 10s some/all
+ * tasks were stalled), total is cumulative stalled microseconds since
+ * boot. "full" is meaningless for cpu.pressure specifically (a single
+ * task can't be the only one running AND have every task stalled at
+ * once) and the kernel simply omits that line there -- left zeroed,
+ * not an error, same convention as every other missing-key case in
+ * this file.
+ */
+struct cgroup_pressure {
+	double some_avg10, some_avg60, some_avg300;
+	long long some_total;
+	double full_avg10, full_avg60, full_avg300;
+	long long full_total;
+};
+
+/*
+ * Reads cgroup_fd's own filename (one of cpu.pressure/io.pressure/
+ * memory.pressure). Best-effort like the three readers above: *out is
+ * left fully zeroed (not an error) if the file doesn't exist at all --
+ * a kernel built without CONFIG_PSI, or a cgroup v1 host, has no such
+ * file, and that's a real, non-fatal case this platform must run on.
+ */
+void cgroup_read_pressure(int cgroup_fd, const char *filename, struct cgroup_pressure *out);
+
+/*
  * overlay_create()'s own distinct failure codes -- every current caller
  * only ever checks `!= 0`, so these are additive, not a behavior
  * change. OVERLAY_ERR_MOUNT_ERRNO_BASE - errno (for errno in

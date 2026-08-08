@@ -77,3 +77,5 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0070](0070-consolidated-log-store.md) | A consolidated, API-accessible, size-capped log store: kernel dmesg + kanxeod diagnostics + per-request audit trail | Accepted |
 | [0071](0071-disk-format-mount.md) | Disk format + mount as a separate, explicitly-confirmed action; a non-execve()ing job child for its two sequential steps | Accepted |
 | [0072](0072-log-message-cap-and-min-level.md) | Log message cap raised 512->4096, build-output capture switched head->tail, settable write-time minimum severity | Accepted |
+| [0073](0073-host-stats-endpoint.md) | Host-wide stats endpoint (GET /v1/system/stats): load/CPU/memory/disk/network, mirroring per-container stats | Accepted |
+| [0074](0074-pressure-stall-information.md) | Pressure-stall information (PSI) in host and per-container stats: cpu/io/memory.pressure | Accepted |

@@ -168,6 +168,7 @@ static void print_usage(FILE *out)
 	        "  swap  -- show whether the host swap file is enabled (ADR-0069)\n"
 	        "  swap enable --size-mb=N  -- create and activate a swap file of this size\n"
 	        "  swap disable  -- deactivate and remove it\n"
+	        "  host-stats  -- host-wide load/CPU/memory/disk/network snapshot (ADR-0073)\n"
 	        "  logs [--source=kernel|kanxeod|audit] [--level=...] [--tail=N] [--since=UNIXTS]\n"
 	        "               -- the consolidated log (kernel dmesg + kanxeod's own\n"
 	        "               diagnostics + a per-request audit trail, ADR-0070)\n"
@@ -1355,6 +1356,101 @@ static int cmd_unpause(const struct kx_client *c, int json_mode, int argc, char 
 }
 
 /*
+ * Prints one cpu.pressure/io.pressure/memory.pressure object's own
+ * "some"/"full" avg10/avg60/avg300 (percentages) -- shared by host and
+ * per-container stats output.
+ */
+static void print_pressure_line(const char *label, const struct json_value *pressure)
+{
+	const struct json_value *some = json_object_get(pressure, "some");
+	const struct json_value *full = json_object_get(pressure, "full");
+
+	printf("%s.pressure some.avg10=%.2f some.avg60=%.2f some.avg300=%.2f "
+	       "full.avg10=%.2f full.avg60=%.2f full.avg300=%.2f\n",
+	       label,
+	       json_as_number(json_object_get(some, "avg10")),
+	       json_as_number(json_object_get(some, "avg60")),
+	       json_as_number(json_object_get(some, "avg300")),
+	       json_as_number(json_object_get(full, "avg10")),
+	       json_as_number(json_object_get(full, "avg60")),
+	       json_as_number(json_object_get(full, "avg300")));
+}
+
+/*
+ * kanxeoctl host-stats -- the host-wide counterpart to `stats NAME`,
+ * same one-shot fetch-and-print/raw-counters convention (no rate or
+ * percentage computed here; a live-refreshing view is the web
+ * dashboard's own job).
+ */
+static void fmt_host_stats(const struct json_value *v)
+{
+	const struct json_value *load = json_object_get(v, "load");
+	const struct json_value *cpu = json_object_get(v, "cpu");
+	const struct json_value *mem = json_object_get(v, "memory");
+	const struct json_value *disk = json_object_get(v, "disk");
+	const struct json_value *nets = json_object_get(v, "networks");
+	size_t i;
+
+	printf("load1=%.2f load5=%.2f load15=%.2f\n",
+	       json_as_number(json_object_get(load, "load1")),
+	       json_as_number(json_object_get(load, "load5")),
+	       json_as_number(json_object_get(load, "load15")));
+
+	printf("cpu.user=%lld cpu.nice=%lld cpu.system=%lld cpu.idle=%lld "
+	       "cpu.iowait=%lld cpu.irq=%lld cpu.softirq=%lld cpu.steal=%lld\n",
+	       (long long)json_as_number(json_object_get(cpu, "user_jiffies")),
+	       (long long)json_as_number(json_object_get(cpu, "nice_jiffies")),
+	       (long long)json_as_number(json_object_get(cpu, "system_jiffies")),
+	       (long long)json_as_number(json_object_get(cpu, "idle_jiffies")),
+	       (long long)json_as_number(json_object_get(cpu, "iowait_jiffies")),
+	       (long long)json_as_number(json_object_get(cpu, "irq_jiffies")),
+	       (long long)json_as_number(json_object_get(cpu, "softirq_jiffies")),
+	       (long long)json_as_number(json_object_get(cpu, "steal_jiffies")));
+	print_pressure_line("cpu", json_object_get(cpu, "pressure"));
+
+	printf("memory.total=%lld memory.free=%lld memory.available=%lld "
+	       "memory.buffers=%lld memory.cached=%lld memory.swap_total=%lld memory.swap_free=%lld\n",
+	       (long long)json_as_number(json_object_get(mem, "total_bytes")),
+	       (long long)json_as_number(json_object_get(mem, "free_bytes")),
+	       (long long)json_as_number(json_object_get(mem, "available_bytes")),
+	       (long long)json_as_number(json_object_get(mem, "buffers_bytes")),
+	       (long long)json_as_number(json_object_get(mem, "cached_bytes")),
+	       (long long)json_as_number(json_object_get(mem, "swap_total_bytes")),
+	       (long long)json_as_number(json_object_get(mem, "swap_free_bytes")));
+	print_pressure_line("memory", json_object_get(mem, "pressure"));
+
+	printf("disk.total=%lld disk.free=%lld disk.avail=%lld\n",
+	       (long long)json_as_number(json_object_get(disk, "total_bytes")),
+	       (long long)json_as_number(json_object_get(disk, "free_bytes")),
+	       (long long)json_as_number(json_object_get(disk, "avail_bytes")));
+	print_pressure_line("io", json_object_get(disk, "pressure"));
+
+	if (nets != NULL && nets->type == JSON_ARRAY) {
+		for (i = 0; i < nets->u.array.count; i++) {
+			const struct json_value *n = nets->u.array.items[i];
+
+			printf("network[%s]: rx_bytes=%lld tx_bytes=%lld rx_packets=%lld tx_packets=%lld\n",
+			       json_str_field(n, "name"),
+			       (long long)json_as_number(json_object_get(n, "rx_bytes")),
+			       (long long)json_as_number(json_object_get(n, "tx_bytes")),
+			       (long long)json_as_number(json_object_get(n, "rx_packets")),
+			       (long long)json_as_number(json_object_get(n, "tx_packets")));
+		}
+	}
+}
+
+static int cmd_host_stats(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/stats", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_host_stats);
+}
+
+/*
  * kanxeoctl container stats <name> -- one-shot fetch-and-print, plain
  * key/value lines. Raw counters exactly as the daemon returns them
  * (ADR-0054: no rate/percentage computed here) -- a live-refreshing
@@ -1373,6 +1469,7 @@ static void fmt_container_stats(const struct json_value *v)
 	       (long long)json_as_number(json_object_get(cpu, "usage_usec")),
 	       (long long)json_as_number(json_object_get(cpu, "user_usec")),
 	       (long long)json_as_number(json_object_get(cpu, "system_usec")));
+	print_pressure_line("cpu", json_object_get(cpu, "pressure"));
 
 	max_v = json_object_get(mem, "max");
 	if (max_v == NULL || max_v->type == JSON_NULL) {
@@ -1385,6 +1482,7 @@ static void fmt_container_stats(const struct json_value *v)
 		       (long long)json_as_number(json_object_get(mem, "peak")),
 		       (long long)json_as_number(max_v));
 	}
+	print_pressure_line("memory", json_object_get(mem, "pressure"));
 
 	printf("disk.upper_bytes=%lld disk.read_bytes=%lld disk.write_bytes=%lld "
 	       "disk.read_ios=%lld disk.write_ios=%lld\n",
@@ -1393,6 +1491,7 @@ static void fmt_container_stats(const struct json_value *v)
 	       (long long)json_as_number(json_object_get(disk, "write_bytes")),
 	       (long long)json_as_number(json_object_get(disk, "read_ios")),
 	       (long long)json_as_number(json_object_get(disk, "write_ios")));
+	print_pressure_line("io", json_object_get(disk, "pressure"));
 
 	if (nets != NULL && nets->type == JSON_ARRAY) {
 		for (i = 0; i < nets->u.array.count; i++) {
@@ -4353,6 +4452,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_logs_top(client, json_mode, argc, argv);
 	if (strcmp(cmd, "swap") == 0)
 		return cmd_swap(client, json_mode, argc, argv);
+	if (strcmp(cmd, "host-stats") == 0)
+		return cmd_host_stats(client, json_mode);
 	if (strcmp(cmd, "ps") == 0)
 		return cmd_ps(client, json_mode);
 	if (strcmp(cmd, "run") == 0)
@@ -4450,12 +4551,13 @@ static int tokenize_line(char *line, char **tokens, int max_tokens)
  * makes on the web dashboard side (web/app.js) for the identical
  * reason (a route table that can't be enumerated by walking code). */
 static const char *const SHELL_COMMANDS[] = {
-	"backup", "console",  "daemon-config", "device", "devicemap", "diskrole",
-	"disks",  "dns",      "exit",          "files",  "health",    "help",
-	"image",  "inspect",  "iso",           "logs",   "network",   "pause",
-	"pkg",    "pki",      "ps",            "quit",   "reboot",    "restore",
-	"rm",     "routes",   "run",           "shutdown", "site",    "start",
-	"stats",  "stop",     "swap",          "unpause", "update",   NULL
+	"backup", "console",   "daemon-config", "device",   "devicemap", "diskrole",
+	"disks",  "dns",       "exit",          "files",    "health",    "help",
+	"host-stats", "image", "inspect",       "iso",      "logs",      "network",
+	"pause",  "pkg",       "pki",           "ps",       "quit",      "reboot",
+	"restore", "rm",       "routes",        "run",      "shutdown",  "site",
+	"start",  "stats",     "stop",          "swap",     "unpause",   "update",
+	NULL
 };
 
 static char g_shell_history[SHELL_HISTORY_MAX][SHELL_LINE_MAX];

@@ -84,6 +84,11 @@ void jw_key(struct json_writer *w, const char *key);
 
 void jw_str(struct json_writer *w, const char *s);
 void jw_int(struct json_writer *w, long long v);
+/* Fixed two-decimal-place formatting -- see jw_num()'s own comment in
+ * json.c for why (matches /proc/loadavg's real precision, and every
+ * value this project has ever needed to write with it is
+ * non-negative). Not a general-purpose float writer. */
+void jw_num(struct json_writer *w, double v);
 void jw_bool(struct json_writer *w, int b);
 void jw_null(struct json_writer *w);
 

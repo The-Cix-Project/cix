@@ -21,6 +21,7 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | GET | `/system/iso` | Status of the most recent server-side installer ISO build |
 | POST | `/system/iso` | Assemble a fresh installer ISO server-side, non-blocking |
 | GET | `/system/routes` | The box's own real kernel IPv4 routing table |
+| GET | `/system/stats` | Host-wide load/CPU/memory/disk/network snapshot |
 | GET | `/containers` | List all containers this daemon knows about |
 | POST | `/containers` | Create and start a container |
 | GET | `/containers/{name}` | Inspect one container |
@@ -316,6 +317,30 @@ This persists the exact request (`/var/lib/kanxeo/container_defs.json`) in addit
 
 `GET`/inspect responses report the current `"status"` (`"running"`/`"paused"`/`"stopped"`) live, not a stale echo.
 
+## Host stats
+
+```
+GET /v1/system/stats
+```
+
+The host-wide counterpart to container stats below (ADR-0073) — mirrors its own conventions exactly: raw cumulative counters only, no server-side history, client computes its own deltas. Response shape:
+
+```json
+{
+  "load": {"load1": 0.42, "load5": 0.61, "load15": 0.55},
+  "cpu": {"user_jiffies": 12345, "nice_jiffies": 0, "system_jiffies": 4321, "idle_jiffies": 987654, "iowait_jiffies": 12, "irq_jiffies": 0, "softirq_jiffies": 5, "steal_jiffies": 0, "pressure": {"some": {"avg10": 3.03, "avg60": 2.8, "avg300": 2.36, "total_usec": 5812475431}, "full": {"avg10": 1.06, "avg60": 0.63, "avg300": 0.44, "total_usec": 1272027550}}},
+  "memory": {"total_bytes": 17179869184, "free_bytes": 10066632704, "available_bytes": 15828671488, "buffers_bytes": 0, "cached_bytes": 5375279104, "swap_total_bytes": 4294967296, "swap_free_bytes": 4294967296, "pressure": {"some": {"avg10": 0, "avg60": 0, "avg300": 0, "total_usec": 17464583}, "full": {"avg10": 0, "avg60": 0, "avg300": 0, "total_usec": 15910263}}},
+  "disk": {"total_bytes": 105492467712, "free_bytes": 45524393984, "avail_bytes": 40869130240, "pressure": {"some": {"avg10": 0, "avg60": 0, "avg300": 0, "total_usec": 111434355}, "full": {"avg10": 0, "avg60": 0, "avg300": 0, "total_usec": 90687340}}},
+  "networks": [{"name": "eth0", "rx_bytes": 1024, "tx_bytes": 2048, "rx_packets": 12, "tx_packets": 9}]
+}
+```
+
+- `load` is `/proc/loadavg`'s own 1/5/15-minute averages; `cpu` is `/proc/stat`'s own first `cpu` line (jiffies, cumulative since boot); `memory` is `/proc/meminfo` (bytes, converted from the source file's kB); `disk` is `statvfs()` on the daemon's own data directory (not necessarily the whole root filesystem, if `--data-dir=` points elsewhere).
+- `memory.available_bytes` is the kernel's own best estimate of reclaimable-and-usable memory — the number that actually answers "is the box under real memory pressure," unlike a hypervisor's own guest-level "used" figure which typically conflates page cache with genuinely unavailable memory.
+- `cpu.pressure`/`memory.pressure`/`disk.pressure` (ADR-0074) are the host-wide cgroup v2 PSI numbers (`cpu.pressure`/`memory.pressure`/`io.pressure`, read from the cgroup v2 root) — `avg10`/`avg60`/`avg300` are percentages of the last N seconds some/all tasks on the box were stalled waiting on that resource, `total_usec` is cumulative stalled time. This answers "is anything actually being held up," a genuinely different question from the raw usage counters above it — a box can show low CPU usage and still have real, measurable stall if something's contending hard for a moment. Zeroed on a kernel without PSI support, not an error.
+- `networks` enumerates every real interface under `/sys/class/net` — not scoped to containers (unlike `networks[]` in container stats below, this can include bridges, physical NICs, and any leftover interface the kernel still reports).
+- Every field is best-effort: a missing/unreadable source leaves that section zeroed rather than failing the whole request.
+
 ## Container stats
 
 ```
@@ -326,14 +351,15 @@ A real, host-side, point-in-time snapshot — no in-container agent, no server-s
 
 ```json
 {
-  "cpu": {"usage_usec": 1234567, "user_usec": 900000, "system_usec": 334567},
-  "memory": {"current": 8388608, "peak": 12582912, "max": null},
-  "disk": {"upper_bytes": 4096, "read_bytes": 0, "write_bytes": 16384, "read_ios": 0, "write_ios": 4},
+  "cpu": {"usage_usec": 1234567, "user_usec": 900000, "system_usec": 334567, "pressure": {"some": {"avg10": 0, "avg60": 0, "avg300": 0, "total_usec": 0}, "full": {"avg10": 0, "avg60": 0, "avg300": 0, "total_usec": 0}}},
+  "memory": {"current": 8388608, "peak": 12582912, "max": null, "pressure": {"some": {"avg10": 0, "avg60": 0, "avg300": 0, "total_usec": 0}, "full": {"avg10": 0, "avg60": 0, "avg300": 0, "total_usec": 0}}},
+  "disk": {"upper_bytes": 4096, "read_bytes": 0, "write_bytes": 16384, "read_ios": 0, "write_ios": 4, "pressure": {"some": {"avg10": 0, "avg60": 0, "avg300": 0, "total_usec": 0}, "full": {"avg10": 0, "avg60": 0, "avg300": 0, "total_usec": 0}}},
   "networks": [{"name": "internal", "rx_bytes": 1024, "tx_bytes": 2048, "rx_packets": 12, "tx_packets": 9}]
 }
 ```
 
 - `cpu`/`disk.read_*`/`disk.write_*`/`networks[].*_bytes`/`networks[].*_packets` are cumulative counters (since the container started); `memory.*`/`disk.upper_bytes` are gauges (current value, not a delta). `disk.upper_bytes` is the real, current size of the container's own overlay upperdir content (its actual on-disk footprint, not including the shared, read-only image layer beneath it).
+- `cpu.pressure`/`memory.pressure`/`disk.pressure` (ADR-0074) are this container's own `cpu.pressure`/`memory.pressure`/`io.pressure` (`disk.pressure` maps to `io.pressure` — kept alongside the existing `disk` object's other I/O-derived counters rather than a separate top-level key), same shape and semantics as host stats' own pressure fields above. `cpu.pressure.full` is structurally always near-zero for a lightly-threaded container — the kernel only populates it when every task in the cgroup is stalled at once.
 - Works for a container that exited on its own (it stays queryable, same as `GET /containers/{name}` itself does, until a real `DELETE`); `404`s once actually removed.
 - `networks[].name` is always the container-facing network name (`"internal"`), never the host-side veth implementation name — a host implementation detail this API never leaks.
 

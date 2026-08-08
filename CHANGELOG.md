@@ -2,6 +2,40 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 18 (done): pressure-stall information (PSI) in host and per-container stats (ADR-0074)
+
+Direct follow-up to Part 17, requested by the user alongside host stats itself -- raw usage counters answer "how much," PSI answers "is anything actually stalled waiting."
+
+#### Added
+- `src/cgroup.c`/`include/container.h`: `cgroup_read_pressure()` -- parses one cgroup v2 PSI file's own `some`/`full` lines into `struct cgroup_pressure`. Zeroed (not an error) on a kernel without `CONFIG_PSI`.
+- `daemon/src/main.c`: shared `write_pressure_json()` helper; `GET /v1/containers/{name}/stats` gains `cpu.pressure`/`memory.pressure`/`disk.pressure` (this container's own PSI); `GET /v1/system/stats` gains the same three, read from the cgroup v2 root.
+- `cli/src/main.c`: shared `print_pressure_line()`; both `stats NAME` and `host-stats` now print a pressure summary line per resource.
+- `docs/adr/0074-pressure-stall-information.md`; `docs/api/openapi.yaml` (new `Pressure`/`PressureLine` schemas) + `docs/api/README.md` + `docs/guides/cli-reference.md` updated.
+
+#### Notes
+- Purely additive to both existing stats response shapes.
+- Verified live against a real running daemon (host PSI genuinely nonzero during the concurrent `lldap` build) and via the existing `test_container_stats` regression test.
+- Full clean rebuild (`-Wall -Werror`, zero warnings); regression sweep (`test_daemon`, `test_container_stats`, `test_routes`, all passing, `sudo`/unsandboxed).
+
+### Part 17 (done): host-wide stats endpoint (ADR-0073)
+
+Raised directly by the user, "asap" priority, to help monitor the box's own real state while the live `lldap` deployment on 192.168.15.95 was ongoing: a host-level counterpart to per-container `GET /v1/containers/{name}/stats`, since nothing exposed the box's own load/memory/CPU/network/disk state through Kanxeo's own API before this.
+
+#### Added
+- `daemon/src/main.c`: `GET /v1/system/stats` -- `load` (`/proc/loadavg`), `cpu` (`/proc/stat`'s own first `cpu` line: user/nice/system/idle/iowait/irq/softirq/steal jiffies), `memory` (`/proc/meminfo`: total/free/available/buffers/cached/swap, bytes), `disk` (`statvfs()` on `g_base_dir`), `networks` (every real interface under `/sys/class/net`). Raw cumulative counters only, mirroring `handle_container_stats()`'s own established convention -- never a pre-computed rate.
+- `daemon/src/json.c`/`daemon/include/json.h`: `jw_num()` -- the first fractional-value JSON writer this daemon has ever needed (load averages), fixed `%.2f` formatting.
+- `cli/src/main.c`: `kanxeoctl host-stats`.
+- `docs/adr/0073-host-stats-endpoint.md`; `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/cli-reference.md` updated.
+
+#### Changed
+- `read_net_stat()` generalized from a veth-only, container-stats-private helper to a shared one accepting any interface name, used by both container and host stats -- avoids a second near-identical `/sys/class/net/<if>/statistics/<file>` reader.
+
+#### Notes
+- Purely additive: new route, no change to any existing schema or persisted state.
+- Verified against a real running daemon (fresh `--data-dir=`, genuine `/proc`/`statvfs()` data, including real leftover interfaces from this dev sandbox's own prior test runs).
+- Full clean rebuild (`-Wall -Werror`, zero warnings); regression sweep (`test_daemon`, `test_container_stats`, `test_routes`, `test_system_backup`, all passing, `sudo`/unsandboxed).
+- Does not include per-container/host PSI (pressure-stall) stats -- tracked separately as task #677.
+
 ### Part 16 (done): log message cap raised, build-output tail-capture, settable minimum severity (ADR-0072)
 
 Found and fixed live while diagnosing a real `lldap` build failure on 192.168.15.95, raised directly by the user: the log store's own `LOGSTORE_MSG_MAX` (512 bytes) and `pkg.c`'s build-output capture (`PKG_BUILD_OUTPUT_CAPTURE_MAX`, 300 bytes, head-only) combined to guarantee a real build failure's own error text was never captured -- only early, unhelpful progress output.

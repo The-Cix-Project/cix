@@ -54,6 +54,7 @@
 #include <sys/reboot.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/timerfd.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -2915,6 +2916,295 @@ static void handle_swap_disable(int fd)
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
+/*
+ * Reads /sys/class/net/<ifname>/statistics/<file> -- shared by
+ * per-container stats (the host-side veth's own counters, the same
+ * numbers a bridge/switch would see) and host-wide stats (real host
+ * interfaces). A missing file (ENOENT -- e.g. a container's veth
+ * already torn down) is not a request failure, just a 0 for that one
+ * counter: GET .../stats stays a best-effort snapshot, not an
+ * all-or-nothing report.
+ */
+static long long read_net_stat(const char *ifname, const char *file)
+{
+	char path[PATH_MAX];
+	char buf[32];
+	int fd;
+	ssize_t n;
+
+	snprintf(path, sizeof(path), "/sys/class/net/%s/statistics/%s", ifname, file);
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return 0;
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return 0;
+	buf[n] = '\0';
+	return strtoll(buf, NULL, 10);
+}
+
+/* Best-effort: a missing/malformed /proc/loadavg leaves all three at 0,
+ * same "snapshot, not all-or-nothing" convention as read_net_stat(). */
+static void read_loadavg(double *l1, double *l5, double *l15)
+{
+	FILE *f;
+
+	*l1 = *l5 = *l15 = 0.0;
+	f = fopen("/proc/loadavg", "r");
+	if (f == NULL)
+		return;
+	fscanf(f, "%lf %lf %lf", l1, l5, l15);
+	fclose(f);
+}
+
+/* /proc/stat's own first "cpu" line: user/nice/system/idle/iowait/irq/
+ * softirq/steal jiffies, in that fixed kernel-documented order. Raw
+ * cumulative counters since boot -- callers compute their own deltas,
+ * same convention as every other stats endpoint in this daemon. */
+static void read_cpu_jiffies(long long *user, long long *nice, long long *system_j,
+                              long long *idle, long long *iowait, long long *irq,
+                              long long *softirq, long long *steal)
+{
+	FILE *f;
+	char label[16];
+
+	*user = *nice = *system_j = *idle = *iowait = *irq = *softirq = *steal = 0;
+	f = fopen("/proc/stat", "r");
+	if (f == NULL)
+		return;
+	if (fscanf(f, "%15s %lld %lld %lld %lld %lld %lld %lld %lld",
+	           label, user, nice, system_j, idle, iowait, irq, softirq, steal) < 9) {
+		*user = *nice = *system_j = *idle = *iowait = *irq = *softirq = *steal = 0;
+	}
+	fclose(f);
+}
+
+/* /proc/meminfo: "Key:   value kB" lines, in no guaranteed order and
+ * with keys this daemon doesn't care about interspersed -- parsed as a
+ * single pass matching each line's key against the wanted set, rather
+ * than assuming a fixed line count/order. All values kB -> bytes. */
+static void read_meminfo(long long *total, long long *free_b, long long *avail,
+                          long long *buffers, long long *cached,
+                          long long *swap_total, long long *swap_free)
+{
+	FILE *f;
+	char line[256];
+	char key[64];
+	long long val;
+
+	*total = *free_b = *avail = *buffers = *cached = *swap_total = *swap_free = 0;
+	f = fopen("/proc/meminfo", "r");
+	if (f == NULL)
+		return;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		if (sscanf(line, "%63s %lld", key, &val) != 2)
+			continue;
+		if (strcmp(key, "MemTotal:") == 0)
+			*total = val * 1024;
+		else if (strcmp(key, "MemFree:") == 0)
+			*free_b = val * 1024;
+		else if (strcmp(key, "MemAvailable:") == 0)
+			*avail = val * 1024;
+		else if (strcmp(key, "Buffers:") == 0)
+			*buffers = val * 1024;
+		else if (strcmp(key, "Cached:") == 0)
+			*cached = val * 1024;
+		else if (strcmp(key, "SwapTotal:") == 0)
+			*swap_total = val * 1024;
+		else if (strcmp(key, "SwapFree:") == 0)
+			*swap_free = val * 1024;
+	}
+	fclose(f);
+}
+
+/*
+ * GET /v1/system/stats: host-wide CPU/memory/disk/network load, mirroring
+ * handle_container_stats()'s own conventions one level up -- nested
+ * per-category objects, raw cumulative/monotonic counters only (never a
+ * pre-computed rate; the client already does its own delta math for
+ * container stats and does the same here). Real /proc and statvfs()
+ * sources throughout, no shelling out, matching this project's own
+ * syscall-first convention. Every field here is a best-effort read: a
+ * missing source leaves that section zeroed rather than failing the
+ * whole request, same as container stats' own network section.
+ */
+/*
+ * Writes one cgroup_pressure as {"some":{...},"full":{...}} -- shared
+ * by cpu.pressure/io.pressure/memory.pressure in both host and
+ * per-container stats, so the shape only needs defining once.
+ */
+static void write_pressure_json(struct json_writer *w, const struct cgroup_pressure *p)
+{
+	jw_key(w, "some");
+	jw_obj_open(w);
+	jw_key(w, "avg10");
+	jw_num(w, p->some_avg10);
+	jw_key(w, "avg60");
+	jw_num(w, p->some_avg60);
+	jw_key(w, "avg300");
+	jw_num(w, p->some_avg300);
+	jw_key(w, "total_usec");
+	jw_int(w, p->some_total);
+	jw_obj_close(w);
+	jw_key(w, "full");
+	jw_obj_open(w);
+	jw_key(w, "avg10");
+	jw_num(w, p->full_avg10);
+	jw_key(w, "avg60");
+	jw_num(w, p->full_avg60);
+	jw_key(w, "avg300");
+	jw_num(w, p->full_avg300);
+	jw_key(w, "total_usec");
+	jw_int(w, p->full_total);
+	jw_obj_close(w);
+}
+
+static void handle_system_stats(int fd)
+{
+	struct json_writer w;
+	double load1, load5, load15;
+	long long cpu_user, cpu_nice, cpu_system, cpu_idle, cpu_iowait, cpu_irq, cpu_softirq, cpu_steal;
+	long long mem_total, mem_free, mem_avail, mem_buffers, mem_cached, swap_total, swap_free;
+	struct statvfs vfs;
+	long long disk_total = 0, disk_free = 0, disk_avail = 0;
+	struct cgroup_pressure cpu_pressure, io_pressure, mem_pressure;
+	DIR *d;
+	struct dirent *ent;
+
+	read_loadavg(&load1, &load5, &load15);
+	read_cpu_jiffies(&cpu_user, &cpu_nice, &cpu_system, &cpu_idle, &cpu_iowait,
+	                 &cpu_irq, &cpu_softirq, &cpu_steal);
+	read_meminfo(&mem_total, &mem_free, &mem_avail, &mem_buffers, &mem_cached,
+	             &swap_total, &swap_free);
+	if (statvfs(g_base_dir, &vfs) == 0) {
+		disk_total = (long long)vfs.f_blocks * vfs.f_frsize;
+		disk_free = (long long)vfs.f_bfree * vfs.f_frsize;
+		disk_avail = (long long)vfs.f_bavail * vfs.f_frsize;
+	}
+
+	memset(&cpu_pressure, 0, sizeof(cpu_pressure));
+	memset(&io_pressure, 0, sizeof(io_pressure));
+	memset(&mem_pressure, 0, sizeof(mem_pressure));
+	{
+		/*
+		 * Host-wide PSI lives at the cgroup v2 root, not inside any
+		 * single leaf -- opened here (O_PATH, no container involved)
+		 * rather than threading a root fd through from daemon init,
+		 * since this is the only call site that ever needs it.
+		 */
+		int root_fd = open("/sys/fs/cgroup", O_PATH | O_DIRECTORY);
+
+		if (root_fd >= 0) {
+			cgroup_read_pressure(root_fd, "cpu.pressure", &cpu_pressure);
+			cgroup_read_pressure(root_fd, "io.pressure", &io_pressure);
+			cgroup_read_pressure(root_fd, "memory.pressure", &mem_pressure);
+			close(root_fd);
+		}
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+
+	jw_key(&w, "load");
+	jw_obj_open(&w);
+	jw_key(&w, "load1");
+	jw_num(&w, load1);
+	jw_key(&w, "load5");
+	jw_num(&w, load5);
+	jw_key(&w, "load15");
+	jw_num(&w, load15);
+	jw_obj_close(&w);
+
+	jw_key(&w, "cpu");
+	jw_obj_open(&w);
+	jw_key(&w, "user_jiffies");
+	jw_int(&w, cpu_user);
+	jw_key(&w, "nice_jiffies");
+	jw_int(&w, cpu_nice);
+	jw_key(&w, "system_jiffies");
+	jw_int(&w, cpu_system);
+	jw_key(&w, "idle_jiffies");
+	jw_int(&w, cpu_idle);
+	jw_key(&w, "iowait_jiffies");
+	jw_int(&w, cpu_iowait);
+	jw_key(&w, "irq_jiffies");
+	jw_int(&w, cpu_irq);
+	jw_key(&w, "softirq_jiffies");
+	jw_int(&w, cpu_softirq);
+	jw_key(&w, "steal_jiffies");
+	jw_int(&w, cpu_steal);
+	jw_key(&w, "pressure");
+	jw_obj_open(&w);
+	write_pressure_json(&w, &cpu_pressure);
+	jw_obj_close(&w);
+	jw_obj_close(&w);
+
+	jw_key(&w, "memory");
+	jw_obj_open(&w);
+	jw_key(&w, "total_bytes");
+	jw_int(&w, mem_total);
+	jw_key(&w, "free_bytes");
+	jw_int(&w, mem_free);
+	jw_key(&w, "available_bytes");
+	jw_int(&w, mem_avail);
+	jw_key(&w, "buffers_bytes");
+	jw_int(&w, mem_buffers);
+	jw_key(&w, "cached_bytes");
+	jw_int(&w, mem_cached);
+	jw_key(&w, "swap_total_bytes");
+	jw_int(&w, swap_total);
+	jw_key(&w, "swap_free_bytes");
+	jw_int(&w, swap_free);
+	jw_key(&w, "pressure");
+	jw_obj_open(&w);
+	write_pressure_json(&w, &mem_pressure);
+	jw_obj_close(&w);
+	jw_obj_close(&w);
+
+	jw_key(&w, "disk");
+	jw_obj_open(&w);
+	jw_key(&w, "total_bytes");
+	jw_int(&w, disk_total);
+	jw_key(&w, "free_bytes");
+	jw_int(&w, disk_free);
+	jw_key(&w, "avail_bytes");
+	jw_int(&w, disk_avail);
+	jw_key(&w, "pressure");
+	jw_obj_open(&w);
+	write_pressure_json(&w, &io_pressure);
+	jw_obj_close(&w);
+	jw_obj_close(&w);
+
+	jw_key(&w, "networks");
+	jw_arr_open(&w);
+	d = opendir("/sys/class/net");
+	if (d != NULL) {
+		while ((ent = readdir(d)) != NULL) {
+			if (ent->d_name[0] == '.')
+				continue;
+			jw_obj_open(&w);
+			jw_key(&w, "name");
+			jw_str(&w, ent->d_name);
+			jw_key(&w, "rx_bytes");
+			jw_int(&w, read_net_stat(ent->d_name, "rx_bytes"));
+			jw_key(&w, "tx_bytes");
+			jw_int(&w, read_net_stat(ent->d_name, "tx_bytes"));
+			jw_key(&w, "rx_packets");
+			jw_int(&w, read_net_stat(ent->d_name, "rx_packets"));
+			jw_key(&w, "tx_packets");
+			jw_int(&w, read_net_stat(ent->d_name, "tx_packets"));
+			jw_obj_close(&w);
+		}
+		closedir(d);
+	}
+	jw_arr_close(&w);
+
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_list(int fd)
 {
 	struct json_writer w;
@@ -4697,34 +4987,6 @@ static void handle_unpause(int fd, const char *name)
 }
 
 /*
- * Reads /sys/class/net/<veth>/statistics/<file> from the HOST netns
- * (never the container's own -- these are the host-side veth's own
- * counters, the same numbers a bridge/switch would see). A missing
- * file (ENOENT -- the veth is gone, e.g. the container already exited
- * and its netns was torn down) is not a request failure, just a 0 for
- * that one counter: GET .../stats stays a best-effort snapshot, not
- * an all-or-nothing report.
- */
-static long long read_net_stat(const char *veth, const char *file)
-{
-	char path[PATH_MAX];
-	char buf[32];
-	int fd;
-	ssize_t n;
-
-	snprintf(path, sizeof(path), "/sys/class/net/%s/statistics/%s", veth, file);
-	fd = open(path, O_RDONLY);
-	if (fd < 0)
-		return 0;
-	n = read(fd, buf, sizeof(buf) - 1);
-	close(fd);
-	if (n <= 0)
-		return 0;
-	buf[n] = '\0';
-	return strtoll(buf, NULL, 10);
-}
-
-/*
  * GET /v1/containers/{name}/files?path=... (ADR-0055): the read-path
  * counterpart to the create-time "files[]" staging (which is write-
  * only, host->container, pre-clone3()) -- reads one file's raw bytes
@@ -4945,6 +5207,7 @@ static void handle_container_stats(int fd, const char *name)
 	int mem_max_unlimited;
 	long long disk_bytes = 0;
 	long long io_rbytes, io_wbytes, io_rios, io_wios;
+	struct cgroup_pressure cpu_pressure, io_pressure, mem_pressure;
 	int i;
 
 	if (e == NULL) {
@@ -4959,6 +5222,9 @@ static void handle_container_stats(int fd, const char *name)
 	cgroup_read_single_value(e->handle.cgroup_fd, "memory.peak", &mem_peak, &mem_max_unlimited);
 	cgroup_read_single_value(e->handle.cgroup_fd, "memory.max", &mem_max, &mem_max_unlimited);
 	cgroup_read_io_totals(e->handle.cgroup_fd, &io_rbytes, &io_wbytes, &io_rios, &io_wios);
+	cgroup_read_pressure(e->handle.cgroup_fd, "cpu.pressure", &cpu_pressure);
+	cgroup_read_pressure(e->handle.cgroup_fd, "io.pressure", &io_pressure);
+	cgroup_read_pressure(e->handle.cgroup_fd, "memory.pressure", &mem_pressure);
 
 	{
 		char upperdir[PATH_MAX];
@@ -4977,6 +5243,10 @@ static void handle_container_stats(int fd, const char *name)
 	jw_int(&w, cpu_user);
 	jw_key(&w, "system_usec");
 	jw_int(&w, cpu_system);
+	jw_key(&w, "pressure");
+	jw_obj_open(&w);
+	write_pressure_json(&w, &cpu_pressure);
+	jw_obj_close(&w);
 	jw_obj_close(&w);
 	jw_key(&w, "memory");
 	jw_obj_open(&w);
@@ -4989,6 +5259,10 @@ static void handle_container_stats(int fd, const char *name)
 		jw_null(&w);
 	else
 		jw_int(&w, mem_max);
+	jw_key(&w, "pressure");
+	jw_obj_open(&w);
+	write_pressure_json(&w, &mem_pressure);
+	jw_obj_close(&w);
 	jw_obj_close(&w);
 	jw_key(&w, "disk");
 	jw_obj_open(&w);
@@ -5002,6 +5276,10 @@ static void handle_container_stats(int fd, const char *name)
 	jw_int(&w, io_rios);
 	jw_key(&w, "write_ios");
 	jw_int(&w, io_wios);
+	jw_key(&w, "pressure");
+	jw_obj_open(&w);
+	write_pressure_json(&w, &io_pressure);
+	jw_obj_close(&w);
 	jw_obj_close(&w);
 	jw_key(&w, "networks");
 	jw_arr_open(&w);
@@ -6878,6 +7156,12 @@ static void dispatch(int fd, const struct http_request *req)
 		}
 		if (strcmp(req->method, "DELETE") == 0) {
 			handle_route_del(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/system/stats") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_system_stats(fd);
 			return;
 		}
 	}

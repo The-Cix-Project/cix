@@ -1504,3 +1504,33 @@ New, persisted, write-time minimum-severity floor (`logstore_set_min_level()`/`l
 Full clean rebuild (`-Wall -Werror`, zero warnings); full local regression sweep (23 daemon-linked/container test binaries, all passing, `sudo`/unsandboxed).
 
 **Two real, adjacent gaps the same investigation surfaced, deliberately not addressed in this part**: host/per-container pressure-stall (PSI: `cpu.pressure`/`io.pressure`/`memory.pressure`) stats, and live-tailing a running build's own output from a console session rather than only seeing captured text after failure (both queued as their own future work, the latter explicitly deferred by the user -- "we'll address it much later").
+
+## Part 17 (done): host-wide stats endpoint (`GET /v1/system/stats`, ADR-0073)
+
+Raised directly by the user while watching the box's own memory behave oddly during the live `lldap` build on 192.168.15.95: "we should add a system load and memory and network and so on (same as we did for containers) but for the host, right?" -- flagged explicitly as "asap" priority, since it was wanted to help monitor the ongoing deployment work itself.
+
+New `daemon/src/main.c` handler mirroring `handle_container_stats()`'s own established shape (nested per-category JSON objects, raw cumulative counters only -- never a pre-computed rate, client does its own delta math): `load` from `/proc/loadavg`, `cpu` from `/proc/stat`'s own first `cpu` line (user/nice/system/idle/iowait/irq/softirq/steal jiffies), `memory` from `/proc/meminfo` (total/free/available/buffers/cached/swap, kB converted to bytes), `disk` from `statvfs()` on `g_base_dir`, `networks` enumerating every real interface under `/sys/class/net`. `read_net_stat()` (previously container-stats-only, veth-specific) generalized to accept any interface name and shared by both -- avoiding a second, near-identical `/sys/class/net/<if>/statistics/<file>` reader.
+
+New `jw_num()` JSON-writer primitive (`daemon/src/json.c`/`.h`) -- load averages are the first genuinely fractional value this daemon has ever needed to serialize over JSON; every prior numeric field across the whole API was a whole-number counter or size. Fixed `%.2f` formatting, not a general-purpose float writer -- the only values ever passed through it are non-negative load averages.
+
+`kanxeoctl host-stats` (a bare top-level verb, not `stats` -- already `stats NAME` for a container -- consistent with `swap`/`routes`/`logs`'s own flat naming for other `/v1/system/*` resources). Documented in `openapi.yaml`, `docs/api/README.md`, `docs/guides/cli-reference.md`.
+
+Verified against a real running daemon (fresh `--data-dir=`, real `/proc`/`statvfs()` data returned, including real leftover veth/bridge interfaces from this same dev sandbox's own prior test runs -- confirming the enumeration is genuinely live, not stubbed).
+
+Full clean rebuild (`-Wall -Werror`, zero warnings); regression sweep (`test_daemon`, `test_container_stats` -- confirming the `read_net_stat()` generalization didn't regress container stats -- plus `test_routes`/`test_system_backup` for nearby dispatch-table safety, all passing, `sudo`/unsandboxed).
+
+**Does not address** per-container/host PSI (pressure-stall) stats -- a real, related, but separate gap, tracked as task #677.
+
+## Part 18 (done): pressure-stall information (PSI) in host and per-container stats (ADR-0074)
+
+Direct follow-up to Part 17, requested by the user in the same breath as host stats itself: "we want diskio cpu pressure stall, io pressure stall, and memory pressure stall graphs per container? Also for the host as we discussed?" -- raw usage counters answer "how much" but not "is anything actually stalled waiting," which is the real diagnostic question PSI answers.
+
+New `cgroup_read_pressure()` (`src/cgroup.c`/`include/container.h`), modeled on the existing `cgroup_read_stat_key()`/`cgroup_read_io_totals()` readers: parses one cgroup v2 PSI file's `some`/`full` lines (`avg10`/`avg60`/`avg300` percentages, `total` cumulative stalled microseconds) into a `struct cgroup_pressure`. Same best-effort convention as every other reader here -- zeroed, not an error, on a kernel without `CONFIG_PSI`.
+
+Wired into both stats endpoints via a shared `write_pressure_json()` helper (`daemon/src/main.c`), so the `{"some":{...},"full":{...}}` shape is defined once: `GET /v1/containers/{name}/stats` gains `cpu.pressure`/`memory.pressure` (nested in the existing objects) and `disk.pressure` (mapping to `io.pressure`, kept inside the existing `disk` object rather than a new top-level key); `GET /v1/system/stats` gains the same three, read from the cgroup v2 root (`/sys/fs/cgroup`, opened fresh per request) rather than any single container's leaf.
+
+`kanxeoctl stats NAME` and `kanxeoctl host-stats` both print one summary pressure line per resource via a shared `print_pressure_line()` CLI helper. Documented in `openapi.yaml` (new reusable `Pressure`/`PressureLine` schemas, referenced from both `SystemStats` and `ContainerStats`), `docs/api/README.md`, `docs/guides/cli-reference.md`.
+
+Verified live: host-level PSI confirmed nonzero and plausible against a real running daemon (this build sandbox's own CPU pressure genuinely elevated during the concurrent `lldap` build on 192.168.15.95); per-container wiring verified via the existing `test_container_stats` regression test passing end-to-end (the reader itself independently verified live against the real root cgroup; container leaf cgroups expose the identical file set).
+
+Full clean rebuild (`-Wall -Werror`, zero warnings); regression sweep (`test_daemon`, `test_container_stats`, `test_routes`, all passing, `sudo`/unsandboxed).

@@ -271,3 +271,55 @@ int cgroup_read_io_totals(int cgroup_fd, long long *out_rbytes, long long *out_w
 	}
 	return 0;
 }
+
+void cgroup_read_pressure(int cgroup_fd, const char *filename, struct cgroup_pressure *out)
+{
+	char buf[512];
+	char *line, *saveptr;
+
+	memset(out, 0, sizeof(*out));
+	if (read_whole_file_at(cgroup_fd, filename, buf, sizeof(buf)) < 0)
+		return;
+
+	for (line = strtok_r(buf, "\n", &saveptr); line != NULL; line = strtok_r(NULL, "\n", &saveptr)) {
+		char *tok, *tsave;
+		int is_full;
+		double avg10 = 0, avg60 = 0, avg300 = 0;
+		long long total = 0;
+
+		tok = strtok_r(line, " ", &tsave);
+		if (tok == NULL)
+			continue;
+		is_full = (strcmp(tok, "full") == 0);
+		if (!is_full && strcmp(tok, "some") != 0)
+			continue;
+
+		for (tok = strtok_r(NULL, " ", &tsave); tok != NULL; tok = strtok_r(NULL, " ", &tsave)) {
+			char *eq = strchr(tok, '=');
+
+			if (eq == NULL)
+				continue;
+			*eq = '\0';
+			if (strcmp(tok, "avg10") == 0)
+				avg10 = strtod(eq + 1, NULL);
+			else if (strcmp(tok, "avg60") == 0)
+				avg60 = strtod(eq + 1, NULL);
+			else if (strcmp(tok, "avg300") == 0)
+				avg300 = strtod(eq + 1, NULL);
+			else if (strcmp(tok, "total") == 0)
+				total = strtoll(eq + 1, NULL, 10);
+		}
+
+		if (is_full) {
+			out->full_avg10 = avg10;
+			out->full_avg60 = avg60;
+			out->full_avg300 = avg300;
+			out->full_total = total;
+		} else {
+			out->some_avg10 = avg10;
+			out->some_avg60 = avg60;
+			out->some_avg300 = avg300;
+			out->some_total = total;
+		}
+	}
+}

@@ -536,6 +536,24 @@ void jw_int(struct json_writer *w, long long v)
 	jw_raw_str(w, buf);
 }
 
+/*
+ * Every numeric field this daemon has ever written before this one
+ * (container/host stats' own counters, sizes, timestamps) is a whole
+ * number -- jw_int() alone sufficed. Host load average (GET
+ * /system/stats, /proc/loadavg) is the first genuinely fractional
+ * value ever needed here. "%.2f" matches /proc/loadavg's own real
+ * precision (two decimal places) and every real value in that file is
+ * always non-negative, so no sign/exponent handling is needed.
+ */
+void jw_num(struct json_writer *w, double v)
+{
+	char buf[32];
+
+	jw_value_prefix(w);
+	snprintf(buf, sizeof(buf), "%.2f", v);
+	jw_raw_str(w, buf);
+}
+
 void jw_bool(struct json_writer *w, int b)
 {
 	jw_value_prefix(w);
