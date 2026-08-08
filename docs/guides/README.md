@@ -9,6 +9,7 @@ Task-oriented "how do I do X" instructions for building, installing, operating, 
 | [`installing.md`](installing.md) | Building and using the installer ISO: Secure Boot, partitioning, first boot |
 | [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) | Producing a kernel and rolling it out through the A/B slot mechanism |
 | [`staying-updated.md`](staying-updated.md) | Keeping an already-installed system current: control plane + packages |
+| [`remote-development.md`](remote-development.md) | Pushing local (or server-compiled) changes onto a real box with no SSH, and proving they landed |
 | [`writing-recipes.md`](writing-recipes.md) | The complete `pkg` recipe format, with a real worked example |
 | [`cli-reference.md`](cli-reference.md) | The full `kanxeoctl` command surface |
 | [`web-dashboard.md`](web-dashboard.md) | A tour of the browser dashboard |
