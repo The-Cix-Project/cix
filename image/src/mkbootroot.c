@@ -206,6 +206,8 @@ int main(int argc, char **argv)
 		return 1;
 	if (ensure_dir_under(image_root, "usr/bin") != 0)
 		return 1;
+	if (ensure_dir_under(image_root, "usr/sbin") != 0)
+		return 1;
 	if (ensure_dir_under(image_root, "bin") != 0)
 		return 1;
 	{
@@ -252,6 +254,17 @@ int main(int argc, char **argv)
 			{ "/usr/bin/gzip", "usr/bin/gzip" },
 			{ "/usr/bin/bzip2", "usr/bin/bzip2" },
 			{ "/usr/bin/xz", "usr/bin/xz" },
+			/*
+			 * mkfs.ext4 -- DISKFORMAT_MKFS_EXT4_BIN, daemon/src/diskformat.c
+			 * (multi-disk management Phase C). "/usr/sbin/mkfs.ext4" is
+			 * itself a symlink to the real binary "mke2fs" on this build
+			 * host; test_image_fixture_copy_file()'s plain open()/read()
+			 * transparently follows it, landing the real mke2fs ELF
+			 * content at this path (no symlink staged, no "mke2fs" binary
+			 * needed alongside it -- the daemon only ever invokes the
+			 * "mkfs.ext4" name).
+			 */
+			{ "/usr/sbin/mkfs.ext4", "usr/sbin/mkfs.ext4" },
 		};
 		static const char *const shelled_bin_libs[] = {
 			/* openssl */
@@ -300,6 +313,12 @@ int main(int argc, char **argv)
 			/* bzip2 -- gzip needs only libc (already staged); xz needs
 			 * only liblzma.so.5 (already staged above, for unsquashfs) */
 			"/lib/x86_64-linux-gnu/libbz2.so.1.0",
+			/* mkfs.ext4 (mke2fs) -- libcom_err.so.2 already listed above
+			 * (curl/krb5) */
+			"/lib/x86_64-linux-gnu/libext2fs.so.2",
+			"/lib/x86_64-linux-gnu/libblkid.so.1",
+			"/lib/x86_64-linux-gnu/libuuid.so.1",
+			"/lib/x86_64-linux-gnu/libe2p.so.2",
 		};
 		size_t i;
 

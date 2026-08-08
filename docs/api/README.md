@@ -40,6 +40,8 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | GET | `/diskroles` | List persisted disk role assignments |
 | POST | `/diskroles` | Assign a role (container-storage/backup) to a disk |
 | DELETE | `/diskroles/{disk_name}` | Remove a disk's role assignment |
+| GET | `/disks/{disk_name}/format` | Status of the most recent (or running) format+mount job for this disk |
+| POST | `/disks/{disk_name}/format` | Destructive: mkfs.ext4 + mount an already role-assigned disk |
 | GET | `/networks` | List all networks this daemon knows about |
 | POST | `/networks` | Create a network (a real bridge, persisted across restarts) |
 | GET | `/networks/{name}` | Inspect one network |
@@ -547,7 +549,7 @@ POST /v1/devicemaps
 GET /v1/disks
 ```
 
-Real host block devices, whole disks only (partitions are never listed independently — they aren't independently assignable), live-enumerated from `/sys/class/block` on every call, the same "real hardware, never persisted" convention `GET /devices` already established. `is_os_disk` flags the one disk holding this platform's own fixed ESP/root-a/root-b/config/containers layout — never a candidate for a role of its own; every other disk is available for a role assignment.
+Real host block devices, whole disks only (partitions are never listed independently — they aren't independently assignable), live-enumerated from `/sys/class/block` on every call, the same "real hardware, never persisted" convention `GET /devices` already established. `is_os_disk` flags the one disk holding this platform's own fixed ESP/root-a/root-b/config/containers layout — never a candidate for a role of its own or for formatting; every other disk is available for a role assignment and, once role-assigned, formatting.
 
 ### Persisted disk roles
 
@@ -556,9 +558,27 @@ POST /v1/diskroles
 {"disk_name": "sdb", "role": "backup"}
 ```
 
-`role` is `"container-storage"` or `"backup"` — a small, fixed, closed vocabulary, not an arbitrary operator-chosen string the way a `devicemap` name is, since a role only means something insofar as a later phase (mount/format, container-storage migration — both still queued, `docs/roadmap/ROADMAP.md`) actually understands and acts on it. `"swap"` is deliberately not a role: this platform already has a dedicated, working, on-demand host swap *file* mechanism (`POST /system/swap`, ADR-0069) with no disk-level equivalent defined yet — adding a same-named disk role would either duplicate or need reconciling with it, a real design question with no answer, so it's left out rather than added as a role nothing can act on.
+`role` is `"container-storage"` or `"backup"` — a small, fixed, closed vocabulary, not an arbitrary operator-chosen string the way a `devicemap` name is, since a role only means something insofar as a later phase (format/mount, container-storage migration) actually understands and acts on it. `"swap"` is deliberately not a role: this platform already has a dedicated, working, on-demand host swap *file* mechanism (`POST /system/swap`, ADR-0069) with no disk-level equivalent defined yet — adding a same-named disk role would either duplicate or need reconciling with it, a real design question with no answer, so it's left out rather than added as a role nothing can act on.
 
 Real and creatable even for a `disk_name` that isn't currently present (`present: false` on `GET`, not an error — the same tolerant convention `/devicemaps` already established for hardware that might be temporarily absent). Always rejected (`400`) for the disk currently flagged `is_os_disk` on `GET /disks` — the fixed OS-disk layout is never a role-assignment candidate. `409` if `disk_name` already has a role (`DELETE` it first to reassign, the same no-silent-overwrite convention `/devicemaps` already established).
+
+### Format + mount
+
+```
+POST /v1/disks/sdb/format
+{"confirm_disk_name": "sdb"}
+```
+
+Multi-disk management Phase C: destructively `mkfs.ext4`s and mounts a disk that already has an assigned role (`POST /diskroles` — a disk with no role is `400`, `"assign one via POST /v1/diskroles first"`). Deliberately a **separate, explicit** action from role assignment — assigning a role never has a destructive side effect of its own — confirmed with the operator during design rather than assumed. `confirm_disk_name` in the request body must match `disk_name` in the URL exactly (`400` otherwise): a deliberate double-confirmation before overwriting every byte of existing content on the disk. Always rejected for the OS disk, same as role assignment.
+
+Async, like every other potentially-slow host operation this daemon runs (`pkg install`, ISO assembly, `pkg bootstrap --toolchain-url=`) — `POST` returns `202` immediately with the job's initial status; poll `GET` on the same path for completion:
+
+```
+GET /v1/disks/sdb/format
+{"disk_name": "sdb", "state": "ready", "mount_path": "/var/lib/kanxeo/disks/sdb"}
+```
+
+`state` is `"none"` (no job has ever run for this disk — including when a job ran/is running for a *different* disk, so a status check never shows another disk's unrelated job), `"running"`, `"ready"`, or `"failed"` (`error` distinguishes `mkfs.ext4` failing outright from it succeeding but the subsequent `mount(2)` failing). Only one format job may run daemon-wide at a time (`409` otherwise) — the same v1 single-job constraint every other async job here already has. Mounted at a fixed path under this platform's own data directory, never `CONTAINERS_DIR` itself — moving container storage onto a mounted disk is Phase D, not yet built.
 
 ## Per-container config files + sysctls
 

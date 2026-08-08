@@ -161,6 +161,10 @@ static void print_usage(FILE *out)
 	        "               persisted role to a disk (never the OS disk)\n"
 	        "  diskrole ls / diskrole rm NAME  -- list assigned roles (with whether each\n"
 	        "               disk is currently present) / remove one\n"
+	        "  disks format NAME  -- destructive: mkfs.ext4 + mount an already role-\n"
+	        "               assigned, non-OS disk (assign a role first via diskrole create)\n"
+	        "  disks format-status NAME  -- state/mount_path/error of the most recent\n"
+	        "               format job for this disk\n"
 	        "  swap  -- show whether the host swap file is enabled (ADR-0069)\n"
 	        "  swap enable --size-mb=N  -- create and activate a swap file of this size\n"
 	        "  swap disable  -- deactivate and remove it\n"
@@ -866,10 +870,85 @@ static int cmd_disks_ls(const struct kx_client *c, int json_mode)
 	return emit(&r, json_mode, fmt_disk_list);
 }
 
-/* No subcommands yet (Phase A: read-only enumeration) -- dispatcher
- * kept in the same shape cmd_routes()/cmd_swap() already use so a
- * later role-assignment phase (ROADMAP.md's own queued follow-up) adds
- * a real subcommand here rather than restructuring this one. */
+static void fmt_diskformat_status(const struct json_value *v)
+{
+	const char *disk_name = json_str_field(v, "disk_name");
+	const char *state = json_str_field(v, "state");
+	const char *mount_path = json_str_field(v, "mount_path");
+	const char *error = json_str_field(v, "error");
+
+	if (state == NULL || strcmp(state, "none") == 0) {
+		printf("no format job has run\n");
+		return;
+	}
+	printf("%s: %s", disk_name != NULL ? disk_name : "?", state);
+	if (mount_path != NULL)
+		printf(" mount_path=%s", mount_path);
+	if (error != NULL)
+		printf(" error=%s", error);
+	printf("\n");
+}
+
+/*
+ * Multi-disk management Phase C (ROADMAP.md): format + mount an
+ * already-role-assigned disk (POST /v1/diskroles first). Destructive
+ * and deliberately explicit -- disk_name is sent as the request body's
+ * own confirm_disk_name (matching what the operator already typed once
+ * in the URL path), the same double-confirmation the REST layer itself
+ * requires (see main.c's handle_disk_format_post()). No further
+ * interactive "are you sure" prompt here, matching this CLI's existing
+ * "pki reset" precedent for destructive operations -- the request body
+ * confirmation IS the safety gate.
+ */
+static int cmd_disks_format(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *disk_name;
+	char path[256];
+	struct json_writer w;
+	struct kx_response r;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl disks format NAME\n");
+		return 2;
+	}
+	disk_name = argv[0];
+	snprintf(path, sizeof(path), "/v1/disks/%s/format", disk_name);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "confirm_disk_name");
+	jw_str(&w, disk_name);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_diskformat_status);
+}
+
+static int cmd_disks_format_status(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *disk_name;
+	char path[256];
+	struct kx_response r;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl disks format-status NAME\n");
+		return 2;
+	}
+	disk_name = argv[0];
+	snprintf(path, sizeof(path), "/v1/disks/%s/format", disk_name);
+	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_diskformat_status);
+}
+
 static int cmd_disks(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
@@ -880,8 +959,14 @@ static int cmd_disks(const struct kx_client *c, int json_mode, int argc, char **
 	sub = argv[0];
 	if (strcmp(sub, "ls") == 0)
 		return cmd_disks_ls(c, json_mode);
+	if (strcmp(sub, "format") == 0)
+		return cmd_disks_format(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "format-status") == 0)
+		return cmd_disks_format_status(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "usage: kanxeoctl disks [ls]\n");
+	fprintf(stderr, "usage: kanxeoctl disks [ls]\n"
+	                "       kanxeoctl disks format NAME\n"
+	                "       kanxeoctl disks format-status NAME\n");
 	return 2;
 }
 

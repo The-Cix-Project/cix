@@ -840,10 +840,11 @@ paths:
         independently assignable whole disks. `is_os_disk` flags the
         one disk holding this platform's own fixed ESP/root-a/root-b/
         config/containers partition layout (never a candidate for role
-        assignment); every other disk is available for a future role
-        (this is Phase A of multi-disk management -- enumeration only;
-        role assignment and container-storage migration are queued
-        follow-ups, see docs/roadmap/ROADMAP.md).
+        assignment or formatting); every other disk is available for a
+        role (POST /diskroles) and, once role-assigned, formatting
+        (POST /disks/{disk_name}/format). Container-storage migration
+        onto a formatted disk is a queued follow-up (multi-disk
+        management Phase D, see docs/roadmap/ROADMAP.md).
       operationId: listDisks
       responses:
         "200":
@@ -858,6 +859,93 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/Disk"
+
+  /disks/{disk_name}/format:
+    get:
+      summary: Status of the most recent (or currently running) format+mount job for this disk
+      description: >
+        Only one format job may be in flight at this daemon at a time
+        (the same v1 single-job constraint pkg install/hostbuild, ISO
+        assembly, and pkg bootstrap's toolchain_url fetch already have).
+        Reports `{"state":"none"}` if no job has ever run for this
+        specific disk_name this daemon lifetime -- including when a
+        job ran/is running for a *different* disk, since a status check
+        should never show another disk's unrelated job.
+      operationId: getDiskFormatStatus
+      parameters:
+        - name: disk_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Format job status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiskFormatStatus"
+    post:
+      summary: Destructively formats (mkfs.ext4) and mounts a disk that already has an assigned role
+      description: >
+        Multi-disk management Phase C. Deliberately a SEPARATE, explicit
+        action from POST /diskroles (role assignment never has a
+        destructive side effect of its own) -- confirmed with the
+        operator during design. The request body's `confirm_disk_name`
+        must match disk_name in the URL exactly, a deliberate double-
+        confirmation before anything irreversible happens: this
+        overwrites every byte of existing content on the disk with a
+        fresh ext4 filesystem, then mounts it. The target disk must
+        currently exist (GET /disks), must not be the OS disk, and must
+        already have a role assigned (POST /diskroles) -- format is
+        never allowed to run against a disk nothing has expressed
+        intent for yet. Async: returns 202 immediately with the job's
+        initial `{"state":"running",...}` status; poll GET on this same
+        path for completion. Mounted at a fixed path under this
+        platform's own data directory (never CONTAINERS_DIR itself --
+        moving container storage onto a mounted disk is Phase D, not
+        yet built).
+      operationId: formatDisk
+      parameters:
+        - name: disk_name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DiskFormatRequest"
+      responses:
+        "202":
+          description: Format job started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiskFormatStatus"
+        "400":
+          description: >
+            confirm_disk_name missing/mismatched, invalid disk name,
+            disk not found, disk is the OS disk, or disk has no
+            assigned role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A format job is already running (this daemon-wide, v1 single-job limit)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Could not create the mount point directory, or could not start the format job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /devicemaps:
     get:
@@ -3627,6 +3715,37 @@ components:
         role:
           type: string
           enum: [container-storage, backup]
+
+    DiskFormatRequest:
+      type: object
+      required: [confirm_disk_name]
+      properties:
+        confirm_disk_name:
+          type: string
+          description: >
+            Must exactly match disk_name in the URL path -- the
+            deliberate double-confirmation this destructive endpoint
+            requires (see /disks/{disk_name}/format's own description).
+
+    DiskFormatStatus:
+      type: object
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [none, running, ready, failed]
+        disk_name:
+          type: string
+          description: Omitted when state is "none".
+        mount_path:
+          type: string
+          description: Present once state is "running" or "ready".
+        error:
+          type: string
+          description: >
+            Present once state is "failed" -- distinguishes "mkfs.ext4
+            failed" from "mkfs.ext4 succeeded but mount(2) failed" from
+            an abnormal job process exit.
 
     NetworkCreateRequest:
       type: object

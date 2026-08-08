@@ -3,6 +3,7 @@
 #include "device.h"
 #include "devicemap.h"
 #include "disk.h"
+#include "diskformat.h"
 #include "diskrole.h"
 #include "logstore.h"
 #include "swap.h"
@@ -140,6 +141,13 @@ static char SWAP_STATE_PATH[PATH_MAX];
  * data dir" convention (PKI_DIR/PKG_DIR/SWAP_DIR above). */
 static char LOG_DIR[PATH_MAX];
 static char LOG_STATE_PATH[PATH_MAX];
+/* Multi-disk management Phase C: where an assigned-role disk gets
+ * mounted once formatted (diskformat.h) -- <name> under here, e.g.
+ * DISKS_MOUNT_DIR/sdb. Deliberately NOT CONTAINERS_DIR itself; Phase D
+ * (container-storage migration) is the still-unbuilt mechanism that
+ * would actually move container storage onto a mounted disk like this
+ * one -- formatting/mounting alone never touches CONTAINERS_DIR. */
+static char DISKS_MOUNT_DIR[PATH_MAX];
 
 /* Computes every path derived from g_base_dir -- called once, right
  * after argv parsing (so --data-dir= has already been applied) and
@@ -174,6 +182,7 @@ static void init_base_dir_paths(void)
 	snprintf(SWAP_STATE_PATH, sizeof(SWAP_STATE_PATH), "%s/state.json", SWAP_DIR);
 	snprintf(LOG_DIR, sizeof(LOG_DIR), "%s/logs", g_base_dir);
 	snprintf(LOG_STATE_PATH, sizeof(LOG_STATE_PATH), "%s/state.json", LOG_DIR);
+	snprintf(DISKS_MOUNT_DIR, sizeof(DISKS_MOUNT_DIR), "%s/disks", g_base_dir);
 }
 /*
  * Backoff cap and stability-reset threshold for the crash-restart
@@ -364,6 +373,7 @@ static int set_disk_quota(uint32_t projid, long long quota_bytes)
 #define IMAGES_PREFIX "/v1/images/"
 #define DEVICEMAPS_PREFIX "/v1/devicemaps/"
 #define DISKROLES_PREFIX "/v1/diskroles/"
+#define DISKS_PREFIX "/v1/disks/"
 
 enum conn_kind {
 	CONN_LISTENER,
@@ -377,6 +387,7 @@ enum conn_kind {
 	CONN_BOOTROOT_ASSEMBLE, /* server-side mkbootroot invocation (ADR-0057) */
 	CONN_ISO_ASSEMBLE,      /* server-side mkinstalleriso invocation (ADR-0064) */
 	CONN_BOOTSTRAP_FETCH,   /* pkg/bootstrap's own toolchain_url curl fetch (ADR-0065) */
+	CONN_DISK_FORMAT,       /* disk format+mount job (multi-disk management Phase C) */
 	CONN_RESTART_TIMER,
 	CONN_BIND_IP_CLEANUP, /* deferred rtnl_addr_del_ipv4() of a superseded/cleared
 	                        * bind_ip (ADR-0068) -- see arm_bind_ip_cleanup_timer() */
@@ -405,7 +416,7 @@ struct conn {
 	           * progress; see handle_client_event(). */
 	struct http_conn http;                 /* CONN_CLIENT only */
 	struct registry_entry *entry;           /* CONN_CONTAINER only */
-	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE / CONN_ISO_ASSEMBLE / CONN_BOOTSTRAP_FETCH */
+	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE / CONN_ISO_ASSEMBLE / CONN_BOOTSTRAP_FETCH / CONN_DISK_FORMAT */
 	char restart_name[REGISTRY_NAME_MAX];   /* CONN_RESTART_TIMER only */
 	char cleanup_ifname[NETWORK_NAME_MAX];  /* CONN_BIND_IP_CLEANUP only */
 	uint32_t cleanup_addr_be;               /* CONN_BIND_IP_CLEANUP only */
@@ -3446,6 +3457,58 @@ static void handle_bootstrap_fetch_event(struct conn *cc)
 	fprintf(stderr, "bootstrap fetch: succeeded, toolchain staged\n");
 }
 
+/*
+ * Multi-disk management Phase C: registers the async format+mount job
+ * diskformat_start() (daemon/src/diskformat.c) already forked -- that
+ * module has no epoll/conn knowledge of its own (mirrors pkg.c's own
+ * start_fetch_for() convention), so main.c does the actual reactor
+ * registration, the same split every other async host job here uses.
+ */
+static void register_disk_format_pidfd(pid_t pid, int pidfd)
+{
+	struct conn *cc;
+	struct kx_epoll_event ev;
+
+	cc = malloc(sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (disk format reactor conn)");
+		abort();
+	}
+	cc->kind = CONN_DISK_FORMAT;
+	cc->fd = pidfd;
+	cc->pkg_fetch_pid = pid;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+		perror("epoll_ctl ADD disk format pidfd");
+		abort();
+	}
+}
+
+/* Reaps diskformat_start()'s own child, hands the exit status straight
+ * to diskformat_completed() -- no REST response is waiting on this
+ * (the original POST already returned 202 long before this fires),
+ * same shape as handle_iso_assemble_event()/handle_bootstrap_fetch_
+ * event() above. */
+static void handle_disk_format_event(struct conn *cc)
+{
+	int status;
+	int exit_status;
+
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
+		exit_status = WEXITSTATUS(status);
+	else
+		exit_status = -1;
+	close(cc->fd);
+	free(cc);
+
+	diskformat_completed(exit_status);
+	fprintf(stderr, "disk format: job finished (exit_status=%d)\n", exit_status);
+}
+
 static const char *iso_build_state_str(enum iso_build_state s)
 {
 	switch (s) {
@@ -5221,6 +5284,96 @@ static void handle_diskrole_delete(int fd, const char *disk_name)
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
+/*
+ * Multi-disk management Phase C (ROADMAP.md): format + mount an
+ * already-role-assigned disk. Deliberately a SEPARATE, explicit action
+ * from Phase B's role assignment above (confirmed with the user) --
+ * assigning a role never has a destructive side effect of its own, and
+ * this endpoint requires the operator to name the exact target disk
+ * again in the request body (confirm_disk_name, matching the URL's own
+ * disk name) as a deliberate double-confirmation before anything
+ * irreversible happens. See diskformat.h for the actual job mechanism.
+ */
+static void respond_diskformat_error(int fd, enum diskformat_error err)
+{
+	switch (err) {
+	case DISKFORMAT_ERR_INVALID_DISK_NAME:
+		respond_error(fd, 400, "Bad Request", "invalid disk name");
+		break;
+	case DISKFORMAT_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such disk");
+		break;
+	case DISKFORMAT_ERR_IS_OS_DISK:
+		respond_error(fd, 400, "Bad Request",
+		              "this disk holds the fixed OS layout -- it can never be formatted");
+		break;
+	case DISKFORMAT_ERR_NO_ROLE:
+		respond_error(fd, 400, "Bad Request",
+		              "this disk has no assigned role -- assign one via POST /v1/diskroles first");
+		break;
+	case DISKFORMAT_ERR_BUSY:
+		respond_error(fd, 409, "Conflict", "a format job is already running");
+		break;
+	case DISKFORMAT_ERR_MKDIR_FAILED:
+		respond_error(fd, 500, "Internal Server Error", "could not create mount point");
+		break;
+	case DISKFORMAT_ERR_SPAWN_FAILED:
+	default:
+		respond_error(fd, 500, "Internal Server Error", "could not start format job");
+		break;
+	}
+}
+
+static void handle_disk_format_post(int fd, const char *disk_name, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *confirm;
+	pid_t pid;
+	int pidfd;
+	enum diskformat_error derr;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	confirm = json_as_string(json_object_get(root, "confirm_disk_name"));
+	if (confirm == NULL || strcmp(confirm, disk_name) != 0) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "confirm_disk_name must be given and must match the disk name in the URL -- "
+		              "this is a destructive operation");
+		return;
+	}
+	json_free(root);
+
+	derr = diskformat_start(disk_name, CONTAINERS_DIR, DISKS_MOUNT_DIR, &pid, &pidfd);
+	if (derr != DISKFORMAT_OK) {
+		respond_diskformat_error(fd, derr);
+		return;
+	}
+	register_disk_format_pidfd(pid, pidfd);
+
+	{
+		struct json_writer w;
+
+		jw_init(&w);
+		diskformat_write_status_json(&w, disk_name);
+		respond_json(fd, 202, "Accepted", &w);
+		jw_free(&w);
+	}
+}
+
+static void handle_disk_format_get(int fd, const char *disk_name)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	diskformat_write_status_json(&w, disk_name);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_network_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
@@ -6855,6 +7008,26 @@ static void dispatch(int fd, const struct http_request *req)
 		handle_disk_list(fd);
 		return;
 	}
+	if (strncmp(req->path, DISKS_PREFIX, strlen(DISKS_PREFIX)) == 0) {
+		name = req->path + strlen(DISKS_PREFIX);
+		size_t nlen = strlen(name);
+
+		if (nlen > 7 && strcmp(name + nlen - 7, "/format") == 0 &&
+		    nlen - 7 < DISKROLE_DISK_NAME_MAX) {
+			char disk_name[DISKROLE_DISK_NAME_MAX];
+
+			memcpy(disk_name, name, nlen - 7);
+			disk_name[nlen - 7] = '\0';
+			if (strcmp(req->method, "POST") == 0) {
+				handle_disk_format_post(fd, disk_name, req->body, req->body_len);
+				return;
+			}
+			if (strcmp(req->method, "GET") == 0) {
+				handle_disk_format_get(fd, disk_name);
+				return;
+			}
+		}
+	}
 	if (strcmp(req->path, "/v1/diskroles") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_diskrole_list(fd);
@@ -8385,7 +8558,8 @@ int main(int argc, char **argv)
 	    ensure_dir(CONTAINERS_DIR) != 0 || ensure_dir(PKI_DIR) != 0 ||
 	    ensure_dir(PKI_CERTS_DIR) != 0 || ensure_dir(PKG_DIR) != 0 ||
 	    ensure_dir(ARTIFACTS_DIR) != 0 || ensure_dir(SIGNING_KEYS_DIR) != 0 ||
-	    ensure_dir(ISO_DIR) != 0 || ensure_dir(SWAP_DIR) != 0 || ensure_dir(LOG_DIR) != 0)
+	    ensure_dir(ISO_DIR) != 0 || ensure_dir(SWAP_DIR) != 0 || ensure_dir(LOG_DIR) != 0 ||
+	    ensure_dir(DISKS_MOUNT_DIR) != 0)
 		return 1;
 
 	if (network_init(NETWORKS_STATE_PATH) != 0)
@@ -8597,6 +8771,8 @@ int main(int argc, char **argv)
 				handle_iso_assemble_event(cc);
 			else if (cc->kind == CONN_BOOTSTRAP_FETCH)
 				handle_bootstrap_fetch_event(cc);
+			else if (cc->kind == CONN_DISK_FORMAT)
+				handle_disk_format_event(cc);
 			else if (cc->kind == CONN_RESTART_TIMER)
 				handle_restart_timer_event(cc);
 			else if (cc->kind == CONN_BIND_IP_CLEANUP)

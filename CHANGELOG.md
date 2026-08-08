@@ -2,6 +2,24 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 15 (done): multi-disk management, Phase C -- destructive format + mount (`GET`/`POST /v1/disks/{disk_name}/format`)
+
+Direct follow-up to Part 14's role assignment. Confirmed with the user before writing code: format is a separate, explicit action from role assignment (never an automatic side effect), gated behind a `confirm_disk_name` field in the request body matching the URL's own disk name. Full reasoning in ADR-0071.
+
+#### Added
+- `daemon/src/diskformat.c`/`daemon/include/diskformat.h`: async format+mount job. The forked job child does NOT `execve()` itself (unlike every other async job in this daemon) -- it internally `fork()`s a grandchild to `execve()` `mkfs.ext4`, waits for it, then calls `mount(2)` directly on success before exiting, since `execve()` can't be "returned from" to run the second step.
+- `daemon/src/main.c`: new `CONN_DISK_FORMAT` conn kind, `register_disk_format_pidfd()`/`handle_disk_format_event()` (mirrors `register_iso_assemble_pidfd()`/`handle_iso_assemble_event()`), `handle_disk_format_post/get()`, `GET`/`POST /v1/disks/{disk_name}/format`, new `DISKS_MOUNT_DIR` (`<data-dir>/disks`).
+- `image/src/mkbootroot.c`: stages `mkfs.ext4` (`/usr/sbin/mkfs.ext4`, a symlink to the real `mke2fs` binary on the build host -- followed transparently by `test_image_fixture_copy_file()`) plus its real library closure (`libext2fs.so.2`, `libblkid.so.1`, `libuuid.so.1`, `libe2p.so.2`) into the control-plane squashfs.
+- `cli/src/main.c`: `kanxeoctl disks format NAME` / `disks format-status NAME`.
+- `docs/adr/0071-disk-format-mount.md`; `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/cli-reference.md` updated.
+
+#### Notes
+- Format is refused unless the target disk already has an assigned role (`diskrole_lookup()`) and is not the OS disk (re-checked live, same as Phase B) -- a disk with no expressed intent can never be formatted.
+- Only one format job may run daemon-wide at a time (`409` otherwise), the same v1 single-job constraint pkg install/hostbuild, ISO assembly, and bootstrap fetch already have.
+- Mounted at `<data-dir>/disks/<disk_name>`, deliberately never `CONTAINERS_DIR` itself -- moving container storage onto it is Phase D, still unbuilt.
+- **Not locally, empirically verified** -- this dev/build sandbox has no loop devices at all and no safe local `mkfs`/`mount` target (`CLAUDE.md`'s own long-documented constraint); real verification needs a genuinely spare disk on a real target box.
+- Full clean rebuild (`-Wall -Werror`, zero warnings); full local regression sweep (all daemon-linked tests run with `sudo`/unsandboxed, all passing).
+
 ### Part 14 (done): multi-disk management, Phase B -- persisted disk role assignment (`GET`/`POST`/`DELETE /v1/diskroles`)
 
 Direct follow-up to Part 13's read-only enumeration, mirroring `devicemap.c`'s own persistence shape but with the binding direction inverted: a disk already has a real, stable-enough kernel name, so this binds that name directly to a role instead of inventing an alias layer.

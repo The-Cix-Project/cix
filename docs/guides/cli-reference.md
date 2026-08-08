@@ -98,6 +98,8 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | `disks [ls]` | Real host block devices (whole disks only), flagging which one is the fixed OS disk |
 | `diskrole create --disk=NAME --role=container-storage\|backup` | Assign a persisted role to a disk (never the OS disk) |
 | `diskrole ls` / `diskrole rm NAME` | List assigned roles (with whether each disk is currently present) / remove one |
+| `disks format NAME` | Destructive: `mkfs.ext4` + mount an already role-assigned, non-OS disk |
+| `disks format-status NAME` | State/mount_path/error of the most recent format job for this disk |
 
 ## DNS
 

@@ -75,3 +75,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0068](0068-dedicated-daemon-bind-ip.md) | A dedicated daemon bind IP, decoupled from the management network's own address | Accepted |
 | [0069](0069-host-swap-file.md) | A single, on-demand host swap file: direct swap-header write, no `mkswap` dependency | Accepted |
 | [0070](0070-consolidated-log-store.md) | A consolidated, API-accessible, size-capped log store: kernel dmesg + kanxeod diagnostics + per-request audit trail | Accepted |
+| [0071](0071-disk-format-mount.md) | Disk format + mount as a separate, explicitly-confirmed action; a non-execve()ing job child for its two sequential steps | Accepted |
