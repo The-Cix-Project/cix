@@ -8,7 +8,8 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/health` | Liveness check |
+| GET | `/health` | Liveness check -- minimal, low-latency, no build/slot identity |
+| GET | `/system/boot` | Build version/time, A/B slot, kernel version (`uname`) |
 | POST | `/system/shutdown` | Stop `kanxeod`; powers off the host too when running as real PID 1 |
 | POST | `/system/reboot` | Stop `kanxeod`; restarts the host too when running as real PID 1 |
 | POST | `/system/update` | Write a fresh control-plane squashfs and/or a fresh kernel onto this daemon's own inactive A/B slot |
@@ -22,6 +23,10 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | POST | `/system/iso` | Assemble a fresh installer ISO server-side, non-blocking |
 | GET | `/system/routes` | The box's own real kernel IPv4 routing table |
 | GET | `/system/stats` | Host-wide load/CPU/memory/disk/network snapshot |
+| GET | `/system/ping` | Poll the current/last ICMP ping job |
+| POST | `/system/ping` | Start a real ICMP echo against an IPv4 address |
+| GET | `/system/resolv` | The host's own outbound DNS resolver config |
+| PUT | `/system/resolv` | Replace it -- takes effect immediately, no reboot |
 | GET | `/containers` | List all containers this daemon knows about |
 | POST | `/containers` | Create and start a container |
 | GET | `/containers/{name}` | Inspect one container |
@@ -341,6 +346,44 @@ The host-wide counterpart to container stats below (ADR-0073) — mirrors its ow
 - `networks` enumerates every real interface under `/sys/class/net` — not scoped to containers (unlike `networks[]` in container stats below, this can include bridges, physical NICs, and any leftover interface the kernel still reports).
 - Every field is best-effort: a missing/unreadable source leaves that section zeroed rather than failing the whole request.
 
+## Reachability (ICMP ping)
+
+```
+POST /v1/system/ping
+{"host": "1.1.1.1"}
+```
+
+A real, hand-rolled ICMP echo (ADR-0075) — no shelling out to a `ping` binary, no DNS involved (`host` must be a literal IPv4 address; resolving a hostname through a possibly-broken resolver would reintroduce exactly the DNS-vs-routing ambiguity this endpoint exists to eliminate). Same "kick off + poll" shape as every other uncertain-duration job in this daemon:
+
+```json
+{"state": "pending", "host": "1.1.1.1", "reachable": null, "rtt_ms": null, "timed_out": null}
+```
+
+`GET /v1/system/ping` polls the same job — `state` moves to `"done"` within a fixed ~2s timeout either way:
+
+```json
+{"state": "done", "host": "1.1.1.1", "reachable": true, "rtt_ms": 12.4, "timed_out": false}
+```
+
+v1 single-job constraint (same as disk format/ISO build/every other async job here): `409` if a ping is already in flight. `kanxeoctl ping HOST` polls to completion and exits nonzero on an unreachable result, so it's usable directly in a script.
+
+## The host's own outbound DNS resolver (ADR-0076)
+
+```
+PUT /v1/system/resolv
+{"nameservers": ["1.1.1.1", "192.168.15.31"]}
+```
+
+A real, installed Kanxeo host has no outbound DNS resolution mechanism at all by default -- `kanxeod`'s own `curl` subprocess (every `pkg_source` fetch, `pkg bootstrap --toolchain-url=`, `pkg hostbuild`'s git fetch) fails immediately against any real hostname. This endpoint fixes that directly: up to 3 IPv4 addresses (matching glibc's own resolver limit), persisted at `<data-dir>/resolv.conf` and bind-mounted onto the real `/etc/resolv.conf` at boot -- a `PUT` here takes effect **immediately**, no reboot needed, because it writes the same file the bind mount already points at. An empty `nameservers` array clears it (falls back to no outbound resolution, the historical default).
+
+This is deliberately generic -- a plain IP list, no notion of "which container is my DNS server." It covers pointing at one of this platform's own DNS containers (resolve its IP once via `GET /containers/{name}`, `PUT` it here) and pointing at a real external resolver, with the exact same mechanism. `GET /v1/system/resolv` reports the current list.
+
+Note this fixes host-level resolution generally, not just for `pkg`'s own fetches -- every current and future tool `kanxeod` shells out to (`git`, `openssl`, anything added later) resolves through the same, single, canonical `/etc/resolv.conf` path.
+
+### A container can already pull the full DNS record set itself
+
+`GET /v1/dns/records` (below) is a real, working REST endpoint returning every current record as JSON -- any container that can route to the daemon's own bind address can already `curl` it directly and reformat the result into whatever its own DNS server software needs (a zone file, a different hosts format, etc.), as an alternative or supplement to the daemon pushing records into a registered server (`POST /v1/dns/servers`, below). No new mechanism needed for this -- it's a documented usage pattern of an endpoint that already exists, not a new capability.
+
 ## Container stats
 
 ```
@@ -429,7 +472,7 @@ POST /v1/dns/records
 - `name` is a hostname (dot-separated labels, `[A-Za-z0-9-]`, RFC 1035 length limits) — a different charset from network/container names, which don't allow dots. A `name` with no `.` at all gets this install's own site suffix appended by default (`<name>.<site_name>.<domain_suffix>`, see [This install's identity](#this-installs-identity-site-config) below) — fully overridable by including a `.`.
 - `ip` must be well-formed IPv4.
 
-Once a container running dnsmasq exists (e.g. `cmd: ["/usr/sbin/dnsmasq", "-k", "-u", "root", "-p", "53", "-H", "/etc/dnsmasq-hosts", "-R", "-h"]` — `-u root` since a minimal container image typically has no `/etc/passwd` for dnsmasq's default privilege drop to resolve; `-R`/`-h` skip `/etc/resolv.conf`/`/etc/hosts`, which likely don't exist either), register it:
+Once a container running dnsmasq exists (e.g. `cmd: ["/usr/sbin/dnsmasq", "-k", "-u", "root", "-p", "53", "-H", "/etc/dnsmasq-hosts", "-R", "-h", "--server=1.1.1.1", "--server=8.8.8.8"]` — `-u root` since a minimal container image typically has no `/etc/passwd` for dnsmasq's default privilege drop to resolve; `-R`/`-h` skip `/etc/resolv.conf`/`/etc/hosts`, which likely don't exist either; the two `--server=` flags are real, static upstream forwarders (ADR-0076) — without them `-R` alone leaves this container purely authoritative for `.internal`, with no recursion for anything else, which is what it was until this ADR), register it:
 
 ```
 POST /v1/dns/servers
@@ -747,6 +790,18 @@ POST /v1/system/iso
 ```
 
 Every field is optional — an empty body reproduces the tool's original default, a generic ISO with its kernel arguments left as the `CHANGEME` placeholder an operator edits at the GRUB boot menu. `202`, polled via `GET /system/iso` (`state`: `none`/`building`/`ready`/`failed`, `iso_path` once ready). Reuses whatever the most recent `kanxeo`/`kernel`/`isotools` hostbuild rounds already harvested — it does not trigger any of them itself, and fails fast (`400`) naming exactly which one is missing rather than a background failure the caller has to poll for to discover. Requires a real Secure Boot signing key pair, staged out of band by the operator at `<data-dir>/keys/kanxeo-signing.{key,crt,cer}` — deliberately never generated, fetched, or copied there by `kanxeod` itself (see ADR-0064: a release-signing private key must never propagate onto every deployed box, only whichever specific instance is actually cutting installer media). `kanxeoctl iso build [--disk=... --ip=... --prefix=... --gateway=... --interface=...] [--wait]` / `kanxeoctl iso status` is the CLI surface.
+
+## Liveness vs. boot identity (ADR-0077)
+
+```
+GET /v1/health
+{"status": "ok"}
+
+GET /v1/system/boot
+{"build_version": "v1.6.0-9-gc59e482-dirty", "build_time": "2026-08-08T00:52:00Z", "slot": "b", "kernel_version": "6.18.40"}
+```
+
+`GET /health` is deliberately minimal -- both `kanxeoctl` and the web dashboard poll it every few seconds purely for a status dot, and it's excluded from the audit trail (see [A consolidated log](#a-consolidated-log) above) as low-value polling noise. Build/slot/kernel identity is a separate, lower-frequency check: `GET /system/boot` reports `build_version` (`git describe --tags --always --dirty` at build time), `build_time`, `slot` (`"a"`/`"b"`, or `null` for a dev/test daemon started without `--slot=`), and `kernel_version` (the running `uname(2)` release string). This is the deploy/reboot verification signal referenced throughout [`docs/guides/kernel-build-and-ab-updates.md`](../guides/kernel-build-and-ab-updates.md) -- a `200` from `health` alone only proves *some* daemon answered, not that it's the one you just wrote; `slot`/`kernel_version` from `boot` are the direct answer to "did I actually boot into what I just wrote."
 
 ## Host + package updates
 

@@ -99,12 +99,13 @@ int main(int argc, char **argv)
 	const char *firmware_dir;
 	const char *modules_dir;
 	const char *kmod_bin_dir;
+	const char *host_tools_dir;
 
-	if (argc != 9) {
+	if (argc != 10) {
 		fprintf(stderr,
 		        "usage: %s <staging-dir> <build/kanxeod> <build/kanxeoctl> <web-dir> "
 		        "<out.squashfs> <amdgpu-firmware-dir-or-\"\"> <modules-dir-or-\"\"> "
-		        "<kmod-bin-dir-or-\"\">\n",
+		        "<kmod-bin-dir-or-\"\"> <host-tools-image-rootfs-or-\"\">\n",
 		        argv[0]);
 		return 2;
 	}
@@ -129,6 +130,24 @@ int main(int argc, char **argv)
 	 */
 	modules_dir = argv[7];
 	kmod_bin_dir = argv[8];
+	/*
+	 * Part D (from-source host-tools bootstrap, ADR-0078): the rootfs of
+	 * a real pkg-installed image carrying coreutils.recipe + gzip.recipe
+	 * (an operator-built "host tools" image, not this dev sandbox's own
+	 * pre-existing /usr/bin) -- when given, cp/rm/sha256sum/gzip below
+	 * are copied from THIS tree instead of the dev build host, closing
+	 * the "control-plane squashfs ships a raw copy of this sandbox's own
+	 * pre-compiled binaries" gap for the tools that already have a real
+	 * from-source recipe. "" (the default, every existing call site
+	 * before this argument was added) keeps today's dev-host-sourced
+	 * behavior -- the same tolerant-default shape firmware_dir/
+	 * modules_dir/kmod_bin_dir above already established. The remaining
+	 * shelled-out tools (openssl/curl/tar/bzip2/xz/unsquashfs/mkfs.ext4)
+	 * have no such recipe yet and still come from the dev host either
+	 * way -- a real, tracked gap (tasks #688-693), not silently masked
+	 * by this argument's presence.
+	 */
+	host_tools_dir = argv[9];
 
 	if (ensure_dir(image_root) != 0)
 		return 1;
@@ -218,9 +237,8 @@ int main(int argc, char **argv)
 			{ "/usr/bin/openssl", "usr/bin/openssl" },     /* PKI_OPENSSL_BIN, daemon/src/pki.c */
 			{ "/usr/bin/curl", "usr/bin/curl" },           /* PKG_CURL_BIN, daemon/src/pkg.c */
 			{ "/usr/bin/tar", "usr/bin/tar" },             /* PKG_TAR_BIN */
-			{ "/usr/bin/sha256sum", "usr/bin/sha256sum" }, /* PKG_SHA256SUM_BIN */
-			{ "/usr/bin/cp", "usr/bin/cp" },               /* PKG_CP_BIN */
-			{ "/usr/bin/rm", "bin/rm" },                   /* PKG_RM_BIN is "/bin/rm", no /usr prefix */
+			/* sha256sum/cp/rm/gzip: NOT here -- staged from host_tools_dir
+			 * (coreutils.recipe/gzip.recipe) when given, see below. */
 			{ "/usr/bin/unsquashfs", "usr/bin/unsquashfs" }, /* PKG_UNSQUASHFS_BIN -- the
 			                                                   * pkg_bootstrap_from_toolchain()
 			                                                   * import path, no mount/loop-device
@@ -229,7 +247,7 @@ int main(int argc, char **argv)
 			                                                   * constraint; real hardware
 			                                                   * shouldn't need one for this either). */
 			/*
-			 * gzip/bzip2/xz -- not a _BIN macro of their own anywhere in
+			 * bzip2/xz -- not a _BIN macro of their own anywhere in
 			 * daemon/src/pkg.c; needed because GNU tar (PKG_TAR_BIN)
 			 * itself has no compression libraries linked in at all
 			 * (confirmed via `ldd /usr/bin/tar`: libacl/libselinux/
@@ -250,8 +268,9 @@ int main(int argc, char **argv)
 			 * bzip2,xz} reachable via $PATH -- the same "this dev
 			 * sandbox's own rich /usr made the gap easy to miss"
 			 * pattern ADR-0023 already names for libtinfo above.
+			 * (gzip itself moved to host_tools_dir staging below,
+			 * gzip.recipe -- bzip2/xz have no recipe yet.)
 			 */
-			{ "/usr/bin/gzip", "usr/bin/gzip" },
 			{ "/usr/bin/bzip2", "usr/bin/bzip2" },
 			{ "/usr/bin/xz", "usr/bin/xz" },
 			/*
@@ -333,6 +352,57 @@ int main(int argc, char **argv)
 			if (test_image_fixture_copy_file(shelled_bins[i].host_path, dst) != 0)
 				return 1;
 		}
+		{
+			/*
+			 * cp/rm/sha256sum/gzip -- the 4 shelled-out tools this
+			 * project already has a real from-source recipe for
+			 * (coreutils.recipe, gzip.recipe). host_tools_dir, when
+			 * given, is that recipe's own installed image rootfs (a
+			 * real `pkg install --image=<name>` result); each binary
+			 * is sourced from THERE instead of this dev build host.
+			 * "" (host_tools_dir unset) falls back to the dev-host
+			 * path, matching every call site that predates this
+			 * argument (test binaries, the server-side ADR-0057
+			 * bootroot-assembly spawn) until they're updated to pass
+			 * a real one.
+			 */
+			static const struct {
+				const char *dev_host_path; /* fallback: this build host's own copy */
+				const char *host_tools_rel; /* relative to host_tools_dir */
+				const char *rootfs_path;    /* relative to image_root, matching the _BIN macro */
+			} host_tool_bins[] = {
+				{ "/usr/bin/sha256sum", "usr/bin/sha256sum", "usr/bin/sha256sum" }, /* PKG_SHA256SUM_BIN */
+				{ "/usr/bin/cp", "usr/bin/cp", "usr/bin/cp" },                       /* PKG_CP_BIN */
+				{ "/usr/bin/rm", "usr/bin/rm", "bin/rm" }, /* PKG_RM_BIN is "/bin/rm"; coreutils.recipe
+				                                             * itself installs rm under usr/bin/rm */
+				{ "/usr/bin/gzip", "usr/bin/gzip", "usr/bin/gzip" },
+			};
+
+			for (i = 0; i < sizeof(host_tool_bins) / sizeof(host_tool_bins[0]); i++) {
+				char src[PATH_MAX];
+				char dst[PATH_MAX];
+				const char *use_src;
+
+				if (host_tools_dir[0] != '\0') {
+					if (snprintf(src, sizeof(src), "%s/%s", host_tools_dir,
+					             host_tool_bins[i].host_tools_rel) >= (int)sizeof(src)) {
+						fprintf(stderr, "path too long: %s/%s\n", host_tools_dir,
+						        host_tool_bins[i].host_tools_rel);
+						return 1;
+					}
+					use_src = src;
+				} else {
+					use_src = host_tool_bins[i].dev_host_path;
+				}
+				if (snprintf(dst, sizeof(dst), "%s/%s", image_root, host_tool_bins[i].rootfs_path) >=
+				    (int)sizeof(dst)) {
+					fprintf(stderr, "path too long: %s/%s\n", image_root, host_tool_bins[i].rootfs_path);
+					return 1;
+				}
+				if (test_image_fixture_copy_file(use_src, dst) != 0)
+					return 1;
+			}
+		}
 		for (i = 0; i < sizeof(shelled_bin_libs) / sizeof(shelled_bin_libs[0]); i++) {
 			if (test_image_fixture_add_lib(image_root, shelled_bin_libs[i]) != 0)
 				return 1;
@@ -359,6 +429,32 @@ int main(int argc, char **argv)
 			if (test_image_fixture_copy_file("/usr/lib/ssl/openssl.cnf", dst) != 0)
 				return 1;
 		}
+	}
+
+	/*
+	 * An empty /etc/resolv.conf placeholder (ADR-0076) -- this control-
+	 * plane squashfs has no /etc directory at all otherwise (confirmed:
+	 * nothing else in this whole file ever creates one). A real
+	 * --init-mode boot bind-mounts <g_base_dir>/resolv.conf onto this
+	 * exact path; mount(MS_BIND) requires the target to already exist,
+	 * so this empty file has to be staged here, not created lazily at
+	 * boot. Content is irrelevant (the bind mount replaces it entirely)
+	 * -- an empty file, not a symlink or directory, matching what a
+	 * real resolv.conf actually is.
+	 */
+	if (ensure_dir_under(image_root, "etc") != 0)
+		return 1;
+	{
+		char dst[PATH_MAX];
+		FILE *f;
+
+		snprintf(dst, sizeof(dst), "%s/etc/resolv.conf", image_root);
+		f = fopen(dst, "w");
+		if (f == NULL) {
+			perror(dst);
+			return 1;
+		}
+		fclose(f);
 	}
 
 	/* kanxeod's DEFAULT_WEB_ROOT is "web", resolved relative to its own

@@ -1,0 +1,80 @@
+#
+# openssl -- OpenSSL: the real `openssl` CLI, libssl.so.3/libcrypto.so.3
+# runtime libraries, the -lssl/-lcrypto dev symlinks, headers, and a
+# real openssl.cnf -- a genuine from-source build.
+#
+# This retires openssl-dev.recipe (deleted, not kept alongside this
+# one -- One Source of Truth): that recipe's own header comment
+# explicitly punted on a real build ("substantial work of its own... a
+# bespoke Configure script, not autoconf") and instead copied this dev
+# sandbox's own pre-built libssl.so.3/libcrypto.so.3 straight out of
+# /lib/x86_64-linux-gnu. That call made sense before this project had
+# a real gcc-based "dev" toolchain image to build OpenSSL in (gcc.recipe,
+# task #479) -- now that one exists, copying dev-host binaries into a
+# recipe's own output is exactly the kind of "atomic OS distribution"
+# gap this project's own maxims rule out, so this recipe does the real
+# build instead. Also the real fix behind mkbootroot.c's own
+# PKI_OPENSSL_BIN staging -- that file still ships a raw dev-host
+# /usr/bin/openssl copy today; wiring this recipe's own output into
+# a shared host-tools image (task #693) is what actually closes that.
+#
+# Source is OpenSSL's own canonical /source/ release, checksum
+# verified against two independent sources (openssl.org's own
+# /source/ tree and the openssl project's own GitHub release mirror)
+# -- byte-identical, same sha256 -- the exact same verified source
+# openssl-dev.recipe already established, now actually built instead
+# of bypassed.
+#
+pkg_name="openssl"
+pkg_version="3.0.20"
+pkg_source="https://www.openssl.org/source/openssl-3.0.20.tar.gz"
+pkg_sha256="c80a01dfc70ece4dc21168932c37739042d404d46ccc81a5986dd75314ecda6f"
+pkg_depends="perl"
+
+# ./Configure (OpenSSL's own bespoke, Perl-driven build script -- not
+# autotools; confirmed real via a local build in this sandbox, which
+# also confirmed no build-time "skip docs" flag exists in this release
+# -- install_sw below is what actually avoids the doc tree, not a
+# Configure option). pkg_depends="perl" above stages a real perl into
+# this same build container first -- Configure hard-requires it.
+# "linux-x86_64" is the real, exact Configure target this platform is
+# (confirmed via a real `uname -m` plus OpenSSL's own
+# Configurations/10-main.conf entry for it), not a generic/auto-detect
+# target. --openssldir=/usr/lib/ssl matches the real path
+# mkbootroot.c's own openssl.cnf staging already uses.
+pkg_build() {
+	./Configure --prefix=/usr --openssldir=/usr/lib/ssl linux-x86_64
+	make -j"$(nproc)"
+}
+
+# install_sw (OpenSSL's own real, documented "software only" target --
+# binaries/libraries/headers, no docs, confirmed via a real local
+# build+install in this sandbox) plus install_ssldirs (the real
+# openssl.cnf/ct_log_list.cnf/certs+private+misc directory layout --
+# this project's own PKI subsystem needs a real openssl.cnf present at
+# exactly usr/lib/ssl/openssl.cnf, confirmed via `pki ca bootstrap`
+# failing without one). Confirmed live: this exact recipe's build
+# output generates a real, working self-signed cert via `openssl req
+# -x509` before being written here.
+#
+# install_sw's own real default lands libraries under usr/lib64 (this
+# Configure target's own default LIBDIR, confirmed via a real
+# DESTDIR install) -- moved to lib/x86_64-linux-gnu/, this project's
+# own real runtime-library path convention every other recipe already
+# uses. .a static archives, pkgconfig/*.pc, and c_rehash (a perl
+# wrapper around a symlink-farm convention nothing in this project
+# uses) are dropped -- nothing here links OpenSSL statically or uses
+# pkg-config. engines-3/ossl-modules (the legacy provider/engine
+# plugins, e.g. padlock) are also dropped: real, but this project's
+# own PKI subsystem (daemon/src/pki.c) only ever needs the default
+# provider, already built into libcrypto.so.3 itself, not a
+# dynamically-loaded plugin.
+pkg_install() {
+	make DESTDIR="$PKG_DESTDIR" install_sw
+	make DESTDIR="$PKG_DESTDIR" install_ssldirs
+	mkdir -p "$PKG_DESTDIR/lib/x86_64-linux-gnu"
+	mv "$PKG_DESTDIR/usr/lib64/libssl.so.3" "$PKG_DESTDIR/usr/lib64/libssl.so" \
+	   "$PKG_DESTDIR/usr/lib64/libcrypto.so.3" "$PKG_DESTDIR/usr/lib64/libcrypto.so" \
+	   "$PKG_DESTDIR/lib/x86_64-linux-gnu/"
+	rm -rf "$PKG_DESTDIR/usr/lib64" "$PKG_DESTDIR/usr/bin/c_rehash"
+}

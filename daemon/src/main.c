@@ -6,6 +6,8 @@
 #include "diskformat.h"
 #include "diskrole.h"
 #include "logstore.h"
+#include "ping.h"
+#include "resolv.h"
 #include "swap.h"
 #include "dns.h"
 #include "exec.h"
@@ -56,6 +58,7 @@
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/timerfd.h>
+#include <sys/utsname.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -149,6 +152,11 @@ static char LOG_STATE_PATH[PATH_MAX];
  * would actually move container storage onto a mounted disk like this
  * one -- formatting/mounting alone never touches CONTAINERS_DIR. */
 static char DISKS_MOUNT_DIR[PATH_MAX];
+/* ADR-0076: the host's own outbound DNS resolver config, persisted in
+ * literal resolv.conf format (not JSON) -- this file IS what a real
+ * --init-mode boot bind-mounts onto /etc/resolv.conf, so writing it
+ * via resolv_set() takes effect immediately, no reboot needed. */
+static char RESOLV_CONF_PATH[PATH_MAX];
 
 /* Computes every path derived from g_base_dir -- called once, right
  * after argv parsing (so --data-dir= has already been applied) and
@@ -184,6 +192,7 @@ static void init_base_dir_paths(void)
 	snprintf(LOG_DIR, sizeof(LOG_DIR), "%s/logs", g_base_dir);
 	snprintf(LOG_STATE_PATH, sizeof(LOG_STATE_PATH), "%s/state.json", LOG_DIR);
 	snprintf(DISKS_MOUNT_DIR, sizeof(DISKS_MOUNT_DIR), "%s/disks", g_base_dir);
+	snprintf(RESOLV_CONF_PATH, sizeof(RESOLV_CONF_PATH), "%s/resolv.conf", g_base_dir);
 }
 /*
  * Backoff cap and stability-reset threshold for the crash-restart
@@ -389,6 +398,8 @@ enum conn_kind {
 	CONN_ISO_ASSEMBLE,      /* server-side mkinstalleriso invocation (ADR-0064) */
 	CONN_BOOTSTRAP_FETCH,   /* pkg/bootstrap's own toolchain_url curl fetch (ADR-0065) */
 	CONN_DISK_FORMAT,       /* disk format+mount job (multi-disk management Phase C) */
+	CONN_PING,              /* GET/POST /v1/system/ping -- the raw ICMP socket half */
+	CONN_PING_TIMER,        /* same job's paired timeout -- see ping_job_teardown() */
 	CONN_RESTART_TIMER,
 	CONN_BIND_IP_CLEANUP, /* deferred rtnl_addr_del_ipv4() of a superseded/cleared
 	                        * bind_ip (ADR-0068) -- see arm_bind_ip_cleanup_timer() */
@@ -834,6 +845,30 @@ static int boot_init(void)
 	if (mount(CONTAINERS_DEVICE, g_base_dir, "ext4", MS_NOSUID | MS_NODEV, NULL) != 0 &&
 	    mount_or_fail("tmpfs", g_base_dir, "tmpfs", MS_NOSUID | MS_NODEV) != 0)
 		return -1;
+	/*
+	 * ADR-0076: the host's own outbound DNS resolver config.
+	 * RESOLV_CONF_PATH (<g_base_dir>/resolv.conf) is real, persisted
+	 * state -- ordinary create-if-missing (O_CREAT, no O_TRUNC, so a
+	 * real reboot never wipes an operator-configured resolver) rather
+	 * than resolv_init()'s own later, read-only load, since that
+	 * doesn't run until well after this mount needs the file to
+	 * already exist. Bind-mounted onto /etc/resolv.conf (a real,
+	 * empty placeholder file already staged in the control-plane
+	 * squashfs, mkbootroot.c) so kanxeod's own curl/openssl/etc.
+	 * subprocesses -- and every future host-level tool -- resolve
+	 * against whatever an operator sets via PUT /v1/system/resolv,
+	 * with zero further wiring needed per tool. Best-effort: a
+	 * failure here leaves the host with no outbound DNS, exactly
+	 * today's status quo, not a boot-blocking condition.
+	 */
+	{
+		int rfd = open(RESOLV_CONF_PATH, O_CREAT | O_WRONLY, 0644);
+
+		if (rfd >= 0)
+			close(rfd);
+		if (mount(RESOLV_CONF_PATH, "/etc/resolv.conf", NULL, MS_BIND, NULL) != 0)
+			perror("/etc/resolv.conf bind mount");
+	}
 	/* Needed to reach the loader entry confirm_boot() renames once this
 	 * boot proves healthy (Phase 11 part 2) -- writable, not read-only
 	 * like the root mounts, since that rename is a real write. */
@@ -1044,6 +1079,24 @@ static void handle_health(int fd)
 	jw_obj_open(&w);
 	jw_key(&w, "status");
 	jw_str(&w, "ok");
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * Build/slot/kernel identity -- split out of handle_health() (ADR-0077)
+ * so the liveness poll every client runs every few seconds stays the
+ * single-field response it always should have been, while this
+ * lower-frequency identity check gets a real home of its own.
+ */
+static void handle_system_boot(int fd)
+{
+	struct json_writer w;
+	struct utsname uts;
+
+	jw_init(&w);
+	jw_obj_open(&w);
 	jw_key(&w, "build_version");
 	jw_str(&w, KANXEO_BUILD_VERSION);
 	jw_key(&w, "build_time");
@@ -1051,6 +1104,11 @@ static void handle_health(int fd)
 	jw_key(&w, "slot");
 	if (g_slot != NULL)
 		jw_str(&w, g_slot);
+	else
+		jw_null(&w);
+	jw_key(&w, "kernel_version");
+	if (uname(&uts) == 0)
+		jw_str(&w, uts.release);
 	else
 		jw_null(&w);
 	jw_obj_close(&w);
@@ -2301,6 +2359,260 @@ static void handle_bind_ip_cleanup_timer_event(struct conn *cc)
 }
 
 /*
+ * GET/POST /v1/system/ping (task #679-681): a real ICMP echo, backed
+ * by ping.c's own raw-socket mechanics. Two fds are in flight for one
+ * logical job -- the raw socket (an echo reply arriving) and a
+ * timerfd (the timeout) -- whichever fires first resolves the job and
+ * tears down BOTH. Same batch-safety hazard console_session_teardown()
+ * already solves (both could be EPOLLIN-ready in the same epoll_wait()
+ * batch): torn-down conns are marked CONN_DEAD and queued via
+ * queue_conn_free(), never free()'d directly.
+ */
+#define PING_TIMEOUT_MS 2000
+
+static struct conn *g_ping_sock_conn;
+static struct conn *g_ping_timer_conn;
+
+static void ping_job_teardown(void)
+{
+	if (g_ping_sock_conn != NULL) {
+		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_ping_sock_conn->fd, NULL);
+		close(g_ping_sock_conn->fd);
+		g_ping_sock_conn->kind = CONN_DEAD;
+		queue_conn_free(g_ping_sock_conn);
+		g_ping_sock_conn = NULL;
+	}
+	if (g_ping_timer_conn != NULL) {
+		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_ping_timer_conn->fd, NULL);
+		close(g_ping_timer_conn->fd);
+		g_ping_timer_conn->kind = CONN_DEAD;
+		queue_conn_free(g_ping_timer_conn);
+		g_ping_timer_conn = NULL;
+	}
+}
+
+static void handle_ping_socket_event(struct conn *cc)
+{
+	if (ping_handle_reply(cc->fd))
+		ping_job_teardown();
+}
+
+static void handle_ping_timer_event(struct conn *cc)
+{
+	uint64_t expirations;
+
+	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
+		perror("read (ping timerfd)");
+	ping_handle_timeout();
+	ping_job_teardown();
+}
+
+/* Body: {"host": "A.B.C.D"}. 202 with the job's initial (pending)
+ * status; GET on the same path polls it, same "kick off + poll"
+ * shape as disks format/ISO build/every other uncertain-duration job
+ * in this daemon. */
+static void handle_ping_post(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *host_str;
+	struct in_addr addr;
+	int sockfd;
+	enum ping_error perr;
+	struct conn *sock_cc, *timer_cc;
+	struct kx_epoll_event ev;
+	int tfd;
+	struct itimerspec its;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	host_str = json_as_string(json_object_get(root, "host"));
+	if (host_str == NULL || inet_pton(AF_INET, host_str, &addr) != 1) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "host missing or not a valid IPv4 address");
+		return;
+	}
+	json_free(root);
+
+	perr = ping_start(addr.s_addr, &sockfd);
+	if (perr == PING_ERR_BUSY) {
+		respond_error(fd, 409, "Conflict", "another ping is already in flight");
+		return;
+	}
+	if (perr != PING_OK) {
+		respond_error(fd, 500, "Internal Server Error",
+		              "could not send ICMP echo (raw socket failed -- CAP_NET_RAW?)");
+		return;
+	}
+
+	tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+	if (tfd < 0) {
+		perror("timerfd_create (ping timeout)");
+		close(sockfd);
+		respond_error(fd, 500, "Internal Server Error", "could not arm ping timeout");
+		return;
+	}
+	memset(&its, 0, sizeof(its));
+	its.it_value.tv_sec = PING_TIMEOUT_MS / 1000;
+	its.it_value.tv_nsec = (long)(PING_TIMEOUT_MS % 1000) * 1000000L;
+	if (timerfd_settime(tfd, 0, &its, NULL) != 0) {
+		perror("timerfd_settime (ping timeout)");
+		close(tfd);
+		close(sockfd);
+		respond_error(fd, 500, "Internal Server Error", "could not arm ping timeout");
+		return;
+	}
+
+	sock_cc = malloc(sizeof(*sock_cc));
+	timer_cc = malloc(sizeof(*timer_cc));
+	if (sock_cc == NULL || timer_cc == NULL) {
+		perror("malloc (ping job conns)");
+		free(sock_cc);
+		free(timer_cc);
+		close(tfd);
+		close(sockfd);
+		respond_error(fd, 500, "Internal Server Error", "out of memory");
+		return;
+	}
+	sock_cc->kind = CONN_PING;
+	sock_cc->fd = sockfd;
+	timer_cc->kind = CONN_PING_TIMER;
+	timer_cc->fd = tfd;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = sock_cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, sockfd, &ev) != 0) {
+		perror("epoll_ctl ADD ping socket");
+		free(sock_cc);
+		free(timer_cc);
+		close(tfd);
+		close(sockfd);
+		respond_error(fd, 500, "Internal Server Error", "could not register ping socket");
+		return;
+	}
+	ev.data.ptr = timer_cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
+		perror("epoll_ctl ADD ping timer");
+		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, sockfd, NULL);
+		free(sock_cc);
+		free(timer_cc);
+		close(tfd);
+		close(sockfd);
+		respond_error(fd, 500, "Internal Server Error", "could not register ping timeout");
+		return;
+	}
+
+	g_ping_sock_conn = sock_cc;
+	g_ping_timer_conn = timer_cc;
+
+	jw_init(&w);
+	ping_write_json_status(&w);
+	respond_json(fd, 202, "Accepted", &w);
+	jw_free(&w);
+}
+
+static void handle_ping_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	ping_write_json_status(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * GET/PUT /v1/system/resolv (ADR-0076): the host's own outbound DNS
+ * resolver config. PUT {"nameservers": [...]} replaces the full list
+ * and takes effect immediately (resolv_set() rewrites the real,
+ * bind-mounted file directly -- no reboot needed); an empty array
+ * clears it.
+ */
+static void handle_resolv_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	resolv_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void respond_resolv_error(int fd, enum resolv_error err)
+{
+	switch (err) {
+	case RESOLV_ERR_INVALID_IP:
+		respond_error(fd, 400, "Bad Request", "nameservers must be valid IPv4 addresses");
+		break;
+	case RESOLV_ERR_TOO_MANY: {
+		char msg[64];
+
+		snprintf(msg, sizeof(msg), "too many nameservers (max %d)", RESOLV_MAX_NAMESERVERS);
+		respond_error(fd, 400, "Bad Request", msg);
+		break;
+	}
+	case RESOLV_ERR_PERSIST_FAILED:
+		respond_error(fd, 500, "Internal Server Error", "could not persist resolv.conf");
+		break;
+	case RESOLV_OK:
+		break;
+	}
+}
+
+static void handle_resolv_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const struct json_value *arr;
+	const char *nameservers[RESOLV_MAX_NAMESERVERS];
+	int count;
+	size_t i;
+	enum resolv_error rerr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	arr = json_object_get(root, "nameservers");
+	if (arr == NULL || arr->type != JSON_ARRAY) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "nameservers (array) is required");
+		return;
+	}
+	if (arr->u.array.count > RESOLV_MAX_NAMESERVERS) {
+		json_free(root);
+		respond_resolv_error(fd, RESOLV_ERR_TOO_MANY);
+		return;
+	}
+	count = (int)arr->u.array.count;
+	for (i = 0; i < arr->u.array.count; i++) {
+		nameservers[i] = json_as_string(arr->u.array.items[i]);
+		if (nameservers[i] == NULL) {
+			json_free(root);
+			respond_resolv_error(fd, RESOLV_ERR_INVALID_IP);
+			return;
+		}
+	}
+
+	rerr = resolv_set(nameservers, count);
+	json_free(root);
+	if (rerr != RESOLV_OK) {
+		respond_resolv_error(fd, rerr);
+		return;
+	}
+
+	jw_init(&w);
+	resolv_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
  * GET/PUT /v1/system/daemon-config (Part 0.5): kanxeod's own listen
  * port and which network is currently its management one -- a
  * dedicated resource, distinct from generic network CRUD, since
@@ -3332,6 +3644,20 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
 }
 
 /*
+ * ADR-0078: the well-known name of the shared "host tools" image --
+ * cp/rm/sha256sum/gzip (coreutils.recipe/gzip.recipe) plus openssl/
+ * curl/tar/bzip2/xz/squashfs-tools/e2fsprogs, one real `pkg install
+ * --image=kanxeo-hosttools` per recipe -- an operator builds this
+ * exactly like "kanxeo-builder"/"dev" (docs/guides/building-kanxeo.md),
+ * no special-cased creation path. spawn_kanxeo_bootroot_assembly()
+ * below passes its rootfs to mkbootroot.c's own host_tools_dir
+ * argument when present, purely additive: a box that never built this
+ * image keeps today's dev-host-sourced behavior (mkbootroot.c's own
+ * "" fallback), never a hard failure.
+ */
+#define HOST_TOOLS_IMAGE "kanxeo-hosttools"
+
+/*
  * ADR-0057: when a hostbuild job named "kanxeo" completes, assembles a
  * fresh control-plane squashfs from its own just-harvested artifacts
  * by forking+exec'ing the real, unmodified build/mkbootroot binary --
@@ -3355,7 +3681,9 @@ static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
 	char web_dir[PATH_MAX];
 	char out_squashfs[PATH_MAX];
 	char stage_dir[PATH_MAX];
-	char *argv[10];
+	char host_tools_dir[PATH_MAX];
+	struct stat host_tools_st;
+	char *argv[11];
 	pid_t pid;
 	int pidfd;
 
@@ -3365,6 +3693,17 @@ static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
 	snprintf(web_dir, sizeof(web_dir), "%s/web", artifact_dir);
 	snprintf(out_squashfs, sizeof(out_squashfs), "%s/kanxeod-root.squashfs", artifact_dir);
 	snprintf(stage_dir, sizeof(stage_dir), "%s/.bootroot-stage", artifact_dir);
+
+	/* Same "<IMAGES_DIR>/<name>/rootfs" convention used directly
+	 * elsewhere in this file (e.g. the container overlay lowerdir,
+	 * the file-read path) -- images are pure filesystem state, no
+	 * registry lookup needed (image.h's own doc comment). stat()
+	 * instead of assuming presence: most installs will never have
+	 * built this optional image, and mkbootroot.c's own "" fallback
+	 * already exists precisely for that case. */
+	snprintf(host_tools_dir, sizeof(host_tools_dir), "%s/%s/rootfs", IMAGES_DIR, HOST_TOOLS_IMAGE);
+	if (stat(host_tools_dir, &host_tools_st) != 0 || !S_ISDIR(host_tools_st.st_mode))
+		host_tools_dir[0] = '\0';
 
 	argv[0] = mkbootroot_bin;
 	argv[1] = stage_dir;
@@ -3376,7 +3715,8 @@ static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
 	argv[7] = ""; /* modules dir -- a control-plane-only rebuild (kanxeod/kanxeoctl/web only,
 	               * ADR-0057) touches no kernel module tree at all */
 	argv[8] = ""; /* kmod bin dir -- same reasoning */
-	argv[9] = NULL;
+	argv[9] = host_tools_dir; /* "" if kanxeo-hosttools was never built on this box */
+	argv[10] = NULL;
 
 	pid = fork();
 	if (pid < 0) {
@@ -7105,6 +7445,10 @@ static void dispatch(int fd, const struct http_request *req)
 		handle_health(fd);
 		return;
 	}
+	if (strcmp(req->method, "GET") == 0 && strcmp(req->path, "/v1/system/boot") == 0) {
+		handle_system_boot(fd);
+		return;
+	}
 	if (strcmp(req->method, "POST") == 0 && strcmp(req->path, "/v1/system/shutdown") == 0) {
 		handle_shutdown(fd);
 		return;
@@ -7162,6 +7506,26 @@ static void dispatch(int fd, const struct http_request *req)
 	if (strcmp(req->path, "/v1/system/stats") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_system_stats(fd);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/system/ping") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_ping_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_ping_post(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/system/resolv") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_resolv_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_resolv_put(fd, req->body, req->body_len);
 			return;
 		}
 	}
@@ -8951,6 +9315,8 @@ int main(int argc, char **argv)
 		return 1;
 	if (logstore_init(LOG_DIR, LOG_STATE_PATH) != 0)
 		return 1;
+	if (resolv_init(RESOLV_CONF_PATH) != 0)
+		return 1;
 
 	/*
 	 * Best-effort, before any container's cgroup leaf can exist (see
@@ -9090,6 +9456,10 @@ int main(int argc, char **argv)
 				handle_bootstrap_fetch_event(cc);
 			else if (cc->kind == CONN_DISK_FORMAT)
 				handle_disk_format_event(cc);
+			else if (cc->kind == CONN_PING)
+				handle_ping_socket_event(cc);
+			else if (cc->kind == CONN_PING_TIMER)
+				handle_ping_timer_event(cc);
 			else if (cc->kind == CONN_RESTART_TIMER)
 				handle_restart_timer_event(cc);
 			else if (cc->kind == CONN_BIND_IP_CLEANUP)

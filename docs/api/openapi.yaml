@@ -17,12 +17,9 @@ paths:
     get:
       summary: Liveness check
       description: >
-        Also reports which build is actually running and, on an
-        installed A/B system, which slot it booted from -- the
-        deploy/reboot verification signal referenced throughout
-        docs/guides/kernel-build-and-ab-updates.md, so a
-        `system/update` + `system/reboot` round trip can be confirmed
-        against the real running daemon instead of inferred.
+        A minimal, low-latency status only -- both clients poll this
+        every few seconds purely for a status dot. Build/slot/kernel
+        identity (a lower-frequency check) is `GET /system/boot`.
       operationId: getHealth
       responses:
         "200":
@@ -31,11 +28,33 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [status, build_version, build_time, slot]
+                required: [status]
                 properties:
                   status:
                     type: string
                     enum: [ok]
+
+  /system/boot:
+    get:
+      summary: Build/slot/kernel identity
+      description: >
+        Reports which build is actually running, which A/B slot it
+        booted from, and the running kernel version -- the
+        deploy/reboot verification signal referenced throughout
+        docs/guides/kernel-build-and-ab-updates.md, so a
+        `system/update` + `system/reboot` round trip can be confirmed
+        against the real running daemon instead of inferred. Split out
+        of `GET /health` (ADR-0077) so the liveness poll stays cheap.
+      operationId: getSystemBoot
+      responses:
+        "200":
+          description: Build/slot/kernel identity
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [build_version, build_time, slot, kernel_version]
+                properties:
                   build_version:
                     type: string
                     description: >
@@ -54,6 +73,13 @@ paths:
                       with, or `null` for a dev/test daemon started
                       without one (see `kanxeo-install.c`'s A/B
                       mechanism).
+                  kernel_version:
+                    type: string
+                    nullable: true
+                    description: >
+                      The running kernel's `uname(2)` release string
+                      (e.g. `6.18.40`), or `null` if `uname(2)` itself
+                      failed.
 
   /system/shutdown:
     post:
@@ -535,6 +561,118 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SystemStats"
+  /system/ping:
+    get:
+      summary: Poll the current/last ICMP ping job's status (ADR-0075)
+      operationId: getSystemPing
+      responses:
+        "200":
+          description: Current ping job status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PingStatus"
+    post:
+      summary: Start a real ICMP echo request against an IPv4 address (ADR-0075)
+      description: >
+        A real, hand-rolled ping -- no DNS involved, host must be a
+        literal IPv4 address. 202 with the job's initial (pending)
+        status; GET on this same path polls it. Resolves within a
+        fixed ~2s timeout either way. v1 single-job constraint: 409 if
+        a ping is already in flight.
+      operationId: postSystemPing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [host]
+              properties:
+                host:
+                  type: string
+                  description: A literal IPv4 address (not a hostname).
+      responses:
+        "202":
+          description: Ping started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PingStatus"
+        "400":
+          description: Invalid JSON body or host is not a valid IPv4 address
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Another ping is already in flight
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Could not send the ICMP echo (raw socket failed -- e.g. no CAP_NET_RAW)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /system/resolv:
+    get:
+      summary: The host's own outbound DNS resolver config (ADR-0076)
+      operationId: getSystemResolv
+      responses:
+        "200":
+          description: Current nameservers
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResolvConfig"
+    put:
+      summary: Replace the host's own outbound DNS resolver config (ADR-0076)
+      description: >
+        Takes effect immediately -- writes the real, persisted file a
+        real --init-mode boot bind-mounts onto /etc/resolv.conf, no
+        reboot needed. An empty array clears it entirely (falls back
+        to no outbound resolution, the historical default). Covers
+        both pointing at one of this platform's own DNS containers
+        (resolve its IP once, PUT it) and a real external resolver --
+        this endpoint has no notion of containers, just a plain IP
+        list.
+      operationId: putSystemResolv
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nameservers]
+              properties:
+                nameservers:
+                  type: array
+                  maxItems: 3
+                  items:
+                    type: string
+                  description: Up to 3 IPv4 addresses, tried in order (matches glibc's own MAXNS).
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResolvConfig"
+        "400":
+          description: Invalid JSON body, an entry isn't a valid IPv4 address, or more than 3 given
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Could not persist the config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /system/swap:
     get:
       summary: Whether the host swap file is enabled (ADR-0069)
@@ -3477,6 +3615,38 @@ components:
             depends_on above; null if none was configured or restart is
             "no".
 
+    ResolvConfig:
+      type: object
+      required: [nameservers]
+      properties:
+        nameservers:
+          type: array
+          items:
+            type: string
+    PingStatus:
+      type: object
+      required: [state, host, reachable, rtt_ms, timed_out]
+      properties:
+        state:
+          type: string
+          enum: [none, pending, done]
+          description: none -- no ping ever started on this daemon instance. pending -- sent, awaiting reply or timeout. done -- resolved.
+        host:
+          type: string
+          nullable: true
+          description: The target IPv4 address, or null if state is none.
+        reachable:
+          type: boolean
+          nullable: true
+          description: Null until state is done.
+        rtt_ms:
+          type: number
+          nullable: true
+          description: Round-trip time in milliseconds. Null unless reachable.
+        timed_out:
+          type: boolean
+          nullable: true
+          description: Null until state is done.
     Pressure:
       type: object
       required: [some, full]

@@ -30,10 +30,31 @@ kanxeoctl pkg install --name=make --image=kanxeo-builder
 kanxeoctl pkg install --name=libc-dev --image=kanxeo-builder
 kanxeoctl pkg install --name=bash --image=kanxeo-builder
 kanxeoctl pkg install --name=coreutils --image=kanxeo-builder
-kanxeoctl pkg install --name=openssl-dev --image=kanxeo-builder
+kanxeoctl pkg install --name=openssl --image=kanxeo-builder
 ```
 
-An image is just an ordinary image, built up with ordinary installs — no special "builder image" concept exists beyond having the right packages present. This exact set (`tcc`, `make`, `libc-dev`, `bash`, `coreutils`, `openssl-dev`) is the minimum a plain Makefile build of this repo needs: `tcc` to compile, `make` to drive the build, `libc-dev` for headers and the CRT startup objects (`crt1.o`/`crti.o`/`crtn.o` — see the note on TCC's own CRT search path below), `bash` because glibc's `popen()` hardcodes `/bin/sh` with no override and the kernel's own Kconfig-style patterns some build steps use need a real shell present, `coreutils` because the root `Makefile`'s own `mkdir -p build` needs a real `mkdir`, and `openssl-dev` because `kanxeod` itself has linked `-lssl -lcrypto` since the HTTPS listener landed (ADR-0059) — its own link-time `libssl.so`/`libcrypto.so` symlinks aren't part of `libc-dev.recipe`'s own wholesale header copy. If a future change to this repo's own build needs something more, that surfaces as a real, specific build failure naming exactly what's missing — install it onto `kanxeo-builder` the same way, one real gap at a time, never speculatively.
+An image is just an ordinary image, built up with ordinary installs — no special "builder image" concept exists beyond having the right packages present. This exact set (`tcc`, `make`, `libc-dev`, `bash`, `coreutils`, `openssl`) is the minimum a plain Makefile build of this repo needs: `tcc` to compile, `make` to drive the build, `libc-dev` for headers and the CRT startup objects (`crt1.o`/`crti.o`/`crtn.o` — see the note on TCC's own CRT search path below), `bash` because glibc's `popen()` hardcodes `/bin/sh` with no override and the kernel's own Kconfig-style patterns some build steps use need a real shell present, `coreutils` because the root `Makefile`'s own `mkdir -p build` needs a real `mkdir`, and `openssl` (a real from-source build, ADR-0078) because `kanxeod` itself has linked `-lssl -lcrypto` since the HTTPS listener landed (ADR-0059) — its own link-time `libssl.so`/`libcrypto.so` symlinks are among the real files this recipe's build produces. If a future change to this repo's own build needs something more, that surfaces as a real, specific build failure naming exactly what's missing — install it onto `kanxeo-builder` the same way, one real gap at a time, never speculatively.
+
+### 1b. Build the host tools image (optional, ADR-0078)
+
+`kanxeod` itself shells out to a handful of real binaries at runtime -- `openssl` (PKI), `curl` (`pkg_source` fetches), `tar`/`gzip`/`bzip2`/`xz` (source extraction), `cp`/`rm`/`sha256sum` (build-container bookkeeping), `unsquashfs` (toolchain import), `mkfs.ext4` (disk format). `image/src/mkbootroot.c` (the tool that assembles the control-plane squashfs) has always sourced these from whichever machine runs it -- fine for this repo's own dev-sandbox build, but not "from source" for a produced squashfs meant to run on someone else's hardware.
+
+An operator who wants every one of those binaries built from real source, not copied off the machine that happened to run `mkbootroot`, builds one more image:
+
+```
+kanxeoctl image create --name=kanxeo-hosttools
+kanxeoctl pkg install --name=coreutils --image=kanxeo-hosttools
+kanxeoctl pkg install --name=gzip --image=kanxeo-hosttools
+kanxeoctl pkg install --name=openssl --image=kanxeo-hosttools
+kanxeoctl pkg install --name=curl --image=kanxeo-hosttools
+kanxeoctl pkg install --name=tar --image=kanxeo-hosttools
+kanxeoctl pkg install --name=bzip2 --image=kanxeo-hosttools
+kanxeoctl pkg install --name=xz --image=kanxeo-hosttools
+kanxeoctl pkg install --name=squashfs-tools --image=kanxeo-hosttools
+kanxeoctl pkg install --name=e2fsprogs --image=kanxeo-hosttools
+```
+
+`kanxeo-hosttools` is a fixed, well-known name (`HOST_TOOLS_IMAGE` in `daemon/src/main.c`) -- `spawn_kanxeo_bootroot_assembly()` (the server-side handler behind a `kanxeo` hostbuild's own automatic bootroot assembly, ADR-0057) checks for it and, if present, passes its rootfs to `mkbootroot.c`'s own `host_tools_dir` argument so `cp`/`rm`/`sha256sum`/`gzip` come from there instead of the box running the build. This is entirely optional and purely additive: a box that never builds this image keeps today's behavior (those four tools sourced from wherever `mkbootroot` itself runs) -- nothing breaks either way. `openssl`/`curl`/`tar`/`bzip2`/`xz`/`squashfs-tools`/`mkfs.ext4` (e2fsprogs) don't have a `mkbootroot.c` wiring point yet (a real, tracked follow-on, not silently dropped) -- installing them onto this same image is still worthwhile today since it's the same real, from-source artifact a future wiring pass will point at.
 
 ### 2. Point `kanxeo.recipe` at a real source snapshot
 

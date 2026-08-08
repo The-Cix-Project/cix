@@ -2,6 +2,79 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 22 (done): From-source host tools bootstrap (ADR-0078)
+
+`image/src/mkbootroot.c` shelled-out binaries (`openssl`/`curl`/`tar`/`gzip`/`bzip2`/`xz`/`cp`/`rm`/`sha256sum`/`unsquashfs`/`mkfs.ext4`) were raw dev-host copies -- not "from source" for a squashfs meant to run on someone else's hardware. Raised directly by the user.
+
+#### Added
+- `mkbootroot.c`: new optional `host_tools_dir` argument (10th argv, `""` tolerant default) -- `cp`/`rm`/`sha256sum`/`gzip` sourced from there when given.
+- `pkg/recipes/openssl.recipe`: real from-source OpenSSL build (`install_sw`+`install_ssldirs`) -- retires `openssl-dev.recipe` (deleted).
+- `pkg/recipes/curl.recipe`: real from-source curl, deliberately narrow (OpenSSL+zlib only, no HTTP/2/IDN/SSH/RTMP/LDAP/GSSAPI/Brotli/Zstd -- none of it real confirmed need for `pkg.c`'s own usage).
+- `pkg/recipes/tar.recipe`, `pkg/recipes/bzip2.recipe`, `pkg/recipes/xz.recipe`, `pkg/recipes/squashfs-tools.recipe` (XZ_SUPPORT only -- the only format this project ever produces), `pkg/recipes/e2fsprogs.recipe` (scoped to `mke2fs`/`mkfs.ext4` only).
+- `daemon/src/main.c`: `HOST_TOOLS_IMAGE` ("kanxeo-hosttools") -- `spawn_kanxeo_bootroot_assembly()` passes its rootfs as `host_tools_dir` when present.
+- `docs/guides/building-kanxeo.md`: new "Host tools image" section.
+- `docs/adr/0078-from-source-host-tools-bootstrap.md`.
+
+#### Notes
+- Every recipe empirically verified via a real local build before being trusted: real self-signed cert (openssl), real HTTPS fetch with `pkg.c`'s own exact flags (curl), real compress/decompress round trips (tar/bzip2/xz), real `mksquashfs`+`unsquashfs` round trip, real `mkfs.ext4` filesystem creation.
+- Checksums cross-verified against a second independent source for every recipe (mirror, Debian orig tarball, or content-identical `diff -r` where GitHub is the only real distribution point).
+- `host_tools_dir` mechanism live-verified with a synthetic fake tools directory (`cp`/`rm`/`sha256sum`/`gzip` genuinely sourced from it); `tar.recipe` live-verified through the real daemon pkg pipeline end-to-end (fetch/checksum/build-container/DESTDIR install).
+- Deliberately deferred, tracked not dropped: `mkbootroot.c`'s own `shelled_bins[]` table isn't yet repointed for the other seven tools (mechanical follow-on); a full live `kanxeo-hosttools` build is folded into the final validation pass on 192.168.15.95.
+- Full clean rebuild (`-Wall -Werror`, zero warnings); regression sweep (6 binaries, all passing, `sudo`/unsandboxed).
+
+### Part 21 (done): Split GET /health into liveness + GET /system/boot identity (ADR-0077)
+
+`GET /health` reverts to a minimal `{"status":"ok"}`; build/slot/kernel identity moves to a new, dedicated endpoint.
+
+#### Added
+- `daemon/src/main.c`: `GET /system/boot` -- `build_version`/`build_time`/`slot` (moved from `/health`) plus new `kernel_version` (`uname(2)`).
+- `cli/src/main.c`: `kanxeoctl boot`.
+- `docs/adr/0077-health-boot-identity-split.md`.
+
+#### Changed
+- `handle_health()`: back to `{"status":"ok"}` only -- both clients poll it every few seconds purely for a status dot.
+- `kanxeoctl health`: drops its `build:`/`slot:` output lines.
+- `docs/guides/kernel-build-and-ab-updates.md`, `docs/guides/remote-development.md`, `docs/api/README.md`, `docs/guides/cli-reference.md`: deploy-verification steps now use `kanxeoctl boot`/`GET /system/boot` instead of `/health`'s old fields.
+
+#### Notes
+- `kernel_version` is read fresh via `uname(2)` on every call, not cached at daemon startup.
+- Live-verified: `kanxeoctl health --json` -> `{"status":"ok"}`; `kanxeoctl boot --json` -> full identity including a real `kernel_version` matching `uname -r`.
+- Full clean rebuild (`-Wall -Werror`, zero warnings); regression sweep (6 binaries, all passing, `sudo`/unsandboxed).
+
+### Part 20 (done): Host DNS resolver config (ADR-0076)
+
+`<g_base_dir>/resolv.conf` + a real `/etc/resolv.conf` bind-mount fix -- closes the real gap Part 19's own investigation started from (a real installed host has no outbound DNS resolution at all).
+
+#### Added
+- `daemon/src/resolv.c`/`daemon/include/resolv.h`: persisted nameserver list (up to 3), literal `nameserver A.B.C.D` format.
+- `daemon/src/main.c`: `GET`/`PUT /v1/system/resolv`; `boot_init()` bind-mounts the persisted file onto `/etc/resolv.conf` at real `--init-mode` boot (best-effort, non-blocking).
+- `image/src/mkbootroot.c`: stages an empty `etc/resolv.conf` placeholder (the control-plane squashfs has no `/etc` otherwise) so the bind-mount target exists.
+- `cli/src/main.c`: `kanxeoctl resolv [show]` / `resolv set [--nameserver=A.B.C.D ...]`.
+- `dnsmasq.recipe`'s documented invocation gains real upstream forwarders (`--server=1.1.1.1 --server=8.8.8.8`).
+- `docs/adr/0076-host-dns-resolver-config.md`; `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/cli-reference.md` updated.
+
+#### Notes
+- Deliberately not a curl patch -- confirmed this project's staged `curl` has no `c-ares` (`--dns-servers` unavailable), and glibc's own resolver hardcodes `/etc/resolv.conf` at compile time; fixing the one canonical path benefits every current/future host tool for free.
+- `PUT` writes straight to the original `g_base_dir` path, not through the bind-mounted alias -- takes effect immediately, no reboot needed.
+- `boot_init()`'s new bind-mount code confirmed inert for this project's test suite (no test uses `--init-mode`); real verification deferred to a live reboot.
+- Full clean rebuild (`-Wall -Werror`, zero warnings); regression sweep (6 binaries, all passing, `sudo`/unsandboxed).
+
+### Part 19 (done): ICMP reachability endpoint (ADR-0075)
+
+Real, hand-rolled ICMP echo, no shelling out to a `ping` binary -- closes a real gap surfaced while diagnosing 192.168.15.95's own network limitations (no way to answer "is there a route to X" independent of DNS).
+
+#### Added
+- `daemon/src/ping.c`/`daemon/include/ping.h`: raw-socket ICMP echo, RFC 1071 checksum, matched by echo id+sequence.
+- `daemon/src/main.c`: `CONN_PING`/`CONN_PING_TIMER`, `GET`/`POST /v1/system/ping`. Reuses `CONN_DEAD`/`queue_conn_free()` for the same two-fds-one-job batch-safety hazard the console WS/PTY pairing already solved.
+- `cli/src/main.c`: `kanxeoctl ping HOST` -- polls to completion, exits nonzero if unreachable.
+- `docs/adr/0075-icmp-reachability-endpoint.md`; `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/cli-reference.md` updated.
+
+#### Notes
+- IPv4/raw-IP only in v1, deliberately no hostname resolution (avoids reintroducing the DNS-vs-routing conflation this endpoint exists to eliminate).
+- v1 single-job constraint, same as every other async job in this daemon.
+- Verified live: real loopback ping (sub-ms RTT) and a real unreachable target (192.0.2.1, RFC 5737) timing out cleanly at ~2s, through the full async path and `kanxeoctl`'s own exit code.
+- Full clean rebuild (`-Wall -Werror`, zero warnings); regression sweep (6 binaries, all passing, `sudo`/unsandboxed).
+
 ### Part 18 (done): pressure-stall information (PSI) in host and per-container stats (ADR-0074)
 
 Direct follow-up to Part 17, requested by the user alongside host stats itself -- raw usage counters answer "how much," PSI answers "is anything actually stalled waiting."

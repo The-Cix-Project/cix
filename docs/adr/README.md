@@ -79,3 +79,7 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0072](0072-log-message-cap-and-min-level.md) | Log message cap raised 512->4096, build-output capture switched head->tail, settable write-time minimum severity | Accepted |
 | [0073](0073-host-stats-endpoint.md) | Host-wide stats endpoint (GET /v1/system/stats): load/CPU/memory/disk/network, mirroring per-container stats | Accepted |
 | [0074](0074-pressure-stall-information.md) | Pressure-stall information (PSI) in host and per-container stats: cpu/io/memory.pressure | Accepted |
+| [0075](0075-icmp-reachability-endpoint.md) | Reachability endpoint (GET/POST /v1/system/ping): real, hand-rolled ICMP echo | Accepted |
+| [0076](0076-host-dns-resolver-config.md) | Host DNS resolver config (GET/PUT /v1/system/resolv) + a real /etc/resolv.conf bind-mount fix | Accepted |
+| [0077](0077-health-boot-identity-split.md) | Split GET /health into liveness + GET /system/boot identity | Accepted |
+| [0078](0078-from-source-host-tools-bootstrap.md) | From-source host tools bootstrap (mkbootroot.c's shelled-out binaries) | Accepted |

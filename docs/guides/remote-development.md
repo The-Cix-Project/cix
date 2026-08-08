@@ -54,13 +54,15 @@ See [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md#background
 
 ```sh
 kanxeoctl --server=http://<box>:7620 health
+kanxeoctl --server=http://<box>:7620 boot
 ```
 
 ```json
-{"status":"ok","build_version":"v1.6.0-9-gc59e482-dirty","build_time":"2026-08-08T00:52:00Z","slot":"b"}
+{"status":"ok"}
+{"build_version":"v1.6.0-9-gc59e482-dirty","build_time":"2026-08-08T00:52:00Z","slot":"b","kernel_version":"6.18.40"}
 ```
 
-`build_version` is `git describe --tags --always --dirty` **at build time** — check it against the commit you actually intended to ship, not just that the daemon answered. `slot` is the direct answer to "did I actually boot into the slot I just wrote." A bare `200` on its own proves only that *some* daemon answered — it doesn't prove it's the one you just deployed, especially right after a reboot where a stale connection or a fallback-to-the-old-slot could both look identical from the outside. Poll through at least one connection failure during the reboot itself (a `curl` timeout or connection-refused) before trusting the recovery — a suspiciously instant reply can mean you never actually lost the old connection.
+`build_version` is `git describe --tags --always --dirty` **at build time** — check it against the commit you actually intended to ship, not just that the daemon answered. `slot` is the direct answer to "did I actually boot into the slot I just wrote," and `kernel_version` (`uname -r`) confirms the running kernel matches what you just wrote too. A bare `200` from `health` on its own proves only that *some* daemon answered — it doesn't prove it's the one you just deployed, especially right after a reboot where a stale connection or a fallback-to-the-old-slot could both look identical from the outside. Poll through at least one connection failure during the reboot itself (a `curl` timeout or connection-refused) before trusting the recovery — a suspiciously instant reply can mean you never actually lost the old connection.
 
 ## When something goes wrong: read the real diagnostics, not just the exit code
 

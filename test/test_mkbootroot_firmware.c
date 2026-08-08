@@ -38,7 +38,8 @@ static int run_mkbootroot2(const char *firmware_dir, const char *modules_dir,
 		                     (char *)"build/kanxeod",   (char *)"build/kanxeoctl",
 		                     (char *)"web",             (char *)OUT_SQUASHFS,
 		                     (char *)firmware_dir,      (char *)modules_dir,
-		                     (char *)kmod_bin_dir,      NULL };
+		                     (char *)kmod_bin_dir,      (char *)"",
+		                     NULL };
 
 	pid = fork();
 	if (pid < 0) {

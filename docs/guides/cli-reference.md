@@ -17,7 +17,8 @@ kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 
 | Command | |
 |---|---|
-| `health` | Liveness check |
+| `health` | Liveness check -- minimal, no build/slot identity |
+| `boot` | Build version/time, A/B slot, kernel version (ADR-0077) |
 | `shutdown` | Stop `kanxeod`; powers off the host too when running as real PID 1 |
 | `reboot` | Stop `kanxeod`; restarts the host too when running as real PID 1 |
 | `update [--image=PATH] [--kernel=PATH]` | Write a fresh control-plane squashfs and/or kernel to the inactive A/B slot; does not reboot |
@@ -29,6 +30,9 @@ kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `daemon-config set [--port=N] [--https-port=N] [--enable-http] [--disable-http] [--enable-https] [--disable-https] [--management-network=NAME] [--bind-ip=A.B.C.D \| --clear-bind-ip]` | Live, no-restart change — only the fields given are touched. `bind_ip` (ADR-0068) is a dedicated second address on the management network's own bridge; `--clear-bind-ip` reverts to that network's own address |
 | `routes` | The box's own real kernel IPv4 routing table (ADR-0066) — the only way to see this on a real install, no SSH/general shell |
 | `host-stats` | Host-wide load/CPU/memory/disk/network snapshot, including cpu/memory/io pressure-stall (PSI) figures (ADR-0073, ADR-0074) — the host-level counterpart to `stats NAME` below |
+| `ping HOST` | Real ICMP echo against a literal IPv4 address (ADR-0075) — waits ~2s max, exits nonzero if unreachable |
+| `resolv [show]` | The host's own outbound DNS resolver config (ADR-0076) |
+| `resolv set [--nameserver=A.B.C.D ...]` | Replace it (repeatable flag, up to 3) — takes effect immediately, no reboot; no flags clears it |
 | `routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]` | Add a real kernel route (ADR-0067 Part 3); or `--default --gateway=A.B.C.D` for the default route |
 | `routes rm --dest=A.B.C.D --prefix=N` | Remove one; or `--default` for the default route |
 | `swap` | Whether the host swap file is enabled (ADR-0069) |

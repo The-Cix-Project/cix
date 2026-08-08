@@ -172,6 +172,7 @@ int main(void)
 			                     "", /* no real GPU firmware needed for a boot test */
 			                     "", /* no kernel modules needed for a boot test */
 			                     "", /* no kmod tools needed for a boot test */
+			                     "", /* no host-tools image needed for a boot test */
 			                     NULL };
 		if (run_subprocess(MKBOOTROOT_BIN, mkbootroot_argv) != 0)
 			return 1;

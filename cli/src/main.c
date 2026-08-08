@@ -28,6 +28,7 @@ static void print_usage(FILE *out)
 	        "\n"
 	        "commands:\n"
 	        "  health\n"
+	        "  boot      -- build version/time, A/B slot, kernel version (uname)\n"
 	        "  shutdown  -- stop kanxeod; powers off the host too when it's running as\n"
 	        "               real PID 1 (an installed system) -- a dev/interactive kanxeod\n"
 	        "               just exits, same as it always has on SIGTERM\n"
@@ -169,6 +170,10 @@ static void print_usage(FILE *out)
 	        "  swap enable --size-mb=N  -- create and activate a swap file of this size\n"
 	        "  swap disable  -- deactivate and remove it\n"
 	        "  host-stats  -- host-wide load/CPU/memory/disk/network snapshot (ADR-0073)\n"
+	        "  ping HOST  -- real ICMP echo against an IPv4 address, waits for the result\n"
+	        "               (~2s max) and exits nonzero if unreachable\n"
+	        "  resolv [show]  -- the host's own outbound DNS resolver config (ADR-0076)\n"
+	        "  resolv set [--nameserver=A.B.C.D ...]  -- replace it; no flags clears it\n"
 	        "  logs [--source=kernel|kanxeod|audit] [--level=...] [--tail=N] [--since=UNIXTS]\n"
 	        "               -- the consolidated log (kernel dmesg + kanxeod's own\n"
 	        "               diagnostics + a per-request audit trail, ADR-0070)\n"
@@ -236,11 +241,17 @@ static void print_raw_json(const struct json_value *v)
 
 static void fmt_health(const struct json_value *v)
 {
-	const char *slot = json_str_field(v, "slot");
-
 	printf("%s\n", json_str_field(v, "status"));
+}
+
+static void fmt_boot(const struct json_value *v)
+{
+	const char *slot = json_str_field(v, "slot");
+	const char *kernel = json_str_field(v, "kernel_version");
+
 	printf("build:   %s (%s)\n", json_str_field(v, "build_version"), json_str_field(v, "build_time"));
 	printf("slot:    %s\n", (slot != NULL) ? slot : "(none)");
+	printf("kernel:  %s\n", (kernel != NULL) ? kernel : "(unknown)");
 }
 
 static void fmt_container_line(const struct json_value *v)
@@ -724,6 +735,17 @@ static int cmd_health(const struct kx_client *c, int json_mode)
 	return emit(&r, json_mode, fmt_health);
 }
 
+static int cmd_boot(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/boot", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_boot);
+}
+
 static int cmd_routes_ls(const struct kx_client *c, int json_mode)
 {
 	struct kx_response r;
@@ -974,6 +996,98 @@ static int cmd_disks(const struct kx_client *c, int json_mode, int argc, char **
 	fprintf(stderr, "usage: kanxeoctl disks [ls]\n"
 	                "       kanxeoctl disks format NAME\n"
 	                "       kanxeoctl disks format-status NAME\n");
+	return 2;
+}
+
+#define CLI_RESOLV_MAX_NAMESERVERS 3 /* mirrors daemon/include/resolv.h's own RESOLV_MAX_NAMESERVERS -- not shared via a header since this CLI never links daemon internals, only talks REST */
+
+static void fmt_resolv(const struct json_value *v)
+{
+	const struct json_value *arr = json_object_get(v, "nameservers");
+	size_t i;
+
+	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		printf("(no nameservers configured)\n");
+		return;
+	}
+	for (i = 0; i < arr->u.array.count; i++)
+		printf("nameserver %s\n", json_as_string(arr->u.array.items[i]));
+}
+
+static int cmd_resolv_show(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/resolv", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_resolv);
+}
+
+/* kanxeoctl resolv set --nameserver=A.B.C.D [--nameserver=A.B.C.D ...]
+ * -- repeatable, same convention run's own --network=/--device=/
+ * --interface= already use. No flags at all means an empty list --
+ * clears the host's own resolver config entirely, same "the absence
+ * of the flag is a real, valid choice" precedent --clear-bind-ip
+ * established for daemon-config. */
+static int cmd_resolv_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *nameservers[CLI_RESOLV_MAX_NAMESERVERS];
+	int count = 0;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--nameserver=", 13) == 0) {
+			if (count >= CLI_RESOLV_MAX_NAMESERVERS) {
+				fprintf(stderr, "kanxeoctl: too many --nameserver= flags (max %d)\n",
+				        CLI_RESOLV_MAX_NAMESERVERS);
+				return 2;
+			}
+			nameservers[count++] = argv[i] + 13;
+		} else {
+			fprintf(stderr, "kanxeoctl: unknown resolv set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "nameservers");
+	jw_arr_open(&w);
+	for (i = 0; i < count; i++)
+		jw_str(&w, nameservers[i]);
+	jw_arr_close(&w);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "PUT", "/v1/system/resolv", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_resolv);
+}
+
+static int cmd_resolv(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1)
+		return cmd_resolv_show(c, json_mode);
+
+	sub = argv[0];
+	if (strcmp(sub, "show") == 0)
+		return cmd_resolv_show(c, json_mode);
+	if (strcmp(sub, "set") == 0)
+		return cmd_resolv_set(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr,
+	        "usage: kanxeoctl resolv [show]\n"
+	        "       kanxeoctl resolv set [--nameserver=A.B.C.D ...]\n");
 	return 2;
 }
 
@@ -1448,6 +1562,91 @@ static int cmd_host_stats(const struct kx_client *c, int json_mode)
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_host_stats);
+}
+
+static void fmt_ping(const struct json_value *v)
+{
+	const char *host = json_str_field(v, "host");
+	const struct json_value *reachable_v = json_object_get(v, "reachable");
+	const struct json_value *timed_out_v = json_object_get(v, "timed_out");
+
+	if (reachable_v != NULL && reachable_v->type == JSON_BOOL && reachable_v->u.boolean) {
+		printf("%s: reachable, rtt=%.2fms\n", host, json_as_number(json_object_get(v, "rtt_ms")));
+	} else if (timed_out_v != NULL && timed_out_v->type == JSON_BOOL && timed_out_v->u.boolean) {
+		printf("%s: unreachable (timed out)\n", host);
+	} else {
+		printf("%s: unreachable\n", host);
+	}
+}
+
+/* Polls GET /v1/system/ping until state leaves "pending" -- same
+ * shape as poll_bootstrap_fetch()/poll_hostbuild()/poll_iso(); the
+ * server side itself is bounded to a fixed ~2s timeout, so this loop
+ * always terminates. */
+static int poll_ping(const struct kx_client *c, struct kx_response *out)
+{
+	for (;;) {
+		const char *state;
+
+		if (kx_client_request(c, "GET", "/v1/system/ping", NULL, out) != 0) {
+			fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+			return -1;
+		}
+		state = json_str_field(out->json, "state");
+		if (state == NULL || strcmp(state, "pending") != 0)
+			return 0;
+		kx_response_free(out);
+		usleep(100000);
+	}
+}
+
+static int cmd_ping(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct json_writer w;
+	struct kx_response r;
+	int rc;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl ping HOST\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "host");
+	jw_str(&w, argv[0]);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/system/ping", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	if (r.status == 409) {
+		kx_response_free(&r);
+		fprintf(stderr, "kanxeoctl: another ping is already in flight\n");
+		return 1;
+	}
+	if (r.status != 202) {
+		return emit(&r, json_mode, fmt_ping);
+	}
+	kx_response_free(&r);
+
+	if (poll_ping(c, &r) != 0)
+		return 1;
+
+	{
+		const struct json_value *reachable_v = json_object_get(r.json, "reachable");
+		int was_reachable = reachable_v != NULL && reachable_v->type == JSON_BOOL &&
+		                     reachable_v->u.boolean;
+
+		rc = emit(&r, json_mode, fmt_ping); /* frees r.json -- read reachable_v above first */
+		if (rc == 0 && !was_reachable)
+			rc = 1; /* unreachable is a real failure exit code, same as any other check command */
+	}
+	return rc;
 }
 
 /*
@@ -4426,6 +4625,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 {
 	if (strcmp(cmd, "health") == 0)
 		return cmd_health(client, json_mode);
+	if (strcmp(cmd, "boot") == 0)
+		return cmd_boot(client, json_mode);
 	if (strcmp(cmd, "shutdown") == 0)
 		return cmd_shutdown(client, json_mode);
 	if (strcmp(cmd, "reboot") == 0)
@@ -4454,6 +4655,10 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_swap(client, json_mode, argc, argv);
 	if (strcmp(cmd, "host-stats") == 0)
 		return cmd_host_stats(client, json_mode);
+	if (strcmp(cmd, "ping") == 0)
+		return cmd_ping(client, json_mode, argc, argv);
+	if (strcmp(cmd, "resolv") == 0)
+		return cmd_resolv(client, json_mode, argc, argv);
 	if (strcmp(cmd, "ps") == 0)
 		return cmd_ps(client, json_mode);
 	if (strcmp(cmd, "run") == 0)
@@ -4551,10 +4756,11 @@ static int tokenize_line(char *line, char **tokens, int max_tokens)
  * makes on the web dashboard side (web/app.js) for the identical
  * reason (a route table that can't be enumerated by walking code). */
 static const char *const SHELL_COMMANDS[] = {
-	"backup", "console",   "daemon-config", "device",   "devicemap", "diskrole",
+	"backup", "boot",      "console",       "daemon-config", "device",   "devicemap", "diskrole",
 	"disks",  "dns",       "exit",          "files",    "health",    "help",
 	"host-stats", "image", "inspect",       "iso",      "logs",      "network",
-	"pause",  "pkg",       "pki",           "ps",       "quit",      "reboot",
+	"pause",  "ping",      "pkg",           "pki",      "ps",        "quit",      "reboot",
+	"resolv",
 	"restore", "rm",       "routes",        "run",      "shutdown",  "site",
 	"start",  "stats",     "stop",          "swap",     "unpause",   "update",
 	NULL

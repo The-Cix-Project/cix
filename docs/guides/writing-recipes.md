@@ -38,6 +38,8 @@ pkg_sha256="<tarball's sha256> <font.woff2's sha256> <icons.css's sha256>"
 
 Index 0 is treated as "the" source: fetched, verified, and extracted into `/build/src` exactly like a single-source recipe. Every entry after that is fetched and verified the same way, but never extracted — each lands as a plain file at `/build/extra/<basename-of-its-own-URL>` for `pkg_build()`/`pkg_install()` to reference directly (e.g. `/build/extra/font.woff2`). Up to 16 entries (`PKG_MAX_SOURCES`). Any single entry's fetch failure or checksum mismatch fails the whole job — no partial-success state, matching the single-source case's own all-or-nothing guarantee.
 
+**A real trap this bit in practice**: `/build/extra/`'s filename comes from `url_basename()` of the URL *as written in `pkg_source`*, not from the original file's name at its ultimate origin. If a source needs re-hosting — e.g. mirroring a CDN asset over the LAN (the [remote-development](remote-development.md) trick) for a box with no outbound DNS — the mirror URL's own path must still end in the exact basename `pkg_build()` expects, not a generic renamed pattern (`asset-1.src`, `pkg-name-version-N.src`, etc.). A real `lldap.recipe` LAN-mirror workaround once re-served all 8 of its CDN assets under a generic `lldap-0.6.3-N.src` naming scheme; every checksum passed, the whole build ran to completion, and only the final `cp /build/extra/bootstrap-nightshade.min.css ...` step failed with "No such file or directory" — silent and easy to miss until the log store's own tail-capture fix (ADR-0072) made the real error visible instead of truncated build-progress noise.
+
 ## The `pkg_build()`/`pkg_install()` contract
 
 ```sh

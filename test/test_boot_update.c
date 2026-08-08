@@ -247,7 +247,7 @@ int main(void)
 	{
 		char *argv_a[] = { (char *)MKBOOTROOT_BIN, stage_dir,
 			           (char *)KANXEOD_BIN, (char *)KANXEOCTL_BIN, "web", root_squashfs_a,
-			           "", NULL };
+			           "", "", "", "", NULL };
 		if (run_subprocess(MKBOOTROOT_BIN, argv_a) != 0)
 			return 1;
 	}
@@ -258,7 +258,7 @@ int main(void)
 	{
 		char *argv_new[] = { (char *)MKBOOTROOT_BIN, stage_dir_new,
 			             (char *)KANXEOD_BIN, (char *)KANXEOCTL_BIN, web_new_dir, root_squashfs_new,
-			             "", NULL };
+			             "", "", "", "", NULL };
 		if (run_subprocess(MKBOOTROOT_BIN, argv_new) != 0)
 			return 1;
 	}
