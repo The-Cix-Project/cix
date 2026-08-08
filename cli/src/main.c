@@ -171,7 +171,10 @@ static void print_usage(FILE *out)
 	        "  logs [--source=kernel|kanxeod|audit] [--level=...] [--tail=N] [--since=UNIXTS]\n"
 	        "               -- the consolidated log (kernel dmesg + kanxeod's own\n"
 	        "               diagnostics + a per-request audit trail, ADR-0070)\n"
-	        "  logs config [--max-bytes=N]  -- show or set the log's total size cap\n");
+	        "  logs config [--max-bytes=N] [--min-level=LEVEL]  -- show or set the log's\n"
+	        "               total size cap and/or its minimum severity floor\n"
+	        "               (emerg/alert/crit/err|error/warning|warn/notice/info/debug,\n"
+	        "               default debug -- log everything)\n");
 }
 
 static const char *json_str_field(const struct json_value *obj, const char *key)
@@ -361,7 +364,10 @@ static void fmt_logs(const struct json_value *v)
 
 static void fmt_logs_config(const struct json_value *v)
 {
-	printf("max_bytes=%lld\n", (long long)json_as_number(json_object_get(v, "max_bytes")));
+	const char *min_level = json_str_field(v, "min_level");
+
+	printf("max_bytes=%lld min_level=%s\n", (long long)json_as_number(json_object_get(v, "max_bytes")),
+	       min_level != NULL ? min_level : "?");
 }
 
 static void fmt_network_line(const struct json_value *v)
@@ -1075,19 +1081,22 @@ static int cmd_logs(const struct kx_client *c, int json_mode, int argc, char **a
 static int cmd_logs_config(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *max_bytes = NULL;
+	const char *min_level = NULL;
 	int i;
 	struct kx_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--max-bytes=", 12) == 0)
 			max_bytes = argv[i] + 12;
+		else if (strncmp(argv[i], "--min-level=", 12) == 0)
+			min_level = argv[i] + 12;
 		else {
 			fprintf(stderr, "kanxeoctl: unknown logs config option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
-	if (max_bytes == NULL) {
+	if (max_bytes == NULL && min_level == NULL) {
 		if (kx_client_request(c, "GET", "/v1/system/logs/config", NULL, &r) != 0) {
 			fprintf(stderr, "kanxeoctl: could not reach daemon\n");
 			return 1;
@@ -1100,8 +1109,14 @@ static int cmd_logs_config(const struct kx_client *c, int json_mode, int argc, c
 
 		jw_init(&w);
 		jw_obj_open(&w);
-		jw_key(&w, "max_bytes");
-		jw_int(&w, atoll(max_bytes));
+		if (max_bytes != NULL) {
+			jw_key(&w, "max_bytes");
+			jw_int(&w, atoll(max_bytes));
+		}
+		if (min_level != NULL) {
+			jw_key(&w, "min_level");
+			jw_str(&w, min_level);
+		}
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 

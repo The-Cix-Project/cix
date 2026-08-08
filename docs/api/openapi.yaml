@@ -640,7 +640,7 @@ paths:
 
   /system/logs/config:
     get:
-      summary: The log store's current total size cap (ADR-0070)
+      summary: The log store's current total size cap and minimum severity floor (ADR-0070)
       operationId: getSystemLogsConfig
       responses:
         "200":
@@ -650,12 +650,25 @@ paths:
               schema:
                 $ref: "#/components/schemas/LogsConfig"
     put:
-      summary: Set the log store's total size cap (ADR-0070)
+      summary: Set the log store's total size cap and/or its minimum severity floor (ADR-0070)
       description: >
-        Enforced at segment granularity (8 rotating segments), not
-        byte-exact -- a few percent of slop against this value is
-        expected. Affects future segment rotation only, never
-        retroactively shrinks an already-large segment.
+        Both fields are optional and independent (at least one is
+        required) -- setting one never requires resupplying the other.
+        `max_bytes` is enforced at segment granularity (8 rotating
+        segments), not byte-exact -- a few percent of slop against this
+        value is expected. Affects future segment rotation only, never
+        retroactively shrinks an already-large segment. `min_level` is
+        checked at write time, before an entry ever touches a segment
+        file -- not merely at `GET`'s own `level` query filter (which
+        only filters what's already stored). Real, deployment-motivated
+        addition: this closes a genuine gap where a real build failure's
+        own captured output was truncated away entirely by the old,
+        far smaller `LOGSTORE_MSG_MAX` (raised 512 -> 4096 in the same
+        change) before this field even existed -- `min_level` lets an
+        operator suppress routine chatter (e.g. verbose kernel
+        `debug`/`notice` dmesg lines) without losing anything more
+        severe, addressing "settable so we do not over-log" without
+        sacrificing "extensive enough to catch real issues."
       operationId: putSystemLogsConfig
       requestBody:
         required: true
@@ -671,7 +684,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/LogsConfig"
         "400":
-          description: max_bytes missing or out of [1 MB, 100 GB]
+          description: >
+            Neither field given, max_bytes out of [1 MB, 100 GB], or
+            min_level not a recognized severity name
           content:
             application/json:
               schema:
@@ -4120,12 +4135,26 @@ components:
 
     LogsConfig:
       type: object
-      required: [max_bytes]
+      required: [max_bytes, min_level]
+      description: >
+        On PUT, both fields are optional in the request body (at least
+        one required) -- the response always echoes back the resulting
+        full config regardless of which field(s) were actually given.
       properties:
         max_bytes:
           type: integer
           minimum: 1048576
           maximum: 107374182400
+        min_level:
+          type: string
+          enum: [emerg, alert, crit, err, error, warning, warn, notice, info, debug]
+          description: >
+            Entries less severe than this are dropped at write time,
+            before ever touching a segment file -- not merely hidden
+            from GET's own `level` query filter. "error"/"warn" are
+            accepted as synonyms for "err"/"warning" (kanxeod/audit's
+            own logstore_write() callers always say "error", never
+            "err"). Default "debug" (log everything).
 
     SwapStatus:
       type: object

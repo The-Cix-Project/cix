@@ -34,7 +34,7 @@ kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `swap enable --size-mb=N` | Create and activate a swap file of this size |
 | `swap disable` | Deactivate and remove it |
 | `logs [--source=kernel\|kanxeod\|audit] [--level=...] [--tail=N] [--since=UNIXTS]` | The consolidated log (kernel dmesg + kanxeod diagnostics + per-request audit trail, ADR-0070) |
-| `logs config [--max-bytes=N]` | Show or set the log's total size cap |
+| `logs config [--max-bytes=N] [--min-level=LEVEL]` | Show or set the log's total size cap and/or minimum severity floor (`emerg`/`alert`/`crit`/`err`\|`error`/`warning`\|`warn`/`notice`/`info`/`debug`, default `debug`) -- either flag alone is fine, both are independent |
 
 See [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) and [`docs/guides/staying-updated.md`](staying-updated.md) for `update`'s real operator runbooks, not just the flag syntax.
 

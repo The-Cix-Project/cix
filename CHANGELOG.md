@@ -2,6 +2,25 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 16 (done): log message cap raised, build-output tail-capture, settable minimum severity (ADR-0072)
+
+Found and fixed live while diagnosing a real `lldap` build failure on 192.168.15.95, raised directly by the user: the log store's own `LOGSTORE_MSG_MAX` (512 bytes) and `pkg.c`'s build-output capture (`PKG_BUILD_OUTPUT_CAPTURE_MAX`, 300 bytes, head-only) combined to guarantee a real build failure's own error text was never captured -- only early, unhelpful progress output.
+
+#### Added
+- `daemon/include/logstore.h`/`daemon/src/logstore.c`: `logstore_set_min_level()`/`logstore_min_level()`, a persisted, write-time minimum-severity floor across the real syslog scale (`emerg`..`debug`) -- dropped before any segment-file I/O, not merely `GET`'s pre-existing `level` filter.
+- `daemon/src/main.c`: `PUT /v1/system/logs/config` gains an optional `min_level` field, independent of the existing `max_bytes` (either alone is a valid partial update).
+- `cli/src/main.c`: `kanxeoctl logs config [--max-bytes=N] [--min-level=LEVEL]`.
+- `docs/adr/0072-log-message-cap-and-min-level.md`; `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/cli-reference.md` updated.
+
+#### Changed
+- `LOGSTORE_MSG_MAX` raised 512 -> 4096.
+- `daemon/src/pkg.c`'s build-output capture (`PKG_BUILD_OUTPUT_CAPTURE_MAX` raised 300 -> 3800) rewritten from a single bounded `read()` (captured only the *head* of a failed build's output) to a full pipe drain keeping only the *tail* via a fixed-size sliding window -- the actual error is almost always the last thing printed, not the first.
+
+#### Notes
+- Purely additive for `max_bytes`-only callers; default `min_level` is `"debug"` (log everything), a deliberate no-op for anyone who never touches the setting.
+- Full clean rebuild (`-Wall -Werror`, zero warnings); full local regression sweep (23 daemon-linked/container test binaries, all passing, `sudo`/unsandboxed).
+- Two real, adjacent gaps deliberately not addressed here (both queued): host/per-container PSI (pressure-stall) stats, and live-tailing a running build's output from a console session rather than only after failure (explicitly deferred by the user).
+
 ### Part 15 (done): multi-disk management, Phase C -- destructive format + mount (`GET`/`POST /v1/disks/{disk_name}/format`)
 
 Direct follow-up to Part 14's role assignment. Confirmed with the user before writing code: format is a separate, explicit action from role assignment (never an automatic side effect), gated behind a `confirm_disk_name` field in the request body matching the URL's own disk name. Full reasoning in ADR-0071.

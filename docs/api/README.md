@@ -224,12 +224,14 @@ GET /v1/system/logs?source=audit&level=info&tail=50&since=1700000000
 ```
 GET /v1/system/logs/config
 PUT /v1/system/logs/config
-{"max_bytes": 5368709120}
+{"max_bytes": 5368709120, "min_level": "info"}
 ```
 
 One consolidated, size-capped log (ADR-0070): real kernel `dmesg` (source `kernel`, read directly from `/dev/kmsg`), kanxeod's own internal diagnostics (source `kanxeod`, mirrored to stderr too — stderr is still the only channel during boot, before the API is reachable), and a per-request audit trail (source `audit`) — one entry per REST request this daemon handles, method + path, covering every action either `kanxeoctl` or the web dashboard takes since both are pure REST clients. `GET /health` and `GET /system/logs` itself are excluded from the audit trail as low-value polling noise. All three sources interleave into one chronologically-ordered store, not siloed per-source streams.
 
 Storage is 8 rotating segment files, not a byte-exact ring buffer — the oldest whole segment is dropped once the configured `max_bytes` cap is reached (enforced at segment granularity, so expect a few percent of slop against the exact number, the same tradeoff `logrotate`/`journald` already make). `tail` defaults to 1000 and is capped at 5000; `since` is Unix seconds.
+
+`PUT .../config`'s two fields — `max_bytes` and `min_level` — are independent; a real request only ever needs to give the one actually changing, and the response always echoes back the resulting full config. `min_level` (any real syslog severity name: `emerg`/`alert`/`crit`/`err` or `error`/`warning` or `warn`/`notice`/`info`/`debug`, default `debug` — log everything) is checked *at write time*, before an entry ever touches a segment file — genuinely different from `GET`'s own `level` query filter, which only ever filters what's already stored. Each captured log message itself is capped at 4096 bytes (`LOGSTORE_MSG_MAX`, raised from an original, too-small 512 after a real deployment failure's own build-output capture was silently truncated away before the actual error line) — a real build failure's captured output (`pkg %s@%s: build output: ...`) keeps the *tail* of the output, not the head, since the actual error is almost always the last thing printed.
 
 ## Creating a container
 

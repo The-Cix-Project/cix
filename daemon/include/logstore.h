@@ -44,13 +44,40 @@
 
 #define LOGSTORE_SOURCE_MAX 16
 #define LOGSTORE_LEVEL_MAX 16
-#define LOGSTORE_MSG_MAX 512
+/*
+ * Raised from an original 512 (2026-08-08, real deployment): a genuine
+ * build failure's own captured output (pkg.c's PKG_BUILD_OUTPUT_CAPTURE_MAX)
+ * routinely runs to several KB before the actual error line, and 512
+ * silently discarded all but the first ~500 bytes of it -- hiding the
+ * one piece of information this whole capture mechanism exists to
+ * preserve. 4096 gives real diagnostic text room to breathe while
+ * staying a fixed, bounded stack buffer (logstore_write()'s own
+ * vsnprintf() truncates safely regardless of the exact value chosen).
+ */
+#define LOGSTORE_MSG_MAX 4096
 
 enum logstore_error {
 	LOGSTORE_OK = 0,
 	LOGSTORE_ERR_INVALID_MAX_BYTES,
+	LOGSTORE_ERR_INVALID_MIN_LEVEL,
 	LOGSTORE_ERR_PERSIST_FAILED
 };
+
+/*
+ * "settable so we do not over-log" (raised directly by the user,
+ * 2026-08-08, alongside the LOGSTORE_MSG_MAX fix above): a persisted
+ * minimum severity threshold, checked at write time -- an entry less
+ * severe than the configured floor is dropped before ever touching a
+ * segment file, not merely hidden from GET's own existing
+ * level_filter (which only ever filters what's already stored).
+ * Covers the full real syslog severity range kernel dmesg entries
+ * already carry (emerg..debug, kmsg_level_name()'s own names) since
+ * that's genuinely the noisiest source today; kanxeod/audit's own
+ * "info"/"error" entries map onto the same scale. Default "debug"
+ * (log everything) preserves this store's exact pre-existing
+ * behavior for anyone who never touches the setting.
+ */
+#define LOGSTORE_DEFAULT_MIN_LEVEL "debug"
 
 /* Loads persisted config (the max_bytes cap, if previously set) and
  * scans dir for any segment files already there (a daemon restart
@@ -79,6 +106,19 @@ void logstore_write(const char *source, const char *level, const char *fmt, ...)
 
 enum logstore_error logstore_set_max_bytes(int64_t max_bytes);
 int64_t logstore_max_bytes(void);
+
+/*
+ * min_level must be one of the real syslog severity names
+ * (kmsg_level_name()'s own set: "emerg", "alert", "crit", "err" or
+ * "error" (both accepted -- kanxeod/audit's own convention is
+ * "error", the kernel's is "err"), "warning" or "warn" (both
+ * accepted), "notice", "info", "debug") -- anything else is
+ * LOGSTORE_ERR_INVALID_MIN_LEVEL. Applied at logstore_write() time,
+ * not just at GET time: an entry less severe than this floor is
+ * dropped before ever touching a segment file.
+ */
+enum logstore_error logstore_set_min_level(const char *min_level);
+const char *logstore_min_level(void);
 
 /* Writes up to limit most-recent entries (newest last, matching
  * `tail`'s own convention) matching every given filter (NULL/0 means

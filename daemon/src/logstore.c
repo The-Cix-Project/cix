@@ -15,8 +15,38 @@
 static char g_dir[512];
 static char g_state_path[512];
 static int64_t g_max_bytes = LOGSTORE_DEFAULT_MAX_BYTES;
+static char g_min_level[LOGSTORE_LEVEL_MAX] = LOGSTORE_DEFAULT_MIN_LEVEL;
 static uint64_t g_next_seq = 1;
 static int g_initialized;
+
+/*
+ * Real syslog severity order (RFC 5424, the same scale kmsg_level_name()
+ * below already names) -- lower number is more severe. "error"/"warn"
+ * are accepted as synonyms for "err"/"warning" since kanxeod/audit's
+ * own logstore_write() callers always say "error", never "err".
+ * Anything unrecognized ranks as INFO (6) -- permissive by
+ * construction, so a typo'd or future level name is never silently
+ * dropped entirely.
+ */
+static int level_rank(const char *level)
+{
+	static const struct {
+		const char *name;
+		int rank;
+	} levels[] = {
+	    {"emerg", 0}, {"alert", 1},   {"crit", 2},  {"err", 3},    {"error", 3},
+	    {"warning", 4}, {"warn", 4},  {"notice", 5}, {"info", 6},  {"debug", 7},
+	};
+	size_t i;
+
+	if (level == NULL)
+		return 6;
+	for (i = 0; i < sizeof(levels) / sizeof(levels[0]); i++) {
+		if (strcmp(level, levels[i].name) == 0)
+			return levels[i].rank;
+	}
+	return 6;
+}
 
 static int g_kmsg_fd = -1;
 
@@ -33,6 +63,8 @@ static int save_state(void)
 	jw_obj_open(&w);
 	jw_key(&w, "max_bytes");
 	jw_int(&w, g_max_bytes);
+	jw_key(&w, "min_level");
+	jw_str(&w, g_min_level);
 	jw_key(&w, "next_seq");
 	jw_int(&w, (long long)g_next_seq);
 	jw_obj_close(&w);
@@ -46,7 +78,7 @@ static int load_state(void)
 	char *buf;
 	size_t len;
 	struct json_value *root;
-	const struct json_value *jmax, *jseq;
+	const struct json_value *jmax, *jseq, *jlevel;
 
 	if (persist_read_file(g_state_path, &buf, &len) != 0)
 		return -1;
@@ -63,6 +95,9 @@ static int load_state(void)
 	jmax = json_object_get(root, "max_bytes");
 	if (jmax != NULL)
 		g_max_bytes = (int64_t)json_as_number(jmax);
+	jlevel = json_object_get(root, "min_level");
+	if (jlevel != NULL && json_as_string(jlevel) != NULL)
+		snprintf(g_min_level, sizeof(g_min_level), "%s", json_as_string(jlevel));
 	jseq = json_object_get(root, "next_seq");
 	if (jseq != NULL)
 		g_next_seq = (uint64_t)json_as_number(jseq);
@@ -185,6 +220,7 @@ int logstore_init(const char *dir, const char *state_path)
 		return -1;
 
 	g_max_bytes = LOGSTORE_DEFAULT_MAX_BYTES;
+	snprintf(g_min_level, sizeof(g_min_level), "%s", LOGSTORE_DEFAULT_MIN_LEVEL);
 	g_next_seq = 1;
 	if (load_state() != 0)
 		return -1;
@@ -254,12 +290,14 @@ void logstore_write(const char *source, const char *level, const char *fmt, ...)
 
 	if (!g_initialized)
 		return;
+	snprintf(lvl, sizeof(lvl), "%s", level != NULL ? level : "info");
+	if (level_rank(lvl) > level_rank(g_min_level))
+		return; /* less severe than the configured floor -- dropped before any write */
 
 	va_start(ap, fmt);
 	vsnprintf(msg, sizeof(msg), fmt, ap);
 	va_end(ap);
 	snprintf(src, sizeof(src), "%s", source != NULL ? source : "kanxeod");
-	snprintf(lvl, sizeof(lvl), "%s", level != NULL ? level : "info");
 
 	jw_init(&w);
 	jw_obj_open(&w);
@@ -299,6 +337,39 @@ enum logstore_error logstore_set_max_bytes(int64_t max_bytes)
 int64_t logstore_max_bytes(void)
 {
 	return g_max_bytes;
+}
+
+enum logstore_error logstore_set_min_level(const char *min_level)
+{
+	char prev[LOGSTORE_LEVEL_MAX];
+	static const char *const valid[] = {"emerg",   "alert", "crit",  "err",  "error",
+	                                     "warning", "warn",  "notice", "info", "debug"};
+	size_t i;
+	int ok = 0;
+
+	if (min_level == NULL)
+		return LOGSTORE_ERR_INVALID_MIN_LEVEL;
+	for (i = 0; i < sizeof(valid) / sizeof(valid[0]); i++) {
+		if (strcmp(min_level, valid[i]) == 0) {
+			ok = 1;
+			break;
+		}
+	}
+	if (!ok)
+		return LOGSTORE_ERR_INVALID_MIN_LEVEL;
+
+	snprintf(prev, sizeof(prev), "%s", g_min_level);
+	snprintf(g_min_level, sizeof(g_min_level), "%s", min_level);
+	if (save_state() != 0) {
+		snprintf(g_min_level, sizeof(g_min_level), "%s", prev);
+		return LOGSTORE_ERR_PERSIST_FAILED;
+	}
+	return LOGSTORE_OK;
+}
+
+const char *logstore_min_level(void)
+{
+	return g_min_level;
 }
 
 struct tail_entry {

@@ -131,12 +131,19 @@ static char *g_build_envp[4];
  * to fail the build).
  */
 static int g_build_output_rd = -1;
-/* Left with headroom under LOGSTORE_MSG_MAX (512) once the surrounding
+/* Left with headroom under LOGSTORE_MSG_MAX (4096) once the surrounding
  * "pkg %s@%s: build output: " prefix and name/image (up to
  * PKG_NAME_MAX/PKG_IMAGE_NAME_MAX, 64 each) are accounted for --
  * logstore_write() truncates safely via vsnprintf() regardless, this
- * just keeps that truncation rare rather than routine. */
-#define PKG_BUILD_OUTPUT_CAPTURE_MAX 300
+ * just keeps that truncation rare rather than routine. Raised from an
+ * original 300 (paired with LOGSTORE_MSG_MAX's own original 512,
+ * 2026-08-08) alongside switching the capture below from "first N
+ * bytes read" to "last N bytes of the whole output" -- a real build's
+ * own output routinely runs to several KB of "Compiling x"/progress
+ * lines before the actual error, so capturing only the head (as
+ * either original value did) reliably captured everything EXCEPT the
+ * one line that mattered. */
+#define PKG_BUILD_OUTPUT_CAPTURE_MAX 3800
 
 static int pkg_name_is_valid(const char *name)
 {
@@ -1827,19 +1834,45 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * or exec attempt failed, this says WHY in the recipe
 		 * script's own words (e.g. a real "make: not found" from
 		 * bash itself, indistinguishable from container.c's own
-		 * exit-127 fallback by exit status alone). Bounded, one
-		 * non-blocking-by-construction read (the container has
-		 * already exited, so the write end is closed and any
-		 * buffered data is immediately available; anything beyond
-		 * the cap is simply not read, capture is diagnostic only).
+		 * exit-127 fallback by exit status alone). Drains the WHOLE
+		 * pipe (the container has already exited, so the write end
+		 * is closed and this loop always reaches real EOF, never
+		 * blocks) rather than a single bounded read -- a real
+		 * build's own output routinely runs to several KB of
+		 * "Compiling x"/progress lines before the actual error, and
+		 * a single read() only ever returns whatever's sitting in
+		 * the pipe's own kernel buffer *first*: exclusively early
+		 * progress spam, never the failure itself (confirmed live,
+		 * 2026-08-08: a real lldap build failure's own captured
+		 * output was 100% "Compiling ..." lines, the real error
+		 * long since scrolled past the old head-only capture).
+		 * Keeps only the TAIL -- the last PKG_BUILD_OUTPUT_CAPTURE_MAX
+		 * bytes, via a fixed-size sliding window (drop the front,
+		 * append at the end) -- since the actual error is almost
+		 * always the last thing printed, regardless of total output
+		 * length.
 		 */
 		char captured[PKG_BUILD_OUTPUT_CAPTURE_MAX + 1];
 		int captured_len = 0;
 
 		if (g_build_output_rd >= 0) {
-			ssize_t n = read(g_build_output_rd, captured, PKG_BUILD_OUTPUT_CAPTURE_MAX);
+			char chunk[4096];
+			ssize_t n;
 
-			captured_len = (n > 0) ? (int)n : 0;
+			while ((n = read(g_build_output_rd, chunk, sizeof(chunk))) > 0) {
+				int take = (n > PKG_BUILD_OUTPUT_CAPTURE_MAX) ? PKG_BUILD_OUTPUT_CAPTURE_MAX
+				                                               : (int)n;
+				int new_total = captured_len + take;
+
+				if (new_total > PKG_BUILD_OUTPUT_CAPTURE_MAX) {
+					int overflow = new_total - PKG_BUILD_OUTPUT_CAPTURE_MAX;
+
+					memmove(captured, captured + overflow, captured_len - overflow);
+					captured_len -= overflow;
+				}
+				memcpy(captured + captured_len, chunk + ((int)n - take), take);
+				captured_len += take;
+			}
 			close(g_build_output_rd);
 			g_build_output_rd = -1;
 		}

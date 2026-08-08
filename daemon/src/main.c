@@ -4781,16 +4781,26 @@ static void handle_logs_config_get(int fd)
 	jw_obj_open(&w);
 	jw_key(&w, "max_bytes");
 	jw_int(&w, logstore_max_bytes());
+	jw_key(&w, "min_level");
+	jw_str(&w, logstore_min_level());
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
 
+/*
+ * Both fields are optional and independent -- a caller changing only
+ * max_bytes doesn't need to resupply min_level and vice versa (each
+ * setter validates/persists on its own, matching every other partial-
+ * update PUT in this daemon, e.g. daemon-config's "only the fields
+ * given are touched" convention). At least one of the two is
+ * required, or this is a no-op PUT that would silently succeed
+ * without changing anything.
+ */
 static void handle_logs_config_put(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
-	const struct json_value *jmax;
-	enum logstore_error lerr;
+	const struct json_value *jmax, *jlevel;
 	struct json_writer w;
 
 	root = json_parse(body, body_len);
@@ -4799,27 +4809,50 @@ static void handle_logs_config_put(int fd, const char *body, size_t body_len)
 		return;
 	}
 	jmax = json_object_get(root, "max_bytes");
-	if (jmax == NULL) {
+	jlevel = json_object_get(root, "min_level");
+	if (jmax == NULL && jlevel == NULL) {
 		json_free(root);
-		respond_error(fd, 400, "Bad Request", "max_bytes missing");
+		respond_error(fd, 400, "Bad Request", "max_bytes and/or min_level required");
 		return;
 	}
 
-	lerr = logstore_set_max_bytes((int64_t)json_as_number(jmax));
-	json_free(root);
-	if (lerr != LOGSTORE_OK) {
-		respond_error(fd, lerr == LOGSTORE_ERR_INVALID_MAX_BYTES ? 400 : 500,
-		              lerr == LOGSTORE_ERR_INVALID_MAX_BYTES ? "Bad Request" : "Internal Server Error",
-		              lerr == LOGSTORE_ERR_INVALID_MAX_BYTES
-		                  ? "max_bytes out of range"
-		                  : "log config could not be persisted");
-		return;
+	if (jmax != NULL) {
+		enum logstore_error lerr = logstore_set_max_bytes((int64_t)json_as_number(jmax));
+
+		if (lerr != LOGSTORE_OK) {
+			json_free(root);
+			respond_error(fd, lerr == LOGSTORE_ERR_INVALID_MAX_BYTES ? 400 : 500,
+			              lerr == LOGSTORE_ERR_INVALID_MAX_BYTES ? "Bad Request"
+			                                                     : "Internal Server Error",
+			              lerr == LOGSTORE_ERR_INVALID_MAX_BYTES
+			                  ? "max_bytes out of range"
+			                  : "log config could not be persisted");
+			return;
+		}
 	}
+	if (jlevel != NULL) {
+		enum logstore_error lerr = logstore_set_min_level(json_as_string(jlevel));
+
+		if (lerr != LOGSTORE_OK) {
+			json_free(root);
+			respond_error(fd, lerr == LOGSTORE_ERR_INVALID_MIN_LEVEL ? 400 : 500,
+			              lerr == LOGSTORE_ERR_INVALID_MIN_LEVEL ? "Bad Request"
+			                                                     : "Internal Server Error",
+			              lerr == LOGSTORE_ERR_INVALID_MIN_LEVEL
+			                  ? "min_level must be one of emerg/alert/crit/err(or)/warning(warn)/"
+			                    "notice/info/debug"
+			                  : "log config could not be persisted");
+			return;
+		}
+	}
+	json_free(root);
 
 	jw_init(&w);
 	jw_obj_open(&w);
 	jw_key(&w, "max_bytes");
 	jw_int(&w, logstore_max_bytes());
+	jw_key(&w, "min_level");
+	jw_str(&w, logstore_min_level());
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
