@@ -2,6 +2,19 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 23 (done): Final live validation on 192.168.15.95
+
+Rebuilt+redeployed+rebooted into the full ADR-0075..0078 body of work on the real target box, confirming every new endpoint live.
+
+#### Added
+- `daemon/src/main.c`: `logstore_write()` diagnostics for `spawn_kanxeo_bootroot_assembly()`/`handle_bootroot_assemble_event()` -- fork/pidfd/exit failures now reach `GET /system/logs`, not just stderr (closes task #669, discovered live: the box's own pre-session `kanxeod` called a freshly-hostbuilt `mkbootroot` with the old 9-arg convention after this session's own argc bump, task #687).
+
+#### Notes
+- Live-verified: `GET /health` minimal; `GET /system/resolv`; a real ICMP ping (loopback, sub-ms RTT); `GET /system/stats` real populated PSI; network `address`/`has_address` fields correct post-reboot.
+- `pkg hostbuild kanxeo` still has no upgrade/force path (task #668, bare 409) -- worked around via `pkg rm` first.
+- **New, separate, unresolved regression found live**: container creation with any resource-limit flag (`--network=`, `--memory-max=`, `--pids-max=`) returns a bare 500 on this box; a flagless `run` succeeds. Not caused by anything this session touched (no container/cgroup/network-attach code changed) -- also confirmed container-creation failures aren't logged anywhere, a distinct silent-failure gap from #669. Blocks the long-pending lldap/LDAPS closure (#623/#624) and container-level PSI verification; queued for a dedicated follow-up, not dropped.
+- Full clean rebuild (`-Wall -Werror`, zero warnings) prior to deploy; regression sweep all passing.
+
 ### Part 22 (done): From-source host tools bootstrap (ADR-0078)
 
 `image/src/mkbootroot.c` shelled-out binaries (`openssl`/`curl`/`tar`/`gzip`/`bzip2`/`xz`/`cp`/`rm`/`sha256sum`/`unsquashfs`/`mkfs.ext4`) were raw dev-host copies -- not "from source" for a squashfs meant to run on someone else's hardware. Raised directly by the user.
