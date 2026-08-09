@@ -252,6 +252,8 @@
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="containers" id="imgd-tab-containers">Containers using this image</button>
 				<button type="button" class="tab-button" data-tab="packages" id="imgd-tab-packages">Packages installed</button>
+				<button type="button" class="tab-button" data-tab="manifest" id="imgd-tab-manifest">Manifest</button>
+				<button type="button" class="tab-button" data-tab="versions" id="imgd-tab-versions">Versions</button>
 			</div>
 			<div class="tab-panel" id="imgd-panel-containers" data-tab="containers">
 				<table id="imgd-containers">
@@ -294,6 +296,50 @@
 				<div class="detail-actions">
 					<button type="button" id="imgd-add-recipe">Add recipe&hellip;</button>
 				</div>
+			</div>
+			<div class="tab-panel" id="imgd-panel-manifest" data-tab="manifest" hidden>
+				<p class="hint">Declared intent (ADR-0107) -- which packages this image SHOULD contain, at
+					which mode/version, independent of what's actually installed right now. A "rolling" entry
+					auto-rebuilds this image the moment a newer recipe version is published; a "pinned"
+					entry never moves on its own.</p>
+				<table id="imgd-manifest">
+					<thead>
+						<tr>
+							<th>Package</th>
+							<th>Mode</th>
+							<th>Version</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody></tbody>
+				</table>
+				<form id="imgd-manifest-form">
+					<label>Package <input type="text" id="imgd-manifest-package" required></label>
+					<label>Mode
+						<select id="imgd-manifest-mode">
+							<option value="rolling">rolling</option>
+							<option value="pinned">pinned</option>
+						</select>
+					</label>
+					<label>Version <input type="text" id="imgd-manifest-version" required
+						placeholder="e.g. 8.20.0 (rolling: floor)"></label>
+					<button type="submit">Set entry</button>
+				</form>
+			</div>
+			<div class="tab-panel" id="imgd-panel-versions" data-tab="versions" hidden>
+				<p class="hint">Every immutable rootfs this image has ever produced (ADR-0107/ADR-0108) --
+					a container pins to whichever version was current at the moment it was created, so an
+					older version stays here, untouched, for as long as anything might still be using it.</p>
+				<table id="imgd-versions">
+					<thead>
+						<tr>
+							<th>Version</th>
+							<th>Created</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody></tbody>
+				</table>
 			</div>
 		</section>
 

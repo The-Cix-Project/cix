@@ -2,6 +2,23 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 56 (done, full clean rebuild + full regression sweep): REST/CLI/web for image version history + manifest editing (ADR-0107/ADR-0108, closes task #721)
+
+Fifth of the package/image versioning epic's parts: `GET`/`POST /v1/images/{name}` now echo `current_version` and the full `versions` history (#719/#720's own machinery was already tracking this, but nothing surfaced it to a client) alongside the existing manifest, and the web dashboard's image detail view gains dedicated **Manifest** and **Versions** tabs so an operator can see and edit pinned/rolling intent and inspect version history without going through raw `curl`.
+
+#### Added
+- `daemon/src/main.c`: `write_image_version_fields()` -- splices `current_version` (empty string if no version has been produced yet) and `versions` (via #719's own `image_version_history_write_json()`, newest first) onto an already-open image JSON object. Shared by `handle_image_create()`'s `201` and `handle_image_get_one()`'s `200`.
+- `cli/src/main.c`: `fmt_image_detail()` (`kanxeoctl image show`) now prints the current version, the manifest, and the full version history newest-first, marking whichever entry matches `current_version`.
+- `web/index.html`/`web/app.js`: two new image-detail tabs. **Manifest** lists every `{package, mode, version}` entry with a per-row Remove button and a form wired to `POST .../manifest`. **Versions** lists the full history, marking the row matching `current_version` as current.
+- `docs/api/openapi.yaml`: `Image` schema gains `current_version`/`versions` (new `ImageVersionHistoryEntry` schema); `docs/api/README.md`'s per-image-installs section now documents the version/manifest model end to end (previously said rolling auto-rebuild was "not yet built" -- stale as of Part 55).
+
+#### Fixed
+- **Use-after-free in `handle_image_create()`**: `write_image_version_fields(name, &w)` was first wired in *after* `json_free(root)`, but `name` is a pointer straight into `root`'s own parsed tree, not a copy. Caught live via a manual `curl` round-trip -- `POST /v1/images` returned malformed JSON (`"current_version":""` and a bare `"versions":` with no value at all) while a subsequent `GET` on the same image correctly showed the real hash and history (an unaffected fresh read from disk). Fixed by moving `json_free(root)` to after every use of `name` completes -- the same use-after-free class already fixed once before for a different handler (task #713).
+
+#### Notes
+- Full clean rebuild (`-Wall -Werror`) zero warnings. Full regression sweep clean: all 27 tests (22 daemon-linked + `test_harness`/`test_overlay`/`test_container_net`/`test_rtnetlink`/`test_devices`).
+- No new ADR -- already specified in ADR-0107/ADR-0108; this part only exposes machinery those already justified.
+
 ### Part 55 (done, full clean rebuild + full regression sweep): rolling images auto-rebuild on new recipe publish (ADR-0107, closes task #720)
 
 Fourth of the package/image versioning epic's parts: publishing a new recipe version now automatically rebuilds every image whose manifest tracks that package as "rolling" with a floor at or below the new version, using #719's own copy-forward mechanism (the old version's rootfs stays untouched, a new immutable version is produced and `current_version` repointed).

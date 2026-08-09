@@ -1850,9 +1850,153 @@ function renderImageDetail(name) {
 
 	renderImageDetailPackages(name);
 	renderImageDetailRecipes(name);
+	refreshImageDetailVersioning(name);
 
 	document.getElementById("imgd-remove").onclick = () => removeImage(name);
 	document.getElementById("imgd-add-recipe").onclick = () => openModal("pkg-recipe-form", "Add or update a recipe");
+}
+
+/* GET /v1/images/{name} isn't part of the images-list cache (that only
+ * ever carries {"name":...} per entry, deliberately minimal) -- the
+ * manifest/current_version/versions fields (ADR-0107/0108, task #721)
+ * are fetched fresh each time the detail view opens. */
+async function refreshImageDetailVersioning(name) {
+	try {
+		const data = await apiRequest("GET", "/v1/images/" + encodeURIComponent(name));
+
+		renderImageDetailManifest(name, data);
+		renderImageDetailVersions(name, data);
+	} catch (e) {
+		showStatus("Failed to load image details for " + name + ": " + e.message, true);
+	}
+}
+
+/* Declared package intent (ADR-0107) -- {package, mode, version}
+ * entries an operator has set via POST .../manifest, each removable
+ * via DELETE .../manifest/{package}; the form below upserts a new or
+ * existing entry through that same POST. */
+function renderImageDetailManifest(name, data) {
+	const body = document.querySelector("#imgd-manifest tbody");
+	const manifest = Array.isArray(data.manifest) ? data.manifest : [];
+
+	body.textContent = "";
+	if (manifest.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 4;
+		cell.className = "empty";
+		cell.textContent = "No manifest entries -- this image has no declared package intent";
+		row.appendChild(cell);
+		body.appendChild(row);
+	} else {
+		for (const entry of manifest) {
+			const row = document.createElement("tr");
+
+			const pkgCell = document.createElement("td");
+			pkgCell.textContent = entry.package;
+			row.appendChild(pkgCell);
+
+			const modeCell = document.createElement("td");
+			modeCell.textContent = entry.mode;
+			row.appendChild(modeCell);
+
+			const versionCell = document.createElement("td");
+			versionCell.textContent = entry.version;
+			row.appendChild(versionCell);
+
+			const actionCell = document.createElement("td");
+			const rmButton = document.createElement("button");
+
+			rmButton.textContent = "Remove";
+			rmButton.className = "button-danger";
+			rmButton.addEventListener("click", async () => {
+				try {
+					await apiRequest(
+						"DELETE",
+						"/v1/images/" + encodeURIComponent(name) + "/manifest/" + encodeURIComponent(entry.package)
+					);
+					clearStatus();
+					refreshImageDetailVersioning(name);
+				} catch (e) {
+					showStatus("Failed to remove manifest entry: " + e.message, true);
+				}
+			});
+			actionCell.appendChild(rmButton);
+			row.appendChild(actionCell);
+
+			body.appendChild(row);
+		}
+	}
+
+	const form = document.getElementById("imgd-manifest-form");
+
+	form.onsubmit = async (ev) => {
+		ev.preventDefault();
+		const pkg = document.getElementById("imgd-manifest-package").value.trim();
+		const mode = document.getElementById("imgd-manifest-mode").value;
+		const version = document.getElementById("imgd-manifest-version").value.trim();
+
+		try {
+			await apiRequest("POST", "/v1/images/" + encodeURIComponent(name) + "/manifest", {
+				package: pkg,
+				mode: mode,
+				version: version,
+			});
+			clearStatus();
+			form.reset();
+			refreshImageDetailVersioning(name);
+		} catch (e) {
+			showStatus("Failed to set manifest entry: " + e.message, true);
+		}
+	};
+}
+
+/* Full immutable version history (ADR-0107/0108) -- newest first,
+ * current_version highlighted. Read-only: a version is only ever
+ * produced by an install/upgrade/delete or the rolling auto-rebuild
+ * trigger (task #720), never created or removed directly here. */
+function renderImageDetailVersions(name, data) {
+	const body = document.querySelector("#imgd-versions tbody");
+	const versions = Array.isArray(data.versions) ? data.versions : [];
+	const currentVersion = data.current_version || "";
+
+	body.textContent = "";
+	if (versions.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 3;
+		cell.className = "empty";
+		cell.textContent = "No version history";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+
+	for (const v of versions) {
+		const row = document.createElement("tr");
+		const isCurrent = v.version === currentVersion;
+
+		const versionCell = document.createElement("td");
+		versionCell.textContent = v.version;
+		row.appendChild(versionCell);
+
+		const createdCell = document.createElement("td");
+		createdCell.textContent = v.created_at ? new Date(v.created_at * 1000).toLocaleString() : "-";
+		row.appendChild(createdCell);
+
+		const statusCell = document.createElement("td");
+		if (isCurrent) {
+			const badge = document.createElement("strong");
+
+			badge.textContent = "current";
+			statusCell.appendChild(badge);
+		}
+		row.appendChild(statusCell);
+
+		body.appendChild(row);
+	}
 }
 
 /* Installed-on-this-image packages, with a per-row Remove -- same

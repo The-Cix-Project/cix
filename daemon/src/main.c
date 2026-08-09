@@ -7051,6 +7051,29 @@ static void jw_reopen_object(struct json_writer *w)
 	w->depth++;
 }
 
+/*
+ * ADR-0107/task #721: splices "current_version" (a bare string, "" if
+ * somehow unresolvable -- IMAGE_ERR_NO_CURRENT_VERSION is unreachable
+ * for anything created via image_create(), which always produces one,
+ * but this reports rather than assumes) and "versions" (newest-first,
+ * each {version, created_at} -- image_version_history_write_json())
+ * onto an already-open image JSON object. Shared by handle_image_create()'s
+ * 201 and handle_image_get_one()'s 200 so the two responses report the
+ * exact same shape rather than one silently lagging the other.
+ */
+static void write_image_version_fields(const char *name, struct json_writer *w)
+{
+	char current_version[IMAGE_VERSION_MAX];
+
+	jw_key(w, "current_version");
+	if (image_current_version(name, current_version, sizeof(current_version)) == IMAGE_OK)
+		jw_str(w, current_version);
+	else
+		jw_str(w, "");
+	jw_key(w, "versions");
+	image_version_history_write_json(name, w);
+}
+
 static void handle_image_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
@@ -7080,11 +7103,19 @@ static void handle_image_create(int fd, const char *body, size_t body_len)
 
 	jw_init(&w);
 	image_write_json_one(name, &w);
-	json_free(root);
 	jw_reopen_object(&w);
 	jw_key(&w, "manifest");
 	jw_arr_open(&w); /* a just-created image never has a manifest.json yet -- always empty */
 	jw_arr_close(&w);
+	/*
+	 * name still points into root's own parsed tree -- json_free(root)
+	 * must not run until every use of name is done (a real
+	 * use-after-free was caught live here: write_image_version_fields()
+	 * used to run AFTER json_free(root), the same class of bug already
+	 * fixed once before for a different handler, task #713).
+	 */
+	write_image_version_fields(name, &w);
+	json_free(root);
 	jw_obj_close(&w);
 	respond_json(fd, 201, "Created", &w);
 	jw_free(&w);
@@ -7132,6 +7163,7 @@ static void handle_image_get_one(int fd, const char *name)
 		respond_image_error(fd, ierr);
 		return;
 	}
+	write_image_version_fields(name, &w);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);

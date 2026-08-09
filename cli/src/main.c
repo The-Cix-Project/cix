@@ -472,18 +472,39 @@ static void fmt_image_list(const struct json_value *v)
 static void fmt_image_detail(const struct json_value *v)
 {
 	const struct json_value *manifest = json_object_get(v, "manifest");
+	const struct json_value *versions = json_object_get(v, "versions");
+	const char *current_version = json_str_field(v, "current_version");
 	size_t i;
 
 	printf("%s\n", json_str_field(v, "name"));
+	printf("  current version: %s\n",
+	       current_version != NULL && current_version[0] != '\0' ? current_version : "(none)");
+
 	if (manifest == NULL || manifest->type != JSON_ARRAY || manifest->u.array.count == 0) {
 		printf("  (no manifest entries)\n");
+	} else {
+		for (i = 0; i < manifest->u.array.count; i++) {
+			const struct json_value *entry = manifest->u.array.items[i];
+
+			printf("  %s: %s %s\n", json_str_field(entry, "package"),
+			       json_str_field(entry, "mode"), json_str_field(entry, "version"));
+		}
+	}
+
+	if (versions == NULL || versions->type != JSON_ARRAY || versions->u.array.count == 0) {
+		printf("  (no version history)\n");
 		return;
 	}
-	for (i = 0; i < manifest->u.array.count; i++) {
-		const struct json_value *entry = manifest->u.array.items[i];
+	printf("  versions (newest first):\n");
+	for (i = 0; i < versions->u.array.count; i++) {
+		const struct json_value *entry = versions->u.array.items[i];
+		const char *version = json_str_field(entry, "version");
+		long long created_at = (long long)json_as_number(json_object_get(entry, "created_at"));
+		int is_current = current_version != NULL && version != NULL &&
+		                  strcmp(current_version, version) == 0;
 
-		printf("  %s: %s %s\n", json_str_field(entry, "package"),
-		       json_str_field(entry, "mode"), json_str_field(entry, "version"));
+		printf("    %s  created_at=%lld%s\n", version != NULL ? version : "?", created_at,
+		       is_current ? "  (current)" : "");
 	}
 }
 

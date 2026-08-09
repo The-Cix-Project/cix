@@ -51,7 +51,7 @@ Six tabs, Proxmox-style: **Summary**, **Hardware**, **Options**, **Stats**, **Co
 
 ## Other detail views
 
-- **Image detail** — two tabs: containers currently using this image, and packages installed into it. Recipes and packages can be added or removed directly from here.
+- **Image detail** — four tabs: containers currently using this image, packages installed into it, **Manifest** (declared `pinned`/`rolling` package intent, ADR-0107 — add/remove entries directly from here), and **Versions** (every immutable version this image has ever produced, ADR-0108, newest first, with the currently-pinned-for-new-containers one marked). Recipes and packages can be added or removed directly from here.
 - **Devices** — four tabs grouped by bus: USB, PCI, Network, GPU.
 - **Package detail** — two tabs: **Recipe** (the raw `.recipe` text, viewable and editable — resubmitting goes through the same upsert `POST /pkg/recipes` every other recipe update uses) and **Installed** (every image this package is tracked against, independently).
 - **Network detail** — attached interfaces (attach/detach directly from here), IP allocation, and a "Routes on this network" sub-table (routes the kernel resolves to this network's own bridge as their outgoing interface — read-only filter, remove still works from here).

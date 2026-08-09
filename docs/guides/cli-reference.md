@@ -91,8 +91,8 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | Command | |
 |---|---|
 | `image create --name=NAME` | An empty image, C runtime pre-seeded, ready for `pkg install --image=NAME` |
-| `image ls` / `image show NAME` / `image rm NAME` | List / inspect one (incl. its manifest) / remove (refused for `base`, in-use, or still has packages) |
-| `image manifest set --image=NAME --package=NAME --mode=pinned\|rolling --version=VERSION` | Upsert one manifest entry (ADR-0107) -- declares intent only, does not itself install/rebuild |
+| `image ls` / `image show NAME` / `image rm NAME` | List / inspect one (manifest, current version, and full version history) / remove (refused for `base`, in-use, or still has packages) |
+| `image manifest set --image=NAME --package=NAME --mode=pinned\|rolling --version=VERSION` | Upsert one manifest entry (ADR-0107) -- `pinned` never auto-advances, `rolling` auto-rebuilds onto a newer recipe version as soon as one is published |
 | `image manifest rm --image=NAME --package=NAME` | Remove one manifest entry |
 
 ## Devices

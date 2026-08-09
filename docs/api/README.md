@@ -795,7 +795,25 @@ POST /v1/images/router/manifest
 {"package": "bird", "mode": "pinned", "version": "2.19.1"}
 ```
 
-`mode: "pinned"` means exactly that version, never auto-advancing; `mode: "rolling"` means `version` is a floor, resolving to the highest available recipe version `>=` it. Re-`POST`ing the same `package` updates its mode/version in place (upsert), never duplicates. `GET /v1/images/router` echoes the full manifest alongside the bare `name` it always returned. `DELETE /v1/images/router/manifest/bird` removes one entry. This only records intent — it does not itself install anything or trigger a rebuild (a separate, automatic mechanism for `rolling` entries, not yet built).
+`mode: "pinned"` means exactly that version, never auto-advancing; `mode: "rolling"` means `version` is a floor, resolving to the highest available recipe version `>=` it. Re-`POST`ing the same `package` updates its mode/version in place (upsert), never duplicates. `GET /v1/images/router` echoes the full manifest alongside the bare `name` it always returned. `DELETE /v1/images/router/manifest/bird` removes one entry. This only records intent — it does not itself install anything.
+
+**Every install/upgrade/uninstall against an image produces a new, immutable version** (ADR-0108) — `/var/lib/kanxeo/images/router/<version>/rootfs`, where `<version>` is a hash of the image's full installed-package manifest (`name@version` pairs, sorted). Prior versions are never mutated or deleted; a version whose content hash already exists in the image's history is deduplicated (no new directory, `current_version` just repoints). New containers created against `router` are pinned to whatever `current_version` resolves to at creation time (`registry.json`'s own `image_version` field) — they keep running against that exact rootfs even if `router` moves on to a newer version later; only a fresh create or explicit restart-with-replay re-resolves. `GET /v1/images/router` reports both:
+
+```json
+{
+  "name": "router",
+  "manifest": [{"package": "bird", "mode": "pinned", "version": "2.19.1"}],
+  "current_version": "3f9c2a...",
+  "versions": [
+    {"version": "3f9c2a...", "created_at": 1786292454},
+    {"version": "a01de8...", "created_at": 1786290011}
+  ]
+}
+```
+
+`versions` is newest-first. `current_version` is `""` for an image that has never had a package installed/upgraded/removed against it (no version produced yet).
+
+**A `rolling`-mode manifest entry auto-rebuilds** the moment a matching recipe with a higher version is published via `POST /v1/pkg/recipes` — no manual re-install needed. The daemon re-derives what's satisfied on every attempt (pinned: exact version match; rolling: currently-installed version must equal the current highest recipe version `>=` the manifest's floor), queues at most one rebuild per image at a time, and re-checks the queue as each job completes.
 
 `GET`/`DELETE` on a non-default image use the compound `{name}@{image}` path form:
 

@@ -4531,7 +4531,7 @@ components:
 
     Image:
       type: object
-      required: [name, manifest]
+      required: [name, manifest, current_version, versions]
       properties:
         name:
           type: string
@@ -4547,6 +4547,35 @@ components:
             Operator-declared package intent (ADR-0107) -- distinct from
             what's currently installed. Empty for an image that has never
             had POST .../manifest called against it.
+        current_version:
+          type: string
+          description: >
+            The version hash (ADR-0108) whose immutable rootfs
+            (IMAGES_DIR/<name>/<version>/rootfs) new containers built from
+            this image are pinned to at creation time. Empty string if this
+            image has never had a package installed/upgraded/removed
+            against it (no version has been produced yet).
+        versions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImageVersionHistoryEntry"
+          description: >
+            Every version this image has ever produced, newest first.
+            Deduplicated by manifest-content hash (ADR-0108) -- an
+            install/upgrade/uninstall cycle that reproduces an
+            already-seen package set does not add a new entry.
+
+    ImageVersionHistoryEntry:
+      type: object
+      required: [version, created_at]
+      properties:
+        version:
+          type: string
+          description: The version hash, as used in current_version and IMAGES_DIR/<name>/<version>/.
+        created_at:
+          type: integer
+          format: int64
+          description: Unix timestamp (seconds) this version was produced.
 
     ImageManifestEntry:
       type: object
