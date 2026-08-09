@@ -80,6 +80,31 @@ paths:
                       The running kernel's `uname(2)` release string
                       (e.g. `6.18.40`), or `null` if `uname(2)` itself
                       failed.
+                  bootroot_assembly_started_generation:
+                    type: integer
+                    description: >
+                      Real freshness signal for `pkg hostbuild kanxeo
+                      --deploy` (ADR-0058-follow-on, task #737): a
+                      monotonic counter incremented once per server-side
+                      kanxeo bootroot assembly attempt (ADR-0057). 0 if
+                      no attempt has ever run this daemon lifetime.
+                  bootroot_assembly_completed_generation:
+                    type: integer
+                    description: >
+                      The generation number of the last assembly attempt
+                      that *actually succeeded* -- never advanced on
+                      failure. A client that captured this value before
+                      triggering a new hostbuild round can wait for it
+                      to advance past that baseline to know the fresh
+                      artifact (not a stale leftover from an earlier
+                      round) is now on disk.
+                  bootroot_assembly_running:
+                    type: boolean
+                    description: >
+                      true while an assembly attempt is in flight --
+                      lets a client distinguish "still working" from
+                      "gave up, that attempt failed" instead of polling
+                      completed_generation forever after a failure.
 
   /system/shutdown:
     post:

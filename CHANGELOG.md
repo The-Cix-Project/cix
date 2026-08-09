@@ -2,6 +2,19 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 50 (done, full clean rebuild + full regression sweep): real freshness tracking for `pkg hostbuild kanxeo --deploy` (ADR-0105, closes task #737)
+
+`kanxeod-root.squashfs` existing at a hostbuild's `artifact_path` was treated as "ready to deploy" the instant the hostbuild itself reached `state: "installed"` -- but that file is assembled by a separate, asynchronous server-side step (ADR-0057) and could be a stale leftover from an earlier round still sitting there while the real new assembly was still running. Reproduced live on 192.168.15.95 during #672's own deploy verification: `--deploy` reported success while the box had actually booted stale content.
+
+#### Added
+- `daemon/src/main.c`: three new process-lifetime counters (`g_bootroot_assembly_started`/`_completed`/`_running`) -- `_completed` only ever advances on a real, confirmed assembly success, never on failure. Reported via `GET /system/boot` (not folded into `pkg.c`'s own generic hostbuild status JSON, keeping `pkg.c` agnostic to what "kanxeo" means, per ADR-0057's own established separation).
+- `cli/src/main.c`: `cmd_pkg_hostbuild()` captures the completed generation as a baseline *before* triggering a new "kanxeo" hostbuild round (capturing it any later would itself race an earlier round's still-finishing assembly); new `wait_for_fresh_bootroot_assembly()` polls `GET /system/boot` after the hostbuild itself reaches `installed`, waiting for the generation to advance past that baseline before deploying -- and reports a real, specific failure (pointing at `GET /system/logs`) if the assembly finishes without ever advancing past it, rather than spinning forever.
+- `docs/adr/0105-bootroot-assembly-freshness.md`; `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/building-kanxeo.md` updated.
+
+#### Notes
+- Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (21 daemon-linked tests) clean.
+- No new persisted state -- matches every other async-job tracking mechanism in this daemon (disk format, ISO assembly, pkg fetch), all process-lifetime only.
+
 ### Part 48 (done, full clean rebuild + full regression sweep, no live-hardware verification): real btrfs qgroup-based disk quotas as a second backend alongside ext4 (ADR-0103, closes task #678)
 
 `--disk-quota=BYTES` only ever meant an ext4 project quota (`quotactl(2)`, ADR-0062) -- no support at all on btrfs, which has no `quotactl(2)` implementation and a fundamentally different, subvolume-scoped qgroup model instead. Per explicit user direction (2026-08-08): close this gap for real, not just document it, using raw ioctls rather than shelling out to btrfs-progs.

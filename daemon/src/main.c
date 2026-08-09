@@ -583,6 +583,39 @@ static const char *g_bind_addr;
 static char g_bind_addr_buf[INET_ADDRSTRLEN];
 static int g_port;
 
+/*
+ * Real freshness tracking for the async kanxeo bootroot assembly
+ * (spawn_kanxeo_bootroot_assembly()/handle_bootroot_assemble_event(),
+ * ADR-0057) -- closes task #737's own gap: `pkg hostbuild kanxeo
+ * --deploy` used to treat "kanxeod-root.squashfs exists" as "this
+ * hostbuild round's own artifact is ready," but that file is a leftover
+ * from whichever assembly last succeeded, not necessarily the one this
+ * round's own hostbuild triggered -- a stale file from an earlier round
+ * would be silently redeployed while the real new assembly was still
+ * running. g_bootroot_assembly_started increments once per attempt
+ * (right before the fork in spawn_kanxeo_bootroot_assembly());
+ * g_bootroot_assembly_completed is only ever set to that attempt's own
+ * generation number on a *real, confirmed success*
+ * (handle_bootroot_assemble_event(), WIFEXITED && WEXITSTATUS==0) --
+ * never bumped on failure, so a client that captured a baseline before
+ * triggering a new hostbuild can tell "a newer assembly than the one I
+ * already knew about actually finished" from "the last one is still the
+ * only one that ever succeeded." g_bootroot_assembly_running covers the
+ * third state (attempted but not yet resolved either way) so a client
+ * polling this can also tell "still working" from "gave up, that
+ * attempt failed" instead of spinning forever on a failure. Reported via
+ * GET /system/boot (handle_system_boot() below) -- not a new resource of
+ * its own, since this is squarely "state about the currently/most-
+ * recently-assembled boot image," the same subject that endpoint already
+ * owns; keeping it there (rather than folding it into pkg.c's own
+ * generic pkg_get_one() JSON) keeps pkg.c fully agnostic to what any
+ * hostbuild name *means*, exactly the separation ADR-0057's own "kanxeo"
+ * special-case comment in this file already established.
+ */
+static long g_bootroot_assembly_started;
+static long g_bootroot_assembly_completed;
+static int g_bootroot_assembly_running;
+
 static void on_signal(int sig)
 {
 	(void)sig;
@@ -1126,6 +1159,22 @@ static void handle_system_boot(int fd)
 		jw_str(&w, uts.release);
 	else
 		jw_null(&w);
+	/*
+	 * Real freshness signal for `pkg hostbuild kanxeo --deploy`
+	 * (task #737, ADR-0058-follow-on comment in
+	 * g_bootroot_assembly_started's own doc comment above): a client
+	 * that captured bootroot_assembly_completed_generation *before*
+	 * triggering a new hostbuild round can wait here for it to advance
+	 * past that baseline rather than trusting "kanxeod-root.squashfs
+	 * exists" (which is also true of a stale file left by an earlier,
+	 * unrelated round).
+	 */
+	jw_key(&w, "bootroot_assembly_started_generation");
+	jw_int(&w, g_bootroot_assembly_started);
+	jw_key(&w, "bootroot_assembly_completed_generation");
+	jw_int(&w, g_bootroot_assembly_completed);
+	jw_key(&w, "bootroot_assembly_running");
+	jw_bool(&w, g_bootroot_assembly_running);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -4065,6 +4114,18 @@ static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
 		_exit(127);
 	}
 
+	/*
+	 * A real child now exists and is genuinely attempting this
+	 * assembly -- bump the generation counter here, not any earlier
+	 * (a failed fork() above never got a real attempt at all) and not
+	 * any later (pidfd_open() failing below still means a real mkbootroot
+	 * process was launched; it just couldn't be reaped normally, so
+	 * task #737's own freshness tracking still needs to count this as
+	 * "attempted, then failed" rather than silently never happening).
+	 */
+	g_bootroot_assembly_started++;
+	g_bootroot_assembly_running = 1;
+
 	if (output_pipe[1] >= 0)
 		close(output_pipe[1]);
 
@@ -4077,6 +4138,7 @@ static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
 			close(output_pipe[0]);
 		kill(pid, SIGKILL);
 		waitpid(pid, NULL, 0);
+		g_bootroot_assembly_running = 0;
 		return;
 	}
 	g_bootroot_output_captured_len = 0;
@@ -9506,7 +9568,17 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 	output_len = g_bootroot_output_captured_len;
 	memcpy(output, g_bootroot_output_captured, output_len);
 	output[output_len] = '\0';
+	/*
+	 * task #737: only a real, confirmed success ever advances the
+	 * completed generation -- at most one assembly is ever in flight
+	 * (only triggered by the "kanxeo" hostbuild's own single-job-
+	 * constrained completion event), so g_bootroot_assembly_started's
+	 * current value is unambiguously *this* attempt's own generation
+	 * number at the moment it resolves, whichever way it resolves.
+	 */
+	g_bootroot_assembly_running = 0;
 	if (reaped == cc->pkg_fetch_pid && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+		g_bootroot_assembly_completed = g_bootroot_assembly_started;
 		fprintf(stderr, "kanxeo bootroot assembly: succeeded\n");
 		logstore_write("kanxeod", "info", "kanxeo bootroot assembly: succeeded");
 	} else if (reaped != cc->pkg_fetch_pid) {

@@ -4311,6 +4311,62 @@ static int poll_hostbuild(const struct kx_client *c, const char *name, struct kx
 	}
 }
 
+/*
+ * Real GET /system/boot read for the kanxeo bootroot-assembly
+ * generation counters (task #737, ADR-0058/ADR-0104-adjacent fix).
+ * Returns 0 with *out_completed/*out_running filled, -1 if the daemon
+ * became unreachable.
+ */
+static int get_bootroot_assembly_generation(const struct kx_client *c, long *out_completed, int *out_running)
+{
+	struct kx_response r;
+	const struct json_value *jrunning;
+
+	if (kx_client_request(c, "GET", "/v1/system/boot", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return -1;
+	}
+	*out_completed = (long)json_as_number(json_object_get(r.json, "bootroot_assembly_completed_generation"));
+	jrunning = json_object_get(r.json, "bootroot_assembly_running");
+	*out_running = jrunning != NULL && jrunning->type == JSON_BOOL && jrunning->u.boolean;
+	kx_response_free(&r);
+	return 0;
+}
+
+/*
+ * The real fix for task #737: `kanxeod-root.squashfs` existing is not
+ * the same as it being *this* hostbuild round's own fresh artifact --
+ * it's a leftover from whichever server-side bootroot assembly
+ * (ADR-0057) last succeeded, which may still be a round or more behind
+ * the hostbuild round --deploy just watched finish. Waits for the real
+ * completed generation to advance past baseline_completed (captured by
+ * the caller before this hostbuild round was even started) rather than
+ * trusting file-exists. Distinguishes "still assembling" (keep polling)
+ * from "that attempt is over and never advanced past baseline" (a real,
+ * reported failure, not an infinite spin) via bootroot_assembly_running.
+ * Returns 0 once a genuinely fresh artifact is confirmed on disk, -1
+ * otherwise (daemon unreachable, or the assembly failed).
+ */
+static int wait_for_fresh_bootroot_assembly(const struct kx_client *c, long baseline_completed)
+{
+	for (;;) {
+		long completed;
+		int running;
+
+		if (get_bootroot_assembly_generation(c, &completed, &running) != 0)
+			return -1;
+		if (completed > baseline_completed)
+			return 0;
+		if (!running) {
+			fprintf(stderr,
+			        "kanxeoctl: kanxeo bootroot assembly did not produce a fresh artifact "
+			        "(see GET /system/logs for the real failure)\n");
+			return -1;
+		}
+		usleep(500000);
+	}
+}
+
 static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
@@ -4319,6 +4375,7 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 	int i;
 	struct json_writer w;
 	struct kx_response r;
+	long bootroot_baseline_completed = 0;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--build-image=", 14) == 0)
@@ -4344,6 +4401,23 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 	}
 	if (deploy)
 		wait = 1;
+
+	/*
+	 * task #737: capture the real baseline *before* this hostbuild
+	 * round even starts -- comparing against a snapshot taken any
+	 * later (e.g. right before the deploy step) could itself already
+	 * be racing a slow-but-real assembly from an EARLIER round that
+	 * just hasn't finished yet, which would wrongly look like "the
+	 * baseline" to a check done later. "kanxeo" only: every other
+	 * hostbuild name deploys straight from its own artifact_path with
+	 * no server-side follow-on assembly to wait for.
+	 */
+	if (deploy && strcmp(name, "kanxeo") == 0) {
+		int running;
+
+		if (get_bootroot_assembly_generation(c, &bootroot_baseline_completed, &running) != 0)
+			return 1;
+	}
 
 	jw_init(&w);
 	jw_obj_open(&w);
@@ -4403,22 +4477,29 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 		 * every possible hostbuild recipe name. */
 		if (strcmp(name, "kernel") == 0)
 			snprintf(deploy_arg, sizeof(deploy_arg), "--kernel=%s/bzImage", artifact_path);
-		else if (strcmp(name, "kanxeo") == 0)
-			/* kanxeod-root.squashfs is assembled server-side by the
+		else if (strcmp(name, "kanxeo") == 0) {
+			/*
+			 * kanxeod-root.squashfs is assembled server-side by the
 			 * daemon itself (ADR-0057), asynchronously, once this
-			 * hostbuild's own artifacts finish harvesting -- may not
-			 * exist yet the instant --wait's own poll sees
-			 * state=="installed" (that only means pkg_build_completed()
-			 * ran, not that the follow-on mkbootroot child has
-			 * finished). This CLI never invokes mkbootroot itself
-			 * (API-First Mandate) -- if the squashfs isn't there yet,
-			 * /system/update's own real, existing 400 for a missing/
-			 * unreadable image_path is the honest answer, not a second
-			 * polling loop bolted on here for one recipe name.
+			 * hostbuild's own artifacts finish harvesting -- state
+			 * =="installed" only means pkg_build_completed() ran, not
+			 * that the follow-on mkbootroot child has finished, let
+			 * alone that it's THIS round's own attempt rather than a
+			 * stale file left by an earlier one (task #737, the real
+			 * gap this closes: file-exists is not the same as fresh).
+			 * This CLI still never invokes mkbootroot itself
+			 * (API-First Mandate) -- it just waits for the daemon's own
+			 * real completed-generation counter (GET /system/boot,
+			 * ADR-0057-follow-on) to confirm a genuinely new success
+			 * before trusting the path below at all.
 			 */
+			if (wait_for_fresh_bootroot_assembly(c, bootroot_baseline_completed) != 0) {
+				kx_response_free(&r);
+				return 1;
+			}
 			snprintf(deploy_arg, sizeof(deploy_arg), "--image=%s/kanxeod-root.squashfs",
 			         artifact_path);
-		else {
+		} else {
 			kx_response_free(&r);
 			fprintf(stderr, "kanxeoctl: --deploy has no rule for hostbuild '%s' yet\n", name);
 			return 1;
