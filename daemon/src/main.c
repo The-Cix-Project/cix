@@ -5416,28 +5416,41 @@ static int create_container_from_body(const char *body, size_t body_len,
 	jdisk_quota = json_object_get(root, "disk_quota_bytes");
 	disk_quota_bytes = jdisk_quota != NULL ? (long long)json_as_number(jdisk_quota) : 0;
 	if (disk_quota_bytes > 0) {
-		uint32_t projid;
-
-		if (quotamap_get_or_assign(name, &projid) != 0) {
-			json_free(root);
-			snprintf(err_msg, err_msg_size, "failed to assign a disk-quota project id");
-			return 500;
-		}
 		/*
-		 * Set before the container (and its overlay_create()'s own
-		 * FS_IOC_FSSETXATTR tagging) is created -- order-agnostic per
-		 * this call's own comment, but doing it first means the limit
-		 * is already in force by the moment any file could possibly
-		 * be tagged with this project id.
+		 * btrfs has no quotactl(2) project-quota support at all
+		 * (ADR-0103) -- overlay_create() enforces the limit itself
+		 * there, via a qgroup set on the upperdir subvolume it
+		 * creates, so there is no project id to assign and no
+		 * quotactl(2) call to make up front here. ext4 (and any other
+		 * quotactl-capable filesystem) keeps the existing Part 4/
+		 * ADR-0062 flow completely unchanged.
 		 */
-		if (set_disk_quota(container_base, projid, disk_quota_bytes) != 0) {
-			json_free(root);
-			snprintf(err_msg, err_msg_size,
-			         "failed to set disk quota (backing filesystem may not have "
-			         "project-quota support enabled)");
-			return 500;
+		if (overlay_backing_is_btrfs(container_base)) {
+			spec.ov.quota_bytes = disk_quota_bytes;
+		} else {
+			uint32_t projid;
+
+			if (quotamap_get_or_assign(name, &projid) != 0) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size, "failed to assign a disk-quota project id");
+				return 500;
+			}
+			/*
+			 * Set before the container (and its overlay_create()'s own
+			 * FS_IOC_FSSETXATTR tagging) is created -- order-agnostic per
+			 * this call's own comment, but doing it first means the limit
+			 * is already in force by the moment any file could possibly
+			 * be tagged with this project id.
+			 */
+			if (set_disk_quota(container_base, projid, disk_quota_bytes) != 0) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size,
+				         "failed to set disk quota (backing filesystem may not have "
+				         "project-quota support enabled)");
+				return 500;
+			}
+			spec.ov.project_id = projid;
 		}
-		spec.ov.project_id = projid;
 	}
 	spec.ov.lowerdir = lowerdir;
 	spec.ov.upperdir = upperdir;

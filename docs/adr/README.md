@@ -107,3 +107,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0100](0100-container-cmd-visibility.md) | GET /containers echoes cmd, sourced from registry_entry (live) or the persisted body (stopped) | Accepted |
 | [0101](0101-pkg-build-log-live-tail.md) | GET /v1/pkg/build/log live-tails an in-flight build's own output, a one-way WS relay distinct from the console's exec/PTY session | Accepted |
 | [0102](0102-per-container-disk-selection.md) | Per-container disk selection at creation time (Phase D) -- POST /containers' new "disk" field, gated on the container-storage role | Accepted |
+| [0103](0103-btrfs-quota-backend.md) | Real btrfs qgroup-based disk quotas as a second backend alongside ext4 project quotas, closing the --disk-quota= filesystem gap | Accepted |

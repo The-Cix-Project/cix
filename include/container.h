@@ -74,10 +74,39 @@ struct overlay_spec {
 	 * zero-means-off convention cgroup_limits' own optional fields
 	 * already use. See src/overlay.c's own comment for exactly what
 	 * the ioctl does and why FS_XFLAG_PROJINHERIT is required, not
-	 * optional.
+	 * optional. Only meaningful when upperdir's own backing filesystem
+	 * is NOT btrfs -- see quota_bytes below for that case.
 	 */
 	uint32_t project_id;
+	/*
+	 * Real btrfs qgroup hard limit in bytes for upperdir (task #678,
+	 * ADR-0103) -- 0 means "no quota requested," same convention
+	 * project_id above already uses. Only meaningful when upperdir's
+	 * own backing filesystem IS btrfs: overlay_create() detects this
+	 * itself (overlay_backing_is_btrfs()) and creates upperdir as a
+	 * real btrfs subvolume instead of a plain directory in that case,
+	 * since qgroups are subvolume-scoped, not arbitrary-directory-
+	 * scoped like ext4 project quotas. The caller populates this
+	 * unconditionally alongside project_id whenever a quota was
+	 * requested at all -- overlay_create() itself decides which of
+	 * the two mechanisms actually applies, based on what it finds.
+	 */
+	long long quota_bytes;
 };
+
+/*
+ * True if path's own backing filesystem is btrfs (a plain statfs(2)
+ * check against KX_BTRFS_SUPER_MAGIC), false for anything else
+ * (including a statfs() failure -- a path that can't even be statfs'd
+ * is conservatively never treated as btrfs). Exposed publicly (not
+ * static to src/overlay.c) because daemon/src/main.c's own container-
+ * create handler needs the same answer before overlay_create() ever
+ * runs, to decide whether to take the existing ext4 quotactl(2) path
+ * at all (btrfs has no quotactl(2) project-quota support -- calling
+ * it against a btrfs-backed path would just fail) -- one real check,
+ * not two independently-written statfs() calls that could drift.
+ */
+int overlay_backing_is_btrfs(const char *path);
 
 /*
  * A considered, generous fixed bound with no natural daemon-side

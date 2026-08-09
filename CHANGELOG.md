@@ -2,6 +2,22 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 48 (done, full clean rebuild + full regression sweep, no live-hardware verification): real btrfs qgroup-based disk quotas as a second backend alongside ext4 (ADR-0103, closes task #678)
+
+`--disk-quota=BYTES` only ever meant an ext4 project quota (`quotactl(2)`, ADR-0062) -- no support at all on btrfs, which has no `quotactl(2)` implementation and a fundamentally different, subvolume-scoped qgroup model instead. Per explicit user direction (2026-08-08): close this gap for real, not just document it, using raw ioctls rather than shelling out to btrfs-progs.
+
+#### Added
+- `include/linux_compat.h`: hand-transcribed btrfs ioctl structs/constants (`kx_btrfs_ioctl_vol_args`, `kx_btrfs_ioctl_qgroup_limit_args`, `kx_btrfs_ioctl_quota_ctl_args`, `KX_BTRFS_IOC_SUBVOL_CREATE`/`QUOTA_CTL`/`QGROUP_LIMIT`, `KX_BTRFS_SUPER_MAGIC`) -- same kernel-uapi-avoidance convention as `clone3`/`epoll_event`/`fsxattr`; each ioctl number hand-derived via `_IOC(dir,type,nr,size)` and cross-checked by independently re-deriving this project's own two already-correct `FS_IOC_FS{GET,SET}XATTR` constants with the identical method.
+- `include/container.h`: `struct overlay_spec.quota_bytes` (parallel to, not overloading, the existing `project_id`); new `overlay_backing_is_btrfs(const char *path)`.
+- `src/overlay.c`: `overlay_backing_is_btrfs()` (statfs-based); `overlay_create_btrfs_upperdir()` -- creates upperdir as a real subvolume (`BTRFS_IOC_SUBVOL_CREATE`), then (if a quota was requested) enables btrfs quotas and sets a qgroup hard limit via `BTRFS_IOC_QGROUP_LIMIT` with `qgroupid=0` (btrfs's own "the subvolume owning this fd" self-addressing convention -- eliminates any need for a persisted qgroup-id-tracking table, which the originating task description had anticipated needing). `overlay_create()` now branches on the parent directory's own filesystem type before creating upperdir.
+- `daemon/src/main.c`: `create_container_from_body()`'s quota block now branches on `overlay_backing_is_btrfs(container_base)` -- btrfs skips `quotamap_get_or_assign()`/`set_disk_quota()` entirely and passes the raw byte limit straight through via `spec.ov.quota_bytes`; ext4 keeps the existing Part 4/ADR-0062 flow unchanged.
+- `docs/adr/0103-btrfs-quota-backend.md`.
+
+#### Notes
+- Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (all 21 daemon-linked tests plus `test_harness`/`test_overlay`/`test_container_net`/`test_devices`, which exercise `overlay_create()` directly) clean -- confirms the ext4 path is byte-for-byte unaffected by the new branching logic.
+- The btrfs success path itself (subvolume creation, quota enable, qgroup enforcement) has **not** been live-tested -- this sandbox has kernel btrfs support but no mounted btrfs filesystem, no `mkfs.btrfs`, and no disk safe to reformat (same acknowledged gap as ADR-0099/ADR-0102). Live verification against real hardware is an open follow-up.
+- Deliberately does **not** extend `diskformat.c` (still ext4-only end to end) to offer btrfs as a format choice -- a materially separate body of work (staging `mkfs.btrfs`, a new `fs_type` REST/CLI param). Task #732 (previously a near-duplicate of this same task) is retained and re-scoped to track exactly that remaining piece.
+
 ### Part 47 (done, local regression sweep clean): per-container disk selection at creation time (ADR-0102, closes task #638, Phase D)
 
 `POST /v1/containers` always placed a container's writable overlay storage under the fixed OS-disk `CONTAINERS_DIR` -- no way to say "put this container's data on disk X." The `"container-storage"` disk role (Phase B, `diskrole.c`) was assignable but never consumed by anything.

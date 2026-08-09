@@ -240,4 +240,65 @@ struct kx_fsxattr {
 #define KX_FS_IOC_FSGETXATTR 0x801c581f
 #define KX_FS_IOC_FSSETXATTR 0x401c5820
 
+/*
+ * Real btrfs qgroup-based quota enforcement (task #678, ADR-0103) --
+ * the btrfs-native counterpart to the ext4/XFS project-quota pair
+ * above, needed because btrfs has no quotactl(2)/project-quota
+ * support at all: quotas are per-subvolume (qgroups), addressed via
+ * these ioctls directly, never quotactl(2). Declared here for the
+ * exact same reason as the fsxattr pair -- <linux/btrfs.h> can't be
+ * included directly (same class of kernel-uapi-vs-glibc header clash
+ * this file already works around elsewhere) -- struct layouts and
+ * ioctl numbers below are transcribed verbatim from the real kernel
+ * header (confirmed against a live copy of <linux/btrfs.h> in this
+ * checkout's own build environment) and the ioctl numbers independently
+ * re-derived by hand from the standard _IOC(dir,type,nr,size) encoding
+ * as a cross-check -- both agree, and the same derivation correctly
+ * reproduces KX_FS_IOC_FSGETXATTR/FSSETXATTR above byte for byte,
+ * confirming the encoding is right.
+ */
+#define KX_BTRFS_IOCTL_MAGIC 0x94
+#define KX_BTRFS_PATH_NAME_MAX 4087
+
+struct kx_btrfs_ioctl_vol_args {
+	int64_t fd;
+	char name[KX_BTRFS_PATH_NAME_MAX + 1];
+};
+
+struct kx_btrfs_qgroup_limit {
+	uint64_t flags;
+	uint64_t max_rfer;
+	uint64_t max_excl;
+	uint64_t rsv_rfer;
+	uint64_t rsv_excl;
+};
+
+struct kx_btrfs_ioctl_qgroup_limit_args {
+	uint64_t qgroupid;
+	struct kx_btrfs_qgroup_limit lim;
+};
+
+struct kx_btrfs_ioctl_quota_ctl_args {
+	uint64_t cmd;
+	uint64_t status;
+};
+
+#define KX_BTRFS_QGROUP_LIMIT_MAX_RFER (1ULL << 0)
+#define KX_BTRFS_QGROUP_LIMIT_MAX_EXCL (1ULL << 1)
+#define KX_BTRFS_QUOTA_CTL_ENABLE 1
+
+/* _IOW(0x94, 14, struct kx_btrfs_ioctl_vol_args) -- sizeof() 4096 */
+#define KX_BTRFS_IOC_SUBVOL_CREATE 0x5000940e
+/* _IOWR(0x94, 40, struct kx_btrfs_ioctl_quota_ctl_args) -- sizeof() 16 */
+#define KX_BTRFS_IOC_QUOTA_CTL 0xc0109428
+/* _IOR(0x94, 43, struct kx_btrfs_ioctl_qgroup_limit_args) -- sizeof() 48 */
+#define KX_BTRFS_IOC_QGROUP_LIMIT 0x8030942b
+
+/* statfs(2) f_type value for a btrfs filesystem (statfs.h's own
+ * BTRFS_SUPER_MAGIC) -- no header clash risk for this one (it's a
+ * bare integer constant, not a struct/ioctl-number pair), but kept
+ * alongside the rest of this project's own btrfs constants for
+ * locality rather than pulled from a system header inconsistently. */
+#define KX_BTRFS_SUPER_MAGIC 0x9123683e
+
 #endif /* LINUX_COMPAT_H */
