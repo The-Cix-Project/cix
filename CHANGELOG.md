@@ -2,6 +2,18 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 44 (done, local regression sweep clean): GET /disks reports real mount status, not diskformat.c's own ephemeral job history (ADR-0099, closes task #672)
+
+`diskformat.c`'s own `DISKFORMAT_STATE_READY`/`NONE` looked like it answered "is this disk mounted" but doesn't -- it's purely in-memory, per-daemon-process state for the single most recent format job this daemon itself ran, forgotten across every restart even though a real mount persists, and blind to a disk mounted by hand or from before this mechanism existed.
+
+#### Fixed
+- `daemon/src/disk.c`/`disk.h`: `disk_enumerate()` now does one real pass over `/proc/mounts` after building the disk list, matching each mounted device back to its parent whole disk the same way `resolve_os_disk_name()` already does. `GET /disks` gains `mounted`/`mount_path` per entry, live ground truth on every call.
+- `cli/src/main.c`: `kanxeoctl disks` now shows a mounted/not-mounted column.
+- `docs/api/openapi.yaml`/`docs/api/README.md`: documented.
+
+#### Notes
+- Full local regression sweep clean, zero compiler warnings. No new dedicated test -- `GET /disks` has never had one, real `/sys/class/block` enumeration isn't practical to exercise deterministically in the sandboxed harness; a real, pre-existing gap, not worsened here.
+
 ### Part 41 (done, local regression sweep clean; live-verified against the real fetch failure that motivated it): pkg fetch failures now report curl's own real error text, not just a bare exit code (ADR-0096)
 
 Found live, mid-redeploy this session: pushing `kanxeo` v1.7.0 to 192.168.15.95 via `pkg hostbuild` failed with only `"fetch failed (curl exit status 1)"` -- no way to tell why, since `start_fetch_for()`'s curl child never captured its own stderr anywhere. The instinctive move (re-serving the tarball over the LAN, the established workaround for a *different*, real problem -- a fresh install with no SSH/shell) was explicitly rejected: it would have unblocked the deploy without ever explaining the failure, leaving the same silent gap for next time. Fixed at the root instead.

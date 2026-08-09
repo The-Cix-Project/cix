@@ -483,13 +483,23 @@ static void fmt_disk_line(const struct json_value *v)
 	long long size_bytes = (long long)json_as_number(json_object_get(v, "size_bytes"));
 	const struct json_value *jremovable = json_object_get(v, "removable");
 	const struct json_value *jos = json_object_get(v, "is_os_disk");
+	const struct json_value *jmounted = json_object_get(v, "mounted");
+	const char *mount_path = json_str_field(v, "mount_path");
 	int removable = jremovable != NULL && jremovable->type == JSON_BOOL && jremovable->u.boolean;
 	int is_os_disk = jos != NULL && jos->type == JSON_BOOL && jos->u.boolean;
+	int mounted = jmounted != NULL && jmounted->type == JSON_BOOL && jmounted->u.boolean;
 	double size_gib = (double)size_bytes / (1024.0 * 1024.0 * 1024.0);
+	char mount_col[288];
 
-	printf("%-12s %-16s %8.1f GiB  %-32s %-9s %s\n", dev_path, name, size_gib,
+	if (mounted)
+		snprintf(mount_col, sizeof(mount_col), "mounted@%s",
+		         mount_path != NULL ? mount_path : "?");
+	else
+		snprintf(mount_col, sizeof(mount_col), "not-mounted");
+
+	printf("%-12s %-16s %8.1f GiB  %-32s %-9s %-9s %s\n", dev_path, name, size_gib,
 	       model != NULL && model[0] != '\0' ? model : "-", removable ? "removable" : "fixed",
-	       is_os_disk ? "os-disk" : "assignable");
+	       is_os_disk ? "os-disk" : "assignable", mount_col);
 }
 
 static void fmt_disk_list(const struct json_value *v)

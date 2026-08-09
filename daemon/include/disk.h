@@ -27,6 +27,24 @@ struct discovered_disk {
 	 * for a role assignment of its own; every other disk is.
 	 */
 	int is_os_disk;
+	/*
+	 * Real, current ground truth from /proc/mounts -- deliberately NOT
+	 * derived from diskformat.c's own job-state (DISKFORMAT_STATE_READY
+	 * is purely in-memory, per-daemon-process, and forgotten across a
+	 * restart even though the real mount persists; it also only ever
+	 * knows about disks *this daemon itself* formatted, never one an
+	 * operator mounted by hand or that survived from before this
+	 * mechanism existed). Set true if any partition on this disk (or
+	 * the whole-disk device itself) currently appears in /proc/mounts;
+	 * mount_path is that mount's own real path. A disk can only really
+	 * have one role-assigned mountpoint in this project's own model, so
+	 * the first match found wins -- matching disk_enumerate()'s own
+	 * already-established precedent (resolve_os_disk_name()'s
+	 * longest-match walk) of treating /proc/mounts as the one real
+	 * source of truth rather than anything this daemon merely believes.
+	 */
+	int mounted;
+	char mount_path[256];
 };
 
 /*

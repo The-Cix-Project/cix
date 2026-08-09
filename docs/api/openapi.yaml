@@ -4036,7 +4036,7 @@ components:
 
     Disk:
       type: object
-      required: [name, dev_path, model, size_bytes, removable, is_os_disk]
+      required: [name, dev_path, model, size_bytes, removable, is_os_disk, mounted, mount_path]
       properties:
         name:
           type: string
@@ -4060,6 +4060,21 @@ components:
             never a candidate for a future role assignment. False
             (including for every disk) on a dev/test daemon with no
             real containers partition to resolve.
+        mounted:
+          type: boolean
+          description: >
+            Real, current ground truth read fresh from /proc/mounts on
+            every call -- true if any partition on this disk (or the
+            whole-disk device itself) is currently mounted, regardless
+            of whether this daemon is the one that mounted it or knows
+            about it at all. Deliberately independent of the disk
+            format job's own DISKFORMAT_STATE_READY (GET
+            /diskformat/{name}), which is purely in-memory,
+            per-daemon-process state forgotten across a restart even
+            though the real mount persists.
+        mount_path:
+          type: string
+          description: The real current mountpoint when mounted is true; empty string otherwise.
 
     DiskRole:
       type: object

@@ -625,6 +625,8 @@ GET /v1/disks
 
 Real host block devices, whole disks only (partitions are never listed independently — they aren't independently assignable), live-enumerated from `/sys/class/block` on every call, the same "real hardware, never persisted" convention `GET /devices` already established. `is_os_disk` flags the one disk holding this platform's own fixed ESP/root-a/root-b/config/containers layout — never a candidate for a role of its own or for formatting; every other disk is available for a role assignment and, once role-assigned, formatting.
 
+`mounted`/`mount_path` are real, current ground truth read fresh from `/proc/mounts` on every call — true if any partition on the disk (or the whole-disk device itself) is currently mounted, regardless of whether this daemon is the one that mounted it. Deliberately independent of the disk format job's own `state` (`GET /diskformat/{name}`, `"ready"` once a format+mount this daemon itself ran succeeds), which is purely in-memory, per-daemon-process state — forgotten across a restart even though the real mount persists, and blind to a disk mounted by hand or from before this mechanism existed. `GET /disks` is the one place to check whether a disk is *actually* mounted right now.
+
 ### Persisted disk roles
 
 ```

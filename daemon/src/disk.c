@@ -119,6 +119,48 @@ static int resolve_os_disk_name(const char *os_containers_dir, char *out, size_t
 	return 0;
 }
 
+/*
+ * One real pass over /proc/mounts (the same ground-truth source
+ * resolve_os_disk_name() above already trusts), matching each mounted
+ * device back to its parent whole disk via disk_name_from_partition()
+ * and recording the first mountpoint found for each entry in out[].
+ * O(disks * mounts) with both counts always small in practice (a real
+ * host has a handful of disks and a few dozen mounts at most) -- not
+ * worth a hash table for this.
+ */
+static void fill_mount_status(struct discovered_disk *out, int count)
+{
+	FILE *f;
+	char line[PATH_MAX * 2];
+
+	f = fopen("/proc/mounts", "r");
+	if (f == NULL)
+		return;
+
+	while (fgets(line, sizeof(line), f) != NULL) {
+		char device[PATH_MAX];
+		char mountpoint[PATH_MAX];
+		char disk_name[32];
+		const char *base;
+		int i;
+
+		if (sscanf(line, "%4095s %4095s", device, mountpoint) != 2)
+			continue;
+		base = strrchr(device, '/');
+		base = (base != NULL) ? base + 1 : device;
+		if (base[0] == '\0')
+			continue;
+		disk_name_from_partition(base, disk_name, sizeof(disk_name));
+		for (i = 0; i < count; i++) {
+			if (out[i].mounted || strcmp(out[i].name, disk_name) != 0)
+				continue;
+			out[i].mounted = 1;
+			snprintf(out[i].mount_path, sizeof(out[i].mount_path), "%s", mountpoint);
+		}
+	}
+	fclose(f);
+}
+
 int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containers_dir)
 {
 	DIR *d;
@@ -180,6 +222,7 @@ int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containe
 		count++;
 	}
 	closedir(d);
+	fill_mount_status(out, count);
 	return count;
 }
 
@@ -198,6 +241,10 @@ void disk_write_json_one(const struct discovered_disk *d, struct json_writer *w)
 	jw_bool(w, d->removable);
 	jw_key(w, "is_os_disk");
 	jw_bool(w, d->is_os_disk);
+	jw_key(w, "mounted");
+	jw_bool(w, d->mounted);
+	jw_key(w, "mount_path");
+	jw_str(w, d->mount_path);
 	jw_obj_close(w);
 }
 
