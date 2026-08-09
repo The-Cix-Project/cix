@@ -1927,12 +1927,13 @@ paths:
     post:
       summary: >
         Register a running container as the LDAP-serving target (task #725, mirrors
-        POST /dns/servers). Unlike DNS, this never touches the container's filesystem
-        or sends any signal -- glauth's own embedded-SQLite backend
-        (pkg/recipes/glauth/2.4.0/recipe.sh) queries its database live on every LDAP
-        request, so registration is pure bookkeeping: it records where db_path
-        (glauth's own SQLite file) lives, for the LDAP user/group CRUD endpoints
-        (task #726) to write into.
+        POST /dns/servers). Unlike DNS, registration itself never touches the
+        container's filesystem or sends any signal -- glauth runs a real fsnotify
+        watcher on its own config file (`watch_config = true`) and reloads
+        automatically on any change, so registration is pure bookkeeping: it
+        records where config_path (glauth's own config file, the one it was
+        started with -c) lives, for the LDAP user/group CRUD endpoints (task #726)
+        to render into.
       operationId: createLdapServer
       requestBody:
         required: true
@@ -1948,7 +1949,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/LdapServerBinding"
         "400":
-          description: db_path missing, not absolute, or contains ".."
+          description: config_path missing, not absolute, or contains ".."
           content:
             application/json:
               schema:
@@ -1983,6 +1984,210 @@ paths:
           description: Unregistered
         "404":
           description: No binding for this container
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /ldap/groups:
+    get:
+      summary: List every LDAP group (task #726)
+      operationId: listLdapGroups
+      responses:
+        "200":
+          description: Group list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [groups]
+                properties:
+                  groups:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/LdapGroup"
+    post:
+      summary: >
+        Create an LDAP group. Kanxeo itself is the durable source of truth
+        (same model as DNS records); the group is also written through into
+        every currently-registered, currently-running LDAP server's own
+        config file immediately (glauth's own fsnotify watcher picks up the
+        change, no signal needed).
+      operationId: createLdapGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LdapGroupCreateRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LdapGroup"
+        "400":
+          description: Invalid name or gidnumber
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A group with this name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /ldap/groups/{name}:
+    get:
+      summary: Fetch one LDAP group
+      operationId: getLdapGroup
+      parameters:
+        - $ref: "#/components/parameters/LdapGroupName"
+      responses:
+        "200":
+          description: Group detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LdapGroup"
+        "404":
+          description: No such group
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Delete an LDAP group (also removed from every registered server's config)
+      operationId: deleteLdapGroup
+      parameters:
+        - $ref: "#/components/parameters/LdapGroupName"
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: No such group
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /ldap/users:
+    get:
+      summary: List every LDAP user (task #726)
+      operationId: listLdapUsers
+      responses:
+        "200":
+          description: User list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [users]
+                properties:
+                  users:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/LdapUser"
+    post:
+      summary: >
+        Create an LDAP user. Same durable-record-store + write-through model
+        as groups. password, if given, is hashed with SHA-256 (glauth's own
+        "passsha256" config field, via kanxeod's already-linked OpenSSL
+        libcrypto) -- never stored or echoed in plaintext, and never
+        returned by any GET (only a has_password boolean is).
+      operationId: createLdapUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LdapUserCreateRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LdapUser"
+        "400":
+          description: Invalid name/uidnumber, or primarygroup doesn't name an existing group
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A user with this name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /ldap/users/{name}:
+    get:
+      summary: Fetch one LDAP user
+      operationId: getLdapUser
+      parameters:
+        - $ref: "#/components/parameters/LdapUserName"
+      responses:
+        "200":
+          description: User detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LdapUser"
+        "404":
+          description: No such user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      summary: >
+        Update an existing LDAP user -- full field replacement, except
+        password: omitting it from the request body leaves the existing
+        credential unchanged (an empty string is treated the same as
+        omitting it).
+      operationId: updateLdapUser
+      parameters:
+        - $ref: "#/components/parameters/LdapUserName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LdapUserCreateRequest"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LdapUser"
+        "400":
+          description: Invalid uidnumber, or primarygroup doesn't name an existing group
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Delete an LDAP user (also removed from every registered server's config)
+      operationId: deleteLdapUser
+      parameters:
+        - $ref: "#/components/parameters/LdapUserName"
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: No such user
           content:
             application/json:
               schema:
@@ -3362,6 +3567,22 @@ components:
         type: string
         pattern: "^[A-Za-z0-9_-]+$"
 
+    LdapGroupName:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[a-z_][a-z0-9_-]*$"
+
+    LdapUserName:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[a-z_][a-z0-9_-]*$"
+
     PkiCertName:
       name: name
       in: path
@@ -4739,27 +4960,107 @@ components:
 
     LdapServerBindingCreateRequest:
       type: object
-      required: [container, db_path]
+      required: [container, config_path]
       properties:
         container:
           type: string
           description: Name of an existing, running container (see /containers) -- the LDAP-serving target.
-        db_path:
+        config_path:
           type: string
           description: >
             Absolute path, as the container's own filesystem sees it (e.g.
-            "/var/lib/glauth/gl.db"), to glauth's own embedded-SQLite database file --
-            recorded for the LDAP user/group CRUD endpoints (task #726) to resolve
-            against. Rejected if not absolute or if it contains "..".
+            "/etc/glauth/glauth.cfg"), to glauth's own config file (the one it was
+            started with -c) -- recorded for the LDAP user/group CRUD endpoints
+            (task #726) to render into. Rejected if not absolute or if it contains
+            "..".
 
     LdapServerBinding:
       type: object
-      required: [container, db_path]
+      required: [container, config_path]
       properties:
         container:
           type: string
-        db_path:
+        config_path:
           type: string
+
+    LdapGroupCreateRequest:
+      type: object
+      required: [name, gidnumber]
+      properties:
+        name:
+          type: string
+          pattern: "^[a-z_][a-z0-9_-]*$"
+        gidnumber:
+          type: integer
+          minimum: 1
+
+    LdapGroup:
+      type: object
+      required: [name, gidnumber]
+      properties:
+        name:
+          type: string
+        gidnumber:
+          type: integer
+
+    LdapUserCreateRequest:
+      type: object
+      required: [name, uidnumber, primarygroup]
+      properties:
+        name:
+          type: string
+          pattern: "^[a-z_][a-z0-9_-]*$"
+        uidnumber:
+          type: integer
+          minimum: 1
+        primarygroup:
+          type: integer
+          description: Must name an existing group's gidnumber.
+        givenname:
+          type: string
+        sn:
+          type: string
+        mail:
+          type: string
+        loginshell:
+          type: string
+        homedirectory:
+          type: string
+        password:
+          type: string
+          description: >
+            Plaintext, hashed server-side with SHA-256 into glauth's own
+            "passsha256" config field -- never persisted or echoed as
+            plaintext. Omitted on PUT: the existing credential is kept.
+        disabled:
+          type: boolean
+          default: false
+
+    LdapUser:
+      type: object
+      required: [name, uidnumber, primarygroup, has_password, disabled]
+      properties:
+        name:
+          type: string
+        uidnumber:
+          type: integer
+        primarygroup:
+          type: integer
+        givenname:
+          type: string
+        sn:
+          type: string
+        mail:
+          type: string
+        loginshell:
+          type: string
+        homedirectory:
+          type: string
+        has_password:
+          type: boolean
+          description: True iff a password has been set. The hash itself is never returned.
+        disabled:
+          type: boolean
 
     SiteConfig:
       type: object

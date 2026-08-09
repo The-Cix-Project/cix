@@ -101,11 +101,19 @@ static void print_usage(FILE *out)
 	        "  dns server register --container=NAME --hosts-path=PATH\n"
 	        "  dns server ls\n"
 	        "  dns server unregister CONTAINER\n"
-	        "  ldap server register --container=NAME --db-path=PATH  -- registers a running\n"
-	        "               container as the LDAP-serving target (task #725); db_path is its\n"
-	        "               own absolute view of glauth's SQLite database file\n"
+	        "  ldap server register --container=NAME --config-path=PATH  -- registers a running\n"
+	        "               container as the LDAP-serving target (task #725); config_path is\n"
+	        "               its own absolute view of glauth's own config file\n"
 	        "  ldap server ls\n"
 	        "  ldap server unregister CONTAINER\n"
+	        "  ldap group add --name=NAME --gidnumber=N\n"
+	        "  ldap group ls\n"
+	        "  ldap group rm NAME\n"
+	        "  ldap user add --name=NAME --uidnumber=N --primarygroup=N [--givenname=S]\n"
+	        "               [--sn=S] [--mail=S] [--loginshell=S] [--homedirectory=S]\n"
+	        "               [--password=S] [--disabled]\n"
+	        "  ldap user ls\n"
+	        "  ldap user rm NAME\n"
 	        "  pki ca bootstrap [--common-name=NAME] [--days=N]\n"
 	        "  pki ca show\n"
 	        "  pki intermediate bootstrap [--common-name=NAME] [--days=N]  -- second CA tier,\n"
@@ -679,9 +687,9 @@ static void fmt_dns_server_list(const struct json_value *v)
 static void fmt_ldap_server_line(const struct json_value *v)
 {
 	const char *container = json_str_field(v, "container");
-	const char *db_path = json_str_field(v, "db_path");
+	const char *config_path = json_str_field(v, "config_path");
 
-	printf("%-20s %s\n", container, db_path);
+	printf("%-20s %s\n", container, config_path);
 }
 
 static void fmt_ldap_server_list(const struct json_value *v)
@@ -693,6 +701,53 @@ static void fmt_ldap_server_list(const struct json_value *v)
 		return;
 	for (i = 0; i < servers->u.array.count; i++)
 		fmt_ldap_server_line(servers->u.array.items[i]);
+}
+
+static void fmt_ldap_group_line(const struct json_value *v)
+{
+	const char *name = json_str_field(v, "name");
+	long gidnumber = (long)json_as_number(json_object_get(v, "gidnumber"));
+
+	printf("%-20s gidnumber=%ld\n", name, gidnumber);
+}
+
+static void fmt_ldap_group_list(const struct json_value *v)
+{
+	const struct json_value *groups = json_object_get(v, "groups");
+	size_t i;
+
+	if (groups == NULL || groups->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < groups->u.array.count; i++)
+		fmt_ldap_group_line(groups->u.array.items[i]);
+}
+
+static void fmt_ldap_user_line(const struct json_value *v)
+{
+	const char *name = json_str_field(v, "name");
+	const char *mail = json_str_field(v, "mail");
+	long uidnumber = (long)json_as_number(json_object_get(v, "uidnumber"));
+	long primarygroup = (long)json_as_number(json_object_get(v, "primarygroup"));
+	const struct json_value *jhas_password = json_object_get(v, "has_password");
+	const struct json_value *jdisabled = json_object_get(v, "disabled");
+	int has_password = jhas_password != NULL && jhas_password->type == JSON_BOOL &&
+	                    jhas_password->u.boolean;
+	int disabled = jdisabled != NULL && jdisabled->type == JSON_BOOL && jdisabled->u.boolean;
+
+	printf("%-20s uid=%-6ld gid=%-6ld mail=%-30s password=%-4s disabled=%s\n", name, uidnumber,
+	       primarygroup, mail != NULL ? mail : "", has_password ? "set" : "unset",
+	       disabled ? "yes" : "no");
+}
+
+static void fmt_ldap_user_list(const struct json_value *v)
+{
+	const struct json_value *users = json_object_get(v, "users");
+	size_t i;
+
+	if (users == NULL || users->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < users->u.array.count; i++)
+		fmt_ldap_user_line(users->u.array.items[i]);
 }
 
 static void print_sans_csv(const struct json_value *v)
@@ -3776,7 +3831,7 @@ static int cmd_dns(const struct kx_client *c, int json_mode, int argc, char **ar
 static int cmd_ldap_server_register(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *container = NULL;
-	const char *db_path = NULL;
+	const char *config_path = NULL;
 	int i;
 	struct json_writer w;
 	struct kx_response r;
@@ -3784,16 +3839,17 @@ static int cmd_ldap_server_register(const struct kx_client *c, int json_mode, in
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--container=", 12) == 0)
 			container = argv[i] + 12;
-		else if (strncmp(argv[i], "--db-path=", 10) == 0)
-			db_path = argv[i] + 10;
+		else if (strncmp(argv[i], "--config-path=", 14) == 0)
+			config_path = argv[i] + 14;
 		else {
 			fprintf(stderr, "kanxeoctl: unknown ldap server register option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
-	if (container == NULL || db_path == NULL) {
-		fprintf(stderr, "usage: kanxeoctl ldap server register --container=NAME --db-path=PATH\n");
+	if (container == NULL || config_path == NULL) {
+		fprintf(stderr,
+		        "usage: kanxeoctl ldap server register --container=NAME --config-path=PATH\n");
 		return 2;
 	}
 
@@ -3801,8 +3857,8 @@ static int cmd_ldap_server_register(const struct kx_client *c, int json_mode, in
 	jw_obj_open(&w);
 	jw_key(&w, "container");
 	jw_str(&w, container);
-	jw_key(&w, "db_path");
-	jw_str(&w, db_path);
+	jw_key(&w, "config_path");
+	jw_str(&w, config_path);
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -3851,7 +3907,7 @@ static int cmd_ldap_server(const struct kx_client *c, int json_mode, int argc, c
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: kanxeoctl ldap server register --container=NAME --db-path=PATH\n"
+		        "usage: kanxeoctl ldap server register --container=NAME --config-path=PATH\n"
 		        "       kanxeoctl ldap server ls\n"
 		        "       kanxeoctl ldap server unregister CONTAINER\n");
 		return 2;
@@ -3868,17 +3924,242 @@ static int cmd_ldap_server(const struct kx_client *c, int json_mode, int argc, c
 	return 2;
 }
 
+static int cmd_ldap_group_add(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *name = NULL;
+	const char *gidnumber = NULL;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--name=", 7) == 0)
+			name = argv[i] + 7;
+		else if (strncmp(argv[i], "--gidnumber=", 12) == 0)
+			gidnumber = argv[i] + 12;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown ldap group add option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	if (name == NULL || gidnumber == NULL) {
+		fprintf(stderr, "usage: kanxeoctl ldap group add --name=NAME --gidnumber=N\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "gidnumber");
+	jw_int(&w, strtol(gidnumber, NULL, 10));
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/ldap/groups", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_ldap_group_line);
+}
+
+static int cmd_ldap_group_ls(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/ldap/groups", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_ldap_group_list);
+}
+
+static int cmd_ldap_group_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: ldap group rm requires a group name\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/ldap/groups/%s", argv[0]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static int cmd_ldap_group(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl ldap group add --name=NAME --gidnumber=N\n"
+		                "       kanxeoctl ldap group ls\n"
+		                "       kanxeoctl ldap group rm NAME\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "add") == 0)
+		return cmd_ldap_group_add(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "ls") == 0)
+		return cmd_ldap_group_ls(c, json_mode);
+	if (strcmp(sub, "rm") == 0)
+		return cmd_ldap_group_rm(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown ldap group subcommand '%s'\n", sub);
+	return 2;
+}
+
+/* Shared by "ldap user add" and a future "ldap user update" -- parses
+ * every optional field kanxeoctl exposes into a JSON request body. */
+static void build_ldap_user_body(struct json_writer *w, int argc, char **argv,
+                                  const char **out_name)
+{
+	int i;
+	const char *name = NULL;
+
+	jw_obj_open(w);
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--name=", 7) == 0) {
+			name = argv[i] + 7;
+			jw_key(w, "name");
+			jw_str(w, name);
+		} else if (strncmp(argv[i], "--uidnumber=", 12) == 0) {
+			jw_key(w, "uidnumber");
+			jw_int(w, strtol(argv[i] + 12, NULL, 10));
+		} else if (strncmp(argv[i], "--primarygroup=", 15) == 0) {
+			jw_key(w, "primarygroup");
+			jw_int(w, strtol(argv[i] + 15, NULL, 10));
+		} else if (strncmp(argv[i], "--givenname=", 12) == 0) {
+			jw_key(w, "givenname");
+			jw_str(w, argv[i] + 12);
+		} else if (strncmp(argv[i], "--sn=", 5) == 0) {
+			jw_key(w, "sn");
+			jw_str(w, argv[i] + 5);
+		} else if (strncmp(argv[i], "--mail=", 7) == 0) {
+			jw_key(w, "mail");
+			jw_str(w, argv[i] + 7);
+		} else if (strncmp(argv[i], "--loginshell=", 13) == 0) {
+			jw_key(w, "loginshell");
+			jw_str(w, argv[i] + 13);
+		} else if (strncmp(argv[i], "--homedirectory=", 16) == 0) {
+			jw_key(w, "homedirectory");
+			jw_str(w, argv[i] + 16);
+		} else if (strncmp(argv[i], "--password=", 11) == 0) {
+			jw_key(w, "password");
+			jw_str(w, argv[i] + 11);
+		} else if (strcmp(argv[i], "--disabled") == 0) {
+			jw_key(w, "disabled");
+			jw_bool(w, 1);
+		}
+	}
+	jw_obj_close(w);
+	*out_name = name;
+}
+
+static int cmd_ldap_user_add(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct json_writer w;
+	struct kx_response r;
+	const char *name;
+
+	jw_init(&w);
+	build_ldap_user_body(&w, argc, argv, &name);
+	if (name == NULL) {
+		jw_free(&w);
+		fprintf(stderr,
+		        "usage: kanxeoctl ldap user add --name=NAME --uidnumber=N "
+		        "--primarygroup=N [--givenname=S] [--sn=S] [--mail=S] "
+		        "[--loginshell=S] [--homedirectory=S] [--password=S] [--disabled]\n");
+		return 2;
+	}
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/ldap/users", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_ldap_user_line);
+}
+
+static int cmd_ldap_user_ls(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/ldap/users", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_ldap_user_list);
+}
+
+static int cmd_ldap_user_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: ldap user rm requires a user name\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/ldap/users/%s", argv[0]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static int cmd_ldap_user(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl ldap user add --name=NAME --uidnumber=N "
+		                "--primarygroup=N ...\n"
+		                "       kanxeoctl ldap user ls\n"
+		                "       kanxeoctl ldap user rm NAME\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "add") == 0)
+		return cmd_ldap_user_add(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "ls") == 0)
+		return cmd_ldap_user_ls(c, json_mode);
+	if (strcmp(sub, "rm") == 0)
+		return cmd_ldap_user_rm(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown ldap user subcommand '%s'\n", sub);
+	return 2;
+}
+
 static int cmd_ldap(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl ldap server ...\n");
+		fprintf(stderr, "usage: kanxeoctl ldap server ...\n"
+		                "       kanxeoctl ldap group ...\n"
+		                "       kanxeoctl ldap user ...\n");
 		return 2;
 	}
 	sub = argv[0];
 	if (strcmp(sub, "server") == 0)
 		return cmd_ldap_server(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "group") == 0)
+		return cmd_ldap_group(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "user") == 0)
+		return cmd_ldap_user(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "kanxeoctl: unknown ldap subcommand '%s'\n", sub);
 	return 2;

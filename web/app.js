@@ -24,6 +24,8 @@ const cache = {
 	dnsRecords: [],
 	dnsServers: [],
 	ldapServers: [],
+	ldapGroups: [],
+	ldapUsers: [],
 	pkiCa: null,
 	pkiIntermediate: null,
 	pkiCerts: [],
@@ -258,6 +260,8 @@ const CATEGORY_VIEWS = {
 	"dns-records": "view-dns-records",
 	"dns-servers": "view-dns-servers",
 	"ldap-servers": "view-ldap-servers",
+	"ldap-groups": "view-ldap-groups",
+	"ldap-users": "view-ldap-users",
 	"pki-ca": "view-pki-ca",
 	"pki-certs": "view-pki-certs",
 	packages: "view-packages",
@@ -669,13 +673,14 @@ function renderTree() {
 					],
 				},
 				{
-					/* task #725 -- LDAP server registration only for now;
-					 * user/group management (task #726) will land here
-					 * once built. */
 					label: "LDAP",
 					hash: "ldap-servers",
 					icon: "dns",
-					children: [{ label: "Servers", hash: "ldap-servers", icon: "dns" }],
+					children: [
+						{ label: "Servers", hash: "ldap-servers", icon: "dns" },
+						{ label: "Groups", hash: "ldap-groups", icon: "dns" },
+						{ label: "Users", hash: "ldap-users", icon: "dns" },
+					],
 				},
 				{
 					/* Aliases to its own first child's hash ("daemon-config"),
@@ -2516,7 +2521,7 @@ function renderLdapServers(servers) {
 		row.appendChild(containerCell);
 
 		const pathCell = document.createElement("td");
-		pathCell.textContent = s.db_path;
+		pathCell.textContent = s.config_path;
 		row.appendChild(pathCell);
 
 		const actionCell = document.createElement("td");
@@ -2545,6 +2550,122 @@ async function removeLdapServer(container) {
 		await refreshLdapServers();
 	} catch (e) {
 		showStatus("Failed to unregister LDAP server " + container + ": " + e.message, true);
+	}
+}
+
+/* ---------- LDAP Groups (task #726) ---------- */
+
+function renderLdapGroups(groups) {
+	const body = document.getElementById("ldap-groups-body");
+
+	body.textContent = "";
+	if (groups.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 3;
+		cell.className = "empty";
+		cell.textContent = "No LDAP groups";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+
+	for (const g of groups) {
+		const row = document.createElement("tr");
+
+		const nameCell = document.createElement("td");
+		nameCell.textContent = g.name;
+		row.appendChild(nameCell);
+
+		const gidCell = document.createElement("td");
+		gidCell.textContent = g.gidnumber;
+		row.appendChild(gidCell);
+
+		const actionCell = document.createElement("td");
+		const rmButton = document.createElement("button");
+
+		rmButton.textContent = "Remove";
+		rmButton.className = "button-danger";
+		rmButton.addEventListener("click", () => removeLdapGroup(g.name));
+		actionCell.appendChild(rmButton);
+		row.appendChild(actionCell);
+
+		body.appendChild(row);
+	}
+}
+
+async function refreshLdapGroups() {
+	const data = await apiRequest("GET", "/v1/ldap/groups");
+	cache.ldapGroups = data.groups;
+	renderLdapGroups(cache.ldapGroups);
+}
+
+async function removeLdapGroup(name) {
+	try {
+		await apiRequest("DELETE", "/v1/ldap/groups/" + encodeURIComponent(name));
+		clearStatus();
+		await refreshLdapGroups();
+	} catch (e) {
+		showStatus("Failed to remove LDAP group " + name + ": " + e.message, true);
+	}
+}
+
+/* ---------- LDAP Users (task #726) ---------- */
+
+function renderLdapUsers(users) {
+	const body = document.getElementById("ldap-users-body");
+
+	body.textContent = "";
+	if (users.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 7;
+		cell.className = "empty";
+		cell.textContent = "No LDAP users";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+
+	for (const u of users) {
+		const row = document.createElement("tr");
+
+		const cells = [u.name, u.uidnumber, u.primarygroup, u.mail,
+		               u.has_password ? "set" : "unset", u.disabled ? "yes" : "no"];
+		for (const v of cells) {
+			const cell = document.createElement("td");
+			cell.textContent = v;
+			row.appendChild(cell);
+		}
+
+		const actionCell = document.createElement("td");
+		const rmButton = document.createElement("button");
+
+		rmButton.textContent = "Remove";
+		rmButton.className = "button-danger";
+		rmButton.addEventListener("click", () => removeLdapUser(u.name));
+		actionCell.appendChild(rmButton);
+		row.appendChild(actionCell);
+
+		body.appendChild(row);
+	}
+}
+
+async function refreshLdapUsers() {
+	const data = await apiRequest("GET", "/v1/ldap/users");
+	cache.ldapUsers = data.users;
+	renderLdapUsers(cache.ldapUsers);
+}
+
+async function removeLdapUser(name) {
+	try {
+		await apiRequest("DELETE", "/v1/ldap/users/" + encodeURIComponent(name));
+		clearStatus();
+		await refreshLdapUsers();
+	} catch (e) {
+		showStatus("Failed to remove LDAP user " + name + ": " + e.message, true);
 	}
 }
 
@@ -3368,16 +3489,62 @@ document.getElementById("ldap-server-form").addEventListener("submit", async (ev
 	event.preventDefault();
 
 	const container = document.getElementById("lf-container").value.trim();
-	const dbPath = document.getElementById("lf-db-path").value.trim();
+	const configPath = document.getElementById("lf-config-path").value.trim();
 
 	try {
-		await apiRequest("POST", "/v1/ldap/servers", { container: container, db_path: dbPath });
+		await apiRequest("POST", "/v1/ldap/servers", { container: container, config_path: configPath });
 		clearStatus();
 		document.getElementById("ldap-server-form").reset();
 		closeModal();
 		await refreshLdapServers();
 	} catch (e) {
 		showStatus("Failed to register LDAP server: " + e.message, true);
+	}
+});
+
+document.getElementById("ldap-group-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const body = {
+		name: document.getElementById("lgf-name").value.trim(),
+		gidnumber: parseInt(document.getElementById("lgf-gidnumber").value, 10),
+	};
+
+	try {
+		await apiRequest("POST", "/v1/ldap/groups", body);
+		clearStatus();
+		document.getElementById("ldap-group-form").reset();
+		closeModal();
+		await refreshLdapGroups();
+	} catch (e) {
+		showStatus("Failed to create LDAP group: " + e.message, true);
+	}
+});
+
+document.getElementById("ldap-user-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const body = {
+		name: document.getElementById("luf-name").value.trim(),
+		uidnumber: parseInt(document.getElementById("luf-uidnumber").value, 10),
+		primarygroup: parseInt(document.getElementById("luf-primarygroup").value, 10),
+		givenname: document.getElementById("luf-givenname").value.trim(),
+		sn: document.getElementById("luf-sn").value.trim(),
+		mail: document.getElementById("luf-mail").value.trim(),
+		loginshell: document.getElementById("luf-loginshell").value.trim(),
+		homedirectory: document.getElementById("luf-homedirectory").value.trim(),
+		password: document.getElementById("luf-password").value,
+		disabled: document.getElementById("luf-disabled").checked,
+	};
+
+	try {
+		await apiRequest("POST", "/v1/ldap/users", body);
+		clearStatus();
+		document.getElementById("ldap-user-form").reset();
+		closeModal();
+		await refreshLdapUsers();
+	} catch (e) {
+		showStatus("Failed to create LDAP user: " + e.message, true);
 	}
 });
 
@@ -4077,6 +4244,8 @@ async function poll() {
 		await refreshDnsRecords();
 		await refreshDnsServers();
 		await refreshLdapServers();
+		await refreshLdapGroups();
+		await refreshLdapUsers();
 		await refreshPkiCa();
 		await refreshPkiIntermediate();
 		await refreshPkiCerts();

@@ -521,21 +521,40 @@ Registration is best-effort and non-fatal to container creation: if a record nam
 
 Also auto-maintained: this install's own instance DNS record (its FQDN pointing at its own `--bind=` address), reconciled at daemon startup and again on every `PUT /system/site` — see [This install's identity](#this-installs-identity-site-config) below.
 
-## LDAP: server registration (task #725)
+## LDAP: server registration (task #725) and user/group CRUD (task #726)
 
-LDAP server registration mirrors DNS server registration's own REST shape and persistence discipline, but with one real, deliberate difference: **registration itself never touches the container's filesystem or sends any signal**. `glauth` (`pkg/recipes/glauth/2.4.0/recipe.sh`, this platform's own standard integrable LDAP provider, replacing `lldap`) queries its own embedded SQLite database live on every LDAP request — confirmed directly during that recipe's own verification, a row inserted while the server was already running was immediately visible to a subsequent `ldapsearch`, no reload needed. DNS server registration exists because dnsmasq only reads its hosts file once at startup; glauth has no equivalent gap to work around.
+LDAP server registration mirrors DNS server registration's own REST shape and persistence discipline, but with one real, deliberate difference: **registration itself never touches the container's filesystem or sends any signal**. `glauth` (`pkg/recipes/glauth/2.4.0/recipe.sh`, this platform's own standard integrable LDAP provider, replacing `lldap`) runs a real `fsnotify` watcher on its own config file whenever that file sets `watch_config = true` — confirmed directly against glauth's own source (`v2/glauth.go`'s `startConfigWatcher()`) — and reloads automatically on any write. DNS server registration exists because dnsmasq only reads its hosts file once at startup; glauth has no equivalent gap to work around.
 
-Once a running glauth container exists, register it so its own SQLite database path is on record for the LDAP user/group CRUD endpoints (task #726, not yet built) to write into:
+Once a running glauth container exists (its own config file staged at creation time, `datastore = "config"` and `watch_config = true` set, the same `--file=` staging convention `lldap.recipe` established), register it so its config file's path is on record for the LDAP user/group CRUD endpoints below to render into:
 
 ```
 POST /v1/ldap/servers
-{"container": "ldap1", "db_path": "/var/lib/glauth/gl.db"}
+{"container": "ldap1", "config_path": "/etc/glauth/glauth.cfg"}
 ```
 
 - `container` must already exist and be running (`404` otherwise, same rule `POST /v1/dns/servers` enforces).
-- `db_path` is `db_path`'s own absolute view of glauth's SQLite file inside that container — rejected (`400`) if not absolute or if it contains `..`. Nothing is read or written at registration time; this call is pure bookkeeping.
+- `config_path` is the container's own absolute view of glauth's config file (the one it was started with `-c`) — rejected (`400`) if not absolute or if it contains `..`. Nothing is read or written at registration time beyond a full user/group sync (see below); this call is otherwise pure bookkeeping.
 
 `GET /v1/ldap/servers` lists every current binding; `DELETE /v1/ldap/servers/{container}` unregisters one (does not touch the container itself). Deleting the container automatically removes its binding (`ldap_server_forget()`, called from the same container-delete cleanup path as `dns_server_forget()`). Bindings are persisted (`<data-dir>/ldap_servers.json`) and survive a daemon restart, the same as DNS server bindings (ADR-0091).
+
+### User/group CRUD
+
+Same durable-record-store model DNS records use (`dns_record_create()`/`delete()`/`find()`): Kanxeo itself is the source of truth for every user/group (persisted to `<data-dir>/ldap_users.json`/`ldap_groups.json`, survives a glauth container being deleted or rebuilt), and every create/update/delete re-renders the **full** current user/group set as glauth "config" datastore TOML and writes it into every currently-registered, currently-running server's own config file — the same always-whole-file-rewrite behavior `dns_write_hosts_file()`/`dns_server_sync_all()` already use for dnsmasq's hosts file. No signal is sent; glauth's own config watcher picks up the write. The write preserves everything above the first `[[users]]`/`[[groups]]` stanza in the container's current config file byte-for-byte (the operator's own `[backend]`/`[ldap]`/`[api]`/TLS settings), so only the managed tail is ever replaced.
+
+```
+POST /v1/ldap/groups
+{"name": "superheros", "gidnumber": 5501}
+
+POST /v1/ldap/users
+{"name": "j_doe", "uidnumber": 5001, "primarygroup": 5501, "mail": "j.doe@kanxeo.internal", "password": "dogood"}
+```
+
+- Group `name`/user `name` follow POSIX-ish username rules (lowercase letters/digits/`_`/`-`, must start with a letter or `_`).
+- A user's `primarygroup` must name an existing group's `gidnumber` (`404`-equivalent `LDAP_RECORD_ERR_GROUP_NOT_FOUND` otherwise) — create the group first.
+- `password`, if given, is hashed with SHA-256 (`passsha256`, a real glauth "config" datastore field) via kanxeod's own already-linked OpenSSL `libcrypto` — never stored or echoed in plaintext, and never returned by any `GET` (only a `has_password` boolean is). Omitting `password` on `PUT .../users/{name}` leaves the existing credential unchanged.
+- Capability/ACL grants (glauth's own `capabilities` config stanza) are out of scope here — directory data only; see tasks #727/#728 for how a real consuming workload's bind/search rights get provisioned.
+
+`GET`/`DELETE` follow the same `/v1/ldap/users/{name}` and `/v1/ldap/groups/{name}` shape as every other named resource in this API; `PUT /v1/ldap/users/{name}` updates an existing user (full field replacement, `password` optional as above).
 
 ## PKI: a CA chain and issued leaf certificates
 

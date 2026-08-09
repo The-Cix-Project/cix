@@ -23,6 +23,8 @@
 				<li><button type="button" data-modal="dns-record-form" data-title="Create DNS record">DNS Record</button></li>
 				<li><button type="button" data-modal="dns-server-form" data-title="Register DNS server">DNS Server</button></li>
 				<li><button type="button" data-modal="ldap-server-form" data-title="Register LDAP server">LDAP Server</button></li>
+				<li><button type="button" data-modal="ldap-group-form" data-title="Create LDAP group">LDAP Group</button></li>
+				<li><button type="button" data-modal="ldap-user-form" data-title="Create LDAP user">LDAP User</button></li>
 				<li><button type="button" data-modal="pki-cert-form" data-title="Issue certificate">PKI Certificate</button></li>
 				<li><button type="button" data-modal="pkg-recipe-form" data-title="Add or update a recipe">Package Recipe</button></li>
 				<li><button type="button" data-modal="pkg-bootstrap-form" data-title="Bootstrap build image">Bootstrap Build Image</button></li>
@@ -451,12 +453,54 @@
 					<thead>
 						<tr>
 							<th>Container</th>
-							<th>DB path</th>
+							<th>Config path</th>
 							<th></th>
 						</tr>
 					</thead>
 					<tbody id="ldap-servers-body">
 						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</section>
+
+		<!-- LDAP Groups -->
+		<section class="view" id="view-ldap-groups" hidden>
+			<div class="view-list">
+				<h2>LDAP Groups</h2>
+				<table id="ldap-groups">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>GID number</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="ldap-groups-body">
+						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</section>
+
+		<!-- LDAP Users -->
+		<section class="view" id="view-ldap-users" hidden>
+			<div class="view-list">
+				<h2>LDAP Users</h2>
+				<table id="ldap-users">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>UID</th>
+							<th>Primary group</th>
+							<th>Mail</th>
+							<th>Password</th>
+							<th>Disabled</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="ldap-users-body">
+						<tr><td colspan="7" class="empty">Loading&hellip;</td></tr>
 					</tbody>
 				</table>
 			</div>
@@ -1019,10 +1063,69 @@
 						<input type="text" id="lf-container" pattern="[A-Za-z0-9_-]+" required>
 					</label>
 					<label class="wide">
-						DB path
-						<input type="text" id="lf-db-path" placeholder="/var/lib/glauth/gl.db" required>
+						Config path
+						<input type="text" id="lf-config-path" placeholder="/etc/glauth/glauth.cfg" required>
 					</label>
 					<button type="submit">Register</button>
+				</form>
+			</div>
+
+			<div id="modal-ldap-group-form" hidden>
+				<form id="ldap-group-form">
+					<label>
+						Name
+						<input type="text" id="lgf-name" pattern="[a-z_][a-z0-9_-]*" required>
+					</label>
+					<label>
+						GID number
+						<input type="number" id="lgf-gidnumber" min="1" required>
+					</label>
+					<button type="submit">Create</button>
+				</form>
+			</div>
+
+			<div id="modal-ldap-user-form" hidden>
+				<form id="ldap-user-form">
+					<label>
+						Name
+						<input type="text" id="luf-name" pattern="[a-z_][a-z0-9_-]*" required>
+					</label>
+					<label>
+						UID number
+						<input type="number" id="luf-uidnumber" min="1" required>
+					</label>
+					<label>
+						Primary group (GID number)
+						<input type="number" id="luf-primarygroup" min="1" required>
+					</label>
+					<label>
+						Given name
+						<input type="text" id="luf-givenname">
+					</label>
+					<label>
+						Surname
+						<input type="text" id="luf-sn">
+					</label>
+					<label>
+						Mail
+						<input type="text" id="luf-mail">
+					</label>
+					<label>
+						Login shell
+						<input type="text" id="luf-loginshell" placeholder="/bin/bash">
+					</label>
+					<label class="wide">
+						Home directory
+						<input type="text" id="luf-homedirectory" placeholder="/home/j_doe">
+					</label>
+					<label class="wide">
+						Password
+						<input type="password" id="luf-password">
+					</label>
+					<label>
+						<input type="checkbox" id="luf-disabled"> Disabled
+					</label>
+					<button type="submit">Create</button>
 				</form>
 			</div>
 

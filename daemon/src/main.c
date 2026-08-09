@@ -95,6 +95,8 @@ static char NETWORKS_STATE_PATH[PATH_MAX];
 static char DNS_RECORDS_STATE_PATH[PATH_MAX];
 static char DNS_SERVERS_STATE_PATH[PATH_MAX];
 static char LDAP_SERVERS_STATE_PATH[PATH_MAX];
+static char LDAP_USERS_STATE_PATH[PATH_MAX];
+static char LDAP_GROUPS_STATE_PATH[PATH_MAX];
 static char PKI_DIR[PATH_MAX];
 static char PKI_CERTS_STATE_PATH[PATH_MAX];
 static char PKI_CERTS_DIR[PATH_MAX];
@@ -174,6 +176,9 @@ static void init_base_dir_paths(void)
 	snprintf(DNS_RECORDS_STATE_PATH, sizeof(DNS_RECORDS_STATE_PATH), "%s/dns_records.json", g_base_dir);
 	snprintf(DNS_SERVERS_STATE_PATH, sizeof(DNS_SERVERS_STATE_PATH), "%s/dns_servers.json", g_base_dir);
 	snprintf(LDAP_SERVERS_STATE_PATH, sizeof(LDAP_SERVERS_STATE_PATH), "%s/ldap_servers.json",
+	         g_base_dir);
+	snprintf(LDAP_USERS_STATE_PATH, sizeof(LDAP_USERS_STATE_PATH), "%s/ldap_users.json", g_base_dir);
+	snprintf(LDAP_GROUPS_STATE_PATH, sizeof(LDAP_GROUPS_STATE_PATH), "%s/ldap_groups.json",
 	         g_base_dir);
 	snprintf(PKI_DIR, sizeof(PKI_DIR), "%s/pki", g_base_dir);
 	snprintf(PKI_CERTS_STATE_PATH, sizeof(PKI_CERTS_STATE_PATH), "%s/pki_certs.json", PKI_DIR);
@@ -390,6 +395,8 @@ static int set_disk_quota(const char *base_path, uint32_t projid, long long quot
 #define DNS_RECORDS_PREFIX "/v1/dns/records/"
 #define DNS_SERVERS_PREFIX "/v1/dns/servers/"
 #define LDAP_SERVERS_PREFIX "/v1/ldap/servers/"
+#define LDAP_GROUPS_PREFIX "/v1/ldap/groups/"
+#define LDAP_USERS_PREFIX "/v1/ldap/users/"
 #define PKI_CERTS_PREFIX "/v1/pki/certs/"
 #define PKG_PREFIX "/v1/pkg/"
 #define PKG_RECIPES_PREFIX "/v1/pkg/recipes/"
@@ -7464,7 +7471,7 @@ static void respond_ldap_server_error(int fd, enum ldap_server_error err)
 {
 	switch (err) {
 	case LDAP_SERVER_ERR_INVALID_PATH:
-		respond_error(fd, 400, "Bad Request", "invalid db_path");
+		respond_error(fd, 400, "Bad Request", "invalid config_path");
 		break;
 	case LDAP_SERVER_ERR_DUPLICATE:
 		respond_error(fd, 409, "Conflict", "this container is already registered");
@@ -7486,15 +7493,15 @@ static void respond_ldap_server_error(int fd, enum ldap_server_error err)
  * Mirrors handle_dns_server_create()/handle_dns_server_list()/
  * handle_dns_server_delete() exactly (task #725) -- same REST shape,
  * same "container must already exist and be running" validation.
- * Unlike DNS, registration itself never touches the container's
+ * Unlike DNS, registration itself never writes to the container's
  * filesystem (see ldap.h's own header comment for why) -- task #726's
- * CRUD handlers resolve /proc/<pid>/root/<db_path> fresh at write
+ * CRUD layer resolves /proc/<pid>/root/<config_path> fresh at write
  * time instead.
  */
 static void handle_ldap_server_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
-	const char *container_name, *db_path;
+	const char *container_name, *config_path;
 	struct registry_entry *entry;
 	enum ldap_server_error serr;
 	struct json_writer w;
@@ -7506,11 +7513,11 @@ static void handle_ldap_server_create(int fd, const char *body, size_t body_len)
 	}
 
 	container_name = json_as_string(json_object_get(root, "container"));
-	db_path = json_as_string(json_object_get(root, "db_path"));
+	config_path = json_as_string(json_object_get(root, "config_path"));
 
-	if (container_name == NULL || db_path == NULL) {
+	if (container_name == NULL || config_path == NULL) {
 		json_free(root);
-		respond_error(fd, 400, "Bad Request", "container/db_path missing");
+		respond_error(fd, 400, "Bad Request", "container/config_path missing");
 		return;
 	}
 
@@ -7521,7 +7528,7 @@ static void handle_ldap_server_create(int fd, const char *body, size_t body_len)
 		return;
 	}
 
-	serr = ldap_server_register(container_name, db_path);
+	serr = ldap_server_register(container_name, config_path);
 
 	if (serr != LDAP_SERVER_OK) {
 		json_free(root);
@@ -7529,15 +7536,21 @@ static void handle_ldap_server_create(int fd, const char *body, size_t body_len)
 		return;
 	}
 
-	/* container_name/db_path still point into root -- build the
+	/* Task #726: populate the freshly-registered server's own config
+	 * file from Kanxeo's own record store, the dns_server_sync_all()
+	 * analog -- a fresh/replacement glauth instance starts current
+	 * instead of empty. */
+	ldap_record_sync_all();
+
+	/* container_name/config_path still point into root -- build the
 	 * response before freeing it (see handle_dns_server_create()'s own
 	 * identical comment). */
 	jw_init(&w);
 	jw_obj_open(&w);
 	jw_key(&w, "container");
 	jw_str(&w, container_name);
-	jw_key(&w, "db_path");
-	jw_str(&w, db_path);
+	jw_key(&w, "config_path");
+	jw_str(&w, config_path);
 	jw_obj_close(&w);
 	json_free(root);
 	respond_json(fd, 201, "Created", &w);
@@ -7563,6 +7576,249 @@ static void handle_ldap_server_delete(int fd, const char *name)
 
 	if (serr != LDAP_SERVER_OK) {
 		respond_ldap_server_error(fd, serr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+/* ---- LDAP user/group CRUD (task #726) ---- */
+
+static void respond_ldap_record_error(int fd, enum ldap_record_error err)
+{
+	switch (err) {
+	case LDAP_RECORD_ERR_INVALID_NAME:
+		respond_error(fd, 400, "Bad Request", "invalid name");
+		break;
+	case LDAP_RECORD_ERR_INVALID_FIELD:
+		respond_error(fd, 400, "Bad Request", "invalid uidnumber/gidnumber");
+		break;
+	case LDAP_RECORD_ERR_DUPLICATE:
+		respond_error(fd, 409, "Conflict", "already exists");
+		break;
+	case LDAP_RECORD_ERR_FULL:
+		respond_error(fd, 500, "Internal Server Error", "LDAP record table full");
+		break;
+	case LDAP_RECORD_ERR_GROUP_NOT_FOUND:
+		respond_error(fd, 400, "Bad Request", "primarygroup does not name an existing group");
+		break;
+	case LDAP_RECORD_ERR_PERSIST_FAILED:
+		respond_error(fd, 500, "Internal Server Error", "failed to persist LDAP record");
+		break;
+	case LDAP_RECORD_ERR_NOT_FOUND:
+	default:
+		respond_error(fd, 404, "Not Found", "no such LDAP user/group");
+		break;
+	}
+}
+
+static void handle_ldap_group_create(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *name;
+	int gidnumber;
+	struct ldap_group *g;
+	enum ldap_record_error rerr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+
+	name = json_as_string(json_object_get(root, "name"));
+	gidnumber = (int)json_as_number(json_object_get(root, "gidnumber"));
+
+	if (name == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "name missing");
+		return;
+	}
+
+	rerr = ldap_group_create(name, gidnumber, &g);
+	json_free(root); /* g points into ldap.c's own record store, not root -- safe past here */
+	if (rerr != LDAP_RECORD_OK) {
+		respond_ldap_record_error(fd, rerr);
+		return;
+	}
+
+	jw_init(&w);
+	ldap_group_write_json_one(g, &w);
+	respond_json(fd, 201, "Created", &w);
+	jw_free(&w);
+}
+
+static void handle_ldap_group_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "groups");
+	ldap_group_write_json_list(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_ldap_group_get_one(int fd, const char *name)
+{
+	struct ldap_group *g = ldap_group_find(name);
+	struct json_writer w;
+
+	if (g == NULL) {
+		respond_error(fd, 404, "Not Found", "no such LDAP group");
+		return;
+	}
+	jw_init(&w);
+	ldap_group_write_json_one(g, &w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_ldap_group_delete(int fd, const char *name)
+{
+	enum ldap_record_error rerr = ldap_group_delete(name);
+
+	if (rerr != LDAP_RECORD_OK) {
+		respond_ldap_record_error(fd, rerr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+/*
+ * Shared by create (task #726's POST) and update (PUT): parses every
+ * user field out of root, leaving *password NULL when the "password"
+ * key is absent from the body at all -- ldap_user_create()/update()
+ * both treat NULL as "no credential change," matching PUT's own
+ * documented "omit password to keep the existing one" semantics.
+ */
+static void parse_ldap_user_body(const struct json_value *root, const char **name, int *uidnumber,
+                                  int *primarygroup, const char **givenname, const char **sn,
+                                  const char **mail, const char **loginshell,
+                                  const char **homedirectory, const char **password, int *disabled)
+{
+	const struct json_value *jdisabled = json_object_get(root, "disabled");
+
+	*name = json_as_string(json_object_get(root, "name"));
+	*uidnumber = (int)json_as_number(json_object_get(root, "uidnumber"));
+	*primarygroup = (int)json_as_number(json_object_get(root, "primarygroup"));
+	*givenname = json_as_string(json_object_get(root, "givenname"));
+	*sn = json_as_string(json_object_get(root, "sn"));
+	*mail = json_as_string(json_object_get(root, "mail"));
+	*loginshell = json_as_string(json_object_get(root, "loginshell"));
+	*homedirectory = json_as_string(json_object_get(root, "homedirectory"));
+	*password = json_as_string(json_object_get(root, "password"));
+	*disabled = (jdisabled != NULL && jdisabled->type == JSON_BOOL && jdisabled->u.boolean);
+}
+
+static void handle_ldap_user_create(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *name, *givenname, *sn, *mail, *loginshell, *homedirectory, *password;
+	int uidnumber, primarygroup, disabled;
+	struct ldap_user *u;
+	enum ldap_record_error rerr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+
+	parse_ldap_user_body(root, &name, &uidnumber, &primarygroup, &givenname, &sn, &mail,
+	                      &loginshell, &homedirectory, &password, &disabled);
+	if (name == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "name missing");
+		return;
+	}
+
+	rerr = ldap_user_create(name, uidnumber, primarygroup, givenname, sn, mail, loginshell,
+	                         homedirectory, password, disabled, &u);
+	json_free(root); /* u points into ldap.c's own record store, not root -- safe past here */
+	if (rerr != LDAP_RECORD_OK) {
+		respond_ldap_record_error(fd, rerr);
+		return;
+	}
+
+	jw_init(&w);
+	ldap_user_write_json_one(u, &w);
+	respond_json(fd, 201, "Created", &w);
+	jw_free(&w);
+}
+
+static void handle_ldap_user_update(int fd, const char *name, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *body_name, *givenname, *sn, *mail, *loginshell, *homedirectory, *password;
+	int uidnumber, primarygroup, disabled;
+	struct ldap_user *u;
+	enum ldap_record_error rerr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+
+	parse_ldap_user_body(root, &body_name, &uidnumber, &primarygroup, &givenname, &sn, &mail,
+	                      &loginshell, &homedirectory, &password, &disabled);
+	(void)body_name; /* the URL path's name is authoritative for PUT, not the body's own */
+
+	rerr = ldap_user_update(name, uidnumber, primarygroup, givenname, sn, mail, loginshell,
+	                         homedirectory, password, disabled, &u);
+	json_free(root);
+	if (rerr != LDAP_RECORD_OK) {
+		respond_ldap_record_error(fd, rerr);
+		return;
+	}
+
+	jw_init(&w);
+	ldap_user_write_json_one(u, &w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_ldap_user_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "users");
+	ldap_user_write_json_list(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_ldap_user_get_one(int fd, const char *name)
+{
+	struct ldap_user *u = ldap_user_find(name);
+	struct json_writer w;
+
+	if (u == NULL) {
+		respond_error(fd, 404, "Not Found", "no such LDAP user");
+		return;
+	}
+	jw_init(&w);
+	ldap_user_write_json_one(u, &w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_ldap_user_delete(int fd, const char *name)
+{
+	enum ldap_record_error rerr = ldap_user_delete(name);
+
+	if (rerr != LDAP_RECORD_OK) {
+		respond_ldap_record_error(fd, rerr);
 		return;
 	}
 	http_set_blocking(fd);
@@ -9037,6 +9293,56 @@ static void dispatch(int fd, const struct http_request *req)
 		if (name[0] != '\0' && strcmp(req->method, "DELETE") == 0) {
 			handle_ldap_server_delete(fd, name);
 			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/ldap/groups") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_ldap_group_list(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_ldap_group_create(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strncmp(req->path, LDAP_GROUPS_PREFIX, strlen(LDAP_GROUPS_PREFIX)) == 0) {
+		name = req->path + strlen(LDAP_GROUPS_PREFIX);
+		if (name[0] != '\0') {
+			if (strcmp(req->method, "GET") == 0) {
+				handle_ldap_group_get_one(fd, name);
+				return;
+			}
+			if (strcmp(req->method, "DELETE") == 0) {
+				handle_ldap_group_delete(fd, name);
+				return;
+			}
+		}
+	}
+	if (strcmp(req->path, "/v1/ldap/users") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_ldap_user_list(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_ldap_user_create(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strncmp(req->path, LDAP_USERS_PREFIX, strlen(LDAP_USERS_PREFIX)) == 0) {
+		name = req->path + strlen(LDAP_USERS_PREFIX);
+		if (name[0] != '\0') {
+			if (strcmp(req->method, "GET") == 0) {
+				handle_ldap_user_get_one(fd, name);
+				return;
+			}
+			if (strcmp(req->method, "PUT") == 0) {
+				handle_ldap_user_update(fd, name, req->body, req->body_len);
+				return;
+			}
+			if (strcmp(req->method, "DELETE") == 0) {
+				handle_ldap_user_delete(fd, name);
+				return;
+			}
 		}
 	}
 	if (strcmp(req->path, "/v1/pki/ca") == 0) {
@@ -10733,6 +11039,8 @@ int main(int argc, char **argv)
 	if (dns_init(DNS_RECORDS_STATE_PATH, DNS_SERVERS_STATE_PATH) != 0)
 		return 1;
 	if (ldap_init(LDAP_SERVERS_STATE_PATH) != 0)
+		return 1;
+	if (ldap_record_init(LDAP_USERS_STATE_PATH, LDAP_GROUPS_STATE_PATH) != 0)
 		return 1;
 	if (pki_init(PKI_DIR, PKI_CERTS_STATE_PATH) != 0)
 		return 1;

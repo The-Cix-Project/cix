@@ -92,7 +92,7 @@ static int str_eq(const char *a, const char *b)
 }
 
 static int servers_list_contains(struct json_value *root, const char *container,
-                                  const char *want_db_path)
+                                  const char *want_config_path)
 {
 	const struct json_value *servers = json_object_get(root, "servers");
 	size_t i;
@@ -103,8 +103,8 @@ static int servers_list_contains(struct json_value *root, const char *container,
 		const struct json_value *item = servers->u.array.items[i];
 
 		if (str_eq(json_str_field(item, "container"), container)) {
-			if (want_db_path != NULL)
-				return str_eq(json_str_field(item, "db_path"), want_db_path);
+			if (want_config_path != NULL)
+				return str_eq(json_str_field(item, "config_path"), want_config_path);
 			return 1;
 		}
 	}
@@ -166,7 +166,7 @@ int main(void)
 	/* 2. validation: nonexistent container -> 404 */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/ldap/servers",
-	                       "{\"container\":\"no-such-container\",\"db_path\":\"/var/lib/glauth/gl.db\"}",
+	                       "{\"container\":\"no-such-container\",\"config_path\":\"/etc/glauth/glauth.cfg\"}",
 	                       &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: register nonexistent container expected 404, got %d\n", r.status);
@@ -174,24 +174,24 @@ int main(void)
 	}
 	kx_response_free(&r);
 
-	/* 3. validation: non-absolute db_path -> 400 */
+	/* 3. validation: non-absolute config_path -> 400 */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/ldap/servers",
-	                       "{\"container\":\"ldapsrv\",\"db_path\":\"var/lib/glauth/gl.db\"}", &r) !=
+	                       "{\"container\":\"ldapsrv\",\"config_path\":\"etc/glauth/glauth.cfg\"}", &r) !=
 	        0 ||
 	    r.status != 400) {
-		fprintf(stderr, "FAIL: non-absolute db_path expected 400, got %d\n", r.status);
+		fprintf(stderr, "FAIL: non-absolute config_path expected 400, got %d\n", r.status);
 		ok = 0;
 	}
 	kx_response_free(&r);
 
-	/* 4. a real, valid registration -> 201, echoes container/db_path */
+	/* 4. a real, valid registration -> 201, echoes container/config_path */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/ldap/servers",
-	                       "{\"container\":\"ldapsrv\",\"db_path\":\"/var/lib/glauth/gl.db\"}", &r) !=
+	                       "{\"container\":\"ldapsrv\",\"config_path\":\"/etc/glauth/glauth.cfg\"}", &r) !=
 	        0 ||
 	    r.status != 201 || !str_eq(json_str_field(r.json, "container"), "ldapsrv") ||
-	    !str_eq(json_str_field(r.json, "db_path"), "/var/lib/glauth/gl.db")) {
+	    !str_eq(json_str_field(r.json, "config_path"), "/etc/glauth/glauth.cfg")) {
 		fprintf(stderr, "FAIL: register ldapsrv, status=%d\n", r.status);
 		ok = 0;
 	}
@@ -200,7 +200,7 @@ int main(void)
 	/* 5. duplicate registration -> 409 */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/ldap/servers",
-	                       "{\"container\":\"ldapsrv\",\"db_path\":\"/var/lib/glauth/gl.db\"}", &r) !=
+	                       "{\"container\":\"ldapsrv\",\"config_path\":\"/etc/glauth/glauth.cfg\"}", &r) !=
 	        0 ||
 	    r.status != 409) {
 		fprintf(stderr, "FAIL: duplicate registration expected 409, got %d\n", r.status);
@@ -211,7 +211,7 @@ int main(void)
 	/* 6. GET reflects it */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "GET", "/v1/ldap/servers", NULL, &r) != 0 || r.status != 200 ||
-	    !servers_list_contains(r.json, "ldapsrv", "/var/lib/glauth/gl.db")) {
+	    !servers_list_contains(r.json, "ldapsrv", "/etc/glauth/glauth.cfg")) {
 		fprintf(stderr, "FAIL: GET /v1/ldap/servers did not show ldapsrv, status=%d\n", r.status);
 		ok = 0;
 	}
@@ -240,7 +240,7 @@ int main(void)
 	} else {
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "GET", "/v1/ldap/servers", NULL, &r) != 0 ||
-		    r.status != 200 || !servers_list_contains(r.json, "ldapsrv", "/var/lib/glauth/gl.db")) {
+		    r.status != 200 || !servers_list_contains(r.json, "ldapsrv", "/etc/glauth/glauth.cfg")) {
 			fprintf(stderr,
 			        "FAIL: ldapsrv binding did not survive a daemon restart, status=%d\n",
 			        r.status);
@@ -299,7 +299,7 @@ int main(void)
 
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/ldap/servers",
-	                       "{\"container\":\"ldapsrv2\",\"db_path\":\"/var/lib/glauth/gl.db\"}", &r) !=
+	                       "{\"container\":\"ldapsrv2\",\"config_path\":\"/etc/glauth/glauth.cfg\"}", &r) !=
 	        0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: register ldapsrv2, status=%d\n", r.status);
@@ -317,6 +317,212 @@ int main(void)
 		ok = 0;
 	}
 	kx_response_free(&r);
+
+	/*
+	 * 11-19. Task #726: user/group CRUD, and -- the part actually worth
+	 * proving -- that the write-through mechanism really preserves an
+	 * operator-authored config prefix while rendering the managed
+	 * [[groups]]/[[users]] tail correctly. "ldapcfg" doesn't run real
+	 * glauth (this project has no way to verify glauth's own fsnotify
+	 * reload from inside this test suite -- confirmed directly against
+	 * glauth's real source instead, see ldap.h's own header comment);
+	 * what's under test here is entirely kanxeod's own code: the
+	 * marker-based prefix-preserving rewrite in ldap_write_config_
+	 * file(), read back via the real GET .../files endpoint (ADR-0055)
+	 * exactly the way an operator or a future test with real glauth
+	 * would.
+	 */
+	{
+		static const char base_config_prefix[] = "# base config\nwatch_config = true\n";
+		struct json_value *jval;
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"ldapcfg\",\"image\":\"ldaptest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+		                       "\"files\":[{\"path\":\"/etc/glauth/glauth.cfg\","
+		                       "\"content\":\"# base config\\nwatch_config = true\\n\"}]}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST ldapcfg, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/ldap/servers",
+		                       "{\"container\":\"ldapcfg\",\"config_path\":\"/etc/glauth/glauth.cfg\"}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: register ldapcfg, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 12. group create */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/ldap/groups",
+		                       "{\"name\":\"engineers\",\"gidnumber\":6001}", &r) != 0 ||
+		    r.status != 201 || !str_eq(json_str_field(r.json, "name"), "engineers")) {
+			fprintf(stderr, "FAIL: create group engineers, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 13. duplicate group -> 409 */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/ldap/groups",
+		                       "{\"name\":\"engineers\",\"gidnumber\":6002}", &r) != 0 ||
+		    r.status != 409) {
+			fprintf(stderr, "FAIL: duplicate group expected 409, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 14. user create with an unknown primarygroup -> 400 */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/ldap/users",
+		                       "{\"name\":\"nogroup\",\"uidnumber\":5002,\"primarygroup\":9999}",
+		                       &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: unknown primarygroup expected 400, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 15. real user create, with a password -- passsha256 must
+		 * never come back over the API (only has_password) */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/ldap/users",
+		                       "{\"name\":\"j_doe\",\"uidnumber\":5001,\"primarygroup\":6001,"
+		                       "\"mail\":\"j.doe@kanxeo.internal\",\"password\":\"dogood\"}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: create user j_doe, status=%d\n", r.status);
+			ok = 0;
+		}
+		jval = r.json != NULL ? (struct json_value *)json_object_get(r.json, "has_password") : NULL;
+		if (jval == NULL || jval->type != JSON_BOOL || !jval->u.boolean) {
+			fprintf(stderr, "FAIL: create user j_doe did not report has_password=true\n");
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 16. the container's own config file now shows the preserved
+		 * prefix plus a correctly-rendered managed tail, including the
+		 * real SHA-256 of "dogood" (independently verified via `printf
+		 * dogood | sha256sum`) */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET",
+		                       "/v1/containers/ldapcfg/files?path=%2Fetc%2Fglauth%2Fglauth.cfg", NULL,
+		                       &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET ldapcfg config file, status=%d\n", r.status);
+			ok = 0;
+		} else if (r.body == NULL || r.body_len < sizeof(base_config_prefix) - 1 ||
+		           memcmp(r.body, base_config_prefix, sizeof(base_config_prefix) - 1) != 0) {
+			fprintf(stderr, "FAIL: rendered config lost its operator-authored prefix\n");
+			ok = 0;
+		} else if (memmem(r.body, r.body_len, "name = \"engineers\"", strlen("name = \"engineers\"")) ==
+		               NULL ||
+		           memmem(r.body, r.body_len, "gidnumber = 6001", strlen("gidnumber = 6001")) ==
+		               NULL ||
+		           memmem(r.body, r.body_len, "name = \"j_doe\"", strlen("name = \"j_doe\"")) == NULL ||
+		           memmem(r.body, r.body_len, "mail = \"j.doe@kanxeo.internal\"",
+		                  strlen("mail = \"j.doe@kanxeo.internal\"")) == NULL ||
+		           memmem(r.body, r.body_len,
+		                  "passsha256 = \"6478579e37aff45f013e14eeb30b3cc56c72ccdc310123bcdf53e0333e"
+		                  "3f416a\"",
+		                  strlen("passsha256 = \"6478579e37aff45f013e14eeb30b3cc56c72ccdc310123bcdf53e"
+		                         "0333e3f416a\"")) == NULL) {
+			fprintf(stderr, "FAIL: rendered config missing expected group/user fields\n");
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 17. update: change mail, omit password -- the existing hash
+		 * must survive unchanged in the re-rendered file */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
+		                       "{\"uidnumber\":5001,\"primarygroup\":6001,"
+		                       "\"mail\":\"jd@kanxeo.internal\"}",
+		                       &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: update user j_doe, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET",
+		                       "/v1/containers/ldapcfg/files?path=%2Fetc%2Fglauth%2Fglauth.cfg", NULL,
+		                       &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET ldapcfg config file after update, status=%d\n", r.status);
+			ok = 0;
+		} else if (memmem(r.body, r.body_len, "mail = \"jd@kanxeo.internal\"",
+		                  strlen("mail = \"jd@kanxeo.internal\"")) == NULL ||
+		           memmem(r.body, r.body_len,
+		                  "passsha256 = \"6478579e37aff45f013e14eeb30b3cc56c72ccdc310123bcdf53e0333e"
+		                  "3f416a\"",
+		                  strlen("passsha256 = \"6478579e37aff45f013e14eeb30b3cc56c72ccdc310123bcdf53e"
+		                         "0333e3f416a\"")) == NULL) {
+			fprintf(stderr, "FAIL: update lost the mail change or the existing password hash\n");
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 18. delete the user -> the rendered file no longer names it,
+		 * but the group stanza survives */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "DELETE", "/v1/ldap/users/j_doe", NULL, &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: delete user j_doe, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET",
+		                       "/v1/containers/ldapcfg/files?path=%2Fetc%2Fglauth%2Fglauth.cfg", NULL,
+		                       &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET ldapcfg config file after user delete, status=%d\n", r.status);
+			ok = 0;
+		} else if (memmem(r.body, r.body_len, "name = \"j_doe\"", strlen("name = \"j_doe\"")) != NULL ||
+		           memmem(r.body, r.body_len, "name = \"engineers\"",
+		                  strlen("name = \"engineers\"")) == NULL) {
+			fprintf(stderr, "FAIL: user delete didn't remove j_doe or dropped the group\n");
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 19. delete the group too, list endpoints reflect it */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "DELETE", "/v1/ldap/groups/engineers", NULL, &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: delete group engineers, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/ldap/groups", NULL, &r) != 0 || r.status != 200) {
+			fprintf(stderr, "FAIL: GET /v1/ldap/groups, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *groups = json_object_get(r.json, "groups");
+
+			if (groups == NULL || groups->type != JSON_ARRAY || groups->u.array.count != 0) {
+				fprintf(stderr, "FAIL: /v1/ldap/groups not empty after delete\n");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		kx_client_request(&client, "DELETE", "/v1/containers/ldapcfg", NULL, &r);
+		kx_response_free(&r);
+	}
 
 	stop_daemon(daemon_pid);
 	test_data_dir_cleanup(g_data_dir);
