@@ -24,6 +24,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 extern char **environ;
@@ -33,8 +34,6 @@ extern char **environ;
 
 static char g_data_dir[PATH_MAX];
 static char g_pkg_state_dir[PATH_MAX];
-static char g_base_rootfs[PATH_MAX];
-static char g_router_rootfs[PATH_MAX];
 static char g_pkgbuild_rootfs[PATH_MAX];
 static char g_images_base_dir[PATH_MAX];
 static char g_images_router_dir[PATH_MAX];
@@ -42,23 +41,32 @@ static char g_images_router_dir[PATH_MAX];
 /* BASE_ROOTFS/ROUTER_ROOTFS were compile-time macros before --data-dir=
  * isolation (see CLAUDE.md's test-isolation Environment note); every
  * call site below concatenated a literal suffix onto them at compile
- * time, which a runtime g_base_rootfs/g_router_rootfs pair can't do --
- * these two helpers are the one place that difference is absorbed, so
- * every call site below just swaps the old BASE_ROOTFS "/x" style
- * literal concatenation for base_path("/x")/router_path("/x"). */
+ * time. These two helpers are still the one place that difference is
+ * absorbed, so every call site below just uses base_path("/x")/
+ * router_path("/x") -- now resolving the image's own current version
+ * (ADR-0107/0108, test_image_fixture_read_current_version()) fresh on
+ * every call instead of a path fixed at test startup, since nearly
+ * every scenario in this file installs/upgrades/deletes packages in
+ * between rootfs checks. */
 static const char *base_path(const char *suffix)
 {
 	static char buf[PATH_MAX];
+	char version[128];
 
-	snprintf(buf, sizeof(buf), "%s%s", g_base_rootfs, suffix);
+	if (test_image_fixture_read_current_version(g_images_base_dir, version, sizeof(version)) != 0)
+		version[0] = '\0';
+	snprintf(buf, sizeof(buf), "%s/%s/rootfs%s", g_images_base_dir, version, suffix);
 	return buf;
 }
 
 static const char *router_path(const char *suffix)
 {
 	static char buf[PATH_MAX];
+	char version[128];
 
-	snprintf(buf, sizeof(buf), "%s%s", g_router_rootfs, suffix);
+	if (test_image_fixture_read_current_version(g_images_router_dir, version, sizeof(version)) != 0)
+		version[0] = '\0';
+	snprintf(buf, sizeof(buf), "%s/%s/rootfs%s", g_images_router_dir, version, suffix);
 	return buf;
 }
 
@@ -365,8 +373,6 @@ int main(void)
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
 	snprintf(g_pkg_state_dir, sizeof(g_pkg_state_dir), "%s/pkg", g_data_dir);
-	snprintf(g_base_rootfs, sizeof(g_base_rootfs), "%s/images/base/rootfs", g_data_dir);
-	snprintf(g_router_rootfs, sizeof(g_router_rootfs), "%s/images/router/rootfs", g_data_dir);
 	snprintf(g_pkgbuild_rootfs, sizeof(g_pkgbuild_rootfs), "%s/images/pkgbuild", g_data_dir);
 	snprintf(g_images_base_dir, sizeof(g_images_base_dir), "%s/images/base", g_data_dir);
 	snprintf(g_images_router_dir, sizeof(g_images_router_dir), "%s/images/router", g_data_dir);
@@ -1298,11 +1304,44 @@ skip_recipe_api:
 		int i;
 		struct stat st;
 
-		snprintf(hb_image_rootfs, sizeof(hb_image_rootfs), "%s/images/hbimage/rootfs", g_data_dir);
+		/*
+		 * ADR-0107/0108: build_image must resolve via a real
+		 * manifest.json + versioned rootfs, same as any other image
+		 * -- pkg_hostbuild_start()/pkg_fetch_completed() now reach it
+		 * through image_current_version()/image_version_rootfs_path(),
+		 * not a flat "<image>/rootfs" path. This fixture bypasses the
+		 * daemon's own image_create()/pkg install pipeline (staging
+		 * a toolchain via a real install would be far too slow for
+		 * this suite), so it hand-writes the same manifest.json shape
+		 * image.c itself produces, pointed at a fixed, made-up version
+		 * hash -- image.c's own load_state() only ever reads this
+		 * field back as an opaque string, never re-derives or
+		 * validates it as a real sha256, so a fixture-chosen literal
+		 * is exactly as valid as a real one.
+		 */
+		snprintf(hb_image_rootfs, sizeof(hb_image_rootfs), "%s/images/hbimage/hbfixture/rootfs",
+		         g_data_dir);
 		if (test_image_fixture_stage_toolchain(hb_image_rootfs) != 0) {
 			fprintf(stderr, "FAIL: could not stage hostbuild build_image toolchain\n");
 			ok = 0;
 			goto skip_hostbuild;
+		}
+		{
+			char hb_manifest_path[PATH_MAX];
+
+			snprintf(hb_manifest_path, sizeof(hb_manifest_path), "%s/images/hbimage/manifest.json",
+			         g_data_dir);
+			f = fopen(hb_manifest_path, "w");
+			if (f == NULL) {
+				fprintf(stderr, "FAIL: could not write hbimage manifest.json\n");
+				ok = 0;
+				goto skip_hostbuild;
+			}
+			fprintf(f,
+			        "{\"packages\":[],\"current_version\":\"hbfixture\","
+			        "\"versions\":[{\"version\":\"hbfixture\",\"created_at\":%ld}]}",
+			        (long)time(NULL));
+			fclose(f);
 		}
 
 		/* A plain hand-written recipe (not stage_fixture_tarball(), no

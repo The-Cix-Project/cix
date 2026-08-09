@@ -472,3 +472,66 @@ void test_data_dir_cleanup(const char *path)
 	if (system(cmd) != 0)
 		fprintf(stderr, "warning: cleanup of %s failed\n", path);
 }
+
+int test_image_fixture_write_manifest(const char *image_dir, const char *version)
+{
+	char manifest_path[PATH_MAX];
+	char content[512];
+	int n;
+	FILE *f;
+
+	if (mkdir_p(image_dir) != 0) {
+		perror("mkdir_p (image_dir)");
+		return -1;
+	}
+	snprintf(manifest_path, sizeof(manifest_path), "%s/manifest.json", image_dir);
+	n = snprintf(content, sizeof(content),
+	             "{\"packages\":[],\"current_version\":\"%s\","
+	             "\"versions\":[{\"version\":\"%s\",\"created_at\":0}]}",
+	             version, version);
+	f = fopen(manifest_path, "w");
+	if (f == NULL) {
+		perror("fopen (manifest.json)");
+		return -1;
+	}
+	if (fwrite(content, 1, (size_t)n, f) != (size_t)n) {
+		fclose(f);
+		return -1;
+	}
+	fclose(f);
+	return 0;
+}
+
+int test_image_fixture_read_current_version(const char *image_dir, char *out_version,
+                                             size_t out_size)
+{
+	char manifest_path[PATH_MAX];
+	char buf[4096];
+	FILE *f;
+	size_t n;
+	const char *key = "\"current_version\":\"";
+	const char *p, *end;
+	size_t len;
+
+	snprintf(manifest_path, sizeof(manifest_path), "%s/manifest.json", image_dir);
+	f = fopen(manifest_path, "r");
+	if (f == NULL)
+		return -1;
+	n = fread(buf, 1, sizeof(buf) - 1, f);
+	fclose(f);
+	buf[n] = '\0';
+
+	p = strstr(buf, key);
+	if (p == NULL)
+		return -1;
+	p += strlen(key);
+	end = strchr(p, '"');
+	if (end == NULL)
+		return -1;
+	len = (size_t)(end - p);
+	if (len >= out_size)
+		return -1;
+	memcpy(out_version, p, len);
+	out_version[len] = '\0';
+	return 0;
+}

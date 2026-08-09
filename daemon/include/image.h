@@ -5,21 +5,26 @@
 #include "pkg.h"
 
 /*
- * Images were pure filesystem state -- a directory under images_dir
- * containing its own rootfs/ subdirectory, the exact same convention
- * pkg.c's own image_rootfs_path() already established for `pkg
- * install`'s target images, re-enumerated fresh on every list/get call,
- * same "host state, not daemon-owned state" posture device.c already
- * has for hardware. ADR-0107 changes this: an image can now also carry
- * a real, operator-declared *manifest* -- a persisted, genuinely
- * daemon-owned {package, mode, version} list expressing package intent,
- * distinct from whatever happens to be built right now. Unlike the
- * image directory itself, the manifest is read/written fresh from its
- * own file on every call (IMAGES_DIR/<name>/manifest.json), not loaded
- * into a startup-resident table -- consistent with this module's own
- * existing "re-enumerated fresh" posture rather than introducing a
- * second, competing persistence convention (ADR-0012's startup-loaded
- * atomic-JSON pattern) for what is still fundamentally per-image state.
+ * ADR-0107/ADR-0108: an image is a name with a real, persisted state
+ * document (IMAGES_DIR/<name>/manifest.json) and a set of immutable,
+ * content-addressed rootfs trees (IMAGES_DIR/<name>/<version>/rootfs,
+ * version = sha256 of the resolved "package@version,..." manifest
+ * string). manifest.json holds three things, deliberately kept in one
+ * document rather than split across files (One Source of Truth):
+ *   - the operator's own declared package intent ({package, mode,
+ *     version} entries) -- what SHOULD be here, independent of build
+ *     history;
+ *   - current_version -- which already-built version is "the" one new
+ *     containers resolve to;
+ *   - versions[] -- every version this image has ever produced, each
+ *     with a real created_at timestamp (ADR-0108; explicit, not
+ *     filesystem-mtime-derived, since the copy-forward rebuild
+ *     mechanism touches directory metadata in ways that would make
+ *     mtime an unreliable proxy here).
+ * Read/written fresh from disk on every call, not loaded into a
+ * startup-resident table -- this module's own long-standing
+ * "re-enumerated fresh" posture, not ADR-0012's competing
+ * startup-loaded pattern.
  */
 
 enum image_error {
@@ -35,6 +40,10 @@ enum image_error {
 	IMAGE_ERR_INVALID_PACKAGE,  /* not a valid pkg_name_is_valid() name */
 	IMAGE_ERR_INVALID_VERSION,  /* missing, or too long for PKG_VERSION_MAX */
 	IMAGE_ERR_MANIFEST_FULL,    /* IMAGE_MANIFEST_MAX_PACKAGES reached, package not already present */
+	IMAGE_ERR_NO_CURRENT_VERSION, /* image exists but has never had a version built (shouldn't
+	                                * happen for anything created via image_create(), which
+	                                * always produces an initial one -- surfaced as a real
+	                                * error rather than silently treated as "no rootfs") */
 	IMAGE_ERR_PERSIST_FAILED
 };
 
@@ -43,6 +52,18 @@ enum image_error {
  * image declares intent for) -- matches PKG_MAX_DEP_CHAIN's own order
  * of magnitude rather than pkg.c's whole-daemon PKG_MAX_PACKAGES. */
 #define IMAGE_MANIFEST_MAX_PACKAGES 128
+
+/* sha256 hex digest (64 chars) + NUL. */
+#define IMAGE_VERSION_MAX 65
+
+/* Real version history could in principle grow without bound (no
+ * automatic pruning, ADR-0107's own stated v1 scope) -- bounded here
+ * the same pragmatic way every other daemon-owned array in this
+ * codebase is; a real deployment producing more than this many
+ * distinct versions of one image is a future problem, not assumed
+ * away silently (a full history array simply stops growing, oldest
+ * entries kept, rather than wrapping/corrupting). */
+#define IMAGE_MAX_VERSION_HISTORY 256
 
 enum image_pkg_mode {
 	IMAGE_PKG_PINNED,  /* version is the exact recipe version to install, never auto-advances */
@@ -55,6 +76,11 @@ struct image_manifest_entry {
 	char version[PKG_VERSION_MAX];
 };
 
+struct image_version_entry {
+	char version[IMAGE_VERSION_MAX];
+	long created_at; /* Unix epoch seconds, real time(NULL) at creation -- ADR-0108 */
+};
+
 /* Call once at daemon startup, before serving any request -- just
  * remembers where images_dir is, same role network_init()'s own
  * state_path parameter plays for a very different (persisted)
@@ -63,22 +89,25 @@ void image_init(const char *images_dir);
 
 /*
  * Validates name (same charset/length rule pkg.c's own recipe/image
- * names already use), IMAGE_ERR_DUPLICATE if <name>/rootfs already
- * exists. Otherwise creates an empty rootfs directory and seeds its C
- * runtime and baseline FHS layout immediately (pkg_seed_image_baseline(),
- * ADR-0023, ADR-0041) so it's usable right away, before any pkg install
- * ever targets it.
+ * names already use), IMAGE_ERR_DUPLICATE if manifest.json already
+ * exists (the authoritative "this image exists" signal -- ADR-0107/8).
+ * Otherwise builds and commits an initial version from the empty
+ * package set (sha256 of the empty string) -- a fresh, seeded rootfs
+ * (pkg_seed_image_baseline(), ADR-0023, ADR-0041), immediately usable
+ * before any pkg install ever targets it, exactly like before this
+ * design -- only the storage layout underneath changed.
  */
 enum image_error image_create(const char *name);
 
 /*
- * IMAGE_ERR_NOT_FOUND if <name>/rootfs doesn't exist. IMAGE_ERR_PROTECTED
+ * IMAGE_ERR_NOT_FOUND if name has no manifest.json. IMAGE_ERR_PROTECTED
  * for "base" specifically. IMAGE_ERR_IN_USE if registry_image_in_use()
  * reports a running container still referencing it. IMAGE_ERR_HAS_PACKAGES
  * if pkg_image_has_packages() reports any package still tracked against
  * it -- remove those first, avoiding orphaned pkg.c state referencing a
  * deleted rootfs. Otherwise recursively removes the image's own
- * directory (a hand-rolled nftw()-based walk -- shelling out to `rm -rf`
+ * directory -- every version it ever produced, all at once (a hand-rolled
+ * nftw()-based walk, persist_remove_tree() -- shelling out to `rm -rf`
  * would be inconsistent with this project's own "hand-rolled C for
  * daemon-owned operations" posture; pkg.c's build-tool subprocess use is
  * a distinct, already-justified exception for executing untrusted build
@@ -92,24 +121,22 @@ enum image_error image_delete(const char *name);
  * already has it via GET /v1/pkg's own "image" field per entry). */
 void image_write_json_list(struct json_writer *w);
 
-/* IMAGE_ERR_NOT_FOUND if <name>/rootfs doesn't exist. */
+/* IMAGE_ERR_NOT_FOUND if name has no manifest.json. */
 enum image_error image_write_json_one(const char *name, struct json_writer *w);
 
 /*
  * ADR-0107: an image's manifest is the operator's declared intent --
  * which packages, at which mode/version, should exist in this image --
  * distinct from image_write_json_one()'s own report of what the image
- * currently *is*. Absent manifest.json is a real, valid empty manifest
- * (IMAGE_OK, zero entries), not an error: an image built purely via
- * ad-hoc `pkg install --image=` calls has never had one written.
- * IMAGE_ERR_NOT_FOUND if name's own rootfs doesn't exist.
+ * currently *is*. A freshly image_create()'d image has a real, valid
+ * empty manifest (zero entries) -- nothing declared yet, not an error.
+ * IMAGE_ERR_NOT_FOUND if name doesn't exist.
  */
 enum image_error image_manifest_read(const char *name, struct image_manifest_entry *out,
                                       int *out_count, int max_entries);
 
 /* Writes {"manifest": [{"package":..., "mode":"pinned"|"rolling",
- * "version":...}, ...]} -- empty array if name has no manifest.json.
- * IMAGE_ERR_NOT_FOUND if name's own rootfs doesn't exist. */
+ * "version":...}, ...]}. IMAGE_ERR_NOT_FOUND if name doesn't exist. */
 enum image_error image_manifest_write_json(const char *name, struct json_writer *w);
 
 /*
@@ -127,5 +154,45 @@ enum image_error image_manifest_set(const char *name, const char *package,
  * not an error, if it's already absent. IMAGE_ERR_NOT_FOUND if name
  * itself doesn't exist. */
 enum image_error image_manifest_unset(const char *name, const char *package);
+
+/*
+ * name's own currently-current version (the hash new containers
+ * resolve to at creation time) -- IMAGE_ERR_NOT_FOUND if name doesn't
+ * exist, IMAGE_ERR_NO_CURRENT_VERSION if it exists but has (somehow)
+ * never had a version recorded (not reachable via image_create(),
+ * which always produces one; surfaced rather than assumed impossible).
+ */
+enum image_error image_current_version(const char *name, char *out, size_t out_size);
+
+/* Pure path construction, no I/O, always succeeds --
+ * IMAGES_DIR/<name>/<version>/rootfs. */
+void image_version_rootfs_path(const char *name, const char *version, char *out, size_t out_size);
+
+/* Writes {"versions": [{"version":..., "created_at":...}, ...]},
+ * newest first. IMAGE_ERR_NOT_FOUND if name doesn't exist. */
+enum image_error image_version_history_write_json(const char *name, struct json_writer *w);
+
+/*
+ * Records version as name's new current_version (ADR-0108) -- called
+ * once a caller (pkg.c) has already built a real, complete rootfs tree
+ * on disk at image_version_rootfs_path(name, version). If version is
+ * already present in history (a rebuild that reproduced already-seen
+ * content, or an install/delete cycle that lands back on an earlier
+ * state), only current_version is repointed -- no duplicate history
+ * entry, no duplicate created_at. IMAGE_ERR_NOT_FOUND if name doesn't
+ * exist, IMAGE_ERR_PERSIST_FAILED on a write failure.
+ */
+enum image_error image_record_version(const char *name, const char *version);
+
+/*
+ * Hashes s (a canonical, caller-constructed "package@version,..."
+ * manifest string, sorted by package name -- ADR-0108) via the real
+ * sha256sum binary (pkg_run_capture_sha256(), never hand-rolled
+ * crypto) -- the one shared primitive both image_create()'s own
+ * initial empty-manifest version and pkg.c's own post-install
+ * version-recording use, so there is exactly one hashing code path
+ * for "what identifies an image version." Returns 0 on success.
+ */
+int image_hash_manifest_string(const char *s, char *out_hash, size_t out_hash_size);
 
 #endif /* IMAGE_H */

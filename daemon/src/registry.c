@@ -42,7 +42,7 @@ int registry_list_names(char out_names[][REGISTRY_NAME_MAX], int max)
 }
 
 enum registry_error registry_create(const char *name, const char *image,
-                                     const struct container_spec *spec,
+                                     const char *image_version, const struct container_spec *spec,
                                      const struct registry_network_attachment *nets, int net_count,
                                      int ip_forward,
                                      const struct registry_device_attachment *devices,
@@ -74,6 +74,9 @@ enum registry_error registry_create(const char *name, const char *image,
 	strncpy(e->name, name, sizeof(e->name) - 1);
 	memset(e->image, 0, sizeof(e->image));
 	strncpy(e->image, image, sizeof(e->image) - 1);
+	memset(e->image_version, 0, sizeof(e->image_version));
+	if (image_version != NULL)
+		strncpy(e->image_version, image_version, sizeof(e->image_version) - 1);
 	e->running = 1;
 	e->exit_status = 0;
 	e->last_exit_reason[0] = '\0';
@@ -296,6 +299,8 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 	jw_str(w, entry->name);
 	jw_key(w, "image");
 	jw_str(w, entry->image);
+	jw_key(w, "image_version");
+	jw_str(w, entry->image_version);
 	jw_key(w, "status");
 	jw_str(w, !entry->running ? "exited" : (entry->paused ? "paused" : "running"));
 	jw_key(w, "paused");

@@ -162,9 +162,18 @@ int main(void)
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
 	snprintf(g_pki_state_dir, sizeof(g_pki_state_dir), "%s/pki", g_data_dir);
-	snprintf(g_pki_image_root, sizeof(g_pki_image_root), "%s/images/pkitest/rootfs", g_data_dir);
+	snprintf(g_pki_image_root, sizeof(g_pki_image_root), "%s/images/pkitest/v1/rootfs", g_data_dir);
 
 	reset_pki_state_dir();
+	{
+		char image_dir[PATH_MAX];
+
+		snprintf(image_dir, sizeof(image_dir), "%s/images/pkitest", g_data_dir);
+		if (test_image_fixture_write_manifest(image_dir, "v1") != 0) {
+			test_data_dir_cleanup(g_data_dir);
+			return 1;
+		}
+	}
 
 	if (test_image_fixture_build(g_pki_image_root, "build/daemon_child", "daemon_child") != 0) {
 		fprintf(stderr, "FAIL: could not stage pkitest image\n");
@@ -1232,8 +1241,15 @@ int main(void)
 		}
 		kx_response_free(&r);
 
-		snprintf(bundle_path, sizeof(bundle_path),
-		         "%s/images/imgtrust/rootfs/etc/ssl/certs/kanxeo-ca-bundle.pem", g_data_dir);
+		{
+			char image_dir[PATH_MAX], version[128];
+
+			snprintf(image_dir, sizeof(image_dir), "%s/images/imgtrust", g_data_dir);
+			if (test_image_fixture_read_current_version(image_dir, version, sizeof(version)) != 0)
+				version[0] = '\0';
+			snprintf(bundle_path, sizeof(bundle_path),
+			         "%s/%s/rootfs/etc/ssl/certs/kanxeo-ca-bundle.pem", image_dir, version);
+		}
 		if (stat(bundle_path, &st) != 0 || st.st_size == 0) {
 			fprintf(stderr, "FAIL: kanxeo-ca-bundle.pem missing or empty at %s\n", bundle_path);
 			ok = 0;

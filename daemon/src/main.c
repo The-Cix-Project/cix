@@ -4045,16 +4045,30 @@ static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
 	snprintf(out_squashfs, sizeof(out_squashfs), "%s/kanxeod-root.squashfs", artifact_dir);
 	snprintf(stage_dir, sizeof(stage_dir), "%s/.bootroot-stage", artifact_dir);
 
-	/* Same "<IMAGES_DIR>/<name>/rootfs" convention used directly
-	 * elsewhere in this file (e.g. the container overlay lowerdir,
-	 * the file-read path) -- images are pure filesystem state, no
-	 * registry lookup needed (image.h's own doc comment). stat()
-	 * instead of assuming presence: most installs will never have
-	 * built this optional image, and mkbootroot.c's own "" fallback
-	 * already exists precisely for that case. */
-	snprintf(host_tools_dir, sizeof(host_tools_dir), "%s/%s/rootfs", IMAGES_DIR, HOST_TOOLS_IMAGE);
-	if (stat(host_tools_dir, &host_tools_st) != 0 || !S_ISDIR(host_tools_st.st_mode))
-		host_tools_dir[0] = '\0';
+	/*
+	 * ADR-0107/0108: resolved via HOST_TOOLS_IMAGE's own current
+	 * version, not a flat "<IMAGES_DIR>/<name>/rootfs" path -- images
+	 * are pure filesystem state, no registry lookup needed (image.h's
+	 * own doc comment), but they DO now need a manifest.json lookup.
+	 * stat() instead of assuming presence: most installs will never
+	 * have built this optional image, and mkbootroot.c's own ""
+	 * fallback already exists precisely for that case (also covers
+	 * "exists but has no current version yet," though that's
+	 * unreachable via image_create()'s own always-produces-one
+	 * guarantee).
+	 */
+	host_tools_dir[0] = '\0';
+	{
+		char host_tools_version[IMAGE_VERSION_MAX];
+
+		if (image_current_version(HOST_TOOLS_IMAGE, host_tools_version,
+		                           sizeof(host_tools_version)) == IMAGE_OK) {
+			image_version_rootfs_path(HOST_TOOLS_IMAGE, host_tools_version, host_tools_dir,
+			                           sizeof(host_tools_dir));
+			if (stat(host_tools_dir, &host_tools_st) != 0 || !S_ISDIR(host_tools_st.st_mode))
+				host_tools_dir[0] = '\0';
+		}
+	}
 
 	argv[0] = mkbootroot_bin;
 	argv[1] = stage_dir;
@@ -4909,8 +4923,8 @@ static int create_container_from_body(const char *body, size_t body_len,
                                        size_t err_msg_size)
 {
 	struct json_value *root;
-	const struct json_value *jname, *jimage, *jcmd, *jmem, *jpids, *jcpu, *jcpuset, *jnetworks,
-	    *jip_forward, *jroutes;
+	const struct json_value *jname, *jimage, *jimage_version, *jcmd, *jmem, *jpids, *jcpu, *jcpuset,
+	    *jnetworks, *jip_forward, *jroutes;
 	const struct json_value *jdisk_quota;
 	long long disk_quota_bytes;
 	const struct json_value *jdevices;
@@ -4922,6 +4936,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	const char *name, *image;
 	char name_copy[REGISTRY_NAME_MAX];
 	char lowerdir[PATH_MAX];
+	char resolved_image_version[IMAGE_VERSION_MAX];
 	char container_base[PATH_MAX];
 	char upperdir[PATH_MAX], workdir[PATH_MAX], merged[PATH_MAX];
 	struct stat st;
@@ -4969,6 +4984,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 
 	jname = json_object_get(root, "name");
 	jimage = json_object_get(root, "image");
+	jimage_version = json_object_get(root, "image_version");
 	jcmd = json_object_get(root, "cmd");
 	jnetworks = json_object_get(root, "networks");
 	jip_forward = json_object_get(root, "ip_forward");
@@ -5345,7 +5361,33 @@ static int create_container_from_body(const char *body, size_t body_len,
 	argv_buf[argc] = NULL;
 	empty_envp[0] = NULL;
 
-	snprintf(lowerdir, sizeof(lowerdir), "%s/%s/rootfs", IMAGES_DIR, image);
+	/*
+	 * ADR-0107/0108: an image's own rootfs is now one of potentially
+	 * many immutable per-version directories, not one fixed path --
+	 * "image_version" in the request body (present only on a
+	 * daemon-restart/`.../start` replay of a create request this
+	 * daemon already persisted once, spliced in by handle_container_create()
+	 * below -- see its own comment) pins this container to the EXACT
+	 * version it was originally created against, so a `pkg install`
+	 * against the same image name in between never silently changes
+	 * what a replayed/restarted container resolves to. A fresh, real
+	 * client request never sets this field, so it resolves the
+	 * image's own current version fresh, exactly as before.
+	 */
+	{
+		const char *requested_version = json_as_string(jimage_version);
+
+		if (requested_version != NULL && requested_version[0] != '\0') {
+			snprintf(resolved_image_version, sizeof(resolved_image_version), "%s",
+			         requested_version);
+		} else if (image_current_version(image, resolved_image_version,
+		                                  sizeof(resolved_image_version)) != IMAGE_OK) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "image rootfs does not exist");
+			return 400;
+		}
+	}
+	image_version_rootfs_path(image, resolved_image_version, lowerdir, sizeof(lowerdir));
 	if (stat(lowerdir, &st) != 0) {
 		json_free(root);
 		snprintf(err_msg, err_msg_size, "image rootfs does not exist");
@@ -5545,7 +5587,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 	spec.argv = argv_buf;
 	spec.envp = empty_envp;
 
-	rerr = registry_create(name, image, &spec, net_attachments, net_count, ip_forward,
+	rerr = registry_create(name, image, resolved_image_version, &spec, net_attachments, net_count,
+	                        ip_forward,
 	                        device_attachments, device_count, file_paths, file_count, disk_name, &entry);
 	/*
 	 * Captured immediately, before json_free() below -- container_create()
@@ -5696,14 +5739,58 @@ static void handle_create(int fd, const char *body, size_t body_len)
 		return;
 	}
 
-	if (strcmp(restart_policy, "no") != 0 &&
-	    containerdef_add(entry->name, body, body_len, depends_on, depends_on_count, has_readiness,
-	                      readiness_tcp_port, readiness_timeout_seconds, restart_policy,
-	                      restart_delay_seconds) != 0) {
-		fprintf(stderr,
-		        "%s: restart:\"%s\" requested but persisting its definition failed -- "
-		        "it will not survive a daemon restart\n",
-		        entry->name, restart_policy);
+	if (strcmp(restart_policy, "no") != 0) {
+		/*
+		 * ADR-0107/0108: splice "image_version" onto the raw request
+		 * body before persisting it -- containerdef_add() stores this
+		 * exact byte string, replayed verbatim (never re-parsed
+		 * against fresh state) by handle_start()/
+		 * handle_restart_timer_event()/containerdef_autostart_all() on
+		 * every future revival of this definition. Without this, a
+		 * replay would call image_current_version() fresh and
+		 * silently re-pin a restarted container to whatever the
+		 * image's current version has become by then -- exactly the
+		 * bug this whole epic exists to close, just moved from "pkg
+		 * install" to "daemon restart" as the trigger. Raw string
+		 * surgery (find the body's own trailing '}', splice one more
+		 * key in front of it) rather than a full JSON re-serialize --
+		 * the body was already validated as a well-formed JSON object
+		 * by create_container_from_body()'s own json_parse() above,
+		 * so its last non-whitespace byte is guaranteed to be '}'.
+		 */
+		char *persisted_body = NULL;
+		size_t persisted_len = body_len;
+		const char *persist_src = body;
+
+		if (entry->image_version[0] != '\0') {
+			size_t trim = body_len;
+
+			while (trim > 0 && (body[trim - 1] == ' ' || body[trim - 1] == '\t' ||
+			                     body[trim - 1] == '\n' || body[trim - 1] == '\r'))
+				trim--;
+			if (trim > 0 && body[trim - 1] == '}') {
+				persisted_body = malloc(trim + 128);
+				if (persisted_body != NULL) {
+					int n;
+
+					memcpy(persisted_body, body, trim - 1);
+					n = snprintf(persisted_body + (trim - 1), 128,
+					             ",\"image_version\":\"%s\"}", entry->image_version);
+					persisted_len = (trim - 1) + (size_t)n;
+					persist_src = persisted_body;
+				}
+			}
+		}
+
+		if (containerdef_add(entry->name, persist_src, persisted_len, depends_on, depends_on_count,
+		                      has_readiness, readiness_tcp_port, readiness_timeout_seconds,
+		                      restart_policy, restart_delay_seconds) != 0) {
+			fprintf(stderr,
+			        "%s: restart:\"%s\" requested but persisting its definition failed -- "
+			        "it will not survive a daemon restart\n",
+			        entry->name, restart_policy);
+		}
+		free(persisted_body);
 	}
 
 	jw_init(&w);
@@ -6098,6 +6185,7 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 {
 	struct registry_entry *e = registry_find(name);
 	char full_path[PATH_MAX];
+	char resolved_version[IMAGE_VERSION_MAX];
 	int file_fd;
 	struct stat st;
 	char *buf;
@@ -6123,7 +6211,29 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 		snprintf(full_path, sizeof(full_path), "%s/%s/upper%s", container_root, name, rel_path);
 		file_fd = open(full_path, O_RDONLY);
 		if (file_fd < 0) {
-			snprintf(full_path, sizeof(full_path), "%s/%s/rootfs%s", IMAGES_DIR, e->image, rel_path);
+			/*
+			 * ADR-0107/0108: fall back to the EXACT version this
+			 * container's own overlay lowerdir was built from
+			 * (e->image_version, resolved once at creation time),
+			 * never the image's current version -- an unchanged base
+			 * file this container never wrote to still has to come
+			 * from the same rootfs its own overlay actually used, not
+			 * whatever a later `pkg install` against the same image
+			 * name has since produced.
+			 */
+			char image_rootfs[PATH_MAX];
+
+			if (e->image_version[0] != '\0') {
+				image_version_rootfs_path(e->image, e->image_version, image_rootfs,
+				                           sizeof(image_rootfs));
+			} else if (image_current_version(e->image, resolved_version,
+			                                  sizeof(resolved_version)) == IMAGE_OK) {
+				image_version_rootfs_path(e->image, resolved_version, image_rootfs,
+				                           sizeof(image_rootfs));
+			} else {
+				image_rootfs[0] = '\0';
+			}
+			snprintf(full_path, sizeof(full_path), "%s%s", image_rootfs, rel_path);
 			file_fd = open(full_path, O_RDONLY);
 		}
 	}
@@ -9754,8 +9864,8 @@ static void handle_pkg_fetch_event(struct conn *cc)
 	if (pkg_fetch_completed(exit_status, &spec, &stdio_write_fd)) {
 		struct registry_entry *entry;
 		enum registry_error rerr =
-		    registry_create(PKG_BUILD_CONTAINER_NAME, "pkgbuild", &spec, NULL, 0, 0, NULL, 0, NULL,
-		                     0, NULL, &entry);
+		    registry_create(PKG_BUILD_CONTAINER_NAME, "pkgbuild", "", &spec, NULL, 0, 0, NULL, 0,
+		                     NULL, 0, NULL, &entry);
 
 		/*
 		 * The child (if registry_create() actually forked one)

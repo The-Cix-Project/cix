@@ -289,16 +289,27 @@ int main(void)
 	}
 	kx_response_free(&r);
 
-	/* 3. runtime seeded immediately -- ADR-0023 */
+	/*
+	 * 3. runtime seeded immediately -- ADR-0023. ADR-0107/0108: resolved
+	 * via manifest.json's own current_version, not a flat "rootfs" path
+	 * -- test_image_fixture_read_current_version() (shared with
+	 * test_pkg.c, see its own header comment).
+	 */
 	{
 		char p1[PATH_MAX], p2[PATH_MAX], p3[PATH_MAX];
+		char image_dir[PATH_MAX], version[128], rootfs[PATH_MAX];
 
-		snprintf(p1, sizeof(p1), "%s/imgtest_empty/rootfs/lib64/ld-linux-x86-64.so.2",
-		         g_images_dir);
-		snprintf(p2, sizeof(p2), "%s/imgtest_empty/rootfs/lib/x86_64-linux-gnu/libc.so.6",
-		         g_images_dir);
-		snprintf(p3, sizeof(p3), "%s/imgtest_empty/rootfs/lib/x86_64-linux-gnu/libtinfo.so.6",
-		         g_images_dir);
+		snprintf(image_dir, sizeof(image_dir), "%s/imgtest_empty", g_images_dir);
+		if (test_image_fixture_read_current_version(image_dir, version, sizeof(version)) != 0) {
+			fprintf(stderr, "FAIL: imgtest_empty has no current_version right after create\n");
+			ok = 0;
+			version[0] = '\0';
+		}
+		snprintf(rootfs, sizeof(rootfs), "%s/%s/rootfs", image_dir, version);
+
+		snprintf(p1, sizeof(p1), "%s/lib64/ld-linux-x86-64.so.2", rootfs);
+		snprintf(p2, sizeof(p2), "%s/lib/x86_64-linux-gnu/libc.so.6", rootfs);
+		snprintf(p3, sizeof(p3), "%s/lib/x86_64-linux-gnu/libtinfo.so.6", rootfs);
 		if (stat(p1, &st) != 0 || stat(p2, &st) != 0 || stat(p3, &st) != 0) {
 			fprintf(stderr, "FAIL: imgtest_empty missing its own C runtime right after create\n");
 			ok = 0;
@@ -356,8 +367,20 @@ int main(void)
 
 	{
 		char ctr_rootfs[PATH_MAX];
+		char image_dir[PATH_MAX], version[128];
 
-		snprintf(ctr_rootfs, sizeof(ctr_rootfs), "%s/imgtest_ctr/rootfs", g_images_dir);
+		/* ADR-0107/0108: stage directly into imgtest_ctr's own current
+		 * version's rootfs -- the exact directory POST /v1/containers
+		 * will resolve as this image's lowerdir (see
+		 * create_container_from_body()'s own image_current_version()
+		 * call), same reasoning as scenario 3 above. */
+		snprintf(image_dir, sizeof(image_dir), "%s/imgtest_ctr", g_images_dir);
+		if (test_image_fixture_read_current_version(image_dir, version, sizeof(version)) != 0) {
+			fprintf(stderr, "FAIL: imgtest_ctr has no current_version after create\n");
+			ok = 0;
+			version[0] = '\0';
+		}
+		snprintf(ctr_rootfs, sizeof(ctr_rootfs), "%s/%s/rootfs", image_dir, version);
 		if (test_image_fixture_build(ctr_rootfs, "build/daemon_child", "daemon_child") != 0) {
 			fprintf(stderr, "FAIL: could not stage daemon_child into imgtest_ctr\n");
 			ok = 0;

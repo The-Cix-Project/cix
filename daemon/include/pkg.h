@@ -198,31 +198,33 @@ int pkg_run_capture_sha256(const char *path, char *out, size_t out_size);
 int pkg_toolchain_has_gcc(void);
 
 /*
- * Seeds image's own rootfs with the fixed baseline every container
- * needs but no image ever gets from pkg install alone (ADR-0019,
- * ADR-0023, ADR-0041): the C runtime a dynamically-linked package
- * needs to actually execve() (ld.so, libc.so.6, libtinfo.so.6, ...),
- * from the same fixed host paths pkg_bootstrap_build_image() and this
- * project's own test/install-image tooling already use; standard char
- * device nodes (/dev/{null,zero,full,random,urandom}, same table/
- * pattern test_image_fixture_stage_toolchain() already proves safe);
- * and a plain, empty /run directory. image NULL or "" means
- * PKG_DEFAULT_IMAGE, same convention as every other image parameter in
- * this header. The runtime-lib half is idempotent (skips a file
+ * Seeds a target rootfs directory with the fixed baseline every
+ * container needs but no image ever gets from pkg install alone
+ * (ADR-0019, ADR-0023, ADR-0041): the C runtime a dynamically-linked
+ * package needs to actually execve() (ld.so, libc.so.6, libtinfo.so.6,
+ * ...), from the same fixed host paths pkg_bootstrap_build_image() and
+ * this project's own test/install-image tooling already use; standard
+ * char device nodes (/dev/{null,zero,full,random,urandom}, same
+ * table/pattern test_image_fixture_stage_toolchain() already proves
+ * safe); and a plain, empty /run directory. Takes the target rootfs
+ * *path* directly (ADR-0107/0108: an image version's own rootfs is
+ * IMAGES_DIR/<image>/<version>/rootfs, not a flat per-image path --
+ * image.h's image_version_rootfs_path() is the one place that path is
+ * ever computed, so this function no longer derives it itself from an
+ * image name). The runtime-lib half is idempotent (skips a file
  * already staged) and tolerant of a missing source file on this
  * particular host (skip, not fatal -- same precedent
  * pkg_bootstrap_build_image() already sets); the dev-node/run half has
  * no such "host source might be missing" excuse, so any real mkdir/
  * mknod failure there is fatal. Either half failing returns
  * PKG_ERR_PERSIST_FAILED. Called automatically by pkg_build_completed()
- * for whatever image a job is merging into (base included, harmlessly
- * redundant there since ADR-0019's install-time seeding already covers
- * the runtime-lib half for base) -- exposed publicly too so an
- * explicit image-creation call can seed a freshly created, still-empty
- * image immediately. This is a fixed, hardcoded baseline set, not an
- * extensible "package declares what it needs" mechanism (ADR-0041).
+ * for whatever new image version a job is merging into -- exposed
+ * publicly too so image_create() can seed a freshly created version's
+ * still-empty rootfs immediately. This is a fixed, hardcoded baseline
+ * set, not an extensible "package declares what it needs" mechanism
+ * (ADR-0041).
  */
-enum pkg_error pkg_seed_image_baseline(const char *image);
+enum pkg_error pkg_seed_image_baseline(const char *rootfs_path);
 
 /*
  * Natural-sort/dpkg-style version comparison (ADR-0107): walks both

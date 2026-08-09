@@ -1,4 +1,5 @@
 #include "pkg.h"
+#include "image.h"
 #include "linux_compat.h"
 #include "logstore.h"
 #include "namecheck.h"
@@ -186,11 +187,6 @@ static const char *normalize_image(const char *image)
 	return (image != NULL && image[0] != '\0') ? image : PKG_DEFAULT_IMAGE;
 }
 
-static void image_rootfs_path(const char *image, char *out, size_t out_size)
-{
-	snprintf(out, out_size, "%s/%s/rootfs", g_images_dir, normalize_image(image));
-}
-
 /*
  * Where start_fetch_for()'s child stashes curl's own real stderr text
  * on a failed fetch, for pkg_fetch_completed() (running later, in the
@@ -236,17 +232,18 @@ static void pkg_entry_free_files(struct pkg_entry *e)
 	e->files_cap = 0;
 }
 
-/* Unlinks every one of e's manifested files from e's own target image
- * -- does NOT touch e->files itself (caller decides when to forget the
- * list, e.g. only once a replacement build has actually succeeded for
- * an in-place upgrade). Shared by pkg_delete() and the upgrade path
- * in pkg_build_completed(). */
-static void unlink_manifest_files(const struct pkg_entry *e)
+/* Unlinks every one of e's manifested files from rootfs -- does NOT
+ * touch e->files itself (caller decides when to forget the list, e.g.
+ * only once a replacement build has actually succeeded for an
+ * in-place upgrade). Shared by pkg_delete() and the upgrade path in
+ * pkg_build_completed(), both via image_produce_new_version()'s own
+ * mutate() callback -- rootfs is always a scratch copy-forward staging
+ * directory (ADR-0107/0108), never a version's own immutable,
+ * possibly-already-in-use-by-a-running-container rootfs directly. */
+static void unlink_manifest_files(const struct pkg_entry *e, const char *rootfs)
 {
-	char rootfs[PATH_MAX];
 	int i;
 
-	image_rootfs_path(e->image, rootfs, sizeof(rootfs));
 	for (i = 0; i < e->file_count; i++) {
 		char path[PATH_MAX];
 
@@ -905,6 +902,215 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 	return 0;
 }
 
+/*
+ * Recursively reproduces src_root's own tree at dst_root -- directories
+ * created fresh, symlinks recreated fresh (readlink+symlink, matching
+ * merge_tree()'s own symlink handling -- hard-linking a symlink's own
+ * dentry works on Linux but is needless fragility for a file that's a
+ * few bytes either way), and every other type (regular files, and the
+ * char device nodes pkg_seed_image_baseline() creates) HARD-LINKED
+ * (link(2), not copied). This is ADR-0107/0108's own "copy-forward"
+ * mechanism -- an unchanged file occupies zero new disk space or copy
+ * time, only the genuinely new/changed files a subsequent merge_tree()
+ * call writes ever land on a new inode. This is the actual fix the
+ * package/image versioning epic exists to deliver: a version's own
+ * rootfs, once produced, is never written to again -- copy_tree_hardlink()
+ * is always followed by mutation of a freshly named STAGING directory,
+ * never of src_root itself.
+ */
+static int copy_tree_hardlink(const char *src_root, const char *dst_root)
+{
+	DIR *d;
+	struct dirent *de;
+
+	d = opendir(src_root);
+	if (d == NULL)
+		return -1;
+
+	while ((de = readdir(d)) != NULL) {
+		char src_path[PATH_MAX], dst_path[PATH_MAX];
+		struct stat st;
+
+		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+			continue;
+		snprintf(src_path, sizeof(src_path), "%s/%s", src_root, de->d_name);
+		snprintf(dst_path, sizeof(dst_path), "%s/%s", dst_root, de->d_name);
+
+		if (lstat(src_path, &st) != 0) {
+			closedir(d);
+			return -1;
+		}
+
+		if (S_ISDIR(st.st_mode)) {
+			if (persist_mkdir_p(dst_path) != 0 || copy_tree_hardlink(src_path, dst_path) != 0) {
+				closedir(d);
+				return -1;
+			}
+		} else if (S_ISLNK(st.st_mode)) {
+			char target[PATH_MAX];
+			ssize_t len = readlink(src_path, target, sizeof(target) - 1);
+
+			if (len < 0) {
+				closedir(d);
+				return -1;
+			}
+			target[len] = '\0';
+			if (symlink(target, dst_path) != 0) {
+				closedir(d);
+				return -1;
+			}
+		} else {
+			if (link(src_path, dst_path) != 0) {
+				closedir(d);
+				return -1;
+			}
+		}
+	}
+	closedir(d);
+	return 0;
+}
+
+/* PKG_MAX_PACKAGES entries at up to PKG_NAME_MAX+PKG_VERSION_MAX bytes
+ * each is a multi-KB working set -- a file-scope static buffer for a
+ * single-job-at-a-time result, matching g_build_lowerdir and friends
+ * above, not a large per-call stack frame. */
+#define PKG_MANIFEST_STRING_MAX (PKG_MAX_PACKAGES * (PKG_NAME_MAX + PKG_VERSION_MAX + 2))
+static char g_manifest_string_buf[PKG_MANIFEST_STRING_MAX];
+
+struct manifest_ref {
+	const char *name;
+	const char *version;
+};
+
+static int manifest_ref_cmp(const void *a, const void *b)
+{
+	return strcmp(((const struct manifest_ref *)a)->name, ((const struct manifest_ref *)b)->name);
+}
+
+/*
+ * The canonical, sorted "name@version,name@version,..." string
+ * (ADR-0108) covering every package currently PKG_STATE_INSTALLED
+ * against image -- the exact set the resulting rootfs will actually
+ * contain once the caller's own mutate() has already been applied to
+ * g_packages (image_produce_new_version() calls this only AFTER
+ * mutate() returns, never before).
+ */
+static const char *build_image_manifest_string(const char *image)
+{
+	struct manifest_ref refs[PKG_MAX_PACKAGES];
+	int count = 0, i;
+	size_t pos = 0;
+
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		if (g_packages[i].in_use && g_packages[i].state == PKG_STATE_INSTALLED &&
+		    strcmp(g_packages[i].image, image) == 0) {
+			refs[count].name = g_packages[i].name;
+			refs[count].version = g_packages[i].version;
+			count++;
+		}
+	}
+	qsort(refs, (size_t)count, sizeof(refs[0]), manifest_ref_cmp);
+
+	g_manifest_string_buf[0] = '\0';
+	for (i = 0; i < count; i++) {
+		int n = snprintf(g_manifest_string_buf + pos, sizeof(g_manifest_string_buf) - pos,
+		                  "%s%s@%s", (i > 0) ? "," : "", refs[i].name, refs[i].version);
+
+		if (n < 0 || (size_t)n >= sizeof(g_manifest_string_buf) - pos)
+			break; /* truncated -- PKG_MANIFEST_STRING_MAX already sized for
+			        * PKG_MAX_PACKAGES worst case, so unreachable in practice */
+		pos += (size_t)n;
+	}
+	return g_manifest_string_buf;
+}
+
+/*
+ * The one shared copy-forward mechanism (ADR-0107/0108) behind every
+ * mutation of an image's own package set -- pkg_build_completed()'s
+ * install/upgrade merge and pkg_delete()'s uninstall both go through
+ * this rather than each hand-rolling their own stage/hash/finalize
+ * sequence (No Parallel Implementations). Ensures image exists
+ * (implicit creation -- the same convention pkg install has always had
+ * for a bare image name never explicitly POSTed to /v1/images first),
+ * resolves its current version's own rootfs, hardlinks a full copy
+ * into a scratch staging directory (image's real version rootfs is
+ * NEVER written to directly -- an already-running container may have
+ * it open as its own overlay lowerdir right now), lets mutate() apply
+ * exactly the one change this install/delete needs against the
+ * staging copy (and update g_packages to match), then hashes the
+ * image's own post-mutation manifest identity to name the result. If
+ * that name already exists in this image's own version history (an
+ * install/delete cycle landing back on a previously seen package set
+ * -- real file content may differ in insignificant ways like an
+ * embedded build timestamp, ADR-0108's own accepted tradeoff for
+ * manifest-identity hashing over full-content hashing), the staging
+ * copy is discarded and current_version is simply repointed to the
+ * existing, already-immutable directory; otherwise the staging copy
+ * itself becomes the new version's permanent rootfs (a same-filesystem
+ * rename(2), not a second copy). Returns 0 on success.
+ */
+static int image_produce_new_version(const char *image,
+                                      int (*mutate)(const char *staging_rootfs, void *ctx),
+                                      void *ctx)
+{
+	char old_version[IMAGE_VERSION_MAX];
+	char old_rootfs[PATH_MAX];
+	char staging[PATH_MAX];
+	char new_rootfs[PATH_MAX];
+	char version_dir[PATH_MAX], *slash;
+	char new_version[IMAGE_VERSION_MAX];
+	const char *manifest_str;
+	enum image_error ierr;
+	struct stat st;
+
+	ierr = image_create(image);
+	if (ierr != IMAGE_OK && ierr != IMAGE_ERR_DUPLICATE)
+		return -1;
+
+	if (image_current_version(image, old_version, sizeof(old_version)) != IMAGE_OK)
+		return -1;
+	image_version_rootfs_path(image, old_version, old_rootfs, sizeof(old_rootfs));
+
+	snprintf(staging, sizeof(staging), "%s/%s/.staging.%d", g_images_dir, image, (int)getpid());
+	persist_remove_tree(staging); /* clear any leftover from a prior crashed attempt */
+	if (persist_mkdir_p(staging) != 0)
+		return -1;
+
+	if (copy_tree_hardlink(old_rootfs, staging) != 0) {
+		persist_remove_tree(staging);
+		return -1;
+	}
+
+	if (mutate(staging, ctx) != 0) {
+		persist_remove_tree(staging);
+		return -1;
+	}
+
+	manifest_str = build_image_manifest_string(image);
+	if (image_hash_manifest_string(manifest_str, new_version, sizeof(new_version)) != 0) {
+		persist_remove_tree(staging);
+		return -1;
+	}
+
+	image_version_rootfs_path(image, new_version, new_rootfs, sizeof(new_rootfs));
+	if (stat(new_rootfs, &st) == 0) {
+		/* Already produced before -- discard this build, trust the
+		 * existing immutable copy (see this function's own comment). */
+		persist_remove_tree(staging);
+	} else {
+		snprintf(version_dir, sizeof(version_dir), "%s", new_rootfs);
+		slash = strrchr(version_dir, '/'); /* drop the trailing "/rootfs" component */
+		if (slash != NULL)
+			*slash = '\0';
+		if (persist_mkdir_p(version_dir) != 0 || rename(staging, new_rootfs) != 0) {
+			persist_remove_tree(staging);
+			return -1;
+		}
+	}
+
+	return image_record_version(image, new_version) == IMAGE_OK ? 0 : -1;
+}
+
 static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 {
 	int i;
@@ -1222,7 +1428,7 @@ int pkg_toolchain_has_gcc(void)
 	return stat(gcc_path, &st) == 0;
 }
 
-enum pkg_error pkg_seed_image_baseline(const char *image)
+enum pkg_error pkg_seed_image_baseline(const char *rootfs_path)
 {
 	/*
 	 * Source paths deliberately have no "/usr" prefix -- they must match
@@ -1287,10 +1493,8 @@ enum pkg_error pkg_seed_image_baseline(const char *image)
 		{ "null", 1, 3 }, { "zero", 1, 5 }, { "full", 1, 7 }, { "random", 1, 8 },
 		{ "urandom", 1, 9 },
 	};
-	char target_rootfs[PATH_MAX];
+	const char *target_rootfs = rootfs_path;
 	size_t i;
-
-	image_rootfs_path(image, target_rootfs, sizeof(target_rootfs));
 
 	for (i = 0; i < sizeof(runtime_libs) / sizeof(runtime_libs[0]); i++) {
 		char dst[PATH_MAX], dst_parent[PATH_MAX], *slash;
@@ -1941,8 +2145,7 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
 	struct pkg_recipe recipe;
 	char recipe_path[PATH_MAX];
 	struct pkg_entry *e;
-	char build_rootfs[PATH_MAX];
-	struct stat st;
+	char build_image_version[IMAGE_VERSION_MAX];
 	enum pkg_error perr;
 
 	if (!pkg_name_is_valid(name))
@@ -1963,9 +2166,12 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
 		return PKG_ERR_INVALID_RECIPE;
 
 	/* build_image must already exist -- there is no sane default the
-	 * way PKG_DEFAULT_IMAGE is for an ordinary install. */
-	image_rootfs_path(build_image, build_rootfs, sizeof(build_rootfs));
-	if (stat(build_rootfs, &st) != 0 || !S_ISDIR(st.st_mode))
+	 * way PKG_DEFAULT_IMAGE is for an ordinary install. Resolved via
+	 * its own current version (ADR-0107/0108) -- a hostbuild's own
+	 * hermetic environment is always build_image's latest built state,
+	 * matching pkg_fetch_completed()'s own resolution below. */
+	if (image_current_version(build_image, build_image_version, sizeof(build_image_version)) !=
+	    IMAGE_OK)
 		return PKG_ERR_NOT_FOUND;
 
 	/*
@@ -2104,13 +2310,26 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 	snprintf(container_base, sizeof(container_base), "%s/%s", g_containers_dir,
 	         PKG_BUILD_CONTAINER_NAME);
 	/* A hostbuild job's own build container is rooted on build_image's
-	 * rootfs (built up via ordinary `pkg install` beforehand), never
-	 * the shared toolchain sandbox every regular install uses
-	 * (ADR-0056). */
-	if (g_current_job_is_hostbuild)
-		image_rootfs_path(g_current_job_build_image, g_build_lowerdir, sizeof(g_build_lowerdir));
-	else
+	 * own current version's rootfs (ADR-0107/0108, built up via
+	 * ordinary `pkg install` beforehand), never the shared toolchain
+	 * sandbox every regular install uses (ADR-0056). */
+	if (g_current_job_is_hostbuild) {
+		char build_image_version[IMAGE_VERSION_MAX];
+
+		/* pkg_hostbuild_start() already validated build_image has a
+		 * current version before this job was ever queued -- a
+		 * failure here is unreachable in practice; an empty lowerdir
+		 * fails the subsequent overlay mount cleanly instead of
+		 * silently reusing a stale path. */
+		if (image_current_version(g_current_job_build_image, build_image_version,
+		                           sizeof(build_image_version)) == IMAGE_OK)
+			image_version_rootfs_path(g_current_job_build_image, build_image_version,
+			                           g_build_lowerdir, sizeof(g_build_lowerdir));
+		else
+			g_build_lowerdir[0] = '\0';
+	} else {
 		snprintf(g_build_lowerdir, sizeof(g_build_lowerdir), "%s", g_pkgbuild_rootfs);
+	}
 	snprintf(g_build_upperdir, sizeof(g_build_upperdir), "%s/upper", container_base);
 	snprintf(g_build_workdir, sizeof(g_build_workdir), "%s/work", container_base);
 	snprintf(g_build_merged, sizeof(g_build_merged), "%s/merged", container_base);
@@ -2409,6 +2628,35 @@ void pkg_build_output_close(void)
 	}
 }
 
+/* image_produce_new_version()'s own mutate() callback for a package
+ * install/upgrade -- runs against the freshly copy-forwarded staging
+ * rootfs (never the old version's own immutable directory). On an
+ * upgrade, the OLD manifest's files are unlinked first (a version that
+ * renamed/dropped files shouldn't leave the old ones behind in the
+ * new version) and e's own file list is forgotten before merge_tree()
+ * repopulates it fresh from dest_dir. pkg_seed_image_baseline() is
+ * still called every time (not just on a brand first version) --
+ * cheap and idempotent (stat-based skip), and lets an image that
+ * missed baseline seeding self-heal on its very next install. */
+struct install_mutate_ctx {
+	const char *dest_dir;
+	struct pkg_entry *e;
+	int is_upgrade;
+};
+
+static int install_mutate(const char *staging_rootfs, void *ctx_v)
+{
+	struct install_mutate_ctx *ctx = ctx_v;
+
+	if (ctx->is_upgrade) {
+		unlink_manifest_files(ctx->e, staging_rootfs);
+		pkg_entry_free_files(ctx->e);
+	}
+	if (pkg_seed_image_baseline(staging_rootfs) != PKG_OK)
+		return -1;
+	return merge_tree(ctx->dest_dir, staging_rootfs, "", ctx->e);
+}
+
 int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_pid,
                          int *out_pidfd, char *out_hostbuild_done_name)
 {
@@ -2587,14 +2835,6 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	         PKG_BUILD_CONTAINER_NAME);
 	snprintf(dest_dir, sizeof(dest_dir), "%s/upper/build/pkg-dest", container_base);
 
-	if (is_upgrade) {
-		/* Unlink the OLD manifest's files first -- a version that
-		 * renamed/dropped files shouldn't leave the old ones behind.
-		 * Only after this do we lose track of the old file list. */
-		unlink_manifest_files(e);
-		pkg_entry_free_files(e);
-	}
-
 	/* Refresh version from the recipe -- for a fresh install this is
 	 * the first time it's set; for an upgrade this is where the entry
 	 * finally moves from the old version to the new one. */
@@ -2609,6 +2849,19 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			strncpy(e->depends, recipe.depends, sizeof(e->depends) - 1);
 		}
 	}
+
+	/*
+	 * Marked INSTALLED here, before either branch below, rather than
+	 * only after both succeed -- the non-hostbuild branch's own
+	 * image_produce_new_version() call needs e's final post-install
+	 * state (name/version/state all correct) to compute the new
+	 * image version's own manifest hash (ADR-0108) for THIS package's
+	 * contribution. Safe: both branches below unconditionally
+	 * overwrite this back to PKG_STATE_FAILED on their own failure
+	 * path, so a failed merge never leaves a falsely-INSTALLED entry.
+	 */
+	e->state = PKG_STATE_INSTALLED;
+	e->error[0] = '\0';
 
 	if (g_current_job_is_hostbuild) {
 		/* A hostbuild's output is a standalone host artifact (a
@@ -2630,12 +2883,12 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			return 0;
 		}
 	} else {
-		char target_rootfs[PATH_MAX];
+		struct install_mutate_ctx ctx;
 
-		image_rootfs_path(g_current_job_image, target_rootfs, sizeof(target_rootfs));
-		if (persist_mkdir_p(target_rootfs) != 0 ||
-		    pkg_seed_image_baseline(g_current_job_image) != PKG_OK ||
-		    merge_tree(dest_dir, target_rootfs, "", e) != 0) {
+		ctx.dest_dir = dest_dir;
+		ctx.e = e;
+		ctx.is_upgrade = is_upgrade;
+		if (image_produce_new_version(g_current_job_image, install_mutate, &ctx) != 0) {
 			e->state = PKG_STATE_FAILED;
 			snprintf(e->error, sizeof(e->error),
 			         "failed to merge installed files into the target image");
@@ -2675,8 +2928,6 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		merge_tree(dest_dir, g_pkgbuild_rootfs, "", NULL);
 	}
 
-	e->state = PKG_STATE_INSTALLED;
-	e->error[0] = '\0';
 	save_state();
 
 	if (g_current_job_is_hostbuild)
@@ -2757,9 +3008,26 @@ enum pkg_error pkg_get_one(const char *name, const char *image, struct json_writ
 	return PKG_OK;
 }
 
+/* image_produce_new_version()'s own mutate() callback for pkg_delete()
+ * -- unlinks ctx's own saved file list from the copy-forwarded staging
+ * rootfs. */
+struct delete_mutate_ctx {
+	const struct pkg_entry *e;
+};
+
+static int delete_mutate(const char *staging_rootfs, void *ctx_v)
+{
+	struct delete_mutate_ctx *ctx = ctx_v;
+
+	unlink_manifest_files(ctx->e, staging_rootfs);
+	return 0;
+}
+
 enum pkg_error pkg_delete(const char *name, const char *image)
 {
 	struct pkg_entry *e = pkg_find(name, image);
+	struct pkg_entry saved;
+	struct delete_mutate_ctx ctx;
 
 	if (e == NULL || e->state != PKG_STATE_INSTALLED)
 		return PKG_ERR_NOT_FOUND;
@@ -2767,9 +3035,28 @@ enum pkg_error pkg_delete(const char *name, const char *image)
 	    strcmp(g_current_job_image, normalize_image(image)) == 0)
 		return PKG_ERR_BUSY;
 
-	unlink_manifest_files(e);
-	pkg_entry_free_files(e);
+	/*
+	 * Uninstalling a package must, like an install/upgrade, produce a
+	 * new immutable image version (ADR-0107/0108) rather than mutating
+	 * a version's rootfs that an already-running container might have
+	 * open as its own overlay lowerdir right now. e's own registry
+	 * slot is cleared BEFORE image_produce_new_version() runs (a
+	 * struct copy captures e->files' pointer into saved first, so
+	 * nothing is freed yet) so build_image_manifest_string()'s own
+	 * fresh g_packages scan -- which only runs after delete_mutate()
+	 * has unlinked the files -- correctly excludes this package from
+	 * the new version's manifest.
+	 */
+	saved = *e;
 	memset(e, 0, sizeof(*e));
+	ctx.e = &saved;
+
+	if (image_produce_new_version(normalize_image(image), delete_mutate, &ctx) != 0) {
+		*e = saved; /* the uninstall never actually happened -- restore e exactly */
+		return PKG_ERR_PERSIST_FAILED;
+	}
+
+	pkg_entry_free_files(&saved);
 
 	if (save_state() != 0)
 		return PKG_ERR_PERSIST_FAILED;

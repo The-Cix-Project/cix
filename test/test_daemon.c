@@ -90,7 +90,19 @@ int main(void)
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
-	snprintf(g_image_root, sizeof(g_image_root), "%s/images/test/rootfs", g_data_dir);
+	/* ADR-0107/0108: a manifest.json is required for POST /v1/containers
+	 * to resolve this image's own current version -- see
+	 * test_image_fixture_write_manifest()'s own header comment. */
+	snprintf(g_image_root, sizeof(g_image_root), "%s/images/test/v1/rootfs", g_data_dir);
+	{
+		char image_dir[PATH_MAX];
+
+		snprintf(image_dir, sizeof(image_dir), "%s/images/test", g_data_dir);
+		if (test_image_fixture_write_manifest(image_dir, "v1") != 0) {
+			test_data_dir_cleanup(g_data_dir);
+			return 1;
+		}
+	}
 
 	if (test_image_fixture_build(g_image_root, "build/daemon_child", "daemon_child") != 0) {
 		test_data_dir_cleanup(g_data_dir);

@@ -44,6 +44,25 @@ struct registry_device_attachment {
 struct registry_entry {
 	char name[REGISTRY_NAME_MAX];
 	char image[REGISTRY_IMAGE_NAME_MAX]; /* the image this container's rootfs was built from */
+	/*
+	 * The specific image version (ADR-0107/0108, a sha256 manifest-
+	 * identity hash -- see IMAGE_VERSION_MAX in daemon/include/image.h,
+	 * not included here just for one array size) this container's own
+	 * overlay lowerdir was pinned to at creation time -- resolved once,
+	 * via image_current_version(), and never re-resolved afterward,
+	 * even across a daemon-restart replay (main.c's own
+	 * create_container_from_body() persists it back into the stored
+	 * create-request body precisely so replay doesn't silently re-pin
+	 * to whatever the image's current_version happens to be by then).
+	 * This is the actual mechanism that fixes the bug the whole
+	 * package/image versioning epic exists for: a later `pkg install`
+	 * against the same image name can never change what an
+	 * already-running (or restarted) container's own lowerdir points
+	 * at. Empty for the one container that predates real image
+	 * versioning at all -- the ephemeral PKG_BUILD_CONTAINER_NAME
+	 * sandbox, rooted on g_pkgbuild_rootfs, not any named image.
+	 */
+	char image_version[65];
 	struct container_handle handle;
 	int running;       /* 1 while the container's process is alive */
 	int exit_status;   /* valid once running == 0 */
@@ -181,7 +200,7 @@ void registry_init(void);
  * before calling this.
  */
 enum registry_error registry_create(const char *name, const char *image,
-                                     const struct container_spec *spec,
+                                     const char *image_version, const struct container_spec *spec,
                                      const struct registry_network_attachment *nets, int net_count,
                                      int ip_forward,
                                      const struct registry_device_attachment *devices,

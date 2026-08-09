@@ -128,4 +128,46 @@ int test_data_dir_create(char *out_path, size_t out_size);
  */
 void test_data_dir_cleanup(const char *path);
 
+/*
+ * ADR-0107/0108: an image no longer has one fixed rootfs path -- each
+ * install/upgrade/delete produces a new immutable
+ * <image_dir>/<version>/rootfs directory, with manifest.json's own
+ * "current_version" field naming whichever one is current. Every
+ * daemon-linked test that inspects an image's rootfs directly on disk
+ * (rather than only through the REST API) needs this same lookup, so
+ * it lives here rather than as a near-duplicate helper in each test
+ * file (test_pkg.c/test_images.c). A plain text scan for the
+ * "current_version":"..." field, not a real JSON parse -- this file
+ * is linked into image/src/mkbootroot.c and image/src/mktoolchainimage.c
+ * too (see the Makefile), neither of which links daemon/src/json.c,
+ * so pulling in a real JSON parser here would ripple into their own
+ * build rules for a lookup this simple. image_dir is an image's own
+ * directory (e.g. "<data_dir>/images/base"), NOT a version's rootfs.
+ * Returns 0, or -1 if image_dir has no manifest.json or no
+ * current_version field.
+ */
+int test_image_fixture_read_current_version(const char *image_dir, char *out_version,
+                                             size_t out_size);
+
+/*
+ * Writes a manifest.json directly into image_dir naming version as
+ * both the sole version-history entry and current_version -- the same
+ * document shape image.c's own image_create() produces, hand-written
+ * here so a test can stage a real image's rootfs directly on disk
+ * (test_image_fixture_build(), bypassing a real `pkg install` for
+ * speed) while still satisfying create_container_from_body()'s own
+ * image_current_version() lookup (ADR-0107/0108) -- without this, a
+ * directly-staged image has no manifest.json at all and POST
+ * /v1/containers 400s with "image rootfs does not exist." version can
+ * be any distinct literal (these fixtures never go through pkg.c's
+ * real ADR-0108 manifest-hash computation -- image.c only ever reads
+ * this field back as an opaque string, never re-derives or validates
+ * it). Callers build their own target rootfs path as
+ * "<image_dir>/<version>/rootfs" before calling
+ * test_image_fixture_build() against it, same shape
+ * image_version_rootfs_path() (daemon/src/image.c) itself produces.
+ * Returns 0, or -1 (with perror on the failing path) otherwise.
+ */
+int test_image_fixture_write_manifest(const char *image_dir, const char *version);
+
 #endif /* TEST_IMAGE_FIXTURE_H */

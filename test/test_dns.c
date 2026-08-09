@@ -260,8 +260,17 @@ int main(void)
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
-	snprintf(g_dnsmasq_image_root, sizeof(g_dnsmasq_image_root), "%s/images/dnstest/rootfs",
+	snprintf(g_dnsmasq_image_root, sizeof(g_dnsmasq_image_root), "%s/images/dnstest/v1/rootfs",
 	         g_data_dir);
+	{
+		char image_dir[PATH_MAX];
+
+		snprintf(image_dir, sizeof(image_dir), "%s/images/dnstest", g_data_dir);
+		if (test_image_fixture_write_manifest(image_dir, "v1") != 0) {
+			test_data_dir_cleanup(g_data_dir);
+			return 1;
+		}
+	}
 
 	if (test_image_fixture_build(g_dnsmasq_image_root, "/usr/sbin/dnsmasq", "dnsmasq") != 0) {
 		fprintf(stderr, "FAIL: could not stage dnsmasq -- is it installed? (apt-get install "
