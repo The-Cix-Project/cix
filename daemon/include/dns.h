@@ -40,8 +40,12 @@ enum dns_error {
 };
 
 /* Loads persisted records (if any) at startup. Unlike networks, there
- * is no kernel state to recreate here -- just the in-memory table. */
-int dns_init(const char *state_path);
+ * is no kernel state to recreate here -- just the in-memory table.
+ * servers_state_path is the sibling persisted state for dns_server_
+ * register()'s own bindings (see below) -- loaded here too so both
+ * come back in one call, but they're independent record sets with
+ * independent files. */
+int dns_init(const char *state_path, const char *servers_state_path);
 
 /*
  * Hostname validation (dot-separated labels of [A-Za-z0-9-], each
@@ -111,7 +115,12 @@ enum dns_server_error dns_server_register(const char *container_name, pid_t pid,
 enum dns_server_error dns_server_unregister(const char *container_name);
 
 /* Called after every record create/delete: rewrites the hosts file
- * and re-sends SIGHUP for every currently-registered binding. */
+ * and re-sends SIGHUP for every currently-registered binding. Also
+ * the right call to make once, after boot-time container autostart
+ * completes, so freshly-live containers (fresh pid, per ADR-0091)
+ * actually receive the bindings dns_init() just loaded from disk --
+ * at load time no container has started yet, so any earlier sync
+ * attempt would find nothing running to write to. */
 void dns_server_sync_all(void);
 
 /* Called when a container is removed, so a stale binding never

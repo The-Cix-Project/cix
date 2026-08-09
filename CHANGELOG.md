@@ -2,6 +2,26 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 38 (done, live-verified end-to-end across a real reboot): DNS server bindings were never persisted; auto-registered records were never site-qualified (ADR-0091, ADR-0092)
+
+Raised directly by the user testing the freshly-deployed DNS work: `dns server ls` came back empty despite `dns-1`/`dns-2` having been registered earlier the same session, and `ldapsvc.uk.home.arpa` failed to resolve while `dns-1`, `dns-2`, and `kanxeo.uk.home.arpa` all worked -- also asking directly why `dns-1`/`dns-2`'s own records had no site suffix, unlike every manually-created record.
+
+Two separate, real, previously-undiscovered bugs, both found by tracing the actual code rather than assuming:
+
+1. `dns_server_register()`'s own bindings (`g_bindings[]`, `daemon/src/dns.c`) were purely in-memory, never persisted to disk -- silently lost on every daemon restart/reboot, unlike the DNS record set itself, which already had a full save/load cycle. Explains both symptoms directly: the empty `dns server ls`, and `ldapsvc` (created after the most recent reboot) never reaching either server's own hosts file, since nothing was registered to sync it to.
+2. Container auto-registration (`--dns-register`) called `dns_record_create()` directly, skipping the `siteconfig_qualify()` (ADR-0052) call the manual `POST /v1/dns/records` path has always made -- a real inconsistency with no reason behind it, not a design choice.
+
+#### Fixed
+- `daemon/src/dns.c`/`daemon/include/dns.h`: `dns_init()` now takes a second state-file path and persists/loads `g_bindings[]` the same way records already were; `dns_server_register()`/`unregister()`/`forget()` all save on change.
+- `daemon/src/main.c`: `dns_server_sync_all()` called once, explicitly, right after boot-time container autostart completes -- bindings loaded at `dns_init()` time have no live container to sync to yet, since nothing has started at that point in startup.
+- `daemon/src/main.c`: the `dns_register` auto-registration path now calls `siteconfig_qualify()` before `dns_record_create()`, matching the manual path exactly.
+- `daemon/src/dns.c`: `dns_record_forget_owner()` (container-delete cleanup) now searches by `owner_container` directly instead of `dns_record_find(container_name)` -- the old lookup-by-name shortcut only worked because name == container_name held before the qualification fix; would have silently leaked every auto-registered record on container delete otherwise.
+
+#### Notes
+- Live-verified across a real reboot, not just in-process: registered `dns-1`/`dns-2` again post-deploy, rebooted a second time with no further manual action, and confirmed both `GET /v1/dns/servers` and real resolution (`ldapsvc.uk.home.arpa` via both servers) survived intact.
+- `dns-1`/`dns-2`'s own pre-existing bare records manually removed and left to be recreated fresh, qualified, by the fixed autostart path.
+- Full local regression sweep (`test_dns`) clean before deploy.
+
 ### Part 37 (done, live-verified end-to-end): real LDAPS handshake + LDAP bind against lldap on 192.168.15.95, closing tasks #623/#624
 
 Completed the lldap deployment left open since the multi-source-recipe work many phases back: ran `ldapsvc` (image `lldap`, `management` network, `192.168.15.105`) with its LDAPS-enabled `lldap_config.toml` staged via `--file=`, a PKI-issued cert (`--pki-issue --pki-cert-dir=/opt/lldap`, matching the config's own `tls.crt`/`tls.key` paths), `--restart=always`. lldap's own binary needs a real `cd /opt/lldap` before running (its `app/` web assets resolve relative to CWD, no config option of its own) -- with no container-level "workdir" flag to set that, installed `bash` onto the `lldap` image and invoked `/usr/bin/bash -c "cd /opt/lldap && exec ./lldap run --config-file ..."`.

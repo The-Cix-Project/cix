@@ -92,6 +92,7 @@ static char IMAGES_DIR[PATH_MAX];
 static char CONTAINERS_DIR[PATH_MAX];
 static char NETWORKS_STATE_PATH[PATH_MAX];
 static char DNS_RECORDS_STATE_PATH[PATH_MAX];
+static char DNS_SERVERS_STATE_PATH[PATH_MAX];
 static char PKI_DIR[PATH_MAX];
 static char PKI_CERTS_STATE_PATH[PATH_MAX];
 static char PKI_CERTS_DIR[PATH_MAX];
@@ -169,6 +170,7 @@ static void init_base_dir_paths(void)
 	snprintf(CONTAINERS_DIR, sizeof(CONTAINERS_DIR), "%s/containers", g_base_dir);
 	snprintf(NETWORKS_STATE_PATH, sizeof(NETWORKS_STATE_PATH), "%s/networks.json", g_base_dir);
 	snprintf(DNS_RECORDS_STATE_PATH, sizeof(DNS_RECORDS_STATE_PATH), "%s/dns_records.json", g_base_dir);
+	snprintf(DNS_SERVERS_STATE_PATH, sizeof(DNS_SERVERS_STATE_PATH), "%s/dns_servers.json", g_base_dir);
 	snprintf(PKI_DIR, sizeof(PKI_DIR), "%s/pki", g_base_dir);
 	snprintf(PKI_CERTS_STATE_PATH, sizeof(PKI_CERTS_STATE_PATH), "%s/pki_certs.json", PKI_DIR);
 	snprintf(PKI_CERTS_DIR, sizeof(PKI_CERTS_DIR), "%s/certs", PKI_DIR);
@@ -5298,10 +5300,22 @@ static int create_container_from_body(const char *body, size_t body_len,
 
 	if (dns_register) {
 		/* entry->name, not the local `name`, which pointed into
-		 * root and is no longer valid after json_free() above. */
+		 * root and is no longer valid after json_free() above.
+		 *
+		 * siteconfig_qualify() (ADR-0052) applies the site's default
+		 * suffix the same way the manual POST /v1/dns/records path
+		 * already does -- this call was missing entirely until now
+		 * (ADR-0092), leaving every auto-registered container record
+		 * (e.g. dns-1/dns-2's own names) bare while every manually-
+		 * created one got the suffix, a real, user-reported
+		 * inconsistency with no reason behind it.
+		 */
+		char qualified_name[DNS_NAME_MAX];
 		struct dns_record *rec;
-		enum dns_error derr = dns_record_create(entry->name, spec.nets[0].container_ip_be,
-		                                         entry->name, &rec);
+		enum dns_error derr;
+
+		siteconfig_qualify(entry->name, qualified_name, sizeof(qualified_name));
+		derr = dns_record_create(qualified_name, spec.nets[0].container_ip_be, entry->name, &rec);
 
 		if (derr != DNS_OK)
 			fprintf(stderr,
@@ -9628,7 +9642,7 @@ int main(int argc, char **argv)
 	if (!port_explicit && daemon_config_port() != 0)
 		port = daemon_config_port();
 	g_port = port;
-	if (dns_init(DNS_RECORDS_STATE_PATH) != 0)
+	if (dns_init(DNS_RECORDS_STATE_PATH, DNS_SERVERS_STATE_PATH) != 0)
 		return 1;
 	if (pki_init(PKI_DIR, PKI_CERTS_STATE_PATH) != 0)
 		return 1;
@@ -9777,6 +9791,17 @@ int main(int argc, char **argv)
 	}
 
 	containerdef_autostart_all();
+
+	/*
+	 * Push the current record set to every dns_server_register()
+	 * binding dns_init() loaded from disk -- at load time no container
+	 * had started yet, so any binding whose container just came back
+	 * up above is exactly the case dns_server_sync_all() itself
+	 * documents needing a fresh call for (ADR-0091). A no-op if there
+	 * are no persisted bindings (the common case on a box that's never
+	 * run a DNS-serving container).
+	 */
+	dns_server_sync_all();
 
 	/* Console login (Phase 19): a real console needs something to walk
 	 * up to, once boot is fully healthy -- never for a dev/test kanxeod

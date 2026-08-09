@@ -13,6 +13,9 @@
 static struct dns_record g_records[DNS_MAX_RECORDS];
 static char g_state_path[PATH_MAX];
 static struct dns_server_binding g_bindings[DNS_SERVER_MAX];
+static char g_servers_state_path[PATH_MAX];
+
+static int hosts_path_is_valid(const char *path);
 
 int dns_name_is_valid(const char *name)
 {
@@ -122,14 +125,86 @@ static int load_state(void)
 	return rc;
 }
 
-int dns_init(const char *state_path)
+/*
+ * Persistence for dns_server_register()'s own bindings -- confirmed a
+ * real, previously-undiscovered gap (ADR-0091): g_bindings[] was
+ * purely in-memory, so every registration was silently lost on the
+ * next daemon restart/reboot, with no error or warning anywhere --
+ * GET /v1/dns/servers would just quietly come back empty, and no
+ * subsequent dns record create/delete would ever reach that server
+ * again until it was manually re-registered. Same JSON-array-file
+ * shape as g_records' own save_state()/load_state() above.
+ */
+static int save_server_state(void)
+{
+	struct json_writer w;
+	int rc;
+
+	jw_init(&w);
+	dns_server_write_json_list(&w);
+	rc = persist_atomic_write(g_servers_state_path, w.buf, w.len);
+	jw_free(&w);
+	return rc;
+}
+
+static int load_server_state(void)
+{
+	char *buf;
+	size_t len;
+	struct json_value *root;
+	size_t i;
+	int count = 0;
+
+	if (persist_read_file(g_servers_state_path, &buf, &len) != 0)
+		return -1;
+	if (buf == NULL)
+		return 0; /* no persisted state yet -- first-ever startup */
+
+	root = json_parse(buf, len);
+	free(buf);
+	if (root == NULL || root->type != JSON_ARRAY) {
+		json_free(root);
+		fprintf(stderr, "%s: malformed persisted DNS server binding state\n",
+		        g_servers_state_path);
+		return -1;
+	}
+
+	for (i = 0; i < root->u.array.count && count < DNS_SERVER_MAX; i++) {
+		const struct json_value *item = root->u.array.items[i];
+		const char *container = json_as_string(json_object_get(item, "container"));
+		const char *hosts_path = json_as_string(json_object_get(item, "hosts_path"));
+
+		if (container == NULL || container[0] == '\0' || !hosts_path_is_valid(hosts_path))
+			continue; /* skip a corrupt entry rather than fail the whole load */
+
+		memset(&g_bindings[count], 0, sizeof(g_bindings[count]));
+		strncpy(g_bindings[count].container_name, container,
+		        sizeof(g_bindings[count].container_name) - 1);
+		strncpy(g_bindings[count].hosts_path, hosts_path,
+		        sizeof(g_bindings[count].hosts_path) - 1);
+		count++;
+	}
+	json_free(root);
+	return 0;
+}
+
+int dns_init(const char *state_path, const char *servers_state_path)
 {
 	if (snprintf(g_state_path, sizeof(g_state_path), "%s", state_path) >= (int)sizeof(g_state_path))
+		return -1;
+	if (snprintf(g_servers_state_path, sizeof(g_servers_state_path), "%s", servers_state_path) >=
+	    (int)sizeof(g_servers_state_path))
 		return -1;
 
 	memset(g_records, 0, sizeof(g_records));
 	memset(g_bindings, 0, sizeof(g_bindings));
-	return load_state();
+	if (load_state() != 0)
+		return -1;
+	/* Bindings loaded here are not yet synced to any real container --
+	 * no container has started at this point in daemon startup. The
+	 * caller is responsible for calling dns_server_sync_all() once
+	 * autostart finishes (see main.c). */
+	return load_server_state();
 }
 
 struct dns_record *dns_record_find(const char *name)
@@ -197,14 +272,26 @@ enum dns_error dns_record_delete(const char *name)
 
 void dns_record_forget_owner(const char *container_name)
 {
-	struct dns_record *e = dns_record_find(container_name);
+	/*
+	 * Searches by owner_container, not dns_record_find(container_name)
+	 * -- that lookup-by-name shortcut relied on name == container_name,
+	 * true before ADR-0092's siteconfig_qualify() fix started
+	 * qualifying auto-registered names (e.g. "dns-1" -> "dns-1.uk.
+	 * home.arpa"). Searching by the field this function is actually
+	 * about is correct regardless of what qualification does to the
+	 * name, and was always the more honest approach.
+	 */
+	int i;
 
-	if (e == NULL || strcmp(e->owner_container, container_name) != 0)
-		return;
-
-	memset(e, 0, sizeof(*e));
-	save_state();
-	dns_server_sync_all();
+	for (i = 0; i < DNS_MAX_RECORDS; i++) {
+		if (g_records[i].name[0] != '\0' &&
+		    strcmp(g_records[i].owner_container, container_name) == 0) {
+			memset(&g_records[i], 0, sizeof(g_records[i]));
+			save_state();
+			dns_server_sync_all();
+			return;
+		}
+	}
 }
 
 void dns_write_json_one(const struct dns_record *rec, struct json_writer *w)
@@ -335,6 +422,7 @@ enum dns_server_error dns_server_register(const char *container_name, pid_t pid,
 	strncpy(g_bindings[slot].container_name, container_name,
 	        sizeof(g_bindings[slot].container_name) - 1);
 	strncpy(g_bindings[slot].hosts_path, hosts_path, sizeof(g_bindings[slot].hosts_path) - 1);
+	save_server_state();
 	return DNS_SERVER_OK;
 }
 
@@ -345,6 +433,7 @@ enum dns_server_error dns_server_unregister(const char *container_name)
 	if (b == NULL)
 		return DNS_SERVER_ERR_NOT_FOUND;
 	memset(b, 0, sizeof(*b));
+	save_server_state();
 	return DNS_SERVER_OK;
 }
 
@@ -352,8 +441,10 @@ void dns_server_forget(const char *container_name)
 {
 	struct dns_server_binding *b = binding_find(container_name);
 
-	if (b != NULL)
+	if (b != NULL) {
 		memset(b, 0, sizeof(*b));
+		save_server_state();
+	}
 }
 
 void dns_server_sync_all(void)

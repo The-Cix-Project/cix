@@ -95,3 +95,5 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0088](0088-kernel-veth-missing.md) | CONFIG_VETH was never enabled -- every container network attachment on a real box has always failed | Accepted |
 | [0089](0089-root-netns-ip-forward-missing.md) | root-netns net.ipv4.ip_forward was never enabled -- no container could ever originate a connection past the host | Accepted |
 | [0090](0090-container-create-log-use-after-free.md) | container-create failure logging used a dangling JSON-tree pointer | Accepted |
+| [0091](0091-dns-server-binding-not-persisted.md) | DNS server bindings were never persisted, silently lost on every restart | Accepted |
+| [0092](0092-dns-register-missing-site-qualification.md) | auto-registered container DNS records were never site-qualified, unlike manual ones | Accepted |
