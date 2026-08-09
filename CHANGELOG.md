@@ -2,6 +2,17 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 40 (done, live-verified via a real QEMU boot-update round trip): the /system/update one-sided image_path/kernel_path footgun, closed at the source (ADR-0095)
+
+`POST /system/update`'s own `image_path`/`kernel_path` have always been independently optional — but omitting one used to leave the inactive slot's own copy of that file exactly as stale as it was from whenever that slot was last written, a real footgun this project's own guides have documented and manually worked around (always resupply both, even the unchanged one) since early on, never fixed at the source until now (task #671).
+
+#### Fixed
+- `daemon/src/main.c`: `do_system_update()` now auto-fills whichever of `image_path`/`kernel_path` is omitted from the **active** slot's own currently-running copy (already booted, already known-good), instead of leaving the inactive slot's prior content in place. Both are always written on every successful call; the response's own `updated` field is simplified to always report `["root", "kernel"]` as a result. Supplying both explicitly is completely unaffected.
+
+#### Notes
+- Live-verified via the existing QEMU-based `test_boot_update` (real device/ESP writes, a real second power-on confirming the freshly-written slot boots) — the explicit-both-paths case, unaffected by this change, still passes clean. The new auto-fill fallback itself was verified by code review and the local `test_system_update` sweep, not a new dedicated QEMU scenario — an acknowledged gap, not glossed over.
+- `docs/guides/remote-development.md` and `docs/guides/kernel-build-and-ab-updates.md` updated to drop the now-unnecessary "always resupply both" operator discipline.
+
 ### Part 39 (done, local regression sweep clean; not yet deployed live): git-archive tarball extraction, and hostbuild's own permanent-409 gap (ADR-0093, ADR-0094)
 
 Two backlog items closed from the same file, `daemon/src/pkg.c`:

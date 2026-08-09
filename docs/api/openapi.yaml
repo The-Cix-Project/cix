@@ -133,11 +133,17 @@ paths:
         Independent and both optional (at least one required): update
         just the root, just the kernel (both slots already carry a
         kernel file from install time, so this always has something to
-        replace), or both together in one call. Requires this daemon to
-        be running with --slot=a or --slot=b (a real --init-mode boot);
-        otherwise there is no meaningful "inactive slot" and the
-        request is rejected. Does NOT reboot -- call /system/reboot
-        separately once ready to cut over; the existing boot-counter/
+        replace), or both together in one call. ADR-0095: whichever of
+        image_path/kernel_path is omitted is auto-filled from the
+        *active* slot's own currently-running copy (already booted,
+        already known-good) rather than left as whatever was
+        previously written to the inactive slot -- a one-sided update
+        can no longer pair a fresh kernel with a stale root (or vice
+        versa) the way it used to. Requires this daemon to be running
+        with --slot=a or --slot=b (a real --init-mode boot); otherwise
+        there is no meaningful "inactive slot" and the request is
+        rejected. Does NOT reboot -- call /system/reboot separately
+        once ready to cut over; the existing boot-counter/
         confirm_boot() machinery, unchanged, decides whether the fresh
         slot sticks.
       operationId: updateSystem
@@ -175,7 +181,11 @@ paths:
                     items:
                       type: string
                       enum: [root, kernel]
-                    description: Which of image_path/kernel_path were actually given and written this call
+                    description: >
+                      Always ["root", "kernel"] (ADR-0095) -- both are genuinely
+                      fresh content in the inactive slot after this call, whether
+                      the caller supplied both explicitly or one was auto-filled
+                      from the active slot's own running copy.
         "400":
           description: >
             No --slot= on this daemon, neither image_path nor

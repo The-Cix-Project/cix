@@ -99,3 +99,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0092](0092-dns-register-missing-site-qualification.md) | auto-registered container DNS records were never site-qualified, unlike manual ones | Accepted |
 | [0093](0093-extract-tarball-assumed-wrapping-directory.md) | extract_tarball() assumed every source tarball has a wrapping directory | Accepted |
 | [0094](0094-hostbuild-upgrade-flag.md) | pkg hostbuild had no upgrade/force path, a bare permanent 409 | Accepted |
+| [0095](0095-update-one-sided-footgun.md) | POST /system/update's one-sided image_path/kernel_path footgun | Accepted |

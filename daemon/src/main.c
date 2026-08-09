@@ -1306,6 +1306,8 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 	const char *kernel_path;
 	const char *inactive_slot;
 	const char *device;
+	const char *active_device;
+	char active_kernel_path[PATH_MAX];
 	int src;
 	unsigned char magic4[4];
 	unsigned char magic2[2];
@@ -1321,14 +1323,17 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 	if (strcmp(g_slot, "a") == 0) {
 		inactive_slot = "b";
 		device = ROOT_B_DEVICE;
+		active_device = ROOT_A_DEVICE;
 	} else if (strcmp(g_slot, "b") == 0) {
 		inactive_slot = "a";
 		device = ROOT_A_DEVICE;
+		active_device = ROOT_B_DEVICE;
 	} else {
 		snprintf(out_errmsg, out_errmsg_size, "unrecognized --slot=, expected \"a\" or \"b\"");
 		return 400;
 	}
 	snprintf(kernel_dest, sizeof(kernel_dest), "%s/kanxeo-bzImage-%s", ESP_DIR, inactive_slot);
+	snprintf(active_kernel_path, sizeof(active_kernel_path), "%s/kanxeo-bzImage-%s", ESP_DIR, g_slot);
 
 	root = json_parse(body, body_len);
 	if (root == NULL) {
@@ -1343,6 +1348,25 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		snprintf(out_errmsg, out_errmsg_size, "image_path and/or kernel_path required");
 		return 400;
 	}
+	/*
+	 * ADR-0095: the real footgun this project's own guides have
+	 * documented and worked around by hand ever since ADR-0031/
+	 * ADR-0032 first split image_path/kernel_path apart -- a one-sided
+	 * update used to leave the OTHER file in the inactive slot exactly
+	 * as stale as it was from whenever that slot was last written,
+	 * silently pairing (say) a brand-new kernel with a root squashfs
+	 * from three updates ago. Closed by auto-copying the omitted half
+	 * forward from the ACTIVE slot's own currently-running copy --
+	 * already-booted, already-verified-good by definition, and the
+	 * exact thing an operator supplying only one path actually wants
+	 * paired with it. This is pure default-filling: an explicitly
+	 * supplied image_path/kernel_path is used exactly as given, this
+	 * only ever substitutes for one that's missing.
+	 */
+	if (image_path == NULL || image_path[0] == '\0')
+		image_path = NULL; /* copy from active_device below */
+	if (kernel_path == NULL || kernel_path[0] == '\0')
+		kernel_path = NULL; /* copy from active_kernel_path below */
 
 	/* Cheap, real safety checks before touching the inactive slot at
 	 * all: squashfs's own on-disk magic ("hsqs", the little-endian
@@ -1389,15 +1413,26 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		close(src);
 	}
 
-	if (image_path != NULL && image_path[0] != '\0' && write_file_to_device(image_path, device) != 0) {
+	/*
+	 * write_file_to_device()'s own copy_bytes() loop reads until read()
+	 * returns 0 -- true at end-of-file for a plain file, equally true
+	 * at a block device's own real capacity for a raw device node, so
+	 * active_device works as a src_path here with no separate device-
+	 * to-device copy primitive needed.
+	 */
+	if (write_file_to_device(image_path != NULL ? image_path : active_device, device) != 0) {
 		json_free(root);
-		snprintf(out_errmsg, out_errmsg_size, "failed to write image to inactive slot");
+		snprintf(out_errmsg, out_errmsg_size,
+		         image_path != NULL ? "failed to write image to inactive slot"
+		                             : "failed to copy the active slot's own root forward");
 		return 500;
 	}
-	if (kernel_path != NULL && kernel_path[0] != '\0' &&
-	    write_file_to_esp(kernel_path, kernel_dest) != 0) {
+	if (write_file_to_esp(kernel_path != NULL ? kernel_path : active_kernel_path, kernel_dest) !=
+	    0) {
 		json_free(root);
-		snprintf(out_errmsg, out_errmsg_size, "failed to write kernel to inactive slot");
+		snprintf(out_errmsg, out_errmsg_size,
+		         kernel_path != NULL ? "failed to write kernel to inactive slot"
+		                              : "failed to copy the active slot's own kernel forward");
 		return 500;
 	}
 
@@ -1441,8 +1476,14 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 
 	json_free(root);
 	snprintf(out_slot, out_slot_size, "%s", inactive_slot);
-	*out_updated_root = (image_path != NULL && image_path[0] != '\0');
-	*out_updated_kernel = (kernel_path != NULL && kernel_path[0] != '\0');
+	/*
+	 * Both are always written now (ADR-0095) -- an omitted half is
+	 * auto-filled from the active slot's own running copy rather than
+	 * left stale, so both genuinely are fresh content in the inactive
+	 * slot regardless of which one(s) the caller actually supplied.
+	 */
+	*out_updated_root = 1;
+	*out_updated_kernel = 1;
 	return 200;
 }
 
