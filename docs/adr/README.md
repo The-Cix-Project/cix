@@ -111,3 +111,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0104](0104-btrfs-disk-format.md) | fs_type on the disk-format REST endpoint -- real btrfs disk formatting alongside ext4 (btrfs-progs.recipe, libblkid.recipe) | Accepted |
 | [0105](0105-bootroot-assembly-freshness.md) | Real generation-counter freshness tracking for `pkg hostbuild kanxeo --deploy`, closing the stale-artifact silent-redeploy gap | Accepted |
 | [0106](0106-container-delete-disk-cleanup.md) | DELETE /containers actually removes on-disk upper/work/merged state, unmounting the overlay first | Accepted |
+| [0107](0107-package-image-versioning.md) | Package + image versioning model: version-keyed recipes, per-image pinned/rolling manifests, per-version immutable image rootfs | Accepted |
