@@ -69,14 +69,27 @@ gets built" discipline this design applies to images too. No migration
 shim for the old overwrite behavior -- clean cut-over, per this project's
 own standing convention.
 
-**Version comparison is real dotted-numeric ordering**, not opaque string
-compare: split on `.`, compare each component as an integer, a shorter
-version treated as zero-padded (`"8.2"` < `"8.2.1"`). Every `pkg_version=`
-across this project's own 60+ existing recipes is already pure
-dotted-numeric (`"1.47.4"`, `"7.1"`, `"3.0.5"`, ...) -- no need for a full
-semver parser (pre-release suffixes, build metadata) this project has no
-real recipe using today; this can grow if a real recipe ever needs it,
-not speculatively now.
+**Version comparison is a real natural-sort/dpkg-style comparator**, not
+opaque string compare and not a naive "split on `.`, parse each component
+as a plain integer" approach either -- checked directly against every one
+of this project's own 60+ existing recipes before committing to a design,
+rather than assumed: most `pkg_version=` values are pure dotted-numeric
+(`"1.47.4"`, `"7.1"`, `"3.0.5"`, ...), but two real, already-shipping
+recipes are not -- `kanxeo.recipe`'s own `"v1.4.0"` (a leading non-digit
+prefix) and `xorriso.recipe`'s own `"1.5.8.pl02"` (a non-numeric trailing
+component). A naive per-component `atoi()` would silently treat both of
+those as `0` for the offending component -- exactly the kind of quiet
+wrong-answer bug this project's own engineering bar rejects. The real
+comparator instead walks both strings left to right, alternating between
+runs of digits (compared numerically) and runs of non-digits (compared
+byte-wise) -- the same algorithm class `sort -V`/dpkg's own version
+comparison use -- so `"v1.4.0"` vs `"v1.5.0"` compares correctly (the
+shared `"v"` prefix matches structurally, then the digit runs compare
+numerically) and `"1.5.8.pl02"` vs `"1.5.8.pl03"` does too (`"pl"` matches,
+then `02` < `03` numerically). No semver-specific concepts (pre-release
+precedence, build metadata) are implemented -- this project has no real
+recipe needing them today; the natural-sort algorithm already handles
+every version string actually in use correctly without them.
 
 **Existing recipes migrate to their own already-published version as a
 one-time move**, not a new "version 1" fiction -- `curl.recipe`'s own
