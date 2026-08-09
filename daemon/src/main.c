@@ -6884,12 +6884,39 @@ static void respond_image_error(int fd, enum image_error err)
 	case IMAGE_ERR_HAS_PACKAGES:
 		respond_error(fd, 409, "Conflict", "image still has packages installed -- remove them first");
 		break;
+	case IMAGE_ERR_INVALID_PACKAGE:
+		respond_error(fd, 400, "Bad Request", "invalid package name");
+		break;
+	case IMAGE_ERR_INVALID_VERSION:
+		respond_error(fd, 400, "Bad Request", "version missing, empty, or too long");
+		break;
+	case IMAGE_ERR_MANIFEST_FULL:
+		respond_error(fd, 500, "Internal Server Error", "image manifest is full");
+		break;
 	case IMAGE_ERR_CREATE_FAILED:
 	case IMAGE_ERR_DELETE_FAILED:
+	case IMAGE_ERR_PERSIST_FAILED:
 	default:
 		respond_error(fd, 500, "Internal Server Error", "image operation failed");
 		break;
 	}
+}
+
+/*
+ * Reopens a just-closed top-level JSON object so a caller can splice
+ * in one more sibling key after the fact (used to add "manifest" onto
+ * image_write_json_one()'s own already-closed {"name":...} without
+ * teaching that function itself about manifests -- see its own two
+ * call sites' comments for why). w must have had exactly one
+ * jw_obj_close() as its very last write; the "}" it wrote is dropped
+ * and the object's own comma-tracking frame is restored so a
+ * subsequent jw_key()/jw_obj_close() behaves exactly as if the object
+ * had never been closed.
+ */
+static void jw_reopen_object(struct json_writer *w)
+{
+	w->len--;
+	w->depth++;
 }
 
 static void handle_image_create(int fd, const char *body, size_t body_len)
@@ -6922,6 +6949,11 @@ static void handle_image_create(int fd, const char *body, size_t body_len)
 	jw_init(&w);
 	image_write_json_one(name, &w);
 	json_free(root);
+	jw_reopen_object(&w);
+	jw_key(&w, "manifest");
+	jw_arr_open(&w); /* a just-created image never has a manifest.json yet -- always empty */
+	jw_arr_close(&w);
+	jw_obj_close(&w);
 	respond_json(fd, 201, "Created", &w);
 	jw_free(&w);
 }
@@ -6939,6 +6971,15 @@ static void handle_image_list(int fd)
 	jw_free(&w);
 }
 
+/*
+ * image_write_json_one() writes a bare {"name":...} object; the
+ * manifest (ADR-0107) is spliced in as a sibling "manifest" key by
+ * re-opening the object rather than by teaching image_write_json_one()
+ * itself about manifests -- keeps that function's own contract (pure
+ * filesystem-state report) unchanged for its other caller
+ * (handle_image_create()'s 201 response, which has no manifest to
+ * report for a just-created, empty-manifest image either way).
+ */
 static void handle_image_get_one(int fd, const char *name)
 {
 	struct json_writer w;
@@ -6951,6 +6992,15 @@ static void handle_image_get_one(int fd, const char *name)
 		respond_image_error(fd, ierr);
 		return;
 	}
+	jw_reopen_object(&w);
+	jw_key(&w, "manifest");
+	ierr = image_manifest_write_json(name, &w);
+	if (ierr != IMAGE_OK) {
+		jw_free(&w);
+		respond_image_error(fd, ierr);
+		return;
+	}
+	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
@@ -6958,6 +7008,67 @@ static void handle_image_get_one(int fd, const char *name)
 static void handle_image_delete(int fd, const char *name)
 {
 	enum image_error ierr = image_delete(name);
+
+	if (ierr != IMAGE_OK) {
+		respond_image_error(fd, ierr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+/*
+ * POST /v1/images/{name}/manifest (ADR-0107): upserts one {package,
+ * mode, version} entry into name's own manifest -- operator-declared
+ * package intent, independent of whatever the image's rootfs currently
+ * contains. Does not itself trigger a rebuild (task #720's own job).
+ */
+static void handle_image_manifest_set(int fd, const char *name, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *package;
+	const char *mode_str;
+	const char *version;
+	enum image_pkg_mode mode;
+	enum image_error ierr;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	package = json_as_string(json_object_get(root, "package"));
+	mode_str = json_as_string(json_object_get(root, "mode"));
+	version = json_as_string(json_object_get(root, "version"));
+	if (package == NULL || mode_str == NULL || version == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "package, mode, and version are all required");
+		return;
+	}
+	if (strcmp(mode_str, "pinned") == 0) {
+		mode = IMAGE_PKG_PINNED;
+	} else if (strcmp(mode_str, "rolling") == 0) {
+		mode = IMAGE_PKG_ROLLING;
+	} else {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "mode must be \"pinned\" or \"rolling\"");
+		return;
+	}
+
+	ierr = image_manifest_set(name, package, mode, version);
+	json_free(root);
+	if (ierr != IMAGE_OK) {
+		respond_image_error(fd, ierr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+/* DELETE /v1/images/{name}/manifest/{package} (ADR-0107). */
+static void handle_image_manifest_unset(int fd, const char *name, const char *package)
+{
+	enum image_error ierr = image_manifest_unset(name, package);
 
 	if (ierr != IMAGE_OK) {
 		respond_image_error(fd, ierr);
@@ -8534,6 +8645,42 @@ static void dispatch(int fd, const struct http_request *req)
 	if (strncmp(req->path, IMAGES_PREFIX, strlen(IMAGES_PREFIX)) == 0) {
 		name = req->path + strlen(IMAGES_PREFIX);
 		if (name[0] != '\0') {
+			size_t nlen = strlen(name);
+
+			/* ADR-0107: /v1/images/{name}/manifest (POST, upsert one
+			 * entry) and /v1/images/{name}/manifest/{package} (DELETE,
+			 * remove one). Image/package names are both '/'-free
+			 * (namecheck.h), so plain suffix/substring checks
+			 * unambiguously split them, the same precedent
+			 * CONTAINERS_PREFIX's own "/start"-style suffixes and the
+			 * pkg recipes route's "/manifest/" split above already
+			 * established. */
+			if (nlen > 9 && strcmp(name + nlen - 9, "/manifest") == 0 &&
+			    strcmp(req->method, "POST") == 0 && nlen - 9 < PKG_IMAGE_NAME_MAX) {
+				char image_name[PKG_IMAGE_NAME_MAX];
+
+				memcpy(image_name, name, nlen - 9);
+				image_name[nlen - 9] = '\0';
+				handle_image_manifest_set(fd, image_name, req->body, req->body_len);
+				return;
+			}
+			{
+				const char *marker = strstr(name, "/manifest/");
+
+				if (marker != NULL && strcmp(req->method, "DELETE") == 0) {
+					size_t image_len = (size_t)(marker - name);
+					const char *package = marker + strlen("/manifest/");
+
+					if (image_len < PKG_IMAGE_NAME_MAX && package[0] != '\0') {
+						char image_name[PKG_IMAGE_NAME_MAX];
+
+						memcpy(image_name, name, image_len);
+						image_name[image_len] = '\0';
+						handle_image_manifest_unset(fd, image_name, package);
+						return;
+					}
+				}
+			}
 			if (strcmp(req->method, "GET") == 0) {
 				handle_image_get_one(fd, name);
 				return;

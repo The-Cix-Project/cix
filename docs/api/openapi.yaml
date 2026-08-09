@@ -1654,6 +1654,83 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /images/{name}/manifest:
+    post:
+      summary: >
+        Upserts one {package, mode, version} entry into name's own manifest
+        (ADR-0107) -- package already present has its mode/version updated
+        in place, otherwise appended. Declares operator intent only; does
+        not itself trigger a rebuild (a separate, automatic mechanism for
+        rolling entries).
+      operationId: setImageManifestEntry
+      parameters:
+        - $ref: "#/components/parameters/ImageName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [package, mode, version]
+              properties:
+                package:
+                  type: string
+                mode:
+                  type: string
+                  enum: [pinned, rolling]
+                version:
+                  type: string
+      responses:
+        "204":
+          description: Manifest entry set
+        "400":
+          description: package/mode/version missing, invalid package name, mode not "pinned"/"rolling", or version empty/too long
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No image with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The image's manifest is full, or writing manifest.json failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /images/{name}/manifest/{package}:
+    delete:
+      summary: >
+        Removes package's entry from name's own manifest (ADR-0107), if
+        present -- a no-op, not an error, if it's already absent.
+      operationId: unsetImageManifestEntry
+      parameters:
+        - $ref: "#/components/parameters/ImageName"
+        - name: package
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Manifest entry removed (or was already absent)
+        "404":
+          description: No image with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Writing manifest.json failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /dns/records:
     get:
       summary: List all DNS records known to this daemon
@@ -4454,14 +4531,38 @@ components:
 
     Image:
       type: object
-      required: [name]
+      required: [name, manifest]
       properties:
         name:
           type: string
           description: >
-            Deliberately minimal -- a client wanting per-image package
-            detail already has it via GET /pkg's own "image" field per
-            entry, not duplicated here.
+            A client wanting per-image *installed* package detail already
+            has it via GET /pkg's own "image" field per entry, not
+            duplicated here.
+        manifest:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImageManifestEntry"
+          description: >
+            Operator-declared package intent (ADR-0107) -- distinct from
+            what's currently installed. Empty for an image that has never
+            had POST .../manifest called against it.
+
+    ImageManifestEntry:
+      type: object
+      required: [package, mode, version]
+      properties:
+        package:
+          type: string
+        mode:
+          type: string
+          enum: [pinned, rolling]
+          description: >
+            "pinned": version is the exact recipe version to install, never
+            auto-advances. "rolling": version is a floor -- resolves to the
+            highest available recipe version >= it.
+        version:
+          type: string
 
     DnsRecordCreateRequest:
       type: object

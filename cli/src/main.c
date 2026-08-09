@@ -467,6 +467,26 @@ static void fmt_image_list(const struct json_value *v)
 		fmt_image_line(images->u.array.items[i]);
 }
 
+/* ADR-0107: one image's own manifest -- operator-declared package
+ * intent, distinct from image_list's bare name-only shape. */
+static void fmt_image_detail(const struct json_value *v)
+{
+	const struct json_value *manifest = json_object_get(v, "manifest");
+	size_t i;
+
+	printf("%s\n", json_str_field(v, "name"));
+	if (manifest == NULL || manifest->type != JSON_ARRAY || manifest->u.array.count == 0) {
+		printf("  (no manifest entries)\n");
+		return;
+	}
+	for (i = 0; i < manifest->u.array.count; i++) {
+		const struct json_value *entry = manifest->u.array.items[i];
+
+		printf("  %s: %s %s\n", json_str_field(entry, "package"),
+		       json_str_field(entry, "mode"), json_str_field(entry, "version"));
+	}
+}
+
 static void fmt_device_line(const struct json_value *v)
 {
 	const char *id = json_str_field(v, "id");
@@ -3113,6 +3133,141 @@ static int cmd_image_rm(const struct kx_client *c, int json_mode, int argc, char
 	return emit(&r, json_mode, fmt_removed);
 }
 
+static int cmd_image_show(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl image show NAME\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/images/%s", argv[0]);
+	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_image_detail);
+}
+
+/* ADR-0107: declares package intent on an image -- does not itself
+ * trigger a rebuild (task #720's own job). */
+static int cmd_image_manifest_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *image = NULL;
+	const char *package = NULL;
+	const char *mode = NULL;
+	const char *version = NULL;
+	int i;
+	char path[256];
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--image=", 8) == 0)
+			image = argv[i] + 8;
+		else if (strncmp(argv[i], "--package=", 10) == 0)
+			package = argv[i] + 10;
+		else if (strncmp(argv[i], "--mode=", 7) == 0)
+			mode = argv[i] + 7;
+		else if (strncmp(argv[i], "--version=", 10) == 0)
+			version = argv[i] + 10;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown image manifest set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (image == NULL || package == NULL || mode == NULL || version == NULL) {
+		fprintf(stderr,
+		        "usage: kanxeoctl image manifest set --image=NAME --package=NAME "
+		        "--mode=pinned|rolling --version=VERSION\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "package");
+	jw_str(&w, package);
+	jw_key(&w, "mode");
+	jw_str(&w, mode);
+	jw_key(&w, "version");
+	jw_str(&w, version);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	snprintf(path, sizeof(path), "/v1/images/%s/manifest", image);
+	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	if (r.status < 200 || r.status >= 300) {
+		const char *msg = json_str_field(r.json, "error");
+
+		fprintf(stderr, "kanxeoctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		        r.status);
+		kx_response_free(&r);
+		return 1;
+	}
+	printf("%s@%s (%s) set on image '%s'\n", package, version, mode, image);
+	kx_response_free(&r);
+	return 0;
+}
+
+static int cmd_image_manifest_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *image = NULL;
+	const char *package = NULL;
+	int i;
+	char path[300];
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--image=", 8) == 0)
+			image = argv[i] + 8;
+		else if (strncmp(argv[i], "--package=", 10) == 0)
+			package = argv[i] + 10;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown image manifest rm option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (image == NULL || package == NULL) {
+		fprintf(stderr, "usage: kanxeoctl image manifest rm --image=NAME --package=NAME\n");
+		return 2;
+	}
+
+	snprintf(path, sizeof(path), "/v1/images/%s/manifest/%s", image, package);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static int cmd_image_manifest(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr,
+		        "usage: kanxeoctl image manifest set --image=NAME --package=NAME "
+		        "--mode=pinned|rolling --version=VERSION\n"
+		        "       kanxeoctl image manifest rm --image=NAME --package=NAME\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "set") == 0)
+		return cmd_image_manifest_set(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "rm") == 0)
+		return cmd_image_manifest_rm(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown image manifest subcommand '%s'\n", sub);
+	return 2;
+}
+
 static int cmd_image(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
@@ -3120,7 +3275,11 @@ static int cmd_image(const struct kx_client *c, int json_mode, int argc, char **
 	if (argc < 1) {
 		fprintf(stderr, "usage: kanxeoctl image create --name=NAME\n"
 		                "       kanxeoctl image ls\n"
-		                "       kanxeoctl image rm NAME\n");
+		                "       kanxeoctl image show NAME\n"
+		                "       kanxeoctl image rm NAME\n"
+		                "       kanxeoctl image manifest set --image=NAME --package=NAME "
+		                "--mode=pinned|rolling --version=VERSION\n"
+		                "       kanxeoctl image manifest rm --image=NAME --package=NAME\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -3128,8 +3287,12 @@ static int cmd_image(const struct kx_client *c, int json_mode, int argc, char **
 		return cmd_image_create(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "ls") == 0)
 		return cmd_image_ls(c, json_mode);
+	if (strcmp(sub, "show") == 0)
+		return cmd_image_show(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "rm") == 0)
 		return cmd_image_rm(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "manifest") == 0)
+		return cmd_image_manifest(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "kanxeoctl: unknown image subcommand '%s'\n", sub);
 	return 2;

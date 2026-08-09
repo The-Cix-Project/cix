@@ -56,8 +56,10 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | DELETE | `/networks/{name}/interfaces/{ifname}` | Detach a previously-attached interface (refused for the management network) |
 | GET | `/images` | List every image this daemon knows about |
 | POST | `/images` | Create an empty image (runtime pre-seeded, ready for `pkg install`) |
-| GET | `/images/{name}` | Inspect one image |
+| GET | `/images/{name}` | Inspect one image, including its manifest |
 | DELETE | `/images/{name}` | Remove an image (refused for `base`, if in use, or if it still has packages) |
+| POST | `/images/{name}/manifest` | Upsert one `{package, mode, version}` manifest entry (ADR-0107) |
+| DELETE | `/images/{name}/manifest/{package}` | Remove one manifest entry |
 | GET | `/dns/records` | List all DNS records this daemon knows about |
 | POST | `/dns/records` | Create a DNS record (name -> IP, persisted across restarts) |
 | GET | `/dns/records/{name}` | Inspect one DNS record |
@@ -785,6 +787,15 @@ POST /v1/pkg/install
 ```
 
 `bird` (and its dependencies, resolved the same way as always) builds into `/var/lib/kanxeo/images/router/rootfs` — containers created with `"image": "base"` never see it. The same package name is tracked independently per image: `bash` installed into both `base` and `router` are two separate entries, each independently upgradable/removable. `router` above doesn't need to exist beforehand — the first install into a name never seen before creates it implicitly; `POST /v1/images {"name": "router"}` creates one explicitly instead, useful when you want an image to exist (and be immediately usable — its C runtime is seeded right away) before installing anything into it.
+
+**An image can also carry a real, persisted manifest** (ADR-0107) — declared package intent, distinct from whatever's actually installed right now:
+
+```
+POST /v1/images/router/manifest
+{"package": "bird", "mode": "pinned", "version": "2.19.1"}
+```
+
+`mode: "pinned"` means exactly that version, never auto-advancing; `mode: "rolling"` means `version` is a floor, resolving to the highest available recipe version `>=` it. Re-`POST`ing the same `package` updates its mode/version in place (upsert), never duplicates. `GET /v1/images/router` echoes the full manifest alongside the bare `name` it always returned. `DELETE /v1/images/router/manifest/bird` removes one entry. This only records intent — it does not itself install anything or trigger a rebuild (a separate, automatic mechanism for `rolling` entries, not yet built).
 
 `GET`/`DELETE` on a non-default image use the compound `{name}@{image}` path form:
 

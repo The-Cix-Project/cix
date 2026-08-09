@@ -466,6 +466,152 @@ int main(void)
 		}
 	}
 
+	/* 8. image manifest CRUD (ADR-0107): a freshly-created image has an
+	 * empty manifest; POST upserts (add, then update the same package
+	 * in place); DELETE removes one entry, leaving others intact. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/images", "{\"name\":\"imgtest_manifest\"}", &r) !=
+	        0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST imgtest_manifest, status=%d\n", r.status);
+		ok = 0;
+	} else {
+		const struct json_value *manifest = json_object_get(r.json, "manifest");
+
+		if (manifest == NULL || manifest->type != JSON_ARRAY || manifest->u.array.count != 0) {
+			fprintf(stderr, "FAIL: freshly-created image manifest is not an empty array\n");
+			ok = 0;
+		}
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/images/imgtest_manifest/manifest",
+	                       "{\"package\":\"curl\",\"mode\":\"pinned\",\"version\":\"8.20.0\"}",
+	                       &r) != 0 ||
+	    r.status != 204) {
+		fprintf(stderr, "FAIL: POST imgtest_manifest/manifest (curl pinned), status=%d\n",
+		        r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/images/imgtest_manifest/manifest",
+	                       "{\"package\":\"bash\",\"mode\":\"rolling\",\"version\":\"5.2.0\"}",
+	                       &r) != 0 ||
+	    r.status != 204) {
+		fprintf(stderr, "FAIL: POST imgtest_manifest/manifest (bash rolling), status=%d\n",
+		        r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	/* upsert: re-set curl at a different version/mode -> must update in
+	 * place, not duplicate */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/images/imgtest_manifest/manifest",
+	                       "{\"package\":\"curl\",\"mode\":\"rolling\",\"version\":\"8.19.0\"}",
+	                       &r) != 0 ||
+	    r.status != 204) {
+		fprintf(stderr, "FAIL: POST imgtest_manifest/manifest (curl re-set), status=%d\n",
+		        r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET", "/v1/images/imgtest_manifest", NULL, &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: GET imgtest_manifest, status=%d\n", r.status);
+		ok = 0;
+	} else {
+		const struct json_value *manifest = json_object_get(r.json, "manifest");
+		int found_curl = 0, found_bash = 0;
+		size_t i;
+
+		if (manifest == NULL || manifest->type != JSON_ARRAY || manifest->u.array.count != 2) {
+			fprintf(stderr, "FAIL: imgtest_manifest expected 2 manifest entries, got %zu\n",
+			        manifest != NULL ? manifest->u.array.count : (size_t)-1);
+			ok = 0;
+		} else {
+			for (i = 0; i < manifest->u.array.count; i++) {
+				const struct json_value *e = manifest->u.array.items[i];
+
+				if (str_eq(json_str_field(e, "package"), "curl")) {
+					found_curl = 1;
+					if (!str_eq(json_str_field(e, "mode"), "rolling") ||
+					    !str_eq(json_str_field(e, "version"), "8.19.0")) {
+						fprintf(stderr, "FAIL: curl manifest entry not updated in place\n");
+						ok = 0;
+					}
+				} else if (str_eq(json_str_field(e, "package"), "bash")) {
+					found_bash = 1;
+				}
+			}
+			if (!found_curl || !found_bash) {
+				fprintf(stderr, "FAIL: imgtest_manifest missing curl and/or bash entry\n");
+				ok = 0;
+			}
+		}
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "DELETE", "/v1/images/imgtest_manifest/manifest/bash", NULL,
+	                       &r) != 0 ||
+	    r.status != 204) {
+		fprintf(stderr, "FAIL: DELETE imgtest_manifest/manifest/bash, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET", "/v1/images/imgtest_manifest", NULL, &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: GET imgtest_manifest after delete, status=%d\n", r.status);
+		ok = 0;
+	} else {
+		const struct json_value *manifest = json_object_get(r.json, "manifest");
+
+		if (manifest == NULL || manifest->type != JSON_ARRAY || manifest->u.array.count != 1 ||
+		    !str_eq(json_str_field(manifest->u.array.items[0], "package"), "curl")) {
+			fprintf(stderr, "FAIL: imgtest_manifest should have exactly curl left after "
+			                "removing bash\n");
+			ok = 0;
+		}
+	}
+	kx_response_free(&r);
+
+	/* invalid mode -> 400, invalid image name -> 404 */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/images/imgtest_manifest/manifest",
+	                       "{\"package\":\"x\",\"mode\":\"bogus\",\"version\":\"1.0\"}", &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: POST manifest with invalid mode expected 400, got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/images/never-created-image/manifest",
+	                       "{\"package\":\"x\",\"mode\":\"pinned\",\"version\":\"1.0\"}", &r) != 0 ||
+	    r.status != 404) {
+		fprintf(stderr, "FAIL: POST manifest on a never-created image expected 404, got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "DELETE", "/v1/images/imgtest_manifest", NULL, &r) != 0 ||
+	    r.status != 204) {
+		fprintf(stderr, "FAIL: DELETE imgtest_manifest, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
 	/* cleanup */
 	run_cmd("rm -rf '%s'", scratch_dir);
 
