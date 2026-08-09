@@ -162,6 +162,19 @@ struct container_sysctl {
  */
 #define CONTAINER_MAX_FILES 16
 #define CONTAINER_FILE_PATH_MAX 256
+
+/*
+ * argv itself (struct container_spec.argv below) is a bare NULL-
+ * terminated char*const* -- these two bounds are the caller-side
+ * (daemon/src/main.c's POST /v1/containers parse) size a request's
+ * "cmd" array is validated against, and the per-token echo-storage
+ * bound daemon/include/registry.h's struct registry_entry.cmd[] reuses
+ * for GET-visibility -- named here rather than left as bare literals,
+ * same "one source of truth for every container-related size bound"
+ * reasoning CONTAINER_MAX_FILES's own comment above already gives.
+ */
+#define CONTAINER_MAX_ARGV 64
+#define CONTAINER_ARGV_MAX 256
 /* Generous for a config file or a shell script; HTTP_MAX_REQUEST_SIZE
  * (daemon/include/http.h, 1MiB) already caps the whole request body
  * regardless, so this is a sane per-file ceiling on top of an existing

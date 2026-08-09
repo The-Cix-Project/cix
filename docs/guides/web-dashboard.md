@@ -42,7 +42,7 @@ Container leaves are colored by live status (running/paused/stopped — tinted i
 
 Six tabs, Proxmox-style: **Summary**, **Hardware**, **Options**, **Stats**, **Console** (the default tab when you open a container), **Backup**.
 
-- **Summary** — status, image, PID, exit status, assigned IPs.
+- **Summary** — status, image, PID, exit status, command (the entrypoint argv this container was created with, ADR-0100), assigned IPs.
 - **Hardware** — granted devices/interfaces, memory/pids limits.
 - **Options** — restart policy, depends-on, readiness check, sysctls, staged files — everything set at creation time.
 - **Stats** — four live graphs (CPU/memory/disk/network), hand-rolled canvas rendering, no charting library, polling only while this tab is open (see [`docs/api/README.md`](../api/README.md#container-stats) for what each number actually means).

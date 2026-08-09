@@ -101,6 +101,10 @@ enum registry_error registry_create(const char *name, const char *image,
 	e->sysctl_count = spec->sysctl_count;
 	for (i = 0; i < spec->sysctl_count; i++)
 		e->sysctls[i] = spec->sysctls[i];
+	memset(e->cmd, 0, sizeof(e->cmd));
+	for (i = 0; i < CONTAINER_MAX_ARGV && spec->argv[i] != NULL; i++)
+		strncpy(e->cmd[i], spec->argv[i], sizeof(e->cmd[i]) - 1);
+	e->cmd_count = i;
 
 	*out = e;
 	return REGISTRY_OK;
@@ -350,6 +354,11 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 		jw_str(w, entry->sysctls[i].value);
 	}
 	jw_obj_close(w);
+	jw_key(w, "cmd");
+	jw_arr_open(w);
+	for (i = 0; i < entry->cmd_count; i++)
+		jw_str(w, entry->cmd[i]);
+	jw_arr_close(w);
 	{
 		/*
 		 * "restart"/"depends_on" are sourced live from containerdef.c,

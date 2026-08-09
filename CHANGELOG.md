@@ -2,6 +2,22 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 45 (done, local regression sweep clean): container cmd/argv is finally REST-visible after creation (ADR-0100, closes task #675)
+
+A container's own entrypoint was write-only: `POST /v1/containers`' `"cmd"` field only ever pointed into that request's transient parsed JSON tree, freed immediately after the process was spawned -- nothing durable ever stored it, so there was no way to ask a running or stopped container "what are you actually running."
+
+#### Fixed
+- `include/container.h`: new named bounds `CONTAINER_MAX_ARGV`/`CONTAINER_ARGV_MAX`, replacing the bare `argv_buf[64]` literal `daemon/src/main.c`'s request parser already had.
+- `daemon/include/registry.h`/`daemon/src/registry.c`: `struct registry_entry` gains `cmd[]`/`cmd_count`, copied from `spec->argv` in `registry_create()` the same way `interfaces[]`/`sysctls[]` already are. `registry_write_json_one()` emits it as a `"cmd"` array.
+- `daemon/src/containerdef.c`: `write_stopped_def_json_one()` now also parses `"cmd"` back out of the persisted create-request body it already re-parses for `image` -- no new storage for the stopped-container case.
+- `cli/src/main.c`: container listing gained a trailing `cmd=...` column.
+- `web/app.js`: container detail Summary tab gained a "Command" field.
+- `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/web-dashboard.md`: documented.
+
+#### Notes
+- Full local regression sweep clean (`test_daemon`, `test_cli`, `test_container_lifecycle`, `test_container_files`, `test_container_net`, `test_networks`, `test_devices`, `test_container_restart`), zero compiler warnings.
+- `CONTAINER_MAX_ARGV` (64) matches the pre-existing (previously unnamed) parse-time cap exactly -- no behavior change to what a create request can contain, only to what's retrievable afterward.
+
 ### Part 44 (done, local regression sweep clean): GET /disks reports real mount status, not diskformat.c's own ephemeral job history (ADR-0099, closes task #672)
 
 `diskformat.c`'s own `DISKFORMAT_STATE_READY`/`NONE` looked like it answered "is this disk mounted" but doesn't -- it's purely in-memory, per-daemon-process state for the single most recent format job this daemon itself ran, forgotten across every restart even though a real mount persists, and blind to a disk mounted by hand or from before this mechanism existed.

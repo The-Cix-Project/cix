@@ -263,6 +263,23 @@ static void write_stopped_def_json_one(struct container_def *d, struct json_writ
 	jw_key(w, "sysctls");
 	jw_obj_open(w);
 	jw_obj_close(w);
+	jw_key(w, "cmd");
+	jw_arr_open(w);
+	if (root != NULL) {
+		const struct json_value *jcmd = json_object_get(root, "cmd");
+
+		if (jcmd != NULL && jcmd->type == JSON_ARRAY) {
+			int k;
+
+			for (k = 0; k < jcmd->u.array.count; k++) {
+				const char *s = json_as_string(jcmd->u.array.items[k]);
+
+				if (s != NULL)
+					jw_str(w, s);
+			}
+		}
+	}
+	jw_arr_close(w);
 	jw_key(w, "restart");
 	jw_str(w, d->restart_policy);
 	jw_key(w, "restart_delay_seconds");

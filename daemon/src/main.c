@@ -4700,7 +4700,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	struct registry_entry *entry;
 	enum registry_error rerr;
 	int create_errno;
-	char *argv_buf[64];
+	char *argv_buf[CONTAINER_MAX_ARGV];
 	char *empty_envp[1];
 	size_t argc, i;
 	struct registry_network_attachment net_attachments[CONTAINER_MAX_NETWORKS];

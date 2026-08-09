@@ -116,6 +116,18 @@ struct registry_entry {
 	struct container_sysctl sysctls[CONTAINER_MAX_SYSCTLS];
 	int sysctl_count; /* 0 = no sysctls applied */
 	/*
+	 * The entrypoint argv this container was created with (POST
+	 * /v1/containers' own "cmd" field) -- copied in registry_create()
+	 * the same way interfaces[]/sysctls[] already are (read directly
+	 * from spec->argv, no separate parameter), so GET/inspect can
+	 * finally answer "what is this container actually running," which
+	 * previously nothing persisted anywhere: spec->argv itself only
+	 * ever pointed into the create request's own parsed JSON tree,
+	 * freed immediately after container_create() returns.
+	 */
+	char cmd[CONTAINER_MAX_ARGV][CONTAINER_ARGV_MAX];
+	int cmd_count; /* always >= 1 for an in-use entry */
+	/*
 	 * Opaque; owned exclusively by main.c's epoll bookkeeping
 	 * (registry.c never reads or writes it beyond zeroing it here).
 	 * Holds the reactor's `struct conn *` wrapper for this entry's

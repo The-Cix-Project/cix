@@ -1482,6 +1482,7 @@ function renderContainerDetail(name) {
 	fields.appendChild(
 		fieldBlock("Exit status", c.exit_status === null || c.exit_status === undefined ? "-" : String(c.exit_status))
 	);
+	fields.appendChild(fieldBlock("Command", (c.cmd || []).join(" ") || "-"));
 
 	/* Hardware -- devices/interfaces/network attachments granted at creation.
 	 * Links back to Devices when the granted id has a real "exact" name

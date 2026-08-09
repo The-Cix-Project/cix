@@ -268,11 +268,14 @@ static void fmt_container_line(const struct json_value *v)
 	const struct json_value *readiness = json_object_get(v, "readiness");
 	const struct json_value *files = json_object_get(v, "files");
 	const struct json_value *sysctls = json_object_get(v, "sysctls");
+	const struct json_value *cmd = json_object_get(v, "cmd");
 	char exit_buf[16];
 	char net_buf[256];
 	char readiness_buf[32];
 	char delay_buf[16];
+	char cmd_buf[256];
 	size_t off = 0;
+	size_t cmd_off = 0;
 	size_t i;
 
 	if (exitv != NULL && exitv->type == JSON_NUMBER)
@@ -307,15 +310,28 @@ static void fmt_container_line(const struct json_value *v)
 	else
 		snprintf(delay_buf, sizeof(delay_buf), "-");
 
+	cmd_buf[0] = '\0';
+	if (cmd != NULL && cmd->type == JSON_ARRAY) {
+		for (i = 0; i < cmd->u.array.count && cmd_off < sizeof(cmd_buf) - 1; i++) {
+			const char *s = json_as_string(cmd->u.array.items[i]);
+			int written = snprintf(cmd_buf + cmd_off, sizeof(cmd_buf) - cmd_off, "%s%s",
+			                        i > 0 ? " " : "", s != NULL ? s : "?");
+
+			if (written > 0)
+				cmd_off += (size_t)written;
+		}
+	}
+
 	printf("%-20s %-8s pid=%-8ld exit_status=%-6s networks=%-20s fwd=%-4s restart=%-15s "
-	       "delay=%-4s stopped=%-5s readiness=%-10s files=%-3zu sysctls=%zu\n",
+	       "delay=%-4s stopped=%-5s readiness=%-10s files=%-3zu sysctls=%-3zu cmd=%s\n",
 	       name, status, pid, exit_buf, net_buf[0] != '\0' ? net_buf : "-",
 	       (ip_forward != NULL && ip_forward->type == JSON_BOOL && ip_forward->u.boolean) ? "yes"
 	                                                                                        : "no",
 	       restart != NULL ? restart : "no", delay_buf,
 	       (stopped != NULL && stopped->type == JSON_BOOL && stopped->u.boolean) ? "yes" : "no",
 	       readiness_buf, files != NULL && files->type == JSON_ARRAY ? files->u.array.count : 0,
-	       sysctls != NULL && sysctls->type == JSON_OBJECT ? sysctls->u.object.count : 0);
+	       sysctls != NULL && sysctls->type == JSON_OBJECT ? sysctls->u.object.count : 0,
+	       cmd_buf[0] != '\0' ? cmd_buf : "-");
 }
 
 static void fmt_list(const struct json_value *v)

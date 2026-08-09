@@ -3617,6 +3617,21 @@ components:
             The net.* sysctls applied inside this container's own netns
             at creation (see ContainerCreateRequest.sysctls). Empty if
             none.
+        cmd:
+          type: array
+          items:
+            type: string
+          description: >
+            The entrypoint argv this container was created with (see
+            ContainerCreateRequest.cmd) -- cmd[0] is the executable
+            path. Previously not retrievable at all after creation: the
+            create request's own argv only ever pointed into that
+            request's transient parsed-JSON tree, freed immediately
+            once the process was spawned. Sourced from the live
+            registry entry while running/recently-exited, or from the
+            persisted create-request body while genuinely stopped (see
+            ADR-0100) -- either way, one real answer to "what is this
+            container actually running."
         restart:
           type: string
           enum: [always, on-failure, unless-stopped, no]
