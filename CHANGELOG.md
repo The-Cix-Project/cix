@@ -2,6 +2,20 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 66 (done, verified locally end-to-end): jump box image + running container with real SSH access (closes task #730)
+
+Stood up a real "jumpbox" image (task #729's openssh/htop/mtr/screen + real transitive deps: zlib, perl, openssl, ncurses, plus bash/coreutils discovered missing live) and a running container serving `sshd`, verified with genuine SSH pubkey auth + remote command execution.
+
+#### Fixed (real gaps found during the live build, not worked around)
+- No shell/coreutils were ever seeded onto a bare `image create`d image -- installed `bash`+`coreutils`.
+- No glibc NSS module (`libnss_files.so.2`) has ever been staged onto any image in this project -- it's `dlopen()`'d based on `/etc/nsswitch.conf`, never an ELF `NEEDED` dependency, so `ldd`-based lib-closure staging (`pkg_seed_image_runtime()`) can never catch it. Fixed for this image by manually staging the module + a minimal `nsswitch.conf`; flagged as a real, general `pkg_seed_image_runtime()` gap for a future session (task #731's LDAP-backed login will hit the equivalent `libnss_ldap` version of this same gap).
+- `/etc/shadow`'s `!` password-field convention (meant as "no password, pubkey only") actually means "account locked" to openssh and blocks **all** auth methods, not just password -- confirmed via `sshd -d` debug output. `*` is the correct pubkey-only placeholder.
+
+#### Notes
+- Confirmed (and worked around, not touched) a stale, unrelated leftover bridge on the shared dev host caused a duplicate-route "no route to host" when the jump box's scratch network first picked an already-in-use subnet.
+- Confirmed a real, worth-remembering trap in the per-version immutable image model (ADR-0107/108): `stop`+`start` does not re-resolve a container to an image's current version after a package install bumps it -- only `rm`+`run` does. Manual rootfs provisioning done against a container's old, unprovisioned version silently had no effect until this was understood.
+- Task #731 (LDAP-backed SSH auth) is the natural place to turn this session's manual, one-off provisioning (host keys, users) into a real, repeatable container-creation-time mechanism.
+
 ### Part 65 (done, full clean rebuild + full regression sweep): NTP -- host clock sync, container time-source registration, manual override (closes tasks #751-755)
 
 Raised directly by the user, confirmed via `AskUserQuestion` before any code: a hand-rolled SNTP client for the host's own clock (delegating to a container is architecturally impossible here -- `clock_settime()` needs host-namespace `CAP_SYS_TIME`), plus `POST`/`GET`/`DELETE /v1/ntp/servers` mirroring `dns_server_register()`/`ldap_server_register()` exactly. See [ADR-0110](docs/adr/0110-ntp-host-clock-sync.md).
