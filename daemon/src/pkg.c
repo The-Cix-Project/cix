@@ -519,11 +519,28 @@ static int tarball_has_common_top_dir(const char *tarball_path)
 		total += (size_t)n;
 	}
 	buf[total] = '\0';
-	/* Drain and reap even if the buffer filled before EOF -- otherwise
+	/*
+	 * Drain and reap even if the buffer filled before EOF -- otherwise
 	 * a large listing leaves tar blocked writing to a full pipe,
-	 * leaking a zombie child. */
-	while ((n = read(pipefd[0], buf, sizeof(buf))) > 0)
-		;
+	 * leaking a zombie child. A real, previously-undiscovered bug this
+	 * pass found and fixed alongside the truncation trim below: this
+	 * drain used to reuse `buf` itself (starting back at index 0) as
+	 * its own scratch space, silently overwriting the very capture the
+	 * mismatch scan below still needed to read -- invisible for any
+	 * tarball whose listing fits inside 64KB (nothing left to drain,
+	 * this loop never touches `buf` at all), but real and reproducible
+	 * for one that doesn't (confirmed directly on coreutils-9.11.tar.xz:
+	 * the drain's own reads landed arbitrary tail fragments like
+	 * "thanks-gen" at buf[0], clobbering the real captured head). A
+	 * small, separate discard buffer fixes it -- the drained bytes are
+	 * never needed for anything, only their being read off the pipe is.
+	 */
+	{
+		char discard[4096];
+
+		while ((n = read(pipefd[0], discard, sizeof(discard))) > 0)
+			;
+	}
 	close(pipefd[0]);
 	if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
 		return 0;

@@ -14,15 +14,16 @@ Found live, mid-redeploy this session: pushing `kanxeo` v1.7.0 to 192.168.15.95 
 - Deliberately proportionate to the actual problem: curl's own `-S` error output is always short and produced once, so a small sidecar file was chosen over reusing ADR-0087's epoll-drained build-output pipe (built specifically for a long-running build's potentially-megabyte output) -- reusing that machinery here would have meant threading a new fd through every one of `start_fetch_for()`'s callers and main.c's five separate registration call sites for no benefit.
 - No new dedicated fetch-failure test was added this pass -- reproducing a real curl stderr failure deterministically needs a fake failing HTTP fixture the existing sandboxed (no real network egress) test harness doesn't have; a real, acknowledged gap.
 
-### Part 43 (done, live-verified via a real coreutils install): tarball_has_common_top_dir() false-positived on its own capture truncation (ADR-0098)
+### Part 43 (done, verified in isolation + local regression sweep): tarball_has_common_top_dir() corrupted its own capture while draining it (ADR-0098)
 
-Found live installing `coreutils` onto `kanxeo-hosttools` (task #735's own unblocker): ADR-0093's tarball-listing capture is bounded at 64KB, but `coreutils-9.11.tar.xz`'s own `tar -tf` listing is 137,883 bytes -- the capture cut off exactly mid-prefix (`"...coreutils-9.11/lib/stdio-read.c\ncoreuti"`), and the dangling `"coreuti"` fragment (no `/` in it) got compared against the real top-level component and false-positived a mismatch, silently landing every recipe's `pkg_build()` one directory level too deep (`./configure: No such file or directory`).
+Found live installing `coreutils` onto `kanxeo-hosttools` (task #735's own unblocker): ADR-0093's tarball-listing capture is bounded at 64KB, but `coreutils-9.11.tar.xz`'s own `tar -tf` listing is 137,883 bytes. Two compounding bugs, found in sequence -- a first fix (trimming the truncated trailing line) didn't actually resolve the live symptom, which led to the second, deeper one: the existing post-capture drain loop (there so a large listing doesn't leave `tar` blocked on a full pipe) reused the *same* capture buffer as its own scratch space, silently overwriting the real captured head with arbitrary tail fragments before the mismatch scan ever ran.
 
 #### Fixed
-- `daemon/src/pkg.c`: `tarball_has_common_top_dir()` now trims the trailing partial line off before the mismatch scan whenever the capture ended because the buffer filled (not because of a real EOF) -- only genuinely complete, newline-terminated entries are ever compared.
+- `daemon/src/pkg.c`: the drain now reads into a small, separate discard buffer instead of reusing the capture buffer. `tarball_has_common_top_dir()` also trims the trailing partial line off before the mismatch scan whenever the capture ended because the buffer filled (not a real EOF) -- only complete, newline-terminated entries are ever compared.
 
 #### Notes
-- Full local regression sweep clean, zero compiler warnings. Live-verified: the exact `coreutils` install that surfaced this completed successfully once deployed.
+- Verified in isolation before redeploying: a standalone extraction of the fixed function against the real `coreutils-9.11.tar.xz` confirmed the drain no longer touches the capture and the trim lands on a genuine line boundary (`result=1`).
+- Full local regression sweep clean, zero compiler warnings.
 - Affects any from-source recipe whose own tarball listing exceeds 64KB, not just `coreutils` -- the only one confirmed live so far, but not the only one exposed.
 
 ### Part 42 (done, live-verified via a real kanxeo v1.7.1 hostbuild): mkbootroot never staged a CA certificate bundle (ADR-0097)
