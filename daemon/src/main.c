@@ -337,8 +337,14 @@ static int resolve_backing_device(const char *path, char *out_device, size_t out
 
 /*
  * Sets a real, kernel-enforced hard limit of quota_bytes for project id
- * projid on whatever device backs CONTAINERS_DIR, via a real
- * quotactl(2) Q_SETQUOTA call -- independent of and order-agnostic with
+ * projid on whatever device backs base_path (the container's own
+ * container_base -- CONTAINERS_DIR/<name> by default, or
+ * <disk's mount_path>/containers/<name> for a disk-placed container,
+ * task #638 -- NOT always CONTAINERS_DIR itself: a container placed on
+ * an alternate disk must have its quota set against THAT disk's own
+ * backing device, or the limit would silently apply to the wrong
+ * filesystem entirely while the actual files live elsewhere), via a
+ * real quotactl(2) Q_SETQUOTA call -- independent of and order-agnostic with
  * src/overlay.c's own FS_IOC_FSSETXATTR tagging (that call says "these
  * files belong to project X"; this one says "project X's own limit is
  * Y" -- setting a limit for a project id the kernel has never seen an
@@ -356,12 +362,12 @@ static int resolve_backing_device(const char *path, char *out_device, size_t out
  * all, exactly what a filesystem kanxeo-install.c didn't create via
  * mkfs.ext4 -O quota -E quotatype=prjquota reports) otherwise.
  */
-static int set_disk_quota(uint32_t projid, long long quota_bytes)
+static int set_disk_quota(const char *base_path, uint32_t projid, long long quota_bytes)
 {
 	char device[PATH_MAX];
 	struct dqblk dq;
 
-	if (resolve_backing_device(CONTAINERS_DIR, device, sizeof(device)) != 0)
+	if (resolve_backing_device(base_path, device, sizeof(device)) != 0)
 		return -1;
 
 	memset(&dq, 0, sizeof(dq));
@@ -5424,7 +5430,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		 * is already in force by the moment any file could possibly
 		 * be tagged with this project id.
 		 */
-		if (set_disk_quota(projid, disk_quota_bytes) != 0) {
+		if (set_disk_quota(container_base, projid, disk_quota_bytes) != 0) {
 			json_free(root);
 			snprintf(err_msg, err_msg_size,
 			         "failed to set disk quota (backing filesystem may not have "
