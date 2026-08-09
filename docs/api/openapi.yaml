@@ -2709,17 +2709,22 @@ paths:
                 $ref: "#/components/schemas/Error"
     delete:
       summary: >
-        Stop (if running) and remove a container, permanently. If it was
-        created with a "restart" policy, this also permanently removes
-        that persisted definition in the same call -- it will not come
-        back on the next crash-restart (none is pending; this path never
-        triggers one) or on a future daemon restart, regardless of
-        policy. See POST /containers/{name}/stop for stopping without
-        losing the definition. Works even if this container currently
-        isn't live (e.g. a persisted definition that has never once
-        managed to autostart, due to a depends_on cycle or an unknown
-        dependency) -- 404 only if neither a live instance nor a
-        persisted definition exists for this name.
+        Stop (if running) and remove a container, permanently, including
+        its own on-disk state. If it was created with a "restart" policy,
+        this also permanently removes that persisted definition in the
+        same call -- it will not come back on the next crash-restart
+        (none is pending; this path never triggers one) or on a future
+        daemon restart, regardless of policy. See POST /containers/{name}/stop
+        for stopping without losing the definition or the disk state.
+        Works even if this container currently isn't live (e.g. a
+        persisted definition that has never once managed to autostart,
+        due to a depends_on cycle or an unknown dependency) -- 404 only
+        if neither a live instance nor a persisted definition exists for
+        this name. Also unmounts and recursively removes the container's
+        own overlay directories (upper/work/merged, ADR-0106) -- best-
+        effort: a cleanup failure is logged but never turns this into an
+        error response, since the registry/definition state, not the
+        disk, is the one source of truth for whether a container exists.
       operationId: deleteContainer
       parameters:
         - $ref: "#/components/parameters/ContainerName"

@@ -37,18 +37,19 @@ int quotamap_init(const char *state_path);
  * persist_atomic_write()) otherwise.
  *
  * Deliberately never reclaimed/reused/recycled, even after the
- * container itself is deleted: DELETE /v1/containers/{name} does not
- * remove the container's own upperdir (ADR-0054's pre-existing backup/
- * restore design -- a deleted container's files stay on disk,
- * recoverable, until something else genuinely wipes them), so the
- * quota data those files count against must keep pointing at the same
- * project id indefinitely too, or usage accounting would silently go
- * stale the moment a "deleted" container still holding real disk
- * space had its id handed to someone else. Recreating a container
- * under the same name later intentionally gets the same id back (this
- * function's own lookup-before-allocate order already gives that for
- * free) -- correct, since that's the same logical container
- * reoccupying the same on-disk upperdir path.
+ * container itself is deleted: DELETE /v1/containers/{name} does
+ * remove the container's own upperdir now (ADR-0106, task #738 --
+ * this comment used to cite "ADR-0054's pre-existing backup/restore
+ * design" as the reason it didn't, but that citation was stale and
+ * incorrect, see ADR-0106's own Context section), but the id is kept
+ * anyway: recreating a container under the same name later
+ * intentionally gets the same id back (this function's own lookup-
+ * before-allocate order already gives that for free) -- correct,
+ * since that's the same logical container reoccupying the same
+ * on-disk upperdir path, and a real, in-flight deletion (kill+unmount+
+ * remove, ADR-0106) racing a fresh create of the same name is exactly
+ * the kind of window a stable, never-recycled id sidesteps entirely
+ * rather than having to reason about.
  */
 int quotamap_get_or_assign(const char *name, uint32_t *out_projid);
 

@@ -11,6 +11,7 @@
 #include "json.h"
 #include "test_image_fixture.h"
 
+#include <errno.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>
@@ -199,6 +200,30 @@ int main(void)
 		if (stat(proc_path, &st) == 0) {
 			fprintf(stderr, "FAIL: c2's process %ld still exists after DELETE\n", c2_pid);
 			ok = 0;
+		}
+
+		/*
+		 * task #738: DELETE must remove c2's own on-disk upper/work/
+		 * merged directories, not just the process and registry entry --
+		 * deleting a container that was genuinely still RUNNING (this
+		 * exact case) is the one that exercises the real hazard the fix
+		 * has to get right: unmounting the still-live overlay mount
+		 * before recursively removing the directory tree underneath it,
+		 * not after.
+		 */
+		{
+			char container_base[PATH_MAX];
+
+			snprintf(container_base, sizeof(container_base), "%s/containers/c2", g_data_dir);
+			if (stat(container_base, &st) == 0) {
+				fprintf(stderr, "FAIL: c2's own directory %s still exists after DELETE\n",
+				        container_base);
+				ok = 0;
+			} else if (errno != ENOENT) {
+				fprintf(stderr, "FAIL: stat(%s) after DELETE: %s\n", container_base,
+				        strerror(errno));
+				ok = 0;
+			}
 		}
 	}
 

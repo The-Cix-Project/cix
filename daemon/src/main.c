@@ -5741,7 +5741,78 @@ static void handle_delete(int fd, const char *name)
 			e->reactor_conn = NULL;
 		}
 
+		/*
+		 * registry_remove() SIGKILLs the process first (thawing it if
+		 * paused, so the signal can actually be delivered) -- the disk
+		 * cleanup below must run AFTER this, never before: overlay_create()
+		 * mounted this container's own overlay (container_base/merged)
+		 * directly in the daemon's own root mount namespace (the mount(2)
+		 * call happens in create_container_from_body(), before clone3()
+		 * ever forks the container's own separate namespace), and that
+		 * mount is never explicitly torn down anywhere else in this
+		 * codebase -- confirmed by grep, the only umount2() calls that
+		 * exist at all are mountns_pivot()'s own old-root cleanup, which
+		 * runs inside the container's own child process, a completely
+		 * separate mount namespace. Running persist_remove_tree() while
+		 * that mount is still live would be a real correctness hazard,
+		 * not just an ordering nicety: nftw() without FTW_MOUNT freely
+		 * crosses into a mounted subdirectory, so it would walk straight
+		 * into the still-live overlay view and start unlinking through
+		 * it -- silently mutating (or, on a still-alive process, actively
+		 * corrupting) the upperdir via the overlay itself, then failing
+		 * on the mountpoint's own rmdir() (EBUSY) partway through, an
+		 * even worse outcome than doing nothing.
+		 */
 		registry_remove(name);
+
+		/*
+		 * task #738: DELETE never removed a container's own on-disk
+		 * upper/work/merged directories -- a real, pre-existing disk-
+		 * space leak for every deleted container (confirmed: no code
+		 * anywhere in this codebase ever called anything equivalent to
+		 * this in a container-teardown context; the quotamap.h doc
+		 * comment that used to justify this as deliberate cited "ADR-0054's
+		 * pre-existing backup/restore design" -- ADR-0054 is entirely
+		 * about host-side stats and says nothing about backup/restore
+		 * at all; ADR-0033, the *real* backup/restore ADR, explicitly
+		 * scopes workload data as "each container's own concern, not
+		 * this endpoint's" and reconstructs a restored container via a
+		 * fresh containerdef replay, never by resurrecting old upperdir
+		 * content -- so no real design anywhere actually depended on
+		 * this retention; it was a stale, incorrect citation for a
+		 * genuine oversight). container_root_for() resolves the same
+		 * root the container was actually created under (ADR-0102 --
+		 * the default CONTAINERS_DIR, or an operator-chosen disk), so
+		 * this works identically for both placements; reading e's own
+		 * fields here is still safe -- registry_remove() only ever
+		 * clears e->in_use, it never frees or reuses the slot's memory
+		 * within this same synchronous call. Only reached when e != NULL:
+		 * a definition that never once managed to autostart (the branch
+		 * below this one) never got as far as overlay_create() either,
+		 * so there is nothing on disk (or mounted) to clean up for it.
+		 * Best-effort throughout -- a failure here is logged, never
+		 * blocks the delete itself from completing (the registry/
+		 * containerdef state is the one source of truth for whether a
+		 * container exists; leftover disk state after a failed cleanup
+		 * is a nit, not a reason to leave the container definition
+		 * half-deleted).
+		 */
+		{
+			char container_root[PATH_MAX];
+			char container_base[PATH_MAX];
+			char merged[PATH_MAX];
+
+			container_root_for(e, container_root, sizeof(container_root));
+			snprintf(container_base, sizeof(container_base), "%s/%s", container_root, name);
+			snprintf(merged, sizeof(merged), "%s/merged", container_base);
+			if (umount2(merged, MNT_DETACH) != 0 && errno != EINVAL && errno != ENOENT)
+				fprintf(stderr, "DELETE %s: umount2(%s) failed: %s\n", name, merged,
+				        strerror(errno));
+			if (persist_remove_tree(container_base) != 0)
+				fprintf(stderr, "DELETE %s: failed to remove %s: %s\n", name,
+				        container_base, strerror(errno));
+		}
+
 		dns_server_forget(name);
 		dns_record_forget_owner(name);
 		pki_cert_forget_owner(name);

@@ -41,4 +41,21 @@ int persist_read_file(const char *path, char **out_buf, size_t *out_len);
  */
 int persist_mkdir_p(const char *dir_path);
 
+/*
+ * rm -rf equivalent: recursively removes path and everything under it
+ * (a physical, post-order nftw() walk -- never follows a symlink, only
+ * ever removes the link itself; every directory's own children are
+ * removed before the directory itself). Extracted from image.c's own
+ * previously-private remove_tree() (image deletion) so container
+ * deletion (task #738 -- DELETE /v1/containers never removed its own
+ * upper/work/merged directories, a real, pre-existing disk-space leak)
+ * reuses the exact same primitive instead of a second, parallel copy of
+ * the identical nftw() callback -- exactly the duplication "No Parallel
+ * Implementations" forbids. Returns 0 on success, -1 (errno set by
+ * whichever unlink()/rmdir() call failed) otherwise; ENOENT on path
+ * itself is tolerated (nothing to remove is not a failure -- matches
+ * persist_read_file()'s own "no persisted state yet" tolerance).
+ */
+int persist_remove_tree(const char *path);
+
 #endif /* PERSIST_H */

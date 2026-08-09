@@ -5,7 +5,6 @@
 #include "registry.h"
 
 #include <dirent.h>
-#include <ftw.h>
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
@@ -36,30 +35,6 @@ static int has_rootfs_subdir(const char *image_dir)
 
 	snprintf(rootfs, sizeof(rootfs), "%s/rootfs", image_dir);
 	return stat(rootfs, &st) == 0 && S_ISDIR(st.st_mode);
-}
-
-/*
- * nftw() callback for a physical (FTW_PHYS -- never follows a
- * symlink, only ever removes the link itself), post-order (FTW_DEPTH
- * -- a directory's own children are always visited, and removed,
- * before the directory itself) walk. Handles every entry type nftw()
- * can report for a physical walk (regular files, symlinks, device
- * nodes, ... all unlink()able the same way; FTW_DP directories need
- * rmdir() instead, only reachable once already empty).
- */
-static int remove_tree_cb(const char *path, const struct stat *sb, int typeflag,
-                           struct FTW *ftwbuf)
-{
-	(void)sb;
-	(void)ftwbuf;
-	if (typeflag == FTW_DP)
-		return rmdir(path);
-	return unlink(path);
-}
-
-static int remove_tree(const char *path)
-{
-	return nftw(path, remove_tree_cb, 16, FTW_DEPTH | FTW_PHYS);
 }
 
 enum image_error image_create(const char *name)
@@ -103,7 +78,7 @@ enum image_error image_delete(const char *name)
 		return IMAGE_ERR_HAS_PACKAGES;
 
 	snprintf(image_dir, sizeof(image_dir), "%s/%s", g_images_dir, name);
-	if (remove_tree(image_dir) != 0)
+	if (persist_remove_tree(image_dir) != 0)
 		return IMAGE_ERR_DELETE_FAILED;
 
 	return IMAGE_OK;

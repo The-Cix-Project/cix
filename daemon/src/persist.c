@@ -3,6 +3,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <ftw.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -95,4 +96,33 @@ int persist_read_file(const char *path, char **out_buf, size_t *out_len)
 int persist_mkdir_p(const char *dir_path)
 {
 	return kx_mkdir_p(dir_path);
+}
+
+/*
+ * nftw() callback for a physical (FTW_PHYS -- never follows a symlink,
+ * only ever removes the link itself), post-order (FTW_DEPTH -- a
+ * directory's own children are always visited, and removed, before the
+ * directory itself) walk. Handles every entry type nftw() can report
+ * for a physical walk (regular files, symlinks, device nodes, ... all
+ * unlink()able the same way; FTW_DP directories need rmdir() instead,
+ * only reachable once already empty). Extracted from image.c's own
+ * previously-private, identical callback -- see persist.h's own doc
+ * comment for why.
+ */
+static int remove_tree_cb(const char *path, const struct stat *sb, int typeflag, struct FTW *ftwbuf)
+{
+	(void)sb;
+	(void)ftwbuf;
+	if (typeflag == FTW_DP)
+		return rmdir(path);
+	return unlink(path);
+}
+
+int persist_remove_tree(const char *path)
+{
+	struct stat st;
+
+	if (stat(path, &st) != 0 && errno == ENOENT)
+		return 0;
+	return nftw(path, remove_tree_cb, 16, FTW_DEPTH | FTW_PHYS);
 }
