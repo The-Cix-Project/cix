@@ -22,6 +22,7 @@
 				<li><button type="button" data-modal="devicemap-form" data-title="Name a device">Device Mapping</button></li>
 				<li><button type="button" data-modal="dns-record-form" data-title="Create DNS record">DNS Record</button></li>
 				<li><button type="button" data-modal="dns-server-form" data-title="Register DNS server">DNS Server</button></li>
+				<li><button type="button" data-modal="ldap-server-form" data-title="Register LDAP server">LDAP Server</button></li>
 				<li><button type="button" data-modal="pki-cert-form" data-title="Issue certificate">PKI Certificate</button></li>
 				<li><button type="button" data-modal="pkg-recipe-form" data-title="Add or update a recipe">Package Recipe</button></li>
 				<li><button type="button" data-modal="pkg-bootstrap-form" data-title="Bootstrap build image">Bootstrap Build Image</button></li>
@@ -436,6 +437,25 @@
 						</tr>
 					</thead>
 					<tbody id="dns-servers-body">
+						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</section>
+
+		<!-- LDAP Servers -->
+		<section class="view" id="view-ldap-servers" hidden>
+			<div class="view-list">
+				<h2>LDAP Servers</h2>
+				<table id="ldap-servers">
+					<thead>
+						<tr>
+							<th>Container</th>
+							<th>DB path</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="ldap-servers-body">
 						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
 					</tbody>
 				</table>
@@ -987,6 +1007,20 @@
 					<label class="wide">
 						Hosts path
 						<input type="text" id="sf-hosts-path" placeholder="/etc/dnsmasq-hosts" required>
+					</label>
+					<button type="submit">Register</button>
+				</form>
+			</div>
+
+			<div id="modal-ldap-server-form" hidden>
+				<form id="ldap-server-form">
+					<label>
+						Container
+						<input type="text" id="lf-container" pattern="[A-Za-z0-9_-]+" required>
+					</label>
+					<label class="wide">
+						DB path
+						<input type="text" id="lf-db-path" placeholder="/var/lib/glauth/gl.db" required>
 					</label>
 					<button type="submit">Register</button>
 				</form>

@@ -23,6 +23,7 @@ const cache = {
 	deviceMaps: [],
 	dnsRecords: [],
 	dnsServers: [],
+	ldapServers: [],
 	pkiCa: null,
 	pkiIntermediate: null,
 	pkiCerts: [],
@@ -256,6 +257,7 @@ const CATEGORY_VIEWS = {
 	devices: "view-devices",
 	"dns-records": "view-dns-records",
 	"dns-servers": "view-dns-servers",
+	"ldap-servers": "view-ldap-servers",
 	"pki-ca": "view-pki-ca",
 	"pki-certs": "view-pki-certs",
 	packages: "view-packages",
@@ -665,6 +667,15 @@ function renderTree() {
 						{ label: "Servers", hash: "dns-servers", icon: "dns" },
 						{ label: "Site", hash: "site", icon: "dns" },
 					],
+				},
+				{
+					/* task #725 -- LDAP server registration only for now;
+					 * user/group management (task #726) will land here
+					 * once built. */
+					label: "LDAP",
+					hash: "ldap-servers",
+					icon: "dns",
+					children: [{ label: "Servers", hash: "ldap-servers", icon: "dns" }],
 				},
 				{
 					/* Aliases to its own first child's hash ("daemon-config"),
@@ -2479,6 +2490,64 @@ async function removeDnsServer(container) {
 	}
 }
 
+/* ---------- LDAP Servers (task #725) ---------- */
+
+function renderLdapServers(servers) {
+	const body = document.getElementById("ldap-servers-body");
+
+	body.textContent = "";
+	if (servers.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 3;
+		cell.className = "empty";
+		cell.textContent = "No LDAP server bindings";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+
+	for (const s of servers) {
+		const row = document.createElement("tr");
+
+		const containerCell = document.createElement("td");
+		containerCell.textContent = s.container;
+		row.appendChild(containerCell);
+
+		const pathCell = document.createElement("td");
+		pathCell.textContent = s.db_path;
+		row.appendChild(pathCell);
+
+		const actionCell = document.createElement("td");
+		const rmButton = document.createElement("button");
+
+		rmButton.textContent = "Unregister";
+		rmButton.className = "button-danger";
+		rmButton.addEventListener("click", () => removeLdapServer(s.container));
+		actionCell.appendChild(rmButton);
+		row.appendChild(actionCell);
+
+		body.appendChild(row);
+	}
+}
+
+async function refreshLdapServers() {
+	const data = await apiRequest("GET", "/v1/ldap/servers");
+	cache.ldapServers = data.servers;
+	renderLdapServers(cache.ldapServers);
+}
+
+async function removeLdapServer(container) {
+	try {
+		await apiRequest("DELETE", "/v1/ldap/servers/" + encodeURIComponent(container));
+		clearStatus();
+		await refreshLdapServers();
+	} catch (e) {
+		showStatus("Failed to unregister LDAP server " + container + ": " + e.message, true);
+	}
+}
+
 /* ---------- PKI ---------- */
 
 async function refreshPkiCa() {
@@ -3295,6 +3364,23 @@ document.getElementById("dns-server-form").addEventListener("submit", async (eve
 	}
 });
 
+document.getElementById("ldap-server-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const container = document.getElementById("lf-container").value.trim();
+	const dbPath = document.getElementById("lf-db-path").value.trim();
+
+	try {
+		await apiRequest("POST", "/v1/ldap/servers", { container: container, db_path: dbPath });
+		clearStatus();
+		document.getElementById("ldap-server-form").reset();
+		closeModal();
+		await refreshLdapServers();
+	} catch (e) {
+		showStatus("Failed to register LDAP server: " + e.message, true);
+	}
+});
+
 document.getElementById("pki-ca-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 
@@ -3990,6 +4076,7 @@ async function poll() {
 		await refreshDeviceMaps();
 		await refreshDnsRecords();
 		await refreshDnsServers();
+		await refreshLdapServers();
 		await refreshPkiCa();
 		await refreshPkiIntermediate();
 		await refreshPkiCerts();

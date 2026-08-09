@@ -10,6 +10,7 @@
 #include "resolv.h"
 #include "swap.h"
 #include "dns.h"
+#include "ldap.h"
 #include "exec.h"
 #include "http.h"
 #include "image.h"
@@ -93,6 +94,7 @@ static char CONTAINERS_DIR[PATH_MAX];
 static char NETWORKS_STATE_PATH[PATH_MAX];
 static char DNS_RECORDS_STATE_PATH[PATH_MAX];
 static char DNS_SERVERS_STATE_PATH[PATH_MAX];
+static char LDAP_SERVERS_STATE_PATH[PATH_MAX];
 static char PKI_DIR[PATH_MAX];
 static char PKI_CERTS_STATE_PATH[PATH_MAX];
 static char PKI_CERTS_DIR[PATH_MAX];
@@ -171,6 +173,8 @@ static void init_base_dir_paths(void)
 	snprintf(NETWORKS_STATE_PATH, sizeof(NETWORKS_STATE_PATH), "%s/networks.json", g_base_dir);
 	snprintf(DNS_RECORDS_STATE_PATH, sizeof(DNS_RECORDS_STATE_PATH), "%s/dns_records.json", g_base_dir);
 	snprintf(DNS_SERVERS_STATE_PATH, sizeof(DNS_SERVERS_STATE_PATH), "%s/dns_servers.json", g_base_dir);
+	snprintf(LDAP_SERVERS_STATE_PATH, sizeof(LDAP_SERVERS_STATE_PATH), "%s/ldap_servers.json",
+	         g_base_dir);
 	snprintf(PKI_DIR, sizeof(PKI_DIR), "%s/pki", g_base_dir);
 	snprintf(PKI_CERTS_STATE_PATH, sizeof(PKI_CERTS_STATE_PATH), "%s/pki_certs.json", PKI_DIR);
 	snprintf(PKI_CERTS_DIR, sizeof(PKI_CERTS_DIR), "%s/certs", PKI_DIR);
@@ -385,6 +389,7 @@ static int set_disk_quota(const char *base_path, uint32_t projid, long long quot
 #define NETWORKS_PREFIX "/v1/networks/"
 #define DNS_RECORDS_PREFIX "/v1/dns/records/"
 #define DNS_SERVERS_PREFIX "/v1/dns/servers/"
+#define LDAP_SERVERS_PREFIX "/v1/ldap/servers/"
 #define PKI_CERTS_PREFIX "/v1/pki/certs/"
 #define PKG_PREFIX "/v1/pkg/"
 #define PKG_RECIPES_PREFIX "/v1/pkg/recipes/"
@@ -5922,6 +5927,7 @@ static void handle_delete(int fd, const char *name)
 
 		dns_server_forget(name);
 		dns_record_forget_owner(name);
+		ldap_server_forget(name);
 		pki_cert_forget_owner(name);
 	}
 	/*
@@ -7454,6 +7460,115 @@ static void handle_dns_server_delete(int fd, const char *name)
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
+static void respond_ldap_server_error(int fd, enum ldap_server_error err)
+{
+	switch (err) {
+	case LDAP_SERVER_ERR_INVALID_PATH:
+		respond_error(fd, 400, "Bad Request", "invalid db_path");
+		break;
+	case LDAP_SERVER_ERR_DUPLICATE:
+		respond_error(fd, 409, "Conflict", "this container is already registered");
+		break;
+	case LDAP_SERVER_ERR_FULL:
+		respond_error(fd, 500, "Internal Server Error", "LDAP server binding table full");
+		break;
+	case LDAP_SERVER_ERR_PERSIST_FAILED:
+		respond_error(fd, 500, "Internal Server Error", "failed to persist LDAP server binding");
+		break;
+	case LDAP_SERVER_ERR_NOT_FOUND:
+	default:
+		respond_error(fd, 404, "Not Found", "no such LDAP server binding");
+		break;
+	}
+}
+
+/*
+ * Mirrors handle_dns_server_create()/handle_dns_server_list()/
+ * handle_dns_server_delete() exactly (task #725) -- same REST shape,
+ * same "container must already exist and be running" validation.
+ * Unlike DNS, registration itself never touches the container's
+ * filesystem (see ldap.h's own header comment for why) -- task #726's
+ * CRUD handlers resolve /proc/<pid>/root/<db_path> fresh at write
+ * time instead.
+ */
+static void handle_ldap_server_create(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *container_name, *db_path;
+	struct registry_entry *entry;
+	enum ldap_server_error serr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+
+	container_name = json_as_string(json_object_get(root, "container"));
+	db_path = json_as_string(json_object_get(root, "db_path"));
+
+	if (container_name == NULL || db_path == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "container/db_path missing");
+		return;
+	}
+
+	entry = registry_find(container_name);
+	if (entry == NULL || !entry->running) {
+		json_free(root);
+		respond_error(fd, 404, "Not Found", "no such running container");
+		return;
+	}
+
+	serr = ldap_server_register(container_name, db_path);
+
+	if (serr != LDAP_SERVER_OK) {
+		json_free(root);
+		respond_ldap_server_error(fd, serr);
+		return;
+	}
+
+	/* container_name/db_path still point into root -- build the
+	 * response before freeing it (see handle_dns_server_create()'s own
+	 * identical comment). */
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "container");
+	jw_str(&w, container_name);
+	jw_key(&w, "db_path");
+	jw_str(&w, db_path);
+	jw_obj_close(&w);
+	json_free(root);
+	respond_json(fd, 201, "Created", &w);
+	jw_free(&w);
+}
+
+static void handle_ldap_server_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "servers");
+	ldap_server_write_json_list(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_ldap_server_delete(int fd, const char *name)
+{
+	enum ldap_server_error serr = ldap_server_unregister(name);
+
+	if (serr != LDAP_SERVER_OK) {
+		respond_ldap_server_error(fd, serr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
 static void respond_pki_error(int fd, enum pki_error err)
 {
 	switch (err) {
@@ -8904,6 +9019,23 @@ static void dispatch(int fd, const struct http_request *req)
 		name = req->path + strlen(DNS_SERVERS_PREFIX);
 		if (name[0] != '\0' && strcmp(req->method, "DELETE") == 0) {
 			handle_dns_server_delete(fd, name);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/ldap/servers") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_ldap_server_list(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_ldap_server_create(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strncmp(req->path, LDAP_SERVERS_PREFIX, strlen(LDAP_SERVERS_PREFIX)) == 0) {
+		name = req->path + strlen(LDAP_SERVERS_PREFIX);
+		if (name[0] != '\0' && strcmp(req->method, "DELETE") == 0) {
+			handle_ldap_server_delete(fd, name);
 			return;
 		}
 	}
@@ -10599,6 +10731,8 @@ int main(int argc, char **argv)
 		port = daemon_config_port();
 	g_port = port;
 	if (dns_init(DNS_RECORDS_STATE_PATH, DNS_SERVERS_STATE_PATH) != 0)
+		return 1;
+	if (ldap_init(LDAP_SERVERS_STATE_PATH) != 0)
 		return 1;
 	if (pki_init(PKI_DIR, PKI_CERTS_STATE_PATH) != 0)
 		return 1;

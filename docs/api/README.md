@@ -67,6 +67,9 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | GET | `/dns/servers` | List all registered DNS server bindings |
 | POST | `/dns/servers` | Register a running container as a DNS-serving target |
 | DELETE | `/dns/servers/{container}` | Unregister a DNS server binding |
+| GET | `/ldap/servers` | List all registered LDAP server bindings |
+| POST | `/ldap/servers` | Register a running container as the LDAP-serving target |
+| DELETE | `/ldap/servers/{container}` | Unregister an LDAP server binding |
 | GET | `/pki/ca` | Inspect the root CA (never includes the private key) |
 | POST | `/pki/ca` | Bootstrap the root CA (once; see `/pki/reset` for regeneration) |
 | GET | `/pki/intermediate` | Inspect the intermediate CA (never includes the private key) |
@@ -518,6 +521,22 @@ Registration is best-effort and non-fatal to container creation: if a record nam
 
 Also auto-maintained: this install's own instance DNS record (its FQDN pointing at its own `--bind=` address), reconciled at daemon startup and again on every `PUT /system/site` — see [This install's identity](#this-installs-identity-site-config) below.
 
+## LDAP: server registration (task #725)
+
+LDAP server registration mirrors DNS server registration's own REST shape and persistence discipline, but with one real, deliberate difference: **registration itself never touches the container's filesystem or sends any signal**. `glauth` (`pkg/recipes/glauth/2.4.0/recipe.sh`, this platform's own standard integrable LDAP provider, replacing `lldap`) queries its own embedded SQLite database live on every LDAP request — confirmed directly during that recipe's own verification, a row inserted while the server was already running was immediately visible to a subsequent `ldapsearch`, no reload needed. DNS server registration exists because dnsmasq only reads its hosts file once at startup; glauth has no equivalent gap to work around.
+
+Once a running glauth container exists, register it so its own SQLite database path is on record for the LDAP user/group CRUD endpoints (task #726, not yet built) to write into:
+
+```
+POST /v1/ldap/servers
+{"container": "ldap1", "db_path": "/var/lib/glauth/gl.db"}
+```
+
+- `container` must already exist and be running (`404` otherwise, same rule `POST /v1/dns/servers` enforces).
+- `db_path` is `db_path`'s own absolute view of glauth's SQLite file inside that container — rejected (`400`) if not absolute or if it contains `..`. Nothing is read or written at registration time; this call is pure bookkeeping.
+
+`GET /v1/ldap/servers` lists every current binding; `DELETE /v1/ldap/servers/{container}` unregisters one (does not touch the container itself). Deleting the container automatically removes its binding (`ldap_server_forget()`, called from the same container-delete cleanup path as `dns_server_forget()`). Bindings are persisted (`<data-dir>/ldap_servers.json`) and survive a daemon restart, the same as DNS server bindings (ADR-0091).
+
 ## PKI: a CA chain and issued leaf certificates
 
 A single internal root CA, an optional second intermediate tier, and leaf certificate issuance. Actual cryptography (keypair generation, CSR signing) is done by the daemon shelling out to the system's real, unmodified `openssl` binary as a short-lived subprocess — the same "real software, not hand-rolled" reasoning BIRD and dnsmasq were chosen under (ADR-0007's "no external libraries" rule governs this project's own platform components, not real software it invokes or runs as a workload).
@@ -926,7 +945,7 @@ The reverse of `GET /system/backup` — same shape, every field optional and ind
 - No authentication yet — the daemon binds to loopback only as its safety boundary for now.
 - HTTP: no keep-alive/pipelining (`Connection: close` on every response), no chunked bodies.
 - Routes are set-once at creation and not echoed back or introspectable afterward; modifying them on a running container would need a new "enter another netns from outside" primitive, not built yet. See `docs/roadmap/ROADMAP.md`.
-- DNS server bindings are in-memory only (not persisted, like the container registry itself — a binding referencing a container that dies with the daemon means nothing after a restart anyway). Only one hosts-format record type; no CNAME/MX/TXT/etc.
+- DNS and LDAP server bindings are both persisted (ADR-0091 fixed this for DNS; LDAP's own binding table, task #725, was built with persistence from the start). DNS: only one hosts-format record type; no CNAME/MX/TXT/etc.
 - PKI: no certificate revocation/CRL, no CSR-submission flow (the daemon always generates both the keypair and the cert itself). CA regeneration/rotation **is** built (`POST /pki/reset`, above) — that gap has closed since this list was first written.
 - Package manager: only one install/hostbuild in flight at a time (dependency chains, and `POST /pkg/update-all`'s own successive calls, still serialize through that same single slot — see [Host + package updates](#host--package-updates) above); no version-constrained dependencies (any installed version satisfies a dependency); symlinks in a package's own `DESTDIR` output are skipped (regular files and directories only).
 - No scheduled/periodic trigger for `POST /system/update` or `POST /pkg/update-all` — both are on-demand, operator- or cron-invoked; no automatic "update then reboot" chaining.

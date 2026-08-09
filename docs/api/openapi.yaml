@@ -1907,6 +1907,87 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /ldap/servers:
+    get:
+      summary: List all registered LDAP server bindings
+      operationId: listLdapServers
+      responses:
+        "200":
+          description: Binding list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [servers]
+                properties:
+                  servers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/LdapServerBinding"
+    post:
+      summary: >
+        Register a running container as the LDAP-serving target (task #725, mirrors
+        POST /dns/servers). Unlike DNS, this never touches the container's filesystem
+        or sends any signal -- glauth's own embedded-SQLite backend
+        (pkg/recipes/glauth/2.4.0/recipe.sh) queries its database live on every LDAP
+        request, so registration is pure bookkeeping: it records where db_path
+        (glauth's own SQLite file) lives, for the LDAP user/group CRUD endpoints
+        (task #726) to write into.
+      operationId: createLdapServer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LdapServerBindingCreateRequest"
+      responses:
+        "201":
+          description: Registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LdapServerBinding"
+        "400":
+          description: db_path missing, not absolute, or contains ".."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No running container with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: This container is already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The binding table is full, or persisting the binding failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /ldap/servers/{container}:
+    delete:
+      summary: Unregister an LDAP server binding (does not touch the container itself)
+      operationId: deleteLdapServer
+      parameters:
+        - $ref: "#/components/parameters/LdapServerContainerName"
+      responses:
+        "204":
+          description: Unregistered
+        "404":
+          description: No binding for this container
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /pki/ca:
     get:
       summary: Inspect the root CA (never includes the private key)
@@ -3266,6 +3347,14 @@ components:
         type: string
 
     DnsServerContainerName:
+      name: container
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9_-]+$"
+
+    LdapServerContainerName:
       name: container
       in: path
       required: true
@@ -4646,6 +4735,30 @@ components:
         container:
           type: string
         hosts_path:
+          type: string
+
+    LdapServerBindingCreateRequest:
+      type: object
+      required: [container, db_path]
+      properties:
+        container:
+          type: string
+          description: Name of an existing, running container (see /containers) -- the LDAP-serving target.
+        db_path:
+          type: string
+          description: >
+            Absolute path, as the container's own filesystem sees it (e.g.
+            "/var/lib/glauth/gl.db"), to glauth's own embedded-SQLite database file --
+            recorded for the LDAP user/group CRUD endpoints (task #726) to resolve
+            against. Rejected if not absolute or if it contains "..".
+
+    LdapServerBinding:
+      type: object
+      required: [container, db_path]
+      properties:
+        container:
+          type: string
+        db_path:
           type: string
 
     SiteConfig:

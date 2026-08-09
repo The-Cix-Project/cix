@@ -116,6 +116,8 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | `dns record ls` / `dns record rm NAME` | List / remove |
 | `dns server register --container=NAME --hosts-path=PATH` | Register a running container as a DNS-serving target |
 | `dns server ls` / `dns server unregister CONTAINER` | List / unregister |
+| `ldap server register --container=NAME --db-path=PATH` | Register a running container as the LDAP-serving target (task #725) -- `db_path` is its own absolute view of glauth's SQLite file |
+| `ldap server ls` / `ldap server unregister CONTAINER` | List / unregister |
 
 ## PKI
 

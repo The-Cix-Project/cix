@@ -101,6 +101,11 @@ static void print_usage(FILE *out)
 	        "  dns server register --container=NAME --hosts-path=PATH\n"
 	        "  dns server ls\n"
 	        "  dns server unregister CONTAINER\n"
+	        "  ldap server register --container=NAME --db-path=PATH  -- registers a running\n"
+	        "               container as the LDAP-serving target (task #725); db_path is its\n"
+	        "               own absolute view of glauth's SQLite database file\n"
+	        "  ldap server ls\n"
+	        "  ldap server unregister CONTAINER\n"
 	        "  pki ca bootstrap [--common-name=NAME] [--days=N]\n"
 	        "  pki ca show\n"
 	        "  pki intermediate bootstrap [--common-name=NAME] [--days=N]  -- second CA tier,\n"
@@ -669,6 +674,25 @@ static void fmt_dns_server_list(const struct json_value *v)
 		return;
 	for (i = 0; i < servers->u.array.count; i++)
 		fmt_dns_server_line(servers->u.array.items[i]);
+}
+
+static void fmt_ldap_server_line(const struct json_value *v)
+{
+	const char *container = json_str_field(v, "container");
+	const char *db_path = json_str_field(v, "db_path");
+
+	printf("%-20s %s\n", container, db_path);
+}
+
+static void fmt_ldap_server_list(const struct json_value *v)
+{
+	const struct json_value *servers = json_object_get(v, "servers");
+	size_t i;
+
+	if (servers == NULL || servers->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < servers->u.array.count; i++)
+		fmt_ldap_server_line(servers->u.array.items[i]);
 }
 
 static void print_sans_csv(const struct json_value *v)
@@ -3749,6 +3773,117 @@ static int cmd_dns(const struct kx_client *c, int json_mode, int argc, char **ar
 	return 2;
 }
 
+static int cmd_ldap_server_register(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *container = NULL;
+	const char *db_path = NULL;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--container=", 12) == 0)
+			container = argv[i] + 12;
+		else if (strncmp(argv[i], "--db-path=", 10) == 0)
+			db_path = argv[i] + 10;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown ldap server register option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	if (container == NULL || db_path == NULL) {
+		fprintf(stderr, "usage: kanxeoctl ldap server register --container=NAME --db-path=PATH\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "container");
+	jw_str(&w, container);
+	jw_key(&w, "db_path");
+	jw_str(&w, db_path);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/ldap/servers", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_ldap_server_line);
+}
+
+static int cmd_ldap_server_ls(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/ldap/servers", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_ldap_server_list);
+}
+
+static int cmd_ldap_server_unregister(const struct kx_client *c, int json_mode, int argc,
+                                       char **argv)
+{
+	struct kx_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: ldap server unregister requires a container name\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/ldap/servers/%s", argv[0]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static int cmd_ldap_server(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr,
+		        "usage: kanxeoctl ldap server register --container=NAME --db-path=PATH\n"
+		        "       kanxeoctl ldap server ls\n"
+		        "       kanxeoctl ldap server unregister CONTAINER\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "register") == 0)
+		return cmd_ldap_server_register(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "ls") == 0)
+		return cmd_ldap_server_ls(c, json_mode);
+	if (strcmp(sub, "unregister") == 0)
+		return cmd_ldap_server_unregister(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown ldap server subcommand '%s'\n", sub);
+	return 2;
+}
+
+static int cmd_ldap(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl ldap server ...\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "server") == 0)
+		return cmd_ldap_server(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown ldap subcommand '%s'\n", sub);
+	return 2;
+}
+
 static int cmd_pki_ca_bootstrap(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *common_name = NULL;
@@ -5079,6 +5214,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_devicemap(client, json_mode, argc, argv);
 	if (strcmp(cmd, "dns") == 0)
 		return cmd_dns(client, json_mode, argc, argv);
+	if (strcmp(cmd, "ldap") == 0)
+		return cmd_ldap(client, json_mode, argc, argv);
 	if (strcmp(cmd, "pki") == 0)
 		return cmd_pki(client, json_mode, argc, argv);
 	if (strcmp(cmd, "pkg") == 0)
@@ -5146,7 +5283,7 @@ static int tokenize_line(char *line, char **tokens, int max_tokens)
 static const char *const SHELL_COMMANDS[] = {
 	"backup", "boot",      "console",       "daemon-config", "device",   "devicemap", "diskrole",
 	"disks",  "dns",       "exit",          "files",    "health",    "help",
-	"host-stats", "image", "inspect",       "iso",      "logs",      "network",
+	"host-stats", "image", "inspect",       "iso",      "ldap",      "logs",      "network",
 	"pause",  "ping",      "pkg",           "pki",      "ps",        "quit",      "reboot",
 	"resolv",
 	"restore", "rm",       "routes",        "run",      "shutdown",  "site",
