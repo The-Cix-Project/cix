@@ -169,10 +169,12 @@ static int stage_tarball(const char *scratch_dir, char *out_tarball_path, size_t
  */
 static int write_slowbuild_recipe(const char *tarball_path, const char *sha256)
 {
-	char path[256];
+	char path[300];
 	FILE *f;
 
-	snprintf(path, sizeof(path), "%s/recipes/slowbuild.recipe", g_pkg_state_dir);
+	if (run_cmd("mkdir -p '%s/recipes/slowbuild/1.0'", g_pkg_state_dir) != 0)
+		return -1;
+	snprintf(path, sizeof(path), "%s/recipes/slowbuild/1.0/recipe.sh", g_pkg_state_dir);
 	f = fopen(path, "w");
 	if (f == NULL)
 		return -1;

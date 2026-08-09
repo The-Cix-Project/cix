@@ -147,10 +147,12 @@ static int stage_fixture_tarball(const char *scratch_dir, const char *name,
 
 static int write_recipe(const char *name, const char *tarball_path)
 {
-	char path[256];
+	char path[300];
 	FILE *f;
 
-	snprintf(path, sizeof(path), "%s/recipes/%s.recipe", g_pkg_state_dir, name);
+	if (run_cmd("mkdir -p '%s/recipes/%s/1.0'", g_pkg_state_dir, name) != 0)
+		return -1;
+	snprintf(path, sizeof(path), "%s/recipes/%s/1.0/recipe.sh", g_pkg_state_dir, name);
 	f = fopen(path, "w");
 	if (f == NULL)
 		return -1;

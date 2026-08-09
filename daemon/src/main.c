@@ -7654,6 +7654,13 @@ static void respond_pkg_recipe_error(int fd, enum pkg_error err)
 		respond_error(fd, 400, "Bad Request",
 		              "recipe content failed to parse, or its pkg_name= doesn't match name");
 		break;
+	case PKG_ERR_DUPLICATE:
+		/* ADR-0107: recipe versions are immutable once published --
+		 * an already-published (name,version) pair is a real client
+		 * error, not the old flat-file upsert-by-name behavior. */
+		respond_error(fd, 409, "Conflict",
+		              "this recipe version is already published -- versions are immutable, bump pkg_version= to publish a fix");
+		break;
 	case PKG_ERR_PERSIST_FAILED:
 	default:
 		respond_error(fd, 500, "Internal Server Error", "recipe operation failed");
@@ -7795,12 +7802,12 @@ static void handle_pkg_recipes_list(int fd)
 }
 
 /*
- * Real, ongoing recipe management (ADR-0040) -- an operator can add or
- * update a recipe on an already-running system, no ISO rebuild/
- * reinstall needed. Upsert: an existing recipe with this name is
- * replaced, never duplicated (PKG_ERR_DUPLICATE doesn't apply here,
- * unlike pkg_install_start()'s own package-installation meaning of
- * "duplicate").
+ * Real, ongoing recipe management (ADR-0040) -- an operator can publish
+ * a new recipe version on an already-running system, no ISO rebuild/
+ * reinstall needed. Versions are immutable once published (ADR-0107):
+ * an already-published (name,version) is PKG_ERR_DUPLICATE, the same
+ * meaning pkg_install_start()'s own "duplicate" already has -- fixing
+ * a mistake means publishing a new version, not overwriting this one.
  */
 static void handle_pkg_recipe_add(int fd, const char *body, size_t body_len)
 {
@@ -7832,9 +7839,11 @@ static void handle_pkg_recipe_add(int fd, const char *body, size_t body_len)
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
-static void handle_pkg_recipe_delete(int fd, const char *name)
+/* version NULL (no ?version= given) removes every published version of
+ * name; a specific version removes only that one (ADR-0107). */
+static void handle_pkg_recipe_delete(int fd, const char *name, const char *version)
 {
-	enum pkg_error perr = pkg_recipe_delete(name);
+	enum pkg_error perr = pkg_recipe_delete(name, version);
 
 	if (perr != PKG_OK) {
 		respond_pkg_recipe_error(fd, perr);
@@ -7844,13 +7853,15 @@ static void handle_pkg_recipe_delete(int fd, const char *name)
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
-static void handle_pkg_recipe_get(int fd, const char *name)
+/* version NULL (no ?version= given) resolves to name's highest
+ * available version (ADR-0107). */
+static void handle_pkg_recipe_get(int fd, const char *name, const char *version)
 {
 	struct json_writer w;
 	enum pkg_error perr;
 
 	jw_init(&w);
-	perr = pkg_recipe_get(name, &w);
+	perr = pkg_recipe_get(name, version, &w);
 	if (perr != PKG_OK) {
 		jw_free(&w);
 		respond_pkg_recipe_error(fd, perr);
@@ -7865,6 +7876,7 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 	struct json_value *root;
 	const char *name;
 	const char *image;
+	const char *version;
 	const struct json_value *jupgrade;
 	int upgrade;
 	char started_name[PKG_NAME_MAX];
@@ -7885,11 +7897,14 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 		return;
 	}
 	image = json_as_string(json_object_get(root, "image"));
+	/* ADR-0107: omitted (NULL) resolves to name's highest available
+	 * recipe version, matching every pre-existing caller's behavior. */
+	version = json_as_string(json_object_get(root, "version"));
 	jupgrade = json_object_get(root, "upgrade");
 	upgrade = (jupgrade != NULL && jupgrade->type == JSON_BOOL && jupgrade->u.boolean);
 
-	perr = pkg_install_start(name, image, upgrade, started_name, sizeof(started_name), &pid,
-	                          &pidfd);
+	perr = pkg_install_start(name, image, version, upgrade, started_name, sizeof(started_name),
+	                          &pid, &pidfd);
 	if (perr != PKG_OK) {
 		json_free(root);
 		respond_pkg_error(fd, perr);
@@ -7930,6 +7945,7 @@ static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
 	struct json_value *root;
 	const char *name;
 	const char *build_image;
+	const char *version;
 	const struct json_value *jupgrade;
 	int upgrade;
 	pid_t pid;
@@ -7949,10 +7965,13 @@ static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
 		respond_error(fd, 400, "Bad Request", "name and build_image are both required");
 		return;
 	}
+	/* ADR-0107: omitted (NULL) resolves to name's highest available
+	 * recipe version. */
+	version = json_as_string(json_object_get(root, "version"));
 	jupgrade = json_object_get(root, "upgrade");
 	upgrade = (jupgrade != NULL && jupgrade->type == JSON_BOOL && jupgrade->u.boolean);
 
-	perr = pkg_hostbuild_start(name, build_image, upgrade, &pid, &pidfd);
+	perr = pkg_hostbuild_start(name, build_image, version, upgrade, &pid, &pidfd);
 	if (perr != PKG_OK) {
 		json_free(root);
 		respond_pkg_error(fd, perr);
@@ -8026,7 +8045,8 @@ static void handle_pkg_update_all(int fd)
 		return;
 	}
 
-	perr = pkg_install_start(name, image, 1, started_name, sizeof(started_name), &pid, &pidfd);
+	perr = pkg_install_start(name, image, NULL, 1, started_name, sizeof(started_name), &pid,
+	                          &pidfd);
 	if (perr != PKG_OK) {
 		respond_pkg_error(fd, perr);
 		return;
@@ -8648,13 +8668,30 @@ static void dispatch(int fd, const struct http_request *req)
 	}
 	if (strncmp(req->path, PKG_RECIPES_PREFIX, strlen(PKG_RECIPES_PREFIX)) == 0) {
 		name = req->path + strlen(PKG_RECIPES_PREFIX);
-		if (name[0] != '\0' && strcmp(req->method, "DELETE") == 0) {
-			handle_pkg_recipe_delete(fd, name);
-			return;
-		}
-		if (name[0] != '\0' && strcmp(req->method, "GET") == 0) {
-			handle_pkg_recipe_get(fd, name);
-			return;
+		if (name[0] != '\0' && (strcmp(req->method, "DELETE") == 0 || strcmp(req->method, "GET") == 0)) {
+			/* ADR-0107: an optional ?version= query param can follow
+			 * the package name -- same "qlen, not nlen" pattern
+			 * CONTAINERS_PREFIX's own .../files route already
+			 * established for a path suffix that can carry a query
+			 * string (name is still '/'-free, so a plain strcspn()
+			 * unambiguously finds where it ends). */
+			size_t qlen = strcspn(name, "?");
+			char pkg_name[PKG_NAME_MAX];
+			char version[PKG_VERSION_MAX];
+			const char *version_ptr = NULL;
+
+			if (qlen < sizeof(pkg_name)) {
+				memcpy(pkg_name, name, qlen);
+				pkg_name[qlen] = '\0';
+				if (url_query_param(req->path, "version", version, sizeof(version)) == 0)
+					version_ptr = version;
+				if (strcmp(req->method, "DELETE") == 0) {
+					handle_pkg_recipe_delete(fd, pkg_name, version_ptr);
+					return;
+				}
+				handle_pkg_recipe_get(fd, pkg_name, version_ptr);
+				return;
+			}
 		}
 	}
 	if (strcmp(req->path, "/v1/pkg/install") == 0) {

@@ -224,48 +224,71 @@ int pkg_toolchain_has_gcc(void);
  */
 enum pkg_error pkg_seed_image_baseline(const char *image);
 
-/* Scans pkg_dir/recipes/*.recipe and writes {name,version,depends}
- * for each one that parses -- metadata only, never sourced/executed. */
+/*
+ * Natural-sort/dpkg-style version comparison (ADR-0107): walks both
+ * strings left to right, alternating between runs of digits (compared
+ * numerically) and runs of non-digits (compared byte-wise). Handles
+ * every pkg_version= actually in use across this project's own
+ * recipes, including a leading non-digit prefix ("v1.4.0") and a
+ * non-numeric trailing component ("1.5.8.pl02") -- a naive
+ * per-component atoi() split silently mis-orders both. No semver-
+ * specific concepts (pre-release precedence, build metadata). Returns
+ * <0/0/>0 like strcmp(): a < b, a == b, a > b.
+ */
+int pkg_version_compare(const char *a, const char *b);
+
+/* Scans pkg_dir/recipes/<name>/<version>/recipe.sh (ADR-0107's
+ * version-keyed layout) and writes one {name,version,depends} object
+ * per (name,version) pair that parses -- metadata only, never
+ * sourced/executed. Multiple entries may share the same name at
+ * different versions. */
 void pkg_write_json_recipes(struct json_writer *w);
 
 /*
- * One recipe's own {name,version,depends,content} -- the raw shell
- * script text too, unlike pkg_write_json_recipes()'s list-view
- * metadata-only shape, for the web dashboard's per-package Recipe tab
- * (view, and edit-then-resubmit through the existing pkg_recipe_add()
- * upsert -- editing a recipe is exactly "add with the same name," no
- * separate update path needed). Still never sourced/executed here,
- * same as every other recipe read in this module -- content is only
- * ever actually run inside the isolated build container.
+ * One recipe version's own {name,version,depends,content} -- the raw
+ * shell script text too, unlike pkg_write_json_recipes()'s list-view
+ * metadata-only shape, for the web dashboard's per-package Recipe tab.
+ * version NULL or "" resolves to the highest available version for
+ * name (pkg_version_compare()-ordered), matching every other
+ * "no explicit version given" caller in this module. Still never
+ * sourced/executed here, same as every other recipe read in this
+ * module -- content is only ever actually run inside the isolated
+ * build container.
  * PKG_ERR_INVALID_NAME / PKG_ERR_NOT_FOUND (missing or fails to parse).
  */
-enum pkg_error pkg_recipe_get(const char *name, struct json_writer *w);
+enum pkg_error pkg_recipe_get(const char *name, const char *version, struct json_writer *w);
 
 /*
- * Adds a new recipe, or replaces an existing one with the same name
- * (upsert -- the whole point is updating a recipe catalog without a
- * full OS reinstall, ADR-0040). content is written to a staging file
- * under pkg_dir/recipes/ first and validated with the same
- * parse_recipe() every install-time lookup already uses (name must be
- * a valid package name, AND must match content's own pkg_name= field
- * -- the same "filename and pkg_name= agree" invariant
- * resolve_chain()'s own dependency lookups already rely on); only on
- * success is it atomically renamed over name.recipe, so an invalid
- * upload can never clobber a working recipe already there.
- * PKG_ERR_INVALID_NAME / PKG_ERR_INVALID_RECIPE / PKG_ERR_PERSIST_FAILED
- * on failure.
+ * Adds a new recipe version at pkg_dir/recipes/<name>/<version>/recipe.sh,
+ * where <name>/<version> both come from content's own pkg_name=/
+ * pkg_version= fields (the same "filename and pkg_name= agree"
+ * invariant this always enforced, now extended to the version
+ * directory too). content is written to a staging file first and
+ * validated with the same parse_recipe() every install-time lookup
+ * already uses; only on success is it atomically renamed into place.
+ *
+ * Recipe versions are immutable once added (ADR-0107) -- unlike the
+ * old flat-file upsert-by-name behavior, adding a (name,version) pair
+ * that already exists is PKG_ERR_DUPLICATE, not a silent overwrite.
+ * Fixing a mistake in an already-published version means publishing a
+ * new version.
+ * PKG_ERR_INVALID_NAME / PKG_ERR_INVALID_RECIPE / PKG_ERR_DUPLICATE /
+ * PKG_ERR_PERSIST_FAILED on failure.
  */
 enum pkg_error pkg_recipe_add(const char *name, const char *content);
 
 /*
- * Removes name.recipe. Does not touch anything already installed via
- * that recipe (a build's output is merged into an image at install
- * time -- nothing about a package that's already installed depends on
- * its own recipe file continuing to exist); only affects future
- * `pkg install`/update-all lookups for that name.
+ * Removes recipe version(s) for name. version NULL or "" removes every
+ * version of name (the whole pkg_dir/recipes/<name>/ directory);
+ * a specific version removes only that one version's subdirectory,
+ * leaving any other published versions of name intact. Does not touch
+ * anything already installed via that recipe (a build's output is
+ * merged into an image at install time -- nothing about a package
+ * that's already installed depends on its own recipe file continuing
+ * to exist); only affects future `pkg install`/update-all lookups.
  * PKG_ERR_INVALID_NAME / PKG_ERR_NOT_FOUND / PKG_ERR_PERSIST_FAILED.
  */
-enum pkg_error pkg_recipe_delete(const char *name);
+enum pkg_error pkg_recipe_delete(const char *name, const char *version);
 
 /*
  * Validates name + its recipe, refuses if any install is already in
@@ -299,10 +322,22 @@ enum pkg_error pkg_recipe_delete(const char *name);
  * entries, not a collision (a container using one image never sees
  * what another image has installed -- the whole point of having more
  * than one).
+ *
+ * version (ADR-0107) is NULL or "" for every pre-existing, non-
+ * manifest-aware caller (direct CLI/REST install, tests) -- resolves
+ * to the highest available version for name, matching the "rolling"
+ * default posture. A non-empty version pins name itself to exactly
+ * that published recipe version (used by manifest-driven image
+ * builds); every one of name's own dependencies still always resolves
+ * to ITS OWN highest available version regardless -- pinning only
+ * ever applies to the single top-level package actually being
+ * installed, never transitively to its build-time prerequisites.
+ * PKG_ERR_INVALID_RECIPE if version is given but no such (name,version)
+ * recipe exists.
  */
-enum pkg_error pkg_install_start(const char *name, const char *image, int upgrade,
-                                  char *out_started_name, size_t out_started_name_size,
-                                  pid_t *out_pid, int *out_pidfd);
+enum pkg_error pkg_install_start(const char *name, const char *image, const char *version,
+                                  int upgrade, char *out_started_name,
+                                  size_t out_started_name_size, pid_t *out_pid, int *out_pidfd);
 
 /*
  * A second mode of the same fetch/build pipeline pkg_install_start()
@@ -343,9 +378,14 @@ enum pkg_error pkg_install_start(const char *name, const char *image, int upgrad
  * genuinely unchanged version is still a no-op duplicate even with
  * upgrade=1, since nothing would actually differ; bump pkg_version=
  * to force a real rebuild).
+ *
+ * version (ADR-0107): same meaning as pkg_install_start()'s own --
+ * NULL or "" resolves to name's highest available recipe version;
+ * a non-empty value hostbuilds that exact published version instead
+ * (e.g. rebuilding an older kanxeo.recipe release on demand).
  */
-enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, int upgrade,
-                                    pid_t *out_pid, int *out_pidfd);
+enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, const char *version,
+                                    int upgrade, pid_t *out_pid, int *out_pidfd);
 
 /*
  * Called once the tracked fetch subprocess's pidfd fires (caller has

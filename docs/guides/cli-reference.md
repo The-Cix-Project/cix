@@ -132,15 +132,15 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | `pkg bootstrap [--toolchain=PATH]` | Stage a build toolchain into the shared build sandbox — see [`docs/guides/writing-recipes.md`](writing-recipes.md#build-images) |
 | `pkg bootstrap --toolchain-url=URL --toolchain-sha256=SHA256 [--wait]` | The daemon fetches the toolchain itself, host-side — for a real minimal install with no SSH server (ADR-0065) |
 | `pkg bootstrap-status` | State/error of the most recent `--toolchain-url=` fetch |
-| `pkg recipes` | List recipes |
-| `pkg recipe add --name=NAME --file=PATH` | Add or update a recipe on this running system directly, no reinstall needed |
-| `pkg recipe show NAME` | Print a recipe's own raw content |
-| `pkg recipe rm NAME` | Remove a recipe |
-| `pkg install --name=NAME [--image=IMAGE] [--upgrade]` | Start installing (or upgrading) a package |
+| `pkg recipes` | List every published recipe version |
+| `pkg recipe add --name=NAME --file=PATH` | Publish a new recipe version on this running system directly, no reinstall needed — immutable once published, rejected if this exact (name,version) already exists |
+| `pkg recipe show NAME [--version=VERSION]` | Print a recipe version's own raw content; omitted version resolves to the highest available |
+| `pkg recipe rm NAME [--version=VERSION]` | Remove recipe version(s); omitted removes every published version |
+| `pkg install --name=NAME [--image=IMAGE] [--version=VERSION] [--upgrade]` | Start installing (or upgrading) a package; omitted version resolves to the highest available |
 | `pkg ls` | List every known package (installed or in-flight) |
 | `pkg rm NAME[@IMAGE]` | Uninstall |
 | `pkg update-all` | Start an upgrade for the first installed package whose recipe has drifted; call again to drain the backlog |
-| `pkg hostbuild NAME --build-image=IMAGE [--wait] [--deploy] [--upgrade]` | Build a standalone host artifact (kernel, or Kanxeo's own control plane) instead of merging into an image — see [`docs/guides/writing-recipes.md#the-hostbuild-variant`](writing-recipes.md#the-hostbuild-variant). `--upgrade` re-runs a build already `state: "installed"` if the recipe's own version has moved on (otherwise a bare 409) |
+| `pkg hostbuild NAME --build-image=IMAGE [--version=VERSION] [--wait] [--deploy] [--upgrade]` | Build a standalone host artifact (kernel, or Kanxeo's own control plane) instead of merging into an image — see [`docs/guides/writing-recipes.md#the-hostbuild-variant`](writing-recipes.md#the-hostbuild-variant). `--upgrade` re-runs a build already `state: "installed"` if the recipe's own version has moved on (otherwise a bare 409) |
 | `pkg build-log` | Live-tail the currently in-flight install/hostbuild's own stdout/stderr (task #676, ADR-0101) — a one-way stream, not an interactive session; prints each chunk as it arrives and exits once the build finishes. 404 if nothing is currently building |
 
 See [`docs/guides/writing-recipes.md`](writing-recipes.md) for the recipe format itself, and [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) / [`docs/guides/building-kanxeo.md`](building-kanxeo.md) for the two real operator runbooks built on `pkg hostbuild`.

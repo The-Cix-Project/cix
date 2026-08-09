@@ -120,12 +120,15 @@ static void print_usage(FILE *out)
 	        "               real minimal install with no SSH server and no other way to get a\n"
 	        "               real toolchain onto the box; async, 202, poll with bootstrap-status\n"
 	        "  pkg bootstrap-status  -- state/error of the most recent toolchain_url fetch\n"
-	        "  pkg recipes\n"
-	        "  pkg recipe add --name=NAME --file=PATH  -- add or update a recipe on this\n"
-	        "               running system directly, no reinstall needed (ADR-0040)\n"
-	        "  pkg recipe show NAME  -- print a recipe's own raw content\n"
-	        "  pkg recipe rm NAME\n"
-	        "  pkg install --name=NAME [--image=IMAGE] [--upgrade]\n"
+	        "  pkg recipes  -- lists every published (name,version) recipe (ADR-0107)\n"
+	        "  pkg recipe add --name=NAME --file=PATH  -- publishes a new recipe version on\n"
+	        "               this running system directly, no reinstall needed (ADR-0040);\n"
+	        "               an already-published (name,version) is rejected, not overwritten\n"
+	        "               (ADR-0107) -- bump pkg_version= to publish a fix\n"
+	        "  pkg recipe show NAME [--version=VERSION]  -- print a recipe's own raw content,\n"
+	        "               omitted version resolves to the highest available\n"
+	        "  pkg recipe rm NAME [--version=VERSION]  -- omitted removes every version\n"
+	        "  pkg install --name=NAME [--image=IMAGE] [--version=VERSION] [--upgrade]\n"
 	        "  pkg ls\n"
 	        "  pkg rm NAME[@IMAGE]\n"
 	        "  pkg update-all  -- starts an upgrade for the first installed package whose\n"
@@ -4177,16 +4180,35 @@ static void fmt_pkg_recipe_show(const struct json_value *v)
 	printf("%s", content != NULL ? content : "");
 }
 
+/* ADR-0107: an optional trailing --version=X selects a specific
+ * published recipe version; omitted resolves to the highest available
+ * version for NAME, matching every other "no version given" caller. */
 static int cmd_pkg_recipe_show(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	struct kx_response r;
 	char path[256];
+	const char *name = NULL;
+	const char *version = NULL;
+	int i;
 
-	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl pkg recipe show NAME\n");
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--version=", 10) == 0)
+			version = argv[i] + 10;
+		else if (name == NULL)
+			name = argv[i];
+		else {
+			fprintf(stderr, "kanxeoctl: unknown pkg recipe show option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL) {
+		fprintf(stderr, "usage: kanxeoctl pkg recipe show NAME [--version=VERSION]\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/pkg/recipes/%s", argv[0]);
+	if (version != NULL)
+		snprintf(path, sizeof(path), "/v1/pkg/recipes/%s?version=%s", name, version);
+	else
+		snprintf(path, sizeof(path), "/v1/pkg/recipes/%s", name);
 	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
 		return 1;
@@ -4194,16 +4216,34 @@ static int cmd_pkg_recipe_show(const struct kx_client *c, int json_mode, int arg
 	return emit(&r, json_mode, fmt_pkg_recipe_show);
 }
 
+/* No --version= removes every published version of NAME; a specific
+ * version removes only that one (ADR-0107). */
 static int cmd_pkg_recipe_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	struct kx_response r;
 	char path[256];
+	const char *name = NULL;
+	const char *version = NULL;
+	int i;
 
-	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl pkg recipe rm NAME\n");
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--version=", 10) == 0)
+			version = argv[i] + 10;
+		else if (name == NULL)
+			name = argv[i];
+		else {
+			fprintf(stderr, "kanxeoctl: unknown pkg recipe rm option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL) {
+		fprintf(stderr, "usage: kanxeoctl pkg recipe rm NAME [--version=VERSION]\n");
 		return 2;
 	}
-	snprintf(path, sizeof(path), "/v1/pkg/recipes/%s", argv[0]);
+	if (version != NULL)
+		snprintf(path, sizeof(path), "/v1/pkg/recipes/%s?version=%s", name, version);
+	else
+		snprintf(path, sizeof(path), "/v1/pkg/recipes/%s", name);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
 		return 1;
@@ -4217,8 +4257,8 @@ static int cmd_pkg_recipe(const struct kx_client *c, int json_mode, int argc, ch
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: kanxeoctl pkg recipe add --name=NAME --file=PATH\n"
-		                "       kanxeoctl pkg recipe show NAME\n"
-		                "       kanxeoctl pkg recipe rm NAME\n");
+		                "       kanxeoctl pkg recipe show NAME [--version=VERSION]\n"
+		                "       kanxeoctl pkg recipe rm NAME [--version=VERSION]\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -4237,6 +4277,7 @@ static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, c
 {
 	const char *name = NULL;
 	const char *image = NULL;
+	const char *version = NULL;
 	int upgrade = 0;
 	int i;
 	struct json_writer w;
@@ -4247,6 +4288,8 @@ static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, c
 			name = argv[i] + 7;
 		else if (strncmp(argv[i], "--image=", 8) == 0)
 			image = argv[i] + 8;
+		else if (strncmp(argv[i], "--version=", 10) == 0)
+			version = argv[i] + 10;
 		else if (strcmp(argv[i], "--upgrade") == 0)
 			upgrade = 1;
 		else {
@@ -4255,7 +4298,9 @@ static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, c
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: kanxeoctl pkg install --name=NAME [--image=IMAGE] [--upgrade]\n");
+		fprintf(stderr,
+		        "usage: kanxeoctl pkg install --name=NAME [--image=IMAGE] "
+		        "[--version=VERSION] [--upgrade]\n");
 		return 2;
 	}
 
@@ -4266,6 +4311,11 @@ static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, c
 	if (image != NULL) {
 		jw_key(&w, "image");
 		jw_str(&w, image);
+	}
+	/* ADR-0107: omitted resolves to the highest available version. */
+	if (version != NULL) {
+		jw_key(&w, "version");
+		jw_str(&w, version);
 	}
 	if (upgrade) {
 		jw_key(&w, "upgrade");
@@ -4371,6 +4421,7 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 {
 	const char *name = NULL;
 	const char *build_image = NULL;
+	const char *version = NULL;
 	int wait = 0, deploy = 0, upgrade = 0;
 	int i;
 	struct json_writer w;
@@ -4380,6 +4431,8 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--build-image=", 14) == 0)
 			build_image = argv[i] + 14;
+		else if (strncmp(argv[i], "--version=", 10) == 0)
+			version = argv[i] + 10;
 		else if (strcmp(argv[i], "--wait") == 0)
 			wait = 1;
 		else if (strcmp(argv[i], "--deploy") == 0)
@@ -4395,8 +4448,8 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 	}
 	if (name == NULL || build_image == NULL) {
 		fprintf(stderr,
-		        "usage: kanxeoctl pkg hostbuild NAME --build-image=IMAGE [--wait] [--deploy] "
-		        "[--upgrade]\n");
+		        "usage: kanxeoctl pkg hostbuild NAME --build-image=IMAGE [--version=VERSION] "
+		        "[--wait] [--deploy] [--upgrade]\n");
 		return 2;
 	}
 	if (deploy)
@@ -4425,6 +4478,10 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 	jw_str(&w, name);
 	jw_key(&w, "build_image");
 	jw_str(&w, build_image);
+	if (version != NULL) {
+		jw_key(&w, "version");
+		jw_str(&w, version);
+	}
 	jw_key(&w, "upgrade");
 	jw_bool(&w, upgrade);
 	jw_obj_close(&w);
@@ -4584,11 +4641,12 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 		                "       kanxeoctl pkg bootstrap-status\n"
 		                "       kanxeoctl pkg recipes\n"
 		                "       kanxeoctl pkg recipe add --name=NAME --file=PATH\n"
-		                "       kanxeoctl pkg recipe show NAME\n"
-		                "       kanxeoctl pkg recipe rm NAME\n"
-		                "       kanxeoctl pkg install --name=NAME [--image=IMAGE] [--upgrade]\n"
-		                "       kanxeoctl pkg hostbuild NAME --build-image=IMAGE [--wait] [--deploy] "
+		                "       kanxeoctl pkg recipe show NAME [--version=VERSION]\n"
+		                "       kanxeoctl pkg recipe rm NAME [--version=VERSION]\n"
+		                "       kanxeoctl pkg install --name=NAME [--image=IMAGE] [--version=VERSION] "
 		                "[--upgrade]\n"
+		                "       kanxeoctl pkg hostbuild NAME --build-image=IMAGE [--version=VERSION] "
+		                "[--wait] [--deploy] [--upgrade]\n"
 		                "       kanxeoctl pkg build-log\n"
 		                "       kanxeoctl pkg ls\n"
 		                "       kanxeoctl pkg rm NAME[@IMAGE]\n"

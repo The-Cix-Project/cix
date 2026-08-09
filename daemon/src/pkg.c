@@ -6,6 +6,7 @@
 #include "pki.h"
 #include "test_image_fixture.h"
 
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -92,6 +93,12 @@ static int g_current_job_is_hostbuild;
  * (e.g. "kanxeo-builder"), as opposed to the always-shared
  * g_pkgbuild_rootfs every ordinary install uses. */
 static char g_current_job_build_image[PKG_IMAGE_NAME_MAX];
+/* ADR-0107: the caller-requested explicit version pin for the single
+ * top-level package this job actually installs/hostbuilds (empty ==
+ * no pin, resolve to the highest available version, the pre-existing
+ * behavior every caller before this design got). Never applies to any
+ * dependency the chain pulls in -- see current_fetch_effective_version(). */
+static char g_current_job_target_version[PKG_VERSION_MAX];
 
 /* The resolved install order for the current job: dependencies first
  * (post-order), the originally-requested package last. g_dep_queue_pos
@@ -381,6 +388,120 @@ static int parse_recipe(const char *path, struct pkg_recipe *out)
 	if (rc != 0 || !pkg_name_is_valid(out->name))
 		return -1;
 	return 0;
+}
+
+/*
+ * Natural-sort/dpkg-style version comparison (ADR-0107): walks both
+ * strings left to right, alternating between runs of digits (compared
+ * numerically) and runs of non-digits (compared byte-wise). See pkg.h's
+ * own doc comment for the two real recipes ("v1.4.0", "1.5.8.pl02")
+ * that ruled out a naive per-component atoi() split.
+ */
+int pkg_version_compare(const char *a, const char *b)
+{
+	while (*a != '\0' || *b != '\0') {
+		if (isdigit((unsigned char)*a) && isdigit((unsigned char)*b)) {
+			long na = 0, nb = 0;
+
+			while (isdigit((unsigned char)*a)) {
+				na = na * 10 + (*a - '0');
+				a++;
+			}
+			while (isdigit((unsigned char)*b)) {
+				nb = nb * 10 + (*b - '0');
+				b++;
+			}
+			if (na != nb)
+				return (na < nb) ? -1 : 1;
+		} else {
+			unsigned char ca = (unsigned char)*a;
+			unsigned char cb = (unsigned char)*b;
+
+			if (ca != cb)
+				return (ca < cb) ? -1 : 1;
+			if (ca != '\0') {
+				a++;
+				b++;
+			}
+		}
+	}
+	return 0;
+}
+
+/*
+ * Resolves name (and optional specific version) to the path of its
+ * recipe.sh under ADR-0107's version-keyed layout:
+ * <g_recipes_dir>/<name>/<version>/recipe.sh. version NULL or ""
+ * resolves to the highest available version for name
+ * (pkg_version_compare()-ordered) -- the "rolling implicit" default
+ * every pre-existing, non-manifest-aware caller (plain `pkg install
+ * NAME`, dependency resolution, hostbuild, update-candidate checks)
+ * relies on. Returns 0 and fills out_path on success, -1 if name has
+ * no published recipe at all (or the specific requested version
+ * doesn't exist).
+ */
+static int find_recipe_path(const char *name, const char *version, char *out_path,
+                             size_t out_path_size)
+{
+	char name_dir[PATH_MAX];
+
+	snprintf(name_dir, sizeof(name_dir), "%s/%s", g_recipes_dir, name);
+
+	if (version != NULL && version[0] != '\0') {
+		struct stat st;
+
+		snprintf(out_path, out_path_size, "%s/%s/recipe.sh", name_dir, version);
+		if (stat(out_path, &st) != 0 || !S_ISREG(st.st_mode))
+			return -1;
+		return 0;
+	}
+
+	{
+		DIR *d = opendir(name_dir);
+		struct dirent *de;
+		char best[PKG_VERSION_MAX];
+		int have_best = 0;
+
+		if (d == NULL)
+			return -1;
+		while ((de = readdir(d)) != NULL) {
+			char candidate[PATH_MAX];
+			struct stat st;
+
+			if (de->d_name[0] == '.')
+				continue;
+			snprintf(candidate, sizeof(candidate), "%s/%s/recipe.sh", name_dir, de->d_name);
+			if (stat(candidate, &st) != 0 || !S_ISREG(st.st_mode))
+				continue;
+			if (!have_best || pkg_version_compare(de->d_name, best) > 0) {
+				snprintf(best, sizeof(best), "%s", de->d_name);
+				have_best = 1;
+			}
+		}
+		closedir(d);
+		if (!have_best)
+			return -1;
+		snprintf(out_path, out_path_size, "%s/%s/recipe.sh", name_dir, best);
+		return 0;
+	}
+}
+
+/*
+ * A recipe version's own file is written exactly once
+ * (persist_atomic_write(), never rewritten -- ADR-0107's immutability
+ * rule) and never copied/hardlinked/touched again by anything in this
+ * codebase, so its own mtime *is* an accurate, permanent "first
+ * published" timestamp with no separate persisted field needed
+ * (ADR-0108). Returns 0 (unknown/stat failed) rather than failing the
+ * caller -- a missing timestamp is display-only, never load-bearing.
+ */
+static long recipe_created_at(const char *recipe_path)
+{
+	struct stat st;
+
+	if (stat(recipe_path, &st) != 0)
+		return 0;
+	return (long)st.st_mtime;
 }
 
 static int copy_file_simple(const char *src, const char *dst)
@@ -815,8 +936,8 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 		char recipe_path[PATH_MAX];
 		struct pkg_recipe recipe;
 
-		snprintf(recipe_path, sizeof(recipe_path), "%s/%s.recipe", g_recipes_dir, e->name);
-		if (parse_recipe(recipe_path, &recipe) == 0 && strcmp(recipe.version, e->version) != 0) {
+		if (find_recipe_path(e->name, NULL, recipe_path, sizeof(recipe_path)) == 0 &&
+		    parse_recipe(recipe_path, &recipe) == 0 && strcmp(recipe.version, e->version) != 0) {
 			snprintf(available_version, sizeof(available_version), "%s", recipe.version);
 			has_available = 1;
 		}
@@ -1263,37 +1384,51 @@ enum pkg_error pkg_seed_image_baseline(const char *image)
 
 void pkg_write_json_recipes(struct json_writer *w)
 {
-	DIR *d;
-	struct dirent *de;
+	DIR *names;
+	struct dirent *nde;
 
 	jw_arr_open(w);
-	d = opendir(g_recipes_dir);
-	if (d != NULL) {
-		while ((de = readdir(d)) != NULL) {
-			size_t len = strlen(de->d_name);
-			char path[PATH_MAX];
-			struct pkg_recipe r;
+	names = opendir(g_recipes_dir);
+	if (names != NULL) {
+		while ((nde = readdir(names)) != NULL) {
+			char name_dir[PATH_MAX];
+			DIR *versions;
+			struct dirent *vde;
 
-			if (len <= 7 || strcmp(de->d_name + len - 7, ".recipe") != 0)
+			if (nde->d_name[0] == '.')
 				continue;
-			snprintf(path, sizeof(path), "%s/%s", g_recipes_dir, de->d_name);
-			if (parse_recipe(path, &r) != 0)
+			snprintf(name_dir, sizeof(name_dir), "%s/%s", g_recipes_dir, nde->d_name);
+			versions = opendir(name_dir);
+			if (versions == NULL)
 				continue;
-			jw_obj_open(w);
-			jw_key(w, "name");
-			jw_str(w, r.name);
-			jw_key(w, "version");
-			jw_str(w, r.version);
-			jw_key(w, "depends");
-			jw_str(w, r.depends);
-			jw_obj_close(w);
+			while ((vde = readdir(versions)) != NULL) {
+				char path[PATH_MAX];
+				struct pkg_recipe r;
+
+				if (vde->d_name[0] == '.')
+					continue;
+				snprintf(path, sizeof(path), "%s/%s/recipe.sh", name_dir, vde->d_name);
+				if (parse_recipe(path, &r) != 0)
+					continue;
+				jw_obj_open(w);
+				jw_key(w, "name");
+				jw_str(w, r.name);
+				jw_key(w, "version");
+				jw_str(w, r.version);
+				jw_key(w, "depends");
+				jw_str(w, r.depends);
+				jw_key(w, "created_at");
+				jw_int(w, recipe_created_at(path));
+				jw_obj_close(w);
+			}
+			closedir(versions);
 		}
-		closedir(d);
+		closedir(names);
 	}
 	jw_arr_close(w);
 }
 
-enum pkg_error pkg_recipe_get(const char *name, struct json_writer *w)
+enum pkg_error pkg_recipe_get(const char *name, const char *version, struct json_writer *w)
 {
 	char recipe_path[PATH_MAX];
 	struct pkg_recipe r;
@@ -1303,8 +1438,8 @@ enum pkg_error pkg_recipe_get(const char *name, struct json_writer *w)
 	if (!pkg_name_is_valid(name))
 		return PKG_ERR_INVALID_NAME;
 
-	snprintf(recipe_path, sizeof(recipe_path), "%s/%s.recipe", g_recipes_dir, name);
-	if (parse_recipe(recipe_path, &r) != 0 || strcmp(r.name, name) != 0)
+	if (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) != 0 ||
+	    parse_recipe(recipe_path, &r) != 0 || strcmp(r.name, name) != 0)
 		return PKG_ERR_NOT_FOUND;
 	if (persist_read_file(recipe_path, &content, &content_len) != 0 || content == NULL)
 		return PKG_ERR_PERSIST_FAILED;
@@ -1316,6 +1451,8 @@ enum pkg_error pkg_recipe_get(const char *name, struct json_writer *w)
 	jw_str(w, r.version);
 	jw_key(w, "depends");
 	jw_str(w, r.depends);
+	jw_key(w, "created_at");
+	jw_int(w, recipe_created_at(recipe_path));
 	jw_key(w, "content");
 	jw_str(w, content);
 	jw_obj_close(w);
@@ -1325,9 +1462,12 @@ enum pkg_error pkg_recipe_get(const char *name, struct json_writer *w)
 
 enum pkg_error pkg_recipe_add(const char *name, const char *content)
 {
+	char name_dir[PATH_MAX];
+	char version_dir[PATH_MAX];
 	char staging_path[PATH_MAX];
 	char recipe_path[PATH_MAX];
 	struct pkg_recipe parsed;
+	struct stat st;
 
 	if (!pkg_name_is_valid(name))
 		return PKG_ERR_INVALID_NAME;
@@ -1335,6 +1475,10 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content)
 	if (persist_mkdir_p(g_recipes_dir) != 0)
 		return PKG_ERR_PERSIST_FAILED;
 
+	/* Staged under g_recipes_dir itself (not yet inside any
+	 * name/version subdirectory -- the version isn't known until the
+	 * staged content is parsed below), same ".name.recipe.new"
+	 * dotfile-hiding convention this always used. */
 	if (snprintf(staging_path, sizeof(staging_path), "%s/.%s.recipe.new", g_recipes_dir, name) >=
 	    (int)sizeof(staging_path))
 		return PKG_ERR_INVALID_NAME;
@@ -1346,7 +1490,20 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content)
 		return PKG_ERR_INVALID_RECIPE;
 	}
 
-	snprintf(recipe_path, sizeof(recipe_path), "%s/%s.recipe", g_recipes_dir, name);
+	/* Immutability (ADR-0107): an already-published (name,version) is a
+	 * real error, never a silent overwrite. */
+	snprintf(name_dir, sizeof(name_dir), "%s/%s", g_recipes_dir, name);
+	snprintf(version_dir, sizeof(version_dir), "%s/%s", name_dir, parsed.version);
+	snprintf(recipe_path, sizeof(recipe_path), "%s/recipe.sh", version_dir);
+	if (stat(recipe_path, &st) == 0) {
+		unlink(staging_path);
+		return PKG_ERR_DUPLICATE;
+	}
+
+	if (persist_mkdir_p(version_dir) != 0) {
+		unlink(staging_path);
+		return PKG_ERR_PERSIST_FAILED;
+	}
 	if (rename(staging_path, recipe_path) != 0) {
 		unlink(staging_path);
 		return PKG_ERR_PERSIST_FAILED;
@@ -1354,20 +1511,59 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content)
 	return PKG_OK;
 }
 
-enum pkg_error pkg_recipe_delete(const char *name)
+enum pkg_error pkg_recipe_delete(const char *name, const char *version)
 {
-	char recipe_path[PATH_MAX];
+	char name_dir[PATH_MAX];
 	struct stat st;
 
 	if (!pkg_name_is_valid(name))
 		return PKG_ERR_INVALID_NAME;
 
-	snprintf(recipe_path, sizeof(recipe_path), "%s/%s.recipe", g_recipes_dir, name);
-	if (stat(recipe_path, &st) != 0)
-		return PKG_ERR_NOT_FOUND;
-	if (unlink(recipe_path) != 0)
-		return PKG_ERR_PERSIST_FAILED;
-	return PKG_OK;
+	snprintf(name_dir, sizeof(name_dir), "%s/%s", g_recipes_dir, name);
+
+	if (version != NULL && version[0] != '\0') {
+		char version_dir[PATH_MAX];
+		char recipe_path[PATH_MAX];
+
+		snprintf(version_dir, sizeof(version_dir), "%s/%s", name_dir, version);
+		snprintf(recipe_path, sizeof(recipe_path), "%s/recipe.sh", version_dir);
+		if (stat(recipe_path, &st) != 0)
+			return PKG_ERR_NOT_FOUND;
+		if (unlink(recipe_path) != 0 || rmdir(version_dir) != 0)
+			return PKG_ERR_PERSIST_FAILED;
+		/* Leave name_dir itself if other versions remain -- rmdir()
+		 * on a non-empty directory harmlessly fails and is ignored. */
+		rmdir(name_dir);
+		return PKG_OK;
+	}
+
+	/* No version given -- remove every published version of name. */
+	{
+		DIR *d = opendir(name_dir);
+		struct dirent *de;
+		int found = 0;
+
+		if (d == NULL)
+			return PKG_ERR_NOT_FOUND;
+		while ((de = readdir(d)) != NULL) {
+			char version_dir[PATH_MAX];
+			char recipe_path[PATH_MAX];
+
+			if (de->d_name[0] == '.')
+				continue;
+			found = 1;
+			snprintf(version_dir, sizeof(version_dir), "%s/%s", name_dir, de->d_name);
+			snprintf(recipe_path, sizeof(recipe_path), "%s/recipe.sh", version_dir);
+			unlink(recipe_path);
+			rmdir(version_dir);
+		}
+		closedir(d);
+		if (!found)
+			return PKG_ERR_NOT_FOUND;
+		if (rmdir(name_dir) != 0)
+			return PKG_ERR_PERSIST_FAILED;
+		return PKG_OK;
+	}
 }
 
 /*
@@ -1382,10 +1578,19 @@ enum pkg_error pkg_recipe_delete(const char *name)
  * the "already in queue" check below, independent of the cycle check).
  * All local file I/O -- no async need, every recipe involved is
  * already on disk.
+ *
+ * version (ADR-0107) is only ever meaningful for the top-level call
+ * (pkg_install_start()'s own requested pin) -- name's OWN recipe is
+ * looked up at that exact version so its depends= reflects what that
+ * specific version actually declared. Every recursive call for a
+ * dependency token always passes NULL: a dependency resolves to its
+ * own highest available version regardless of what the top-level
+ * target is pinned to (pinning applies only to the single package
+ * actually being installed, never transitively).
  */
-static int resolve_chain(const char *name, int force, char queue[][PKG_NAME_MAX], int *count,
-                          char visiting[][PKG_NAME_MAX], int *visiting_count, char *err_out,
-                          size_t err_out_size)
+static int resolve_chain(const char *name, const char *version, int force,
+                          char queue[][PKG_NAME_MAX], int *count, char visiting[][PKG_NAME_MAX],
+                          int *visiting_count, char *err_out, size_t err_out_size)
 {
 	struct pkg_entry *existing;
 	struct pkg_recipe recipe;
@@ -1415,8 +1620,8 @@ static int resolve_chain(const char *name, int force, char queue[][PKG_NAME_MAX]
 		}
 	}
 
-	snprintf(recipe_path, sizeof(recipe_path), "%s/%s.recipe", g_recipes_dir, name);
-	if (parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0) {
+	if (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) != 0 ||
+	    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0) {
 		snprintf(err_out, err_out_size, "unknown dependency '%s' (no recipe)", name);
 		return -1;
 	}
@@ -1432,8 +1637,8 @@ static int resolve_chain(const char *name, int force, char queue[][PKG_NAME_MAX]
 	snprintf(deps_copy, sizeof(deps_copy), "%s", recipe.depends);
 	tok = strtok_r(deps_copy, " \t", &save);
 	while (tok != NULL) {
-		if (resolve_chain(tok, 0, queue, count, visiting, visiting_count, err_out, err_out_size) !=
-		    0)
+		if (resolve_chain(tok, NULL, 0, queue, count, visiting, visiting_count, err_out,
+		                   err_out_size) != 0)
 			return -1;
 		tok = strtok_r(NULL, " \t", &save);
 	}
@@ -1448,6 +1653,33 @@ static int resolve_chain(const char *name, int force, char queue[][PKG_NAME_MAX]
 	queue[*count][PKG_NAME_MAX - 1] = '\0';
 	(*count)++;
 	return 0;
+}
+
+/*
+ * True exactly while the entry currently being fetched/built is the
+ * single top-level package the in-flight job actually asked for --
+ * g_dep_queue's own post-order construction (resolve_chain()) always
+ * places that entry last, and it's the only entry a version pin
+ * (g_current_job_target_version) ever applies to (ADR-0107).
+ */
+static int current_fetch_is_target(void)
+{
+	return g_dep_queue_pos == g_dep_queue_count - 1;
+}
+
+/*
+ * The version to resolve the currently-fetching/-building entry's own
+ * recipe at: the job's requested pin, but ONLY for the top-level
+ * target entry -- every dependency always resolves to its own highest
+ * available version regardless of what the target is pinned to.
+ * Returns NULL for "resolve to highest available", the pre-existing
+ * behavior for every case that isn't an explicit top-level pin.
+ */
+static const char *current_fetch_effective_version(void)
+{
+	if (current_fetch_is_target() && g_current_job_target_version[0] != '\0')
+		return g_current_job_target_version;
+	return NULL;
 }
 
 /*
@@ -1471,8 +1703,9 @@ static enum pkg_error start_fetch_for(const char *name, pid_t *out_pid, int *out
 	pid_t pid;
 	int pidfd;
 
-	snprintf(recipe_path, sizeof(recipe_path), "%s/%s.recipe", g_recipes_dir, name);
-	if (parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
+	if (find_recipe_path(name, current_fetch_effective_version(), recipe_path,
+	                      sizeof(recipe_path)) != 0 ||
+	    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
 		return PKG_ERR_INVALID_RECIPE;
 
 	e = pkg_find(name, g_current_job_image);
@@ -1647,9 +1880,9 @@ static enum pkg_error start_fetch_for(const char *name, pid_t *out_pid, int *out
 	return PKG_OK;
 }
 
-enum pkg_error pkg_install_start(const char *name, const char *image, int upgrade,
-                                  char *out_started_name, size_t out_started_name_size,
-                                  pid_t *out_pid, int *out_pidfd)
+enum pkg_error pkg_install_start(const char *name, const char *image, const char *version,
+                                  int upgrade, char *out_started_name,
+                                  size_t out_started_name_size, pid_t *out_pid, int *out_pidfd)
 {
 	struct pkg_recipe recipe;
 	char recipe_path[PATH_MAX];
@@ -1666,11 +1899,13 @@ enum pkg_error pkg_install_start(const char *name, const char *image, int upgrad
 	if (g_current_job_name[0] != '\0')
 		return PKG_ERR_BUSY;
 
-	snprintf(recipe_path, sizeof(recipe_path), "%s/%s.recipe", g_recipes_dir, name);
-	if (parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
+	if (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) != 0 ||
+	    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
 		return PKG_ERR_INVALID_RECIPE;
 
 	snprintf(g_current_job_image, sizeof(g_current_job_image), "%s", normalize_image(image));
+	snprintf(g_current_job_target_version, sizeof(g_current_job_target_version), "%s",
+	         (version != NULL) ? version : "");
 	g_current_job_is_hostbuild = 0;
 
 	e = pkg_find(name, g_current_job_image);
@@ -1684,8 +1919,8 @@ enum pkg_error pkg_install_start(const char *name, const char *image, int upgrad
 	 * installed (resolve_chain()'s default "already installed, skip"
 	 * rule is for pure dependencies, not the package actually asked for). */
 	g_dep_queue_count = 0;
-	if (resolve_chain(name, 1, g_dep_queue, &g_dep_queue_count, visiting, &visiting_count, err,
-	                   sizeof(err)) != 0)
+	if (resolve_chain(name, version, 1, g_dep_queue, &g_dep_queue_count, visiting, &visiting_count,
+	                   err, sizeof(err)) != 0)
 		return PKG_ERR_INVALID_RECIPE;
 
 	g_dep_queue_pos = 0;
@@ -1700,8 +1935,8 @@ enum pkg_error pkg_install_start(const char *name, const char *image, int upgrad
 	return PKG_OK;
 }
 
-enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, int upgrade,
-                                    pid_t *out_pid, int *out_pidfd)
+enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, const char *version,
+                                    int upgrade, pid_t *out_pid, int *out_pidfd)
 {
 	struct pkg_recipe recipe;
 	char recipe_path[PATH_MAX];
@@ -1717,8 +1952,8 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, in
 	if (g_current_job_name[0] != '\0')
 		return PKG_ERR_BUSY;
 
-	snprintf(recipe_path, sizeof(recipe_path), "%s/%s.recipe", g_recipes_dir, name);
-	if (parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
+	if (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) != 0 ||
+	    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
 		return PKG_ERR_INVALID_RECIPE;
 	/* Dependency resolution targets "merge into an image" -- meaningless
 	 * for a one-shot artifact harvest. Every prerequisite must already
@@ -1752,6 +1987,8 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, in
 
 	snprintf(g_current_job_image, sizeof(g_current_job_image), "%s", PKG_HOSTBUILD_IMAGE);
 	snprintf(g_current_job_build_image, sizeof(g_current_job_build_image), "%s", build_image);
+	snprintf(g_current_job_target_version, sizeof(g_current_job_target_version), "%s",
+	         (version != NULL) ? version : "");
 	g_current_job_is_hostbuild = 1;
 
 	/* A hostbuild job is always a single, standalone entry -- no
@@ -1829,8 +2066,9 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 		return 0;
 	}
 
-	snprintf(recipe_path, sizeof(recipe_path), "%s/%s.recipe", g_recipes_dir, e->name);
-	if (parse_recipe(recipe_path, &recipe) != 0) {
+	if (find_recipe_path(e->name, current_fetch_effective_version(), recipe_path,
+	                      sizeof(recipe_path)) != 0 ||
+	    parse_recipe(recipe_path, &recipe) != 0) {
 		e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
 		snprintf(e->error, sizeof(e->error), "recipe became unreadable mid-install");
 		g_current_job_name[0] = '\0';
@@ -2364,8 +2602,9 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		char recipe_path[PATH_MAX];
 		struct pkg_recipe recipe;
 
-		snprintf(recipe_path, sizeof(recipe_path), "%s/%s.recipe", g_recipes_dir, e->name);
-		if (parse_recipe(recipe_path, &recipe) == 0) {
+		if (find_recipe_path(e->name, current_fetch_effective_version(), recipe_path,
+		                      sizeof(recipe_path)) == 0 &&
+		    parse_recipe(recipe_path, &recipe) == 0) {
 			strncpy(e->version, recipe.version, sizeof(e->version) - 1);
 			strncpy(e->depends, recipe.depends, sizeof(e->depends) - 1);
 		}
@@ -2486,8 +2725,8 @@ int pkg_find_update_candidate(char *out_name, size_t out_name_size, char *out_im
 		/* Same fresh-from-disk drift check write_pkg_json() performs
 		 * per-entry for available_version -- One Source of Truth, no
 		 * second comparison rule to keep in sync. */
-		snprintf(recipe_path, sizeof(recipe_path), "%s/%s.recipe", g_recipes_dir, e->name);
-		if (parse_recipe(recipe_path, &recipe) == 0 && strcmp(recipe.version, e->version) != 0) {
+		if (find_recipe_path(e->name, NULL, recipe_path, sizeof(recipe_path)) == 0 &&
+		    parse_recipe(recipe_path, &recipe) == 0 && strcmp(recipe.version, e->version) != 0) {
 			snprintf(out_name, out_name_size, "%s", e->name);
 			snprintf(out_image, out_image_size, "%s", e->image);
 			return 1;

@@ -244,13 +244,21 @@ static int stage_fixture_plain_file(const char *scratch_dir, const char *filenam
 	return compute_file_sha256(out_path, out_sha256, sha256_size);
 }
 
+/* ADR-0107: recipes live at recipes/<name>/<version>/recipe.sh -- the
+ * two mkdir()s are best-effort (already-exists is fine, anything else
+ * surfaces as the fopen() below failing). */
 static int write_recipe(const char *name, const char *version, const char *tarball_path,
                          const char *sha256, const char *depends)
 {
-	char path[256];
+	char name_dir[256];
+	char path[300];
 	FILE *f;
 
-	snprintf(path, sizeof(path), "%s/recipes/%s.recipe", g_pkg_state_dir, name);
+	snprintf(name_dir, sizeof(name_dir), "%s/recipes/%s", g_pkg_state_dir, name);
+	mkdir(name_dir, 0755);
+	snprintf(path, sizeof(path), "%s/%s", name_dir, version);
+	mkdir(path, 0755);
+	snprintf(path, sizeof(path), "%s/recipes/%s/%s/recipe.sh", g_pkg_state_dir, name, version);
 	f = fopen(path, "w");
 	if (f == NULL)
 		return -1;
@@ -278,10 +286,15 @@ static int write_multisrc_recipe(const char *name, const char *version, const ch
                                   const char *extra1_sha256, const char *extra2_path,
                                   const char *extra2_sha256)
 {
-	char path[256];
+	char name_dir[256];
+	char path[300];
 	FILE *f;
 
-	snprintf(path, sizeof(path), "%s/recipes/%s.recipe", g_pkg_state_dir, name);
+	snprintf(name_dir, sizeof(name_dir), "%s/recipes/%s", g_pkg_state_dir, name);
+	mkdir(name_dir, 0755);
+	snprintf(path, sizeof(path), "%s/%s", name_dir, version);
+	mkdir(path, 0755);
+	snprintf(path, sizeof(path), "%s/recipes/%s/%s/recipe.sh", g_pkg_state_dir, name, version);
 	f = fopen(path, "w");
 	if (f == NULL)
 		return -1;
@@ -1129,8 +1142,10 @@ int main(void)
 			}
 		}
 
-		/* upsert: re-add the same name with a bumped version -> the
-		 * recipe list must reflect the new version, not the old one */
+		/* ADR-0107: publish a second, distinct version of the same
+		 * name -- immutable-per-version, not an upsert, so this must
+		 * NOT reject the first version (a genuinely different
+		 * pkg_version=) and both versions must coexist afterward. */
 		{
 			snprintf(body2, sizeof(body2),
 			         "pkg_name=apirecipe\npkg_version=2.0\npkg_source=file://%s\n"
@@ -1156,30 +1171,35 @@ int main(void)
 			kx_response_free(&r);
 			jw_free(&w);
 		}
+		/* ADR-0107: recipe versions are immutable and multi-version,
+		 * not upsert-by-name -- the list must now show BOTH 1.0 and
+		 * 2.0 as separate, independently-published entries for
+		 * "apirecipe", neither one replacing the other. */
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "GET", "/v1/pkg/recipes", NULL, &r) != 0 || r.status != 200) {
-			fprintf(stderr, "FAIL: GET recipes after upsert, status=%d\n", r.status);
+			fprintf(stderr, "FAIL: GET recipes after publishing a second version, status=%d\n",
+			        r.status);
 			ok = 0;
 		} else {
 			const struct json_value *recipes = json_object_get(r.json, "recipes");
 			size_t i;
-			int found = 0;
+			int found_v1 = 0, found_v2 = 0;
 
 			for (i = 0; recipes != NULL && i < recipes->u.array.count; i++) {
 				const struct json_value *item = recipes->u.array.items[i];
 
-				if (str_eq(json_str_field(item, "name"), "apirecipe")) {
-					found = 1;
-					if (!str_eq(json_str_field(item, "version"), "2.0")) {
-						fprintf(stderr,
-						        "FAIL: apirecipe version after upsert is '%s', expected 2.0\n",
-						        json_str_field(item, "version"));
-						ok = 0;
-					}
-				}
+				if (!str_eq(json_str_field(item, "name"), "apirecipe"))
+					continue;
+				if (str_eq(json_str_field(item, "version"), "1.0"))
+					found_v1 = 1;
+				else if (str_eq(json_str_field(item, "version"), "2.0"))
+					found_v2 = 1;
 			}
-			if (!found) {
-				fprintf(stderr, "FAIL: apirecipe missing from recipe list after upsert\n");
+			if (!found_v1 || !found_v2) {
+				fprintf(stderr,
+				        "FAIL: apirecipe recipe list missing a version after publishing "
+				        "2.0 (v1.0 present=%d, v2.0 present=%d)\n",
+				        found_v1, found_v2);
 				ok = 0;
 			}
 		}
@@ -1288,7 +1308,16 @@ skip_recipe_api:
 		/* A plain hand-written recipe (not stage_fixture_tarball(), no
 		 * DESTDIR/usr/bin convention needed -- pkg_install() below
 		 * just drops its output at a fixed, predictable name). */
-		snprintf(hb_recipe_path, sizeof(hb_recipe_path), "%s/recipes/hbtest.recipe", g_pkg_state_dir);
+		{
+			char hb_recipe_dir[PATH_MAX];
+
+			snprintf(hb_recipe_dir, sizeof(hb_recipe_dir), "%s/recipes/hbtest", g_pkg_state_dir);
+			mkdir(hb_recipe_dir, 0755);
+			snprintf(hb_recipe_dir, sizeof(hb_recipe_dir), "%s/recipes/hbtest/1.0", g_pkg_state_dir);
+			mkdir(hb_recipe_dir, 0755);
+		}
+		snprintf(hb_recipe_path, sizeof(hb_recipe_path), "%s/recipes/hbtest/1.0/recipe.sh",
+		         g_pkg_state_dir);
 		f = fopen(hb_recipe_path, "w");
 		if (f == NULL) {
 			fprintf(stderr, "FAIL: could not write hbtest.recipe\n");
@@ -1405,7 +1434,17 @@ skip_recipe_api:
 		 * into an image," meaningless for a one-shot harvest. The
 		 * prior job is done by now (not busy), so this genuinely
 		 * exercises the depends check, not PKG_ERR_BUSY. */
-		snprintf(hb_recipe_path, sizeof(hb_recipe_path), "%s/recipes/hbdepstest.recipe",
+		{
+			char hb_recipe_dir[PATH_MAX];
+
+			snprintf(hb_recipe_dir, sizeof(hb_recipe_dir), "%s/recipes/hbdepstest",
+			         g_pkg_state_dir);
+			mkdir(hb_recipe_dir, 0755);
+			snprintf(hb_recipe_dir, sizeof(hb_recipe_dir), "%s/recipes/hbdepstest/1.0",
+			         g_pkg_state_dir);
+			mkdir(hb_recipe_dir, 0755);
+		}
+		snprintf(hb_recipe_path, sizeof(hb_recipe_path), "%s/recipes/hbdepstest/1.0/recipe.sh",
 		         g_pkg_state_dir);
 		f = fopen(hb_recipe_path, "w");
 		if (f == NULL) {

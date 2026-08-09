@@ -76,10 +76,10 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | POST | `/pki/reset` | Wipe and regenerate the entire CA chain, reissuing every currently-tracked leaf |
 | POST | `/pkg/bootstrap` | Stage the sandboxed build toolchain image (`toolchain_path` local import, or `toolchain_url`+`toolchain_sha256` for the daemon to fetch it itself; once; idempotent) |
 | GET | `/pkg/bootstrap` | Status of the most recent `toolchain_url` fetch |
-| GET | `/pkg/recipes` | List recipes known to this daemon (metadata only) |
-| POST | `/pkg/recipes` | Add a recipe, or replace one with the same name (upsert) |
-| GET | `/pkg/recipes/{name}` | One recipe's full detail, including its raw `.recipe` text |
-| DELETE | `/pkg/recipes/{name}` | Remove a recipe (does not affect anything already installed via it) |
+| GET | `/pkg/recipes` | List every published recipe version known to this daemon (metadata only) |
+| POST | `/pkg/recipes` | Publish a new recipe version — immutable once published, 409 if this exact (name,version) already exists |
+| GET | `/pkg/recipes/{name}` | One recipe version's full detail, including its raw `recipe.sh` text; `?version=` selects a specific one, omitted resolves to the highest available |
+| DELETE | `/pkg/recipes/{name}` | Remove recipe version(s) (does not affect anything already installed via it); `?version=` removes just that one, omitted removes every version |
 | POST | `/pkg/install` | Start installing a package (async — returns immediately) |
 | POST | `/pkg/update-all` | Start an upgrade for the first installed package whose recipe has drifted |
 | POST | `/pkg/hostbuild` | Start a hostbuild job — build a standalone artifact instead of merging into an image |
@@ -703,14 +703,14 @@ Stages a real build toolchain (`gcc`/`make`/`ld`/`as`/`cc1`/`sh`/`tar` and their
 
 **`{"toolchain_url": "...", "toolchain_sha256": "..."}` is a third mode (ADR-0065): the daemon fetches the artifact itself, host-side** — the same real `curl` primitive every recipe's own `pkg_source` already uses, not a second fetch mechanism. Closes a real gap the other two modes both rest on: a genuinely fresh, minimal Kanxeo install has no SSH server and no general shell at all (ADR-0034), so "the operator transfers it onto the box" was never actually possible for a from-scratch install with nothing else already on the network to reach it via — confirmed the hard way (`nc -z <box> 22` closed) rather than assumed. Async (`202`, since a real network fetch of a real, large artifact can't block this daemon's single-threaded event loop) — poll `GET /v1/pkg/bootstrap` (`state`: `none`/`fetching`/`ready`/`failed`) the same shape `GET /system/iso` already established. `409` if a fetch is already in flight; `400` if `toolchain_url` is given without a valid 64-char `toolchain_sha256`. All three modes are idempotent — safe to call again.
 
-**Recipes are managed live, via the API itself (ADR-0040)** — `POST /v1/pkg/recipes` adds one (or replaces an existing one of the same name, an upsert), no ISO rebuild or reinstall needed:
+**Recipes are managed live, via the API itself (ADR-0040), and are version-keyed and immutable once published (ADR-0107)** — `POST /v1/pkg/recipes` publishes a new `(name, version)`, no ISO rebuild or reinstall needed:
 
 ```
 POST /v1/pkg/recipes
 {"name": "hello", "content": "pkg_name=hello\npkg_version=2.12.1\n..."}
 ```
 
-`content` is validated (must parse, and its own `pkg_name=` must equal `name`) *before* anything on disk changes — `400` on a mismatch or a recipe that fails to parse, so a bad upload can never clobber a working recipe already there. `204` on success. `GET /v1/pkg/recipes/{name}` returns one recipe's full detail (including its raw `.recipe` text, unlike the list view's metadata-only shape) — powers the web dashboard's per-package Recipe tab. `DELETE /v1/pkg/recipes/{name}` removes one; it only affects future `pkg install`/`update-all` lookups, never anything already installed via it. `GET /v1/pkg/recipes` lists what this daemon currently knows about. This project's own git-tracked `pkg/recipes/*.recipe` files (`bash`, `bird`, `iproute2`, etc.) are the *source* for a fresh deployment's initial catalog, uploaded through this same endpoint — never baked into the installer ISO or read directly off some fixed on-disk path by the daemon itself.
+`content` is validated (must parse, and its own `pkg_name=`/`pkg_version=` must equal `name` and the version this call actually publishes) *before* anything on disk changes — `400` on a mismatch or a recipe that fails to parse. Unlike the old flat-file layout, publishing an already-existing `(name, version)` pair is `409 Conflict`, not a silent overwrite — fixing a mistake means bumping `pkg_version=` and publishing again. `204` on success. `GET /v1/pkg/recipes/{name}` returns one recipe version's full detail (including its raw `recipe.sh` text and a `created_at` timestamp, unlike the list view's metadata-only shape) — powers the web dashboard's per-package Recipe tab; an optional `?version=` selects a specific published version, omitted resolves to the highest available. `DELETE /v1/pkg/recipes/{name}` removes recipe version(s) — `?version=` removes just that one, leaving any other published versions of `name` intact; omitted removes every version. Either way it only affects future `pkg install`/`update-all` lookups, never anything already installed via it. `GET /v1/pkg/recipes` lists every published version this daemon currently knows about — a package name with multiple published versions appears as multiple separate entries, not merged. This project's own git-tracked `pkg/recipes/<name>/<version>/recipe.sh` files (`bash`, `bird`, `iproute2`, etc.) are the *source* for a fresh deployment's initial catalog, uploaded through this same endpoint — never baked into the installer ISO or read directly off some fixed on-disk path by the daemon itself.
 
 Install it:
 
@@ -764,6 +764,17 @@ POST /v1/pkg/install
 
 `GET /v1/pkg/{name}` shows `"available_version"` (`null`, or the recipe's current version) for any installed package whose recipe has since changed — the concrete "is this out of date" answer, checked live against the recipe on disk every time, not cached.
 
+### Pinning a specific recipe version
+
+A bare install/hostbuild always resolves `name` to its highest published recipe version. An explicit `"version"` field pins it to exactly that one instead (ADR-0107):
+
+```
+POST /v1/pkg/install
+{"name": "curl", "version": "8.20.0"}
+```
+
+404/400 if no such `(name, version)` recipe is published. This pin applies only to the single package actually being installed — every dependency it pulls in via `pkg_depends` still always resolves to *its own* highest available version, regardless of what the top-level target is pinned to.
+
 ### Per-image installs
 
 Install into something other than the default `base` image with `"image"`:
@@ -795,7 +806,7 @@ POST /v1/pkg/hostbuild
 {"name": "kernel", "build_image": "kanxeo-builder"}
 ```
 
-`build_image` is always explicit (no default) — the already-existing image whose rootfs supplies the build container's own toolchain (must already have whatever the recipe's `pkg_build()` needs actually installed, via ordinary `pkg install` first; a hostbuild recipe cannot itself declare `pkg_depends`, since dependency resolution has no meaning for a one-shot harvest). `202`, polled via `GET /pkg/hostbuild/{name}` (a thin wrapper over the same `GET /pkg/{name}` lookup, scoped to a reserved internal image name) exactly like an ordinary install. Once `state: "installed"`, the artifact lives on the host at a fixed, well-known path per recipe (`kernel.recipe` → a `bzImage`; `kanxeo.recipe` → `kanxeod`/`kanxeoctl`/`web/`/`kanxeo-install`/`mkinstalleriso` plus a server-side-assembled `kanxeod-root.squashfs`; `isotools.recipe` → a self-contained `grub-mkrescue`/`sbsign`/`sbverify`/`xorriso`/`mformat`/`mcopy` toolchain) — never merged into any container image's rootfs. `PkgEntry`'s own `files[]` stays empty for a hostbuild entry always, by design (nothing to `pkg_delete()` for a plain host artifact) — `artifact_path`'s own directory listing is the real answer to what a hostbuild produced. A hostbuild already in `state: "installed"` is a bare 409 on a repeat call unless `"upgrade": true` is given and the recipe's own `pkg_version=` has actually moved on (ADR-0094, mirrors `/pkg/install`'s own `upgrade` field exactly). `kanxeoctl pkg hostbuild <name> --build-image=<image> [--wait] [--deploy] [--upgrade]` is the CLI surface; `--deploy` reads the finished artifact and calls the existing, unmodified `/system/update` for you.
+`build_image` is always explicit (no default), and an optional `"version"` field pins the hostbuild to a specific published recipe version exactly like `/pkg/install`'s own (omitted resolves to the highest available) — the already-existing image whose rootfs supplies the build container's own toolchain (must already have whatever the recipe's `pkg_build()` needs actually installed, via ordinary `pkg install` first; a hostbuild recipe cannot itself declare `pkg_depends`, since dependency resolution has no meaning for a one-shot harvest). `202`, polled via `GET /pkg/hostbuild/{name}` (a thin wrapper over the same `GET /pkg/{name}` lookup, scoped to a reserved internal image name) exactly like an ordinary install. Once `state: "installed"`, the artifact lives on the host at a fixed, well-known path per recipe (`kernel.recipe` → a `bzImage`; `kanxeo.recipe` → `kanxeod`/`kanxeoctl`/`web/`/`kanxeo-install`/`mkinstalleriso` plus a server-side-assembled `kanxeod-root.squashfs`; `isotools.recipe` → a self-contained `grub-mkrescue`/`sbsign`/`sbverify`/`xorriso`/`mformat`/`mcopy` toolchain) — never merged into any container image's rootfs. `PkgEntry`'s own `files[]` stays empty for a hostbuild entry always, by design (nothing to `pkg_delete()` for a plain host artifact) — `artifact_path`'s own directory listing is the real answer to what a hostbuild produced. A hostbuild already in `state: "installed"` is a bare 409 on a repeat call unless `"upgrade": true` is given and the recipe's own `pkg_version=` has actually moved on (ADR-0094, mirrors `/pkg/install`'s own `upgrade` field exactly). `kanxeoctl pkg hostbuild <name> --build-image=<image> [--wait] [--deploy] [--upgrade]` is the CLI surface; `--deploy` reads the finished artifact and calls the existing, unmodified `/system/update` for you.
 
 ### Building a fresh installer ISO server-side
 

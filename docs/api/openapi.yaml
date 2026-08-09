@@ -2257,11 +2257,13 @@ paths:
                       $ref: "#/components/schemas/PkgRecipe"
     post:
       summary: >
-        Adds a new recipe, or replaces an existing one with the same name (upsert) --
-        the real, ongoing way a recipe catalog is managed on an already-running system,
-        no ISO rebuild or reinstall needed (ADR-0040). content is validated (must parse,
-        and its own pkg_name= field must equal name) before anything on disk changes --
-        an invalid upload can never clobber a working recipe already there.
+        Publishes a new recipe version (ADR-0107) -- the real, ongoing way a recipe
+        catalog is managed on an already-running system, no ISO rebuild or reinstall
+        needed (ADR-0040). content is validated (must parse, and its own pkg_name=/
+        pkg_version= must equal name and the version content itself declares) before
+        anything on disk changes. Recipe versions are immutable once published: an
+        already-published (name, version) pair is 409 Conflict, never a silent
+        overwrite -- fixing a mistake means bumping pkg_version= and publishing again.
       operationId: addPkgRecipe
       requestBody:
         required: true
@@ -2275,18 +2277,24 @@ paths:
                   type: string
                 content:
                   type: string
-                  description: The full text of a .recipe file (pkg_name=/pkg_version=/pkg_source=/pkg_sha256=/pkg_depends=)
+                  description: The full text of a recipe.sh file (pkg_name=/pkg_version=/pkg_source=/pkg_sha256=/pkg_depends=)
       responses:
         "204":
-          description: Recipe added or updated
+          description: Recipe version published
         "400":
           description: name/content missing, name invalid, or content failed to parse / its pkg_name= doesn't match name
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "409":
+          description: This exact (name, version) is already published -- versions are immutable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
-          description: Validated but writing the .recipe file to disk failed
+          description: Validated but writing the recipe.sh file to disk failed
           content:
             application/json:
               schema:
@@ -2295,13 +2303,17 @@ paths:
   /pkg/recipes/{name}:
     get:
       summary: >
-        One recipe's own {name,version,depends,content} -- the raw .recipe text too,
-        unlike GET /pkg/recipes' list-view metadata-only shape. Powers the web
-        dashboard's per-package Recipe tab (view, and edit-then-resubmit through the
-        existing POST /pkg/recipes upsert). Still never sourced/executed here.
+        One recipe version's own {name,version,depends,content,created_at} -- the raw
+        recipe.sh text too, unlike GET /pkg/recipes' list-view metadata-only shape.
+        Powers the web dashboard's per-package Recipe tab (view, and edit-then-publish
+        as a new version through POST /pkg/recipes). An optional ?version= query
+        parameter selects a specific published version; omitted resolves to the
+        highest available version for name (ADR-0107). Still never sourced/executed
+        here.
       operationId: getPkgRecipe
       parameters:
         - $ref: "#/components/parameters/PkgRecipeName"
+        - $ref: "#/components/parameters/PkgRecipeVersionQuery"
       responses:
         "200":
           description: Recipe detail
@@ -2310,7 +2322,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/PkgRecipeDetail"
         "404":
-          description: No recipe with this name
+          description: No recipe with this name (or this exact name+version)
           content:
             application/json:
               schema:
@@ -2323,22 +2335,25 @@ paths:
                 $ref: "#/components/schemas/Error"
     delete:
       summary: >
-        Removes a recipe. Does not affect anything already installed via it -- only
-        future `pkg install`/update-all lookups for this name.
+        Removes recipe version(s) for name. An optional ?version= query parameter
+        removes only that one published version, leaving any others intact; omitted
+        removes every published version of name (ADR-0107). Does not affect anything
+        already installed via it -- only future `pkg install`/update-all lookups.
       operationId: deletePkgRecipe
       parameters:
         - $ref: "#/components/parameters/PkgRecipeName"
+        - $ref: "#/components/parameters/PkgRecipeVersionQuery"
       responses:
         "204":
-          description: Recipe removed
+          description: Recipe version(s) removed
         "404":
-          description: No recipe with this name
+          description: No recipe with this name (or this exact name+version)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "500":
-          description: The recipe exists but deleting its file from disk failed
+          description: The recipe exists but deleting its file(s) from disk failed
           content:
             application/json:
               schema:
@@ -2462,6 +2477,12 @@ paths:
                   description: >
                     The already-existing image whose rootfs supplies the build
                     container's lowerdir. No default -- always explicit.
+                version:
+                  type: string
+                  description: >
+                    Hostbuilds exactly this published recipe version (ADR-0107) --
+                    e.g. rebuilding an older kanxeo release on demand. Omitted
+                    resolves to the highest available version for name.
                 upgrade:
                   type: boolean
                   default: false
@@ -3198,13 +3219,23 @@ components:
       in: path
       required: true
       description: >
-        A recipe's name (its pkg_name= field, and the {name}.recipe
-        filename). Unlike PkgName, this has no "{name}@{image}" compound
-        form -- a recipe is not tracked per-image, so an "@" is simply
-        rejected as an invalid name.
+        A recipe's name (its pkg_name= field, and the {name}/ directory
+        under pkg/recipes/, ADR-0107). Unlike PkgName, this has no
+        "{name}@{image}" compound form -- a recipe is not tracked
+        per-image, so an "@" is simply rejected as an invalid name.
       schema:
         type: string
         pattern: "^[A-Za-z0-9_-]+$"
+
+    PkgRecipeVersionQuery:
+      name: version
+      in: query
+      required: false
+      description: >
+        A specific published recipe version (ADR-0107). Omitted resolves to the
+        highest available version for GET, or every published version for DELETE.
+      schema:
+        type: string
 
   schemas:
     ContainerCreateRequest:
@@ -4881,6 +4912,10 @@ components:
           type: string
         version:
           type: string
+          description: >
+            One published version of name (ADR-0107) -- a package name may have
+            multiple recipe versions coexisting; each appears as its own separate
+            entry in GET /pkg/recipes' list, not merged/deduplicated by name.
         depends:
           type: string
           description: >
@@ -4889,9 +4924,18 @@ components:
             /pkg/install and /pkg/update-all both recursively resolve and
             install any of these not already satisfied in the target
             image before this recipe's own build starts, with cycle and
-            diamond-dependency handling. A hostbuild recipe (POST
-            /pkg/hostbuild) must leave this empty -- dependency
-            resolution has no meaning for a one-shot artifact harvest.
+            diamond-dependency handling (dependencies always resolve to
+            their own highest available version, regardless of any
+            pinned version on the package actually being installed). A
+            hostbuild recipe (POST /pkg/hostbuild) must leave this empty
+            -- dependency resolution has no meaning for a one-shot
+            artifact harvest.
+        created_at:
+          type: integer
+          description: >
+            Unix epoch seconds this recipe version's file was first published
+            (ADR-0108) -- real filesystem mtime, accurate because a published
+            version's file is never rewritten (ADR-0107's immutability rule).
 
     PkgRecipeDetail:
       allOf:
@@ -4901,7 +4945,7 @@ components:
           properties:
             content:
               type: string
-              description: The full text of the .recipe file, never sourced/executed by the daemon.
+              description: The full text of the recipe.sh file, never sourced/executed by the daemon.
 
     PkgInstallRequest:
       type: object
@@ -4910,9 +4954,10 @@ components:
         name:
           type: string
           description: >
-            Must match an existing <name>.recipe file's own pkg_name=. Its pkg_depends
-            are resolved and installed first automatically (already-installed
-            dependencies are skipped; a circular or unresolvable dependency is a 400).
+            Must match a published <name>/<version>/recipe.sh's own pkg_name=. Its
+            pkg_depends are resolved and installed first automatically
+            (already-installed dependencies are skipped; a circular or unresolvable
+            dependency is a 400).
         image:
           type: string
           default: base
@@ -4922,6 +4967,16 @@ components:
             is tracked independently per image -- installing "bash" into both "base"
             and "router" are two separate, independently upgradable/removable entries.
             Every dependency name pulls in installs into this same target image.
+        version:
+          type: string
+          description: >
+            Pins name to exactly this published recipe version (ADR-0107). Omitted
+            resolves to the highest available version for name -- the pre-existing
+            behavior every caller before ADR-0107 relied on. Every dependency name
+            pulls in always resolves to its own highest available version regardless
+            of this field -- pinning applies only to the single package actually
+            being installed, never transitively to its build-time prerequisites.
+            404/400 if no such (name, version) recipe exists.
         upgrade:
           type: boolean
           default: false

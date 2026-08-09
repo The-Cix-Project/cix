@@ -90,7 +90,7 @@ Every install targets one image's rootfs — `pkg_build()`/`pkg_install()` write
 
 ## A complete, real worked example
 
-`pkg/recipes/bash.recipe`, verbatim, annotated with why each line is there:
+`pkg/recipes/bash/5.2.37/recipe.sh`, verbatim, annotated with why each line is there:
 
 ```sh
 pkg_name="bash"
@@ -120,7 +120,7 @@ POST /v1/pkg/recipes
 {"name": "hello", "content": "pkg_name=hello\npkg_version=2.12.1\n..."}
 ```
 
-Upserts — the same call adds a brand new recipe or replaces an existing one with the same name, validated (parses, and its own `pkg_name=` matches `name`) before anything on disk changes. `kanxeoctl pkg recipe add --name=hello --file=./hello.recipe` is the CLI equivalent. Then:
+Publishes a new `(name, version)` recipe (ADR-0107) — validated (parses, and its own `pkg_name=`/`pkg_version=` match `name` and the version this call actually publishes) before anything on disk changes. Recipe versions are immutable once published: an already-published `(name, version)` pair is rejected (`409 Conflict`), not silently overwritten — fixing a mistake means bumping `pkg_version=` and publishing again, not re-uploading under the same version. `kanxeoctl pkg recipe add --name=hello --file=./hello.recipe` is the CLI equivalent. A bare `pkg install`/`pkg hostbuild` (no explicit `version`) always resolves to the highest published version for that name. Then:
 
 ```
 POST /v1/pkg/install
