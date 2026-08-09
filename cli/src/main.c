@@ -705,6 +705,14 @@ static void fmt_ldap_server_list(const struct json_value *v)
 		fmt_ldap_server_line(servers->u.array.items[i]);
 }
 
+static void fmt_ldap_config_line(const struct json_value *v)
+{
+	long start_uid = (long)json_as_number(json_object_get(v, "start_uid"));
+	long start_gid = (long)json_as_number(json_object_get(v, "start_gid"));
+
+	printf("start_uid=%ld start_gid=%ld\n", start_uid, start_gid);
+}
+
 static void fmt_ldap_group_line(const struct json_value *v)
 {
 	const char *name = json_str_field(v, "name");
@@ -3712,6 +3720,49 @@ static int cmd_dns_record_ls(const struct kx_client *c, int json_mode)
 	return emit(&r, json_mode, fmt_dns_record_list);
 }
 
+static int cmd_dns_record_update(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *name = NULL;
+	const char *ip = NULL;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+	char path[256];
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--name=", 7) == 0)
+			name = argv[i] + 7;
+		else if (strncmp(argv[i], "--ip=", 5) == 0)
+			ip = argv[i] + 5;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown dns record update option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	if (name == NULL || ip == NULL) {
+		fprintf(stderr, "usage: kanxeoctl dns record update --name=NAME --ip=A.B.C.D\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "ip");
+	jw_str(&w, ip);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	snprintf(path, sizeof(path), "/v1/dns/records/%s", name);
+	if (kx_client_request(c, "PUT", path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_dns_record_line);
+}
+
 static int cmd_dns_record_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	struct kx_response r;
@@ -3736,6 +3787,7 @@ static int cmd_dns_record(const struct kx_client *c, int json_mode, int argc, ch
 	if (argc < 1) {
 		fprintf(stderr,
 		        "usage: kanxeoctl dns record create --name=NAME --ip=A.B.C.D\n"
+		        "       kanxeoctl dns record update --name=NAME --ip=A.B.C.D\n"
 		        "       kanxeoctl dns record ls\n"
 		        "       kanxeoctl dns record rm NAME\n");
 		return 2;
@@ -3743,6 +3795,8 @@ static int cmd_dns_record(const struct kx_client *c, int json_mode, int argc, ch
 	sub = argv[0];
 	if (strcmp(sub, "create") == 0)
 		return cmd_dns_record_create(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "update") == 0)
+		return cmd_dns_record_update(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "ls") == 0)
 		return cmd_dns_record_ls(c, json_mode);
 	if (strcmp(sub, "rm") == 0)
@@ -3982,8 +4036,8 @@ static int cmd_ldap_group_add(const struct kx_client *c, int json_mode, int argc
 		}
 	}
 
-	if (name == NULL || gidnumber == NULL) {
-		fprintf(stderr, "usage: kanxeoctl ldap group add --name=NAME --gidnumber=N\n");
+	if (name == NULL) {
+		fprintf(stderr, "usage: kanxeoctl ldap group add --name=NAME [--gidnumber=N]\n");
 		return 2;
 	}
 
@@ -3991,8 +4045,12 @@ static int cmd_ldap_group_add(const struct kx_client *c, int json_mode, int argc
 	jw_obj_open(&w);
 	jw_key(&w, "name");
 	jw_str(&w, name);
-	jw_key(&w, "gidnumber");
-	jw_int(&w, strtol(gidnumber, NULL, 10));
+	/* gidnumber omitted (task #748): server auto-allocates from the
+	 * configurable start_gid pool -- see `ldap config`. */
+	if (gidnumber != NULL) {
+		jw_key(&w, "gidnumber");
+		jw_int(&w, strtol(gidnumber, NULL, 10));
+	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -4017,6 +4075,49 @@ static int cmd_ldap_group_ls(const struct kx_client *c, int json_mode)
 	return emit(&r, json_mode, fmt_ldap_group_list);
 }
 
+static int cmd_ldap_group_update(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *name = NULL;
+	const char *gidnumber = NULL;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+	char path[256];
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--name=", 7) == 0)
+			name = argv[i] + 7;
+		else if (strncmp(argv[i], "--gidnumber=", 12) == 0)
+			gidnumber = argv[i] + 12;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown ldap group update option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	if (name == NULL || gidnumber == NULL) {
+		fprintf(stderr, "usage: kanxeoctl ldap group update --name=NAME --gidnumber=N\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "gidnumber");
+	jw_int(&w, strtol(gidnumber, NULL, 10));
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	snprintf(path, sizeof(path), "/v1/ldap/groups/%s", name);
+	if (kx_client_request(c, "PUT", path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_ldap_group_line);
+}
+
 static int cmd_ldap_group_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	struct kx_response r;
@@ -4039,7 +4140,8 @@ static int cmd_ldap_group(const struct kx_client *c, int json_mode, int argc, ch
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl ldap group add --name=NAME --gidnumber=N\n"
+		fprintf(stderr, "usage: kanxeoctl ldap group add --name=NAME [--gidnumber=N]\n"
+		                "       kanxeoctl ldap group update --name=NAME --gidnumber=N\n"
 		                "       kanxeoctl ldap group ls\n"
 		                "       kanxeoctl ldap group rm NAME\n");
 		return 2;
@@ -4047,6 +4149,8 @@ static int cmd_ldap_group(const struct kx_client *c, int json_mode, int argc, ch
 	sub = argv[0];
 	if (strcmp(sub, "add") == 0)
 		return cmd_ldap_group_add(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "update") == 0)
+		return cmd_ldap_group_update(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "ls") == 0)
 		return cmd_ldap_group_ls(c, json_mode);
 	if (strcmp(sub, "rm") == 0)
@@ -4114,7 +4218,7 @@ static int cmd_ldap_user_add(const struct kx_client *c, int json_mode, int argc,
 	if (name == NULL) {
 		jw_free(&w);
 		fprintf(stderr,
-		        "usage: kanxeoctl ldap user add --name=NAME --uidnumber=N "
+		        "usage: kanxeoctl ldap user add --name=NAME [--uidnumber=N] "
 		        "--primarygroup=N [--givenname=S] [--sn=S] [--mail=S] "
 		        "[--loginshell=S] [--homedirectory=S] [--password=S] [--disabled]\n");
 		return 2;
@@ -4182,12 +4286,85 @@ static int cmd_ldap_user(const struct kx_client *c, int json_mode, int argc, cha
 	return 2;
 }
 
+static int cmd_ldap_config_show(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/ldap/config", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_ldap_config_line);
+}
+
+static int cmd_ldap_config_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	long start_uid = -1, start_gid = -1;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--start-uid=", 12) == 0)
+			start_uid = strtol(argv[i] + 12, NULL, 10);
+		else if (strncmp(argv[i], "--start-gid=", 12) == 0)
+			start_gid = strtol(argv[i] + 12, NULL, 10);
+		else {
+			fprintf(stderr, "kanxeoctl: unknown ldap config set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	if (start_uid < 0 || start_gid < 0) {
+		fprintf(stderr, "usage: kanxeoctl ldap config set --start-uid=N --start-gid=N\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "start_uid");
+	jw_int(&w, start_uid);
+	jw_key(&w, "start_gid");
+	jw_int(&w, start_gid);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "PUT", "/v1/ldap/config", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_ldap_config_line);
+}
+
+static int cmd_ldap_config(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl ldap config show\n"
+		                "       kanxeoctl ldap config set --start-uid=N --start-gid=N\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "show") == 0)
+		return cmd_ldap_config_show(c, json_mode);
+	if (strcmp(sub, "set") == 0)
+		return cmd_ldap_config_set(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown ldap config subcommand '%s'\n", sub);
+	return 2;
+}
+
 static int cmd_ldap(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: kanxeoctl ldap server ...\n"
+		                "       kanxeoctl ldap config ...\n"
 		                "       kanxeoctl ldap group ...\n"
 		                "       kanxeoctl ldap user ...\n");
 		return 2;
@@ -4195,6 +4372,8 @@ static int cmd_ldap(const struct kx_client *c, int json_mode, int argc, char **a
 	sub = argv[0];
 	if (strcmp(sub, "server") == 0)
 		return cmd_ldap_server(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "config") == 0)
+		return cmd_ldap_config(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "group") == 0)
 		return cmd_ldap_group(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "user") == 0)

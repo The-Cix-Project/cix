@@ -63,6 +63,7 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | GET | `/dns/records` | List all DNS records this daemon knows about |
 | POST | `/dns/records` | Create a DNS record (name -> IP, persisted across restarts) |
 | GET | `/dns/records/{name}` | Inspect one DNS record |
+| PUT | `/dns/records/{name}` | Edit an existing DNS record's ip in place (task #749) |
 | DELETE | `/dns/records/{name}` | Remove a DNS record |
 | GET | `/dns/servers` | List all registered DNS server bindings |
 | POST | `/dns/servers` | Register a running container as a DNS-serving target |
@@ -70,6 +71,18 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | GET | `/ldap/servers` | List all registered LDAP server bindings |
 | POST | `/ldap/servers` | Register a running container as the LDAP-serving target |
 | DELETE | `/ldap/servers/{container}` | Unregister an LDAP server binding |
+| GET | `/ldap/groups` | List every LDAP group |
+| POST | `/ldap/groups` | Create an LDAP group (`gidnumber` optional -- auto-allocated if omitted, task #748) |
+| GET | `/ldap/groups/{name}` | Inspect one LDAP group |
+| PUT | `/ldap/groups/{name}` | Edit an existing LDAP group's gidnumber in place (task #750) |
+| DELETE | `/ldap/groups/{name}` | Delete an LDAP group |
+| GET | `/ldap/users` | List every LDAP user |
+| POST | `/ldap/users` | Create an LDAP user (`uidnumber` optional -- auto-allocated if omitted, task #748) |
+| GET | `/ldap/users/{name}` | Inspect one LDAP user |
+| PUT | `/ldap/users/{name}` | Update an existing LDAP user (full field replacement; `password` omitted keeps the existing credential) |
+| DELETE | `/ldap/users/{name}` | Delete an LDAP user |
+| GET | `/ldap/config` | Fetch the current `start_uid`/`start_gid` auto-allocation floor (task #748) |
+| PUT | `/ldap/config` | Set the `start_uid`/`start_gid` floor -- takes effect for future allocations only, does not renumber existing records |
 | GET | `/pki/ca` | Inspect the root CA (never includes the private key) |
 | POST | `/pki/ca` | Bootstrap the root CA (once; see `/pki/reset` for regeneration) |
 | GET | `/pki/intermediate` | Inspect the intermediate CA (never includes the private key) |
@@ -490,6 +503,8 @@ POST /v1/dns/records
 - `name` is a hostname (dot-separated labels, `[A-Za-z0-9-]`, RFC 1035 length limits) — a different charset from network/container names, which don't allow dots. A `name` with no `.` at all gets this install's own site suffix appended by default (`<name>.<site_name>.<domain_suffix>`, see [This install's identity](#this-installs-identity-site-config) below) — fully overridable by including a `.`.
 - `ip` must be well-formed IPv4.
 
+`PUT /v1/dns/records/{name}` (task #749) edits an existing record's `ip` in place — `name` is authoritative from the URL path and, unlike `POST`, is never re-qualified with the site suffix (that qualification only ever applies at creation time). `400` on a malformed `ip`, `404` if no record with that name exists.
+
 Once a container running dnsmasq exists (e.g. `cmd: ["/usr/sbin/dnsmasq", "-k", "-u", "root", "-p", "53", "-H", "/etc/dnsmasq-hosts", "-R", "-h", "--server=1.1.1.1", "--server=8.8.8.8"]` — `-u root` since a minimal container image typically has no `/etc/passwd` for dnsmasq's default privilege drop to resolve; `-R`/`-h` skip `/etc/resolv.conf`/`/etc/hosts`, which likely don't exist either; the two `--server=` flags are real, static upstream forwarders (ADR-0076) — without them `-R` alone leaves this container purely authoritative for `.internal`, with no recursion for anything else, which is what it was until this ADR), register it:
 
 ```
@@ -554,8 +569,21 @@ POST /v1/ldap/users
 - A user's `primarygroup` must name an existing group's `gidnumber` (`404`-equivalent `LDAP_RECORD_ERR_GROUP_NOT_FOUND` otherwise) — create the group first.
 - `password`, if given, is hashed with SHA-256 (`passsha256`, a real glauth "config" datastore field) via kanxeod's own already-linked OpenSSL `libcrypto` — never stored or echoed in plaintext, and never returned by any `GET` (only a `has_password` boolean is). Omitting `password` on `PUT .../users/{name}` leaves the existing credential unchanged.
 - Capability/ACL grants (glauth's own `capabilities` config stanza) are set directly here only for the auto-provisioned service accounts below — the `password`/username/group CRUD above stays directory-data-only.
+- `gidnumber`/`uidnumber` are optional on `POST` (task #748): omit either one and it's auto-allocated — `ldap_gid_alloc()`/`ldap_uid_alloc()` scan upward from a configurable floor (see below) for the next value not already in use, the same "scan for next free above floor" algorithm both have always used, just with the floor itself now settable instead of a hardcoded `10000`.
 
-`GET`/`DELETE` follow the same `/v1/ldap/users/{name}` and `/v1/ldap/groups/{name}` shape as every other named resource in this API; `PUT /v1/ldap/users/{name}` updates an existing user (full field replacement, `password` optional as above).
+`GET`/`DELETE` follow the same `/v1/ldap/users/{name}` and `/v1/ldap/groups/{name}` shape as every other named resource in this API; `PUT /v1/ldap/users/{name}` updates an existing user (full field replacement, `password` optional as above); `PUT /v1/ldap/groups/{name}` updates an existing group's `gidnumber` (task #750) — unlike `POST`, `gidnumber` is always required in the body on `PUT` and is never auto-allocated, matching every other PUT resource's full-replacement semantics. Neither `PUT` cascades to records referencing the old value: editing a group's `gidnumber` does not update any user's `primarygroup`, and callers are responsible for that themselves if needed.
+
+### Configurable uid/gid auto-allocation floor
+
+```
+GET /v1/ldap/config
+{"start_uid": 10000, "start_gid": 10000}
+
+PUT /v1/ldap/config
+{"start_uid": 50000, "start_gid": 50000}
+```
+
+`start_uid`/`start_gid` (task #748) are the floors `ldap_uid_alloc()`/`ldap_gid_alloc()` scan upward from when `POST /v1/ldap/users`/`POST /v1/ldap/groups` omits `uidnumber`/`gidnumber`. Both default to `10000` until changed. Setting a new floor takes effect immediately for the *next* auto-allocation only — it never renumbers any user or group that already exists, and both values must be positive integers (`400` otherwise). Persisted to `<data-dir>/ldap_config.json`, survives a daemon restart.
 
 ### Automatic provisioning: `ldap_provision`
 

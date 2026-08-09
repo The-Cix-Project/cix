@@ -19,6 +19,9 @@ static char g_users_state_path[PATH_MAX];
 static struct ldap_group g_groups[LDAP_GROUP_MAX];
 static char g_groups_state_path[PATH_MAX];
 
+static struct ldap_config g_config = { LDAP_CONFIG_DEFAULT_START_UID, LDAP_CONFIG_DEFAULT_START_GID };
+static char g_config_state_path[PATH_MAX];
+
 static int config_path_is_valid(const char *path)
 {
 	return path != NULL && path[0] == '/' && strstr(path, "..") == NULL;
@@ -401,6 +404,82 @@ int ldap_record_init(const char *users_state_path, const char *groups_state_path
 	return load_users_state();
 }
 
+int ldap_config_init(const char *state_path)
+{
+	char *buf;
+	size_t len;
+	struct json_value *root;
+	const struct json_value *jstart_uid, *jstart_gid;
+
+	if (snprintf(g_config_state_path, sizeof(g_config_state_path), "%s", state_path) >=
+	    (int)sizeof(g_config_state_path))
+		return -1;
+
+	g_config.start_uid = LDAP_CONFIG_DEFAULT_START_UID;
+	g_config.start_gid = LDAP_CONFIG_DEFAULT_START_GID;
+
+	if (persist_read_file(g_config_state_path, &buf, &len) != 0)
+		return -1;
+	if (buf == NULL)
+		return 0; /* no persisted config yet -- defaults stand */
+
+	root = json_parse(buf, len);
+	free(buf);
+	if (root == NULL) {
+		fprintf(stderr, "%s: malformed persisted LDAP config\n", g_config_state_path);
+		return -1;
+	}
+
+	jstart_uid = json_object_get(root, "start_uid");
+	jstart_gid = json_object_get(root, "start_gid");
+	if (jstart_uid != NULL)
+		g_config.start_uid = (int)json_as_number(jstart_uid);
+	if (jstart_gid != NULL)
+		g_config.start_gid = (int)json_as_number(jstart_gid);
+	json_free(root);
+	return 0;
+}
+
+const struct ldap_config *ldap_config_get(void)
+{
+	return &g_config;
+}
+
+enum ldap_record_error ldap_config_set(int start_uid, int start_gid)
+{
+	struct json_writer w;
+	int rc;
+
+	if (start_uid <= 0 || start_gid <= 0)
+		return LDAP_RECORD_ERR_INVALID_FIELD;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "start_uid");
+	jw_int(&w, start_uid);
+	jw_key(&w, "start_gid");
+	jw_int(&w, start_gid);
+	jw_obj_close(&w);
+	rc = persist_atomic_write(g_config_state_path, w.buf, w.len);
+	jw_free(&w);
+	if (rc != 0)
+		return LDAP_RECORD_ERR_PERSIST_FAILED;
+
+	g_config.start_uid = start_uid;
+	g_config.start_gid = start_gid;
+	return LDAP_RECORD_OK;
+}
+
+void ldap_config_write_json(struct json_writer *w)
+{
+	jw_obj_open(w);
+	jw_key(w, "start_uid");
+	jw_int(w, g_config.start_uid);
+	jw_key(w, "start_gid");
+	jw_int(w, g_config.start_gid);
+	jw_obj_close(w);
+}
+
 struct ldap_group *ldap_group_find(const char *name)
 {
 	int i;
@@ -757,6 +836,34 @@ enum ldap_record_error ldap_group_delete(const char *name)
 	return LDAP_RECORD_OK;
 }
 
+enum ldap_record_error ldap_group_update(const char *name, int gidnumber, struct ldap_group **out)
+{
+	struct ldap_group *g = ldap_group_find(name);
+	struct ldap_group *collision;
+	int old_gidnumber;
+
+	if (g == NULL)
+		return LDAP_RECORD_ERR_NOT_FOUND;
+	if (gidnumber <= 0)
+		return LDAP_RECORD_ERR_INVALID_FIELD;
+
+	collision = ldap_group_find_by_gid(gidnumber);
+	if (collision != NULL && collision != g)
+		return LDAP_RECORD_ERR_DUPLICATE;
+
+	old_gidnumber = g->gidnumber;
+	g->gidnumber = gidnumber;
+
+	if (save_groups_state() != 0) {
+		g->gidnumber = old_gidnumber;
+		return LDAP_RECORD_ERR_PERSIST_FAILED;
+	}
+
+	ldap_record_sync_all();
+	*out = g;
+	return LDAP_RECORD_OK;
+}
+
 static enum ldap_record_error validate_user_fields(int uidnumber, int primarygroup)
 {
 	if (uidnumber <= 0)
@@ -968,7 +1075,7 @@ void ldap_user_forget_owner(const char *container_name)
 
 int ldap_uid_alloc(void)
 {
-	int uid = 10000;
+	int uid = g_config.start_uid;
 	int i;
 
 	for (;;) {
@@ -983,6 +1090,26 @@ int ldap_uid_alloc(void)
 		if (!in_use)
 			return uid;
 		uid++;
+	}
+}
+
+int ldap_gid_alloc(void)
+{
+	int gid = g_config.start_gid;
+	int i;
+
+	for (;;) {
+		int in_use = 0;
+
+		for (i = 0; i < LDAP_GROUP_MAX; i++) {
+			if (g_groups[i].name[0] != '\0' && g_groups[i].gidnumber == gid) {
+				in_use = 1;
+				break;
+			}
+		}
+		if (!in_use)
+			return gid;
+		gid++;
 	}
 }
 

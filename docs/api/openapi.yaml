@@ -1808,6 +1808,46 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+    put:
+      summary: Edit an existing DNS record's ip in place (task #749)
+      description: >
+        Full field replacement of `ip` only -- `name` is authoritative from the URL
+        path and is never re-qualified or renamed by this call (unlike `POST
+        /dns/records`'s own bare-label qualification, which only ever applies at
+        creation time).
+      operationId: updateDnsRecord
+      parameters:
+        - $ref: "#/components/parameters/DnsRecordName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ip]
+              properties:
+                ip:
+                  type: string
+                  format: ipv4
+      responses:
+        "200":
+          description: Record updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DnsRecord"
+        "400":
+          description: Invalid ip
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No record with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     delete:
       summary: Remove a DNS record
       operationId: deleteDnsRecord
@@ -2059,6 +2099,55 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+    put:
+      summary: Edit an existing LDAP group's gidnumber in place (task #750)
+      description: >
+        Full field replacement of `gidnumber` only -- `name` is authoritative
+        from the URL path and is never re-qualified by this call. Unlike `POST
+        /ldap/groups`, gidnumber is never auto-allocated here: it is always
+        required in the body, matching every other PUT resource's "full
+        replacement, no create-time convenience" semantics. Does not cascade
+        to any user currently referencing the old gidnumber -- callers editing
+        a group's gidnumber are responsible for updating affected users
+        themselves if needed.
+      operationId: updateLdapGroup
+      parameters:
+        - $ref: "#/components/parameters/LdapGroupName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [gidnumber]
+              properties:
+                gidnumber:
+                  type: integer
+      responses:
+        "200":
+          description: Group updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LdapGroup"
+        "400":
+          description: Invalid gidnumber
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such group
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: gidnumber already used by a different group
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     delete:
       summary: Delete an LDAP group (also removed from every registered server's config)
       operationId: deleteLdapGroup
@@ -2188,6 +2277,47 @@ paths:
           description: Deleted
         "404":
           description: No such user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /ldap/config:
+    get:
+      summary: >
+        Fetch the current start_uid/start_gid floor used by ldap_uid_alloc()
+        and ldap_gid_alloc() (task #748) -- the value POST /ldap/users and
+        POST /ldap/groups auto-allocate from when uidnumber/gidnumber is
+        omitted from the request body. Defaults to 10000/10000 until changed.
+      operationId: getLdapConfig
+      responses:
+        "200":
+          description: Current config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LdapConfig"
+    put:
+      summary: >
+        Set the start_uid/start_gid floor. Takes effect immediately for the
+        next auto-allocated uidnumber/gidnumber; does not renumber any
+        existing user or group. Both fields are required and must be > 0.
+      operationId: updateLdapConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LdapConfig"
+      responses:
+        "200":
+          description: Config updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LdapConfig"
+        "400":
+          description: start_uid or start_gid not a positive integer
           content:
             application/json:
               schema:
@@ -5030,9 +5160,24 @@ components:
         config_path:
           type: string
 
+    LdapConfig:
+      type: object
+      required: [start_uid, start_gid]
+      properties:
+        start_uid:
+          type: integer
+          minimum: 1
+          default: 10000
+          description: Floor ldap_uid_alloc() scans upward from when POST /ldap/users omits uidnumber.
+        start_gid:
+          type: integer
+          minimum: 1
+          default: 10000
+          description: Floor ldap_gid_alloc() scans upward from when POST /ldap/groups omits gidnumber.
+
     LdapGroupCreateRequest:
       type: object
-      required: [name, gidnumber]
+      required: [name]
       properties:
         name:
           type: string
@@ -5040,6 +5185,10 @@ components:
         gidnumber:
           type: integer
           minimum: 1
+          description: >
+            Optional (task #748) -- omit to auto-allocate the next free
+            gidnumber starting from the current GET /ldap/config
+            start_gid floor (10000 by default).
 
     LdapGroup:
       type: object
@@ -5052,7 +5201,7 @@ components:
 
     LdapUserCreateRequest:
       type: object
-      required: [name, uidnumber, primarygroup]
+      required: [name, primarygroup]
       properties:
         name:
           type: string
@@ -5060,6 +5209,13 @@ components:
         uidnumber:
           type: integer
           minimum: 1
+          description: >
+            Optional on POST (task #748) -- omit to auto-allocate the next
+            free uidnumber starting from the current GET /ldap/config
+            start_uid floor (10000 by default). Required in practice on
+            PUT (an omitted value is treated as 0, which fails validation)
+            -- PUT never auto-allocates, matching every other PUT
+            resource's full-replacement semantics.
         primarygroup:
           type: integer
           description: Must name an existing group's gidnumber.

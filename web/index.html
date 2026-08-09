@@ -506,6 +506,28 @@
 			</div>
 		</section>
 
+		<!-- LDAP Config: start_uid/start_gid auto-allocation floor (task #748) -->
+		<section class="view" id="view-ldap-config" hidden>
+			<h2>LDAP Config</h2>
+			<p class="hint">
+				The floor <code>start_uid</code>/<code>start_gid</code> auto-allocation
+				scans upward from when a group or user is created without an explicit
+				gidnumber/uidnumber. Changing this takes effect for future
+				auto-allocations only -- it never renumbers any existing user or group.
+			</p>
+			<form id="ldap-config-form">
+				<label>
+					Start UID
+					<input type="number" id="lcf-start-uid" min="1" required>
+				</label>
+				<label>
+					Start GID
+					<input type="number" id="lcf-start-gid" min="1" required>
+				</label>
+				<button type="submit">Save</button>
+			</form>
+		</section>
+
 		<!-- PKI: Root CA -->
 		<section class="view" id="view-pki-ca" hidden>
 			<h2>PKI: Root CA</h2>
@@ -1061,7 +1083,7 @@
 						IP
 						<input type="text" id="df-ip" placeholder="172.31.0.5" required>
 					</label>
-					<button type="submit">Create</button>
+					<button type="submit" id="df-submit">Create</button>
 				</form>
 			</div>
 
@@ -1101,9 +1123,9 @@
 					</label>
 					<label>
 						GID number
-						<input type="number" id="lgf-gidnumber" min="1" required>
+						<input type="number" id="lgf-gidnumber" min="1" placeholder="auto-allocated if blank">
 					</label>
-					<button type="submit">Create</button>
+					<button type="submit" id="lgf-submit">Create</button>
 				</form>
 			</div>
 
@@ -1115,7 +1137,7 @@
 					</label>
 					<label>
 						UID number
-						<input type="number" id="luf-uidnumber" min="1" required>
+						<input type="number" id="luf-uidnumber" min="1" placeholder="auto-allocated if blank">
 					</label>
 					<label>
 						Primary group (GID number)

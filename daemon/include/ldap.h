@@ -186,6 +186,14 @@ int ldap_groupname_is_valid(const char *name);
 struct ldap_group *ldap_group_find(const char *name);
 struct ldap_group *ldap_group_find_by_gid(int gidnumber);
 enum ldap_record_error ldap_group_create(const char *name, int gidnumber, struct ldap_group **out);
+/* Full field replacement (task #750), mirroring ldap_user_update()'s
+ * own shape -- name is authoritative from the URL path, gidnumber is
+ * the only other field a group has. Rejects a gidnumber collision
+ * with a DIFFERENT existing group (LDAP_RECORD_ERR_DUPLICATE); does
+ * NOT cascade-update any user whose primarygroup referenced the old
+ * gidnumber -- same "no cascading validation" posture this module
+ * already has everywhere else. */
+enum ldap_record_error ldap_group_update(const char *name, int gidnumber, struct ldap_group **out);
 enum ldap_record_error ldap_group_delete(const char *name);
 void ldap_group_write_json_one(const struct ldap_group *g, struct json_writer *w);
 void ldap_group_write_json_list(struct json_writer *w);
@@ -219,11 +227,53 @@ void ldap_user_write_json_list(struct json_writer *w);
  * container-delete handler. */
 void ldap_user_forget_owner(const char *container_name);
 
-/* Returns the lowest unused uidnumber >= 10000 (a service-account
- * range, distinct from the human-numbered 5000s an operator would
- * typically pick by hand) -- used by the container-creation LDAP
- * auto-provisioning hook (task #727) when no explicit uid is given. */
+/*
+ * Configurable uid/gid allocation start points (task #748, user-
+ * requested): ldap_uid_alloc()/ldap_gid_alloc() below used to hardcode
+ * 10000 as the search floor with no way to change it. Persisted
+ * separately from the user/group records themselves (a single small
+ * settings object, not a record collection) -- same "one small
+ * singleton config file" shape resolv.c's own resolv_init()/
+ * resolv_set() already establishes for GET/PUT /v1/system/resolv,
+ * rather than folding it into ldap_server_binding or struct ldap_user.
+ * Changing start_uid/start_gid only affects *future* allocations --
+ * it never renumbers an already-existing user or group.
+ */
+#define LDAP_CONFIG_DEFAULT_START_UID 10000
+#define LDAP_CONFIG_DEFAULT_START_GID 10000
+
+struct ldap_config {
+	int start_uid;
+	int start_gid;
+};
+
+/* Loads persisted start_uid/start_gid (if any) at startup, alongside
+ * ldap_record_init(). A missing file means the compiled-in defaults
+ * above -- not an error. */
+int ldap_config_init(const char *state_path);
+
+/* Never NULL -- returns the compiled-in defaults if ldap_config_set()
+ * has never been called. */
+const struct ldap_config *ldap_config_get(void);
+
+/* Both values must be > 0 (LDAP_RECORD_ERR_INVALID_FIELD otherwise).
+ * Persists immediately; takes effect on the very next ldap_uid_alloc()/
+ * ldap_gid_alloc() call. */
+enum ldap_record_error ldap_config_set(int start_uid, int start_gid);
+
+void ldap_config_write_json(struct json_writer *w);
+
+/* Returns the lowest unused uidnumber >= ldap_config_get()->start_uid
+ * (a service-account range, distinct from the human-numbered 5000s an
+ * operator would typically pick by hand) -- used by the container-
+ * creation LDAP auto-provisioning hook (task #727), and by POST
+ * /v1/ldap/users when the caller omits uidnumber entirely (task #748). */
 int ldap_uid_alloc(void);
+
+/* The ldap_uid_alloc() analog for gidnumber, seeded from
+ * ldap_config_get()->start_gid -- used by POST /v1/ldap/groups when
+ * the caller omits gidnumber entirely (task #748). */
+int ldap_gid_alloc(void);
 
 #define LDAP_PROVISION_SECRET_LEN 32 /* hex-encoded random bytes */
 

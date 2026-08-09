@@ -58,6 +58,10 @@ int dns_name_is_valid(const char *name);
 
 enum dns_error dns_record_create(const char *name, uint32_t ip_be, const char *owner_container,
                                   struct dns_record **out);
+/* Full field replacement (task #749) -- name is authoritative from the
+ * URL path, ip is the only other field a plain (non-owner-tracked)
+ * record has; owner_container is never editable via this path. */
+enum dns_error dns_record_update(const char *name, uint32_t ip_be, struct dns_record **out);
 enum dns_error dns_record_delete(const char *name);
 struct dns_record *dns_record_find(const char *name);
 

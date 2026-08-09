@@ -97,6 +97,7 @@ static char DNS_SERVERS_STATE_PATH[PATH_MAX];
 static char LDAP_SERVERS_STATE_PATH[PATH_MAX];
 static char LDAP_USERS_STATE_PATH[PATH_MAX];
 static char LDAP_GROUPS_STATE_PATH[PATH_MAX];
+static char LDAP_CONFIG_STATE_PATH[PATH_MAX];
 static char PKI_DIR[PATH_MAX];
 static char PKI_CERTS_STATE_PATH[PATH_MAX];
 static char PKI_CERTS_DIR[PATH_MAX];
@@ -179,6 +180,8 @@ static void init_base_dir_paths(void)
 	         g_base_dir);
 	snprintf(LDAP_USERS_STATE_PATH, sizeof(LDAP_USERS_STATE_PATH), "%s/ldap_users.json", g_base_dir);
 	snprintf(LDAP_GROUPS_STATE_PATH, sizeof(LDAP_GROUPS_STATE_PATH), "%s/ldap_groups.json",
+	         g_base_dir);
+	snprintf(LDAP_CONFIG_STATE_PATH, sizeof(LDAP_CONFIG_STATE_PATH), "%s/ldap_config.json",
 	         g_base_dir);
 	snprintf(PKI_DIR, sizeof(PKI_DIR), "%s/pki", g_base_dir);
 	snprintf(PKI_CERTS_STATE_PATH, sizeof(PKI_CERTS_STATE_PATH), "%s/pki_certs.json", PKI_DIR);
@@ -7479,6 +7482,41 @@ static void handle_dns_record_get_one(int fd, const char *name)
 	jw_free(&w);
 }
 
+static void handle_dns_record_update(int fd, const char *name, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *ip;
+	struct in_addr addr;
+	struct dns_record *rec;
+	enum dns_error derr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+
+	ip = json_as_string(json_object_get(root, "ip"));
+	if (ip == NULL || inet_pton(AF_INET, ip, &addr) != 1) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "ip missing or invalid");
+		return;
+	}
+	json_free(root);
+
+	derr = dns_record_update(name, addr.s_addr, &rec);
+	if (derr != DNS_OK) {
+		respond_dns_error(fd, derr);
+		return;
+	}
+
+	jw_init(&w);
+	dns_write_json_one(rec, &w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_dns_record_delete(int fd, const char *name)
 {
 	enum dns_error derr = dns_record_delete(name);
@@ -7709,6 +7747,47 @@ static void handle_ldap_server_delete(int fd, const char *name)
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
+/* ---- LDAP uid/gid allocation config (task #748) ---- */
+
+static void handle_ldap_config_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	ldap_config_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_ldap_config_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	int start_uid, start_gid;
+	enum ldap_record_error rerr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+
+	start_uid = (int)json_as_number(json_object_get(root, "start_uid"));
+	start_gid = (int)json_as_number(json_object_get(root, "start_gid"));
+	json_free(root);
+
+	rerr = ldap_config_set(start_uid, start_gid);
+	if (rerr != LDAP_RECORD_OK) {
+		respond_error(fd, 400, "Bad Request", "start_uid/start_gid must both be > 0");
+		return;
+	}
+
+	jw_init(&w);
+	ldap_config_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 /* ---- LDAP user/group CRUD (task #726) ---- */
 
 static void respond_ldap_record_error(int fd, enum ldap_record_error err)
@@ -7743,6 +7822,7 @@ static void handle_ldap_group_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
 	const char *name;
+	const struct json_value *jgidnumber;
 	int gidnumber;
 	struct ldap_group *g;
 	enum ldap_record_error rerr;
@@ -7755,7 +7835,11 @@ static void handle_ldap_group_create(int fd, const char *body, size_t body_len)
 	}
 
 	name = json_as_string(json_object_get(root, "name"));
-	gidnumber = (int)json_as_number(json_object_get(root, "gidnumber"));
+	jgidnumber = json_object_get(root, "gidnumber");
+	/* Omitted (task #748): auto-allocate from the configurable
+	 * start_gid pool (GET/PUT /v1/ldap/config), same shape the
+	 * container-creation LDAP hook already uses for uidnumber. */
+	gidnumber = jgidnumber != NULL ? (int)json_as_number(jgidnumber) : ldap_gid_alloc();
 
 	if (name == NULL) {
 		json_free(root);
@@ -7804,6 +7888,37 @@ static void handle_ldap_group_get_one(int fd, const char *name)
 	jw_free(&w);
 }
 
+static void handle_ldap_group_update(int fd, const char *name, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const struct json_value *jgidnumber;
+	int gidnumber;
+	struct ldap_group *g;
+	enum ldap_record_error rerr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+
+	jgidnumber = json_object_get(root, "gidnumber");
+	gidnumber = jgidnumber != NULL ? (int)json_as_number(jgidnumber) : 0;
+	json_free(root);
+
+	rerr = ldap_group_update(name, gidnumber, &g);
+	if (rerr != LDAP_RECORD_OK) {
+		respond_ldap_record_error(fd, rerr);
+		return;
+	}
+
+	jw_init(&w);
+	ldap_group_write_json_one(g, &w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_ldap_group_delete(int fd, const char *name)
 {
 	enum ldap_record_error rerr = ldap_group_delete(name);
@@ -7824,14 +7939,16 @@ static void handle_ldap_group_delete(int fd, const char *name)
  * documented "omit password to keep the existing one" semantics.
  */
 static void parse_ldap_user_body(const struct json_value *root, const char **name, int *uidnumber,
-                                  int *primarygroup, const char **givenname, const char **sn,
-                                  const char **mail, const char **loginshell,
+                                  int *has_uidnumber, int *primarygroup, const char **givenname,
+                                  const char **sn, const char **mail, const char **loginshell,
                                   const char **homedirectory, const char **password, int *disabled)
 {
 	const struct json_value *jdisabled = json_object_get(root, "disabled");
+	const struct json_value *juidnumber = json_object_get(root, "uidnumber");
 
 	*name = json_as_string(json_object_get(root, "name"));
-	*uidnumber = (int)json_as_number(json_object_get(root, "uidnumber"));
+	*uidnumber = juidnumber != NULL ? (int)json_as_number(juidnumber) : 0;
+	*has_uidnumber = juidnumber != NULL;
 	*primarygroup = (int)json_as_number(json_object_get(root, "primarygroup"));
 	*givenname = json_as_string(json_object_get(root, "givenname"));
 	*sn = json_as_string(json_object_get(root, "sn"));
@@ -7846,7 +7963,7 @@ static void handle_ldap_user_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
 	const char *name, *givenname, *sn, *mail, *loginshell, *homedirectory, *password;
-	int uidnumber, primarygroup, disabled;
+	int uidnumber, has_uidnumber, primarygroup, disabled;
 	struct ldap_user *u;
 	enum ldap_record_error rerr;
 	struct json_writer w;
@@ -7857,13 +7974,18 @@ static void handle_ldap_user_create(int fd, const char *body, size_t body_len)
 		return;
 	}
 
-	parse_ldap_user_body(root, &name, &uidnumber, &primarygroup, &givenname, &sn, &mail,
-	                      &loginshell, &homedirectory, &password, &disabled);
+	parse_ldap_user_body(root, &name, &uidnumber, &has_uidnumber, &primarygroup, &givenname, &sn,
+	                      &mail, &loginshell, &homedirectory, &password, &disabled);
 	if (name == NULL) {
 		json_free(root);
 		respond_error(fd, 400, "Bad Request", "name missing");
 		return;
 	}
+	/* Omitted (task #748): auto-allocate from the configurable
+	 * start_uid pool, same allocator the container-creation LDAP hook
+	 * already uses. */
+	if (!has_uidnumber)
+		uidnumber = ldap_uid_alloc();
 
 	rerr = ldap_user_create(name, uidnumber, primarygroup, givenname, sn, mail, loginshell,
 	                         homedirectory, password, disabled, NULL, 0, &u);
@@ -7883,7 +8005,7 @@ static void handle_ldap_user_update(int fd, const char *name, const char *body, 
 {
 	struct json_value *root;
 	const char *body_name, *givenname, *sn, *mail, *loginshell, *homedirectory, *password;
-	int uidnumber, primarygroup, disabled;
+	int uidnumber, has_uidnumber, primarygroup, disabled;
 	struct ldap_user *u;
 	enum ldap_record_error rerr;
 	struct json_writer w;
@@ -7894,9 +8016,13 @@ static void handle_ldap_user_update(int fd, const char *name, const char *body, 
 		return;
 	}
 
-	parse_ldap_user_body(root, &body_name, &uidnumber, &primarygroup, &givenname, &sn, &mail,
-	                      &loginshell, &homedirectory, &password, &disabled);
+	parse_ldap_user_body(root, &body_name, &uidnumber, &has_uidnumber, &primarygroup, &givenname,
+	                      &sn, &mail, &loginshell, &homedirectory, &password, &disabled);
 	(void)body_name; /* the URL path's name is authoritative for PUT, not the body's own */
+	(void)has_uidnumber; /* PUT is full-field-replacement -- an omitted uidnumber here is 0,
+	                       * same pre-existing semantics as every other omittable PUT field
+	                       * (e.g. givenname/sn) resetting to empty; auto-allocation is only
+	                       * for create, where "I don't have an opinion" is a real, common case. */
 
 	rerr = ldap_user_update(name, uidnumber, primarygroup, givenname, sn, mail, loginshell,
 	                         homedirectory, password, disabled, &u);
@@ -9382,6 +9508,10 @@ static void dispatch(int fd, const struct http_request *req)
 				handle_dns_record_get_one(fd, name);
 				return;
 			}
+			if (strcmp(req->method, "PUT") == 0) {
+				handle_dns_record_update(fd, name, req->body, req->body_len);
+				return;
+			}
 			if (strcmp(req->method, "DELETE") == 0) {
 				handle_dns_record_delete(fd, name);
 				return;
@@ -9422,6 +9552,16 @@ static void dispatch(int fd, const struct http_request *req)
 			return;
 		}
 	}
+	if (strcmp(req->path, "/v1/ldap/config") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_ldap_config_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_ldap_config_put(fd, req->body, req->body_len);
+			return;
+		}
+	}
 	if (strcmp(req->path, "/v1/ldap/groups") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_ldap_group_list(fd);
@@ -9437,6 +9577,10 @@ static void dispatch(int fd, const struct http_request *req)
 		if (name[0] != '\0') {
 			if (strcmp(req->method, "GET") == 0) {
 				handle_ldap_group_get_one(fd, name);
+				return;
+			}
+			if (strcmp(req->method, "PUT") == 0) {
+				handle_ldap_group_update(fd, name, req->body, req->body_len);
 				return;
 			}
 			if (strcmp(req->method, "DELETE") == 0) {
@@ -11168,6 +11312,8 @@ int main(int argc, char **argv)
 	if (ldap_init(LDAP_SERVERS_STATE_PATH) != 0)
 		return 1;
 	if (ldap_record_init(LDAP_USERS_STATE_PATH, LDAP_GROUPS_STATE_PATH) != 0)
+		return 1;
+	if (ldap_config_init(LDAP_CONFIG_STATE_PATH) != 0)
 		return 1;
 	if (pki_init(PKI_DIR, PKI_CERTS_STATE_PATH) != 0)
 		return 1;

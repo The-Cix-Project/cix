@@ -423,6 +423,62 @@ int main(void)
 	kx_response_free(&r);
 
 	/*
+	 * 1a (task #749): PUT edits an existing record's ip in place --
+	 * name stays authoritative from the URL path, not re-qualified. A
+	 * dedicated scratch record ("editme.test"), not svc.test -- a
+	 * later real dnsmasq/dig check (step 7-ish below) still expects
+	 * svc.test's own original 10.9.9.9, and this step shouldn't couple
+	 * to that.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/dns/records",
+	                       "{\"name\":\"editme.test\",\"ip\":\"10.9.9.50\"}", &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST editme.test, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT", "/v1/dns/records/editme.test", "{\"ip\":\"10.9.9.77\"}",
+	                       &r) != 0 ||
+	    r.status != 200 || !str_eq(json_str_field(r.json, "ip"), "10.9.9.77") ||
+	    !str_eq(json_str_field(r.json, "name"), "editme.test")) {
+		fprintf(stderr, "FAIL: PUT editme.test update, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET", "/v1/dns/records/editme.test", NULL, &r) != 0 ||
+	    r.status != 200 || !str_eq(json_str_field(r.json, "ip"), "10.9.9.77")) {
+		fprintf(stderr, "FAIL: GET editme.test after update, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT", "/v1/dns/records/editme.test", "{\"ip\":\"not-an-ip\"}",
+	                       &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: PUT editme.test with invalid ip expected 400, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT", "/v1/dns/records/no-such-record.test",
+	                       "{\"ip\":\"10.9.9.1\"}", &r) != 0 ||
+	    r.status != 404) {
+		fprintf(stderr, "FAIL: PUT nonexistent record expected 404, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	kx_client_request(&client, "DELETE", "/v1/dns/records/editme.test", NULL, &r);
+	kx_response_free(&r);
+
+	/*
 	 * 1b (ADR-0052): server-side default name qualification -- a bare
 	 * label (no dot) gets this site's suffix appended; a name that
 	 * already has a dot (like "svc.test" above) is left exactly as

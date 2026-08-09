@@ -664,6 +664,119 @@ int main(void)
 		kx_response_free(&r);
 	}
 
+	/*
+	 * 26-33. Task #748 (user-requested): configurable start_uid/
+	 * start_gid, auto-allocated when uidnumber/gidnumber are omitted
+	 * on create. Task #750 (user-requested): PUT /v1/ldap/groups/{name}
+	 * edits an existing group's gidnumber in place.
+	 */
+	{
+		/* 26. default config */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/ldap/config", NULL, &r) != 0 ||
+		    r.status != 200 ||
+		    (long)json_as_number(json_object_get(r.json, "start_uid")) != 10000 ||
+		    (long)json_as_number(json_object_get(r.json, "start_gid")) != 10000) {
+			fprintf(stderr, "FAIL: GET default ldap config, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 27. group create with no gidnumber -> auto-allocated from start_gid */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/ldap/groups", "{\"name\":\"autogid1\"}",
+		                       &r) != 0 ||
+		    r.status != 201 ||
+		    (long)json_as_number(json_object_get(r.json, "gidnumber")) != 10000) {
+			fprintf(stderr, "FAIL: create group with no gidnumber, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 28. user create with no uidnumber -> auto-allocated from start_uid */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/ldap/users",
+		                       "{\"name\":\"autouid1\",\"primarygroup\":10000}", &r) != 0 ||
+		    r.status != 201 ||
+		    (long)json_as_number(json_object_get(r.json, "uidnumber")) != 10000) {
+			fprintf(stderr, "FAIL: create user with no uidnumber, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 29. PUT ldap config -- changes take effect for future allocations only */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/ldap/config",
+		                       "{\"start_uid\":50000,\"start_gid\":50000}", &r) != 0 ||
+		    r.status != 200 ||
+		    (long)json_as_number(json_object_get(r.json, "start_uid")) != 50000 ||
+		    (long)json_as_number(json_object_get(r.json, "start_gid")) != 50000) {
+			fprintf(stderr, "FAIL: PUT ldap config, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 30. a second auto-allocated group/user now starts from 50000,
+		 * not colliding with autogid1/autouid1's own 10000 */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/ldap/groups", "{\"name\":\"autogid2\"}",
+		                       &r) != 0 ||
+		    r.status != 201 ||
+		    (long)json_as_number(json_object_get(r.json, "gidnumber")) != 50000) {
+			fprintf(stderr, "FAIL: create group after config change, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 31. group update -- PUT edits gidnumber in place */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/ldap/groups/autogid1",
+		                       "{\"gidnumber\":10999}", &r) != 0 ||
+		    r.status != 200 ||
+		    (long)json_as_number(json_object_get(r.json, "gidnumber")) != 10999) {
+			fprintf(stderr, "FAIL: PUT autogid1 update, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/ldap/groups/autogid1", NULL, &r) != 0 ||
+		    r.status != 200 ||
+		    (long)json_as_number(json_object_get(r.json, "gidnumber")) != 10999) {
+			fprintf(stderr, "FAIL: GET autogid1 after update, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 32. group update colliding with a different group's gidnumber -> 409 */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/ldap/groups/autogid1",
+		                       "{\"gidnumber\":50000}", &r) != 0 ||
+		    r.status != 409) {
+			fprintf(stderr, "FAIL: PUT autogid1 gidnumber collision expected 409, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 33. group update on a nonexistent group -> 404 */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/ldap/groups/no-such-group",
+		                       "{\"gidnumber\":10001}", &r) != 0 ||
+		    r.status != 404) {
+			fprintf(stderr, "FAIL: PUT nonexistent group expected 404, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		kx_client_request(&client, "DELETE", "/v1/ldap/users/autouid1", NULL, &r);
+		kx_response_free(&r);
+		kx_client_request(&client, "DELETE", "/v1/ldap/groups/autogid1", NULL, &r);
+		kx_response_free(&r);
+		kx_client_request(&client, "DELETE", "/v1/ldap/groups/autogid2", NULL, &r);
+		kx_response_free(&r);
+	}
+
 	stop_daemon(daemon_pid);
 	test_data_dir_cleanup(g_data_dir);
 

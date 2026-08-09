@@ -26,6 +26,7 @@ const cache = {
 	ldapServers: [],
 	ldapGroups: [],
 	ldapUsers: [],
+	ldapConfig: null,
 	pkiCa: null,
 	pkiIntermediate: null,
 	pkiCerts: [],
@@ -81,6 +82,16 @@ function closeModal() {
 	modalOverlay.hidden = true;
 	for (const panel of modalOverlay.querySelectorAll(".modal-body > div"))
 		panel.hidden = true;
+
+	/* Edit-mode state (tasks #749/#750) is scoped to a single modal
+	 * session -- always reset back to "create" on close, regardless of
+	 * how it closed (submit, X button, Escape, outside click). */
+	dnsRecordEditName = null;
+	document.getElementById("df-name").readOnly = false;
+	document.getElementById("df-submit").textContent = "Create";
+	ldapGroupEditName = null;
+	document.getElementById("lgf-name").readOnly = false;
+	document.getElementById("lgf-submit").textContent = "Create";
 }
 
 function openModal(formId, title) {
@@ -262,6 +273,7 @@ const CATEGORY_VIEWS = {
 	"ldap-servers": "view-ldap-servers",
 	"ldap-groups": "view-ldap-groups",
 	"ldap-users": "view-ldap-users",
+	"ldap-config": "view-ldap-config",
 	"pki-ca": "view-pki-ca",
 	"pki-certs": "view-pki-certs",
 	packages: "view-packages",
@@ -680,6 +692,7 @@ function renderTree() {
 						{ label: "Servers", hash: "ldap-servers", icon: "dns" },
 						{ label: "Groups", hash: "ldap-groups", icon: "dns" },
 						{ label: "Users", hash: "ldap-users", icon: "dns" },
+						{ label: "Config", hash: "ldap-config", icon: "dns" },
 					],
 				},
 				{
@@ -2377,6 +2390,19 @@ async function removeDeviceMap(name) {
 
 /* ---------- DNS Records ---------- */
 
+/* Set while the DNS record modal form is open in edit mode (task #749) --
+ * null means the next submit is a create (POST). */
+let dnsRecordEditName = null;
+
+function editDnsRecord(rec) {
+	dnsRecordEditName = rec.name;
+	openModal("dns-record-form", "Edit DNS record");
+	document.getElementById("df-name").value = rec.name;
+	document.getElementById("df-name").readOnly = true;
+	document.getElementById("df-ip").value = rec.ip;
+	document.getElementById("df-submit").textContent = "Save";
+}
+
 function renderDnsRecords(records) {
 	const body = document.getElementById("dns-records-body");
 
@@ -2409,6 +2435,12 @@ function renderDnsRecords(records) {
 		row.appendChild(ownerCell);
 
 		const actionCell = document.createElement("td");
+		const editButton = document.createElement("button");
+
+		editButton.textContent = "Edit";
+		editButton.addEventListener("click", () => editDnsRecord(rec));
+		actionCell.appendChild(editButton);
+
 		const rmButton = document.createElement("button");
 
 		rmButton.textContent = "Remove";
@@ -2555,6 +2587,19 @@ async function removeLdapServer(container) {
 
 /* ---------- LDAP Groups (task #726) ---------- */
 
+/* Set while the LDAP group modal form is open in edit mode (task #750) --
+ * null means the next submit is a create (POST). */
+let ldapGroupEditName = null;
+
+function editLdapGroup(group) {
+	ldapGroupEditName = group.name;
+	openModal("ldap-group-form", "Edit LDAP group");
+	document.getElementById("lgf-name").value = group.name;
+	document.getElementById("lgf-name").readOnly = true;
+	document.getElementById("lgf-gidnumber").value = group.gidnumber;
+	document.getElementById("lgf-submit").textContent = "Save";
+}
+
 function renderLdapGroups(groups) {
 	const body = document.getElementById("ldap-groups-body");
 
@@ -2583,6 +2628,12 @@ function renderLdapGroups(groups) {
 		row.appendChild(gidCell);
 
 		const actionCell = document.createElement("td");
+		const editButton = document.createElement("button");
+
+		editButton.textContent = "Edit";
+		editButton.addEventListener("click", () => editLdapGroup(g));
+		actionCell.appendChild(editButton);
+
 		const rmButton = document.createElement("button");
 
 		rmButton.textContent = "Remove";
@@ -2668,6 +2719,50 @@ async function removeLdapUser(name) {
 		showStatus("Failed to remove LDAP user " + name + ": " + e.message, true);
 	}
 }
+
+/* ---------- LDAP Config: start_uid/start_gid auto-allocation floor (task #748) ---------- */
+
+let ldapConfigDirty = false;
+
+async function refreshLdapConfig() {
+	try {
+		const config = await apiRequest("GET", "/v1/ldap/config");
+
+		cache.ldapConfig = config;
+		if (!ldapConfigDirty) {
+			document.getElementById("lcf-start-uid").value = config.start_uid;
+			document.getElementById("lcf-start-gid").value = config.start_gid;
+		}
+	} catch (e) {
+		/* Best-effort -- the form just stays at whatever was last shown. */
+	}
+}
+
+document.getElementById("lcf-start-uid").addEventListener("input", () => {
+	ldapConfigDirty = true;
+});
+document.getElementById("lcf-start-gid").addEventListener("input", () => {
+	ldapConfigDirty = true;
+});
+
+document.getElementById("ldap-config-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const body = {
+		start_uid: parseInt(document.getElementById("lcf-start-uid").value, 10),
+		start_gid: parseInt(document.getElementById("lcf-start-gid").value, 10),
+	};
+
+	try {
+		await apiRequest("PUT", "/v1/ldap/config", body);
+		clearStatus();
+		showStatus("LDAP config saved", false);
+		ldapConfigDirty = false;
+		await refreshLdapConfig();
+	} catch (e) {
+		showStatus("Failed to save LDAP config: " + e.message, true);
+	}
+});
 
 /* ---------- PKI ---------- */
 
@@ -3474,13 +3569,16 @@ document.getElementById("dns-record-form").addEventListener("submit", async (eve
 	const ip = document.getElementById("df-ip").value.trim();
 
 	try {
-		await apiRequest("POST", "/v1/dns/records", { name: name, ip: ip });
+		if (dnsRecordEditName !== null)
+			await apiRequest("PUT", "/v1/dns/records/" + encodeURIComponent(dnsRecordEditName), { ip: ip });
+		else
+			await apiRequest("POST", "/v1/dns/records", { name: name, ip: ip });
 		clearStatus();
 		document.getElementById("dns-record-form").reset();
 		closeModal();
 		await refreshDnsRecords();
 	} catch (e) {
-		showStatus("Failed to create DNS record: " + e.message, true);
+		showStatus((dnsRecordEditName !== null ? "Failed to update" : "Failed to create") + " DNS record: " + e.message, true);
 	}
 });
 
@@ -3521,19 +3619,26 @@ document.getElementById("ldap-server-form").addEventListener("submit", async (ev
 document.getElementById("ldap-group-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 
-	const body = {
-		name: document.getElementById("lgf-name").value.trim(),
-		gidnumber: parseInt(document.getElementById("lgf-gidnumber").value, 10),
-	};
+	const name = document.getElementById("lgf-name").value.trim();
+	const gidnumberRaw = document.getElementById("lgf-gidnumber").value;
 
 	try {
-		await apiRequest("POST", "/v1/ldap/groups", body);
+		if (ldapGroupEditName !== null) {
+			await apiRequest("PUT", "/v1/ldap/groups/" + encodeURIComponent(ldapGroupEditName), {
+				gidnumber: parseInt(gidnumberRaw, 10),
+			});
+		} else {
+			const body = { name: name };
+			if (gidnumberRaw !== "")
+				body.gidnumber = parseInt(gidnumberRaw, 10);
+			await apiRequest("POST", "/v1/ldap/groups", body);
+		}
 		clearStatus();
 		document.getElementById("ldap-group-form").reset();
 		closeModal();
 		await refreshLdapGroups();
 	} catch (e) {
-		showStatus("Failed to create LDAP group: " + e.message, true);
+		showStatus((ldapGroupEditName !== null ? "Failed to update" : "Failed to create") + " LDAP group: " + e.message, true);
 	}
 });
 
@@ -3542,7 +3647,6 @@ document.getElementById("ldap-user-form").addEventListener("submit", async (even
 
 	const body = {
 		name: document.getElementById("luf-name").value.trim(),
-		uidnumber: parseInt(document.getElementById("luf-uidnumber").value, 10),
 		primarygroup: parseInt(document.getElementById("luf-primarygroup").value, 10),
 		givenname: document.getElementById("luf-givenname").value.trim(),
 		sn: document.getElementById("luf-sn").value.trim(),
@@ -3552,6 +3656,10 @@ document.getElementById("ldap-user-form").addEventListener("submit", async (even
 		password: document.getElementById("luf-password").value,
 		disabled: document.getElementById("luf-disabled").checked,
 	};
+	const uidnumberRaw = document.getElementById("luf-uidnumber").value;
+
+	if (uidnumberRaw !== "")
+		body.uidnumber = parseInt(uidnumberRaw, 10);
 
 	try {
 		await apiRequest("POST", "/v1/ldap/users", body);
@@ -4262,6 +4370,7 @@ async function poll() {
 		await refreshLdapServers();
 		await refreshLdapGroups();
 		await refreshLdapUsers();
+		await refreshLdapConfig();
 		await refreshPkiCa();
 		await refreshPkiIntermediate();
 		await refreshPkiCerts();

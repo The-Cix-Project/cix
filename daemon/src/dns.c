@@ -270,6 +270,27 @@ enum dns_error dns_record_delete(const char *name)
 	return DNS_OK;
 }
 
+enum dns_error dns_record_update(const char *name, uint32_t ip_be, struct dns_record **out)
+{
+	struct dns_record *e = dns_record_find(name);
+	uint32_t old_ip_be;
+
+	if (e == NULL)
+		return DNS_ERR_NOT_FOUND;
+
+	old_ip_be = e->ip_be;
+	e->ip_be = ip_be;
+
+	if (save_state() != 0) {
+		e->ip_be = old_ip_be;
+		return DNS_ERR_PERSIST_FAILED;
+	}
+
+	dns_server_sync_all();
+	*out = e;
+	return DNS_OK;
+}
+
 void dns_record_forget_owner(const char *container_name)
 {
 	/*
