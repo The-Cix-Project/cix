@@ -2,6 +2,7 @@
 #define REGISTRY_H
 
 #include "container.h"
+#include "diskrole.h"
 #include "json.h"
 #include "network.h"
 
@@ -128,6 +129,17 @@ struct registry_entry {
 	char cmd[CONTAINER_MAX_ARGV][CONTAINER_ARGV_MAX];
 	int cmd_count; /* always >= 1 for an in-use entry */
 	/*
+	 * The disk (disk.h's own bare kernel name, e.g. "sdb") this
+	 * container's own upper/work/merged overlay directories live
+	 * under, or an empty string for the default (CONTAINERS_DIR, the
+	 * OS disk) -- task #638/ADR-0102. Purely a memo for reconstructing
+	 * the right base path at stats/file-read time (see main.c's
+	 * container_base_for()); registry_create() itself is handed the
+	 * already-resolved path, this field never drives any path
+	 * computation on its own.
+	 */
+	char disk_name[DISKROLE_DISK_NAME_MAX];
+	/*
 	 * Opaque; owned exclusively by main.c's epoll bookkeeping
 	 * (registry.c never reads or writes it beyond zeroing it here).
 	 * Holds the reactor's `struct conn *` wrapper for this entry's
@@ -160,6 +172,14 @@ void registry_init(void);
  * reallocated). On REGISTRY_ERR_CREATE_FAILED, errno is set by the
  * failing container_create()/cgroup_create() call.
  */
+/*
+ * disk_name (task #638/ADR-0102): the disk this container's overlay
+ * storage was placed on -- an empty string ("") for the default
+ * (CONTAINERS_DIR). Purely recorded onto the new entry, same
+ * display-only reasoning file_paths/file_count already have; the
+ * caller has already resolved the actual filesystem paths (spec->ov.*)
+ * before calling this.
+ */
 enum registry_error registry_create(const char *name, const char *image,
                                      const struct container_spec *spec,
                                      const struct registry_network_attachment *nets, int net_count,
@@ -167,7 +187,8 @@ enum registry_error registry_create(const char *name, const char *image,
                                      const struct registry_device_attachment *devices,
                                      int device_count,
                                      const char file_paths[][CONTAINER_FILE_PATH_MAX],
-                                     int file_count, struct registry_entry **out);
+                                     int file_count, const char *disk_name,
+                                     struct registry_entry **out);
 
 struct registry_entry *registry_find(const char *name);
 

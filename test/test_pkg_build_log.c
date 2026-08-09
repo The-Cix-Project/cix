@@ -28,8 +28,8 @@
 
 extern char **environ;
 
-#define TEST_PORT 7637
-#define PORT_ARG "--port=7637"
+#define TEST_PORT 7639
+#define PORT_ARG "--port=7639"
 
 static char g_data_dir[PATH_MAX];
 static char g_pkg_state_dir[PATH_MAX];

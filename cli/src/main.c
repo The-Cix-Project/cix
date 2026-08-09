@@ -2498,6 +2498,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	const char *cpu_max = NULL;
 	const char *cpuset_cpus = NULL;
 	long long disk_quota_bytes = -1;
+	const char *disk = NULL;
 	int i = 0;
 	int cmd_start = -1;
 	struct json_writer w;
@@ -2522,6 +2523,8 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 			cpuset_cpus = argv[i] + 9;
 		else if (strncmp(argv[i], "--disk-quota=", 13) == 0)
 			disk_quota_bytes = atoll(argv[i] + 13);
+		else if (strncmp(argv[i], "--disk=", 7) == 0)
+			disk = argv[i] + 7;
 		else if (strncmp(argv[i], "--network=", 10) == 0) {
 			if (network_count >= CLI_MAX_NETWORKS) {
 				fprintf(stderr, "kanxeoctl: too many --network= flags (max %d)\n",
@@ -2622,7 +2625,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		fprintf(stderr,
 		        "usage: kanxeoctl run --name=NAME --image=IMAGE [--memory-max=N] "
 		        "[--pids-max=N] [--cpu-max=\"QUOTA PERIOD\"] [--cpuset=0-1,3] "
-		        "[--disk-quota=BYTES] "
+		        "[--disk-quota=BYTES] [--disk=NAME] "
 		        "[--network=NAME[:IP] ...] [--ip-forward] [--dns-register] "
 		        "[--pki-issue] [--pki-cert-dir=PATH] [--pki-days=N] "
 		        "[--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--interface=IFNAME ...] "
@@ -2669,6 +2672,10 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (disk_quota_bytes >= 0) {
 		jw_key(&w, "disk_quota_bytes");
 		jw_int(&w, disk_quota_bytes);
+	}
+	if (disk != NULL) {
+		jw_key(&w, "disk");
+		jw_str(&w, disk);
 	}
 	if (network_count > 0) {
 		jw_key(&w, "networks");

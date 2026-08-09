@@ -4754,6 +4754,83 @@ static int sysctl_key_is_safe(const char *key)
  * err_msg holding the exact same message text -- the REST wrapper
  * forwards both verbatim; boot/restart callers just log them.
  */
+enum disk_resolve_result {
+	DISK_RESOLVE_OK = 0,
+	DISK_RESOLVE_NOT_FOUND,
+	DISK_RESOLVE_NOT_MOUNTED,
+	DISK_RESOLVE_NO_ROLE,
+};
+
+/*
+ * Resolves disk_name (POST /v1/containers' own optional "disk" field,
+ * task #638/ADR-0102) to the real host directory a container's own
+ * overlay storage should live under, in place of the default
+ * CONTAINERS_DIR: <the disk's own live mount_path>/containers.
+ * Requires the disk to (a) actually exist, (b) currently be mounted
+ * (ADR-0099's live /proc/mounts ground truth, not diskformat.c's own
+ * ephemeral per-process job state), and (c) carry the
+ * "container-storage" role (diskrole.c, Phase B) -- an arbitrary
+ * mounted disk is not automatically a valid target. This is the one
+ * thing that makes that role (assignable since Phase B but never
+ * consumed by anything until now, per diskrole.h's own "Phase D"
+ * comment) actually mean something, rather than being pure inert
+ * metadata. Returns DISK_RESOLVE_OK and fills out_root, or the
+ * specific reason it failed so the caller can give a precise 400.
+ */
+static int resolve_container_disk_root(const char *disk_name, char *out_root, size_t out_root_size)
+{
+	struct discovered_disk disks[DISK_ENUM_MAX];
+	int count, i;
+
+	count = disk_enumerate(disks, DISK_ENUM_MAX, CONTAINERS_DIR);
+	for (i = 0; i < count; i++) {
+		const char *role;
+
+		if (strcmp(disks[i].name, disk_name) != 0)
+			continue;
+		if (!disks[i].mounted)
+			return DISK_RESOLVE_NOT_MOUNTED;
+		role = diskrole_lookup(disk_name);
+		if (role == NULL || strcmp(role, "container-storage") != 0)
+			return DISK_RESOLVE_NO_ROLE;
+		snprintf(out_root, out_root_size, "%s/containers", disks[i].mount_path);
+		return DISK_RESOLVE_OK;
+	}
+	return DISK_RESOLVE_NOT_FOUND;
+}
+
+/*
+ * The read-side counterpart to resolve_container_disk_root() -- given
+ * an already-created entry, reconstructs the same root its own
+ * container_base was computed under, for handle_container_file_read()
+ * and handle_container_stats() (neither has any other record of it
+ * beyond entry->disk_name). Re-resolves the disk's current mount_path
+ * fresh via disk_enumerate() rather than caching it, matching this
+ * project's own "live /proc/mounts is the one source of truth"
+ * precedent (ADR-0099) -- if the disk is no longer mounted (a real,
+ * rare operational anomaly: it was unmounted after a container was
+ * placed on it), falls back to CONTAINERS_DIR, which fails the lookup
+ * cleanly (ENOENT) rather than crashing.
+ */
+static void container_root_for(const struct registry_entry *e, char *out, size_t out_size)
+{
+	struct discovered_disk disks[DISK_ENUM_MAX];
+	int count, i;
+
+	if (e->disk_name[0] == '\0') {
+		snprintf(out, out_size, "%s", CONTAINERS_DIR);
+		return;
+	}
+	count = disk_enumerate(disks, DISK_ENUM_MAX, CONTAINERS_DIR);
+	for (i = 0; i < count; i++) {
+		if (strcmp(disks[i].name, e->disk_name) == 0 && disks[i].mounted) {
+			snprintf(out, out_size, "%s/containers", disks[i].mount_path);
+			return;
+		}
+	}
+	snprintf(out, out_size, "%s", CONTAINERS_DIR);
+}
+
 static int create_container_from_body(const char *body, size_t body_len,
                                        struct registry_entry **out_entry,
                                        char out_restart_policy[16], int *out_restart_delay_seconds,
@@ -4807,6 +4884,9 @@ static int create_container_from_body(const char *body, size_t body_len,
 	int pki_issue = 0;
 	char pki_cert_dir_buf[PATH_MAX];
 	int pki_days = 365;
+	const struct json_value *jdisk;
+	const char *disk_name;
+	char container_root[PATH_MAX];
 
 	snprintf(out_restart_policy, 16, "no");
 	*out_restart_delay_seconds = CONTAINERDEF_DEFAULT_RESTART_DELAY_SECONDS;
@@ -4833,8 +4913,10 @@ static int create_container_from_body(const char *body, size_t body_len,
 	jpki_issue = json_object_get(root, "pki_issue");
 	jpki_cert_dir = json_object_get(root, "pki_cert_dir");
 	jpki_days = json_object_get(root, "pki_days");
+	jdisk = json_object_get(root, "disk");
 	name = json_as_string(jname);
 	image = json_as_string(jimage);
+	disk_name = json_as_string(jdisk);
 	ip_forward = (jip_forward != NULL && jip_forward->type == JSON_BOOL && jip_forward->u.boolean);
 	dns_register = (jdns_register != NULL && jdns_register->type == JSON_BOOL &&
 	                jdns_register->u.boolean);
@@ -5230,8 +5312,25 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 	}
 
-	snprintf(container_base, sizeof(container_base), "%s/%s", CONTAINERS_DIR, name);
-	if (mkdir(container_base, 0755) != 0 && errno != EEXIST) {
+	if (disk_name != NULL && disk_name[0] != '\0') {
+		int drc = resolve_container_disk_root(disk_name, container_root, sizeof(container_root));
+
+		if (drc != DISK_RESOLVE_OK) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "%s",
+			         drc == DISK_RESOLVE_NOT_FOUND
+			             ? "no such disk"
+			             : drc == DISK_RESOLVE_NOT_MOUNTED
+			                   ? "disk is not mounted"
+			                   : "disk has no container-storage role assigned");
+			return 400;
+		}
+	} else {
+		snprintf(container_root, sizeof(container_root), "%s", CONTAINERS_DIR);
+	}
+
+	snprintf(container_base, sizeof(container_base), "%s/%s", container_root, name);
+	if (persist_mkdir_p(container_base) != 0) {
 		json_free(root);
 		snprintf(err_msg, err_msg_size, "failed to create container directory");
 		return 500;
@@ -5366,7 +5465,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	spec.envp = empty_envp;
 
 	rerr = registry_create(name, image, &spec, net_attachments, net_count, ip_forward,
-	                        device_attachments, device_count, file_paths, file_count, &entry);
+	                        device_attachments, device_count, file_paths, file_count, disk_name, &entry);
 	/*
 	 * Captured immediately, before json_free() below -- container_create()
 	 * (via registry_create()) always preserves errno across every one of
@@ -5866,7 +5965,10 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 		snprintf(full_path, sizeof(full_path), "/proc/%d/root%s", (int)e->handle.pid, rel_path);
 		file_fd = open(full_path, O_RDONLY);
 	} else {
-		snprintf(full_path, sizeof(full_path), "%s/%s/upper%s", CONTAINERS_DIR, name, rel_path);
+		char container_root[PATH_MAX];
+
+		container_root_for(e, container_root, sizeof(container_root));
+		snprintf(full_path, sizeof(full_path), "%s/%s/upper%s", container_root, name, rel_path);
 		file_fd = open(full_path, O_RDONLY);
 		if (file_fd < 0) {
 			snprintf(full_path, sizeof(full_path), "%s/%s/rootfs%s", IMAGES_DIR, e->image, rel_path);
@@ -5950,9 +6052,11 @@ static void handle_container_stats(int fd, const char *name)
 	cgroup_read_pressure(e->handle.cgroup_fd, "memory.pressure", &mem_pressure);
 
 	{
+		char container_root[PATH_MAX];
 		char upperdir[PATH_MAX];
 
-		snprintf(upperdir, sizeof(upperdir), "%s/%s/upper", CONTAINERS_DIR, name);
+		container_root_for(e, container_root, sizeof(container_root));
+		snprintf(upperdir, sizeof(upperdir), "%s/%s/upper", container_root, name);
 		overlay_upperdir_size(upperdir, &disk_bytes);
 	}
 
@@ -9289,7 +9393,7 @@ static void handle_pkg_fetch_event(struct conn *cc)
 		struct registry_entry *entry;
 		enum registry_error rerr =
 		    registry_create(PKG_BUILD_CONTAINER_NAME, "pkgbuild", &spec, NULL, 0, 0, NULL, 0, NULL,
-		                     0, &entry);
+		                     0, NULL, &entry);
 
 		/*
 		 * The child (if registry_create() actually forked one)

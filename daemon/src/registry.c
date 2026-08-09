@@ -48,7 +48,8 @@ enum registry_error registry_create(const char *name, const char *image,
                                      const struct registry_device_attachment *devices,
                                      int device_count,
                                      const char file_paths[][CONTAINER_FILE_PATH_MAX],
-                                     int file_count, struct registry_entry **out)
+                                     int file_count, const char *disk_name,
+                                     struct registry_entry **out)
 {
 	int i, slot = -1;
 	struct registry_entry *e;
@@ -105,6 +106,9 @@ enum registry_error registry_create(const char *name, const char *image,
 	for (i = 0; i < CONTAINER_MAX_ARGV && spec->argv[i] != NULL; i++)
 		strncpy(e->cmd[i], spec->argv[i], sizeof(e->cmd[i]) - 1);
 	e->cmd_count = i;
+	memset(e->disk_name, 0, sizeof(e->disk_name));
+	if (disk_name != NULL)
+		strncpy(e->disk_name, disk_name, sizeof(e->disk_name) - 1);
 
 	*out = e;
 	return REGISTRY_OK;
@@ -359,6 +363,11 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 	for (i = 0; i < entry->cmd_count; i++)
 		jw_str(w, entry->cmd[i]);
 	jw_arr_close(w);
+	jw_key(w, "disk");
+	if (entry->disk_name[0] != '\0')
+		jw_str(w, entry->disk_name);
+	else
+		jw_null(w);
 	{
 		/*
 		 * "restart"/"depends_on" are sourced live from containerdef.c,

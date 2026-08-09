@@ -2,6 +2,22 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 47 (done, local regression sweep clean): per-container disk selection at creation time (ADR-0102, closes task #638, Phase D)
+
+`POST /v1/containers` always placed a container's writable overlay storage under the fixed OS-disk `CONTAINERS_DIR` -- no way to say "put this container's data on disk X." The `"container-storage"` disk role (Phase B, `diskrole.c`) was assignable but never consumed by anything.
+
+#### Added
+- `daemon/src/main.c`: new optional `"disk"` field on `POST /v1/containers`. `resolve_container_disk_root()` validates it exists, is currently mounted (ADR-0099), and carries the `"container-storage"` role before rooting the container's `upper`/`work`/`merged` under `<disk's mount_path>/containers/<name>` instead of `CONTAINERS_DIR/<name>`.
+- `daemon/include/registry.h`/`registry.c`: `struct registry_entry` gains `disk_name` (a memo, echoed as `"disk"` in `GET /containers`); `container_root_for()` re-resolves a disk's live mount_path for the file-read/stats call sites that need it after creation.
+- `kanxeoctl run --disk=NAME`.
+- `docs/api/openapi.yaml`/`docs/api/README.md`: documented.
+
+#### Notes
+- Full local regression sweep clean, zero compiler warnings.
+- The web dashboard's create-container form does not yet offer a disk picker -- acknowledged gap, left for a follow-on.
+- No new automated test for the successful placement path itself -- this sandbox's visible block devices are the underlying host's real hardware, not safe to format/mount for a test (same gap ADR-0099 already accepted for `GET /disks`).
+- Found, but deliberately **not** fixed here (own scope, tracked separately, task #738): `DELETE /v1/containers` has never removed a container's own on-disk upper/work directories, for any placement -- a real, pre-existing leak this change doesn't introduce or worsen.
+
 ### Part 46 (done, local regression sweep clean, real end-to-end test): live-tail a real in-flight package build's own output (ADR-0101, closes task #676)
 
 A build's real-time stdout/stderr had no REST-visible path while it was still running -- ADR-0087's epoll-drained capture buffer was only ever read back out on a *failed* build, folded into the logged error; a successful build's output was simply discarded. The existing container console looked like it might cover this "for free" by pointing it at the build container's own name, but doesn't: the build container's output is a plain pipe, not a PTY, and the console's `exec_into_container()` spawns a brand-new process rather than attaching to the running one.

@@ -3239,6 +3239,19 @@ components:
             system's containers partition) -- if it doesn't, container
             creation fails with a clear error rather than silently
             not enforcing the requested limit. Omit for no limit.
+        disk:
+          type: string
+          description: >
+            Bare kernel name (e.g. "sdb", no "/dev/" prefix -- disk.h's
+            own naming, see GET /disks) of a real, currently-mounted
+            disk this container's own overlay storage (upperdir/
+            workdir/merged) should live on, in place of the default
+            OS-disk containers directory (task #638, ADR-0102). The
+            disk must already carry the "container-storage" role
+            (POST /diskroles) -- 400 if it doesn't exist, isn't
+            mounted, or lacks that role; this is the one thing that
+            makes the role (assignable since Phase B) actually
+            connect to anything. Omit for the default placement.
         networks:
           type: array
           items:
@@ -3718,6 +3731,13 @@ components:
             persisted create-request body while genuinely stopped (see
             ADR-0100) -- either way, one real answer to "what is this
             container actually running."
+        disk:
+          type: string
+          nullable: true
+          description: >
+            The disk (see ContainerCreateRequest.disk) this
+            container's own overlay storage lives on, or null for the
+            default OS-disk placement (task #638, ADR-0102).
         restart:
           type: string
           enum: [always, on-failure, unless-stopped, no]
