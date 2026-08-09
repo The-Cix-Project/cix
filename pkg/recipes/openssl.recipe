@@ -18,16 +18,25 @@
 # /usr/bin/openssl copy today; wiring this recipe's own output into
 # a shared host-tools image (task #693) is what actually closes that.
 #
-# Source is OpenSSL's own canonical /source/ release, checksum
-# verified against two independent sources (openssl.org's own
-# /source/ tree and the openssl project's own GitHub release mirror)
-# -- byte-identical, same sha256 -- the exact same verified source
-# openssl-dev.recipe already established, now actually built instead
-# of bypassed.
+# Source is the OpenSSL project's own GitHub Releases asset --
+# checksum verified against two independent sources (openssl.org's
+# own /source/ tree and this GitHub release) -- byte-identical, same
+# sha256. Pointed directly at GitHub rather than openssl.org's own
+# "/source/" URL (which this same file used until this line, and
+# which is itself now just a 301 redirect to this exact GitHub URL,
+# confirmed directly): `kanxeod`'s own host-side fetch (PKG_CURL_BIN,
+# daemon/include/pkg.h -- a fixed /usr/bin/curl on the daemon's own
+# root, separate from this recipe's own build output) failed fetching
+# through that redirect hop on a real installed box, exit 1
+# ("unsupported protocol"), while fetching this direct URL (still
+# itself `-L`-followed through GitHub's own further redirect to a
+# time-limited signed blob URL, which is why this is the stable
+# `releases/download/...` URL and not that ephemeral final one)
+# succeeds -- a real, working-source fix, not a preference swap.
 #
 pkg_name="openssl"
 pkg_version="3.0.20"
-pkg_source="https://www.openssl.org/source/openssl-3.0.20.tar.gz"
+pkg_source="https://github.com/openssl/openssl/releases/download/openssl-3.0.20/openssl-3.0.20.tar.gz"
 pkg_sha256="c80a01dfc70ece4dc21168932c37739042d404d46ccc81a5986dd75314ecda6f"
 pkg_depends="perl"
 
@@ -37,13 +46,24 @@ pkg_depends="perl"
 # -- install_sw below is what actually avoids the doc tree, not a
 # Configure option). pkg_depends="perl" above stages a real perl into
 # this same build container first -- Configure hard-requires it.
-# "linux-x86_64" is the real, exact Configure target this platform is
-# (confirmed via a real `uname -m` plus OpenSSL's own
+# Invoked as "perl ./Configure ..." rather than "./Configure" directly:
+# the script's own shebang is "#!/usr/bin/env perl" (confirmed by
+# reading it), which needs /usr/bin/env on PATH -- real on an image
+# that also has coreutils, but not guaranteed on a lean image built
+# only from this recipe set's own pkg_depends chain (confirmed the
+# hard way: kanxeo-hosttools has perl but no coreutils/env, and
+# execve() on the un-runnable script fell back to bash interpreting
+# Configure's own Perl source as shell, "use: command not found").
+# Calling perl directly needs nothing beyond what pkg_depends="perl"
+# already guarantees, so it's the real fix, not a version of "add
+# coreutils as a dependency too" that would only be needed for this
+# one indirection. "linux-x86_64" is the real, exact Configure target
+# this platform is (confirmed via a real `uname -m` plus OpenSSL's own
 # Configurations/10-main.conf entry for it), not a generic/auto-detect
 # target. --openssldir=/usr/lib/ssl matches the real path
 # mkbootroot.c's own openssl.cnf staging already uses.
 pkg_build() {
-	./Configure --prefix=/usr --openssldir=/usr/lib/ssl linux-x86_64
+	perl ./Configure --prefix=/usr --openssldir=/usr/lib/ssl linux-x86_64
 	make -j"$(nproc)"
 }
 

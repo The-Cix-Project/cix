@@ -2,6 +2,45 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 35 (done, live-verified): CONFIG_VETH was never enabled -- every real container network attachment has always failed (ADR-0088)
+
+Found live while building the first real DNS containers this project has attempted: `POST /v1/containers` with any `networks` attachment on 192.168.15.95 failed outright with `"Operation not supported"`, reproduced identically for both a network with a real uplink and a pure isolated one. Root cause: `image/kernel/qemu-part1.config` has never enabled `CONFIG_VETH` in its entire history -- `src/container_net.c`'s `rtnl_veth_create()`, the only mechanism any container has ever gotten a network interface through, depends on it. `CONFIG_BRIDGE=y` (already enabled) is not sufficient alone -- a bridge needs veth or a real NIC to attach anything. Never caught before because every prior "container networking works" test in this project's history ran on this dev sandbox's own host kernel (which has veth natively), never on a kernel actually built from this project's own tracked config fragment.
+
+#### Fixed
+- `image/kernel/qemu-part1.config`: added `CONFIG_VETH=y`.
+
+#### Notes
+- Kernel rebuilt from the cached `allnoconfig` tree reused from the earlier CONFIG_SMP fix (ADR-0082); deployed via a kernel-only update -- the control-plane root was rebuilt locally (`build/mkbootroot`) to match what was already running (no `kanxeod` code bundled into this deploy), both landed on 192.168.15.95's inactive slot A together (per the documented one-sided-update footgun, task #671) via the LAN-serve + scratch-recipe trick, then a real reboot.
+- Live-verified post-reboot: `slot: "a"` confirmed the new slot actually booted; a real container (`vethtest`, network `management`) was created successfully, receiving a real veth-backed interface and its assigned IP, where the identical request previously failed.
+- See ADR-0088 for the full investigation and the "no kernel-built-from-this-config gets exercised in the automated suite" gap this leaves open.
+
+### Part 34 (done): kanxeo-hosttools fully built on 192.168.15.95 -- two more real recipe bugs found and fixed
+
+Continuing Part 33's own fix, finished building `kanxeo-hosttools` (all 10 packages: `perl`, `zlib`, `xz`, `tar`, `gzip`, `bzip2`, `e2fsprogs`, `openssl`, `curl`, `squashfs-tools`). `openssl` and `squashfs-tools` each had a real, distinct bug in their own recipe, found and fixed live.
+
+#### Fixed
+- `pkg/recipes/openssl.recipe`: `pkg_build()` now invokes `perl ./Configure ...` directly instead of `./Configure` -- the script's own `#!/usr/bin/env perl` shebang needs `/usr/bin/env` on `PATH`, which a lean image like `kanxeo-hosttools` (perl only, no coreutils) doesn't have; bash's own ENOEXEC fallback was silently interpreting `Configure`'s Perl source as a shell script instead.
+- `pkg/recipes/squashfs-tools.recipe`: `pkg_install()`'s own `cp -a squashfs-tools/mksquashfs ...` dropped the redundant `squashfs-tools/` prefix -- `pkg_build()` and `pkg_install()` run in the same shell session (`pkg.c`'s own `. recipe.sh; cd /build/src && pkg_build && pkg_install`), so `pkg_build()`'s own earlier `cd squashfs-tools` was still in effect, making the old path look one directory too deep.
+
+#### Notes
+- A separate `kanxeod`-side issue, worked around rather than root-caused: the daemon's own fixed host-side `curl` (`PKG_CURL_BIN`) failed fetching two different real GitHub-hosted release URLs with a bare `curl exit 1` ("unsupported protocol"), while a structurally-identical GitHub release redirect for a different package (`xz`) succeeded from the same box in the same session -- not a blanket CDN/TLS problem. No shell access to the real box to diagnose further; unblocked both times with the established LAN-serve trick, then reverted the box's own recipe registry back to the real, canonical URLs once each install succeeded. Documented as a standing `CLAUDE.md` environment note for next time.
+- Full clean rebuild + regression sweep (no new C code this part, recipe fixes only). Live-verified: all 10 `kanxeo-hosttools` packages show `state: "installed"` with real file manifests on 192.168.15.95.
+
+### Part 33 (done, live-verified end-to-end): build-output capture pipes deadlocked on sufficiently verbose builds (ADR-0087)
+
+Continuing Part 32's own host-tools bootstrap: `perl` (real upstream CPAN URL, real `make -j"$(nproc)"`) reproducibly stalled partway through its own build, `__pkgbuild`'s `cpu.usage_usec` frozen for 90+ seconds, host `load1`/`load5`/`load15` near zero. An interactive-prompt hang, a DNS-resolution hang, and a parallel-`make` race were each investigated and ruled out with direct evidence (see ADR-0087's own Context for each). PSI (`cpu.pressure`/`memory.pressure`/`io.pressure`) reading exactly zero, combined with zero disk I/O and a frozen `cpu.usage_usec`, pointed at an in-memory synchronization block rather than any kernel-tracked resource contention -- confirmed by reading `daemon/src/pkg.c` directly: the build container's own stdout/stderr capture pipe (a plain `pipe()`, 64KB kernel buffer) was never drained while the container ran, only once, in a blocking loop, after it had already exited. Any build whose combined output exceeded 64KB deadlocked unconditionally. `daemon/src/main.c`'s `spawn_kanxeo_bootroot_assembly()`/`handle_bootroot_assemble_event()` turned out to have the identical architectural gap, fixed pre-emptively in the same pass.
+
+#### Fixed
+- `daemon/src/pkg.c`: the build-output pipe's read end is now opened non-blocking (`pipe2()`+`O_NONBLOCK`) and drained incrementally into a persistent capture buffer as data arrives, not in one shot after exit; new `pkg_build_output_fd()`/`pkg_build_output_readable()`/`pkg_build_output_close()` (`daemon/include/pkg.h`).
+- `daemon/src/main.c`: new `CONN_PKG_BUILD_OUTPUT` conn kind registers the pipe directly with epoll (the `CONN_KMSG` direct-fd pattern, not the pidfd-then-single-read shape every other `CONN_*` kind uses) right after the build container spawns; `handle_pkg_build_output_event()` drains it live and owns its own close/cleanup on EOF.
+- `daemon/src/main.c`: the identical fix applied to `spawn_kanxeo_bootroot_assembly()`'s own captured stdout/stderr -- new `CONN_BOOTROOT_OUTPUT` conn kind, `bootroot_output_readable()`/`bootroot_output_close()`, `handle_bootroot_output_event()`; `struct conn`'s now-unused `output_fd` field removed.
+- `docs/adr/0087-pkg-build-output-pipe-deadlock.md`.
+
+#### Notes
+- No pipe-size tuning (`F_SETPIPE_SZ`) considered -- a larger buffer only raises the threshold, it doesn't remove the deadlock for an arbitrarily verbose build, which this project's own "No Stop-Gaps" maxim rules out as a real fix.
+- Full clean rebuild (`-Wall -Werror`, zero warnings); full local regression sweep (`test_pkg`, `test_container_lifecycle`, `test_system_update`, and every other daemon-linked test, all passing).
+- **Live-verified end to end on 192.168.15.95**: deployed via a direct squashfs push to the inactive slot (`kanxeo-hosttools`'s own build had wedged `__pkgbuild` under the old code -- `POST .../stop` freed it, ADR-0086), rebooted into the fixed daemon, then re-ran the real `perl.recipe` (upstream CPAN URL, real `make -j"$(nproc)"`) -- `cpu.usage_usec` climbed continuously for the entire build with no freeze at the ~90s mark that reliably killed every prior attempt, and the package reached `state: "installed"` with its full real file manifest (Perl's own core modules, `libcrypt.so.1`, etc.).
+
 ### Part 31 (done): stopping __pkgbuild via POST .../stop left pkg.c's job lock stuck forever (ADR-0086)
 
 Found live while building the host-tools image (perl/openssl/zlib/curl/tar/bzip2/xz/squashfs-tools/e2fsprogs/gzip) needed to finish Part 30's own mksquashfs fix: a `perl` build stalled (`cpu.usage_usec` frozen identically across 30+ seconds, host `load1`/`load5`/`load15` near zero -- a genuine stall, confirmed via repeated `kanxeoctl stats`, not just a lull between compile steps). `POST /v1/containers/__pkgbuild/stop` killed it correctly at the container level (`ps`/`inspect` both confirmed it gone), but every subsequent `pkg install` then 409'd "another package install is already in progress" indefinitely.

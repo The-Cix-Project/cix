@@ -46,8 +46,24 @@ pkg_build() {
 # baseline) -- the entire install is one binary, no man page (this is
 # a container image, not a dev environment, the same boundary every
 # other recipe in this set already keeps).
+#
+# Also writes a minimal /etc/passwd + /etc/group: dnsmasq's own -u/-g
+# flags resolve the given name via NSS (getpwnam/getgrnam) even when
+# it's already running as that user, so "-u root -g root" still needs
+# a real root entry in both files -- confirmed the hard way
+# (test/test_dns.c's own write_minimal_passwd_group(), the exact same
+# content reproduced here). No other recipe in this set needs either
+# file, and pkg_seed_image_baseline() deliberately doesn't provide
+# them for every image (dev nodes only) -- this is dnsmasq's own
+# runtime requirement, so it belongs in dnsmasq's own pkg_install(),
+# not a new baseline-seeding step for every image regardless of
+# whether it runs dnsmasq.
 pkg_install() {
 	dir="$PKG_DESTDIR/usr/sbin"
 	mkdir -p "$dir"
 	cp src/dnsmasq "$dir/"
+
+	mkdir -p "$PKG_DESTDIR/etc"
+	printf 'root:x:0:0:root:/root:/bin/sh\n' >"$PKG_DESTDIR/etc/passwd"
+	printf 'root:x:0:\n' >"$PKG_DESTDIR/etc/group"
 }

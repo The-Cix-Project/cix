@@ -51,9 +51,16 @@ pkg_build() {
 # files copied directly. sqfscat/sqfstar are real symlinks to
 # unsquashfs/mksquashfs respectively (upstream's own convention,
 # confirmed via `ls -la` on the build output), kept as-is.
+#
+# No "squashfs-tools/" prefix here (confirmed live: an earlier version
+# of this line had one and every real build failed at this exact step,
+# "cannot stat 'squashfs-tools/mksquashfs'") -- pkg_build() and
+# pkg_install() run as two calls in the *same* shell session (pkg.c's
+# own build invocation: ". recipe.sh; cd /build/src && pkg_build &&
+# pkg_install"), so pkg_build()'s own "cd squashfs-tools" is still in
+# effect here; this function is already inside that directory, not
+# back at /build/src.
 pkg_install() {
 	mkdir -p "$PKG_DESTDIR/usr/bin"
-	cp -a squashfs-tools/mksquashfs squashfs-tools/unsquashfs \
-	      squashfs-tools/sqfscat squashfs-tools/sqfstar \
-	      "$PKG_DESTDIR/usr/bin/"
+	cp -a mksquashfs unsquashfs sqfscat sqfstar "$PKG_DESTDIR/usr/bin/"
 }

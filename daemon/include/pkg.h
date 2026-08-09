@@ -414,6 +414,39 @@ void pkg_build_spawn_failed(void);
 int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_pid, int *out_pidfd,
                          char *out_hostbuild_done_name);
 
+/*
+ * The build-output capture pipe's read end (see pkg_fetch_completed()'s
+ * doc comment), for the caller to register with its own epoll loop
+ * right after a successful registry_create() -- ADR-0087: draining
+ * this only once, after the container has already exited, deadlocks
+ * any build whose combined stdout+stderr exceeds the pipe's 64KB
+ * kernel buffer, since nothing would read from it while the build is
+ * still running. Returns -1 if no build is in flight or the pipe2()
+ * call itself failed (capture is a diagnostic nicety, never a reason
+ * to fail the build).
+ */
+int pkg_build_output_fd(void);
+
+/*
+ * Called whenever pkg_build_output_fd()'s fd reports EPOLLIN --
+ * drains everything currently available (the fd is non-blocking) into
+ * pkg.c's own bounded, sliding-window capture buffer, the same one
+ * pkg_build_completed() logs from on a build failure. Returns 1 if
+ * the pipe reached EOF or a real read error (every write end has been
+ * closed -- the caller should now tear down its own epoll
+ * registration and call pkg_build_output_close()), 0 if there may
+ * still be more to come later.
+ */
+int pkg_build_output_readable(void);
+
+/* Closes pkg_build_output_fd()'s fd and clears it -- called by the
+ * caller once pkg_build_output_readable() returns 1, or directly by
+ * pkg_build_spawn_failed()'s own caller path when registry_create()
+ * never actually spawned a container to produce any output at all
+ * (no epoll registration ever existed to drive the EOF path in that
+ * case). Safe to call when already closed (no-op). */
+void pkg_build_output_close(void);
+
 /* Metadata for every known package (installed or in-flight): name,
  * image, version, state, error (null unless FAILED), files (manifest,
  * empty until INSTALLED), available_version (null if up to date or

@@ -394,7 +394,11 @@ enum conn_kind {
 	CONN_CLIENT,
 	CONN_CONTAINER,
 	CONN_PKG_FETCH,
+	CONN_PKG_BUILD_OUTPUT,  /* pkg.c's build-output capture pipe, drained incrementally
+	                          * as the container runs rather than once at exit (ADR-0087) */
 	CONN_BOOTROOT_ASSEMBLE, /* server-side mkbootroot invocation (ADR-0057) */
+	CONN_BOOTROOT_OUTPUT,   /* mkbootroot's own captured stdout/stderr, drained
+	                          * incrementally exactly like CONN_PKG_BUILD_OUTPUT (ADR-0087) */
 	CONN_ISO_ASSEMBLE,      /* server-side mkinstalleriso invocation (ADR-0064) */
 	CONN_BOOTSTRAP_FETCH,   /* pkg/bootstrap's own toolchain_url curl fetch (ADR-0065) */
 	CONN_DISK_FORMAT,       /* disk format+mount job (multi-disk management Phase C) */
@@ -429,14 +433,6 @@ struct conn {
 	struct http_conn http;                 /* CONN_CLIENT only */
 	struct registry_entry *entry;           /* CONN_CONTAINER only */
 	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE / CONN_ISO_ASSEMBLE / CONN_BOOTSTRAP_FETCH / CONN_DISK_FORMAT */
-	int output_fd;                          /* CONN_BOOTROOT_ASSEMBLE only -- read end of a pipe2(O_CLOEXEC)
-	                                          * the spawned mkbootroot's own stdout/stderr were dup2()'d onto;
-	                                          * read once in the reaper (handle_bootroot_assemble_event()) and
-	                                          * logged alongside its exit status, closing the same real-vs-
-	                                          * generic-failure-message gap container_read_diag() (see
-	                                          * container.h) closes for containers -- "mkbootroot exited 1"
-	                                          * alone was never enough to root-cause a real assembly failure
-	                                          * without serial console access. -1 once consumed. */
 	char restart_name[REGISTRY_NAME_MAX];   /* CONN_RESTART_TIMER only */
 	char cleanup_ifname[NETWORK_NAME_MAX];  /* CONN_BIND_IP_CLEANUP only */
 	uint32_t cleanup_addr_be;               /* CONN_BIND_IP_CLEANUP only */
@@ -3626,11 +3622,173 @@ static void register_pkg_fetch_pidfd(pid_t pid, int pidfd)
 	}
 }
 
+/*
+ * ADR-0087: registers pkg.c's own build-output capture pipe (see
+ * pkg_build_output_fd()) directly with epoll, watching the pipe's fd
+ * itself rather than a pidfd -- the CONN_KMSG pattern (start_kmsg_
+ * watch()/handle_kmsg_event()), not the pidfd-then-single-read pattern
+ * every other CONN_* kind above uses. This is deliberate: the build
+ * container's own exit is already tracked separately via
+ * register_container_pidfd()'s own CONN_CONTAINER registration for
+ * PKG_BUILD_CONTAINER_NAME; this conn's only job is draining the
+ * output pipe live, as data arrives, so it never fills its 64KB
+ * kernel buffer and deadlocks the still-running build. No-op if
+ * output_fd is -1 (pipe2() itself failed at build-spawn time, or no
+ * build is in flight).
+ */
+static void register_pkg_build_output(int output_fd)
+{
+	struct conn *cc;
+	struct kx_epoll_event ev;
+
+	if (output_fd < 0)
+		return;
+
+	cc = malloc(sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (pkg build output reactor conn)");
+		abort();
+	}
+	cc->kind = CONN_PKG_BUILD_OUTPUT;
+	cc->fd = output_fd;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+		perror("epoll_ctl ADD pkg build output fd");
+		abort();
+	}
+}
+
+/*
+ * Fires whenever pkg_build_output_fd()'s fd becomes readable --
+ * drains everything currently buffered into pkg.c's own capture
+ * buffer. Once pkg_build_output_readable() reports EOF/error (every
+ * write end closed -- the build container and all its descendants
+ * have exited), tears down this conn's own epoll registration and
+ * closes the fd via pkg_build_output_close(), mirroring exactly how
+ * the container's own CONN_CONTAINER exit path tears itself down.
+ */
+static void handle_pkg_build_output_event(struct conn *cc)
+{
+	if (pkg_build_output_readable()) {
+		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+		pkg_build_output_close();
+		free(cc);
+	}
+}
+
+/*
+ * ADR-0087: mkbootroot's own captured stdout/stderr, drained
+ * incrementally via epoll exactly like pkg.c's own build-output pipe
+ * above -- the identical class of bug (a single post-exit read of a
+ * plain pipe deadlocks the moment cumulative output exceeds the 64KB
+ * kernel buffer), just not yet observed live here since a
+ * control-plane-only rebuild's own output has never been verbose
+ * enough to fill it. Safe as a bare static: only one bootroot
+ * assembly can ever be in flight at a time (triggered exclusively by
+ * a "kanxeo" hostbuild completing, itself serialized by pkg.c's own
+ * one-job-at-a-time invariant) -- the same reasoning pkg.c's own
+ * module-level build state statics already document.
+ */
+static int g_bootroot_output_rd = -1;
+#define BOOTROOT_OUTPUT_CAPTURE_MAX 2000
+static char g_bootroot_output_captured[BOOTROOT_OUTPUT_CAPTURE_MAX + 1];
+static int g_bootroot_output_captured_len;
+
+static void bootroot_output_append(const char *data, int len)
+{
+	int take = (len > BOOTROOT_OUTPUT_CAPTURE_MAX) ? BOOTROOT_OUTPUT_CAPTURE_MAX : len;
+	int new_total = g_bootroot_output_captured_len + take;
+
+	if (new_total > BOOTROOT_OUTPUT_CAPTURE_MAX) {
+		int overflow = new_total - BOOTROOT_OUTPUT_CAPTURE_MAX;
+
+		memmove(g_bootroot_output_captured, g_bootroot_output_captured + overflow,
+		        g_bootroot_output_captured_len - overflow);
+		g_bootroot_output_captured_len -= overflow;
+	}
+	memcpy(g_bootroot_output_captured + g_bootroot_output_captured_len, data + (len - take), take);
+	g_bootroot_output_captured_len += take;
+}
+
+/* Returns 1 once every write end has closed (EOF/real read error --
+ * the caller should tear down its own epoll registration and call
+ * bootroot_output_close()), 0 if there may still be more to come. */
+static int bootroot_output_readable(void)
+{
+	char chunk[2048];
+	ssize_t n;
+
+	if (g_bootroot_output_rd < 0)
+		return 1;
+
+	for (;;) {
+		n = read(g_bootroot_output_rd, chunk, sizeof(chunk));
+		if (n > 0) {
+			bootroot_output_append(chunk, (int)n);
+			continue;
+		}
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+			return 0;
+		return 1;
+	}
+}
+
+static void bootroot_output_close(void)
+{
+	if (g_bootroot_output_rd >= 0) {
+		close(g_bootroot_output_rd);
+		g_bootroot_output_rd = -1;
+	}
+}
+
+/* Registers g_bootroot_output_rd with epoll -- same CONN_KMSG-style
+ * direct-fd pattern as register_pkg_build_output() above, not the
+ * pidfd-then-single-read shape the CONN_BOOTROOT_ASSEMBLE conn itself
+ * still uses for tracking mkbootroot's own exit. No-op if the fd is
+ * -1 (pipe2() failed at spawn time). */
+static void register_bootroot_output(void)
+{
+	struct conn *cc;
+	struct kx_epoll_event ev;
+
+	if (g_bootroot_output_rd < 0)
+		return;
+
+	cc = malloc(sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (bootroot output reactor conn)");
+		abort();
+	}
+	cc->kind = CONN_BOOTROOT_OUTPUT;
+	cc->fd = g_bootroot_output_rd;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+		perror("epoll_ctl ADD bootroot output fd");
+		abort();
+	}
+}
+
+static void handle_bootroot_output_event(struct conn *cc)
+{
+	if (bootroot_output_readable()) {
+		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+		bootroot_output_close();
+		free(cc);
+	}
+}
+
 /* Same shape as register_pkg_fetch_pidfd(), for the mkbootroot child
- * spawn_kanxeo_bootroot_assembly() below just forked. output_fd is the
- * read end of its captured stdout/stderr (-1 if the capture pipe
- * itself couldn't be created) -- see handle_bootroot_assemble_event(). */
-static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd, int output_fd)
+ * spawn_kanxeo_bootroot_assembly() below just forked -- tracks only
+ * its exit; its captured stdout/stderr is a separate, directly-
+ * registered conn (register_bootroot_output()/g_bootroot_output_rd
+ * above, ADR-0087), not this one. */
+static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
 {
 	struct conn *cc;
 	struct kx_epoll_event ev;
@@ -3643,7 +3801,6 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd, int output_fd
 	cc->kind = CONN_BOOTROOT_ASSEMBLE;
 	cc->fd = pidfd;
 	cc->pkg_fetch_pid = pid;
-	cc->output_fd = output_fd;
 
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
@@ -3737,13 +3894,20 @@ static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
 	 * past this fork) shouldn't leak into any later child this daemon
 	 * spawns either. Not fatal on failure -- assembly still proceeds
 	 * exactly as before this capture existed, just back to only the
-	 * bare exit-status logging.
+	 * bare exit-status logging. O_NONBLOCK on the read end only (added
+	 * for ADR-0087) -- the write end stays blocking since it becomes
+	 * mkbootroot's own stdout/stderr.
 	 */
 	if (pipe2(output_pipe, O_CLOEXEC) != 0) {
 		perror("pipe2 (bootroot assembly output capture)");
 		logstore_write("kanxeod", "error",
 		                "kanxeo bootroot assembly: output capture pipe failed: %s",
 		                strerror(errno));
+		output_pipe[0] = output_pipe[1] = -1;
+	} else if (fcntl(output_pipe[0], F_SETFL, O_NONBLOCK) != 0) {
+		perror("fcntl O_NONBLOCK (bootroot assembly output capture)");
+		close(output_pipe[0]);
+		close(output_pipe[1]);
 		output_pipe[0] = output_pipe[1] = -1;
 	}
 
@@ -3782,7 +3946,10 @@ static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
 		waitpid(pid, NULL, 0);
 		return;
 	}
-	register_bootroot_assemble_pidfd(pid, pidfd, output_pipe[0]);
+	g_bootroot_output_captured_len = 0;
+	g_bootroot_output_rd = output_pipe[0];
+	register_bootroot_output();
+	register_bootroot_assemble_pidfd(pid, pidfd);
 }
 
 /*
@@ -8807,10 +8974,12 @@ static void handle_pkg_fetch_event(struct conn *cc)
 		if (stdio_write_fd >= 0)
 			close(stdio_write_fd);
 
-		if (rerr != REGISTRY_OK)
+		if (rerr != REGISTRY_OK) {
 			pkg_build_spawn_failed();
-		else
+		} else {
 			register_container_pidfd(entry);
+			register_pkg_build_output(pkg_build_output_fd());
+		}
 	}
 }
 
@@ -8836,28 +9005,31 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 {
 	int status;
 	pid_t reaped;
-	char output[2048] = { 0 };
-	ssize_t output_len = 0;
+	char output[BOOTROOT_OUTPUT_CAPTURE_MAX + 1];
+	ssize_t output_len;
 
 	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	reaped = waitpid(cc->pkg_fetch_pid, &status, 0);
 	/*
-	 * One read, right after waitpid(): mkbootroot's own write end is
-	 * already closed by now either way (O_CLOEXEC on a successful
-	 * execve() before this, or the process simply exited), so this
-	 * never blocks -- same one-shot pattern container_read_diag()
-	 * (src/container.c) uses for a container's own setup diagnostics.
-	 * Read regardless of exit status: real, useful stdout (e.g. a
-	 * progress line) isn't exclusively a failure-path signal, though
-	 * only the failure branches below actually log it.
+	 * ADR-0087: g_bootroot_output_captured has already been
+	 * incrementally filled by bootroot_output_readable() (see its own
+	 * comment) as mkbootroot ran, via its own directly-registered
+	 * epoll conn (CONN_BOOTROOT_OUTPUT) -- NOT read here in one shot,
+	 * which is what used to deadlock mkbootroot itself the moment its
+	 * combined output exceeded the pipe's 64KB kernel buffer. One
+	 * last non-blocking drain catches anything written in the brief
+	 * window between mkbootroot's own final write() and its exit (by
+	 * the time waitpid() confirms the exit, the kernel has already
+	 * torn down its fd table, so this either returns real data still
+	 * sitting in the pipe or immediate EOF, never blocks). Read
+	 * regardless of exit status: real, useful stdout (e.g. a progress
+	 * line) isn't exclusively a failure-path signal, though only the
+	 * failure branches below actually log it.
 	 */
-	if (cc->output_fd >= 0) {
-		output_len = read(cc->output_fd, output, sizeof(output) - 1);
-		if (output_len < 0)
-			output_len = 0;
-		output[output_len] = '\0';
-		close(cc->output_fd);
-	}
+	bootroot_output_readable();
+	output_len = g_bootroot_output_captured_len;
+	memcpy(output, g_bootroot_output_captured, output_len);
+	output[output_len] = '\0';
 	if (reaped == cc->pkg_fetch_pid && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
 		fprintf(stderr, "kanxeo bootroot assembly: succeeded\n");
 		logstore_write("kanxeod", "info", "kanxeo bootroot assembly: succeeded");
@@ -9592,8 +9764,12 @@ int main(int argc, char **argv)
 				handle_container_event(cc);
 			else if (cc->kind == CONN_PKG_FETCH)
 				handle_pkg_fetch_event(cc);
+			else if (cc->kind == CONN_PKG_BUILD_OUTPUT)
+				handle_pkg_build_output_event(cc);
 			else if (cc->kind == CONN_BOOTROOT_ASSEMBLE)
 				handle_bootroot_assemble_event(cc);
+			else if (cc->kind == CONN_BOOTROOT_OUTPUT)
+				handle_bootroot_output_event(cc);
 			else if (cc->kind == CONN_ISO_ASSEMBLE)
 				handle_iso_assemble_event(cc);
 			else if (cc->kind == CONN_BOOTSTRAP_FETCH)

@@ -91,3 +91,5 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0084](0084-mkbootroot-mksquashfs-unreachable-on-real-host.md) | mkbootroot's own mksquashfs exec target was never reachable on a real installed host | Accepted |
 | [0085](0085-mkbootroot-source-paths-not-merged-usr.md) | The real, final root cause: mkbootroot's own source reads assumed a merged-usr host | Accepted |
 | [0086](0086-pkgbuild-stop-bypasses-pkg-completion.md) | Stopping __pkgbuild via POST .../stop left pkg.c's job lock stuck forever | Accepted |
+| [0087](0087-pkg-build-output-pipe-deadlock.md) | Build-output capture pipes were drained once, after exit, deadlocking any sufficiently verbose build | Accepted |
+| [0088](0088-kernel-veth-missing.md) | CONFIG_VETH was never enabled -- every container network attachment on a real box has always failed | Accepted |

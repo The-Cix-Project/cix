@@ -119,16 +119,24 @@ static char *g_build_envp[4];
  * other way to see a recipe's real build-script output: the async
  * pipeline captures no logs of its own, and this project's minimal
  * install has no SSH/console access to read the daemon's own
- * inherited stdout on a real remote box (ADR-0034). g_build_output_rd
- * is read by pkg_build_completed() once the container exits;
- * g_build_output_wr is the caller's (main.c's) own copy of the write
- * end, returned via pkg_fetch_completed()'s out-param so it can be
- * closed right after the child inherits its own duplicate -- an open
- * write end left in the daemon's own fd table would make an EOF-based
- * read block forever, though the bounded, non-blocking read below
- * doesn't depend on it. -1 when no build is in flight or the pipe()
- * call itself failed (capture is a diagnostic nicety, never a reason
- * to fail the build).
+ * inherited stdout on a real remote box (ADR-0034).
+ *
+ * g_build_output_rd is registered directly with the daemon's own
+ * epoll loop by the caller (main.c, via pkg_build_output_fd()) right
+ * after the build container is spawned, and drained incrementally as
+ * data arrives (pkg_build_output_readable(), called on EPOLLIN) into
+ * g_build_output_captured below -- NOT read in one shot after the
+ * container exits. ADR-0087: a plain pipe's kernel buffer is 64KB;
+ * any build whose combined stdout+stderr exceeds that would block
+ * forever on its next write() if nothing drains the pipe while it's
+ * still running, which is exactly what a single post-exit read did
+ * before this fix (confirmed live: a real `perl` build reproducibly
+ * deadlocked this way). g_build_output_wr is the caller's (main.c's)
+ * own copy of the write end, returned via pkg_fetch_completed()'s
+ * out-param so it can be closed right after the child inherits its
+ * own duplicate. -1 when no build is in flight or the pipe2() call
+ * itself failed (capture is a diagnostic nicety, never a reason to
+ * fail the build).
  */
 static int g_build_output_rd = -1;
 /* Left with headroom under LOGSTORE_MSG_MAX (4096) once the surrounding
@@ -144,6 +152,12 @@ static int g_build_output_rd = -1;
  * either original value did) reliably captured everything EXCEPT the
  * one line that mattered. */
 #define PKG_BUILD_OUTPUT_CAPTURE_MAX 3800
+/* Sliding-window tail buffer g_build_output_readable() incrementally
+ * fills (see its own comment) -- pkg_build_completed() logs straight
+ * from this on a build failure, replacing what used to be a single
+ * blocking drain-to-EOF loop performed at that point instead. */
+static char g_build_output_captured[PKG_BUILD_OUTPUT_CAPTURE_MAX + 1];
+static int g_build_output_captured_len;
 
 static int pkg_name_is_valid(const char *name)
 {
@@ -1769,15 +1783,33 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 	spec_out->argv = g_build_argv;
 	spec_out->envp = g_build_envp;
 
+	g_build_output_captured_len = 0;
 	{
 		int output_pipe[2];
 
-		if (pipe(output_pipe) == 0) {
-			spec_out->capture_output = 1;
-			spec_out->stdout_fd = output_pipe[1];
-			spec_out->stderr_fd = output_pipe[1];
-			g_build_output_rd = output_pipe[0];
-			*out_stdio_write_fd = output_pipe[1];
+		/*
+		 * O_CLOEXEC on both ends (dup2() in src/container.c's
+		 * pre-exec setup clears it on the child's own fd 1/2
+		 * copies before any execve() happens, so the child is
+		 * unaffected); O_NONBLOCK only on the read end, set
+		 * separately below -- the write end must stay blocking,
+		 * since it becomes the build script's own stdout/stderr
+		 * and an EAGAIN there would be a real, unhandled error for
+		 * most programs.
+		 */
+		if (pipe2(output_pipe, O_CLOEXEC) == 0) {
+			if (fcntl(output_pipe[0], F_SETFL, O_NONBLOCK) == 0) {
+				spec_out->capture_output = 1;
+				spec_out->stdout_fd = output_pipe[1];
+				spec_out->stderr_fd = output_pipe[1];
+				g_build_output_rd = output_pipe[0];
+				*out_stdio_write_fd = output_pipe[1];
+			} else {
+				close(output_pipe[0]);
+				close(output_pipe[1]);
+				g_build_output_rd = -1;
+				*out_stdio_write_fd = -1;
+			}
 		} else {
 			g_build_output_rd = -1;
 			*out_stdio_write_fd = -1;
@@ -1800,6 +1832,63 @@ void pkg_build_spawn_failed(void)
 	}
 	g_current_job_name[0] = '\0';
 	g_dep_queue_count = 0;
+	/*
+	 * registry_create() never spawned a container, so no epoll
+	 * registration for g_build_output_rd exists anywhere to drive
+	 * its own EOF-triggered close (see register_pkg_build_output()/
+	 * handle_pkg_build_output_event() in main.c) -- this is the one
+	 * path that has to close it directly.
+	 */
+	pkg_build_output_close();
+}
+
+int pkg_build_output_fd(void)
+{
+	return g_build_output_rd;
+}
+
+static void pkg_build_output_append(const char *data, int len)
+{
+	int take = (len > PKG_BUILD_OUTPUT_CAPTURE_MAX) ? PKG_BUILD_OUTPUT_CAPTURE_MAX : len;
+	int new_total = g_build_output_captured_len + take;
+
+	if (new_total > PKG_BUILD_OUTPUT_CAPTURE_MAX) {
+		int overflow = new_total - PKG_BUILD_OUTPUT_CAPTURE_MAX;
+
+		memmove(g_build_output_captured, g_build_output_captured + overflow,
+		        g_build_output_captured_len - overflow);
+		g_build_output_captured_len -= overflow;
+	}
+	memcpy(g_build_output_captured + g_build_output_captured_len, data + (len - take), take);
+	g_build_output_captured_len += take;
+}
+
+int pkg_build_output_readable(void)
+{
+	char chunk[4096];
+	ssize_t n;
+
+	if (g_build_output_rd < 0)
+		return 1;
+
+	for (;;) {
+		n = read(g_build_output_rd, chunk, sizeof(chunk));
+		if (n > 0) {
+			pkg_build_output_append(chunk, (int)n);
+			continue;
+		}
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+			return 0; /* drained everything available right now */
+		return 1;         /* EOF (n == 0) or a real read error */
+	}
+}
+
+void pkg_build_output_close(void)
+{
+	if (g_build_output_rd >= 0) {
+		close(g_build_output_rd);
+		g_build_output_rd = -1;
+	}
 }
 
 int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_pid,
@@ -1827,55 +1916,40 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 
 	if (exit_status != 0) {
 		/*
-		 * Read back whatever the build container's own stdout/stderr
-		 * actually said (see pkg_fetch_completed()'s pipe setup) --
-		 * the one piece of information no exit-status decode below
-		 * can ever substitute for: the exit code says WHICH syscall
-		 * or exec attempt failed, this says WHY in the recipe
-		 * script's own words (e.g. a real "make: not found" from
-		 * bash itself, indistinguishable from container.c's own
-		 * exit-127 fallback by exit status alone). Drains the WHOLE
-		 * pipe (the container has already exited, so the write end
-		 * is closed and this loop always reaches real EOF, never
-		 * blocks) rather than a single bounded read -- a real
-		 * build's own output routinely runs to several KB of
-		 * "Compiling x"/progress lines before the actual error, and
-		 * a single read() only ever returns whatever's sitting in
-		 * the pipe's own kernel buffer *first*: exclusively early
-		 * progress spam, never the failure itself (confirmed live,
-		 * 2026-08-08: a real lldap build failure's own captured
-		 * output was 100% "Compiling ..." lines, the real error
-		 * long since scrolled past the old head-only capture).
+		 * Whatever the build container's own stdout/stderr actually
+		 * said -- the one piece of information no exit-status decode
+		 * below can ever substitute for: the exit code says WHICH
+		 * syscall or exec attempt failed, this says WHY in the
+		 * recipe script's own words (e.g. a real "make: not found"
+		 * from bash itself, indistinguishable from container.c's own
+		 * exit-127 fallback by exit status alone).
+		 *
+		 * g_build_output_captured has already been incrementally
+		 * filled by pkg_build_output_readable() (see its own comment
+		 * and ADR-0087) as the container ran, via the caller's epoll
+		 * registration -- NOT read here in one shot, which is what
+		 * used to deadlock any build whose combined output exceeded
+		 * the pipe's 64KB kernel buffer. One last non-blocking drain
+		 * catches anything written in the brief window between the
+		 * container's own final write() and its exit (by the time
+		 * waitpid() confirms the exit, the kernel has already torn
+		 * down its fd table, so this read either returns real data
+		 * still sitting in the pipe or immediate EOF, never blocks).
 		 * Keeps only the TAIL -- the last PKG_BUILD_OUTPUT_CAPTURE_MAX
 		 * bytes, via a fixed-size sliding window (drop the front,
 		 * append at the end) -- since the actual error is almost
 		 * always the last thing printed, regardless of total output
-		 * length.
+		 * length (confirmed live, 2026-08-08: a real lldap build
+		 * failure's own captured output was 100% "Compiling ..."
+		 * lines under the old head-only capture, the real error long
+		 * since scrolled past).
 		 */
 		char captured[PKG_BUILD_OUTPUT_CAPTURE_MAX + 1];
-		int captured_len = 0;
+		int captured_len;
 
-		if (g_build_output_rd >= 0) {
-			char chunk[4096];
-			ssize_t n;
-
-			while ((n = read(g_build_output_rd, chunk, sizeof(chunk))) > 0) {
-				int take = (n > PKG_BUILD_OUTPUT_CAPTURE_MAX) ? PKG_BUILD_OUTPUT_CAPTURE_MAX
-				                                               : (int)n;
-				int new_total = captured_len + take;
-
-				if (new_total > PKG_BUILD_OUTPUT_CAPTURE_MAX) {
-					int overflow = new_total - PKG_BUILD_OUTPUT_CAPTURE_MAX;
-
-					memmove(captured, captured + overflow, captured_len - overflow);
-					captured_len -= overflow;
-				}
-				memcpy(captured + captured_len, chunk + ((int)n - take), take);
-				captured_len += take;
-			}
-			close(g_build_output_rd);
-			g_build_output_rd = -1;
-		}
+		pkg_build_output_readable();
+		captured_len = g_build_output_captured_len;
+		memcpy(captured, g_build_output_captured, captured_len);
 		captured[captured_len] = '\0';
 
 		/*
@@ -1978,13 +2052,18 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		return 0;
 	}
 
-	/* Clean success -- the captured pipe (opened regardless of outcome
-	 * in pkg_fetch_completed()) is never read on this path, just
-	 * closed, matching the failure branch's own close above. */
-	if (g_build_output_rd >= 0) {
-		close(g_build_output_rd);
-		g_build_output_rd = -1;
-	}
+	/*
+	 * Clean success -- the captured output (opened regardless of
+	 * outcome in pkg_fetch_completed()) is simply discarded, not
+	 * logged, matching the failure branch's own use above. The pipe
+	 * fd itself is deliberately left alone here: it is still
+	 * registered with the caller's epoll loop (see
+	 * pkg_build_output_fd()/register_pkg_build_output() in main.c),
+	 * which owns closing it once its own EOF-driven
+	 * handle_pkg_build_output_event() fires -- closing it directly
+	 * from here would race that still-live epoll registration.
+	 */
+	g_build_output_captured_len = 0;
 
 	snprintf(container_base, sizeof(container_base), "%s/%s", g_containers_dir,
 	         PKG_BUILD_CONTAINER_NAME);
