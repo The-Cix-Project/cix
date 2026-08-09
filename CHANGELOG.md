@@ -12,7 +12,7 @@ Sixth and closing part of the package/image versioning epic. The prior five part
 #### Notes
 - Full clean rebuild (`-Wall -Werror`) zero warnings. Full regression sweep clean: all 27 tests.
 - No new ADR -- this closes out test coverage for a design already fully specified in ADR-0107/ADR-0108; docs (`openapi.yaml`, `api/README.md`, `docs/guides/`) were already brought current for the whole epic in Part 56.
-- Live deployment + verification against 192.168.15.95 (creating two real containers off the same image at different versions) tracked separately as the epic's closing operational step.
+- Live deployment + verification, done: cut tag `v1.8.0`, hostbuilt + deployed the current `kanxeod`/`kanxeoctl` onto 192.168.15.95 (slot flipped a -> b, confirmed via fresh `build_time` and the new `bootroot_assembly_*` fields on `GET /system/boot`), then reproduced the epic's core guarantee against real hardware: created a scratch image, installed a real from-source package at 1.0, created a container against it (`livepin-old`), upgraded the image to 2.0, created a second fresh container (`livepin-new`), and confirmed via `GET .../files` that `livepin-old` still reads the byte-for-byte 1.0 binary while `livepin-new` reads the 2.0 one -- `cmp` confirmed the two binaries genuinely differ. Scratch image/recipe/containers cleaned up afterward.
 
 ### Part 56 (done, full clean rebuild + full regression sweep): REST/CLI/web for image version history + manifest editing (ADR-0107/ADR-0108, closes task #721)
 
