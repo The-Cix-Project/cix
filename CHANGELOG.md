@@ -2,6 +2,18 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 57 (done, full clean rebuild + full regression sweep): per-version rootfs isolation test coverage (ADR-0107/ADR-0108, closes task #722)
+
+Sixth and closing part of the package/image versioning epic. The prior five parts built and exposed the whole mechanism, but nothing in the test suite proved the actual, end-user-visible guarantee the epic exists to deliver: that a real container, already created against an image, keeps seeing exactly the package content it was created with even after that image is later rebuilt to a new version. `test_pkg.c` gains a two-sided scenario proving it against a real running daemon, not a unit-level check of the version-tracking internals alone.
+
+#### Added
+- `test/test_pkg.c`: new scenario (16.6) -- creates image `pintest`, installs `pinpkg` 1.0, creates container `pintest-old` against it (pinning to that version), then upgrades `pintest` to `pinpkg` 2.0 (a new immutable version, per Part 54). Proves, against the real REST API: `pintest-old`'s own `image_version` is unchanged by the upgrade; `GET .../pintest-old/files?path=/usr/bin/pinpkg` still returns the byte content of the 1.0 binary (exercising `handle_container_file_read()`'s exited-container fallback to `e->image_version`'s own immutable rootfs, not `pintest`'s now-current one); a **fresh** container `pintest-new` created after the upgrade pins to the new version and sees the 2.0 binary instead. Both binaries embed their own version string in source (`stage_fixture_tarball()`), so the comparison is real compiled-binary content, not a label.
+
+#### Notes
+- Full clean rebuild (`-Wall -Werror`) zero warnings. Full regression sweep clean: all 27 tests.
+- No new ADR -- this closes out test coverage for a design already fully specified in ADR-0107/ADR-0108; docs (`openapi.yaml`, `api/README.md`, `docs/guides/`) were already brought current for the whole epic in Part 56.
+- Live deployment + verification against 192.168.15.95 (creating two real containers off the same image at different versions) tracked separately as the epic's closing operational step.
+
 ### Part 56 (done, full clean rebuild + full regression sweep): REST/CLI/web for image version history + manifest editing (ADR-0107/ADR-0108, closes task #721)
 
 Fifth of the package/image versioning epic's parts: `GET`/`POST /v1/images/{name}` now echo `current_version` and the full `versions` history (#719/#720's own machinery was already tracking this, but nothing surfaced it to a client) alongside the existing manifest, and the web dashboard's image detail view gains dedicated **Manifest** and **Versions** tabs so an operator can see and edit pinned/rolling intent and inspect version history without going through raw `curl`.

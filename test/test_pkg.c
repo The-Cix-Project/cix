@@ -1453,6 +1453,211 @@ skip_recipe_api:
 	}
 skip_rolling_rebuild:
 
+	/*
+	 * 16.6. ADR-0107/0108 per-version rootfs isolation (task #722): the
+	 * core guarantee the whole versioning epic exists to provide -- a
+	 * container created against an image stays pinned to the exact
+	 * rootfs it was created with, byte-for-byte, even after that image
+	 * name is later upgraded to a new version. Proven two-sided: an
+	 * EXISTING container (created before the upgrade) must keep seeing
+	 * the OLD content; a FRESH container (created after) must see the
+	 * NEW content -- both against the very same image name.
+	 */
+	{
+		char pin_image_dir[PATH_MAX];
+		char tarball1[512], sha1[128];
+		char tarball2[512], sha2[128];
+		char v1_version[128], v2_version[128];
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/images", "{\"name\":\"pintest\"}", &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST pintest image, status=%d\n", r.status);
+			ok = 0;
+			goto skip_pin_isolation;
+		}
+		kx_response_free(&r);
+
+		if (stage_fixture_tarball(scratch_dir, "pinpkg", "1.0", tarball1, sizeof(tarball1), sha1,
+		                           sizeof(sha1)) != 0 ||
+		    write_recipe("pinpkg", "1.0", tarball1, sha1, NULL) != 0) {
+			fprintf(stderr, "FAIL: could not stage/write pinpkg 1.0\n");
+			ok = 0;
+			goto skip_pin_isolation;
+		}
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/install",
+		                       "{\"name\":\"pinpkg\",\"image\":\"pintest\"}", &r) != 0 ||
+		    r.status != 202) {
+			fprintf(stderr, "FAIL: POST install pinpkg@pintest, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		if (poll_pkg_state(&client, "pinpkg@pintest", state, sizeof(state), 60) != 0 ||
+		    strcmp(state, "installed") != 0) {
+			fprintf(stderr, "FAIL: pinpkg@pintest (1.0) did not reach installed\n");
+			ok = 0;
+			goto skip_pin_isolation;
+		}
+
+		snprintf(pin_image_dir, sizeof(pin_image_dir), "%s/images/pintest", g_data_dir);
+		if (test_image_fixture_read_current_version(pin_image_dir, v1_version,
+		                                             sizeof(v1_version)) != 0) {
+			fprintf(stderr, "FAIL: could not read pintest's version after installing 1.0\n");
+			ok = 0;
+			goto skip_pin_isolation;
+		}
+
+		/* Create a container against pintest BEFORE the upgrade below --
+		 * it must pin to v1_version (registry_entry.image_version,
+		 * ADR-0107/0108). cmd exits almost immediately (a real
+		 * from-source build of the fixture's own hello.c, see
+		 * stage_fixture_tarball()), so a short wait after create is
+		 * enough for registry_mark_exited() to run and for the
+		 * exited-container GET .../files fallback path
+		 * (handle_container_file_read()) to be the one actually
+		 * exercised below -- the same fallback a real operator's
+		 * stopped/restarted container would hit. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"pintest-old\",\"image\":\"pintest\","
+		                       "\"cmd\":[\"/usr/bin/pinpkg\"]}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST pintest-old, status=%d\n", r.status);
+			ok = 0;
+			goto skip_pin_isolation;
+		}
+		kx_response_free(&r);
+		usleep(500000);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/containers/pintest-old", NULL, &r) != 0 ||
+		    r.status != 200 || !str_eq(json_str_field(r.json, "image_version"), v1_version)) {
+			fprintf(stderr,
+			        "FAIL: pintest-old should be pinned to %s, image_version=%s\n", v1_version,
+			        json_str_field(r.json, "image_version") ? json_str_field(r.json, "image_version")
+			                                                 : "(null)");
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* Now upgrade pintest to 2.0 -- produces a NEW immutable
+		 * current_version; pintest-old's own overlay lowerdir must stay
+		 * exactly what it was pinned to above. */
+		if (stage_fixture_tarball(scratch_dir, "pinpkg", "2.0", tarball2, sizeof(tarball2), sha2,
+		                           sizeof(sha2)) != 0 ||
+		    write_recipe("pinpkg", "2.0", tarball2, sha2, NULL) != 0) {
+			fprintf(stderr, "FAIL: could not stage/write pinpkg 2.0\n");
+			ok = 0;
+			goto skip_pin_isolation;
+		}
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/install",
+		                       "{\"name\":\"pinpkg\",\"image\":\"pintest\",\"upgrade\":true}", &r) !=
+		        0 ||
+		    r.status != 202) {
+			fprintf(stderr, "FAIL: POST upgrade pinpkg@pintest, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		if (poll_pkg_state(&client, "pinpkg@pintest", state, sizeof(state), 60) != 0 ||
+		    strcmp(state, "installed") != 0) {
+			fprintf(stderr, "FAIL: pinpkg@pintest (2.0) did not reach installed\n");
+			ok = 0;
+			goto skip_pin_isolation;
+		}
+
+		if (test_image_fixture_read_current_version(pin_image_dir, v2_version,
+		                                             sizeof(v2_version)) != 0 ||
+		    strcmp(v2_version, v1_version) == 0) {
+			fprintf(stderr, "FAIL: pintest's current_version did not advance after upgrade\n");
+			ok = 0;
+			goto skip_pin_isolation;
+		}
+
+		/* pintest-old's own registry pin must be UNCHANGED by the
+		 * upgrade -- it was resolved once at create time, never
+		 * re-resolved by a later, unrelated pkg install. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/containers/pintest-old", NULL, &r) != 0 ||
+		    r.status != 200 || !str_eq(json_str_field(r.json, "image_version"), v1_version)) {
+			fprintf(stderr,
+			        "FAIL: pintest-old's image_version changed after pintest's upgrade "
+			        "(was %s, now %s) -- pinning broke\n",
+			        v1_version,
+			        json_str_field(r.json, "image_version") ? json_str_field(r.json, "image_version")
+			                                                 : "(null)");
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* The real proof: pintest-old's own /usr/bin/pinpkg must still
+		 * be the OLD binary (embeds "hello from pinpkg v1.0" in its own
+		 * rodata, see stage_fixture_tarball()) -- read via GET
+		 * .../files, which for an exited container falls back to
+		 * e->image_version's own immutable rootfs
+		 * (handle_container_file_read(), ADR-0107/0108), never
+		 * pintest's current (now 2.0) rootfs. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET",
+		                       "/v1/containers/pintest-old/files?path=%2Fusr%2Fbin%2Fpinpkg", NULL,
+		                       &r) != 0 ||
+		    r.status != 200 || r.body == NULL ||
+		    memmem(r.body, r.body_len, "hello from pinpkg v1.0", strlen("hello from pinpkg v1.0")) ==
+		        NULL) {
+			fprintf(stderr,
+			        "FAIL: pintest-old's /usr/bin/pinpkg no longer reflects v1.0 after "
+			        "pintest's own upgrade to 2.0 -- per-version isolation broke\n");
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* A FRESH container created now, against the very same image
+		 * name, must pin to the NEW version and see the NEW binary --
+		 * completing the two-sided proof. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"pintest-new\",\"image\":\"pintest\","
+		                       "\"cmd\":[\"/usr/bin/pinpkg\"]}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST pintest-new, status=%d\n", r.status);
+			ok = 0;
+			goto skip_pin_isolation;
+		}
+		kx_response_free(&r);
+		usleep(500000);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/containers/pintest-new", NULL, &r) != 0 ||
+		    r.status != 200 || !str_eq(json_str_field(r.json, "image_version"), v2_version)) {
+			fprintf(stderr, "FAIL: pintest-new should be pinned to %s, image_version=%s\n",
+			        v2_version,
+			        json_str_field(r.json, "image_version") ? json_str_field(r.json, "image_version")
+			                                                 : "(null)");
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET",
+		                       "/v1/containers/pintest-new/files?path=%2Fusr%2Fbin%2Fpinpkg", NULL,
+		                       &r) != 0 ||
+		    r.status != 200 || r.body == NULL ||
+		    memmem(r.body, r.body_len, "hello from pinpkg v2.0", strlen("hello from pinpkg v2.0")) ==
+		        NULL) {
+			fprintf(stderr, "FAIL: pintest-new's /usr/bin/pinpkg does not reflect v2.0\n");
+			ok = 0;
+		}
+		kx_response_free(&r);
+	}
+skip_pin_isolation:
+
 	/* 17. hostbuild (ADR-0056): a second mode of the same pipeline that
 	 * harvests pkg_install()'s output into ARTIFACTS_DIR/<name>/ instead
 	 * of merging it into any image's rootfs, using a named image's own
