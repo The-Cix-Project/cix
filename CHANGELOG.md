@@ -18,6 +18,23 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 - The btrfs success path itself (subvolume creation, quota enable, qgroup enforcement) has **not** been live-tested -- this sandbox has kernel btrfs support but no mounted btrfs filesystem, no `mkfs.btrfs`, and no disk safe to reformat (same acknowledged gap as ADR-0099/ADR-0102). Live verification against real hardware is an open follow-up.
 - Deliberately does **not** extend `diskformat.c` (still ext4-only end to end) to offer btrfs as a format choice -- a materially separate body of work (staging `mkfs.btrfs`, a new `fs_type` REST/CLI param). Task #732 (previously a near-duplicate of this same task) is retained and re-scoped to track exactly that remaining piece.
 
+### Part 49 (done, full clean rebuild + full regression sweep, kernel-image-dependent QEMU boot test not re-run -- see notes): real btrfs disk formatting alongside ext4 (ADR-0104, closes task #732)
+
+ADR-0103 closed the *quota enforcement* half of the ext4-vs-btrfs gap; `POST /v1/disks/{name}/format` (Phase C) was still hardcoded ext4 end to end. Task #732 (a pre-existing near-duplicate of #678, re-purposed rather than left open) tracked exactly this remaining piece.
+
+#### Added
+- `daemon/include/diskformat.h`/`daemon/src/diskformat.c`: new `enum diskformat_fs_type` (`DISKFORMAT_FS_EXT4` default / `DISKFORMAT_FS_BTRFS`) threaded through `diskformat_start()`; the forked child now picks its mkfs binary (`DISKFORMAT_MKFS_EXT4_BIN` or new `DISKFORMAT_MKFS_BTRFS_BIN`) and its `mount(2)` fstype string from the same parameter, inside the one existing fork+exec+mount sequence. `diskformat_write_status_json()` echoes `fs_type` once a job is running/ready.
+- `daemon/src/main.c`: `POST /v1/disks/{name}/format` gains an optional `fs_type` field (`"ext4"`/`"btrfs"`, default `"ext4"` -- every pre-existing request keeps its exact prior behavior), validated to a `400` before `diskformat_start()` is ever called.
+- `image/src/mkbootroot.c`: `mkfs.btrfs` staged tolerantly (stat()-gated, reusing the existing `host_tools_dir` argument -- no new positional arg) rather than added to the unconditionally-required `host_tool_bins[]`/`shelled_bins[]` lists, since this dev sandbox has no `mkfs.btrfs` of its own and no dev-host fallback exists for it. No new runtime library staging needed -- confirmed via a real local `ldd` on a real local `mkfs.btrfs` build: identical closure to `mke2fs`'s own (already staged) plus `libz.so.1` (already staged for curl/unsquashfs).
+- `pkg/recipes/btrfs-progs.recipe` (v7.1, builds only `mkfs.btrfs`, matching `e2fsprogs.recipe`'s single-binary economy) and `pkg/recipes/libblkid.recipe` (reuses `libuuid.recipe`'s already-staged libuuid via pkg-config rather than rebuilding it) -- both verified via a real local build in this sandbox (`./configure` summary output, real `make`, real `ldd`/`--version` on the resulting binaries).
+- `kanxeoctl disks format NAME [--fs-type=ext4|btrfs]`.
+- `docs/adr/0104-btrfs-disk-format.md`; `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/cli-reference.md` updated.
+
+#### Notes
+- Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (21 daemon-linked tests, `test_mkbootroot_firmware`) clean.
+- `test_boot` (the QEMU end-to-end boot test) was attempted but fails at `build/bzImage: No such file or directory` -- a pre-existing, already-documented gap (the kernel image isn't reproduced by `make clean`, a separate deliberately-manual build step) triggered by this session's own `make clean`, not a regression from this change: the squashfs assembly step this change actually touches completed successfully before that point.
+- Recipes verified via direct local source-tree builds, not yet through a live `kanxeod` `pkg install` round-trip or against a real mounted btrfs filesystem (same acknowledged gap as ADR-0099/ADR-0102/ADR-0103) -- live verification against real hardware remains an open follow-up.
+
 ### Part 47 (done, local regression sweep clean): per-container disk selection at creation time (ADR-0102, closes task #638, Phase D)
 
 `POST /v1/containers` always placed a container's writable overlay storage under the fixed OS-disk `CONTAINERS_DIR` -- no way to say "put this container's data on disk X." The `"container-storage"` disk role (Phase B, `diskrole.c`) was assignable but never consumed by anything.

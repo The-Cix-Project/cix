@@ -6517,6 +6517,8 @@ static void handle_disk_format_post(int fd, const char *disk_name, const char *b
 {
 	struct json_value *root;
 	const char *confirm;
+	const char *fs_type_str;
+	enum diskformat_fs_type fs_type;
 	pid_t pid;
 	int pidfd;
 	enum diskformat_error derr;
@@ -6534,9 +6536,33 @@ static void handle_disk_format_post(int fd, const char *disk_name, const char *b
 		              "this is a destructive operation");
 		return;
 	}
+	/*
+	 * fs_type (ADR-0104, task #732): optional, defaults to "ext4" --
+	 * every pre-existing request body (no fs_type field at all) keeps
+	 * its exact prior behavior. "btrfs" requires a real mkfs.btrfs to
+	 * actually be staged on this box (btrfs-progs.recipe via a real
+	 * kanxeo-hosttools image, ADR-0103's own scope note) -- if it
+	 * isn't, the job still starts (this daemon has no cheap way to
+	 * probe for the binary's presence without also handling every
+	 * other reason execve() could fail the same way) but fails fast
+	 * with a clear DISKFORMAT_STATE_FAILED/"mkfs.btrfs failed" once
+	 * the child actually tries to exec it and gets ENOENT -- consistent
+	 * with mkfs.ext4's own existing failure-reporting shape, not a
+	 * new failure mode this field introduces.
+	 */
+	fs_type_str = json_as_string(json_object_get(root, "fs_type"));
+	if (fs_type_str == NULL || strcmp(fs_type_str, "ext4") == 0) {
+		fs_type = DISKFORMAT_FS_EXT4;
+	} else if (strcmp(fs_type_str, "btrfs") == 0) {
+		fs_type = DISKFORMAT_FS_BTRFS;
+	} else {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "fs_type must be \"ext4\" or \"btrfs\"");
+		return;
+	}
 	json_free(root);
 
-	derr = diskformat_start(disk_name, CONTAINERS_DIR, DISKS_MOUNT_DIR, &pid, &pidfd);
+	derr = diskformat_start(disk_name, CONTAINERS_DIR, DISKS_MOUNT_DIR, fs_type, &pid, &pidfd);
 	if (derr != DISKFORMAT_OK) {
 		respond_diskformat_error(fd, derr);
 		return;

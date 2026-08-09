@@ -44,6 +44,24 @@
 
 #define DISKFORMAT_MKFS_EXT4_BIN "/usr/sbin/mkfs.ext4"
 
+/*
+ * btrfs support (ADR-0104, closes task #732 -- the disk-*format*-time
+ * half of the ext4-vs-btrfs gap; ADR-0103/task #678 already closed the
+ * *quota enforcement* half). mkfs.btrfs is genuinely optional: unlike
+ * mkfs.ext4 (staged into every assembled boot image unconditionally,
+ * mkbootroot.c), it's only staged when a real kanxeo-hosttools image
+ * built with btrfs-progs.recipe is available -- an install without one
+ * simply can't format a disk btrfs (ENOENT at exec time, surfaced as a
+ * normal DISKFORMAT_STATE_FAILED, not a crash or a silently-ignored
+ * request).
+ */
+#define DISKFORMAT_MKFS_BTRFS_BIN "/usr/sbin/mkfs.btrfs"
+
+enum diskformat_fs_type {
+	DISKFORMAT_FS_EXT4 = 0, /* the default -- matches every fs_type-less request from before this field existed */
+	DISKFORMAT_FS_BTRFS,
+};
+
 enum diskformat_error {
 	DISKFORMAT_OK = 0,
 	DISKFORMAT_ERR_INVALID_DISK_NAME,
@@ -76,9 +94,15 @@ enum diskformat_state {
  * this module has no epoll/conn knowledge of its own. State is now
  * DISKFORMAT_STATE_RUNNING (diskformat_write_status_json() reports
  * it); every other error is a synchronous rejection, no job started.
+ *
+ * fs_type selects which mkfs tool the forked child execve()s and which
+ * fstype string the final mount(2) uses -- DISKFORMAT_FS_EXT4 (the
+ * default) is byte-for-byte the same job this function has always
+ * started; DISKFORMAT_FS_BTRFS is new (ADR-0104).
  */
 enum diskformat_error diskformat_start(const char *disk_name, const char *os_containers_dir,
-                                        const char *mount_base_dir, pid_t *out_pid, int *out_pidfd);
+                                        const char *mount_base_dir, enum diskformat_fs_type fs_type,
+                                        pid_t *out_pid, int *out_pidfd);
 
 /*
  * Called by main.c after waitpid() on the child diskformat_start()

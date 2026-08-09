@@ -47,7 +47,7 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | POST | `/diskroles` | Assign a role (container-storage/backup) to a disk |
 | DELETE | `/diskroles/{disk_name}` | Remove a disk's role assignment |
 | GET | `/disks/{disk_name}/format` | Status of the most recent (or running) format+mount job for this disk |
-| POST | `/disks/{disk_name}/format` | Destructive: mkfs.ext4 + mount an already role-assigned disk |
+| POST | `/disks/{disk_name}/format` | Destructive: mkfs (ext4 or btrfs) + mount an already role-assigned disk |
 | GET | `/networks` | List all networks this daemon knows about |
 | POST | `/networks` | Create a network (a real bridge, persisted across restarts) |
 | GET | `/networks/{name}` | Inspect one network |
@@ -651,19 +651,21 @@ Real and creatable even for a `disk_name` that isn't currently present (`present
 
 ```
 POST /v1/disks/sdb/format
-{"confirm_disk_name": "sdb"}
+{"confirm_disk_name": "sdb", "fs_type": "btrfs"}
 ```
 
-Multi-disk management Phase C: destructively `mkfs.ext4`s and mounts a disk that already has an assigned role (`POST /diskroles` — a disk with no role is `400`, `"assign one via POST /v1/diskroles first"`). Deliberately a **separate, explicit** action from role assignment — assigning a role never has a destructive side effect of its own — confirmed with the operator during design rather than assumed. `confirm_disk_name` in the request body must match `disk_name` in the URL exactly (`400` otherwise): a deliberate double-confirmation before overwriting every byte of existing content on the disk. Always rejected for the OS disk, same as role assignment.
+Multi-disk management Phase C: destructively formats and mounts a disk that already has an assigned role (`POST /diskroles` — a disk with no role is `400`, `"assign one via POST /v1/diskroles first"`). Deliberately a **separate, explicit** action from role assignment — assigning a role never has a destructive side effect of its own — confirmed with the operator during design rather than assumed. `confirm_disk_name` in the request body must match `disk_name` in the URL exactly (`400` otherwise): a deliberate double-confirmation before overwriting every byte of existing content on the disk. Always rejected for the OS disk, same as role assignment.
+
+`fs_type` is optional (ADR-0104), `"ext4"` (the default, omit the field entirely for the original behavior) or `"btrfs"` — `400` for any other value. `"btrfs"` requires a real `mkfs.btrfs` to actually be staged on this box (`btrfs-progs.recipe`, via a real `kanxeo-hosttools` image); if it isn't, the job still starts but fails fast with `"mkfs.btrfs failed"` once the child process's own exec attempt hits `ENOENT` — the same failure shape any other `mkfs` failure already has, not a special case.
 
 Async, like every other potentially-slow host operation this daemon runs (`pkg install`, ISO assembly, `pkg bootstrap --toolchain-url=`) — `POST` returns `202` immediately with the job's initial status; poll `GET` on the same path for completion:
 
 ```
 GET /v1/disks/sdb/format
-{"disk_name": "sdb", "state": "ready", "mount_path": "/var/lib/kanxeo/disks/sdb"}
+{"disk_name": "sdb", "state": "ready", "fs_type": "btrfs", "mount_path": "/var/lib/kanxeo/disks/sdb"}
 ```
 
-`state` is `"none"` (no job has ever run for this disk — including when a job ran/is running for a *different* disk, so a status check never shows another disk's unrelated job), `"running"`, `"ready"`, or `"failed"` (`error` distinguishes `mkfs.ext4` failing outright from it succeeding but the subsequent `mount(2)` failing). Only one format job may run daemon-wide at a time (`409` otherwise) — the same v1 single-job constraint every other async job here already has. Mounted at a fixed path under this platform's own data directory, never `CONTAINERS_DIR` itself — moving container storage onto a mounted disk is Phase D, not yet built.
+`state` is `"none"` (no job has ever run for this disk — including when a job ran/is running for a *different* disk, so a status check never shows another disk's unrelated job), `"running"`, `"ready"`, or `"failed"` (`error` distinguishes `mkfs.<fs_type>` failing outright from it succeeding but the subsequent `mount(2)` failing). Only one format job may run daemon-wide at a time (`409` otherwise) — the same v1 single-job constraint every other async job here already has. Mounted at a fixed path under this platform's own data directory by default; a `container-storage`-role disk can also be selected explicitly per container via `POST /containers`' own `disk` field (ADR-0102, Phase D, already built).
 
 ## Per-container config files + sysctls
 

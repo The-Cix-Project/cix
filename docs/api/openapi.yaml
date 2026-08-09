@@ -1067,7 +1067,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/DiskFormatStatus"
     post:
-      summary: Destructively formats (mkfs.ext4) and mounts a disk that already has an assigned role
+      summary: Destructively formats (mkfs.ext4 or mkfs.btrfs) and mounts a disk that already has an assigned role
       description: >
         Multi-disk management Phase C. Deliberately a SEPARATE, explicit
         action from POST /diskroles (role assignment never has a
@@ -1076,16 +1076,17 @@ paths:
         must match disk_name in the URL exactly, a deliberate double-
         confirmation before anything irreversible happens: this
         overwrites every byte of existing content on the disk with a
-        fresh ext4 filesystem, then mounts it. The target disk must
-        currently exist (GET /disks), must not be the OS disk, and must
-        already have a role assigned (POST /diskroles) -- format is
-        never allowed to run against a disk nothing has expressed
-        intent for yet. Async: returns 202 immediately with the job's
-        initial `{"state":"running",...}` status; poll GET on this same
-        path for completion. Mounted at a fixed path under this
-        platform's own data directory (never CONTAINERS_DIR itself --
-        moving container storage onto a mounted disk is Phase D, not
-        yet built).
+        fresh filesystem (ext4 by default, or btrfs via `fs_type`,
+        ADR-0104), then mounts it. The target disk must currently exist
+        (GET /disks), must not be the OS disk, and must already have a
+        role assigned (POST /diskroles) -- format is never allowed to
+        run against a disk nothing has expressed intent for yet. Async:
+        returns 202 immediately with the job's initial
+        `{"state":"running",...}` status; poll GET on this same path for
+        completion. Mounted at a fixed path under this platform's own
+        data directory by default; a container-storage-role disk can
+        also be selected explicitly per container via POST /containers'
+        own `disk` field (ADR-0102, Phase D, already built).
       operationId: formatDisk
       parameters:
         - name: disk_name
@@ -4245,6 +4246,19 @@ components:
             Must exactly match disk_name in the URL path -- the
             deliberate double-confirmation this destructive endpoint
             requires (see /disks/{disk_name}/format's own description).
+        fs_type:
+          type: string
+          enum: [ext4, btrfs]
+          default: ext4
+          description: >
+            Which filesystem to format the disk with (ADR-0104). Optional --
+            omitting it keeps this endpoint's original ext4-only behavior.
+            "btrfs" requires a real mkfs.btrfs to actually be staged on this
+            box (btrfs-progs.recipe, via a real kanxeo-hosttools image) --
+            if it isn't, the job still starts but fails fast with a clear
+            "mkfs.btrfs failed" once the child process's own exec attempt
+            hits ENOENT, the same failure shape any other mkfs failure
+            already has.
 
     DiskFormatStatus:
       type: object
@@ -4256,14 +4270,18 @@ components:
         disk_name:
           type: string
           description: Omitted when state is "none".
+        fs_type:
+          type: string
+          enum: [ext4, btrfs]
+          description: Present once state is "running" or "ready".
         mount_path:
           type: string
           description: Present once state is "running" or "ready".
         error:
           type: string
           description: >
-            Present once state is "failed" -- distinguishes "mkfs.ext4
-            failed" from "mkfs.ext4 succeeded but mount(2) failed" from
+            Present once state is "failed" -- distinguishes "mkfs.<fs_type>
+            failed" from "mkfs.<fs_type> succeeded but mount(2) failed" from
             an abnormal job process exit.
 
     NetworkCreateRequest:

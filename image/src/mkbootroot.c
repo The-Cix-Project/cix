@@ -448,6 +448,46 @@ int main(int argc, char **argv)
 					return 1;
 			}
 		}
+		/*
+		 * mkfs.btrfs -- DISKFORMAT_MKFS_BTRFS_BIN, daemon/src/diskformat.c
+		 * (ADR-0104, task #732). Deliberately NOT added to host_tool_bins[]
+		 * above: every entry there is unconditionally required (a dev-host
+		 * fallback always exists), but this dev sandbox has no mkfs.btrfs
+		 * of its own at all (confirmed directly -- unlike mke2fs, Debian
+		 * doesn't ship btrfs-progs by default) and no real box may have
+		 * built btrfs-progs.recipe onto its kanxeo-hosttools image yet
+		 * either. Staged tolerantly instead, matching firmware_dir/
+		 * modules_dir/kmod_bin_dir's own "absent is a normal, silently-
+		 * skipped state, not a build failure" precedent: only attempted
+		 * when host_tools_dir is given AND that tree's own copy actually
+		 * exists (stat()-gated) -- an older kanxeo-hosttools image built
+		 * before btrfs-progs.recipe existed is not an error here, just a
+		 * box that can't format a disk btrfs yet (POST /v1/disks/{name}/
+		 * format with fs_type=btrfs fails loud with ENOENT at exec time
+		 * on such a box, not silently). Its runtime library closure
+		 * (libuuid.so.1/libblkid.so.1/libz.so.1) needs no new entries in
+		 * shelled_bin_libs[] below -- confirmed via a real local `ldd` on
+		 * a real local mkfs.btrfs build: identical to mke2fs's own
+		 * closure (already staged there) plus libz.so.1 (already staged
+		 * there for curl/unsquashfs).
+		 */
+		if (host_tools_dir[0] != '\0') {
+			char src[PATH_MAX];
+			struct stat st;
+
+			if (snprintf(src, sizeof(src), "%s/usr/sbin/mkfs.btrfs", host_tools_dir) >=
+			    (int)sizeof(src)) {
+				fprintf(stderr, "path too long: %s/usr/sbin/mkfs.btrfs\n", host_tools_dir);
+				return 1;
+			}
+			if (stat(src, &st) == 0) {
+				char dst[PATH_MAX];
+
+				snprintf(dst, sizeof(dst), "%s/usr/sbin/mkfs.btrfs", image_root);
+				if (test_image_fixture_copy_file(src, dst) != 0)
+					return 1;
+			}
+		}
 		for (i = 0; i < sizeof(shelled_bin_libs) / sizeof(shelled_bin_libs[0]); i++) {
 			if (test_image_fixture_add_lib(image_root, shelled_bin_libs[i]) != 0)
 				return 1;

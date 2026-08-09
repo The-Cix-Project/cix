@@ -162,8 +162,9 @@ static void print_usage(FILE *out)
 	        "               persisted role to a disk (never the OS disk)\n"
 	        "  diskrole ls / diskrole rm NAME  -- list assigned roles (with whether each\n"
 	        "               disk is currently present) / remove one\n"
-	        "  disks format NAME  -- destructive: mkfs.ext4 + mount an already role-\n"
-	        "               assigned, non-OS disk (assign a role first via diskrole create)\n"
+	        "  disks format NAME [--fs-type=ext4|btrfs]  -- destructive: mkfs + mount an\n"
+	        "               already role-assigned, non-OS disk (assign a role first via\n"
+	        "               diskrole create); fs_type defaults to ext4\n"
 	        "  disks format-status NAME  -- state/mount_path/error of the most recent\n"
 	        "               format job for this disk\n"
 	        "  swap  -- show whether the host swap file is enabled (ADR-0069)\n"
@@ -929,6 +930,7 @@ static void fmt_diskformat_status(const struct json_value *v)
 {
 	const char *disk_name = json_str_field(v, "disk_name");
 	const char *state = json_str_field(v, "state");
+	const char *fs_type = json_str_field(v, "fs_type");
 	const char *mount_path = json_str_field(v, "mount_path");
 	const char *error = json_str_field(v, "error");
 
@@ -937,6 +939,8 @@ static void fmt_diskformat_status(const struct json_value *v)
 		return;
 	}
 	printf("%s: %s", disk_name != NULL ? disk_name : "?", state);
+	if (fs_type != NULL)
+		printf(" fs_type=%s", fs_type);
 	if (mount_path != NULL)
 		printf(" mount_path=%s", mount_path);
 	if (error != NULL)
@@ -958,21 +962,31 @@ static void fmt_diskformat_status(const struct json_value *v)
 static int cmd_disks_format(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *disk_name;
+	const char *fs_type = NULL;
 	char path[256];
 	struct json_writer w;
 	struct kx_response r;
+	int i;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl disks format NAME\n");
+		fprintf(stderr, "usage: kanxeoctl disks format NAME [--fs-type=ext4|btrfs]\n");
 		return 2;
 	}
 	disk_name = argv[0];
+	for (i = 1; i < argc; i++) {
+		if (strncmp(argv[i], "--fs-type=", 10) == 0)
+			fs_type = argv[i] + 10;
+	}
 	snprintf(path, sizeof(path), "/v1/disks/%s/format", disk_name);
 
 	jw_init(&w);
 	jw_obj_open(&w);
 	jw_key(&w, "confirm_disk_name");
 	jw_str(&w, disk_name);
+	if (fs_type != NULL) {
+		jw_key(&w, "fs_type");
+		jw_str(&w, fs_type);
+	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -1020,7 +1034,7 @@ static int cmd_disks(const struct kx_client *c, int json_mode, int argc, char **
 		return cmd_disks_format_status(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "usage: kanxeoctl disks [ls]\n"
-	                "       kanxeoctl disks format NAME\n"
+	                "       kanxeoctl disks format NAME [--fs-type=ext4|btrfs]\n"
 	                "       kanxeoctl disks format-status NAME\n");
 	return 2;
 }

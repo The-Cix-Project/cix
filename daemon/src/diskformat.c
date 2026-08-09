@@ -23,6 +23,12 @@ static enum diskformat_state g_state = DISKFORMAT_STATE_NONE;
 static char g_disk_name[DISKROLE_DISK_NAME_MAX];
 static char g_mount_path[PATH_MAX];
 static char g_error[256];
+static enum diskformat_fs_type g_fs_type;
+
+static const char *fs_type_str(enum diskformat_fs_type t)
+{
+	return t == DISKFORMAT_FS_BTRFS ? "btrfs" : "ext4";
+}
 
 static int find_disk(const char *disk_name, const char *os_containers_dir, struct discovered_disk *out)
 {
@@ -40,7 +46,8 @@ static int find_disk(const char *disk_name, const char *os_containers_dir, struc
 }
 
 enum diskformat_error diskformat_start(const char *disk_name, const char *os_containers_dir,
-                                        const char *mount_base_dir, pid_t *out_pid, int *out_pidfd)
+                                        const char *mount_base_dir, enum diskformat_fs_type fs_type,
+                                        pid_t *out_pid, int *out_pidfd)
 {
 	struct discovered_disk d;
 	pid_t pid;
@@ -73,8 +80,20 @@ enum diskformat_error diskformat_start(const char *disk_name, const char *os_con
 		 * own doc comment for why: format+mount is two sequential
 		 * steps and execve() can't be "returned from" to run the
 		 * second one.
+		 *
+		 * mkfs.btrfs takes no "-F" (force) flag of its own -- it
+		 * always overwrites an existing signature without prompting
+		 * when run non-interactively (confirmed via a real local
+		 * build+run of mkfs.btrfs --version/-h: no equivalent flag
+		 * exists, and btrfs-progs' own docs describe this as the
+		 * default non-tty behavior), so the mkfs.ext4 branch's own
+		 * "-F" is simply omitted rather than passed as a no-op.
 		 */
-		char *argv[] = { (char *)DISKFORMAT_MKFS_EXT4_BIN, "-F", (char *)d.dev_path, NULL };
+		const char *mkfs_bin = fs_type == DISKFORMAT_FS_BTRFS ?
+		                        DISKFORMAT_MKFS_BTRFS_BIN : DISKFORMAT_MKFS_EXT4_BIN;
+		char *ext4_argv[] = { (char *)DISKFORMAT_MKFS_EXT4_BIN, "-F", (char *)d.dev_path, NULL };
+		char *btrfs_argv[] = { (char *)DISKFORMAT_MKFS_BTRFS_BIN, (char *)d.dev_path, NULL };
+		char **argv = fs_type == DISKFORMAT_FS_BTRFS ? btrfs_argv : ext4_argv;
 		pid_t sub;
 		int status;
 
@@ -82,7 +101,7 @@ enum diskformat_error diskformat_start(const char *disk_name, const char *os_con
 		if (sub < 0)
 			_exit(1);
 		if (sub == 0) {
-			execve(DISKFORMAT_MKFS_EXT4_BIN, argv, environ);
+			execve(mkfs_bin, argv, environ);
 			_exit(127);
 		}
 		if (waitpid(sub, &status, 0) != sub || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
@@ -90,7 +109,7 @@ enum diskformat_error diskformat_start(const char *disk_name, const char *os_con
 
 		/* A plain fork() (no CLONE_NEWNS) shares the parent's mount
 		 * namespace -- this becomes visible daemon-wide immediately. */
-		if (mount(d.dev_path, g_mount_path, "ext4", MS_NOSUID | MS_NODEV, NULL) != 0)
+		if (mount(d.dev_path, g_mount_path, fs_type_str(fs_type), MS_NOSUID | MS_NODEV, NULL) != 0)
 			_exit(2);
 		_exit(0);
 	}
@@ -104,6 +123,7 @@ enum diskformat_error diskformat_start(const char *disk_name, const char *os_con
 
 	snprintf(g_disk_name, sizeof(g_disk_name), "%s", disk_name);
 	g_error[0] = '\0';
+	g_fs_type = fs_type;
 	g_state = DISKFORMAT_STATE_RUNNING;
 	*out_pid = pid;
 	*out_pidfd = pidfd;
@@ -119,10 +139,10 @@ void diskformat_completed(int exit_status)
 	}
 	g_state = DISKFORMAT_STATE_FAILED;
 	if (exit_status == 1)
-		snprintf(g_error, sizeof(g_error), "mkfs.ext4 failed");
+		snprintf(g_error, sizeof(g_error), "mkfs.%s failed", fs_type_str(g_fs_type));
 	else if (exit_status == 2)
-		snprintf(g_error, sizeof(g_error), "mkfs.ext4 succeeded but mount(2) failed: %s",
-		         strerror(errno));
+		snprintf(g_error, sizeof(g_error), "mkfs.%s succeeded but mount(2) failed: %s",
+		         fs_type_str(g_fs_type), strerror(errno));
 	else
 		snprintf(g_error, sizeof(g_error), "format job process exited abnormally (status %d)",
 		         exit_status);
@@ -160,6 +180,8 @@ void diskformat_write_status_json(struct json_writer *w, const char *want_disk_n
 	jw_key(w, "state");
 	jw_str(w, state_str(g_state));
 	if (g_state == DISKFORMAT_STATE_RUNNING || g_state == DISKFORMAT_STATE_READY) {
+		jw_key(w, "fs_type");
+		jw_str(w, fs_type_str(g_fs_type));
 		jw_key(w, "mount_path");
 		jw_str(w, g_mount_path);
 	}
