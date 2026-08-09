@@ -459,6 +459,30 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
                          char *out_hostbuild_done_name);
 
 /*
+ * ADR-0107: publishing a new recipe version (pkg_recipe_add()) queues a
+ * rebuild for every image whose own manifest tracks that package as
+ * "rolling" with a floor at or below the new version -- but the single-
+ * job-in-flight constraint (PKG_ERR_BUSY) every install/hostbuild
+ * already shares means that rebuild can't start immediately if a job is
+ * already running. This is pkg.c's own drain step for that queue,
+ * called by main.c at every point a job's completion might free the
+ * single in-flight slot (pkg_build_completed()/pkg_fetch_completed()
+ * returning "nothing more to chain", and pkg_build_spawn_failed()) --
+ * mirrors pkg_build_completed()'s own out-param/return shape exactly,
+ * so the caller reacts identically ("nonzero: register *out_pid/
+ * *out_pidfd via register_pkg_fetch_pidfd(), same as any other started
+ * job"). Internally walks the queue front-to-back: an image whose
+ * manifest is already fully satisfied (every pinned entry installed at
+ * its exact version, every rolling entry installed at its own current
+ * highest available version) is dropped with no job started, and the
+ * next queued image is tried instead -- so one call can both start a
+ * real job AND drain any number of already-satisfied entries ahead of
+ * it. Returns 0 if a job is already in flight or the queue is (now)
+ * empty.
+ */
+int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd);
+
+/*
  * The build-output capture pipe's read end (see pkg_fetch_completed()'s
  * doc comment), for the caller to register with its own epoll loop
  * right after a successful registry_create() -- ADR-0087: draining

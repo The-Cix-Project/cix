@@ -1280,6 +1280,179 @@ int main(void)
 	}
 skip_recipe_api:
 
+	/*
+	 * 16.5. ADR-0107 rolling auto-rebuild (task #720): an image whose
+	 * manifest tracks a package as "rolling" must pick up a newer
+	 * recipe version automatically the moment it's published --
+	 * publishing 2.0 below is the ONLY action this scenario takes; no
+	 * POST /v1/pkg/install is ever issued for the upgrade itself,
+	 * proving the daemon's own trigger (pkg_recipe_add() ->
+	 * queue_rolling_rebuilds_for() -> pkg_try_start_queued_rebuild())
+	 * did the work, not the test driving it directly.
+	 */
+	{
+		char roll_image_dir[PATH_MAX];
+		char tarball1[512], sha1[128];
+		char tarball2[512], sha2[128];
+		char body2[2048];
+		struct json_writer w;
+		char state[32];
+		int i;
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/images", "{\"name\":\"rollingtest\"}", &r) !=
+		        0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST rollingtest image, status=%d\n", r.status);
+			ok = 0;
+			goto skip_rolling_rebuild;
+		}
+		kx_response_free(&r);
+
+		if (stage_fixture_tarball(scratch_dir, "rollpkg", "1.0", tarball1, sizeof(tarball1), sha1,
+		                           sizeof(sha1)) != 0 ||
+		    write_recipe("rollpkg", "1.0", tarball1, sha1, NULL) != 0) {
+			fprintf(stderr, "FAIL: could not stage/write rollpkg 1.0\n");
+			ok = 0;
+			goto skip_rolling_rebuild;
+		}
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/install",
+		                       "{\"name\":\"rollpkg\",\"image\":\"rollingtest\"}", &r) != 0 ||
+		    r.status != 202) {
+			fprintf(stderr, "FAIL: POST install rollpkg@rollingtest, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		if (poll_pkg_state(&client, "rollpkg@rollingtest", state, sizeof(state), 60) != 0 ||
+		    strcmp(state, "installed") != 0) {
+			fprintf(stderr, "FAIL: rollpkg@rollingtest (1.0) did not reach installed\n");
+			ok = 0;
+			goto skip_rolling_rebuild;
+		}
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/images/rollingtest/manifest",
+		                       "{\"package\":\"rollpkg\",\"mode\":\"rolling\",\"version\":\"1.0\"}",
+		                       &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: POST rollingtest manifest (rollpkg rolling@1.0), status=%d\n",
+			        r.status);
+			ok = 0;
+			goto skip_rolling_rebuild;
+		}
+		kx_response_free(&r);
+
+		/* Read rollingtest's own current_version now, before the
+		 * rebuild -- immutability means this exact directory must
+		 * still exist, byte-for-byte, after the rebuild too. */
+		snprintf(roll_image_dir, sizeof(roll_image_dir), "%s/images/rollingtest", g_data_dir);
+		{
+			char old_version[128], old_rootfs_check[PATH_MAX];
+			struct stat old_st;
+
+			if (test_image_fixture_read_current_version(roll_image_dir, old_version,
+			                                             sizeof(old_version)) != 0) {
+				fprintf(stderr, "FAIL: could not read rollingtest's pre-rebuild version\n");
+				ok = 0;
+				goto skip_rolling_rebuild;
+			}
+
+			if (stage_fixture_tarball(scratch_dir, "rollpkg", "2.0", tarball2, sizeof(tarball2),
+			                           sha2, sizeof(sha2)) != 0) {
+				fprintf(stderr, "FAIL: could not stage rollpkg 2.0\n");
+				ok = 0;
+				goto skip_rolling_rebuild;
+			}
+			snprintf(body2, sizeof(body2),
+			         "pkg_name=rollpkg\npkg_version=2.0\npkg_source=file://%s\n"
+			         "pkg_sha256=%s\npkg_depends=\"\"\n\n"
+			         "pkg_build() {\n\tgcc -o hello hello.c\n}\n\n"
+			         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
+			         "\"$PKG_DESTDIR/usr/bin/rollpkg\"\n}\n",
+			         tarball2, sha2);
+			jw_init(&w);
+			jw_obj_open(&w);
+			jw_key(&w, "name");
+			jw_str(&w, "rollpkg");
+			jw_key(&w, "content");
+			jw_str(&w, body2);
+			jw_obj_close(&w);
+			w.buf[w.len] = '\0';
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "POST", "/v1/pkg/recipes", w.buf, &r) != 0 ||
+			    r.status != 204) {
+				fprintf(stderr, "FAIL: publish rollpkg 2.0, status=%d\n", r.status);
+				ok = 0;
+			}
+			kx_response_free(&r);
+			jw_free(&w);
+
+			/* No install/upgrade request follows -- the daemon's own
+			 * rolling-rebuild trigger must do this by itself. */
+			state[0] = '\0';
+			for (i = 0; i < 60; i++) {
+				memset(&r, 0, sizeof(r));
+				if (kx_client_request(&client, "GET", "/v1/pkg/rollpkg@rollingtest", NULL, &r) ==
+				        0 &&
+				    r.status == 200) {
+					const char *st = json_str_field(r.json, "state");
+					const char *ver = json_str_field(r.json, "version");
+
+					if (st != NULL)
+						snprintf(state, sizeof(state), "%s", st);
+					if (st != NULL && strcmp(st, "installed") == 0 && ver != NULL &&
+					    strcmp(ver, "2.0") == 0) {
+						kx_response_free(&r);
+						break;
+					}
+				}
+				kx_response_free(&r);
+				usleep(300000);
+			}
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "GET", "/v1/pkg/rollpkg@rollingtest", NULL, &r) != 0 ||
+			    r.status != 200 || !str_eq(json_str_field(r.json, "state"), "installed") ||
+			    !str_eq(json_str_field(r.json, "version"), "2.0")) {
+				fprintf(stderr,
+				        "FAIL: rollpkg@rollingtest was not auto-rebuilt to 2.0 (last state "
+				        "seen: %s)\n",
+				        state);
+				ok = 0;
+			}
+			kx_response_free(&r);
+
+			/* The old version's own rootfs must still exist, untouched
+			 * -- copy-forward immutability (ADR-0107/0108), not
+			 * mutated in place by the auto-rebuild. */
+			snprintf(old_rootfs_check, sizeof(old_rootfs_check), "%s/%s/rootfs", roll_image_dir,
+			         old_version);
+			if (stat(old_rootfs_check, &old_st) != 0) {
+				fprintf(stderr,
+				        "FAIL: rollingtest's pre-rebuild version rootfs no longer exists "
+				        "(auto-rebuild mutated it in place instead of copy-forwarding)\n");
+				ok = 0;
+			}
+
+			/* current_version must have actually moved. */
+			{
+				char new_version[128];
+
+				if (test_image_fixture_read_current_version(roll_image_dir, new_version,
+				                                              sizeof(new_version)) != 0 ||
+				    strcmp(new_version, old_version) == 0) {
+					fprintf(stderr,
+					        "FAIL: rollingtest's current_version did not advance after "
+					        "the auto-rebuild\n");
+					ok = 0;
+				}
+			}
+		}
+	}
+skip_rolling_rebuild:
+
 	/* 17. hostbuild (ADR-0056): a second mode of the same pipeline that
 	 * harvests pkg_install()'s output into ARTIFACTS_DIR/<name>/ instead
 	 * of merging it into any image's rootfs, using a named image's own

@@ -265,29 +265,41 @@ enum image_error image_delete(const char *name)
 	return IMAGE_OK;
 }
 
-void image_write_json_list(struct json_writer *w)
+int image_list_names(char names[][PKG_IMAGE_NAME_MAX], int max)
 {
 	DIR *d;
 	struct dirent *ent;
+	int count = 0;
+
+	d = opendir(g_images_dir);
+	if (d == NULL)
+		return 0;
+	while (count < max && (ent = readdir(d)) != NULL) {
+		char path[PATH_MAX];
+		struct stat st;
+
+		if (ent->d_name[0] == '.')
+			continue;
+		manifest_path(ent->d_name, path, sizeof(path));
+		if (stat(path, &st) == 0)
+			snprintf(names[count++], PKG_IMAGE_NAME_MAX, "%s", ent->d_name);
+	}
+	closedir(d);
+	return count;
+}
+
+void image_write_json_list(struct json_writer *w)
+{
+	char names[IMAGE_LIST_MAX][PKG_IMAGE_NAME_MAX];
+	int count = image_list_names(names, IMAGE_LIST_MAX);
+	int i;
 
 	jw_arr_open(w);
-	d = opendir(g_images_dir);
-	if (d != NULL) {
-		while ((ent = readdir(d)) != NULL) {
-			char path[PATH_MAX];
-			struct stat st;
-
-			if (ent->d_name[0] == '.')
-				continue;
-			manifest_path(ent->d_name, path, sizeof(path));
-			if (stat(path, &st) == 0) {
-				jw_obj_open(w);
-				jw_key(w, "name");
-				jw_str(w, ent->d_name);
-				jw_obj_close(w);
-			}
-		}
-		closedir(d);
+	for (i = 0; i < count; i++) {
+		jw_obj_open(w);
+		jw_key(w, "name");
+		jw_str(w, names[i]);
+		jw_obj_close(w);
 	}
 	jw_arr_close(w);
 }

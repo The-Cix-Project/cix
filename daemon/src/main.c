@@ -3724,6 +3724,26 @@ static void register_pkg_fetch_pidfd(pid_t pid, int pidfd)
 }
 
 /*
+ * ADR-0107: called at every point a completed/failed pkg job might
+ * have just freed pkg.c's own single-job-in-flight slot -- tries to
+ * start whatever rolling-image rebuild is queued (pkg_recipe_add()'s
+ * own trigger), registering its pidfd exactly like a fresh top-level
+ * install already does if one actually started. A no-op (returns
+ * immediately, no epoll registration) when the queue is empty or a
+ * job is somehow already running -- safe to call unconditionally
+ * after every job-completion path rather than threading a "did this
+ * really free the slot" condition through each call site.
+ */
+static void try_start_queued_pkg_rebuild(void)
+{
+	pid_t pkg_pid;
+	int pkg_pidfd;
+
+	if (pkg_try_start_queued_rebuild(&pkg_pid, &pkg_pidfd))
+		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd);
+}
+
+/*
  * ADR-0087: registers pkg.c's own build-output capture pipe (see
  * pkg_build_output_fd()) directly with epoll, watching the pipe's fd
  * itself rather than a pidfd -- the CONN_KMSG pattern (start_kmsg_
@@ -6460,6 +6480,8 @@ static void handle_stop(int fd, const char *name)
 			if (pkg_build_completed(name, e->exit_status, &pkg_pid, &pkg_pidfd,
 			                         hostbuild_done_name))
 				register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd);
+			else
+				try_start_queued_pkg_rebuild();
 		}
 	}
 	containerdef_set_stopped(name, 1);
@@ -8056,6 +8078,18 @@ static void handle_pkg_recipe_add(int fd, const char *body, size_t body_len)
 		respond_pkg_recipe_error(fd, perr);
 		return;
 	}
+	/*
+	 * ADR-0107: pkg_recipe_add()'s own queue_rolling_rebuilds_for()
+	 * only enqueues -- it can't itself start a job (pkg.c has no epoll
+	 * access). Every OTHER trigger point (try_start_queued_pkg_rebuild()'s
+	 * own call sites) only fires reactively when a previously-running
+	 * job finishes; if the daemon is completely idle right now (the
+	 * common case -- publishing a new version doesn't require any job
+	 * to already be in flight), nothing would otherwise ever start the
+	 * rebuild this request just queued. This is the one place that
+	 * actually kicks it off immediately when nothing else will.
+	 */
+	try_start_queued_pkg_rebuild();
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
@@ -9771,6 +9805,8 @@ static void handle_container_event(struct conn *cc)
 		registry_remove(entry->name);
 	if (chained)
 		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd);
+	else
+		try_start_queued_pkg_rebuild();
 
 	/*
 	 * ADR-0057: "kanxeo" is the one hostbuild name this daemon gives
@@ -9879,10 +9915,13 @@ static void handle_pkg_fetch_event(struct conn *cc)
 
 		if (rerr != REGISTRY_OK) {
 			pkg_build_spawn_failed();
+			try_start_queued_pkg_rebuild();
 		} else {
 			register_container_pidfd(entry);
 			register_pkg_build_output(pkg_build_output_fd());
 		}
+	} else {
+		try_start_queued_pkg_rebuild();
 	}
 }
 

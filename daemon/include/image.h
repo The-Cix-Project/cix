@@ -115,6 +115,21 @@ enum image_error image_create(const char *name);
  */
 enum image_error image_delete(const char *name);
 
+/* Upper bound for image_list_names() -- a real deployment having more
+ * than this many distinct images at once is a future problem, the same
+ * pragmatic bound every other daemon-owned array in this codebase
+ * already uses (PKG_MAX_PACKAGES, REGISTRY_MAX_CONTAINERS, ...). */
+#define IMAGE_LIST_MAX 256
+
+/* Every existing image's name (manifest.json presence is the
+ * authoritative "exists" signal, same as everywhere else in this
+ * module), up to max entries. Returns the count actually written.
+ * Shared by image_write_json_list() below and pkg.c's own rolling-
+ * rebuild trigger (which needs to enumerate every image's manifest,
+ * not just report names over REST) -- one real directory-scan
+ * implementation, not two. */
+int image_list_names(char names[][PKG_IMAGE_NAME_MAX], int max);
+
 /* {"images": [...]} entries, each just {"name": "..."} -- deliberately
  * minimal, matching device.c's own "report what's discoverable, not a
  * derived summary" posture (a client wanting per-image package detail

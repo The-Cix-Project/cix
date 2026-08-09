@@ -2,6 +2,21 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 55 (done, full clean rebuild + full regression sweep): rolling images auto-rebuild on new recipe publish (ADR-0107, closes task #720)
+
+Fourth of the package/image versioning epic's parts: publishing a new recipe version now automatically rebuilds every image whose manifest tracks that package as "rolling" with a floor at or below the new version, using #719's own copy-forward mechanism (the old version's rootfs stays untouched, a new immutable version is produced and `current_version` repointed).
+
+#### Added
+- `daemon/src/pkg.c`: a small FIFO (`g_rebuild_queue`) reusing this daemon's existing single-job-in-flight constraint. `queue_rolling_rebuilds_for()` (called from `pkg_recipe_add()`) enumerates every image and queues any whose manifest has a matching rolling entry. `pkg_try_start_queued_rebuild()` drains the queue: an already-satisfied image is dropped with no job started, an unsatisfied one gets a real `pkg_install_start()` call through the same pipeline an operator-triggered install already uses.
+- `daemon/include/image.h`/`image.c`: `image_list_names()` (extracted from `image_write_json_list()`'s own directory walk -- one real enumeration, not two) and `IMAGE_LIST_MAX`.
+- `daemon/src/main.c`: `try_start_queued_pkg_rebuild()`, called at every job-completion hook (`pkg_build_completed()`'s two call sites, `pkg_fetch_completed()`, `pkg_build_spawn_failed()`) and -- critically -- immediately after a successful `POST /v1/pkg/recipes`, since the daemon is idle far more often than not when a new version is published and no reactive hook would otherwise ever fire.
+- `test/test_pkg.c`: new end-to-end scenario proving the trigger fires with **no install/upgrade request from the test itself** -- publish 2.0, poll until the rolling image reaches it on its own, confirm the 1.0 rootfs still exists untouched.
+
+#### Notes
+- Full clean rebuild (`-Wall -Werror`) zero warnings. Full regression sweep clean: all 22 daemon-linked tests.
+- A pinned manifest entry never triggers a rebuild -- pinning means "never move."
+- No new ADR -- already specified in ADR-0107.
+
 ### Part 54 (done, full clean rebuild + full regression sweep): per-version immutable image rootfs storage -- the actual bug fix (ADR-0107/ADR-0108, closes task #719)
 
 Third of the package/image versioning epic's parts, and the one that closes the real bug Part 52 named: an image's rootfs is no longer one shared, mutable `IMAGES_DIR/<name>/rootfs` directory that every container ever created against that name (and every future `pkg install`) points at and mutates in place. Every install/upgrade/delete now produces a new, immutable `IMAGES_DIR/<name>/<version>/rootfs` directory via a copy-forward (hardlink) mechanism, and a container's own overlay lowerdir is pinned to the exact version resolved at creation time.

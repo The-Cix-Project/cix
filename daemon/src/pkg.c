@@ -112,6 +112,17 @@ static int g_dep_queue_count;
 static int g_dep_queue_pos;
 static int g_dep_queue_is_upgrade;
 
+/* ADR-0107: images awaiting a rolling-manifest rebuild, queued by
+ * pkg_recipe_add() and drained by pkg_try_start_queued_rebuild() --
+ * a small FIFO reusing this daemon's own existing "one fetch/build job
+ * in flight" v1 constraint rather than inventing parallel job tracking.
+ * A real deployment queuing more than this many images at once for a
+ * single new recipe version is a future problem, the same pragmatic
+ * bound every other daemon-owned array here already uses. */
+#define PKG_REBUILD_QUEUE_MAX 32
+static char g_rebuild_queue[PKG_REBUILD_QUEUE_MAX][PKG_IMAGE_NAME_MAX];
+static int g_rebuild_queue_count;
+
 /* Static storage for the pending build's container_spec inputs --
  * valid from pkg_fetch_completed() returning success through the
  * caller's immediately-following registry_create() call. Safe as
@@ -1664,6 +1675,134 @@ enum pkg_error pkg_recipe_get(const char *name, const char *version, struct json
 	return PKG_OK;
 }
 
+static void rebuild_queue_enqueue(const char *image)
+{
+	int i;
+
+	for (i = 0; i < g_rebuild_queue_count; i++) {
+		if (strcmp(g_rebuild_queue[i], image) == 0)
+			return; /* already queued */
+	}
+	if (g_rebuild_queue_count >= PKG_REBUILD_QUEUE_MAX)
+		return; /* best-effort, matches this queue's own documented bound */
+	snprintf(g_rebuild_queue[g_rebuild_queue_count], PKG_IMAGE_NAME_MAX, "%s", image);
+	g_rebuild_queue_count++;
+}
+
+static void rebuild_queue_pop_front(void)
+{
+	int i;
+
+	if (g_rebuild_queue_count == 0)
+		return;
+	for (i = 1; i < g_rebuild_queue_count; i++)
+		snprintf(g_rebuild_queue[i - 1], PKG_IMAGE_NAME_MAX, "%s", g_rebuild_queue[i]);
+	g_rebuild_queue_count--;
+}
+
+/*
+ * ADR-0107: the moment pkg_name@pkg_version is published, every image
+ * whose own manifest tracks pkg_name as "rolling" with a floor at or
+ * below pkg_version needs a rebuild to actually pick it up -- queued
+ * here, drained later by pkg_try_start_queued_rebuild() (this daemon's
+ * own single-job-in-flight constraint means it usually can't start
+ * immediately). A pinned entry never triggers this -- pinning means
+ * "never move," by definition unaffected by a newer version existing.
+ */
+static void queue_rolling_rebuilds_for(const char *pkg_name, const char *pkg_version)
+{
+	char image_names[IMAGE_LIST_MAX][PKG_IMAGE_NAME_MAX];
+	int image_count = image_list_names(image_names, IMAGE_LIST_MAX);
+	int i;
+
+	for (i = 0; i < image_count; i++) {
+		struct image_manifest_entry entries[IMAGE_MANIFEST_MAX_PACKAGES];
+		int entry_count, j;
+
+		if (image_manifest_read(image_names[i], entries, &entry_count,
+		                         IMAGE_MANIFEST_MAX_PACKAGES) != IMAGE_OK)
+			continue;
+		for (j = 0; j < entry_count; j++) {
+			if (entries[j].mode == IMAGE_PKG_ROLLING &&
+			    strcmp(entries[j].package, pkg_name) == 0 &&
+			    pkg_version_compare(pkg_version, entries[j].version) >= 0) {
+				rebuild_queue_enqueue(image_names[i]);
+				break;
+			}
+		}
+	}
+}
+
+int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd)
+{
+	if (g_current_job_name[0] != '\0')
+		return 0;
+
+	while (g_rebuild_queue_count > 0) {
+		const char *image = g_rebuild_queue[0];
+		struct image_manifest_entry entries[IMAGE_MANIFEST_MAX_PACKAGES];
+		int entry_count, i;
+		int started = 0;
+
+		if (image_manifest_read(image, entries, &entry_count, IMAGE_MANIFEST_MAX_PACKAGES) !=
+		    IMAGE_OK) {
+			rebuild_queue_pop_front();
+			continue;
+		}
+
+		for (i = 0; i < entry_count; i++) {
+			struct pkg_entry *e = pkg_find(entries[i].package, image);
+			int satisfied;
+
+			if (entries[i].mode == IMAGE_PKG_PINNED) {
+				satisfied = (e != NULL && e->state == PKG_STATE_INSTALLED &&
+				             strcmp(e->version, entries[i].version) == 0);
+			} else {
+				/* rolling: satisfied only if installed at the CURRENT
+				 * highest available version -- re-derived fresh every
+				 * call rather than trusting any cached "target," which
+				 * is exactly what lets this queue naturally settle once
+				 * every image has caught up (a later, even newer
+				 * version publish just re-queues the image again via
+				 * queue_rolling_rebuilds_for()). */
+				char recipe_path[PATH_MAX];
+				struct pkg_recipe recipe;
+
+				satisfied = (e != NULL && e->state == PKG_STATE_INSTALLED &&
+				             find_recipe_path(entries[i].package, NULL, recipe_path,
+				                               sizeof(recipe_path)) == 0 &&
+				             parse_recipe(recipe_path, &recipe) == 0 &&
+				             strcmp(recipe.version, e->version) == 0);
+			}
+
+			if (!satisfied) {
+				const char *want_version =
+				    (entries[i].mode == IMAGE_PKG_PINNED) ? entries[i].version : NULL;
+				char started_name[PKG_NAME_MAX];
+
+				if (pkg_install_start(entries[i].package, image, want_version, e != NULL,
+				                       started_name, sizeof(started_name), out_pid,
+				                       out_pidfd) == PKG_OK) {
+					started = 1;
+					break;
+				}
+				/* Couldn't start this particular entry (recipe removed
+				 * out from under the manifest, etc.) -- try the rest of
+				 * the manifest rather than getting stuck on one bad
+				 * entry. */
+			}
+		}
+
+		if (started)
+			return 1;
+
+		/* Every manifest entry already satisfied -- this image is
+		 * caught up, drop it and try whatever's queued next. */
+		rebuild_queue_pop_front();
+	}
+	return 0;
+}
+
 enum pkg_error pkg_recipe_add(const char *name, const char *content)
 {
 	char name_dir[PATH_MAX];
@@ -1712,6 +1851,7 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content)
 		unlink(staging_path);
 		return PKG_ERR_PERSIST_FAILED;
 	}
+	queue_rolling_rebuilds_for(parsed.name, parsed.version);
 	return PKG_OK;
 }
 
