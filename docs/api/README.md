@@ -27,6 +27,15 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | POST | `/system/ping` | Start a real ICMP echo against an IPv4 address |
 | GET | `/system/resolv` | The host's own outbound DNS resolver config |
 | PUT | `/system/resolv` | Replace it -- takes effect immediately, no reboot |
+| GET | `/system/ntp` | Upstream NTP server address list used to sync the host clock |
+| PUT | `/system/ntp` | Replace it |
+| GET | `/system/ntp/status` | Outcome of the most recent sync attempt |
+| POST | `/system/ntp/sync` | Trigger a sync attempt now, rather than waiting for the next hourly automatic one |
+| GET | `/system/time` | The host's current date/time |
+| PUT | `/system/time` | Manually set the host clock (`clock_settime()`, immediate, no reboot) |
+| GET | `/ntp/servers` | List all registered NTP server bindings |
+| POST | `/ntp/servers` | Register a running container as an available internal NTP time source |
+| DELETE | `/ntp/servers/{container}` | Unregister an NTP server binding |
 | GET | `/containers` | List all containers this daemon knows about |
 | POST | `/containers` | Create and start a container |
 | GET | `/containers/{name}` | Inspect one container |
@@ -402,6 +411,49 @@ A real, installed Kanxeo host has no outbound DNS resolution mechanism at all by
 This is deliberately generic -- a plain IP list, no notion of "which container is my DNS server." It covers pointing at one of this platform's own DNS containers (resolve its IP once via `GET /containers/{name}`, `PUT` it here) and pointing at a real external resolver, with the exact same mechanism. `GET /v1/system/resolv` reports the current list.
 
 Note this fixes host-level resolution generally, not just for `pkg`'s own fetches -- every current and future tool `kanxeod` shells out to (`git`, `openssl`, anything added later) resolves through the same, single, canonical `/etc/resolv.conf` path.
+
+## NTP: host clock sync (ADR-0110)
+
+Two related but genuinely independent mechanisms:
+
+**1. The host's own clock.** A small hand-rolled SNTP client (the client subset of RFC 5905) -- setting the host's own clock needs `CAP_SYS_TIME` from the host's own namespace, which no container can do without either breaking isolation or `kanxeod` doing the `clock_settime()` call itself anyway, so this can never be delegated to a containerized workload the way DNS/dnsmasq or LDAP/glauth are.
+
+```
+PUT /v1/system/ntp
+{"upstream": ["192.168.15.1", "10.0.0.1"]}
+```
+
+Same list convention `PUT /v1/system/resolv` already has: up to 3 IPv4 addresses, tried in order at every sync attempt; an empty array clears it (the host then relies solely on any registered `/ntp/servers` container, if any). Synced automatically every hour, or immediately via:
+
+```
+POST /v1/system/ntp/sync
+```
+
+`202` starts a sync attempt (`409` if one's already in flight, `400` if nothing is configured at all -- no upstream and no registered server container). `GET /v1/system/ntp/status` reports the outcome once it lands:
+
+```json
+{"state": "ok", "synced_from": "192.168.15.1", "last_sync_unixtime": 1735689600}
+```
+
+`state` is `never` (nothing attempted yet), `ok`, or `failed` (every candidate exhausted with no valid reply, or a valid reply arrived but the final `clock_settime()` itself failed -- e.g. no `CAP_SYS_TIME`).
+
+**2. Container-to-container NTP:** `POST`/`GET`/`DELETE /v1/ntp/servers`, registering a running container as an available time source -- mirrors `POST /v1/dns/servers`/`POST /v1/ldap/servers` exactly:
+
+```
+POST /v1/ntp/servers
+{"container": "ntp1"}
+```
+
+Simpler than either: NTP is itself a live query/response protocol, so this is pure bookkeeping -- no pid/pidfd, no config-file push, no signal. `kanxeod` resolves the registered container's own live IP fresh at every sync attempt (never cached) and queries it directly with the exact same SNTP client as (1) -- a registered container is just one more candidate `ntp_sync_start()` tries, ahead of the configured upstream addresses. `404` if the named container doesn't exist or isn't currently running.
+
+`GET`/`PUT /v1/system/time` is a separate, manual escape hatch alongside automatic sync -- view or directly set the host's current clock:
+
+```
+PUT /v1/system/time
+{"unixtime": 1735689600}
+```
+
+Real `clock_settime(CLOCK_REALTIME, ...)` -- immediate, host-wide effect, no reboot needed. Independent of NTP sync, which will overwrite it again at its own next scheduled or on-demand attempt.
 
 ### A container can already pull the full DNS record set itself
 

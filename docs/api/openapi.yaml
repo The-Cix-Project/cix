@@ -783,6 +783,229 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/ntp:
+    get:
+      summary: Upstream NTP server address list used to sync the host clock (ADR-0110)
+      operationId: getSystemNtp
+      responses:
+        "200":
+          description: Current upstream list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NtpConfig"
+    put:
+      summary: Replace the upstream NTP server address list (ADR-0110)
+      description: >
+        Same list convention GET/PUT /system/resolv already has for
+        DNS nameservers -- an empty array clears it entirely (the host
+        then relies solely on any registered /ntp/servers container,
+        if any). Tried after any registered server, in the order
+        added, at every sync attempt (the hourly automatic one, or an
+        on-demand POST /system/ntp/sync).
+      operationId: putSystemNtp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [upstream]
+              properties:
+                upstream:
+                  type: array
+                  maxItems: 3
+                  items:
+                    type: string
+                  description: Up to 3 IPv4 addresses, tried in the order given.
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NtpConfig"
+        "400":
+          description: Invalid JSON body, an entry isn't a valid IPv4 address, or more than 3 given
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Could not persist ntp.conf
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /system/ntp/status:
+    get:
+      summary: Outcome of the most recent sync attempt (ADR-0110)
+      operationId: getSystemNtpStatus
+      responses:
+        "200":
+          description: Current sync status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NtpStatus"
+
+  /system/ntp/sync:
+    post:
+      summary: Trigger one sync attempt now, rather than waiting for the next hourly automatic one (ADR-0110)
+      description: >
+        Builds the ordered candidate list (registered, currently-running
+        /ntp/servers containers first, then the configured upstream
+        addresses) and sends the first candidate its own SNTP request --
+        the same v1 one-job-in-flight/202-then-poll-status shape POST
+        /system/ping already established. Check GET /system/ntp/status
+        once it lands for the outcome.
+      operationId: postSystemNtpSync
+      responses:
+        "202":
+          description: Sync started
+        "400":
+          description: Nothing configured -- no upstream addresses and no registered server containers
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A sync attempt is already in flight
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Could not start the sync job (socket/timer setup failed)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /system/time:
+    get:
+      summary: The host's current date/time (ADR-0110)
+      operationId: getSystemTime
+      responses:
+        "200":
+          description: Current host clock
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TimeConfig"
+    put:
+      summary: Manually set the host clock (ADR-0110)
+      description: >
+        Real clock_settime(CLOCK_REALTIME, ...) -- immediate, host-wide
+        effect, no reboot needed, same live-apply posture every other
+        resource here has. Independent of NTP sync, which will
+        overwrite it again at its own next scheduled or on-demand
+        attempt.
+      operationId: putSystemTime
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [unixtime]
+              properties:
+                unixtime:
+                  type: integer
+                  minimum: 0
+      responses:
+        "200":
+          description: Clock set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TimeConfig"
+        "400":
+          description: Invalid JSON body, unixtime negative, or clock_settime() failed (e.g. missing CAP_SYS_TIME)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /ntp/servers:
+    get:
+      summary: List all registered NTP server bindings (ADR-0110)
+      operationId: listNtpServers
+      responses:
+        "200":
+          description: Binding list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [servers]
+                properties:
+                  servers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/NtpServerBinding"
+    post:
+      summary: >
+        Register a running container as an available internal NTP time source
+        (task #753, mirrors POST /dns/servers and POST /ldap/servers). Simpler
+        than either: NTP is itself a live query/response protocol, so this is
+        pure bookkeeping -- no pid/pidfd, no config-file push, no signal. The
+        container's own live IP is resolved fresh from the registry at every
+        sync attempt, never cached here.
+      operationId: createNtpServer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NtpServerBindingCreateRequest"
+      responses:
+        "201":
+          description: Registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NtpServerBinding"
+        "404":
+          description: No such container, or it exists but isn't running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: This container is already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "400":
+          description: Too many registered NTP servers
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /ntp/servers/{container}:
+    delete:
+      summary: Unregister an NTP server binding (does not touch the container itself)
+      operationId: deleteNtpServer
+      parameters:
+        - name: container
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Unregistered
+        "404":
+          description: No binding for this container
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /system/logs:
     get:
       summary: Tail the consolidated log (kernel dmesg + kanxeod diagnostics + per-request audit trail, ADR-0070)
@@ -5498,6 +5721,54 @@ components:
         path:
           type: string
           description: The swap file's real path on the host, or "" when not enabled.
+
+    NtpConfig:
+      type: object
+      required: [upstream]
+      properties:
+        upstream:
+          type: array
+          items:
+            type: string
+
+    NtpStatus:
+      type: object
+      required: [state, synced_from, last_sync_unixtime]
+      properties:
+        state:
+          type: string
+          enum: [never, ok, failed]
+          description: never -- no sync attempted yet since the daemon started. ok -- last attempt succeeded. failed -- last attempt exhausted every candidate with no valid reply (or a valid reply arrived but clock_settime() itself failed).
+        synced_from:
+          type: string
+          nullable: true
+          description: The IPv4 address the last successful sync used. Null unless state is ok.
+        last_sync_unixtime:
+          type: integer
+          nullable: true
+          description: Null unless state is ok.
+
+    NtpServerBindingCreateRequest:
+      type: object
+      required: [container]
+      properties:
+        container:
+          type: string
+          description: Name of an existing, running container (see /containers) to register as a time source.
+
+    NtpServerBinding:
+      type: object
+      required: [container]
+      properties:
+        container:
+          type: string
+
+    TimeConfig:
+      type: object
+      required: [unixtime]
+      properties:
+        unixtime:
+          type: integer
 
     KernelRoute:
       type: object

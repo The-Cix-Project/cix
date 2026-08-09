@@ -27,6 +27,10 @@ const cache = {
 	ldapGroups: [],
 	ldapUsers: [],
 	ldapConfig: null,
+	ntpConfig: null,
+	ntpServers: [],
+	ntpStatus: null,
+	ntpTime: null,
 	pkiCa: null,
 	pkiIntermediate: null,
 	pkiCerts: [],
@@ -274,6 +278,10 @@ const CATEGORY_VIEWS = {
 	"ldap-groups": "view-ldap-groups",
 	"ldap-users": "view-ldap-users",
 	"ldap-config": "view-ldap-config",
+	"ntp-config": "view-ntp-config",
+	"ntp-servers": "view-ntp-servers",
+	"ntp-status": "view-ntp-status",
+	"ntp-time": "view-ntp-time",
 	"pki-ca": "view-pki-ca",
 	"pki-certs": "view-pki-certs",
 	packages: "view-packages",
@@ -693,6 +701,17 @@ function renderTree() {
 						{ label: "Groups", hash: "ldap-groups", icon: "dns" },
 						{ label: "Users", hash: "ldap-users", icon: "dns" },
 						{ label: "Config", hash: "ldap-config", icon: "dns" },
+					],
+				},
+				{
+					label: "NTP",
+					hash: "ntp-config",
+					icon: "dns",
+					children: [
+						{ label: "Config", hash: "ntp-config", icon: "dns" },
+						{ label: "Servers", hash: "ntp-servers", icon: "dns" },
+						{ label: "Status", hash: "ntp-status", icon: "dns" },
+						{ label: "Time", hash: "ntp-time", icon: "dns" },
 					],
 				},
 				{
@@ -2764,6 +2783,192 @@ document.getElementById("ldap-config-form").addEventListener("submit", async (ev
 	}
 });
 
+/* ---------- NTP (tasks #751-755) ---------- */
+
+/* ---- NTP Config: upstream server address list ---- */
+
+let ntpConfigDirty = false;
+
+async function refreshNtpConfig() {
+	try {
+		const config = await apiRequest("GET", "/v1/system/ntp");
+
+		cache.ntpConfig = config;
+		if (!ntpConfigDirty)
+			document.getElementById("ncf-servers").value = config.upstream.join(", ");
+	} catch (e) {
+		/* Best-effort -- the form just stays at whatever was last shown. */
+	}
+}
+
+document.getElementById("ncf-servers").addEventListener("input", () => {
+	ntpConfigDirty = true;
+});
+
+document.getElementById("ntp-config-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const raw = document.getElementById("ncf-servers").value.trim();
+	const servers = raw === "" ? [] : raw.split(/[\s,]+/).filter((s) => s.length > 0);
+
+	try {
+		await apiRequest("PUT", "/v1/system/ntp", { upstream: servers });
+		clearStatus();
+		showStatus("NTP config saved", false);
+		ntpConfigDirty = false;
+		await refreshNtpConfig();
+	} catch (e) {
+		showStatus("Failed to save NTP config: " + e.message, true);
+	}
+});
+
+/* ---- NTP Servers: registered container time sources ---- */
+
+function renderNtpServers(servers) {
+	const body = document.getElementById("ntp-servers-body");
+
+	body.textContent = "";
+	if (servers.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 2;
+		cell.className = "empty";
+		cell.textContent = "No NTP server bindings";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+
+	for (const s of servers) {
+		const row = document.createElement("tr");
+
+		const containerCell = document.createElement("td");
+		containerCell.textContent = s.container;
+		row.appendChild(containerCell);
+
+		const actionCell = document.createElement("td");
+		const rmButton = document.createElement("button");
+
+		rmButton.textContent = "Unregister";
+		rmButton.className = "button-danger";
+		rmButton.addEventListener("click", () => removeNtpServer(s.container));
+		actionCell.appendChild(rmButton);
+		row.appendChild(actionCell);
+
+		body.appendChild(row);
+	}
+}
+
+async function refreshNtpServers() {
+	const data = await apiRequest("GET", "/v1/ntp/servers");
+	cache.ntpServers = data.servers;
+	renderNtpServers(cache.ntpServers);
+}
+
+async function removeNtpServer(container) {
+	try {
+		await apiRequest("DELETE", "/v1/ntp/servers/" + encodeURIComponent(container));
+		clearStatus();
+		await refreshNtpServers();
+	} catch (e) {
+		showStatus("Failed to unregister NTP server " + container + ": " + e.message, true);
+	}
+}
+
+document.getElementById("ntp-server-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const container = document.getElementById("nsf-container").value.trim();
+
+	try {
+		await apiRequest("POST", "/v1/ntp/servers", { container: container });
+		clearStatus();
+		document.getElementById("ntp-server-form").reset();
+		closeModal();
+		await refreshNtpServers();
+	} catch (e) {
+		showStatus("Failed to register NTP server: " + e.message, true);
+	}
+});
+
+/* ---- NTP Status: most recent sync attempt outcome ---- */
+
+async function refreshNtpStatus() {
+	const box = document.getElementById("ntp-status-box");
+
+	try {
+		const status = await apiRequest("GET", "/v1/system/ntp/status");
+
+		cache.ntpStatus = status;
+		box.textContent = "";
+
+		const lines = [
+			["State", status.state],
+			["Synced from", status.synced_from || "(never)"],
+			["Last sync unixtime", status.last_sync_unixtime || "(never)"],
+		];
+		for (const [label, value] of lines) {
+			const p = document.createElement("p");
+			p.textContent = label + ": " + value;
+			box.appendChild(p);
+		}
+	} catch (e) {
+		box.textContent = "Failed to load NTP status: " + e.message;
+	}
+}
+
+document.getElementById("ntp-sync-now").addEventListener("click", async () => {
+	try {
+		await apiRequest("POST", "/v1/system/ntp/sync");
+		clearStatus();
+		showStatus("NTP sync started", false);
+		await refreshNtpStatus();
+	} catch (e) {
+		showStatus("Failed to start NTP sync: " + e.message, true);
+	}
+});
+
+/* ---- NTP Time: manual host clock view/override ---- */
+
+async function refreshNtpTime() {
+	const box = document.getElementById("ntp-time-box");
+
+	try {
+		const t = await apiRequest("GET", "/v1/system/time");
+
+		cache.ntpTime = t;
+		box.textContent = "";
+
+		const p1 = document.createElement("p");
+		p1.textContent = "Unix time: " + t.unixtime;
+		box.appendChild(p1);
+
+		const p2 = document.createElement("p");
+		p2.textContent = "UTC: " + new Date(t.unixtime * 1000).toISOString();
+		box.appendChild(p2);
+	} catch (e) {
+		box.textContent = "Failed to load host time: " + e.message;
+	}
+}
+
+document.getElementById("ntp-time-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const raw = document.getElementById("ntf-unixtime").value.trim();
+	const unixtime = raw === "" ? Math.floor(Date.now() / 1000) : parseInt(raw, 10);
+
+	try {
+		await apiRequest("PUT", "/v1/system/time", { unixtime: unixtime });
+		clearStatus();
+		showStatus("Host clock set", false);
+		document.getElementById("ntp-time-form").reset();
+		await refreshNtpTime();
+	} catch (e) {
+		showStatus("Failed to set host clock: " + e.message, true);
+	}
+});
+
 /* ---------- PKI ---------- */
 
 async function refreshPkiCa() {
@@ -4371,6 +4576,10 @@ async function poll() {
 		await refreshLdapGroups();
 		await refreshLdapUsers();
 		await refreshLdapConfig();
+		await refreshNtpConfig();
+		await refreshNtpServers();
+		await refreshNtpStatus();
+		await refreshNtpTime();
 		await refreshPkiCa();
 		await refreshPkiIntermediate();
 		await refreshPkiCerts();

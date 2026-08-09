@@ -33,6 +33,15 @@ kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `ping HOST` | Real ICMP echo against a literal IPv4 address (ADR-0075) — waits ~2s max, exits nonzero if unreachable |
 | `resolv [show]` | The host's own outbound DNS resolver config (ADR-0076) |
 | `resolv set [--nameserver=A.B.C.D ...]` | Replace it (repeatable flag, up to 3) — takes effect immediately, no reboot; no flags clears it |
+| `time [show]` | The host's current date/time (ADR-0110) |
+| `time set --unixtime=N` | Manually set the host clock (real `clock_settime()`, immediate, no reboot) |
+| `ntp config [show]` | Upstream NTP server address list used to sync the host clock (ADR-0110) |
+| `ntp config set [--server=A.B.C.D ...]` | Replace it (repeatable flag, up to 3); no flags clears it |
+| `ntp status` | Most recent sync attempt's outcome/source/time |
+| `ntp sync` | Trigger a sync attempt now, rather than waiting for the next hourly automatic one |
+| `ntp server register --container=NAME` | Register a running container as an available internal NTP time source, mirrors `dns server register`/`ldap server register` |
+| `ntp server ls` | List registered NTP server bindings |
+| `ntp server unregister CONTAINER` | Unregister one (does not touch the container itself) |
 | `routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]` | Add a real kernel route (ADR-0067 Part 3); or `--default --gateway=A.B.C.D` for the default route |
 | `routes rm --dest=A.B.C.D --prefix=N` | Remove one; or `--default` for the default route |
 | `swap` | Whether the host swap file is enabled (ADR-0069) |

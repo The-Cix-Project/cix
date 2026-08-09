@@ -25,6 +25,7 @@
 				<li><button type="button" data-modal="ldap-server-form" data-title="Register LDAP server">LDAP Server</button></li>
 				<li><button type="button" data-modal="ldap-group-form" data-title="Create LDAP group">LDAP Group</button></li>
 				<li><button type="button" data-modal="ldap-user-form" data-title="Create LDAP user">LDAP User</button></li>
+				<li><button type="button" data-modal="ntp-server-form" data-title="Register NTP server">NTP Server</button></li>
 				<li><button type="button" data-modal="pki-cert-form" data-title="Issue certificate">PKI Certificate</button></li>
 				<li><button type="button" data-modal="pkg-recipe-form" data-title="Add or update a recipe">Package Recipe</button></li>
 				<li><button type="button" data-modal="pkg-bootstrap-form" data-title="Bootstrap build image">Bootstrap Build Image</button></li>
@@ -525,6 +526,74 @@
 					<input type="number" id="lcf-start-gid" min="1" required>
 				</label>
 				<button type="submit">Save</button>
+			</form>
+		</section>
+
+		<!-- NTP Config: upstream server address list (task #751) -->
+		<section class="view" id="view-ntp-config" hidden>
+			<h2>NTP Config</h2>
+			<p class="hint">
+				Upstream NTP server addresses the host's own clock syncs against,
+				same list convention as <a href="#daemon-config">resolv.conf's own
+				nameserver list</a>. Tried after any registered
+				<a href="#ntp-servers">NTP server container</a>, in the order added.
+				Leaving this blank clears it -- the host then relies solely on
+				registered server containers, if any (ADR-0110).
+			</p>
+			<form id="ntp-config-form">
+				<label class="wide">
+					Upstream servers (comma or space separated IPv4 addresses)
+					<input type="text" id="ncf-servers" placeholder="192.168.15.1, 10.0.0.1">
+				</label>
+				<button type="submit">Save</button>
+			</form>
+		</section>
+
+		<!-- NTP Servers: registered container time sources (task #753) -->
+		<section class="view" id="view-ntp-servers" hidden>
+			<div class="view-list">
+				<h2>NTP Servers</h2>
+				<table id="ntp-servers">
+					<thead>
+						<tr>
+							<th>Container</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="ntp-servers-body">
+						<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</section>
+
+		<!-- NTP Status: most recent sync attempt outcome (task #751) -->
+		<section class="view" id="view-ntp-status" hidden>
+			<h2>NTP Status</h2>
+			<p class="hint">
+				The outcome of the most recent sync attempt since the daemon last
+				started -- synced automatically every hour, or on demand below.
+			</p>
+			<div id="ntp-status-box" class="pki-ca-status"></div>
+			<button type="button" id="ntp-sync-now">Sync now</button>
+		</section>
+
+		<!-- NTP Time: manual host clock view/override (task #752) -->
+		<section class="view" id="view-ntp-time" hidden>
+			<h2>Host Date/Time</h2>
+			<p class="hint">
+				The host's current wall clock, read live at every poll. Setting it
+				manually takes effect immediately via <code>clock_settime()</code> --
+				no reboot needed -- and is independent of NTP sync, which will
+				overwrite it again at its next scheduled attempt.
+			</p>
+			<div id="ntp-time-box" class="pki-ca-status"></div>
+			<form id="ntp-time-form">
+				<label class="wide">
+					Set to (unix timestamp, blank = now)
+					<input type="number" id="ntf-unixtime" min="0" placeholder="(current time)">
+				</label>
+				<button type="submit">Set</button>
 			</form>
 		</section>
 
@@ -1111,6 +1180,22 @@
 						Config path
 						<input type="text" id="lf-config-path" placeholder="/etc/glauth/glauth.cfg" required>
 					</label>
+					<button type="submit">Register</button>
+				</form>
+			</div>
+
+			<div id="modal-ntp-server-form" hidden>
+				<form id="ntp-server-form">
+					<label>
+						Container
+						<input type="text" id="nsf-container" pattern="[A-Za-z0-9_-]+" required>
+					</label>
+					<p class="hint">
+						Registers an already-running container as an available internal NTP
+						time source -- the daemon resolves its live IP fresh at every sync
+						attempt and queries it directly, ahead of any configured upstream
+						address (ADR-0110).
+					</p>
 					<button type="submit">Register</button>
 				</form>
 			</div>

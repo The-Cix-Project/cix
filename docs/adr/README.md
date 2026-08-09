@@ -114,3 +114,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0107](0107-package-image-versioning.md) | Package + image versioning model: version-keyed recipes, per-image pinned/rolling manifests, per-version immutable image rootfs | Accepted |
 | [0108](0108-image-version-content-hash.md) | Image versions are a manifest-content hash (sha256 of resolved package@version list), not a sequential integer; explicit created_at tracking for both image and recipe versions | Accepted |
 | [0109](0109-ldap-redesign.md) | LDAP redesign: glauth, config-render write-through (mirroring DNS, not a second SQLite-owned datastore), and owner-tracked automatic service-account provisioning | Accepted |
+| [0110](0110-ntp-host-clock-sync.md) | NTP: hand-rolled SNTP client for the host clock (clock_settime() needs host-namespace CAP_SYS_TIME, no container can do it), plus container time-source registration mirroring DNS/LDAP | Accepted |

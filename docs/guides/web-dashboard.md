@@ -4,7 +4,7 @@ The dashboard is served by `kanxeod` itself, same origin and port as the API (`h
 
 ## Layout
 
-- **Header**: instance name (once [site config](../api/README.md#this-installs-identity-site-config) is set), a live health badge, `Reboot`/`Shutdown` buttons, and a **`+ Create`** dropdown covering every resource this dashboard can create directly: Container, Network, Image, Device Mapping, DNS Record, DNS Server, PKI Certificate, Package Recipe, Bootstrap Build Image, Install Package. Each opens the same shared modal component with the resource's own form.
+- **Header**: instance name (once [site config](../api/README.md#this-installs-identity-site-config) is set), a live health badge, `Reboot`/`Shutdown` buttons, and a **`+ Create`** dropdown covering every resource this dashboard can create directly: Container, Network, Image, Device Mapping, DNS Record, DNS Server, LDAP Server, LDAP Group, LDAP User, NTP Server, PKI Certificate, Package Recipe, Bootstrap Build Image, Install Package. Each opens the same shared modal component with the resource's own form.
 - **Left tree**: every resource this daemon knows about, grouped by kind. Clicking a leaf navigates to its detail view (the URL's own hash, e.g. `#containers/my-container` — bookmarkable, shareable, browser-back-button-safe); clicking a category header expands/collapses it (remembered across reloads).
 - **Main content area**: whatever the current hash routes to — a list view for a category, or a detail view for one specific resource.
 
@@ -27,6 +27,16 @@ System
     Records
     Servers
     Site
+  LDAP
+    Servers
+    Groups
+    Users
+    Config
+  NTP
+    Config
+    Servers
+    Status
+    Time
   Server
     Daemon
     Devices

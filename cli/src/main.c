@@ -193,6 +193,17 @@ static void print_usage(FILE *out)
 	        "               (~2s max) and exits nonzero if unreachable\n"
 	        "  resolv [show]  -- the host's own outbound DNS resolver config (ADR-0076)\n"
 	        "  resolv set [--nameserver=A.B.C.D ...]  -- replace it; no flags clears it\n"
+	        "  time [show]  -- the host's current date/time (ADR-0110)\n"
+	        "  time set --unixtime=N  -- manually set the host clock (clock_settime())\n"
+	        "  ntp config [show]  -- upstream NTP server address list used to sync the\n"
+	        "               host clock\n"
+	        "  ntp config set [--server=A.B.C.D ...]  -- replace it; no flags clears it\n"
+	        "  ntp status  -- most recent sync attempt's outcome/source/time\n"
+	        "  ntp sync  -- trigger a sync attempt now (default: hourly automatic)\n"
+	        "  ntp server register CONTAINER  -- registers a running container as an\n"
+	        "               available internal NTP time source (mirrors dns/ldap server)\n"
+	        "  ntp server ls\n"
+	        "  ntp server unregister CONTAINER\n"
 	        "  logs [--source=kernel|kanxeod|audit] [--level=...] [--tail=N] [--since=UNIXTS]\n"
 	        "               -- the consolidated log (kernel dmesg + kanxeod's own\n"
 	        "               diagnostics + a per-request audit trail, ADR-0070)\n"
@@ -1261,6 +1272,361 @@ static int cmd_resolv(const struct kx_client *c, int json_mode, int argc, char *
 	fprintf(stderr,
 	        "usage: kanxeoctl resolv [show]\n"
 	        "       kanxeoctl resolv set [--nameserver=A.B.C.D ...]\n");
+	return 2;
+}
+
+/* kanxeoctl ntp config show/set, ntp status, ntp server register/ls/
+ * unregister, and the separate kanxeoctl time show/set -- task
+ * #751-755, mirroring resolv's own upstream-list shape (config) plus
+ * dns/ldap server's own registration shape (server), kept as two
+ * genuinely different resources exactly like the daemon's own REST
+ * surface does (GET/PUT /v1/system/ntp vs POST/GET/DELETE /v1/ntp/
+ * servers vs GET/PUT /v1/system/time). */
+#define CLI_NTP_MAX_UPSTREAM 3 /* mirrors daemon/include/ntp.h's own NTP_MAX_UPSTREAM */
+
+static void fmt_ntp_config(const struct json_value *v)
+{
+	const struct json_value *arr = json_object_get(v, "upstream");
+	size_t i;
+
+	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		printf("(no upstream NTP servers configured)\n");
+		return;
+	}
+	for (i = 0; i < arr->u.array.count; i++)
+		printf("server %s\n", json_as_string(arr->u.array.items[i]));
+}
+
+static int cmd_ntp_config_show(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/ntp", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_ntp_config);
+}
+
+static int cmd_ntp_config_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *upstream[CLI_NTP_MAX_UPSTREAM];
+	int count = 0;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--server=", 9) == 0) {
+			if (count >= CLI_NTP_MAX_UPSTREAM) {
+				fprintf(stderr, "kanxeoctl: too many --server= flags (max %d)\n",
+				        CLI_NTP_MAX_UPSTREAM);
+				return 2;
+			}
+			upstream[count++] = argv[i] + 9;
+		} else {
+			fprintf(stderr, "kanxeoctl: unknown ntp config set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "upstream");
+	jw_arr_open(&w);
+	for (i = 0; i < count; i++)
+		jw_str(&w, upstream[i]);
+	jw_arr_close(&w);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "PUT", "/v1/system/ntp", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_ntp_config);
+}
+
+static int cmd_ntp_config(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1)
+		return cmd_ntp_config_show(c, json_mode);
+
+	sub = argv[0];
+	if (strcmp(sub, "show") == 0)
+		return cmd_ntp_config_show(c, json_mode);
+	if (strcmp(sub, "set") == 0)
+		return cmd_ntp_config_set(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr,
+	        "usage: kanxeoctl ntp config [show]\n"
+	        "       kanxeoctl ntp config set [--server=A.B.C.D ...]\n");
+	return 2;
+}
+
+static void fmt_ntp_status(const struct json_value *v)
+{
+	const char *state = json_str_field(v, "state");
+	const char *synced_from = json_str_field(v, "synced_from");
+	const struct json_value *last = json_object_get(v, "last_sync_unixtime");
+
+	printf("state=%s", state != NULL ? state : "?");
+	if (synced_from != NULL)
+		printf(" synced_from=%s", synced_from);
+	if (last != NULL && last->type == JSON_NUMBER)
+		printf(" last_sync_unixtime=%lld", (long long)last->u.number);
+	printf("\n");
+}
+
+static int cmd_ntp_status(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/ntp/status", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_ntp_status);
+}
+
+/* Triggers one sync attempt on demand rather than waiting for the
+ * next hourly automatic fire -- 202 on success, no body; check
+ * `ntp status` afterward for the outcome. */
+static int cmd_ntp_sync(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "POST", "/v1/system/ntp/sync", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	if (r.status != 202) {
+		const char *msg = json_str_field(r.json, "error");
+
+		fprintf(stderr, "kanxeoctl: %s (HTTP %d)\n", msg != NULL ? msg : "sync failed to start",
+		        r.status);
+		kx_response_free(&r);
+		return 1;
+	}
+	if (!json_mode)
+		printf("sync started\n");
+	else
+		print_raw_json(r.json);
+	kx_response_free(&r);
+	return 0;
+}
+
+static void fmt_ntp_server_line(const struct json_value *v)
+{
+	const char *container = json_str_field(v, "container");
+
+	printf("%s\n", container);
+}
+
+static void fmt_ntp_server_list(const struct json_value *v)
+{
+	const struct json_value *servers = json_object_get(v, "servers");
+	size_t i;
+
+	if (servers == NULL || servers->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < servers->u.array.count; i++)
+		fmt_ntp_server_line(servers->u.array.items[i]);
+}
+
+static int cmd_ntp_server_register(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *container = NULL;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--container=", 12) == 0)
+			container = argv[i] + 12;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown ntp server register option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (container == NULL) {
+		fprintf(stderr, "usage: kanxeoctl ntp server register --container=NAME\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "container");
+	jw_str(&w, container);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/ntp/servers", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_ntp_server_line);
+}
+
+static int cmd_ntp_server_ls(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/ntp/servers", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_ntp_server_list);
+}
+
+static int cmd_ntp_server_unregister(const struct kx_client *c, int json_mode, int argc,
+                                      char **argv)
+{
+	struct kx_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: ntp server unregister requires a container name\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/ntp/servers/%s", argv[0]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static int cmd_ntp_server(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr,
+		        "usage: kanxeoctl ntp server register --container=NAME\n"
+		        "       kanxeoctl ntp server ls\n"
+		        "       kanxeoctl ntp server unregister CONTAINER\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "register") == 0)
+		return cmd_ntp_server_register(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "ls") == 0)
+		return cmd_ntp_server_ls(c, json_mode);
+	if (strcmp(sub, "unregister") == 0)
+		return cmd_ntp_server_unregister(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown ntp server subcommand '%s'\n", sub);
+	return 2;
+}
+
+static int cmd_ntp(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr,
+		        "usage: kanxeoctl ntp config [show]\n"
+		        "       kanxeoctl ntp config set [--server=A.B.C.D ...]\n"
+		        "       kanxeoctl ntp status\n"
+		        "       kanxeoctl ntp sync  -- trigger a sync attempt now, don't wait for the\n"
+		        "               next hourly automatic one\n"
+		        "       kanxeoctl ntp server register --container=NAME\n"
+		        "       kanxeoctl ntp server ls\n"
+		        "       kanxeoctl ntp server unregister CONTAINER\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "config") == 0)
+		return cmd_ntp_config(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "status") == 0)
+		return cmd_ntp_status(c, json_mode);
+	if (strcmp(sub, "sync") == 0)
+		return cmd_ntp_sync(c, json_mode);
+	if (strcmp(sub, "server") == 0)
+		return cmd_ntp_server(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown ntp subcommand '%s'\n", sub);
+	return 2;
+}
+
+static void fmt_time(const struct json_value *v)
+{
+	const struct json_value *unixtime = json_object_get(v, "unixtime");
+
+	if (unixtime != NULL && unixtime->type == JSON_NUMBER)
+		printf("unixtime=%lld\n", (long long)unixtime->u.number);
+}
+
+static int cmd_time_show(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/time", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_time);
+}
+
+static int cmd_time_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *unixtime = NULL;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--unixtime=", 11) == 0)
+			unixtime = argv[i] + 11;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown time set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (unixtime == NULL) {
+		fprintf(stderr, "usage: kanxeoctl time set --unixtime=N\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "unixtime");
+	jw_num(&w, atof(unixtime));
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "PUT", "/v1/system/time", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_time);
+}
+
+static int cmd_time(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1)
+		return cmd_time_show(c, json_mode);
+
+	sub = argv[0];
+	if (strcmp(sub, "show") == 0)
+		return cmd_time_show(c, json_mode);
+	if (strcmp(sub, "set") == 0)
+		return cmd_time_set(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr,
+	        "usage: kanxeoctl time [show]\n"
+	        "       kanxeoctl time set --unixtime=N\n");
 	return 2;
 }
 
@@ -5681,6 +6047,10 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_ping(client, json_mode, argc, argv);
 	if (strcmp(cmd, "resolv") == 0)
 		return cmd_resolv(client, json_mode, argc, argv);
+	if (strcmp(cmd, "ntp") == 0)
+		return cmd_ntp(client, json_mode, argc, argv);
+	if (strcmp(cmd, "time") == 0)
+		return cmd_time(client, json_mode, argc, argv);
 	if (strcmp(cmd, "ps") == 0)
 		return cmd_ps(client, json_mode);
 	if (strcmp(cmd, "run") == 0)
@@ -5783,10 +6153,11 @@ static const char *const SHELL_COMMANDS[] = {
 	"backup", "boot",      "console",       "daemon-config", "device",   "devicemap", "diskrole",
 	"disks",  "dns",       "exit",          "files",    "health",    "help",
 	"host-stats", "image", "inspect",       "iso",      "ldap",      "logs",      "network",
+	"ntp",
 	"pause",  "ping",      "pkg",           "pki",      "ps",        "quit",      "reboot",
 	"resolv",
 	"restore", "rm",       "routes",        "run",      "shutdown",  "site",
-	"start",  "stats",     "stop",          "swap",     "unpause",   "update",
+	"start",  "stats",     "stop",          "swap",     "time",      "unpause",   "update",
 	NULL
 };
 

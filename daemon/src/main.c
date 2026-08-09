@@ -6,6 +6,7 @@
 #include "diskformat.h"
 #include "diskrole.h"
 #include "logstore.h"
+#include "ntp.h"
 #include "ping.h"
 #include "resolv.h"
 #include "swap.h"
@@ -163,6 +164,13 @@ static char DISKS_MOUNT_DIR[PATH_MAX];
  * --init-mode boot bind-mounts onto /etc/resolv.conf, so writing it
  * via resolv_set() takes effect immediately, no reboot needed. */
 static char RESOLV_CONF_PATH[PATH_MAX];
+/* NTP (task #751-755): the host's own upstream server address list
+ * (GET/PUT /v1/system/ntp) and registered NTP-serving container
+ * bindings (POST/GET/DELETE /v1/ntp/servers) -- two independent
+ * persisted files, same dual-path convention dns_init()'s own
+ * records/servers pair already uses. */
+static char NTP_STATE_PATH[PATH_MAX];
+static char NTP_SERVERS_STATE_PATH[PATH_MAX];
 
 /* Computes every path derived from g_base_dir -- called once, right
  * after argv parsing (so --data-dir= has already been applied) and
@@ -207,6 +215,8 @@ static void init_base_dir_paths(void)
 	snprintf(LOG_STATE_PATH, sizeof(LOG_STATE_PATH), "%s/state.json", LOG_DIR);
 	snprintf(DISKS_MOUNT_DIR, sizeof(DISKS_MOUNT_DIR), "%s/disks", g_base_dir);
 	snprintf(RESOLV_CONF_PATH, sizeof(RESOLV_CONF_PATH), "%s/resolv.conf", g_base_dir);
+	snprintf(NTP_STATE_PATH, sizeof(NTP_STATE_PATH), "%s/ntp.conf", g_base_dir);
+	snprintf(NTP_SERVERS_STATE_PATH, sizeof(NTP_SERVERS_STATE_PATH), "%s/ntp_servers.json", g_base_dir);
 }
 /*
  * Backoff cap and stability-reset threshold for the crash-restart
@@ -400,6 +410,7 @@ static int set_disk_quota(const char *base_path, uint32_t projid, long long quot
 #define LDAP_SERVERS_PREFIX "/v1/ldap/servers/"
 #define LDAP_GROUPS_PREFIX "/v1/ldap/groups/"
 #define LDAP_USERS_PREFIX "/v1/ldap/users/"
+#define NTP_SERVERS_PREFIX "/v1/ntp/servers/"
 #define PKI_CERTS_PREFIX "/v1/pki/certs/"
 #define PKG_PREFIX "/v1/pkg/"
 #define PKG_RECIPES_PREFIX "/v1/pkg/recipes/"
@@ -427,6 +438,9 @@ enum conn_kind {
 	CONN_DISK_FORMAT,       /* disk format+mount job (multi-disk management Phase C) */
 	CONN_PING,              /* GET/POST /v1/system/ping -- the raw ICMP socket half */
 	CONN_PING_TIMER,        /* same job's paired timeout -- see ping_job_teardown() */
+	CONN_NTP_PERIODIC_TIMER, /* permanent, re-arms itself -- fires ntp_sync_start() periodically (task #751) */
+	CONN_NTP_SYNC,           /* one in-flight SNTP sync attempt's own UDP socket */
+	CONN_NTP_SYNC_TIMER,     /* same job's per-candidate timeout -- see ntp_job_teardown() */
 	CONN_RESTART_TIMER,
 	CONN_BIND_IP_CLEANUP, /* deferred rtnl_addr_del_ipv4() of a superseded/cleared
 	                        * bind_ip (ADR-0068) -- see arm_bind_ip_cleanup_timer() */
@@ -2641,6 +2655,480 @@ static void handle_ping_get(int fd)
 
 	jw_init(&w);
 	ping_write_json_status(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * NTP sync job (task #751-755): one in-flight SNTP attempt, mirroring
+ * ping's own two-fd (socket + timeout) shape above -- the one real
+ * difference is ntp.c's own candidate-retry logic means a timeout can
+ * result in "move to the next candidate, re-arm the SAME timer" rather
+ * than always tearing down (see arm_ntp_timeout_timer() below).
+ */
+#define NTP_SYNC_INTERVAL_SEC (60 * 60) /* re-sync hourly once a sync mechanism exists at all */
+
+static struct conn *g_ntp_sync_conn;
+static struct conn *g_ntp_timer_conn;
+static struct conn g_ntp_periodic_conn; /* permanent -- registered once at startup */
+
+static void ntp_job_teardown(void)
+{
+	if (g_ntp_sync_conn != NULL) {
+		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_ntp_sync_conn->fd, NULL);
+		close(g_ntp_sync_conn->fd);
+		g_ntp_sync_conn->kind = CONN_DEAD;
+		queue_conn_free(g_ntp_sync_conn);
+		g_ntp_sync_conn = NULL;
+	}
+	if (g_ntp_timer_conn != NULL) {
+		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_ntp_timer_conn->fd, NULL);
+		close(g_ntp_timer_conn->fd);
+		g_ntp_timer_conn->kind = CONN_DEAD;
+		queue_conn_free(g_ntp_timer_conn);
+		g_ntp_timer_conn = NULL;
+	}
+}
+
+/* Re-arms g_ntp_timer_conn's own timerfd for the next candidate --
+ * reused (not recreated) across every candidate in one sync attempt,
+ * unlike ping's own always-one-shot timer. */
+static int arm_ntp_timeout_timer(void)
+{
+	struct itimerspec its;
+
+	if (g_ntp_timer_conn == NULL)
+		return -1;
+	memset(&its, 0, sizeof(its));
+	its.it_value.tv_sec = NTP_SYNC_TIMEOUT_MS / 1000;
+	its.it_value.tv_nsec = (long)(NTP_SYNC_TIMEOUT_MS % 1000) * 1000000L;
+	return timerfd_settime(g_ntp_timer_conn->fd, 0, &its, NULL);
+}
+
+static void handle_ntp_sync_socket_event(struct conn *cc)
+{
+	if (ntp_sync_handle_reply(cc->fd)) {
+		ntp_job_teardown();
+		return;
+	}
+	if (arm_ntp_timeout_timer() != 0) {
+		perror("timerfd_settime (ntp sync re-arm)");
+		ntp_job_teardown();
+	}
+}
+
+static void handle_ntp_sync_timer_event(struct conn *cc)
+{
+	uint64_t expirations;
+
+	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
+		perror("read (ntp sync timerfd)");
+	if (ntp_sync_handle_timeout(g_ntp_sync_conn != NULL ? g_ntp_sync_conn->fd : -1)) {
+		ntp_job_teardown();
+		return;
+	}
+	if (arm_ntp_timeout_timer() != 0) {
+		perror("timerfd_settime (ntp sync re-arm)");
+		ntp_job_teardown();
+	}
+}
+
+/* Kicks off one sync attempt if none is currently in flight. Returns
+ * the outcome so callers can distinguish "started" from "nothing to
+ * do" -- the periodic timer (best-effort, ignores the return value:
+ * NTP_START_BUSY/NTP_START_NO_CANDIDATES are the common,
+ * nothing-configured-yet case, not a real error, and the next fire
+ * tries again regardless) vs. the manual POST /v1/system/ntp/sync
+ * trigger below, which does report it to the caller. */
+static enum ntp_start_error start_ntp_sync_job(void)
+{
+	int sockfd;
+	enum ntp_start_error serr;
+	struct conn *sock_cc, *timer_cc;
+	struct kx_epoll_event ev;
+	int tfd;
+	struct itimerspec its;
+
+	serr = ntp_sync_start(&sockfd);
+	if (serr != NTP_START_OK)
+		return serr;
+
+	tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+	if (tfd < 0) {
+		perror("timerfd_create (ntp sync timeout)");
+		close(sockfd);
+		return NTP_START_SOCKET_FAILED;
+	}
+	memset(&its, 0, sizeof(its));
+	its.it_value.tv_sec = NTP_SYNC_TIMEOUT_MS / 1000;
+	its.it_value.tv_nsec = (long)(NTP_SYNC_TIMEOUT_MS % 1000) * 1000000L;
+	if (timerfd_settime(tfd, 0, &its, NULL) != 0) {
+		perror("timerfd_settime (ntp sync timeout)");
+		close(tfd);
+		close(sockfd);
+		return NTP_START_SOCKET_FAILED;
+	}
+
+	sock_cc = malloc(sizeof(*sock_cc));
+	timer_cc = malloc(sizeof(*timer_cc));
+	if (sock_cc == NULL || timer_cc == NULL) {
+		perror("malloc (ntp sync job conns)");
+		free(sock_cc);
+		free(timer_cc);
+		close(tfd);
+		close(sockfd);
+		return NTP_START_SOCKET_FAILED;
+	}
+	sock_cc->kind = CONN_NTP_SYNC;
+	sock_cc->fd = sockfd;
+	timer_cc->kind = CONN_NTP_SYNC_TIMER;
+	timer_cc->fd = tfd;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = sock_cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, sockfd, &ev) != 0) {
+		perror("epoll_ctl ADD ntp sync socket");
+		free(sock_cc);
+		free(timer_cc);
+		close(tfd);
+		close(sockfd);
+		return NTP_START_SOCKET_FAILED;
+	}
+	ev.data.ptr = timer_cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
+		perror("epoll_ctl ADD ntp sync timer");
+		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, sockfd, NULL);
+		free(sock_cc);
+		free(timer_cc);
+		close(tfd);
+		close(sockfd);
+		return NTP_START_SOCKET_FAILED;
+	}
+
+	g_ntp_sync_conn = sock_cc;
+	g_ntp_timer_conn = timer_cc;
+	return NTP_START_OK;
+}
+
+/* Permanent, re-arming itself every NTP_SYNC_INTERVAL_SEC -- the
+ * "schedule the next one-shot fire on completion" idiom this daemon
+ * already uses everywhere else (e.g. the console-respawn timer),
+ * rather than a genuinely recurring timerfd (it_interval) -- this
+ * codebase has no precedent for the latter yet, and re-arming keeps
+ * this consistent with every other timer here. */
+static void arm_ntp_periodic_timer(void)
+{
+	struct itimerspec its;
+
+	memset(&its, 0, sizeof(its));
+	its.it_value.tv_sec = NTP_SYNC_INTERVAL_SEC;
+	if (timerfd_settime(g_ntp_periodic_conn.fd, 0, &its, NULL) != 0)
+		perror("timerfd_settime (ntp periodic re-arm)");
+}
+
+static void handle_ntp_periodic_timer_event(struct conn *cc)
+{
+	uint64_t expirations;
+
+	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
+		perror("read (ntp periodic timerfd)");
+	start_ntp_sync_job();
+	arm_ntp_periodic_timer();
+}
+
+/* Best-effort, same "never block daemon startup" posture as start_
+ * kmsg_watch() above -- a timerfd_create() failure here just means no
+ * automatic sync ever happens; GET/PUT /v1/system/ntp and /v1/ntp/
+ * servers remain fully usable regardless. */
+static void start_ntp_periodic_timer(void)
+{
+	struct kx_epoll_event ev;
+	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+
+	if (fd < 0) {
+		perror("timerfd_create (ntp periodic)");
+		return;
+	}
+	g_ntp_periodic_conn.kind = CONN_NTP_PERIODIC_TIMER;
+	g_ntp_periodic_conn.fd = fd;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = &g_ntp_periodic_conn;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+		close(fd);
+		g_ntp_periodic_conn.fd = -1;
+		return;
+	}
+	arm_ntp_periodic_timer();
+}
+
+/*
+ * GET/PUT /v1/system/ntp: the host's own upstream NTP server address
+ * list (task #751), the exact same shape GET/PUT /v1/system/resolv
+ * already has for DNS -- PUT {"upstream": [...]} replaces the full
+ * list, an empty array clears it (the host then relies solely on any
+ * registered server containers, if any -- see /v1/ntp/servers below).
+ * Sync status (last attempt's outcome) is a separate resource, GET
+ * /v1/system/ntp/status -- config and live job state are two
+ * different concerns, the same split daemon_config/swap-status and
+ * diskrole/format-status already keep.
+ */
+static void handle_ntp_config_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	ntp_write_json_config(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void respond_ntp_error(int fd, enum ntp_error err)
+{
+	switch (err) {
+	case NTP_ERR_INVALID_IP:
+		respond_error(fd, 400, "Bad Request", "upstream must be valid IPv4 addresses");
+		break;
+	case NTP_ERR_TOO_MANY: {
+		char msg[64];
+
+		snprintf(msg, sizeof(msg), "too many upstream addresses (max %d)", NTP_MAX_UPSTREAM);
+		respond_error(fd, 400, "Bad Request", msg);
+		break;
+	}
+	case NTP_ERR_PERSIST_FAILED:
+		respond_error(fd, 500, "Internal Server Error", "could not persist ntp.conf");
+		break;
+	case NTP_ERR_DUPLICATE:
+		respond_error(fd, 409, "Conflict", "this container is already registered");
+		break;
+	case NTP_ERR_FULL:
+		respond_error(fd, 400, "Bad Request", "too many registered NTP servers");
+		break;
+	case NTP_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such registration");
+		break;
+	case NTP_ERR_CONTAINER_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such container");
+		break;
+	case NTP_ERR_CONTAINER_NOT_RUNNING:
+		respond_error(fd, 404, "Not Found", "no such running container");
+		break;
+	case NTP_ERR_INVALID_TIME:
+		respond_error(fd, 400, "Bad Request", "invalid unixtime, or clock_settime() failed");
+		break;
+	case NTP_OK:
+		break;
+	}
+}
+
+static void handle_ntp_config_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const struct json_value *arr;
+	const char *upstream[NTP_MAX_UPSTREAM];
+	int count;
+	size_t i;
+	enum ntp_error nerr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	arr = json_object_get(root, "upstream");
+	if (arr == NULL || arr->type != JSON_ARRAY) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "upstream (array) is required");
+		return;
+	}
+	if (arr->u.array.count > NTP_MAX_UPSTREAM) {
+		json_free(root);
+		respond_ntp_error(fd, NTP_ERR_TOO_MANY);
+		return;
+	}
+	count = (int)arr->u.array.count;
+	for (i = 0; i < arr->u.array.count; i++) {
+		upstream[i] = json_as_string(arr->u.array.items[i]);
+		if (upstream[i] == NULL) {
+			json_free(root);
+			respond_ntp_error(fd, NTP_ERR_INVALID_IP);
+			return;
+		}
+	}
+
+	nerr = ntp_set_upstream(upstream, count);
+	json_free(root);
+	if (nerr != NTP_OK) {
+		respond_ntp_error(fd, nerr);
+		return;
+	}
+
+	jw_init(&w);
+	ntp_write_json_config(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_ntp_status_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	ntp_write_json_status(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/* POST /v1/system/ntp/sync: triggers one sync attempt on demand,
+ * rather than waiting for the next hourly automatic fire
+ * (NTP_SYNC_INTERVAL_SEC) -- an operator who just set upstream
+ * servers or registered a server container has no other way to see
+ * the result without waiting up to an hour. Same v1
+ * one-job-in-flight/202-Accepted-then-poll-status shape POST
+ * /v1/system/ping already established; GET /v1/system/ntp/status
+ * reports the outcome once it lands. */
+static void handle_ntp_sync_post(int fd)
+{
+	enum ntp_start_error serr = start_ntp_sync_job();
+
+	if (serr == NTP_START_BUSY) {
+		respond_error(fd, 409, "Conflict", "a sync attempt is already in flight");
+		return;
+	}
+	if (serr == NTP_START_NO_CANDIDATES) {
+		respond_error(fd, 400, "Bad Request",
+		              "no NTP servers configured -- set upstream (PUT /v1/system/ntp) or "
+		              "register a server container (POST /v1/ntp/servers) first");
+		return;
+	}
+	if (serr != NTP_START_OK) {
+		respond_error(fd, 500, "Internal Server Error",
+		              "could not start sync (socket/timer setup failed)");
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 202, "Accepted", "application/json", "", 0);
+}
+
+/* POST/GET/DELETE /v1/ntp/servers (task #753): registering a running
+ * container as an internal NTP time source, mirroring dns_server_
+ * create/list/delete's own REST shape exactly -- see ntp.h's own
+ * header comment for why no pid/pidfd is needed here (pure
+ * bookkeeping, unlike DNS/LDAP server registration). */
+static void handle_ntp_server_create(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *container_name;
+	enum ntp_error nerr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	container_name = json_as_string(json_object_get(root, "container"));
+	if (container_name == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "container missing");
+		return;
+	}
+
+	nerr = ntp_server_register(container_name);
+	if (nerr != NTP_OK) {
+		json_free(root);
+		respond_ntp_error(fd, nerr);
+		return;
+	}
+
+	/* container_name still points into root -- build the response
+	 * before freeing it, matching handle_dns_server_create()'s own
+	 * use-after-free-avoidance ordering. */
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "container");
+	jw_str(&w, container_name);
+	jw_obj_close(&w);
+	json_free(root);
+	respond_json(fd, 201, "Created", &w);
+	jw_free(&w);
+}
+
+static void handle_ntp_server_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "servers");
+	ntp_server_write_json_list(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_ntp_server_delete(int fd, const char *name)
+{
+	enum ntp_error nerr = ntp_server_unregister(name);
+
+	if (nerr != NTP_OK) {
+		respond_ntp_error(fd, nerr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+/*
+ * GET/PUT /v1/system/time (task #752): the host's real current clock,
+ * and a manual override -- an operator-facing escape hatch alongside
+ * the automatic SNTP sync above, the same "live-apply, immediate
+ * effect" relationship GET/PUT /v1/system/resolv already has to real
+ * DNS resolution. PUT {"unixtime": N} calls clock_settime() directly.
+ */
+static void handle_time_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	ntp_write_json_time(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_time_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const struct json_value *junixtime;
+	int64_t unixtime;
+	enum ntp_error nerr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	junixtime = json_object_get(root, "unixtime");
+	if (junixtime == NULL || junixtime->type != JSON_NUMBER) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "unixtime (number) is required");
+		return;
+	}
+	unixtime = (int64_t)junixtime->u.number;
+	json_free(root);
+
+	nerr = ntp_time_set(unixtime);
+	if (nerr != NTP_OK) {
+		respond_ntp_error(fd, nerr);
+		return;
+	}
+
+	jw_init(&w);
+	ntp_write_json_time(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
@@ -6066,6 +6554,7 @@ static void handle_delete(int fd, const char *name)
 		ldap_server_forget(name);
 		ldap_user_forget_owner(name);
 		pki_cert_forget_owner(name);
+		ntp_server_forget(name);
 	}
 	/*
 	 * Unconditional, a no-op if this name never had a restart:"always"
@@ -9161,6 +9650,55 @@ static void dispatch(int fd, const struct http_request *req)
 			return;
 		}
 	}
+	if (strcmp(req->path, "/v1/system/ntp") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_ntp_config_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_ntp_config_put(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/system/ntp/status") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_ntp_status_get(fd);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/system/ntp/sync") == 0) {
+		if (strcmp(req->method, "POST") == 0) {
+			handle_ntp_sync_post(fd);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/system/time") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_time_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_time_put(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/ntp/servers") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_ntp_server_list(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_ntp_server_create(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strncmp(req->path, NTP_SERVERS_PREFIX, strlen(NTP_SERVERS_PREFIX)) == 0) {
+		name = req->path + strlen(NTP_SERVERS_PREFIX);
+		if (name[0] != '\0' && strcmp(req->method, "DELETE") == 0) {
+			handle_ntp_server_delete(fd, name);
+			return;
+		}
+	}
 	if (strcmp(req->path, "/v1/system/swap") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_swap_get(fd);
@@ -11309,6 +11847,8 @@ int main(int argc, char **argv)
 	g_port = port;
 	if (dns_init(DNS_RECORDS_STATE_PATH, DNS_SERVERS_STATE_PATH) != 0)
 		return 1;
+	if (ntp_init(NTP_STATE_PATH, NTP_SERVERS_STATE_PATH) != 0)
+		return 1;
 	if (ldap_init(LDAP_SERVERS_STATE_PATH) != 0)
 		return 1;
 	if (ldap_record_init(LDAP_USERS_STATE_PATH, LDAP_GROUPS_STATE_PATH) != 0)
@@ -11450,6 +11990,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	start_kmsg_watch(); /* needs g_epfd, only just created above -- best-effort, see its own comment */
+	start_ntp_periodic_timer(); /* same g_epfd/best-effort posture, task #751 */
 	fflush(stdout);
 
 	/* "About to serve traffic" is the honest definition of healthy this
@@ -11524,6 +12065,12 @@ int main(int argc, char **argv)
 				handle_ping_socket_event(cc);
 			else if (cc->kind == CONN_PING_TIMER)
 				handle_ping_timer_event(cc);
+			else if (cc->kind == CONN_NTP_SYNC)
+				handle_ntp_sync_socket_event(cc);
+			else if (cc->kind == CONN_NTP_SYNC_TIMER)
+				handle_ntp_sync_timer_event(cc);
+			else if (cc->kind == CONN_NTP_PERIODIC_TIMER)
+				handle_ntp_periodic_timer_event(cc);
 			else if (cc->kind == CONN_RESTART_TIMER)
 				handle_restart_timer_event(cc);
 			else if (cc->kind == CONN_BIND_IP_CLEANUP)
