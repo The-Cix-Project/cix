@@ -433,13 +433,27 @@ int pkg_build_output_fd(void);
  * Called whenever pkg_build_output_fd()'s fd reports EPOLLIN --
  * drains everything currently available (the fd is non-blocking) into
  * pkg.c's own bounded, sliding-window capture buffer, the same one
- * pkg_build_completed() logs from on a build failure. Returns 1 if
- * the pipe reached EOF or a real read error (every write end has been
- * closed -- the caller should now tear down its own epoll
- * registration and call pkg_build_output_close()), 0 if there may
- * still be more to come later.
+ * pkg_build_completed() logs from on a build failure. If new_data is
+ * non-NULL, also copies up to new_data_cap of the raw bytes read this
+ * call into it (*new_data_len set to how many) -- for a caller that
+ * wants to relay newly-arrived output live (see
+ * try_pkg_build_log_upgrade(), daemon/src/main.c) without waiting for
+ * a failure. Pass NULL/0/NULL when only draining matters (e.g.
+ * pkg_build_completed()'s own internal call). Returns 1 if the pipe
+ * reached EOF or a real read error (every write end has been closed
+ * -- the caller should now tear down its own epoll registration and
+ * call pkg_build_output_close()), 0 if there may still be more to
+ * come later.
  */
-int pkg_build_output_readable(void);
+int pkg_build_output_readable(char *new_data, int new_data_cap, int *new_data_len);
+
+/*
+ * Copies the current sliding-window tail (up to out_cap bytes) into
+ * out, for a live-log client attaching mid-build to see everything
+ * captured so far before streaming further chunks. Returns the number
+ * of bytes copied.
+ */
+int pkg_build_output_snapshot(char *out, int out_cap);
 
 /* Closes pkg_build_output_fd()'s fd and clears it -- called by the
  * caller once pkg_build_output_readable() returns 1, or directly by

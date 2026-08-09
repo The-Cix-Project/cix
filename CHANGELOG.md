@@ -2,6 +2,21 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 46 (done, local regression sweep clean, real end-to-end test): live-tail a real in-flight package build's own output (ADR-0101, closes task #676)
+
+A build's real-time stdout/stderr had no REST-visible path while it was still running -- ADR-0087's epoll-drained capture buffer was only ever read back out on a *failed* build, folded into the logged error; a successful build's output was simply discarded. The existing container console looked like it might cover this "for free" by pointing it at the build container's own name, but doesn't: the build container's output is a plain pipe, not a PTY, and the console's `exec_into_container()` spawns a brand-new process rather than attaching to the running one.
+
+#### Added
+- `daemon/src/pkg.c`: `pkg_build_output_readable()` gains an optional out-parameter for the raw bytes read this call (separate from its existing trimmed tail buffer); new `pkg_build_output_snapshot()` for a client attaching mid-build.
+- `daemon/src/main.c`: new `CONN_PKG_BUILD_LOG_WS` conn kind, a small fixed attach table (max 4 concurrent viewers), and `try_pkg_build_log_upgrade()` for `GET /v1/pkg/build/log` -- a genuinely simpler WS upgrade than the console's (no exec/PTY, `cc` is the entire session). `handle_pkg_build_output_event()` now also broadcasts each newly-drained chunk to every attached client, and sends a real WS close frame once the build finishes.
+- `client/src/console.c`: `kx_pkg_build_log_run()`, sharing a generalized `do_ws_handshake()` with `kx_console_run()`. `kanxeoctl pkg build-log` is the new CLI entry point.
+- `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/cli-reference.md`: documented.
+- New permanent test: `test/test_pkg_build_log.c` -- a real daemon, real build container, hand-rolled WS client (same precedent `test/test_console_exec.c` set): 404 with no build in progress, 400 on a missing `Upgrade` header, live incremental marker delivery strictly before build completion, a genuine WS close frame, and a fresh 404 again once torn down.
+
+#### Notes
+- Full local regression sweep clean, zero compiler warnings.
+- Deliberately scoped to `pkg install`/`pkg hostbuild`'s own build pipe -- `CONN_BOOTROOT_OUTPUT` (mkbootroot's structurally identical capture) is a natural, later follow-on for the same treatment, not done here.
+
 ### Part 45 (done, local regression sweep clean): container cmd/argv is finally REST-visible after creation (ADR-0100, closes task #675)
 
 A container's own entrypoint was write-only: `POST /v1/containers`' `"cmd"` field only ever pointed into that request's transient parsed JSON tree, freed immediately after the process was spawned -- nothing durable ever stored it, so there was no way to ask a running or stopped container "what are you actually running."

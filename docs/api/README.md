@@ -463,6 +463,14 @@ Two real, ready-to-use clients — neither requires hand-rolling the handshake y
 
 Any frame-parse failure post-upgrade (including an unmasked client frame, which RFC 6455 requires a server to reject) — or a WebSocket CLOSE frame from either side, or the exec'd process exiting on its own — ends the session the same way: `SIGKILL` the exec'd process, then close the raw connection immediately (no WS CLOSE frame is sent back, no HTTP status is possible once the connection is a WebSocket at all) — no leaked processes survive session teardown. No new authentication layer exists for this endpoint — exactly as protected as every other existing mutating endpoint today (network reachability only), a more sensitive capability than most, worth stating plainly rather than leaving implicit.
 
+## Live-tailing an in-flight package build (task #676, ADR-0101)
+
+`GET /v1/pkg/build/log` streams a currently-running `pkg install`/`pkg hostbuild` job's own stdout/stderr live, over the same minimal WebSocket upgrade the console endpoint uses — but it's a genuinely different, much simpler mechanism: a one-way relay of an already-epoll-drained pipe (ADR-0087), not an interactive exec/PTY session. Before this existed, a build's output was only ever visible after the fact, and only on failure (folded into the logged error, `GET /pkg/{name}`'s `error` field) — a slow build in progress (this project has hit real multi-minute ones: `perl`, `gcc` from source) had no REST-visible signal at all while it ran.
+
+On a successful upgrade, whatever of the build's output was already captured is sent immediately as one frame (so attaching mid-build doesn't start blind), then every further chunk streams live as the build produces it. The daemon sends a real WebSocket CLOSE frame — and tears every attached client down — the instant the build finishes, success or failure; there's no "reconnect and keep watching," since by definition there's nothing left to watch. `404` if no build is currently in progress; `503` if 4 clients are already attached (a soft cap matching this project's own "one build in flight at a time" invariant, not a silent drop).
+
+`kanxeoctl pkg build-log` is the CLI client — no raw terminal mode, no input relay (this stream is one-way), just prints each chunk to stdout as it arrives and exits cleanly once the daemon's own CLOSE frame lands.
+
 ## DNS: records + a real dnsmasq container
 
 DNS records are a REST resource; the actual name resolution is done by a real DNS server (dnsmasq recommended) running as a normal containerized workload — not hand-rolled, the same reasoning BIRD wasn't hand-rolled for routing (ADR-0007's "no external libraries" rule is about this project's own platform components, not about workloads a container runs).

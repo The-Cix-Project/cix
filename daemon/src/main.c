@@ -413,6 +413,9 @@ enum conn_kind {
 	CONN_CONSOLE_RESPAWN_TIMER,
 	CONN_CONSOLE_WS,        /* GET /v1/containers/{name}/console -- client-facing WebSocket half */
 	CONN_CONSOLE_PTY,       /* same session's other half -- the exec'd shell's pty master fd */
+	CONN_PKG_BUILD_LOG_WS,  /* GET /v1/pkg/build/log -- live-tail of the in-flight build's own
+	                          * output pipe (task #676), a one-way relay of CONN_PKG_BUILD_OUTPUT's
+	                          * existing capture, not an exec/PTY session like CONN_CONSOLE_WS */
 	CONN_KMSG,              /* /dev/kmsg -- feeds real kernel dmesg lines into the consolidated log store */
 	/*
 	 * A conn already torn down mid-batch (console_session_teardown()
@@ -442,7 +445,7 @@ struct conn {
 	pid_t console_pid;                      /* CONN_CONSOLE_SHELL only */
 	char console_tty[32];                   /* CONN_CONSOLE_SHELL / CONN_CONSOLE_RESPAWN_TIMER */
 	struct console_exec_session *exec_session; /* CONN_CONSOLE_WS / CONN_CONSOLE_PTY only -- shared by both halves of one session */
-	struct ws_conn ws;                      /* CONN_CONSOLE_WS only -- incremental client-frame parser */
+	struct ws_conn ws;                      /* CONN_CONSOLE_WS / CONN_PKG_BUILD_LOG_WS -- incremental client-frame parser */
 };
 
 /*
@@ -3705,19 +3708,100 @@ static void register_pkg_build_output(int output_fd)
 }
 
 /*
+ * task #676: clients live-tailing the in-flight build's own output
+ * over GET /v1/pkg/build/log (try_pkg_build_log_upgrade() below) --
+ * a small fixed table, same "one build in flight at a time" invariant
+ * pkg.c's own module-level build state already relies on, generous
+ * enough for a few operators watching the same build at once.
+ */
+#define PKG_BUILD_LOG_WS_MAX 4
+static struct conn *g_build_log_ws_conns[PKG_BUILD_LOG_WS_MAX];
+static int g_build_log_ws_conn_count;
+
+static void build_log_ws_detach(struct conn *cc)
+{
+	int i;
+
+	for (i = 0; i < g_build_log_ws_conn_count; i++) {
+		if (g_build_log_ws_conns[i] != cc)
+			continue;
+		g_build_log_ws_conns[i] = g_build_log_ws_conns[g_build_log_ws_conn_count - 1];
+		g_build_log_ws_conn_count--;
+		return;
+	}
+}
+
+/* Sends a chunk of newly-drained build output to every attached
+ * live-tail client. A write failure just detaches that one client
+ * (its own next epoll event, or this immediate teardown, reflects a
+ * gone-away peer) -- never lets one broken viewer affect the others
+ * or the build itself, which never blocks on this at all. */
+static void build_log_ws_broadcast(const void *data, size_t len)
+{
+	int i;
+
+	for (i = 0; i < g_build_log_ws_conn_count;) {
+		struct conn *cc = g_build_log_ws_conns[i];
+
+		if (ws_write_frame(cc->fd, WS_OPCODE_TEXT, data, len) != 0) {
+			kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+			ws_conn_free(&cc->ws);
+			close(cc->fd);
+			g_build_log_ws_conns[i] = g_build_log_ws_conns[g_build_log_ws_conn_count - 1];
+			g_build_log_ws_conn_count--;
+			free(cc);
+			continue;
+		}
+		i++;
+	}
+}
+
+/* Called once the build's own output pipe reaches EOF (the build
+ * finished, one way or another) -- tells every still-attached
+ * live-tail client the stream is over via a real WS close frame, then
+ * tears each one down. Without this a client would just hang waiting
+ * for more output that will never come. */
+static void build_log_ws_teardown_all(void)
+{
+	int i;
+
+	for (i = 0; i < g_build_log_ws_conn_count; i++) {
+		struct conn *cc = g_build_log_ws_conns[i];
+
+		ws_write_frame(cc->fd, WS_OPCODE_CLOSE, NULL, 0);
+		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+		ws_conn_free(&cc->ws);
+		close(cc->fd);
+		free(cc);
+	}
+	g_build_log_ws_conn_count = 0;
+}
+
+/*
  * Fires whenever pkg_build_output_fd()'s fd becomes readable --
  * drains everything currently buffered into pkg.c's own capture
- * buffer. Once pkg_build_output_readable() reports EOF/error (every
- * write end closed -- the build container and all its descendants
- * have exited), tears down this conn's own epoll registration and
- * closes the fd via pkg_build_output_close(), mirroring exactly how
- * the container's own CONN_CONTAINER exit path tears itself down.
+ * buffer, relaying whatever was newly read to any attached live-tail
+ * clients (task #676) before checking for EOF. Once
+ * pkg_build_output_readable() reports EOF/error (every write end
+ * closed -- the build container and all its descendants have
+ * exited), tears down this conn's own epoll registration and closes
+ * the fd via pkg_build_output_close(), mirroring exactly how the
+ * container's own CONN_CONTAINER exit path tears itself down, and
+ * tells every live-tail client the stream has ended.
  */
 static void handle_pkg_build_output_event(struct conn *cc)
 {
-	if (pkg_build_output_readable()) {
+	char new_data[4096];
+	int new_len = 0;
+	int eof;
+
+	eof = pkg_build_output_readable(new_data, (int)sizeof(new_data), &new_len);
+	if (new_len > 0 && g_build_log_ws_conn_count > 0)
+		build_log_ws_broadcast(new_data, (size_t)new_len);
+	if (eof) {
 		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 		pkg_build_output_close();
+		build_log_ws_teardown_all();
 		free(cc);
 	}
 }
@@ -8573,6 +8657,172 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	return CONSOLE_HANDLED;
 }
 
+#define PKG_BUILD_LOG_PATH "/v1/pkg/build/log"
+
+/*
+ * GET /v1/pkg/build/log -- live-tail of the currently in-flight pkg
+ * build's own stdout/stderr (task #676), over the same minimal
+ * WebSocket upgrade try_console_upgrade() above uses. Unlike the
+ * console, there's no PTY or exec'd process on the other end -- this
+ * is a plain one-way relay of pkg.c's own already-epoll-drained
+ * output pipe (handle_pkg_build_output_event()/build_log_ws_
+ * broadcast() above), so this function is far shorter: no
+ * exec_into_container(), no console_exec_session, no CONN_CONSOLE_PTY
+ * counterpart. Reuses enum console_route_result -- the same three-
+ * outcome shape (not matched / failed before cc touched / fully
+ * handled) applies unchanged to this route too.
+ */
+static enum console_route_result try_pkg_build_log_upgrade(struct conn *cc, const struct http_request *req)
+{
+	char upgrade_val[32], connection_val[64], ws_key[256], ws_version[8];
+	char accept_val[64];
+	char response[512];
+	int rlen;
+	struct registry_entry *entry;
+	/* Generously >= pkg.c's own private PKG_BUILD_OUTPUT_CAPTURE_MAX
+	 * (3800) -- pkg_build_output_snapshot() takes an explicit cap and
+	 * never writes past it regardless, so this only needs to be "big
+	 * enough," not an exact mirror of a constant that's deliberately
+	 * private to pkg.c. */
+	char snapshot[4096];
+	int snapshot_len;
+
+	if (strcmp(req->method, "GET") != 0)
+		return CONSOLE_NOT_MATCHED;
+	if (strcmp(req->path, PKG_BUILD_LOG_PATH) != 0)
+		return CONSOLE_NOT_MATCHED;
+
+	if (http_find_header(req->headers, req->headers_len, "Upgrade", upgrade_val, sizeof(upgrade_val)) < 0 ||
+	    strcasecmp(upgrade_val, "websocket") != 0) {
+		respond_error(cc->fd, 400, "Bad Request", "this endpoint requires Upgrade: websocket");
+		return CONSOLE_FAILED;
+	}
+	if (http_find_header(req->headers, req->headers_len, "Connection", connection_val, sizeof(connection_val)) < 0 ||
+	    strcasestr(connection_val, "upgrade") == NULL) {
+		respond_error(cc->fd, 400, "Bad Request", "this endpoint requires Connection: Upgrade");
+		return CONSOLE_FAILED;
+	}
+	if (http_find_header(req->headers, req->headers_len, "Sec-WebSocket-Key", ws_key, sizeof(ws_key)) < 0) {
+		respond_error(cc->fd, 400, "Bad Request", "missing Sec-WebSocket-Key");
+		return CONSOLE_FAILED;
+	}
+	if (http_find_header(req->headers, req->headers_len, "Sec-WebSocket-Version", ws_version, sizeof(ws_version)) < 0 ||
+	    strcmp(ws_version, "13") != 0) {
+		respond_error(cc->fd, 400, "Bad Request", "requires Sec-WebSocket-Version: 13");
+		return CONSOLE_FAILED;
+	}
+
+	entry = registry_find(PKG_BUILD_CONTAINER_NAME);
+	if (entry == NULL || !entry->running) {
+		respond_error(cc->fd, 404, "Not Found", "no build in progress");
+		return CONSOLE_FAILED;
+	}
+	if (g_build_log_ws_conn_count >= PKG_BUILD_LOG_WS_MAX) {
+		respond_error(cc->fd, 503, "Service Unavailable", "too many live-tail viewers already attached");
+		return CONSOLE_FAILED;
+	}
+
+	if (ws_compute_accept(ws_key, accept_val, sizeof(accept_val)) != 0) {
+		respond_error(cc->fd, 500, "Internal Server Error", "failed to compute websocket accept");
+		return CONSOLE_FAILED;
+	}
+
+	rlen = snprintf(response, sizeof(response),
+	                 "HTTP/1.1 101 Switching Protocols\r\n"
+	                 "Upgrade: websocket\r\n"
+	                 "Connection: Upgrade\r\n"
+	                 "Sec-WebSocket-Accept: %s\r\n"
+	                 "\r\n",
+	                 accept_val);
+	if (rlen < 0 || (size_t)rlen >= sizeof(response)) {
+		respond_error(cc->fd, 500, "Internal Server Error", "failed to build handshake response");
+		return CONSOLE_FAILED;
+	}
+
+	/* cc is still an untouched, ordinary CONN_CLIENT up through this
+	 * point -- every failure above and below, up until cc->kind
+	 * actually changes further down, is still CONSOLE_FAILED. */
+	http_set_blocking(cc->fd);
+	if (tls_write_all(cc->fd, response, (size_t)rlen) != 0)
+		return CONSOLE_FAILED; /* client already gone -- nothing left to respond with */
+
+	/* From here on cc IS repurposed -- same "no more CONSOLE_FAILED"
+	 * rule try_console_upgrade() documents, and the same reason: its
+	 * own storage (cc->http's buffer) is about to be freed, so a
+	 * caller-side teardown expecting an ordinary CONN_CLIENT would
+	 * double-free it. Repurposed in place, exactly like
+	 * try_console_upgrade()'s own cc -> CONN_CONSOLE_WS half -- no
+	 * PTY/exec-session counterpart needed here, so unlike that route
+	 * this is the ENTIRE repurposing, not just one half of a pair. */
+	http_conn_free(&cc->http);
+	cc->kind = CONN_PKG_BUILD_LOG_WS;
+	ws_conn_init(&cc->ws);
+	g_build_log_ws_conns[g_build_log_ws_conn_count++] = cc;
+
+	/* cc->fd is already registered for EPOLLIN -- no epoll_ctl needed,
+	 * same as try_console_upgrade()'s own WS half. */
+
+	snapshot_len = pkg_build_output_snapshot(snapshot, sizeof(snapshot));
+	if (snapshot_len > 0 && ws_write_frame(cc->fd, WS_OPCODE_TEXT, snapshot, (size_t)snapshot_len) != 0) {
+		build_log_ws_detach(cc);
+		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+		ws_conn_free(&cc->ws);
+		close(cc->fd);
+		free(cc);
+	}
+
+	return CONSOLE_HANDLED;
+}
+
+/*
+ * A live-tail client never sends anything meaningful (this is a
+ * one-way relay) -- the only thing this handler cares about is
+ * noticing the client has gone away (a close frame, EOF, or a real
+ * read error) so its slot in g_build_log_ws_conns[] is freed up.
+ */
+static void handle_pkg_build_log_ws_event(struct conn *cc)
+{
+	unsigned char buf[512];
+	ssize_t n;
+	struct ws_frame frame;
+	int pr;
+
+	for (;;) {
+		n = tls_read(cc->fd, buf, sizeof(buf));
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+			return;
+		if (n <= 0)
+			break;
+		if (ws_conn_feed(&cc->ws, buf, (size_t)n) != 0)
+			break;
+
+		for (;;) {
+			pr = ws_conn_try_parse(&cc->ws, &frame);
+			if (pr == 0)
+				break;
+			if (pr < 0)
+				goto gone;
+			if (frame.opcode == WS_OPCODE_CLOSE) {
+				ws_conn_consume(&cc->ws, frame.frame_len);
+				goto gone;
+			}
+			if (frame.opcode == WS_OPCODE_PING)
+				ws_write_frame(cc->fd, WS_OPCODE_PONG, frame.payload, frame.payload_len);
+			ws_conn_consume(&cc->ws, frame.frame_len);
+		}
+
+		if (cc->ssl == NULL || SSL_pending(cc->ssl) <= 0)
+			return;
+	}
+
+gone:
+	build_log_ws_detach(cc);
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	ws_conn_free(&cc->ws);
+	close(cc->fd);
+	free(cc);
+}
+
 static void handle_console_ws_event(struct conn *cc)
 {
 	unsigned char buf[4096];
@@ -8769,10 +9019,14 @@ static void handle_client_event(struct conn *cc)
 			if (cr == CONSOLE_HANDLED)
 				return; /* cc repurposed into CONN_CONSOLE_WS (or already torn down) -- must not be touched again */
 			if (cr == CONSOLE_NOT_MATCHED)
+				cr = try_pkg_build_log_upgrade(cc, &req);
+			if (cr == CONSOLE_HANDLED)
+				return; /* cc repurposed into CONN_PKG_BUILD_LOG_WS -- must not be touched again */
+			if (cr == CONSOLE_NOT_MATCHED)
 				dispatch(cc->fd, &req);
 			/* CONSOLE_FAILED: an error response (or nothing, if the
 			 * client was already gone) was already written by
-			 * try_console_upgrade() itself -- cc still needs the
+			 * whichever upgrade attempt failed -- cc still needs the
 			 * same teardown every other handled request gets. */
 			client_conn_teardown(cc);
 			return;
@@ -9910,6 +10164,8 @@ int main(int argc, char **argv)
 				handle_console_ws_event(cc);
 			else if (cc->kind == CONN_CONSOLE_PTY)
 				handle_console_pty_event(cc);
+			else if (cc->kind == CONN_PKG_BUILD_LOG_WS)
+				handle_pkg_build_log_ws_event(cc);
 			else if (cc->kind == CONN_KMSG)
 				handle_kmsg_event(cc);
 			else

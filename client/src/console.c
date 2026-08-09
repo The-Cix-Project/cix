@@ -197,7 +197,15 @@ static void consume(struct client_ws_buf *b, size_t frame_len)
 	b->len -= frame_len;
 }
 
-static int do_handshake(const struct kx_client *c, const char *container_name, const char *cmd)
+/*
+ * Shared WS handshake for both kx_console_run() (path always
+ * /v1/containers/{name}/console, optional X-Kanxeo-Exec-Cmd header)
+ * and kx_pkg_build_log_run() below (fixed path, no such header) --
+ * label identifies which one for error messages, path is the exact
+ * request-line target to send.
+ */
+static int do_ws_handshake(const struct kx_client *c, const char *label, const char *path,
+                            const char *exec_cmd_header)
 {
 	int fd;
 	char key[64];
@@ -208,19 +216,20 @@ static int do_handshake(const struct kx_client *c, const char *container_name, c
 	ssize_t n;
 
 	if (make_ws_key(key, sizeof(key)) != 0) {
-		fprintf(stderr, "console: could not generate a WebSocket key (/dev/urandom): %s\n", strerror(errno));
+		fprintf(stderr, "%s: could not generate a WebSocket key (/dev/urandom): %s\n", label,
+		        strerror(errno));
 		return -1;
 	}
 
 	fd = kx_client_connect_raw(c);
 	if (fd < 0) {
-		fprintf(stderr, "console: could not connect to %s:%d\n", c->host, c->port);
+		fprintf(stderr, "%s: could not connect to %s:%d\n", label, c->host, c->port);
 		return -1;
 	}
 
-	if (cmd != NULL && cmd[0] != '\0') {
+	if (exec_cmd_header != NULL && exec_cmd_header[0] != '\0') {
 		rlen = snprintf(req, sizeof(req),
-		                 "GET /v1/containers/%s/console HTTP/1.1\r\n"
+		                 "GET %s HTTP/1.1\r\n"
 		                 "Host: %s:%d\r\n"
 		                 "Upgrade: websocket\r\n"
 		                 "Connection: Upgrade\r\n"
@@ -228,20 +237,20 @@ static int do_handshake(const struct kx_client *c, const char *container_name, c
 		                 "Sec-WebSocket-Version: 13\r\n"
 		                 "X-Kanxeo-Exec-Cmd: %s\r\n"
 		                 "\r\n",
-		                 container_name, c->host, c->port, key, cmd);
+		                 path, c->host, c->port, key, exec_cmd_header);
 	} else {
 		rlen = snprintf(req, sizeof(req),
-		                 "GET /v1/containers/%s/console HTTP/1.1\r\n"
+		                 "GET %s HTTP/1.1\r\n"
 		                 "Host: %s:%d\r\n"
 		                 "Upgrade: websocket\r\n"
 		                 "Connection: Upgrade\r\n"
 		                 "Sec-WebSocket-Key: %s\r\n"
 		                 "Sec-WebSocket-Version: 13\r\n"
 		                 "\r\n",
-		                 container_name, c->host, c->port, key);
+		                 path, c->host, c->port, key);
 	}
 	if (rlen < 0 || (size_t)rlen >= sizeof(req) || kx_write_all(fd, req, (size_t)rlen) != 0) {
-		fprintf(stderr, "console: failed to send the upgrade request\n");
+		fprintf(stderr, "%s: failed to send the upgrade request\n", label);
 		close(fd);
 		return -1;
 	}
@@ -249,7 +258,7 @@ static int do_handshake(const struct kx_client *c, const char *container_name, c
 	while (got < sizeof(resp) - 1) {
 		n = read(fd, resp + got, sizeof(resp) - 1 - got);
 		if (n <= 0) {
-			fprintf(stderr, "console: connection closed before a handshake response arrived\n");
+			fprintf(stderr, "%s: connection closed before a handshake response arrived\n", label);
 			close(fd);
 			return -1;
 		}
@@ -264,7 +273,7 @@ static int do_handshake(const struct kx_client *c, const char *container_name, c
 
 		if (line_end != NULL)
 			*line_end = '\0';
-		fprintf(stderr, "console: %s\n", resp);
+		fprintf(stderr, "%s: %s\n", label, resp);
 		close(fd);
 		return -1;
 	}
@@ -366,7 +375,12 @@ int kx_console_run(const struct kx_client *c, const char *container_name, const 
 	struct termios saved;
 	int have_saved;
 
-	fd = do_handshake(c, container_name, cmd);
+	{
+		char path[256];
+
+		snprintf(path, sizeof(path), "/v1/containers/%s/console", container_name);
+		fd = do_ws_handshake(c, "console", path, cmd);
+	}
 	if (fd < 0)
 		return -1;
 
@@ -378,6 +392,62 @@ int kx_console_run(const struct kx_client *c, const char *container_name, const 
 		tcsetattr(STDIN_FILENO, TCSANOW, &saved);
 	printf("\r\nconsole session ended\n");
 
+	close(fd);
+	return 0;
+}
+
+/*
+ * task #676: one-way live-tail relay for GET /v1/pkg/build/log -- no
+ * stdin, no raw mode, no send_masked_frame() call at all (this
+ * daemon-side stream never expects anything FROM the client but a
+ * close frame), just print every TEXT frame straight to stdout as it
+ * arrives, same server-frame parser kx_console_run()'s own relay()
+ * already uses.
+ */
+int kx_pkg_build_log_run(const struct kx_client *c)
+{
+	int fd;
+	struct client_ws_buf inbuf;
+	unsigned char iobuf[4096];
+
+	fd = do_ws_handshake(c, "pkg build-log", "/v1/pkg/build/log", NULL);
+	if (fd < 0)
+		return -1;
+
+	inbuf.len = 0;
+	for (;;) {
+		ssize_t n = read(fd, iobuf, sizeof(iobuf));
+		int opcode;
+		unsigned char *payload;
+		size_t payload_len, frame_len;
+
+		if (n <= 0)
+			break;
+		if (inbuf.len + (size_t)n > sizeof(inbuf.buf))
+			break;
+		memcpy(inbuf.buf + inbuf.len, iobuf, (size_t)n);
+		inbuf.len += (size_t)n;
+
+		for (;;) {
+			int r = try_parse_server_frame(&inbuf, &opcode, &payload, &payload_len, &frame_len);
+
+			if (r == 0)
+				break;
+			if (r < 0)
+				goto done;
+			if (opcode == 0x1 || opcode == 0x2) {
+				if (kx_write_all(STDOUT_FILENO, payload, payload_len) != 0)
+					goto done;
+			} else if (opcode == 0x8) {
+				consume(&inbuf, frame_len);
+				goto done;
+			}
+			consume(&inbuf, frame_len);
+		}
+	}
+
+done:
+	printf("\n--- build log stream ended ---\n");
 	close(fd);
 	return 0;
 }

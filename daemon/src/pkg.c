@@ -2117,10 +2117,13 @@ static void pkg_build_output_append(const char *data, int len)
 	g_build_output_captured_len += take;
 }
 
-int pkg_build_output_readable(void)
+int pkg_build_output_readable(char *new_data, int new_data_cap, int *new_data_len)
 {
 	char chunk[4096];
 	ssize_t n;
+
+	if (new_data_len != NULL)
+		*new_data_len = 0;
 
 	if (g_build_output_rd < 0)
 		return 1;
@@ -2129,12 +2132,35 @@ int pkg_build_output_readable(void)
 		n = read(g_build_output_rd, chunk, sizeof(chunk));
 		if (n > 0) {
 			pkg_build_output_append(chunk, (int)n);
+			if (new_data != NULL && new_data_len != NULL && *new_data_len < new_data_cap) {
+				int room = new_data_cap - *new_data_len;
+				int take = ((int)n > room) ? room : (int)n;
+
+				memcpy(new_data + *new_data_len, chunk, take);
+				*new_data_len += take;
+			}
 			continue;
 		}
 		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
 			return 0; /* drained everything available right now */
 		return 1;         /* EOF (n == 0) or a real read error */
 	}
+}
+
+/*
+ * Copies the current sliding-window tail buffer out for a newly-
+ * attaching live-log client (see try_pkg_build_log_upgrade(),
+ * daemon/src/main.c) to replay before streaming further live chunks --
+ * without this, a client attaching mid-build would see nothing until
+ * the next chunk arrives, no matter how much output already happened.
+ * Returns the number of bytes copied (<= out_cap).
+ */
+int pkg_build_output_snapshot(char *out, int out_cap)
+{
+	int take = (g_build_output_captured_len > out_cap) ? out_cap : g_build_output_captured_len;
+
+	memcpy(out, g_build_output_captured, take);
+	return take;
 }
 
 void pkg_build_output_close(void)
@@ -2201,7 +2227,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		char captured[PKG_BUILD_OUTPUT_CAPTURE_MAX + 1];
 		int captured_len;
 
-		pkg_build_output_readable();
+		pkg_build_output_readable(NULL, 0, NULL);
 		captured_len = g_build_output_captured_len;
 		memcpy(captured, g_build_output_captured, captured_len);
 		captured[captured_len] = '\0';

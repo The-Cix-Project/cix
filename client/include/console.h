@@ -26,4 +26,18 @@
  */
 int kx_console_run(const struct kx_client *c, const char *container_name, const char *cmd);
 
+/*
+ * Live-tails the currently in-flight pkg build's own stdout/stderr
+ * over GET /v1/pkg/build/log (task #676, ADR-0101) -- a one-way
+ * relay, not an interactive session: no local raw mode, nothing is
+ * ever sent back to the daemon but an eventual close. Prints each
+ * chunk straight to stdout as it arrives (already includes whatever
+ * of the build's output was captured before this attached). Blocks
+ * until the build finishes (the daemon sends a real WS close frame)
+ * or the connection drops. Returns 0 on a clean stream end, -1 on a
+ * connection/handshake failure (e.g. no build currently in progress
+ * -- a message is already printed to stderr).
+ */
+int kx_pkg_build_log_run(const struct kx_client *c);
+
 #endif /* CONSOLE_H */

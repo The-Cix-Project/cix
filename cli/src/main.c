@@ -4463,6 +4463,15 @@ static int cmd_pkg_update_all(const struct kx_client *c, int json_mode)
 	return emit(&r, json_mode, fmt_pkg_update_all);
 }
 
+/* task #676: live-tail the currently in-flight build's own output --
+ * a thin wrapper, all the real work is kx_pkg_build_log_run()'s own
+ * WS relay (client/src/console.c), same "cmd_* just calls the client
+ * library" shape every other pkg subcommand here already has. */
+static int cmd_pkg_build_log(const struct kx_client *c)
+{
+	return kx_pkg_build_log_run(c) == 0 ? 0 : 1;
+}
+
 static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
@@ -4478,6 +4487,7 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 		                "       kanxeoctl pkg install --name=NAME [--image=IMAGE] [--upgrade]\n"
 		                "       kanxeoctl pkg hostbuild NAME --build-image=IMAGE [--wait] [--deploy] "
 		                "[--upgrade]\n"
+		                "       kanxeoctl pkg build-log\n"
 		                "       kanxeoctl pkg ls\n"
 		                "       kanxeoctl pkg rm NAME[@IMAGE]\n"
 		                "       kanxeoctl pkg update-all\n");
@@ -4496,6 +4506,8 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 		return cmd_pkg_install(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "hostbuild") == 0)
 		return cmd_pkg_hostbuild(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "build-log") == 0)
+		return cmd_pkg_build_log(c);
 	if (strcmp(sub, "ls") == 0)
 		return cmd_pkg_ls(c, json_mode);
 	if (strcmp(sub, "rm") == 0)

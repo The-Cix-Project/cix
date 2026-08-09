@@ -105,3 +105,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0098](0098-tarball-listing-truncation-false-mismatch.md) | tarball_has_common_top_dir() false-positived "no common top dir" when its own 64KB capture truncated mid-line | Accepted |
 | [0099](0099-disk-mount-ground-truth.md) | GET /disks reports real mount status from /proc/mounts, not diskformat.c's own ephemeral job history | Accepted |
 | [0100](0100-container-cmd-visibility.md) | GET /containers echoes cmd, sourced from registry_entry (live) or the persisted body (stopped) | Accepted |
+| [0101](0101-pkg-build-log-live-tail.md) | GET /v1/pkg/build/log live-tails an in-flight build's own output, a one-way WS relay distinct from the console's exec/PTY session | Accepted |

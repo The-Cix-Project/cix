@@ -2506,6 +2506,92 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /pkg/build/log:
+    get:
+      summary: >
+        Live-tail the currently in-flight package build's own
+        stdout/stderr, over a WebSocket (task #676, ADR-0101).
+      description: >
+        Not a normal REST request/response -- like
+        /containers/{name}/console, this is an HTTP/1.1 Upgrade to
+        WebSocket (RFC 6455), documented as a GET whose success
+        response is "101 Switching Protocols." The same `Upgrade:
+        websocket`, `Connection: Upgrade`, `Sec-WebSocket-Key`, and
+        `Sec-WebSocket-Version: 13` headers are required; missing or
+        misusing them is a 400.
+
+
+        Unlike the console endpoint, this is a one-way relay, not an
+        interactive session: nothing sent by the client is ever acted
+        on except an eventual WebSocket CLOSE frame. On a successful
+        upgrade, the currently-captured tail of the in-flight build's
+        output (up to a few KB) is sent immediately as one TEXT frame,
+        so a client attaching mid-build isn't starting blind; every
+        further chunk is then relayed live as the build produces it.
+        A real WebSocket CLOSE frame is sent, and the connection torn
+        down, the moment the build finishes (success or failure) --
+        there is no notion of "reconnect and keep watching a build
+        that's already over."
+
+
+        Up to 4 clients may be attached to the same in-flight build at
+        once; a 5th attempt gets a 503, not silently dropped. 404 if
+        no build is currently in progress at all -- this endpoint has
+        nothing to do with a completed/failed build's own logged
+        output (see GET /pkg/{name}'s `error` field for that).
+      operationId: pkgBuildLog
+      parameters:
+        - name: Upgrade
+          in: header
+          required: true
+          schema:
+            type: string
+            enum: [websocket]
+        - name: Connection
+          in: header
+          required: true
+          schema:
+            type: string
+            description: Must contain the token "Upgrade" (case-insensitive), e.g. "Upgrade" or "keep-alive, Upgrade".
+        - name: Sec-WebSocket-Key
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: Sec-WebSocket-Version
+          in: header
+          required: true
+          schema:
+            type: string
+            enum: ["13"]
+      responses:
+        "101":
+          description: Switching Protocols -- the connection is now a WebSocket streaming the build's own output live, per this endpoint's own description above.
+        "400":
+          description: Missing/invalid Upgrade, Connection, Sec-WebSocket-Key, or Sec-WebSocket-Version header.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No package build is currently in progress.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Failed to compute the WebSocket handshake accept value.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Too many live-tail viewers already attached to this build (max 4).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /pkg:
     get:
       summary: List every known package (installed or in-flight) with its current state
