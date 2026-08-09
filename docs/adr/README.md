@@ -93,3 +93,5 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0086](0086-pkgbuild-stop-bypasses-pkg-completion.md) | Stopping __pkgbuild via POST .../stop left pkg.c's job lock stuck forever | Accepted |
 | [0087](0087-pkg-build-output-pipe-deadlock.md) | Build-output capture pipes were drained once, after exit, deadlocking any sufficiently verbose build | Accepted |
 | [0088](0088-kernel-veth-missing.md) | CONFIG_VETH was never enabled -- every container network attachment on a real box has always failed | Accepted |
+| [0089](0089-root-netns-ip-forward-missing.md) | root-netns net.ipv4.ip_forward was never enabled -- no container could ever originate a connection past the host | Accepted |
+| [0090](0090-container-create-log-use-after-free.md) | container-create failure logging used a dangling JSON-tree pointer | Accepted |

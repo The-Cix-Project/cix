@@ -4648,6 +4648,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	const char *restart_str;
 	long restart_delay;
 	const char *name, *image;
+	char name_copy[REGISTRY_NAME_MAX];
 	char lowerdir[PATH_MAX];
 	char container_base[PATH_MAX];
 	char upperdir[PATH_MAX], workdir[PATH_MAX], merged[PATH_MAX];
@@ -5254,6 +5255,19 @@ static int create_container_from_body(const char *body, size_t body_len,
 	 */
 	create_errno = errno;
 	/*
+	 * A real copy, not just the `name` pointer -- `name` is
+	 * json_as_string(jname), pointing straight into `root`'s own
+	 * string storage, which json_free() below invalidates. Confirmed
+	 * live as a real use-after-free, not a hypothetical one: the log
+	 * store's own "container %s: failed to create: ..." line (below)
+	 * showed garbled bytes instead of the real container name in the
+	 * web dashboard's log view. The success path already sidesteps
+	 * this exact hazard by using entry->name instead of `name` (see
+	 * its own comment a little further down) -- this was the one
+	 * spot that still used the dangling pointer directly.
+	 */
+	snprintf(name_copy, sizeof(name_copy), "%s", name != NULL ? name : "");
+	/*
 	 * Safe to free the JSON tree now even though spec.ns.hostname,
 	 * spec.cg.name and spec.argv[] point into it: registry_create()
 	 * has already returned, meaning container_create()'s clone3() has
@@ -5275,7 +5289,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	}
 	if (rerr == REGISTRY_ERR_CREATE_FAILED) {
 		snprintf(err_msg, err_msg_size, "failed to create container: %s", strerror(create_errno));
-		logstore_write("kanxeod", "error", "container %s: failed to create: %s", name,
+		logstore_write("kanxeod", "error", "container %s: failed to create: %s", name_copy,
 		                strerror(create_errno));
 		return 500;
 	}
@@ -9560,6 +9574,40 @@ int main(int argc, char **argv)
 
 	if (network_init(NETWORKS_STATE_PATH) != 0)
 		return 1;
+	/*
+	 * Root-netns net.ipv4.ip_forward -- distinct from struct
+	 * container_spec's own per-container ip_forward field (which
+	 * governs a *container's own* netns, for a container acting as a
+	 * router between two of its own attached networks, e.g. Phase
+	 * 24's BIRD/keepalived pairs). This one governs the *host's own*
+	 * root netns, which every ordinary (non-router) container's
+	 * default route already points at (see ADR-0067: a network's own
+	 * "address" is deliberately the target containers route through)
+	 * -- without it, any container whose destination isn't the host
+	 * itself or another peer already on the same bridge has its
+	 * traffic silently dropped the moment it reaches the host's own
+	 * IP stack. Confirmed live as a real, previously-undiscovered gap
+	 * (ADR-0089): a container could reach the daemon's own management
+	 * address but not the real upstream LAN gateway one hop further,
+	 * even though both are equally reachable over the same bridge at
+	 * the link layer -- nothing in this codebase had ever enabled
+	 * root-netns forwarding, because no container before dns-1/dns-2
+	 * had ever needed to originate a connection leaving the host at
+	 * all (every prior "container needs the internet" case, package
+	 * installs, was always a host-side curl, never container-
+	 * initiated).
+	 */
+	{
+		int fwd_fd;
+		static const char one[] = "1\n";
+
+		fwd_fd = open("/proc/sys/net/ipv4/ip_forward", O_WRONLY);
+		if (fwd_fd < 0 || write(fwd_fd, one, sizeof(one) - 1) != (ssize_t)(sizeof(one) - 1)) {
+			perror("enable root-netns ip_forward");
+			return 1;
+		}
+		close(fwd_fd);
+	}
 	/* Part 3: real hardware's NIC driver (needed for the interface
 	 * attach below) may be a module -- must run before bootstrap_
 	 * management_network(), not after. Same init_mode gate: a plain/

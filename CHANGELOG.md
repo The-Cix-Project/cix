@@ -2,6 +2,22 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 36 (done, live-verified): dns-1/dns-2 stood up; root-netns ip_forward was never enabled either (ADR-0089); container-create log use-after-free fixed (ADR-0090)
+
+Completed the originally-requested DNS work, immediately hitting a second real, previously-undiscovered gap along the way: with ADR-0088's CONFIG_VETH fix landed, `dns-1`/`dns-2` (real `dnsmasq` containers, `management` network, `192.168.15.101`/`.102`) resolved internal records fine but timed out recursing any real public domain. Isolated with controlled before/after tests: a container could reach the daemon's own bridge address but not originate a connection past it. Root cause: `net.ipv4.ip_forward` was never enabled in the daemon's own root netns anywhere in this codebase -- the existing `--ip-forward` mechanism only ever governs a *container's own* netns (for a container acting as its own router, e.g. Phase 24's BIRD/keepalived pairs), never the host's. Every ordinary container's default route already points at the host per ADR-0067's own design, but the host had never actually been turned into a working gateway.
+
+Separately, the container-create-failure log use-after-free the user reported earlier this session (garbled container names in the log view) was fixed and shipped in the same deploy.
+
+#### Fixed
+- `daemon/src/main.c`: enable `net.ipv4.ip_forward=1` in the root netns once, at daemon startup, right after `network_init()`.
+- `daemon/src/main.c`: container-create's `REGISTRY_ERR_CREATE_FAILED` log line now copies `name` into a stack buffer before `json_free(root)` runs, instead of using the now-dangling pointer directly.
+
+#### Notes
+- `dns-1`/`dns-2` registered as DNS servers (`/etc/dnsmasq-hosts`), both real, upstream-forwarding (`1.1.1.1`/`8.8.8.8`) recursive resolvers -- live-verified: internal (`kanxeo.uk.home.arpa`) and real public (`example.com`) resolution both succeed against both servers directly.
+- Host's own resolver repointed at `192.168.15.101`/`192.168.15.102` (`kanxeoctl resolv set`), replacing the earlier temporary placeholder addresses.
+- Deployed as a root-squashfs-only update (kernel unchanged from Part 35's own deploy, resupplied anyway per the documented one-sided-update footgun) via the same local-build + LAN-serve + scratch-recipe mechanism.
+- No automated test exercises root-netns forwarding (same category of gap Part 35 already flagged) -- a future regression here would only surface the same way this one did.
+
 ### Part 35 (done, live-verified): CONFIG_VETH was never enabled -- every real container network attachment has always failed (ADR-0088)
 
 Found live while building the first real DNS containers this project has attempted: `POST /v1/containers` with any `networks` attachment on 192.168.15.95 failed outright with `"Operation not supported"`, reproduced identically for both a network with a real uplink and a pure isolated one. Root cause: `image/kernel/qemu-part1.config` has never enabled `CONFIG_VETH` in its entire history -- `src/container_net.c`'s `rtnl_veth_create()`, the only mechanism any container has ever gotten a network interface through, depends on it. `CONFIG_BRIDGE=y` (already enabled) is not sufficient alone -- a bridge needs veth or a real NIC to attach anything. Never caught before because every prior "container networking works" test in this project's history ran on this dev sandbox's own host kernel (which has veth natively), never on a kernel actually built from this project's own tracked config fragment.
