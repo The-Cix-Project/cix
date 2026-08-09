@@ -51,7 +51,9 @@ static void print_usage(FILE *out)
 	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] [--cpu-max=\"Q P\"]\n"
 	        "      [--cpuset=0-1,3] [--disk-quota=BYTES] [--network=NAME[:IP] ...]\n"
 	        "      [--ip-forward] [--dns-register] [--pki-issue] [--pki-cert-dir=PATH]\n"
-	        "      [--pki-days=N] [--route=DEST/PREFIX:VIA ...] [--device=ID ...]\n"
+	        "      [--pki-days=N] [--ldap-provision] [--ldap-user=NAME] [--ldap-group=NAME]\n"
+	        "      [--ldap-uid=N] [--ldap-secret-dir=PATH]\n"
+	        "      [--route=DEST/PREFIX:VIA ...] [--device=ID ...]\n"
 	        "      [--interface=IFNAME ...] [--restart=always|on-failure|unless-stopped]\n"
 	        "      [--restart-delay=N] [--depends-on=NAME ...]\n"
 	        "      [--readiness-tcp-port=N [--readiness-timeout=N]] -- CMD [ARGS...]\n"
@@ -2624,6 +2626,11 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	int pki_issue = 0;
 	const char *pki_cert_dir = NULL;
 	long pki_days = -1;
+	int ldap_provision = 0;
+	const char *ldap_user = NULL;
+	const char *ldap_group = NULL;
+	long ldap_uid = -1;
+	const char *ldap_secret_dir = NULL;
 	struct cli_route routes[CLI_MAX_ROUTES];
 	int route_count = 0;
 	struct cli_file_attach files[CLI_MAX_FILES];
@@ -2712,6 +2719,16 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 			pki_cert_dir = argv[i] + 15;
 		} else if (strncmp(argv[i], "--pki-days=", 11) == 0) {
 			pki_days = atol(argv[i] + 11);
+		} else if (strcmp(argv[i], "--ldap-provision") == 0) {
+			ldap_provision = 1;
+		} else if (strncmp(argv[i], "--ldap-user=", 12) == 0) {
+			ldap_user = argv[i] + 12;
+		} else if (strncmp(argv[i], "--ldap-group=", 13) == 0) {
+			ldap_group = argv[i] + 13;
+		} else if (strncmp(argv[i], "--ldap-uid=", 11) == 0) {
+			ldap_uid = atol(argv[i] + 11);
+		} else if (strncmp(argv[i], "--ldap-secret-dir=", 18) == 0) {
+			ldap_secret_dir = argv[i] + 18;
 		} else if (strncmp(argv[i], "--route=", 8) == 0) {
 			if (route_count >= CLI_MAX_ROUTES) {
 				fprintf(stderr, "kanxeoctl: too many --route= flags (max %d)\n",
@@ -2765,6 +2782,8 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		        "[--disk-quota=BYTES] [--disk=NAME] "
 		        "[--network=NAME[:IP] ...] [--ip-forward] [--dns-register] "
 		        "[--pki-issue] [--pki-cert-dir=PATH] [--pki-days=N] "
+		        "[--ldap-provision] [--ldap-user=NAME] [--ldap-group=NAME] "
+		        "[--ldap-uid=N] [--ldap-secret-dir=PATH] "
 		        "[--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--interface=IFNAME ...] "
 		        "[--restart=always|on-failure|unless-stopped] [--restart-delay=N] "
 		        "[--depends-on=NAME ...] "
@@ -2849,6 +2868,26 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		if (pki_days >= 0) {
 			jw_key(&w, "pki_days");
 			jw_int(&w, pki_days);
+		}
+	}
+	if (ldap_provision) {
+		jw_key(&w, "ldap_provision");
+		jw_bool(&w, 1);
+		if (ldap_user != NULL) {
+			jw_key(&w, "ldap_user");
+			jw_str(&w, ldap_user);
+		}
+		if (ldap_group != NULL) {
+			jw_key(&w, "ldap_group");
+			jw_str(&w, ldap_group);
+		}
+		if (ldap_uid >= 0) {
+			jw_key(&w, "ldap_uid");
+			jw_int(&w, ldap_uid);
+		}
+		if (ldap_secret_dir != NULL) {
+			jw_key(&w, "ldap_secret_dir");
+			jw_str(&w, ldap_secret_dir);
 		}
 	}
 	if (route_count > 0) {

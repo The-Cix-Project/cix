@@ -20,6 +20,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -521,6 +522,145 @@ int main(void)
 		kx_response_free(&r);
 
 		kx_client_request(&client, "DELETE", "/v1/containers/ldapcfg", NULL, &r);
+		kx_response_free(&r);
+	}
+
+	/*
+	 * 20-25. Task #727: the automatic provisioning hook. Mirrors
+	 * test_pki.c's own step 6b (pki_issue delivery verification) as
+	 * closely as possible -- a service account (not a human login,
+	 * task #726's own territory) auto-created for the container
+	 * itself, owner set to the container's name, a "search"
+	 * capability granted by default (glauth defaults to deny-all),
+	 * and a freshly generated secret delivered into the container's
+	 * own filesystem at /etc/kanxeo-ldap/bind.secret -- read directly
+	 * via /proc/<pid>/root/, the same privilege pki_issue's own test
+	 * already established (ADR-0013), not just assumed from a 201.
+	 */
+	{
+		int provtest_pid = -1;
+
+		/* 20. a group for provisioned accounts to join */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/ldap/groups",
+		                       "{\"name\":\"svcaccts\",\"gidnumber\":7001}", &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: create group svcaccts, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 21. ldap_provision without ldap_group naming a real group -> 400 */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"badprov\",\"image\":\"ldaptest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+		                       "\"ldap_provision\":true}",
+		                       &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: ldap_provision without a valid ldap_group expected 400, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 22. a real provisioned container -- default ldap_user
+		 * (the container's own name), default ldap_uid (allocated),
+		 * default ldap_secret_dir (/etc/kanxeo-ldap) */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"provtest\",\"image\":\"ldaptest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+		                       "\"ldap_provision\":true,\"ldap_group\":\"svcaccts\"}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST provtest (ldap_provision), status=%d\n", r.status);
+			ok = 0;
+		} else {
+			provtest_pid = (int)json_as_number(json_object_get(r.json, "pid"));
+		}
+		kx_response_free(&r);
+
+		/* 23. the auto-created service account: owner==container name,
+		 * primarygroup resolved, can_search granted, has_password */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/ldap/users/provtest", NULL, &r) != 0 ||
+		    r.status != 200 || !str_eq(json_str_field(r.json, "owner"), "provtest") ||
+		    (int)json_as_number(json_object_get(r.json, "primarygroup")) != 7001) {
+			fprintf(stderr, "FAIL: GET provtest ldap user, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *jsearch = json_object_get(r.json, "can_search");
+			const struct json_value *jpass = json_object_get(r.json, "has_password");
+
+			if (jsearch == NULL || jsearch->type != JSON_BOOL || !jsearch->u.boolean ||
+			    jpass == NULL || jpass->type != JSON_BOOL || !jpass->u.boolean) {
+				fprintf(stderr, "FAIL: provtest ldap user missing can_search/has_password\n");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		/* 24. the secret was really delivered into the container's own
+		 * filesystem, at the default path, chmod 0600 */
+		if (provtest_pid > 0) {
+			char proc_path[192];
+			struct stat st;
+			FILE *f;
+			char secret[128] = { 0 };
+			size_t n = 0;
+
+			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/kanxeo-ldap/bind.secret",
+			         provtest_pid);
+			if (stat(proc_path, &st) != 0 || (st.st_mode & 0777) != 0600) {
+				fprintf(stderr, "FAIL: delivered bind.secret missing or not chmod 0600 (%s)\n",
+				        proc_path);
+				ok = 0;
+			}
+			f = fopen(proc_path, "r");
+			if (f == NULL) {
+				fprintf(stderr, "FAIL: could not open delivered bind.secret (%s)\n", proc_path);
+				ok = 0;
+			} else {
+				n = fread(secret, 1, sizeof(secret) - 1, f);
+				fclose(f);
+				secret[n] = '\0';
+				/* ldap_generate_secret() reads LDAP_PROVISION_SECRET_LEN/2
+				 * (16) raw bytes and hex-encodes them -- 32 hex chars. */
+				if (n != 32) {
+					fprintf(stderr,
+					        "FAIL: delivered bind.secret has wrong length (got %zu, want 32)\n",
+					        n);
+					ok = 0;
+				}
+			}
+		} else {
+			fprintf(stderr, "FAIL: provtest never got a pid, skipping delivery checks\n");
+			ok = 0;
+		}
+
+		/* 25. deleting the container removes the auto-provisioned
+		 * account too (ldap_user_forget_owner(), mirroring
+		 * dns_record_forget_owner()/pki_cert_forget_owner()) */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "DELETE", "/v1/containers/provtest", NULL, &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: delete provtest, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/ldap/users/provtest", NULL, &r) != 0 ||
+		    r.status != 404) {
+			fprintf(stderr,
+			        "FAIL: provtest ldap user survived container deletion, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		kx_client_request(&client, "DELETE", "/v1/ldap/groups/svcaccts", NULL, &r);
 		kx_response_free(&r);
 	}
 

@@ -3795,6 +3795,53 @@ components:
           type: integer
           default: 365
           description: Validity period in days for the pki_issue certificate. Ignored otherwise.
+        ldap_provision:
+          type: boolean
+          default: false
+          description: >
+            If true, automatically creates an LDAP service/bind account
+            (see POST /ldap/users) for the container itself -- NOT a
+            human login account, those are created directly via POST
+            /ldap/users -- as part of container creation, and delivers a
+            freshly generated secret into the container's own filesystem.
+            Requires ldap_group to name an existing LDAP group (400
+            otherwise). A "search" capability is granted by default
+            (glauth denies all LDAP operations by default otherwise). The
+            plaintext secret is never persisted anywhere in Kanxeo's own
+            state -- only its SHA-256 hash survives -- so every
+            restart-always respawn regenerates and re-delivers a fresh
+            one. Best-effort past validation: an "already exists" account
+            (e.g. a respawn under restart:always) is tolerated and just
+            gets its secret re-delivered rather than failing container
+            creation. The account's owner field is set to this
+            container's name, and it is automatically removed when the
+            container is deleted.
+        ldap_user:
+          type: string
+          description: >
+            LDAP username for the ldap_provision service account.
+            Defaults to the container's own name. Ignored unless
+            ldap_provision is true.
+        ldap_group:
+          type: string
+          description: >
+            Name of an existing LDAP group (see POST /ldap/groups) the
+            provisioned service account joins as its primarygroup.
+            Required when ldap_provision is true (400 if omitted or the
+            group doesn't exist).
+        ldap_uid:
+          type: integer
+          description: >
+            uidnumber for the ldap_provision service account. Defaults to
+            an auto-allocated uid. Ignored unless ldap_provision is true.
+        ldap_secret_dir:
+          type: string
+          default: "/etc/kanxeo-ldap"
+          description: >
+            Destination directory inside the container (its own
+            filesystem view) that the delivered secret (bind.secret,
+            chmod 0600) is written into when ldap_provision is true.
+            Ignored otherwise.
         devices:
           type: array
           items:

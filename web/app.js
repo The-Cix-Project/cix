@@ -3218,6 +3218,11 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 	const pkiIssue = document.getElementById("f-pki-issue").checked;
 	const pkiCertDir = document.getElementById("f-pki-cert-dir").value.trim();
 	const pkiDaysText = document.getElementById("f-pki-days").value.trim();
+	const ldapProvision = document.getElementById("f-ldap-provision").checked;
+	const ldapGroup = document.getElementById("f-ldap-group").value.trim();
+	const ldapUser = document.getElementById("f-ldap-user").value.trim();
+	const ldapUidText = document.getElementById("f-ldap-uid").value.trim();
+	const ldapSecretDir = document.getElementById("f-ldap-secret-dir").value.trim();
 
 	const body = {
 		name: name,
@@ -3293,6 +3298,17 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 			body.pki_cert_dir = pkiCertDir;
 		if (pkiDaysText !== "")
 			body.pki_days = parseInt(pkiDaysText, 10);
+	}
+	if (ldapProvision) {
+		body.ldap_provision = true;
+		if (ldapGroup !== "")
+			body.ldap_group = ldapGroup;
+		if (ldapUser !== "")
+			body.ldap_user = ldapUser;
+		if (ldapUidText !== "")
+			body.ldap_uid = parseInt(ldapUidText, 10);
+		if (ldapSecretDir !== "")
+			body.ldap_secret_dir = ldapSecretDir;
 	}
 
 	try {

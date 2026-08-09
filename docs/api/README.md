@@ -269,6 +269,7 @@ POST /v1/containers
 - `networks` is optional: 1–64 entries, each either a bare name (auto-allocated IP) or `{"name": "internal", "ip": "172.31.0.50"}` for an explicit, operator-chosen address — each network must already exist via `POST /v1/networks` (`400` if unknown), and an explicit `ip` must be a usable address on that network: in its subnet, not the reserved address/network address, and not already taken (`400`/`409`). Omit `networks` entirely for no networking (isolated netns, only `lo` — same as before this field existed). The **first** entry is primary and gets the default route; the rest only get their own subnet's connected route.
 - `dns_register` is optional, default `false` — see [DNS: records + a real dnsmasq container](#dns-records--a-real-dnsmasq-container) below. Requires `networks` to be set (`400` otherwise).
 - `pki_issue`/`pki_cert_dir`/`pki_days` are optional, default `false`/`/etc/kanxeo-tls`/`365` — see [PKI: a root CA and issued leaf certificates](#pki-a-root-ca-and-issued-leaf-certificates) below. Requires the CA to already be bootstrapped (`400` otherwise); does **not** require `networks`.
+- `ldap_provision`/`ldap_user`/`ldap_group`/`ldap_uid`/`ldap_secret_dir` are optional, default `false`/(container's own name)/(required when `ldap_provision` is true)/(auto-allocated)/`/etc/kanxeo-ldap` — see [Automatic provisioning: ldap_provision](#automatic-provisioning-ldap_provision) below. Requires `ldap_group` to name an existing LDAP group (`400` otherwise); does **not** require `networks`.
 
 Response (`201`):
 
@@ -521,7 +522,7 @@ Registration is best-effort and non-fatal to container creation: if a record nam
 
 Also auto-maintained: this install's own instance DNS record (its FQDN pointing at its own `--bind=` address), reconciled at daemon startup and again on every `PUT /system/site` — see [This install's identity](#this-installs-identity-site-config) below.
 
-## LDAP: server registration (task #725) and user/group CRUD (task #726)
+## LDAP: server registration, user/group CRUD, and automatic provisioning
 
 LDAP server registration mirrors DNS server registration's own REST shape and persistence discipline, but with one real, deliberate difference: **registration itself never touches the container's filesystem or sends any signal**. `glauth` (`pkg/recipes/glauth/2.4.0/recipe.sh`, this platform's own standard integrable LDAP provider, replacing `lldap`) runs a real `fsnotify` watcher on its own config file whenever that file sets `watch_config = true` — confirmed directly against glauth's own source (`v2/glauth.go`'s `startConfigWatcher()`) — and reloads automatically on any write. DNS server registration exists because dnsmasq only reads its hosts file once at startup; glauth has no equivalent gap to work around.
 
@@ -552,9 +553,30 @@ POST /v1/ldap/users
 - Group `name`/user `name` follow POSIX-ish username rules (lowercase letters/digits/`_`/`-`, must start with a letter or `_`).
 - A user's `primarygroup` must name an existing group's `gidnumber` (`404`-equivalent `LDAP_RECORD_ERR_GROUP_NOT_FOUND` otherwise) — create the group first.
 - `password`, if given, is hashed with SHA-256 (`passsha256`, a real glauth "config" datastore field) via kanxeod's own already-linked OpenSSL `libcrypto` — never stored or echoed in plaintext, and never returned by any `GET` (only a `has_password` boolean is). Omitting `password` on `PUT .../users/{name}` leaves the existing credential unchanged.
-- Capability/ACL grants (glauth's own `capabilities` config stanza) are out of scope here — directory data only; see tasks #727/#728 for how a real consuming workload's bind/search rights get provisioned.
+- Capability/ACL grants (glauth's own `capabilities` config stanza) are set directly here only for the auto-provisioned service accounts below — the `password`/username/group CRUD above stays directory-data-only.
 
 `GET`/`DELETE` follow the same `/v1/ldap/users/{name}` and `/v1/ldap/groups/{name}` shape as every other named resource in this API; `PUT /v1/ldap/users/{name}` updates an existing user (full field replacement, `password` optional as above).
+
+### Automatic provisioning: `ldap_provision`
+
+Mirrors `dns_register`/`pki_issue`'s own container-creation-hook shape closely, but provisions a **service/bind account for the container itself** — not a human login account, those stay entirely in the CRUD endpoints above:
+
+```
+POST /v1/containers
+{
+  "name": "svc1", "image": "myapp",
+  "ldap_provision": true,
+  "ldap_group": "svcaccts"
+}
+```
+
+- `ldap_group` is required (`400` if omitted or the group doesn't exist) — the provisioned account's `primarygroup`.
+- `ldap_user` is optional, defaults to the container's own name.
+- `ldap_uid` is optional, defaults to an auto-allocated `uidnumber` (`ldap_uid_alloc()` picks the next free one above every currently-known user).
+- `ldap_secret_dir` is optional, default `/etc/kanxeo-ldap` — where the delivered `bind.secret` (chmod `0600`) lands inside the container's own filesystem.
+- A `"search"` capability (`object = "*"`) is granted by default — glauth denies all LDAP operations by default otherwise, and a bind-only account with zero capabilities couldn't do anything useful.
+- The secret itself is generated fresh from `/dev/urandom` (`ldap_generate_secret()`, 16 raw bytes hex-encoded to 32 characters) on every single fire of this hook, including every `restart:"always"` respawn — **the plaintext secret is never persisted anywhere in Kanxeo's own state**, only its SHA-256 hash (`passsha256`) survives in the durable user record. This means a respawned container always gets both a fresh secret and a fresh delivery, even though the underlying account (same name, same owner) already existed — tolerated the same way `pki_issue` tolerates re-delivery to a respawned container's fresh pid.
+- The account's `owner` field is set to the container's own name and it is automatically removed when the container is deleted (`ldap_user_forget_owner()`, called from the same container-delete cleanup path as `dns_record_forget_owner()`/`pki_cert_forget_owner()`).
 
 ## PKI: a CA chain and issued leaf certificates
 

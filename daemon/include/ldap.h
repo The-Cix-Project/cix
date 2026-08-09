@@ -132,6 +132,7 @@ void ldap_server_write_json_list(struct json_writer *w);
 #define LDAP_GROUP_NAME_MAX 32
 #define LDAP_USER_FIELD_MAX 128   /* givenname/sn/mail/loginshell/homedirectory */
 #define LDAP_PASSSHA256_LEN 64    /* hex-encoded SHA-256, no null in the count */
+#define LDAP_OWNER_NAME_MAX 64    /* matches REGISTRY_NAME_MAX, no header dependency -- same convention as DNS_OWNER_NAME_MAX */
 
 struct ldap_user {
 	char name[LDAP_USER_NAME_MAX];
@@ -144,6 +145,19 @@ struct ldap_user {
 	char homedirectory[LDAP_USER_FIELD_MAX];
 	char passsha256[LDAP_PASSSHA256_LEN + 1]; /* empty: no password set yet */
 	int disabled;
+	/* Task #727 (container-creation auto-provisioning) only, from here down --
+	 * never settable via the public user-CRUD REST body (POST/PUT .../users). */
+	char owner_container[LDAP_OWNER_NAME_MAX]; /* empty: not auto-provisioned; else the
+	                                             * container that owns this account --
+	                                             * auto-removed via ldap_user_forget_owner()
+	                                             * on container delete, same as
+	                                             * dns_record_forget_owner(). */
+	int can_search; /* grants a minimal glauth "search" capability (object "*"),
+	                  * rendered as a [[users.capabilities]] sub-stanza -- without
+	                  * it a provisioned service account can bind but not search,
+	                  * useless for looking up another user's DN. Real, scoped
+	                  * capability support; the general ACL/grant design for
+	                  * manually-created users is still deferred to task #728. */
 };
 
 struct ldap_group {
@@ -179,11 +193,14 @@ void ldap_group_write_json_list(struct json_writer *w);
 struct ldap_user *ldap_user_find(const char *name);
 /* password == NULL: leave passsha256 unset (create) or unchanged
  * (update). password == "" is treated the same as NULL -- an empty
- * credential is never written. */
+ * credential is never written. owner_container/can_search: task
+ * #727's own fields (see struct ldap_user's own comment) -- every
+ * caller outside the auto-provisioning hook in main.c passes NULL/0. */
 enum ldap_record_error ldap_user_create(const char *name, int uidnumber, int primarygroup,
                                          const char *givenname, const char *sn, const char *mail,
                                          const char *loginshell, const char *homedirectory,
                                          const char *password, int disabled,
+                                         const char *owner_container, int can_search,
                                          struct ldap_user **out);
 enum ldap_record_error ldap_user_update(const char *name, int uidnumber, int primarygroup,
                                          const char *givenname, const char *sn, const char *mail,
@@ -193,6 +210,34 @@ enum ldap_record_error ldap_user_update(const char *name, int uidnumber, int pri
 enum ldap_record_error ldap_user_delete(const char *name);
 void ldap_user_write_json_one(const struct ldap_user *u, struct json_writer *w);
 void ldap_user_write_json_list(struct json_writer *w);
+
+/* Best-effort cleanup on container deletion, mirroring dns_record_
+ * forget_owner()/pki_cert_forget_owner() exactly: deletes name's
+ * account iff it exists and its owner_container is container_name
+ * itself. Safe no-op for every container that was never auto-
+ * provisioned, so this is called unconditionally from the
+ * container-delete handler. */
+void ldap_user_forget_owner(const char *container_name);
+
+/* Returns the lowest unused uidnumber >= 10000 (a service-account
+ * range, distinct from the human-numbered 5000s an operator would
+ * typically pick by hand) -- used by the container-creation LDAP
+ * auto-provisioning hook (task #727) when no explicit uid is given. */
+int ldap_uid_alloc(void);
+
+#define LDAP_PROVISION_SECRET_LEN 32 /* hex-encoded random bytes */
+
+/* Fills out with a fresh, random provisioning secret (32 lowercase
+ * hex chars, from /dev/urandom) for task #727's auto-provisioning
+ * hook. Never persisted in plaintext anywhere -- the caller hashes it
+ * via ldap_user_create()'s own password param and delivers the
+ * plaintext directly into the freshly-created container's filesystem
+ * in the same request, the same "generate once, deliver once, only
+ * the hash survives" shape pki_cert_deliver() already established for
+ * TLS keys. Returns 0 on success, -1 if /dev/urandom couldn't be read
+ * (never expected on a real Linux kernel, but checked rather than
+ * trusted). */
+int ldap_generate_secret(char out[LDAP_PROVISION_SECRET_LEN + 1]);
 
 /* Full re-population of every currently-registered, currently-running
  * LDAP server's own config file from Kanxeo's own record store -- the

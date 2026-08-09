@@ -67,6 +67,7 @@ run --name=NAME --image=IMAGE
     [--network=NAME[:IP] ...] [--ip-forward]
     [--dns-register]
     [--pki-issue] [--pki-cert-dir=PATH] [--pki-days=N]
+    [--ldap-provision] [--ldap-user=NAME] [--ldap-group=NAME] [--ldap-uid=N] [--ldap-secret-dir=PATH]
     [--route=DEST/PREFIX:VIA ...]
     [--device=ID ...] [--interface=IFNAME ...]
     [--restart=always|on-failure|unless-stopped] [--restart-delay=N]

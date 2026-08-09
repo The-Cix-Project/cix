@@ -970,6 +970,29 @@
 							<input type="number" id="f-pki-days" min="1" placeholder="365">
 						</label>
 					</fieldset>
+					<fieldset>
+						<legend>LDAP</legend>
+						<label class="checkbox">
+							<input type="checkbox" id="f-ldap-provision">
+							Provision service account
+						</label>
+						<label>
+							LDAP group
+							<input type="text" id="f-ldap-group" placeholder="required if provisioning">
+						</label>
+						<label>
+							LDAP username
+							<input type="text" id="f-ldap-user" placeholder="(container's own name)">
+						</label>
+						<label>
+							uidnumber
+							<input type="number" id="f-ldap-uid" min="1" placeholder="(auto-allocated)">
+						</label>
+						<label>
+							Secret dir
+							<input type="text" id="f-ldap-secret-dir" placeholder="/etc/kanxeo-ldap">
+						</label>
+					</fieldset>
 					<button type="submit">Run</button>
 				</form>
 			</div>

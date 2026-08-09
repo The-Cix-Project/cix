@@ -2,10 +2,12 @@
 #include "persist.h"
 #include "registry.h"
 
+#include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <openssl/sha.h>
 
@@ -242,6 +244,13 @@ static void write_user_persist_one(const struct ldap_user *u, struct json_writer
 	jw_str(w, u->passsha256);
 	jw_key(w, "disabled");
 	jw_bool(w, u->disabled != 0);
+	jw_key(w, "owner");
+	if (u->owner_container[0] != '\0')
+		jw_str(w, u->owner_container);
+	else
+		jw_null(w);
+	jw_key(w, "can_search");
+	jw_bool(w, u->can_search != 0);
 	jw_obj_close(w);
 }
 
@@ -304,6 +313,7 @@ static int load_users_state(void)
 		const char *loginshell = json_as_string(json_object_get(item, "loginshell"));
 		const char *homedirectory = json_as_string(json_object_get(item, "homedirectory"));
 		const char *passsha256 = json_as_string(json_object_get(item, "passsha256"));
+		const char *owner = json_as_string(json_object_get(item, "owner"));
 		struct ldap_user *u;
 
 		if (!ldap_username_is_valid(name))
@@ -326,7 +336,10 @@ static int load_users_state(void)
 			strncpy(u->homedirectory, homedirectory, sizeof(u->homedirectory) - 1);
 		if (passsha256 != NULL)
 			strncpy(u->passsha256, passsha256, sizeof(u->passsha256) - 1);
+		if (owner != NULL)
+			strncpy(u->owner_container, owner, sizeof(u->owner_container) - 1);
 		u->disabled = json_as_number(json_object_get(item, "disabled")) != 0;
+		u->can_search = json_as_number(json_object_get(item, "can_search")) != 0;
 		count++;
 	}
 	json_free(root);
@@ -556,6 +569,15 @@ static size_t render_users_groups_toml(char *buf, size_t bufsize)
 			toml_append_string(buf, bufsize, &off, u->passsha256);
 		}
 		toml_append_raw(buf, bufsize, &off, "\n");
+		if (u->can_search) {
+			/* Task #727: a minimal, self-only capability grant for an
+			 * auto-provisioned service account -- syntax verified
+			 * directly against glauth's own real sample config
+			 * (v2/sample-simple.cfg's own "[[users.capabilities]]"
+			 * nested array-of-tables under a [[users]] entry). */
+			toml_append_raw(buf, bufsize, &off,
+			                 "  [[users.capabilities]]\n  action = \"search\"\n  object = \"*\"\n");
+		}
 	}
 	return off >= bufsize ? (size_t)-1 : off;
 }
@@ -775,6 +797,7 @@ enum ldap_record_error ldap_user_create(const char *name, int uidnumber, int pri
                                          const char *givenname, const char *sn, const char *mail,
                                          const char *loginshell, const char *homedirectory,
                                          const char *password, int disabled,
+                                         const char *owner_container, int can_search,
                                          struct ldap_user **out)
 {
 	int i, slot = -1;
@@ -803,6 +826,9 @@ enum ldap_record_error ldap_user_create(const char *name, int uidnumber, int pri
 	strncpy(u->name, name, sizeof(u->name) - 1);
 	fill_user_fields(u, uidnumber, primarygroup, givenname, sn, mail, loginshell, homedirectory,
 	                  password, disabled);
+	if (owner_container != NULL)
+		strncpy(u->owner_container, owner_container, sizeof(u->owner_container) - 1);
+	u->can_search = can_search ? 1 : 0;
 
 	if (save_users_state() != 0) {
 		memset(u, 0, sizeof(*u));
@@ -903,6 +929,13 @@ void ldap_user_write_json_one(const struct ldap_user *u, struct json_writer *w)
 	jw_bool(w, u->passsha256[0] != '\0');
 	jw_key(w, "disabled");
 	jw_bool(w, u->disabled != 0);
+	jw_key(w, "owner");
+	if (u->owner_container[0] != '\0')
+		jw_str(w, u->owner_container);
+	else
+		jw_null(w);
+	jw_key(w, "can_search");
+	jw_bool(w, u->can_search != 0);
 	jw_obj_close(w);
 }
 
@@ -916,4 +949,65 @@ void ldap_user_write_json_list(struct json_writer *w)
 			ldap_user_write_json_one(&g_users[i], w);
 	}
 	jw_arr_close(w);
+}
+
+void ldap_user_forget_owner(const char *container_name)
+{
+	int i;
+
+	for (i = 0; i < LDAP_USER_MAX; i++) {
+		if (g_users[i].name[0] != '\0' &&
+		    strcmp(g_users[i].owner_container, container_name) == 0) {
+			memset(&g_users[i], 0, sizeof(g_users[i]));
+			save_users_state();
+			ldap_record_sync_all();
+			return;
+		}
+	}
+}
+
+int ldap_uid_alloc(void)
+{
+	int uid = 10000;
+	int i;
+
+	for (;;) {
+		int in_use = 0;
+
+		for (i = 0; i < LDAP_USER_MAX; i++) {
+			if (g_users[i].name[0] != '\0' && g_users[i].uidnumber == uid) {
+				in_use = 1;
+				break;
+			}
+		}
+		if (!in_use)
+			return uid;
+		uid++;
+	}
+}
+
+int ldap_generate_secret(char out[LDAP_PROVISION_SECRET_LEN + 1])
+{
+	unsigned char raw[LDAP_PROVISION_SECRET_LEN / 2];
+	int fd;
+	ssize_t n;
+	size_t total = 0;
+	size_t i;
+
+	fd = open("/dev/urandom", O_RDONLY);
+	if (fd < 0)
+		return -1;
+	while (total < sizeof(raw)) {
+		n = read(fd, raw + total, sizeof(raw) - total);
+		if (n <= 0) {
+			close(fd);
+			return -1;
+		}
+		total += (size_t)n;
+	}
+	close(fd);
+
+	for (i = 0; i < sizeof(raw); i++)
+		snprintf(out + i * 2, 3, "%02x", raw[i]);
+	return 0;
 }

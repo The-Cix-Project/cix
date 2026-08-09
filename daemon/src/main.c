@@ -4999,6 +4999,13 @@ static int create_container_from_body(const char *body, size_t body_len,
 	int pki_issue = 0;
 	char pki_cert_dir_buf[PATH_MAX];
 	int pki_days = 365;
+	const struct json_value *jldap_provision, *jldap_user, *jldap_group, *jldap_uid,
+	    *jldap_secret_dir;
+	int ldap_provision = 0;
+	char ldap_user_buf[LDAP_USER_NAME_MAX];
+	char ldap_group_buf[LDAP_GROUP_NAME_MAX];
+	int ldap_uid = 0;
+	char ldap_secret_dir_buf[PATH_MAX];
 	const struct json_value *jdisk;
 	const char *disk_name;
 	char container_root[PATH_MAX];
@@ -5042,6 +5049,30 @@ static int create_container_from_body(const char *body, size_t body_len,
 	                                                  "/etc/kanxeo-tls");
 	if (jpki_days != NULL)
 		pki_days = (int)json_as_number(jpki_days);
+
+	/* Task #727: auto-provisioning hook. ldap_user_buf left empty
+	 * (rather than defaulted here) when omitted -- the firing block
+	 * below defaults it to entry->name, a stable post-json_free()
+	 * buffer, not the raw `name` pointer into root this parse
+	 * function must not still be holding onto by then. */
+	jldap_provision = json_object_get(root, "ldap_provision");
+	jldap_user = json_object_get(root, "ldap_user");
+	jldap_group = json_object_get(root, "ldap_group");
+	jldap_uid = json_object_get(root, "ldap_uid");
+	jldap_secret_dir = json_object_get(root, "ldap_secret_dir");
+	ldap_provision = (jldap_provision != NULL && jldap_provision->type == JSON_BOOL &&
+	                   jldap_provision->u.boolean);
+	ldap_user_buf[0] = '\0';
+	if (json_as_string(jldap_user) != NULL)
+		snprintf(ldap_user_buf, sizeof(ldap_user_buf), "%s", json_as_string(jldap_user));
+	ldap_group_buf[0] = '\0';
+	if (json_as_string(jldap_group) != NULL)
+		snprintf(ldap_group_buf, sizeof(ldap_group_buf), "%s", json_as_string(jldap_group));
+	if (jldap_uid != NULL)
+		ldap_uid = (int)json_as_number(jldap_uid);
+	snprintf(ldap_secret_dir_buf, sizeof(ldap_secret_dir_buf), "%s",
+	         json_as_string(jldap_secret_dir) != NULL ? json_as_string(jldap_secret_dir) :
+	                                                     "/etc/kanxeo-ldap");
 
 	jrestart = json_object_get(root, "restart");
 	restart_str = json_as_string(jrestart);
@@ -5184,6 +5215,31 @@ static int create_container_from_body(const char *body, size_t body_len,
 		json_free(root);
 		snprintf(err_msg, err_msg_size, "pki_issue requires the CA to be bootstrapped -- POST /v1/pki/ca first");
 		return 400;
+	}
+	if (ldap_provision) {
+		/* Group must exist -- ldap_user_create() would reject an
+		 * unresolvable primarygroup anyway, but checking here (before
+		 * the container itself is created) matches pki_issue's own
+		 * "fail fast on an obviously-unsatisfiable request" pattern,
+		 * and reads by ldap.c's own in-memory table (no root pointer
+		 * involved), so it's safe this early. Auto-creating the group
+		 * is deliberately not done -- an operator's own group naming/
+		 * gid-numbering choices shouldn't be second-guessed here. */
+		if (ldap_group_buf[0] == '\0' || ldap_group_find(ldap_group_buf) == NULL) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size,
+			         "ldap_provision requires ldap_group to name an existing LDAP group");
+			return 400;
+		}
+		/* An explicit ldap_user must already be a valid LDAP username
+		 * (default-to-container-name happens later, post-json_free(),
+		 * and is validated there too -- container names allow a wider
+		 * charset than LDAP usernames do). */
+		if (ldap_user_buf[0] != '\0' && !ldap_username_is_valid(ldap_user_buf)) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "ldap_user is not a valid LDAP username");
+			return 400;
+		}
 	}
 	if (jroutes != NULL) {
 		if (jroutes->type != JSON_ARRAY || jroutes->u.array.count > CONTAINER_MAX_ROUTES) {
@@ -5746,6 +5802,76 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 	}
 
+	if (ldap_provision) {
+		/* task #727: a service/bind identity for this container itself --
+		 * NOT a human login account (those are created directly via
+		 * POST /v1/ldap/users, task #726). Mirrors pki_issue's own
+		 * shape closely: pid-dependent (secret delivery needs a live
+		 * container root), so it fires in this same post-pidfd block,
+		 * and tolerates its own "already exists" case the identical
+		 * way pki_issue tolerates PKI_ERR_DUPLICATE -- a respawn under
+		 * restart-always gets a fresh pid and needs its secret
+		 * delivered again even though the account itself already
+		 * exists. The plaintext secret is never persisted anywhere
+		 * (see ldap_generate_secret()'s own comment) -- a fresh one is
+		 * generated and re-hashed into the account on every single
+		 * fire of this block, respawn or not, and only this one
+		 * delivery ever sees the plaintext. */
+		const struct ldap_group *g = ldap_group_find(ldap_group_buf); /* validated non-empty above */
+		const char *ldap_user_name = ldap_user_buf[0] != '\0' ? ldap_user_buf : entry->name;
+		int uid = ldap_uid != 0 ? ldap_uid : ldap_uid_alloc();
+		char secret[LDAP_PROVISION_SECRET_LEN + 1];
+		struct ldap_user *u = NULL;
+		enum ldap_record_error lerr = LDAP_RECORD_ERR_NOT_FOUND;
+
+		if (!ldap_username_is_valid(ldap_user_name)) {
+			fprintf(stderr,
+			        "%s: ldap_provision requested but the container name isn't a valid "
+			        "LDAP username -- pass ldap_user= explicitly\n",
+			        entry->name);
+		} else if (g == NULL || ldap_generate_secret(secret) != 0) {
+			fprintf(stderr, "%s: ldap_provision requested but the group vanished or "
+			                "/dev/urandom couldn't be read\n",
+			        entry->name);
+		} else {
+			lerr = ldap_user_create(ldap_user_name, uid, g->gidnumber, NULL, NULL, NULL, NULL,
+			                         NULL, secret, 0, entry->name, 1, &u);
+			if (lerr == LDAP_RECORD_ERR_DUPLICATE) {
+				/* Respawn under restart-always: the account already
+				 * exists (from this container's own first start) --
+				 * re-hash the freshly generated secret into it so
+				 * this respawn's own delivery below is valid. */
+				u = ldap_user_find(ldap_user_name);
+				if (u != NULL)
+					lerr = ldap_user_update(ldap_user_name, uid, g->gidnumber, u->givenname,
+					                         u->sn, u->mail, u->loginshell, u->homedirectory,
+					                         secret, u->disabled, &u);
+			}
+			if (lerr != LDAP_RECORD_OK || u == NULL) {
+				fprintf(stderr,
+				        "%s: ldap_provision requested but the account create/update failed "
+				        "(err=%d)\n",
+				        entry->name, (int)lerr);
+			} else {
+				char parent[PATH_MAX + 32], dst[PATH_MAX + 32];
+
+				if (snprintf(parent, sizeof(parent), "/proc/%d/root%s",
+				             (int)entry->handle.pid, ldap_secret_dir_buf) >=
+				        (int)sizeof(parent) ||
+				    snprintf(dst, sizeof(dst), "%s/bind.secret", parent) >= (int)sizeof(dst) ||
+				    persist_mkdir_p(parent) != 0 ||
+				    persist_atomic_write(dst, secret, strlen(secret)) != 0) {
+					fprintf(stderr,
+					        "%s: ldap_provision account ready but delivering its secret "
+					        "into the container failed\n",
+					        entry->name);
+				} else {
+					chmod(dst, 0600);
+				}
+			}
+		}
+	}
+
 	*out_entry = entry;
 	return 0;
 }
@@ -5935,6 +6061,7 @@ static void handle_delete(int fd, const char *name)
 		dns_server_forget(name);
 		dns_record_forget_owner(name);
 		ldap_server_forget(name);
+		ldap_user_forget_owner(name);
 		pki_cert_forget_owner(name);
 	}
 	/*
@@ -7739,7 +7866,7 @@ static void handle_ldap_user_create(int fd, const char *body, size_t body_len)
 	}
 
 	rerr = ldap_user_create(name, uidnumber, primarygroup, givenname, sn, mail, loginshell,
-	                         homedirectory, password, disabled, &u);
+	                         homedirectory, password, disabled, NULL, 0, &u);
 	json_free(root); /* u points into ldap.c's own record store, not root -- safe past here */
 	if (rerr != LDAP_RECORD_OK) {
 		respond_ldap_record_error(fd, rerr);
