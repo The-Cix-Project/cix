@@ -14,6 +14,17 @@ Found live, mid-redeploy this session: pushing `kanxeo` v1.7.0 to 192.168.15.95 
 - Deliberately proportionate to the actual problem: curl's own `-S` error output is always short and produced once, so a small sidecar file was chosen over reusing ADR-0087's epoll-drained build-output pipe (built specifically for a long-running build's potentially-megabyte output) -- reusing that machinery here would have meant threading a new fd through every one of `start_fetch_for()`'s callers and main.c's five separate registration call sites for no benefit.
 - No new dedicated fetch-failure test was added this pass -- reproducing a real curl stderr failure deterministically needs a fake failing HTTP fixture the existing sandboxed (no real network egress) test harness doesn't have; a real, acknowledged gap.
 
+### Part 42 (done, live-verified via a real kanxeo v1.7.1 hostbuild): mkbootroot never staged a CA certificate bundle (ADR-0097)
+
+Found immediately after Part 41's fetch-diagnostic capture landed, on the very next redeploy attempt: with the DNS-forwarding gap fixed too (a separate, real, live-only issue -- `dns-1`/`dns-2` never forwarding the operator's own `home.arpa` zone upstream, fixed directly on the box, not a code change), the same fetch failed a second, different way -- `curl: (77) error setting certificate file: /etc/ssl/certs/ca-certificates.crt`. `curl.recipe`'s own build-time auto-detected default CA path has never actually been staged onto the assembled control-plane root by `mkbootroot.c` -- `openssl.cnf` gets this treatment already (added after a real `pki ca bootstrap` failure), the CA bundle never did.
+
+#### Fixed
+- `image/src/mkbootroot.c`: stages a real `/etc/ssl/certs/ca-certificates.crt` into the assembled root immediately after the existing `openssl.cnf` staging block, same mechanism, sourced from wherever `mkbootroot` itself runs when no better source is given.
+
+#### Notes
+- Live-verified directly and about as strongly as possible: the exact `kanxeo` v1.7.1 hostbuild that surfaced this bug (real HTTPS, token-authenticated, `git.home.arpa`) completed successfully -- fetch, build, and install -- once this fix (and the DNS fix) were deployed.
+- A separate, real gap surfaced immediately after and is intentionally not fixed here: the server-side mkbootroot re-assembly that normally follows a successful `kanxeo` hostbuild (ADR-0057) itself fails with `sha256sum: No such file or directory`, sourcing from the `kanxeo-hosttools` image's own rootfs -- that image was never given a real `sha256sum` binary. Tracked separately.
+
 ### Part 40 (done, live-verified via a real QEMU boot-update round trip): the /system/update one-sided image_path/kernel_path footgun, closed at the source (ADR-0095)
 
 `POST /system/update`'s own `image_path`/`kernel_path` have always been independently optional — but omitting one used to leave the inactive slot's own copy of that file exactly as stale as it was from whenever that slot was last written, a real footgun this project's own guides have documented and manually worked around (always resupply both, even the unchanged one) since early on, never fixed at the source until now (task #671).

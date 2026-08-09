@@ -474,6 +474,36 @@ int main(int argc, char **argv)
 			if (test_image_fixture_copy_file("/usr/lib/ssl/openssl.cnf", dst) != 0)
 				return 1;
 		}
+
+		/*
+		 * ADR-0096's own follow-on: curl.recipe's ./configure auto-
+		 * detects a CA bundle path at build time from whatever machine
+		 * builds it (Debian convention: /etc/ssl/certs/ca-certificates.crt)
+		 * and compiles that path in as its default -- but nothing in this
+		 * file has ever actually staged a real bundle there, so every
+		 * host-side HTTPS pkg_source fetch (PKG_CURL_BIN) has had no way
+		 * to verify a TLS cert at all. Found live via ADR-0096's own new
+		 * diagnostic capture: "curl: (77) error setting certificate file:
+		 * /etc/ssl/certs/ca-certificates.crt" on a real kanxeo hostbuild
+		 * fetch, previously invisible behind a bare "curl exit status 1".
+		 * Same fix shape as openssl.cnf just above: copy the real bundle
+		 * from wherever this tool itself runs -- test_image_fixture_copy_file()
+		 * follows symlinks transparently, so a distro's usual
+		 * ca-certificates -> a real file chain lands as one plain file.
+		 */
+		if (ensure_dir_under(image_root, "etc") != 0)
+			return 1;
+		if (ensure_dir_under(image_root, "etc/ssl") != 0)
+			return 1;
+		if (ensure_dir_under(image_root, "etc/ssl/certs") != 0)
+			return 1;
+		{
+			char dst[PATH_MAX];
+
+			snprintf(dst, sizeof(dst), "%s/etc/ssl/certs/ca-certificates.crt", image_root);
+			if (test_image_fixture_copy_file("/etc/ssl/certs/ca-certificates.crt", dst) != 0)
+				return 1;
+		}
 	}
 
 	/*
