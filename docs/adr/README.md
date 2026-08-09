@@ -100,3 +100,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0093](0093-extract-tarball-assumed-wrapping-directory.md) | extract_tarball() assumed every source tarball has a wrapping directory | Accepted |
 | [0094](0094-hostbuild-upgrade-flag.md) | pkg hostbuild had no upgrade/force path, a bare permanent 409 | Accepted |
 | [0095](0095-update-one-sided-footgun.md) | POST /system/update's one-sided image_path/kernel_path footgun | Accepted |
+| [0096](0096-pkg-fetch-diagnostic-capture.md) | pkg fetch failures reported only a bare curl exit code, curl's own real error text was discarded | Accepted |

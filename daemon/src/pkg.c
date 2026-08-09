@@ -184,6 +184,26 @@ static void image_rootfs_path(const char *image, char *out, size_t out_size)
 	snprintf(out, out_size, "%s/%s/rootfs", g_images_dir, normalize_image(image));
 }
 
+/*
+ * Where start_fetch_for()'s child stashes curl's own real stderr text
+ * on a failed fetch, for pkg_fetch_completed() (running later, in the
+ * real daemon process, once the async job's exit status arrives) to
+ * read back. A plain integer exit status alone was a genuine, silent
+ * diagnostic gap here -- unlike the build path (ADR-0087's build
+ * output pipe), a bare "curl exit status 1" gives no way to tell
+ * "unsupported protocol" apart from a DNS failure, a TLS failure, or
+ * anything else curl's own -S flag would have reported on stderr.
+ * A small sidecar file (not a pipe+epoll registration like the build
+ * output capture) is deliberately proportionate here: curl's own
+ * error output is always a few short lines, never the megabytes of
+ * output a long-running build can produce, so there is no deadlock
+ * risk to design around and no need for incremental draining.
+ */
+static void fetch_error_sidecar_path(const char *name, char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/.fetcherr-%s", g_sources_dir, name);
+}
+
 static struct pkg_entry *pkg_find(const char *name, const char *image)
 {
 	int i;
@@ -1462,11 +1482,16 @@ static enum pkg_error start_fetch_for(const char *name, pid_t *out_pid, int *out
 		 * sequence; pkg_fetch_completed()'s existing "one exit status
 		 * summarizes the whole fetch" contract needs no change. */
 		int j;
+		char fetch_err_path[PATH_MAX];
+
+		fetch_error_sidecar_path(recipe.name, fetch_err_path, sizeof(fetch_err_path));
+		unlink(fetch_err_path);
 
 		for (j = 0; j < recipe.source_count; j++) {
 			char src_tarball_path[PATH_MAX];
 			pid_t sub;
 			int status;
+			int errpipe[2];
 			/*
 			 * --retry/--retry-all-errors/-C -: large sources
 			 * (e.g. kernel.recipe's ~150MB tarball) hit real,
@@ -1509,16 +1534,59 @@ static enum pkg_error start_fetch_for(const char *name, pid_t *out_pid, int *out
 			 */
 			unlink(src_tarball_path);
 
+			/*
+			 * curl's own -S text (whatever real reason it failed
+			 * for -- unsupported protocol, TLS, DNS, a bad status
+			 * code) is the only thing that can tell those apart;
+			 * see fetch_error_sidecar_path()'s own comment. Best
+			 * effort only: if pipe2() itself fails, fall back to
+			 * the old behavior (curl inherits this process's own
+			 * stderr) rather than aborting the fetch over a
+			 * diagnostics-only setup failure.
+			 */
+			if (pipe2(errpipe, O_CLOEXEC) != 0) {
+				errpipe[0] = -1;
+				errpipe[1] = -1;
+			}
+
 			sub = fork();
-			if (sub < 0)
+			if (sub < 0) {
+				if (errpipe[0] >= 0)
+					close(errpipe[0]);
+				if (errpipe[1] >= 0)
+					close(errpipe[1]);
 				_exit(1);
+			}
 			if (sub == 0) {
+				if (errpipe[1] >= 0)
+					dup2(errpipe[1], STDERR_FILENO);
 				execve(PKG_CURL_BIN, argv, environ);
 				_exit(127);
 			}
+			if (errpipe[1] >= 0)
+				close(errpipe[1]);
 			if (waitpid(sub, &status, 0) != sub || !WIFEXITED(status) ||
-			    WEXITSTATUS(status) != 0)
+			    WEXITSTATUS(status) != 0) {
+				if (errpipe[0] >= 0) {
+					char errbuf[512];
+					ssize_t n = read(errpipe[0], errbuf, sizeof(errbuf) - 1);
+					int fd;
+
+					close(errpipe[0]);
+					if (n > 0) {
+						errbuf[n] = '\0';
+						fd = open(fetch_err_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+						if (fd >= 0) {
+							ssize_t written = write(fd, errbuf, (size_t)n);
+							(void)written;
+							close(fd);
+						}
+					}
+				}
 				_exit(1);
+			}
+			if (errpipe[0] >= 0)
+				close(errpipe[0]);
 		}
 		_exit(0);
 	}
@@ -1683,8 +1751,39 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 	is_final_upgrade = g_dep_queue_is_upgrade && (g_dep_queue_pos + 1 >= g_dep_queue_count);
 
 	if (exit_status != 0) {
+		char fetch_err_path[PATH_MAX];
+		char detail[512];
+		int detail_len = 0;
+		int fd;
+
+		detail[0] = '\0';
+		fetch_error_sidecar_path(e->name, fetch_err_path, sizeof(fetch_err_path));
+		fd = open(fetch_err_path, O_RDONLY);
+		if (fd >= 0) {
+			ssize_t n = read(fd, detail, sizeof(detail) - 1);
+
+			close(fd);
+			unlink(fetch_err_path);
+			if (n > 0) {
+				detail_len = (int)n;
+				/* curl's own error text always ends in its own
+				 * newline; strip trailing whitespace so it reads
+				 * naturally packed into e->error/the log line
+				 * below rather than leaving a dangling blank line. */
+				while (detail_len > 0 && (detail[detail_len - 1] == '\n' ||
+				                           detail[detail_len - 1] == '\r'))
+					detail_len--;
+				detail[detail_len] = '\0';
+			}
+		}
+
 		e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
-		snprintf(e->error, sizeof(e->error), "fetch failed (curl exit status %d)", exit_status);
+		if (detail_len > 0)
+			snprintf(e->error, sizeof(e->error), "fetch failed (curl exit status %d): %s",
+			         exit_status, detail);
+		else
+			snprintf(e->error, sizeof(e->error), "fetch failed (curl exit status %d)", exit_status);
+		logstore_write("kanxeod", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
 		g_current_job_name[0] = '\0';
 		g_dep_queue_count = 0;
 		return 0;

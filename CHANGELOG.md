@@ -2,6 +2,18 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 41 (done, local regression sweep clean; live-verified against the real fetch failure that motivated it): pkg fetch failures now report curl's own real error text, not just a bare exit code (ADR-0096)
+
+Found live, mid-redeploy this session: pushing `kanxeo` v1.7.0 to 192.168.15.95 via `pkg hostbuild` failed with only `"fetch failed (curl exit status 1)"` -- no way to tell why, since `start_fetch_for()`'s curl child never captured its own stderr anywhere. The instinctive move (re-serving the tarball over the LAN, the established workaround for a *different*, real problem -- a fresh install with no SSH/shell) was explicitly rejected: it would have unblocked the deploy without ever explaining the failure, leaving the same silent gap for next time. Fixed at the root instead.
+
+#### Fixed
+- `daemon/src/pkg.c`: `start_fetch_for()`'s curl child now pipes its own stderr to a small sidecar file (`fetch_error_sidecar_path()`) on a failed fetch, via a short-lived `pipe2()` + `dup2()` onto the grandchild's `STDERR_FILENO` -- a synchronous, single `read()` after `waitpid()` (curl has already exited by then, so no deadlock risk, unlike the build path's still-running output). `pkg_fetch_completed()` reads it back, folds curl's own real error text into `e->error`, and logs it via `logstore_write()` (a fetch failure previously had no log store entry at all).
+
+#### Notes
+- Full local regression sweep clean (`test_pkg`, `test_daemon`, `test_cli`, `test_dns`, `test_system_update`), zero compiler warnings.
+- Deliberately proportionate to the actual problem: curl's own `-S` error output is always short and produced once, so a small sidecar file was chosen over reusing ADR-0087's epoll-drained build-output pipe (built specifically for a long-running build's potentially-megabyte output) -- reusing that machinery here would have meant threading a new fd through every one of `start_fetch_for()`'s callers and main.c's five separate registration call sites for no benefit.
+- No new dedicated fetch-failure test was added this pass -- reproducing a real curl stderr failure deterministically needs a fake failing HTTP fixture the existing sandboxed (no real network egress) test harness doesn't have; a real, acknowledged gap.
+
 ### Part 40 (done, live-verified via a real QEMU boot-update round trip): the /system/update one-sided image_path/kernel_path footgun, closed at the source (ADR-0095)
 
 `POST /system/update`'s own `image_path`/`kernel_path` have always been independently optional — but omitting one used to leave the inactive slot's own copy of that file exactly as stale as it was from whenever that slot was last written, a real footgun this project's own guides have documented and manually worked around (always resupply both, even the unchanged one) since early on, never fixed at the source until now (task #671).
