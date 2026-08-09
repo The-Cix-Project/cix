@@ -4774,6 +4774,11 @@ components:
             Paths (relative to the base image root) this package installed. Empty until
             state is "installed". Symlinks in a package's own DESTDIR output are skipped
             in v1 (a documented boundary) -- only regular files are copied and manifested.
+            Always empty for a hostbuild entry (is_hostbuild=true), by design, not a bug:
+            a hostbuild's output is copied to artifact_path, a plain host directory outside
+            any image, which has nothing to ever pkg_delete() and so no manifest is kept
+            for it -- artifact_path's own directory listing is the real answer to "what did
+            this hostbuild produce."
         is_hostbuild:
           type: boolean
           description: >

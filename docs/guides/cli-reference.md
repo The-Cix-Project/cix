@@ -140,6 +140,6 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | `pkg ls` | List every known package (installed or in-flight) |
 | `pkg rm NAME[@IMAGE]` | Uninstall |
 | `pkg update-all` | Start an upgrade for the first installed package whose recipe has drifted; call again to drain the backlog |
-| `pkg hostbuild NAME --build-image=IMAGE [--wait] [--deploy]` | Build a standalone host artifact (kernel, or Kanxeo's own control plane) instead of merging into an image — see [`docs/guides/writing-recipes.md#the-hostbuild-variant`](writing-recipes.md#the-hostbuild-variant) |
+| `pkg hostbuild NAME --build-image=IMAGE [--wait] [--deploy] [--upgrade]` | Build a standalone host artifact (kernel, or Kanxeo's own control plane) instead of merging into an image — see [`docs/guides/writing-recipes.md#the-hostbuild-variant`](writing-recipes.md#the-hostbuild-variant). `--upgrade` re-runs a build already `state: "installed"` if the recipe's own version has moved on (otherwise a bare 409) |
 
 See [`docs/guides/writing-recipes.md`](writing-recipes.md) for the recipe format itself, and [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) / [`docs/guides/building-kanxeo.md`](building-kanxeo.md) for the two real operator runbooks built on `pkg hostbuild`.
