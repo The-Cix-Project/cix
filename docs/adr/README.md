@@ -102,3 +102,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0095](0095-update-one-sided-footgun.md) | POST /system/update's one-sided image_path/kernel_path footgun | Accepted |
 | [0096](0096-pkg-fetch-diagnostic-capture.md) | pkg fetch failures reported only a bare curl exit code, curl's own real error text was discarded | Accepted |
 | [0097](0097-mkbootroot-missing-ca-bundle.md) | mkbootroot never staged a CA certificate bundle -- every host-side HTTPS pkg_source fetch had no way to verify a TLS cert | Accepted |
+| [0098](0098-tarball-listing-truncation-false-mismatch.md) | tarball_has_common_top_dir() false-positived "no common top dir" when its own 64KB capture truncated mid-line | Accepted |

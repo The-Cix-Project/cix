@@ -528,6 +528,29 @@ static int tarball_has_common_top_dir(const char *tarball_path)
 	if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
 		return 0;
 
+	/*
+	 * A real, previously-undiscovered gap: when the buffer fills before
+	 * EOF (a large listing -- coreutils-9.11.tar.xz's own `tar -tf`
+	 * output is 137KB, well over this 64KB cap), the trailing captured
+	 * bytes are an arbitrary mid-line cut, not a real, complete entry.
+	 * Confirmed exactly: a real capture ending "...coreutils-9.11/lib/
+	 * stdio-read.c\ncoreuti" -- that dangling "coreuti" fragment has no
+	 * '/' within it, so the slash-scan below treats it as a short,
+	 * mismatched top-level component against the already-established
+	 * "coreutils-9.11", false-positiving the whole tarball as having no
+	 * common top dir and silently breaking every subsequent pkg_build()
+	 * (extract lands one directory level too deep). Only a genuinely
+	 * complete, newline-terminated line is real signal -- trim the
+	 * dangling fragment off entirely before scanning when truncated.
+	 */
+	if (total + 1 >= sizeof(buf)) {
+		size_t trimmed = total;
+
+		while (trimmed > 0 && buf[trimmed - 1] != '\n')
+			trimmed--;
+		total = trimmed;
+	}
+
 	for (i = 0; i <= total; i++) {
 		if (i == total || buf[i] == '\n') {
 			size_t line_len = i - line_start;
