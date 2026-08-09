@@ -337,13 +337,15 @@ enum pkg_error pkg_install_start(const char *name, const char *image, int upgrad
  * PKG_ERR_BUSY serialization as every other install -- a hostbuild
  * job occupies the one v1 in-flight slot exactly like an ordinary one.
  * PKG_ERR_DUPLICATE if name is already a hostbuild entry in
- * PKG_STATE_INSTALLED (re-run with a bumped pkg_version= to rebuild;
- * there is no separate "upgrade" flag here, a hostbuild has no
- * container depending on its own continued installed-ness the way a
- * package does).
+ * PKG_STATE_INSTALLED and either upgrade is false, or the recipe's
+ * current pkg_version= matches what's already installed (ADR-0094 --
+ * same semantics as pkg_install_start()'s own upgrade parameter: a
+ * genuinely unchanged version is still a no-op duplicate even with
+ * upgrade=1, since nothing would actually differ; bump pkg_version=
+ * to force a real rebuild).
  */
-enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, pid_t *out_pid,
-                                    int *out_pidfd);
+enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, int upgrade,
+                                    pid_t *out_pid, int *out_pidfd);
 
 /*
  * Called once the tracked fetch subprocess's pidfd fires (caller has

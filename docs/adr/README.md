@@ -97,3 +97,5 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0090](0090-container-create-log-use-after-free.md) | container-create failure logging used a dangling JSON-tree pointer | Accepted |
 | [0091](0091-dns-server-binding-not-persisted.md) | DNS server bindings were never persisted, silently lost on every restart | Accepted |
 | [0092](0092-dns-register-missing-site-qualification.md) | auto-registered container DNS records were never site-qualified, unlike manual ones | Accepted |
+| [0093](0093-extract-tarball-assumed-wrapping-directory.md) | extract_tarball() assumed every source tarball has a wrapping directory | Accepted |
+| [0094](0094-hostbuild-upgrade-flag.md) | pkg hostbuild had no upgrade/force path, a bare permanent 409 | Accepted |

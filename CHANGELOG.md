@@ -2,6 +2,23 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 39 (done, local regression sweep clean; not yet deployed live): git-archive tarball extraction, and hostbuild's own permanent-409 gap (ADR-0093, ADR-0094)
+
+Two backlog items closed from the same file, `daemon/src/pkg.c`:
+
+- `extract_tarball()` always ran `tar --strip-components=1`, assuming every source tarball has a real release's own wrapping directory. `kanxeo.recipe`'s own self-build source snapshot fetches a `git archive`-generated tarball (gitea's REST archive-download endpoint) which, without an explicit `--prefix=`, has no wrapping directory at all -- blindly stripping one path component silently drops or misplaces real top-level content instead of failing loudly. Fixed by inspecting the tarball's own listing first (`tar -tf`) and only stripping when every entry actually shares one common top-level component.
+- `pkg_hostbuild_start()` rejected any hostbuild request for a `name` already `PKG_STATE_INSTALLED` with a bare, permanent 409 -- no way to rebuild from fresh source under an unchanged recipe name once the first build succeeded. Given the same `upgrade` parameter `pkg_install_start()` already has, with identical semantics (still 409 if the recipe's version is genuinely unchanged).
+
+#### Fixed
+- `daemon/src/pkg.c`: `extract_tarball()` now checks tarball structure before deciding whether to strip a wrapping directory.
+- `daemon/src/pkg.c`/`daemon/include/pkg.h`: `pkg_hostbuild_start()` gained an `upgrade` parameter.
+- `daemon/src/main.c`: `POST /pkg/hostbuild` reads an optional `"upgrade"` body field.
+- `cli/src/main.c`: `kanxeoctl pkg hostbuild ... --upgrade`.
+- `docs/api/openapi.yaml`: documented the new field.
+
+#### Notes
+- Full local regression sweep (`test_pkg`, `test_dns`, `test_daemon`, `test_cli`) clean, zero compiler warnings. Not yet deployed to 192.168.15.95 or live-verified against a real git-archive tarball -- both fixes are code-correctness fixes reasoned from the actual failure mode already documented in this project's own task backlog, not re-derived from a fresh live reproduction this pass.
+
 ### Part 38 (done, live-verified end-to-end across a real reboot): DNS server bindings were never persisted; auto-registered records were never site-qualified (ADR-0091, ADR-0092)
 
 Raised directly by the user testing the freshly-deployed DNS work: `dns server ls` came back empty despite `dns-1`/`dns-2` having been registered earlier the same session, and `ldapsvc.uk.home.arpa` failed to resolve while `dns-1`, `dns-2`, and `kanxeo.uk.home.arpa` all worked -- also asking directly why `dns-1`/`dns-2`'s own records had no site suffix, unlike every manually-created record.

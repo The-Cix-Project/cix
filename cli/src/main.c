@@ -4268,7 +4268,7 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 {
 	const char *name = NULL;
 	const char *build_image = NULL;
-	int wait = 0, deploy = 0;
+	int wait = 0, deploy = 0, upgrade = 0;
 	int i;
 	struct json_writer w;
 	struct kx_response r;
@@ -4280,6 +4280,8 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 			wait = 1;
 		else if (strcmp(argv[i], "--deploy") == 0)
 			deploy = 1; /* implies --wait -- a not-yet-finished artifact has no path to deploy */
+		else if (strcmp(argv[i], "--upgrade") == 0)
+			upgrade = 1;
 		else if (name == NULL)
 			name = argv[i];
 		else {
@@ -4289,7 +4291,8 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 	}
 	if (name == NULL || build_image == NULL) {
 		fprintf(stderr,
-		        "usage: kanxeoctl pkg hostbuild NAME --build-image=IMAGE [--wait] [--deploy]\n");
+		        "usage: kanxeoctl pkg hostbuild NAME --build-image=IMAGE [--wait] [--deploy] "
+		        "[--upgrade]\n");
 		return 2;
 	}
 	if (deploy)
@@ -4301,6 +4304,8 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 	jw_str(&w, name);
 	jw_key(&w, "build_image");
 	jw_str(&w, build_image);
+	jw_key(&w, "upgrade");
+	jw_bool(&w, upgrade);
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -4445,7 +4450,8 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 		                "       kanxeoctl pkg recipe show NAME\n"
 		                "       kanxeoctl pkg recipe rm NAME\n"
 		                "       kanxeoctl pkg install --name=NAME [--image=IMAGE] [--upgrade]\n"
-		                "       kanxeoctl pkg hostbuild NAME --build-image=IMAGE [--wait] [--deploy]\n"
+		                "       kanxeoctl pkg hostbuild NAME --build-image=IMAGE [--wait] [--deploy] "
+		                "[--upgrade]\n"
 		                "       kanxeoctl pkg ls\n"
 		                "       kanxeoctl pkg rm NAME[@IMAGE]\n"
 		                "       kanxeoctl pkg update-all\n");

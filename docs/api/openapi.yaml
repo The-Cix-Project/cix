@@ -2426,6 +2426,18 @@ paths:
                   description: >
                     The already-existing image whose rootfs supplies the build
                     container's lowerdir. No default -- always explicit.
+                upgrade:
+                  type: boolean
+                  default: false
+                  description: >
+                    ADR-0094: without this, a hostbuild entry already in
+                    PKG_STATE_INSTALLED makes every later call a bare 409, with
+                    no way to rebuild from fresh source under the same recipe
+                    name. true re-runs the build if the recipe's own
+                    pkg_version= genuinely differs from what's installed --
+                    still 409 if the version is unchanged, since nothing would
+                    actually be different (mirrors /pkg/install's own upgrade
+                    field exactly).
       responses:
         "202":
           description: Hostbuild started -- poll GET /pkg/hostbuild/{name} for progress

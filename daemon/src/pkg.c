@@ -438,12 +438,114 @@ static int run_subprocess(const char *bin, char *const argv[])
 	return -1;
 }
 
+/*
+ * Whether every entry in tarball_path's own listing shares the same
+ * single top-level path component -- the shape --strip-components=1
+ * assumes (a real release tarball's own "foo-1.2.3/" wrapping
+ * directory). Confirmed a real, previously-undiscovered gap (ADR-0093):
+ * git archive without --prefix= (gitea's own archive-download REST
+ * endpoint, used by kanxeo.recipe's own self-build source snapshot)
+ * produces a tarball with NO such wrapping directory at all -- every
+ * top-level file/directory of the real source tree sits at depth 0.
+ * Blindly stripping one component there silently drops or misplaces
+ * real top-level content instead of failing loudly.
+ *
+ * Captures up to a bounded listing (64KB -- comfortably thousands of
+ * short path entries) via `tar -tf`; a mismatch found anywhere within
+ * that capture is conclusive (git-archive-without-prefix's own
+ * top-level entries diverge immediately -- Makefile, daemon/, docs/,
+ * ... -- never needs the full listing to detect). A capture that's
+ * still fully consistent when it ends (whether by EOF or by filling
+ * the buffer) is treated as "has a common top dir" -- the buffer is
+ * sized generously enough that truncation without ever having seen a
+ * mismatch is itself strong evidence, not a real gap in practice.
+ */
+static int tarball_has_common_top_dir(const char *tarball_path)
+{
+	int pipefd[2];
+	pid_t pid;
+	int status;
+	char buf[65536];
+	size_t total = 0;
+	ssize_t n;
+	char top[PATH_MAX] = { 0 };
+	size_t top_len = 0;
+	size_t line_start = 0;
+	size_t i;
+
+	if (pipe2(pipefd, O_CLOEXEC) != 0)
+		return 0;
+
+	pid = fork();
+	if (pid < 0) {
+		close(pipefd[0]);
+		close(pipefd[1]);
+		return 0;
+	}
+	if (pid == 0) {
+		char *argv[] = { (char *)PKG_TAR_BIN, "-tf", (char *)tarball_path, NULL };
+
+		dup2(pipefd[1], STDOUT_FILENO);
+		close(pipefd[0]);
+		close(pipefd[1]);
+		execve(PKG_TAR_BIN, argv, environ);
+		_exit(127);
+	}
+	close(pipefd[1]);
+	while (total + 1 < sizeof(buf)) {
+		n = read(pipefd[0], buf + total, sizeof(buf) - total - 1);
+		if (n <= 0)
+			break;
+		total += (size_t)n;
+	}
+	buf[total] = '\0';
+	/* Drain and reap even if the buffer filled before EOF -- otherwise
+	 * a large listing leaves tar blocked writing to a full pipe,
+	 * leaking a zombie child. */
+	while ((n = read(pipefd[0], buf, sizeof(buf))) > 0)
+		;
+	close(pipefd[0]);
+	if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		return 0;
+
+	for (i = 0; i <= total; i++) {
+		if (i == total || buf[i] == '\n') {
+			size_t line_len = i - line_start;
+			size_t slash;
+
+			if (line_len > 0) {
+				for (slash = 0; slash < line_len && buf[line_start + slash] != '/'; slash++)
+					;
+				if (slash == 0 || slash >= sizeof(top))
+					return 0; /* an entry with no top-level component at all */
+				if (top_len == 0) {
+					memcpy(top, buf + line_start, slash);
+					top[slash] = '\0';
+					top_len = slash;
+				} else if (slash != top_len || memcmp(top, buf + line_start, slash) != 0) {
+					return 0; /* real mismatch -- no common top dir */
+				}
+			}
+			line_start = i + 1;
+		}
+	}
+	return top_len > 0;
+}
+
 static int extract_tarball(const char *tarball_path, const char *dest_dir)
 {
-	char *argv[] = { (char *)PKG_TAR_BIN, "-C",           (char *)dest_dir,
-		          "--strip-components=1", "-xf", (char *)tarball_path, NULL };
+	if (tarball_has_common_top_dir(tarball_path)) {
+		char *argv[] = { (char *)PKG_TAR_BIN, "-C",           (char *)dest_dir,
+			          "--strip-components=1", "-xf", (char *)tarball_path, NULL };
 
-	return run_subprocess(PKG_TAR_BIN, argv);
+		return run_subprocess(PKG_TAR_BIN, argv);
+	}
+	{
+		char *argv[] = { (char *)PKG_TAR_BIN, "-C", (char *)dest_dir, "-xf",
+			          (char *)tarball_path, NULL };
+
+		return run_subprocess(PKG_TAR_BIN, argv);
+	}
 }
 
 /* Last '/'-separated segment of a source URL -- where an extra
@@ -1490,8 +1592,8 @@ enum pkg_error pkg_install_start(const char *name, const char *image, int upgrad
 	return PKG_OK;
 }
 
-enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, pid_t *out_pid,
-                                    int *out_pidfd)
+enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, int upgrade,
+                                    pid_t *out_pid, int *out_pidfd)
 {
 	struct pkg_recipe recipe;
 	char recipe_path[PATH_MAX];
@@ -1523,8 +1625,21 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, pi
 	if (stat(build_rootfs, &st) != 0 || !S_ISDIR(st.st_mode))
 		return PKG_ERR_NOT_FOUND;
 
+	/*
+	 * ADR-0094: same "409 with no way out" gap pkg_install_start()
+	 * already solved with its own upgrade parameter -- a hostbuild
+	 * that already succeeded once for this name used to make every
+	 * later hostbuild attempt a bare, permanent PKG_ERR_DUPLICATE,
+	 * with no way to rebuild from fresh source under the same recipe
+	 * name (e.g. a new commit under kanxeo.recipe's own tracked tag).
+	 * Same rule as install: only actually re-run the build if the
+	 * recipe's own version genuinely differs from what's already
+	 * installed -- upgrade=1 with an unchanged version is still a
+	 * no-op duplicate, since nothing would actually be different.
+	 */
 	e = pkg_find(name, PKG_HOSTBUILD_IMAGE);
-	if (e != NULL && e->state == PKG_STATE_INSTALLED)
+	if (e != NULL && e->state == PKG_STATE_INSTALLED &&
+	    (!upgrade || strcmp(e->version, recipe.version) == 0))
 		return PKG_ERR_DUPLICATE;
 
 	snprintf(g_current_job_image, sizeof(g_current_job_image), "%s", PKG_HOSTBUILD_IMAGE);

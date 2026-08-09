@@ -7523,6 +7523,8 @@ static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
 	struct json_value *root;
 	const char *name;
 	const char *build_image;
+	const struct json_value *jupgrade;
+	int upgrade;
 	pid_t pid;
 	int pidfd;
 	enum pkg_error perr;
@@ -7540,8 +7542,10 @@ static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
 		respond_error(fd, 400, "Bad Request", "name and build_image are both required");
 		return;
 	}
+	jupgrade = json_object_get(root, "upgrade");
+	upgrade = (jupgrade != NULL && jupgrade->type == JSON_BOOL && jupgrade->u.boolean);
 
-	perr = pkg_hostbuild_start(name, build_image, &pid, &pidfd);
+	perr = pkg_hostbuild_start(name, build_image, upgrade, &pid, &pidfd);
 	if (perr != PKG_OK) {
 		json_free(root);
 		respond_pkg_error(fd, perr);
