@@ -929,6 +929,42 @@ static int boot_init(void)
 		return -1;
 	if (mount_or_fail("cgroup2", "/sys/fs/cgroup", "cgroup2", 0) != 0)
 		return -1;
+	/*
+	 * task #764: kanxeod's own exec_into_container() (daemon/src/exec.c,
+	 * the console/exec feature, ADR pending #426) calls posix_openpt()
+	 * and then open()s the slave device ptsname_r() hands back --
+	 * that slave path only resolves to a real device node once the
+	 * devpts filesystem is actually mounted at /dev/pts. devtmpfs
+	 * auto-populates /dev/ptmx (CONFIG_DEVTMPFS_MOUNT) so posix_openpt()
+	 * itself always succeeds regardless, which is exactly what made
+	 * this gap so easy to miss: only the SECOND step (opening the
+	 * slave) ever fails, with a generic ENOENT that gave no hint it
+	 * was devpts-shaped until task #764's own diagnostic surfacing
+	 * made "No such file or directory" visible at all. kanxeo-install.c's
+	 * own early_mounts() has mounted devpts since ADR-0042/task #406 --
+	 * but that binary only ever runs during one-time disk installation,
+	 * never during kanxeod's own real boot_init() (--init-mode, a bare
+	 * kernel with no initramfs) on an already-installed box, which is
+	 * exactly why every console/exec attempt against 192.168.15.95
+	 * failed with a bare 500 while the same code path passed cleanly
+	 * in every dev-sandbox/QEMU test harness run (those inherit an
+	 * already-mounted /dev/pts from their own outer environment,
+	 * never exercising this gap). Same mount options as
+	 * kanxeo-install.c's own copy, for the same reason (ptmxmode=0666
+	 * -- devpts's own ptmx alias needs to be world-writable for
+	 * posix_openpt() to work as any non-root exec'd process would
+	 * expect, even though everything in this project currently execs
+	 * as root).
+	 */
+	if (mkdir("/dev/pts", 0755) != 0 && errno != EEXIST) {
+		perror("/dev/pts");
+		return -1;
+	}
+	if (mount("devpts", "/dev/pts", "devpts", MS_NOSUID | MS_NOEXEC,
+	          "mode=0620,ptmxmode=0666") != 0) {
+		perror("mount devpts");
+		return -1;
+	}
 	if (mount(CONTAINERS_DEVICE, g_base_dir, "ext4", MS_NOSUID | MS_NODEV, NULL) != 0 &&
 	    mount_or_fail("tmpfs", g_base_dir, "tmpfs", MS_NOSUID | MS_NODEV) != 0)
 		return -1;

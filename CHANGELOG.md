@@ -2,6 +2,19 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 76 (done): console/exec 500 on 192.168.15.95 root-caused and fixed -- boot_init() never mounted /dev/pts
+
+Task #764, a same-day follow-up from task #760's sweep. `kanxeoctl console` returned a bare 500 against every container on 192.168.15.95, while the identical `exec_into_container()` code path passed cleanly in the local `test_console_exec` regression test. Diagnosed in two steps: first, `exec_into_container()`'s own failure reason (previously only visible in `kanxeod`'s own stderr, invisible on a real installed box with no host shell access) was surfaced into the HTTP response body and printed by the console client; second, once the real reason ("No such file or directory") was visible, it traced to `boot_init()` (`daemon/src/main.c`, the real PID-1 boot path an already-installed box actually runs) never mounting `/dev/pts` -- `posix_openpt()` always succeeds (`/dev/ptmx` is `devtmpfs`-populated unconditionally), but the PTY slave path it hands back only resolves to a real device once devpts is mounted, and only `image/src/kanxeo-install.c`'s own installer-only `early_mounts()` (ADR-0042/task #406) ever did that. See [ADR-0118](docs/adr/0118-boot-init-devpts-mount.md).
+
+#### Fixed
+- `daemon/src/exec.c`: the ns-fd-open failure branch now preserves the real first-failing `open()`'s own errno instead of overwriting it with a blanket `ESRCH`.
+- `daemon/src/main.c`: `try_console_upgrade()` embeds `strerror(errno)` in its 500 response body; `boot_init()` now mounts `/dev/pts` (same options as `kanxeo-install.c`'s own copy), fatal like every other essential boot mount.
+- `client/src/console.c`: a non-101 upgrade response now parses and prints the JSON error body's detail, not just the bare HTTP status line.
+
+#### Verified
+- Full clean rebuild + full regression sweep (24 tests) all pass, including `test_boot` and `test_installer` run explicitly (both exercise a real QEMU PID-1 boot through `boot_init()` itself, confirming the new mount doesn't regress boot).
+- Live against 192.168.15.95: see the next deploy round-trip's own confirmation.
+
 ### Part 75 (done, verified live end-to-end): DNS record GET/PUT/DELETE now qualify a bare name, matching POST
 
 Task #760's sweep found a second real bug immediately after the `json.c` fix: `kanxeoctl dns record rm sweeptest` 404'd right after `kanxeoctl dns record create --name=sweeptest ...` had just succeeded and `dns record ls` showed it present as `sweeptest.uk.home.arpa`. `handle_dns_record_create()` has always qualified a bare label via `siteconfig_qualify()` (ADR-0052) before storing it; `handle_dns_record_get_one()`/`handle_dns_record_update()` (PUT, task #749)/`handle_dns_record_delete()` never did the same on the read side, so only the exact FQDN -- not the bare name a caller just used to create the record -- could ever look it back up. See [ADR-0117](docs/adr/0117-dns-record-qualify-on-read.md).
