@@ -603,6 +603,20 @@ int main(void)
 			        attempt, captured_buf);
 			ok = 0;
 		}
+		/* task #760: output_child.c's stdout line carries a real ANSI
+		 * color escape (raw ESC 0x1b) -- jw_escaped_string() writes it
+		 * as a \u00XX escape to stay valid JSON, so this only round-trips
+		 * correctly if json_parse() (used by kx_client_request() just
+		 * above, the same shared client every CLI command goes
+		 * through) actually decodes \uXXXX back into a real byte
+		 * rather than failing the whole parse. */
+		if (captured_found && strstr(captured_buf, "\x1b[31mcolor-marker\x1b[0m") == NULL) {
+			fprintf(stderr,
+			        "FAIL: lc5's captured_output lost its raw ANSI escape byte "
+			        "across the JSON round trip (got: \"%s\")\n",
+			        captured_buf);
+			ok = 0;
+		}
 
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "DELETE", "/v1/containers/lc5", NULL, &r) != 0 ||

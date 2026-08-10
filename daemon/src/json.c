@@ -58,8 +58,67 @@ static char *parse_string_raw(struct parser *ps)
 			case 'r': out = '\r'; break;
 			case 'b': out = '\b'; break;
 			case 'f': out = '\f'; break;
+			case 'u': {
+				/*
+				 * task #760: jw_escaped_string() (below, the writer
+				 * half of this same file) has always emitted \u00XX
+				 * for any control character < 0x20 -- the only
+				 * \uXXXX shape this codebase's own writer ever
+				 * produces, confirmed by inspection -- but this
+				 * parser rejected every \u escape outright,
+				 * silently failing the ENTIRE surrounding parse
+				 * (json_parse() has no partial-success mode) the
+				 * moment any string field contained one. Never hit
+				 * before capture_output (ADR-0112) started
+				 * capturing real stdout/stderr content: any
+				 * program that colorizes its own terminal output
+				 * (glauth's zerolog does) writes raw ANSI escape
+				 * bytes (ESC = 0x1b) into what capture_output
+				 * relays verbatim, which jw_escaped_string() then
+				 * has to \u-escape to stay valid JSON at all --
+				 * found live via `kanxeoctl ps` silently returning
+				 * nothing against a real box with LDAP containers
+				 * running. json.h's own "no field needs \uXXXX"
+				 * scope note was accurate when written, before
+				 * this field existed; it no longer is. Scoped
+				 * deliberately narrow, matching what the writer
+				 * side actually needs (still not full RFC 8259):
+				 * exactly 4 hex digits, decoded as a single byte
+				 * (0x00-0xFF) -- no UTF-16 surrogate-pair handling,
+				 * since nothing in this codebase's own writer ever
+				 * emits or needs one.
+				 */
+				unsigned int cp = 0;
+				int i;
+
+				if (ps->end - ps->p < 5) {
+					free(buf);
+					return NULL;
+				}
+				for (i = 1; i <= 4; i++) {
+					char h = ps->p[i];
+
+					cp <<= 4;
+					if (h >= '0' && h <= '9')
+						cp |= (unsigned int)(h - '0');
+					else if (h >= 'a' && h <= 'f')
+						cp |= (unsigned int)(h - 'a' + 10);
+					else if (h >= 'A' && h <= 'F')
+						cp |= (unsigned int)(h - 'A' + 10);
+					else {
+						free(buf);
+						return NULL;
+					}
+				}
+				if (cp > 0xff) {
+					free(buf);
+					return NULL;
+				}
+				out = (char)cp;
+				ps->p += 4;
+				break;
+			}
 			default:
-				/* Includes \uXXXX -- unsupported, see json.h. */
 				free(buf);
 				return NULL;
 			}

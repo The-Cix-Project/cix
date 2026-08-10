@@ -5,10 +5,17 @@
 
 /*
  * Minimal, generic JSON support -- not a full RFC 8259 implementation.
- * \uXXXX escapes are an explicit, documented scope boundary: neither
- * parsing nor writing supports them, since no field in this project's
- * API needs one. Every other basic escape (\" \\ \/ \n \t \r \b \f)
- * is handled on both sides.
+ * \uXXXX escapes are still a deliberate, narrower-than-spec scope
+ * boundary (task #760, fixing a real write/parse asymmetry found via
+ * `kanxeoctl ps` silently failing against a real box): the writer
+ * emits \u00XX for any control character below 0x20 (needed since
+ * capture_output, ADR-0112, can relay raw ANSI escape bytes from a
+ * colorized program's real stdout/stderr), and the parser decodes
+ * exactly that shape back -- 4 hex digits, single byte, 0x00-0xFF.
+ * Neither side handles a \uXXXX value above 0xFF or UTF-16 surrogate
+ * pairs; nothing in this project's own API has ever needed one.
+ * Every other basic escape (\" \\ \/ \n \t \r \b \f) is handled on
+ * both sides, unchanged.
  */
 
 enum json_type {

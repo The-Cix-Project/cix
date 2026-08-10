@@ -2,6 +2,18 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 74 (done, verified live end-to-end): full feature regression sweep on 192.168.15.95 -- found and fixed a real json.c write/parse asymmetry
+
+Task #760. `kanxeoctl ps` (and `--json ps`) silently returned nothing against the real box mid-sweep, despite `curl`'s raw fetch of the identical endpoint returning valid JSON. Root cause: `daemon/src/json.c`'s writer (`jw_escaped_string()`) has always encoded control characters below `0x20` as `\u00XX` to stay valid JSON, but its own parser (`parse_string_raw()`) rejected every `\u` escape outright, failing the *entire* surrounding document parse the instant it hit one -- silent since `json_parse()` has no partial-success mode. Never hit before `capture_output` (Part 70) started relaying real stdout/stderr containing raw ANSI color codes (glauth's own `zerolog` colorizes its terminal output) into a JSON field the writer then had to `\u`-escape. See [ADR-0116](docs/adr/0116-json-parser-u-escape-support.md).
+
+#### Fixed
+- `daemon/src/json.c`: `parse_string_raw()` now decodes `\uXXXX` as a single byte (`0x00`-`0xFF`), matching exactly what the writer side ever produces -- deliberately still not full RFC 8259 (no surrogate pairs), since nothing in this project's own writer needs one.
+- `test/output_child.c`/`test/test_container_lifecycle.c`: the `capture_output` test (step 10) now writes a real ANSI color escape and asserts it survives the full write-then-parse round trip through the exact client path every CLI command uses -- this test would have failed before the fix, closing the gap that let the bug ship unnoticed.
+
+#### Verified
+- Direct reproduction: extracted the real `GET /v1/containers` response body from 192.168.15.95, fed it to a throwaway harness linking `json.c` directly -- `json_parse()` returned `NULL` before the fix, `PARSE OK` after. `kanxeoctl ps` run locally against the live box now correctly lists all 7 running containers.
+- Full clean rebuild + full regression sweep (23 tests) all pass, including the newly-extended `test_container_lifecycle`.
+
 ### Part 73 (done, verified live end-to-end): jump box SSH login working for real -- CONFIG_SECCOMP kernel fix, plus a real DELETE disk-cleanup gap found and fixed along the way
 
 Closes task #759. `capture_output` (Part 70) found the real cause of every SSH login attempt against the jump box failing with `Connection reset by peer`: `ssh_sandbox_child: prctl(PR_SET_SECCOMP): Invalid argument [preauth]` -- OpenSSH's own privilege-separation preauth child unconditionally tries to install a seccomp-BPF filter, and this kernel had never enabled `CONFIG_SECCOMP` (the fourth confirmed instance of this project's `allnoconfig`-starting build silently disabling an `def_bool y` Kconfig symbol -- after `CONFIG_VETH` and `CONFIG_INOTIFY_USER`/Part 71). See [ADR-0114](docs/adr/0114-kernel-config-gap-config-seccomp.md).
