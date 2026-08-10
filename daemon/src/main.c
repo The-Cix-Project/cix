@@ -5517,29 +5517,34 @@ static int resolve_container_disk_root(const char *disk_name, char *out_root, si
 
 /*
  * The read-side counterpart to resolve_container_disk_root() -- given
- * an already-created entry, reconstructs the same root its own
- * container_base was computed under, for handle_container_file_read()
- * and handle_container_stats() (neither has any other record of it
- * beyond entry->disk_name). Re-resolves the disk's current mount_path
- * fresh via disk_enumerate() rather than caching it, matching this
- * project's own "live /proc/mounts is the one source of truth"
- * precedent (ADR-0099) -- if the disk is no longer mounted (a real,
- * rare operational anomaly: it was unmounted after a container was
- * placed on it), falls back to CONTAINERS_DIR, which fails the lookup
- * cleanly (ENOENT) rather than crashing.
+ * a disk_name (an already-created entry's own e->disk_name, or one
+ * freshly reparsed from a containerdef's own stored body when no live
+ * entry exists -- see handle_delete()'s crashed-container cleanup
+ * branch), reconstructs the same root its own container_base was
+ * computed under, for handle_container_file_read() and
+ * handle_container_stats(). Takes the disk name directly rather than
+ * a struct registry_entry * so callers with no live entry (a
+ * restart:"always" definition currently between a crash and its next
+ * restart timer) can still resolve the right root. Re-resolves the
+ * disk's current mount_path fresh via disk_enumerate() rather than
+ * caching it, matching this project's own "live /proc/mounts is the
+ * one source of truth" precedent (ADR-0099) -- if the disk is no
+ * longer mounted (a real, rare operational anomaly: it was unmounted
+ * after a container was placed on it), falls back to CONTAINERS_DIR,
+ * which fails the lookup cleanly (ENOENT) rather than crashing.
  */
-static void container_root_for(const struct registry_entry *e, char *out, size_t out_size)
+static void container_root_for(const char *disk_name, char *out, size_t out_size)
 {
 	struct discovered_disk disks[DISK_ENUM_MAX];
 	int count, i;
 
-	if (e->disk_name[0] == '\0') {
+	if (disk_name == NULL || disk_name[0] == '\0') {
 		snprintf(out, out_size, "%s", CONTAINERS_DIR);
 		return;
 	}
 	count = disk_enumerate(disks, DISK_ENUM_MAX, CONTAINERS_DIR);
 	for (i = 0; i < count; i++) {
-		if (strcmp(disks[i].name, e->disk_name) == 0 && disks[i].mounted) {
+		if (strcmp(disks[i].name, disk_name) == 0 && disks[i].mounted) {
 			snprintf(out, out_size, "%s/containers", disks[i].mount_path);
 			return;
 		}
@@ -6625,7 +6630,9 @@ static void handle_create(int fd, const char *body, size_t body_len)
 static void handle_delete(int fd, const char *name)
 {
 	struct registry_entry *e = registry_find(name);
+	struct container_def *def = containerdef_find(name);
 	struct conn *cc;
+	char disk_name[DISKROLE_DISK_NAME_MAX];
 
 	/*
 	 * A restart:"always" definition that has never once managed to
@@ -6638,10 +6645,12 @@ static void handle_delete(int fd, const char *name)
 	 * circular/unknown dependency) silently 404'd, leaking its
 	 * definition into every subsequently-run test on this host.
 	 */
-	if (e == NULL && containerdef_find(name) == NULL) {
+	if (e == NULL && def == NULL) {
 		respond_error(fd, 404, "Not Found", "no such container");
 		return;
 	}
+
+	disk_name[0] = '\0';
 
 	if (e != NULL) {
 		if (e->reactor_conn != NULL) {
@@ -6650,6 +6659,8 @@ static void handle_delete(int fd, const char *name)
 			free(cc);
 			e->reactor_conn = NULL;
 		}
+
+		snprintf(disk_name, sizeof(disk_name), "%s", e->disk_name);
 
 		/*
 		 * registry_remove() SIGKILLs the process first (thawing it if
@@ -6674,63 +6685,104 @@ static void handle_delete(int fd, const char *name)
 		 * even worse outcome than doing nothing.
 		 */
 		registry_remove(name);
-
+	} else {
 		/*
-		 * task #738: DELETE never removed a container's own on-disk
-		 * upper/work/merged directories -- a real, pre-existing disk-
-		 * space leak for every deleted container (confirmed: no code
-		 * anywhere in this codebase ever called anything equivalent to
-		 * this in a container-teardown context; the quotamap.h doc
-		 * comment that used to justify this as deliberate cited "ADR-0054's
-		 * pre-existing backup/restore design" -- ADR-0054 is entirely
-		 * about host-side stats and says nothing about backup/restore
-		 * at all; ADR-0033, the *real* backup/restore ADR, explicitly
-		 * scopes workload data as "each container's own concern, not
-		 * this endpoint's" and reconstructs a restored container via a
-		 * fresh containerdef replay, never by resurrecting old upperdir
-		 * content -- so no real design anywhere actually depended on
-		 * this retention; it was a stale, incorrect citation for a
-		 * genuine oversight). container_root_for() resolves the same
-		 * root the container was actually created under (ADR-0102 --
-		 * the default CONTAINERS_DIR, or an operator-chosen disk), so
-		 * this works identically for both placements; reading e's own
-		 * fields here is still safe -- registry_remove() only ever
-		 * clears e->in_use, it never frees or reuses the slot's memory
-		 * within this same synchronous call. Only reached when e != NULL:
-		 * a definition that never once managed to autostart (the branch
-		 * below this one) never got as far as overlay_create() either,
-		 * so there is nothing on disk (or mounted) to clean up for it.
-		 * Best-effort throughout -- a failure here is logged, never
-		 * blocks the delete itself from completing (the registry/
-		 * containerdef state is the one source of truth for whether a
-		 * container exists; leftover disk state after a failed cleanup
-		 * is a nit, not a reason to leave the container definition
-		 * half-deleted).
+		 * task #759 follow-up: e == NULL here does NOT mean "never
+		 * autostarted, nothing on disk" -- it also covers a
+		 * restart:"always" container that DID create successfully at
+		 * least once and is simply between a crash and its next
+		 * handle_restart_timer_event() retry (registry_remove() runs
+		 * on every exit, live or crashed, long before this handler is
+		 * ever reached). The previous version of this function skipped
+		 * disk cleanup entirely for this case, based on the (false)
+		 * assumption below it. Confirmed the hard way, live on
+		 * 192.168.15.95: a jump box container crash-looped forever
+		 * with "Unable to load host key: bad permissions" because its
+		 * very first-ever creation left a 0644 host-key file in its
+		 * upperdir, and every subsequent DELETE + recreate under the
+		 * SAME name silently reused that same never-cleaned upperdir
+		 * (files[] staging's own open(O_CREAT|O_TRUNC) never chmod()s
+		 * an already-existing file to the newly requested mode) --
+		 * repeating the identical crash forever, surviving any number
+		 * of "delete and recreate" cycles. The overlay mount is still
+		 * live too (nothing unmounts it on a plain crash, same
+		 * reasoning as the e != NULL branch above), so this is exactly
+		 * as safe to clean up here, not a special case.
+		 *
+		 * disk_name is re-derived from the persisted definition's own
+		 * stored body (the same "disk" field create_container_from_body()
+		 * itself reads), since there's no live registry entry to read
+		 * e->disk_name from.
 		 */
-		{
-			char container_root[PATH_MAX];
-			char container_base[PATH_MAX];
-			char merged[PATH_MAX];
+		struct json_value *defroot = json_parse(def->body, def->body_len);
 
-			container_root_for(e, container_root, sizeof(container_root));
-			snprintf(container_base, sizeof(container_base), "%s/%s", container_root, name);
-			snprintf(merged, sizeof(merged), "%s/merged", container_base);
-			if (umount2(merged, MNT_DETACH) != 0 && errno != EINVAL && errno != ENOENT)
-				fprintf(stderr, "DELETE %s: umount2(%s) failed: %s\n", name, merged,
-				        strerror(errno));
-			if (persist_remove_tree(container_base) != 0)
-				fprintf(stderr, "DELETE %s: failed to remove %s: %s\n", name,
-				        container_base, strerror(errno));
+		if (defroot != NULL) {
+			const char *d = json_as_string(json_object_get(defroot, "disk"));
+
+			if (d != NULL)
+				snprintf(disk_name, sizeof(disk_name), "%s", d);
+			json_free(defroot);
 		}
-
-		dns_server_forget(name);
-		dns_record_forget_owner(name);
-		ldap_server_forget(name);
-		ldap_user_forget_owner(name);
-		pki_cert_forget_owner(name);
-		ntp_server_forget(name);
-		ldap_ssh_target_forget(name);
 	}
+
+	/*
+	 * task #738 (extended by the task #759 follow-up above to also
+	 * cover the e == NULL/crashed case): DELETE never removed a
+	 * container's own on-disk upper/work/merged directories -- a real,
+	 * pre-existing disk-space leak for every deleted container
+	 * (confirmed: no code anywhere in this codebase ever called
+	 * anything equivalent to this in a container-teardown context; the
+	 * quotamap.h doc comment that used to justify this as deliberate
+	 * cited "ADR-0054's pre-existing backup/restore design" --
+	 * ADR-0054 is entirely about host-side stats and says nothing
+	 * about backup/restore at all; ADR-0033, the *real* backup/restore
+	 * ADR, explicitly scopes workload data as "each container's own
+	 * concern, not this endpoint's" and reconstructs a restored
+	 * container via a fresh containerdef replay, never by resurrecting
+	 * old upperdir content -- so no real design anywhere actually
+	 * depended on this retention; it was a stale, incorrect citation
+	 * for a genuine oversight). container_root_for() resolves the same
+	 * root the container was actually created under (ADR-0102 -- the
+	 * default CONTAINERS_DIR, or an operator-chosen disk). Best-effort
+	 * throughout -- a failure here is logged, never blocks the delete
+	 * itself from completing (the registry/containerdef state is the
+	 * one source of truth for whether a container exists; leftover
+	 * disk state after a failed cleanup is a nit, not a reason to
+	 * leave the container definition half-deleted).
+	 */
+	{
+		char container_root[PATH_MAX];
+		char container_base[PATH_MAX];
+		char merged[PATH_MAX];
+
+		container_root_for(disk_name, container_root, sizeof(container_root));
+		snprintf(container_base, sizeof(container_base), "%s/%s", container_root, name);
+		snprintf(merged, sizeof(merged), "%s/merged", container_base);
+		if (umount2(merged, MNT_DETACH) != 0 && errno != EINVAL && errno != ENOENT)
+			fprintf(stderr, "DELETE %s: umount2(%s) failed: %s\n", name, merged,
+			        strerror(errno));
+		if (persist_remove_tree(container_base) != 0)
+			fprintf(stderr, "DELETE %s: failed to remove %s: %s\n", name, container_base,
+			        strerror(errno));
+	}
+
+	/*
+	 * Unconditional, matching the disk cleanup above -- a crashed-but-
+	 * still-defined container releasing its own DNS/LDAP/PKI/NTP/SSH-
+	 * target ownership on DELETE is exactly as correct as a live one
+	 * doing so; there is no reason a still-registered DNS record or
+	 * LDAP SSH-target sync should outlive a definition that's being
+	 * permanently removed just because the container happened to be
+	 * mid-crash at the moment of the DELETE call.
+	 */
+	dns_server_forget(name);
+	dns_record_forget_owner(name);
+	ldap_server_forget(name);
+	ldap_user_forget_owner(name);
+	pki_cert_forget_owner(name);
+	ntp_server_forget(name);
+	ldap_ssh_target_forget(name);
+
 	/*
 	 * Unconditional, a no-op if this name never had a restart:"always"
 	 * definition. DELETE always means gone for good: not on this
@@ -7034,7 +7086,7 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 	} else {
 		char container_root[PATH_MAX];
 
-		container_root_for(e, container_root, sizeof(container_root));
+		container_root_for(e->disk_name, container_root, sizeof(container_root));
 		snprintf(full_path, sizeof(full_path), "%s/%s/upper%s", container_root, name, rel_path);
 		file_fd = open(full_path, O_RDONLY);
 		if (file_fd < 0) {
@@ -7144,7 +7196,7 @@ static void handle_container_stats(int fd, const char *name)
 		char container_root[PATH_MAX];
 		char upperdir[PATH_MAX];
 
-		container_root_for(e, container_root, sizeof(container_root));
+		container_root_for(e->disk_name, container_root, sizeof(container_root));
 		snprintf(upperdir, sizeof(upperdir), "%s/%s/upper", container_root, name);
 		overlay_upperdir_size(upperdir, &disk_bytes);
 	}
