@@ -538,6 +538,33 @@ Two real, ready-to-use clients — neither requires hand-rolling the handshake y
 
 Any frame-parse failure post-upgrade (including an unmasked client frame, which RFC 6455 requires a server to reject) — or a WebSocket CLOSE frame from either side, or the exec'd process exiting on its own — ends the session the same way: `SIGKILL` the exec'd process, then close the raw connection immediately (no WS CLOSE frame is sent back, no HTTP status is possible once the connection is a WebSocket at all) — no leaked processes survive session teardown. No new authentication layer exists for this endpoint — exactly as protected as every other existing mutating endpoint today (network reachability only), a more sensitive capability than most, worth stating plainly rather than leaving implicit.
 
+## Diagnosing a container that starts but exits on its own (`capture_output`)
+
+The console endpoint above needs the target process to still be running — no help for a container whose command execve()s fine and then exits on its own, taking whatever it printed to stderr with it. `capture_output` (optional, default `false`, on `POST /containers`) closes that gap: it captures the container's own stdout/stderr — interleaved, oldest-first, bounded at 4096 bytes — into an in-memory buffer readable back afterward via `GET /containers/{name}`'s `captured_output` field, the same mechanism `pkg.c`'s own build containers have used internally since ADR-0087, now opt-in for ordinary containers too.
+
+```
+POST /v1/containers
+{
+  "name": "jumpbox1",
+  "image": "jumpbox",
+  "cmd": ["/usr/sbin/sshd", "-D", "-e"],
+  "capture_output": true
+}
+```
+
+```
+GET /v1/containers/jumpbox1
+{
+  "name": "jumpbox1",
+  "status": "exited",
+  "exit_status": 1,
+  "captured_output": "sshd: no hostkeys available -- exiting.\n",
+  ...
+}
+```
+
+`captured_output` is `null` (not `""`) when `capture_output` was never requested — the two are deliberately distinguishable: `null` means "opted out," `""` means "opted in, nothing written yet." It keeps growing live while the container runs and simply stops once the process (and every descendant it forked) exits and the capture pipe's write end fully closes — not a live tail (see the build-log WebSocket below, or the console endpoint above, for that), just a diagnostic snapshot worth reading after the fact. Bytes past the 4096-byte cap are silently dropped, not the earliest ones — generous enough for a real startup failure's own error text, bounded so one runaway-logging container can't grow a registry entry unbounded.
+
 ## Live-tailing an in-flight package build (task #676, ADR-0101)
 
 `GET /v1/pkg/build/log` streams a currently-running `pkg install`/`pkg hostbuild` job's own stdout/stderr live, over the same minimal WebSocket upgrade the console endpoint uses — but it's a genuinely different, much simpler mechanism: a one-way relay of an already-epoll-drained pipe (ADR-0087), not an interactive exec/PTY session. Before this existed, a build's output was only ever visible after the fact, and only on failure (folded into the logged error, `GET /pkg/{name}`'s `error` field) — a slow build in progress (this project has hit real multi-minute ones: `perl`, `gcc` from source) had no REST-visible signal at all while it ran.
@@ -560,7 +587,7 @@ POST /v1/dns/records
 
 `PUT /v1/dns/records/{name}` (task #749) edits an existing record's `ip` in place — `name` is authoritative from the URL path and, unlike `POST`, is never re-qualified with the site suffix (that qualification only ever applies at creation time). `400` on a malformed `ip`, `404` if no record with that name exists.
 
-Once a container running dnsmasq exists (e.g. `cmd: ["/usr/sbin/dnsmasq", "-k", "-u", "root", "-p", "53", "-H", "/etc/dnsmasq-hosts", "-R", "-h", "--server=1.1.1.1", "--server=8.8.8.8"]` — `-u root` since a minimal container image typically has no `/etc/passwd` for dnsmasq's default privilege drop to resolve; `-R`/`-h` skip `/etc/resolv.conf`/`/etc/hosts`, which likely don't exist either; the two `--server=` flags are real, static upstream forwarders (ADR-0076) — without them `-R` alone leaves this container purely authoritative for `.internal`, with no recursion for anything else, which is what it was until this ADR), register it:
+Once a container running dnsmasq exists (e.g. `cmd: ["/usr/sbin/dnsmasq", "-k", "-u", "root", "-p", "53", "-H", "/etc/dnsmasq-hosts", "-R", "-h", "--pid-file=", "--server=1.1.1.1", "--server=8.8.8.8"]` — `-u root` since a minimal container image typically has no `/etc/passwd` for dnsmasq's default privilege drop to resolve; `-R`/`-h` skip `/etc/resolv.conf`/`/etc/hosts`, which likely don't exist either; `--pid-file=` (empty) disables dnsmasq's own default pidfile write, `/var/run/dnsmasq.pid` — confirmed the hard way, this project's own minimal images have no `/var/run` (only `/run`), so without this flag dnsmasq dies immediately with its own `EC_FILE` (exit status 3) on every single startup attempt, an instant, silent crash-loop under `restart: always` with no REST-visible cause; the two `--server=` flags are real, static upstream forwarders (ADR-0076) — without them `-R` alone leaves this container purely authoritative for `.internal`, with no recursion for anything else, which is what it was until this ADR), register it:
 
 ```
 POST /v1/dns/servers

@@ -84,6 +84,10 @@ enum registry_error registry_create(const char *name, const char *image,
 	e->started_at = time(NULL);
 	e->in_use = 1;
 	e->reactor_conn = NULL;
+	e->output_fd = -1;
+	e->capture_requested = 0;
+	e->captured_output[0] = '\0';
+	e->captured_output_len = 0;
 	memset(e->nets, 0, sizeof(e->nets));
 	e->net_count = net_count;
 	for (i = 0; i < net_count; i++)
@@ -317,6 +321,11 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 		jw_null(w);
 	else
 		jw_str(w, entry->last_exit_reason);
+	jw_key(w, "captured_output");
+	if (entry->capture_requested)
+		jw_str(w, entry->captured_output);
+	else
+		jw_null(w);
 	jw_key(w, "networks");
 	jw_arr_open(w);
 	for (i = 0; i < entry->net_count; i++) {

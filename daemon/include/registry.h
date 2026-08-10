@@ -10,6 +10,10 @@
 
 #define REGISTRY_MAX_CONTAINERS 256
 #define REGISTRY_NAME_MAX 64
+/* Same cap pkg.c's own PKG_BUILD_OUTPUT_CAPTURE_MAX uses for build-output
+ * capture -- generous enough for a real startup failure's own diagnostic
+ * text, bounded so one misbehaving container can't grow this indefinitely. */
+#define REGISTRY_CAPTURED_OUTPUT_MAX 4096
 /* Matches daemon's PKG_IMAGE_NAME_MAX -- see daemon/include/pkg.h. An
  * image name is not a distinct kind of identifier, just a directory
  * name, the same reasoning that constant's own comment already gives. */
@@ -166,6 +170,30 @@ struct registry_entry {
 	 * deregistered (container exited and was noticed, or removed).
 	 */
 	void *reactor_conn;
+	/*
+	 * Opt-in stdout/stderr capture (POST /v1/containers' own
+	 * "capture_output" field) -- the ordinary-container analog of the
+	 * pkg-build-container capture ADR-0056/0087 already established,
+	 * closing a real observability gap: a container that execve()s
+	 * cleanly and then exits on its own for a reason with no other
+	 * visible signal (e.g. a daemon refusing to start over a config
+	 * problem) previously had no way to say why, since neither the diag
+	 * pipe (container_read_diag(), only ever written by Kanxeo's own
+	 * pre-exec setup steps) nor anything else captured what the
+	 * exec'd program itself wrote. output_fd is main.c's own
+	 * epoll-owned read end of the capture pipe (-1 once not capturing,
+	 * or already drained to EOF); captured_output/captured_output_len
+	 * hold whatever was read so far, bounded and drained incrementally
+	 * exactly like ADR-0087's build-output pipe (never letting the
+	 * container itself block on a full pipe buffer).
+	 */
+	int output_fd;
+	int capture_requested; /* 1 iff "capture_output" was set at creation time --
+	                         * distinguishes "never asked for capture" (captured_output
+	                         * stays "") from "asked, but nothing written yet" (same
+	                         * empty string) for GET's own null-vs-"" reporting. */
+	char captured_output[REGISTRY_CAPTURED_OUTPUT_MAX];
+	int captured_output_len;
 };
 
 void registry_init(void);

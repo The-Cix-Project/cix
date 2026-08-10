@@ -116,3 +116,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0109](0109-ldap-redesign.md) | LDAP redesign: glauth, config-render write-through (mirroring DNS, not a second SQLite-owned datastore), and owner-tracked automatic service-account provisioning | Accepted |
 | [0110](0110-ntp-host-clock-sync.md) | NTP: hand-rolled SNTP client for the host clock (clock_settime() needs host-namespace CAP_SYS_TIME, no container can do it), plus container time-source registration mirroring DNS/LDAP | Accepted |
 | [0111](0111-ssh-ldap-account-sync.md) | Jump box SSH auth backed by LDAP: rendered Unix accounts (passwd/group/shadow/authorized_keys), not real NSS/PAM-over-LDAP | Accepted |
+| [0112](0112-container-output-capture.md) | Opt-in stdout/stderr capture for ordinary containers, reusing the existing build-container pipe/epoll-drain mechanism -- closes the diagnostic gap named by tasks #731 and #747 | Accepted |

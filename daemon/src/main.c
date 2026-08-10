@@ -434,6 +434,12 @@ enum conn_kind {
 	CONN_PKG_FETCH,
 	CONN_PKG_BUILD_OUTPUT,  /* pkg.c's build-output capture pipe, drained incrementally
 	                          * as the container runs rather than once at exit (ADR-0087) */
+	CONN_CONTAINER_OUTPUT,  /* an ordinary container's own opt-in stdout/stderr capture
+	                          * pipe (POST /v1/containers' "capture_output"), drained
+	                          * incrementally into its registry_entry exactly like
+	                          * CONN_PKG_BUILD_OUTPUT drains into pkg.c's build-output
+	                          * buffer -- the same ADR-0087 discipline, a different
+	                          * destination */
 	CONN_BOOTROOT_ASSEMBLE, /* server-side mkbootroot invocation (ADR-0057) */
 	CONN_BOOTROOT_OUTPUT,   /* mkbootroot's own captured stdout/stderr, drained
 	                          * incrementally exactly like CONN_PKG_BUILD_OUTPUT (ADR-0087) */
@@ -475,7 +481,7 @@ struct conn {
 	           * finished() means the TLS handshake is still in
 	           * progress; see handle_client_event(). */
 	struct http_conn http;                 /* CONN_CLIENT only */
-	struct registry_entry *entry;           /* CONN_CONTAINER only */
+	struct registry_entry *entry;           /* CONN_CONTAINER / CONN_CONTAINER_OUTPUT */
 	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE / CONN_ISO_ASSEMBLE / CONN_BOOTSTRAP_FETCH / CONN_DISK_FORMAT */
 	char restart_name[REGISTRY_NAME_MAX];   /* CONN_RESTART_TIMER only */
 	char cleanup_ifname[NETWORK_NAME_MAX];  /* CONN_BIND_IP_CLEANUP only */
@@ -4389,6 +4395,107 @@ static void handle_pkg_build_output_event(struct conn *cc)
 }
 
 /*
+ * The ordinary-container analog of register_pkg_build_output() above --
+ * registers a container's own opt-in capture pipe (POST /v1/containers'
+ * "capture_output") directly with epoll, watching entry->output_fd
+ * itself rather than a pidfd, for exactly the same reason: draining it
+ * live, incrementally, as the container runs, so it never fills its
+ * 64KB kernel buffer and blocks whatever the container itself is trying
+ * to write to stdout/stderr (the same ADR-0087 discipline). No-op if
+ * output_fd is < 0 (pipe2() itself failed at container-create time).
+ */
+static void register_container_output(struct registry_entry *entry)
+{
+	struct conn *cc;
+	struct kx_epoll_event ev;
+
+	if (entry->output_fd < 0)
+		return;
+
+	cc = malloc(sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (container output reactor conn)");
+		abort();
+	}
+	memset(cc, 0, sizeof(*cc));
+	cc->kind = CONN_CONTAINER_OUTPUT;
+	cc->fd = entry->output_fd;
+	cc->entry = entry;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+		perror("epoll_ctl ADD container output fd");
+		abort();
+	}
+}
+
+/*
+ * Fires whenever a capture-enabled container's own output_fd becomes
+ * readable. Appends whatever was newly read into entry->captured_output
+ * (bounded at REGISTRY_CAPTURED_OUTPUT_MAX, silently dropping anything
+ * past that -- the same "generous but bounded" posture pkg.c's own
+ * build-output capture already established, not a live-tail feature
+ * like CONN_PKG_BUILD_OUTPUT's WS relay, just a diagnostic snapshot GET
+ * /v1/containers/{name} can report). Guards entry->in_use: this
+ * registry slot could in principle already have been reused by a
+ * different container by the time EOF finally arrives (e.g. a very
+ * fast create/delete/create cycle racing this conn's own teardown) --
+ * skip the append rather than risk attributing one container's output
+ * to another's slot. On EOF (every copy of the pipe's write end closed
+ * -- the container process and every descendant it forked have
+ * exited), tears down this conn's own epoll registration and closes
+ * the fd, mirroring handle_pkg_build_output_event() exactly.
+ */
+static void handle_container_output_event(struct conn *cc)
+{
+	char new_data[4096];
+	ssize_t n;
+	int eof = 0;
+
+	for (;;) {
+		n = read(cc->fd, new_data, sizeof(new_data));
+		if (n > 0) {
+			if (cc->entry->in_use && cc->entry->output_fd == cc->fd) {
+				int room = (int)sizeof(cc->entry->captured_output) -
+				           cc->entry->captured_output_len - 1;
+				int take = (int)n < room ? (int)n : room;
+
+				if (take > 0) {
+					memcpy(cc->entry->captured_output + cc->entry->captured_output_len,
+					       new_data, (size_t)take);
+					cc->entry->captured_output_len += take;
+					cc->entry->captured_output[cc->entry->captured_output_len] = '\0';
+				}
+			}
+			if (n < (ssize_t)sizeof(new_data))
+				break; /* drained everything currently buffered */
+			continue;
+		}
+		if (n == 0) {
+			eof = 1;
+			break;
+		}
+		/* n < 0 */
+		if (errno == EINTR)
+			continue;
+		if (errno == EAGAIN || errno == EWOULDBLOCK)
+			break; /* nothing more right now, still open */
+		eof = 1; /* a real read error -- treat like EOF, stop watching */
+		break;
+	}
+
+	if (eof) {
+		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+		close(cc->fd);
+		if (cc->entry->output_fd == cc->fd)
+			cc->entry->output_fd = -1;
+		free(cc);
+	}
+}
+
+/*
  * ADR-0087: mkbootroot's own captured stdout/stderr, drained
  * incrementally via epoll exactly like pkg.c's own build-output pipe
  * above -- the identical class of bug (a single post-exit read of a
@@ -5477,6 +5584,10 @@ static int create_container_from_body(const char *body, size_t body_len,
 	struct registry_network_attachment net_attachments[CONTAINER_MAX_NETWORKS];
 	int net_count = 0;
 	int ip_forward = 0;
+	const struct json_value *jcapture_output;
+	int capture_output = 0;
+	int output_pipe[2] = { -1, -1 };
+	int stdio_write_fd = -1;
 	struct route_spec route_specs[CONTAINER_MAX_ROUTES];
 	int route_count = 0;
 	struct registry_device_attachment device_attachments[CONTAINER_MAX_DEVICES];
@@ -5522,6 +5633,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	jcmd = json_object_get(root, "cmd");
 	jnetworks = json_object_get(root, "networks");
 	jip_forward = json_object_get(root, "ip_forward");
+	jcapture_output = json_object_get(root, "capture_output");
 	jroutes = json_object_get(root, "routes");
 	jdevices = json_object_get(root, "devices");
 	jinterfaces = json_object_get(root, "interfaces");
@@ -5536,6 +5648,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 	image = json_as_string(jimage);
 	disk_name = json_as_string(jdisk);
 	ip_forward = (jip_forward != NULL && jip_forward->type == JSON_BOOL && jip_forward->u.boolean);
+	capture_output = (jcapture_output != NULL && jcapture_output->type == JSON_BOOL &&
+	                   jcapture_output->u.boolean);
 	dns_register = (jdns_register != NULL && jdns_register->type == JSON_BOOL &&
 	                jdns_register->u.boolean);
 	pki_issue = (jpki_issue != NULL && jpki_issue->type == JSON_BOOL && jpki_issue->u.boolean);
@@ -6170,6 +6284,38 @@ static int create_container_from_body(const char *body, size_t body_len,
 	spec.argv = argv_buf;
 	spec.envp = empty_envp;
 
+	/*
+	 * Opt-in stdout/stderr capture for an ordinary, operator-created
+	 * container -- the same pipe2()/O_NONBLOCK-on-the-read-end pattern
+	 * pkg_build_start() already established for build containers
+	 * (pkg.c), plumbed here so a container that crash-loops with no
+	 * REST-visible diagnostic (e.g. sshd's -D -e exiting 1 on a config
+	 * problem) can have its real stderr read back afterward via
+	 * GET /v1/containers/{name}'s new "captured_output" field. A
+	 * pipe2()/fcntl() failure here is treated as "capture unavailable"
+	 * rather than a hard container-create failure -- the container
+	 * still gets created, it just runs without capture, exactly like
+	 * pkg.c's own build path degrades.
+	 */
+	if (capture_output) {
+		if (pipe2(output_pipe, O_CLOEXEC) == 0) {
+			if (fcntl(output_pipe[0], F_SETFL, O_NONBLOCK) == 0) {
+				spec.capture_output = 1;
+				spec.stdout_fd = output_pipe[1];
+				spec.stderr_fd = output_pipe[1];
+				stdio_write_fd = output_pipe[1];
+			} else {
+				close(output_pipe[0]);
+				close(output_pipe[1]);
+				output_pipe[0] = -1;
+				output_pipe[1] = -1;
+			}
+		} else {
+			output_pipe[0] = -1;
+			output_pipe[1] = -1;
+		}
+	}
+
 	rerr = registry_create(name, image, resolved_image_version, &spec, net_attachments, net_count,
 	                        ip_forward,
 	                        device_attachments, device_count, file_paths, file_count, disk_name, &entry);
@@ -6187,6 +6333,18 @@ static int create_container_from_body(const char *body, size_t body_len,
 	 * an operator nothing to act on beyond a bare 500.
 	 */
 	create_errno = errno;
+	/*
+	 * The parent's own copy of the pipe's write end must be closed
+	 * explicitly here, win or lose -- clone3() (no CLONE_FILES) gave
+	 * the child an independent copy of the fd table, not a shared one,
+	 * so this process's own copy of output_pipe[1] keeps the pipe
+	 * "held open" from the read end's perspective (no EOF, ever) until
+	 * it's closed, regardless of what the child itself does with its
+	 * copy. Same discipline as handle_pkg_fetch_event()'s own
+	 * `if (stdio_write_fd >= 0) close(stdio_write_fd);`.
+	 */
+	if (stdio_write_fd >= 0)
+		close(stdio_write_fd);
 	/*
 	 * A real copy, not just the `name` pointer -- `name` is
 	 * json_as_string(jname), pointing straight into `root`'s own
@@ -6213,14 +6371,20 @@ static int create_container_from_body(const char *body, size_t body_len,
 	json_free(root);
 
 	if (rerr == REGISTRY_ERR_DUPLICATE) {
+		if (output_pipe[0] >= 0)
+			close(output_pipe[0]);
 		snprintf(err_msg, err_msg_size, "a container with this name already exists");
 		return 409;
 	}
 	if (rerr == REGISTRY_ERR_FULL) {
+		if (output_pipe[0] >= 0)
+			close(output_pipe[0]);
 		snprintf(err_msg, err_msg_size, "container table full");
 		return 500;
 	}
 	if (rerr == REGISTRY_ERR_CREATE_FAILED) {
+		if (output_pipe[0] >= 0)
+			close(output_pipe[0]);
 		snprintf(err_msg, err_msg_size, "failed to create container: %s", strerror(create_errno));
 		logstore_write("kanxeod", "error", "container %s: failed to create: %s", name_copy,
 		                strerror(create_errno));
@@ -6228,6 +6392,12 @@ static int create_container_from_body(const char *body, size_t body_len,
 	}
 
 	register_container_pidfd(entry);
+
+	if (output_pipe[0] >= 0) {
+		entry->output_fd = output_pipe[0];
+		entry->capture_requested = 1;
+		register_container_output(entry);
+	}
 
 	if (dns_register) {
 		/* entry->name, not the local `name`, which pointed into
@@ -12177,6 +12347,8 @@ int main(int argc, char **argv)
 				handle_pkg_fetch_event(cc);
 			else if (cc->kind == CONN_PKG_BUILD_OUTPUT)
 				handle_pkg_build_output_event(cc);
+			else if (cc->kind == CONN_CONTAINER_OUTPUT)
+				handle_container_output_event(cc);
 			else if (cc->kind == CONN_BOOTROOT_ASSEMBLE)
 				handle_bootroot_assemble_event(cc);
 			else if (cc->kind == CONN_BOOTROOT_OUTPUT)

@@ -2,6 +2,19 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 70 (done, full clean rebuild + full regression sweep): opt-in stdout/stderr capture for ordinary containers
+
+Wires the existing `container_spec.capture_output`/`stdout_fd`/`stderr_fd` mechanism (previously build-container-only) into `POST /v1/containers` for ordinary, operator-created containers -- the exact gap Part 69's own closing note named as the concrete next step for diagnosing glauth's non-binding LDAP listener. See [ADR-0112](docs/adr/0112-container-output-capture.md).
+
+#### Added
+- `daemon/include/registry.h`: `output_fd`/`capture_requested`/`captured_output[4096]`/`captured_output_len` on `struct registry_entry` -- a per-container capture destination.
+- `daemon/src/main.c`: `capture_output` boolean parsing + `pipe2()`/`O_NONBLOCK` wiring in `create_container_from_body()`; new `register_container_output()`/`handle_container_output_event()`, incremental epoll-driven drain mirroring `register_pkg_build_output()`/`handle_pkg_build_output_event()` (ADR-0087's discipline) into the per-entry buffer instead of a shared global; `GET /v1/containers/{name}`'s new `captured_output` field (`null` if never requested, the text -- possibly `""` -- otherwise).
+- `test/output_child.c`, `test/test_container_lifecycle.c` step 10: a real end-to-end test proving both the positive case (both stdout and stderr lines captured after the process exits) and the `null`-vs-`""` distinction.
+- `docs/api/openapi.yaml`/`docs/api/README.md`: `capture_output`/`captured_output` documented, plus a new narrative section on diagnosing a container that starts but exits on its own.
+
+#### Fixed
+- **A real gap caught by the new live test, not by inspection**: the epoll dispatch loop had no branch for the new `CONN_CONTAINER_OUTPUT` conn kind -- registered with epoll correctly, but its readable events were silently never handled, so `captured_output` never updated past empty regardless of how long a caller polled.
+
 ### Part 69 (investigated, root cause narrowed but not fully isolated): glauth's LDAP listener never accepts TCP on real hardware (closes task #747)
 
 Continued task #728's own unresolved "listener mystery" with a fresh diagnostic angle: a standalone `glauth-diag` container on 192.168.15.95, staged with glauth's real upstream `sample-simple.cfg` (not a Kanxeo-rendered config) to rule out "bad operator config" as the cause. Confirmed with direct evidence: the process stays running (stable pid, no crash-loop); the staged config reads back byte-identical via `GET .../files`; the installed binary is a valid, well-formed 43MB dynamically-linked ELF64; `src/container.c` drops zero capabilities and applies no seccomp filter to any container; and a direct external TCP connect against both the configured port and an intentionally-unconfigured one both return `ECONNREFUSED` immediately -- the exact symptom task #728 already documented, now reproduced against a known-good config. This rules out the "malformed config"/"Kanxeo file-staging corruption" theories the original investigation couldn't fully close.

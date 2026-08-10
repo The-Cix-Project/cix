@@ -4195,6 +4195,26 @@ components:
             container. Format only is validated (dest/via must be
             well-formed IPv4, prefix_len 0-32) -- whether via is
             actually reachable is the caller's responsibility.
+        capture_output:
+          type: boolean
+          default: false
+          description: >
+            If true, captures this container's own stdout/stderr into
+            a bounded in-memory buffer (4096 bytes, oldest bytes kept,
+            newest dropped past the cap), readable back afterward via
+            GET .../{name}'s captured_output field -- the same
+            mechanism pkg.c's own build containers already use
+            internally, now opt-in for ordinary operator-created
+            containers too. Meant for diagnosing a process that starts
+            fine (a successful execve()) but then exits on its own
+            with no other visible signal -- e.g. a daemon whose real
+            config-validation error would otherwise only ever have
+            gone to a terminal nobody was watching. Not a live tail:
+            the buffer fills as the process runs but is only useful to
+            read after it has produced output, not as an ongoing log
+            stream (see the console/exec endpoint for that). Default
+            false: capturing costs one pipe and one small buffer per
+            container, worth paying only when actually needed.
         dns_register:
           type: boolean
           default: false
@@ -4636,6 +4656,21 @@ components:
             echoed back here -- the caller already has them, and v1
             doesn't support introspecting or modifying them after
             creation.
+        captured_output:
+          type: string
+          nullable: true
+          description: >
+            This container's own captured stdout/stderr (interleaved,
+            oldest-first, bounded at 4096 bytes -- bytes past the cap
+            are dropped, not the earliest ones), present only if
+            capture_output was set to true at creation time. null (not
+            an empty string) if capture was never requested -- the two
+            are deliberately distinguishable: null means "opted out",
+            "" means "opted in, nothing written yet." Updates live
+            while the container runs and stops growing once it exits,
+            so it remains readable afterward -- meant for diagnosing a
+            process that starts (a successful execve()) but exits on
+            its own with no other visible signal.
         devices:
           type: array
           items:

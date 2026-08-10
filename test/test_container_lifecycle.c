@@ -192,6 +192,10 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
+	if (test_image_fixture_build(g_image_root, "build/output_child", "output_child") != 0) {
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
 
 	daemon_pid = start_daemon();
 	if (daemon_pid < 0) {
@@ -532,6 +536,115 @@ int main(void)
 		if (kx_client_request(&client, "DELETE", "/v1/containers/lc4", NULL, &r) != 0 ||
 		    r.status != 204) {
 			fprintf(stderr, "FAIL: DELETE lc4, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+	}
+
+	/* 10. capture_output: a container created with "capture_output":true
+	 * has its real stdout/stderr captured into the registry entry's own
+	 * "captured_output" field, readable back via GET even after the
+	 * process has exited -- the feature that makes an otherwise-silent
+	 * crash-loop (e.g. sshd -D -e exiting 1 on a config problem)
+	 * diagnosable without a working console/exec path. A sibling
+	 * container created WITHOUT the option must report
+	 * "captured_output":null, not an empty string -- the two are
+	 * deliberately distinguishable (opted out vs. captured-but-empty). */
+	{
+		int attempt;
+		char captured_buf[4096];
+		int captured_found = 0;
+
+		captured_buf[0] = '\0';
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"lc5\",\"image\":\"lifecycletest\","
+		                       "\"cmd\":[\"/bin/output_child\"],"
+		                       "\"capture_output\":true}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST lc5 with capture_output, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* output_child exits almost immediately -- poll briefly for the
+		 * pipe's EOF to be drained into captured_output rather than
+		 * racing it. The matched string is copied out into a local
+		 * buffer BEFORE kx_response_free(&r) -- captured pointed into
+		 * r.json's own tree, which that free() invalidates, so holding
+		 * onto the struct json_value* itself across the free (as an
+		 * earlier version of this test did) is a real use-after-free,
+		 * not just untidy. */
+		for (attempt = 0; attempt < 50; attempt++) {
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "GET", "/v1/containers/lc5", NULL, &r) == 0 &&
+			    r.status == 200) {
+				const struct json_value *captured = json_object_get(r.json, "captured_output");
+
+				if (captured != NULL && captured->type == JSON_STRING &&
+				    strstr(captured->u.string, "capture-test-stdout-line") != NULL) {
+					snprintf(captured_buf, sizeof(captured_buf), "%s", captured->u.string);
+					captured_found = 1;
+					kx_response_free(&r);
+					break;
+				}
+			}
+			kx_response_free(&r);
+			usleep(100000);
+		}
+
+		if (!captured_found || strstr(captured_buf, "capture-test-stdout-line") == NULL ||
+		    strstr(captured_buf, "capture-test-stderr-line") == NULL) {
+			fprintf(stderr,
+			        "FAIL: lc5's captured_output did not contain both expected lines "
+			        "after %d attempts (got: \"%s\")\n",
+			        attempt, captured_buf);
+			ok = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "DELETE", "/v1/containers/lc5", NULL, &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: DELETE lc5, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* Sibling without capture_output: captured_output must be JSON null. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"lc6\",\"image\":\"lifecycletest\","
+		                       "\"cmd\":[\"/bin/output_child\"]}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST lc6 without capture_output, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/containers/lc6", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET lc6, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *v = json_object_get(r.json, "captured_output");
+
+			if (v == NULL || v->type != JSON_NULL) {
+				fprintf(stderr,
+				        "FAIL: lc6's captured_output should be JSON null "
+				        "(capture_output not requested)\n");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "DELETE", "/v1/containers/lc6", NULL, &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: DELETE lc6, status=%d\n", r.status);
 			ok = 0;
 		}
 		kx_response_free(&r);
