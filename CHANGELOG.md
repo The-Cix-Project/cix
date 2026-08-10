@@ -13,7 +13,7 @@ Task #764, a same-day follow-up from task #760's sweep. `kanxeoctl console` retu
 
 #### Verified
 - Full clean rebuild + full regression sweep (24 tests) all pass, including `test_boot` and `test_installer` run explicitly (both exercise a real QEMU PID-1 boot through `boot_init()` itself, confirming the new mount doesn't regress boot).
-- Live against 192.168.15.95: see the next deploy round-trip's own confirmation.
+- Live against 192.168.15.95: deployed as `v1.8.6` via the established hostbuild+deploy+upgrade+reboot round-trip. `kanxeoctl console jumpbox1 --cmd=/usr/bin/id` returned `uid=0(root) gid=0(root) groups=0(root)` cleanly -- no more bare 500. Confirms both the diagnosis and the fix.
 
 ### Part 75 (done, verified live end-to-end): DNS record GET/PUT/DELETE now qualify a bare name, matching POST
 

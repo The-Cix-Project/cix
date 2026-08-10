@@ -22,7 +22,7 @@ This also explains why the bug was invisible in every prior test run: the local 
 
 Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (24 daemon-linked/host-side tests) all pass. Critically, this change touches the real PID-1 boot path, so the two QEMU tests that actually exercise it end to end were run explicitly, not just the fast in-process tests: `test_boot` (a from-scratch disk image, real `kanxeod` as PID 1, confirms `boot_init()` itself doesn't regress) and `test_installer` (a full install + reboot cycle) — both pass.
 
-Live verification on 192.168.15.95 deferred to the same deploy round-trip as the diagnostic-surfacing commit immediately before this one; see the CHANGELOG/ROADMAP entry for this phase for the live confirmation once deployed.
+Live-verified on 192.168.15.95 after deploying as `v1.8.6`: `kanxeoctl console jumpbox1 --cmd=/usr/bin/id` returned `uid=0(root) gid=0(root) groups=0(root)` cleanly, confirming the console/exec path now works end to end on a real, from-scratch `boot_init()` boot.
 
 ## Consequences
 
