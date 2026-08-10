@@ -2,6 +2,18 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 71 (done, verified live end-to-end): glauth's "listener mystery" resolved for real -- two unrelated causes, neither a Kanxeo or glauth defect
+
+Deployed Part 70's `capture_output` to 192.168.15.95 and used it immediately: glauth's real log showed a clean `LDAP server listening`, no error, ruling out the process itself. Root cause 1: the diagnostic container's auto-allocated IP (`192.168.15.1`) landed outside the reserved `192.168.15.101`-`109` range and collided with a real device on the physical LAN, which was RSTing every connection on glauth's behalf -- confirmed by pinning a fresh container to `.103`, which connected immediately. Root cause 2, found right after: a genuine, previously-undiscovered kernel gap -- `CONFIG_INOTIFY_USER` was never enabled, so glauth's own `watchconfig = true` fsnotify watcher silently failed at startup (`error="function not implemented"`), meaning live LDAP CRUD writes never reached an already-running glauth process. See [ADR-0113](docs/adr/0113-glauth-listener-mystery-resolved.md).
+
+#### Fixed
+- `image/kernel/qemu-part1.config`: added `CONFIG_INOTIFY_USER=y`. Rebuilt and deployed to 192.168.15.95 via the LAN-serve `system/update --kernel_path=` + reboot round-trip.
+
+#### Verified
+- Live end to end: recreated `ldap-1`/`ldap-2` (pinned to `.103`/`.104`), a real `POST /v1/ldap/users` write with the container already running triggered glauth's own `Config was reloaded` log line with zero restart, and a genuine `ldapsearch` bind with the new user's real password authenticated successfully.
+
+No code changes to glauth or Kanxeo's own LDAP module -- both were already correct.
+
 ### Part 70 (done, full clean rebuild + full regression sweep): opt-in stdout/stderr capture for ordinary containers
 
 Wires the existing `container_spec.capture_output`/`stdout_fd`/`stderr_fd` mechanism (previously build-container-only) into `POST /v1/containers` for ordinary, operator-created containers -- the exact gap Part 69's own closing note named as the concrete next step for diagnosing glauth's non-binding LDAP listener. See [ADR-0112](docs/adr/0112-container-output-capture.md).
