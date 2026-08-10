@@ -2,6 +2,18 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 72 (done, verified live end-to-end): real chrony NTP server, ntp-1/ntp-2 standing up permanently
+
+`chrony.recipe` (new, 4.8): a real from-source chronyd/chronyc build, every optional crypto/privilege-drop backend disabled (this project's own per-container isolation makes a second sandboxing layer redundant), `--with-pidfile=/run/chronyd.pid` matching the established `/run`-only convention. Stood up `ntp-1`/`ntp-2` permanently on 192.168.15.95 (`restart: always`, pinned to the reserved `192.168.15.105`/`.106` range), each an orphan `local stratum 10` reference, registered via `POST /v1/ntp/servers`.
+
+#### Fixed
+- A second real gap found via `capture_output`: `chronyd` calls `getpwnam("root")` to resolve its own configured user even with privilege-dropping compiled out (it never actually changes UID) -- with no `/etc/passwd` at all on this project's minimal images, that lookup fails and the process exits immediately. Fixed by staging a minimal `/etc/passwd`/`/etc/group` as ordinary container `files[]` content, the same mechanism as the config file itself.
+
+#### Verified
+- `POST /v1/system/ntp/sync` against both `ntp-1` and `ntp-2` returned `state: "ok"` with the correct `synced_from` IP -- a genuine NTP wire-protocol round trip via Kanxeo's own SNTP client.
+
+`docs/api/README.md`'s NTP section gained a full worked chrony-container example; `CLAUDE.md`'s environment notes gained the generalized finding.
+
 ### Part 71 (done, verified live end-to-end): glauth's "listener mystery" resolved for real -- two unrelated causes, neither a Kanxeo or glauth defect
 
 Deployed Part 70's `capture_output` to 192.168.15.95 and used it immediately: glauth's real log showed a clean `LDAP server listening`, no error, ruling out the process itself. Root cause 1: the diagnostic container's auto-allocated IP (`192.168.15.1`) landed outside the reserved `192.168.15.101`-`109` range and collided with a real device on the physical LAN, which was RSTing every connection on glauth's behalf -- confirmed by pinning a fresh container to `.103`, which connected immediately. Root cause 2, found right after: a genuine, previously-undiscovered kernel gap -- `CONFIG_INOTIFY_USER` was never enabled, so glauth's own `watchconfig = true` fsnotify watcher silently failed at startup (`error="function not implemented"`), meaning live LDAP CRUD writes never reached an already-running glauth process. See [ADR-0113](docs/adr/0113-glauth-listener-mystery-resolved.md).

@@ -449,6 +449,30 @@ POST /v1/ntp/servers
 
 Simpler than either: NTP is itself a live query/response protocol, so this is pure bookkeeping -- no pid/pidfd, no config-file push, no signal. `kanxeod` resolves the registered container's own live IP fresh at every sync attempt (never cached) and queries it directly with the exact same SNTP client as (1) -- a registered container is just one more candidate `ntp_sync_start()` tries, ahead of the configured upstream addresses. `404` if the named container doesn't exist or isn't currently running.
 
+Once a running chrony container exists (`chrony.recipe`, this platform's own standard NTP server -- `chronyd`, plain from-source, `--without-libcap --without-seccomp` so it never attempts privilege dropping in the first place, since it's already the container's own root):
+
+```
+POST /v1/containers
+{
+  "name": "ntp1",
+  "image": "ntp_server",
+  "cmd": ["/usr/sbin/chronyd", "-d", "-f", "/etc/chrony.conf"],
+  "capture_output": true,
+  "files": [
+    {"path": "/etc/chrony.conf", "content": "local stratum 10\nallow 192.168.15.0/24\ndriftfile /run/chrony.drift\n"},
+    {"path": "/etc/passwd", "content": "root:x:0:0:root:/root:/usr/bin/bash\n"},
+    {"path": "/etc/group", "content": "root:x:0:\n"}
+  ]
+}
+```
+
+`-d` (not daemonizing) is the same "stay in the foreground, log to stderr" requirement every containerized service here has (`kanxeod` has no init to reap a forking child). `local stratum 10` makes this an orphan reference -- a stable internal time source that doesn't need real upstream internet reachability, appropriate for a LAN-internal NTP source other containers or the host register against; a real deployment wanting real wall-clock accuracy would add real `server`/`pool` directives instead (see (1) above for the DNS-resolution caveat that applies to any hostname used inside a container's own config on a real installed host). **The `/etc/passwd`/`/etc/group` files are not optional**, confirmed the hard way: `chronyd` calls `getpwnam()` to resolve its own `--with-user=root` compile-time default even though privilege-dropping itself is compiled out and it never actually changes UID -- with no `/etc/passwd` at all (this project's minimal images ship none by default), that lookup legitimately fails and `chronyd` exits immediately with `Fatal error : Could not get user/group ID of root`. `capture_output` is what makes this diagnosable at all; see [Diagnosing a container that starts but exits on its own](#diagnosing-a-container-that-starts-but-exits-on-its-own-capture_output) above.
+
+```
+POST /v1/ntp/servers
+{"container": "ntp1"}
+```
+
 `GET`/`PUT /v1/system/time` is a separate, manual escape hatch alongside automatic sync -- view or directly set the host's current clock:
 
 ```
