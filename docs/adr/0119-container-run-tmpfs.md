@@ -24,7 +24,7 @@ Fixed at the mount-namespace level, not in `chrony.recipe` (e.g. by trying to su
 
 Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (24 tests) all pass, including `test_overlay`/`test_container_net`/`test_devices`/`test_container_lifecycle`/`test_container_restart` (every test that actually exercises `mountns_pivot()` via a real `clone3()`+`pivot_root()`).
 
-Live on 192.168.15.95: after explicitly `DELETE`ing the pre-existing, poisoned `ntp-1`/`ntp-2` disk state (one-time cleanup -- the fix prevents the *next* poisoning, it doesn't retroactively clean up the one this session already left behind) and redeploying with this fix, `ntp-1`/`ntp-2` were recreated and confirmed stable. See the ROADMAP/CHANGELOG entry for this phase for the specific reboot-survival confirmation.
+Live on 192.168.15.95: after explicitly `DELETE`ing the pre-existing, poisoned `ntp-1`/`ntp-2` disk state (one-time cleanup -- the fix prevents the *next* poisoning, it doesn't retroactively clean up the one this session already left behind), redeployed as `v1.8.7`, recreated `ntp-1`/`ntp-2`, and confirmed stable. Rebooted the box twice in succession: both times `ntp-1`/`ntp-2` autostarted via `containerdef_autostart_all()` and stayed up, with zero manual intervention -- the exact failure mode this ADR exists to fix.
 
 ## Consequences
 

@@ -11,7 +11,7 @@ The user asked directly why `ntp-1`/`ntp-2` never survived a real reboot of 192.
 
 #### Verified
 - Full clean rebuild + full regression sweep (24 tests) all pass, including every test that exercises `mountns_pivot()` via a real `clone3()`+`pivot_root()` (`test_overlay`, `test_container_net`, `test_devices`, `test_container_lifecycle`, `test_container_restart`).
-- Live against 192.168.15.95: explicitly `DELETE`d the pre-existing, poisoned `ntp-1`/`ntp-2` disk state (one-time cleanup for state this session's own prior crash-loops had already left behind), deployed the fix, recreated both, and confirmed they stayed running stably -- see the ROADMAP entry for this phase for the full reboot-survival confirmation.
+- Live against 192.168.15.95: explicitly `DELETE`d the pre-existing, poisoned `ntp-1`/`ntp-2` disk state (one-time cleanup for state this session's own prior crash-loops had already left behind), deployed as `v1.8.7`, recreated both, and confirmed stable. Rebooted the box twice in succession: both times `ntp-1`/`ntp-2` autostarted cleanly with zero manual intervention -- the exact failure this task set out to fix.
 
 ### Part 76 (done): console/exec 500 on 192.168.15.95 root-caused and fixed -- boot_init() never mounted /dev/pts
 
