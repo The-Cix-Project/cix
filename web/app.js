@@ -24,6 +24,7 @@ const cache = {
 	dnsRecords: [],
 	dnsServers: [],
 	ldapServers: [],
+	ldapSshTargets: [],
 	ldapGroups: [],
 	ldapUsers: [],
 	ldapConfig: null,
@@ -96,6 +97,9 @@ function closeModal() {
 	ldapGroupEditName = null;
 	document.getElementById("lgf-name").readOnly = false;
 	document.getElementById("lgf-submit").textContent = "Create";
+	ldapUserEditName = null;
+	document.getElementById("luf-name").readOnly = false;
+	document.getElementById("luf-submit").textContent = "Create";
 }
 
 function openModal(formId, title) {
@@ -275,6 +279,7 @@ const CATEGORY_VIEWS = {
 	"dns-records": "view-dns-records",
 	"dns-servers": "view-dns-servers",
 	"ldap-servers": "view-ldap-servers",
+	"ldap-ssh-targets": "view-ldap-ssh-targets",
 	"ldap-groups": "view-ldap-groups",
 	"ldap-users": "view-ldap-users",
 	"ldap-config": "view-ldap-config",
@@ -698,6 +703,7 @@ function renderTree() {
 					icon: "dns",
 					children: [
 						{ label: "Servers", hash: "ldap-servers", icon: "dns" },
+						{ label: "SSH Targets", hash: "ldap-ssh-targets", icon: "dns" },
 						{ label: "Groups", hash: "ldap-groups", icon: "dns" },
 						{ label: "Users", hash: "ldap-users", icon: "dns" },
 						{ label: "Config", hash: "ldap-config", icon: "dns" },
@@ -2604,6 +2610,60 @@ async function removeLdapServer(container) {
 	}
 }
 
+/* ---------- LDAP SSH Targets (task #731) ---------- */
+
+function renderLdapSshTargets(targets) {
+	const body = document.getElementById("ldap-ssh-targets-body");
+
+	body.textContent = "";
+	if (targets.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 2;
+		cell.className = "empty";
+		cell.textContent = "No SSH targets registered";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+
+	for (const t of targets) {
+		const row = document.createElement("tr");
+
+		const containerCell = document.createElement("td");
+		containerCell.textContent = t.container;
+		row.appendChild(containerCell);
+
+		const actionCell = document.createElement("td");
+		const rmButton = document.createElement("button");
+
+		rmButton.textContent = "Unregister";
+		rmButton.className = "button-danger";
+		rmButton.addEventListener("click", () => removeLdapSshTarget(t.container));
+		actionCell.appendChild(rmButton);
+		row.appendChild(actionCell);
+
+		body.appendChild(row);
+	}
+}
+
+async function refreshLdapSshTargets() {
+	const data = await apiRequest("GET", "/v1/ldap/ssh-targets");
+	cache.ldapSshTargets = data.ssh_targets;
+	renderLdapSshTargets(cache.ldapSshTargets);
+}
+
+async function removeLdapSshTarget(container) {
+	try {
+		await apiRequest("DELETE", "/v1/ldap/ssh-targets/" + encodeURIComponent(container));
+		clearStatus();
+		await refreshLdapSshTargets();
+	} catch (e) {
+		showStatus("Failed to unregister SSH target " + container + ": " + e.message, true);
+	}
+}
+
 /* ---------- LDAP Groups (task #726) ---------- */
 
 /* Set while the LDAP group modal form is open in edit mode (task #750) --
@@ -2683,6 +2743,28 @@ async function removeLdapGroup(name) {
 
 /* ---------- LDAP Users (task #726) ---------- */
 
+/* Set while the LDAP user modal form is open in edit mode (task #731,
+ * following the exact ldapGroupEditName pattern from task #750) -- null
+ * means the next submit is a create (POST). */
+let ldapUserEditName = null;
+
+function editLdapUser(user) {
+	ldapUserEditName = user.name;
+	openModal("ldap-user-form", "Edit LDAP user");
+	document.getElementById("luf-name").value = user.name;
+	document.getElementById("luf-name").readOnly = true;
+	document.getElementById("luf-uidnumber").value = user.uidnumber;
+	document.getElementById("luf-primarygroup").value = user.primarygroup;
+	document.getElementById("luf-givenname").value = user.givenname || "";
+	document.getElementById("luf-sn").value = user.sn || "";
+	document.getElementById("luf-mail").value = user.mail || "";
+	document.getElementById("luf-loginshell").value = user.loginshell || "";
+	document.getElementById("luf-homedirectory").value = user.homedirectory || "";
+	document.getElementById("luf-ssh-key").value = user.ssh_public_key || "";
+	document.getElementById("luf-disabled").checked = !!user.disabled;
+	document.getElementById("luf-submit").textContent = "Save";
+}
+
 function renderLdapUsers(users) {
 	const body = document.getElementById("ldap-users-body");
 
@@ -2691,7 +2773,7 @@ function renderLdapUsers(users) {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
 
-		cell.colSpan = 7;
+		cell.colSpan = 8;
 		cell.className = "empty";
 		cell.textContent = "No LDAP users";
 		row.appendChild(cell);
@@ -2703,7 +2785,8 @@ function renderLdapUsers(users) {
 		const row = document.createElement("tr");
 
 		const cells = [u.name, u.uidnumber, u.primarygroup, u.mail,
-		               u.has_password ? "set" : "unset", u.disabled ? "yes" : "no"];
+		               u.has_password ? "set" : "unset", u.disabled ? "yes" : "no",
+		               u.ssh_public_key ? "set" : "unset"];
 		for (const v of cells) {
 			const cell = document.createElement("td");
 			cell.textContent = v;
@@ -2711,6 +2794,12 @@ function renderLdapUsers(users) {
 		}
 
 		const actionCell = document.createElement("td");
+		const editButton = document.createElement("button");
+
+		editButton.textContent = "Edit";
+		editButton.addEventListener("click", () => editLdapUser(u));
+		actionCell.appendChild(editButton);
+
 		const rmButton = document.createElement("button");
 
 		rmButton.textContent = "Remove";
@@ -3821,6 +3910,22 @@ document.getElementById("ldap-server-form").addEventListener("submit", async (ev
 	}
 });
 
+document.getElementById("ldap-ssh-target-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const container = document.getElementById("lstf-container").value.trim();
+
+	try {
+		await apiRequest("POST", "/v1/ldap/ssh-targets", { container: container });
+		clearStatus();
+		document.getElementById("ldap-ssh-target-form").reset();
+		closeModal();
+		await refreshLdapSshTargets();
+	} catch (e) {
+		showStatus("Failed to register SSH target: " + e.message, true);
+	}
+});
+
 document.getElementById("ldap-group-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 
@@ -3859,6 +3964,7 @@ document.getElementById("ldap-user-form").addEventListener("submit", async (even
 		loginshell: document.getElementById("luf-loginshell").value.trim(),
 		homedirectory: document.getElementById("luf-homedirectory").value.trim(),
 		password: document.getElementById("luf-password").value,
+		ssh_public_key: document.getElementById("luf-ssh-key").value.trim(),
 		disabled: document.getElementById("luf-disabled").checked,
 	};
 	const uidnumberRaw = document.getElementById("luf-uidnumber").value;
@@ -3867,13 +3973,16 @@ document.getElementById("ldap-user-form").addEventListener("submit", async (even
 		body.uidnumber = parseInt(uidnumberRaw, 10);
 
 	try {
-		await apiRequest("POST", "/v1/ldap/users", body);
+		if (ldapUserEditName !== null)
+			await apiRequest("PUT", "/v1/ldap/users/" + encodeURIComponent(ldapUserEditName), body);
+		else
+			await apiRequest("POST", "/v1/ldap/users", body);
 		clearStatus();
 		document.getElementById("ldap-user-form").reset();
 		closeModal();
 		await refreshLdapUsers();
 	} catch (e) {
-		showStatus("Failed to create LDAP user: " + e.message, true);
+		showStatus((ldapUserEditName !== null ? "Failed to update" : "Failed to create") + " LDAP user: " + e.message, true);
 	}
 });
 
@@ -4573,6 +4682,7 @@ async function poll() {
 		await refreshDnsRecords();
 		await refreshDnsServers();
 		await refreshLdapServers();
+		await refreshLdapSshTargets();
 		await refreshLdapGroups();
 		await refreshLdapUsers();
 		await refreshLdapConfig();

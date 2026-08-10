@@ -2252,6 +2252,91 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /ldap/ssh-targets:
+    get:
+      summary: List all registered LDAP SSH targets (task #731)
+      operationId: listLdapSshTargets
+      responses:
+        "200":
+          description: Target list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ssh_targets]
+                properties:
+                  ssh_targets:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/LdapSshTarget"
+    post:
+      summary: >
+        Register a running container to receive real Unix accounts rendered
+        from LDAP users (task #731). Kanxeo owns the durable record and
+        renders directly into the target's own filesystem -- the same
+        pattern DNS (dns_write_hosts_file) and LDAP-for-glauth
+        (ldap_write_config_file) already establish, extended a third time.
+        No real LDAP-protocol NSS/PAM integration is involved: sshd on the
+        target reads ordinary, locally-resolvable /etc/passwd, /etc/group,
+        /etc/shadow, and ~/.ssh/authorized_keys entries that Kanxeo keeps
+        current on every subsequent LDAP user/group mutation. Sync happens
+        immediately on a successful registration, so a fresh target starts
+        current rather than empty.
+      operationId: createLdapSshTarget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LdapSshTargetCreateRequest"
+      responses:
+        "201":
+          description: Registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LdapSshTarget"
+        "400":
+          description: container missing from the request body, or the target table is full
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No running container with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: This container is already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Persisting the registration failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /ldap/ssh-targets/{container}:
+    delete:
+      summary: Unregister an LDAP SSH target (does not touch the container's own filesystem)
+      operationId: deleteLdapSshTarget
+      parameters:
+        - $ref: "#/components/parameters/LdapSshTargetContainerName"
+      responses:
+        "204":
+          description: Unregistered
+        "404":
+          description: No registration for this container
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /ldap/groups:
     get:
       summary: List every LDAP group (task #726)
@@ -3920,6 +4005,14 @@ components:
         type: string
         pattern: "^[A-Za-z0-9_-]+$"
 
+    LdapSshTargetContainerName:
+      name: container
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9_-]+$"
+
     LdapGroupName:
       name: name
       in: path
@@ -5383,6 +5476,29 @@ components:
         config_path:
           type: string
 
+    LdapSshTargetCreateRequest:
+      type: object
+      required: [container]
+      properties:
+        container:
+          type: string
+          description: >
+            Name of an existing, running container (see /containers). Every
+            LDAP user carrying a non-empty ssh_public_key gets a real Unix
+            account (passwd/group/shadow entries) plus a dedicated
+            ~/.ssh/authorized_keys file rendered directly into this
+            container's own filesystem, kept in sync on every subsequent
+            LDAP user/group mutation (task #731). Unlike /ldap/servers, this
+            target never talks LDAP itself -- sshd reads real, locally
+            resolvable account files.
+
+    LdapSshTarget:
+      type: object
+      required: [container]
+      properties:
+        container:
+          type: string
+
     LdapConfig:
       type: object
       required: [start_uid, start_gid]
@@ -5458,6 +5574,15 @@ components:
             Plaintext, hashed server-side with SHA-256 into glauth's own
             "passsha256" config field -- never persisted or echoed as
             plaintext. Omitted on PUT: the existing credential is kept.
+        ssh_public_key:
+          type: string
+          description: >
+            A single OpenSSH public key line (task #731). Non-empty here
+            makes this user eligible for account sync onto every registered
+            SSH target (see POST /ldap/ssh-targets) -- a real Unix account
+            plus a dedicated ~/.ssh/authorized_keys file, kept current on
+            every subsequent LDAP user/group mutation. Empty/omitted means
+            this user is skipped by SSH target sync entirely.
         disabled:
           type: boolean
           default: false
@@ -5485,6 +5610,12 @@ components:
         has_password:
           type: boolean
           description: True iff a password has been set. The hash itself is never returned.
+        ssh_public_key:
+          type: string
+          description: >
+            Returned as given, unlike password -- an SSH public key is not
+            a secret. Empty string means this user is not currently
+            eligible for SSH target account sync.
         disabled:
           type: boolean
 

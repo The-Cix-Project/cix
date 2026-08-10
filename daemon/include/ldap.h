@@ -133,6 +133,7 @@ void ldap_server_write_json_list(struct json_writer *w);
 #define LDAP_USER_FIELD_MAX 128   /* givenname/sn/mail/loginshell/homedirectory */
 #define LDAP_PASSSHA256_LEN 64    /* hex-encoded SHA-256, no null in the count */
 #define LDAP_OWNER_NAME_MAX 64    /* matches REGISTRY_NAME_MAX, no header dependency -- same convention as DNS_OWNER_NAME_MAX */
+#define LDAP_SSH_KEY_MAX 1024     /* comfortably fits any real ed25519/ecdsa/rsa-4096 public key line */
 
 struct ldap_user {
 	char name[LDAP_USER_NAME_MAX];
@@ -158,6 +159,13 @@ struct ldap_user {
 	                  * useless for looking up another user's DN. Real, scoped
 	                  * capability support; the general ACL/grant design for
 	                  * manually-created users is still deferred to task #728. */
+	char ssh_public_key[LDAP_SSH_KEY_MAX]; /* task #731: a single OpenSSH public
+	                  * key line ("ssh-ed25519 AAAA... comment"), settable via the
+	                  * normal user CRUD REST body -- empty means this user gets
+	                  * no account/key rendered onto any registered SSH target
+	                  * (ldap_ssh_target_*, below). One key per user in v1, the
+	                  * same "start minimal" scope every other single-value field
+	                  * here already has. */
 };
 
 struct ldap_group {
@@ -209,12 +217,12 @@ enum ldap_record_error ldap_user_create(const char *name, int uidnumber, int pri
                                          const char *loginshell, const char *homedirectory,
                                          const char *password, int disabled,
                                          const char *owner_container, int can_search,
-                                         struct ldap_user **out);
+                                         const char *ssh_public_key, struct ldap_user **out);
 enum ldap_record_error ldap_user_update(const char *name, int uidnumber, int primarygroup,
                                          const char *givenname, const char *sn, const char *mail,
                                          const char *loginshell, const char *homedirectory,
                                          const char *password, int disabled,
-                                         struct ldap_user **out);
+                                         const char *ssh_public_key, struct ldap_user **out);
 enum ldap_record_error ldap_user_delete(const char *name);
 void ldap_user_write_json_one(const struct ldap_user *u, struct json_writer *w);
 void ldap_user_write_json_list(struct json_writer *w);
@@ -294,7 +302,83 @@ int ldap_generate_secret(char out[LDAP_PROVISION_SECRET_LEN + 1]);
  * dns_server_sync_all() analog, called after every user/group
  * mutation AND right after a server registers (see handle_ldap_
  * server_create()) so a fresh/replacement glauth instance starts
- * current instead of empty. */
+ * current instead of empty. Also re-syncs every registered SSH target
+ * (ldap_ssh_sync_all(), below) -- both are "push current LDAP state
+ * into a registered consumer's own filesystem" and share this one
+ * trigger point, matching every other user/group mutation call site
+ * already funneling through here rather than each caller remembering
+ * two separate sync calls.
+ */
 void ldap_record_sync_all(void);
+
+/*
+ * SSH-backed login for LDAP users (task #731): registers a running
+ * container as a target that should receive a real, locally-resolvable
+ * Unix account (uid/gid/home/shell) plus an authorized_keys entry for
+ * every current LDAP user that has a non-empty ssh_public_key -- NOT
+ * an LDAP-protocol integration (no libnss_ldap/pam_ldap; this project
+ * builds openssh without PAM at all, task #729's own recipe decision).
+ * Same "Kanxeo owns the durable record, renders into the consumer's
+ * own filesystem" posture DNS/LDAP-for-glauth already established --
+ * sshd itself never talks to LDAP or to kanxeod, it just reads real
+ * /etc/passwd,/etc/group,/etc/shadow,~/.ssh/authorized_keys entries
+ * that happen to be kept in sync from the LDAP user store.
+ *
+ * A locked password (`*` in /etc/shadow, NOT `!` -- openssh treats a
+ * leading `!` as "account locked", which blocks every auth method
+ * including pubkey, confirmed directly via `sshd -d` during task #730)
+ * is always written; only pubkey auth is ever possible for a synced
+ * account. Deliberately does not attempt real NSS/LDAP integration
+ * (libnss_ldap has no recipe in this project yet, and would need a
+ * new from-source build + real testing this task's own scope doesn't
+ * cover) -- this is a real, working v1, not a stop-gap for a design
+ * that was never going to ship: it fully solves "log into a jump box
+ * container with your LDAP-managed key," the concrete capability
+ * requested.
+ */
+#define LDAP_SSH_TARGET_MAX 16
+#define LDAP_SSH_TARGET_NAME_MAX 64 /* matches REGISTRY_NAME_MAX, no header dependency */
+
+struct ldap_ssh_target {
+	char container_name[LDAP_SSH_TARGET_NAME_MAX];
+};
+
+enum ldap_ssh_error {
+	LDAP_SSH_OK = 0,
+	LDAP_SSH_ERR_DUPLICATE,
+	LDAP_SSH_ERR_FULL,
+	LDAP_SSH_ERR_NOT_FOUND,
+	LDAP_SSH_ERR_CONTAINER_NOT_FOUND,
+	LDAP_SSH_ERR_CONTAINER_NOT_RUNNING,
+	LDAP_SSH_ERR_PERSIST_FAILED
+};
+
+/* Loads persisted SSH targets (if any) at startup, alongside ldap_init(). */
+int ldap_ssh_init(const char *state_path);
+
+/* container_name must already exist and be running (self-contained
+ * check via registry_find(), same as ntp_server_register() -- not
+ * relying on a main.c pre-check). Immediately syncs the target on
+ * successful registration so a fresh/replacement container starts
+ * current instead of empty, matching ldap_server_register()'s own
+ * "sync right after registering" behavior for glauth. */
+enum ldap_ssh_error ldap_ssh_target_register(const char *container_name);
+enum ldap_ssh_error ldap_ssh_target_unregister(const char *container_name);
+
+/* Called from the same container-delete cleanup path as dns_server_
+ * forget()/ldap_server_forget()/ntp_server_forget() -- safe no-op if
+ * container_name was never registered. */
+void ldap_ssh_target_forget(const char *container_name);
+
+void ldap_ssh_target_write_json_list(struct json_writer *w);
+
+/* Re-renders Unix accounts + authorized_keys for every current LDAP
+ * user with a non-empty ssh_public_key into every currently-
+ * registered, currently-running SSH target -- called from ldap_
+ * record_sync_all() (see above) and right after a target registers.
+ * Best-effort per target: an unreachable container right now is
+ * simply skipped and stays stale until it next registers or the next
+ * user/group mutation retries every target again. */
+void ldap_ssh_sync_all(void);
 
 #endif /* LDAP_SERVER_H */

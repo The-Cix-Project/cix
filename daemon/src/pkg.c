@@ -1483,6 +1483,23 @@ enum pkg_error pkg_seed_image_baseline(const char *rootfs_path)
 		{ "/lib/x86_64-linux-gnu/libtinfo.so.6", "lib/x86_64-linux-gnu/libtinfo.so.6" },
 		{ "/lib/x86_64-linux-gnu/libgcc_s.so.1", "lib/x86_64-linux-gnu/libgcc_s.so.1" },
 		{ "/lib/x86_64-linux-gnu/libm.so.6", "lib/x86_64-linux-gnu/libm.so.6" },
+		/*
+		 * Task #731: glibc's NSS modules (getpwnam()/getgrnam(), needed
+		 * by anything doing real Unix account lookups -- sshd's pubkey
+		 * auth being the case that surfaced this) are dlopen()'d at
+		 * runtime based on /etc/nsswitch.conf, never a direct ELF
+		 * NEEDED dependency -- so no ldd-based shared-lib-closure
+		 * staging (this table, or any individual recipe's own lib
+		 * copying) has ever caught this gap; nothing built by this
+		 * platform needed real user/group resolution before task #730's
+		 * jump box. Confirmed the hard way: sshd silently rejected
+		 * every pubkey auth attempt with no diagnostic pointing at the
+		 * real cause until this was staged (getpwnam() just returns
+		 * NULL, indistinguishable from "no such user" without directly
+		 * nsenter-ing the container to test account lookup in
+		 * isolation from SSH-specific causes).
+		 */
+		{ "/lib/x86_64-linux-gnu/libnss_files.so.2", "lib/x86_64-linux-gnu/libnss_files.so.2" },
 	};
 	/*
 	 * ADR-0041: the same real, generic gap Phase 23 (iptables' own
@@ -1590,6 +1607,39 @@ enum pkg_error pkg_seed_image_baseline(const char *rootfs_path)
 
 			perr = pki_write_trust_bundle_file(bundle_dst);
 			if (perr != PKI_OK && perr != PKI_ERR_NOT_BOOTSTRAPPED)
+				return PKG_ERR_PERSIST_FAILED;
+		}
+	}
+
+	/*
+	 * A minimal, real /etc/nsswitch.conf so the libnss_files.so.2
+	 * staged above actually gets consulted -- glibc's own compiled-in
+	 * default database list is used when this file is missing, but
+	 * that default is a moving target across glibc versions and this
+	 * project has no reason to depend on it being correct. "files"
+	 * only for every database this platform's own containers could
+	 * plausibly need (no "ldap"/"dns" backend entries -- this project
+	 * always pushes rendered files into a container's own filesystem
+	 * rather than having the container's own NSS talk to a remote
+	 * service directly, the same "Kanxeo owns the durable record,
+	 * renders into the consumer's own format" posture dns.c/ldap.c
+	 * already established for DNS/LDAP).
+	 */
+	{
+		static const char nsswitch_content[] =
+		    "passwd: files\ngroup: files\nshadow: files\nhosts: files\n";
+		char nsswitch_dst[PATH_MAX];
+		struct stat dst_st;
+
+		snprintf(nsswitch_dst, sizeof(nsswitch_dst), "%s/etc/nsswitch.conf", target_rootfs);
+		if (stat(nsswitch_dst, &dst_st) != 0) {
+			char etc_dir[PATH_MAX];
+
+			snprintf(etc_dir, sizeof(etc_dir), "%s/etc", target_rootfs);
+			if (persist_mkdir_p(etc_dir) != 0)
+				return PKG_ERR_PERSIST_FAILED;
+			if (persist_atomic_write(nsswitch_dst, nsswitch_content,
+			                          sizeof(nsswitch_content) - 1) != 0)
 				return PKG_ERR_PERSIST_FAILED;
 		}
 	}

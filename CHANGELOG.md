@@ -2,6 +2,24 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 67 (done, verified end-to-end against a real running container): jump box SSH auth backed by LDAP (closes task #731)
+
+Extended the "Kanxeo owns the durable record, renders into the consumer's own filesystem" pattern DNS and LDAP-for-glauth already established, a third time, rather than building a real LDAP-protocol NSS/PAM stack (no `libnss_ldap`/`pam_ldap` recipe exists, and `openssh.recipe` was deliberately built without PAM per task #729). See [ADR-0111](docs/adr/0111-ssh-ldap-account-sync.md).
+
+#### Added
+- `daemon/include/ldap.h`/`daemon/src/ldap.c`: `ssh_public_key` field on `struct ldap_user` (settable via existing user CRUD); new self-contained `ldap_ssh_target_register()`/`unregister()`/`forget()` mechanism (mirrors `ntp_server_register()`); `write_accounts_for_pid()` renders real `/etc/passwd`/`/etc/group`/`/etc/shadow` + per-user `~/.ssh/authorized_keys` into every registered target for every eligible user, using `*` (not `!`) for the shadow password field; `write_managed_tail()` marker-based truncate-and-replace preserves pre-existing account entries above the marker byte-for-byte; `ldap_ssh_sync_all()` hooked into the existing `ldap_record_sync_all()` so every current user/group mutation already re-syncs every SSH target for free.
+- `daemon/src/main.c`: `POST`/`GET /v1/ldap/ssh-targets`, `DELETE /v1/ldap/ssh-targets/{container}`, wired into container-delete cleanup.
+- `cli/src/main.c`: `ldap ssh-target register|ls|unregister`, `--ssh-key=` on `ldap user add`, and a new `ldap user update` subcommand (`PUT /v1/ldap/users/{name}` previously had no CLI surface).
+- `web/index.html`/`web/app.js`: "SSH Targets" leaf under the LDAP tree, an "LDAP SSH Target" `+ Create` entry, an SSH-key field + Edit button on the LDAP Users view.
+- `docs/adr/0111-ssh-ldap-account-sync.md`, `docs/api/openapi.yaml` (`LdapSshTarget`/`LdapSshTargetCreateRequest` schemas + 3 new paths, `ssh_public_key` on `LdapUser`/`LdapUserCreateRequest`), `docs/api/README.md`, `docs/guides/cli-reference.md`, `docs/guides/web-dashboard.md`.
+
+#### Fixed
+- `daemon/src/pkg.c`: `pkg_seed_image_baseline()` now unconditionally stages `libnss_files.so.2` (a `dlopen()`ed glibc NSS module, never an ELF `NEEDED` dependency, so no `ldd`-based lib-closure staging ever caught it) and a default `/etc/nsswitch.conf` into every newly-created image -- generalizes the ad hoc fix task #730 applied to the jump box image specifically.
+
+#### Notes
+- Full clean rebuild (`-Wall -Werror`) zero warnings. `test_ldap`/`test_pkg` rebuilt and rerun clean.
+- Live-verified end-to-end against a real running `jumpbox1` container: registered it as an SSH target, created an LDAP user with a real ED25519 key (both via REST and `kanxeoctl`), confirmed a genuine `ssh` connection using that key authenticates and runs a remote command. Confirmed disabling the user immediately revokes SSH access and re-enabling it restores access -- proving the sync-on-every-mutation behavior, not just the initial render. Inspected the rendered account files directly inside the container's own mount namespace to confirm the managed-tail marker correctly preserved the pre-existing `op`/`sshd` entries untouched.
+
 ### Part 66 (done, verified locally end-to-end): jump box image + running container with real SSH access (closes task #730)
 
 Stood up a real "jumpbox" image (task #729's openssh/htop/mtr/screen + real transitive deps: zlib, perl, openssl, ncurses, plus bash/coreutils discovered missing live) and a running container serving `sshd`, verified with genuine SSH pubkey auth + remote command execution.
