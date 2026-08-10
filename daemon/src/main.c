@@ -10839,7 +10839,20 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	 * been copied into a local buffer above. */
 
 	if (exec_into_container(entry->handle.pid, cmd_argv, &master_fd, &exec_pid) != 0) {
-		respond_error(cc->fd, 500, "Internal Server Error", "failed to start console session");
+		/* task #764: exec_into_container()'s own diagnostics
+		 * (daemon/src/exec.c's fprintf(stderr,...) calls) go to
+		 * kanxeod's own stderr -- invisible to a REST client on a
+		 * real installed box with no host shell access, exactly the
+		 * gap that made a live-only console failure unreachable to
+		 * diagnose during task #760's sweep. errno is preserved by
+		 * every one of exec_into_container()'s own failure paths
+		 * (confirmed by inspection), so surfacing strerror(errno)
+		 * here costs nothing and gives the real reason directly in
+		 * the HTTP response body instead of a bare generic message. */
+		char errmsg[256];
+
+		snprintf(errmsg, sizeof(errmsg), "failed to start console session: %s", strerror(errno));
+		respond_error(cc->fd, 500, "Internal Server Error", errmsg);
 		return CONSOLE_FAILED;
 	}
 

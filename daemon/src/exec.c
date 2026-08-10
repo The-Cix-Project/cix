@@ -77,21 +77,42 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 	char slave_path[64];
 	int pipefd[2];
 	int mnt_fd, uts_fd, net_fd, pid_fd;
+	int mnt_errno, uts_errno, net_errno, pid_errno;
 	pid_t intermediate;
 
 	/* Opened here, in the daemon's own (host) mount namespace, before
 	 * anything below ever calls setns() -- see join_namespaces()'s own
-	 * comment for why opening these any later would be wrong. */
+	 * comment for why opening these any later would be wrong.
+	 *
+	 * task #764: each open_ns_fd() call's own errno is captured
+	 * immediately, before the next open() or any close() below can
+	 * clobber it -- this branch used to force a blanket errno=ESRCH
+	 * regardless of which of the four actually failed or why.
+	 * open_ns_fd() already fprintf(stderr,...)s the real reason, but
+	 * that goes nowhere a REST client can ever see (kanxeod's own
+	 * stderr on a real installed box, no host shell access).
+	 * Preserving the real first failure's errno here lets the caller
+	 * (main.c's try_console_upgrade()) put it in the HTTP response
+	 * body instead of a generic "failed to start console session". */
 	mnt_fd = open_ns_fd(target_pid, "mnt");
+	mnt_errno = errno;
 	uts_fd = open_ns_fd(target_pid, "uts");
+	uts_errno = errno;
 	net_fd = open_ns_fd(target_pid, "net");
+	net_errno = errno;
 	pid_fd = open_ns_fd(target_pid, "pid");
+	pid_errno = errno;
 	if (mnt_fd < 0 || uts_fd < 0 || net_fd < 0 || pid_fd < 0) {
+		int saved_errno = mnt_fd < 0   ? mnt_errno
+		                   : uts_fd < 0 ? uts_errno
+		                   : net_fd < 0 ? net_errno
+		                                : pid_errno;
+
 		if (mnt_fd >= 0) close(mnt_fd);
 		if (uts_fd >= 0) close(uts_fd);
 		if (net_fd >= 0) close(net_fd);
 		if (pid_fd >= 0) close(pid_fd);
-		errno = ESRCH;
+		errno = saved_errno;
 		return -1;
 	}
 

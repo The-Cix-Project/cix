@@ -1,5 +1,6 @@
 #include "console.h"
 #include "iohelpers.h"
+#include "json.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -269,11 +270,36 @@ static int do_ws_handshake(const struct kx_client *c, const char *label, const c
 	}
 
 	if (strncmp(resp, "HTTP/1.1 101", 12) != 0) {
+		/* task #764: a non-101 response here is respond_error()'s own
+		 * JSON body ({"error":"..."}), not a bare status line -- this
+		 * used to print only the status line, discarding the actual
+		 * reason (e.g. exec_into_container()'s own strerror(errno))
+		 * that made a live-only console failure impossible to
+		 * diagnose without host shell access. body_start may not
+		 * include the full body if it arrived in a later TCP segment
+		 * than the headers did (this loop only reads up to the blank
+		 * line, never past it) -- best-effort: fall back to the bare
+		 * status line if nothing parses, same as before. */
 		char *line_end = strstr(resp, "\r\n");
+		char *body_start = strstr(resp, "\r\n\r\n");
+		const char *detail = NULL;
+		struct json_value *errjson = NULL;
 
 		if (line_end != NULL)
 			*line_end = '\0';
-		fprintf(stderr, "%s: %s\n", label, resp);
+		if (body_start != NULL) {
+			body_start += 4;
+			errjson = json_parse(body_start, strlen(body_start));
+			if (errjson != NULL) {
+				const struct json_value *ev = json_object_get(errjson, "error");
+
+				if (ev != NULL && ev->type == JSON_STRING)
+					detail = ev->u.string;
+			}
+		}
+		fprintf(stderr, "%s: %s%s%s\n", label, resp, detail != NULL ? ": " : "",
+		        detail != NULL ? detail : "");
+		json_free(errjson);
 		close(fd);
 		return -1;
 	}
