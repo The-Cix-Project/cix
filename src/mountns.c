@@ -102,5 +102,29 @@ int mountns_pivot(const char *new_root, const struct mount_spec *mnt)
 		return -1;
 	}
 
+	/*
+	 * /run must be a fresh tmpfs on every single container start, same
+	 * as /proc and /sys above -- without this it's just ordinary
+	 * overlay-persisted storage (upperdir survives a crash/restart by
+	 * design, see overlay.c's own EEXIST-tolerant upperdir reuse), which
+	 * silently breaks any daemon that assumes /run is cleared on start
+	 * (the near-universal Linux/systemd convention). Confirmed the hard
+	 * way: chronyd (-d mode) writes /run/chronyd.pid, and since every
+	 * container gets its own fresh PID namespace chronyd is always PID
+	 * 1 there -- on a respawn (crash, or a manual recreate reusing the
+	 * same name after a reboot) it found its OWN stale pidfile
+	 * containing "1", saw that PID legitimately exists, and refused to
+	 * start with "another instance may already be running", exiting 1
+	 * forever with no way out short of deleting the container outright.
+	 */
+	if (mkdir("/run", 0755) != 0 && errno != EEXIST) {
+		perror("mountns_pivot: mkdir(/run)");
+		return -1;
+	}
+	if (mount("tmpfs", "/run", "tmpfs", MS_NOSUID | MS_NODEV, "mode=0755") != 0) {
+		perror("mountns_pivot: mount(tmpfs /run)");
+		return -1;
+	}
+
 	return 0;
 }
