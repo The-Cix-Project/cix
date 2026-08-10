@@ -2,6 +2,18 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 75 (done, verified live end-to-end): DNS record GET/PUT/DELETE now qualify a bare name, matching POST
+
+Task #760's sweep found a second real bug immediately after the `json.c` fix: `kanxeoctl dns record rm sweeptest` 404'd right after `kanxeoctl dns record create --name=sweeptest ...` had just succeeded and `dns record ls` showed it present as `sweeptest.uk.home.arpa`. `handle_dns_record_create()` has always qualified a bare label via `siteconfig_qualify()` (ADR-0052) before storing it; `handle_dns_record_get_one()`/`handle_dns_record_update()` (PUT, task #749)/`handle_dns_record_delete()` never did the same on the read side, so only the exact FQDN -- not the bare name a caller just used to create the record -- could ever look it back up. See [ADR-0117](docs/adr/0117-dns-record-qualify-on-read.md).
+
+#### Fixed
+- `daemon/src/main.c`: all three read-side DNS record handlers now call `siteconfig_qualify()` before doing the lookup, mirroring `handle_dns_record_create()` -- safe and idempotent for an already-qualified name too, since `siteconfig_qualify()` only ever qualifies a label with no `.` in it.
+- `test/test_dns.c`: extended the existing site-qualification scenario with three new assertions (`GET`/`PUT`/`DELETE` all by bare name) that would 404 before this fix and pass after.
+
+#### Verified
+- Live against 192.168.15.95: `kanxeoctl dns record create --name=sweeptest ...` followed by `kanxeoctl dns record rm sweeptest` now succeeds.
+- Full clean rebuild + full regression sweep (23 tests) all pass.
+
 ### Part 74 (done, verified live end-to-end): full feature regression sweep on 192.168.15.95 -- found and fixed a real json.c write/parse asymmetry
 
 Task #760. `kanxeoctl ps` (and `--json ps`) silently returned nothing against the real box mid-sweep, despite `curl`'s raw fetch of the identical endpoint returning valid JSON. Root cause: `daemon/src/json.c`'s writer (`jw_escaped_string()`) has always encoded control characters below `0x20` as `\u00XX` to stay valid JSON, but its own parser (`parse_string_raw()`) rejected every `\u` escape outright, failing the *entire* surrounding document parse the instant it hit one -- silent since `json_parse()` has no partial-success mode. Never hit before `capture_output` (Part 70) started relaying real stdout/stderr containing raw ANSI color codes (glauth's own `zerolog` colorizes its terminal output) into a JSON field the writer then had to `\u`-escape. See [ADR-0116](docs/adr/0116-json-parser-u-escape-support.md).

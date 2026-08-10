@@ -518,8 +518,48 @@ int main(void)
 	}
 	kx_response_free(&r);
 
-	kx_client_request(&client, "DELETE", "/v1/dns/records/bareweb.lab9.qualify.test", NULL, &r);
+	/*
+	 * task #760: GET/PUT/DELETE-by-name used to require the caller
+	 * already know the full site-qualified FQDN ("bareweb.lab9.
+	 * qualify.test") even though POST /v1/dns/records happily accepts
+	 * (and auto-qualifies) the bare label -- dns_record_find()'s own
+	 * exact strcmp() against the record's stored, already-qualified
+	 * name meant a GET/PUT/DELETE using the same bare "bareweb" the
+	 * caller just created it with 404'd. Found live during the task
+	 * #760 sweep against 192.168.15.95. Fixed by applying the same
+	 * siteconfig_qualify() the create path already used to the read
+	 * side too -- these three calls, using the bare name throughout,
+	 * are the real regression coverage for that fix.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET", "/v1/dns/records/bareweb", NULL, &r) != 0 ||
+	    r.status != 200 ||
+	    !str_eq(json_str_field(r.json, "name"), "bareweb.lab9.qualify.test")) {
+		fprintf(stderr, "FAIL: GET by bare name didn't find the qualified record, status=%d\n",
+		        r.status);
+		ok = 0;
+	}
 	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT", "/v1/dns/records/bareweb", "{\"ip\":\"10.9.9.99\"}",
+	                       &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: PUT by bare name didn't find the qualified record, status=%d\n",
+		        r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "DELETE", "/v1/dns/records/bareweb", NULL, &r) != 0 ||
+	    r.status != 204) {
+		fprintf(stderr, "FAIL: DELETE by bare name didn't find the qualified record, status=%d\n",
+		        r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
 	kx_client_request(&client, "DELETE", "/v1/dns/records/explicit.other", NULL, &r);
 	kx_response_free(&r);
 

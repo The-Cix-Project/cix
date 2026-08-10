@@ -8185,8 +8185,24 @@ static void handle_dns_record_list(int fd)
 
 static void handle_dns_record_get_one(int fd, const char *name)
 {
-	struct dns_record *rec = dns_record_find(name);
+	char qualified_name[DNS_NAME_MAX];
+	struct dns_record *rec;
 	struct json_writer w;
+
+	/* task #760: dns_record_find() matches the record's own stored,
+	 * already-qualified name exactly (a plain strcmp() -- see dns.c) --
+	 * handle_dns_record_create() has always qualified a bare label
+	 * before storing one (ADR-0052), but this GET (and, until this
+	 * fix, PUT/DELETE below) never did the same on the read side,
+	 * so a record created with a bare --name=foo could only ever be
+	 * looked back up by its full site-qualified FQDN, not the same
+	 * bare name a caller just used to create it. Found live during
+	 * the task #760 sweep. siteconfig_qualify() is a safe no-op on an
+	 * already-qualified name (any label containing a '.' passes
+	 * through unchanged), so this is correct for both a bare label
+	 * and an already-fully-qualified name. */
+	siteconfig_qualify(name, qualified_name, sizeof(qualified_name));
+	rec = dns_record_find(qualified_name);
 
 	if (rec == NULL) {
 		respond_error(fd, 404, "Not Found", "no such DNS record");
@@ -8200,6 +8216,7 @@ static void handle_dns_record_get_one(int fd, const char *name)
 
 static void handle_dns_record_update(int fd, const char *name, const char *body, size_t body_len)
 {
+	char qualified_name[DNS_NAME_MAX];
 	struct json_value *root;
 	const char *ip;
 	struct in_addr addr;
@@ -8221,7 +8238,11 @@ static void handle_dns_record_update(int fd, const char *name, const char *body,
 	}
 	json_free(root);
 
-	derr = dns_record_update(name, addr.s_addr, &rec);
+	/* task #760: see handle_dns_record_get_one()'s own comment above --
+	 * same qualify-before-lookup fix, so a record created with a bare
+	 * --name= can be updated back with that same bare name. */
+	siteconfig_qualify(name, qualified_name, sizeof(qualified_name));
+	derr = dns_record_update(qualified_name, addr.s_addr, &rec);
 	if (derr != DNS_OK) {
 		respond_dns_error(fd, derr);
 		return;
@@ -8235,7 +8256,14 @@ static void handle_dns_record_update(int fd, const char *name, const char *body,
 
 static void handle_dns_record_delete(int fd, const char *name)
 {
-	enum dns_error derr = dns_record_delete(name);
+	char qualified_name[DNS_NAME_MAX];
+	enum dns_error derr;
+
+	/* task #760: see handle_dns_record_get_one()'s own comment above --
+	 * same qualify-before-lookup fix, so a record created with a bare
+	 * --name= can be deleted back with that same bare name. */
+	siteconfig_qualify(name, qualified_name, sizeof(qualified_name));
+	derr = dns_record_delete(qualified_name);
 
 	if (derr != DNS_OK) {
 		respond_dns_error(fd, derr);
