@@ -26,7 +26,7 @@
  * AND send SIGHUP on every subsequent change. glauth, confirmed
  * directly against its own source (github.com/glauth/glauth v2.4.0,
  * v2/glauth.go's startConfigWatcher()), runs a real fsnotify watcher
- * on its own config file whenever `watch_config = true` is set in
+ * on its own config file whenever `watchconfig = true` is set in
  * that file, and reloads automatically on any write -- no signal
  * needed at all, simpler than DNS's own mechanism. Registration here
  * is still pure bookkeeping (no pid/pidfd parameter, matching the
@@ -108,7 +108,7 @@ void ldap_server_write_json_list(struct json_writer *w);
  * syntactically unambiguous TOML array-of-tables boundary -- these
  * headers can only ever start a line at column 0) and truncating
  * there before appending the freshly-rendered tail; everything above
- * that point (baseDN, listen address, watch_config, TLS paths) is
+ * that point (baseDN, listen address, watchconfig, TLS paths) is
  * preserved byte-for-byte. If neither marker is present yet (a fresh
  * base config with no managed section), the fresh content is simply
  * appended at EOF.

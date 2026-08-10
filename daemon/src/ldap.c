@@ -684,7 +684,7 @@ static size_t render_users_groups_toml(char *buf, size_t bufsize)
  * the fresh content is simply appended at the existing EOF. No SIGHUP
  * or other signal is sent -- glauth's own fsnotify config watcher
  * (v2/glauth.go's startConfigWatcher(), active whenever the operator's
- * base config sets `watch_config = true`) notices the write and
+ * base config sets `watchconfig = true`) notices the write and
  * reloads on its own, confirmed directly against glauth's real source.
  */
 static int ldap_write_config_file(const char *full_path)

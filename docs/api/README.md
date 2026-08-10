@@ -594,9 +594,9 @@ Also auto-maintained: this install's own instance DNS record (its FQDN pointing 
 
 ## LDAP: server registration, user/group CRUD, and automatic provisioning
 
-LDAP server registration mirrors DNS server registration's own REST shape and persistence discipline, but with one real, deliberate difference: **registration itself never touches the container's filesystem or sends any signal**. `glauth` (`pkg/recipes/glauth/2.4.0/recipe.sh`, this platform's own standard integrable LDAP provider, replacing `lldap`) runs a real `fsnotify` watcher on its own config file whenever that file sets `watch_config = true` — confirmed directly against glauth's own source (`v2/glauth.go`'s `startConfigWatcher()`) — and reloads automatically on any write. DNS server registration exists because dnsmasq only reads its hosts file once at startup; glauth has no equivalent gap to work around.
+LDAP server registration mirrors DNS server registration's own REST shape and persistence discipline, but with one real, deliberate difference: **registration itself never touches the container's filesystem or sends any signal**. `glauth` (`pkg/recipes/glauth/2.4.0/recipe.sh`, this platform's own standard integrable LDAP provider, replacing `lldap`) runs a real `fsnotify` watcher on its own config file whenever that file sets `watchconfig = true` — confirmed directly against glauth's own source (`v2/glauth.go`'s `startConfigWatcher()`) — and reloads automatically on any write. DNS server registration exists because dnsmasq only reads its hosts file once at startup; glauth has no equivalent gap to work around.
 
-Once a running glauth container exists (its own config file staged at creation time, `datastore = "config"` and `watch_config = true` set, the same `--file=` staging convention `lldap.recipe` established), register it so its config file's path is on record for the LDAP user/group CRUD endpoints below to render into:
+Once a running glauth container exists (its own config file staged at creation time, `datastore = "config"` and `watchconfig = true` set, the same `--file=` staging convention `lldap.recipe` established), register it so its config file's path is on record for the LDAP user/group CRUD endpoints below to render into:
 
 ```
 POST /v1/ldap/servers

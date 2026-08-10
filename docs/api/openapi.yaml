@@ -2192,7 +2192,7 @@ paths:
         Register a running container as the LDAP-serving target (task #725, mirrors
         POST /dns/servers). Unlike DNS, registration itself never touches the
         container's filesystem or sends any signal -- glauth runs a real fsnotify
-        watcher on its own config file (`watch_config = true`) and reloads
+        watcher on its own config file (`watchconfig = true`) and reloads
         automatically on any change, so registration is pure bookkeeping: it
         records where config_path (glauth's own config file, the one it was
         started with -c) lives, for the LDAP user/group CRUD endpoints (task #726)

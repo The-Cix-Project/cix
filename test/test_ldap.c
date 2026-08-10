@@ -334,7 +334,7 @@ int main(void)
 	 * would.
 	 */
 	{
-		static const char base_config_prefix[] = "# base config\nwatch_config = true\n";
+		static const char base_config_prefix[] = "# base config\nwatchconfig = true\n";
 		struct json_value *jval;
 
 		memset(&r, 0, sizeof(r));
@@ -342,7 +342,7 @@ int main(void)
 		                       "{\"name\":\"ldapcfg\",\"image\":\"ldaptest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 		                       "\"files\":[{\"path\":\"/etc/glauth/glauth.cfg\","
-		                       "\"content\":\"# base config\\nwatch_config = true\\n\"}]}",
+		                       "\"content\":\"# base config\\nwatchconfig = true\\n\"}]}",
 		                       &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: POST ldapcfg, status=%d\n", r.status);
