@@ -22,6 +22,14 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | GET | `/system/iso` | Status of the most recent server-side installer ISO build |
 | POST | `/system/iso` | Assemble a fresh installer ISO server-side, non-blocking |
 | GET | `/system/routes` | The box's own real kernel IPv4 routing table |
+| POST | `/system/routes` | Add a real kernel route (gone on next reboot unless something else re-applies it) |
+| DELETE | `/system/routes` | Remove a real kernel route |
+| GET | `/system/swap` | Whether a host swap file is currently enabled, and its size |
+| POST | `/system/swap` | Enable a host swap file at a given size |
+| DELETE | `/system/swap` | Disable and remove the host swap file |
+| GET | `/system/logs` | Query the consolidated log store (`source`/`level`/`container`/`regex`/`since`/`tail` filters) |
+| GET | `/system/logs/config` | The consolidated log store's size cap |
+| PUT | `/system/logs/config` | Set the log store's size cap |
 | GET | `/system/stats` | Host-wide load/CPU/memory/disk/network snapshot |
 | GET | `/system/processes` | Every real process on the box, correlated to a container if any |
 | DELETE | `/system/processes/{pid}` | Kill a process -- real, immediate SIGKILL |
@@ -137,6 +145,7 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | POST | `/pkg/update-all` | Start an upgrade for the first installed package whose recipe has drifted |
 | POST | `/pkg/hostbuild` | Start a hostbuild job — build a standalone artifact instead of merging into an image |
 | GET | `/pkg/hostbuild/{name}` | Inspect one hostbuild job's current state |
+| GET | `/pkg/build/log` | Upgrade to a WebSocket; live-tail a currently-running install/hostbuild job's own stdout/stderr |
 | GET | `/pkg` | List every known package (installed or in-flight) with its state |
 | GET | `/pkg/{name}` | Inspect one package's current state |
 | DELETE | `/pkg/{name}` | Uninstall a package, or clear a permanently-failed entry (never actually merged into any image, so no new image version is produced) |
@@ -1236,3 +1245,5 @@ The reverse of `GET /system/backup` — same shape, every field optional and ind
 ## Why this file exists alongside `openapi.yaml`
 
 One Source of Truth means the *schema* lives in exactly one place (`openapi.yaml`). This page exists only so a human (or a future CLI/web implementer) can get oriented quickly without parsing YAML first — if the two ever disagree, `openapi.yaml` wins and this page is out of date and should be fixed. Per `CLAUDE.md`'s Documentation Map, this file is updated in the same change as any `openapi.yaml` edit, never after.
+
+A note for anyone re-auditing endpoint parity against the daemon's own source: `daemon/src/main.c`'s `dispatch()` is *not* the complete ground truth by itself. [`GET /containers/{name}/console`](#interactive-container-console-docker-exec--it-style) and [`GET /pkg/build/log`](#live-tailing-an-in-flight-package-build-task-676-adr-0101) are both real, correctly-documented endpoints, but — being WebSocket upgrades rather than ordinary request/response calls — they're handled by dedicated upgrade-detection code in the connection read loop (`try_console_upgrade()`/`try_pkg_build_log_upgrade()`) that runs *before* `dispatch()` is ever reached, not by a case inside it. A `dispatch()`-only diff will misreport both as "documented but not implemented."
