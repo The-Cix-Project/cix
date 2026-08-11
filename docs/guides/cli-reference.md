@@ -9,7 +9,7 @@ kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 ```
 
 - `--host=`/`--port=` — default `127.0.0.1:7620`.
-- `--json` — print the raw API response instead of the default formatted text. Every subcommand supports it.
+- `--json` — print the raw API response instead of the default formatted text. Every subcommand supports it except `console` (an interactive terminal session, not a per-call response) and `files get` (its own raw file bytes are the CLI's one non-JSON response body) — `--json` is silently ignored on those two.
 - Running `kanxeoctl` with no command at all, from a real terminal (`isatty(stdin)`), drops into an **interactive shell**: one line, one command, reusing the same connection — useful for a session of several related calls without re-establishing a TCP connection each time (`kanxeoctl --json` plus a piped/redirected stdin skips the shell and falls through to the usual usage-error path instead, so scripting is unaffected). The prompt is the connected daemon's own `instance_name` (`GET /system/site`, e.g. `myhost> `), not a fixed string — useful the moment more than one Kanxeo install is reachable (ADR-0132).
 - **Exit codes**: `0` success, `1` the API call itself failed (a non-2xx response, or a transport-level failure reaching the daemon), `2` a usage error (bad flags, unknown subcommand) — checked before any network call is made.
 
@@ -28,6 +28,10 @@ kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `site set [--instance-name=NAME] [--site-name=NAME] [--domain-suffix=NAME]` | Set them |
 | `daemon-config show` | `kanxeod`'s own listen port, HTTP/HTTPS exposure, and which network is currently its management one |
 | `daemon-config set [--port=N] [--https-port=N] [--enable-http] [--disable-http] [--enable-https] [--disable-https] [--management-network=NAME] [--bind-ip=A.B.C.D \| --clear-bind-ip]` | Live, no-restart change — only the fields given are touched. `bind_ip` (ADR-0068) is a dedicated second address on the management network's own bridge; `--clear-bind-ip` reverts to that network's own address |
+| `rolling-config show` | The configured rolling-restart jitter window (`jitter_window_seconds`) used by `run --follow-rolling` (ADR-0124) |
+| `rolling-config set --jitter-window-seconds=N` | Set the jitter window — `0` disables jitter (restart happens immediately on every rolling reconcile) |
+| `iso status` | Status of the most recent server-side installer ISO build |
+| `iso build [--disk=DEV] [--ip=A.B.C.D] [--prefix=N] [--gateway=A.B.C.D] [--interface=IFNAME] [--wait]` | Assemble a fresh installer ISO server-side; all flags optional (unset fields fall back to the daemon's own defaults) — `--wait` polls until the build finishes instead of returning immediately |
 | `routes` | The box's own real kernel IPv4 routing table (ADR-0066) — the only way to see this on a real install, no SSH/general shell |
 | `host-stats` | Host-wide load/CPU/memory/disk/network snapshot, including cpu/memory/io pressure-stall (PSI) figures (ADR-0073, ADR-0074) — the host-level counterpart to `stats NAME` below |
 | `process ls` | Every real process on the box (a direct `/proc` scan), each correlated to a container by its own real host ppid chain, if any (ADR-0131) |
@@ -86,8 +90,10 @@ run --name=NAME --image=IMAGE
     [--route=DEST/PREFIX:VIA ...]
     [--device=ID ...] [--interface=IFNAME ...]
     [--restart=always|on-failure|unless-stopped] [--restart-delay=N]
+    [--follow-rolling] [--follow-rolling-jitter-seconds=N]
     [--depends-on=NAME ...]
     [--readiness-tcp-port=N [--readiness-timeout=N]]
+    [--file=CONTAINER_PATH=LOCAL_PATH[:MODE] ...] [--sysctl=KEY=VALUE ...]
     -- CMD [ARGS...]
 ```
 
@@ -110,6 +116,12 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | `image ls` / `image show NAME` / `image rm NAME` | List / inspect one (manifest, current version, and full version history) / remove (refused for `base`, in-use, or still has packages) |
 | `image manifest set --image=NAME --package=NAME --mode=pinned\|rolling --version=VERSION` | Upsert one manifest entry (ADR-0107) -- `pinned` never auto-advances, `rolling` auto-rebuilds onto a newer recipe version as soon as one is published |
 | `image manifest rm --image=NAME --package=NAME` | Remove one manifest entry |
+| `image recipe add --name=NAME --file=PATH` | Publish a declarative image recipe (ADR-0123) -- recipe name and image name are 1:1; bulk-declares a manifest in one shot instead of one `image manifest set` per package |
+| `image recipe show NAME` | Print a recipe's own raw content |
+| `image recipe rm NAME` | Remove a stored image recipe |
+| `image recipe ls` | List image recipes (metadata only) |
+| `image apply-recipe NAME` | Apply `NAME`'s own stored recipe -- bulk-declares the manifest immediately (common case), or starts an async whole-rootfs artifact fetch for a fully-pinned recipe with a matching configured artifact server (poll `image recipe-apply-status`) |
+| `image recipe-apply-status` | State/image/error of the most recent `image apply-recipe` artifact fetch |
 
 ## Devices
 

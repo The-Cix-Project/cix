@@ -28,6 +28,8 @@ This gives you `/tmp/linux-firmware/amdgpu` — pass that path as `mkbootroot`'s
 
 ## Building the ISO
 
+This section covers the dev-machine path (`mkbootroot`/`mkinstalleriso` run by hand). A running Kanxeo host can also assemble a fresh ISO itself, no separate dev machine involved — see [`building-kanxeo.md`'s "Build a fresh installer ISO, server-side"](building-kanxeo.md#4-build-a-fresh-installer-iso-server-side) (`POST /system/iso` / `kanxeoctl iso build`, ADR-0064). Either path produces the same kind of ISO, described below.
+
 Once `build/kanxeod`, `build/kanxeo-install`, `build/bzImage`, and the signing key above all exist:
 
 ```sh
