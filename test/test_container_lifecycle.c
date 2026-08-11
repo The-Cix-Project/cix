@@ -655,6 +655,77 @@ int main(void)
 		}
 		kx_response_free(&r);
 
+		/*
+		 * lc6 never asked for capture_output (confirmed null just
+		 * above) -- but transparent container-log capture (Part 1 of
+		 * the logging/UI epic, ADR-0126) is unconditional, so its own
+		 * real stdout/stderr must still be independently discoverable
+		 * via GET /v1/system/logs?source=container, tagged with its
+		 * own container name. Polled briefly: the same async
+		 * container-exits-almost-immediately race the capture_output
+		 * check above already has to poll for.
+		 */
+		{
+			int seen = 0;
+			int i;
+
+			for (i = 0; i < 30 && !seen; i++) {
+				memset(&r, 0, sizeof(r));
+				if (kx_client_request(&client, "GET",
+				                       "/v1/system/logs?source=container&container=lc6", NULL,
+				                       &r) == 0 &&
+				    r.status == 200 && r.json != NULL && r.json->type == JSON_ARRAY) {
+					size_t j;
+
+					for (j = 0; j < r.json->u.array.count; j++) {
+						const struct json_value *e = r.json->u.array.items[j];
+						const struct json_value *msg = json_object_get(e, "msg");
+						const struct json_value *cont = json_object_get(e, "container");
+
+						if (msg != NULL && msg->type == JSON_STRING &&
+						    strstr(msg->u.string, "capture-test-stdout-line") != NULL &&
+						    cont != NULL && cont->type == JSON_STRING &&
+						    strcmp(cont->u.string, "lc6") == 0) {
+							seen = 1;
+							break;
+						}
+					}
+				}
+				kx_response_free(&r);
+				if (!seen)
+					usleep(100000);
+			}
+			if (!seen) {
+				fprintf(stderr,
+				        "FAIL: lc6's real stdout never showed up in "
+				        "GET /v1/system/logs?source=container&container=lc6 "
+				        "(transparent capture should be unconditional)\n");
+				ok = 0;
+			}
+		}
+
+		/* A container-name filter for an unrelated name must exclude it. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET",
+		                       "/v1/system/logs?source=container&container=no-such-container", NULL,
+		                       &r) != 0 ||
+		    r.status != 200 || r.json == NULL || r.json->type != JSON_ARRAY ||
+		    r.json->u.array.count != 0) {
+			fprintf(stderr,
+			        "FAIL: container filter for an unrelated name should return zero entries\n");
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* A malformed regex is a 400, not a silent empty match. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/system/logs?regex=%5B", NULL, &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: malformed regex filter expected 400, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "DELETE", "/v1/containers/lc6", NULL, &r) != 0 ||
 		    r.status != 204) {

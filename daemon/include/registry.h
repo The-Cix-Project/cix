@@ -171,8 +171,7 @@ struct registry_entry {
 	 */
 	void *reactor_conn;
 	/*
-	 * Opt-in stdout/stderr capture (POST /v1/containers' own
-	 * "capture_output" field) -- the ordinary-container analog of the
+	 * stdout/stderr capture -- the ordinary-container analog of the
 	 * pkg-build-container capture ADR-0056/0087 already established,
 	 * closing a real observability gap: a container that execve()s
 	 * cleanly and then exits on its own for a reason with no other
@@ -182,16 +181,25 @@ struct registry_entry {
 	 * pre-exec setup steps) nor anything else captured what the
 	 * exec'd program itself wrote. output_fd is main.c's own
 	 * epoll-owned read end of the capture pipe (-1 once not capturing,
-	 * or already drained to EOF); captured_output/captured_output_len
-	 * hold whatever was read so far, bounded and drained incrementally
-	 * exactly like ADR-0087's build-output pipe (never letting the
-	 * container itself block on a full pipe buffer).
+	 * or already drained to EOF) -- always present now (transparent
+	 * container-log capture: every container's own output is always
+	 * forwarded, line by line, into logstore.c as a source="container"
+	 * entry, regardless of capture_requested below). captured_output/
+	 * captured_output_len hold whatever was read so far, bounded and
+	 * drained incrementally exactly like ADR-0087's build-output pipe
+	 * (never letting the container itself block on a full pipe buffer)
+	 * -- but only ever populated when capture_requested is set; this
+	 * field pair is the client-facing GET /v1/containers/{name} tail,
+	 * a separate, still-opt-in feature from the always-on logstore
+	 * forwarding above, fed from the same underlying pipe.
 	 */
 	int output_fd;
 	int capture_requested; /* 1 iff "capture_output" was set at creation time --
 	                         * distinguishes "never asked for capture" (captured_output
 	                         * stays "") from "asked, but nothing written yet" (same
-	                         * empty string) for GET's own null-vs-"" reporting. */
+	                         * empty string) for GET's own null-vs-"" reporting. Does NOT
+	                         * gate output_fd's own existence or the logstore forward
+	                         * anymore -- see this field's own sibling doc comment above. */
 	char captured_output[REGISTRY_CAPTURED_OUTPUT_MAX];
 	int captured_output_len;
 };

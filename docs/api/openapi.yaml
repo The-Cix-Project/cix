@@ -1058,15 +1058,20 @@ paths:
 
   /system/logs:
     get:
-      summary: Tail the consolidated log (kernel dmesg + kanxeod diagnostics + per-request audit trail, ADR-0070)
+      summary: Tail the consolidated log (kernel dmesg + kanxeod diagnostics + per-request audit trail + every container's own stdout/stderr, ADR-0070/ADR-0126)
       description: >
         Every kanxeoctl command and every web UI action is, underneath,
         a REST call this daemon already handles -- one entry is logged
         per request (source "audit"), except GET /system/logs and
         GET /health, which are excluded as low-value polling noise.
-        Combined with real kernel dmesg (source "kernel") and
-        kanxeod's own internal diagnostics (source "kanxeod") in one
-        chronologically-ordered store.
+        Combined with real kernel dmesg (source "kernel"), kanxeod's
+        own internal diagnostics (source "kanxeod"), and -- since
+        ADR-0126 -- every container's own stdout/stderr (source
+        "container", always captured regardless of that container's
+        own "capture_output" opt-in, which only additionally mirrors
+        the same bytes into that one container's own
+        GET /containers/{name} tail) in one chronologically-ordered
+        store.
       operationId: getSystemLogs
       parameters:
         - name: source
@@ -1074,10 +1079,28 @@ paths:
           required: false
           schema:
             type: string
-            enum: [kernel, kanxeod, audit]
+            enum: [kernel, kanxeod, audit, container]
         - name: level
           in: query
           required: false
+          schema:
+            type: string
+        - name: container
+          in: query
+          required: false
+          description: >
+            Exact match against an entry's own "container" field --
+            only ever non-empty on a source="container" entry.
+            ADR-0126.
+          schema:
+            type: string
+        - name: regex
+          in: query
+          required: false
+          description: >
+            POSIX extended regular expression (case-insensitive),
+            matched against "msg". A malformed pattern is a 400, not a
+            silent empty result. ADR-0126.
           schema:
             type: string
         - name: tail
@@ -1101,6 +1124,12 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/LogEntry"
+        "400":
+          description: Malformed regex pattern
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /system/logs/config:
     get:
@@ -6309,16 +6338,23 @@ components:
 
     LogEntry:
       type: object
-      required: [ts, source, level, msg]
+      required: [ts, source, level, container, msg]
       properties:
         ts:
           type: integer
           description: Unix seconds.
         source:
           type: string
-          enum: [kernel, kanxeod, audit]
+          enum: [kernel, kanxeod, audit, container]
         level:
           type: string
+        container:
+          type: string
+          description: >
+            The container this line came from -- only ever non-empty
+            when source="container" (ADR-0126); empty string for every
+            other source (this store's own established convention,
+            same as every other field here -- never null).
         msg:
           type: string
 

@@ -1,6 +1,26 @@
 #include "logstore.h"
 #include "persist.h"
 
+/*
+ * TCC can't parse glibc's own <regex.h> regexec() prototype as
+ * written -- it declares its regmatch_t array parameter with a C99
+ * VLA-in-prototype size expression referencing __nmatch
+ * (regmatch_t __pmatch[_Restrict_arr_ _REGEX_NELTS(__nmatch)]), a
+ * syntax TCC's simpler parser rejects outright ("__nmatch
+ * undeclared", confirmed directly). The header's own _REGEX_NELTS
+ * macro already exists precisely for compilers without VLA support
+ * (see its own #ifndef __STDC_NO_VLA__ guard) -- defining that
+ * standard C11 feature-test macro ourselves, accurately (TCC really
+ * doesn't support this construct), makes the header emit a plain
+ * `regmatch_t __pmatch[]` parameter instead, which TCC parses fine.
+ * Not a hand-replaced struct/prototype (the struct epoll_event/
+ * clone_args precedent, include/linux_compat.h) -- glibc's own real
+ * declaration is used as-is, just steered onto the branch it already
+ * carries for exactly this situation.
+ */
+#define __STDC_NO_VLA__ 1
+#include <regex.h>
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -280,13 +300,17 @@ void logstore_kmsg_readable(void)
 	}
 }
 
-void logstore_write(const char *source, const char *level, const char *fmt, ...)
+/* Shared by logstore_write()/logstore_write_container() -- container
+ * is "" for every non-container entry (this store's own established
+ * convention: empty string means N/A, no jw_null() used anywhere else
+ * in this file). */
+static void write_entry(const char *source, const char *level, const char *container,
+                         const char *msg)
 {
-	char msg[LOGSTORE_MSG_MAX];
 	char src[LOGSTORE_SOURCE_MAX];
 	char lvl[LOGSTORE_LEVEL_MAX];
+	char cont[LOGSTORE_CONTAINER_MAX];
 	struct json_writer w;
-	va_list ap;
 
 	if (!g_initialized)
 		return;
@@ -294,10 +318,8 @@ void logstore_write(const char *source, const char *level, const char *fmt, ...)
 	if (level_rank(lvl) > level_rank(g_min_level))
 		return; /* less severe than the configured floor -- dropped before any write */
 
-	va_start(ap, fmt);
-	vsnprintf(msg, sizeof(msg), fmt, ap);
-	va_end(ap);
 	snprintf(src, sizeof(src), "%s", source != NULL ? source : "kanxeod");
+	snprintf(cont, sizeof(cont), "%s", container != NULL ? container : "");
 
 	jw_init(&w);
 	jw_obj_open(&w);
@@ -307,6 +329,8 @@ void logstore_write(const char *source, const char *level, const char *fmt, ...)
 	jw_str(&w, src);
 	jw_key(&w, "level");
 	jw_str(&w, lvl);
+	jw_key(&w, "container");
+	jw_str(&w, cont);
 	jw_key(&w, "msg");
 	jw_str(&w, msg);
 	jw_obj_close(&w);
@@ -318,6 +342,28 @@ void logstore_write(const char *source, const char *level, const char *fmt, ...)
 		g_current_size += (long)w.len + 1;
 	}
 	jw_free(&w);
+}
+
+void logstore_write(const char *source, const char *level, const char *fmt, ...)
+{
+	char msg[LOGSTORE_MSG_MAX];
+	va_list ap;
+
+	va_start(ap, fmt);
+	vsnprintf(msg, sizeof(msg), fmt, ap);
+	va_end(ap);
+	write_entry(source, level, NULL, msg);
+}
+
+void logstore_write_container(const char *container, const char *level, const char *fmt, ...)
+{
+	char msg[LOGSTORE_MSG_MAX];
+	va_list ap;
+
+	va_start(ap, fmt);
+	vsnprintf(msg, sizeof(msg), fmt, ap);
+	va_end(ap);
+	write_entry("container", level, container, msg);
 }
 
 enum logstore_error logstore_set_max_bytes(int64_t max_bytes)
@@ -376,11 +422,19 @@ struct tail_entry {
 	int64_t ts;
 	char source[LOGSTORE_SOURCE_MAX];
 	char level[LOGSTORE_LEVEL_MAX];
+	char container[LOGSTORE_CONTAINER_MAX];
 	char msg[LOGSTORE_MSG_MAX];
 };
 
 void logstore_tail(const char *source_filter, const char *level_filter, int64_t since,
                     int limit, struct json_writer *w)
+{
+	logstore_tail_ex(source_filter, level_filter, NULL, NULL, since, limit, w);
+}
+
+void logstore_tail_ex(const char *source_filter, const char *level_filter,
+                       const char *container_filter, const char *msg_regex, int64_t since,
+                       int limit, struct json_writer *w)
 {
 	uint64_t seqs[LOGSTORE_SEGMENT_COUNT + 4];
 	int seg_count = segment_seq_list(seqs, LOGSTORE_SEGMENT_COUNT + 4);
@@ -388,9 +442,26 @@ void logstore_tail(const char *source_filter, const char *level_filter, int64_t 
 	struct tail_entry *ring;
 	int ring_head = 0, ring_count = 0;
 	int i;
+	regex_t re;
+	int have_re = 0;
+
+	if (msg_regex != NULL && msg_regex[0] != '\0') {
+		if (regcomp(&re, msg_regex, REG_EXTENDED | REG_NOSUB | REG_ICASE) != 0) {
+			/* An invalid pattern matches nothing, rather than crashing
+			 * or silently ignoring the filter -- the caller (main.c)
+			 * already 400s a malformed regex before ever reaching
+			 * here; this is just defense in depth. */
+			jw_arr_open(w);
+			jw_arr_close(w);
+			return;
+		}
+		have_re = 1;
+	}
 
 	ring = calloc((size_t)eff_limit, sizeof(*ring));
 	if (ring == NULL) {
+		if (have_re)
+			regfree(&re);
 		jw_arr_open(w);
 		jw_arr_close(w);
 		return;
@@ -410,7 +481,7 @@ void logstore_tail(const char *source_filter, const char *level_filter, int64_t 
 
 		while ((n = getline(&line, &line_cap, fp)) > 0) {
 			struct json_value *root = json_parse(line, (size_t)n);
-			const char *src, *lvl, *msg;
+			const char *src, *lvl, *cont, *msg;
 			int64_t ts;
 			int idx;
 
@@ -419,10 +490,14 @@ void logstore_tail(const char *source_filter, const char *level_filter, int64_t 
 			ts = (int64_t)json_as_number(json_object_get(root, "ts"));
 			src = json_as_string(json_object_get(root, "source"));
 			lvl = json_as_string(json_object_get(root, "level"));
+			cont = json_as_string(json_object_get(root, "container"));
 			msg = json_as_string(json_object_get(root, "msg"));
 
 			if ((source_filter != NULL && (src == NULL || strcmp(src, source_filter) != 0)) ||
 			    (level_filter != NULL && (lvl == NULL || strcmp(lvl, level_filter) != 0)) ||
+			    (container_filter != NULL &&
+			     (cont == NULL || strcmp(cont, container_filter) != 0)) ||
+			    (have_re && (msg == NULL || regexec(&re, msg, 0, NULL, 0) != 0)) ||
 			    (since > 0 && ts < since)) {
 				json_free(root);
 				continue;
@@ -438,6 +513,8 @@ void logstore_tail(const char *source_filter, const char *level_filter, int64_t 
 			ring[idx].ts = ts;
 			snprintf(ring[idx].source, sizeof(ring[idx].source), "%s", src != NULL ? src : "");
 			snprintf(ring[idx].level, sizeof(ring[idx].level), "%s", lvl != NULL ? lvl : "");
+			snprintf(ring[idx].container, sizeof(ring[idx].container), "%s",
+			         cont != NULL ? cont : "");
 			snprintf(ring[idx].msg, sizeof(ring[idx].msg), "%s", msg != NULL ? msg : "");
 			json_free(root);
 		}
@@ -456,10 +533,14 @@ void logstore_tail(const char *source_filter, const char *level_filter, int64_t 
 		jw_str(w, ring[idx].source);
 		jw_key(w, "level");
 		jw_str(w, ring[idx].level);
+		jw_key(w, "container");
+		jw_str(w, ring[idx].container);
 		jw_key(w, "msg");
 		jw_str(w, ring[idx].msg);
 		jw_obj_close(w);
 	}
 	jw_arr_close(w);
 	free(ring);
+	if (have_re)
+		regfree(&re);
 }

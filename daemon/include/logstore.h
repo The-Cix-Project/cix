@@ -44,6 +44,10 @@
 
 #define LOGSTORE_SOURCE_MAX 16
 #define LOGSTORE_LEVEL_MAX 16
+/* Matches REGISTRY_NAME_MAX by value, no header dependency -- same
+ * precedent NTP_SERVER_NAME_MAX (daemon/include/ntp.h) already
+ * established for this exact situation. */
+#define LOGSTORE_CONTAINER_MAX 64
 /*
  * Raised from an original 512 (2026-08-08, real deployment): a genuine
  * build failure's own captured output (pkg.c's PKG_BUILD_OUTPUT_CAPTURE_MAX)
@@ -104,6 +108,26 @@ void logstore_kmsg_readable(void);
 void logstore_write(const char *source, const char *level, const char *fmt, ...)
 	__attribute__((format(printf, 3, 4)));
 
+/*
+ * Transparent container-log capture (added alongside kernel/kanxeod/
+ * audit): every container's stdout/stderr is always piped and drained
+ * (main.c's handle_container_output_event(), unconditional since this
+ * feature landed -- no longer gated behind the per-container
+ * "capture_output" opt-in, which now controls only whether
+ * GET /v1/containers/{name}'s own captured_output tail is populated,
+ * a separate, still-opt-in feature fed from the same underlying pipe).
+ * Always writes source="container" and the given container name into
+ * its own dedicated "container" field -- a real structured filter for
+ * logstore_tail()'s own container_filter, not a substring match against
+ * "msg". level is fixed by the caller (main.c currently always passes
+ * "info": stdout and stderr are merged onto one pipe, same as
+ * captured_output's own long-standing merge, so there's no real signal
+ * to derive a per-line severity from without a second pipe -- a stated,
+ * documented v1 boundary, not silently assumed).
+ */
+void logstore_write_container(const char *container, const char *level, const char *fmt, ...)
+	__attribute__((format(printf, 3, 4)));
+
 enum logstore_error logstore_set_max_bytes(int64_t max_bytes);
 int64_t logstore_max_bytes(void);
 
@@ -124,8 +148,27 @@ const char *logstore_min_level(void);
  * `tail`'s own convention) matching every given filter (NULL/0 means
  * "no filter" for that field) into w as a JSON array. limit <= 0
  * means LOGSTORE_DEFAULT limit (1000) -- never unbounded, this store
- * has no index and a very large limit means reading whole segments. */
+ * has no index and a very large limit means reading whole segments.
+ * Equivalent to logstore_tail_ex() with container_filter/msg_regex
+ * both NULL -- kept as its own entry point since every pre-existing
+ * caller only ever needed source/level/since/limit. */
 void logstore_tail(const char *source_filter, const char *level_filter, int64_t since,
                     int limit, struct json_writer *w);
+
+/*
+ * Added for transparent container-log capture: container_filter
+ * matches an entry's own "container" field exactly (only ever
+ * non-empty on a source="container" entry); msg_regex is a POSIX
+ * extended regular expression (REG_ICASE -- case-insensitive, same
+ * "least surprise for an operator eyeballing log text" posture grep's
+ * own -i default reflects) matched against "msg", NULL/"" meaning no
+ * regex filter. A malformed msg_regex matches nothing rather than
+ * crashing (main.c's own caller validates and 400s a bad pattern
+ * before ever reaching here; this is defense in depth, not the
+ * primary validation).
+ */
+void logstore_tail_ex(const char *source_filter, const char *level_filter,
+                       const char *container_filter, const char *msg_regex, int64_t since,
+                       int limit, struct json_writer *w);
 
 #endif /* LOGSTORE_H */

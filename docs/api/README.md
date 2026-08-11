@@ -269,10 +269,11 @@ One on-demand swap file, off by default (ADR-0069) — raised after a real Rust/
 
 ```
 GET /v1/system/logs?source=audit&level=info&tail=50&since=1700000000
+GET /v1/system/logs?source=container&container=dns-1&regex=error
 ```
 
 ```json
-[{"ts": 1700000012, "source": "audit", "level": "info", "msg": "POST /v1/networks"}]
+[{"ts": 1700000012, "source": "audit", "level": "info", "container": "", "msg": "POST /v1/networks"}]
 ```
 
 ```
@@ -281,7 +282,7 @@ PUT /v1/system/logs/config
 {"max_bytes": 5368709120, "min_level": "info"}
 ```
 
-One consolidated, size-capped log (ADR-0070): real kernel `dmesg` (source `kernel`, read directly from `/dev/kmsg`), kanxeod's own internal diagnostics (source `kanxeod`, mirrored to stderr too — stderr is still the only channel during boot, before the API is reachable), and a per-request audit trail (source `audit`) — one entry per REST request this daemon handles, method + path, covering every action either `kanxeoctl` or the web dashboard takes since both are pure REST clients. `GET /health` and `GET /system/logs` itself are excluded from the audit trail as low-value polling noise. All three sources interleave into one chronologically-ordered store, not siloed per-source streams.
+One consolidated, size-capped log (ADR-0070): real kernel `dmesg` (source `kernel`, read directly from `/dev/kmsg`), kanxeod's own internal diagnostics (source `kanxeod`, mirrored to stderr too — stderr is still the only channel during boot, before the API is reachable), a per-request audit trail (source `audit`) — one entry per REST request this daemon handles, method + path, covering every action either `kanxeoctl` or the web dashboard takes since both are pure REST clients — and, since ADR-0126, **every container's own stdout/stderr, transparently** (source `container`, tagged with the `container` field) — no opt-in needed; a container's own `"capture_output":true` (see the Containers section) only additionally mirrors the same bytes into that one container's own `GET /containers/{name}` tail, it's a separate, still-opt-in feature fed from the same pipe. `container=` filters to one container's own lines; `regex=` (POSIX extended, case-insensitive) matches against `msg`, `400` on a malformed pattern. `GET /health` and `GET /system/logs` itself are excluded from the audit trail as low-value polling noise. All sources interleave into one chronologically-ordered store, not siloed per-source streams.
 
 Storage is 8 rotating segment files, not a byte-exact ring buffer — the oldest whole segment is dropped once the configured `max_bytes` cap is reached (enforced at segment granularity, so expect a few percent of slop against the exact number, the same tradeoff `logrotate`/`journald` already make). `tail` defaults to 1000 and is capped at 5000; `since` is Unix seconds.
 

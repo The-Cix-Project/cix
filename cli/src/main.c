@@ -225,9 +225,14 @@ static void print_usage(FILE *out)
 	        "               available internal NTP time source (mirrors dns/ldap server)\n"
 	        "  ntp server ls\n"
 	        "  ntp server unregister CONTAINER\n"
-	        "  logs [--source=kernel|kanxeod|audit] [--level=...] [--tail=N] [--since=UNIXTS]\n"
+	        "  logs [--source=kernel|kanxeod|audit|container] [--level=...] [--container=NAME]\n"
+	        "               [--regex=PATTERN] [--tail=N] [--since=UNIXTS]\n"
 	        "               -- the consolidated log (kernel dmesg + kanxeod's own\n"
-	        "               diagnostics + a per-request audit trail, ADR-0070)\n"
+	        "               diagnostics + a per-request audit trail + every container's\n"
+	        "               own stdout/stderr, transparently, ADR-0070/ADR-0126);\n"
+	        "               --container= filters to one container's own lines,\n"
+	        "               --regex= is a POSIX extended regex (case-insensitive)\n"
+	        "               matched against the message text\n"
 	        "  logs config [--max-bytes=N] [--min-level=LEVEL]  -- show or set the log's\n"
 	        "               total size cap and/or its minimum severity floor\n"
 	        "               (emerg/alert/crit/err|error/warning|warn/notice/info/debug,\n"
@@ -447,10 +452,15 @@ static void fmt_logs(const struct json_value *v)
 		long long ts = (long long)json_as_number(json_object_get(e, "ts"));
 		const char *source = json_str_field(e, "source");
 		const char *level = json_str_field(e, "level");
+		const char *container = json_str_field(e, "container");
 		const char *msg = json_str_field(e, "msg");
 
-		printf("[%lld] %-8s %-7s %s\n", ts, source != NULL ? source : "", level != NULL ? level : "",
-		       msg != NULL ? msg : "");
+		if (container != NULL && container[0] != '\0')
+			printf("[%lld] %-8s %-7s (%s) %s\n", ts, source != NULL ? source : "",
+			       level != NULL ? level : "", container, msg != NULL ? msg : "");
+		else
+			printf("[%lld] %-8s %-7s %s\n", ts, source != NULL ? source : "",
+			       level != NULL ? level : "", msg != NULL ? msg : "");
 	}
 }
 
@@ -1743,13 +1753,26 @@ static int cmd_swap_disable(const struct kx_client *c, int json_mode)
 	return emit(&r, json_mode, fmt_removed);
 }
 
+/* Forward-declared -- its own definition lives further down the file
+ * (cmd_files_get's own neighborhood), needed here first for --container=/
+ * --regex=, both free-text values that can contain characters ('&',
+ * '=', regex metacharacters) a raw, unencoded query string would
+ * corrupt. */
+static void url_encode_query_value(const char *in, char *out, size_t out_size);
+
 static int cmd_logs(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *source = NULL;
 	const char *level = NULL;
+	const char *container = NULL;
+	const char *msg_regex = NULL;
 	const char *tail = NULL;
 	const char *since = NULL;
-	char path[320];
+	char path[640];
+	char encoded_container[64 * 3]; /* 64 matches LOGSTORE_CONTAINER_MAX (daemon/include/
+	                                  * logstore.h) by value, no header dependency -- this
+	                                  * is a pure REST client, API-First Mandate */
+	char encoded_regex[256 * 3];
 	int i;
 	size_t o;
 	struct kx_response r;
@@ -1759,6 +1782,10 @@ static int cmd_logs(const struct kx_client *c, int json_mode, int argc, char **a
 			source = argv[i] + 9;
 		else if (strncmp(argv[i], "--level=", 8) == 0)
 			level = argv[i] + 8;
+		else if (strncmp(argv[i], "--container=", 12) == 0)
+			container = argv[i] + 12;
+		else if (strncmp(argv[i], "--regex=", 8) == 0)
+			msg_regex = argv[i] + 8;
 		else if (strncmp(argv[i], "--tail=", 7) == 0)
 			tail = argv[i] + 7;
 		else if (strncmp(argv[i], "--since=", 8) == 0)
@@ -1774,6 +1801,14 @@ static int cmd_logs(const struct kx_client *c, int json_mode, int argc, char **a
 		o += (size_t)snprintf(path + o, sizeof(path) - o, "source=%s&", source);
 	if (level != NULL)
 		o += (size_t)snprintf(path + o, sizeof(path) - o, "level=%s&", level);
+	if (container != NULL) {
+		url_encode_query_value(container, encoded_container, sizeof(encoded_container));
+		o += (size_t)snprintf(path + o, sizeof(path) - o, "container=%s&", encoded_container);
+	}
+	if (msg_regex != NULL) {
+		url_encode_query_value(msg_regex, encoded_regex, sizeof(encoded_regex));
+		o += (size_t)snprintf(path + o, sizeof(path) - o, "regex=%s&", encoded_regex);
+	}
 	if (tail != NULL)
 		o += (size_t)snprintf(path + o, sizeof(path) - o, "tail=%s&", tail);
 	if (since != NULL)
@@ -1781,6 +1816,13 @@ static int cmd_logs(const struct kx_client *c, int json_mode, int argc, char **a
 
 	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	if (r.status == 400) {
+		fprintf(stderr, "kanxeoctl: %s\n",
+		        json_str_field(r.json, "error") != NULL ? json_str_field(r.json, "error") :
+		                                                   "bad request");
+		kx_response_free(&r);
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_logs);

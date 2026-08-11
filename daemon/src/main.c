@@ -44,6 +44,10 @@
 #include <limits.h>
 #include <net/if.h>
 #include <netinet/in.h>
+/* See daemon/src/logstore.c's own include-block comment: TCC can't
+ * parse glibc's real <regex.h> regexec() prototype without this. */
+#define __STDC_NO_VLA__ 1
+#include <regex.h>
 #include <sched.h>
 #include <signal.h>
 #include <stdint.h>
@@ -446,12 +450,16 @@ enum conn_kind {
 	CONN_PKG_FETCH,
 	CONN_PKG_BUILD_OUTPUT,  /* pkg.c's build-output capture pipe, drained incrementally
 	                          * as the container runs rather than once at exit (ADR-0087) */
-	CONN_CONTAINER_OUTPUT,  /* an ordinary container's own opt-in stdout/stderr capture
-	                          * pipe (POST /v1/containers' "capture_output"), drained
-	                          * incrementally into its registry_entry exactly like
-	                          * CONN_PKG_BUILD_OUTPUT drains into pkg.c's build-output
-	                          * buffer -- the same ADR-0087 discipline, a different
-	                          * destination */
+	CONN_CONTAINER_OUTPUT,  /* an ordinary container's own stdout/stderr capture pipe --
+	                          * always present since transparent container-log capture
+	                          * landed (every container, not just capture_output=true
+	                          * ones), drained incrementally into logstore.c (source
+	                          * "container") exactly like CONN_PKG_BUILD_OUTPUT drains
+	                          * into pkg.c's build-output buffer -- the same ADR-0087
+	                          * discipline, a different destination. POST /v1/containers'
+	                          * own "capture_output" opt-in now controls only whether
+	                          * the SAME bytes are ALSO mirrored into this container's
+	                          * own registry_entry->captured_output tail. */
 	CONN_BOOTROOT_ASSEMBLE, /* server-side mkbootroot invocation (ADR-0057) */
 	CONN_BOOTROOT_OUTPUT,   /* mkbootroot's own captured stdout/stderr, drained
 	                          * incrementally exactly like CONN_PKG_BUILD_OUTPUT (ADR-0087) */
@@ -504,6 +512,18 @@ struct conn {
 	           * progress; see handle_client_event(). */
 	struct http_conn http;                 /* CONN_CLIENT only */
 	struct registry_entry *entry;           /* CONN_CONTAINER / CONN_CONTAINER_OUTPUT */
+	/*
+	 * CONN_CONTAINER_OUTPUT only: partial-line accumulation for the
+	 * always-on container-log-capture forward into logstore (transparent
+	 * log aggregation) -- independent of entry->captured_output's own
+	 * raw-byte accumulation (which stays byte-oriented, unchanged,
+	 * gated on entry->capture_requested). A line longer than this
+	 * buffer is flushed to logstore as-is at the boundary rather than
+	 * grown unboundedly -- the same "generous but bounded" posture
+	 * every other capture buffer in this daemon already has.
+	 */
+	char output_line_buf[1024];             /* CONN_CONTAINER_OUTPUT only */
+	int output_line_len;                    /* CONN_CONTAINER_OUTPUT only */
 	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE / CONN_ISO_ASSEMBLE / CONN_BOOTSTRAP_FETCH / CONN_DISK_FORMAT */
 	char restart_name[REGISTRY_NAME_MAX];   /* CONN_RESTART_TIMER only */
 	char cleanup_ifname[NETWORK_NAME_MAX];  /* CONN_BIND_IP_CLEANUP only */
@@ -4519,13 +4539,15 @@ static void handle_pkg_build_output_event(struct conn *cc)
 
 /*
  * The ordinary-container analog of register_pkg_build_output() above --
- * registers a container's own opt-in capture pipe (POST /v1/containers'
- * "capture_output") directly with epoll, watching entry->output_fd
- * itself rather than a pidfd, for exactly the same reason: draining it
- * live, incrementally, as the container runs, so it never fills its
- * 64KB kernel buffer and blocks whatever the container itself is trying
- * to write to stdout/stderr (the same ADR-0087 discipline). No-op if
- * output_fd is < 0 (pipe2() itself failed at container-create time).
+ * registers a container's own always-present capture pipe directly
+ * with epoll, watching entry->output_fd itself rather than a pidfd,
+ * for exactly the same reason: draining it live, incrementally, as
+ * the container runs, so it never fills its 64KB kernel buffer and
+ * blocks whatever the container itself is trying to write to stdout/
+ * stderr (the same ADR-0087 discipline). No-op if output_fd is < 0
+ * (pipe2() itself failed at container-create time -- capture
+ * unavailable, the container still runs, exactly like pkg.c's own
+ * build path degrades on the same failure).
  */
 static void register_container_output(struct registry_entry *entry)
 {
@@ -4555,22 +4577,68 @@ static void register_container_output(struct registry_entry *entry)
 }
 
 /*
- * Fires whenever a capture-enabled container's own output_fd becomes
- * readable. Appends whatever was newly read into entry->captured_output
- * (bounded at REGISTRY_CAPTURED_OUTPUT_MAX, silently dropping anything
- * past that -- the same "generous but bounded" posture pkg.c's own
- * build-output capture already established, not a live-tail feature
- * like CONN_PKG_BUILD_OUTPUT's WS relay, just a diagnostic snapshot GET
- * /v1/containers/{name} can report). Guards entry->in_use: this
- * registry slot could in principle already have been reused by a
- * different container by the time EOF finally arrives (e.g. a very
- * fast create/delete/create cycle racing this conn's own teardown) --
- * skip the append rather than risk attributing one container's output
- * to another's slot. On EOF (every copy of the pipe's write end closed
+ * Fires whenever any container's own output_fd becomes readable --
+ * every container has one now (transparent log capture), not just
+ * ones created with "capture_output":true. Two independent
+ * destinations for the same bytes: (1) always, split into lines and
+ * forwarded to logstore.c as source="container" entries (see
+ * forward_container_output_to_logstore()) -- the "transparent... goes
+ * to a common logging backend" mechanism; (2) only when
+ * entry->capture_requested (this container's own client explicitly
+ * opted in), the raw bytes are ALSO appended into
+ * entry->captured_output (bounded at REGISTRY_CAPTURED_OUTPUT_MAX,
+ * silently dropping anything past that -- the same "generous but
+ * bounded" posture pkg.c's own build-output capture already
+ * established, not a live-tail feature like CONN_PKG_BUILD_OUTPUT's WS
+ * relay, just a diagnostic snapshot GET /v1/containers/{name} can
+ * report). Guards entry->in_use: this registry slot could in principle
+ * already have been reused by a different container by the time EOF
+ * finally arrives (e.g. a very fast create/delete/create cycle racing
+ * this conn's own teardown) -- skip both destinations rather than risk
+ * attributing one container's output to another's slot. On EOF (every
+ * copy of the pipe's write end closed
  * -- the container process and every descendant it forked have
  * exited), tears down this conn's own epoll registration and closes
  * the fd, mirroring handle_pkg_build_output_event() exactly.
  */
+/*
+ * Splits newly-read bytes on '\n', flushing each complete line into
+ * logstore as its own "container" entry -- the transparent capture
+ * this feature exists for, always running regardless of whether this
+ * container's own client asked for capture_output. Partial lines
+ * accumulate in cc->output_line_buf across calls (a line can span
+ * multiple read()s); a line that fills the buffer with no '\n' yet is
+ * flushed as-is rather than grown unboundedly, the same "generous but
+ * bounded" posture entry->captured_output already has. Called with
+ * flush_partial=1 at EOF so a container's final line (its very last
+ * write before exit, which may have no trailing newline at all) isn't
+ * silently dropped.
+ */
+static void forward_container_output_to_logstore(struct conn *cc, const char *data, size_t len,
+                                                   int flush_partial)
+{
+	size_t i;
+
+	for (i = 0; i < len; i++) {
+		if (data[i] == '\n' ||
+		    cc->output_line_len >= (int)sizeof(cc->output_line_buf) - 1) {
+			cc->output_line_buf[cc->output_line_len] = '\0';
+			if (cc->output_line_len > 0)
+				logstore_write_container(cc->entry->name, "info", "%s", cc->output_line_buf);
+			cc->output_line_len = 0;
+			if (data[i] == '\n')
+				continue;
+		}
+		cc->output_line_buf[cc->output_line_len++] = data[i];
+	}
+
+	if (flush_partial && cc->output_line_len > 0) {
+		cc->output_line_buf[cc->output_line_len] = '\0';
+		logstore_write_container(cc->entry->name, "info", "%s", cc->output_line_buf);
+		cc->output_line_len = 0;
+	}
+}
+
 static void handle_container_output_event(struct conn *cc)
 {
 	char new_data[4096];
@@ -4581,16 +4649,19 @@ static void handle_container_output_event(struct conn *cc)
 		n = read(cc->fd, new_data, sizeof(new_data));
 		if (n > 0) {
 			if (cc->entry->in_use && cc->entry->output_fd == cc->fd) {
-				int room = (int)sizeof(cc->entry->captured_output) -
-				           cc->entry->captured_output_len - 1;
-				int take = (int)n < room ? (int)n : room;
+				if (cc->entry->capture_requested) {
+					int room = (int)sizeof(cc->entry->captured_output) -
+					           cc->entry->captured_output_len - 1;
+					int take = (int)n < room ? (int)n : room;
 
-				if (take > 0) {
-					memcpy(cc->entry->captured_output + cc->entry->captured_output_len,
-					       new_data, (size_t)take);
-					cc->entry->captured_output_len += take;
-					cc->entry->captured_output[cc->entry->captured_output_len] = '\0';
+					if (take > 0) {
+						memcpy(cc->entry->captured_output + cc->entry->captured_output_len,
+						       new_data, (size_t)take);
+						cc->entry->captured_output_len += take;
+						cc->entry->captured_output[cc->entry->captured_output_len] = '\0';
+					}
 				}
+				forward_container_output_to_logstore(cc, new_data, (size_t)n, 0);
 			}
 			if (n < (ssize_t)sizeof(new_data))
 				break; /* drained everything currently buffered */
@@ -4610,6 +4681,8 @@ static void handle_container_output_event(struct conn *cc)
 	}
 
 	if (eof) {
+		if (cc->entry->in_use && cc->entry->output_fd == cc->fd)
+			forward_container_output_to_logstore(cc, "", 0, 1);
 		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 		close(cc->fd);
 		if (cc->entry->output_fd == cc->fd)
@@ -6607,35 +6680,41 @@ static int create_container_from_body(const char *body, size_t body_len,
 	spec.envp = empty_envp;
 
 	/*
-	 * Opt-in stdout/stderr capture for an ordinary, operator-created
+	 * Always-on stdout/stderr capture for an ordinary, operator-created
 	 * container -- the same pipe2()/O_NONBLOCK-on-the-read-end pattern
 	 * pkg_build_start() already established for build containers
-	 * (pkg.c), plumbed here so a container that crash-loops with no
-	 * REST-visible diagnostic (e.g. sshd's -D -e exiting 1 on a config
-	 * problem) can have its real stderr read back afterward via
-	 * GET /v1/containers/{name}'s new "captured_output" field. A
+	 * (pkg.c). Unconditional (every container, not gated behind the
+	 * client's own "capture_output" request) since transparent
+	 * container-log capture landed: every line gets forwarded to
+	 * logstore.c regardless, so a container that crash-loops with no
+	 * other REST-visible diagnostic (e.g. sshd's -D -e exiting 1 on a
+	 * config problem) always has its real stderr discoverable via
+	 * GET /v1/system/logs?source=container. The client's own
+	 * "capture_output" boolean (the `capture_output` local variable
+	 * here) now controls only whether the SAME bytes are ALSO mirrored
+	 * into this container's own GET /v1/containers/{name} "captured_output"
+	 * tail (see register_container_output()'s call site below,
+	 * entry->capture_requested) -- a separate, still-opt-in feature. A
 	 * pipe2()/fcntl() failure here is treated as "capture unavailable"
 	 * rather than a hard container-create failure -- the container
 	 * still gets created, it just runs without capture, exactly like
 	 * pkg.c's own build path degrades.
 	 */
-	if (capture_output) {
-		if (pipe2(output_pipe, O_CLOEXEC) == 0) {
-			if (fcntl(output_pipe[0], F_SETFL, O_NONBLOCK) == 0) {
-				spec.capture_output = 1;
-				spec.stdout_fd = output_pipe[1];
-				spec.stderr_fd = output_pipe[1];
-				stdio_write_fd = output_pipe[1];
-			} else {
-				close(output_pipe[0]);
-				close(output_pipe[1]);
-				output_pipe[0] = -1;
-				output_pipe[1] = -1;
-			}
+	if (pipe2(output_pipe, O_CLOEXEC) == 0) {
+		if (fcntl(output_pipe[0], F_SETFL, O_NONBLOCK) == 0) {
+			spec.capture_output = 1;
+			spec.stdout_fd = output_pipe[1];
+			spec.stderr_fd = output_pipe[1];
+			stdio_write_fd = output_pipe[1];
 		} else {
+			close(output_pipe[0]);
+			close(output_pipe[1]);
 			output_pipe[0] = -1;
 			output_pipe[1] = -1;
 		}
+	} else {
+		output_pipe[0] = -1;
+		output_pipe[1] = -1;
 	}
 
 	rerr = registry_create(name, image, resolved_image_version, &spec, net_attachments, net_count,
@@ -6717,7 +6796,11 @@ static int create_container_from_body(const char *body, size_t body_len,
 
 	if (output_pipe[0] >= 0) {
 		entry->output_fd = output_pipe[0];
-		entry->capture_requested = 1;
+		/* The pipe/forwarding-to-logstore is now unconditional (see
+		 * this function's own comment above output_pipe's setup) --
+		 * capture_requested (the client's own "capture_output" opt-in)
+		 * controls only whether captured_output itself gets populated. */
+		entry->capture_requested = capture_output;
 		register_container_output(entry);
 	}
 
@@ -7279,9 +7362,13 @@ static void handle_logs_get(int fd, const struct http_request *req)
 {
 	char source[LOGSTORE_SOURCE_MAX];
 	char level[LOGSTORE_LEVEL_MAX];
+	char container[LOGSTORE_CONTAINER_MAX];
+	char msg_regex[256];
 	char tail_str[32], since_str[32];
 	const char *source_filter = NULL;
 	const char *level_filter = NULL;
+	const char *container_filter = NULL;
+	const char *regex_filter = NULL;
 	int64_t since = 0;
 	int limit = 0;
 	struct json_writer w;
@@ -7290,13 +7377,28 @@ static void handle_logs_get(int fd, const struct http_request *req)
 		source_filter = source;
 	if (url_query_param(req->path, "level", level, sizeof(level)) == 0)
 		level_filter = level;
+	if (url_query_param(req->path, "container", container, sizeof(container)) == 0)
+		container_filter = container;
 	if (url_query_param(req->path, "tail", tail_str, sizeof(tail_str)) == 0)
 		limit = atoi(tail_str);
 	if (url_query_param(req->path, "since", since_str, sizeof(since_str)) == 0)
 		since = (int64_t)atoll(since_str);
+	if (url_query_param(req->path, "regex", msg_regex, sizeof(msg_regex)) == 0) {
+		/* Compile-tested here, not just inside logstore_tail_ex() --
+		 * a malformed pattern is a real client mistake (400), not
+		 * something to silently match zero results for. */
+		regex_t re;
+
+		if (regcomp(&re, msg_regex, REG_EXTENDED | REG_NOSUB | REG_ICASE) != 0) {
+			respond_error(fd, 400, "Bad Request", "invalid regex pattern");
+			return;
+		}
+		regfree(&re);
+		regex_filter = msg_regex;
+	}
 
 	jw_init(&w);
-	logstore_tail(source_filter, level_filter, since, limit, &w);
+	logstore_tail_ex(source_filter, level_filter, container_filter, regex_filter, since, limit, &w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
@@ -12021,6 +12123,39 @@ static void handle_console_pty_event(struct conn *cc)
 }
 
 /*
+ * A failed TLS handshake or SSL_new()/SSL_set_fd() is an entirely
+ * ordinary, expected occurrence on a box whose HTTPS listener serves a
+ * self-signed cert by default (ADR-0046's own PKI CA) -- any client
+ * that hasn't been given that CA to trust rejects the handshake and
+ * sends a real, correctly-formed TLS alert (most commonly 46,
+ * "certificate unknown") before disconnecting; a stray non-TLS client
+ * hitting the HTTPS port produces a similar, equally benign failure.
+ * ERR_print_errors_fp(stderr) used to dump the *entire* raw OpenSSL
+ * error queue (often several lines) straight to this daemon's own
+ * stderr on every single one of these -- harmless on a dev box, but a
+ * real problem on an installed one, where stderr is the physical/
+ * serial console: confirmed live, a client repeatedly probing the
+ * HTTPS port with an untrusted cert floods the console non-stop with
+ * multi-line OpenSSL traces for something that isn't an error an
+ * operator can or needs to act on. Routed through logstore instead
+ * (source "kanxeod", "warning") as a single summary line per failure,
+ * discoverable via the API like everything else, never spamming the
+ * console; still drains the whole error queue (ERR_get_error() in a
+ * loop) so it can't silently accumulate across repeated failures --
+ * only the first (most specific) reason is actually logged.
+ */
+static void log_tls_error(const char *context)
+{
+	unsigned long first = ERR_get_error();
+	unsigned long e;
+
+	if (first != 0)
+		logstore_write("kanxeod", "warning", "%s: %s", context, ERR_reason_error_string(first));
+	while ((e = ERR_get_error()) != 0)
+		; /* drain the rest of the queue silently -- see this function's own comment */
+}
+
+/*
  * Shared teardown for a CONN_CLIENT conn, from any of handle_client_
  * event()'s several exit points -- consolidated here (Part 0.5) since
  * TLS cleanup (tls_unregister()/SSL_free()) needs to happen at every
@@ -12075,7 +12210,7 @@ static int client_conn_advance_handshake(struct conn *cc)
 		kx_epoll_ctl(g_epfd, EPOLL_CTL_MOD, cc->fd, &ev);
 		return 0;
 	}
-	ERR_print_errors_fp(stderr);
+	log_tls_error("https handshake failed");
 	return -1;
 }
 
@@ -12987,7 +13122,7 @@ static void accept_loop(struct conn *listener)
 		if (is_tls) {
 			cc->ssl = SSL_new(g_tls_ctx);
 			if (cc->ssl == NULL || SSL_set_fd(cc->ssl, client_fd) != 1) {
-				ERR_print_errors_fp(stderr);
+				log_tls_error("https accept failed");
 				if (cc->ssl != NULL)
 					SSL_free(cc->ssl);
 				close(client_fd);
