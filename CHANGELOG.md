@@ -13,7 +13,7 @@ First of a five-part `pkg/` redesign (task #739): a real, multi-round design dis
 
 #### Verified
 - Full clean rebuild + full regression sweep (24 tests) all pass.
-- Live against 192.168.15.95: `GET /v1/system/backup`'s `pkg_recipes` field confirmed to contain real entries again.
+- Live against 192.168.15.95 (deployed as `v1.9.0`): every real package recipe re-published under the new `build.sh` layout (a clean re-add, not a rejected duplicate -- ADR-0107's own check keys off `build.sh`, and the live daemon's old on-disk `recipe.sh` files never matched it). All 7 running containers survived the reboot untouched. `GET /v1/system/backup`'s `pkg_recipes` field now returns 67 real entries with real content.
 
 ### Part 77 (done): ntp-1/ntp-2 never surviving a reboot root-caused and fixed -- /run was overlay-persisted, not tmpfs
 
