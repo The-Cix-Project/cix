@@ -3378,6 +3378,157 @@ static int cmd_rolling_config(const struct kx_client *c, int json_mode, int argc
 	return 2;
 }
 
+/*
+ * ADR-0134: kanxeoctl tls-throttle show|set|status -- per-source-IP
+ * throttling for repeated failed HTTPS handshakes. show/set mirror
+ * daemon-config's own multi-field partial-update shape; status has no
+ * daemon-config equivalent (there's nothing analogous to show there)
+ * since it's live, read-only tracking state, not configuration.
+ */
+static void fmt_tls_throttle(const struct json_value *v)
+{
+	const struct json_value *jenabled = json_object_get(v, "enabled");
+
+	printf("enabled=%s threshold=%ld window_seconds=%ld block_seconds=%ld\n",
+	       (jenabled != NULL && jenabled->type == JSON_BOOL && jenabled->u.boolean) ? "true" : "false",
+	       (long)json_as_number(json_object_get(v, "threshold")),
+	       (long)json_as_number(json_object_get(v, "window_seconds")),
+	       (long)json_as_number(json_object_get(v, "block_seconds")));
+}
+
+static int cmd_tls_throttle_show(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/tls-throttle", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_tls_throttle);
+}
+
+static int cmd_tls_throttle_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *threshold = NULL;
+	const char *window = NULL;
+	const char *block = NULL;
+	int want_enabled = -1; /* -1: untouched, 0: disable, 1: enable */
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strcmp(argv[i], "--enabled") == 0)
+			want_enabled = 1;
+		else if (strcmp(argv[i], "--disabled") == 0)
+			want_enabled = 0;
+		else if (strncmp(argv[i], "--threshold=", 12) == 0)
+			threshold = argv[i] + 12;
+		else if (strncmp(argv[i], "--window-seconds=", 17) == 0)
+			window = argv[i] + 17;
+		else if (strncmp(argv[i], "--block-seconds=", 16) == 0)
+			block = argv[i] + 16;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown tls-throttle set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (want_enabled == -1 && threshold == NULL && window == NULL && block == NULL) {
+		fprintf(stderr, "usage: kanxeoctl tls-throttle set [--enabled | --disabled] "
+		                "[--threshold=N] [--window-seconds=N] [--block-seconds=N]\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	if (want_enabled != -1) {
+		jw_key(&w, "enabled");
+		jw_bool(&w, want_enabled);
+	}
+	if (threshold != NULL) {
+		jw_key(&w, "threshold");
+		jw_int(&w, atol(threshold));
+	}
+	if (window != NULL) {
+		jw_key(&w, "window_seconds");
+		jw_int(&w, atol(window));
+	}
+	if (block != NULL) {
+		jw_key(&w, "block_seconds");
+		jw_int(&w, atol(block));
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "PUT", "/v1/system/tls-throttle", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_tls_throttle);
+}
+
+static void fmt_tls_throttle_status_line(const struct json_value *v)
+{
+	const struct json_value *jblocked = json_object_get(v, "blocked");
+	const char *ip = json_str_field(v, "ip");
+	long blocked_until = (long)json_as_number(json_object_get(v, "blocked_until"));
+
+	printf("%s fail_count=%ld blocked=%s", ip != NULL ? ip : "?",
+	       (long)json_as_number(json_object_get(v, "fail_count")),
+	       (jblocked != NULL && jblocked->type == JSON_BOOL && jblocked->u.boolean) ? "true" : "false");
+	if (blocked_until > 0)
+		printf(" blocked_until=%ld", blocked_until);
+	printf("\n");
+}
+
+static void fmt_tls_throttle_status(const struct json_value *v)
+{
+	const struct json_value *entries = json_object_get(v, "entries");
+	size_t i;
+
+	if (entries == NULL || entries->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < entries->u.array.count; i++)
+		fmt_tls_throttle_status_line(entries->u.array.items[i]);
+}
+
+static int cmd_tls_throttle_status(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/tls-throttle/status", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_tls_throttle_status);
+}
+
+static int cmd_tls_throttle(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl tls-throttle show\n"
+		                "       kanxeoctl tls-throttle set [--enabled | --disabled] "
+		                "[--threshold=N] [--window-seconds=N] [--block-seconds=N]\n"
+		                "       kanxeoctl tls-throttle status\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "show") == 0)
+		return cmd_tls_throttle_show(c, json_mode);
+	if (strcmp(sub, "set") == 0)
+		return cmd_tls_throttle_set(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "status") == 0)
+		return cmd_tls_throttle_status(c, json_mode);
+
+	fprintf(stderr, "kanxeoctl: unknown tls-throttle subcommand '%s'\n", sub);
+	return 2;
+}
+
 struct cli_sysctl {
 	char key[128]; /* matches daemon's CONTAINER_SYSCTL_KEY_MAX */
 	char value[64]; /* matches daemon's CONTAINER_SYSCTL_VALUE_MAX */
@@ -7279,6 +7430,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_daemon_config(client, json_mode, argc, argv);
 	if (strcmp(cmd, "rolling-config") == 0)
 		return cmd_rolling_config(client, json_mode, argc, argv);
+	if (strcmp(cmd, "tls-throttle") == 0)
+		return cmd_tls_throttle(client, json_mode, argc, argv);
 	if (strcmp(cmd, "iso") == 0)
 		return cmd_iso(client, json_mode, argc, argv);
 	if (strcmp(cmd, "routes") == 0)
@@ -7436,7 +7589,7 @@ static const char *const SHELL_COMMANDS[] = {
 	"pause",  "ping",      "pkg",           "pki",      "process",   "ps",        "quit",      "reboot",
 	"resolv",
 	"restore", "rm",       "rolling-config", "routes",        "run",      "shutdown",  "site",
-	"start",  "stats",     "stop",          "swap",     "syslog",    "time",      "unpause",   "update",
+	"start",  "stats",     "stop",          "swap",     "syslog",    "time",      "tls-throttle", "unpause",   "update",
 	NULL
 };
 

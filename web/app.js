@@ -480,6 +480,7 @@ const CATEGORY_VIEWS = {
 	"host-stats": "view-host-stats",
 	processes: "view-processes",
 	"syslog-targets": "view-syslog-targets",
+	"tls-throttle": "view-tls-throttle",
 	logs: "view-logs",
 	backup: "view-backup",
 	update: "view-update",
@@ -532,6 +533,8 @@ function renderCurrentView() {
 			renderProcessesList();
 		else if (route.category === "syslog-targets")
 			renderSyslogTargetsList();
+		else if (route.category === "tls-throttle")
+			refreshTlsThrottleStatus();
 		else if (route.category === "logs")
 			renderLogsList();
 		else if (route.category === "images" && route.name !== null)
@@ -932,6 +935,7 @@ function renderTree() {
 						{ label: "Host Stats", hash: "host-stats", icon: "stats" },
 						{ label: "Processes", hash: "processes", icon: "stats" },
 						{ label: "Syslog Targets", hash: "syslog-targets", icon: "system" },
+						{ label: "TLS Throttle", hash: "tls-throttle", icon: "system" },
 						{ label: "Logs", hash: "logs", icon: "system" },
 						{ label: "Update", hash: "update", icon: "update" },
 						{ label: "Backup", hash: "backup", icon: "backup" },
@@ -3655,6 +3659,100 @@ document.getElementById("syslog-target-form").addEventListener("submit", async (
 	}
 });
 
+/* ---- TLS Throttle: per-source-IP HTTPS-handshake-failure throttling
+ * (ADR-0134) ---- */
+
+let tlsThrottleConfigDirty = false;
+
+async function refreshTlsThrottleConfig() {
+	try {
+		const config = await apiRequest("GET", "/v1/system/tls-throttle");
+
+		cache.tlsThrottleConfig = config;
+		if (!tlsThrottleConfigDirty) {
+			document.getElementById("ttf-enabled").checked = config.enabled;
+			document.getElementById("ttf-threshold").value = config.threshold;
+			document.getElementById("ttf-window").value = config.window_seconds;
+			document.getElementById("ttf-block").value = config.block_seconds;
+		}
+	} catch (e) {
+		/* Best-effort -- the form just stays at whatever was last shown. */
+	}
+}
+
+for (const id of ["ttf-enabled", "ttf-threshold", "ttf-window", "ttf-block"]) {
+	document.getElementById(id).addEventListener("input", () => {
+		tlsThrottleConfigDirty = true;
+	});
+}
+
+document.getElementById("ttf-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	try {
+		await apiRequest("PUT", "/v1/system/tls-throttle", {
+			enabled: document.getElementById("ttf-enabled").checked,
+			threshold: parseInt(document.getElementById("ttf-threshold").value, 10),
+			window_seconds: parseInt(document.getElementById("ttf-window").value, 10),
+			block_seconds: parseInt(document.getElementById("ttf-block").value, 10),
+		});
+		clearStatus();
+		showStatus("TLS throttle config saved", false);
+		tlsThrottleConfigDirty = false;
+		await refreshTlsThrottleConfig();
+	} catch (e) {
+		showStatus("Failed to save TLS throttle config: " + e.message, true);
+	}
+});
+
+function renderTlsThrottleStatus(entries) {
+	const body = document.getElementById("tls-throttle-status-body");
+
+	body.textContent = "";
+	if (entries.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 4;
+		cell.className = "empty";
+		cell.textContent = "No sources currently tracked";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+
+	for (const e of entries) {
+		const row = document.createElement("tr");
+
+		const ipCell = document.createElement("td");
+		ipCell.textContent = e.ip;
+		row.appendChild(ipCell);
+
+		const failCell = document.createElement("td");
+		failCell.textContent = e.fail_count;
+		row.appendChild(failCell);
+
+		const blockedCell = document.createElement("td");
+		blockedCell.textContent = e.blocked ? "yes" : "no";
+		row.appendChild(blockedCell);
+
+		const untilCell = document.createElement("td");
+		untilCell.textContent = e.blocked && e.blocked_until
+			? new Date(e.blocked_until * 1000).toLocaleTimeString()
+			: "";
+		row.appendChild(untilCell);
+
+		body.appendChild(row);
+	}
+}
+
+async function refreshTlsThrottleStatus() {
+	const data = await apiRequest("GET", "/v1/system/tls-throttle/status");
+
+	cache.tlsThrottleStatus = data.entries;
+	renderTlsThrottleStatus(cache.tlsThrottleStatus);
+}
+
 /* ---- NTP Status: most recent sync attempt outcome ---- */
 
 async function refreshNtpStatus() {
@@ -5593,6 +5691,8 @@ async function poll() {
 		await refreshRollingConfig();
 		await refreshRoutes();
 		await refreshSwap();
+		await refreshTlsThrottleConfig();
+		await refreshTlsThrottleStatus();
 		await pollServerLogs();
 	} catch (e) {
 		showStatus("Poll failed: " + e.message, true);

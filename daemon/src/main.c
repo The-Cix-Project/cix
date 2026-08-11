@@ -1,3 +1,4 @@
+#include "connthrottle.h"
 #include "container.h"
 #include "containerdef.h"
 #include "device.h"
@@ -184,6 +185,11 @@ static char RESOLV_CONF_PATH[PATH_MAX];
 static char NTP_STATE_PATH[PATH_MAX];
 static char NTP_SERVERS_STATE_PATH[PATH_MAX];
 static char SYSLOGFWD_STATE_PATH[PATH_MAX];
+/* Per-source-IP HTTPS-handshake-failure throttling config (GET/PUT
+ * /v1/system/tls-throttle) -- the tracked-peer table itself is
+ * in-memory only, never persisted, same posture as every other
+ * transient in-flight daemon state. */
+static char CONNTHROTTLE_CONFIG_PATH[PATH_MAX];
 
 /* Computes every path derived from g_base_dir -- called once, right
  * after argv parsing (so --data-dir= has already been applied) and
@@ -239,6 +245,7 @@ static void init_base_dir_paths(void)
 	snprintf(NTP_STATE_PATH, sizeof(NTP_STATE_PATH), "%s/ntp.conf", g_base_dir);
 	snprintf(NTP_SERVERS_STATE_PATH, sizeof(NTP_SERVERS_STATE_PATH), "%s/ntp_servers.json", g_base_dir);
 	snprintf(SYSLOGFWD_STATE_PATH, sizeof(SYSLOGFWD_STATE_PATH), "%s/syslog_targets.json", g_base_dir);
+	snprintf(CONNTHROTTLE_CONFIG_PATH, sizeof(CONNTHROTTLE_CONFIG_PATH), "%s/tls_throttle.json", g_base_dir);
 }
 /*
  * Backoff cap and stability-reset threshold for the crash-restart
@@ -517,6 +524,7 @@ struct conn {
 	           * finished() means the TLS handshake is still in
 	           * progress; see handle_client_event(). */
 	struct http_conn http;                 /* CONN_CLIENT only */
+	char peer_ip[CONNTHROTTLE_IP_MAX];      /* CONN_CLIENT only -- captured at accept4() time */
 	struct registry_entry *entry;           /* CONN_CONTAINER / CONN_CONTAINER_OUTPUT */
 	/*
 	 * CONN_CONTAINER_OUTPUT only: partial-line accumulation for the
@@ -10472,6 +10480,98 @@ static void handle_rolling_config_put(int fd, const char *body, size_t body_len)
 	handle_rolling_config_get(fd);
 }
 
+/*
+ * GET/PUT /v1/system/tls-throttle, GET /v1/system/tls-throttle/status
+ * (ADR-0134) -- per-source-IP throttling for repeated failed HTTPS
+ * handshakes. PUT is a real partial update, same convention pkg_repo_
+ * set_config()/handle_pkg_repo_config_put() already established:
+ * fields omitted from the body are left unchanged.
+ */
+static void handle_tls_throttle_get(int fd)
+{
+	struct throttle_config cfg = connthrottle_config_get();
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "enabled");
+	jw_bool(&w, cfg.enabled);
+	jw_key(&w, "threshold");
+	jw_int(&w, cfg.threshold);
+	jw_key(&w, "window_seconds");
+	jw_int(&w, cfg.window_seconds);
+	jw_key(&w, "block_seconds");
+	jw_int(&w, cfg.block_seconds);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_tls_throttle_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = NULL;
+	int enabled_flag = -1;
+	int threshold = -1;
+	int window_seconds = -1;
+	int block_seconds = -1;
+
+	if (body_len > 0) {
+		root = json_parse(body, body_len);
+		if (root == NULL) {
+			respond_error(fd, 400, "Bad Request", "invalid JSON body");
+			return;
+		}
+		{
+			const struct json_value *v = json_object_get(root, "enabled");
+
+			if (v != NULL && v->type == JSON_BOOL)
+				enabled_flag = v->u.boolean;
+		}
+		{
+			const struct json_value *v = json_object_get(root, "threshold");
+
+			if (v != NULL)
+				threshold = (int)json_as_number(v);
+		}
+		{
+			const struct json_value *v = json_object_get(root, "window_seconds");
+
+			if (v != NULL)
+				window_seconds = (int)json_as_number(v);
+		}
+		{
+			const struct json_value *v = json_object_get(root, "block_seconds");
+
+			if (v != NULL)
+				block_seconds = (int)json_as_number(v);
+		}
+	}
+
+	if (connthrottle_config_set(enabled_flag, threshold, window_seconds, block_seconds) != 0) {
+		if (root != NULL)
+			json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "threshold must be 1-100000, window_seconds 1-86400, block_seconds 1-604800");
+		return;
+	}
+	if (root != NULL)
+		json_free(root);
+	handle_tls_throttle_get(fd);
+}
+
+static void handle_tls_throttle_status_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "entries");
+	connthrottle_write_status_json(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 /* GET /v1/pkg/cache -- current cache occupancy; DELETE /v1/pkg/cache --
  * clears every cached artifact (an explicit operator reset). */
 static void handle_pkg_cache_get(int fd)
@@ -11036,6 +11136,22 @@ static void dispatch(int fd, const struct http_request *req)
 		}
 		if (strcmp(req->method, "PUT") == 0) {
 			handle_rolling_config_put(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/system/tls-throttle") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_tls_throttle_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_tls_throttle_put(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/system/tls-throttle/status") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_tls_throttle_status_get(fd);
 			return;
 		}
 	}
@@ -12346,14 +12462,20 @@ static void handle_console_pty_event(struct conn *cc)
  * console; still drains the whole error queue (ERR_get_error() in a
  * loop) so it can't silently accumulate across repeated failures --
  * only the first (most specific) reason is actually logged.
+ *
+ * peer_ip (ADR-0134) is logged alongside the reason -- originally
+ * absent, closing a real, confirmed gap: a sustained flood of these
+ * warnings from one source had no way to identify which client it was
+ * coming from.
  */
-static void log_tls_error(const char *context)
+static void log_tls_error(const char *context, const char *peer_ip)
 {
 	unsigned long first = ERR_get_error();
 	unsigned long e;
 
 	if (first != 0)
-		logstore_write("kanxeod", "warning", "%s: %s", context, ERR_reason_error_string(first));
+		logstore_write("kanxeod", "warning", "%s from %s: %s", context, peer_ip,
+		                ERR_reason_error_string(first));
 	while ((e = ERR_get_error()) != 0)
 		; /* drain the rest of the queue silently -- see this function's own comment */
 }
@@ -12400,8 +12522,10 @@ static int client_conn_advance_handshake(struct conn *cc)
 	struct kx_epoll_event ev;
 
 	r = SSL_accept(cc->ssl);
-	if (r == 1)
+	if (r == 1) {
+		connthrottle_record_success(cc->peer_ip);
 		return 1;
+	}
 
 	err = SSL_get_error(cc->ssl, r);
 	if (err == SSL_ERROR_WANT_READ)
@@ -12413,7 +12537,8 @@ static int client_conn_advance_handshake(struct conn *cc)
 		kx_epoll_ctl(g_epfd, EPOLL_CTL_MOD, cc->fd, &ev);
 		return 0;
 	}
-	log_tls_error("https handshake failed");
+	log_tls_error("https handshake failed", cc->peer_ip);
+	connthrottle_record_failure(cc->peer_ip);
 	return -1;
 }
 
@@ -12472,7 +12597,18 @@ static void handle_client_event(struct conn *cc)
 			return;
 		}
 		if (pr == 1) {
-			enum console_route_result cr = try_console_upgrade(cc, &req);
+			enum console_route_result cr;
+
+			/* A complete, well-formed HTTP request was actually
+			 * received -- real evidence this source isn't currently
+			 * misbehaving, on whichever listener it arrived on, so it
+			 * resets the same failure count a bad TLS handshake would
+			 * have raised (ADR-0134). Deliberately independent of what
+			 * this specific request dispatches to (even a 404 still
+			 * proves the client speaks HTTP correctly). */
+			connthrottle_record_success(cc->peer_ip);
+
+			cr = try_console_upgrade(cc, &req);
 
 			if (cr == CONSOLE_HANDLED)
 				return; /* cc repurposed into CONN_CONSOLE_WS (or already torn down) -- must not be touched again */
@@ -13296,9 +13432,14 @@ static void accept_loop(struct conn *listener)
 	struct conn *cc;
 	struct kx_epoll_event ev;
 	int is_tls = (listener->kind == CONN_LISTENER_TLS);
+	struct sockaddr_in peer_addr;
+	socklen_t peer_len;
+	char peer_ip[CONNTHROTTLE_IP_MAX];
 
 	for (;;) {
-		client_fd = accept4(listener->fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+		peer_len = sizeof(peer_addr);
+		client_fd = accept4(listener->fd, (struct sockaddr *)&peer_addr, &peer_len,
+		                     SOCK_NONBLOCK | SOCK_CLOEXEC);
 		if (client_fd < 0) {
 			if (errno == EAGAIN || errno == EWOULDBLOCK)
 				break;
@@ -13306,6 +13447,19 @@ static void accept_loop(struct conn *listener)
 				continue;
 			perror("accept4");
 			break;
+		}
+
+		if (inet_ntop(AF_INET, &peer_addr.sin_addr, peer_ip, sizeof(peer_ip)) == NULL)
+			snprintf(peer_ip, sizeof(peer_ip), "?");
+
+		/* A source already blocked for repeated failed HTTPS
+		 * handshakes (ADR-0134) is refused as cheaply as possible --
+		 * before any malloc/SSL_new, on either listener, since a
+		 * source flooding one is a reasonable thing to also stop
+		 * bothering with on the other. */
+		if (connthrottle_should_block(peer_ip)) {
+			close(client_fd);
+			continue;
 		}
 
 		cc = malloc(sizeof(*cc));
@@ -13320,12 +13474,19 @@ static void accept_loop(struct conn *listener)
 		cc->kind = CONN_CLIENT;
 		cc->fd = client_fd;
 		cc->ssl = NULL;
+		snprintf(cc->peer_ip, sizeof(cc->peer_ip), "%s", peer_ip);
 		http_conn_init(&cc->http);
 
 		if (is_tls) {
 			cc->ssl = SSL_new(g_tls_ctx);
 			if (cc->ssl == NULL || SSL_set_fd(cc->ssl, client_fd) != 1) {
-				log_tls_error("https accept failed");
+				/* A local resource failure (SSL_new()/SSL_set_fd()),
+				 * never the peer's own doing -- logged with its IP for
+				 * context, but deliberately not counted toward that
+				 * peer's own throttle score (connthrottle_record_
+				 * failure() is reserved for a real handshake the peer
+				 * actually attempted and failed). */
+				log_tls_error("https accept failed", peer_ip);
 				if (cc->ssl != NULL)
 					SSL_free(cc->ssl);
 				close(client_fd);
@@ -13721,6 +13882,8 @@ int main(int argc, char **argv)
 	if (containerdef_init(CONTAINER_DEFS_STATE_PATH) != 0)
 		return 1;
 	if (containerdef_rolling_config_init(ROLLING_CONFIG_PATH) != 0)
+		return 1;
+	if (connthrottle_config_init(CONNTHROTTLE_CONFIG_PATH) != 0)
 		return 1;
 	if (devicemap_init(DEVICEMAP_STATE_PATH) != 0)
 		return 1;

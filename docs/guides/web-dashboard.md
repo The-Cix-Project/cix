@@ -48,6 +48,7 @@ System
     Host Stats
     Processes
     Syslog Targets
+    TLS Throttle
     Logs
     Update
     Backup
@@ -79,6 +80,7 @@ Six tabs, Proxmox-style: **Summary**, **Hardware**, **Options**, **Stats**, **Co
 - **System > Server > Host Stats** — the host-wide counterpart to a container's own Stats tab (ADR-0130): four live graphs (CPU/memory/disk/network, same hand-rolled canvas rendering, no charting library) for `GET /system/stats`, plus a load-average text line. Network is every real interface combined (loopback and every container's own veth included), labeled as such. Polls only while this page is open, same as the container Stats tab.
 - **System > Server > Processes** — every real process on the box (ADR-0131), correlated to a container if any (a link to that container's own detail page). Fetch-on-demand (a Refresh button), not folded into the global poll loop -- a real process table churns too fast for a full-table re-render every 2s to be anything but noisy. Kill is a real, immediate SIGKILL, guarded by a `confirm()` dialog matching this dashboard's own convention for genuinely destructive actions.
 - **System > Server > Syslog Targets** — registered containers (e.g. `syslog-1`/`syslog-2` running `sysklogd`) that container-sourced log lines are also forwarded to as real RFC 3164 UDP datagrams (ADR-0127). Register one via the `+ Create` menu (`Syslog Target`); Unregister per row. The `+ Create` header dropdown also gained this entry alongside every other "register a container as X" form (DNS Server, LDAP Server, NTP Server).
+- **System > Server > TLS Throttle** — per-source-IP throttling config for repeated failed HTTPS handshakes (ADR-0134): enabled toggle, threshold/window/block-duration fields, and a live table of every source currently tracked (failure count, blocked state, blocked-until time). Loopback is never throttled or shown here — a hostile source sharing the box can never lock out this dashboard's own access.
 - **System > Server > Logs** — configuration only (ADR-0129 moved browsing to the always-visible bottom log panel, see Layout above): a size-cap field for the consolidated log store (8 rotating segments, enforced at segment granularity — not byte-exact) with its own Save button.
 
 ## What's deliberately not here

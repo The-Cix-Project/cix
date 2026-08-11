@@ -1062,6 +1062,47 @@
 			</div>
 		</section>
 
+		<section class="view" id="view-tls-throttle" hidden>
+			<div class="view-list">
+				<h2>TLS Throttle</h2>
+				<p class="hint">Per-source-IP throttling for repeated failed HTTPS handshakes (ADR-0134) -- a source that fails enough handshakes within the window is refused outright, on both listeners, until the block expires. Loopback (127.0.0.1) is never throttled, so this daemon's own local admin access can't be locked out by a hostile source sharing the box.</p>
+				<h3>Config</h3>
+				<form id="ttf-form">
+					<label class="checkbox">
+						<input type="checkbox" id="ttf-enabled">
+						Enabled
+					</label>
+					<label>
+						Threshold (failures)
+						<input type="number" id="ttf-threshold" min="1" max="100000">
+					</label>
+					<label>
+						Window (seconds)
+						<input type="number" id="ttf-window" min="1" max="86400">
+					</label>
+					<label>
+						Block duration (seconds)
+						<input type="number" id="ttf-block" min="1" max="604800">
+					</label>
+					<button type="submit">Save</button>
+				</form>
+				<h3>Currently tracked</h3>
+				<table id="tls-throttle-status">
+					<thead>
+						<tr>
+							<th>IP</th>
+							<th>Failures</th>
+							<th>Blocked</th>
+							<th>Blocked until</th>
+						</tr>
+					</thead>
+					<tbody id="tls-throttle-status-body">
+						<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</section>
+
 		<section class="view" id="view-logs" hidden>
 			<div class="view-list">
 				<h2>Logs</h2>

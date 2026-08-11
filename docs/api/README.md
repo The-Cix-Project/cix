@@ -39,6 +39,9 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | PUT | `/system/resolv` | Replace it -- takes effect immediately, no reboot |
 | GET | `/system/rolling-config` | The configured rolling-restart jitter window (`jitter_window_seconds`) |
 | PUT | `/system/rolling-config` | Set the jitter window -- 0 disables jitter, restart happens immediately |
+| GET | `/system/tls-throttle` | Per-source-IP throttling config for repeated failed HTTPS handshakes |
+| PUT | `/system/tls-throttle` | Partially update it -- fields omitted are left unchanged |
+| GET | `/system/tls-throttle/status` | Every source currently tracked for failed handshakes, live |
 | GET | `/system/ntp` | Upstream NTP server address list used to sync the host clock |
 | PUT | `/system/ntp` | Replace it |
 | GET | `/system/ntp/status` | Outcome of the most recent sync attempt |
@@ -228,6 +231,37 @@ PUT /v1/system/daemon-config
 Starts a second, independent listener on `https_port` (default `8443`), reusing the already-issued PKI `"host"` leaf certificate (see [PKI](#pki-a-ca-chain-and-issued-leaf-certificates) below) — `500` if no root CA has been bootstrapped yet (`POST /pki/ca`), since there's no certificate to serve TLS with. `http_enabled` and `https_enabled` can each be toggled off, but never both in the same request (`400`) — kanxeod must always have at least one live listener, since (installed) it runs as real PID 1 with no "restart" to fall back on. Every change here — port, network repoint, HTTP/HTTPS toggle — is live immediately and also persisted, so it survives a real reboot.
 
 Since kanxeod is PID 1 on an installed system, there is no way to reach it again over the network if it's ever pointed at an address you can't get to — double-check reachability of a new `management_network` (or a firewalled `https_port`) before relying on it as your only way in; physical console access (`docs/guides/installing.md`'s "Console login") is always the fallback.
+
+## Per-source-IP throttling for failed HTTPS handshakes (ADR-0134)
+
+```
+GET /v1/system/tls-throttle
+```
+
+```json
+{"enabled": true, "threshold": 20, "window_seconds": 60, "block_seconds": 300}
+```
+
+Found live, not designed speculatively: a sustained flood of failed HTTPS handshakes from an untrusting client (several hundred/minute, since this daemon deliberately never does HTTP keep-alive — every attempt is a brand-new TCP+TLS connection) had no peer IP in its own log line and no way to stop the daemon spending a real `accept4()`+`SSL_new()`+`SSL_accept()` attempt on every single one. A source that fails `threshold` handshakes within `window_seconds` is refused outright — a bare `close()`, before any allocation or TLS negotiation — on **both** the HTTPS and plain HTTP listeners, for `block_seconds`. One shared in-memory table, checked once per `accept4()` regardless of which listener it came in on.
+
+```
+PUT /v1/system/tls-throttle
+{"threshold": 10}
+```
+
+Partial update — fields omitted are left unchanged, same convention `PUT /system/daemon-config`/`PUT /pkg/repo-config` already use. `enabled` defaults `true`; disabling it stops all enforcement without losing the configured thresholds. Persisted (survives a restart); the live tracking table itself is not — the same "an in-flight thing the daemon restarts through is simply lost" posture every other transient daemon state already has.
+
+```
+GET /v1/system/tls-throttle/status
+```
+
+```json
+{"entries": [{"ip": "203.0.113.9", "fail_count": 24, "blocked": true, "blocked_until": 1786490300}]}
+```
+
+Every source currently tracked — live, read-only, in-memory state. `fail_count` is the count within the current rolling window; `blocked_until` is Unix seconds, `0` when not currently blocked. A clean, complete HTTP request (any status code — even a 404 proves the client speaks HTTP correctly) or a successful TLS handshake both reset a source's own count, so a client that had a handful of transient failures and then behaved normally isn't left one failure away from a block.
+
+**Loopback (`127.0.0.1`) is never throttled or tracked, deliberately** — `kanxeoctl`'s own default `--host=` is `127.0.0.1`, and since a block applies uniformly across both listeners, tripping it from loopback would lock out this daemon's own local admin access entirely, the same class of hazard as a firewall rule that can shut out its own operator. A genuinely hostile source is, by definition, never loopback.
 
 ## The box's own kernel routing table
 
@@ -1241,7 +1275,7 @@ The reverse of `GET /system/backup` — same shape, every field optional and ind
 - Package manager: only one install/hostbuild in flight at a time (dependency chains, and `POST /pkg/update-all`'s own successive calls, still serialize through that same single slot — see [Host + package updates](#host--package-updates) above); no version-constrained dependencies (any installed version satisfies a dependency); symlinks in a package's own `DESTDIR` output are skipped (regular files and directories only).
 - No scheduled/periodic trigger for `POST /system/update` or `POST /pkg/update-all` — both are on-demand, operator- or cron-invoked; no automatic "update then reboot" chaining.
 - No volume/bind-mount concept beyond small, content-inlined `files` (see [Per-container config files + sysctls](#per-container-config-files--sysctls) above) — a large binary asset or directory tree has no home in this model yet.
-- **A real, confirmed gap, found live on 192.168.15.95**: a failed HTTPS handshake (`log_tls_error()`, ADR-0126) logs only `"https handshake failed: <reason>"` — no peer IP, no port, no attempt count. A sustained flood of `certificate unknown`/`unknown CA` alerts (an untrusting client repeatedly hitting `:8443`, hundreds/minute) is fully visible in `GET /system/logs` but has no way to identify *which* client it's coming from, and at high enough volume it crowds out everything else in the log store's own rotation window. Not designed or built yet: capturing the peer's `getpeername()` address at TLS-accept time and including it in this log line (and, ideally, in every other per-connection log line this daemon already writes) would close this. See `docs/roadmap/ROADMAP.md` for what's actually scoped/built.
+- Per-connection log lines elsewhere in this daemon (the audit trail, container lifecycle events) still don't carry a peer IP the way `log_tls_error()` now does (ADR-0134) — closed for the one case that was actually flooding a real deployment's logs, not generalized to every log line this daemon writes.
 
 ## Why this file exists alongside `openapi.yaml`
 

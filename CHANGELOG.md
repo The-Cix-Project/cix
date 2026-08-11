@@ -2,6 +2,23 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 94 (done): per-source-IP throttling for repeated failed HTTPS handshakes (ADR-0134)
+
+Found live on 192.168.15.95, watched directly on the physical console: a sustained flood (500+/min) of `https handshake failed: sslv3 alert certificate unknown` -- an untrusting client repeatedly hitting `:8443`. The user asked for the peer IP to be logged and for throttling, explicitly requiring it be API-driven and configurable.
+
+#### Added
+- `daemon/src/connthrottle.c`/`connthrottle.h` (new module): in-memory, per-source-IP failure tracking (256-entry fixed table, not persisted) plus a persisted config (`enabled`/`threshold`/`window_seconds`/`block_seconds`, defaults `true`/20/60/300). `GET`/`PUT /v1/system/tls-throttle` (partial update, same convention `daemon-config`/`pkg/repo-config` already use), `GET /v1/system/tls-throttle/status` (live tracked-source list).
+- `accept_loop()`'s `accept4()` now captures the real peer address (previously discarded via `NULL`) and enforces a block -- a bare `close()`, before any allocation or TLS work -- uniformly on **both** listeners, the earliest possible point.
+- `kanxeoctl tls-throttle show|set|status`; a System > Server > TLS Throttle web dashboard page (config form + live status table).
+- **Loopback (`127.0.0.1`) is never throttled or tracked** -- found the hard way while writing this feature's own test: `kanxeoctl`'s own default `--host=` is `127.0.0.1`, and since a block applies uniformly across both listeners, tripping it from loopback would lock the daemon's own local admin access out entirely.
+
+#### Fixed
+- `log_tls_error()` (ADR-0126) now includes the peer IP in its log line -- previously just `"<context>: <reason>"`, no way to identify which client a flood was coming from.
+- A clean request resets a source's own failure count -- not just a successful TLS handshake, but any complete, well-formed HTTP request on either listener (`handle_client_event()`, right after a request is fully parsed, regardless of what it dispatches to). Without this, a source behaving well on one listener stayed one stale failure away from a block its own good behavior never got credit for -- found directly by the test's own step 10 failing before this was added.
+
+#### Verified
+- New `test/test_tls_throttle.c`: config GET/PUT round-trips and validates fields (an out-of-range value rejected without silently applying the others); real malformed-handshake bytes against the HTTPS listener trip a real block after `threshold` failures, from a genuinely distinct source (`127.0.0.2`, daemon bound to `0.0.0.0` -- `127.0.0.0/8` routes locally on Linux, no second host needed); the peer IP appears in `GET /system/logs`; the block refuses the plain HTTP listener too, while loopback stays completely unaffected; the block expires on its own; `enabled=false` genuinely disables enforcement under a sustained flood. Full clean rebuild (`-Wall -Werror`, zero warnings) + full regression sweep (39 test binaries) confirm zero regressions. Web dashboard verified with a real headless-browser session (Chromium + Puppeteer): the page renders with real API-fetched values, and a real click on Save round-trips a changed threshold.
+
 ### Part 93 (done): full documentation audit -- taxonomy compliance, accuracy fixes, three new guides, architecture.svg redrawn for real
 
 A second full, user-requested documentation audit (the first was Phase 30 parts 5-6): "fine tooth pick" accuracy across every document, explicit priority on the API docs, tracked via a real task list (one `TaskCreate`/`TaskUpdate` item per phase). The existing taxonomy (`docs/README.md`'s "Taxonomy and naming" section, `CLAUDE.md`'s Documentation Map) was already sound and confirmed compliant -- this was a compliance/drift-correction pass against it, plus closing real content gaps, not a redesign.

@@ -30,6 +30,9 @@ kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `daemon-config set [--port=N] [--https-port=N] [--enable-http] [--disable-http] [--enable-https] [--disable-https] [--management-network=NAME] [--bind-ip=A.B.C.D \| --clear-bind-ip]` | Live, no-restart change — only the fields given are touched. `bind_ip` (ADR-0068) is a dedicated second address on the management network's own bridge; `--clear-bind-ip` reverts to that network's own address |
 | `rolling-config show` | The configured rolling-restart jitter window (`jitter_window_seconds`) used by `run --follow-rolling` (ADR-0124) |
 | `rolling-config set --jitter-window-seconds=N` | Set the jitter window — `0` disables jitter (restart happens immediately on every rolling reconcile) |
+| `tls-throttle show` | Per-source-IP throttling config for repeated failed HTTPS handshakes (ADR-0134) |
+| `tls-throttle set [--enabled \| --disabled] [--threshold=N] [--window-seconds=N] [--block-seconds=N]` | Partial update — only the fields given are touched. `threshold` failures within `window-seconds` blocks a source, on both listeners, for `block-seconds`; loopback is never throttled |
+| `tls-throttle status` | Every source currently tracked for failed handshakes, live (in-memory, not persisted) |
 | `iso status` | Status of the most recent server-side installer ISO build |
 | `iso build [--disk=DEV] [--ip=A.B.C.D] [--prefix=N] [--gateway=A.B.C.D] [--interface=IFNAME] [--wait]` | Assemble a fresh installer ISO server-side; all flags optional (unset fields fall back to the daemon's own defaults) — `--wait` polls until the build finishes instead of returning immediately |
 | `routes` | The box's own real kernel IPv4 routing table (ADR-0066) — the only way to see this on a real install, no SSH/general shell |

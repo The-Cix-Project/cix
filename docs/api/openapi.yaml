@@ -888,6 +888,86 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/tls-throttle:
+    get:
+      summary: >
+        Per-source-IP throttling config for repeated failed HTTPS handshakes
+        (ADR-0134).
+      operationId: getSystemTlsThrottle
+      responses:
+        "200":
+          description: Current throttle config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TlsThrottleConfig"
+    put:
+      summary: Partially update the TLS throttle config (ADR-0134)
+      description: >
+        Fields omitted from the body are left unchanged, same convention
+        GET/PUT /system/daemon-config and PUT /pkg/repo-config already use.
+        A source that fails `threshold` HTTPS handshakes within
+        `window_seconds` is refused outright -- on both the HTTPS and plain
+        HTTP listeners -- for `block_seconds`. Loopback (127.0.0.1) is never
+        throttled, so this daemon's own local admin access can't be locked
+        out by a hostile source sharing the box.
+      operationId: putSystemTlsThrottle
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                threshold:
+                  type: integer
+                  minimum: 1
+                  maximum: 100000
+                window_seconds:
+                  type: integer
+                  minimum: 1
+                  maximum: 86400
+                block_seconds:
+                  type: integer
+                  minimum: 1
+                  maximum: 604800
+      responses:
+        "200":
+          description: Updated throttle config (same shape as GET)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TlsThrottleConfig"
+        "400":
+          description: A given field is out of range, or the JSON body is malformed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /system/tls-throttle/status:
+    get:
+      summary: >
+        Every source currently tracked for failed HTTPS handshakes (ADR-0134)
+        -- live, in-memory state, not persisted, forgotten across a daemon
+        restart the same way any other in-flight tracking this daemon keeps
+        is.
+      operationId: getSystemTlsThrottleStatus
+      responses:
+        "200":
+          description: Currently tracked sources
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries]
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TlsThrottleStatusEntry"
+
   /system/ntp:
     get:
       summary: Upstream NTP server address list used to sync the host clock (ADR-0110)
@@ -6954,6 +7034,38 @@ components:
           description: >
             Default 60. 0 disables jitter -- a follow_rolling container
             restarts immediately when its image's rolling version advances.
+
+    TlsThrottleConfig:
+      type: object
+      required: [enabled, threshold, window_seconds, block_seconds]
+      properties:
+        enabled:
+          type: boolean
+          description: Default true.
+        threshold:
+          type: integer
+          description: Default 20. Failures within window_seconds before a source is blocked.
+        window_seconds:
+          type: integer
+          description: Default 60. The rolling window threshold is counted over.
+        block_seconds:
+          type: integer
+          description: Default 300. How long a tripped source stays blocked.
+
+    TlsThrottleStatusEntry:
+      type: object
+      required: [ip, fail_count, blocked, blocked_until]
+      properties:
+        ip:
+          type: string
+        fail_count:
+          type: integer
+          description: Failures counted within the current rolling window.
+        blocked:
+          type: boolean
+        blocked_until:
+          type: integer
+          description: Unix seconds the block lifts at, or 0 if not currently blocked.
 
     PkgInstallRequest:
       type: object
