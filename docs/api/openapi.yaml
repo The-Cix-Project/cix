@@ -1056,6 +1056,89 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /syslog/targets:
+    get:
+      summary: List all registered syslog forward targets (ADR-0127)
+      operationId: listSyslogTargets
+      responses:
+        "200":
+          description: Target list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [targets]
+                properties:
+                  targets:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SyslogTarget"
+    post:
+      summary: >
+        Register a running container as an optional, redundant syslog
+        forward target (logging epic Part 2, ADR-0127, mirrors POST
+        /ntp/servers). Every subsequent container-sourced log line
+        (source="container" only) is also sent to it as a real RFC 3164
+        UDP datagram -- alongside, never instead of, the consolidated
+        log store (GET /system/logs), which stays the one source of
+        truth this API and the web UI ever read from. Pure bookkeeping,
+        same as NTP server registration: no pid/pidfd, the target's own
+        live IP is resolved fresh from the registry at every send,
+        never cached here. A send failure is silently dropped -- UDP
+        syslog has never had delivery guarantees.
+      operationId: createSyslogTarget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SyslogTargetCreateRequest"
+      responses:
+        "201":
+          description: Registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SyslogTarget"
+        "404":
+          description: No such container, or it exists but isn't running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: This container is already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "400":
+          description: Too many registered syslog forward targets
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /syslog/targets/{container}:
+    delete:
+      summary: Unregister a syslog forward target (does not touch the container itself)
+      operationId: deleteSyslogTarget
+      parameters:
+        - name: container
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Unregistered
+        "404":
+          description: No binding for this container
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /system/logs:
     get:
       summary: Tail the consolidated log (kernel dmesg + kanxeod diagnostics + per-request audit trail + every container's own stdout/stderr, ADR-0070/ADR-0126)
@@ -6429,6 +6512,21 @@ components:
           description: Name of an existing, running container (see /containers) to register as a time source.
 
     NtpServerBinding:
+      type: object
+      required: [container]
+      properties:
+        container:
+          type: string
+
+    SyslogTargetCreateRequest:
+      type: object
+      required: [container]
+      properties:
+        container:
+          type: string
+          description: Name of an existing, running container (see /containers) to register as a syslog forward target.
+
+    SyslogTarget:
       type: object
       required: [container]
       properties:

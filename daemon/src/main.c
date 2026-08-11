@@ -10,6 +10,7 @@
 #include "ping.h"
 #include "resolv.h"
 #include "swap.h"
+#include "syslogfwd.h"
 #include "dns.h"
 #include "ldap.h"
 #include "exec.h"
@@ -181,6 +182,7 @@ static char RESOLV_CONF_PATH[PATH_MAX];
  * records/servers pair already uses. */
 static char NTP_STATE_PATH[PATH_MAX];
 static char NTP_SERVERS_STATE_PATH[PATH_MAX];
+static char SYSLOGFWD_STATE_PATH[PATH_MAX];
 
 /* Computes every path derived from g_base_dir -- called once, right
  * after argv parsing (so --data-dir= has already been applied) and
@@ -235,6 +237,7 @@ static void init_base_dir_paths(void)
 	snprintf(RESOLV_CONF_PATH, sizeof(RESOLV_CONF_PATH), "%s/resolv.conf", g_base_dir);
 	snprintf(NTP_STATE_PATH, sizeof(NTP_STATE_PATH), "%s/ntp.conf", g_base_dir);
 	snprintf(NTP_SERVERS_STATE_PATH, sizeof(NTP_SERVERS_STATE_PATH), "%s/ntp_servers.json", g_base_dir);
+	snprintf(SYSLOGFWD_STATE_PATH, sizeof(SYSLOGFWD_STATE_PATH), "%s/syslog_targets.json", g_base_dir);
 }
 /*
  * Backoff cap and stability-reset threshold for the crash-restart
@@ -430,6 +433,7 @@ static int set_disk_quota(const char *base_path, uint32_t projid, long long quot
 #define LDAP_USERS_PREFIX "/v1/ldap/users/"
 #define LDAP_SSH_TARGETS_PREFIX "/v1/ldap/ssh-targets/"
 #define NTP_SERVERS_PREFIX "/v1/ntp/servers/"
+#define SYSLOG_TARGETS_PREFIX "/v1/syslog/targets/"
 #define PKI_CERTS_PREFIX "/v1/pki/certs/"
 #define PKG_PREFIX "/v1/pkg/"
 #define PKG_RECIPES_PREFIX "/v1/pkg/recipes/"
@@ -3222,6 +3226,101 @@ static void handle_ntp_server_delete(int fd, const char *name)
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
+static void respond_syslogfwd_error(int fd, enum syslogfwd_error err)
+{
+	switch (err) {
+	case SYSLOGFWD_ERR_PERSIST_FAILED:
+		respond_error(fd, 500, "Internal Server Error", "could not persist syslog_targets.json");
+		break;
+	case SYSLOGFWD_ERR_DUPLICATE:
+		respond_error(fd, 409, "Conflict", "this container is already registered");
+		break;
+	case SYSLOGFWD_ERR_FULL:
+		respond_error(fd, 400, "Bad Request", "too many registered syslog forward targets");
+		break;
+	case SYSLOGFWD_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such registration");
+		break;
+	case SYSLOGFWD_ERR_CONTAINER_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such container");
+		break;
+	case SYSLOGFWD_ERR_CONTAINER_NOT_RUNNING:
+		respond_error(fd, 404, "Not Found", "no such running container");
+		break;
+	case SYSLOGFWD_OK:
+		break;
+	}
+}
+
+/* POST/GET/DELETE /v1/syslog/targets (logging epic Part 2, ADR-0127):
+ * registering a running container (typically syslog-1/syslog-2, a real
+ * syslogd such as sysklogd.recipe) as an external forward target for
+ * every container-sourced log line -- mirrors handle_ntp_server_
+ * create/list/delete's own REST shape exactly. */
+static void handle_syslog_target_create(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *container_name;
+	enum syslogfwd_error serr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	container_name = json_as_string(json_object_get(root, "container"));
+	if (container_name == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "container missing");
+		return;
+	}
+
+	serr = syslogfwd_target_register(container_name);
+	if (serr != SYSLOGFWD_OK) {
+		json_free(root);
+		respond_syslogfwd_error(fd, serr);
+		return;
+	}
+
+	/* container_name still points into root -- build the response
+	 * before freeing it, matching handle_ntp_server_create()'s own
+	 * use-after-free-avoidance ordering. */
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "container");
+	jw_str(&w, container_name);
+	jw_obj_close(&w);
+	json_free(root);
+	respond_json(fd, 201, "Created", &w);
+	jw_free(&w);
+}
+
+static void handle_syslog_target_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "targets");
+	syslogfwd_target_write_json_list(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_syslog_target_delete(int fd, const char *name)
+{
+	enum syslogfwd_error serr = syslogfwd_target_unregister(name);
+
+	if (serr != SYSLOGFWD_OK) {
+		respond_syslogfwd_error(fd, serr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
 /*
  * GET/PUT /v1/system/time (task #752): the host's real current clock,
  * and a manual override -- an operator-facing escape hatch alongside
@@ -4613,6 +4712,10 @@ static void register_container_output(struct registry_entry *entry)
  * flush_partial=1 at EOF so a container's final line (its very last
  * write before exit, which may have no trailing newline at all) isn't
  * silently dropped.
+ *
+ * Each flushed line is also fanned out to syslogfwd_send() (logging
+ * epic Part 2, ADR-0127) -- a no-op unless at least one syslog forward
+ * target is registered, so this costs nothing in the common case.
  */
 static void forward_container_output_to_logstore(struct conn *cc, const char *data, size_t len,
                                                    int flush_partial)
@@ -4623,8 +4726,10 @@ static void forward_container_output_to_logstore(struct conn *cc, const char *da
 		if (data[i] == '\n' ||
 		    cc->output_line_len >= (int)sizeof(cc->output_line_buf) - 1) {
 			cc->output_line_buf[cc->output_line_len] = '\0';
-			if (cc->output_line_len > 0)
+			if (cc->output_line_len > 0) {
 				logstore_write_container(cc->entry->name, "info", "%s", cc->output_line_buf);
+				syslogfwd_send(cc->entry->name, "info", cc->output_line_buf);
+			}
 			cc->output_line_len = 0;
 			if (data[i] == '\n')
 				continue;
@@ -4635,6 +4740,7 @@ static void forward_container_output_to_logstore(struct conn *cc, const char *da
 	if (flush_partial && cc->output_line_len > 0) {
 		cc->output_line_buf[cc->output_line_len] = '\0';
 		logstore_write_container(cc->entry->name, "info", "%s", cc->output_line_buf);
+		syslogfwd_send(cc->entry->name, "info", cc->output_line_buf);
 		cc->output_line_len = 0;
 	}
 }
@@ -7173,8 +7279,8 @@ static void handle_delete(int fd, const char *name)
 
 	/*
 	 * Unconditional, matching the disk cleanup above -- a crashed-but-
-	 * still-defined container releasing its own DNS/LDAP/PKI/NTP/SSH-
-	 * target ownership on DELETE is exactly as correct as a live one
+	 * still-defined container releasing its own DNS/LDAP/PKI/NTP/SSH/
+	 * syslog-target ownership on DELETE is exactly as correct as a live one
 	 * doing so; there is no reason a still-registered DNS record or
 	 * LDAP SSH-target sync should outlive a definition that's being
 	 * permanently removed just because the container happened to be
@@ -7187,6 +7293,7 @@ static void handle_delete(int fd, const char *name)
 	pki_cert_forget_owner(name);
 	ntp_server_forget(name);
 	ldap_ssh_target_forget(name);
+	syslogfwd_target_forget(name);
 
 	/*
 	 * Unconditional, a no-op if this name never had a restart:"always"
@@ -10902,6 +11009,23 @@ static void dispatch(int fd, const struct http_request *req)
 			return;
 		}
 	}
+	if (strcmp(req->path, "/v1/syslog/targets") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_syslog_target_list(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_syslog_target_create(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strncmp(req->path, SYSLOG_TARGETS_PREFIX, strlen(SYSLOG_TARGETS_PREFIX)) == 0) {
+		name = req->path + strlen(SYSLOG_TARGETS_PREFIX);
+		if (name[0] != '\0' && strcmp(req->method, "DELETE") == 0) {
+			handle_syslog_target_delete(fd, name);
+			return;
+		}
+	}
 	if (strcmp(req->path, "/v1/system/swap") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_swap_get(fd);
@@ -13462,6 +13586,8 @@ int main(int argc, char **argv)
 	if (dns_init(DNS_RECORDS_STATE_PATH, DNS_SERVERS_STATE_PATH) != 0)
 		return 1;
 	if (ntp_init(NTP_STATE_PATH, NTP_SERVERS_STATE_PATH) != 0)
+		return 1;
+	if (syslogfwd_init(SYSLOGFWD_STATE_PATH) != 0)
 		return 1;
 	if (ldap_init(LDAP_SERVERS_STATE_PATH) != 0)
 		return 1;

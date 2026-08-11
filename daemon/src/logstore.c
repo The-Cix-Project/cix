@@ -68,6 +68,11 @@ static int level_rank(const char *level)
 	return 6;
 }
 
+int logstore_level_severity(const char *level)
+{
+	return level_rank(level);
+}
+
 static int g_kmsg_fd = -1;
 
 static FILE *g_current_fp;

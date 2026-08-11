@@ -38,6 +38,9 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | GET | `/ntp/servers` | List all registered NTP server bindings |
 | POST | `/ntp/servers` | Register a running container as an available internal NTP time source |
 | DELETE | `/ntp/servers/{container}` | Unregister an NTP server binding |
+| GET | `/syslog/targets` | List all registered syslog forward targets |
+| POST | `/syslog/targets` | Register a running container as an optional syslog forward target |
+| DELETE | `/syslog/targets/{container}` | Unregister a syslog forward target |
 | GET | `/containers` | List all containers this daemon knows about |
 | POST | `/containers` | Create and start a container |
 | GET | `/containers/{name}` | Inspect one container |
@@ -500,6 +503,31 @@ PUT /v1/system/time
 ```
 
 Real `clock_settime(CLOCK_REALTIME, ...)` -- immediate, host-wide effect, no reboot needed. Independent of NTP sync, which will overwrite it again at its own next scheduled or on-demand attempt.
+
+## Syslog forward targets (ADR-0127)
+
+`GET /system/logs` (below) stays the one source of truth this API and the web UI ever read from -- registering a syslog forward target is purely an optional, additional side channel for operators who already have real external syslog tooling and want this platform's container logs to reach it too:
+
+```
+POST /v1/syslog/targets
+{"container": "syslog1"}
+```
+
+Mirrors `POST /v1/ntp/servers` exactly: pure bookkeeping, no pid/pidfd, `404` if the named container doesn't exist or isn't currently running, `409` if already registered. Once registered, every subsequent container-sourced log line (`source="container"` only -- kernel/kanxeod/audit entries are never forwarded) is also sent to it as a real RFC 3164 UDP datagram (`local0` facility; `HOSTNAME` is the originating container's own name; `TAG` is always `kanxeod`) -- fire-and-forget, silently dropped on any failure, since `GET /system/logs` already holds the durable, replayable copy of everything ever sent. A registered target never receives its own captured output forwarded back to itself.
+
+A real `sysklogd` reference recipe (`sysklogd.recipe`, an unmodified upstream build) is this platform's own standard syslog-receiving container, the same "real protocol server as an ordinary containerized workload" precedent `dnsmasq.recipe`/`chrony.recipe` already established:
+
+```
+POST /v1/containers
+{
+  "name": "syslog1",
+  "image": "syslog_server",
+  "cmd": ["/usr/sbin/syslogd", "-F", "-K", "-n", "-P", "/run/syslogd.pid", "-C", "/run/syslogd.cache", "-f", "/etc/syslog.conf"],
+  "networks": ["management"]
+}
+```
+
+`-K` disables kernel-log reading (not meaningful inside a container), `-n` skips DNS lookups for senders (this project's own hostname-resolution caveats apply the same way here as everywhere else, see the NTP section above), `-P`/`-C` point at `/run` rather than the traditional `/var/run` (this platform's own minimal images have no `/var/run`, the same class of gap `chrony.recipe`'s own `--with-pidfile=/run/chronyd.pid` already worked around). Received messages land in `/var/log/messages` inside the container's own persistent overlay upperdir (unlike `/run`, never reset on restart) -- any real external syslog tooling pointed at this container from outside sees the same standard, durable log file it would expect from any other syslog receiver.
 
 ### A container can already pull the full DNS record set itself
 

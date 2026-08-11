@@ -128,6 +128,18 @@ void logstore_write(const char *source, const char *level, const char *fmt, ...)
 void logstore_write_container(const char *container, const char *level, const char *fmt, ...)
 	__attribute__((format(printf, 3, 4)));
 
+/*
+ * Maps a level name (any of the real syslog severity names this store
+ * already accepts, see logstore_set_min_level()'s own doc comment) to
+ * its RFC 5424 numeric severity (0=emerg .. 7=debug, lower is more
+ * severe) -- the exact scale syslogfwd.c's RFC 3164 PRI field needs.
+ * A thin public wrapper over this file's own internal level_rank(),
+ * so that scale is computed in exactly one place rather than a second
+ * copy living in syslogfwd.c. Unrecognized input ranks as INFO (6),
+ * same permissive-by-construction posture level_rank() already has.
+ */
+int logstore_level_severity(const char *level);
+
 enum logstore_error logstore_set_max_bytes(int64_t max_bytes);
 int64_t logstore_max_bytes(void);
 

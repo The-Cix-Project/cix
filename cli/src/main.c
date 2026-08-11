@@ -225,6 +225,13 @@ static void print_usage(FILE *out)
 	        "               available internal NTP time source (mirrors dns/ldap server)\n"
 	        "  ntp server ls\n"
 	        "  ntp server unregister CONTAINER\n"
+	        "  syslog target register --container=NAME  -- forwards every container-\n"
+	        "               sourced log line to this running container (e.g. syslog-1/\n"
+	        "               syslog-2 running sysklogd) as a real RFC 3164 UDP syslog\n"
+	        "               datagram, alongside (never instead of) the consolidated log\n"
+	        "               store 'logs' below already reads from (ADR-0127)\n"
+	        "  syslog target ls\n"
+	        "  syslog target unregister CONTAINER\n"
 	        "  logs [--source=kernel|kanxeod|audit|container] [--level=...] [--container=NAME]\n"
 	        "               [--regex=PATTERN] [--tail=N] [--since=UNIXTS]\n"
 	        "               -- the consolidated log (kernel dmesg + kanxeod's own\n"
@@ -1617,6 +1624,136 @@ static int cmd_ntp(const struct kx_client *c, int json_mode, int argc, char **ar
 		return cmd_ntp_server(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "kanxeoctl: unknown ntp subcommand '%s'\n", sub);
+	return 2;
+}
+
+static void fmt_syslog_target_line(const struct json_value *v)
+{
+	const char *container = json_str_field(v, "container");
+
+	printf("%s\n", container);
+}
+
+static void fmt_syslog_target_list(const struct json_value *v)
+{
+	const struct json_value *targets = json_object_get(v, "targets");
+	size_t i;
+
+	if (targets == NULL || targets->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < targets->u.array.count; i++)
+		fmt_syslog_target_line(targets->u.array.items[i]);
+}
+
+static int cmd_syslog_target_register(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *container = NULL;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--container=", 12) == 0)
+			container = argv[i] + 12;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown syslog target register option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (container == NULL) {
+		fprintf(stderr, "usage: kanxeoctl syslog target register --container=NAME\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "container");
+	jw_str(&w, container);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/syslog/targets", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_syslog_target_line);
+}
+
+static int cmd_syslog_target_ls(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/syslog/targets", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_syslog_target_list);
+}
+
+static int cmd_syslog_target_unregister(const struct kx_client *c, int json_mode, int argc,
+                                         char **argv)
+{
+	struct kx_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: syslog target unregister requires a container name\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/syslog/targets/%s", argv[0]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static int cmd_syslog_target(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr,
+		        "usage: kanxeoctl syslog target register --container=NAME\n"
+		        "       kanxeoctl syslog target ls\n"
+		        "       kanxeoctl syslog target unregister CONTAINER\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "register") == 0)
+		return cmd_syslog_target_register(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "ls") == 0)
+		return cmd_syslog_target_ls(c, json_mode);
+	if (strcmp(sub, "unregister") == 0)
+		return cmd_syslog_target_unregister(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown syslog target subcommand '%s'\n", sub);
+	return 2;
+}
+
+static int cmd_syslog(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr,
+		        "usage: kanxeoctl syslog target register --container=NAME  -- forward every\n"
+		        "               container-sourced log line to this running container as a real\n"
+		        "               RFC 3164 UDP syslog datagram (e.g. syslog-1/syslog-2 running\n"
+		        "               sysklogd), alongside (never instead of) the consolidated log\n"
+		        "               store every other 'kanxeoctl logs' call already reads from\n"
+		        "               (ADR-0127)\n"
+		        "       kanxeoctl syslog target ls\n"
+		        "       kanxeoctl syslog target unregister CONTAINER\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "target") == 0)
+		return cmd_syslog_target(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown syslog subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -7042,6 +7179,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_resolv(client, json_mode, argc, argv);
 	if (strcmp(cmd, "ntp") == 0)
 		return cmd_ntp(client, json_mode, argc, argv);
+	if (strcmp(cmd, "syslog") == 0)
+		return cmd_syslog(client, json_mode, argc, argv);
 	if (strcmp(cmd, "time") == 0)
 		return cmd_time(client, json_mode, argc, argv);
 	if (strcmp(cmd, "ps") == 0)
@@ -7150,7 +7289,7 @@ static const char *const SHELL_COMMANDS[] = {
 	"pause",  "ping",      "pkg",           "pki",      "ps",        "quit",      "reboot",
 	"resolv",
 	"restore", "rm",       "rolling-config", "routes",        "run",      "shutdown",  "site",
-	"start",  "stats",     "stop",          "swap",     "time",      "unpause",   "update",
+	"start",  "stats",     "stop",          "swap",     "syslog",    "time",      "unpause",   "update",
 	NULL
 };
 

@@ -2,6 +2,23 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 85 (done): logging/web-UI epic Part 2 -- optional syslog-1/syslog-2 forward targets
+
+Second of the logging/web-UI epic (Part 1 was ADR-0126). The consolidated log store stays the one source of truth the REST API and web UI ever read from -- `syslog-1`/`syslog-2` are an optional, redundant *forward* target for operators who want standard external syslog tooling on top, never a second store the platform itself depends on. See [ADR-0127](docs/adr/0127-syslog-forward-targets.md).
+
+#### Added
+- `daemon/include/syslogfwd.h`/`daemon/src/syslogfwd.c` (new module): `POST`/`GET`/`DELETE /v1/syslog/targets` registers a running container as a forward target, mirroring `ntp_server_register()`/`_unregister()`/`_forget()` almost exactly -- pure bookkeeping, a target's live IP resolved fresh from the registry at every send. `syslogfwd_target_forget()` wired into the same container-delete cleanup path as every other server/target registration. Every container-sourced log line (`forward_container_output_to_logstore()`, ADR-0126) is now also sent to every registered, currently-running target as a real RFC 3164 UDP datagram (`local0` facility, HOSTNAME=originating container, TAG=`kanxeod`) -- fire-and-forget, silently dropped on failure, since `logstore.c` already holds the durable copy.
+- `logstore_level_severity()` (`logstore.c`/`.h`): a thin public wrapper over the store's own existing internal severity-ranking logic, reused for the RFC 3164 PRI field rather than a second copy of the same mapping.
+- `cli/src/main.c`: `kanxeoctl syslog target register --container=NAME`, `syslog target ls`, `syslog target unregister CONTAINER`.
+- `pkg/recipes/sysklogd/2.7.0/build.sh`: a real, unmodified upstream syslogd (troglobit/sysklogd fork) as the reference receiver recipe for `syslog-1`/`syslog-2`, mirroring `dnsmasq.recipe`/`chrony.recipe`'s own "real protocol server as an ordinary containerized workload" precedent.
+- `test/test_syslogfwd.c` + `test/syslog_recv_child.c`: registration bookkeeping mirrors `test_ntp.c`'s own coverage, plus a genuine wire-level proof -- a real receiver container (binding real UDP `:514` inside its own netns) confirmed, via its own transparently-captured stdout, to have received a well-formed datagram from a real sender container.
+
+#### Fixed
+- **TCC/glibc `<regex.h>` friction, again**: `sysklogd`'s own `syslogd.c`/`socket.c` hit the exact same VLA-in-prototype parse failure ADR-0126 already found and fixed in this project's own `logstore.c` -- fixed identically via `CFLAGS=-D__STDC_NO_VLA__=1` at build time (no source patch, since this is unmodified upstream).
+
+#### Verified
+- Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (37 test binaries) confirms zero regressions.
+
 ### Part 84 (done): logging/web-UI epic Part 1 -- transparent container log capture into the consolidated log store
 
 First of a multi-part logging/web-UI epic, kicked off by the user's request for containers' stdout/stderr to be captured transparently into a common logging backend with regex/level/container filters, plus an optional redundant syslog-1/syslog-2 forward target -- see [ADR-0126](docs/adr/0126-transparent-container-log-capture.md) for the two design questions (where container logs live; how a non-API syslog receiver fits "100% API driven") worked through with the user before implementation.
