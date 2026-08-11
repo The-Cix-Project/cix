@@ -9,7 +9,7 @@ This directory holds every durable, non-code artifact describing Kanxeo: why it 
 | [`adr/`](adr/) | *Why* a specific, significant, hard-to-reverse engineering decision was made the way it was — reasoning and alternatives, not implementation detail | [`adr/README.md`](adr/README.md) |
 | [`api/`](api/) | The REST API contract, both as data (OpenAPI) and as a human-readable walkthrough | [`api/openapi.yaml`](api/openapi.yaml) (authoritative), [`api/README.md`](api/README.md) (narrative) |
 | [`architecture/`](architecture/) | A visual map of the system's components and how they connect, as of the most recently reflected phase | [`architecture/architecture.svg`](architecture/architecture.svg) |
-| [`guides/`](guides/) | Task-oriented operator/user instructions — how to build, install, update, write a recipe, and use the CLI or web dashboard | [`guides/README.md`](guides/README.md) |
+| [`guides/`](guides/) | Task-oriented operator/user instructions — how to build, install, update, administer, network, secure, or write a recipe for Kanxeo | [`guides/README.md`](guides/README.md) |
 
 Two more project documents live outside `docs/` entirely, at the repository root, because they're read before anything under `docs/` is: [`CLAUDE.md`](../CLAUDE.md) (living instructions for working in this repository — rules, conventions, environment facts) and [`CHANGELOG.md`](../CHANGELOG.md) (the chronological record of every change, grouped by roadmap phase). The root [`README.md`](../README.md) is the project's own front door — what Kanxeo is, a quickstart pointer — and links back into every directory listed above rather than repeating their content (in particular, it does not carry its own phase-status table — that's `roadmap/ROADMAP.md`'s job alone). A third file, [`../pkg/recipes/README.md`](../pkg/recipes/README.md), sits next to the recipe catalog itself rather than under `docs/`, since a recipe author is already looking at that directory — it does no more than point at [`guides/writing-recipes.md`](guides/writing-recipes.md).
 
@@ -20,7 +20,7 @@ Two more project documents live outside `docs/` entirely, at the repository root
 - **"Why is it built *this* way and not some other way?"** → [`adr/`](adr/) — check the index for the specific decision first; if none exists, the choice was either not yet significant enough to record or genuinely undecided.
 - **"What does the API actually accept and return?"** → [`api/openapi.yaml`](api/openapi.yaml) is the ground truth; [`api/README.md`](api/README.md) is the same information organized for reading start to finish.
 - **"What talks to what, at a glance?"** → [`architecture/architecture.svg`](architecture/architecture.svg).
-- **"How do I actually build/install/update Kanxeo, or write a recipe?"** → [`guides/`](guides/) — check the index for the specific task first.
+- **"How do I actually build/install/update/administer Kanxeo, or write a recipe?"** → [`guides/`](guides/) — check the index for the specific task first.
 - **"What changed recently, and why?"** → [`../CHANGELOG.md`](../CHANGELOG.md), newest entries first.
 - **"How do I work in this repository — rules, conventions, known environment quirks?"** → [`../CLAUDE.md`](../CLAUDE.md).
 
