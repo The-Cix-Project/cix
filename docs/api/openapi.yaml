@@ -3160,6 +3160,117 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /pkg/repo-config:
+    get:
+      summary: >
+        The currently configured recipe-sync source (ADR-0121, Part 2 of the pkg/
+        redesign). auth_token itself is never echoed back -- only a derived
+        auth_token_set boolean, the same "never round-trip a secret" posture as
+        every other credential this API handles.
+      operationId: getPkgRepoConfig
+      responses:
+        "200":
+          description: Current repo config (repo_url is empty when nothing is configured yet)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgRepoConfig"
+    put:
+      summary: >
+        Partially updates the configured recipe repo: any field omitted from the
+        request body leaves that setting unchanged. An explicit "auth_token": ""
+        is the one way to clear an already-set token; omitting auth_token entirely
+        leaves whatever token (if any) is already stored. Changing
+        sync_interval_seconds re-arms the periodic sync timer immediately (0
+        disables it) -- no daemon restart needed.
+      operationId: putPkgRepoConfig
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                repo_url:
+                  type: string
+                repo_kind:
+                  type: string
+                  enum: [gitea, github, gitlab]
+                ref:
+                  type: string
+                  description: Branch/tag to fetch; defaults to "master" if never set
+                auth_token:
+                  type: string
+                  description: Write-only; "" clears an existing token, omitted leaves it unchanged
+                sync_interval_seconds:
+                  type: integer
+                  description: 0 disables periodic sync (default); positive re-arms a periodic timer
+      responses:
+        "200":
+          description: Updated repo config (same shape as GET)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgRepoConfig"
+        "400":
+          description: repo_kind is not one of gitea/github/gitlab
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Validated but persisting the config to disk failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /pkg/sync:
+    post:
+      summary: >
+        Starts an async fetch-and-merge of the configured repo's recipes (ADR-0121).
+        Recipes only -- never package artifacts (that's Part 3's own separate
+        cache/fetch mechanism). Merge/additive: an already-known (name,version) is
+        counted as skipped, never overwritten or deleted (recipe versions stay
+        immutable, ADR-0107) -- a sync can never discard a recipe a host already
+        has. 202, poll GET /pkg/sync for the outcome.
+      operationId: pkgSync
+      responses:
+        "202":
+          description: Sync started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgSyncStatus"
+        "400":
+          description: No repo configured yet (PUT /pkg/repo-config first)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A sync is already in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Spawning/tracking the fetch subprocess failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      summary: The most recent (or currently running) sync's status.
+      operationId: getPkgSyncStatus
+      responses:
+        "200":
+          description: Sync status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgSyncStatus"
+
   /pkg/install:
     post:
       summary: >
@@ -6130,6 +6241,51 @@ components:
             content:
               type: string
               description: The full text of the build.sh file, never sourced/executed by the daemon.
+
+    PkgRepoConfig:
+      type: object
+      required: [repo_url, repo_kind, ref, auth_token_set, sync_interval_seconds]
+      properties:
+        repo_url:
+          type: string
+          description: Empty when no repo has ever been configured on this host.
+        repo_kind:
+          type: string
+          enum: [gitea, github, gitlab]
+        ref:
+          type: string
+          description: Branch/tag fetched on sync; "master" until explicitly set otherwise.
+        auth_token_set:
+          type: boolean
+          description: Whether an auth token is currently stored -- the token itself is never returned.
+        sync_interval_seconds:
+          type: integer
+          description: 0 means periodic sync is disabled (the default) -- only manual POST /pkg/sync runs.
+
+    PkgSyncStatus:
+      type: object
+      required: [state, added, skipped]
+      properties:
+        state:
+          type: string
+          enum: [never, running, success, failed]
+        last_attempt:
+          type: integer
+          nullable: true
+          description: Unix epoch seconds the most recent sync was started; null if one has never run.
+        added:
+          type: integer
+          description: Recipe versions newly added by the most recent completed sync.
+        skipped:
+          type: integer
+          description: >
+            Recipe versions the most recent completed sync found already present
+            locally (merge/additive semantics -- ADR-0107 immutability means these
+            are never overwritten, only counted).
+        error:
+          type: string
+          nullable: true
+          description: Set when state is "failed"; also non-null if some recipes failed to parse even on an otherwise-successful sync.
 
     PkgInstallRequest:
       type: object

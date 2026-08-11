@@ -110,6 +110,10 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | POST | `/pkg/recipes` | Publish a new recipe version — immutable once published, 409 if this exact (name,version) already exists |
 | GET | `/pkg/recipes/{name}` | One recipe version's full detail, including its raw `build.sh` text; `?version=` selects a specific one, omitted resolves to the highest available |
 | DELETE | `/pkg/recipes/{name}` | Remove recipe version(s) (does not affect anything already installed via it); `?version=` removes just that one, omitted removes every version |
+| GET | `/pkg/repo-config` | The configured recipe-sync source (ADR-0121); `auth_token` itself is never returned |
+| PUT | `/pkg/repo-config` | Partially update the configured recipe repo — fields omitted from the body are left unchanged |
+| POST | `/pkg/sync` | Start an async fetch-and-merge of the configured repo's recipes (async — returns immediately) |
+| GET | `/pkg/sync` | The most recent (or currently running) sync's status |
 | POST | `/pkg/install` | Start installing a package (async — returns immediately) |
 | POST | `/pkg/update-all` | Start an upgrade for the first installed package whose recipe has drifted |
 | POST | `/pkg/hostbuild` | Start a hostbuild job — build a standalone artifact instead of merging into an image |
@@ -929,6 +933,15 @@ POST /v1/pkg/recipes
 ```
 
 `content` is validated (must parse, and its own `pkg_name=`/`pkg_version=` must equal `name` and the version this call actually publishes) *before* anything on disk changes — `400` on a mismatch or a recipe that fails to parse. Unlike the old flat-file layout, publishing an already-existing `(name, version)` pair is `409 Conflict`, not a silent overwrite — fixing a mistake means bumping `pkg_version=` and publishing again. `204` on success. `GET /v1/pkg/recipes/{name}` returns one recipe version's full detail (including its raw `build.sh` text and a `created_at` timestamp, unlike the list view's metadata-only shape) — powers the web dashboard's per-package Recipe tab; an optional `?version=` selects a specific published version, omitted resolves to the highest available. `DELETE /v1/pkg/recipes/{name}` removes recipe version(s) — `?version=` removes just that one, leaving any other published versions of `name` intact; omitted removes every version. Either way it only affects future `pkg install`/`update-all` lookups, never anything already installed via it. `GET /v1/pkg/recipes` lists every published version this daemon currently knows about — a package name with multiple published versions appears as multiple separate entries, not merged. This project's own git-tracked `pkg/recipes/<name>/<version>/build.sh` files (`bash`, `bird`, `iproute2`, etc.) are the *source* for a fresh deployment's initial catalog, uploaded through this same endpoint — never baked into the installer ISO or read directly off some fixed on-disk path by the daemon itself.
+
+**A host can also stay current with a shared recipe repository instead of every recipe needing an individual manual push (ADR-0121)** — `PUT /v1/pkg/repo-config` points a host at one:
+
+```
+PUT /v1/pkg/repo-config
+{"repo_url": "https://git.example.internal/team/recipes", "repo_kind": "gitea", "ref": "master"}
+```
+
+`PUT` is a **partial update** — any field left out of the body keeps its existing value; an explicit `"auth_token": ""` is the one way to clear an already-set token, and the token itself is never echoed back by either `GET` or `PUT`, only a derived `auth_token_set` boolean. `repo_kind` is one of `gitea`/`github`/`gitlab` — each forge has a genuinely different archive-download URL shape and auth convention, handled as three separate, explicit branches rather than one generic abstraction (only the `gitea` branch has been verified against a real forge from this project's own dev environment; `github`/`gitlab` follow each forge's own documented API but are unverified against a live account of either kind). `POST /v1/pkg/sync` starts an async fetch of the configured repo's recipe tree and merges it into this host's own catalog — **merge/additive, never a mirror**: an already-known `(name, version)` is counted as `skipped`, never overwritten (recipe versions stay immutable, ADR-0107), so a sync can never discard a recipe a host already has. `202`, poll `GET /v1/pkg/sync` (`state`: `never`/`running`/`success`/`failed`, plus `added`/`skipped` counts and an `error` string) for the outcome — `400` if no repo is configured yet, `409` if a sync is already running. `sync_interval_seconds` in the repo config (0 = disabled, the default) optionally re-arms an automatic periodic sync on top of the always-available manual `POST`.
 
 Install it:
 

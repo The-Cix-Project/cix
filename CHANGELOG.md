@@ -2,6 +2,21 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 79 (done): pkg/ redesign Part 2 -- configurable recipe repo + merge/additive `pkg sync`
+
+Second of the five-part `pkg/` redesign (task #739/#767) -- see [ADR-0121](docs/adr/0121-pkg-redesign-part2-configurable-repo-and-sync.md). A host can now be pointed at a shared recipe repository (gitea/github/gitlab) and pull its whole tree in one call, instead of every recipe needing an individual manual `POST /pkg/recipes`.
+
+#### Added
+- `daemon/src/pkg.c`/`pkg.h`: `pkg_repo_init()`/`pkg_repo_set_config()`/`pkg_repo_write_json_config()` (persisted `<data-dir>/pkg/repo_config.json`: `repo_url`, `repo_kind`, `ref`, `auth_token`, `sync_interval_seconds`); `pkg_sync_start()`/`pkg_sync_completed()`/`pkg_sync_write_json_status()` -- a direct clone of `CONN_BOOTSTRAP_FETCH`'s own async fork+curl+pidfd pattern (ADR-0065), merging fetched recipes via the existing `pkg_recipe_add()` (its own duplicate-(name,version) rejection *is* the merge/additive semantics -- nothing is ever overwritten, only skipped or newly added).
+- `build_sync_fetch_request()`: three explicit, separately-readable branches for gitea/github/gitlab's genuinely different archive-download URL shapes and auth conventions -- only gitea verified against a real forge (`git.home.arpa`) from this sandbox; github/gitlab follow each forge's own documented API but are unverified against a live account.
+- `GET`/`PUT /v1/pkg/repo-config` (partial-update semantics; `auth_token` write-only, never echoed back -- only a derived `auth_token_set`), `POST`/`GET /v1/pkg/sync` (`202`, poll for `state`/`added`/`skipped`/`error`; `400` unconfigured, `409` already running).
+- Periodic sync timer (`arm_pkg_sync_periodic_timer()`), mirroring NTP's own re-arming timerfd pattern exactly -- `sync_interval_seconds=0` (default) means disabled.
+- `kanxeoctl pkg repo-config show|set`, `pkg sync [--wait]`, `pkg sync-status`.
+- `test/test_pkg_sync.c`: a real, unmocked round trip against a `python3 -m http.server` standing in for a gitea REST endpoint -- covers unconfigured-400, partial-update semantics, token clear, a first sync (`added=1`), a second sync of the same repo proving merge/additive semantics (`added=0, skipped=1`), and a real fetch failure (`state=failed` with a real error).
+
+#### Verified
+- Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (25 tests, including the new one) all pass.
+
 ### Part 78 (done): pkg/ redesign Part 1 -- recipe.sh -> build.sh rename, plus a real backup/restore regression fixed along the way
 
 First of a five-part `pkg/` redesign (task #739): a real, multi-round design discussion landed on rewriting how recipes/images are stored, synced from a configurable repo, cached, and installed -- see [ADR-0120](docs/adr/0120-pkg-redesign-part1-naming-and-backup-fix.md) for Part 1's own scope. The user's own observation: `pkg/recipes/<name>/<version>/recipe.sh` says "recipe" twice for a tree that holds nothing else. Grounding the redesign in the current code surfaced a real, independent bug along the way: `do_system_backup()`/`do_system_restore()` still assumed the pre-ADR-0107 flat `<name>.recipe` layout, silently matching nothing since that migration's version-keyed directories landed -- system backup has included zero recipes for the entire time that layout has been live.

@@ -129,6 +129,8 @@ POST /v1/pkg/install
 
 starts the actual build — see [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs) for the full async install/poll/upgrade contract, which this guide doesn't repeat.
 
+Rather than pushing every recipe individually, a host can also point itself at a shared recipe repository and pull its whole tree in one call: `kanxeoctl pkg repo-config set --url=https://git.example.internal/team/recipes --kind=gitea`, then `kanxeoctl pkg sync --wait`. This is additive/merge only — a sync never overwrites or removes a recipe version this host already has, it only adds ones it doesn't (see [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs) and ADR-0121 for the full contract, including the `gitea`/`github`/`gitlab` URL shapes).
+
 ## The hostbuild variant
 
 A recipe can also be built as a standalone, host-side artifact instead of merging into a container image's rootfs — used for building the Linux kernel and for [self-hosted rebuilds of Kanxeo's own control plane](building-kanxeo.md) (ADR-0056). The recipe format is identical; the only hard requirement is `pkg_depends=""` (empty), since dependency resolution targets "merge into an image," a concept with no meaning for a one-shot harvest — every prerequisite the build needs must already be installed onto the named `--build-image=` beforehand, via ordinary `pkg install` calls against that image, exactly as described in [Build images](#build-images) above.

@@ -570,4 +570,68 @@ enum pkg_error pkg_delete(const char *name, const char *image);
  */
 int pkg_image_has_packages(const char *image);
 
+/* ---- pkg/ redesign Part 2 (ADR-0121): configurable repo + pkg sync ---- */
+
+#define PKGREPO_URL_MAX 512
+#define PKGREPO_KIND_MAX 16 /* "gitea" / "github" / "gitlab" */
+#define PKGREPO_REF_MAX 128
+#define PKGREPO_TOKEN_MAX 256
+
+/* Loads any persisted repo config (or leaves the defaults: kind
+ * "gitea", ref "master", no URL/token/interval configured) -- same
+ * "missing file is not an error, just first-ever startup" tolerance
+ * every other *_init() in this codebase already has. */
+int pkg_repo_init(const char *config_path);
+
+/* {"repo_url","repo_kind","ref","auth_token_set","sync_interval_
+ * seconds"} -- the token itself is never echoed back (auth_token_set
+ * is a bool), the one piece of secret-shaped state this daemon
+ * persists that's genuinely sensitive over REST. */
+void pkg_repo_write_json_config(struct json_writer *w);
+
+/*
+ * Any NULL pointer parameter leaves that field unchanged (a partial
+ * PUT); passing "" for auth_token clears it explicitly (distinct from
+ * NULL, which leaves whatever's already configured). repo_kind (if
+ * given) must be exactly "gitea"/"github"/"gitlab" -- PKG_ERR_INVALID_
+ * NAME otherwise, reusing the existing error for "not a valid
+ * identifier of the expected shape" rather than adding a new one just
+ * for this. sync_interval_seconds < 0 leaves it unchanged; 0 disables
+ * periodic auto-sync (manual `pkg sync` remains available regardless).
+ */
+enum pkg_error pkg_repo_set_config(const char *repo_url, const char *repo_kind, const char *ref,
+                                    const char *auth_token, int sync_interval_seconds);
+
+int pkg_repo_get_sync_interval_seconds(void);
+int pkg_repo_is_configured(void);
+
+/*
+ * Starts an async fetch of the configured repo's own archive (forge-
+ * specific URL/auth, see pkg.c's build_sync_fetch_request()) --
+ * PKG_ERR_BUSY if a sync is already running, PKG_ERR_NOT_FOUND if no
+ * repo is configured. out_pid/out_pidfd are registered with epoll by
+ * the caller exactly like every other async pkg.c job (pkg_install_
+ * start(), pkg_bootstrap_from_toolchain(), ...).
+ */
+enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd);
+
+/*
+ * Called once the curl child from pkg_sync_start() exits. A non-zero
+ * exit_status is a fetch failure, recorded and nothing else happens.
+ * On success: extracts the archive, walks pkg/recipes/<name>/<version>/
+ * build.sh within it, and pkg_recipe_add()s every one -- an already-
+ * published (name,version) comes back PKG_ERR_DUPLICATE and is
+ * silently skipped (merge semantics: sync only ever adds, never
+ * deletes or overwrites, so a locally-added-only recipe is always
+ * safe). Records added/skipped counts and any error for pkg_sync_
+ * write_json_status().
+ */
+void pkg_sync_completed(int exit_status);
+
+/* {"state":"never"|"running"|"success"|"failed","last_attempt":
+ * <epoch or null>,"added":N,"skipped":N,"error":<string or null>}. */
+void pkg_sync_write_json_status(struct json_writer *w);
+
+int pkg_sync_in_progress(void);
+
 #endif /* PKG_H */

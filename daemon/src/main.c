@@ -106,6 +106,7 @@ static char PKI_CERTS_DIR[PATH_MAX];
 static char PKG_DIR[PATH_MAX];
 static char PKG_INSTALLED_STATE_PATH[PATH_MAX];
 static char PKG_RECIPES_DIR[PATH_MAX];
+static char PKG_REPO_CONFIG_PATH[PATH_MAX]; /* ADR-0121 */
 /* Where a hostbuild job's own harvested output lands (ADR-0056) --
  * ARTIFACTS_DIR/<name>/..., a plain host directory, never a container-
  * visible path. */
@@ -200,6 +201,7 @@ static void init_base_dir_paths(void)
 	snprintf(PKG_DIR, sizeof(PKG_DIR), "%s/pkg", g_base_dir);
 	snprintf(PKG_INSTALLED_STATE_PATH, sizeof(PKG_INSTALLED_STATE_PATH), "%s/pkg_installed.json", PKG_DIR);
 	snprintf(PKG_RECIPES_DIR, sizeof(PKG_RECIPES_DIR), "%s/recipes", PKG_DIR);
+	snprintf(PKG_REPO_CONFIG_PATH, sizeof(PKG_REPO_CONFIG_PATH), "%s/repo_config.json", PKG_DIR);
 	snprintf(ARTIFACTS_DIR, sizeof(ARTIFACTS_DIR), "%s/artifacts", g_base_dir);
 	snprintf(CONTAINER_DEFS_STATE_PATH, sizeof(CONTAINER_DEFS_STATE_PATH), "%s/container_defs.json", g_base_dir);
 	snprintf(SITE_CONFIG_PATH, sizeof(SITE_CONFIG_PATH), "%s/site_config.json", g_base_dir);
@@ -445,6 +447,8 @@ enum conn_kind {
 	                          * incrementally exactly like CONN_PKG_BUILD_OUTPUT (ADR-0087) */
 	CONN_ISO_ASSEMBLE,      /* server-side mkinstalleriso invocation (ADR-0064) */
 	CONN_BOOTSTRAP_FETCH,   /* pkg/bootstrap's own toolchain_url curl fetch (ADR-0065) */
+	CONN_PKG_SYNC_FETCH,    /* pkg sync's own repo-archive curl fetch (ADR-0121) */
+	CONN_PKG_SYNC_PERIODIC_TIMER, /* permanent, re-arms itself -- fires pkg_sync_start() periodically if configured (ADR-0121) */
 	CONN_DISK_FORMAT,       /* disk format+mount job (multi-disk management Phase C) */
 	CONN_PING,              /* GET/POST /v1/system/ping -- the raw ICMP socket half */
 	CONN_PING_TIMER,        /* same job's paired timeout -- see ping_job_teardown() */
@@ -5116,6 +5120,112 @@ static void register_bootstrap_fetch_pidfd(pid_t pid, int pidfd)
 	}
 }
 
+/* ADR-0121: same shape as register_bootstrap_fetch_pidfd() immediately
+ * above, one epoll-tracked conn per in-flight pkg_sync_start() curl
+ * child. */
+static void register_pkg_sync_fetch_pidfd(pid_t pid, int pidfd)
+{
+	struct conn *cc;
+	struct kx_epoll_event ev;
+
+	cc = malloc(sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (pkg sync fetch reactor conn)");
+		abort();
+	}
+	cc->kind = CONN_PKG_SYNC_FETCH;
+	cc->fd = pidfd;
+	cc->pkg_fetch_pid = pid;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+		perror("epoll_ctl ADD pkg sync fetch pidfd");
+		abort();
+	}
+}
+
+/* Reaps the curl child pkg_sync_start() spawned and hands its exit
+ * status to pkg_sync_completed(), which does the real work (extract +
+ * merge-add every recipe found). */
+static void handle_pkg_sync_fetch_event(struct conn *cc)
+{
+	int status;
+	int exit_status;
+
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
+		exit_status = WEXITSTATUS(status);
+	else
+		exit_status = -1;
+	close(cc->fd);
+	free(cc);
+
+	pkg_sync_completed(exit_status);
+}
+
+/* Permanent, re-arming itself every configured interval -- identical
+ * shape to arm_ntp_periodic_timer()/handle_ntp_periodic_timer_event()
+ * (task #751), except an interval of 0 means "disabled": the timer is
+ * simply never (re)armed, and manual `pkg sync` remains the only
+ * trigger until an operator sets a real interval via PUT /v1/pkg/
+ * repo-config. */
+static struct conn g_pkg_sync_periodic_conn;
+
+static void arm_pkg_sync_periodic_timer(void)
+{
+	struct itimerspec its;
+	int interval = pkg_repo_get_sync_interval_seconds();
+
+	if (interval <= 0 || g_pkg_sync_periodic_conn.fd < 0)
+		return;
+	memset(&its, 0, sizeof(its));
+	its.it_value.tv_sec = interval;
+	if (timerfd_settime(g_pkg_sync_periodic_conn.fd, 0, &its, NULL) != 0)
+		perror("timerfd_settime (pkg sync periodic re-arm)");
+}
+
+static void handle_pkg_sync_periodic_timer_event(struct conn *cc)
+{
+	uint64_t expirations;
+	pid_t pid;
+	int pidfd;
+
+	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
+		perror("read (pkg sync periodic timerfd)");
+	if (!pkg_sync_in_progress() && pkg_sync_start(&pid, &pidfd) == PKG_OK)
+		register_pkg_sync_fetch_pidfd(pid, pidfd);
+	arm_pkg_sync_periodic_timer();
+}
+
+/* Best-effort, same "never block daemon startup" posture as start_ntp_
+ * periodic_timer() -- a timerfd_create() failure just means no
+ * automatic sync ever happens; every pkg sync/repo-config surface
+ * remains fully usable via manual trigger regardless. */
+static void start_pkg_sync_periodic_timer(void)
+{
+	struct kx_epoll_event ev;
+	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+
+	g_pkg_sync_periodic_conn.fd = -1;
+	if (fd < 0) {
+		perror("timerfd_create (pkg sync periodic)");
+		return;
+	}
+	g_pkg_sync_periodic_conn.kind = CONN_PKG_SYNC_PERIODIC_TIMER;
+	g_pkg_sync_periodic_conn.fd = fd;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = &g_pkg_sync_periodic_conn;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+		close(fd);
+		g_pkg_sync_periodic_conn.fd = -1;
+		return;
+	}
+	arm_pkg_sync_periodic_timer();
+}
+
 /*
  * Returns 0 and forks the fetch (state -> FETCHING) on success; -1
  * with err_msg filled otherwise (both url and sha256 are required --
@@ -9621,6 +9731,110 @@ static void handle_pkg_bootstrap(int fd, const char *body, size_t body_len)
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
+/* ADR-0121: GET /v1/pkg/repo-config -- the configured sync source
+ * (never echoes the auth token itself, see pkg_repo_write_json_
+ * config()'s own doc comment). */
+static void handle_pkg_repo_config_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	pkg_repo_write_json_config(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * PUT /v1/pkg/repo-config: a partial update -- any field omitted from
+ * the body leaves that setting unchanged (pkg_repo_set_config()'s own
+ * NULL-means-unchanged contract). "auth_token": "" explicitly clears
+ * an already-configured token; omitting it entirely leaves whatever's
+ * there. Changing sync_interval_seconds takes effect on the next
+ * periodic-timer re-arm (immediately, via arm_pkg_sync_periodic_
+ * timer() below) -- no daemon restart needed, same "live, no-restart"
+ * posture every other *_config PUT in this codebase already has.
+ */
+static void handle_pkg_repo_config_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = NULL;
+	const char *repo_url = NULL;
+	const char *repo_kind = NULL;
+	const char *ref = NULL;
+	const char *auth_token = NULL;
+	int sync_interval_seconds = -1;
+	enum pkg_error perr;
+
+	if (body_len > 0) {
+		root = json_parse(body, body_len);
+		if (root == NULL) {
+			respond_error(fd, 400, "Bad Request", "invalid JSON body");
+			return;
+		}
+		repo_url = json_as_string(json_object_get(root, "repo_url"));
+		repo_kind = json_as_string(json_object_get(root, "repo_kind"));
+		ref = json_as_string(json_object_get(root, "ref"));
+		auth_token = json_as_string(json_object_get(root, "auth_token"));
+		{
+			const struct json_value *iv = json_object_get(root, "sync_interval_seconds");
+
+			if (iv != NULL)
+				sync_interval_seconds = (int)json_as_number(iv);
+		}
+	}
+
+	perr = pkg_repo_set_config(repo_url, repo_kind, ref, auth_token, sync_interval_seconds);
+	if (root != NULL)
+		json_free(root);
+	if (perr != PKG_OK) {
+		respond_pkg_error(fd, perr);
+		return;
+	}
+	arm_pkg_sync_periodic_timer();
+	handle_pkg_repo_config_get(fd);
+}
+
+/* POST /v1/pkg/sync: starts an async fetch+merge of the configured
+ * repo's recipes (never binaries -- see pkg_sync_completed()'s own
+ * doc comment). 409 if one is already running, 400 if no repo is
+ * configured yet. 202, poll GET /v1/pkg/sync for the outcome. */
+static void handle_pkg_sync_post(int fd)
+{
+	pid_t pid;
+	int pidfd;
+	enum pkg_error perr;
+	struct json_writer w;
+
+	perr = pkg_sync_start(&pid, &pidfd);
+	if (perr == PKG_ERR_BUSY) {
+		respond_error(fd, 409, "Conflict", "a sync is already in progress");
+		return;
+	}
+	if (perr == PKG_ERR_NOT_FOUND) {
+		respond_error(fd, 400, "Bad Request", "no repo configured (PUT /v1/pkg/repo-config first)");
+		return;
+	}
+	if (perr != PKG_OK) {
+		respond_pkg_error(fd, perr);
+		return;
+	}
+	register_pkg_sync_fetch_pidfd(pid, pidfd);
+
+	jw_init(&w);
+	pkg_sync_write_json_status(&w);
+	respond_json(fd, 202, "Accepted", &w);
+	jw_free(&w);
+}
+
+static void handle_pkg_sync_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	pkg_sync_write_json_status(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_pkg_recipes_list(int fd)
 {
 	struct json_writer w;
@@ -10669,9 +10883,10 @@ static void dispatch(int fd, const struct http_request *req)
 	 * These reserved paths are checked before the generic
 	 * PKG_PREFIX/{name} fallback below, exactly like every other
 	 * resource's exact-match-then-prefix ordering in this dispatch --
-	 * a package named "bootstrap"/"recipes"/"install"/"update-all"
-	 * would be unreachable via GET/DELETE /v1/pkg/{name}, a
-	 * deliberate, documented reserved-words boundary. PKG_RECIPES_PREFIX
+	 * a package named "bootstrap"/"recipes"/"install"/"update-all"/
+	 * "repo-config"/"sync" (ADR-0121) would be unreachable via
+	 * GET/DELETE /v1/pkg/{name}, a deliberate, documented
+	 * reserved-words boundary. PKG_RECIPES_PREFIX
 	 * (/v1/pkg/recipes/{name}, DELETE) is checked here too, before the
 	 * generic PKG_PREFIX/{name} fallback -- otherwise
 	 * "/v1/pkg/recipes/bash" would wrongly match that fallback with
@@ -10685,6 +10900,26 @@ static void dispatch(int fd, const struct http_request *req)
 		}
 		if (strcmp(req->method, "GET") == 0) {
 			handle_pkg_bootstrap_get(fd);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/pkg/repo-config") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_pkg_repo_config_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_pkg_repo_config_put(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/pkg/sync") == 0) {
+		if (strcmp(req->method, "POST") == 0) {
+			handle_pkg_sync_post(fd);
+			return;
+		}
+		if (strcmp(req->method, "GET") == 0) {
+			handle_pkg_sync_get(fd);
 			return;
 		}
 	}
@@ -12339,6 +12574,8 @@ int main(int argc, char **argv)
 	reconcile_instance_dns_record();
 	if (pkg_init(PKG_DIR, PKG_INSTALLED_STATE_PATH, CONTAINERS_DIR, IMAGES_DIR, ARTIFACTS_DIR) != 0)
 		return 1;
+	if (pkg_repo_init(PKG_REPO_CONFIG_PATH) != 0)
+		return 1;
 
 	/*
 	 * Test-only, same precedent as --test-update-image=: makes
@@ -12468,6 +12705,7 @@ int main(int argc, char **argv)
 	}
 	start_kmsg_watch(); /* needs g_epfd, only just created above -- best-effort, see its own comment */
 	start_ntp_periodic_timer(); /* same g_epfd/best-effort posture, task #751 */
+	start_pkg_sync_periodic_timer(); /* same posture, ADR-0121 -- no-op until an interval is configured */
 	fflush(stdout);
 
 	/* "About to serve traffic" is the honest definition of healthy this
@@ -12538,6 +12776,10 @@ int main(int argc, char **argv)
 				handle_iso_assemble_event(cc);
 			else if (cc->kind == CONN_BOOTSTRAP_FETCH)
 				handle_bootstrap_fetch_event(cc);
+			else if (cc->kind == CONN_PKG_SYNC_FETCH)
+				handle_pkg_sync_fetch_event(cc);
+			else if (cc->kind == CONN_PKG_SYNC_PERIODIC_TIMER)
+				handle_pkg_sync_periodic_timer_event(cc);
 			else if (cc->kind == CONN_DISK_FORMAT)
 				handle_disk_format_event(cc);
 			else if (cc->kind == CONN_PING)

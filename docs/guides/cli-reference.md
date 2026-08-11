@@ -161,6 +161,10 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | `pkg recipe add --name=NAME --file=PATH` | Publish a new recipe version on this running system directly, no reinstall needed — immutable once published, rejected if this exact (name,version) already exists |
 | `pkg recipe show NAME [--version=VERSION]` | Print a recipe version's own raw content; omitted version resolves to the highest available |
 | `pkg recipe rm NAME [--version=VERSION]` | Remove recipe version(s); omitted removes every published version |
+| `pkg repo-config show` | The currently configured recipe-sync source (empty if none) |
+| `pkg repo-config set [--url=URL] [--kind=gitea\|github\|gitlab] [--ref=REF] [--token=TOKEN\|--clear-token] [--sync-interval=SECONDS]` | Partially update the configured repo; omitted flags leave that setting unchanged |
+| `pkg sync [--wait]` | Fetch and merge the configured repo's recipes into this host's own catalog (additive — never overwrites an existing version) |
+| `pkg sync-status` | The most recent (or currently running) sync's outcome |
 | `pkg install --name=NAME [--image=IMAGE] [--version=VERSION] [--upgrade]` | Start installing (or upgrading) a package; omitted version resolves to the highest available |
 | `pkg ls` | List every known package (installed or in-flight) |
 | `pkg rm NAME[@IMAGE]` | Uninstall |

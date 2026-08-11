@@ -20,6 +20,7 @@
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 extern char **environ;
@@ -3251,4 +3252,441 @@ enum pkg_error pkg_delete(const char *name, const char *image)
 	if (save_state() != 0)
 		return PKG_ERR_PERSIST_FAILED;
 	return PKG_OK;
+}
+
+/* ---- pkg/ redesign Part 2 (ADR-0121): configurable repo + pkg sync ---- */
+
+static char g_repo_config_path[PATH_MAX];
+static char g_repo_url[PKGREPO_URL_MAX];
+static char g_repo_kind[PKGREPO_KIND_MAX] = "gitea";
+static char g_repo_ref[PKGREPO_REF_MAX] = "master";
+static char g_repo_auth_token[PKGREPO_TOKEN_MAX];
+static int g_repo_sync_interval_seconds;
+
+static pid_t g_sync_pid = -1;
+enum sync_state { SYNC_NEVER = 0, SYNC_RUNNING, SYNC_SUCCESS, SYNC_FAILED };
+static enum sync_state g_sync_last_state = SYNC_NEVER;
+static time_t g_sync_last_attempt;
+static int g_sync_last_added;
+static int g_sync_last_skipped;
+static char g_sync_last_error[PKG_ERROR_MAX];
+
+static int repo_kind_is_valid(const char *kind)
+{
+	return strcmp(kind, "gitea") == 0 || strcmp(kind, "github") == 0 ||
+	       strcmp(kind, "gitlab") == 0;
+}
+
+static int save_repo_config(void)
+{
+	struct json_writer w;
+	int rc;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "repo_url");
+	jw_str(&w, g_repo_url);
+	jw_key(&w, "repo_kind");
+	jw_str(&w, g_repo_kind);
+	jw_key(&w, "ref");
+	jw_str(&w, g_repo_ref);
+	jw_key(&w, "auth_token");
+	jw_str(&w, g_repo_auth_token);
+	jw_key(&w, "sync_interval_seconds");
+	jw_int(&w, g_repo_sync_interval_seconds);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	rc = persist_atomic_write(g_repo_config_path, w.buf, w.len);
+	jw_free(&w);
+	return rc;
+}
+
+int pkg_repo_init(const char *config_path)
+{
+	char *buf;
+	size_t len;
+	struct json_value *root;
+	const struct json_value *interval;
+	const char *s;
+
+	if (snprintf(g_repo_config_path, sizeof(g_repo_config_path), "%s", config_path) >=
+	    (int)sizeof(g_repo_config_path))
+		return -1;
+
+	g_repo_url[0] = '\0';
+	snprintf(g_repo_kind, sizeof(g_repo_kind), "gitea");
+	snprintf(g_repo_ref, sizeof(g_repo_ref), "master");
+	g_repo_auth_token[0] = '\0';
+	g_repo_sync_interval_seconds = 0;
+
+	if (persist_read_file(config_path, &buf, &len) != 0 || buf == NULL)
+		return 0; /* no persisted config yet -- defaults stand */
+
+	root = json_parse(buf, len);
+	free(buf);
+	if (root == NULL)
+		return 0;
+
+	s = json_as_string(json_object_get(root, "repo_url"));
+	if (s != NULL)
+		snprintf(g_repo_url, sizeof(g_repo_url), "%s", s);
+	s = json_as_string(json_object_get(root, "repo_kind"));
+	if (s != NULL && repo_kind_is_valid(s))
+		snprintf(g_repo_kind, sizeof(g_repo_kind), "%s", s);
+	s = json_as_string(json_object_get(root, "ref"));
+	if (s != NULL && s[0] != '\0')
+		snprintf(g_repo_ref, sizeof(g_repo_ref), "%s", s);
+	s = json_as_string(json_object_get(root, "auth_token"));
+	if (s != NULL)
+		snprintf(g_repo_auth_token, sizeof(g_repo_auth_token), "%s", s);
+	interval = json_object_get(root, "sync_interval_seconds");
+	if (interval != NULL)
+		g_repo_sync_interval_seconds = (int)json_as_number(interval);
+
+	json_free(root);
+	return 0;
+}
+
+void pkg_repo_write_json_config(struct json_writer *w)
+{
+	jw_obj_open(w);
+	jw_key(w, "repo_url");
+	jw_str(w, g_repo_url);
+	jw_key(w, "repo_kind");
+	jw_str(w, g_repo_kind);
+	jw_key(w, "ref");
+	jw_str(w, g_repo_ref);
+	jw_key(w, "auth_token_set");
+	jw_bool(w, g_repo_auth_token[0] != '\0');
+	jw_key(w, "sync_interval_seconds");
+	jw_int(w, g_repo_sync_interval_seconds);
+	jw_obj_close(w);
+}
+
+enum pkg_error pkg_repo_set_config(const char *repo_url, const char *repo_kind, const char *ref,
+                                    const char *auth_token, int sync_interval_seconds)
+{
+	if (repo_kind != NULL && !repo_kind_is_valid(repo_kind))
+		return PKG_ERR_INVALID_NAME;
+
+	if (repo_url != NULL)
+		snprintf(g_repo_url, sizeof(g_repo_url), "%s", repo_url);
+	if (repo_kind != NULL)
+		snprintf(g_repo_kind, sizeof(g_repo_kind), "%s", repo_kind);
+	if (ref != NULL && ref[0] != '\0')
+		snprintf(g_repo_ref, sizeof(g_repo_ref), "%s", ref);
+	if (auth_token != NULL)
+		snprintf(g_repo_auth_token, sizeof(g_repo_auth_token), "%s", auth_token);
+	if (sync_interval_seconds >= 0)
+		g_repo_sync_interval_seconds = sync_interval_seconds;
+
+	if (save_repo_config() != 0)
+		return PKG_ERR_PERSIST_FAILED;
+	return PKG_OK;
+}
+
+int pkg_repo_get_sync_interval_seconds(void)
+{
+	return g_repo_sync_interval_seconds;
+}
+
+int pkg_repo_is_configured(void)
+{
+	return g_repo_url[0] != '\0';
+}
+
+/*
+ * Splits g_repo_url ("<scheme>://<host>/<owner>/<repo>[.git][/]") into
+ * its parts. A bare "owner/repo" (no nested subgroup) covers every
+ * kind this project actually talks to (gitea/github always; gitlab
+ * subgroup paths are a real gap, out of v1 scope -- flagged here, not
+ * silently mishandled: a subgroup path just ends up with the whole
+ * subgroup prefix folded into "owner", which fails cleanly at fetch
+ * time rather than doing something wrong quietly).
+ */
+static int parse_repo_url(char *out_scheme, size_t scheme_sz, char *out_host, size_t host_sz,
+                           char *out_owner, size_t owner_sz, char *out_repo, size_t repo_sz)
+{
+	const char *scheme_end = strstr(g_repo_url, "://");
+	const char *host_start, *host_end, *path;
+	char path_buf[PKGREPO_URL_MAX];
+	size_t path_len;
+	char *last_slash;
+
+	if (scheme_end == NULL)
+		return -1;
+	snprintf(out_scheme, scheme_sz, "%.*s", (int)(scheme_end - g_repo_url), g_repo_url);
+
+	host_start = scheme_end + 3;
+	host_end = strchr(host_start, '/');
+	if (host_end == NULL || host_end == host_start)
+		return -1;
+	snprintf(out_host, host_sz, "%.*s", (int)(host_end - host_start), host_start);
+
+	path = host_end + 1;
+	snprintf(path_buf, sizeof(path_buf), "%s", path);
+	path_len = strlen(path_buf);
+	while (path_len > 0 && path_buf[path_len - 1] == '/')
+		path_buf[--path_len] = '\0';
+	if (path_len > 4 && strcmp(path_buf + path_len - 4, ".git") == 0) {
+		path_buf[path_len - 4] = '\0';
+		path_len -= 4;
+	}
+	if (path_len == 0)
+		return -1;
+
+	last_slash = strrchr(path_buf, '/');
+	if (last_slash == NULL || last_slash == path_buf)
+		return -1;
+	snprintf(out_repo, repo_sz, "%s", last_slash + 1);
+	*last_slash = '\0';
+	snprintf(out_owner, owner_sz, "%s", path_buf);
+	return out_repo[0] != '\0' && out_owner[0] != '\0' ? 0 : -1;
+}
+
+/*
+ * Three small, explicitly separate branches, one per forge -- not one
+ * "generic REST archive API" abstraction, because there isn't one:
+ * gitea/github/gitlab each have a genuinely different URL shape and
+ * auth convention (confirmed directly before choosing this design,
+ * see ADR-0121). Only gitea (git.home.arpa) is actually reachable
+ * from this project's own dev/test environment; github/gitlab follow
+ * the identical documented pattern each forge's own API reference
+ * specifies, but are unverified against a real github.com/gitlab.com
+ * account here -- flagged honestly, not silently assumed working.
+ */
+static int build_sync_fetch_request(char *out_url, size_t out_url_size, char *out_header,
+                                     size_t out_header_size)
+{
+	char scheme[16], host[256], owner[256], repo[256];
+	const char *ref = g_repo_ref[0] != '\0' ? g_repo_ref : "master";
+
+	out_header[0] = '\0';
+	if (!pkg_repo_is_configured())
+		return -1;
+	if (parse_repo_url(scheme, sizeof(scheme), host, sizeof(host), owner, sizeof(owner), repo,
+	                    sizeof(repo)) != 0)
+		return -1;
+
+	if (strcmp(g_repo_kind, "gitea") == 0) {
+		/* Token-in-URL basic auth, same proven convention ADR-0057's
+		 * own kanxeo.recipe pkg_source already relies on. */
+		if (g_repo_auth_token[0] != '\0')
+			snprintf(out_url, out_url_size, "%s://%s@%s/api/v1/repos/%s/%s/archive/%s.tar.gz",
+			         scheme, g_repo_auth_token, host, owner, repo, ref);
+		else
+			snprintf(out_url, out_url_size, "%s://%s/api/v1/repos/%s/%s/archive/%s.tar.gz",
+			         scheme, host, owner, repo, ref);
+	} else if (strcmp(g_repo_kind, "github") == 0) {
+		/* github.com's own REST API is always at the separate
+		 * api.github.com host regardless of what host the repo URL
+		 * itself names; GitHub Enterprise Server uses <host>/api/v3/
+		 * instead -- both per GitHub's own published API docs. */
+		if (strcmp(host, "github.com") == 0)
+			snprintf(out_url, out_url_size, "https://api.github.com/repos/%s/%s/tarball/%s",
+			         owner, repo, ref);
+		else
+			snprintf(out_url, out_url_size, "%s://%s/api/v3/repos/%s/%s/tarball/%s", scheme,
+			         host, owner, repo, ref);
+		if (g_repo_auth_token[0] != '\0')
+			snprintf(out_header, out_header_size, "Authorization: Bearer %s", g_repo_auth_token);
+	} else if (strcmp(g_repo_kind, "gitlab") == 0) {
+		/* Unlike github, gitlab.com and a self-hosted GitLab instance
+		 * both use the identical <host>/api/v4/ convention -- no
+		 * separate-domain special case needed here. */
+		snprintf(out_url, out_url_size,
+		         "%s://%s/api/v4/projects/%s%%2F%s/repository/archive.tar.gz?sha=%s", scheme,
+		         host, owner, repo, ref);
+		if (g_repo_auth_token[0] != '\0')
+			snprintf(out_header, out_header_size, "PRIVATE-TOKEN: %s", g_repo_auth_token);
+	} else {
+		return -1;
+	}
+	return 0;
+}
+
+static void sync_state_path(char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/sync.tar.gz", g_pkg_dir);
+}
+
+enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd)
+{
+	char url[PKGREPO_URL_MAX + PKGREPO_TOKEN_MAX + 64];
+	char header[320];
+	char tarball_path[PATH_MAX];
+	pid_t pid;
+	int pidfd;
+
+	if (g_sync_pid > 0)
+		return PKG_ERR_BUSY;
+	if (build_sync_fetch_request(url, sizeof(url), header, sizeof(header)) != 0)
+		return PKG_ERR_NOT_FOUND;
+
+	sync_state_path(tarball_path, sizeof(tarball_path));
+	unlink(tarball_path);
+
+	pid = fork();
+	if (pid < 0)
+		return PKG_ERR_SPAWN_FAILED;
+	if (pid == 0) {
+		if (header[0] != '\0') {
+			char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL", "-H",  header,
+				          "-o",                  tarball_path, url, NULL };
+			execve(PKG_CURL_BIN, argv, environ);
+		} else {
+			char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL", "-o", tarball_path, url, NULL };
+			execve(PKG_CURL_BIN, argv, environ);
+		}
+		_exit(127);
+	}
+
+	pidfd = sys_pidfd_open(pid, 0);
+	if (pidfd < 0) {
+		kill(pid, SIGKILL);
+		waitpid(pid, NULL, 0);
+		return PKG_ERR_SPAWN_FAILED;
+	}
+
+	g_sync_pid = pid;
+	g_sync_last_state = SYNC_RUNNING;
+	g_sync_last_attempt = time(NULL);
+	g_sync_last_error[0] = '\0';
+	*out_pid = pid;
+	*out_pidfd = pidfd;
+	return PKG_OK;
+}
+
+void pkg_sync_completed(int exit_status)
+{
+	char tarball_path[PATH_MAX];
+	char extract_dir[PATH_MAX];
+	char recipes_root[PATH_MAX];
+	DIR *names_d;
+	struct dirent *name_de;
+	int added = 0, skipped = 0, failed = 0;
+
+	g_sync_pid = -1;
+	sync_state_path(tarball_path, sizeof(tarball_path));
+
+	if (exit_status != 0) {
+		g_sync_last_state = SYNC_FAILED;
+		snprintf(g_sync_last_error, sizeof(g_sync_last_error), "fetch failed (curl exit %d)",
+		         exit_status);
+		unlink(tarball_path);
+		return;
+	}
+
+	snprintf(extract_dir, sizeof(extract_dir), "%s/sync-extract", g_pkg_dir);
+	{
+		char *rm_argv[] = { (char *)PKG_RM_BIN, "-rf", extract_dir, NULL };
+
+		run_subprocess(PKG_RM_BIN, rm_argv);
+	}
+	if (persist_mkdir_p(extract_dir) != 0) {
+		g_sync_last_state = SYNC_FAILED;
+		snprintf(g_sync_last_error, sizeof(g_sync_last_error),
+		         "could not create extraction directory");
+		unlink(tarball_path);
+		return;
+	}
+	if (extract_tarball(tarball_path, extract_dir) != 0) {
+		g_sync_last_state = SYNC_FAILED;
+		snprintf(g_sync_last_error, sizeof(g_sync_last_error), "archive extraction failed");
+		unlink(tarball_path);
+		return;
+	}
+	unlink(tarball_path);
+
+	snprintf(recipes_root, sizeof(recipes_root), "%s/pkg/recipes", extract_dir);
+	names_d = opendir(recipes_root);
+	if (names_d != NULL) {
+		while ((name_de = readdir(names_d)) != NULL) {
+			char name_dir[PATH_MAX];
+			DIR *vd;
+			struct dirent *vde;
+
+			if (name_de->d_name[0] == '.')
+				continue;
+			snprintf(name_dir, sizeof(name_dir), "%s/%s", recipes_root, name_de->d_name);
+			vd = opendir(name_dir);
+			if (vd == NULL)
+				continue;
+			while ((vde = readdir(vd)) != NULL) {
+				char script_path[PATH_MAX];
+				char *content;
+				size_t content_len;
+				struct stat st;
+				enum pkg_error rc;
+
+				if (vde->d_name[0] == '.')
+					continue;
+				snprintf(script_path, sizeof(script_path), "%s/%s/build.sh", name_dir,
+				         vde->d_name);
+				if (stat(script_path, &st) != 0 || !S_ISREG(st.st_mode))
+					continue;
+				if (persist_read_file(script_path, &content, &content_len) != 0 ||
+				    content == NULL)
+					continue;
+				rc = pkg_recipe_add(name_de->d_name, content);
+				free(content);
+				if (rc == PKG_OK)
+					added++;
+				else if (rc == PKG_ERR_DUPLICATE)
+					skipped++;
+				else
+					failed++;
+			}
+			closedir(vd);
+		}
+		closedir(names_d);
+	}
+
+	{
+		char *rm_argv[] = { (char *)PKG_RM_BIN, "-rf", extract_dir, NULL };
+
+		run_subprocess(PKG_RM_BIN, rm_argv);
+	}
+
+	g_sync_last_state = SYNC_SUCCESS;
+	g_sync_last_added = added;
+	g_sync_last_skipped = skipped;
+	if (failed > 0)
+		snprintf(g_sync_last_error, sizeof(g_sync_last_error),
+		         "%d recipe(s) failed to add (invalid content)", failed);
+	else
+		g_sync_last_error[0] = '\0';
+}
+
+void pkg_sync_write_json_status(struct json_writer *w)
+{
+	const char *state_str = g_sync_last_state == SYNC_NEVER     ? "never"
+	                         : g_sync_last_state == SYNC_RUNNING ? "running"
+	                         : g_sync_last_state == SYNC_SUCCESS ? "success"
+	                                                              : "failed";
+
+	jw_obj_open(w);
+	jw_key(w, "state");
+	jw_str(w, state_str);
+	jw_key(w, "last_attempt");
+	if (g_sync_last_attempt > 0)
+		jw_int(w, (long long)g_sync_last_attempt);
+	else
+		jw_null(w);
+	jw_key(w, "added");
+	jw_int(w, g_sync_last_added);
+	jw_key(w, "skipped");
+	jw_int(w, g_sync_last_skipped);
+	jw_key(w, "error");
+	if (g_sync_last_error[0] != '\0')
+		jw_str(w, g_sync_last_error);
+	else
+		jw_null(w);
+	jw_obj_close(w);
+}
+
+int pkg_sync_in_progress(void)
+{
+	return g_sync_pid > 0;
 }

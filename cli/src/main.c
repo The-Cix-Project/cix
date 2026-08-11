@@ -5450,6 +5450,203 @@ static int cmd_pkg_bootstrap(const struct kx_client *c, int json_mode, int argc,
 	return emit(&r, json_mode, fmt_bootstrapped);
 }
 
+/* ADR-0121: pkg/ redesign Part 2 -- configurable repo + pkg sync. */
+static void fmt_pkg_repo_config(const struct json_value *v)
+{
+	const char *url = json_str_field(v, "repo_url");
+	const char *kind = json_str_field(v, "repo_kind");
+	const char *ref = json_str_field(v, "ref");
+	const struct json_value *token_set = json_object_get(v, "auth_token_set");
+	long interval = (long)json_as_number(json_object_get(v, "sync_interval_seconds"));
+
+	if (url == NULL || url[0] == '\0') {
+		printf("(no repo configured)\n");
+		return;
+	}
+	printf("repo_url=%s repo_kind=%s ref=%s auth_token=%s sync_interval_seconds=%ld\n", url,
+	       kind != NULL ? kind : "?", ref != NULL ? ref : "?",
+	       (token_set != NULL && token_set->type == JSON_BOOL && token_set->u.boolean) ? "set"
+	                                                                                    : "unset",
+	       interval);
+}
+
+static int cmd_pkg_repo_config_show(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/pkg/repo-config", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_pkg_repo_config);
+}
+
+static int cmd_pkg_repo_config_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *url = NULL;
+	const char *kind = NULL;
+	const char *ref = NULL;
+	const char *token = NULL;
+	long interval = -1;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--url=", 6) == 0)
+			url = argv[i] + 6;
+		else if (strncmp(argv[i], "--kind=", 7) == 0)
+			kind = argv[i] + 7;
+		else if (strncmp(argv[i], "--ref=", 6) == 0)
+			ref = argv[i] + 6;
+		else if (strncmp(argv[i], "--token=", 8) == 0)
+			token = argv[i] + 8;
+		else if (strcmp(argv[i], "--clear-token") == 0)
+			token = "";
+		else if (strncmp(argv[i], "--sync-interval=", 16) == 0)
+			interval = strtol(argv[i] + 16, NULL, 10);
+		else {
+			fprintf(stderr, "kanxeoctl: unknown pkg repo-config set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	if (url != NULL) {
+		jw_key(&w, "repo_url");
+		jw_str(&w, url);
+	}
+	if (kind != NULL) {
+		jw_key(&w, "repo_kind");
+		jw_str(&w, kind);
+	}
+	if (ref != NULL) {
+		jw_key(&w, "ref");
+		jw_str(&w, ref);
+	}
+	if (token != NULL) {
+		jw_key(&w, "auth_token");
+		jw_str(&w, token);
+	}
+	if (interval >= 0) {
+		jw_key(&w, "sync_interval_seconds");
+		jw_int(&w, interval);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "PUT", "/v1/pkg/repo-config", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_pkg_repo_config);
+}
+
+static int cmd_pkg_repo_config(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl pkg repo-config show\n"
+		                "       kanxeoctl pkg repo-config set [--url=URL] [--kind=gitea|github|gitlab] "
+		                "[--ref=REF] [--token=TOKEN | --clear-token] [--sync-interval=SECONDS]\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "show") == 0)
+		return cmd_pkg_repo_config_show(c, json_mode);
+	if (strcmp(sub, "set") == 0)
+		return cmd_pkg_repo_config_set(c, json_mode, argc - 1, argv + 1);
+	fprintf(stderr, "kanxeoctl: unknown pkg repo-config subcommand '%s'\n", sub);
+	return 2;
+}
+
+static void fmt_pkg_sync_status(const struct json_value *v)
+{
+	const char *state = json_str_field(v, "state");
+	const struct json_value *last_attempt = json_object_get(v, "last_attempt");
+	long added = (long)json_as_number(json_object_get(v, "added"));
+	long skipped = (long)json_as_number(json_object_get(v, "skipped"));
+	const char *error = json_str_field(v, "error");
+
+	printf("state=%s", state != NULL ? state : "?");
+	if (last_attempt != NULL && last_attempt->type != JSON_NULL)
+		printf(" last_attempt=%lld", (long long)json_as_number(last_attempt));
+	printf(" added=%ld skipped=%ld", added, skipped);
+	if (error != NULL)
+		printf(" error=%s", error);
+	printf("\n");
+}
+
+/* Polls GET /v1/pkg/sync until state leaves "running" -- --wait's own
+ * loop, the same shape poll_hostbuild()/poll_iso() already establish. */
+static int poll_pkg_sync(const struct kx_client *c, struct kx_response *out)
+{
+	for (;;) {
+		const char *state;
+
+		if (kx_client_request(c, "GET", "/v1/pkg/sync", NULL, out) != 0) {
+			fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+			return -1;
+		}
+		state = json_str_field(out->json, "state");
+		if (state == NULL || strcmp(state, "running") != 0)
+			return 0;
+		kx_response_free(out);
+		usleep(500000);
+	}
+}
+
+static int cmd_pkg_sync(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	int wait = 0;
+	int i;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strcmp(argv[i], "--wait") == 0)
+			wait = 1;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown pkg sync option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	if (kx_client_request(c, "POST", "/v1/pkg/sync", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	if (r.status != 202) {
+		int rc = emit(&r, json_mode, fmt_pkg_sync_status);
+
+		return rc != 0 ? rc : 1;
+	}
+	kx_response_free(&r);
+
+	if (wait) {
+		if (poll_pkg_sync(c, &r) != 0)
+			return 1;
+	} else if (kx_client_request(c, "GET", "/v1/pkg/sync", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_pkg_sync_status);
+}
+
+static int cmd_pkg_sync_status(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/pkg/sync", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_pkg_sync_status);
+}
+
 static int cmd_pkg_recipes(const struct kx_client *c, int json_mode)
 {
 	struct kx_response r;
@@ -6003,7 +6200,12 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 		                "       kanxeoctl pkg build-log\n"
 		                "       kanxeoctl pkg ls\n"
 		                "       kanxeoctl pkg rm NAME[@IMAGE]\n"
-		                "       kanxeoctl pkg update-all\n");
+		                "       kanxeoctl pkg update-all\n"
+		                "       kanxeoctl pkg repo-config show\n"
+		                "       kanxeoctl pkg repo-config set [--url=URL] [--kind=gitea|github|gitlab] "
+		                "[--ref=REF] [--token=TOKEN | --clear-token] [--sync-interval=SECONDS]\n"
+		                "       kanxeoctl pkg sync [--wait]\n"
+		                "       kanxeoctl pkg sync-status\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -6027,6 +6229,12 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 		return cmd_pkg_rm(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "update-all") == 0)
 		return cmd_pkg_update_all(c, json_mode);
+	if (strcmp(sub, "repo-config") == 0)
+		return cmd_pkg_repo_config(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "sync") == 0)
+		return cmd_pkg_sync(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "sync-status") == 0)
+		return cmd_pkg_sync_status(c, json_mode);
 
 	fprintf(stderr, "kanxeoctl: unknown pkg subcommand '%s'\n", sub);
 	return 2;
