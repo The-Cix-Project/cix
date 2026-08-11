@@ -6043,6 +6043,9 @@ components:
             (via ContainerCreateRequest.dns_register), or null for a
             record created directly via POST /dns/records. Owned
             records are automatically deleted when their container is.
+            "__host" is a reserved sentinel (never a real container
+            name, ADR-0128): the daemon's own auto-maintained instance
+            DNS record for its own FQDN (ADR-0053).
 
     DnsServerBindingCreateRequest:
       type: object
@@ -6678,7 +6681,9 @@ components:
             Name of the container this cert was auto-issued for (via
             ContainerCreateRequest.pki_issue), or null for a cert created
             directly via POST /pki/certs. Owned certs are automatically
-            deleted when their container is.
+            deleted when their container is. "__host" is a reserved
+            sentinel (never a real container name, ADR-0128): the
+            daemon's own auto-issued "host" leaf cert (ADR-0050).
 
     PkiCertIssued:
       allOf:

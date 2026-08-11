@@ -1207,6 +1207,18 @@ function formatBytes(n) {
 	return v.toFixed(i === 0 ? 0 : 1) + " " + units[i];
 }
 
+/* "__host" is a reserved owner sentinel (daemon/src/main.c's
+ * reissue_host_pki_cert()/reconcile_instance_dns_record(), ADR-0128) --
+ * the daemon's own auto-issued host cert / auto-maintained instance
+ * DNS record are never owned by a container, so a plain, real
+ * container name would be misleading here. Rendered distinctly rather
+ * than shown as the raw sentinel string. */
+function formatOwner(owner) {
+	if (!owner) return "-";
+	if (owner === "__host") return "host (this daemon)";
+	return owner;
+}
+
 /* "-1:58" for anything a minute or more old, "-12s" otherwise --
  * relative to the chart's own newest sample ("now"), not wall-clock
  * real time, since what matters here is how far back the window
@@ -2600,7 +2612,7 @@ function renderDnsRecords(records) {
 		row.appendChild(ipCell);
 
 		const ownerCell = document.createElement("td");
-		ownerCell.textContent = rec.owner || "-";
+		ownerCell.textContent = formatOwner(rec.owner);
 		row.appendChild(ownerCell);
 
 		const actionCell = document.createElement("td");
@@ -3288,7 +3300,7 @@ function renderPkiCerts(certs) {
 		row.appendChild(sansCell);
 
 		const ownerCell = document.createElement("td");
-		ownerCell.textContent = cert.owner || "-";
+		ownerCell.textContent = formatOwner(cert.owner);
 		row.appendChild(ownerCell);
 
 		const actionCell = document.createElement("td");

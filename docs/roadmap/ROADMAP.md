@@ -2214,6 +2214,12 @@ Second of the logging/web-UI epic. The consolidated log store stays the one sour
 
 Verified: `test/test_syslogfwd.c` covers the registration bookkeeping (mirroring the existing NTP test's own coverage) plus a genuine wire-level proof -- a real receiver container (a small new fixture binding real UDP `:514` inside its own network namespace) confirmed, via its own transparently-captured stdout, to have received a well-formed RFC 3164 datagram from a real sender container, naming the sender correctly and carrying its message verbatim. Full clean rebuild (`-Wall -Werror`, zero warnings) + full regression sweep (37 test binaries) confirm zero regressions.
 
+## Part 86 (done): logging/web-UI epic Part 5 -- __host owner sentinel for PKI cert / DNS record
+
+Small, user-requested clarity fix: the daemon's own auto-issued `"host"` PKI leaf and auto-maintained instance DNS record now carry a reserved `"__host"` owner sentinel instead of `null`, distinguishing "owned by the daemon itself" from "no owner for any other reason." See [ADR-0128](docs/adr/0128-host-owner-sentinel.md). Rendered as "host (this daemon)" in both the CLI and web dashboard; the REST API itself still returns the raw sentinel string.
+
+Verified: `test_pki.c`'s existing site-config-triggered reissue assertion updated to expect the new sentinel. Full clean rebuild (`-Wall -Werror`, zero warnings) + full regression sweep (37 test binaries) confirm zero regressions.
+
 ## Part 84 (done): logging/web-UI epic Part 1 -- transparent container log capture into the consolidated log store
 
 First of a multi-part logging/web-UI epic (user-requested: transparent container log aggregation with regex/level/container filters feeding a common backend; optional redundant `syslog-1`/`syslog-2` forward containers; several other web dashboard changes tracked as later parts of the same epic). Two design questions -- where container logs should live, and how a non-API syslog receiver fits this project's "100% API driven" mandate -- were worked through with the user before any code was written, both resolved in favor of extending the existing consolidated log store (`logstore.c`, ADR-0070) as the one source of truth, with syslog forwarding deferred to a later part as a purely optional, non-authoritative external-tooling target. See [ADR-0126](docs/adr/0126-transparent-container-log-capture.md).

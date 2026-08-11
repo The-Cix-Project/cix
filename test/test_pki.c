@@ -818,7 +818,10 @@ int main(void)
 		/*
 		 * ADR-0050: the site PUT above must have (re)issued this
 		 * install's own "host" leaf -- SAN reflects the FQDN just set,
-		 * fixed record name, owner null (not tied to any container).
+		 * fixed record name, owner "__host" (a reserved sentinel, ADR-0128
+		 * -- never a real container name, distinguishing "not owned by
+		 * any container" from "owned by a container literally named
+		 * host").
 		 */
 		{
 			char first_serial[128] = { 0 };
@@ -845,9 +848,10 @@ int main(void)
 					        "FAIL: host cert SAN missing kanxeo1.lab1.corp.internal\n");
 					ok = 0;
 				}
-				if (json_object_get(r.json, "owner") != NULL &&
-				    json_object_get(r.json, "owner")->type != JSON_NULL) {
-					fprintf(stderr, "FAIL: host cert should have owner=null\n");
+				if (!str_eq(json_str_field(r.json, "owner"), "__host")) {
+					fprintf(stderr, "FAIL: host cert should have owner=\"__host\", got %s\n",
+					        json_str_field(r.json, "owner") ? json_str_field(r.json, "owner")
+					                                          : "(null)");
 					ok = 0;
 				}
 				snprintf(first_serial, sizeof(first_serial), "%s",

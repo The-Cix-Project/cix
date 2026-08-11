@@ -709,13 +709,26 @@ static void fmt_devicemap_list(const struct json_value *v)
 		fmt_devicemap_line(maps->u.array.items[i]);
 }
 
+/* "__host" is a reserved owner sentinel (daemon/src/main.c's
+ * reissue_host_pki_cert()/reconcile_instance_dns_record(), ADR-0128) --
+ * never a real container name, rendered distinctly here rather than as
+ * the raw sentinel string, mirroring web/app.js's own formatOwner(). */
+static const char *owner_display(const char *owner)
+{
+	if (owner == NULL || owner[0] == '\0')
+		return "-";
+	if (strcmp(owner, "__host") == 0)
+		return "host (this daemon)";
+	return owner;
+}
+
 static void fmt_dns_record_line(const struct json_value *v)
 {
 	const char *name = json_str_field(v, "name");
 	const char *ip = json_str_field(v, "ip");
 	const char *owner = json_str_field(v, "owner");
 
-	printf("%-30s %-16s %s\n", name, ip, owner != NULL ? owner : "-");
+	printf("%-30s %-16s %s\n", name, ip, owner_display(owner));
 }
 
 static void fmt_dns_record_list(const struct json_value *v)
@@ -863,7 +876,7 @@ static void fmt_pki_cert_line(const struct json_value *v)
 	const char *not_after = json_str_field(v, "not_after");
 	const char *owner = json_str_field(v, "owner");
 
-	printf("%-24s %-42s %-30s %s\n", name, serial, not_after, owner != NULL ? owner : "-");
+	printf("%-24s %-42s %-30s %s\n", name, serial, not_after, owner_display(owner));
 }
 
 static void fmt_pki_cert_list(const struct json_value *v)

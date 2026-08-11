@@ -851,7 +851,7 @@ POST /v1/containers
 
 Unlike `dns_register`, `pki_issue` does **not** require `networks` — the cert identifies the container by name, not by IP, and delivery works for any running container regardless of networking. It **does** require the CA to already be bootstrapped, checked upfront as a `400` (you can't issue a cert with no CA). A *name collision* discovered only at issuance time (e.g. a stale cert persisted from a same-named container created before a daemon restart) is best-effort instead: issuance is silently skipped rather than overwriting it, and the container is still created successfully.
 
-This install also always keeps a `"host"` leaf current for itself, auto-(re)issued whenever `PUT /system/site` changes this install's identity, or whenever the CA chain changes at all — nothing an operator needs to request separately.
+This install also always keeps a `"host"` leaf current for itself, auto-(re)issued whenever `PUT /system/site` changes this install's identity, or whenever the CA chain changes at all — nothing an operator needs to request separately. Its own `"owner"` is `"__host"` (ADR-0128), a reserved sentinel distinguishing "owned by the daemon itself" from a plain `null` owner — the CLI and web dashboard both render it as "host (this daemon)" rather than the raw sentinel string. Same sentinel on the auto-maintained instance DNS record mentioned above.
 
 ### Regenerating the whole chain: `POST /pki/reset`
 

@@ -2125,7 +2125,12 @@ static void reissue_host_pki_cert(void)
 
 	sans[0] = fqdn;
 	jw_init(&scratch);
-	perr = pki_cert_create("host", sans, 1, 365, NULL, &scratch);
+	/* "__host" (not "host"): a reserved owner sentinel distinct from
+	 * any real container name, so this cert's own ownership can never
+	 * collide with (and be wrongly wiped by) a real container someone
+	 * happens to name "host" -- same reserved-pseudo-name convention
+	 * PKG_BUILD_CONTAINER_NAME ("__pkgbuild") already established. */
+	perr = pki_cert_create("host", sans, 1, 365, "__host", &scratch);
 	jw_free(&scratch);
 	if (perr != PKI_OK)
 		fprintf(stderr, "host: could not (re)issue PKI cert for %s (err=%d)\n", fqdn,
@@ -2181,7 +2186,10 @@ static void reconcile_instance_dns_record(void)
 		dns_record_delete(g_last_instance_dns_name);
 	dns_record_delete(fqdn); /* in case this exact name is already registered (idempotent re-call) */
 
-	derr = dns_record_create(fqdn, addr.s_addr, NULL, &rec);
+	/* "__host" owner sentinel, same reasoning as reissue_host_pki_cert()
+	 * above -- never a real container name, so this record's own
+	 * ownership can't collide with one. */
+	derr = dns_record_create(fqdn, addr.s_addr, "__host", &rec);
 	if (derr != DNS_OK) {
 		fprintf(stderr, "instance DNS record: could not (re)create %s (err=%d)\n", fqdn,
 		        (int)derr);

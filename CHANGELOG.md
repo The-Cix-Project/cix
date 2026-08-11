@@ -19,6 +19,17 @@ Second of the logging/web-UI epic (Part 1 was ADR-0126). The consolidated log st
 #### Verified
 - Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (37 test binaries) confirms zero regressions.
 
+### Part 86 (done): logging/web-UI epic Part 5 -- __host owner sentinel for PKI cert / DNS record
+
+Small, user-requested clarity fix: "for the entry for the host in pki certs, dns, can we make the owner the host? so that it's clear?" See [ADR-0128](docs/adr/0128-host-owner-sentinel.md).
+
+#### Added
+- `daemon/src/main.c`: `reissue_host_pki_cert()`/`reconcile_instance_dns_record()` now pass `"__host"` (a reserved owner sentinel, confirmed via discussion to be necessary rather than the bare `"host"` -- container names may legally contain `_`, so a real container literally named `host` is possible and must never collide with this sentinel) instead of `NULL` for the daemon's own auto-issued PKI leaf / auto-maintained instance DNS record.
+- `web/app.js`: new `formatOwner()`, `cli/src/main.c`: new `owner_display()` -- both map `"__host"` to `"host (this daemon)"` for display; the REST API itself still returns the raw `"__host"` string, only the two client surfaces add a friendlier label.
+
+#### Verified
+- `test/test_pki.c`'s existing ADR-0050 assertion updated from "owner must be null" to "owner must be exactly `__host`" -- a real, deliberate behavior change. Full clean rebuild (`-Wall -Werror`, zero warnings) + full regression sweep (37 test binaries) confirm zero regressions.
+
 ### Part 85 follow-up: sysklogd.recipe build-image gaps found during live verification on 192.168.15.95
 
 Two real, environment-specific build-image gaps found only by actually running `sysklogd.recipe` against the real `kanxeo-builder` build image (both had already built and passed a local smoke test in a dev sandbox, which doesn't reproduce either): (1) sysklogd's own Autotools/Libtool build always constructs a real static "convenience library" internally even with `--disable-shared --disable-static`, needing `ar`/`ranlib` from `binutils` -- not present on `kanxeo-builder` by default. Fixed by bypassing `make`/libtool entirely: `pkg_build()` now compiles and links the handful of needed `.c` files directly with `tcc`. (2) That direct-link path then surfaced a second gap -- `__dso_handle` came back undefined at link time on the real build image (glibc's own static-destructor bookkeeping expects it; the normal libtool-driven link path provides it, a bare `tcc` link sometimes doesn't). Fixed with a tiny, `__attribute__((weak))` stub compiled and linked in alongside the real object files. Also found live: sysklogd's own default `-H`-less behavior substitutes the *sending* address (kanxeod's own host IP) as the logged `HOSTNAME` rather than trusting the RFC 3164 message's own `HOSTNAME` field -- `docs/api/README.md`'s own reference run command now includes `-H`. Both build-image gaps documented as new `CLAUDE.md` environment notes for any future recipe hitting the same class of issue. Live-verified end to end afterward: real `syslog-1`/`syslog-2` containers on 192.168.15.95, both registered as forward targets, both correctly show a real container's own name (not the daemon's IP) against its own forwarded log lines in `/var/log/messages`.
