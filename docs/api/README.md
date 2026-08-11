@@ -23,6 +23,8 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | POST | `/system/iso` | Assemble a fresh installer ISO server-side, non-blocking |
 | GET | `/system/routes` | The box's own real kernel IPv4 routing table |
 | GET | `/system/stats` | Host-wide load/CPU/memory/disk/network snapshot |
+| GET | `/system/processes` | Every real process on the box, correlated to a container if any |
+| DELETE | `/system/processes/{pid}` | Kill a process -- real, immediate SIGKILL |
 | GET | `/system/ping` | Poll the current/last ICMP ping job |
 | POST | `/system/ping` | Start a real ICMP echo against an IPv4 address |
 | GET | `/system/resolv` | The host's own outbound DNS resolver config |
@@ -554,6 +556,26 @@ A real, host-side, point-in-time snapshot — no in-container agent, no server-s
 - `cpu.pressure`/`memory.pressure`/`disk.pressure` (ADR-0074) are this container's own `cpu.pressure`/`memory.pressure`/`io.pressure` (`disk.pressure` maps to `io.pressure` — kept alongside the existing `disk` object's other I/O-derived counters rather than a separate top-level key), same shape and semantics as host stats' own pressure fields above. `cpu.pressure.full` is structurally always near-zero for a lightly-threaded container — the kernel only populates it when every task in the cgroup is stalled at once.
 - Works for a container that exited on its own (it stays queryable, same as `GET /containers/{name}` itself does, until a real `DELETE`); `404`s once actually removed.
 - `networks[].name` is always the container-facing network name (`"internal"`), never the host-side veth implementation name — a host implementation detail this API never leaks.
+
+## Host processes (ADR-0131)
+
+```
+GET /v1/system/processes
+```
+
+A real, direct `/proc` scan — every process on the box, not just ones this daemon itself spawned (host-level daemons, a shell an operator started over SSH into a jumpbox container's own console, everything). A point-in-time snapshot, same posture as `GET /system/stats`/`GET /containers/{name}/stats` above — no history, call again for a fresh one. Response shape (one entry per process):
+
+```json
+[{"pid": 1234, "ppid": 1, "comm": "chronyd", "command_line": "/usr/sbin/chronyd -d -f /etc/chrony.conf", "container": "ntp-1", "user_id": 0, "group_id": 0}]
+```
+
+`container` is populated by walking the process's own real host ppid chain against every currently-running container's own root pid — every container's own init is a direct `clone3()` child of `kanxeod` itself, so this reaches either a known container root (a match) or `kanxeod`'s own pid / pid 1 (empty string, a plain host-level process) for every case that matters. `command_line` is `/proc/<pid>/cmdline`'s own space-joined argv, or `"[comm]"` for a kernel thread (or a process caught between `execve()` calls) — the same convention `ps(1)` itself uses for an empty cmdline. `user_id`/`group_id` are the real (not effective/saved/filesystem) uid/gid from `/proc/<pid>/status`.
+
+```
+DELETE /v1/system/processes/{pid}
+```
+
+A real, immediate `SIGKILL` — no grace period, unlike `DELETE /containers/{name}` (which has real container-lifecycle semantics: the container's own restart policy, network/cgroup teardown, etc.). Refuses `pid 1` and this daemon's own real pid outright (`400`) — killing either would crash or reboot the whole host on a real installed system, where `kanxeod` runs as real PID 1. Every other pid is allowed, **including one that happens to belong to a running container** — killing a container's own init pid this way is exactly equivalent to that container crashing on its own; the existing `SIGCHLD`-driven exit handling already covers it correctly, restart policy and all. `404` for a pid that isn't currently running, `400` for a non-numeric path segment. `kanxeoctl process ls`/`process kill PID` is the CLI surface.
 
 ## Reading a file back out of a container
 

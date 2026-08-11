@@ -432,6 +432,7 @@ const CATEGORY_VIEWS = {
 	site: "view-site",
 	"daemon-config": "view-daemon-config",
 	"host-stats": "view-host-stats",
+	processes: "view-processes",
 	logs: "view-logs",
 	backup: "view-backup",
 	update: "view-update",
@@ -480,6 +481,8 @@ function renderCurrentView() {
 			renderRoutesList();
 		else if (route.category === "host-stats")
 			startHostStatsPolling();
+		else if (route.category === "processes")
+			renderProcessesList();
 		else if (route.category === "logs")
 			renderLogsList();
 		else if (route.category === "images" && route.name !== null)
@@ -878,6 +881,7 @@ function renderTree() {
 						{ label: "Devices", hash: "devices", icon: "devices" },
 						{ label: "Routes", hash: "routes", icon: "networks" },
 						{ label: "Host Stats", hash: "host-stats", icon: "stats" },
+						{ label: "Processes", hash: "processes", icon: "stats" },
 						{ label: "Logs", hash: "logs", icon: "system" },
 						{ label: "Update", hash: "update", icon: "update" },
 						{ label: "Backup", hash: "backup", icon: "backup" },
@@ -1758,6 +1762,95 @@ function startHostStatsPolling() {
 	pollHostStatsOnce();
 	hostStatsTimer = setInterval(pollHostStatsOnce, POLL_INTERVAL_MS);
 }
+
+/*
+ * ---------- Host processes (ADR-0131) ----------
+ * Fetch-on-demand, not folded into the global 2s poll() loop the way
+ * most category views are -- a real host's process table can be large
+ * and churns constantly (pids come and go every fraction of a second),
+ * so a full-table re-render every 2s would be visually noisy for a
+ * view an operator opens to inspect a point-in-time snapshot, not
+ * watch scroll by live. Same "no reason to keep re-polling while
+ * nobody's looking" reasoning the old fetch-on-demand Logs page had.
+ */
+async function refreshProcesses() {
+	const tbody = document.getElementById("processes-body");
+
+	tbody.innerHTML = '<tr><td colspan="7" class="empty">Loading&hellip;</td></tr>';
+	try {
+		const procs = await apiRequest("GET", "/v1/system/processes");
+
+		renderProcessesTable(procs);
+	} catch (e) {
+		tbody.innerHTML = '<tr><td colspan="7" class="empty">Failed to load.</td></tr>';
+	}
+}
+
+function renderProcessesTable(procs) {
+	const tbody = document.getElementById("processes-body");
+
+	tbody.textContent = "";
+	if (!procs || procs.length === 0) {
+		tbody.innerHTML = '<tr><td colspan="7" class="empty">No processes.</td></tr>';
+		return;
+	}
+	for (const p of procs) {
+		const row = document.createElement("tr");
+		const pidCell = document.createElement("td");
+		const ppidCell = document.createElement("td");
+		const uidCell = document.createElement("td");
+		const gidCell = document.createElement("td");
+		const containerCell = document.createElement("td");
+		const cmdCell = document.createElement("td");
+		const actionCell = document.createElement("td");
+		const killButton = document.createElement("button");
+
+		pidCell.textContent = p.pid;
+		ppidCell.textContent = p.ppid;
+		uidCell.textContent = p.user_id;
+		gidCell.textContent = p.group_id;
+		if (p.container) {
+			const link = document.createElement("a");
+
+			link.href = "#containers/" + encodeURIComponent(p.container);
+			link.textContent = p.container;
+			containerCell.appendChild(link);
+		} else {
+			containerCell.textContent = "-";
+		}
+		cmdCell.textContent = p.command_line;
+		cmdCell.className = "processes-cmdline";
+
+		killButton.textContent = "Kill";
+		killButton.className = "button-danger button-small";
+		killButton.addEventListener("click", () => killProcess(p.pid, p.command_line));
+		actionCell.appendChild(killButton);
+
+		row.append(pidCell, ppidCell, uidCell, gidCell, containerCell, cmdCell, actionCell);
+		tbody.appendChild(row);
+	}
+}
+
+async function killProcess(pid, cmdline) {
+	if (!confirm("Kill pid " + pid + " (" + cmdline + ")? This is an immediate SIGKILL, no confirmation from the process itself."))
+		return;
+	try {
+		await apiRequest("DELETE", "/v1/system/processes/" + pid);
+		clearStatus();
+		showStatus("Killed pid " + pid, false);
+		await refreshProcesses();
+	} catch (e) {
+		showStatus("Failed to kill pid " + pid + ": " + e.message, true);
+	}
+}
+
+function renderProcessesList() {
+	refreshProcesses();
+}
+
+document.getElementById("proc-refresh").addEventListener("click", () => {
+	refreshProcesses();
+});
 
 function consoleKeydown(event) {
 	if (consoleWs === null || consoleWs.readyState !== WebSocket.OPEN)

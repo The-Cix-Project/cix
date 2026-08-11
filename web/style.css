@@ -632,6 +632,13 @@ table {
 	border-collapse: collapse;
 }
 
+.processes-cmdline {
+	max-width: 32rem;
+	overflow-wrap: break-word;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: 0.85rem;
+}
+
 th, td {
 	text-align: left;
 	padding: 0.5rem;

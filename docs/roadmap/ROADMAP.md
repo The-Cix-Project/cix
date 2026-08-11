@@ -2214,6 +2214,14 @@ Second of the logging/web-UI epic. The consolidated log store stays the one sour
 
 Verified: `test/test_syslogfwd.c` covers the registration bookkeeping (mirroring the existing NTP test's own coverage) plus a genuine wire-level proof -- a real receiver container (a small new fixture binding real UDP `:514` inside its own network namespace) confirmed, via its own transparently-captured stdout, to have received a well-formed RFC 3164 datagram from a real sender container, naming the sender correctly and carrying its message verbatim. Full clean rebuild (`-Wall -Werror`, zero warnings) + full regression sweep (37 test binaries) confirm zero regressions.
 
+## Part 89 (done): logging/web-UI epic Part 6 (final) -- host process list + kill
+
+Closes the logging/web-UI epic (Parts 1-6, ADR-0126 through ADR-0131). `GET`/`DELETE /v1/system/processes` -- a real, direct `/proc` scan of every process on the box, each correlated to a container (if any) by walking its own real host ppid chain against the registry's own known container root pids, rather than a pid-namespace comparison (every container's own init is a direct `clone3()` child of `kanxeod`, so the ppid walk gives the same answer more cheaply). Kill is a real, immediate SIGKILL, refusing only pid 1 and this daemon's own real pid -- a pid belonging to a running container is allowed, since killing it is exactly equivalent to that container crashing on its own and the existing exit handling already covers it. See [ADR-0131](docs/adr/0131-host-process-list-and-kill.md).
+
+New `kanxeoctl process ls`/`process kill PID` CLI surface, and a new System > Server > Processes web dashboard page (fetch-on-demand, container values linking to that container's own detail page, Kill guarded by a confirm() dialog matching this dashboard's own destructive-action convention).
+
+Verified: new `test/test_hostproc.c` confirms the daemon's own real pid is listed correctly, a real running container's own process is correlated to it by name, all kill-validation edge cases (pid 1, this daemon's own pid, nonexistent, non-numeric) are exercised over real HTTP, and a real disposable process is confirmed to actually die when killed via the API. Full clean rebuild + full regression sweep (38 test binaries) confirm zero regressions.
+
 ## Part 88 (done): logging/web-UI epic Part 4 -- host stats graphs page
 
 `GET /v1/system/stats` (ADR-0073) has existed in the API since that phase but had zero web dashboard presence until now -- closed with a new System > Server > Host Stats page, four live graphs (CPU/memory/disk/network) reusing the container Stats tab's own hand-rolled canvas chart renderer, plus a load-average text line. See [ADR-0130](docs/adr/0130-host-stats-graphs-page.md).

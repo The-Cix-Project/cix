@@ -19,6 +19,19 @@ Second of the logging/web-UI epic (Part 1 was ADR-0126). The consolidated log st
 #### Verified
 - Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (37 test binaries) confirms zero regressions.
 
+### Part 89 (done): logging/web-UI epic Part 6 (final) -- host process list + kill
+
+Closes the logging/web-UI epic. User request: "I want a host process command with ls and kill maybe and stuff?... show the process as id, command, command_line, container, user_ID, group_id... something that shows processes but also shows containers?" See [ADR-0131](docs/adr/0131-host-process-list-and-kill.md).
+
+#### Added
+- `daemon/src/hostproc.c`/`daemon/include/hostproc.h` (new module): `GET`/`DELETE /v1/system/processes`/`/v1/system/processes/{pid}` -- a real, direct `/proc` scan (pid/ppid/comm/command_line/uid/gid), each process correlated to a container (if any) by walking its own real host ppid chain against the registry's own known container root pids (every container's own init is a direct `clone3()` child of `kanxeod`, so this reaches either a known container root or `kanxeod`'s own pid/pid 1). `DELETE` is a real, immediate SIGKILL -- refuses pid 1 and this daemon's own real pid outright, allows every other pid including one belonging to a running container (equivalent to that container crashing on its own; the existing exit handling already covers it).
+- `cli/src/main.c`: new top-level `process` command, `kanxeoctl process ls`/`process kill PID`.
+- `web/`: new System > Server > Processes page -- fetch-on-demand (not folded into the global poll loop, since a real process table churns too fast for that to be anything but noisy), container values link to that container's own detail page, Kill guarded by a `confirm()` dialog.
+- `test/test_hostproc.c`: the daemon's own real pid confirmed present (`comm=="kanxeod"`); a real running container's own process confirmed correlated to it by name; all four kill-validation cases exercised over real HTTP; a real, disposable forked process confirmed to actually die (`waitpid()`/`WIFSIGNALED`/`WTERMSIG`) when killed via the API.
+
+#### Verified
+- Full clean rebuild (`-Wall -Werror`, zero warnings) + full regression sweep (38 test binaries) confirm zero regressions. `node --check web/app.js`.
+
 ### Part 88 (done): logging/web-UI epic Part 4 -- host stats graphs page
 
 User request: "in the system tree, i want to be able to have a page which shows the host stats in graphs and so on?" `GET /v1/system/stats` (ADR-0073) has existed since that ADR but had zero web dashboard presence until now. See [ADR-0130](docs/adr/0130-host-stats-graphs-page.md).

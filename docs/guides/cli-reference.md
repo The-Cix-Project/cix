@@ -30,6 +30,8 @@ kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `daemon-config set [--port=N] [--https-port=N] [--enable-http] [--disable-http] [--enable-https] [--disable-https] [--management-network=NAME] [--bind-ip=A.B.C.D \| --clear-bind-ip]` | Live, no-restart change — only the fields given are touched. `bind_ip` (ADR-0068) is a dedicated second address on the management network's own bridge; `--clear-bind-ip` reverts to that network's own address |
 | `routes` | The box's own real kernel IPv4 routing table (ADR-0066) — the only way to see this on a real install, no SSH/general shell |
 | `host-stats` | Host-wide load/CPU/memory/disk/network snapshot, including cpu/memory/io pressure-stall (PSI) figures (ADR-0073, ADR-0074) — the host-level counterpart to `stats NAME` below |
+| `process ls` | Every real process on the box (a direct `/proc` scan), each correlated to a container by its own real host ppid chain, if any (ADR-0131) |
+| `process kill PID` | A real, immediate SIGKILL; refuses pid 1 and this daemon's own pid |
 | `ping HOST` | Real ICMP echo against a literal IPv4 address (ADR-0075) — waits ~2s max, exits nonzero if unreachable |
 | `resolv [show]` | The host's own outbound DNS resolver config (ADR-0076) |
 | `resolv set [--nameserver=A.B.C.D ...]` | Replace it (repeatable flag, up to 3) — takes effect immediately, no reboot; no flags clears it |
@@ -42,12 +44,15 @@ kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `ntp server register --container=NAME` | Register a running container as an available internal NTP time source, mirrors `dns server register`/`ldap server register` |
 | `ntp server ls` | List registered NTP server bindings |
 | `ntp server unregister CONTAINER` | Unregister one (does not touch the container itself) |
+| `syslog target register --container=NAME` | Register a running container (e.g. `syslog-1`/`syslog-2` running `sysklogd`) as an optional, redundant syslog forward target — every container-sourced log line is also sent to it as a real RFC 3164 UDP datagram, alongside the consolidated log store (ADR-0127) |
+| `syslog target ls` | List registered syslog forward targets |
+| `syslog target unregister CONTAINER` | Unregister one (does not touch the container itself) |
 | `routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]` | Add a real kernel route (ADR-0067 Part 3); or `--default --gateway=A.B.C.D` for the default route |
 | `routes rm --dest=A.B.C.D --prefix=N` | Remove one; or `--default` for the default route |
 | `swap` | Whether the host swap file is enabled (ADR-0069) |
 | `swap enable --size-mb=N` | Create and activate a swap file of this size |
 | `swap disable` | Deactivate and remove it |
-| `logs [--source=kernel\|kanxeod\|audit] [--level=...] [--tail=N] [--since=UNIXTS]` | The consolidated log (kernel dmesg + kanxeod diagnostics + per-request audit trail, ADR-0070) |
+| `logs [--source=kernel\|kanxeod\|audit\|container] [--level=...] [--container=NAME] [--regex=PATTERN] [--tail=N] [--since=UNIXTS]` | The consolidated log — kernel dmesg, kanxeod diagnostics, a per-request audit trail, and every container's own stdout/stderr, transparently (ADR-0070, ADR-0126) — `--container=` filters to one container's own lines, `--regex=` is a POSIX extended regex (case-insensitive) matched against the message text |
 | `logs config [--max-bytes=N] [--min-level=LEVEL]` | Show or set the log's total size cap and/or minimum severity floor (`emerg`/`alert`/`crit`/`err`\|`error`/`warning`\|`warn`/`notice`/`info`/`debug`, default `debug`) -- either flag alone is fine, both are independent |
 
 See [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) and [`docs/guides/staying-updated.md`](staying-updated.md) for `update`'s real operator runbooks, not just the flag syntax.

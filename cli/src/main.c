@@ -210,6 +210,11 @@ static void print_usage(FILE *out)
 	        "  swap enable --size-mb=N  -- create and activate a swap file of this size\n"
 	        "  swap disable  -- deactivate and remove it\n"
 	        "  host-stats  -- host-wide load/CPU/memory/disk/network snapshot (ADR-0073)\n"
+	        "  process ls  -- every real process on the box (a direct /proc scan), each\n"
+	        "               correlated to a container by its own real host ppid chain, if any\n"
+	        "               (ADR-0131)\n"
+	        "  process kill PID  -- a real, immediate SIGKILL; refuses pid 1 and this\n"
+	        "               daemon's own pid\n"
 	        "  ping HOST  -- real ICMP echo against an IPv4 address, waits for the result\n"
 	        "               (~2s max) and exits nonzero if unreachable\n"
 	        "  resolv [show]  -- the host's own outbound DNS resolver config (ADR-0076)\n"
@@ -2347,6 +2352,81 @@ static int cmd_host_stats(const struct kx_client *c, int json_mode)
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_host_stats);
+}
+
+/* GET/DELETE /v1/system/processes (logging/web-UI epic Part 6,
+ * ADR-0131) -- a real /proc scan, container column correlated
+ * server-side via a ppid-chain walk. */
+static void fmt_process_list(const struct json_value *v)
+{
+	size_t i;
+
+	if (v == NULL || v->type != JSON_ARRAY)
+		return;
+	printf("%-8s %-8s %-8s %-8s %-16s %s\n", "PID", "PPID", "UID", "GID", "CONTAINER", "COMMAND");
+	for (i = 0; i < v->u.array.count; i++) {
+		const struct json_value *e = v->u.array.items[i];
+		long long pid = (long long)json_as_number(json_object_get(e, "pid"));
+		long long ppid = (long long)json_as_number(json_object_get(e, "ppid"));
+		long long uid = (long long)json_as_number(json_object_get(e, "user_id"));
+		long long gid = (long long)json_as_number(json_object_get(e, "group_id"));
+		const char *container = json_str_field(e, "container");
+		const char *cmdline = json_str_field(e, "command_line");
+
+		printf("%-8lld %-8lld %-8lld %-8lld %-16s %s\n", pid, ppid, uid, gid,
+		       container != NULL && container[0] != '\0' ? container : "-",
+		       cmdline != NULL ? cmdline : "");
+	}
+}
+
+static int cmd_process_ls(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/processes", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_process_list);
+}
+
+static int cmd_process_kill(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[64];
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: process kill requires a pid\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/system/processes/%s", argv[0]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static int cmd_process(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr,
+		        "usage: kanxeoctl process ls  -- every real process on the box, correlated to a\n"
+		        "               container by its own real host ppid chain (ADR-0131)\n"
+		        "       kanxeoctl process kill PID  -- a real, immediate SIGKILL; refuses pid 1\n"
+		        "               and this daemon's own pid\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "ls") == 0)
+		return cmd_process_ls(c, json_mode);
+	if (strcmp(sub, "kill") == 0)
+		return cmd_process_kill(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown process subcommand '%s'\n", sub);
+	return 2;
 }
 
 static void fmt_ping(const struct json_value *v)
@@ -7186,6 +7266,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_swap(client, json_mode, argc, argv);
 	if (strcmp(cmd, "host-stats") == 0)
 		return cmd_host_stats(client, json_mode);
+	if (strcmp(cmd, "process") == 0)
+		return cmd_process(client, json_mode, argc, argv);
 	if (strcmp(cmd, "ping") == 0)
 		return cmd_ping(client, json_mode, argc, argv);
 	if (strcmp(cmd, "resolv") == 0)
@@ -7299,7 +7381,7 @@ static const char *const SHELL_COMMANDS[] = {
 	"disks",  "dns",       "exit",          "files",    "health",    "help",
 	"host-stats", "image", "inspect",       "iso",      "ldap",      "logs",      "network",
 	"ntp",
-	"pause",  "ping",      "pkg",           "pki",      "ps",        "quit",      "reboot",
+	"pause",  "ping",      "pkg",           "pki",      "process",   "ps",        "quit",      "reboot",
 	"resolv",
 	"restore", "rm",       "rolling-config", "routes",        "run",      "shutdown",  "site",
 	"start",  "stats",     "stop",          "swap",     "syslog",    "time",      "unpause",   "update",

@@ -596,6 +596,61 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SystemStats"
+  /system/processes:
+    get:
+      summary: Every real process on the box, correlated to a container if any (ADR-0131)
+      description: >
+        A real, direct /proc scan -- every process on the host, not
+        just ones this daemon itself spawned. Each entry's "container"
+        field is populated by walking the process's own real host ppid
+        chain against every currently-running container's own root pid
+        (see ADR-0131 for why this, not a pid-namespace comparison) --
+        empty string if the process isn't inside any known container.
+        A point-in-time snapshot, same as GET /system/stats -- no
+        history, call again for a fresh one.
+      operationId: listSystemProcesses
+      responses:
+        "200":
+          description: Current process list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/HostProcess"
+  /system/processes/{pid}:
+    delete:
+      summary: Kill a host process (ADR-0131)
+      description: >
+        A real, immediate SIGKILL -- no grace period, unlike DELETE
+        /containers/{name} (which has real container-lifecycle
+        semantics). Refuses pid 1 and this daemon's own real pid
+        outright (400) -- every other pid is allowed, including one
+        that happens to belong to a running container (equivalent to
+        that container crashing on its own; the existing exit handling
+        already covers it).
+      operationId: killSystemProcess
+      parameters:
+        - name: pid
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Killed
+        "400":
+          description: pid is not a positive integer, or is pid 1 / this daemon's own pid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such pid currently running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /system/ping:
     get:
       summary: Poll the current/last ICMP ping job's status (ADR-0075)
@@ -5498,6 +5553,29 @@ components:
                 type: integer
               tx_packets:
                 type: integer
+    HostProcess:
+      type: object
+      required: [pid, ppid, comm, command_line, container, user_id, group_id]
+      properties:
+        pid:
+          type: integer
+        ppid:
+          type: integer
+        comm:
+          type: string
+          description: /proc/<pid>/stat's own short process name.
+        command_line:
+          type: string
+          description: Space-joined argv from /proc/<pid>/cmdline; "[comm]" for a kernel thread or a process caught between execve() calls.
+        container:
+          type: string
+          description: The container this pid belongs to (by a real host ppid-chain walk, ADR-0131), or empty string if none.
+        user_id:
+          type: integer
+          description: Real (not effective/saved/filesystem) uid.
+        group_id:
+          type: integer
+          description: Real (not effective/saved/filesystem) gid.
     ContainerStats:
       type: object
       required: [cpu, memory, disk, networks]

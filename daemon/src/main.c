@@ -5,6 +5,7 @@
 #include "disk.h"
 #include "diskformat.h"
 #include "diskrole.h"
+#include "hostproc.h"
 #include "logstore.h"
 #include "ntp.h"
 #include "ping.h"
@@ -434,6 +435,7 @@ static int set_disk_quota(const char *base_path, uint32_t projid, long long quot
 #define LDAP_SSH_TARGETS_PREFIX "/v1/ldap/ssh-targets/"
 #define NTP_SERVERS_PREFIX "/v1/ntp/servers/"
 #define SYSLOG_TARGETS_PREFIX "/v1/syslog/targets/"
+#define PROCESSES_PREFIX "/v1/system/processes/"
 #define PKI_CERTS_PREFIX "/v1/pki/certs/"
 #define PKG_PREFIX "/v1/pkg/"
 #define PKG_RECIPES_PREFIX "/v1/pkg/recipes/"
@@ -4370,6 +4372,50 @@ static void handle_system_stats(int fd)
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
+}
+
+/* GET/DELETE /v1/system/processes (logging/web-UI epic Part 6,
+ * ADR-0131): a real, direct /proc scan of every process on the box,
+ * correlated to a container by hostproc.c's own ppid-chain walk. */
+static void handle_hostproc_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	hostproc_write_json_list(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_hostproc_kill(int fd, const char *pid_str)
+{
+	char *endptr;
+	long pid;
+	enum hostproc_error herr;
+
+	pid = strtol(pid_str, &endptr, 10);
+	if (*pid_str == '\0' || *endptr != '\0' || pid <= 0) {
+		respond_error(fd, 400, "Bad Request", "pid must be a positive integer");
+		return;
+	}
+
+	herr = hostproc_kill((pid_t)pid);
+	switch (herr) {
+	case HOSTPROC_OK:
+		http_set_blocking(fd);
+		http_write_response(fd, 204, "No Content", "application/json", "", 0);
+		break;
+	case HOSTPROC_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such pid currently running");
+		break;
+	case HOSTPROC_ERR_FORBIDDEN:
+		respond_error(fd, 400, "Bad Request",
+		              "refusing to kill pid 1 or this daemon's own pid");
+		break;
+	case HOSTPROC_ERR_KILL_FAILED:
+		respond_error(fd, 500, "Internal Server Error", "kill(2) failed");
+		break;
+	}
 }
 
 static void handle_list(int fd)
@@ -10935,6 +10981,19 @@ static void dispatch(int fd, const struct http_request *req)
 	if (strcmp(req->path, "/v1/system/stats") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_system_stats(fd);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/system/processes") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_hostproc_list(fd);
+			return;
+		}
+	}
+	if (strncmp(req->path, PROCESSES_PREFIX, strlen(PROCESSES_PREFIX)) == 0) {
+		name = req->path + strlen(PROCESSES_PREFIX);
+		if (name[0] != '\0' && strcmp(req->method, "DELETE") == 0) {
+			handle_hostproc_kill(fd, name);
 			return;
 		}
 	}

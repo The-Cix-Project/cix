@@ -1019,6 +1019,30 @@
 			<p class="hint">Real, host-side usage (ADR-0073/ADR-0130) -- /proc + statvfs() on the daemon's own data directory, no in-container agent, sampled every 2s while this page stays open. History resets whenever this page (re)opens. Disk is the filesystem kanxeod's own data directory lives on, not every mounted filesystem on the box.</p>
 		</section>
 
+		<section class="view" id="view-processes" hidden>
+			<div class="view-list">
+				<h2>Processes</h2>
+				<p class="hint">Every real process on the box (ADR-0131) -- a direct <code>/proc</code> scan, each one correlated to a container (if any) by its own real host ppid chain. A snapshot, not a live feed -- press Refresh for a fresh one. Kill is a real, immediate SIGKILL; refuses pid 1 and this daemon's own pid.</p>
+				<button type="button" id="proc-refresh">Refresh</button>
+				<table id="processes">
+					<thead>
+						<tr>
+							<th>PID</th>
+							<th>PPID</th>
+							<th>UID</th>
+							<th>GID</th>
+							<th>Container</th>
+							<th>Command</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="processes-body">
+						<tr><td colspan="7" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</section>
+
 		<section class="view" id="view-logs" hidden>
 			<div class="view-list">
 				<h2>Logs</h2>
