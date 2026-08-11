@@ -29,6 +29,7 @@ See [`docs/roadmap/ROADMAP.md`](docs/roadmap/ROADMAP.md) for the full phase-by-p
 - **Build it**: [`docs/guides/building-kanxeo.md`](docs/guides/building-kanxeo.md) — on a dev machine, or self-hosted from a running Kanxeo box with no separate dev machine at all.
 - **Install it**: [`docs/guides/installing.md`](docs/guides/installing.md) — the installer ISO, disk partitioning, Secure Boot.
 - **Use it**: [`docs/guides/cli-reference.md`](docs/guides/cli-reference.md) (the `kanxeoctl` command surface) and [`docs/guides/web-dashboard.md`](docs/guides/web-dashboard.md) (the browser UI) — both pure REST clients over the same API documented in [`docs/api/README.md`](docs/api/README.md).
+- **Administer it**: [`docs/guides/administration.md`](docs/guides/administration.md) (monitoring, backup/restore, disks), [`docs/guides/networking.md`](docs/guides/networking.md) (networks, routing, VLANs), and [`docs/guides/security.md`](docs/guides/security.md) (PKI, HTTPS, LDAP accounts).
 - **Keep it updated**: [`docs/guides/kernel-build-and-ab-updates.md`](docs/guides/kernel-build-and-ab-updates.md) and [`docs/guides/staying-updated.md`](docs/guides/staying-updated.md).
 - **Extend it**: [`docs/guides/writing-recipes.md`](docs/guides/writing-recipes.md) — building real software from source into a `pkg install`-able package.
 
