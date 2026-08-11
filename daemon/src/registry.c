@@ -401,6 +401,8 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 			jw_null(w);
 		jw_key(w, "stopped");
 		jw_bool(w, def != NULL && def->stopped);
+		jw_key(w, "follow_rolling");
+		jw_bool(w, def != NULL && def->follow_rolling);
 		jw_key(w, "depends_on");
 		jw_arr_open(w);
 		if (def != NULL) {

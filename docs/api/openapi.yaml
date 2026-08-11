@@ -783,6 +783,56 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/rolling-config:
+    get:
+      summary: >
+        The configured rolling-restart jitter window (ADR-0124) -- how far
+        apart a rolling image's own follow_rolling containers spread their
+        restarts when that image auto-rebuilds.
+      operationId: getSystemRollingConfig
+      responses:
+        "200":
+          description: Current rolling-restart config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RollingConfig"
+    put:
+      summary: Set the rolling-restart jitter window (ADR-0124)
+      description: >
+        Each follow_rolling container that needs restarting on a given
+        reconciliation pass gets an independent, uniformly-random delay in
+        [0, jitter_window_seconds] before its own restart fires -- 0 means
+        no jitter, restart immediately. Spreads out the restarts of many
+        containers following the same rolling image instead of firing them
+        all in the same instant.
+      operationId: putSystemRollingConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [jitter_window_seconds]
+              properties:
+                jitter_window_seconds:
+                  type: integer
+                  minimum: 0
+                  maximum: 3600
+      responses:
+        "200":
+          description: Updated rolling-restart config (same shape as GET)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RollingConfig"
+        "400":
+          description: jitter_window_seconds missing, not a number, or out of the 0-3600 range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /system/ntp:
     get:
       summary: Upstream NTP server address list used to sync the host clock (ADR-0110)
@@ -4821,6 +4871,21 @@ components:
             including why even a container's own first-ever failure
             already applies one doubling (consecutive_failures goes 0 ->
             1 on that first exit, same as any subsequent one).
+        follow_rolling:
+          type: boolean
+          default: false
+          description: >
+            Opt-in (ADR-0124): whenever this container's own image is
+            rolling and its current_version advances, this container's own
+            pinned image_version is patched to match and the container is
+            live-restarted onto it -- after an independent, uniformly-random
+            delay in [0, jitter_window_seconds] (see PUT
+            /system/rolling-config) to spread out simultaneous restarts of
+            many containers following the same image. Reconciled after
+            every completed pkg install/hostbuild/image-recipe-apply job,
+            not just rolling auto-rebuilds. Silently ignored (not an
+            error), same as restart_delay_seconds above, when restart is
+            "no" -- meaningless without a persisted definition to replay.
         depends_on:
           type: array
           items:
@@ -5093,6 +5158,21 @@ components:
           type: integer
           nullable: true
           description: Base crash-restart delay; null unless restart is not "no".
+        image_version:
+          type: string
+          description: >
+            The image version this container was actually built from --
+            resolved once at creation to whatever the image's own
+            current_version was at that moment, or an explicit
+            "image_version" on the create request. Stable from then on
+            unless follow_rolling patches it and the container is
+            restarted onto the new pin (ADR-0124).
+        follow_rolling:
+          type: boolean
+          description: >
+            Whether this container auto-follows its image's own rolling
+            version drift (see ContainerCreateRequest.follow_rolling,
+            ADR-0124). Always false unless restart is not "no".
         stopped:
           type: boolean
           description: >
@@ -6608,6 +6688,16 @@ components:
         auth_token_set:
           type: boolean
           description: Whether a bearer auth token is currently stored -- the token itself is never returned.
+
+    RollingConfig:
+      type: object
+      required: [jitter_window_seconds]
+      properties:
+        jitter_window_seconds:
+          type: integer
+          description: >
+            Default 60. 0 disables jitter -- a follow_rolling container
+            restarts immediately when its image's rolling version advances.
 
     PkgInstallRequest:
       type: object

@@ -1610,6 +1610,8 @@ function renderContainerDetail(name) {
 				: c.restart_delay_seconds + "s"
 		)
 	);
+	optionsFields.appendChild(fieldBlock("Follow rolling image", c.follow_rolling ? "yes" : "no"));
+	optionsFields.appendChild(fieldBlock("Pinned image version", c.image_version || "-"));
 	optionsFields.appendChild(fieldBlock("Depends on", (c.depends_on || []).join(", ") || "-"));
 	optionsFields.appendChild(
 		fieldBlock(
@@ -3781,6 +3783,42 @@ document.getElementById("pkg-cache-clear").addEventListener("click", async () =>
 	}
 });
 
+/* ---- Rolling-restart jitter config (Part 5, ADR-0124) ---- */
+
+let rollingConfigDirty = false;
+
+async function refreshRollingConfig() {
+	try {
+		const config = await apiRequest("GET", "/v1/system/rolling-config");
+
+		cache.rollingConfig = config;
+		if (!rollingConfigDirty)
+			document.getElementById("rc-jitter-window").value = config.jitter_window_seconds;
+	} catch (e) {
+		/* Best-effort -- the form just stays at whatever was last shown. */
+	}
+}
+
+document.getElementById("rc-jitter-window").addEventListener("input", () => {
+	rollingConfigDirty = true;
+});
+
+document.getElementById("rc-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	try {
+		await apiRequest("PUT", "/v1/system/rolling-config", {
+			jitter_window_seconds: parseInt(document.getElementById("rc-jitter-window").value, 10),
+		});
+		clearStatus();
+		showStatus("Rolling-restart config saved", false);
+		rollingConfigDirty = false;
+		await refreshRollingConfig();
+	} catch (e) {
+		showStatus("Failed to save rolling-restart config: " + e.message, true);
+	}
+});
+
 let pkgArtifactConfigDirty = false;
 
 async function refreshPkgArtifactConfig() {
@@ -3955,6 +3993,7 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 	const interfaces = Array.from(document.getElementById("f-interfaces").selectedOptions).map((o) => o.value.replace(/^net:/, ""));
 	const restart = document.getElementById("f-restart").value;
 	const restartDelayText = document.getElementById("f-restart-delay").value.trim();
+	const followRolling = document.getElementById("f-follow-rolling").checked;
 	const dependsOnText = document.getElementById("f-depends-on").value.trim();
 	const readinessPortText = document.getElementById("f-readiness-port").value.trim();
 	const readinessTimeoutText = document.getElementById("f-readiness-timeout").value.trim();
@@ -4016,6 +4055,8 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 		body.restart = restart;
 	if (restartDelayText !== "")
 		body.restart_delay_seconds = parseInt(restartDelayText, 10);
+	if (followRolling)
+		body.follow_rolling = true;
 	if (dependsOnText !== "") {
 		body.depends_on = dependsOnText
 			.split(",")
@@ -5058,6 +5099,7 @@ async function poll() {
 		await refreshImageRecipeApplyStatus();
 		await refreshSiteConfig();
 		await refreshDaemonConfig();
+		await refreshRollingConfig();
 		await refreshRoutes();
 		await refreshSwap();
 	} catch (e) {

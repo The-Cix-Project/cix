@@ -1,0 +1,514 @@
+/*
+ * Proves Part 5 of the pkg/ redesign (task #770, ADR-0124): a
+ * follow_rolling container tracks its own image's current_version --
+ * when a rolling image auto-rebuilds (ADR-0107's own trigger,
+ * unmodified), apply_rolling_container_restarts() (daemon/src/main.c)
+ * patches the container's persisted image_version pin and, if it's
+ * still live, kills and replays it onto the new rootfs via a jittered
+ * one-shot timer (CONN_ROLLING_RESTART_TIMER). Proven two-sided: a
+ * follow_rolling container gets a genuinely new process (pid changes,
+ * not just relabeled) pinned to the new version; an otherwise-identical
+ * container on the same image WITHOUT follow_rolling is left
+ * completely untouched -- the opt-in gate the user asked for.
+ *
+ * Kept hermetic and gcc-free: the "package" installed is a real,
+ * already-compiled test binary (build/daemon_child, dynamically linked
+ * against system glibc like everything else this project produces) tar-
+ * wrapped as the pkg_source payload, with a no-op pkg_build() and a
+ * pkg_install() that just copies it -- pkg_seed_image_baseline()
+ * already stages the runtime lib closure (ld-linux/libc/...) onto
+ * every image, so this binary runs inside the container with no
+ * compiler ever invoked.
+ */
+#include "httpclient.h"
+#include "json.h"
+#include "test_image_fixture.h"
+
+#include <limits.h>
+#include <signal.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+extern char **environ;
+
+#define TEST_PORT 7657
+#define PORT_ARG "--port=7657"
+
+static char g_data_dir[PATH_MAX];
+static int g_failures;
+
+#define CHECK(cond, msg) \
+	do { \
+		if (!(cond)) { \
+			fprintf(stderr, "FAIL: %s\n", msg); \
+			g_failures++; \
+		} \
+	} while (0)
+
+static int run_cmd(const char *fmt, ...)
+{
+	char cmd[2048];
+	va_list ap;
+	int rc;
+
+	va_start(ap, fmt);
+	vsnprintf(cmd, sizeof(cmd), fmt, ap);
+	va_end(ap);
+	rc = system(cmd);
+	return (rc == 0) ? 0 : -1;
+}
+
+static int compute_file_sha256(const char *path, char *out_sha256, size_t sha256_size)
+{
+	char shacmd[700];
+	FILE *sp;
+	char buf[128] = { 0 };
+
+	snprintf(shacmd, sizeof(shacmd), "sha256sum '%s'", path);
+	sp = popen(shacmd, "r");
+	if (sp == NULL)
+		return -1;
+	if (fgets(buf, sizeof(buf), sp) == NULL) {
+		pclose(sp);
+		return -1;
+	}
+	pclose(sp);
+	if (strlen(buf) < 64 || 64 >= sha256_size)
+		return -1;
+	memcpy(out_sha256, buf, 64);
+	out_sha256[64] = '\0';
+	return 0;
+}
+
+static pid_t start_daemon(void)
+{
+	pid_t pid;
+	char *dargv[4];
+	static char data_dir_arg[PATH_MAX + 11];
+
+	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
+	dargv[0] = "build/kanxeod";
+	dargv[1] = PORT_ARG;
+	dargv[2] = data_dir_arg;
+	dargv[3] = NULL;
+
+	pid = fork();
+	if (pid < 0) {
+		perror("fork");
+		return -1;
+	}
+	if (pid == 0) {
+		execve("build/kanxeod", dargv, environ);
+		perror("execve build/kanxeod");
+		_exit(127);
+	}
+	return pid;
+}
+
+static int stop_daemon(pid_t pid)
+{
+	int status;
+
+	kill(pid, SIGTERM);
+	if (waitpid(pid, &status, 0) != pid)
+		return -1;
+	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
+}
+
+static const char *json_str_field(const struct json_value *obj, const char *key)
+{
+	return json_as_string(json_object_get(obj, key));
+}
+
+static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+{
+	int i;
+	struct kx_response r;
+
+	for (i = 0; i < max_attempts; i++) {
+		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			kx_response_free(&r);
+			return 0;
+		}
+		usleep(100000);
+	}
+	return -1;
+}
+
+/* Stages <scratch_dir>/rollsvc-<version>/rollsvc (a copy of the
+ * already-compiled binary_path), tars it with the usual
+ * <name>-<version>/ wrapper, returns its sha256. */
+static int stage_binary_fixture(const char *scratch_dir, const char *version,
+                                 const char *binary_path, char *out_tarball_path,
+                                 size_t tarball_path_size, char *out_sha256, size_t sha256_size)
+{
+	char src_dir[512];
+	char dst_bin[600];
+
+	snprintf(src_dir, sizeof(src_dir), "%s/rollsvc-%s", scratch_dir, version);
+	if (run_cmd("mkdir -p '%s'", src_dir) != 0)
+		return -1;
+
+	snprintf(dst_bin, sizeof(dst_bin), "%s/rollsvc", src_dir);
+	if (run_cmd("cp '%s' '%s' && chmod +x '%s'", binary_path, dst_bin, dst_bin) != 0)
+		return -1;
+
+	snprintf(out_tarball_path, tarball_path_size, "%s/rollsvc-%s.tarball", scratch_dir, version);
+	if (run_cmd("tar -cf '%s' -C '%s' 'rollsvc-%s'", out_tarball_path, scratch_dir, version) != 0)
+		return -1;
+
+	return compute_file_sha256(out_tarball_path, out_sha256, sha256_size);
+}
+
+static int write_binary_recipe(const char *pkg_state_dir, const char *version,
+                                const char *tarball_path, const char *sha256)
+{
+	char recipes_dir[256];
+	char name_dir[256];
+	char path[300];
+	FILE *f;
+
+	/* Unlike the real POST /v1/pkg/recipes path (pkg_recipe_add()'s own
+	 * persist_mkdir_p()), this test writes recipe files directly to
+	 * disk and never calls that endpoint first, so nothing else has
+	 * created "recipes/" yet. */
+	snprintf(recipes_dir, sizeof(recipes_dir), "%s/recipes", pkg_state_dir);
+	mkdir(pkg_state_dir, 0755);
+	mkdir(recipes_dir, 0755);
+
+	snprintf(name_dir, sizeof(name_dir), "%s/recipes/rollsvc", pkg_state_dir);
+	mkdir(name_dir, 0755);
+	snprintf(path, sizeof(path), "%s/%s", name_dir, version);
+	mkdir(path, 0755);
+	snprintf(path, sizeof(path), "%s/recipes/rollsvc/%s/build.sh", pkg_state_dir, version);
+	f = fopen(path, "w");
+	if (f == NULL)
+		return -1;
+	fprintf(f, "pkg_name=rollsvc\n");
+	fprintf(f, "pkg_version=%s\n", version);
+	fprintf(f, "pkg_source=file://%s\n", tarball_path);
+	fprintf(f, "pkg_sha256=%s\n", sha256);
+	fprintf(f, "pkg_depends=\"\"\n\n");
+	/* No compiler needed -- rollsvc is already a real ELF binary. */
+	fprintf(f, "pkg_build() {\n\t:\n}\n\n");
+	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp rollsvc "
+	           "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n\tchmod +x \"$PKG_DESTDIR/usr/bin/rollsvc\"\n}\n");
+	fclose(f);
+	return 0;
+}
+
+static int poll_pkg_installed_version(const struct kx_client *c, const char *pkg_at_image,
+                                       const char *want_version, int max_attempts)
+{
+	int i;
+	char path[256];
+
+	snprintf(path, sizeof(path), "/v1/pkg/%s", pkg_at_image);
+	for (i = 0; i < max_attempts; i++) {
+		struct kx_response r;
+		int matched = 0;
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200) {
+			const char *st = json_str_field(r.json, "state");
+			const char *ver = json_str_field(r.json, "version");
+
+			matched = st != NULL && strcmp(st, "installed") == 0 && ver != NULL &&
+			          strcmp(ver, want_version) == 0;
+		}
+		kx_response_free(&r);
+		if (matched)
+			return 0;
+		usleep(200000);
+	}
+	return -1;
+}
+
+/* Fetches pid and image_version for name; returns 0 on success. */
+static int fetch_container_pid_version(const struct kx_client *c, const char *name, long *out_pid,
+                                        char *out_version, size_t version_size)
+{
+	struct kx_response r;
+	char path[300];
+	int rc = -1;
+
+	snprintf(path, sizeof(path), "/v1/containers/%s", name);
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200) {
+		const char *ver = json_str_field(r.json, "image_version");
+
+		*out_pid = (long)json_as_number(json_object_get(r.json, "pid"));
+		if (ver != NULL)
+			snprintf(out_version, version_size, "%s", ver);
+		else
+			out_version[0] = '\0';
+		rc = 0;
+	}
+	kx_response_free(&r);
+	return rc;
+}
+
+int main(void)
+{
+	pid_t daemon_pid;
+	struct kx_client client;
+	struct kx_response r;
+	char scratch_dir[] = "/tmp/kanxeo_test_rollrestart_XXXXXX";
+	char pkg_state_dir[PATH_MAX];
+	char image_dir[PATH_MAX];
+	char tarball_v1[512], sha_v1[128];
+	char tarball_v2[512], sha_v2[128];
+	char old_version[128], new_version[128];
+	long follow_pid_before, follow_pid_after;
+	long plain_pid_before, plain_pid_after;
+	char follow_ver_before[128], follow_ver_after[128];
+	char plain_ver_before[128], plain_ver_after[128];
+	int i;
+
+	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
+		return 1;
+	if (mkdtemp(scratch_dir) == NULL) {
+		fprintf(stderr, "FAIL: mkdtemp\n");
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
+	snprintf(pkg_state_dir, sizeof(pkg_state_dir), "%s/pkg", g_data_dir);
+	snprintf(image_dir, sizeof(image_dir), "%s/images/rollctrimg", g_data_dir);
+
+	daemon_pid = start_daemon();
+	if (daemon_pid < 0) {
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
+	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	if (wait_for_daemon(&client, 50) != 0) {
+		fprintf(stderr, "FAIL: daemon never became healthy\n");
+		kill(daemon_pid, SIGKILL);
+		waitpid(daemon_pid, NULL, 0);
+		test_data_dir_cleanup(g_data_dir);
+		return 1;
+	}
+
+	/* Regular (non-hostbuild) `pkg install` builds every package inside
+	 * a shared toolchain sandbox (g_pkgbuild_rootfs, ADR-0056), never
+	 * the target image's own rootfs -- an empty POST here bootstraps it
+	 * from this sandbox's own real host environment (same call
+	 * test_pkg.c's own scenario 1 makes), needed before any install
+	 * below can create its build container. */
+	memset(&r, 0, sizeof(r));
+	CHECK(kx_client_request(&client, "POST", "/v1/pkg/bootstrap", NULL, &r) == 0 && r.status == 204,
+	      "POST /v1/pkg/bootstrap");
+	kx_response_free(&r);
+
+	/* --- rolling-config GET/PUT round trip, and range validation --- */
+	memset(&r, 0, sizeof(r));
+	CHECK(kx_client_request(&client, "GET", "/v1/system/rolling-config", NULL, &r) == 0 &&
+	          r.status == 200,
+	      "GET /v1/system/rolling-config (default)");
+	if (r.json != NULL) {
+		CHECK((long)json_as_number(json_object_get(r.json, "jitter_window_seconds")) == 60,
+		      "default jitter_window_seconds is 60");
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	CHECK(kx_client_request(&client, "PUT", "/v1/system/rolling-config",
+	                         "{\"jitter_window_seconds\":99999}", &r) == 0 &&
+	          r.status == 400,
+	      "PUT rolling-config out of range (99999) is 400");
+	kx_response_free(&r);
+
+	/* Deterministic restart timing for the rest of this test: no jitter. */
+	memset(&r, 0, sizeof(r));
+	CHECK(kx_client_request(&client, "PUT", "/v1/system/rolling-config",
+	                         "{\"jitter_window_seconds\":0}", &r) == 0 &&
+	          r.status == 200,
+	      "PUT rolling-config jitter_window_seconds=0");
+	if (r.json != NULL) {
+		CHECK((long)json_as_number(json_object_get(r.json, "jitter_window_seconds")) == 0,
+		      "rolling-config round-trips to 0");
+	}
+	kx_response_free(&r);
+
+	/* --- stage rollsvc 1.0 (a real prebuilt binary, no compiler) --- */
+	CHECK(stage_binary_fixture(scratch_dir, "1.0", "build/daemon_child", tarball_v1,
+	                            sizeof(tarball_v1), sha_v1, sizeof(sha_v1)) == 0,
+	      "stage rollsvc 1.0 fixture");
+	CHECK(write_binary_recipe(pkg_state_dir, "1.0", tarball_v1, sha_v1) == 0,
+	      "write rollsvc 1.0 recipe");
+
+	memset(&r, 0, sizeof(r));
+	CHECK(kx_client_request(&client, "POST", "/v1/images", "{\"name\":\"rollctrimg\"}", &r) == 0 &&
+	          r.status == 201,
+	      "POST rollctrimg image");
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	CHECK(kx_client_request(&client, "POST", "/v1/pkg/install",
+	                         "{\"name\":\"rollsvc\",\"image\":\"rollctrimg\"}", &r) == 0 &&
+	          r.status == 202,
+	      "POST install rollsvc@rollctrimg");
+	kx_response_free(&r);
+	CHECK(poll_pkg_installed_version(&client, "rollsvc@rollctrimg", "1.0", 60) == 0,
+	      "rollsvc@rollctrimg (1.0) reaches installed");
+
+	memset(&r, 0, sizeof(r));
+	CHECK(kx_client_request(&client, "POST", "/v1/images/rollctrimg/manifest",
+	                         "{\"package\":\"rollsvc\",\"mode\":\"rolling\",\"version\":\"1.0\"}",
+	                         &r) == 0 &&
+	          r.status == 204,
+	      "POST rollctrimg manifest (rollsvc rolling@1.0)");
+	kx_response_free(&r);
+
+	CHECK(test_image_fixture_read_current_version(image_dir, old_version, sizeof(old_version)) == 0,
+	      "read rollctrimg's pre-rebuild current_version");
+
+	/* --- two containers on the same rolling image: one opts in, one doesn't --- */
+	memset(&r, 0, sizeof(r));
+	CHECK(kx_client_request(&client, "POST", "/v1/containers",
+	                         "{\"name\":\"rollctr-follow\",\"image\":\"rollctrimg\","
+	                         "\"cmd\":[\"/usr/bin/rollsvc\",\"300\",\"0\"],"
+	                         "\"restart\":\"always\",\"follow_rolling\":true}",
+	                         &r) == 0 &&
+	          r.status == 201,
+	      "POST rollctr-follow (follow_rolling=true)");
+	if (r.json != NULL) {
+		const struct json_value *fr = json_object_get(r.json, "follow_rolling");
+
+		CHECK(fr != NULL && fr->type == JSON_BOOL && fr->u.boolean,
+		      "create response reports follow_rolling=true");
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	CHECK(kx_client_request(&client, "POST", "/v1/containers",
+	                         "{\"name\":\"rollctr-plain\",\"image\":\"rollctrimg\","
+	                         "\"cmd\":[\"/usr/bin/rollsvc\",\"300\",\"0\"],"
+	                         "\"restart\":\"always\"}",
+	                         &r) == 0 &&
+	          r.status == 201,
+	      "POST rollctr-plain (no follow_rolling)");
+	if (r.json != NULL) {
+		const struct json_value *fr = json_object_get(r.json, "follow_rolling");
+
+		CHECK(fr != NULL && fr->type == JSON_BOOL && !fr->u.boolean,
+		      "create response reports follow_rolling=false by default");
+	}
+	kx_response_free(&r);
+
+	CHECK(fetch_container_pid_version(&client, "rollctr-follow", &follow_pid_before,
+	                                   follow_ver_before, sizeof(follow_ver_before)) == 0 &&
+	          follow_pid_before > 0,
+	      "rollctr-follow is running before the rebuild");
+	CHECK(fetch_container_pid_version(&client, "rollctr-plain", &plain_pid_before,
+	                                   plain_ver_before, sizeof(plain_ver_before)) == 0 &&
+	          plain_pid_before > 0,
+	      "rollctr-plain is running before the rebuild");
+	CHECK(strcmp(follow_ver_before, old_version) == 0, "rollctr-follow pinned to pre-rebuild version");
+	CHECK(strcmp(plain_ver_before, old_version) == 0, "rollctr-plain pinned to pre-rebuild version");
+
+	/* --- publish rollsvc 2.0: the ONLY action taken. No install/upgrade
+	 * request, no restart request -- the daemon's own rolling-rebuild
+	 * trigger (ADR-0107, unmodified) and this test's new reconciliation
+	 * hook (ADR-0124) must do everything from here. --- */
+	CHECK(stage_binary_fixture(scratch_dir, "2.0", "build/daemon_child", tarball_v2,
+	                            sizeof(tarball_v2), sha_v2, sizeof(sha_v2)) == 0,
+	      "stage rollsvc 2.0 fixture");
+	{
+		struct json_writer w;
+		char body[2048];
+
+		/* Built purely in memory and published ONLY through POST
+		 * /v1/pkg/recipes -- unlike rollsvc 1.0 (write_binary_recipe(),
+		 * a direct on-disk write used once as setup before anything
+		 * else touches that version), this version must reach the
+		 * daemon exclusively through the real API call for
+		 * pkg_recipe_add()'s own trigger (queue_rolling_rebuilds_for())
+		 * to ever fire -- pre-writing the file first (as an earlier
+		 * draft of this test did) makes the daemon see an
+		 * already-published version and reject the POST as a 409
+		 * (recipe versions are immutable). */
+		{
+			char content[1200];
+
+			snprintf(content, sizeof(content),
+			         "pkg_name=rollsvc\npkg_version=2.0\npkg_source=file://%s\n"
+			         "pkg_sha256=%s\npkg_depends=\"\"\n\n"
+			         "pkg_build() {\n\t:\n}\n\n"
+			         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp rollsvc "
+			         "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n\tchmod +x "
+			         "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n}\n",
+			         tarball_v2, sha_v2);
+
+			jw_init(&w);
+			jw_obj_open(&w);
+			jw_key(&w, "name");
+			jw_str(&w, "rollsvc");
+			jw_key(&w, "content");
+			jw_str(&w, content);
+			jw_obj_close(&w);
+			w.buf[w.len] = '\0';
+			snprintf(body, sizeof(body), "%s", w.buf);
+		}
+
+		memset(&r, 0, sizeof(r));
+		CHECK(kx_client_request(&client, "POST", "/v1/pkg/recipes", body, &r) == 0 &&
+		          r.status == 204,
+		      "publish rollsvc 2.0 recipe (triggers rolling auto-rebuild)");
+		jw_free(&w);
+		kx_response_free(&r);
+	}
+
+	/* Wait for the auto-rebuild to move rollctrimg's own current_version. */
+	new_version[0] = '\0';
+	for (i = 0; i < 100; i++) {
+		if (test_image_fixture_read_current_version(image_dir, new_version, sizeof(new_version)) ==
+		        0 &&
+		    strcmp(new_version, old_version) != 0)
+			break;
+		usleep(200000);
+	}
+	CHECK(strcmp(new_version, old_version) != 0, "rollctrimg's current_version advanced");
+
+	/* Wait for rollctr-follow to actually restart onto it: real proof is
+	 * a DIFFERENT pid (killed and replayed, not just relabeled) AND the
+	 * new image_version. */
+	follow_pid_after = follow_pid_before;
+	follow_ver_after[0] = '\0';
+	for (i = 0; i < 100; i++) {
+		if (fetch_container_pid_version(&client, "rollctr-follow", &follow_pid_after,
+		                                 follow_ver_after, sizeof(follow_ver_after)) == 0 &&
+		    follow_pid_after != follow_pid_before && strcmp(follow_ver_after, new_version) == 0)
+			break;
+		usleep(200000);
+	}
+	CHECK(follow_pid_after > 0 && follow_pid_after != follow_pid_before,
+	      "rollctr-follow got a genuinely new process (pid changed)");
+	CHECK(strcmp(follow_ver_after, new_version) == 0,
+	      "rollctr-follow's pinned image_version advanced to the new current_version");
+
+	/* rollctr-plain must be completely untouched. */
+	CHECK(fetch_container_pid_version(&client, "rollctr-plain", &plain_pid_after, plain_ver_after,
+	                                   sizeof(plain_ver_after)) == 0,
+	      "rollctr-plain still reachable");
+	CHECK(plain_pid_after == plain_pid_before,
+	      "rollctr-plain's pid is unchanged (opt-in gate honored)");
+	CHECK(strcmp(plain_ver_after, old_version) == 0,
+	      "rollctr-plain is still pinned to the pre-rebuild version");
+
+	CHECK(stop_daemon(daemon_pid) == 0, "daemon shut down cleanly");
+	run_cmd("rm -rf '%s'", scratch_dir);
+	test_data_dir_cleanup(g_data_dir);
+
+	if (g_failures > 0) {
+		fprintf(stderr, "test_rolling_restart: %d failure(s)\n", g_failures);
+		return 1;
+	}
+	printf("test_rolling_restart: OK\n");
+	return 0;
+}

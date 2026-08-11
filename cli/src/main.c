@@ -55,7 +55,7 @@ static void print_usage(FILE *out)
 	        "      [--ldap-uid=N] [--ldap-secret-dir=PATH]\n"
 	        "      [--route=DEST/PREFIX:VIA ...] [--device=ID ...]\n"
 	        "      [--interface=IFNAME ...] [--restart=always|on-failure|unless-stopped]\n"
-	        "      [--restart-delay=N] [--depends-on=NAME ...]\n"
+	        "      [--restart-delay=N] [--follow-rolling] [--depends-on=NAME ...]\n"
 	        "      [--readiness-tcp-port=N [--readiness-timeout=N]] -- CMD [ARGS...]\n"
 	        "  inspect NAME\n"
 	        "  stop NAME  -- kill it now, keep its persisted definition (unlike rm)\n"
@@ -176,6 +176,10 @@ static void print_usage(FILE *out)
 	        "               (ADR-0068) is a second, dedicated address on the management\n"
 	        "               network's own bridge -- kanxeod binds there instead of that\n"
 	        "               network's own address; --clear-bind-ip reverts to it\n"
+	        "  rolling-config show  -- current rolling-restart jitter window (Part 5, ADR-0124)\n"
+	        "  rolling-config set --jitter-window-seconds=N  -- 0-3600, 0 = no jitter (restart\n"
+	        "               immediately); spreads out simultaneous restarts of every\n"
+	        "               follow_rolling container sharing an image that just rebuilt\n"
 	        "  iso build [--disk=DEV --ip=A.B.C.D --prefix=N --gateway=A.B.C.D\n"
 	        "               --interface=IFNAME] [--wait]  -- assembles a fresh installer ISO\n"
 	        "               server-side (ADR-0064), from the most recent \"kanxeo\"/\"kernel\"/\n"
@@ -308,6 +312,7 @@ static void fmt_container_line(const struct json_value *v)
 	const char *restart = json_str_field(v, "restart");
 	const struct json_value *restart_delay = json_object_get(v, "restart_delay_seconds");
 	const struct json_value *stopped = json_object_get(v, "stopped");
+	const struct json_value *follow_rolling = json_object_get(v, "follow_rolling");
 	const struct json_value *readiness = json_object_get(v, "readiness");
 	const struct json_value *files = json_object_get(v, "files");
 	const struct json_value *sysctls = json_object_get(v, "sysctls");
@@ -366,11 +371,14 @@ static void fmt_container_line(const struct json_value *v)
 	}
 
 	printf("%-20s %-8s pid=%-8ld exit_status=%-6s networks=%-20s fwd=%-4s restart=%-15s "
-	       "delay=%-4s stopped=%-5s readiness=%-10s files=%-3zu sysctls=%-3zu cmd=%s\n",
+	       "delay=%-4s roll=%-4s stopped=%-5s readiness=%-10s files=%-3zu sysctls=%-3zu cmd=%s\n",
 	       name, status, pid, exit_buf, net_buf[0] != '\0' ? net_buf : "-",
 	       (ip_forward != NULL && ip_forward->type == JSON_BOOL && ip_forward->u.boolean) ? "yes"
 	                                                                                        : "no",
 	       restart != NULL ? restart : "no", delay_buf,
+	       (follow_rolling != NULL && follow_rolling->type == JSON_BOOL && follow_rolling->u.boolean)
+	           ? "yes"
+	           : "no",
 	       (stopped != NULL && stopped->type == JSON_BOOL && stopped->u.boolean) ? "yes" : "no",
 	       readiness_buf, files != NULL && files->type == JSON_ARRAY ? files->u.array.count : 0,
 	       sysctls != NULL && sysctls->type == JSON_OBJECT ? sysctls->u.object.count : 0,
@@ -2981,6 +2989,83 @@ static int cmd_daemon_config(const struct kx_client *c, int json_mode, int argc,
 	return 2;
 }
 
+/*
+ * Part 5 (ADR-0124): kanxeoctl rolling-config show|set -- mirrors
+ * cmd_daemon_config's own shape exactly, one field instead of several.
+ */
+static void fmt_rolling_config(const struct json_value *v)
+{
+	printf("jitter_window_seconds=%ld\n",
+	       (long)json_as_number(json_object_get(v, "jitter_window_seconds")));
+}
+
+static int cmd_rolling_config_show(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/rolling-config", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_rolling_config);
+}
+
+static int cmd_rolling_config_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *window = NULL;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--jitter-window-seconds=", 25) == 0)
+			window = argv[i] + 25;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown rolling-config set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (window == NULL) {
+		fprintf(stderr, "usage: kanxeoctl rolling-config set --jitter-window-seconds=N\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "jitter_window_seconds");
+	jw_int(&w, atol(window));
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "PUT", "/v1/system/rolling-config", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_rolling_config);
+}
+
+static int cmd_rolling_config(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl rolling-config show\n"
+		                "       kanxeoctl rolling-config set --jitter-window-seconds=N\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "show") == 0)
+		return cmd_rolling_config_show(c, json_mode);
+	if (strcmp(sub, "set") == 0)
+		return cmd_rolling_config_set(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown rolling-config subcommand '%s'\n", sub);
+	return 2;
+}
+
 struct cli_sysctl {
 	char key[128]; /* matches daemon's CONTAINER_SYSCTL_KEY_MAX */
 	char value[64]; /* matches daemon's CONTAINER_SYSCTL_VALUE_MAX */
@@ -3024,6 +3109,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	int interface_count = 0;
 	const char *restart = NULL;
 	long restart_delay = -1;
+	int follow_rolling = 0;
 	const char *depends_on[CLI_MAX_DEPENDS];
 	int depends_on_count = 0;
 	long readiness_tcp_port = -1;
@@ -3105,6 +3191,8 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 			restart = argv[i] + 10;
 		} else if (strncmp(argv[i], "--restart-delay=", 16) == 0) {
 			restart_delay = atol(argv[i] + 16);
+		} else if (strcmp(argv[i], "--follow-rolling") == 0) {
+			follow_rolling = 1;
 		} else if (strncmp(argv[i], "--depends-on=", 13) == 0) {
 			if (depends_on_count >= CLI_MAX_DEPENDS) {
 				fprintf(stderr, "kanxeoctl: too many --depends-on= flags (max %d)\n",
@@ -3193,6 +3281,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		        "[--ldap-uid=N] [--ldap-secret-dir=PATH] "
 		        "[--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--interface=IFNAME ...] "
 		        "[--restart=always|on-failure|unless-stopped] [--restart-delay=N] "
+		        "[--follow-rolling] "
 		        "[--depends-on=NAME ...] "
 		        "[--readiness-tcp-port=N [--readiness-timeout=N]] "
 		        "[--file=CONTAINER_PATH=LOCAL_PATH[:MODE] ...] [--sysctl=KEY=VALUE ...] "
@@ -3333,6 +3422,10 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (restart_delay >= 0) {
 		jw_key(&w, "restart_delay_seconds");
 		jw_int(&w, restart_delay);
+	}
+	if (follow_rolling) {
+		jw_key(&w, "follow_rolling");
+		jw_bool(&w, 1);
 	}
 	if (depends_on_count > 0) {
 		jw_key(&w, "depends_on");
@@ -6865,6 +6958,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_site(client, json_mode, argc, argv);
 	if (strcmp(cmd, "daemon-config") == 0)
 		return cmd_daemon_config(client, json_mode, argc, argv);
+	if (strcmp(cmd, "rolling-config") == 0)
+		return cmd_rolling_config(client, json_mode, argc, argv);
 	if (strcmp(cmd, "iso") == 0)
 		return cmd_iso(client, json_mode, argc, argv);
 	if (strcmp(cmd, "routes") == 0)
@@ -6992,7 +7087,7 @@ static const char *const SHELL_COMMANDS[] = {
 	"ntp",
 	"pause",  "ping",      "pkg",           "pki",      "ps",        "quit",      "reboot",
 	"resolv",
-	"restore", "rm",       "routes",        "run",      "shutdown",  "site",
+	"restore", "rm",       "rolling-config", "routes",        "run",      "shutdown",  "site",
 	"start",  "stats",     "stop",          "swap",     "time",      "unpause",   "update",
 	NULL
 };

@@ -58,6 +58,8 @@ static int save_state(void)
 		jw_int(&w, d->restart_delay_seconds);
 		jw_key(&w, "stopped");
 		jw_bool(&w, d->stopped);
+		jw_key(&w, "follow_rolling");
+		jw_bool(&w, d->follow_rolling);
 		jw_key(&w, "body");
 		jw_str(&w, d->body);
 		jw_obj_close(&w);
@@ -71,7 +73,7 @@ static int save_state(void)
 int containerdef_add(const char *name, const char *body, size_t body_len,
                       const char depends_on[][REGISTRY_NAME_MAX], int depends_on_count,
                       int has_readiness, int readiness_tcp_port, int readiness_timeout_seconds,
-                      const char *restart_policy, int restart_delay_seconds)
+                      const char *restart_policy, int restart_delay_seconds, int follow_rolling)
 {
 	struct container_def *d = containerdef_find(name);
 	int i;
@@ -116,6 +118,7 @@ int containerdef_add(const char *name, const char *body, size_t body_len,
 	d->restart_delay_seconds = restart_delay_seconds;
 	d->stopped = 0;              /* a fresh create/redefine is definitionally not stopped */
 	d->consecutive_failures = 0; /* ...and not backed off either */
+	d->follow_rolling = follow_rolling;
 
 	d->in_use = 1;
 
@@ -284,6 +287,8 @@ static void write_stopped_def_json_one(struct container_def *d, struct json_writ
 	jw_str(w, d->restart_policy);
 	jw_key(w, "restart_delay_seconds");
 	jw_int(w, d->restart_delay_seconds);
+	jw_key(w, "follow_rolling");
+	jw_bool(w, d->follow_rolling);
 	jw_key(w, "stopped");
 	jw_bool(w, 1);
 	jw_key(w, "depends_on");
@@ -336,6 +341,7 @@ static int parse_persisted_entry(const struct json_value *item, struct container
 	const struct json_value *jrestart_policy = json_object_get(item, "restart_policy");
 	const struct json_value *jrestart_delay = json_object_get(item, "restart_delay_seconds");
 	const struct json_value *jstopped = json_object_get(item, "stopped");
+	const struct json_value *jfollow_rolling = json_object_get(item, "follow_rolling");
 	size_t i;
 
 	if (name == NULL || name[0] == '\0' || strlen(name) >= REGISTRY_NAME_MAX || body == NULL)
@@ -405,6 +411,10 @@ static int parse_persisted_entry(const struct json_value *item, struct container
 	                                   ? (int)json_as_number(jrestart_delay)
 	                                   : CONTAINERDEF_DEFAULT_RESTART_DELAY_SECONDS;
 	slot->stopped = (jstopped != NULL && jstopped->type == JSON_BOOL && jstopped->u.boolean);
+	/* Absent means a file predating Part 5 -- naturally defaults to 0
+	 * (never followed rolling updates before this feature existed). */
+	slot->follow_rolling =
+	    (jfollow_rolling != NULL && jfollow_rolling->type == JSON_BOOL && jfollow_rolling->u.boolean);
 
 	slot->in_use = 1;
 	return 0;
@@ -456,4 +466,114 @@ int containerdef_init(const char *state_path)
 		return -1;
 	memset(g_defs, 0, sizeof(g_defs));
 	return load_state();
+}
+
+/*
+ * Part 5 (ADR-0124): raw string find/replace of the "image_version"
+ * value already spliced into d->body at creation time (handle_create(),
+ * daemon/src/main.c) -- same "the body is already known-valid JSON,
+ * only surgery is needed" posture that splice itself uses, not a full
+ * JSON re-serialize (this module has no generic "write an arbitrary
+ * parsed tree back out" helper, and doesn't need one just for this).
+ */
+int containerdef_patch_image_version(const char *name, const char *new_version)
+{
+	static const char key[] = "\"image_version\":\"";
+	struct container_def *d = containerdef_find(name);
+	char *key_pos, *val_start, *val_end, *new_body;
+	size_t prefix_len, suffix_len, new_version_len, new_body_len;
+
+	if (d == NULL)
+		return -1;
+
+	key_pos = strstr(d->body, key);
+	if (key_pos == NULL)
+		return -1;
+	val_start = key_pos + (sizeof(key) - 1);
+	val_end = strchr(val_start, '"');
+	if (val_end == NULL)
+		return -1;
+
+	prefix_len = (size_t)(val_start - d->body);
+	suffix_len = d->body_len - (size_t)(val_end - d->body);
+	new_version_len = strlen(new_version);
+	new_body_len = prefix_len + new_version_len + suffix_len;
+
+	new_body = malloc(new_body_len + 1);
+	if (new_body == NULL)
+		return -1;
+	memcpy(new_body, d->body, prefix_len);
+	memcpy(new_body + prefix_len, new_version, new_version_len);
+	memcpy(new_body + prefix_len + new_version_len, val_end, suffix_len);
+	new_body[new_body_len] = '\0';
+
+	free(d->body);
+	d->body = new_body;
+	d->body_len = new_body_len;
+
+	return save_state();
+}
+
+/* ---- Part 5 (ADR-0124): rolling-restart jitter window config ---- */
+
+static char g_rolling_config_path[PATH_MAX];
+static int g_jitter_window_seconds = CONTAINERDEF_JITTER_DEFAULT_SECONDS;
+
+static int save_rolling_config(void)
+{
+	struct json_writer w;
+	int rc;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "jitter_window_seconds");
+	jw_int(&w, g_jitter_window_seconds);
+	jw_obj_close(&w);
+	rc = persist_atomic_write(g_rolling_config_path, w.buf, w.len);
+	jw_free(&w);
+	return rc;
+}
+
+int containerdef_rolling_config_init(const char *config_path)
+{
+	char *buf;
+	size_t len;
+	struct json_value *root;
+	const struct json_value *jwindow;
+
+	if (snprintf(g_rolling_config_path, sizeof(g_rolling_config_path), "%s", config_path) >=
+	    (int)sizeof(g_rolling_config_path))
+		return -1;
+	g_jitter_window_seconds = CONTAINERDEF_JITTER_DEFAULT_SECONDS;
+
+	if (persist_read_file(config_path, &buf, &len) != 0 || buf == NULL)
+		return 0; /* no persisted config yet -- the default stands */
+
+	root = json_parse(buf, len);
+	free(buf);
+	if (root == NULL)
+		return 0;
+
+	jwindow = json_object_get(root, "jitter_window_seconds");
+	if (jwindow != NULL) {
+		double v = json_as_number(jwindow);
+
+		if (v >= 0 && v <= CONTAINERDEF_JITTER_MAX_SECONDS)
+			g_jitter_window_seconds = (int)v;
+	}
+	json_free(root);
+	return 0;
+}
+
+int containerdef_jitter_window_get(void)
+{
+	return g_jitter_window_seconds;
+}
+
+int containerdef_jitter_window_set(int seconds)
+{
+	if (seconds < 0 || seconds > CONTAINERDEF_JITTER_MAX_SECONDS)
+		return -1;
+	g_jitter_window_seconds = seconds;
+	return save_rolling_config();
 }

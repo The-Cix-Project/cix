@@ -29,6 +29,18 @@
  */
 #define CONTAINERDEF_DEFAULT_RESTART_DELAY_SECONDS 2
 
+/*
+ * Part 5 (pkg/ redesign, ADR-0124): default/max width of the random
+ * delay window added on top of a rolling-restart, spreading out
+ * simultaneous restarts of every follow_rolling container sharing an
+ * image that just rebuilt rather than killing them all in the same
+ * instant. Operator-configurable via containerdef_jitter_window_get()/
+ * _set() -- these are only the persisted-config bootstrap default and
+ * upper bound, not a hardcoded behavior.
+ */
+#define CONTAINERDEF_JITTER_DEFAULT_SECONDS 60
+#define CONTAINERDEF_JITTER_MAX_SECONDS 3600
+
 struct container_def {
 	char name[REGISTRY_NAME_MAX];
 	char *body; /* owned, malloc'd -- the original request body, verbatim */
@@ -71,6 +83,19 @@ struct container_def {
 	 * meaningful afterward.
 	 */
 	int consecutive_failures;
+	/*
+	 * Part 5 (ADR-0124): opt-in, set only by an explicit "follow_rolling":
+	 * true on the original POST body (mirrors restart_policy/depends_on's
+	 * own "parsed once by the caller, cached here" shape). Meaningless
+	 * without a persisted definition to replay, so it's silently ignored
+	 * (never reaches containerdef_add() at all) on a restart_policy:"no"
+	 * request -- the same "ignored, not an error" precedent
+	 * restart_delay_seconds already established for that combination.
+	 * When set, apply_rolling_container_restarts() (daemon/src/main.c)
+	 * keeps this container's own pinned image_version chasing its
+	 * image's current_version whenever that changes.
+	 */
+	int follow_rolling;
 	int in_use;
 };
 
@@ -107,7 +132,7 @@ int containerdef_init(const char *state_path);
 int containerdef_add(const char *name, const char *body, size_t body_len,
                       const char depends_on[][REGISTRY_NAME_MAX], int depends_on_count,
                       int has_readiness, int readiness_tcp_port, int readiness_timeout_seconds,
-                      const char *restart_policy, int restart_delay_seconds);
+                      const char *restart_policy, int restart_delay_seconds, int follow_rolling);
 
 /* Removes name's definition, if any. A no-op (returns 0) if none exists. */
 int containerdef_remove(const char *name);
@@ -171,5 +196,45 @@ void containerdef_write_json_stopped_list(struct json_writer *w);
  * then free to fall through to its own 404.
  */
 int containerdef_write_json_stopped_one(const char *name, struct json_writer *w);
+
+/*
+ * Part 5 (ADR-0124): rewrites just the "image_version" value already
+ * spliced into name's own persisted body (see handle_create()'s own
+ * comment on why every restart_policy != "no" body carries one) to
+ * new_version, in place -- raw string find/replace on the existing
+ * value, not a full JSON re-serialize (mirrors handle_create()'s own
+ * "the body is already known-valid JSON, only surgery is needed"
+ * reasoning). Used by apply_rolling_container_restarts() so a future
+ * replay (an explicit POST .../start, a crash respawn, or this same
+ * mechanism's own jittered restart) picks up the new pin instead of
+ * silently reverting to the version this container was originally
+ * created against. Returns 0 on success, -1 if name has no definition
+ * or its body unexpectedly has no "image_version" key to replace (real
+ * corruption -- every restart-capable body is guaranteed to have one,
+ * spliced in at creation time).
+ */
+int containerdef_patch_image_version(const char *name, const char *new_version);
+
+/*
+ * Loads (or initializes, if config_path doesn't exist yet)
+ * config_path as the persisted rolling-restart jitter window --
+ * mirrors pkg_cache_init()'s own "small standalone JSON config file,
+ * one key" shape exactly (daemon/src/pkg.c, ADR-0122). Call once at
+ * daemon startup, after containerdef_init(). Returns 0, or -1 on a
+ * malformed persisted file (real corruption, same posture as every
+ * other persisted-state loader here).
+ */
+int containerdef_rolling_config_init(const char *config_path);
+
+/* Current jitter window, seconds -- CONTAINERDEF_JITTER_DEFAULT_SECONDS
+ * until containerdef_jitter_window_set() is ever called. */
+int containerdef_jitter_window_get(void);
+
+/* Validates 0 <= seconds <= CONTAINERDEF_JITTER_MAX_SECONDS (0 means
+ * "no jitter, restart immediately" -- a legitimate choice for a small
+ * fleet where a thundering herd isn't a real concern), persists, and
+ * takes effect for every rolling restart scheduled from then on.
+ * Returns 0, or -1 (out of range, or a persist failure). */
+int containerdef_jitter_window_set(int seconds);
 
 #endif /* CONTAINERDEF_H */

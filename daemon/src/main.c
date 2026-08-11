@@ -115,6 +115,7 @@ static char PKG_ARTIFACT_CONFIG_PATH[PATH_MAX];   /* ADR-0122 */
  * visible path. */
 static char ARTIFACTS_DIR[PATH_MAX];
 static char CONTAINER_DEFS_STATE_PATH[PATH_MAX];
+static char ROLLING_CONFIG_PATH[PATH_MAX]; /* ADR-0124 */
 static char SITE_CONFIG_PATH[PATH_MAX];
 static char DEVICEMAP_STATE_PATH[PATH_MAX];
 static char DISKROLE_STATE_PATH[PATH_MAX];
@@ -211,6 +212,7 @@ static void init_base_dir_paths(void)
 	         PKG_DIR);
 	snprintf(ARTIFACTS_DIR, sizeof(ARTIFACTS_DIR), "%s/artifacts", g_base_dir);
 	snprintf(CONTAINER_DEFS_STATE_PATH, sizeof(CONTAINER_DEFS_STATE_PATH), "%s/container_defs.json", g_base_dir);
+	snprintf(ROLLING_CONFIG_PATH, sizeof(ROLLING_CONFIG_PATH), "%s/rolling_config.json", g_base_dir);
 	snprintf(SITE_CONFIG_PATH, sizeof(SITE_CONFIG_PATH), "%s/site_config.json", g_base_dir);
 	snprintf(DEVICEMAP_STATE_PATH, sizeof(DEVICEMAP_STATE_PATH), "%s/devicemaps.json", g_base_dir);
 	snprintf(DISKROLE_STATE_PATH, sizeof(DISKROLE_STATE_PATH), "%s/diskroles.json", g_base_dir);
@@ -465,6 +467,13 @@ enum conn_kind {
 	CONN_NTP_SYNC,           /* one in-flight SNTP sync attempt's own UDP socket */
 	CONN_NTP_SYNC_TIMER,     /* same job's per-candidate timeout -- see ntp_job_teardown() */
 	CONN_RESTART_TIMER,
+	CONN_ROLLING_RESTART_TIMER, /* jittered live-restart onto a newer rolling image
+	                              * version (ADR-0124/Part 5) -- distinct from
+	                              * CONN_RESTART_TIMER: that one only ever fires
+	                              * after a container has already exited (crash
+	                              * respawn); this one fires against a still-live
+	                              * container, which needs an explicit stop first
+	                              * -- see handle_rolling_restart_timer_event(). */
 	CONN_BIND_IP_CLEANUP, /* deferred rtnl_addr_del_ipv4() of a superseded/cleared
 	                        * bind_ip (ADR-0068) -- see arm_bind_ip_cleanup_timer() */
 	CONN_CONSOLE_SHELL,
@@ -4337,6 +4346,11 @@ static void register_pkg_fetch_pidfd(pid_t pid, int pidfd)
 	}
 }
 
+/* Forward declaration -- defined later in this file (Part 5, ADR-0124);
+ * called from try_start_queued_pkg_rebuild() below, which several
+ * earlier call sites already depend on. */
+static void apply_rolling_container_restarts(void);
+
 /*
  * ADR-0107: called at every point a completed/failed pkg job might
  * have just freed pkg.c's own single-job-in-flight slot -- tries to
@@ -4347,6 +4361,13 @@ static void register_pkg_fetch_pidfd(pid_t pid, int pidfd)
  * job is somehow already running -- safe to call unconditionally
  * after every job-completion path rather than threading a "did this
  * really free the slot" condition through each call site.
+ *
+ * Also runs apply_rolling_container_restarts() (Part 5, ADR-0124):
+ * this same "a pkg job just finished" moment is exactly when an
+ * image's current_version might have just moved (a rolling rebuild
+ * completing is itself one more pkg job), so it's the natural single
+ * hook for reconciling any follow_rolling container against it too --
+ * one call site, not two independently-triggered mechanisms.
  */
 static void try_start_queued_pkg_rebuild(void)
 {
@@ -4355,6 +4376,7 @@ static void try_start_queued_pkg_rebuild(void)
 
 	if (pkg_try_start_queued_rebuild(&pkg_pid, &pkg_pidfd))
 		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd);
+	apply_rolling_container_restarts();
 }
 
 /*
@@ -5811,8 +5833,8 @@ static int create_container_from_body(const char *body, size_t body_len,
                                        char out_depends_on[][REGISTRY_NAME_MAX],
                                        int *out_depends_on_count, int *out_has_readiness,
                                        int *out_readiness_tcp_port,
-                                       int *out_readiness_timeout_seconds, char *err_msg,
-                                       size_t err_msg_size)
+                                       int *out_readiness_timeout_seconds, int *out_follow_rolling,
+                                       char *err_msg, size_t err_msg_size)
 {
 	struct json_value *root;
 	const struct json_value *jname, *jimage, *jimage_version, *jcmd, *jmem, *jpids, *jcpu, *jcpuset,
@@ -5823,6 +5845,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	const struct json_value *jinterfaces;
 	const struct json_value *jfiles, *jsysctls;
 	const struct json_value *jrestart, *jrestart_delay, *jdepends_on, *jreadiness;
+	const struct json_value *jfollow_rolling;
 	const char *restart_str;
 	long restart_delay;
 	const char *name, *image;
@@ -5878,6 +5901,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	*out_restart_delay_seconds = CONTAINERDEF_DEFAULT_RESTART_DELAY_SECONDS;
 	*out_depends_on_count = 0;
 	*out_has_readiness = 0;
+	*out_follow_rolling = 0;
 
 	root = json_parse(body, body_len);
 	if (root == NULL) {
@@ -5968,6 +5992,18 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 		*out_restart_delay_seconds = (int)restart_delay;
 	}
+
+	/*
+	 * Part 5 (ADR-0124): same "ignored, not an error" precedent
+	 * restart_delay_seconds already established just above for
+	 * restart:"no" -- meaningless without a persisted definition to
+	 * follow, so it's simply never passed to containerdef_add() by
+	 * handle_create()'s own restart_policy != "no" gate, rather than
+	 * rejected here.
+	 */
+	jfollow_rolling = json_object_get(root, "follow_rolling");
+	*out_follow_rolling =
+	    (jfollow_rolling != NULL && jfollow_rolling->type == JSON_BOOL && jfollow_rolling->u.boolean);
 
 	jdepends_on = json_object_get(root, "depends_on");
 	if (jdepends_on != NULL) {
@@ -6807,6 +6843,7 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
 	int depends_on_count;
 	int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
+	int follow_rolling;
 	char err_msg[256];
 	int status;
 	struct json_writer w;
@@ -6814,7 +6851,8 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	status = create_container_from_body(body, body_len, &entry, restart_policy,
 	                                     &restart_delay_seconds, depends_on, &depends_on_count,
 	                                     &has_readiness, &readiness_tcp_port,
-	                                     &readiness_timeout_seconds, err_msg, sizeof(err_msg));
+	                                     &readiness_timeout_seconds, &follow_rolling, err_msg,
+	                                     sizeof(err_msg));
 	if (status != 0) {
 		respond_error(fd, status, http_status_text(status), err_msg);
 		return;
@@ -6865,7 +6903,7 @@ static void handle_create(int fd, const char *body, size_t body_len)
 
 		if (containerdef_add(entry->name, persist_src, persisted_len, depends_on, depends_on_count,
 		                      has_readiness, readiness_tcp_port, readiness_timeout_seconds,
-		                      restart_policy, restart_delay_seconds) != 0) {
+		                      restart_policy, restart_delay_seconds, follow_rolling) != 0) {
 			fprintf(stderr,
 			        "%s: restart:\"%s\" requested but persisting its definition failed -- "
 			        "it will not survive a daemon restart\n",
@@ -7080,6 +7118,7 @@ static void handle_start(int fd, const char *name)
 	char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
 	int depends_on_count;
 	int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
+	int follow_rolling;
 	char err_msg[256];
 	int status;
 	struct json_writer w;
@@ -7102,7 +7141,8 @@ static void handle_start(int fd, const char *name)
 	status = create_container_from_body(def->body, def->body_len, &entry, restart_policy,
 	                                     &restart_delay_seconds, depends_on, &depends_on_count,
 	                                     &has_readiness, &readiness_tcp_port,
-	                                     &readiness_timeout_seconds, err_msg, sizeof(err_msg));
+	                                     &readiness_timeout_seconds, &follow_rolling, err_msg,
+	                                     sizeof(err_msg));
 	if (status != 0) {
 		respond_error(fd, status, http_status_text(status), err_msg);
 		return;
@@ -10089,6 +10129,53 @@ static void handle_pkg_cache_config_put(int fd, const char *body, size_t body_le
 	handle_pkg_cache_config_get(fd);
 }
 
+/*
+ * Part 5 (ADR-0124): GET/PUT /v1/system/rolling-config -- mirrors
+ * handle_pkg_cache_config_get/put()'s own shape exactly, one field,
+ * same "PUT re-reads via GET on success" convention.
+ */
+static void handle_rolling_config_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "jitter_window_seconds");
+	jw_int(&w, containerdef_jitter_window_get());
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_rolling_config_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const struct json_value *jwindow;
+
+	if (body_len == 0) {
+		respond_error(fd, 400, "Bad Request", "jitter_window_seconds is required");
+		return;
+	}
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	jwindow = json_object_get(root, "jitter_window_seconds");
+	if (jwindow == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "jitter_window_seconds is required");
+		return;
+	}
+	if (containerdef_jitter_window_set((int)json_as_number(jwindow)) != 0) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "jitter_window_seconds must be 0-3600");
+		return;
+	}
+	json_free(root);
+	handle_rolling_config_get(fd);
+}
+
 /* GET /v1/pkg/cache -- current cache occupancy; DELETE /v1/pkg/cache --
  * clears every cached artifact (an explicit operator reset). */
 static void handle_pkg_cache_get(int fd)
@@ -10618,6 +10705,16 @@ static void dispatch(int fd, const struct http_request *req)
 		}
 		if (strcmp(req->method, "PUT") == 0) {
 			handle_resolv_put(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/system/rolling-config") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_rolling_config_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_rolling_config_put(fd, req->body, req->body_len);
 			return;
 		}
 	}
@@ -12131,11 +12228,12 @@ static void handle_restart_timer_event(struct conn *cc)
 		 * way regardless of caller, but a crash restart never acts on
 		 * them. */
 		int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
+		int follow_rolling;
 		char err_msg[256];
 		int status = create_container_from_body(
 		    def->body, def->body_len, &entry, restart_policy, &restart_delay_seconds, depends_on,
 		    &depends_on_count, &has_readiness, &readiness_tcp_port, &readiness_timeout_seconds,
-		    err_msg, sizeof(err_msg));
+		    &follow_rolling, err_msg, sizeof(err_msg));
 
 		if (status != 0)
 			fprintf(stderr, "%s: restart failed: %s\n", cc->restart_name, err_msg);
@@ -12144,6 +12242,238 @@ static void handle_restart_timer_event(struct conn *cc)
 	}
 
 	free(cc);
+}
+
+/*
+ * Part 5 (ADR-0124): arm_restart_timer()'s own shape, verbatim, but a
+ * distinct conn kind -- see CONN_ROLLING_RESTART_TIMER's own comment
+ * for why this can't just reuse arm_restart_timer() itself: that one's
+ * paired handler assumes the container has already exited, this one's
+ * own handler (below) must stop a still-live one first.
+ *
+ * delay_seconds == 0 is a real, intentional input here (an operator
+ * explicitly disabling jitter, containerdef_jitter_window_get() == 0)
+ * -- unlike arm_restart_timer()'s own delay, always a validated 1-300
+ * from restart_delay_seconds, which can never be 0. timerfd_settime(2)
+ * treats an all-zero it_value as "disarm this timer," not "fire
+ * immediately," so a literal 0 here would silently never fire at all;
+ * it_value.tv_nsec is set to 1 in that case, the smallest interval
+ * that still counts as armed.
+ */
+static void arm_rolling_restart_timer(const char *name, int delay_seconds)
+{
+	int tfd;
+	struct itimerspec its;
+	struct conn *cc;
+	struct kx_epoll_event ev;
+
+	tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+	if (tfd < 0) {
+		perror("timerfd_create (rolling restart)");
+		return;
+	}
+
+	memset(&its, 0, sizeof(its));
+	its.it_value.tv_sec = delay_seconds;
+	if (delay_seconds <= 0)
+		its.it_value.tv_nsec = 1;
+	if (timerfd_settime(tfd, 0, &its, NULL) != 0) {
+		perror("timerfd_settime (rolling restart)");
+		close(tfd);
+		return;
+	}
+
+	cc = malloc(sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (rolling restart timer conn)");
+		close(tfd);
+		return;
+	}
+	cc->kind = CONN_ROLLING_RESTART_TIMER;
+	cc->fd = tfd;
+	snprintf(cc->restart_name, sizeof(cc->restart_name), "%s", name);
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
+		perror("epoll_ctl ADD rolling restart timer");
+		close(tfd);
+		free(cc);
+	}
+}
+
+/*
+ * Fires once arm_rolling_restart_timer()'s jittered delay elapses.
+ * def->stopped is checked exactly like handle_restart_timer_event()'s
+ * own (an explicit POST .../stop during the jitter window wins, same
+ * ADR-0027 precedent) and containerdef_find() returning NULL is the
+ * same real, correct "already deleted during the delay window" case
+ * too. The one genuine difference from that function: the container is
+ * expected to still be live here (apply_rolling_container_restarts()
+ * only ever arms this timer for one it just found running), so it must
+ * be stopped -- the exact registry_remove()-plus-reactor-conn-teardown
+ * primitive handle_stop() uses, minus that handler's own containerdef_
+ * set_stopped() call (deliberately not marking it "stopped": this is a
+ * restart, not an operator-requested stop, and the very next step
+ * below immediately replays it) -- before create_container_from_body()
+ * can safely reuse its name. By the time this fires, apply_rolling_
+ * container_restarts() has already patched def's own body with the new
+ * pinned image_version (before arming the timer), so the replay below
+ * picks it up automatically, the same way every other consumer of a
+ * persisted body already does.
+ */
+static void handle_rolling_restart_timer_event(struct conn *cc)
+{
+	struct container_def *def;
+	uint64_t expirations;
+
+	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
+		perror("read (rolling restart timerfd)");
+
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	close(cc->fd);
+
+	def = containerdef_find(cc->restart_name);
+	if (def != NULL && !def->stopped) {
+		struct registry_entry *live = registry_find(cc->restart_name);
+
+		if (live != NULL) {
+			if (live->reactor_conn != NULL) {
+				struct conn *rc = live->reactor_conn;
+
+				kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, rc->fd, NULL);
+				free(rc);
+				live->reactor_conn = NULL;
+			}
+			registry_remove(cc->restart_name);
+		}
+		/* else: an explicit DELETE/stop already took it down during the
+		 * jitter delay -- def->stopped above already re-checked for the
+		 * stop case; a delete would have removed def entirely, already
+		 * handled by the containerdef_find() == NULL branch. Either way,
+		 * falling through to replay the (already-patched) definition
+		 * below is correct: it just becomes an ordinary restart of a
+		 * currently-stopped-but-defined container. */
+
+		{
+			struct registry_entry *entry;
+			char restart_policy[16];
+			int restart_delay_seconds;
+			char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
+			int depends_on_count;
+			int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
+			int follow_rolling;
+			char err_msg[256];
+			int status = create_container_from_body(
+			    def->body, def->body_len, &entry, restart_policy, &restart_delay_seconds,
+			    depends_on, &depends_on_count, &has_readiness, &readiness_tcp_port,
+			    &readiness_timeout_seconds, &follow_rolling, err_msg, sizeof(err_msg));
+
+			if (status != 0)
+				fprintf(stderr, "%s: rolling restart failed: %s\n", cc->restart_name, err_msg);
+		}
+	}
+
+	free(cc);
+}
+
+/*
+ * Part 5 (ADR-0124): reads 4 bytes from /dev/urandom (same idiom
+ * ldap_generate_secret() already established, daemon/src/ldap.c -- no
+ * new randomness-source precedent) and reduces modulo (window + 1),
+ * giving a uniform [0, window] jittered delay. window == 0 (an
+ * operator explicitly wants no jitter) is handled by the caller never
+ * invoking this at all, not by this function -- see its own call site.
+ */
+static int rolling_jitter_seconds(int window)
+{
+	unsigned char raw[4];
+	int fd;
+	ssize_t n;
+	size_t total = 0;
+	uint32_t v;
+
+	fd = open("/dev/urandom", O_RDONLY);
+	if (fd < 0)
+		return 0;
+	while (total < sizeof(raw)) {
+		n = read(fd, raw + total, sizeof(raw) - total);
+		if (n <= 0) {
+			close(fd);
+			return 0;
+		}
+		total += (size_t)n;
+	}
+	close(fd);
+
+	v = ((uint32_t)raw[0] << 24) | ((uint32_t)raw[1] << 16) | ((uint32_t)raw[2] << 8) | raw[3];
+	return (int)(v % (uint32_t)(window + 1));
+}
+
+/*
+ * Part 5 (ADR-0124): the reconciliation pass this whole feature hinges
+ * on -- see try_start_queued_pkg_rebuild()'s own updated comment for
+ * why this runs from the exact same "a pkg job might have just
+ * finished" hook rather than pkg.c threading a bespoke "this image
+ * changed" signal back into main.c. Deliberately generic over *why* an
+ * image's current_version moved (a rolling auto-rebuild, an operator's
+ * plain `pkg install` against a rolling-manifested image, or Part 4's
+ * own image-recipe artifact-tier apply) -- image_current_version() is
+ * the one source of truth this checks against, not a duplicate signal
+ * threaded through each of those call paths individually.
+ *
+ * containerdef_resolve_order() is reused purely as a "list every
+ * currently-defined container name" enumerator here -- its own
+ * dependency-order guarantee is irrelevant to this pass (each
+ * container's own rolling-restart is independent and independently
+ * jittered), but it's already the one function that does this
+ * enumeration, and inventing a second one just for this would violate
+ * One Source of Truth for no benefit.
+ */
+static void apply_rolling_container_restarts(void)
+{
+	char order[CONTAINERDEF_MAX][REGISTRY_NAME_MAX];
+	int count = containerdef_resolve_order(order);
+	int i;
+
+	for (i = 0; i < count; i++) {
+		struct container_def *def = containerdef_find(order[i]);
+		struct json_value *root;
+		const char *image;
+		const char *pinned_version;
+		char current_version[IMAGE_VERSION_MAX];
+
+		if (def == NULL || !def->follow_rolling)
+			continue;
+
+		root = json_parse(def->body, def->body_len);
+		if (root == NULL)
+			continue;
+		image = json_as_string(json_object_get(root, "image"));
+		pinned_version = json_as_string(json_object_get(root, "image_version"));
+		if (image == NULL || pinned_version == NULL || image_current_version(image, current_version,
+		                                                                      sizeof(current_version)) != 0) {
+			json_free(root);
+			continue;
+		}
+
+		if (strcmp(pinned_version, current_version) != 0) {
+			int jitter_window = containerdef_jitter_window_get();
+			int delay = jitter_window > 0 ? rolling_jitter_seconds(jitter_window) : 0;
+
+			if (containerdef_patch_image_version(order[i], current_version) == 0) {
+				if (registry_find(order[i]) != NULL)
+					arm_rolling_restart_timer(order[i], delay);
+				/* else: stopped-but-defined -- the patched pin alone is
+				 * enough; nothing live to disrupt, and its next start
+				 * already replays the patched body. */
+			} else {
+				fprintf(stderr, "%s: failed to patch rolling image_version pin\n", order[i]);
+			}
+		}
+		json_free(root);
+	}
 }
 
 static void handle_container_event(struct conn *cc)
@@ -12715,6 +13045,7 @@ static void containerdef_autostart_all(void)
 		char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
 		int depends_on_count;
 		int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
+		int follow_rolling;
 		char err_msg[256];
 		int status;
 
@@ -12730,7 +13061,8 @@ static void containerdef_autostart_all(void)
 		status = create_container_from_body(def->body, def->body_len, &entry, restart_policy,
 		                                     &restart_delay_seconds, depends_on, &depends_on_count,
 		                                     &has_readiness, &readiness_tcp_port,
-		                                     &readiness_timeout_seconds, err_msg, sizeof(err_msg));
+		                                     &readiness_timeout_seconds, &follow_rolling, err_msg,
+		                                     sizeof(err_msg));
 		if (status != 0) {
 			fprintf(stderr, "%s: autostart failed: %s\n", order[i], err_msg);
 			continue;
@@ -13002,6 +13334,8 @@ int main(int argc, char **argv)
 	image_init(IMAGES_DIR);
 	if (containerdef_init(CONTAINER_DEFS_STATE_PATH) != 0)
 		return 1;
+	if (containerdef_rolling_config_init(ROLLING_CONFIG_PATH) != 0)
+		return 1;
 	if (devicemap_init(DEVICEMAP_STATE_PATH) != 0)
 		return 1;
 	if (diskrole_init(DISKROLE_STATE_PATH) != 0)
@@ -13191,6 +13525,8 @@ int main(int argc, char **argv)
 				handle_ntp_periodic_timer_event(cc);
 			else if (cc->kind == CONN_RESTART_TIMER)
 				handle_restart_timer_event(cc);
+			else if (cc->kind == CONN_ROLLING_RESTART_TIMER)
+				handle_rolling_restart_timer_event(cc);
 			else if (cc->kind == CONN_BIND_IP_CLEANUP)
 				handle_bind_ip_cleanup_timer_event(cc);
 			else if (cc->kind == CONN_CONSOLE_SHELL)

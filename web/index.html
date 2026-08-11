@@ -979,6 +979,16 @@
 				<button type="button" id="swap-disable">Disable</button>
 			</form>
 			<p class="hint">A single on-demand swap file (ADR-0069), off by default -- useful for memory-heavy package builds (e.g. Rust/wasm) on a box with limited RAM. File-backed swap performs identically to a partition on SSD/NVMe-backed storage.</p>
+
+			<h3>Rolling restart jitter</h3>
+			<form id="rc-form">
+				<label>
+					Jitter window (seconds)
+					<input type="number" id="rc-jitter-window" min="0" max="3600" value="60">
+				</label>
+				<button type="submit">Save</button>
+			</form>
+			<p class="hint">Part 5, ADR-0124: when a rolling image auto-rebuilds, every <code>follow_rolling</code> container on it gets a uniformly-random restart delay up to this window, spreading the restarts out instead of killing them all in the same instant. 0 disables jitter (restart immediately).</p>
 		</section>
 
 		<section class="view" id="view-logs" hidden>
@@ -1162,6 +1172,12 @@
 						<label>
 							Restart delay (seconds)
 							<input type="number" id="f-restart-delay" min="1" max="300" placeholder="2">
+						</label>
+						<label>
+							<input type="checkbox" id="f-follow-rolling">
+							Follow rolling image (Part 5, ADR-0124) -- auto-restart onto a newer
+							version whenever this container's own rolling image rebuilds; requires
+							a restart policy other than "no"
 						</label>
 						<label class="wide">
 							Depends on
