@@ -5834,7 +5834,9 @@ static int create_container_from_body(const char *body, size_t body_len,
                                        int *out_depends_on_count, int *out_has_readiness,
                                        int *out_readiness_tcp_port,
                                        int *out_readiness_timeout_seconds, int *out_follow_rolling,
-                                       char *err_msg, size_t err_msg_size)
+                                       int *out_has_follow_rolling_jitter,
+                                       int *out_follow_rolling_jitter_seconds, char *err_msg,
+                                       size_t err_msg_size)
 {
 	struct json_value *root;
 	const struct json_value *jname, *jimage, *jimage_version, *jcmd, *jmem, *jpids, *jcpu, *jcpuset,
@@ -5845,9 +5847,9 @@ static int create_container_from_body(const char *body, size_t body_len,
 	const struct json_value *jinterfaces;
 	const struct json_value *jfiles, *jsysctls;
 	const struct json_value *jrestart, *jrestart_delay, *jdepends_on, *jreadiness;
-	const struct json_value *jfollow_rolling;
+	const struct json_value *jfollow_rolling, *jfollow_rolling_jitter;
 	const char *restart_str;
-	long restart_delay;
+	long restart_delay, follow_rolling_jitter;
 	const char *name, *image;
 	char name_copy[REGISTRY_NAME_MAX];
 	char lowerdir[PATH_MAX];
@@ -5902,6 +5904,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 	*out_depends_on_count = 0;
 	*out_has_readiness = 0;
 	*out_follow_rolling = 0;
+	*out_has_follow_rolling_jitter = 0;
+	*out_follow_rolling_jitter_seconds = 0;
 
 	root = json_parse(body, body_len);
 	if (root == NULL) {
@@ -6004,6 +6008,30 @@ static int create_container_from_body(const char *body, size_t body_len,
 	jfollow_rolling = json_object_get(root, "follow_rolling");
 	*out_follow_rolling =
 	    (jfollow_rolling != NULL && jfollow_rolling->type == JSON_BOOL && jfollow_rolling->u.boolean);
+
+	/*
+	 * Part 5 follow-up: an optional per-container override of the
+	 * daemon-wide rolling-restart jitter window -- same "ignored, not
+	 * an error" precedent as follow_rolling itself just above when
+	 * this container never actually follows rolling updates, or when
+	 * restart is "no" (handle_create()'s own gate never persists it in
+	 * either case). Range-validated the same 0-CONTAINERDEF_JITTER_MAX_
+	 * SECONDS bound PUT /v1/system/rolling-config already enforces for
+	 * the daemon-wide default, so a container-level override can never
+	 * exceed what the daemon itself would ever accept.
+	 */
+	jfollow_rolling_jitter = json_object_get(root, "follow_rolling_jitter_seconds");
+	if (jfollow_rolling_jitter != NULL) {
+		follow_rolling_jitter = (long)json_as_number(jfollow_rolling_jitter);
+		if (follow_rolling_jitter < 0 || follow_rolling_jitter > CONTAINERDEF_JITTER_MAX_SECONDS) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "follow_rolling_jitter_seconds must be 0-%d",
+			         CONTAINERDEF_JITTER_MAX_SECONDS);
+			return 400;
+		}
+		*out_has_follow_rolling_jitter = 1;
+		*out_follow_rolling_jitter_seconds = (int)follow_rolling_jitter;
+	}
 
 	jdepends_on = json_object_get(root, "depends_on");
 	if (jdepends_on != NULL) {
@@ -6844,6 +6872,7 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	int depends_on_count;
 	int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
 	int follow_rolling;
+	int has_follow_rolling_jitter, follow_rolling_jitter_seconds;
 	char err_msg[256];
 	int status;
 	struct json_writer w;
@@ -6851,8 +6880,9 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	status = create_container_from_body(body, body_len, &entry, restart_policy,
 	                                     &restart_delay_seconds, depends_on, &depends_on_count,
 	                                     &has_readiness, &readiness_tcp_port,
-	                                     &readiness_timeout_seconds, &follow_rolling, err_msg,
-	                                     sizeof(err_msg));
+	                                     &readiness_timeout_seconds, &follow_rolling,
+	                                     &has_follow_rolling_jitter, &follow_rolling_jitter_seconds,
+	                                     err_msg, sizeof(err_msg));
 	if (status != 0) {
 		respond_error(fd, status, http_status_text(status), err_msg);
 		return;
@@ -6903,7 +6933,8 @@ static void handle_create(int fd, const char *body, size_t body_len)
 
 		if (containerdef_add(entry->name, persist_src, persisted_len, depends_on, depends_on_count,
 		                      has_readiness, readiness_tcp_port, readiness_timeout_seconds,
-		                      restart_policy, restart_delay_seconds, follow_rolling) != 0) {
+		                      restart_policy, restart_delay_seconds, follow_rolling,
+		                      has_follow_rolling_jitter, follow_rolling_jitter_seconds) != 0) {
 			fprintf(stderr,
 			        "%s: restart:\"%s\" requested but persisting its definition failed -- "
 			        "it will not survive a daemon restart\n",
@@ -7119,6 +7150,7 @@ static void handle_start(int fd, const char *name)
 	int depends_on_count;
 	int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
 	int follow_rolling;
+	int has_follow_rolling_jitter, follow_rolling_jitter_seconds;
 	char err_msg[256];
 	int status;
 	struct json_writer w;
@@ -7141,8 +7173,9 @@ static void handle_start(int fd, const char *name)
 	status = create_container_from_body(def->body, def->body_len, &entry, restart_policy,
 	                                     &restart_delay_seconds, depends_on, &depends_on_count,
 	                                     &has_readiness, &readiness_tcp_port,
-	                                     &readiness_timeout_seconds, &follow_rolling, err_msg,
-	                                     sizeof(err_msg));
+	                                     &readiness_timeout_seconds, &follow_rolling,
+	                                     &has_follow_rolling_jitter, &follow_rolling_jitter_seconds,
+	                                     err_msg, sizeof(err_msg));
 	if (status != 0) {
 		respond_error(fd, status, http_status_text(status), err_msg);
 		return;
@@ -12229,11 +12262,13 @@ static void handle_restart_timer_event(struct conn *cc)
 		 * them. */
 		int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
 		int follow_rolling;
+		int has_follow_rolling_jitter, follow_rolling_jitter_seconds;
 		char err_msg[256];
 		int status = create_container_from_body(
 		    def->body, def->body_len, &entry, restart_policy, &restart_delay_seconds, depends_on,
 		    &depends_on_count, &has_readiness, &readiness_tcp_port, &readiness_timeout_seconds,
-		    &follow_rolling, err_msg, sizeof(err_msg));
+		    &follow_rolling, &has_follow_rolling_jitter, &follow_rolling_jitter_seconds, err_msg,
+		    sizeof(err_msg));
 
 		if (status != 0)
 			fprintf(stderr, "%s: restart failed: %s\n", cc->restart_name, err_msg);
@@ -12364,11 +12399,13 @@ static void handle_rolling_restart_timer_event(struct conn *cc)
 			int depends_on_count;
 			int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
 			int follow_rolling;
+			int has_follow_rolling_jitter, follow_rolling_jitter_seconds;
 			char err_msg[256];
 			int status = create_container_from_body(
 			    def->body, def->body_len, &entry, restart_policy, &restart_delay_seconds,
 			    depends_on, &depends_on_count, &has_readiness, &readiness_tcp_port,
-			    &readiness_timeout_seconds, &follow_rolling, err_msg, sizeof(err_msg));
+			    &readiness_timeout_seconds, &follow_rolling, &has_follow_rolling_jitter,
+			    &follow_rolling_jitter_seconds, err_msg, sizeof(err_msg));
 
 			if (status != 0)
 				fprintf(stderr, "%s: rolling restart failed: %s\n", cc->restart_name, err_msg);
@@ -12459,7 +12496,14 @@ static void apply_rolling_container_restarts(void)
 		}
 
 		if (strcmp(pinned_version, current_version) != 0) {
-			int jitter_window = containerdef_jitter_window_get();
+			/* Part 5 follow-up: this container's own explicit
+			 * follow_rolling_jitter_seconds, if it set one, otherwise
+			 * the daemon-wide default -- same override-over-default
+			 * shape restart_delay_seconds's own base value has, just
+			 * one level up (a per-container knob over a daemon-wide
+			 * one, not a per-container knob over a hardcoded constant). */
+			int jitter_window = def->has_follow_rolling_jitter ? def->follow_rolling_jitter_seconds
+			                                                    : containerdef_jitter_window_get();
 			int delay = jitter_window > 0 ? rolling_jitter_seconds(jitter_window) : 0;
 
 			if (containerdef_patch_image_version(order[i], current_version) == 0) {
@@ -13046,6 +13090,7 @@ static void containerdef_autostart_all(void)
 		int depends_on_count;
 		int has_readiness, readiness_tcp_port, readiness_timeout_seconds;
 		int follow_rolling;
+		int has_follow_rolling_jitter, follow_rolling_jitter_seconds;
 		char err_msg[256];
 		int status;
 
@@ -13061,8 +13106,9 @@ static void containerdef_autostart_all(void)
 		status = create_container_from_body(def->body, def->body_len, &entry, restart_policy,
 		                                     &restart_delay_seconds, depends_on, &depends_on_count,
 		                                     &has_readiness, &readiness_tcp_port,
-		                                     &readiness_timeout_seconds, &follow_rolling, err_msg,
-		                                     sizeof(err_msg));
+		                                     &readiness_timeout_seconds, &follow_rolling,
+		                                     &has_follow_rolling_jitter, &follow_rolling_jitter_seconds,
+		                                     err_msg, sizeof(err_msg));
 		if (status != 0) {
 			fprintf(stderr, "%s: autostart failed: %s\n", order[i], err_msg);
 			continue;

@@ -553,11 +553,15 @@ int pkg_find_update_candidate(char *out_name, size_t out_name_size, char *out_im
 /* image NULL or "" means PKG_DEFAULT_IMAGE, matching pkg_install_start(). */
 enum pkg_error pkg_get_one(const char *name, const char *image, struct json_writer *w);
 
-/* Unlinks every manifested file from that specific (name, image)
- * entry's own image and forgets the package. PKG_ERR_NOT_FOUND if
- * unknown or not currently installed; PKG_ERR_BUSY if this exact
- * (name, image) is the one currently mid-build. image NULL or ""
- * means PKG_DEFAULT_IMAGE. */
+/* Forgets a package entry in either of the two terminal states:
+ * PKG_STATE_INSTALLED (unlinks every manifested file from that
+ * specific (name, image) entry's own image first, producing a new
+ * immutable image version -- ADR-0107/0108) or PKG_STATE_FAILED (a
+ * permanently-failed fetch/build attempt that never actually merged
+ * anything into any image -- cleared directly, no image version
+ * produced). PKG_ERR_NOT_FOUND if unknown or still FETCHING/BUILDING;
+ * PKG_ERR_BUSY if this exact (name, image) is the one currently
+ * mid-build. image NULL or "" means PKG_DEFAULT_IMAGE. */
 enum pkg_error pkg_delete(const char *name, const char *image);
 
 /*

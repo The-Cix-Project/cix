@@ -19,6 +19,21 @@ Fifth and final of the five-part `pkg/` redesign (task #739/#770) -- see [ADR-01
 #### Verified
 - Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (all daemon-linked and standalone tests, including the new `test_rolling_restart.c`, run three times consecutively for the new test) confirms zero regressions.
 
+### Part 83 (done): pkg_delete() failed-state removal + per-container follow_rolling jitter override
+
+Two further Part 5 follow-ups (task #739), both user-requested after the prior session's live verification -- see [ADR-0125](docs/adr/0125-pkg-delete-failed-state-and-jitter-override.md).
+
+#### Fixed
+- `pkg_delete()` (`daemon/src/pkg.c`) previously only accepted `PKG_STATE_INSTALLED`, leaving a permanently-`PKG_STATE_FAILED` package (a bad checksum, a broken recipe, a network hiccup) stuck forever -- `DELETE /v1/pkg/{name}` 404'd for it exactly like an unknown name, indistinguishably. Confirmed by tracing every `PKG_STATE_FAILED` transition that a failed entry's own `e->files` either is empty or, in the one path that runs `image_produce_new_version()` first, only ever describes content in an already-discarded scratch staging directory -- never anything actually present in a real image version. Fixed: a FAILED entry is now cleared directly (`pkg_entry_free_files()` + slot clear), skipping `image_produce_new_version()`/`delete_mutate()` entirely rather than reusing the INSTALLED uninstall path, since nothing was ever really merged into any image.
+
+#### Added
+- `follow_rolling_jitter_seconds`: an optional per-container override (0-3600) of the daemon-wide rolling-restart jitter window, set via `POST /v1/containers`. `struct container_def` gains `has_follow_rolling_jitter`/`follow_rolling_jitter_seconds` (mirrors `has_readiness`'s own "optional int" shape); `apply_rolling_container_restarts()` resolves `def->has_follow_rolling_jitter ? def->follow_rolling_jitter_seconds : containerdef_jitter_window_get()` per container instead of always using the daemon-wide default. Persisted, migrated (absent/null both mean "no override," covering pre-existing `container_defs.json` files), and surfaced (nullable) in every container response. `cli/src/main.c`: `--follow-rolling-jitter-seconds=N` on `container run`, a `jitter=` column in `ps`/`inspect` output. Web dashboard: an override field on the container-create modal and the container-detail Options tab.
+
+#### Verified
+- `test/test_pkg.c`: a checksum-mismatch install (`badsum`) is deleted after reaching `failed`, confirmed `204`/subsequent-`404`, and confirmed the base image's own `current_version` is completely unchanged by the removal (no new image version produced for something that never touched the image).
+- `test/test_rolling_restart.c`: a round-trip proof (`follow_rolling_jitter_seconds:0` on create is echoed back by both the create response and `GET`); a real behavioral proof the override wins over the daemon-wide default -- the default is cranked to its own 3600s maximum, a new container gets an explicit `0` override, a second rolling rebuild is triggered, and the container is confirmed to restart within a ~10s poll window (under 0.3% chance of a daemon-default-only container coincidentally restarting that fast).
+- Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (all daemon-linked and standalone tests) confirms zero regressions; `test_rolling_restart` re-run 3x consecutively given its one timing-sensitive assertion.
+
 ### Part 82 follow-up: `kanxeoctl rolling-config set` off-by-one, found during live verification on 192.168.15.95
 
 `cmd_rolling_config_set()` (`cli/src/main.c`) compared `argv[i]` against `"--jitter-window-seconds="` with `strncmp(..., 25)` and read the value from `argv[i] + 25` -- the literal is 24 characters, not 25, so the flag never matched and every real invocation failed with "unknown rolling-config set option". Caught immediately during live verification (task #770's own real end-to-end round trip on 192.168.15.95, not caught by `test_rolling_restart.c` since that test drives the REST API directly, never the CLI's own argv parser). Fixed (`24`/`24`); added a new CLI-level check to `test/test_cli.c` (forks the real `kanxeoctl` binary against a real daemon) so this class of bug can't ship silently again. Full regression sweep re-run clean.

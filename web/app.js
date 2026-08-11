@@ -1611,6 +1611,14 @@ function renderContainerDetail(name) {
 		)
 	);
 	optionsFields.appendChild(fieldBlock("Follow rolling image", c.follow_rolling ? "yes" : "no"));
+	optionsFields.appendChild(
+		fieldBlock(
+			"Follow-rolling jitter override",
+			c.follow_rolling_jitter_seconds === null || c.follow_rolling_jitter_seconds === undefined
+				? "(daemon default)"
+				: c.follow_rolling_jitter_seconds + "s"
+		)
+	);
 	optionsFields.appendChild(fieldBlock("Pinned image version", c.image_version || "-"));
 	optionsFields.appendChild(fieldBlock("Depends on", (c.depends_on || []).join(", ") || "-"));
 	optionsFields.appendChild(
@@ -3994,6 +4002,7 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 	const restart = document.getElementById("f-restart").value;
 	const restartDelayText = document.getElementById("f-restart-delay").value.trim();
 	const followRolling = document.getElementById("f-follow-rolling").checked;
+	const followRollingJitterText = document.getElementById("f-follow-rolling-jitter").value.trim();
 	const dependsOnText = document.getElementById("f-depends-on").value.trim();
 	const readinessPortText = document.getElementById("f-readiness-port").value.trim();
 	const readinessTimeoutText = document.getElementById("f-readiness-timeout").value.trim();
@@ -4057,6 +4066,8 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 		body.restart_delay_seconds = parseInt(restartDelayText, 10);
 	if (followRolling)
 		body.follow_rolling = true;
+	if (followRollingJitterText !== "")
+		body.follow_rolling_jitter_seconds = parseInt(followRollingJitterText, 10);
 	if (dependsOnText !== "") {
 		body.depends_on = dependsOnText
 			.split(",")

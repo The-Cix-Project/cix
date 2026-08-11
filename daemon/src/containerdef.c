@@ -60,6 +60,11 @@ static int save_state(void)
 		jw_bool(&w, d->stopped);
 		jw_key(&w, "follow_rolling");
 		jw_bool(&w, d->follow_rolling);
+		jw_key(&w, "follow_rolling_jitter_seconds");
+		if (d->has_follow_rolling_jitter)
+			jw_int(&w, d->follow_rolling_jitter_seconds);
+		else
+			jw_null(&w);
 		jw_key(&w, "body");
 		jw_str(&w, d->body);
 		jw_obj_close(&w);
@@ -73,7 +78,8 @@ static int save_state(void)
 int containerdef_add(const char *name, const char *body, size_t body_len,
                       const char depends_on[][REGISTRY_NAME_MAX], int depends_on_count,
                       int has_readiness, int readiness_tcp_port, int readiness_timeout_seconds,
-                      const char *restart_policy, int restart_delay_seconds, int follow_rolling)
+                      const char *restart_policy, int restart_delay_seconds, int follow_rolling,
+                      int has_follow_rolling_jitter, int follow_rolling_jitter_seconds)
 {
 	struct container_def *d = containerdef_find(name);
 	int i;
@@ -119,6 +125,8 @@ int containerdef_add(const char *name, const char *body, size_t body_len,
 	d->stopped = 0;              /* a fresh create/redefine is definitionally not stopped */
 	d->consecutive_failures = 0; /* ...and not backed off either */
 	d->follow_rolling = follow_rolling;
+	d->has_follow_rolling_jitter = has_follow_rolling_jitter;
+	d->follow_rolling_jitter_seconds = follow_rolling_jitter_seconds;
 
 	d->in_use = 1;
 
@@ -289,6 +297,11 @@ static void write_stopped_def_json_one(struct container_def *d, struct json_writ
 	jw_int(w, d->restart_delay_seconds);
 	jw_key(w, "follow_rolling");
 	jw_bool(w, d->follow_rolling);
+	jw_key(w, "follow_rolling_jitter_seconds");
+	if (d->has_follow_rolling_jitter)
+		jw_int(w, d->follow_rolling_jitter_seconds);
+	else
+		jw_null(w);
 	jw_key(w, "stopped");
 	jw_bool(w, 1);
 	jw_key(w, "depends_on");
@@ -342,6 +355,8 @@ static int parse_persisted_entry(const struct json_value *item, struct container
 	const struct json_value *jrestart_delay = json_object_get(item, "restart_delay_seconds");
 	const struct json_value *jstopped = json_object_get(item, "stopped");
 	const struct json_value *jfollow_rolling = json_object_get(item, "follow_rolling");
+	const struct json_value *jfollow_rolling_jitter =
+	    json_object_get(item, "follow_rolling_jitter_seconds");
 	size_t i;
 
 	if (name == NULL || name[0] == '\0' || strlen(name) >= REGISTRY_NAME_MAX || body == NULL)
@@ -415,6 +430,14 @@ static int parse_persisted_entry(const struct json_value *item, struct container
 	 * (never followed rolling updates before this feature existed). */
 	slot->follow_rolling =
 	    (jfollow_rolling != NULL && jfollow_rolling->type == JSON_BOOL && jfollow_rolling->u.boolean);
+	/* Absent or JSON null both mean "no per-container override" -- the
+	 * former predates this field, the latter is what save_state()
+	 * itself always writes for an unset override, same "null means
+	 * absent" shape has_readiness above uses for a nested object. */
+	slot->has_follow_rolling_jitter =
+	    (jfollow_rolling_jitter != NULL && jfollow_rolling_jitter->type == JSON_NUMBER);
+	slot->follow_rolling_jitter_seconds =
+	    slot->has_follow_rolling_jitter ? (int)json_as_number(jfollow_rolling_jitter) : 0;
 
 	slot->in_use = 1;
 	return 0;

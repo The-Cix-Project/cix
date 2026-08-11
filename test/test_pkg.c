@@ -506,6 +506,46 @@ int main(void)
 		ok = 0;
 	}
 
+	/* 7b. DELETE on a permanently-failed entry actually removes it
+	 * (this daemon used to only accept PKG_STATE_INSTALLED, leaving a
+	 * failed fetch/build stuck forever) -- and, since it was never
+	 * merged into any image, base's own current_version must be
+	 * completely unchanged by the removal (no new image version
+	 * produced for something that never touched the image). */
+	{
+		char base_version_before[128], base_version_after[128];
+
+		if (test_image_fixture_read_current_version(g_images_base_dir, base_version_before,
+		                                             sizeof(base_version_before)) != 0) {
+			fprintf(stderr, "FAIL: could not read base image current_version before badsum delete\n");
+			ok = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "DELETE", "/v1/pkg/badsum", NULL, &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: DELETE badsum (failed state) expected 204, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pkg/badsum", NULL, &r) != 0 || r.status != 404) {
+			fprintf(stderr, "FAIL: GET badsum after delete expected 404, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		if (test_image_fixture_read_current_version(g_images_base_dir, base_version_after,
+		                                             sizeof(base_version_after)) != 0 ||
+		    strcmp(base_version_before, base_version_after) != 0) {
+			fprintf(stderr,
+			        "FAIL: base image current_version changed after deleting a failed entry (%s -> %s)\n",
+			        base_version_before, base_version_after);
+			ok = 0;
+		}
+	}
+
 	/* 8. delete removes the manifested file from the base image, not
 	 * just the registry entry */
 	memset(&r, 0, sizeof(r));

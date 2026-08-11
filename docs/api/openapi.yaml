@@ -3893,7 +3893,14 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
     delete:
-      summary: Uninstalls a package (unlinks its manifested files from its target image)
+      summary: >
+        Removes a package entry, either installed or permanently failed.
+        For an installed package, unlinks its manifested files from its
+        target image, producing a new immutable image version
+        (ADR-0107/0108). For one stuck in a permanently-failed
+        fetch/build state, clears the tracking entry directly -- nothing
+        was ever actually merged into any image, so there is nothing to
+        unlink and no new image version is produced.
       operationId: deletePkg
       parameters:
         - $ref: "#/components/parameters/PkgName"
@@ -3901,7 +3908,7 @@ paths:
         "204":
           description: Removed
         "404":
-          description: No such package, or not currently installed
+          description: No such package, or still fetching/building (not yet installed or failed)
           content:
             application/json:
               schema:
@@ -4886,6 +4893,22 @@ components:
             not just rolling auto-rebuilds. Silently ignored (not an
             error), same as restart_delay_seconds above, when restart is
             "no" -- meaningless without a persisted definition to replay.
+        follow_rolling_jitter_seconds:
+          type: integer
+          minimum: 0
+          maximum: 3600
+          description: >
+            Optional per-container override of the daemon-wide jitter
+            window (GET/PUT /system/rolling-config's own
+            jitter_window_seconds) used when this container's own
+            follow_rolling restarts fire -- lets one particularly
+            latency-sensitive or particularly tolerant container use a
+            different spread than the daemon-wide default without
+            changing that default for every other follow_rolling
+            container. Omitted means "use the daemon-wide default."
+            Same "ignored, not an error" precedent as follow_rolling
+            itself when restart is "no" or follow_rolling is false --
+            meaningless without both.
         depends_on:
           type: array
           items:
@@ -5173,6 +5196,14 @@ components:
             Whether this container auto-follows its image's own rolling
             version drift (see ContainerCreateRequest.follow_rolling,
             ADR-0124). Always false unless restart is not "no".
+        follow_rolling_jitter_seconds:
+          type: integer
+          nullable: true
+          description: >
+            This container's own per-container jitter-window override
+            (see ContainerCreateRequest.follow_rolling_jitter_seconds).
+            null means "use the daemon-wide default" -- either because
+            none was set, or because restart is "no".
         stopped:
           type: boolean
           description: >

@@ -1179,6 +1179,10 @@
 							version whenever this container's own rolling image rebuilds; requires
 							a restart policy other than "no"
 						</label>
+						<label>
+							Follow-rolling jitter override (seconds)
+							<input type="number" id="f-follow-rolling-jitter" min="0" max="3600" placeholder="(daemon default)">
+						</label>
 						<label class="wide">
 							Depends on
 							<input type="text" id="f-depends-on" placeholder="(none), or comma-separated: db,cache">

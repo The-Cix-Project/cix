@@ -3379,11 +3379,39 @@ enum pkg_error pkg_delete(const char *name, const char *image)
 	struct pkg_entry saved;
 	struct delete_mutate_ctx ctx;
 
-	if (e == NULL || e->state != PKG_STATE_INSTALLED)
+	if (e == NULL || (e->state != PKG_STATE_INSTALLED && e->state != PKG_STATE_FAILED))
 		return PKG_ERR_NOT_FOUND;
 	if (strcmp(g_current_job_name, name) == 0 &&
 	    strcmp(g_current_job_image, normalize_image(image)) == 0)
 		return PKG_ERR_BUSY;
+
+	/*
+	 * A PKG_STATE_FAILED entry never had its files actually committed
+	 * into any real, persisted image version: either the failure
+	 * happened before pkg_build_completed()'s own merge step ever ran
+	 * (e->files still empty -- the common case, a fetch or build
+	 * failure), or it happened inside image_produce_new_version()
+	 * itself, after install_mutate()'s own merge_tree() had already
+	 * populated e->files as a side effect of writing into that
+	 * attempt's own scratch staging directory --
+	 * image_produce_new_version() always discards that staging
+	 * directory on any failure (see its own comment) before ever
+	 * renaming it into a real version, so e->files in that case
+	 * describes content that was already deleted along with the
+	 * staging copy, not anything an operator can actually see in the
+	 * image. Either way there is nothing to unlink from a real image
+	 * and no new image version to produce for this removal --
+	 * image_produce_new_version()/delete_mutate() below is for the
+	 * PKG_STATE_INSTALLED case only; a failed entry is cleared
+	 * directly. save_state() is harmless-but-not-load-bearing here
+	 * (only PKG_STATE_INSTALLED entries are ever persisted), kept for
+	 * consistency with the branch below.
+	 */
+	if (e->state == PKG_STATE_FAILED) {
+		pkg_entry_free_files(e);
+		memset(e, 0, sizeof(*e));
+		return save_state() == 0 ? PKG_OK : PKG_ERR_PERSIST_FAILED;
+	}
 
 	/*
 	 * Uninstalling a package must, like an install/upgrade, produce a

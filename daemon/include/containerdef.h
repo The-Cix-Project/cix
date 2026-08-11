@@ -96,6 +96,21 @@ struct container_def {
 	 * image's current_version whenever that changes.
 	 */
 	int follow_rolling;
+	/*
+	 * Part 5 follow-up: optional per-container override of the
+	 * daemon-wide jitter window (containerdef_jitter_window_get()),
+	 * set only by an explicit "follow_rolling_jitter_seconds" on the
+	 * original POST body -- the same has_readiness shape this struct
+	 * already uses for an optional int (has_follow_rolling_jitter == 0
+	 * means "use the daemon default," the other field is then
+	 * meaningless). Like follow_rolling itself, meaningless without a
+	 * persisted definition to replay and without follow_rolling also
+	 * being set; not independently rejected for either combination
+	 * here, the same "ignored, not an error" precedent
+	 * restart_delay_seconds/follow_rolling already established.
+	 */
+	int has_follow_rolling_jitter;
+	int follow_rolling_jitter_seconds;
 	int in_use;
 };
 
@@ -126,13 +141,16 @@ int containerdef_init(const char *state_path);
  * request never reaches this function, see handle_create()).
  * Overwrites any existing definition for the same name, explicitly
  * clearing its stopped/consecutive_failures state (a fresh create/
- * redefine is definitionally not stopped and not backed off). Returns
- * 0, or -1 on a persist (disk) failure.
+ * redefine is definitionally not stopped and not backed off).
+ * has_follow_rolling_jitter == 0 means "use the daemon-wide jitter
+ * window" (containerdef_jitter_window_get()); the other field is then
+ * ignored. Returns 0, or -1 on a persist (disk) failure.
  */
 int containerdef_add(const char *name, const char *body, size_t body_len,
                       const char depends_on[][REGISTRY_NAME_MAX], int depends_on_count,
                       int has_readiness, int readiness_tcp_port, int readiness_timeout_seconds,
-                      const char *restart_policy, int restart_delay_seconds, int follow_rolling);
+                      const char *restart_policy, int restart_delay_seconds, int follow_rolling,
+                      int has_follow_rolling_jitter, int follow_rolling_jitter_seconds);
 
 /* Removes name's definition, if any. A no-op (returns 0) if none exists. */
 int containerdef_remove(const char *name);

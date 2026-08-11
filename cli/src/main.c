@@ -55,7 +55,8 @@ static void print_usage(FILE *out)
 	        "      [--ldap-uid=N] [--ldap-secret-dir=PATH]\n"
 	        "      [--route=DEST/PREFIX:VIA ...] [--device=ID ...]\n"
 	        "      [--interface=IFNAME ...] [--restart=always|on-failure|unless-stopped]\n"
-	        "      [--restart-delay=N] [--follow-rolling] [--depends-on=NAME ...]\n"
+	        "      [--restart-delay=N] [--follow-rolling] [--follow-rolling-jitter-seconds=N]\n"
+	        "      [--depends-on=NAME ...]\n"
 	        "      [--readiness-tcp-port=N [--readiness-timeout=N]] -- CMD [ARGS...]\n"
 	        "  inspect NAME\n"
 	        "  stop NAME  -- kill it now, keep its persisted definition (unlike rm)\n"
@@ -176,10 +177,13 @@ static void print_usage(FILE *out)
 	        "               (ADR-0068) is a second, dedicated address on the management\n"
 	        "               network's own bridge -- kanxeod binds there instead of that\n"
 	        "               network's own address; --clear-bind-ip reverts to it\n"
-	        "  rolling-config show  -- current rolling-restart jitter window (Part 5, ADR-0124)\n"
+	        "  rolling-config show  -- current daemon-wide rolling-restart jitter window default\n"
+	        "               (Part 5, ADR-0124)\n"
 	        "  rolling-config set --jitter-window-seconds=N  -- 0-3600, 0 = no jitter (restart\n"
 	        "               immediately); spreads out simultaneous restarts of every\n"
-	        "               follow_rolling container sharing an image that just rebuilt\n"
+	        "               follow_rolling container sharing an image that just rebuilt --\n"
+	        "               a single follow_rolling container can override this default via\n"
+	        "               run --follow-rolling-jitter-seconds=N at creation time\n"
 	        "  iso build [--disk=DEV --ip=A.B.C.D --prefix=N --gateway=A.B.C.D\n"
 	        "               --interface=IFNAME] [--wait]  -- assembles a fresh installer ISO\n"
 	        "               server-side (ADR-0064), from the most recent \"kanxeo\"/\"kernel\"/\n"
@@ -313,6 +317,8 @@ static void fmt_container_line(const struct json_value *v)
 	const struct json_value *restart_delay = json_object_get(v, "restart_delay_seconds");
 	const struct json_value *stopped = json_object_get(v, "stopped");
 	const struct json_value *follow_rolling = json_object_get(v, "follow_rolling");
+	const struct json_value *follow_rolling_jitter =
+	    json_object_get(v, "follow_rolling_jitter_seconds");
 	const struct json_value *readiness = json_object_get(v, "readiness");
 	const struct json_value *files = json_object_get(v, "files");
 	const struct json_value *sysctls = json_object_get(v, "sysctls");
@@ -321,6 +327,7 @@ static void fmt_container_line(const struct json_value *v)
 	char net_buf[256];
 	char readiness_buf[32];
 	char delay_buf[16];
+	char jitter_buf[16];
 	char cmd_buf[256];
 	size_t off = 0;
 	size_t cmd_off = 0;
@@ -358,6 +365,11 @@ static void fmt_container_line(const struct json_value *v)
 	else
 		snprintf(delay_buf, sizeof(delay_buf), "-");
 
+	if (follow_rolling_jitter != NULL && follow_rolling_jitter->type == JSON_NUMBER)
+		snprintf(jitter_buf, sizeof(jitter_buf), "%ld", (long)json_as_number(follow_rolling_jitter));
+	else
+		snprintf(jitter_buf, sizeof(jitter_buf), "-");
+
 	cmd_buf[0] = '\0';
 	if (cmd != NULL && cmd->type == JSON_ARRAY) {
 		for (i = 0; i < cmd->u.array.count && cmd_off < sizeof(cmd_buf) - 1; i++) {
@@ -371,7 +383,7 @@ static void fmt_container_line(const struct json_value *v)
 	}
 
 	printf("%-20s %-8s pid=%-8ld exit_status=%-6s networks=%-20s fwd=%-4s restart=%-15s "
-	       "delay=%-4s roll=%-4s stopped=%-5s readiness=%-10s files=%-3zu sysctls=%-3zu cmd=%s\n",
+	       "delay=%-4s roll=%-4s jitter=%-4s stopped=%-5s readiness=%-10s files=%-3zu sysctls=%-3zu cmd=%s\n",
 	       name, status, pid, exit_buf, net_buf[0] != '\0' ? net_buf : "-",
 	       (ip_forward != NULL && ip_forward->type == JSON_BOOL && ip_forward->u.boolean) ? "yes"
 	                                                                                        : "no",
@@ -379,6 +391,7 @@ static void fmt_container_line(const struct json_value *v)
 	       (follow_rolling != NULL && follow_rolling->type == JSON_BOOL && follow_rolling->u.boolean)
 	           ? "yes"
 	           : "no",
+	       jitter_buf,
 	       (stopped != NULL && stopped->type == JSON_BOOL && stopped->u.boolean) ? "yes" : "no",
 	       readiness_buf, files != NULL && files->type == JSON_ARRAY ? files->u.array.count : 0,
 	       sysctls != NULL && sysctls->type == JSON_OBJECT ? sysctls->u.object.count : 0,
@@ -3110,6 +3123,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	const char *restart = NULL;
 	long restart_delay = -1;
 	int follow_rolling = 0;
+	long follow_rolling_jitter = -1;
 	const char *depends_on[CLI_MAX_DEPENDS];
 	int depends_on_count = 0;
 	long readiness_tcp_port = -1;
@@ -3193,6 +3207,8 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 			restart_delay = atol(argv[i] + 16);
 		} else if (strcmp(argv[i], "--follow-rolling") == 0) {
 			follow_rolling = 1;
+		} else if (strncmp(argv[i], "--follow-rolling-jitter-seconds=", 32) == 0) {
+			follow_rolling_jitter = atol(argv[i] + 32);
 		} else if (strncmp(argv[i], "--depends-on=", 13) == 0) {
 			if (depends_on_count >= CLI_MAX_DEPENDS) {
 				fprintf(stderr, "kanxeoctl: too many --depends-on= flags (max %d)\n",
@@ -3281,7 +3297,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		        "[--ldap-uid=N] [--ldap-secret-dir=PATH] "
 		        "[--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--interface=IFNAME ...] "
 		        "[--restart=always|on-failure|unless-stopped] [--restart-delay=N] "
-		        "[--follow-rolling] "
+		        "[--follow-rolling] [--follow-rolling-jitter-seconds=N] "
 		        "[--depends-on=NAME ...] "
 		        "[--readiness-tcp-port=N [--readiness-timeout=N]] "
 		        "[--file=CONTAINER_PATH=LOCAL_PATH[:MODE] ...] [--sysctl=KEY=VALUE ...] "
@@ -3426,6 +3442,10 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (follow_rolling) {
 		jw_key(&w, "follow_rolling");
 		jw_bool(&w, 1);
+	}
+	if (follow_rolling_jitter >= 0) {
+		jw_key(&w, "follow_rolling_jitter_seconds");
+		jw_int(&w, follow_rolling_jitter);
 	}
 	if (depends_on_count > 0) {
 		jw_key(&w, "depends_on");

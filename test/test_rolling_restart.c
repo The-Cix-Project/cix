@@ -9,7 +9,11 @@
  * follow_rolling container gets a genuinely new process (pid changes,
  * not just relabeled) pinned to the new version; an otherwise-identical
  * container on the same image WITHOUT follow_rolling is left
- * completely untouched -- the opt-in gate the user asked for.
+ * completely untouched -- the opt-in gate the user asked for. Also
+ * proves the per-container follow_rolling_jitter_seconds override
+ * (Part 5 follow-up): round-trips through create/GET, and actually
+ * takes precedence over a much larger daemon-wide default when a
+ * second rebuild fires.
  *
  * Kept hermetic and gcc-free: the "package" installed is a real,
  * already-compiled test binary (build/daemon_child, dynamically linked
@@ -500,6 +504,135 @@ int main(void)
 	      "rollctr-plain's pid is unchanged (opt-in gate honored)");
 	CHECK(strcmp(plain_ver_after, old_version) == 0,
 	      "rollctr-plain is still pinned to the pre-rebuild version");
+
+	/* --- per-container jitter override (Part 5 follow-up) ---
+	 *
+	 * First, a pure round-trip proof: an explicit
+	 * follow_rolling_jitter_seconds on create is echoed back by GET,
+	 * not silently dropped.
+	 *
+	 * Second, a real behavioral proof that the override actually wins
+	 * over the daemon-wide default, not just that it's stored: crank
+	 * the daemon-wide default up to its own maximum (3600s -- up to an
+	 * hour), give a new container an explicit override of 0 (restart
+	 * immediately, no jitter), trigger one more rebuild, and confirm
+	 * this container restarts within a short poll window. If the
+	 * per-container override were being ignored in favor of the
+	 * (now huge) daemon default, a short poll window would essentially
+	 * never observe a restart -- rolling_jitter_seconds() draws
+	 * uniformly from [0, 3600], so P(<=~10s by chance alone) is under
+	 * 0.3%.
+	 */
+	memset(&r, 0, sizeof(r));
+	CHECK(kx_client_request(&client, "POST", "/v1/containers",
+	                         "{\"name\":\"rollctr-jitter\",\"image\":\"rollctrimg\","
+	                         "\"cmd\":[\"/usr/bin/rollsvc\",\"300\",\"0\"],"
+	                         "\"restart\":\"always\",\"follow_rolling\":true,"
+	                         "\"follow_rolling_jitter_seconds\":0}",
+	                         &r) == 0 &&
+	          r.status == 201,
+	      "POST rollctr-jitter (follow_rolling=true, jitter override=0)");
+	if (r.json != NULL) {
+		const struct json_value *jj = json_object_get(r.json, "follow_rolling_jitter_seconds");
+
+		CHECK(jj != NULL && jj->type == JSON_NUMBER && (long)json_as_number(jj) == 0,
+		      "create response echoes follow_rolling_jitter_seconds=0, not null");
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	CHECK(kx_client_request(&client, "GET", "/v1/containers/rollctr-jitter", NULL, &r) == 0 &&
+	          r.status == 200,
+	      "GET rollctr-jitter");
+	if (r.json != NULL) {
+		const struct json_value *jj = json_object_get(r.json, "follow_rolling_jitter_seconds");
+
+		CHECK(jj != NULL && jj->type == JSON_NUMBER && (long)json_as_number(jj) == 0,
+		      "GET rollctr-jitter reports follow_rolling_jitter_seconds=0");
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	CHECK(kx_client_request(&client, "PUT", "/v1/system/rolling-config",
+	                         "{\"jitter_window_seconds\":3600}", &r) == 0 &&
+	          r.status == 200,
+	      "PUT rolling-config jitter_window_seconds=3600 (the daemon-wide default a container-level "
+	      "override must beat)");
+	kx_response_free(&r);
+
+	{
+		long jitter_pid_before, jitter_pid_after;
+		char jitter_ver_before[128], jitter_ver_after[128];
+		char tarball_v3[512], sha_v3[128];
+		char newer_version[128];
+		struct json_writer w;
+		char body[2048];
+		char content[1200];
+
+		CHECK(fetch_container_pid_version(&client, "rollctr-jitter", &jitter_pid_before,
+		                                   jitter_ver_before, sizeof(jitter_ver_before)) == 0 &&
+		          jitter_pid_before > 0,
+		      "rollctr-jitter is running before the second rebuild");
+		CHECK(strcmp(jitter_ver_before, new_version) == 0,
+		      "rollctr-jitter pinned to the first rebuild's version");
+
+		CHECK(stage_binary_fixture(scratch_dir, "3.0", "build/daemon_child", tarball_v3,
+		                            sizeof(tarball_v3), sha_v3, sizeof(sha_v3)) == 0,
+		      "stage rollsvc 3.0 fixture");
+
+		snprintf(content, sizeof(content),
+		         "pkg_name=rollsvc\npkg_version=3.0\npkg_source=file://%s\n"
+		         "pkg_sha256=%s\npkg_depends=\"\"\n\n"
+		         "pkg_build() {\n\t:\n}\n\n"
+		         "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp rollsvc "
+		         "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n\tchmod +x "
+		         "\"$PKG_DESTDIR/usr/bin/rollsvc\"\n}\n",
+		         tarball_v3, sha_v3);
+
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "name");
+		jw_str(&w, "rollsvc");
+		jw_key(&w, "content");
+		jw_str(&w, content);
+		jw_obj_close(&w);
+		w.buf[w.len] = '\0';
+		snprintf(body, sizeof(body), "%s", w.buf);
+
+		memset(&r, 0, sizeof(r));
+		CHECK(kx_client_request(&client, "POST", "/v1/pkg/recipes", body, &r) == 0 &&
+		          r.status == 204,
+		      "publish rollsvc 3.0 recipe (triggers second rolling auto-rebuild)");
+		jw_free(&w);
+		kx_response_free(&r);
+
+		newer_version[0] = '\0';
+		for (i = 0; i < 100; i++) {
+			if (test_image_fixture_read_current_version(image_dir, newer_version,
+			                                             sizeof(newer_version)) == 0 &&
+			    strcmp(newer_version, new_version) != 0)
+				break;
+			usleep(200000);
+		}
+		CHECK(strcmp(newer_version, new_version) != 0,
+		      "rollctrimg's current_version advanced a second time");
+
+		jitter_pid_after = jitter_pid_before;
+		jitter_ver_after[0] = '\0';
+		for (i = 0; i < 50; i++) { /* ~10s -- see this block's own comment on why */
+			if (fetch_container_pid_version(&client, "rollctr-jitter", &jitter_pid_after,
+			                                 jitter_ver_after, sizeof(jitter_ver_after)) == 0 &&
+			    jitter_pid_after != jitter_pid_before &&
+			    strcmp(jitter_ver_after, newer_version) == 0)
+				break;
+			usleep(200000);
+		}
+		CHECK(jitter_pid_after > 0 && jitter_pid_after != jitter_pid_before,
+		      "rollctr-jitter restarted promptly despite a 3600s daemon-wide default -- its own "
+		      "jitter_seconds=0 override took effect");
+		CHECK(strcmp(jitter_ver_after, newer_version) == 0,
+		      "rollctr-jitter's pinned image_version advanced to the second rebuild's version");
+	}
 
 	CHECK(stop_daemon(daemon_pid) == 0, "daemon shut down cleanly");
 	run_cmd("rm -rf '%s'", scratch_dir);

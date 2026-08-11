@@ -403,6 +403,11 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 		jw_bool(w, def != NULL && def->stopped);
 		jw_key(w, "follow_rolling");
 		jw_bool(w, def != NULL && def->follow_rolling);
+		jw_key(w, "follow_rolling_jitter_seconds");
+		if (def != NULL && def->has_follow_rolling_jitter)
+			jw_int(w, def->follow_rolling_jitter_seconds);
+		else
+			jw_null(w);
 		jw_key(w, "depends_on");
 		jw_arr_open(w);
 		if (def != NULL) {
