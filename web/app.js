@@ -30,6 +30,7 @@ const cache = {
 	ldapConfig: null,
 	ntpConfig: null,
 	ntpServers: [],
+	syslogTargets: [],
 	ntpStatus: null,
 	ntpTime: null,
 	pkiCa: null,
@@ -478,6 +479,7 @@ const CATEGORY_VIEWS = {
 	"daemon-config": "view-daemon-config",
 	"host-stats": "view-host-stats",
 	processes: "view-processes",
+	"syslog-targets": "view-syslog-targets",
 	logs: "view-logs",
 	backup: "view-backup",
 	update: "view-update",
@@ -528,6 +530,8 @@ function renderCurrentView() {
 			startHostStatsPolling();
 		else if (route.category === "processes")
 			renderProcessesList();
+		else if (route.category === "syslog-targets")
+			renderSyslogTargetsList();
 		else if (route.category === "logs")
 			renderLogsList();
 		else if (route.category === "images" && route.name !== null)
@@ -927,6 +931,7 @@ function renderTree() {
 						{ label: "Routes", hash: "routes", icon: "networks" },
 						{ label: "Host Stats", hash: "host-stats", icon: "stats" },
 						{ label: "Processes", hash: "processes", icon: "stats" },
+						{ label: "Syslog Targets", hash: "syslog-targets", icon: "system" },
 						{ label: "Logs", hash: "logs", icon: "system" },
 						{ label: "Update", hash: "update", icon: "update" },
 						{ label: "Backup", hash: "backup", icon: "backup" },
@@ -3575,6 +3580,81 @@ document.getElementById("ntp-server-form").addEventListener("submit", async (eve
 	}
 });
 
+/* ---- Syslog forward targets: registered container log receivers
+ * (ADR-0127) -- same shape as NTP Servers above, mirrored exactly. */
+
+function renderSyslogTargets(targets) {
+	const body = document.getElementById("syslog-targets-body");
+
+	body.textContent = "";
+	if (targets.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 2;
+		cell.className = "empty";
+		cell.textContent = "No syslog forward targets registered";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+
+	for (const t of targets) {
+		const row = document.createElement("tr");
+
+		const containerCell = document.createElement("td");
+		containerCell.textContent = t.container;
+		row.appendChild(containerCell);
+
+		const actionCell = document.createElement("td");
+		const rmButton = document.createElement("button");
+
+		rmButton.textContent = "Unregister";
+		rmButton.className = "button-danger";
+		rmButton.addEventListener("click", () => removeSyslogTarget(t.container));
+		actionCell.appendChild(rmButton);
+		row.appendChild(actionCell);
+
+		body.appendChild(row);
+	}
+}
+
+async function refreshSyslogTargets() {
+	const data = await apiRequest("GET", "/v1/syslog/targets");
+	cache.syslogTargets = data.targets;
+	renderSyslogTargets(cache.syslogTargets);
+}
+
+function renderSyslogTargetsList() {
+	refreshSyslogTargets();
+}
+
+async function removeSyslogTarget(container) {
+	try {
+		await apiRequest("DELETE", "/v1/syslog/targets/" + encodeURIComponent(container));
+		clearStatus();
+		await refreshSyslogTargets();
+	} catch (e) {
+		showStatus("Failed to unregister syslog target " + container + ": " + e.message, true);
+	}
+}
+
+document.getElementById("syslog-target-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const container = document.getElementById("stf-container").value.trim();
+
+	try {
+		await apiRequest("POST", "/v1/syslog/targets", { container: container });
+		clearStatus();
+		document.getElementById("syslog-target-form").reset();
+		closeModal();
+		await refreshSyslogTargets();
+	} catch (e) {
+		showStatus("Failed to register syslog target: " + e.message, true);
+	}
+});
+
 /* ---- NTP Status: most recent sync attempt outcome ---- */
 
 async function refreshNtpStatus() {
@@ -5494,6 +5574,7 @@ async function poll() {
 		await refreshLdapConfig();
 		await refreshNtpConfig();
 		await refreshNtpServers();
+		await refreshSyslogTargets();
 		await refreshNtpStatus();
 		await refreshNtpTime();
 		await refreshPkiCa();

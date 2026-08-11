@@ -27,6 +27,7 @@
 				<li><button type="button" data-modal="ldap-group-form" data-title="Create LDAP group">LDAP Group</button></li>
 				<li><button type="button" data-modal="ldap-user-form" data-title="Create LDAP user">LDAP User</button></li>
 				<li><button type="button" data-modal="ntp-server-form" data-title="Register NTP server">NTP Server</button></li>
+				<li><button type="button" data-modal="syslog-target-form" data-title="Register syslog forward target">Syslog Target</button></li>
 				<li><button type="button" data-modal="pki-cert-form" data-title="Issue certificate">PKI Certificate</button></li>
 				<li><button type="button" data-modal="pkg-recipe-form" data-title="Add or update a recipe">Package Recipe</button></li>
 				<li><button type="button" data-modal="pkg-bootstrap-form" data-title="Bootstrap build image">Bootstrap Build Image</button></li>
@@ -1043,6 +1044,24 @@
 			</div>
 		</section>
 
+		<section class="view" id="view-syslog-targets" hidden>
+			<div class="view-list">
+				<h2>Syslog Targets</h2>
+				<p class="hint">Registered containers (e.g. syslog-1/syslog-2 running sysklogd) that every container-sourced log line is also forwarded to as a real RFC 3164 UDP datagram, alongside (never instead of) the consolidated log store, which stays the one source of truth (ADR-0127). Register one via the "+ Create" menu above.</p>
+				<table id="syslog-targets">
+					<thead>
+						<tr>
+							<th>Container</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="syslog-targets-body">
+						<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</section>
+
 		<section class="view" id="view-logs" hidden>
 			<div class="view-list">
 				<h2>Logs</h2>
@@ -1379,6 +1398,23 @@
 						time source -- the daemon resolves its live IP fresh at every sync
 						attempt and queries it directly, ahead of any configured upstream
 						address (ADR-0110).
+					</p>
+					<button type="submit">Register</button>
+				</form>
+			</div>
+
+			<div id="modal-syslog-target-form" hidden>
+				<form id="syslog-target-form">
+					<label>
+						Container
+						<input type="text" id="stf-container" pattern="[A-Za-z0-9_-]+" required>
+					</label>
+					<p class="hint">
+						Registers an already-running container (e.g. syslog-1/syslog-2 running
+						sysklogd) as an optional, redundant syslog forward target -- every
+						subsequent container-sourced log line is also sent to it as a real
+						RFC 3164 UDP datagram, alongside (never instead of) the consolidated
+						log store, which stays the one source of truth (ADR-0127).
 					</p>
 					<button type="submit">Register</button>
 				</form>

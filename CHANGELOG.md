@@ -2,6 +2,18 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 92 (done): web dashboard surface for syslog forward targets (closing an ADR-0127 gap)
+
+User-reported: "how do we forward logs to the syslog server from the web ui? is there a place to provision the syslog servers?" -- Part 2 of the logging epic (ADR-0127) shipped `POST`/`GET`/`DELETE /v1/syslog/targets` and the `kanxeoctl syslog target` CLI, but never got a web dashboard surface, a real gap against this project's own "every capability needs REST + CLI + web" convention (confirmed via a direct grep: zero references to "syslog" anywhere in `web/`).
+
+#### Added
+- New System > Server > Syslog Targets page -- a registered-target list (container name + Unregister button), mirroring the existing NTP Servers page's own shape exactly.
+- A "Syslog Target" entry in the header's `+ Create` dropdown, alongside every other "register a container as X" form (DNS Server, LDAP Server, NTP Server) -- opens the same shared modal component.
+- Folded into the existing 2s poll cycle (`refreshSyslogTargets()`), same as the NTP Servers list.
+
+#### Verified
+- `node --check web/app.js`. Served `app.js`/`index.html` confirmed byte-for-byte identical to source from a live scratch daemon; `GET /v1/syslog/targets` confirmed to return the expected `{"targets": [...]}` shape the new UI reads. Full regression sweep (38 test binaries, no daemon-side code changed -- the API already existed) confirms zero regressions.
+
 ### Part 91 (done): lenient pkg repo_url parsing -- accepts a real forge browse URL
 
 Continuing the same real-world feedback round as Part 90: the resolv fix (ADR-0132) turned a DNS failure into a plain HTTP 404 on retrying `pkg sync` -- root cause was `parse_repo_url()` splitting `owner`/`repo` at the *last* slash in the configured `repo_url`, so a real gitea browse URL (`.../owner/repo/src/branch/master/pkg/recipes`, exactly what a browser address bar shows) silently mis-parsed into a garbage owner and an opaque 404 with no hint the URL itself was the problem. See [ADR-0133](docs/adr/0133-lenient-repo-url-parsing.md).

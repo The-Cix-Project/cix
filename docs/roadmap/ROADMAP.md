@@ -2214,6 +2214,14 @@ Second of the logging/web-UI epic. The consolidated log store stays the one sour
 
 Verified: `test/test_syslogfwd.c` covers the registration bookkeeping (mirroring the existing NTP test's own coverage) plus a genuine wire-level proof -- a real receiver container (a small new fixture binding real UDP `:514` inside its own network namespace) confirmed, via its own transparently-captured stdout, to have received a well-formed RFC 3164 datagram from a real sender container, naming the sender correctly and carrying its message verbatim. Full clean rebuild (`-Wall -Werror`, zero warnings) + full regression sweep (37 test binaries) confirm zero regressions.
 
+## Part 92 (done): web dashboard surface for syslog forward targets (closing an ADR-0127 gap)
+
+User-reported gap: Part 2 of the logging epic (ADR-0127) shipped the REST API and CLI for registering syslog forward targets, but never got a web dashboard surface -- a real miss against this project's own "every capability needs REST + CLI + web" convention.
+
+New System > Server > Syslog Targets page (a registered-target list, mirroring the existing NTP Servers page exactly) plus a "Syslog Target" entry in the header's `+ Create` dropdown, alongside every other "register a container as X" form. Folded into the existing 2s poll cycle.
+
+Verified: `node --check`, served files confirmed byte-identical to source, `GET /v1/syslog/targets` response shape confirmed to match what the new UI reads. Full regression sweep (38 test binaries, no daemon-side code changed) confirms zero regressions.
+
 ## Part 91 (done): lenient pkg repo_url parsing -- accepts a real forge browse URL
 
 Continuing the same real-world feedback round as Part 90: once the resolv fix (ADR-0132) closed the DNS layer of a `pkg sync` failure, retrying surfaced a second, genuinely different bug underneath -- `parse_repo_url()` split `owner`/`repo` at the *last* slash in the configured `repo_url`, so a real gitea browse URL (exactly what a browser address bar shows while looking at a repo) silently mis-parsed into a garbage owner and an opaque 404, with no hint the URL itself was the problem. See [ADR-0133](docs/adr/0133-lenient-repo-url-parsing.md).
