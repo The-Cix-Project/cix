@@ -19,6 +19,10 @@ Fifth and final of the five-part `pkg/` redesign (task #739/#770) -- see [ADR-01
 #### Verified
 - Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (all daemon-linked and standalone tests, including the new `test_rolling_restart.c`, run three times consecutively for the new test) confirms zero regressions.
 
+### Part 82 follow-up: `kanxeoctl rolling-config set` off-by-one, found during live verification on 192.168.15.95
+
+`cmd_rolling_config_set()` (`cli/src/main.c`) compared `argv[i]` against `"--jitter-window-seconds="` with `strncmp(..., 25)` and read the value from `argv[i] + 25` -- the literal is 24 characters, not 25, so the flag never matched and every real invocation failed with "unknown rolling-config set option". Caught immediately during live verification (task #770's own real end-to-end round trip on 192.168.15.95, not caught by `test_rolling_restart.c` since that test drives the REST API directly, never the CLI's own argv parser). Fixed (`24`/`24`); added a new CLI-level check to `test/test_cli.c` (forks the real `kanxeoctl` binary against a real daemon) so this class of bug can't ship silently again. Full regression sweep re-run clean.
+
 ### Part 81 (done): pkg/ redesign Part 4 -- declarative image recipes + whole-rootfs artifact fast path
 
 Fourth of the five-part `pkg/` redesign (task #739/#769) -- see [ADR-0123](docs/adr/0123-pkg-redesign-part4-image-recipes-and-artifact.md). An image's whole package-list intent can now be declared in one text file (`image_packages="name:mode:version ..."`, recipe name == image name) instead of N individual `PUT /v1/images/{name}/manifest` calls, and a fully-pinned recipe with a matching precompiled artifact skips every per-package build entirely.

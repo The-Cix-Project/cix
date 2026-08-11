@@ -3018,8 +3018,8 @@ static int cmd_rolling_config_set(const struct kx_client *c, int json_mode, int 
 	struct kx_response r;
 
 	for (i = 0; i < argc; i++) {
-		if (strncmp(argv[i], "--jitter-window-seconds=", 25) == 0)
-			window = argv[i] + 25;
+		if (strncmp(argv[i], "--jitter-window-seconds=", 24) == 0)
+			window = argv[i] + 24;
 		else {
 			fprintf(stderr, "kanxeoctl: unknown rolling-config set option '%s'\n", argv[i]);
 			return 2;

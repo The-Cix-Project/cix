@@ -398,6 +398,39 @@ int main(void)
 		}
 	}
 
+	/* 11. rolling-config set --jitter-window-seconds=N (ADR-0124) -- a
+	 * real CLI-level round trip through the actual argv parser, not
+	 * just the REST layer test_rolling_restart.c already covers; this
+	 * caught a real off-by-one in the "--jitter-window-seconds="
+	 * prefix length once (24 chars, not 25) that a REST-only test
+	 * could never have seen. */
+	{
+		char *set0_argv[] = { "kanxeoctl", PORT_ARG, "rolling-config", "set",
+			               "--jitter-window-seconds=0", NULL };
+		char *show_argv[] = { "kanxeoctl", PORT_ARG, "rolling-config", "show", NULL };
+		char *set_back_argv[] = { "kanxeoctl", PORT_ARG, "rolling-config", "set",
+			                   "--jitter-window-seconds=60", NULL };
+
+		if (run_cli(set0_argv, out, sizeof(out), &rc) != 0 || rc != 0 ||
+		    strstr(out, "jitter_window_seconds=0") == NULL) {
+			fprintf(stderr, "FAIL: kanxeoctl rolling-config set --jitter-window-seconds=0, rc=%d out=%s\n",
+			        rc, out);
+			ok = 0;
+		}
+		if (run_cli(show_argv, out, sizeof(out), &rc) != 0 || rc != 0 ||
+		    strstr(out, "jitter_window_seconds=0") == NULL) {
+			fprintf(stderr, "FAIL: kanxeoctl rolling-config show after set 0, rc=%d out=%s\n",
+			        rc, out);
+			ok = 0;
+		}
+		if (run_cli(set_back_argv, out, sizeof(out), &rc) != 0 || rc != 0 ||
+		    strstr(out, "jitter_window_seconds=60") == NULL) {
+			fprintf(stderr, "FAIL: kanxeoctl rolling-config set --jitter-window-seconds=60, rc=%d out=%s\n",
+			        rc, out);
+			ok = 0;
+		}
+	}
+
 	kill(daemon_pid, SIGTERM);
 	waitpid(daemon_pid, NULL, 0);
 	test_data_dir_cleanup(g_data_dir);
