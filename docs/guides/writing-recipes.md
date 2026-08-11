@@ -26,6 +26,7 @@ pkg_depends=""
 - **`pkg_source`** — where to fetch from. Almost always an `https://` URL; a local self-hosted git remote's own archive-download endpoint works identically (see [`building-kanxeo.md`](building-kanxeo.md) for a real example). Fetched host-side by the daemon's own `curl` subprocess, before the build container ever starts — the container itself has no network access at all, so anything a build needs must already be named here.
 - **`pkg_sha256`** — the fetched source's checksum, verified before extraction. A mismatch fails the job outright (`PKG_STATE_FAILED`, no partial state).
 - **`pkg_depends`** — a space-separated list of other recipe names to install first (empty string if none). See [Dependencies](#dependencies) below. Must be exactly empty for a hostbuild recipe (see [The hostbuild variant](#the-hostbuild-variant) below) — dependency resolution has no meaning for a one-shot artifact harvest.
+- **`pkg_artifact_sha256`** — optional (ADR-0122). Absent means this recipe always builds from source, exactly as above. Set means: if a plain-HTTP precompiled-artifact server is configured (`GET`/`PUT /v1/pkg/artifact-config`, a separate, non-git thing from `pkg_source` — see [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs)), an install first tries `<base_url>/<name>-<version>.tar.gz` and verifies it against this checksum before ever trusting it; a miss (no server, 404, mismatch) silently falls back to `pkg_source`/`pkg_build()`/`pkg_install()` below, unchanged. This is the *only* thing that makes a fetched artifact trustworthy — the server itself is never a trust boundary.
 
 ## Multi-source recipes
 
@@ -130,6 +131,8 @@ POST /v1/pkg/install
 starts the actual build — see [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs) for the full async install/poll/upgrade contract, which this guide doesn't repeat.
 
 Rather than pushing every recipe individually, a host can also point itself at a shared recipe repository and pull its whole tree in one call: `kanxeoctl pkg repo-config set --url=https://git.example.internal/team/recipes --kind=gitea`, then `kanxeoctl pkg sync --wait`. This is additive/merge only — a sync never overwrites or removes a recipe version this host already has, it only adds ones it doesn't (see [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs) and ADR-0121 for the full contract, including the `gitea`/`github`/`gitlab` URL shapes).
+
+Every real build is also cached locally (ADR-0122) — installing the same `(name, version)` into a second image, or reinstalling after deletion, reuses it instead of fetching/compiling again, with no recipe change needed. `kanxeoctl pkg cache-status` / `pkg cache-config` manage its size cap; see [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs) for the full cache + optional precompiled-artifact-server contract.
 
 ## The hostbuild variant
 

@@ -19,6 +19,8 @@ Software
   Images
   Packages
   Recipes
+  Repo & Sync
+  Cache & Artifacts
 System
   PKI
     Root CA
@@ -65,6 +67,8 @@ Six tabs, Proxmox-style: **Summary**, **Hardware**, **Options**, **Stats**, **Co
 - **Image detail** — four tabs: containers currently using this image, packages installed into it, **Manifest** (declared `pinned`/`rolling` package intent, ADR-0107 — add/remove entries directly from here), and **Versions** (every immutable version this image has ever produced, ADR-0108, newest first, with the currently-pinned-for-new-containers one marked). Recipes and packages can be added or removed directly from here.
 - **Devices** — four tabs grouped by bus: USB, PCI, Network, GPU.
 - **Package detail** — two tabs: **Recipe** (the raw `.recipe` text, viewable and editable — resubmitting goes through the same upsert `POST /pkg/recipes` every other recipe update uses) and **Installed** (every image this package is tracked against, independently).
+- **Software > Repo & Sync** — the configured git-forge recipe source (ADR-0121: URL, kind, ref, auth token, sync interval) and a "Sync now" button with the outcome of the most recent attempt (`state`/`added`/`skipped`/`error`) — the web equivalent of `kanxeoctl pkg repo-config`/`pkg sync`.
+- **Software > Cache & Artifacts** — the local build-artifact cache's occupancy (entry count, current/max bytes) with a size-cap field and a "Clear cache" button, plus the configured plain-HTTP precompiled-artifact server (ADR-0122: base URL, auth token) — the web equivalent of `kanxeoctl pkg cache-config`/`pkg cache-status`/`pkg cache-clear`/`pkg artifact-config`. Both auth-token fields work the same way: leaving the field blank on save keeps whatever token is already configured; a "Clear token" checkbox removes it explicitly.
 - **Network detail** — attached interfaces (attach/detach directly from here), IP allocation, and a "Routes on this network" sub-table (routes the kernel resolves to this network's own bridge as their outgoing interface — read-only filter, remove still works from here).
 - **System > Server > Routes** — the box's own real kernel IPv4 routing table (ADR-0066); moved here (under System's Server group) from the Networks tree, since it reads as system-level diagnostic state, not a Kanxeo-managed network resource. Add/remove real routes directly (ADR-0067 Part 3) — a route added or removed here is gone on the next reboot unless something else re-applies it, same as any kernel route not backed by persisted Kanxeo state.
 - **System > Server > Daemon** — `kanxeod`'s own listen port, HTTP/HTTPS toggles, and which network it's currently bound to (Part 0.5). The management-network dropdown only lists networks with their own address (repointing anywhere else is refused server-side). A "Bind IP (optional)" field sets a dedicated second address on the management network's own bridge (ADR-0068) — kanxeod binds there instead of that network's own address; a "Clear bind IP" checkbox reverts to it. Since the dashboard's own requests are relative to the page it was loaded from, saving a change to the port, the management network, or the bind IP disconnects the page the moment it takes effect — confirmed with a dialog before submitting any of them. A "Host swap" block on the same page (ADR-0069) shows whether a swap file is currently enabled, with a size field + Enable button and a Disable button — useful for memory-heavy package builds on a box with limited RAM.

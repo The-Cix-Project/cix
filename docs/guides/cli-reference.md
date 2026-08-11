@@ -165,6 +165,10 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | `pkg repo-config set [--url=URL] [--kind=gitea\|github\|gitlab] [--ref=REF] [--token=TOKEN\|--clear-token] [--sync-interval=SECONDS]` | Partially update the configured repo; omitted flags leave that setting unchanged |
 | `pkg sync [--wait]` | Fetch and merge the configured repo's recipes into this host's own catalog (additive — never overwrites an existing version) |
 | `pkg sync-status` | The most recent (or currently running) sync's outcome |
+| `pkg cache-config show` \| `set --max-bytes=N` | The local build-artifact cache's own size cap (always a real cap, no "unlimited" mode) |
+| `pkg cache-status` | Current cache occupancy (max/current bytes, entry count) |
+| `pkg cache-clear` | Remove every cached artifact — an explicit operator reset |
+| `pkg artifact-config show` \| `set [--url=URL] [--token=TOKEN\|--clear-token]` | The configured plain-HTTP precompiled-artifact server — separate from `repo-config` above, never a git forge |
 | `pkg install --name=NAME [--image=IMAGE] [--version=VERSION] [--upgrade]` | Start installing (or upgrading) a package; omitted version resolves to the highest available |
 | `pkg ls` | List every known package (installed or in-flight) |
 | `pkg rm NAME[@IMAGE]` | Uninstall |

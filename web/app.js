@@ -37,6 +37,11 @@ const cache = {
 	pkiCerts: [],
 	pkgRecipes: [],
 	pkgList: [],
+	pkgRepoConfig: null,
+	pkgSyncStatus: null,
+	pkgCacheConfig: null,
+	pkgCacheStatus: null,
+	pkgArtifactConfig: null,
 	siteConfig: null,
 	daemonConfig: null,
 	swap: null,
@@ -291,6 +296,8 @@ const CATEGORY_VIEWS = {
 	"pki-certs": "view-pki-certs",
 	packages: "view-packages",
 	recipes: "view-recipes",
+	"pkg-repo": "view-pkg-repo",
+	"pkg-cache": "view-pkg-cache",
 	site: "view-site",
 	"daemon-config": "view-daemon-config",
 	logs: "view-logs",
@@ -657,6 +664,8 @@ function renderTree() {
 				{ label: "Images", hash: "images", icon: "images" },
 				{ label: "Packages", hash: "packages", icon: "packages" },
 				{ label: "Recipes", hash: "recipes", icon: "recipes" },
+				{ label: "Repo & Sync", hash: "pkg-repo", icon: "recipes" },
+				{ label: "Cache & Artifacts", hash: "pkg-cache", icon: "recipes" },
 			],
 		},
 		{
@@ -3473,6 +3482,227 @@ async function removePkg(name, image) {
 	}
 }
 
+/* ---- Package repo config + sync (ADR-0121) ---- */
+
+let pkgRepoConfigDirty = false;
+
+async function refreshPkgRepoConfig() {
+	try {
+		const config = await apiRequest("GET", "/v1/pkg/repo-config");
+
+		cache.pkgRepoConfig = config;
+		if (!pkgRepoConfigDirty) {
+			document.getElementById("prc-url").value = config.repo_url || "";
+			document.getElementById("prc-kind").value = config.repo_kind || "gitea";
+			document.getElementById("prc-ref").value = config.ref || "";
+			document.getElementById("prc-token").value = "";
+			document.getElementById("prc-token").placeholder =
+				config.auth_token_set ? "(unchanged, a token is set)" : "(unchanged, no token set)";
+			document.getElementById("prc-interval").value = config.sync_interval_seconds;
+		}
+	} catch (e) {
+		/* Best-effort -- the form just stays at whatever was last shown. */
+	}
+}
+
+for (const id of ["prc-url", "prc-kind", "prc-ref", "prc-token", "prc-clear-token", "prc-interval"]) {
+	document.getElementById(id).addEventListener("input", () => {
+		pkgRepoConfigDirty = true;
+	});
+	document.getElementById(id).addEventListener("change", () => {
+		pkgRepoConfigDirty = true;
+	});
+}
+
+document.getElementById("prc-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const body = {
+		repo_url: document.getElementById("prc-url").value.trim(),
+		repo_kind: document.getElementById("prc-kind").value,
+		ref: document.getElementById("prc-ref").value.trim(),
+		sync_interval_seconds: parseInt(document.getElementById("prc-interval").value, 10),
+	};
+	const token = document.getElementById("prc-token").value;
+
+	/* "" explicitly clears an already-configured token (pkg_repo_set_
+	 * config()'s own NULL-vs-empty-string contract) -- omitting the
+	 * field entirely (the common case, token left blank and not
+	 * clearing) leaves whatever's already configured untouched. */
+	if (document.getElementById("prc-clear-token").checked)
+		body.auth_token = "";
+	else if (token !== "")
+		body.auth_token = token;
+
+	try {
+		await apiRequest("PUT", "/v1/pkg/repo-config", body);
+		clearStatus();
+		showStatus("Package repo config saved", false);
+		pkgRepoConfigDirty = false;
+		document.getElementById("prc-clear-token").checked = false;
+		await refreshPkgRepoConfig();
+	} catch (e) {
+		showStatus("Failed to save package repo config: " + e.message, true);
+	}
+});
+
+async function refreshPkgSyncStatus() {
+	const box = document.getElementById("pkg-sync-status-box");
+
+	try {
+		const status = await apiRequest("GET", "/v1/pkg/sync");
+
+		cache.pkgSyncStatus = status;
+		box.textContent = "";
+
+		const lines = [
+			["State", status.state],
+			["Last attempt", status.last_attempt || "(never)"],
+			["Added", status.added],
+			["Skipped", status.skipped],
+			["Error", status.error || "-"],
+		];
+		for (const [label, value] of lines) {
+			const p = document.createElement("p");
+			p.textContent = label + ": " + value;
+			box.appendChild(p);
+		}
+	} catch (e) {
+		box.textContent = "Failed to load sync status: " + e.message;
+	}
+}
+
+document.getElementById("pkg-sync-now").addEventListener("click", async () => {
+	try {
+		await apiRequest("POST", "/v1/pkg/sync");
+		clearStatus();
+		showStatus("Package sync started", false);
+		await refreshPkgSyncStatus();
+	} catch (e) {
+		showStatus("Failed to start package sync: " + e.message, true);
+	}
+});
+
+/* ---- Package cache + artifact server config (ADR-0122) ---- */
+
+let pkgCacheConfigDirty = false;
+
+async function refreshPkgCacheConfig() {
+	try {
+		const config = await apiRequest("GET", "/v1/pkg/cache-config");
+
+		cache.pkgCacheConfig = config;
+		if (!pkgCacheConfigDirty)
+			document.getElementById("pcc-max-bytes").value = config.max_bytes;
+	} catch (e) {
+		/* Best-effort -- the form just stays at whatever was last shown. */
+	}
+}
+
+document.getElementById("pcc-max-bytes").addEventListener("input", () => {
+	pkgCacheConfigDirty = true;
+});
+
+document.getElementById("pcc-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	try {
+		await apiRequest("PUT", "/v1/pkg/cache-config", {
+			max_bytes: parseInt(document.getElementById("pcc-max-bytes").value, 10),
+		});
+		clearStatus();
+		showStatus("Cache config saved", false);
+		pkgCacheConfigDirty = false;
+		await refreshPkgCacheConfig();
+	} catch (e) {
+		showStatus("Failed to save cache config: " + e.message, true);
+	}
+});
+
+async function refreshPkgCacheStatus() {
+	const box = document.getElementById("pkg-cache-status-box");
+
+	try {
+		const status = await apiRequest("GET", "/v1/pkg/cache");
+
+		cache.pkgCacheStatus = status;
+		box.textContent = "";
+
+		const lines = [
+			["Entries", status.entry_count],
+			["Current size (bytes)", status.current_bytes],
+			["Max size (bytes)", status.max_bytes],
+		];
+		for (const [label, value] of lines) {
+			const p = document.createElement("p");
+			p.textContent = label + ": " + value;
+			box.appendChild(p);
+		}
+	} catch (e) {
+		box.textContent = "Failed to load cache status: " + e.message;
+	}
+}
+
+document.getElementById("pkg-cache-clear").addEventListener("click", async () => {
+	if (!confirm("Clear the entire local package artifact cache?"))
+		return;
+	try {
+		await apiRequest("DELETE", "/v1/pkg/cache");
+		clearStatus();
+		showStatus("Cache cleared", false);
+		await refreshPkgCacheStatus();
+	} catch (e) {
+		showStatus("Failed to clear cache: " + e.message, true);
+	}
+});
+
+let pkgArtifactConfigDirty = false;
+
+async function refreshPkgArtifactConfig() {
+	try {
+		const config = await apiRequest("GET", "/v1/pkg/artifact-config");
+
+		cache.pkgArtifactConfig = config;
+		if (!pkgArtifactConfigDirty) {
+			document.getElementById("pac-base-url").value = config.base_url || "";
+			document.getElementById("pac-token").value = "";
+			document.getElementById("pac-token").placeholder =
+				config.auth_token_set ? "(unchanged, a token is set)" : "(unchanged, no token set)";
+		}
+	} catch (e) {
+		/* Best-effort -- the form just stays at whatever was last shown. */
+	}
+}
+
+for (const id of ["pac-base-url", "pac-token", "pac-clear-token"]) {
+	document.getElementById(id).addEventListener("input", () => {
+		pkgArtifactConfigDirty = true;
+	});
+}
+
+document.getElementById("pac-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const body = { base_url: document.getElementById("pac-base-url").value.trim() };
+	const token = document.getElementById("pac-token").value;
+
+	if (document.getElementById("pac-clear-token").checked)
+		body.auth_token = "";
+	else if (token !== "")
+		body.auth_token = token;
+
+	try {
+		await apiRequest("PUT", "/v1/pkg/artifact-config", body);
+		clearStatus();
+		showStatus("Artifact server config saved", false);
+		pkgArtifactConfigDirty = false;
+		document.getElementById("pac-clear-token").checked = false;
+		await refreshPkgArtifactConfig();
+	} catch (e) {
+		showStatus("Failed to save artifact server config: " + e.message, true);
+	}
+});
+
 /* ---------- Container create form: devices/interfaces pickers ---------- */
 
 function populateContainerFormDeviceLists() {
@@ -4695,6 +4925,11 @@ async function poll() {
 		await refreshPkiCerts();
 		await refreshPkgRecipes();
 		await refreshPkgList();
+		await refreshPkgRepoConfig();
+		await refreshPkgSyncStatus();
+		await refreshPkgCacheConfig();
+		await refreshPkgCacheStatus();
+		await refreshPkgArtifactConfig();
 		await refreshSiteConfig();
 		await refreshDaemonConfig();
 		await refreshRoutes();

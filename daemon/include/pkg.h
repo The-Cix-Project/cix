@@ -634,4 +634,52 @@ void pkg_sync_write_json_status(struct json_writer *w);
 
 int pkg_sync_in_progress(void);
 
+/* ---- pkg/ redesign Part 3 (ADR-0122): local build-artifact cache + LRU eviction ---- */
+
+/* 2 GiB -- a real, always-enforced cap (no "unlimited" mode), the same
+ * "bounded, not silently unbounded" posture logstore's own max_bytes
+ * cap already established for this project. */
+#define PKG_CACHE_DEFAULT_MAX_BYTES (2LL * 1024 * 1024 * 1024)
+
+/* Loads any persisted cache config (default: PKG_CACHE_DEFAULT_MAX_BYTES,
+ * same "missing file = first-ever startup, not an error" tolerance
+ * every other *_init() here already has). cache_dir is where built-
+ * package artifact tarballs are stored, one file per (name,version). */
+int pkg_cache_init(const char *cache_dir, const char *config_path);
+
+long long pkg_cache_get_max_bytes(void);
+
+/* max_bytes must be > 0 -- there is no "unlimited" mode. */
+enum pkg_error pkg_cache_set_max_bytes(long long max_bytes);
+
+/* {"max_bytes":N,"current_bytes":N,"entry_count":N}. */
+void pkg_cache_write_json_status(struct json_writer *w);
+
+/* Removes every cached artifact -- an explicit operator reset; nothing
+ * else in this module ever calls this itself. */
+void pkg_cache_clear(void);
+
+/* ---- pkg/ redesign Part 3b (ADR-0122): plain-HTTP precompiled-artifact server config ---- */
+
+#define PKGARTIFACT_URL_MAX 512
+#define PKGARTIFACT_TOKEN_MAX 256
+
+/* Loads any persisted artifact-server config (default: unconfigured --
+ * every install simply builds from source, same as before this part
+ * existed). */
+int pkg_artifact_init(const char *config_path);
+
+/* {"base_url","auth_token_set"} -- the token itself is never echoed
+ * back, same posture pkg_repo_write_json_config() already has. */
+void pkg_artifact_write_json_config(struct json_writer *w);
+
+/*
+ * NULL leaves that field unchanged (a partial PUT, same contract
+ * pkg_repo_set_config() already has); "" for auth_token explicitly
+ * clears it. Deliberately no repo_kind/ref here -- this is a plain
+ * HTTP location, not a git forge (see pkg.c's own module comment for
+ * why binaries and git don't mix).
+ */
+enum pkg_error pkg_artifact_set_config(const char *base_url, const char *auth_token);
+
 #endif /* PKG_H */

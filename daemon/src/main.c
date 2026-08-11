@@ -107,6 +107,9 @@ static char PKG_DIR[PATH_MAX];
 static char PKG_INSTALLED_STATE_PATH[PATH_MAX];
 static char PKG_RECIPES_DIR[PATH_MAX];
 static char PKG_REPO_CONFIG_PATH[PATH_MAX]; /* ADR-0121 */
+static char PKG_CACHE_DIR[PATH_MAX];              /* ADR-0122 */
+static char PKG_CACHE_CONFIG_PATH[PATH_MAX];      /* ADR-0122 */
+static char PKG_ARTIFACT_CONFIG_PATH[PATH_MAX];   /* ADR-0122 */
 /* Where a hostbuild job's own harvested output lands (ADR-0056) --
  * ARTIFACTS_DIR/<name>/..., a plain host directory, never a container-
  * visible path. */
@@ -202,6 +205,10 @@ static void init_base_dir_paths(void)
 	snprintf(PKG_INSTALLED_STATE_PATH, sizeof(PKG_INSTALLED_STATE_PATH), "%s/pkg_installed.json", PKG_DIR);
 	snprintf(PKG_RECIPES_DIR, sizeof(PKG_RECIPES_DIR), "%s/recipes", PKG_DIR);
 	snprintf(PKG_REPO_CONFIG_PATH, sizeof(PKG_REPO_CONFIG_PATH), "%s/repo_config.json", PKG_DIR);
+	snprintf(PKG_CACHE_DIR, sizeof(PKG_CACHE_DIR), "%s/cache", PKG_DIR);
+	snprintf(PKG_CACHE_CONFIG_PATH, sizeof(PKG_CACHE_CONFIG_PATH), "%s/cache_config.json", PKG_DIR);
+	snprintf(PKG_ARTIFACT_CONFIG_PATH, sizeof(PKG_ARTIFACT_CONFIG_PATH), "%s/artifact_config.json",
+	         PKG_DIR);
 	snprintf(ARTIFACTS_DIR, sizeof(ARTIFACTS_DIR), "%s/artifacts", g_base_dir);
 	snprintf(CONTAINER_DEFS_STATE_PATH, sizeof(CONTAINER_DEFS_STATE_PATH), "%s/container_defs.json", g_base_dir);
 	snprintf(SITE_CONFIG_PATH, sizeof(SITE_CONFIG_PATH), "%s/site_config.json", g_base_dir);
@@ -9835,6 +9842,108 @@ static void handle_pkg_sync_get(int fd)
 	jw_free(&w);
 }
 
+/* ADR-0122: GET /v1/pkg/cache-config -- the configured cache size cap. */
+static void handle_pkg_cache_config_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "max_bytes");
+	jw_int(&w, pkg_cache_get_max_bytes());
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_pkg_cache_config_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const struct json_value *mb;
+	enum pkg_error perr;
+
+	if (body_len == 0) {
+		respond_error(fd, 400, "Bad Request", "max_bytes is required");
+		return;
+	}
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	mb = json_object_get(root, "max_bytes");
+	if (mb == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "max_bytes is required");
+		return;
+	}
+	perr = pkg_cache_set_max_bytes((long long)json_as_number(mb));
+	json_free(root);
+	if (perr != PKG_OK) {
+		respond_pkg_error(fd, perr);
+		return;
+	}
+	handle_pkg_cache_config_get(fd);
+}
+
+/* GET /v1/pkg/cache -- current cache occupancy; DELETE /v1/pkg/cache --
+ * clears every cached artifact (an explicit operator reset). */
+static void handle_pkg_cache_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	pkg_cache_write_json_status(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_pkg_cache_delete(int fd)
+{
+	pkg_cache_clear();
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+/* ADR-0122: GET/PUT /v1/pkg/artifact-config -- the configured plain-
+ * HTTP precompiled-artifact server (deliberately NOT the git-forge
+ * repo config above -- see pkg.c's own module comment for why). */
+static void handle_pkg_artifact_config_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	pkg_artifact_write_json_config(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_pkg_artifact_config_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = NULL;
+	const char *base_url = NULL;
+	const char *auth_token = NULL;
+	enum pkg_error perr;
+
+	if (body_len > 0) {
+		root = json_parse(body, body_len);
+		if (root == NULL) {
+			respond_error(fd, 400, "Bad Request", "invalid JSON body");
+			return;
+		}
+		base_url = json_as_string(json_object_get(root, "base_url"));
+		auth_token = json_as_string(json_object_get(root, "auth_token"));
+	}
+
+	perr = pkg_artifact_set_config(base_url, auth_token);
+	if (root != NULL)
+		json_free(root);
+	if (perr != PKG_OK) {
+		respond_pkg_error(fd, perr);
+		return;
+	}
+	handle_pkg_artifact_config_get(fd);
+}
+
 static void handle_pkg_recipes_list(int fd)
 {
 	struct json_writer w;
@@ -10884,7 +10993,8 @@ static void dispatch(int fd, const struct http_request *req)
 	 * PKG_PREFIX/{name} fallback below, exactly like every other
 	 * resource's exact-match-then-prefix ordering in this dispatch --
 	 * a package named "bootstrap"/"recipes"/"install"/"update-all"/
-	 * "repo-config"/"sync" (ADR-0121) would be unreachable via
+	 * "repo-config"/"sync" (ADR-0121)/"cache-config"/"cache"/
+	 * "artifact-config" (ADR-0122) would be unreachable via
 	 * GET/DELETE /v1/pkg/{name}, a deliberate, documented
 	 * reserved-words boundary. PKG_RECIPES_PREFIX
 	 * (/v1/pkg/recipes/{name}, DELETE) is checked here too, before the
@@ -10920,6 +11030,36 @@ static void dispatch(int fd, const struct http_request *req)
 		}
 		if (strcmp(req->method, "GET") == 0) {
 			handle_pkg_sync_get(fd);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/pkg/cache-config") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_pkg_cache_config_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_pkg_cache_config_put(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/pkg/cache") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_pkg_cache_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "DELETE") == 0) {
+			handle_pkg_cache_delete(fd);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/pkg/artifact-config") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_pkg_artifact_config_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_pkg_artifact_config_put(fd, req->body, req->body_len);
 			return;
 		}
 	}
@@ -12575,6 +12715,10 @@ int main(int argc, char **argv)
 	if (pkg_init(PKG_DIR, PKG_INSTALLED_STATE_PATH, CONTAINERS_DIR, IMAGES_DIR, ARTIFACTS_DIR) != 0)
 		return 1;
 	if (pkg_repo_init(PKG_REPO_CONFIG_PATH) != 0)
+		return 1;
+	if (pkg_cache_init(PKG_CACHE_DIR, PKG_CACHE_CONFIG_PATH) != 0)
+		return 1;
+	if (pkg_artifact_init(PKG_ARTIFACT_CONFIG_PATH) != 0)
 		return 1;
 
 	/*

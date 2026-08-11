@@ -750,6 +750,93 @@
 			</div>
 		</section>
 
+		<!-- Packages: Repo & Sync (ADR-0121) -->
+		<section class="view" id="view-pkg-repo" hidden>
+			<h2>Package Repo &amp; Sync</h2>
+			<p class="hint">
+				The configured git-forge source recipes sync from (ADR-0121) -- gitea/github/gitlab,
+				fetched as a plain archive download, never the git protocol itself. Distinct from the
+				artifact server (<a href="#pkg-cache">Cache &amp; Artifacts</a>), which serves
+				precompiled binaries, not recipe text -- the checksum for each is the trust anchor
+				tying the two together (ADR-0122).
+			</p>
+			<form id="prc-form">
+				<label class="wide">
+					Repo URL
+					<input type="text" id="prc-url" placeholder="https://git.example.com/org/recipes">
+				</label>
+				<label>
+					Kind
+					<select id="prc-kind">
+						<option value="gitea">gitea</option>
+						<option value="github">github</option>
+						<option value="gitlab">gitlab</option>
+					</select>
+				</label>
+				<label>
+					Ref (branch/tag)
+					<input type="text" id="prc-ref" placeholder="main">
+				</label>
+				<label>
+					Auth token (blank = unchanged)
+					<input type="password" id="prc-token" placeholder="(unchanged)">
+				</label>
+				<label class="checkbox">
+					<input type="checkbox" id="prc-clear-token">
+					Clear token
+				</label>
+				<label>
+					Sync interval (seconds)
+					<input type="number" id="prc-interval" min="0">
+				</label>
+				<button type="submit">Save</button>
+			</form>
+			<h3>Sync status</h3>
+			<div id="pkg-sync-status-box" class="pki-ca-status"></div>
+			<button type="button" id="pkg-sync-now">Sync now</button>
+		</section>
+
+		<!-- Packages: Cache & Artifacts (ADR-0122) -->
+		<section class="view" id="view-pkg-cache" hidden>
+			<h2>Package Cache &amp; Artifacts</h2>
+			<p class="hint">
+				Tier 1: a local build-artifact cache (LRU-evicted, keyed by name+version) that skips a
+				real rebuild on a repeat install. Tier 2: an optional plain-HTTP precompiled-artifact
+				server, checked before falling back to source, verified against the recipe's own
+				<code>pkg_artifact_sha256</code> before being trusted. Both distinct from the recipe
+				repo (<a href="#pkg-repo">Repo &amp; Sync</a>) -- recipes stay in git, compiled binaries
+				never do.
+			</p>
+			<h3>Cache</h3>
+			<div id="pkg-cache-status-box" class="pki-ca-status"></div>
+			<form id="pcc-form">
+				<label>
+					Max size (bytes)
+					<input type="number" id="pcc-max-bytes" min="0">
+				</label>
+				<button type="submit">Save</button>
+			</form>
+			<button type="button" id="pkg-cache-clear" class="button-danger">Clear cache</button>
+
+			<h3>Artifact server</h3>
+			<div id="pkg-artifact-status-box" class="pki-ca-status"></div>
+			<form id="pac-form">
+				<label class="wide">
+					Base URL
+					<input type="text" id="pac-base-url" placeholder="http://artifacts.example.com/kanxeo">
+				</label>
+				<label>
+					Auth token (blank = unchanged)
+					<input type="password" id="pac-token" placeholder="(unchanged)">
+				</label>
+				<label class="checkbox">
+					<input type="checkbox" id="pac-clear-token">
+					Clear token
+				</label>
+				<button type="submit">Save</button>
+			</form>
+		</section>
+
 		<section class="view" id="view-package-detail" hidden>
 			<div class="detail-topbar">
 				<h2 id="pkgd-title"></h2>

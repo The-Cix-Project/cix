@@ -22,6 +22,7 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include <utime.h>
 
 extern char **environ;
 
@@ -56,6 +57,15 @@ struct pkg_recipe {
 	char sha256[PKG_MAX_SOURCES][PKG_SHA256_MAX];
 	int source_count;
 	char depends[PKG_DEPENDS_MAX];
+	/* ADR-0122: optional -- empty means this recipe never opts into
+	 * precompiled-artifact fetch, always builds from source. When set,
+	 * it's the ONLY thing that makes a fetched artifact trustworthy: a
+	 * git-tracked, versioned expectation the daemon verifies a fetched
+	 * <name>-<version>.tar.gz against (pkg_run_capture_sha256(), same
+	 * verify-before-trust discipline pkg_source/pkg_sha256 already has)
+	 * before ever treating it as real -- the plain HTTP artifact server
+	 * (pkg_artifact_*, below) is never itself a trust boundary. */
+	char artifact_sha256[PKG_SHA256_MAX];
 };
 
 static struct pkg_entry g_packages[PKG_MAX_PACKAGES];
@@ -95,6 +105,14 @@ static int g_current_job_is_hostbuild;
  * (e.g. "kanxeo-builder"), as opposed to the always-shared
  * g_pkgbuild_rootfs every ordinary install uses. */
 static char g_current_job_build_image[PKG_IMAGE_NAME_MAX];
+/* ADR-0122: true exactly while the in-flight job's fetch step resolved
+ * to a local build-cache hit for the CURRENT queue entry -- set fresh
+ * by start_fetch_for() every time (never left stale across queue
+ * entries), read by pkg_fetch_completed() to stage the cached tarball
+ * into the build container's own upperdir instead of the recipe's
+ * real source, and by pkg_build_completed() to skip re-caching content
+ * that was itself just extracted FROM the cache. */
+static int g_current_job_cache_hit;
 /* ADR-0107: the caller-requested explicit version pin for the single
  * top-level package this job actually installs/hostbuilds (empty ==
  * no pin, resolve to the highest available version, the pre-existing
@@ -378,8 +396,10 @@ static int parse_recipe(const char *path, struct pkg_recipe *out)
 		rc = -1;
 	if (extract_line_value(buf, "pkg_sha256=", raw_sha256, sizeof(raw_sha256)) != 0)
 		rc = -1;
-	/* depends is optional -- fine if absent */
+	/* depends and artifact_sha256 are both optional -- fine if absent */
 	extract_line_value(buf, "pkg_depends=", out->depends, sizeof(out->depends));
+	extract_line_value(buf, "pkg_artifact_sha256=", out->artifact_sha256,
+	                    sizeof(out->artifact_sha256));
 	free(buf);
 
 	if (rc == 0) {
@@ -2077,6 +2097,20 @@ static const char *current_fetch_effective_version(void)
 	return NULL;
 }
 
+/* ADR-0122: forward declarations -- defined below (near the end of this
+ * file, alongside the rest of the local-cache/artifact-server module)
+ * but needed here since start_fetch_for()/pkg_fetch_completed()/
+ * pkg_build_completed() are the only call sites and all come first. */
+static int pkg_cache_has(const char *name, const char *version);
+static void pkg_cache_touch(const char *name, const char *version);
+static void pkg_cache_save(const char *name, const char *version, const char *dest_dir);
+static void pkg_cache_save_from_file(const char *name, const char *version, const char *src_path);
+static int pkg_cache_extract(const char *name, const char *version, const char *out_dir);
+static int pkg_artifact_is_configured(void);
+static void pkg_artifact_build_request(const char *name, const char *version, char *out_url,
+                                        size_t out_url_size, char *out_header, size_t out_header_size);
+static void artifact_sentinel_path(const char *name, const char *version, char *out, size_t out_size);
+
 /*
  * Starts the fetch for a single package already known to have a valid
  * recipe (resolve_chain() already checked). Shared by pkg_install_start()
@@ -2102,6 +2136,14 @@ static enum pkg_error start_fetch_for(const char *name, pid_t *out_pid, int *out
 	                      sizeof(recipe_path)) != 0 ||
 	    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
 		return PKG_ERR_INVALID_RECIPE;
+
+	/* ADR-0122: set fresh for every queue entry (never left stale from
+	 * a prior one) -- a hostbuild job's own artifact never belongs in
+	 * the shared package cache (a one-shot host harvest, not something
+	 * merged into any image, see g_current_job_is_hostbuild's own
+	 * doc), so it's never a cache candidate. */
+	g_current_job_cache_hit =
+	    !g_current_job_is_hostbuild && pkg_cache_has(recipe.name, recipe.version);
 
 	e = pkg_find(name, g_current_job_image);
 	is_upgrade = (e != NULL && e->state == PKG_STATE_INSTALLED);
@@ -2154,6 +2196,66 @@ static enum pkg_error start_fetch_for(const char *name, pid_t *out_pid, int *out
 
 		fetch_error_sidecar_path(recipe.name, fetch_err_path, sizeof(fetch_err_path));
 		unlink(fetch_err_path);
+
+		if (g_current_job_cache_hit) {
+			/* Local cache already has this exact (name,version) --
+			 * nothing to fetch; pkg_fetch_completed() stages straight
+			 * from the cache. */
+			_exit(0);
+		}
+
+		/*
+		 * ADR-0122: a recipe that has opted in (pkg_artifact_sha256=
+		 * set) gets one best-effort attempt at a precompiled artifact
+		 * from the configured plain-HTTP artifact server before
+		 * falling through to a real source fetch+compile -- verified
+		 * against the recipe's own git-tracked checksum before ever
+		 * being trusted (the artifact server itself is never a trust
+		 * boundary, same "verify, don't just believe" posture
+		 * pkg_source/pkg_sha256 already have). A miss here (no server
+		 * configured, this recipe never opted in, a 404, or a
+		 * checksum mismatch) is not a fetch failure -- it just means
+		 * "build from source like always," so the real per-source
+		 * loop below still runs unconditionally in that case.
+		 */
+		if (recipe.artifact_sha256[0] != '\0' && pkg_artifact_is_configured()) {
+			char artifact_url[768];
+			char artifact_header[320];
+			char artifact_path[PATH_MAX];
+			char sha_out[128];
+			pid_t sub;
+			int status;
+
+			pkg_artifact_build_request(recipe.name, recipe.version, artifact_url,
+			                            sizeof(artifact_url), artifact_header,
+			                            sizeof(artifact_header));
+			artifact_sentinel_path(recipe.name, recipe.version, artifact_path,
+			                        sizeof(artifact_path));
+			unlink(artifact_path);
+
+			sub = fork();
+			if (sub == 0) {
+				if (artifact_header[0] != '\0') {
+					char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL", "-H", artifact_header,
+						          "-o",                  artifact_path, artifact_url, NULL };
+
+					execve(PKG_CURL_BIN, argv, environ);
+				} else {
+					char *argv[] = { (char *)PKG_CURL_BIN, "-fsSL", "-o", artifact_path,
+						          artifact_url, NULL };
+
+					execve(PKG_CURL_BIN, argv, environ);
+				}
+				_exit(127);
+			}
+			if (sub > 0 && waitpid(sub, &status, 0) == sub && WIFEXITED(status) &&
+			    WEXITSTATUS(status) == 0 &&
+			    pkg_run_capture_sha256(artifact_path, sha_out, sizeof(sha_out)) == 0 &&
+			    strcasecmp(sha_out, recipe.artifact_sha256) == 0) {
+				_exit(0); /* verified -- pkg_fetch_completed() stages straight from this file */
+			}
+			unlink(artifact_path); /* not found / wrong checksum -- discard, fall through */
+		}
 
 		for (j = 0; j < recipe.source_count; j++) {
 			char src_tarball_path[PATH_MAX];
@@ -2474,6 +2576,27 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 	}
 
 	/*
+	 * ADR-0122: start_fetch_for()'s child may have left a checksum-
+	 * verified artifact tarball sitting at the sentinel path instead
+	 * of ever fetching recipe.source[] at all -- promote it into the
+	 * real local cache right here and fold this job into the exact
+	 * same cache-hit path a local cache hit already takes (set fresh
+	 * by start_fetch_for() itself; this is the only other way it ever
+	 * becomes true).
+	 */
+	if (!g_current_job_cache_hit) {
+		char artifact_sentinel[PATH_MAX];
+		struct stat st;
+
+		artifact_sentinel_path(e->name, recipe.version, artifact_sentinel,
+		                        sizeof(artifact_sentinel));
+		if (stat(artifact_sentinel, &st) == 0 && S_ISREG(st.st_mode)) {
+			pkg_cache_save_from_file(e->name, recipe.version, artifact_sentinel);
+			g_current_job_cache_hit = 1;
+		}
+	}
+
+	/*
 	 * recipe.version, not e->version -- during an in-place upgrade
 	 * e->version is deliberately still the OLD version until this job
 	 * actually succeeds; each source on disk was fetched under the
@@ -2481,20 +2604,24 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 	 * (the main one at index 0, and any extras) is verified against
 	 * its own sha256 before any of them are touched further -- one
 	 * bad entry fails the whole job, matching the single-source
-	 * case's own existing all-or-nothing guarantee (ADR-0036).
+	 * case's own existing all-or-nothing guarantee (ADR-0036). Skipped
+	 * entirely for a cache/artifact hit -- nothing was fetched from
+	 * recipe.source[] at all in that case.
 	 */
-	for (i = 0; i < recipe.source_count; i++) {
-		char src_path[PATH_MAX];
+	if (!g_current_job_cache_hit) {
+		for (i = 0; i < recipe.source_count; i++) {
+			char src_path[PATH_MAX];
 
-		snprintf(src_path, sizeof(src_path), "%s/%s-%s-%d.src", g_sources_dir, e->name,
-		         recipe.version, i);
-		if (pkg_run_capture_sha256(src_path, sha_out, sizeof(sha_out)) != 0 ||
-		    strcasecmp(sha_out, recipe.sha256[i]) != 0) {
-			e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
-			snprintf(e->error, sizeof(e->error), "checksum mismatch (source %d)", i);
-			g_current_job_name[0] = '\0';
-			g_dep_queue_count = 0;
-			return 0;
+			snprintf(src_path, sizeof(src_path), "%s/%s-%s-%d.src", g_sources_dir, e->name,
+			         recipe.version, i);
+			if (pkg_run_capture_sha256(src_path, sha_out, sizeof(sha_out)) != 0 ||
+			    strcasecmp(sha_out, recipe.sha256[i]) != 0) {
+				e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
+				snprintf(e->error, sizeof(e->error), "checksum mismatch (source %d)", i);
+				g_current_job_name[0] = '\0';
+				g_dep_queue_count = 0;
+				return 0;
+			}
 		}
 	}
 
@@ -2572,14 +2699,25 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 
 			if (reset_build_container_dir(container_base) != 0) {
 				prep_step = "reset build container dir";
-			} else if (persist_mkdir_p(src_dir) != 0) {
-				prep_step = "create src dir";
-				prep_errno = errno;
 			} else if (persist_mkdir_p(dest_dir) != 0) {
 				prep_step = "create dest dir";
 				prep_errno = errno;
 			} else if (persist_mkdir_p(tmp_dir) != 0) {
 				prep_step = "create tmp dir";
+				prep_errno = errno;
+			} else if (g_current_job_cache_hit) {
+				/* ADR-0122: dest_dir is populated straight from the
+				 * local cache -- no source to verify, no recipe.sh to
+				 * source, no real compile needed. The build container
+				 * spawned below runs a pure no-op; its own upperdir
+				 * already IS the finished package by the time it
+				 * starts, purely to keep pkg_build_completed()'s own
+				 * merge/dependency-chaining logic completely unchanged
+				 * for this case too. */
+				if (pkg_cache_extract(e->name, recipe.version, dest_dir) != 0)
+					prep_step = "extract cached artifact";
+			} else if (persist_mkdir_p(src_dir) != 0) {
+				prep_step = "create src dir";
 				prep_errno = errno;
 			} else if (copy_file_simple(recipe_path, recipe_dst) != 0) {
 				prep_step = "copy recipe.sh";
@@ -2612,8 +2750,9 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 	 * verbatim into /build/extra/<basename-of-their-own-URL> for
 	 * pkg_build()/pkg_install() to reference directly (ADR-0036).
 	 * Basename collisions across multiple extra URLs are a stated
-	 * recipe-author responsibility, not auto-resolved here. */
-	if (recipe.source_count > 1) {
+	 * recipe-author responsibility, not auto-resolved here. Skipped for
+	 * a cache hit -- nothing was fetched at all in that case. */
+	if (!g_current_job_cache_hit && recipe.source_count > 1) {
 		if (persist_mkdir_p(extra_dir) != 0) {
 			logstore_write("kanxeod", "error",
 			                "pkg %s@%s: could not prepare build container (create extra dir): %s",
@@ -2645,8 +2784,15 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 		}
 	}
 
-	snprintf(g_build_argv_cmd, sizeof(g_build_argv_cmd),
-	         ". /build/recipe.sh; cd /build/src && pkg_build && pkg_install");
+	/* ADR-0122: a cache hit runs a pure no-op -- dest_dir (this
+	 * container's own /build/pkg-dest) was already populated straight
+	 * from the cache above, nothing left for the container itself to
+	 * do. */
+	if (g_current_job_cache_hit)
+		snprintf(g_build_argv_cmd, sizeof(g_build_argv_cmd), ":");
+	else
+		snprintf(g_build_argv_cmd, sizeof(g_build_argv_cmd),
+		         ". /build/recipe.sh; cd /build/src && pkg_build && pkg_install");
 	/*
 	 * /usr/bin/bash, not /bin/sh -- caught empirically (ADR-0056) the
 	 * first time a hostbuild job's own build_image was one of this
@@ -3087,6 +3233,17 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			g_dep_queue_count = 0;
 			return 0;
 		}
+
+		/* ADR-0122: a fresh, real build's own output is saved into the
+		 * local cache for next time (best-effort, LRU-evicting older
+		 * entries as needed); a cache/artifact hit's own dest_dir was
+		 * itself just extracted FROM the cache, so there's nothing new
+		 * to save -- just bump its mtime so LRU eviction correctly
+		 * treats it as recently used, not stale. */
+		if (g_current_job_cache_hit)
+			pkg_cache_touch(e->name, e->version);
+		else
+			pkg_cache_save(e->name, e->version, dest_dir);
 
 		/*
 		 * ALSO merge into g_pkgbuild_rootfs (the one shared, persistent
@@ -3689,4 +3846,452 @@ void pkg_sync_write_json_status(struct json_writer *w)
 int pkg_sync_in_progress(void)
 {
 	return g_sync_pid > 0;
+}
+
+/* ---- pkg/ redesign Part 3 (ADR-0122): local build-artifact cache + LRU eviction ---- */
+
+static char g_cache_dir[PATH_MAX];
+static char g_cache_config_path[PATH_MAX];
+static long long g_cache_max_bytes = PKG_CACHE_DEFAULT_MAX_BYTES;
+
+static void cache_tarball_path(const char *name, const char *version, char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/%s-%s.tar.gz", g_cache_dir, name, version);
+}
+
+static int save_cache_config(void)
+{
+	struct json_writer w;
+	int rc;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "max_bytes");
+	jw_int(&w, g_cache_max_bytes);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	rc = persist_atomic_write(g_cache_config_path, w.buf, w.len);
+	jw_free(&w);
+	return rc;
+}
+
+int pkg_cache_init(const char *cache_dir, const char *config_path)
+{
+	char *buf;
+	size_t len;
+	struct json_value *root;
+	const struct json_value *mb;
+
+	if (snprintf(g_cache_dir, sizeof(g_cache_dir), "%s", cache_dir) >= (int)sizeof(g_cache_dir))
+		return -1;
+	if (snprintf(g_cache_config_path, sizeof(g_cache_config_path), "%s", config_path) >=
+	    (int)sizeof(g_cache_config_path))
+		return -1;
+	g_cache_max_bytes = PKG_CACHE_DEFAULT_MAX_BYTES;
+
+	if (persist_read_file(config_path, &buf, &len) != 0 || buf == NULL)
+		return 0; /* no persisted config yet -- the default cap stands */
+
+	root = json_parse(buf, len);
+	free(buf);
+	if (root == NULL)
+		return 0;
+
+	mb = json_object_get(root, "max_bytes");
+	if (mb != NULL) {
+		double v = json_as_number(mb);
+
+		if (v > 0)
+			g_cache_max_bytes = (long long)v;
+	}
+	json_free(root);
+	return 0;
+}
+
+long long pkg_cache_get_max_bytes(void)
+{
+	return g_cache_max_bytes;
+}
+
+enum pkg_error pkg_cache_set_max_bytes(long long max_bytes)
+{
+	if (max_bytes <= 0)
+		return PKG_ERR_INVALID_NAME;
+	g_cache_max_bytes = max_bytes;
+	if (save_cache_config() != 0)
+		return PKG_ERR_PERSIST_FAILED;
+	return PKG_OK;
+}
+
+/* Scanned once per eviction pass -- a static, file-scope buffer (not a
+ * stack array): PKG_CACHE_SCAN_MAX entries at this per-entry size is
+ * real memory a stack frame shouldn't carry, but is trivial as static
+ * data, the same tradeoff g_build_output_captured already makes. A
+ * real cache holding more than this many distinct (name,version)
+ * artifacts at once is not a case this project has ever seen -- a
+ * real, generous bound, not an unbounded scan. */
+#define PKG_CACHE_SCAN_MAX 4096
+struct cache_scan_entry {
+	char filename[PKG_NAME_MAX + PKG_VERSION_MAX + 16];
+	time_t mtime;
+	long long size;
+};
+static struct cache_scan_entry g_cache_scan_buf[PKG_CACHE_SCAN_MAX];
+static int g_cache_scan_count;
+
+static int cache_scan_cmp(const void *a, const void *b)
+{
+	const struct cache_scan_entry *ea = a, *eb = b;
+
+	if (ea->mtime < eb->mtime)
+		return -1;
+	if (ea->mtime > eb->mtime)
+		return 1;
+	return 0;
+}
+
+static long long cache_scan(void)
+{
+	DIR *d;
+	struct dirent *de;
+	int count = 0;
+	long long total = 0;
+
+	d = opendir(g_cache_dir);
+	if (d == NULL)
+		return 0;
+	while ((de = readdir(d)) != NULL && count < PKG_CACHE_SCAN_MAX) {
+		char path[PATH_MAX];
+		struct stat st;
+
+		if (de->d_name[0] == '.')
+			continue;
+		snprintf(path, sizeof(path), "%s/%s", g_cache_dir, de->d_name);
+		if (stat(path, &st) != 0 || !S_ISREG(st.st_mode))
+			continue;
+		snprintf(g_cache_scan_buf[count].filename, sizeof(g_cache_scan_buf[count].filename), "%s",
+		         de->d_name);
+		g_cache_scan_buf[count].mtime = st.st_mtime;
+		g_cache_scan_buf[count].size = (long long)st.st_size;
+		total += (long long)st.st_size;
+		count++;
+	}
+	closedir(d);
+	qsort(g_cache_scan_buf, (size_t)count, sizeof(g_cache_scan_buf[0]), cache_scan_cmp);
+	g_cache_scan_count = count;
+	return total;
+}
+
+/* Real LRU: evicts the least-recently-used (oldest mtime) entries
+ * first until incoming_size will fit under g_cache_max_bytes -- called
+ * before every new cache write (pkg_cache_save()/pkg_cache_save_from_
+ * file()). A single artifact bigger than the whole configured cap is
+ * simply never cached (the caller checks this itself before calling)
+ * rather than evicting everything else to make room for one oversized
+ * entry. */
+static void cache_evict_lru_until_fits(long long incoming_size)
+{
+	long long total = cache_scan();
+	int i;
+
+	for (i = 0; i < g_cache_scan_count && total + incoming_size > g_cache_max_bytes; i++) {
+		char path[PATH_MAX];
+
+		snprintf(path, sizeof(path), "%s/%s", g_cache_dir, g_cache_scan_buf[i].filename);
+		if (unlink(path) == 0)
+			total -= g_cache_scan_buf[i].size;
+	}
+}
+
+static int pkg_cache_has(const char *name, const char *version)
+{
+	char path[PATH_MAX];
+	struct stat st;
+
+	cache_tarball_path(name, version, path, sizeof(path));
+	return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+/* Marks a cache entry as just-used (bumps its mtime to now) -- called
+ * both after a cache-hit install and right after a fresh save, so LRU
+ * eviction genuinely reflects recency of use, not just insertion
+ * order. Best-effort: a failure here (e.g. the entry vanished under a
+ * concurrent evict) is never a reason to fail the install that
+ * triggered it. */
+static void pkg_cache_touch(const char *name, const char *version)
+{
+	char path[PATH_MAX];
+
+	cache_tarball_path(name, version, path, sizeof(path));
+	utime(path, NULL);
+}
+
+/*
+ * Tars dest_dir's own content into the cache, keyed name-version,
+ * evicting older entries first if needed to fit under the configured
+ * cap. Best-effort, deliberately non-fatal: the real, authoritative
+ * install (merging dest_dir into the target image) has already
+ * succeeded by the time this runs -- the same "best effort, not the
+ * primary install" posture pkg_build_completed()'s own g_pkgbuild_
+ * rootfs merge already established for a comparable secondary write.
+ */
+static void pkg_cache_save(const char *name, const char *version, const char *dest_dir)
+{
+	char final_path[PATH_MAX];
+	char tmp_path[PATH_MAX];
+	struct stat st;
+	long long size;
+
+	if (persist_mkdir_p(g_cache_dir) != 0)
+		return;
+	cache_tarball_path(name, version, final_path, sizeof(final_path));
+	snprintf(tmp_path, sizeof(tmp_path), "%s.tmp-%d", final_path, (int)getpid());
+	unlink(tmp_path);
+
+	{
+		char *argv[] = { (char *)PKG_TAR_BIN, "-C", (char *)dest_dir, "-czf", tmp_path, ".", NULL };
+
+		if (run_subprocess(PKG_TAR_BIN, argv) != 0) {
+			unlink(tmp_path);
+			return;
+		}
+	}
+	if (stat(tmp_path, &st) != 0) {
+		unlink(tmp_path);
+		return;
+	}
+	size = (long long)st.st_size;
+	if (size > g_cache_max_bytes) {
+		unlink(tmp_path); /* bigger than the whole cache cap -- not cacheable */
+		return;
+	}
+	cache_evict_lru_until_fits(size);
+	unlink(final_path);
+	if (rename(tmp_path, final_path) != 0)
+		unlink(tmp_path);
+}
+
+/*
+ * Same cap/eviction discipline as pkg_cache_save(), but for an
+ * artifact tarball that already exists on disk as a whole file
+ * (pkg_sync_completed()'s own network-fetched pkg/artifacts/ entries)
+ * rather than a directory to tar up. Takes ownership of src_path: it
+ * either becomes the cache entry (rename) or is removed (copy+unlink
+ * fallback across a filesystem boundary, or on any failure) -- never
+ * left behind either way.
+ */
+static void pkg_cache_save_from_file(const char *name, const char *version, const char *src_path)
+{
+	char final_path[PATH_MAX];
+	struct stat st;
+	long long size;
+
+	if (stat(src_path, &st) != 0)
+		return;
+	size = (long long)st.st_size;
+	if (persist_mkdir_p(g_cache_dir) != 0 || size > g_cache_max_bytes) {
+		unlink(src_path);
+		return;
+	}
+	cache_tarball_path(name, version, final_path, sizeof(final_path));
+	cache_evict_lru_until_fits(size);
+	unlink(final_path);
+	if (rename(src_path, final_path) != 0) {
+		if (copy_file_simple(src_path, final_path) == 0)
+			unlink(src_path);
+		else
+			unlink(src_path);
+	}
+}
+
+/* Extracts a cache hit's own content into out_dir (a fresh, empty
+ * directory the caller already created) -- a plain tar extraction, no
+ * common-top-dir stripping needed since pkg_cache_save() always tars
+ * dest_dir's own contents directly (tar -C dest_dir -czf ... .), never
+ * a single wrapping directory. */
+static int pkg_cache_extract(const char *name, const char *version, const char *out_dir)
+{
+	char path[PATH_MAX];
+	char *argv[6];
+
+	cache_tarball_path(name, version, path, sizeof(path));
+	argv[0] = (char *)PKG_TAR_BIN;
+	argv[1] = "-C";
+	argv[2] = (char *)out_dir;
+	argv[3] = "-xzf";
+	argv[4] = path;
+	argv[5] = NULL;
+	return run_subprocess(PKG_TAR_BIN, argv);
+}
+
+void pkg_cache_write_json_status(struct json_writer *w)
+{
+	long long total = cache_scan();
+
+	jw_obj_open(w);
+	jw_key(w, "max_bytes");
+	jw_int(w, g_cache_max_bytes);
+	jw_key(w, "current_bytes");
+	jw_int(w, total);
+	jw_key(w, "entry_count");
+	jw_int(w, g_cache_scan_count);
+	jw_obj_close(w);
+}
+
+void pkg_cache_clear(void)
+{
+	DIR *d = opendir(g_cache_dir);
+	struct dirent *de;
+
+	if (d == NULL)
+		return;
+	while ((de = readdir(d)) != NULL) {
+		char path[PATH_MAX];
+
+		if (de->d_name[0] == '.')
+			continue;
+		snprintf(path, sizeof(path), "%s/%s", g_cache_dir, de->d_name);
+		unlink(path);
+	}
+	closedir(d);
+}
+
+/* ---- pkg/ redesign Part 3b (ADR-0122): plain-HTTP precompiled-artifact server config ----
+ *
+ * Deliberately NOT the same forge-aware repo config Part 2 built for
+ * recipes (ADR-0121). Confirmed with the user directly: recipes are
+ * small, versioned text that belongs in git; a compiled package
+ * artifact does not, and stuffing binaries into a git-forge's own
+ * archive/raw-content endpoints (the mechanism Part 2 already has)
+ * would mean an operator has to check binaries into that same git
+ * tree to make them fetchable -- exactly the "source contaminated
+ * with compiled output" problem this design explicitly avoids. A
+ * precompiled artifact is instead served from any plain HTTP
+ * location (a generic file server, a forge's own release-assets/
+ * package-registry feature reachable over plain HTTP, a peer
+ * kanxeod) at a fixed, predictable path this daemon computes itself:
+ * <base_url>/<name>-<version>.tar.gz -- the exact same naming
+ * convention the local cache already uses. Trust never comes from
+ * the server (see struct pkg_recipe's own artifact_sha256 comment):
+ * the artifact is only ever accepted after verifying it against the
+ * recipe's own git-tracked checksum.
+ */
+
+static char g_artifact_base_url[PKGARTIFACT_URL_MAX];
+static char g_artifact_token[PKGARTIFACT_TOKEN_MAX];
+static char g_artifact_config_path[PATH_MAX];
+
+static int save_artifact_config(void)
+{
+	struct json_writer w;
+	int rc;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "base_url");
+	jw_str(&w, g_artifact_base_url);
+	jw_key(&w, "auth_token");
+	jw_str(&w, g_artifact_token);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	rc = persist_atomic_write(g_artifact_config_path, w.buf, w.len);
+	jw_free(&w);
+	return rc;
+}
+
+int pkg_artifact_init(const char *config_path)
+{
+	char *buf;
+	size_t len;
+	struct json_value *root;
+	const char *s;
+
+	if (snprintf(g_artifact_config_path, sizeof(g_artifact_config_path), "%s", config_path) >=
+	    (int)sizeof(g_artifact_config_path))
+		return -1;
+	g_artifact_base_url[0] = '\0';
+	g_artifact_token[0] = '\0';
+
+	if (persist_read_file(config_path, &buf, &len) != 0 || buf == NULL)
+		return 0; /* no persisted config yet -- defaults stand */
+
+	root = json_parse(buf, len);
+	free(buf);
+	if (root == NULL)
+		return 0;
+
+	s = json_as_string(json_object_get(root, "base_url"));
+	if (s != NULL)
+		snprintf(g_artifact_base_url, sizeof(g_artifact_base_url), "%s", s);
+	s = json_as_string(json_object_get(root, "auth_token"));
+	if (s != NULL)
+		snprintf(g_artifact_token, sizeof(g_artifact_token), "%s", s);
+
+	json_free(root);
+	return 0;
+}
+
+/* {"base_url","auth_token_set"} -- the token itself is never echoed
+ * back, same posture pkg_repo_write_json_config() already has. */
+void pkg_artifact_write_json_config(struct json_writer *w)
+{
+	jw_obj_open(w);
+	jw_key(w, "base_url");
+	jw_str(w, g_artifact_base_url);
+	jw_key(w, "auth_token_set");
+	jw_bool(w, g_artifact_token[0] != '\0');
+	jw_obj_close(w);
+}
+
+/* NULL leaves that field unchanged (partial PUT, same contract
+ * pkg_repo_set_config() already has); "" for auth_token explicitly
+ * clears it. */
+enum pkg_error pkg_artifact_set_config(const char *base_url, const char *auth_token)
+{
+	if (base_url != NULL)
+		snprintf(g_artifact_base_url, sizeof(g_artifact_base_url), "%s", base_url);
+	if (auth_token != NULL)
+		snprintf(g_artifact_token, sizeof(g_artifact_token), "%s", auth_token);
+
+	if (save_artifact_config() != 0)
+		return PKG_ERR_PERSIST_FAILED;
+	return PKG_OK;
+}
+
+static int pkg_artifact_is_configured(void)
+{
+	return g_artifact_base_url[0] != '\0';
+}
+
+/* out_url: <base_url>/<name>-<version>.tar.gz (a trailing slash on
+ * base_url, if present, is not doubled). out_header: an optional
+ * "Authorization: Bearer <token>" when a token is configured, empty
+ * string otherwise -- plain bearer auth, not a forge-specific
+ * convention, since this is deliberately not talking to a git forge's
+ * own API. */
+static void pkg_artifact_build_request(const char *name, const char *version, char *out_url,
+                                        size_t out_url_size, char *out_header, size_t out_header_size)
+{
+	size_t len = strlen(g_artifact_base_url);
+
+	if (len > 0 && g_artifact_base_url[len - 1] == '/')
+		len--;
+	snprintf(out_url, out_url_size, "%.*s/%s-%s.tar.gz", (int)len, g_artifact_base_url, name,
+	         version);
+	if (g_artifact_token[0] != '\0')
+		snprintf(out_header, out_header_size, "Authorization: Bearer %s", g_artifact_token);
+	else
+		out_header[0] = '\0';
+}
+
+/* Where start_fetch_for()'s child stages a checksum-verified artifact
+ * fetch before pkg_fetch_completed() promotes it into the real local
+ * cache -- deliberately under g_sources_dir (not g_cache_dir): an
+ * unverified download never touches the cache directory at all, only
+ * a file that has already passed the recipe's own sha256 check does. */
+static void artifact_sentinel_path(const char *name, const char *version, char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/.artifact-%s-%s.tar.gz", g_sources_dir, name, version);
 }

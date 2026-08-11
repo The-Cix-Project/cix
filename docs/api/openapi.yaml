@@ -3271,6 +3271,113 @@ paths:
               schema:
                 $ref: "#/components/schemas/PkgSyncStatus"
 
+  /pkg/cache-config:
+    get:
+      summary: The configured local build-artifact cache size cap (ADR-0122).
+      operationId: getPkgCacheConfig
+      responses:
+        "200":
+          description: Current cache config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgCacheConfig"
+    put:
+      summary: >
+        Sets the cache's own size cap. There is no "unlimited" mode -- a real
+        cap always applies. Lowering the cap below the cache's current
+        occupancy does not evict anything immediately; eviction only happens
+        lazily, the next time a new entry needs room.
+      operationId: putPkgCacheConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [max_bytes]
+              properties:
+                max_bytes:
+                  type: integer
+                  description: Must be > 0.
+      responses:
+        "200":
+          description: Updated cache config (same shape as GET)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgCacheConfig"
+        "400":
+          description: max_bytes missing, not a number, or <= 0
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /pkg/cache:
+    get:
+      summary: Current local build-artifact cache occupancy.
+      operationId: getPkgCache
+      responses:
+        "200":
+          description: Cache status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgCacheStatus"
+    delete:
+      summary: >
+        Removes every cached artifact -- an explicit operator reset. Nothing
+        in the install pipeline calls this itself; a cleared cache just means
+        the next install of anything falls back to a real fetch/build (or the
+        artifact tier, if configured) exactly as if nothing had ever been
+        cached.
+      operationId: deletePkgCache
+      responses:
+        "204":
+          description: Cache cleared
+
+  /pkg/artifact-config:
+    get:
+      summary: >
+        The configured plain-HTTP precompiled-artifact server (ADR-0122) --
+        deliberately not the git-forge repo config above; see that schema's
+        own description for why a compiled binary is never served from the
+        same place recipes are.
+      operationId: getPkgArtifactConfig
+      responses:
+        "200":
+          description: Current artifact-server config (base_url is empty when none is configured)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgArtifactConfig"
+    put:
+      summary: >
+        Partially updates the configured artifact server: fields omitted from
+        the body are left unchanged. An explicit "auth_token": "" clears an
+        already-set token; omitting it leaves whatever's there.
+      operationId: putPkgArtifactConfig
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                base_url:
+                  type: string
+                auth_token:
+                  type: string
+                  description: Write-only; "" clears an existing token, omitted leaves it unchanged. Sent as an Authorization Bearer header.
+      responses:
+        "200":
+          description: Updated artifact-server config (same shape as GET)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgArtifactConfig"
+
   /pkg/install:
     post:
       summary: >
@@ -6286,6 +6393,42 @@ components:
           type: string
           nullable: true
           description: Set when state is "failed"; also non-null if some recipes failed to parse even on an otherwise-successful sync.
+
+    PkgCacheConfig:
+      type: object
+      required: [max_bytes]
+      properties:
+        max_bytes:
+          type: integer
+          description: The cache's own real, always-enforced size cap; default 2 GiB. No "unlimited" mode.
+
+    PkgCacheStatus:
+      type: object
+      required: [max_bytes, current_bytes, entry_count]
+      properties:
+        max_bytes:
+          type: integer
+        current_bytes:
+          type: integer
+          description: Total bytes currently occupied by cached artifacts.
+        entry_count:
+          type: integer
+          description: Number of distinct (name,version) artifacts currently cached.
+
+    PkgArtifactConfig:
+      type: object
+      required: [base_url, auth_token_set]
+      properties:
+        base_url:
+          type: string
+          description: >
+            Empty when no artifact server is configured. A plain HTTP(S)
+            location -- never a git forge; recipe artifacts are fetched at
+            <base_url>/<name>-<version>.tar.gz, the same naming convention
+            the local cache uses.
+        auth_token_set:
+          type: boolean
+          description: Whether a bearer auth token is currently stored -- the token itself is never returned.
 
     PkgInstallRequest:
       type: object

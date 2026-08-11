@@ -5647,6 +5647,183 @@ static int cmd_pkg_sync_status(const struct kx_client *c, int json_mode)
 	return emit(&r, json_mode, fmt_pkg_sync_status);
 }
 
+static void fmt_pkg_cache_status(const struct json_value *v)
+{
+	long max_bytes = (long)json_as_number(json_object_get(v, "max_bytes"));
+	long current_bytes = (long)json_as_number(json_object_get(v, "current_bytes"));
+	long entry_count = (long)json_as_number(json_object_get(v, "entry_count"));
+
+	printf("max_bytes=%ld current_bytes=%ld entry_count=%ld\n", max_bytes, current_bytes,
+	       entry_count);
+}
+
+static int cmd_pkg_cache_config_show(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/pkg/cache-config", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_pkg_cache_status);
+}
+
+static int cmd_pkg_cache_config_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	long max_bytes = -1;
+	int i;
+	char body[128];
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--max-bytes=", 12) == 0)
+			max_bytes = strtol(argv[i] + 12, NULL, 10);
+		else {
+			fprintf(stderr, "kanxeoctl: unknown pkg cache-config set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (max_bytes <= 0) {
+		fprintf(stderr, "usage: kanxeoctl pkg cache-config set --max-bytes=N\n");
+		return 2;
+	}
+
+	snprintf(body, sizeof(body), "{\"max_bytes\":%ld}", max_bytes);
+	if (kx_client_request(c, "PUT", "/v1/pkg/cache-config", body, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_pkg_cache_status);
+}
+
+static int cmd_pkg_cache_config(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl pkg cache-config show\n"
+		                "       kanxeoctl pkg cache-config set --max-bytes=N\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "show") == 0)
+		return cmd_pkg_cache_config_show(c, json_mode);
+	if (strcmp(sub, "set") == 0)
+		return cmd_pkg_cache_config_set(c, json_mode, argc - 1, argv + 1);
+	fprintf(stderr, "kanxeoctl: unknown pkg cache-config subcommand '%s'\n", sub);
+	return 2;
+}
+
+static int cmd_pkg_cache_status(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/pkg/cache", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_pkg_cache_status);
+}
+
+static int cmd_pkg_cache_clear(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "DELETE", "/v1/pkg/cache", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static void fmt_pkg_artifact_config(const struct json_value *v)
+{
+	const char *base_url = json_str_field(v, "base_url");
+	const struct json_value *token_set = json_object_get(v, "auth_token_set");
+
+	if (base_url == NULL || base_url[0] == '\0') {
+		printf("(no artifact server configured)\n");
+		return;
+	}
+	printf("base_url=%s auth_token=%s\n", base_url,
+	       (token_set != NULL && token_set->type == JSON_BOOL && token_set->u.boolean) ? "set"
+	                                                                                    : "unset");
+}
+
+static int cmd_pkg_artifact_config_show(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/pkg/artifact-config", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_pkg_artifact_config);
+}
+
+static int cmd_pkg_artifact_config_set(const struct kx_client *c, int json_mode, int argc,
+                                        char **argv)
+{
+	const char *base_url = NULL;
+	const char *token = NULL;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--url=", 6) == 0)
+			base_url = argv[i] + 6;
+		else if (strncmp(argv[i], "--token=", 8) == 0)
+			token = argv[i] + 8;
+		else if (strcmp(argv[i], "--clear-token") == 0)
+			token = "";
+		else {
+			fprintf(stderr, "kanxeoctl: unknown pkg artifact-config set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	if (base_url != NULL) {
+		jw_key(&w, "base_url");
+		jw_str(&w, base_url);
+	}
+	if (token != NULL) {
+		jw_key(&w, "auth_token");
+		jw_str(&w, token);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "PUT", "/v1/pkg/artifact-config", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_pkg_artifact_config);
+}
+
+static int cmd_pkg_artifact_config(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl pkg artifact-config show\n"
+		                "       kanxeoctl pkg artifact-config set [--url=URL] "
+		                "[--token=TOKEN | --clear-token]\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "show") == 0)
+		return cmd_pkg_artifact_config_show(c, json_mode);
+	if (strcmp(sub, "set") == 0)
+		return cmd_pkg_artifact_config_set(c, json_mode, argc - 1, argv + 1);
+	fprintf(stderr, "kanxeoctl: unknown pkg artifact-config subcommand '%s'\n", sub);
+	return 2;
+}
+
 static int cmd_pkg_recipes(const struct kx_client *c, int json_mode)
 {
 	struct kx_response r;
@@ -6205,7 +6382,14 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 		                "       kanxeoctl pkg repo-config set [--url=URL] [--kind=gitea|github|gitlab] "
 		                "[--ref=REF] [--token=TOKEN | --clear-token] [--sync-interval=SECONDS]\n"
 		                "       kanxeoctl pkg sync [--wait]\n"
-		                "       kanxeoctl pkg sync-status\n");
+		                "       kanxeoctl pkg sync-status\n"
+		                "       kanxeoctl pkg cache-config show\n"
+		                "       kanxeoctl pkg cache-config set --max-bytes=N\n"
+		                "       kanxeoctl pkg cache-status\n"
+		                "       kanxeoctl pkg cache-clear\n"
+		                "       kanxeoctl pkg artifact-config show\n"
+		                "       kanxeoctl pkg artifact-config set [--url=URL] "
+		                "[--token=TOKEN | --clear-token]\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -6235,6 +6419,14 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 		return cmd_pkg_sync(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "sync-status") == 0)
 		return cmd_pkg_sync_status(c, json_mode);
+	if (strcmp(sub, "cache-config") == 0)
+		return cmd_pkg_cache_config(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "cache-status") == 0)
+		return cmd_pkg_cache_status(c, json_mode);
+	if (strcmp(sub, "cache-clear") == 0)
+		return cmd_pkg_cache_clear(c, json_mode);
+	if (strcmp(sub, "artifact-config") == 0)
+		return cmd_pkg_artifact_config(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "kanxeoctl: unknown pkg subcommand '%s'\n", sub);
 	return 2;
