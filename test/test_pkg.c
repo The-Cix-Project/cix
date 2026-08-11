@@ -252,7 +252,7 @@ static int stage_fixture_plain_file(const char *scratch_dir, const char *filenam
 	return compute_file_sha256(out_path, out_sha256, sha256_size);
 }
 
-/* ADR-0107: recipes live at recipes/<name>/<version>/recipe.sh -- the
+/* ADR-0107: recipes live at recipes/<name>/<version>/build.sh -- the
  * two mkdir()s are best-effort (already-exists is fine, anything else
  * surfaces as the fopen() below failing). */
 static int write_recipe(const char *name, const char *version, const char *tarball_path,
@@ -266,7 +266,7 @@ static int write_recipe(const char *name, const char *version, const char *tarba
 	mkdir(name_dir, 0755);
 	snprintf(path, sizeof(path), "%s/%s", name_dir, version);
 	mkdir(path, 0755);
-	snprintf(path, sizeof(path), "%s/recipes/%s/%s/recipe.sh", g_pkg_state_dir, name, version);
+	snprintf(path, sizeof(path), "%s/recipes/%s/%s/build.sh", g_pkg_state_dir, name, version);
 	f = fopen(path, "w");
 	if (f == NULL)
 		return -1;
@@ -302,7 +302,7 @@ static int write_multisrc_recipe(const char *name, const char *version, const ch
 	mkdir(name_dir, 0755);
 	snprintf(path, sizeof(path), "%s/%s", name_dir, version);
 	mkdir(path, 0755);
-	snprintf(path, sizeof(path), "%s/recipes/%s/%s/recipe.sh", g_pkg_state_dir, name, version);
+	snprintf(path, sizeof(path), "%s/recipes/%s/%s/build.sh", g_pkg_state_dir, name, version);
 	f = fopen(path, "w");
 	if (f == NULL)
 		return -1;
@@ -1733,7 +1733,7 @@ skip_pin_isolation:
 			snprintf(hb_recipe_dir, sizeof(hb_recipe_dir), "%s/recipes/hbtest/1.0", g_pkg_state_dir);
 			mkdir(hb_recipe_dir, 0755);
 		}
-		snprintf(hb_recipe_path, sizeof(hb_recipe_path), "%s/recipes/hbtest/1.0/recipe.sh",
+		snprintf(hb_recipe_path, sizeof(hb_recipe_path), "%s/recipes/hbtest/1.0/build.sh",
 		         g_pkg_state_dir);
 		f = fopen(hb_recipe_path, "w");
 		if (f == NULL) {
@@ -1861,7 +1861,7 @@ skip_pin_isolation:
 			         g_pkg_state_dir);
 			mkdir(hb_recipe_dir, 0755);
 		}
-		snprintf(hb_recipe_path, sizeof(hb_recipe_path), "%s/recipes/hbdepstest/1.0/recipe.sh",
+		snprintf(hb_recipe_path, sizeof(hb_recipe_path), "%s/recipes/hbdepstest/1.0/build.sh",
 		         g_pkg_state_dir);
 		f = fopen(hb_recipe_path, "w");
 		if (f == NULL) {

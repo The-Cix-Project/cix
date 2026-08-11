@@ -1728,28 +1728,53 @@ static void do_system_backup(struct json_writer *w)
 		jw_str(w, "");
 	}
 
-	/* Every recipe on disk, not just currently-installed packages --
-	 * they're cheap, and the operator may want them all preserved.
-	 * Same opendir()/readdir()/".recipe" filtering shape pkg.c's own
-	 * pkg_write_json_recipes() already uses. */
+	/* Every recipe version on disk, not just currently-installed
+	 * packages -- they're cheap, and the operator may want them all
+	 * preserved. ADR-0107's version-keyed layout (<name>/<version>/
+	 * build.sh, ADR-0120's filename) needs a two-level directory walk,
+	 * not the flat single-level opendir() this used before that
+	 * migration landed -- that old code silently stopped matching
+	 * anything the moment recipes moved to per-name subdirectories
+	 * (every entry in PKG_RECIPES_DIR became a directory, none ending
+	 * in ".recipe"), so backups have included zero recipes since.
+	 * Each entry's key is "<name>/<version>" (never ambiguous, since a
+	 * bare package name never itself contains '/') -- do_system_
+	 * restore() below splits on the same separator to reconstruct the
+	 * exact on-disk path. */
 	jw_key(w, "pkg_recipes");
 	jw_obj_open(w);
 	d = opendir(PKG_RECIPES_DIR);
 	if (d != NULL) {
 		while ((de = readdir(d)) != NULL) {
-			size_t nlen = strlen(de->d_name);
-			char path[PATH_MAX];
-			char name[256];
+			char name_dir[PATH_MAX];
+			DIR *vd;
+			struct dirent *vde;
 
-			if (nlen <= 7 || strcmp(de->d_name + nlen - 7, ".recipe") != 0)
+			if (de->d_name[0] == '.')
 				continue;
-			snprintf(path, sizeof(path), "%s/recipes/%s", PKG_DIR, de->d_name);
-			if (persist_read_file(path, &buf, &len) != 0 || buf == NULL)
+			snprintf(name_dir, sizeof(name_dir), "%s/%s", PKG_RECIPES_DIR, de->d_name);
+			vd = opendir(name_dir);
+			if (vd == NULL)
 				continue;
-			snprintf(name, sizeof(name), "%.*s", (int)(nlen - 7), de->d_name);
-			jw_key(w, name);
-			jw_str(w, buf);
-			free(buf);
+			while ((vde = readdir(vd)) != NULL) {
+				char script_path[PATH_MAX];
+				char key[512];
+				struct stat st;
+
+				if (vde->d_name[0] == '.')
+					continue;
+				snprintf(script_path, sizeof(script_path), "%s/%s/build.sh", name_dir,
+				         vde->d_name);
+				if (stat(script_path, &st) != 0 || !S_ISREG(st.st_mode))
+					continue;
+				if (persist_read_file(script_path, &buf, &len) != 0 || buf == NULL)
+					continue;
+				snprintf(key, sizeof(key), "%s/%s", de->d_name, vde->d_name);
+				jw_key(w, key);
+				jw_str(w, buf);
+				free(buf);
+			}
+			closedir(vd);
 		}
 		closedir(d);
 	}
@@ -1886,10 +1911,24 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 			return 400;
 		}
 		for (i = 0; i < jpkg_recipes->u.object.count; i++) {
+			const char *key = jpkg_recipes->u.object.keys[i];
+			const char *slash = strchr(key, '/');
+
 			if (json_as_string(jpkg_recipes->u.object.values[i]) == NULL) {
 				json_free(root);
 				snprintf(out_errmsg, out_errmsg_size,
-				         "pkg_recipes.%s is not a string", jpkg_recipes->u.object.keys[i]);
+				         "pkg_recipes.%s is not a string", key);
+				return 400;
+			}
+			/* ADR-0120: each key is "<name>/<version>" (do_system_
+			 * backup()'s own emitted shape) -- a bare package name
+			 * never itself contains '/', so a single separator with
+			 * non-empty content on both sides is both necessary and
+			 * sufficient here. */
+			if (slash == NULL || slash == key || slash[1] == '\0') {
+				json_free(root);
+				snprintf(out_errmsg, out_errmsg_size,
+				         "pkg_recipes key %s is not in <name>/<version> form", key);
 				return 400;
 			}
 		}
@@ -1949,15 +1988,28 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 			return 500;
 		}
 		for (i = 0; i < jpkg_recipes->u.object.count; i++) {
+			const char *key = jpkg_recipes->u.object.keys[i];
+			const char *slash = strchr(key, '/');
+			char version_dir[PATH_MAX];
 			char path[PATH_MAX];
 
-			snprintf(path, sizeof(path), "%s/%s.recipe", PKG_RECIPES_DIR,
-			         jpkg_recipes->u.object.keys[i]);
+			/* Already validated above (key is "<name>/<version>",
+			 * slash guaranteed non-NULL and interior) -- rebuilds the
+			 * exact <name>/<version>/build.sh path do_system_backup()
+			 * read this same content from (ADR-0120). */
+			snprintf(version_dir, sizeof(version_dir), "%s/%.*s/%s", PKG_RECIPES_DIR,
+			         (int)(slash - key), key, slash + 1);
+			if (persist_mkdir_p(version_dir) != 0) {
+				json_free(root);
+				snprintf(out_errmsg, out_errmsg_size, "failed to create recipe directory for %s",
+				         key);
+				return 500;
+			}
+			snprintf(path, sizeof(path), "%s/build.sh", version_dir);
 			if (restore_write_field(path, json_as_string(jpkg_recipes->u.object.values[i])) !=
 			    0) {
 				json_free(root);
-				snprintf(out_errmsg, out_errmsg_size, "failed to write recipe %s",
-				         jpkg_recipes->u.object.keys[i]);
+				snprintf(out_errmsg, out_errmsg_size, "failed to write recipe %s", key);
 				return 500;
 			}
 		}

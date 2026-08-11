@@ -3078,7 +3078,7 @@ paths:
                   type: string
                 content:
                   type: string
-                  description: The full text of a recipe.sh file (pkg_name=/pkg_version=/pkg_source=/pkg_sha256=/pkg_depends=)
+                  description: The full text of a build.sh file (pkg_name=/pkg_version=/pkg_source=/pkg_sha256=/pkg_depends=)
       responses:
         "204":
           description: Recipe version published
@@ -3095,7 +3095,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "500":
-          description: Validated but writing the recipe.sh file to disk failed
+          description: Validated but writing the build.sh file to disk failed
           content:
             application/json:
               schema:
@@ -3105,7 +3105,7 @@ paths:
     get:
       summary: >
         One recipe version's own {name,version,depends,content,created_at} -- the raw
-        recipe.sh text too, unlike GET /pkg/recipes' list-view metadata-only shape.
+        build.sh text too, unlike GET /pkg/recipes' list-view metadata-only shape.
         Powers the web dashboard's per-package Recipe tab (view, and edit-then-publish
         as a new version through POST /pkg/recipes). An optional ?version= query
         parameter selects a specific published version; omitted resolves to the
@@ -6129,7 +6129,7 @@ components:
           properties:
             content:
               type: string
-              description: The full text of the recipe.sh file, never sourced/executed by the daemon.
+              description: The full text of the build.sh file, never sourced/executed by the daemon.
 
     PkgInstallRequest:
       type: object
@@ -6138,7 +6138,7 @@ components:
         name:
           type: string
           description: >
-            Must match a published <name>/<version>/recipe.sh's own pkg_name=. Its
+            Must match a published <name>/<version>/build.sh's own pkg_name=. Its
             pkg_depends are resolved and installed first automatically
             (already-installed dependencies are skipped; a circular or unresolvable
             dependency is a 400).

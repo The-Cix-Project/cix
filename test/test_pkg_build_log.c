@@ -174,7 +174,7 @@ static int write_slowbuild_recipe(const char *tarball_path, const char *sha256)
 
 	if (run_cmd("mkdir -p '%s/recipes/slowbuild/1.0'", g_pkg_state_dir) != 0)
 		return -1;
-	snprintf(path, sizeof(path), "%s/recipes/slowbuild/1.0/recipe.sh", g_pkg_state_dir);
+	snprintf(path, sizeof(path), "%s/recipes/slowbuild/1.0/build.sh", g_pkg_state_dir);
 	f = fopen(path, "w");
 	if (f == NULL)
 		return -1;

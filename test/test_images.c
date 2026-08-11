@@ -152,7 +152,7 @@ static int write_recipe(const char *name, const char *tarball_path)
 
 	if (run_cmd("mkdir -p '%s/recipes/%s/1.0'", g_pkg_state_dir, name) != 0)
 		return -1;
-	snprintf(path, sizeof(path), "%s/recipes/%s/1.0/recipe.sh", g_pkg_state_dir, name);
+	snprintf(path, sizeof(path), "%s/recipes/%s/1.0/build.sh", g_pkg_state_dir, name);
 	f = fopen(path, "w");
 	if (f == NULL)
 		return -1;

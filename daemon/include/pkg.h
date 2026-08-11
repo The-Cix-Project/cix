@@ -239,7 +239,7 @@ enum pkg_error pkg_seed_image_baseline(const char *rootfs_path);
  */
 int pkg_version_compare(const char *a, const char *b);
 
-/* Scans pkg_dir/recipes/<name>/<version>/recipe.sh (ADR-0107's
+/* Scans pkg_dir/recipes/<name>/<version>/build.sh (ADR-0107's
  * version-keyed layout) and writes one {name,version,depends} object
  * per (name,version) pair that parses -- metadata only, never
  * sourced/executed. Multiple entries may share the same name at
@@ -261,7 +261,7 @@ void pkg_write_json_recipes(struct json_writer *w);
 enum pkg_error pkg_recipe_get(const char *name, const char *version, struct json_writer *w);
 
 /*
- * Adds a new recipe version at pkg_dir/recipes/<name>/<version>/recipe.sh,
+ * Adds a new recipe version at pkg_dir/recipes/<name>/<version>/build.sh,
  * where <name>/<version> both come from content's own pkg_name=/
  * pkg_version= fields (the same "filename and pkg_name= agree"
  * invariant this always enforced, now extended to the version

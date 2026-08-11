@@ -438,8 +438,8 @@ int pkg_version_compare(const char *a, const char *b)
 
 /*
  * Resolves name (and optional specific version) to the path of its
- * recipe.sh under ADR-0107's version-keyed layout:
- * <g_recipes_dir>/<name>/<version>/recipe.sh. version NULL or ""
+ * build.sh under ADR-0107's version-keyed layout:
+ * <g_recipes_dir>/<name>/<version>/build.sh. version NULL or ""
  * resolves to the highest available version for name
  * (pkg_version_compare()-ordered) -- the "rolling implicit" default
  * every pre-existing, non-manifest-aware caller (plain `pkg install
@@ -458,7 +458,7 @@ static int find_recipe_path(const char *name, const char *version, char *out_pat
 	if (version != NULL && version[0] != '\0') {
 		struct stat st;
 
-		snprintf(out_path, out_path_size, "%s/%s/recipe.sh", name_dir, version);
+		snprintf(out_path, out_path_size, "%s/%s/build.sh", name_dir, version);
 		if (stat(out_path, &st) != 0 || !S_ISREG(st.st_mode))
 			return -1;
 		return 0;
@@ -478,7 +478,7 @@ static int find_recipe_path(const char *name, const char *version, char *out_pat
 
 			if (de->d_name[0] == '.')
 				continue;
-			snprintf(candidate, sizeof(candidate), "%s/%s/recipe.sh", name_dir, de->d_name);
+			snprintf(candidate, sizeof(candidate), "%s/%s/build.sh", name_dir, de->d_name);
 			if (stat(candidate, &st) != 0 || !S_ISREG(st.st_mode))
 				continue;
 			if (!have_best || pkg_version_compare(de->d_name, best) > 0) {
@@ -489,7 +489,7 @@ static int find_recipe_path(const char *name, const char *version, char *out_pat
 		closedir(d);
 		if (!have_best)
 			return -1;
-		snprintf(out_path, out_path_size, "%s/%s/recipe.sh", name_dir, best);
+		snprintf(out_path, out_path_size, "%s/%s/build.sh", name_dir, best);
 		return 0;
 	}
 }
@@ -1672,7 +1672,7 @@ void pkg_write_json_recipes(struct json_writer *w)
 
 				if (vde->d_name[0] == '.')
 					continue;
-				snprintf(path, sizeof(path), "%s/%s/recipe.sh", name_dir, vde->d_name);
+				snprintf(path, sizeof(path), "%s/%s/build.sh", name_dir, vde->d_name);
 				if (parse_recipe(path, &r) != 0)
 					continue;
 				jw_obj_open(w);
@@ -1887,7 +1887,7 @@ enum pkg_error pkg_recipe_add(const char *name, const char *content)
 	 * real error, never a silent overwrite. */
 	snprintf(name_dir, sizeof(name_dir), "%s/%s", g_recipes_dir, name);
 	snprintf(version_dir, sizeof(version_dir), "%s/%s", name_dir, parsed.version);
-	snprintf(recipe_path, sizeof(recipe_path), "%s/recipe.sh", version_dir);
+	snprintf(recipe_path, sizeof(recipe_path), "%s/build.sh", version_dir);
 	if (stat(recipe_path, &st) == 0) {
 		unlink(staging_path);
 		return PKG_ERR_DUPLICATE;
@@ -1920,7 +1920,7 @@ enum pkg_error pkg_recipe_delete(const char *name, const char *version)
 		char recipe_path[PATH_MAX];
 
 		snprintf(version_dir, sizeof(version_dir), "%s/%s", name_dir, version);
-		snprintf(recipe_path, sizeof(recipe_path), "%s/recipe.sh", version_dir);
+		snprintf(recipe_path, sizeof(recipe_path), "%s/build.sh", version_dir);
 		if (stat(recipe_path, &st) != 0)
 			return PKG_ERR_NOT_FOUND;
 		if (unlink(recipe_path) != 0 || rmdir(version_dir) != 0)
@@ -1947,7 +1947,7 @@ enum pkg_error pkg_recipe_delete(const char *name, const char *version)
 				continue;
 			found = 1;
 			snprintf(version_dir, sizeof(version_dir), "%s/%s", name_dir, de->d_name);
-			snprintf(recipe_path, sizeof(recipe_path), "%s/recipe.sh", version_dir);
+			snprintf(recipe_path, sizeof(recipe_path), "%s/build.sh", version_dir);
 			unlink(recipe_path);
 			rmdir(version_dir);
 		}

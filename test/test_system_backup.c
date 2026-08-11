@@ -13,6 +13,7 @@
  */
 #include "httpclient.h"
 #include "json.h"
+#include "persist.h"
 #include "test_image_fixture.h"
 
 #include <limits.h>
@@ -233,6 +234,43 @@ int main(void)
 	}
 	kx_response_free(&r);
 
+	/* ADR-0120 regression coverage: do_system_backup()'s own recipe walk
+	 * used to assume the pre-ADR-0107 flat <name>.recipe layout
+	 * (opendir(PKG_RECIPES_DIR) filtering a ".recipe" suffix directly),
+	 * which silently matched nothing at all once recipes moved to the
+	 * nested <name>/<version>/build.sh layout -- every entry in
+	 * PKG_RECIPES_DIR became a per-name subdirectory instead. A real
+	 * recipe added here, with its exact "<name>/<version>" backup key
+	 * and content asserted below, is what would have caught that. */
+	{
+		char recipe_body[1024];
+		struct json_writer rw;
+
+		snprintf(recipe_body, sizeof(recipe_body),
+		         "pkg_name=backuptestpkg\npkg_version=1.0\n"
+		         "pkg_source=http://127.0.0.1:1/unreachable.tar.gz\n"
+		         "pkg_sha256=%s\npkg_depends=\"\"\n\n"
+		         "pkg_build() {\n\ttrue\n}\n\npkg_install() {\n\ttrue\n}\n",
+		         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+		jw_init(&rw);
+		jw_obj_open(&rw);
+		jw_key(&rw, "name");
+		jw_str(&rw, "backuptestpkg");
+		jw_key(&rw, "content");
+		jw_str(&rw, recipe_body);
+		jw_obj_close(&rw);
+		rw.buf[rw.len] = '\0';
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/recipes", rw.buf, &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: POST recipe backuptestpkg, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+		free(rw.buf);
+	}
+
 	/* 2. GET /system/backup: confirm the bundle's own container_defs
 	 * field, re-parsed, actually mentions "keeper", and that
 	 * site_config actually carries the instance_name just set. */
@@ -266,6 +304,16 @@ int main(void)
 		if (recipes == NULL || recipes->type != JSON_OBJECT) {
 			fprintf(stderr, "FAIL: backup pkg_recipes missing or not an object\n");
 			ok = 0;
+		} else {
+			const struct json_value *entry = json_object_get(recipes, "backuptestpkg/1.0");
+			const char *content = entry != NULL ? json_as_string(entry) : NULL;
+
+			if (content == NULL || strstr(content, "pkg_name=backuptestpkg") == NULL) {
+				fprintf(stderr,
+				        "FAIL: backup pkg_recipes missing \"backuptestpkg/1.0\" key with real "
+				        "content (ADR-0120 regression: version-keyed layout not walked)\n");
+				ok = 0;
+			}
 		}
 		/* Only container_defs is saved for the later restore step below
 		 * -- restoring the full bundle (including "networks") would
@@ -402,6 +450,52 @@ int main(void)
 		}
 		kx_response_free(&r);
 		jw_free(&restore_body);
+	}
+
+	/* ADR-0120 regression coverage, restore side: a distinct (name,
+	 * version) key than the one added via POST /v1/pkg/recipes above,
+	 * to prove do_system_restore() itself (not just pkg_recipe_add())
+	 * writes to the real nested <name>/<version>/build.sh path -- the
+	 * old restore code wrote a flat "<key>.recipe" file that nothing
+	 * in the version-keyed lookup path (find_recipe_path()) would ever
+	 * find again. */
+	{
+		struct json_writer recipe_restore;
+		char expected_path[PATH_MAX];
+		char *on_disk = NULL;
+		size_t on_disk_len = 0;
+
+		jw_init(&recipe_restore);
+		jw_obj_open(&recipe_restore);
+		jw_key(&recipe_restore, "pkg_recipes");
+		jw_obj_open(&recipe_restore);
+		jw_key(&recipe_restore, "restoredpkg/2.0");
+		jw_str(&recipe_restore, "pkg_name=restoredpkg\npkg_version=2.0\n");
+		jw_obj_close(&recipe_restore);
+		jw_obj_close(&recipe_restore);
+		recipe_restore.buf[recipe_restore.len] = '\0';
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/system/restore", recipe_restore.buf, &r) !=
+		        0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: restore of pkg_recipes expected 200, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+		jw_free(&recipe_restore);
+
+		snprintf(expected_path, sizeof(expected_path), "%s/pkg/recipes/restoredpkg/2.0/build.sh",
+		         g_data_dir);
+		if (persist_read_file(expected_path, &on_disk, &on_disk_len) != 0 || on_disk == NULL ||
+		    strstr(on_disk, "pkg_name=restoredpkg") == NULL) {
+			fprintf(stderr,
+			        "FAIL: restored recipe not found at real nested path %s (ADR-0120 "
+			        "regression: restore wrote the old flat layout)\n",
+			        expected_path);
+			ok = 0;
+		}
+		free(on_disk);
 	}
 
 	/* Restore does NOT hot-reload -- keeper must still be absent from

@@ -90,7 +90,7 @@ Every install targets one image's rootfs — `pkg_build()`/`pkg_install()` write
 
 ## A complete, real worked example
 
-`pkg/recipes/bash/5.2.37/recipe.sh`, verbatim, annotated with why each line is there:
+`pkg/recipes/bash/5.2.37/build.sh`, verbatim, annotated with why each line is there:
 
 ```sh
 pkg_name="bash"
