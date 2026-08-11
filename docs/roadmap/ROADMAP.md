@@ -2,20 +2,7 @@
 
 Phased, dependency-ordered breakdown of the mission in [MISSION.md](../mission/MISSION.md). Each phase is designed in detail only when we reach it — see the Zen maxim. This page covers *what* shipped and how it was verified; *why* the significant decisions behind it were made lives in [docs/adr/](../adr/README.md). Chronological summary: [CHANGELOG.md](../../CHANGELOG.md).
 
-| Phase | Name | Depends on | Status |
-|---|---|---|---|
-| 0 | Toolchain smoke test | — | Done |
-| 1 | Namespace + cgroup v2 container harness | 0 | Done |
-| 2 | OverlayFS root construction | 1 | Done |
-| 3 | REST API spec + daemon (host + container lifecycle) | 1, 2 | Done |
-| 4 | CLI (pure REST API client) | 3 | Done |
-| 5 | Web dashboard (pure REST API client) | 3 | Done |
-| 6 | Custom virtual switch / rtnetlink data plane | 3 | Done |
-| 7 | Routing protocols (containerized VPNs/routers) | 6 | Done |
-| 8 | DNS service | 3, 6 | Done |
-| 9 | PKI / certificate management | 3 | Done |
-| 10 | Package manager | 1, 2, 4 | Done |
-| 11 | Bare-metal boot: kernel, bootloader, A/B root, installer | 3, 10 | Done |
+The original charter (Phase 0-11 above the "Phase 12 and beyond" expansion below) was small enough for a one-page status table; the roadmap has since grown far past that, and a hand-maintained summary table drifts out of date the moment it stops being updated on every single phase/part — which is exactly what happened to the one that used to be here. There is no substitute for it: each `## Phase N` / `### Part N` heading below is its own status marker — most read `(done)` and are; a heading that instead reads `(investigated, ...)`, `(superseded by ...)`, or similar is flagging a genuine exception, not a typo. Use your editor's outline view or a search for a specific phase/part number rather than a summary table.
 
 **API-first, no exceptions (added after Phase 2):** the REST daemon is the only process with direct access to the runtime library or any host/network/DNS/PKI primitive. The CLI (4) and web dashboard (5) are pure REST clients — every capability they expose must exist as a REST endpoint first. This reordered the roadmap: the CLI can no longer come before the REST daemon, since it now depends on the daemon's API existing rather than linking against `container.h` directly. See `CLAUDE.md`'s API-First Mandate.
 
