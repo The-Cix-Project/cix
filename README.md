@@ -22,7 +22,7 @@ Kanxeo is more than a distribution — it's a discipline. Complex routing protoc
 
 [`docs/README.md`](docs/README.md) is the index to the entire documentation set — start there if you're not sure which document has what you're looking for. [`docs/guides/quickstart.md`](docs/guides/quickstart.md) is the fastest real path from nothing to a running container.
 
-40 phases shipped and verified end to end so far — see [`docs/roadmap/ROADMAP.md`](docs/roadmap/ROADMAP.md) for the full phase-by-phase history (what shipped, how each was verified). Architecture diagram: [`docs/architecture/architecture.svg`](docs/architecture/architecture.svg). API contract: [`docs/api/openapi.yaml`](docs/api/openapi.yaml), with a narrative walkthrough at [`docs/api/README.md`](docs/api/README.md). Why a given significant, hard-to-reverse decision was made: [`docs/adr/`](docs/adr/).
+See [`docs/roadmap/ROADMAP.md`](docs/roadmap/ROADMAP.md) for the full phase-by-phase history — what shipped, how each was verified. Architecture diagram: [`docs/architecture/architecture.svg`](docs/architecture/architecture.svg). API contract: [`docs/api/openapi.yaml`](docs/api/openapi.yaml), with a narrative walkthrough at [`docs/api/README.md`](docs/api/README.md). Why a given significant, hard-to-reverse decision was made: [`docs/adr/`](docs/adr/).
 
 ## Getting started
 
