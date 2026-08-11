@@ -428,6 +428,7 @@ static int set_disk_quota(const char *base_path, uint32_t projid, long long quot
 #define PKG_PREFIX "/v1/pkg/"
 #define PKG_RECIPES_PREFIX "/v1/pkg/recipes/"
 #define IMAGES_PREFIX "/v1/images/"
+#define IMAGE_RECIPES_PREFIX "/v1/images/recipes/"
 #define DEVICEMAPS_PREFIX "/v1/devicemaps/"
 #define DISKROLES_PREFIX "/v1/diskroles/"
 #define DISKS_PREFIX "/v1/disks/"
@@ -456,6 +457,7 @@ enum conn_kind {
 	CONN_BOOTSTRAP_FETCH,   /* pkg/bootstrap's own toolchain_url curl fetch (ADR-0065) */
 	CONN_PKG_SYNC_FETCH,    /* pkg sync's own repo-archive curl fetch (ADR-0121) */
 	CONN_PKG_SYNC_PERIODIC_TIMER, /* permanent, re-arms itself -- fires pkg_sync_start() periodically if configured (ADR-0121) */
+	CONN_IMAGE_RECIPE_FETCH, /* image-recipe-apply's own whole-rootfs artifact curl fetch (ADR-0123) */
 	CONN_DISK_FORMAT,       /* disk format+mount job (multi-disk management Phase C) */
 	CONN_PING,              /* GET/POST /v1/system/ping -- the raw ICMP socket half */
 	CONN_PING_TIMER,        /* same job's paired timeout -- see ping_job_teardown() */
@@ -5172,6 +5174,52 @@ static void handle_pkg_sync_fetch_event(struct conn *cc)
 	pkg_sync_completed(exit_status);
 }
 
+/* ADR-0123: same shape as register_pkg_sync_fetch_pidfd() immediately
+ * above, for an image-recipe-apply's own whole-rootfs artifact curl
+ * fetch. */
+static void register_image_recipe_fetch_pidfd(pid_t pid, int pidfd)
+{
+	struct conn *cc;
+	struct kx_epoll_event ev;
+
+	cc = malloc(sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (image recipe fetch reactor conn)");
+		abort();
+	}
+	cc->kind = CONN_IMAGE_RECIPE_FETCH;
+	cc->fd = pidfd;
+	cc->pkg_fetch_pid = pid;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+		perror("epoll_ctl ADD image recipe fetch pidfd");
+		abort();
+	}
+}
+
+/* Reaps the curl child pkg_image_recipe_apply_start() spawned and
+ * hands its exit status to pkg_image_recipe_apply_completed(), which
+ * does the real work (verify checksum, extract as the new version's
+ * whole rootfs, record it, mirror g_packages[]). */
+static void handle_image_recipe_fetch_event(struct conn *cc)
+{
+	int status;
+	int exit_status;
+
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
+		exit_status = WEXITSTATUS(status);
+	else
+		exit_status = -1;
+	close(cc->fd);
+	free(cc);
+
+	pkg_image_recipe_apply_completed(exit_status);
+}
+
 /* Permanent, re-arming itself every configured interval -- identical
  * shape to arm_ntp_periodic_timer()/handle_ntp_periodic_timer_event()
  * (task #751), except an interval of 0 means "disabled": the timer is
@@ -8306,6 +8354,161 @@ static void handle_image_manifest_unset(int fd, const char *name, const char *pa
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
+/*
+ * ADR-0123: image recipes (Part 4 of the pkg/ redesign) share pkg_error
+ * with package recipes, but respond_pkg_recipe_error()'s own
+ * PKG_ERR_INVALID_RECIPE wording names pkg_name= (package-recipe-
+ * specific) -- a real, misleading-message gap for an image recipe,
+ * same reasoning respond_pkg_recipe_error()'s own doc comment already
+ * gives for why it exists distinct from respond_pkg_error().
+ */
+static void respond_image_recipe_error(int fd, enum pkg_error err)
+{
+	switch (err) {
+	case PKG_ERR_INVALID_NAME:
+		respond_error(fd, 400, "Bad Request", "invalid image recipe name");
+		break;
+	case PKG_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such image recipe");
+		break;
+	case PKG_ERR_INVALID_RECIPE:
+		respond_error(fd, 400, "Bad Request",
+		              "recipe content failed to parse -- image_packages= is required, each "
+		              "entry \"name:pinned|rolling:version\"");
+		break;
+	case PKG_ERR_BUSY:
+		respond_error(fd, 409, "Conflict",
+		              "another package install/hostbuild/image-recipe-apply is already in progress");
+		break;
+	case PKG_ERR_PERSIST_FAILED:
+	default:
+		respond_error(fd, 500, "Internal Server Error", "image recipe operation failed");
+		break;
+	}
+}
+
+static void handle_image_recipe_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "recipes");
+	image_recipe_write_json_list(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_image_recipe_add(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *name;
+	const char *content;
+	enum pkg_error perr;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	name = json_as_string(json_object_get(root, "name"));
+	content = json_as_string(json_object_get(root, "content"));
+	if (name == NULL || content == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "name and content both required");
+		return;
+	}
+
+	perr = image_recipe_add(name, content);
+	json_free(root);
+	if (perr != PKG_OK) {
+		respond_image_recipe_error(fd, perr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+static void handle_image_recipe_get(int fd, const char *name)
+{
+	char *content;
+	size_t content_len;
+	enum pkg_error perr;
+	struct json_writer w;
+
+	perr = image_recipe_get(name, &content, &content_len);
+	if (perr != PKG_OK) {
+		respond_image_recipe_error(fd, perr);
+		return;
+	}
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "content");
+	jw_str(&w, content);
+	jw_obj_close(&w);
+	free(content);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_image_recipe_delete(int fd, const char *name)
+{
+	enum pkg_error perr = image_recipe_rm(name);
+
+	if (perr != PKG_OK) {
+		respond_image_recipe_error(fd, perr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+/*
+ * POST /v1/images/{name}/apply-recipe -- 204 for the common, synchronous
+ * bulk-declare case (async == 0, see pkg_image_recipe_apply_start()'s
+ * own doc comment); 202 + a registered pidfd for the async artifact-
+ * fetch fast path, poll GET /v1/images/recipe-apply-status for the
+ * outcome, exactly the same "202, poll a status endpoint" convention
+ * every other async pkg.c job here already has.
+ */
+static void handle_image_recipe_apply(int fd, const char *name)
+{
+	int async = 0;
+	pid_t pid;
+	int pidfd;
+	enum pkg_error perr;
+	struct json_writer w;
+
+	perr = pkg_image_recipe_apply_start(name, &async, &pid, &pidfd);
+	if (perr != PKG_OK) {
+		respond_image_recipe_error(fd, perr);
+		return;
+	}
+	if (!async) {
+		http_set_blocking(fd);
+		http_write_response(fd, 204, "No Content", "application/json", "", 0);
+		return;
+	}
+	register_image_recipe_fetch_pidfd(pid, pidfd);
+	jw_init(&w);
+	pkg_image_recipe_apply_write_json_status(&w);
+	respond_json(fd, 202, "Accepted", &w);
+	jw_free(&w);
+}
+
+static void handle_image_recipe_apply_status_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	pkg_image_recipe_apply_write_json_status(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void respond_dns_error(int fd, enum dns_error err)
 {
 	switch (err) {
@@ -10738,6 +10941,43 @@ static void dispatch(int fd, const struct http_request *req)
 			}
 		}
 	}
+	/*
+	 * ADR-0123: image recipes' own reserved paths, checked before the
+	 * generic IMAGES_PREFIX/{name} fallback below -- same "recipes"/
+	 * "recipe-apply-status" reserved-words boundary PKG_RECIPES_PREFIX
+	 * already established for package recipes, one level up (an image
+	 * literally named "recipes" would otherwise be unreachable via
+	 * GET/DELETE /v1/images/{name}).
+	 */
+	if (strcmp(req->path, "/v1/images/recipes") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_image_recipe_list(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_image_recipe_add(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/images/recipe-apply-status") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_image_recipe_apply_status_get(fd);
+			return;
+		}
+	}
+	if (strncmp(req->path, IMAGE_RECIPES_PREFIX, strlen(IMAGE_RECIPES_PREFIX)) == 0) {
+		name = req->path + strlen(IMAGE_RECIPES_PREFIX);
+		if (name[0] != '\0') {
+			if (strcmp(req->method, "GET") == 0) {
+				handle_image_recipe_get(fd, name);
+				return;
+			}
+			if (strcmp(req->method, "DELETE") == 0) {
+				handle_image_recipe_delete(fd, name);
+				return;
+			}
+		}
+	}
 	if (strcmp(req->path, "/v1/images") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_image_list(fd);
@@ -10768,6 +11008,17 @@ static void dispatch(int fd, const struct http_request *req)
 				memcpy(image_name, name, nlen - 9);
 				image_name[nlen - 9] = '\0';
 				handle_image_manifest_set(fd, image_name, req->body, req->body_len);
+				return;
+			}
+			/* ADR-0123: /v1/images/{name}/apply-recipe (POST) --
+			 * applies image's own already-stored recipe. */
+			if (nlen > 13 && strcmp(name + nlen - 13, "/apply-recipe") == 0 &&
+			    strcmp(req->method, "POST") == 0 && nlen - 13 < PKG_IMAGE_NAME_MAX) {
+				char image_name[PKG_IMAGE_NAME_MAX];
+
+				memcpy(image_name, name, nlen - 13);
+				image_name[nlen - 13] = '\0';
+				handle_image_recipe_apply(fd, image_name);
 				return;
 			}
 			{
@@ -12924,6 +13175,8 @@ int main(int argc, char **argv)
 				handle_pkg_sync_fetch_event(cc);
 			else if (cc->kind == CONN_PKG_SYNC_PERIODIC_TIMER)
 				handle_pkg_sync_periodic_timer_event(cc);
+			else if (cc->kind == CONN_IMAGE_RECIPE_FETCH)
+				handle_image_recipe_fetch_event(cc);
 			else if (cc->kind == CONN_DISK_FORMAT)
 				handle_disk_format_event(cc);
 			else if (cc->kind == CONN_PING)

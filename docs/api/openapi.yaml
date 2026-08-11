@@ -1954,6 +1954,147 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /images/recipes:
+    get:
+      summary: >
+        List image recipes found on disk (ADR-0123, Part 4 of the pkg/
+        redesign) -- metadata only, one entry per image name (a recipe's
+        own name is always its target image's name, a 1:1 relationship).
+      operationId: listImageRecipes
+      responses:
+        "200":
+          description: Recipe list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [recipes]
+                properties:
+                  recipes:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ImageRecipe"
+    post:
+      summary: >
+        Adds or replaces the image recipe for name. content is parsed and
+        validated before anything on disk changes -- image_packages= is
+        required (whitespace-separated "package:mode:version" entries,
+        mode one of pinned/rolling); image_artifact_sha256= is optional.
+      operationId: addImageRecipe
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, content]
+              properties:
+                name:
+                  type: string
+                  description: The target image's own name -- an image recipe's name is always its image's name.
+                content:
+                  type: string
+                  description: The full text of an image recipe file (image_packages=/image_artifact_sha256=).
+      responses:
+        "204":
+          description: Recipe added/replaced
+        "400":
+          description: name/content missing, invalid name, or content failed to parse
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Validated but writing the recipe file to disk failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /images/recipes/{name}:
+    get:
+      summary: One image recipe's own {name,content} -- the raw recipe text.
+      operationId: getImageRecipe
+      parameters:
+        - $ref: "#/components/parameters/ImageName"
+      responses:
+        "200":
+          description: Recipe detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImageRecipeDetail"
+        "404":
+          description: No recipe for this image name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Removes name's own image recipe. Does not affect the image itself or anything already installed via it.
+      operationId: deleteImageRecipe
+      parameters:
+        - $ref: "#/components/parameters/ImageName"
+      responses:
+        "204":
+          description: Recipe removed
+        "404":
+          description: No recipe for this image name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /images/{name}/apply-recipe:
+    post:
+      summary: >
+        Applies name's own already-stored image recipe (ADR-0123). The
+        common case bulk-declares the manifest synchronously (204) --
+        exactly what N manual POST /images/{name}/manifest calls would
+        already do, no rootfs touched; packages still need real
+        POST /pkg/install calls afterward to actually be built. A fully
+        "pinned" recipe with a matching image_artifact_sha256 and a
+        configured plain-HTTP artifact server (PUT /pkg/artifact-config,
+        reused from Part 3 under a distinct images/ URL prefix) instead
+        starts an async whole-rootfs fetch (202) -- poll
+        GET /images/recipe-apply-status for the outcome.
+      operationId: applyImageRecipe
+      parameters:
+        - $ref: "#/components/parameters/ImageName"
+      responses:
+        "204":
+          description: Recipe applied synchronously (bulk-declare path)
+        "202":
+          description: Async artifact fetch started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImageRecipeApplyStatus"
+        "404":
+          description: No recipe stored for this image name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A package install/hostbuild/image-recipe-apply is already in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /images/recipe-apply-status:
+    get:
+      summary: The most recent image-recipe-apply artifact fetch's own state/image/error.
+      operationId: getImageRecipeApplyStatus
+      responses:
+        "200":
+          description: Current status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImageRecipeApplyStatus"
+
   /dns/records:
     get:
       summary: List all DNS records known to this daemon
@@ -6348,6 +6489,44 @@ components:
             content:
               type: string
               description: The full text of the build.sh file, never sourced/executed by the daemon.
+
+    ImageRecipe:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Also the target image's own name -- an image recipe's name is always its image's name (ADR-0123).
+
+    ImageRecipeDetail:
+      allOf:
+        - $ref: "#/components/schemas/ImageRecipe"
+        - type: object
+          required: [content]
+          properties:
+            content:
+              type: string
+              description: The full text of the image recipe file (image_packages=/image_artifact_sha256=).
+
+    ImageRecipeApplyStatus:
+      type: object
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [never, running, success, failed]
+        image:
+          type: string
+          nullable: true
+          description: The image the most recent apply attempt targeted; null if one has never run.
+        last_attempt:
+          type: integer
+          nullable: true
+          description: Unix epoch seconds the most recent artifact-fetch apply was started; null if one has never run.
+        error:
+          type: string
+          nullable: true
+          description: Set when state is "failed" (fetch failure, checksum mismatch, or extraction failure).
 
     PkgRepoConfig:
       type: object

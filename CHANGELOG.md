@@ -2,6 +2,21 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 81 (done): pkg/ redesign Part 4 -- declarative image recipes + whole-rootfs artifact fast path
+
+Fourth of the five-part `pkg/` redesign (task #739/#769) -- see [ADR-0123](docs/adr/0123-pkg-redesign-part4-image-recipes-and-artifact.md). An image's whole package-list intent can now be declared in one text file (`image_packages="name:mode:version ..."`, recipe name == image name) instead of N individual `PUT /v1/images/{name}/manifest` calls, and a fully-pinned recipe with a matching precompiled artifact skips every per-package build entirely.
+
+#### Added
+- `daemon/src/pkg.c`: new `image_recipe_*` module -- name-keyed recipe storage (`<data-dir>/pkg/image-recipes/<name>.recipe`), parsing (`image_packages=`/`image_artifact_sha256=`), CRUD (`GET`/`POST /v1/images/recipes`, `GET`/`DELETE /v1/images/recipes/{name}`).
+- `pkg_image_recipe_apply_start()`/`pkg_image_recipe_apply_completed()` (`POST /v1/images/{name}/apply-recipe`): the common case bulk-declares the manifest synchronously (204, no rootfs touched -- packages still need real `pkg install` calls to be realized, exactly like manual manifest edits already require); a fully-pinned recipe with a declared `image_artifact_sha256` and a configured plain-HTTP artifact server (reusing Part 3's `pkg_artifact_*` config under a new `images/` URL prefix) instead fetches one whole-rootfs tarball asynchronously (202), verifies it against the recipe's own checksum, extracts it directly as the new version, and mirrors `g_packages[]` so `GET /v1/pkg` matches the rootfs that was actually written. A fourth small instance of `pkg.c`'s existing fork+curl+pidfd job idiom (`CONN_IMAGE_RECIPE_FETCH`), sharing package-install's own `g_current_job_name` single-job guard so the two can never race over the same shared state.
+- `GET /v1/images/recipe-apply-status`.
+- `kanxeoctl image recipe add|show|rm|ls`, `image apply-recipe NAME`, `image recipe-apply-status`.
+- Web dashboard: a new "Recipe" tab on the image detail view -- shows the stored recipe text (edit via a modal, same shared-modal convention every other resource form here already uses), Apply/Remove buttons, and a live apply-status box.
+- `test/test_image_recipe.c`: real end-to-end suite -- bulk-declare (confirms `current_version` unchanged, proving no rootfs was touched), 404/400 error cases, and the full artifact-tier round trip (a real `python3 http.server`, an independently-precomputed target hash and artifact URL, confirming the daemon requested exactly that URL, the manifest and `g_packages[]` both updated, and the real extracted file present on disk).
+
+#### Verified
+- Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (28 tests) all pass, including the pre-existing `test_images.c` and `test_pkg.c` (manifest editing, dependency chains, hostbuild, upgrades -- the real-install path is completely unmodified).
+
 ### Part 79 (done): pkg/ redesign Part 2 -- configurable recipe repo + merge/additive `pkg sync`
 
 Second of the five-part `pkg/` redesign (task #739/#767) -- see [ADR-0121](docs/adr/0121-pkg-redesign-part2-configurable-repo-and-sync.md). A host can now be pointed at a shared recipe repository (gitea/github/gitlab) and pull its whole tree in one call, instead of every recipe needing an individual manual `POST /pkg/recipes`.

@@ -1914,10 +1914,135 @@ function renderImageDetail(name) {
 	renderImageDetailPackages(name);
 	renderImageDetailRecipes(name);
 	refreshImageDetailVersioning(name);
+	renderImageRecipeTab(name);
+	refreshImageRecipeApplyStatus();
 
 	document.getElementById("imgd-remove").onclick = () => removeImage(name);
 	document.getElementById("imgd-add-recipe").onclick = () => openModal("pkg-recipe-form", "Add or update a recipe");
 }
+
+/* ---- ADR-0123: image recipe tab (declarative package-list definition) ---- */
+
+let imageRecipeContentCache = { name: null, content: null };
+
+async function loadImageRecipeContent(name) {
+	if (imageRecipeContentCache.name === name)
+		return imageRecipeContentCache.content;
+	const data = await apiRequest("GET", "/v1/images/recipes/" + encodeURIComponent(name));
+
+	imageRecipeContentCache = { name: name, content: data.content };
+	return imageRecipeContentCache.content;
+}
+
+function renderImageRecipeTab(name) {
+	const missingEl = document.getElementById("imgd-recipe-missing");
+	const presentEl = document.getElementById("imgd-recipe-present");
+	const contentEl = document.getElementById("imgd-recipe-content");
+
+	loadImageRecipeContent(name)
+		.then((content) => {
+			if (parseHash().category === "images" && parseHash().name === name) {
+				missingEl.hidden = true;
+				presentEl.hidden = false;
+				contentEl.textContent = content;
+			}
+		})
+		.catch(() => {
+			if (parseHash().category === "images" && parseHash().name === name) {
+				missingEl.hidden = false;
+				presentEl.hidden = true;
+			}
+		});
+
+	document.getElementById("imgd-edit-recipe").onclick = async () => {
+		let content = "";
+
+		try {
+			content = await loadImageRecipeContent(name);
+		} catch (e) {
+			/* No recipe yet -- start from an empty template. */
+		}
+		openModal("image-recipe-form", "Edit image recipe");
+		document.getElementById("irf-name").value = name;
+		document.getElementById("irf-content").value = content;
+	};
+	document.getElementById("imgd-remove-recipe").onclick = async () => {
+		try {
+			await apiRequest("DELETE", "/v1/images/recipes/" + encodeURIComponent(name));
+			clearStatus();
+			imageRecipeContentCache = { name: null, content: null };
+			renderImageRecipeTab(name);
+		} catch (e) {
+			showStatus("Failed to remove image recipe for " + name + ": " + e.message, true);
+		}
+	};
+	document.getElementById("imgd-apply-recipe").onclick = async () => {
+		try {
+			const r = await apiRequest("POST", "/v1/images/" + encodeURIComponent(name) + "/apply-recipe");
+
+			clearStatus();
+			showStatus(
+				r && r.state === "running"
+					? "Recipe apply started for " + name + " (async artifact fetch)"
+					: "Recipe applied for " + name,
+				false
+			);
+			await refreshImageRecipeApplyStatus();
+			await refreshImageDetailVersioning(name);
+		} catch (e) {
+			showStatus("Failed to apply recipe for " + name + ": " + e.message, true);
+		}
+	};
+}
+
+async function refreshImageRecipeApplyStatus() {
+	const box = document.getElementById("imgd-recipe-apply-status");
+	const route = parseHash();
+
+	if (route.category !== "images" || route.name === null)
+		return;
+	try {
+		const status = await apiRequest("GET", "/v1/images/recipe-apply-status");
+
+		box.textContent = "";
+		const lines = [
+			["State", status.state],
+			["Image", status.image || "-"],
+			["Last attempt", status.last_attempt || "(never)"],
+			["Error", status.error || "-"],
+		];
+		for (const [label, value] of lines) {
+			const p = document.createElement("p");
+
+			p.textContent = label + ": " + value;
+			box.appendChild(p);
+		}
+	} catch (e) {
+		box.textContent = "Failed to load apply status: " + e.message;
+	}
+}
+
+document.getElementById("image-recipe-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const name = document.getElementById("irf-name").value.trim();
+	const content = document.getElementById("irf-content").value;
+
+	if (name === "" || content.trim() === "")
+		return;
+
+	try {
+		await apiRequest("POST", "/v1/images/recipes", { name: name, content: content });
+		clearStatus();
+		document.getElementById("image-recipe-form").reset();
+		closeModal();
+		imageRecipeContentCache = { name: null, content: null };
+		if (parseHash().category === "images" && parseHash().name === name)
+			renderImageRecipeTab(name);
+	} catch (e) {
+		showStatus("Failed to save image recipe for " + name + ": " + e.message, true);
+	}
+});
 
 /* GET /v1/images/{name} isn't part of the images-list cache (that only
  * ever carries {"name":...} per entry, deliberately minimal) -- the
@@ -4930,6 +5055,7 @@ async function poll() {
 		await refreshPkgCacheConfig();
 		await refreshPkgCacheStatus();
 		await refreshPkgArtifactConfig();
+		await refreshImageRecipeApplyStatus();
 		await refreshSiteConfig();
 		await refreshDaemonConfig();
 		await refreshRoutes();

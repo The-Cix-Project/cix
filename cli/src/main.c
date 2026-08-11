@@ -84,6 +84,12 @@ static void print_usage(FILE *out)
 	        "  image ls\n"
 	        "  image rm NAME  -- refused for \"base\", for an image still in use, or with\n"
 	        "               packages still installed into it\n"
+	        "  image recipe add --name=NAME --file=PATH  -- a declarative package-list\n"
+	        "               definition for an image (ADR-0123); recipe name == image name\n"
+	        "  image recipe show|rm NAME / image recipe ls\n"
+	        "  image apply-recipe NAME  -- bulk-declares the manifest; a fully-pinned\n"
+	        "               recipe with a matching configured artifact server instead does\n"
+	        "               an async whole-rootfs fetch -- poll image recipe-apply-status\n"
 	        "  device ls  -- lists host PCI/USB/GPU devices discoverable via sysfs, with\n"
 	        "               each one's id (pass to run --device=ID) and whether it's\n"
 	        "               assignable. A GPU's own bare \"gpu:N\" id (not itself listed --\n"
@@ -3808,6 +3814,256 @@ static int cmd_image_manifest(const struct kx_client *c, int json_mode, int argc
 	return 2;
 }
 
+/* ---- ADR-0123: image recipes (Part 4 of the pkg/ redesign) ---- */
+
+static void fmt_image_recipe_line(const struct json_value *v)
+{
+	const char *name = json_str_field(v, "name");
+
+	printf("%s\n", name != NULL ? name : "");
+}
+
+static void fmt_image_recipe_list(const struct json_value *v)
+{
+	const struct json_value *recipes = json_object_get(v, "recipes");
+	size_t i;
+
+	if (recipes == NULL || recipes->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < recipes->u.array.count; i++)
+		fmt_image_recipe_line(recipes->u.array.items[i]);
+}
+
+static int cmd_image_recipe_ls(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/images/recipes", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_image_recipe_list);
+}
+
+/* Same shape as `pkg recipe add` -- --name= is the image name this
+ * recipe declares intent for (recipe name == image name, a 1:1
+ * relationship, ADR-0123), --file= a local path to the recipe text. */
+static int cmd_image_recipe_add(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *name = NULL;
+	const char *file = NULL;
+	char *content;
+	size_t content_len;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--name=", 7) == 0)
+			name = argv[i] + 7;
+		else if (strncmp(argv[i], "--file=", 7) == 0)
+			file = argv[i] + 7;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown image recipe add option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL || file == NULL) {
+		fprintf(stderr, "usage: kanxeoctl image recipe add --name=NAME --file=PATH\n");
+		return 2;
+	}
+	if (read_local_file(file, &content, &content_len) != 0) {
+		fprintf(stderr, "kanxeoctl: could not read %s\n", file);
+		return 1;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "content");
+	jw_str(&w, content);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	free(content);
+
+	if (kx_client_request(c, "POST", "/v1/images/recipes", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	if (r.status < 200 || r.status >= 300) {
+		const char *msg = json_str_field(r.json, "error");
+
+		fprintf(stderr, "kanxeoctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		        r.status);
+		kx_response_free(&r);
+		return 1;
+	}
+	printf("image recipe '%s' added\n", name);
+	kx_response_free(&r);
+	return 0;
+}
+
+static void fmt_image_recipe_show(const struct json_value *v)
+{
+	const char *content = json_str_field(v, "content");
+
+	printf("%s", content != NULL ? content : "");
+}
+
+static int cmd_image_recipe_show(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[256];
+	const char *name = NULL;
+	int i;
+
+	for (i = 0; i < argc; i++) {
+		if (name == NULL)
+			name = argv[i];
+		else {
+			fprintf(stderr, "kanxeoctl: unknown image recipe show option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL) {
+		fprintf(stderr, "usage: kanxeoctl image recipe show NAME\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/images/recipes/%s", name);
+	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_image_recipe_show);
+}
+
+static int cmd_image_recipe_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[256];
+	const char *name = NULL;
+	int i;
+
+	for (i = 0; i < argc; i++) {
+		if (name == NULL)
+			name = argv[i];
+		else {
+			fprintf(stderr, "kanxeoctl: unknown image recipe rm option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL) {
+		fprintf(stderr, "usage: kanxeoctl image recipe rm NAME\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/images/recipes/%s", name);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static int cmd_image_recipe(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl image recipe add --name=NAME --file=PATH\n"
+		                "       kanxeoctl image recipe show NAME\n"
+		                "       kanxeoctl image recipe rm NAME\n"
+		                "       kanxeoctl image recipe ls\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "add") == 0)
+		return cmd_image_recipe_add(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "show") == 0)
+		return cmd_image_recipe_show(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "rm") == 0)
+		return cmd_image_recipe_rm(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "ls") == 0)
+		return cmd_image_recipe_ls(c, json_mode);
+
+	fprintf(stderr, "kanxeoctl: unknown image recipe subcommand '%s'\n", sub);
+	return 2;
+}
+
+/*
+ * Applies NAME's own already-stored recipe (ADR-0123): the common case
+ * bulk-declares the manifest and returns immediately; a fully-pinned
+ * recipe with a matching configured artifact server instead starts an
+ * async whole-rootfs fetch -- 202 means poll `image recipe-apply-
+ * status`, 204 means it already fully finished (nothing more to wait
+ * for).
+ */
+static int cmd_image_apply_recipe(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[256];
+	const char *name = NULL;
+	int i;
+
+	for (i = 0; i < argc; i++) {
+		if (name == NULL)
+			name = argv[i];
+		else {
+			fprintf(stderr, "kanxeoctl: unknown image apply-recipe option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL) {
+		fprintf(stderr, "usage: kanxeoctl image apply-recipe NAME\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/images/%s/apply-recipe", name);
+	if (kx_client_request(c, "POST", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	if (r.status < 200 || r.status >= 300) {
+		const char *msg = json_str_field(r.json, "error");
+
+		fprintf(stderr, "kanxeoctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		        r.status);
+		kx_response_free(&r);
+		return 1;
+	}
+	if (r.status == 202)
+		printf("recipe apply started for '%s' (async artifact fetch) -- poll `image "
+		       "recipe-apply-status`\n",
+		       name);
+	else
+		printf("recipe applied for '%s'\n", name);
+	kx_response_free(&r);
+	return 0;
+}
+
+static void fmt_image_recipe_apply_status(const struct json_value *v)
+{
+	const char *state = json_str_field(v, "state");
+	const char *image = json_str_field(v, "image");
+	const char *error = json_str_field(v, "error");
+
+	printf("state=%s image=%s error=%s\n", state != NULL ? state : "unknown",
+	       image != NULL ? image : "-", error != NULL ? error : "-");
+}
+
+static int cmd_image_recipe_apply_status(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/images/recipe-apply-status", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_image_recipe_apply_status);
+}
+
 static int cmd_image(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
@@ -3819,7 +4075,12 @@ static int cmd_image(const struct kx_client *c, int json_mode, int argc, char **
 		                "       kanxeoctl image rm NAME\n"
 		                "       kanxeoctl image manifest set --image=NAME --package=NAME "
 		                "--mode=pinned|rolling --version=VERSION\n"
-		                "       kanxeoctl image manifest rm --image=NAME --package=NAME\n");
+		                "       kanxeoctl image manifest rm --image=NAME --package=NAME\n"
+		                "       kanxeoctl image recipe add --name=NAME --file=PATH\n"
+		                "       kanxeoctl image recipe show|rm NAME\n"
+		                "       kanxeoctl image recipe ls\n"
+		                "       kanxeoctl image apply-recipe NAME\n"
+		                "       kanxeoctl image recipe-apply-status\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -3833,6 +4094,12 @@ static int cmd_image(const struct kx_client *c, int json_mode, int argc, char **
 		return cmd_image_rm(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "manifest") == 0)
 		return cmd_image_manifest(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "recipe") == 0)
+		return cmd_image_recipe(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "apply-recipe") == 0)
+		return cmd_image_apply_recipe(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "recipe-apply-status") == 0)
+		return cmd_image_recipe_apply_status(c, json_mode);
 
 	fprintf(stderr, "kanxeoctl: unknown image subcommand '%s'\n", sub);
 	return 2;

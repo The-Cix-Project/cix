@@ -258,6 +258,7 @@
 				<button type="button" class="tab-button active" data-tab="containers" id="imgd-tab-containers">Containers using this image</button>
 				<button type="button" class="tab-button" data-tab="packages" id="imgd-tab-packages">Packages installed</button>
 				<button type="button" class="tab-button" data-tab="manifest" id="imgd-tab-manifest">Manifest</button>
+				<button type="button" class="tab-button" data-tab="recipe" id="imgd-tab-recipe">Recipe</button>
 				<button type="button" class="tab-button" data-tab="versions" id="imgd-tab-versions">Versions</button>
 			</div>
 			<div class="tab-panel" id="imgd-panel-containers" data-tab="containers">
@@ -330,6 +331,26 @@
 						placeholder="e.g. 8.20.0 (rolling: floor)"></label>
 					<button type="submit">Set entry</button>
 				</form>
+			</div>
+			<div class="tab-panel" id="imgd-panel-recipe" data-tab="recipe" hidden>
+				<p class="hint">A declarative package-list definition for this image (ADR-0123) --
+					bulk-declares the manifest above in one shot instead of individual entries; a
+					fully-pinned recipe with a matching configured artifact server (<a
+					href="#pkg-cache">Cache &amp; Artifacts</a>) instead fetches one precompiled
+					whole-rootfs tarball, skipping every per-package build. A recipe's own name is
+					always this image's own name.</p>
+				<div id="imgd-recipe-missing" class="hint" hidden>No recipe stored for this image --
+					packages must still be added one at a time via Manifest above.</div>
+				<div id="imgd-recipe-present">
+					<pre id="imgd-recipe-content" class="recipe-content"></pre>
+				</div>
+				<div class="detail-actions">
+					<button type="button" id="imgd-edit-recipe">Edit&hellip;</button>
+					<button type="button" id="imgd-remove-recipe" class="button-danger">Remove recipe</button>
+					<button type="button" id="imgd-apply-recipe">Apply recipe</button>
+				</div>
+				<h3>Apply status</h3>
+				<div id="imgd-recipe-apply-status" class="pki-ca-status"></div>
 			</div>
 			<div class="tab-panel" id="imgd-panel-versions" data-tab="versions" hidden>
 				<p class="hint">Every immutable rootfs this image has ever produced (ADR-0107/ADR-0108) --
@@ -1427,6 +1448,24 @@
 				</form>
 				<p class="hint">Upserts by name -- adding the same name again replaces its content, no ISO
 					rebuild or reinstall needed (ADR-0040).</p>
+			</div>
+
+			<div id="modal-image-recipe-form" hidden>
+				<form id="image-recipe-form">
+					<label>
+						Image name
+						<input type="text" id="irf-name" pattern="[A-Za-z0-9_-]+" required readonly>
+					</label>
+					<label class="wide">
+						Content
+						<textarea id="irf-content" rows="10" spellcheck="false"
+							placeholder='image_packages="pkgA:pinned:1.0 pkgB:rolling:2.0"&#10;image_artifact_sha256=""'></textarea>
+					</label>
+					<button type="submit">Add / update</button>
+				</form>
+				<p class="hint">Replaces the whole recipe -- image_packages= is required
+					(whitespace-separated "package:mode:version" entries); image_artifact_sha256= is
+					optional (ADR-0123).</p>
 			</div>
 
 			<div id="modal-pkg-bootstrap-form" hidden>
