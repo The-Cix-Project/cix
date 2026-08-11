@@ -2,6 +2,16 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 91 (done): lenient pkg repo_url parsing -- accepts a real forge browse URL
+
+Continuing the same real-world feedback round as Part 90: the resolv fix (ADR-0132) turned a DNS failure into a plain HTTP 404 on retrying `pkg sync` -- root cause was `parse_repo_url()` splitting `owner`/`repo` at the *last* slash in the configured `repo_url`, so a real gitea browse URL (`.../owner/repo/src/branch/master/pkg/recipes`, exactly what a browser address bar shows) silently mis-parsed into a garbage owner and an opaque 404 with no hint the URL itself was the problem. See [ADR-0133](docs/adr/0133-lenient-repo-url-parsing.md).
+
+#### Fixed
+- `daemon/src/pkg.c`'s `parse_repo_url()` now reads only the first two path segments as owner/repo, discarding anything after -- a bare `owner/repo`, `owner/repo.git`, and a full browse-URL suffix all now resolve identically and correctly.
+
+#### Verified
+- New `test/test_pkg_sync.c` scenario: the same stand-in repo already reachable via a bare `owner/repo` URL is re-pointed at through a URL with a real browse-style suffix appended, and `pkg sync` is confirmed to resolve it to the *same* repo (`skipped=1`), not fail or silently re-add. Full clean rebuild (`-Wall -Werror`, zero warnings) + full regression sweep (38 test binaries) confirm zero regressions. Live-verified on 192.168.15.95: the user's own originally-configured browse-URL-style `repo_url` now syncs successfully.
+
 ### Part 85 (done): logging/web-UI epic Part 2 -- optional syslog-1/syslog-2 forward targets
 
 Second of the logging/web-UI epic (Part 1 was ADR-0126). The consolidated log store stays the one source of truth the REST API and web UI ever read from -- `syslog-1`/`syslog-2` are an optional, redundant *forward* target for operators who want standard external syslog tooling on top, never a second store the platform itself depends on. See [ADR-0127](docs/adr/0127-syslog-forward-targets.md).

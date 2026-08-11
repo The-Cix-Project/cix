@@ -2214,6 +2214,14 @@ Second of the logging/web-UI epic. The consolidated log store stays the one sour
 
 Verified: `test/test_syslogfwd.c` covers the registration bookkeeping (mirroring the existing NTP test's own coverage) plus a genuine wire-level proof -- a real receiver container (a small new fixture binding real UDP `:514` inside its own network namespace) confirmed, via its own transparently-captured stdout, to have received a well-formed RFC 3164 datagram from a real sender container, naming the sender correctly and carrying its message verbatim. Full clean rebuild (`-Wall -Werror`, zero warnings) + full regression sweep (37 test binaries) confirm zero regressions.
 
+## Part 91 (done): lenient pkg repo_url parsing -- accepts a real forge browse URL
+
+Continuing the same real-world feedback round as Part 90: once the resolv fix (ADR-0132) closed the DNS layer of a `pkg sync` failure, retrying surfaced a second, genuinely different bug underneath -- `parse_repo_url()` split `owner`/`repo` at the *last* slash in the configured `repo_url`, so a real gitea browse URL (exactly what a browser address bar shows while looking at a repo) silently mis-parsed into a garbage owner and an opaque 404, with no hint the URL itself was the problem. See [ADR-0133](docs/adr/0133-lenient-repo-url-parsing.md).
+
+Fixed by taking only the first two path segments as owner/repo and discarding anything after -- a bare `owner/repo` and a full browse-URL suffix now resolve identically and correctly, closing the single most likely real-world paste mistake for this field.
+
+Verified: a new test scenario re-points at the same stand-in repo already proven reachable via a bare URL, this time through one with a browse-style suffix appended, and confirms `pkg sync` resolves it to the same repo rather than failing or mis-adding. Full clean rebuild + full regression sweep (38 test binaries) confirm zero regressions. Live-verified on 192.168.15.95: the user's own originally-configured browse-URL-style `repo_url` now syncs successfully.
+
 ## Part 90 (done): real-world fixes after the logging epic -- log panel fixed size/perf, dynamic shell prompt, CLI polish
 
 Direct user feedback after using the logging/web-UI epic (Parts 1-6, ADR-0126-0131) for real. See [ADR-0132](docs/adr/0132-log-panel-fixes-and-cli-polish.md).

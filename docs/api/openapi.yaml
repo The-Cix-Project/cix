@@ -6865,7 +6865,12 @@ components:
       properties:
         repo_url:
           type: string
-          description: Empty when no repo has ever been configured on this host.
+          description: >
+            Empty when no repo has ever been configured on this host.
+            Only <scheme>://<host>/<owner>/<repo> is ever read from
+            this -- a real forge browse URL pasted verbatim (e.g.
+            ".../owner/repo/src/branch/<ref>/<path>") also works,
+            since anything past the repo segment is ignored (ADR-0133).
         repo_kind:
           type: string
           enum: [gitea, github, gitlab]

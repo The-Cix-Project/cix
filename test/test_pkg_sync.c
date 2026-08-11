@@ -388,6 +388,44 @@ int main(void)
 	}
 	kx_response_free(&r);
 
+	/* --- scenario 5b: parse_repo_url() ignores anything past the repo
+	 * segment (ADR-0133) -- an operator pasting a real forge browse URL
+	 * (e.g. gitea's own "<repo>/src/branch/<ref>/<path>", exactly what
+	 * a browser address bar shows while looking at the repo) must still
+	 * resolve to the same owner/repo, not silently mis-parse into a
+	 * garbage owner and a bogus fetch URL (confirmed live: this exact
+	 * shape 404'd with no clue the URL itself was the problem, before
+	 * this fix). Re-pointed at the identical stand-in repo via a URL
+	 * with a browse-style suffix appended -- sync must still find and
+	 * correctly skip the same already-present fixture recipe. */
+	memset(&r, 0, sizeof(r));
+	snprintf(put_body, sizeof(put_body),
+	         "{\"repo_url\":\"http://127.0.0.1:%d/testowner/testrepo/src/branch/master/pkg/recipes\"}",
+	         HTTP_PORT);
+	CHECK(kx_client_request(&client, "PUT", "/v1/pkg/repo-config", put_body, &r) == 0 &&
+	              r.status == 200,
+	      "PUT /v1/pkg/repo-config (browse-URL-style suffix)");
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	CHECK(kx_client_request(&client, "POST", "/v1/pkg/sync", NULL, &r) == 0 && r.status == 202,
+	      "POST /v1/pkg/sync accepted (browse-URL-style suffix)");
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	CHECK(poll_sync(&client, &r) == 0, "browse-URL-suffix sync leaves running state before timeout");
+	if (r.json != NULL) {
+		const char *state = json_str_field(r.json, "state");
+		long added = (long)json_as_number(json_object_get(r.json, "added"));
+		long skipped = (long)json_as_number(json_object_get(r.json, "skipped"));
+
+		CHECK(state != NULL && strcmp(state, "success") == 0,
+		      "sync with a browse-URL-style suffix still succeeds (owner/repo correctly parsed)");
+		CHECK(added == 0 && skipped == 1,
+		      "browse-URL-suffix sync resolves to the SAME repo as the bare owner/repo URL did");
+	}
+	kx_response_free(&r);
+
 	/* --- scenario 6: a real fetch failure (unknown repo path -> curl
 	 * exit) reports state=failed with a real error, not a silent hang. */
 	memset(&r, 0, sizeof(r));

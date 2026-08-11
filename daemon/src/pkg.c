@@ -3584,13 +3584,27 @@ int pkg_repo_is_configured(void)
 }
 
 /*
- * Splits g_repo_url ("<scheme>://<host>/<owner>/<repo>[.git][/]") into
- * its parts. A bare "owner/repo" (no nested subgroup) covers every
- * kind this project actually talks to (gitea/github always; gitlab
- * subgroup paths are a real gap, out of v1 scope -- flagged here, not
- * silently mishandled: a subgroup path just ends up with the whole
- * subgroup prefix folded into "owner", which fails cleanly at fetch
- * time rather than doing something wrong quietly).
+ * Splits g_repo_url ("<scheme>://<host>/<owner>/<repo>[.git][/...]")
+ * into its parts. Only the FIRST TWO path segments are ever owner/repo
+ * -- anything after is ignored, not folded into "owner". This is
+ * deliberately lenient, not just simple: a real, confirmed bug (found
+ * live, not in review) was a naive "split at the LAST slash" version
+ * silently mis-parsing a real browser browse URL an operator pasted
+ * verbatim (e.g. ".../itdlabs/kanxeo/src/branch/master/pkg/recipes",
+ * exactly what a forge's own address bar shows while browsing a repo
+ * -- an entirely natural thing to copy-paste) into a garbage owner
+ * ("itdlabs/kanxeo/src/branch/master/pkg") and repo ("recipes"),
+ * which then failed at fetch time as an opaque 404/curl-exit-22 with
+ * no clue the URL itself was the problem. Taking the first two
+ * segments and discarding the rest accepts that exact paste directly,
+ * matching what any reasonable operator would expect "give it the
+ * repo URL" to mean. A bare "owner/repo" (no nested subgroup) still
+ * covers every kind this project actually talks to (gitea/github
+ * always; gitlab subgroup paths are a real gap, out of v1 scope --
+ * flagged here, not silently mishandled: a subgroup path just ends up
+ * with the subgroup's own first segment folded into "owner", which
+ * fails cleanly at fetch time rather than doing something wrong
+ * quietly).
  */
 static int parse_repo_url(char *out_scheme, size_t scheme_sz, char *out_host, size_t host_sz,
                            char *out_owner, size_t owner_sz, char *out_repo, size_t repo_sz)
@@ -3598,8 +3612,8 @@ static int parse_repo_url(char *out_scheme, size_t scheme_sz, char *out_host, si
 	const char *scheme_end = strstr(g_repo_url, "://");
 	const char *host_start, *host_end, *path;
 	char path_buf[PKGREPO_URL_MAX];
-	size_t path_len;
-	char *last_slash;
+	char *owner_start, *slash1, *slash2, *repo_start;
+	size_t repo_len;
 
 	if (scheme_end == NULL)
 		return -1;
@@ -3613,22 +3627,27 @@ static int parse_repo_url(char *out_scheme, size_t scheme_sz, char *out_host, si
 
 	path = host_end + 1;
 	snprintf(path_buf, sizeof(path_buf), "%s", path);
-	path_len = strlen(path_buf);
-	while (path_len > 0 && path_buf[path_len - 1] == '/')
-		path_buf[--path_len] = '\0';
-	if (path_len > 4 && strcmp(path_buf + path_len - 4, ".git") == 0) {
-		path_buf[path_len - 4] = '\0';
-		path_len -= 4;
-	}
-	if (path_len == 0)
-		return -1;
 
-	last_slash = strrchr(path_buf, '/');
-	if (last_slash == NULL || last_slash == path_buf)
+	owner_start = path_buf;
+	slash1 = strchr(owner_start, '/');
+	if (slash1 == NULL || slash1 == owner_start)
 		return -1;
-	snprintf(out_repo, repo_sz, "%s", last_slash + 1);
-	*last_slash = '\0';
-	snprintf(out_owner, owner_sz, "%s", path_buf);
+	*slash1 = '\0';
+	snprintf(out_owner, owner_sz, "%s", owner_start);
+
+	repo_start = slash1 + 1;
+	slash2 = strchr(repo_start, '/');
+	if (slash2 != NULL)
+		*slash2 = '\0'; /* everything past the repo segment is ignored, see above */
+
+	repo_len = strlen(repo_start);
+	if (repo_len > 4 && strcmp(repo_start + repo_len - 4, ".git") == 0) {
+		repo_start[repo_len - 4] = '\0';
+		repo_len -= 4;
+	}
+	if (repo_len == 0)
+		return -1;
+	snprintf(out_repo, repo_sz, "%s", repo_start);
 	return out_repo[0] != '\0' && out_owner[0] != '\0' ? 0 : -1;
 }
 
