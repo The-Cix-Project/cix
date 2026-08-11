@@ -33,20 +33,68 @@ pkg_depends=""
 # both include <regex.h> for syslog.conf's own selector-matching
 # support); no source patch needed, the same standard C11 feature-test
 # macro fix, just applied via CFLAGS instead of a #define at an include
-# site since this is unmodified upstream source. --disable-shared:
-# nothing in this platform's own image model ever dynamically loads a
-# libsyslog.so at runtime, so only the static variant is built.
+# site since this is unmodified upstream source.
+#
+# ./configure is run only to generate config.h (its own compile checks
+# already confirmed clean under tcc) -- the actual build deliberately
+# does NOT call `make`. sysklogd's own Makefile.am always builds a
+# libtool convenience archive (libsyslog.la, still a real .a under the
+# hood even with --disable-shared --disable-static, confirmed directly:
+# both syslogd and logger link against it), which needs `ar`/`ranlib`
+# from binutils -- a real build dependency this platform's own build
+# images don't carry by default (confirmed live: the identical
+# ./configure + make sequence that succeeds in a dev sandbox with
+# binutils installed fails with a real, reproducible build error on a
+# real build image with none). Pulling in the whole binutils toolchain
+# as a pkg_depends= just to run `ar` on eight object files this small
+# would be real, unjustified extra weight (binutils' own real upstream
+# tarball is itself large, non-trivial to build, and adds nothing this
+# recipe's own output actually needs at runtime) -- so instead, every
+# needed source file is compiled and linked directly with tcc, bypassing
+# libtool/ar entirely. The exact -D flags below (SYSCONFDIR/RUNSTATEDIR/
+# _BSD_SOURCE/_XOPEN_SOURCE) are copied verbatim from src/Makefile's own
+# AM_CPPFLAGS (the same values `make` itself would have passed) -- their
+# exact values don't matter functionally here since every path they
+# affect (-P/-C/-f) is overridden at container-run time anyway, they
+# only need to be *defined* for the source to compile. Confirmed via a
+# real `ldd` + a real UDP round-trip in this sandbox: the resulting
+# syslogd binary behaves identically to the make-built one.
+#
+# One further, real per-build-image difference found only by actually
+# running this on a real build image (not reproducible in every dev
+# sandbox -- this project's own build-image's tcc/glibc combination
+# apparently doesn't auto-provide a `__dso_handle` definition at link
+# time, unlike some other sandboxes' host glibc, which does): direct
+# tcc linking (bypassing the crt/libtool machinery `make` would
+# otherwise drive) can leave `__dso_handle` -- a symbol glibc's own
+# static-destructor/`__cxa_atexit` bookkeeping expects to exist --
+# undefined. Fixed with a tiny, weak, always-safe stub compiled and
+# linked in alongside the real object files: `__attribute__((weak))`
+# means it's silently superseded wherever the real system already
+# provides one (confirmed harmless in a sandbox where the bug doesn't
+# reproduce at all), and provides the missing definition wherever it
+# doesn't. This is a build-time compatibility shim for this recipe's
+# own tcc invocation, not a patch to sysklogd's own upstream source.
 pkg_build() {
 	CC=tcc CFLAGS="-D__STDC_NO_VLA__=1" ./configure --prefix=/usr --disable-shared
-	make -j"$(nproc)"
+
+	echo 'void *__dso_handle __attribute__((weak)) = (void *)0;' > dso_stub.c
+	tcc -c dso_stub.c -o dso_stub.o
+
+	DEFS='-D__STDC_NO_VLA__=1 -DHAVE_CONFIG_H -DSYSCONFDIR=\"/etc\" -DRUNSTATEDIR=\"/run\" -D_BSD_SOURCE -D_XOPEN_SOURCE=600'
+	for f in src/syslogd src/socket src/timer src/syslog src/logger lib/pidfile lib/strlcpy lib/strlcat; do
+		eval tcc "$DEFS" -I. -Isrc -Ilib -c "$f.c" -o "$(basename "$f").o"
+	done
+	tcc -o syslogd syslogd.o socket.o timer.o syslog.o pidfile.o strlcpy.o strlcat.o dso_stub.o
+	tcc -o logger logger.o syslog.o pidfile.o strlcpy.o strlcat.o dso_stub.o
 }
 
 # Real files copied from this recipe's own build (confirmed via `ldd`):
 # syslogd + logger only, no man pages, no systemd unit, no libsyslog.so
-# (disabled above) -- the same doc/lib-stripping convention every other
-# recipe in this set already follows. `ldd` on the built syslogd
-# confirms zero runtime dependencies beyond libc.so.6/ld-linux, already
-# part of every image's own baseline (pkg_seed_image_baseline()).
+# -- the same doc/lib-stripping convention every other recipe in this
+# set already follows. `ldd` on the built syslogd confirms zero runtime
+# dependencies beyond libc.so.6/ld-linux, already part of every image's
+# own baseline (pkg_seed_image_baseline()).
 #
 # /etc/syslog.conf: one catch-all rule writing everything to
 # /var/log/messages -- /var/log is created here (staged directly into
@@ -60,8 +108,8 @@ pkg_build() {
 # read even across a container restart.
 pkg_install() {
 	mkdir -p "$PKG_DESTDIR/usr/sbin" "$PKG_DESTDIR/usr/bin" "$PKG_DESTDIR/etc" "$PKG_DESTDIR/var/log"
-	cp src/syslogd "$PKG_DESTDIR/usr/sbin/"
-	cp src/logger "$PKG_DESTDIR/usr/bin/"
+	cp syslogd "$PKG_DESTDIR/usr/sbin/"
+	cp logger "$PKG_DESTDIR/usr/bin/"
 	touch "$PKG_DESTDIR/var/log/messages"
 	printf '*.*\t/var/log/messages\n' > "$PKG_DESTDIR/etc/syslog.conf"
 }

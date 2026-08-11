@@ -522,12 +522,12 @@ POST /v1/containers
 {
   "name": "syslog1",
   "image": "syslog_server",
-  "cmd": ["/usr/sbin/syslogd", "-F", "-K", "-n", "-P", "/run/syslogd.pid", "-C", "/run/syslogd.cache", "-f", "/etc/syslog.conf"],
+  "cmd": ["/usr/sbin/syslogd", "-F", "-K", "-n", "-H", "-P", "/run/syslogd.pid", "-C", "/run/syslogd.cache", "-f", "/etc/syslog.conf"],
   "networks": ["management"]
 }
 ```
 
-`-K` disables kernel-log reading (not meaningful inside a container), `-n` skips DNS lookups for senders (this project's own hostname-resolution caveats apply the same way here as everywhere else, see the NTP section above), `-P`/`-C` point at `/run` rather than the traditional `/var/run` (this platform's own minimal images have no `/var/run`, the same class of gap `chrony.recipe`'s own `--with-pidfile=/run/chronyd.pid` already worked around). Received messages land in `/var/log/messages` inside the container's own persistent overlay upperdir (unlike `/run`, never reset on restart) -- any real external syslog tooling pointed at this container from outside sees the same standard, durable log file it would expect from any other syslog receiver.
+`-K` disables kernel-log reading (not meaningful inside a container), `-n` skips DNS lookups for senders (this project's own hostname-resolution caveats apply the same way here as everywhere else, see the NTP section above), `-P`/`-C` point at `/run` rather than the traditional `/var/run` (this platform's own minimal images have no `/var/run`, the same class of gap `chrony.recipe`'s own `--with-pidfile=/run/chronyd.pid` already worked around). **`-H` is not optional**: sysklogd's own default behavior for a remote-received datagram is to substitute the *sending* address as the logged hostname (kanxeod's own host IP, since every forward originates from the daemon's root netns) rather than trust the message's own embedded `HOSTNAME` field -- confirmed live, the difference between a `/var/log/messages` full of `kanxeod`'s own IP address on every line versus one correctly showing each real originating container's own name. `-H` tells it to trust the message's own `HOSTNAME` field instead, which is exactly what this daemon's own RFC 3164 datagrams already carry (ADR-0127). Received messages land in `/var/log/messages` inside the container's own persistent overlay upperdir (unlike `/run`, never reset on restart) -- any real external syslog tooling pointed at this container from outside sees the same standard, durable log file it would expect from any other syslog receiver.
 
 ### A container can already pull the full DNS record set itself
 
