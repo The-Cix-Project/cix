@@ -994,40 +994,7 @@
 		<section class="view" id="view-logs" hidden>
 			<div class="view-list">
 				<h2>Logs</h2>
-				<p class="hint">A consolidated log (ADR-0070): real kernel dmesg, kanxeod's own diagnostics, and a per-request audit trail (every kanxeoctl command and every web UI action, since both are pure REST clients) -- all in one place, size-capped with the oldest entries dropped first once the cap is reached.</p>
-				<form id="logs-filter-form">
-					<label>
-						Source
-						<select id="lf-source">
-							<option value="">(all)</option>
-							<option value="kernel">kernel</option>
-							<option value="kanxeod">kanxeod</option>
-							<option value="audit">audit</option>
-						</select>
-					</label>
-					<label>
-						Level
-						<input type="text" id="lf-level" placeholder="(any)">
-					</label>
-					<label>
-						Tail
-						<input type="number" id="lf-tail" min="1" max="5000" value="200">
-					</label>
-					<button type="submit">Refresh</button>
-				</form>
-				<table id="logs">
-					<thead>
-						<tr>
-							<th>Time</th>
-							<th>Source</th>
-							<th>Level</th>
-							<th>Message</th>
-						</tr>
-					</thead>
-					<tbody id="logs-body">
-						<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
+				<p class="hint">A consolidated log (ADR-0070/ADR-0126): real kernel dmesg, kanxeod's own diagnostics, a per-request audit trail, and every container's own stdout/stderr -- all in one place, size-capped with the oldest entries dropped first once the cap is reached. Browse it live in the Log panel at the bottom of every page (source filter includes this browser's own local activity too, kept client-side only) -- this page just configures the store itself.</p>
 				<h3>Size cap</h3>
 				<form id="logs-config-form">
 					<label>
@@ -1076,7 +1043,17 @@
 	</div>
 
 	<div id="log-panel">
-		<div class="log-panel-header" id="log-panel-header"><span id="log-panel-arrow">▾</span> Log</div>
+		<div class="log-panel-header" id="log-panel-header">
+			<span id="log-panel-arrow">▾</span> Log
+			<select id="log-panel-source" title="Filter by source">
+				<option value="">(all)</option>
+				<option value="web-ui">web-ui</option>
+				<option value="kernel">kernel</option>
+				<option value="kanxeod">kanxeod</option>
+				<option value="audit">audit</option>
+				<option value="container">container</option>
+			</select>
+		</div>
 		<div id="log-output"></div>
 	</div>
 	</main>

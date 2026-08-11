@@ -2214,6 +2214,14 @@ Second of the logging/web-UI epic. The consolidated log store stays the one sour
 
 Verified: `test/test_syslogfwd.c` covers the registration bookkeeping (mirroring the existing NTP test's own coverage) plus a genuine wire-level proof -- a real receiver container (a small new fixture binding real UDP `:514` inside its own network namespace) confirmed, via its own transparently-captured stdout, to have received a well-formed RFC 3164 datagram from a real sender container, naming the sender correctly and carrying its message verbatim. Full clean rebuild (`-Wall -Werror`, zero warnings) + full regression sweep (37 test binaries) confirm zero regressions.
 
+## Part 87 (done): logging/web-UI epic Part 3 -- merged bottom log panel + toast notifications
+
+User-requested web dashboard reorganization: browsing the consolidated log moved out of its tree page and into the dashboard's own always-visible bottom panel, merged with the panel's pre-existing client-side "web UI activity" stream into one filtered view; the status bar became a fixed-position, auto-dismissing toast that also lands in that same merged panel. See [ADR-0129](docs/adr/0129-merged-log-panel-and-toast.md).
+
+The bottom log panel already existed (logging every mutating REST request the dashboard itself made, client-side only) -- extended rather than duplicated, per this project's own "No Parallel Implementations" maxim, to also poll in the server's own kernel/kanxeod/audit/container log entries, with a new source-filter dropdown in the panel's own header. The Logs page under the tree now configures only (the size cap); browsing lives in the panel. Two stale documentation claims left over from before Part 1 shipped (ADR-0126) -- "no log retrieval endpoint"/"no log viewer" -- were also found and corrected while touching these docs.
+
+Verified: `node --check` (this project's closest thing to a compile check for its own build-step-free vanilla JS, ADR-0010). Full clean rebuild + full regression sweep (37 test binaries, no daemon-side code changed) confirm zero regressions. Served `app.js`/`index.html` confirmed byte-for-byte identical to source from a live scratch daemon.
+
 ## Part 86 (done): logging/web-UI epic Part 5 -- __host owner sentinel for PKI cert / DNS record
 
 Small, user-requested clarity fix: the daemon's own auto-issued `"host"` PKI leaf and auto-maintained instance DNS record now carry a reserved `"__host"` owner sentinel instead of `null`, distinguishing "owned by the daemon itself" from "no owner for any other reason." See [ADR-0128](docs/adr/0128-host-owner-sentinel.md). Rendered as "host (this daemon)" in both the CLI and web dashboard; the REST API itself still returns the raw sentinel string.

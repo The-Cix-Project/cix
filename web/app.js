@@ -45,7 +45,6 @@ const cache = {
 	siteConfig: null,
 	daemonConfig: null,
 	swap: null,
-	logs: [],
 };
 
 const healthBadge = document.getElementById("health");
@@ -55,6 +54,7 @@ const logOutput = document.getElementById("log-output");
 const logPanel = document.getElementById("log-panel");
 const logPanelHeader = document.getElementById("log-panel-header");
 const logPanelArrow = document.getElementById("log-panel-arrow");
+const logPanelSource = document.getElementById("log-panel-source");
 
 const LOG_COLLAPSE_KEY = "kanxeo-log-collapsed";
 
@@ -70,6 +70,13 @@ function setLogCollapsed(collapsed) {
 
 logPanelHeader.addEventListener("click", () => {
 	setLogCollapsed(!logPanel.classList.contains("collapsed"));
+});
+
+/* Prevent a click/interaction on the source filter from also toggling
+ * collapse via the header's own click handler above (event bubbling --
+ * the select lives inside .log-panel-header for layout purposes only). */
+logPanelSource.addEventListener("click", (event) => {
+	event.stopPropagation();
 });
 
 try {
@@ -141,50 +148,174 @@ for (const item of createDropdownMenu.querySelectorAll("button[data-modal]")) {
 	});
 }
 
-/* Action log (bottom-right panel) -- every mutating request this
- * dashboard makes, newest at the bottom, like Proxmox's own task log.
- * Routine poll GETs are deliberately not logged here (every 2s x 10
- * endpoints would drown out anything a human actually did) -- see
- * apiRequest()'s own method check. */
+/*
+ * Merged log panel (bottom of every page, ADR-0129): one stream, one
+ * source filter, covering both this browser's own local activity
+ * ("web-ui" -- every mutating request this dashboard makes, plus every
+ * toast below, kept entirely client-side, never sent to the server
+ * since it isn't a system component) and the server's own consolidated
+ * log store (kernel/kanxeod/audit/container, GET /v1/system/logs,
+ * ADR-0070/ADR-0126) merged in via periodic polling (pollServerLogs(),
+ * called from the main poll() loop). logBuffer is the one source of
+ * truth both the live-append path and a full filter-change re-render
+ * read from -- capped at MAX_LOG_ENTRIES total, across every source
+ * combined (a dedicated Logs page still exists, under System > Server,
+ * for browsing/configuring the server's own full history/size cap;
+ * this panel is a live tail, not a history browser).
+ */
 const MAX_LOG_ENTRIES = 300;
-let logCount = 0;
+let logBuffer = [];
+let logSourceFilter = "";
 
-function logLine(method, path, statusText, kind) {
-	const time = new Date().toTimeString().slice(0, 8);
-	const entry = document.createElement("div");
+function renderLogEntryDom(entry) {
+	const time = new Date(entry.ts * 1000).toTimeString().slice(0, 8);
+	const el = document.createElement("div");
 
-	entry.className = "log-entry log-entry-" + kind;
+	el.className = "log-entry log-entry-" + entry.kind;
 
 	const timeSpan = document.createElement("span");
 
 	timeSpan.className = "log-entry-time";
 	timeSpan.textContent = time + "  ";
-	entry.appendChild(timeSpan);
-	entry.appendChild(document.createTextNode(method + " " + path + " "));
+	el.appendChild(timeSpan);
 
-	const statusSpan = document.createElement("span");
+	const sourceSpan = document.createElement("span");
 
-	statusSpan.className = "log-entry-status";
-	statusSpan.textContent = statusText;
-	entry.appendChild(statusSpan);
+	sourceSpan.className = "log-entry-source";
+	sourceSpan.textContent = "[" + entry.source + "] ";
+	el.appendChild(sourceSpan);
 
-	logOutput.appendChild(entry);
-	logCount++;
-	while (logCount > MAX_LOG_ENTRIES) {
+	el.appendChild(document.createTextNode(entry.text));
+
+	logOutput.appendChild(el);
+	while (logOutput.children.length > MAX_LOG_ENTRIES)
 		logOutput.removeChild(logOutput.firstChild);
-		logCount--;
-	}
 	logOutput.scrollTop = logOutput.scrollHeight;
 }
+
+/* Appends one entry to the merged buffer and, if it currently passes
+ * the source filter, renders it immediately (an incremental append,
+ * not a full rebuild -- rerenderLogPanel() below handles the "filter
+ * just changed" case, where every already-buffered entry needs
+ * reconsidering). */
+function addLogEntry(ts, source, level, text, kind) {
+	logBuffer.push({ ts, source, level, text, kind });
+	while (logBuffer.length > MAX_LOG_ENTRIES)
+		logBuffer.shift();
+	if (logSourceFilter === "" || logSourceFilter === source)
+		renderLogEntryDom({ ts, source, level, text, kind });
+}
+
+function rerenderLogPanel() {
+	logOutput.textContent = "";
+	for (const entry of logBuffer) {
+		if (logSourceFilter === "" || logSourceFilter === entry.source)
+			renderLogEntryDom(entry);
+	}
+}
+
+logPanelSource.addEventListener("change", () => {
+	logSourceFilter = logPanelSource.value;
+	rerenderLogPanel();
+});
+
+/* Every mutating request this dashboard makes, source "web-ui" --
+ * routine poll GETs are deliberately not logged here (every 2s x 30
+ * endpoints would drown out anything a human actually did) -- see
+ * apiRequest()'s own method check. */
+function logLine(method, path, statusText, kind) {
+	addLogEntry(Math.floor(Date.now() / 1000), "web-ui", kind === "error" ? "error" : "info",
+	            method + " " + path + " " + statusText, kind);
+}
+
+/* Merges newly-polled server-side entries into the same buffer/panel,
+ * source-tagged by their own real source (kernel/kanxeod/audit/
+ * container) rather than "web-ui". Deliberately starts from "now"
+ * (logsSinceTs set at declaration time below) rather than 0 -- this
+ * panel is a live tail from page-load onward, not a full-history
+ * backfill (GET /system/logs with no since= would return the entire
+ * store on first poll, flooding the panel). since= is an inclusive
+ * floor (logstore_tail_ex()'s own "ts < since" exclusion) and this
+ * store's own ts resolution is whole seconds, so a naive since=lastTs
+ * poll would re-return (and re-render) every entry still exactly at
+ * that boundary second -- logsSeenAtSinceTs dedupes those specifically,
+ * not the whole history, since only the current boundary second can
+ * ever repeat across polls. */
+let logsSinceTs = Math.floor(Date.now() / 1000);
+let logsSeenAtSinceTs = new Set();
+const LOG_ERROR_LEVELS = new Set(["emerg", "alert", "crit", "err", "error", "warning", "warn"]);
+
+function serverLogEntryKey(e) {
+	return e.source + "|" + e.container + "|" + e.level + "|" + e.msg;
+}
+
+async function pollServerLogs() {
+	let entries;
+
+	try {
+		entries = await apiRequest("GET", "/v1/system/logs?since=" + logsSinceTs + "&tail=500");
+	} catch (e) {
+		return; /* best-effort, matches every other poll()'s own error tolerance */
+	}
+	if (!entries) return;
+
+	let maxTs = logsSinceTs;
+	let newAtMax = new Set();
+
+	for (const e of entries) {
+		if (e.ts < logsSinceTs) continue; /* defensive -- since= should already exclude these */
+		if (e.ts === logsSinceTs && logsSeenAtSinceTs.has(serverLogEntryKey(e))) continue;
+
+		const text = e.container ? "(" + e.container + ") " + e.msg : e.msg;
+		const kind = LOG_ERROR_LEVELS.has(e.level) ? "error" : "ok";
+
+		addLogEntry(e.ts, e.source, e.level, text, kind);
+
+		if (e.ts > maxTs) {
+			maxTs = e.ts;
+			newAtMax = new Set([serverLogEntryKey(e)]);
+		} else if (e.ts === maxTs) {
+			newAtMax.add(serverLogEntryKey(e));
+		}
+	}
+	if (maxTs > logsSinceTs) {
+		logsSinceTs = maxTs;
+		logsSeenAtSinceTs = newAtMax;
+	} else {
+		for (const k of newAtMax)
+			logsSeenAtSinceTs.add(k);
+	}
+}
+
+/* Toast (ADR-0129): a fixed-position popup with a disappear timer,
+ * replacing the old always-content-flow status bar -- same element/
+ * id/classes (only the CSS positioning changed), so every existing
+ * showStatus()/clearStatus() call site needed no change. Every toast
+ * also lands in the merged log panel above (source "web-ui") -- the
+ * user's own request: "it should be shown in the logs right?". */
+const STATUS_AUTO_DISMISS_MS = 5000;
+let statusTimeoutId = null;
 
 function showStatus(message, isError) {
 	statusBox.textContent = message;
 	statusBox.hidden = false;
 	statusBox.className = "status " + (isError ? "status-error" : "status-ok");
+	addLogEntry(Math.floor(Date.now() / 1000), "web-ui", isError ? "error" : "info", message,
+	            isError ? "error" : "ok");
+	if (statusTimeoutId !== null)
+		clearTimeout(statusTimeoutId);
+	statusTimeoutId = setTimeout(() => {
+		statusBox.hidden = true;
+		statusTimeoutId = null;
+	}, STATUS_AUTO_DISMISS_MS);
 }
 
 function clearStatus() {
 	statusBox.hidden = true;
+	if (statusTimeoutId !== null) {
+		clearTimeout(statusTimeoutId);
+		statusTimeoutId = null;
+	}
 }
 
 async function apiRequest(method, path, body) {
@@ -4803,54 +4934,9 @@ function renderRoutesList() {
 		appendRouteRow(tbody, route);
 }
 
-/* Fetch-on-demand, not folded into the global poll() loop the way
- * routes/daemon-config are -- this view has real filters (source/
- * level/tail) that change what's actually fetched, and a diagnostic
- * log view has no reason to keep re-polling the server every few
- * seconds while nobody's looking at it. */
-async function refreshLogs() {
-	const source = document.getElementById("lf-source").value;
-	const level = document.getElementById("lf-level").value.trim();
-	const tail = document.getElementById("lf-tail").value;
-	let path = "/v1/system/logs?tail=" + encodeURIComponent(tail || "200");
-
-	if (source)
-		path += "&source=" + encodeURIComponent(source);
-	if (level)
-		path += "&level=" + encodeURIComponent(level);
-
-	try {
-		cache.logs = await apiRequest("GET", path);
-	} catch (e) {
-		cache.logs = [];
-	}
-	renderLogsTable();
-}
-
-function renderLogsTable() {
-	const tbody = document.getElementById("logs-body");
-
-	tbody.textContent = "";
-	if (!cache.logs || cache.logs.length === 0) {
-		tbody.innerHTML = '<tr><td colspan="4" class="empty">No log entries.</td></tr>';
-		return;
-	}
-	for (const entry of cache.logs) {
-		const tr = document.createElement("tr");
-		const tsCell = document.createElement("td");
-		const sourceCell = document.createElement("td");
-		const levelCell = document.createElement("td");
-		const msgCell = document.createElement("td");
-
-		tsCell.textContent = new Date(entry.ts * 1000).toLocaleString();
-		sourceCell.textContent = entry.source;
-		levelCell.textContent = entry.level;
-		msgCell.textContent = entry.msg;
-		tr.append(tsCell, sourceCell, levelCell, msgCell);
-		tbody.appendChild(tr);
-	}
-}
-
+/* The log browsing table/filter form moved to the always-visible
+ * bottom log panel (ADR-0129) -- this page now only shows/edits the
+ * server-side store's own size cap. */
 async function refreshLogsConfig() {
 	try {
 		const cfg = await apiRequest("GET", "/v1/system/logs/config");
@@ -4862,14 +4948,8 @@ async function refreshLogsConfig() {
 }
 
 function renderLogsList() {
-	refreshLogs();
 	refreshLogsConfig();
 }
-
-document.getElementById("logs-filter-form").addEventListener("submit", (event) => {
-	event.preventDefault();
-	refreshLogs();
-});
 
 document.getElementById("logs-config-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
@@ -5125,6 +5205,7 @@ async function poll() {
 		await refreshRollingConfig();
 		await refreshRoutes();
 		await refreshSwap();
+		await pollServerLogs();
 	} catch (e) {
 		showStatus("Poll failed: " + e.message, true);
 	}

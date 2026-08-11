@@ -1200,7 +1200,6 @@ The reverse of `GET /system/backup` — same shape, every field optional and ind
 ## Current scope boundaries (v1, deliberate — see ADR-0007)
 
 - No image build/pull endpoint yet — images are provisioned onto disk out of band.
-- No log retrieval endpoint yet — the daemon doesn't capture container stdout/stderr separately.
 - No authentication yet — the daemon binds to loopback only as its safety boundary for now.
 - HTTP: no keep-alive/pipelining (`Connection: close` on every response), no chunked bodies.
 - Routes are set-once at creation and not echoed back or introspectable afterward; modifying them on a running container would need a new "enter another netns from outside" primitive, not built yet. See `docs/roadmap/ROADMAP.md`.

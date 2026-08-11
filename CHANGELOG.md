@@ -19,6 +19,22 @@ Second of the logging/web-UI epic (Part 1 was ADR-0126). The consolidated log st
 #### Verified
 - Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (37 test binaries) confirms zero regressions.
 
+### Part 87 (done): logging/web-UI epic Part 3 -- merged bottom log panel + toast notifications
+
+User-requested web dashboard reorganization: "let's move the logs themselves (the display) on the web ui to the logs area on the page (bottom)... only the configuration stuff should be in the tree/page" and "the green/red info box... should be a popup with a disappear timer, and it should be shown in the logs." See [ADR-0129](docs/adr/0129-merged-log-panel-and-toast.md).
+
+#### Added
+- `web/app.js`: the existing bottom-of-page action-log panel (previously client-side-only "every mutating request this dashboard makes") now merges in the server's own consolidated log (`kernel`/`kanxeod`/`audit`/`container`, `pollServerLogs()`, polled every 2s alongside everything else `poll()` already refreshes) into one buffer (`logBuffer`), with a new source-filter dropdown in the panel's own header (`web-ui`/`kernel`/`kanxeod`/`audit`/`container`, plus "(all)").
+- `showStatus()`/`clearStatus()` unchanged signature, same `#status` element -- only its CSS changed (`position: fixed`, top-right, a fade-in, a 5s auto-dismiss timer). Every toast also lands in the merged log panel as a `web-ui` entry.
+
+#### Changed
+- `web/index.html`'s `view-logs` (System > Server > Logs) now holds only the size-cap config form -- the browsing table and its own filter form (source/level/tail) are removed outright, since that browsing now lives in the always-visible bottom panel.
+- `docs/api/README.md`'s "Current scope boundaries" list: removed a stale "no log retrieval endpoint" line left over from before ADR-0126 shipped.
+- `docs/guides/web-dashboard.md`: documents the new Log panel in the Layout section, updates the Logs tree-page description, and removes a similarly stale "no log viewer" claim from "What's deliberately not here."
+
+#### Verified
+- `node --check web/app.js`. Full clean rebuild (`-Wall -Werror`, zero warnings, no daemon-side code changed) + full regression sweep (37 test binaries) confirm zero regressions. `app.js`/`index.html` fetched from a live scratch daemon and confirmed byte-for-byte identical to the on-disk source (no headless browser available in this sandbox to drive real DOM interaction, flagged honestly).
+
 ### Part 86 (done): logging/web-UI epic Part 5 -- __host owner sentinel for PKI cert / DNS record
 
 Small, user-requested clarity fix: "for the entry for the host in pki certs, dns, can we make the owner the host? so that it's clear?" See [ADR-0128](docs/adr/0128-host-owner-sentinel.md).
