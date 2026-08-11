@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed (some tagged: `v1.0.0` closed Phase 0-10, `v1.1.0` closed Phase 11 parts 1-4, `v1.2.0` closed Phase 11 part 5, `v1.3.0` closed Phase 30 part 5 (a prior documentation audit), `v1.4.0` closed Phase 40 part 2 (ADR-0056), `v1.5.0` closed Phase 40 part 3 (ADR-0057) plus this full documentation audit; untagged phases in between are untagged but no less real). This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
+All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
 ### Part 92 (done): web dashboard surface for syslog forward targets (closing an ADR-0127 gap)
 
@@ -23,23 +23,6 @@ Continuing the same real-world feedback round as Part 90: the resolv fix (ADR-01
 
 #### Verified
 - New `test/test_pkg_sync.c` scenario: the same stand-in repo already reachable via a bare `owner/repo` URL is re-pointed at through a URL with a real browse-style suffix appended, and `pkg sync` is confirmed to resolve it to the *same* repo (`skipped=1`), not fail or silently re-add. Full clean rebuild (`-Wall -Werror`, zero warnings) + full regression sweep (38 test binaries) confirm zero regressions. Live-verified on 192.168.15.95: the user's own originally-configured browse-URL-style `repo_url` now syncs successfully.
-
-### Part 85 (done): logging/web-UI epic Part 2 -- optional syslog-1/syslog-2 forward targets
-
-Second of the logging/web-UI epic (Part 1 was ADR-0126). The consolidated log store stays the one source of truth the REST API and web UI ever read from -- `syslog-1`/`syslog-2` are an optional, redundant *forward* target for operators who want standard external syslog tooling on top, never a second store the platform itself depends on. See [ADR-0127](docs/adr/0127-syslog-forward-targets.md).
-
-#### Added
-- `daemon/include/syslogfwd.h`/`daemon/src/syslogfwd.c` (new module): `POST`/`GET`/`DELETE /v1/syslog/targets` registers a running container as a forward target, mirroring `ntp_server_register()`/`_unregister()`/`_forget()` almost exactly -- pure bookkeeping, a target's live IP resolved fresh from the registry at every send. `syslogfwd_target_forget()` wired into the same container-delete cleanup path as every other server/target registration. Every container-sourced log line (`forward_container_output_to_logstore()`, ADR-0126) is now also sent to every registered, currently-running target as a real RFC 3164 UDP datagram (`local0` facility, HOSTNAME=originating container, TAG=`kanxeod`) -- fire-and-forget, silently dropped on failure, since `logstore.c` already holds the durable copy.
-- `logstore_level_severity()` (`logstore.c`/`.h`): a thin public wrapper over the store's own existing internal severity-ranking logic, reused for the RFC 3164 PRI field rather than a second copy of the same mapping.
-- `cli/src/main.c`: `kanxeoctl syslog target register --container=NAME`, `syslog target ls`, `syslog target unregister CONTAINER`.
-- `pkg/recipes/sysklogd/2.7.0/build.sh`: a real, unmodified upstream syslogd (troglobit/sysklogd fork) as the reference receiver recipe for `syslog-1`/`syslog-2`, mirroring `dnsmasq.recipe`/`chrony.recipe`'s own "real protocol server as an ordinary containerized workload" precedent.
-- `test/test_syslogfwd.c` + `test/syslog_recv_child.c`: registration bookkeeping mirrors `test_ntp.c`'s own coverage, plus a genuine wire-level proof -- a real receiver container (binding real UDP `:514` inside its own netns) confirmed, via its own transparently-captured stdout, to have received a well-formed datagram from a real sender container.
-
-#### Fixed
-- **TCC/glibc `<regex.h>` friction, again**: `sysklogd`'s own `syslogd.c`/`socket.c` hit the exact same VLA-in-prototype parse failure ADR-0126 already found and fixed in this project's own `logstore.c` -- fixed identically via `CFLAGS=-D__STDC_NO_VLA__=1` at build time (no source patch, since this is unmodified upstream).
-
-#### Verified
-- Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (37 test binaries) confirms zero regressions.
 
 ### Part 90 (done): real-world fixes after the logging epic -- log panel fixed size/perf, dynamic shell prompt, CLI polish
 
@@ -112,6 +95,23 @@ Small, user-requested clarity fix: "for the entry for the host in pki certs, dns
 #### Verified
 - `test/test_pki.c`'s existing ADR-0050 assertion updated from "owner must be null" to "owner must be exactly `__host`" -- a real, deliberate behavior change. Full clean rebuild (`-Wall -Werror`, zero warnings) + full regression sweep (37 test binaries) confirm zero regressions.
 
+### Part 85 (done): logging/web-UI epic Part 2 -- optional syslog-1/syslog-2 forward targets
+
+Second of the logging/web-UI epic (Part 1 was ADR-0126). The consolidated log store stays the one source of truth the REST API and web UI ever read from -- `syslog-1`/`syslog-2` are an optional, redundant *forward* target for operators who want standard external syslog tooling on top, never a second store the platform itself depends on. See [ADR-0127](docs/adr/0127-syslog-forward-targets.md).
+
+#### Added
+- `daemon/include/syslogfwd.h`/`daemon/src/syslogfwd.c` (new module): `POST`/`GET`/`DELETE /v1/syslog/targets` registers a running container as a forward target, mirroring `ntp_server_register()`/`_unregister()`/`_forget()` almost exactly -- pure bookkeeping, a target's live IP resolved fresh from the registry at every send. `syslogfwd_target_forget()` wired into the same container-delete cleanup path as every other server/target registration. Every container-sourced log line (`forward_container_output_to_logstore()`, ADR-0126) is now also sent to every registered, currently-running target as a real RFC 3164 UDP datagram (`local0` facility, HOSTNAME=originating container, TAG=`kanxeod`) -- fire-and-forget, silently dropped on failure, since `logstore.c` already holds the durable copy.
+- `logstore_level_severity()` (`logstore.c`/`.h`): a thin public wrapper over the store's own existing internal severity-ranking logic, reused for the RFC 3164 PRI field rather than a second copy of the same mapping.
+- `cli/src/main.c`: `kanxeoctl syslog target register --container=NAME`, `syslog target ls`, `syslog target unregister CONTAINER`.
+- `pkg/recipes/sysklogd/2.7.0/build.sh`: a real, unmodified upstream syslogd (troglobit/sysklogd fork) as the reference receiver recipe for `syslog-1`/`syslog-2`, mirroring `dnsmasq.recipe`/`chrony.recipe`'s own "real protocol server as an ordinary containerized workload" precedent.
+- `test/test_syslogfwd.c` + `test/syslog_recv_child.c`: registration bookkeeping mirrors `test_ntp.c`'s own coverage, plus a genuine wire-level proof -- a real receiver container (binding real UDP `:514` inside its own netns) confirmed, via its own transparently-captured stdout, to have received a well-formed datagram from a real sender container.
+
+#### Fixed
+- **TCC/glibc `<regex.h>` friction, again**: `sysklogd`'s own `syslogd.c`/`socket.c` hit the exact same VLA-in-prototype parse failure ADR-0126 already found and fixed in this project's own `logstore.c` -- fixed identically via `CFLAGS=-D__STDC_NO_VLA__=1` at build time (no source patch, since this is unmodified upstream).
+
+#### Verified
+- Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (37 test binaries) confirms zero regressions.
+
 ### Part 85 follow-up: sysklogd.recipe build-image gaps found during live verification on 192.168.15.95
 
 Two real, environment-specific build-image gaps found only by actually running `sysklogd.recipe` against the real `kanxeo-builder` build image (both had already built and passed a local smoke test in a dev sandbox, which doesn't reproduce either): (1) sysklogd's own Autotools/Libtool build always constructs a real static "convenience library" internally even with `--disable-shared --disable-static`, needing `ar`/`ranlib` from `binutils` -- not present on `kanxeo-builder` by default. Fixed by bypassing `make`/libtool entirely: `pkg_build()` now compiles and links the handful of needed `.c` files directly with `tcc`. (2) That direct-link path then surfaced a second gap -- `__dso_handle` came back undefined at link time on the real build image (glibc's own static-destructor bookkeeping expects it; the normal libtool-driven link path provides it, a bare `tcc` link sometimes doesn't). Fixed with a tiny, `__attribute__((weak))` stub compiled and linked in alongside the real object files. Also found live: sysklogd's own default `-H`-less behavior substitutes the *sending* address (kanxeod's own host IP) as the logged `HOSTNAME` rather than trusting the RFC 3164 message's own `HOSTNAME` field -- `docs/api/README.md`'s own reference run command now includes `-H`. Both build-image gaps documented as new `CLAUDE.md` environment notes for any future recipe hitting the same class of issue. Live-verified end to end afterward: real `syslog-1`/`syslog-2` containers on 192.168.15.95, both registered as forward targets, both correctly show a real container's own name (not the daemon's IP) against its own forwarded log lines in `/var/log/messages`.
@@ -133,23 +133,6 @@ First of a multi-part logging/web-UI epic, kicked off by the user's request for 
 #### Verified
 - Full clean rebuild (`-Wall -Werror`), zero warnings. Manual live round-trip against a scratch daemon confirmed both stdout and stderr lines land in the log store tagged with the right container name, `capture_output:true` still populates `captured_output` unaffected, and the container/regex filters plus malformed-regex-400 all work. Full regression sweep (every daemon-linked and standalone test) confirms zero regressions.
 
-### Part 82 (done): pkg/ redesign Part 5 -- rolling containers + restart jitter, closing out the five-part redesign
-
-Fifth and final of the five-part `pkg/` redesign (task #739/#770) -- see [ADR-0124](docs/adr/0124-pkg-redesign-part5-rolling-containers-and-restart-jitter.md). A running container can now opt in to automatically following a rolling image's own version drift (ADR-0107's own auto-rebuild trigger, previously consumed by nothing): set `follow_rolling` at creation, and the container's pin gets patched and the container live-restarted onto every new version its image rebuilds to, after an independent, jittered delay so many containers on the same image don't all restart in the same instant.
-
-#### Added
-- `daemon/include/containerdef.h`/`containerdef.c`: `struct container_def.follow_rolling`, persisted and migrated like every other create-request-derived field; `containerdef_patch_image_version()` (raw string surgery on the persisted body's already-spliced `"image_version"` value, mirroring `handle_create()`'s own splice posture); a new rolling-config module (`containerdef_rolling_config_init()`/`_get()`/`_set()`) persisting `jitter_window_seconds` (default 60, 0-3600), mirroring `pkg_cache_init()`'s shape.
-- `daemon/src/main.c`: `apply_rolling_container_restarts()`, run from the tail of `try_start_queued_pkg_rebuild()` (the same trigger point ADR-0107's own rolling-rebuild reconciliation already uses) -- for every `follow_rolling` container definition, compares its pin against the image's real `current_version`, patches and (if running) schedules a restart via a new, separate `CONN_ROLLING_RESTART_TIMER` idiom (deliberately not a reuse of `CONN_RESTART_TIMER`, which assumes the container has already exited; this one actively tears down a still-live container first). `rolling_jitter_seconds()` mirrors `ldap_generate_secret()`'s own `/dev/urandom` idiom. `GET`/`PUT /v1/system/rolling-config`.
-- `cli/src/main.c`: `--follow-rolling` on `container run`, `roll=yes/no` in `ps` output, `kanxeoctl rolling-config show|set`.
-- Web dashboard: a "Follow rolling image" checkbox on the container-create modal, "Follow rolling image"/"Pinned image version" fields on the container detail Options tab, and a "Rolling restart jitter" form on the Daemon page.
-- `test/test_rolling_restart.c`: stages a real dynamically-linked binary as a synthetic package's install payload (avoids needing a compiler inside the test's own sandbox), publishes a second version purely through the real recipe API, and confirms a `follow_rolling` container's PID and pin both update while a plain container's stay untouched; also exercises the rolling-config GET/PUT and its range validation.
-
-#### Fixed
-- **A real production bug, found by the new test**: `timerfd_settime(2)`'s documented semantics are that an all-zero `it_value` disarms the timer rather than firing it immediately -- `jitter_window_seconds=0` (an intentional "no jitter, restart now" setting) hit this exactly, silently leaving the restart timer disarmed and the container never actually replaying onto its new version. Fixed in `arm_rolling_restart_timer()` with a 1-nanosecond floor when the computed delay is `<= 0`.
-
-#### Verified
-- Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (all daemon-linked and standalone tests, including the new `test_rolling_restart.c`, run three times consecutively for the new test) confirms zero regressions.
-
 ### Part 83 (done): pkg_delete() failed-state removal + per-container follow_rolling jitter override
 
 Two further Part 5 follow-ups (task #739), both user-requested after the prior session's live verification -- see [ADR-0125](docs/adr/0125-pkg-delete-failed-state-and-jitter-override.md).
@@ -169,6 +152,23 @@ Two further Part 5 follow-ups (task #739), both user-requested after the prior s
 
 `cmd_rolling_config_set()` (`cli/src/main.c`) compared `argv[i]` against `"--jitter-window-seconds="` with `strncmp(..., 25)` and read the value from `argv[i] + 25` -- the literal is 24 characters, not 25, so the flag never matched and every real invocation failed with "unknown rolling-config set option". Caught immediately during live verification (task #770's own real end-to-end round trip on 192.168.15.95, not caught by `test_rolling_restart.c` since that test drives the REST API directly, never the CLI's own argv parser). Fixed (`24`/`24`); added a new CLI-level check to `test/test_cli.c` (forks the real `kanxeoctl` binary against a real daemon) so this class of bug can't ship silently again. Full regression sweep re-run clean.
 
+### Part 82 (done): pkg/ redesign Part 5 -- rolling containers + restart jitter, closing out the five-part redesign
+
+Fifth and final of the five-part `pkg/` redesign (task #739/#770) -- see [ADR-0124](docs/adr/0124-pkg-redesign-part5-rolling-containers-and-restart-jitter.md). A running container can now opt in to automatically following a rolling image's own version drift (ADR-0107's own auto-rebuild trigger, previously consumed by nothing): set `follow_rolling` at creation, and the container's pin gets patched and the container live-restarted onto every new version its image rebuilds to, after an independent, jittered delay so many containers on the same image don't all restart in the same instant.
+
+#### Added
+- `daemon/include/containerdef.h`/`containerdef.c`: `struct container_def.follow_rolling`, persisted and migrated like every other create-request-derived field; `containerdef_patch_image_version()` (raw string surgery on the persisted body's already-spliced `"image_version"` value, mirroring `handle_create()`'s own splice posture); a new rolling-config module (`containerdef_rolling_config_init()`/`_get()`/`_set()`) persisting `jitter_window_seconds` (default 60, 0-3600), mirroring `pkg_cache_init()`'s shape.
+- `daemon/src/main.c`: `apply_rolling_container_restarts()`, run from the tail of `try_start_queued_pkg_rebuild()` (the same trigger point ADR-0107's own rolling-rebuild reconciliation already uses) -- for every `follow_rolling` container definition, compares its pin against the image's real `current_version`, patches and (if running) schedules a restart via a new, separate `CONN_ROLLING_RESTART_TIMER` idiom (deliberately not a reuse of `CONN_RESTART_TIMER`, which assumes the container has already exited; this one actively tears down a still-live container first). `rolling_jitter_seconds()` mirrors `ldap_generate_secret()`'s own `/dev/urandom` idiom. `GET`/`PUT /v1/system/rolling-config`.
+- `cli/src/main.c`: `--follow-rolling` on `container run`, `roll=yes/no` in `ps` output, `kanxeoctl rolling-config show|set`.
+- Web dashboard: a "Follow rolling image" checkbox on the container-create modal, "Follow rolling image"/"Pinned image version" fields on the container detail Options tab, and a "Rolling restart jitter" form on the Daemon page.
+- `test/test_rolling_restart.c`: stages a real dynamically-linked binary as a synthetic package's install payload (avoids needing a compiler inside the test's own sandbox), publishes a second version purely through the real recipe API, and confirms a `follow_rolling` container's PID and pin both update while a plain container's stay untouched; also exercises the rolling-config GET/PUT and its range validation.
+
+#### Fixed
+- **A real production bug, found by the new test**: `timerfd_settime(2)`'s documented semantics are that an all-zero `it_value` disarms the timer rather than firing it immediately -- `jitter_window_seconds=0` (an intentional "no jitter, restart now" setting) hit this exactly, silently leaving the restart timer disarmed and the container never actually replaying onto its new version. Fixed in `arm_rolling_restart_timer()` with a 1-nanosecond floor when the computed delay is `<= 0`.
+
+#### Verified
+- Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (all daemon-linked and standalone tests, including the new `test_rolling_restart.c`, run three times consecutively for the new test) confirms zero regressions.
+
 ### Part 81 (done): pkg/ redesign Part 4 -- declarative image recipes + whole-rootfs artifact fast path
 
 Fourth of the five-part `pkg/` redesign (task #739/#769) -- see [ADR-0123](docs/adr/0123-pkg-redesign-part4-image-recipes-and-artifact.md). An image's whole package-list intent can now be declared in one text file (`image_packages="name:mode:version ..."`, recipe name == image name) instead of N individual `PUT /v1/images/{name}/manifest` calls, and a fully-pinned recipe with a matching precompiled artifact skips every per-package build entirely.
@@ -183,21 +183,6 @@ Fourth of the five-part `pkg/` redesign (task #739/#769) -- see [ADR-0123](docs/
 
 #### Verified
 - Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (28 tests) all pass, including the pre-existing `test_images.c` and `test_pkg.c` (manifest editing, dependency chains, hostbuild, upgrades -- the real-install path is completely unmodified).
-
-### Part 79 (done): pkg/ redesign Part 2 -- configurable recipe repo + merge/additive `pkg sync`
-
-Second of the five-part `pkg/` redesign (task #739/#767) -- see [ADR-0121](docs/adr/0121-pkg-redesign-part2-configurable-repo-and-sync.md). A host can now be pointed at a shared recipe repository (gitea/github/gitlab) and pull its whole tree in one call, instead of every recipe needing an individual manual `POST /pkg/recipes`.
-
-#### Added
-- `daemon/src/pkg.c`/`pkg.h`: `pkg_repo_init()`/`pkg_repo_set_config()`/`pkg_repo_write_json_config()` (persisted `<data-dir>/pkg/repo_config.json`: `repo_url`, `repo_kind`, `ref`, `auth_token`, `sync_interval_seconds`); `pkg_sync_start()`/`pkg_sync_completed()`/`pkg_sync_write_json_status()` -- a direct clone of `CONN_BOOTSTRAP_FETCH`'s own async fork+curl+pidfd pattern (ADR-0065), merging fetched recipes via the existing `pkg_recipe_add()` (its own duplicate-(name,version) rejection *is* the merge/additive semantics -- nothing is ever overwritten, only skipped or newly added).
-- `build_sync_fetch_request()`: three explicit, separately-readable branches for gitea/github/gitlab's genuinely different archive-download URL shapes and auth conventions -- only gitea verified against a real forge (`git.home.arpa`) from this sandbox; github/gitlab follow each forge's own documented API but are unverified against a live account.
-- `GET`/`PUT /v1/pkg/repo-config` (partial-update semantics; `auth_token` write-only, never echoed back -- only a derived `auth_token_set`), `POST`/`GET /v1/pkg/sync` (`202`, poll for `state`/`added`/`skipped`/`error`; `400` unconfigured, `409` already running).
-- Periodic sync timer (`arm_pkg_sync_periodic_timer()`), mirroring NTP's own re-arming timerfd pattern exactly -- `sync_interval_seconds=0` (default) means disabled.
-- `kanxeoctl pkg repo-config show|set`, `pkg sync [--wait]`, `pkg sync-status`.
-- `test/test_pkg_sync.c`: a real, unmocked round trip against a `python3 -m http.server` standing in for a gitea REST endpoint -- covers unconfigured-400, partial-update semantics, token clear, a first sync (`added=1`), a second sync of the same repo proving merge/additive semantics (`added=0, skipped=1`), and a real fetch failure (`state=failed` with a real error).
-
-#### Verified
-- Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (25 tests, including the new one) all pass.
 
 ### Part 80 (done): pkg/ redesign Part 3 -- local build-artifact cache + plain-HTTP precompiled-artifact server
 
@@ -214,6 +199,21 @@ Third of the five-part `pkg/` redesign (task #739/#768) -- see [ADR-0122](docs/a
 #### Verified
 - Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (27 tests) all pass, including the pre-existing `test_pkg.c` (multi-source, dependency chains, hostbuild, upgrades -- unaffected by the cache/artifact tiers when neither applies).
 - Web dashboard: fetched `app.js`/`index.html` from a live scratch daemon and diffed against the on-disk source (identical), confirmed all new element IDs resolve with no duplicates, `node --check web/app.js` clean, and exercised every new REST call (`repo-config`/`artifact-config` GET+PUT, `cache-config` GET+PUT, `cache` GET) directly against a running `kanxeod`.
+
+### Part 79 (done): pkg/ redesign Part 2 -- configurable recipe repo + merge/additive `pkg sync`
+
+Second of the five-part `pkg/` redesign (task #739/#767) -- see [ADR-0121](docs/adr/0121-pkg-redesign-part2-configurable-repo-and-sync.md). A host can now be pointed at a shared recipe repository (gitea/github/gitlab) and pull its whole tree in one call, instead of every recipe needing an individual manual `POST /pkg/recipes`.
+
+#### Added
+- `daemon/src/pkg.c`/`pkg.h`: `pkg_repo_init()`/`pkg_repo_set_config()`/`pkg_repo_write_json_config()` (persisted `<data-dir>/pkg/repo_config.json`: `repo_url`, `repo_kind`, `ref`, `auth_token`, `sync_interval_seconds`); `pkg_sync_start()`/`pkg_sync_completed()`/`pkg_sync_write_json_status()` -- a direct clone of `CONN_BOOTSTRAP_FETCH`'s own async fork+curl+pidfd pattern (ADR-0065), merging fetched recipes via the existing `pkg_recipe_add()` (its own duplicate-(name,version) rejection *is* the merge/additive semantics -- nothing is ever overwritten, only skipped or newly added).
+- `build_sync_fetch_request()`: three explicit, separately-readable branches for gitea/github/gitlab's genuinely different archive-download URL shapes and auth conventions -- only gitea verified against a real forge (`git.home.arpa`) from this sandbox; github/gitlab follow each forge's own documented API but are unverified against a live account.
+- `GET`/`PUT /v1/pkg/repo-config` (partial-update semantics; `auth_token` write-only, never echoed back -- only a derived `auth_token_set`), `POST`/`GET /v1/pkg/sync` (`202`, poll for `state`/`added`/`skipped`/`error`; `400` unconfigured, `409` already running).
+- Periodic sync timer (`arm_pkg_sync_periodic_timer()`), mirroring NTP's own re-arming timerfd pattern exactly -- `sync_interval_seconds=0` (default) means disabled.
+- `kanxeoctl pkg repo-config show|set`, `pkg sync [--wait]`, `pkg sync-status`.
+- `test/test_pkg_sync.c`: a real, unmocked round trip against a `python3 -m http.server` standing in for a gitea REST endpoint -- covers unconfigured-400, partial-update semantics, token clear, a first sync (`added=1`), a second sync of the same repo proving merge/additive semantics (`added=0, skipped=1`), and a real fetch failure (`state=failed` with a real error).
+
+#### Verified
+- Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (25 tests, including the new one) all pass.
 
 ### Part 78 (done): pkg/ redesign Part 1 -- recipe.sh -> build.sh rename, plus a real backup/restore regression fixed along the way
 
@@ -651,22 +651,6 @@ The real bug this whole epic exists to fix: `overlay_create()`'s lowerdir is `IM
 - Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (21 daemon-linked tests) clean.
 - No new persisted state -- matches every other async-job tracking mechanism in this daemon (disk format, ISO assembly, pkg fetch), all process-lifetime only.
 
-### Part 48 (done, full clean rebuild + full regression sweep, no live-hardware verification): real btrfs qgroup-based disk quotas as a second backend alongside ext4 (ADR-0103, closes task #678)
-
-`--disk-quota=BYTES` only ever meant an ext4 project quota (`quotactl(2)`, ADR-0062) -- no support at all on btrfs, which has no `quotactl(2)` implementation and a fundamentally different, subvolume-scoped qgroup model instead. Per explicit user direction (2026-08-08): close this gap for real, not just document it, using raw ioctls rather than shelling out to btrfs-progs.
-
-#### Added
-- `include/linux_compat.h`: hand-transcribed btrfs ioctl structs/constants (`kx_btrfs_ioctl_vol_args`, `kx_btrfs_ioctl_qgroup_limit_args`, `kx_btrfs_ioctl_quota_ctl_args`, `KX_BTRFS_IOC_SUBVOL_CREATE`/`QUOTA_CTL`/`QGROUP_LIMIT`, `KX_BTRFS_SUPER_MAGIC`) -- same kernel-uapi-avoidance convention as `clone3`/`epoll_event`/`fsxattr`; each ioctl number hand-derived via `_IOC(dir,type,nr,size)` and cross-checked by independently re-deriving this project's own two already-correct `FS_IOC_FS{GET,SET}XATTR` constants with the identical method.
-- `include/container.h`: `struct overlay_spec.quota_bytes` (parallel to, not overloading, the existing `project_id`); new `overlay_backing_is_btrfs(const char *path)`.
-- `src/overlay.c`: `overlay_backing_is_btrfs()` (statfs-based); `overlay_create_btrfs_upperdir()` -- creates upperdir as a real subvolume (`BTRFS_IOC_SUBVOL_CREATE`), then (if a quota was requested) enables btrfs quotas and sets a qgroup hard limit via `BTRFS_IOC_QGROUP_LIMIT` with `qgroupid=0` (btrfs's own "the subvolume owning this fd" self-addressing convention -- eliminates any need for a persisted qgroup-id-tracking table, which the originating task description had anticipated needing). `overlay_create()` now branches on the parent directory's own filesystem type before creating upperdir.
-- `daemon/src/main.c`: `create_container_from_body()`'s quota block now branches on `overlay_backing_is_btrfs(container_base)` -- btrfs skips `quotamap_get_or_assign()`/`set_disk_quota()` entirely and passes the raw byte limit straight through via `spec.ov.quota_bytes`; ext4 keeps the existing Part 4/ADR-0062 flow unchanged.
-- `docs/adr/0103-btrfs-quota-backend.md`.
-
-#### Notes
-- Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (all 21 daemon-linked tests plus `test_harness`/`test_overlay`/`test_container_net`/`test_devices`, which exercise `overlay_create()` directly) clean -- confirms the ext4 path is byte-for-byte unaffected by the new branching logic.
-- The btrfs success path itself (subvolume creation, quota enable, qgroup enforcement) has **not** been live-tested -- this sandbox has kernel btrfs support but no mounted btrfs filesystem, no `mkfs.btrfs`, and no disk safe to reformat (same acknowledged gap as ADR-0099/ADR-0102). Live verification against real hardware is an open follow-up.
-- Deliberately does **not** extend `diskformat.c` (still ext4-only end to end) to offer btrfs as a format choice -- a materially separate body of work (staging `mkfs.btrfs`, a new `fs_type` REST/CLI param). Task #732 (previously a near-duplicate of this same task) is retained and re-scoped to track exactly that remaining piece.
-
 ### Part 49 (done, full clean rebuild + full regression sweep, kernel-image-dependent QEMU boot test not re-run -- see notes): real btrfs disk formatting alongside ext4 (ADR-0104, closes task #732)
 
 ADR-0103 closed the *quota enforcement* half of the ext4-vs-btrfs gap; `POST /v1/disks/{name}/format` (Phase C) was still hardcoded ext4 end to end. Task #732 (a pre-existing near-duplicate of #678, re-purposed rather than left open) tracked exactly this remaining piece.
@@ -683,6 +667,22 @@ ADR-0103 closed the *quota enforcement* half of the ext4-vs-btrfs gap; `POST /v1
 - Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (21 daemon-linked tests, `test_mkbootroot_firmware`) clean.
 - `test_boot` (the QEMU end-to-end boot test) was attempted but fails at `build/bzImage: No such file or directory` -- a pre-existing, already-documented gap (the kernel image isn't reproduced by `make clean`, a separate deliberately-manual build step) triggered by this session's own `make clean`, not a regression from this change: the squashfs assembly step this change actually touches completed successfully before that point.
 - Recipes verified via direct local source-tree builds, not yet through a live `kanxeod` `pkg install` round-trip or against a real mounted btrfs filesystem (same acknowledged gap as ADR-0099/ADR-0102/ADR-0103) -- live verification against real hardware remains an open follow-up.
+
+### Part 48 (done, full clean rebuild + full regression sweep, no live-hardware verification): real btrfs qgroup-based disk quotas as a second backend alongside ext4 (ADR-0103, closes task #678)
+
+`--disk-quota=BYTES` only ever meant an ext4 project quota (`quotactl(2)`, ADR-0062) -- no support at all on btrfs, which has no `quotactl(2)` implementation and a fundamentally different, subvolume-scoped qgroup model instead. Per explicit user direction (2026-08-08): close this gap for real, not just document it, using raw ioctls rather than shelling out to btrfs-progs.
+
+#### Added
+- `include/linux_compat.h`: hand-transcribed btrfs ioctl structs/constants (`kx_btrfs_ioctl_vol_args`, `kx_btrfs_ioctl_qgroup_limit_args`, `kx_btrfs_ioctl_quota_ctl_args`, `KX_BTRFS_IOC_SUBVOL_CREATE`/`QUOTA_CTL`/`QGROUP_LIMIT`, `KX_BTRFS_SUPER_MAGIC`) -- same kernel-uapi-avoidance convention as `clone3`/`epoll_event`/`fsxattr`; each ioctl number hand-derived via `_IOC(dir,type,nr,size)` and cross-checked by independently re-deriving this project's own two already-correct `FS_IOC_FS{GET,SET}XATTR` constants with the identical method.
+- `include/container.h`: `struct overlay_spec.quota_bytes` (parallel to, not overloading, the existing `project_id`); new `overlay_backing_is_btrfs(const char *path)`.
+- `src/overlay.c`: `overlay_backing_is_btrfs()` (statfs-based); `overlay_create_btrfs_upperdir()` -- creates upperdir as a real subvolume (`BTRFS_IOC_SUBVOL_CREATE`), then (if a quota was requested) enables btrfs quotas and sets a qgroup hard limit via `BTRFS_IOC_QGROUP_LIMIT` with `qgroupid=0` (btrfs's own "the subvolume owning this fd" self-addressing convention -- eliminates any need for a persisted qgroup-id-tracking table, which the originating task description had anticipated needing). `overlay_create()` now branches on the parent directory's own filesystem type before creating upperdir.
+- `daemon/src/main.c`: `create_container_from_body()`'s quota block now branches on `overlay_backing_is_btrfs(container_base)` -- btrfs skips `quotamap_get_or_assign()`/`set_disk_quota()` entirely and passes the raw byte limit straight through via `spec.ov.quota_bytes`; ext4 keeps the existing Part 4/ADR-0062 flow unchanged.
+- `docs/adr/0103-btrfs-quota-backend.md`.
+
+#### Notes
+- Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (all 21 daemon-linked tests plus `test_harness`/`test_overlay`/`test_container_net`/`test_devices`, which exercise `overlay_create()` directly) clean -- confirms the ext4 path is byte-for-byte unaffected by the new branching logic.
+- The btrfs success path itself (subvolume creation, quota enable, qgroup enforcement) has **not** been live-tested -- this sandbox has kernel btrfs support but no mounted btrfs filesystem, no `mkfs.btrfs`, and no disk safe to reformat (same acknowledged gap as ADR-0099/ADR-0102). Live verification against real hardware is an open follow-up.
+- Deliberately does **not** extend `diskformat.c` (still ext4-only end to end) to offer btrfs as a format choice -- a materially separate body of work (staging `mkfs.btrfs`, a new `fs_type` REST/CLI param). Task #732 (previously a near-duplicate of this same task) is retained and re-scoped to track exactly that remaining piece.
 
 ### Part 47 (done, local regression sweep clean): per-container disk selection at creation time (ADR-0102, closes task #638, Phase D)
 
@@ -743,18 +743,6 @@ A container's own entrypoint was write-only: `POST /v1/containers`' `"cmd"` fiel
 #### Notes
 - Full local regression sweep clean, zero compiler warnings. No new dedicated test -- `GET /disks` has never had one, real `/sys/class/block` enumeration isn't practical to exercise deterministically in the sandboxed harness; a real, pre-existing gap, not worsened here.
 
-### Part 41 (done, local regression sweep clean; live-verified against the real fetch failure that motivated it): pkg fetch failures now report curl's own real error text, not just a bare exit code (ADR-0096)
-
-Found live, mid-redeploy this session: pushing `kanxeo` v1.7.0 to 192.168.15.95 via `pkg hostbuild` failed with only `"fetch failed (curl exit status 1)"` -- no way to tell why, since `start_fetch_for()`'s curl child never captured its own stderr anywhere. The instinctive move (re-serving the tarball over the LAN, the established workaround for a *different*, real problem -- a fresh install with no SSH/shell) was explicitly rejected: it would have unblocked the deploy without ever explaining the failure, leaving the same silent gap for next time. Fixed at the root instead.
-
-#### Fixed
-- `daemon/src/pkg.c`: `start_fetch_for()`'s curl child now pipes its own stderr to a small sidecar file (`fetch_error_sidecar_path()`) on a failed fetch, via a short-lived `pipe2()` + `dup2()` onto the grandchild's `STDERR_FILENO` -- a synchronous, single `read()` after `waitpid()` (curl has already exited by then, so no deadlock risk, unlike the build path's still-running output). `pkg_fetch_completed()` reads it back, folds curl's own real error text into `e->error`, and logs it via `logstore_write()` (a fetch failure previously had no log store entry at all).
-
-#### Notes
-- Full local regression sweep clean (`test_pkg`, `test_daemon`, `test_cli`, `test_dns`, `test_system_update`), zero compiler warnings.
-- Deliberately proportionate to the actual problem: curl's own `-S` error output is always short and produced once, so a small sidecar file was chosen over reusing ADR-0087's epoll-drained build-output pipe (built specifically for a long-running build's potentially-megabyte output) -- reusing that machinery here would have meant threading a new fd through every one of `start_fetch_for()`'s callers and main.c's five separate registration call sites for no benefit.
-- No new dedicated fetch-failure test was added this pass -- reproducing a real curl stderr failure deterministically needs a fake failing HTTP fixture the existing sandboxed (no real network egress) test harness doesn't have; a real, acknowledged gap.
-
 ### Part 43 (done, verified in isolation + local regression sweep): tarball_has_common_top_dir() corrupted its own capture while draining it (ADR-0098)
 
 Found live installing `coreutils` onto `kanxeo-hosttools` (task #735's own unblocker): ADR-0093's tarball-listing capture is bounded at 64KB, but `coreutils-9.11.tar.xz`'s own `tar -tf` listing is 137,883 bytes. Two compounding bugs, found in sequence -- a first fix (trimming the truncated trailing line) didn't actually resolve the live symptom, which led to the second, deeper one: the existing post-capture drain loop (there so a large listing doesn't leave `tar` blocked on a full pipe) reused the *same* capture buffer as its own scratch space, silently overwriting the real captured head with arbitrary tail fragments before the mismatch scan ever ran.
@@ -777,6 +765,18 @@ Found immediately after Part 41's fetch-diagnostic capture landed, on the very n
 #### Notes
 - Live-verified directly and about as strongly as possible: the exact `kanxeo` v1.7.1 hostbuild that surfaced this bug (real HTTPS, token-authenticated, `git.home.arpa`) completed successfully -- fetch, build, and install -- once this fix (and the DNS fix) were deployed.
 - A separate, real gap surfaced immediately after and is intentionally not fixed here: the server-side mkbootroot re-assembly that normally follows a successful `kanxeo` hostbuild (ADR-0057) itself fails with `sha256sum: No such file or directory`, sourcing from the `kanxeo-hosttools` image's own rootfs -- that image was never given a real `sha256sum` binary. Tracked separately.
+
+### Part 41 (done, local regression sweep clean; live-verified against the real fetch failure that motivated it): pkg fetch failures now report curl's own real error text, not just a bare exit code (ADR-0096)
+
+Found live, mid-redeploy this session: pushing `kanxeo` v1.7.0 to 192.168.15.95 via `pkg hostbuild` failed with only `"fetch failed (curl exit status 1)"` -- no way to tell why, since `start_fetch_for()`'s curl child never captured its own stderr anywhere. The instinctive move (re-serving the tarball over the LAN, the established workaround for a *different*, real problem -- a fresh install with no SSH/shell) was explicitly rejected: it would have unblocked the deploy without ever explaining the failure, leaving the same silent gap for next time. Fixed at the root instead.
+
+#### Fixed
+- `daemon/src/pkg.c`: `start_fetch_for()`'s curl child now pipes its own stderr to a small sidecar file (`fetch_error_sidecar_path()`) on a failed fetch, via a short-lived `pipe2()` + `dup2()` onto the grandchild's `STDERR_FILENO` -- a synchronous, single `read()` after `waitpid()` (curl has already exited by then, so no deadlock risk, unlike the build path's still-running output). `pkg_fetch_completed()` reads it back, folds curl's own real error text into `e->error`, and logs it via `logstore_write()` (a fetch failure previously had no log store entry at all).
+
+#### Notes
+- Full local regression sweep clean (`test_pkg`, `test_daemon`, `test_cli`, `test_dns`, `test_system_update`), zero compiler warnings.
+- Deliberately proportionate to the actual problem: curl's own `-S` error output is always short and produced once, so a small sidecar file was chosen over reusing ADR-0087's epoll-drained build-output pipe (built specifically for a long-running build's potentially-megabyte output) -- reusing that machinery here would have meant threading a new fd through every one of `start_fetch_for()`'s callers and main.c's five separate registration call sites for no benefit.
+- No new dedicated fetch-failure test was added this pass -- reproducing a real curl stderr failure deterministically needs a fake failing HTTP fixture the existing sandboxed (no real network egress) test harness doesn't have; a real, acknowledged gap.
 
 ### Part 40 (done, live-verified via a real QEMU boot-update round trip): the /system/update one-sided image_path/kernel_path footgun, closed at the source (ADR-0095)
 
@@ -932,6 +932,19 @@ Part 28's own `ld-linux` fix didn't resolve the live symptom after redeploy -- r
 - Full clean rebuild (`-Wall -Werror`, zero warnings); `test_mkbootroot_firmware` passes locally.
 - Superseded by Part 30's own deeper fix -- ADR-0084's own diagnosis was real (mksquashfs genuinely was unreachable) but not sufficient on its own; the box was, at the time this was written, believed unreachable due to a port-number mixup on this end, not an actual outage.
 
+### Part 28 (done): the real mkbootroot fix -- second ld-linux copy (ADR-0083)
+
+With Part 25's mkbootroot output-capture diagnostics now deployed, triggered a real `kanxeo` hostbuild round on 192.168.15.95 and read `GET /system/logs` for the actual, long-missing failure text: `/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: No such file or directory`. Root cause: `test_image_fixture_build()` (`test/test_image_fixture.c`, the control-plane root's own runtime-lib staging, used by `mkbootroot.c`) only ever staged `ld-linux-x86-64.so.2` at `lib64/` -- never the second copy at `lib/x86_64-linux-gnu/` that glibc >= 2.34's own `libc.so.6` needs (its own `DT_NEEDED` on `ld-linux-x86-64.so.2` itself) -- the exact same gap ADR-0057 already fixed for `pkg_seed_image_baseline()` (container images), just never applied to this sibling function.
+
+#### Fixed
+- `test/test_image_fixture.c`: `test_image_fixture_build()` now stages both copies, matching `pkg_seed_image_baseline()`'s own established pattern.
+- `docs/adr/0083-mkbootroot-ld-linux-second-copy.md`.
+
+#### Notes
+- Confirmed locally: a fresh `mkbootroot` run now produces both `lib64/ld-linux-x86-64.so.2` and `lib/x86_64-linux-gnu/ld-linux-x86-64.so.2` in the staged control-plane root.
+- This closes the real, long-open "kanxeo bootroot assembly: mkbootroot exited 1" gap from Part 23 -- not a workaround, the actual root cause, only findable once real diagnostics existed to read.
+- Full clean rebuild (`-Wall -Werror`, zero warnings); full local regression sweep passing.
+
 ### Part 27 (done): kernel SMP + virtio-balloon (ADR-0082)
 
 User-reported: Proxmox's own view of 192.168.15.95's memory usage kept climbing while idle (460MB at boot toward 546MB). Investigating traced this to a missing `CONFIG_VIRTIO_BALLOON` (a KVM guest with no balloon driver can only ever grow the host's own reported RSS for it, regardless of what the guest frees internally -- confirmed via `GET /v1/system/stats`: guest-internal "used" memory stayed flat at ~62MB the whole time, so there was never a real leak).
@@ -945,19 +958,6 @@ While separately still chasing the open `--cpuset=` regression (ADR-0081's fix d
 #### Notes
 - Kernel rebuilt from a clean `allnoconfig` (not layered onto the stale non-SMP `.config`, since SMP makes many previously-hidden Kconfig symbols reachable), deployed to 192.168.15.95 (direct squashfs+kernel push, landing on slot A), and live-verified: `--cpuset=0` and `--cpuset=1` container creation both succeed, confirming a genuine second CPU is active, not just cpuset syntax being accepted. Memory-ballooning's effect on Proxmox's own reported VM RSS still needs hypervisor-side confirmation (outside this repo's scope).
 - Full clean rebuild (`-Wall -Werror`, zero warnings).
-
-### Part 28 (done): the real mkbootroot fix -- second ld-linux copy (ADR-0083)
-
-With Part 25's mkbootroot output-capture diagnostics now deployed, triggered a real `kanxeo` hostbuild round on 192.168.15.95 and read `GET /system/logs` for the actual, long-missing failure text: `/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: No such file or directory`. Root cause: `test_image_fixture_build()` (`test/test_image_fixture.c`, the control-plane root's own runtime-lib staging, used by `mkbootroot.c`) only ever staged `ld-linux-x86-64.so.2` at `lib64/` -- never the second copy at `lib/x86_64-linux-gnu/` that glibc >= 2.34's own `libc.so.6` needs (its own `DT_NEEDED` on `ld-linux-x86-64.so.2` itself) -- the exact same gap ADR-0057 already fixed for `pkg_seed_image_baseline()` (container images), just never applied to this sibling function.
-
-#### Fixed
-- `test/test_image_fixture.c`: `test_image_fixture_build()` now stages both copies, matching `pkg_seed_image_baseline()`'s own established pattern.
-- `docs/adr/0083-mkbootroot-ld-linux-second-copy.md`.
-
-#### Notes
-- Confirmed locally: a fresh `mkbootroot` run now produces both `lib64/ld-linux-x86-64.so.2` and `lib/x86_64-linux-gnu/ld-linux-x86-64.so.2` in the staged control-plane root.
-- This closes the real, long-open "kanxeo bootroot assembly: mkbootroot exited 1" gap from Part 23 -- not a workaround, the actual root cause, only findable once real diagnostics existed to read.
-- Full clean rebuild (`-Wall -Werror`, zero warnings); full local regression sweep passing.
 
 ### Part 26 (done): cgroup atomic-write regression fix (ADR-0081)
 
