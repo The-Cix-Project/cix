@@ -1200,9 +1200,12 @@ paths:
       description: >
         Every kanxeoctl command and every web UI action is, underneath,
         a REST call this daemon already handles -- one entry is logged
-        per request (source "audit"), except GET /system/logs and
-        GET /health, which are excluded as low-value polling noise.
-        Combined with real kernel dmesg (source "kernel"), kanxeod's
+        per mutating request (source "audit"; POST/PUT/DELETE only --
+        every GET is excluded, ADR-0132, since a GET is a query never
+        an action, and the web dashboard's own routine ~30-request
+        poll cycle every 2s would otherwise drown real actions in
+        noise for no diagnostic value). Combined with real kernel
+        dmesg (source "kernel"), kanxeod's
         own internal diagnostics (source "kanxeod"), and -- since
         ADR-0126 -- every container's own stdout/stderr (source
         "container", always captured regardless of that container's

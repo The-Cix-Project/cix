@@ -19,6 +19,21 @@ Second of the logging/web-UI epic (Part 1 was ADR-0126). The consolidated log st
 #### Verified
 - Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (37 test binaries) confirms zero regressions.
 
+### Part 90 (done): real-world fixes after the logging epic -- log panel fixed size/perf, dynamic shell prompt, CLI polish
+
+Direct user feedback after living with the logging/web-UI epic (ADR-0126-0131) for real: the log panel grew with content instead of staying fixed, the dashboard felt slower, the shell prompt was a fixed literal, `process ls` didn't match `ps`'s style, and no noun-based `container` command existed. See [ADR-0132](docs/adr/0132-log-panel-fixes-and-cli-polish.md).
+
+#### Fixed
+- **Log panel growing instead of staying fixed-size, and the dashboard slowing down -- the same root cause, not two separate bugs.** `#log-output` was missing `min-height: 0` (a classic flexbox gotcha: a flex item's default min-height is its own content size, not 0), so accumulated `.log-entry` divs pushed past `#log-panel`'s fixed 200px and visually spilled out instead of scrolling inside it. Separately, every rendered entry forced a synchronous browser reflow (`scrollTop = scrollHeight` per entry) -- costly once `dispatch()`'s audit-log call started including the web dashboard's own routine ~30-request-per-2s poll cycle (previously only `GET /health` was excluded from the audit trail; generalized to every `GET`, since a query is never an action -- `POST`/`PUT`/`DELETE` unaffected). Client-side rendering also now batches a whole poll's worth of entries into one `DocumentFragment` append instead of one reflow per entry.
+- `kanxeoctl`'s interactive shell prompt is now the connected daemon's own `instance_name` (`GET /system/site`), not a fixed `"kanxeo> "` literal -- falls back to that same default if the fetch fails.
+- `process ls`'s output now matches `ps`'s own established style (bare leading identity columns, then `key=value` pairs, no header row) instead of a fixed-width table.
+
+#### Added
+- `container ls` -- a noun-based synonym for `ps` (identical output), matching every other resource command's own `<noun> <verb>` shape. `ps`/`run`/`stop`/`rm`/etc. are unchanged, deliberately -- this adds a second entry point, it doesn't replace the established Docker-familiar verbs.
+
+#### Verified
+- Full clean rebuild (`-Wall -Werror`, zero warnings) + full regression sweep (38 test binaries) confirm zero regressions -- no existing test asserted on `GET` requests appearing in the audit log. `node --check web/app.js`. A real PTY-driven shell session (Python's `pty` module) confirms the dynamic prompt; `process ls`/`container ls` verified against a real scratch daemon.
+
 ### Part 89 (done): logging/web-UI epic Part 6 (final) -- host process list + kill
 
 Closes the logging/web-UI epic. User request: "I want a host process command with ls and kill maybe and stuff?... show the process as id, command, command_line, container, user_ID, group_id... something that shows processes but also shows containers?" See [ADR-0131](docs/adr/0131-host-process-list-and-kill.md).

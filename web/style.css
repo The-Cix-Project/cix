@@ -375,6 +375,10 @@ main {
 	flex-direction: column;
 	border-top: 1px solid var(--border);
 	background: var(--panel);
+	/* Defensive backstop alongside #log-output's own min-height: 0
+	   below -- nothing rendered inside this panel can ever visually
+	   spill past its fixed 200px, regardless of content volume. */
+	overflow: hidden;
 }
 
 .log-panel-header {
@@ -423,6 +427,15 @@ main {
 
 #log-output {
 	flex: 1 1 auto;
+	/* The classic flexbox scrolling bug: a flex item's default
+	   min-height is "auto" (its own content size), not 0 -- without
+	   this, hundreds of log-entry divs push this element's own
+	   intrinsic height past #log-panel's fixed 200px, spilling out of
+	   it instead of scrolling inside it (confirmed as the real cause
+	   of "the log window grows with content" -- min-height: 0 forces
+	   this element to actually respect flex: 1 1 auto and let
+	   overflow-y handle the rest, the way it was always meant to). */
+	min-height: 0;
 	overflow-y: auto;
 	padding: 0.4rem 1rem;
 	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;

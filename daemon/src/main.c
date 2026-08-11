@@ -10910,10 +10910,22 @@ static void dispatch(int fd, const struct http_request *req)
 	 * -- one log call here is a complete audit trail of every real
 	 * action taken via either client, with zero client-side
 	 * instrumentation needed (ADR for the consolidated log store).
-	 * GET /v1/health excluded: both clients poll it every few
-	 * seconds purely for a status dot, and logging that would drown
-	 * every real action in noise for no diagnostic value. */
-	if (!(strcmp(req->method, "GET") == 0 && strcmp(req->path, "/v1/health") == 0))
+	 * Every GET is excluded, not just /v1/health: a GET is a query,
+	 * never a mutation, and the web dashboard alone issues ~30 of them
+	 * every single poll cycle (every 2s) purely to keep its own cache
+	 * fresh -- none of that is a real, deliberate action worth
+	 * auditing, the same reasoning that originally excluded /health
+	 * specifically (both clients poll it every few seconds purely for
+	 * a status dot) generalizes to every other routine GET the same
+	 * way. Confirmed live: once the web dashboard's own bottom log
+	 * panel started polling GET /v1/system/logs itself (ADR-0129), the
+	 * audit trail became a fast-scrolling wall of the dashboard's own
+	 * routine polling, drowning real actions and costing real render
+	 * time client-side -- this is that fix, not scope creep: the
+	 * original exclusion's own stated rationale already covered this
+	 * case, it just hadn't been generalized yet. POST/PUT/DELETE (the
+	 * real mutations) are completely unaffected. */
+	if (strcmp(req->method, "GET") != 0)
 		logstore_write("audit", "info", "%s %s", req->method, req->path);
 
 	if (strcmp(req->method, "GET") == 0 && strcmp(req->path, "/v1/health") == 0) {

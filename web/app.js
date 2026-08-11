@@ -167,7 +167,15 @@ const MAX_LOG_ENTRIES = 300;
 let logBuffer = [];
 let logSourceFilter = "";
 
-function renderLogEntryDom(entry) {
+/* A pure builder -- returns the element, does not touch the DOM tree
+ * itself. Callers batch their own appendChild()/scrollTop so a poll
+ * cycle adding many entries at once costs one reflow, not one per
+ * entry (see addLogEntriesBatch() below -- a real, confirmed-live
+ * perf bug when this was previously one reflow per entry: the
+ * dashboard's own routine 2s poll cycle alone issues ~30 requests,
+ * each capable of contributing a new entry once server-log polling
+ * merged in, ADR-0129). */
+function buildLogEntryDom(entry) {
 	const time = new Date(entry.ts * 1000).toTimeString().slice(0, 8);
 	const el = document.createElement("div");
 
@@ -186,32 +194,66 @@ function renderLogEntryDom(entry) {
 	el.appendChild(sourceSpan);
 
 	el.appendChild(document.createTextNode(entry.text));
+	return el;
+}
 
-	logOutput.appendChild(el);
+/* Trims the rendered DOM (not logBuffer, which callers already trim
+ * themselves) down to MAX_LOG_ENTRIES and scrolls to the bottom --
+ * pulled out so both the single-entry and batch paths share it, each
+ * calling it exactly once per operation regardless of how many
+ * entries that operation added. */
+function trimAndScrollLogOutput() {
 	while (logOutput.children.length > MAX_LOG_ENTRIES)
 		logOutput.removeChild(logOutput.firstChild);
 	logOutput.scrollTop = logOutput.scrollHeight;
 }
 
-/* Appends one entry to the merged buffer and, if it currently passes
- * the source filter, renders it immediately (an incremental append,
- * not a full rebuild -- rerenderLogPanel() below handles the "filter
- * just changed" case, where every already-buffered entry needs
- * reconsidering). */
+/* Single real-time entry (a toast, or one web-ui action) -- rare
+ * enough that one reflow per call is fine. */
 function addLogEntry(ts, source, level, text, kind) {
-	logBuffer.push({ ts, source, level, text, kind });
+	const entry = { ts, source, level, text, kind };
+
+	logBuffer.push(entry);
 	while (logBuffer.length > MAX_LOG_ENTRIES)
 		logBuffer.shift();
-	if (logSourceFilter === "" || logSourceFilter === source)
-		renderLogEntryDom({ ts, source, level, text, kind });
+	if (logSourceFilter === "" || logSourceFilter === source) {
+		logOutput.appendChild(buildLogEntryDom(entry));
+		trimAndScrollLogOutput();
+	}
+}
+
+/* The polled-server-logs path (pollServerLogs() below can hand this
+ * dozens of entries in one call) -- one DocumentFragment append and
+ * one trim/scroll for the whole batch, not one each per entry. */
+function addLogEntriesBatch(entries) {
+	const fragment = document.createDocumentFragment();
+	let rendered = false;
+
+	for (const entry of entries) {
+		logBuffer.push(entry);
+		if (logSourceFilter === "" || logSourceFilter === entry.source) {
+			fragment.appendChild(buildLogEntryDom(entry));
+			rendered = true;
+		}
+	}
+	while (logBuffer.length > MAX_LOG_ENTRIES)
+		logBuffer.shift();
+	if (rendered) {
+		logOutput.appendChild(fragment);
+		trimAndScrollLogOutput();
+	}
 }
 
 function rerenderLogPanel() {
-	logOutput.textContent = "";
+	const fragment = document.createDocumentFragment();
+
 	for (const entry of logBuffer) {
 		if (logSourceFilter === "" || logSourceFilter === entry.source)
-			renderLogEntryDom(entry);
+			fragment.appendChild(buildLogEntryDom(entry));
 	}
+	logOutput.textContent = "";
+	logOutput.appendChild(fragment);
+	logOutput.scrollTop = logOutput.scrollHeight;
 }
 
 logPanelSource.addEventListener("change", () => {
@@ -261,6 +303,7 @@ async function pollServerLogs() {
 
 	let maxTs = logsSinceTs;
 	let newAtMax = new Set();
+	const toAdd = [];
 
 	for (const e of entries) {
 		if (e.ts < logsSinceTs) continue; /* defensive -- since= should already exclude these */
@@ -269,7 +312,7 @@ async function pollServerLogs() {
 		const text = e.container ? "(" + e.container + ") " + e.msg : e.msg;
 		const kind = LOG_ERROR_LEVELS.has(e.level) ? "error" : "ok";
 
-		addLogEntry(e.ts, e.source, e.level, text, kind);
+		toAdd.push({ ts: e.ts, source: e.source, level: e.level, text, kind });
 
 		if (e.ts > maxTs) {
 			maxTs = e.ts;
@@ -278,6 +321,8 @@ async function pollServerLogs() {
 			newAtMax.add(serverLogEntryKey(e));
 		}
 	}
+	if (toAdd.length > 0)
+		addLogEntriesBatch(toAdd);
 	if (maxTs > logsSinceTs) {
 		logsSinceTs = maxTs;
 		logsSeenAtSinceTs = newAtMax;

@@ -48,6 +48,9 @@ static void print_usage(FILE *out)
 	        "               back to their real state files; does NOT reboot or hot-reload --\n"
 	        "               call reboot separately for it to take effect on the next boot\n"
 	        "  ps\n"
+	        "  container ls  -- same as `ps` (every provisioned container and its current state);\n"
+	        "               a noun-based synonym matching dns/ldap/ntp/syslog/network/etc.'s own\n"
+	        "               <noun> <verb> shape\n"
 	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] [--cpu-max=\"Q P\"]\n"
 	        "      [--cpuset=0-1,3] [--disk-quota=BYTES] [--network=NAME[:IP] ...]\n"
 	        "      [--ip-forward] [--dns-register] [--pki-issue] [--pki-cert-dir=PATH]\n"
@@ -2157,6 +2160,24 @@ static int cmd_ps(const struct kx_client *c, int json_mode)
 	return emit(&r, json_mode, fmt_list);
 }
 
+/* `container ls` -- a noun-based synonym for `ps` (identical output,
+ * same GET /v1/containers), matching the <noun> <verb> shape every
+ * other resource command here already uses (dns/ldap/ntp/syslog/
+ * network/image/devicemap/pkg/pki) -- `ps`/`run`/`stop`/`rm`/etc. stay
+ * exactly as they are, deliberately: Docker-familiar short verbs for
+ * the operations themselves are their own real usability value, not
+ * something this adds to replace, only to give a second, equally
+ * discoverable entry point into for a plain "list what's running". */
+static int cmd_container(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	if (argc < 1 || strcmp(argv[0], "ls") != 0) {
+		fprintf(stderr, "usage: kanxeoctl container ls  -- every provisioned container and its "
+		                "current state (same as `ps`)\n");
+		return 2;
+	}
+	return cmd_ps(c, json_mode);
+}
+
 static int cmd_inspect(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	struct kx_response r;
@@ -2356,27 +2377,33 @@ static int cmd_host_stats(const struct kx_client *c, int json_mode)
 
 /* GET/DELETE /v1/system/processes (logging/web-UI epic Part 6,
  * ADR-0131) -- a real /proc scan, container column correlated
- * server-side via a ppid-chain walk. */
+ * server-side via a ppid-chain walk. Same style as `ps`'s own
+ * fmt_container_line() above: bare leading identity columns (pid,
+ * comm), then key=value pairs, one line per entry, no header row. */
+static void fmt_process_line(const struct json_value *v)
+{
+	long long pid = (long long)json_as_number(json_object_get(v, "pid"));
+	long long ppid = (long long)json_as_number(json_object_get(v, "ppid"));
+	long long uid = (long long)json_as_number(json_object_get(v, "user_id"));
+	long long gid = (long long)json_as_number(json_object_get(v, "group_id"));
+	const char *comm = json_str_field(v, "comm");
+	const char *container = json_str_field(v, "container");
+	const char *cmdline = json_str_field(v, "command_line");
+
+	printf("%-8lld %-20s ppid=%-8lld uid=%-6lld gid=%-6lld container=%-16s cmd=%s\n", pid,
+	       comm != NULL ? comm : "-", ppid, uid, gid,
+	       container != NULL && container[0] != '\0' ? container : "-",
+	       cmdline != NULL ? cmdline : "-");
+}
+
 static void fmt_process_list(const struct json_value *v)
 {
 	size_t i;
 
 	if (v == NULL || v->type != JSON_ARRAY)
 		return;
-	printf("%-8s %-8s %-8s %-8s %-16s %s\n", "PID", "PPID", "UID", "GID", "CONTAINER", "COMMAND");
-	for (i = 0; i < v->u.array.count; i++) {
-		const struct json_value *e = v->u.array.items[i];
-		long long pid = (long long)json_as_number(json_object_get(e, "pid"));
-		long long ppid = (long long)json_as_number(json_object_get(e, "ppid"));
-		long long uid = (long long)json_as_number(json_object_get(e, "user_id"));
-		long long gid = (long long)json_as_number(json_object_get(e, "group_id"));
-		const char *container = json_str_field(e, "container");
-		const char *cmdline = json_str_field(e, "command_line");
-
-		printf("%-8lld %-8lld %-8lld %-8lld %-16s %s\n", pid, ppid, uid, gid,
-		       container != NULL && container[0] != '\0' ? container : "-",
-		       cmdline != NULL ? cmdline : "");
-	}
+	for (i = 0; i < v->u.array.count; i++)
+		fmt_process_line(v->u.array.items[i]);
 }
 
 static int cmd_process_ls(const struct kx_client *c, int json_mode)
@@ -7280,6 +7307,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_time(client, json_mode, argc, argv);
 	if (strcmp(cmd, "ps") == 0)
 		return cmd_ps(client, json_mode);
+	if (strcmp(cmd, "container") == 0)
+		return cmd_container(client, json_mode, argc, argv);
 	if (strcmp(cmd, "run") == 0)
 		return cmd_run(client, json_mode, argc, argv);
 	if (strcmp(cmd, "inspect") == 0)
@@ -7364,9 +7393,32 @@ static int tokenize_line(char *line, char **tokens, int max_tokens)
 	return n;
 }
 
-#define SHELL_PROMPT "kanxeo> "
 #define SHELL_LINE_MAX 4096
 #define SHELL_HISTORY_MAX 100
+
+/* The connected daemon's own instance_name (GET /v1/system/site,
+ * ADR-0046), not a fixed "kanxeo> " -- fetched once at shell startup
+ * by shell_prompt_init() below, so the prompt actually identifies
+ * *which* box this session is talking to (useful the moment an
+ * operator has more than one Kanxeo install reachable). Falls back to
+ * the literal string "kanxeo" (site config's own documented default)
+ * if the fetch fails for any reason -- never leaves the prompt blank. */
+#define SHELL_PROMPT_MAX 96
+static char g_shell_prompt[SHELL_PROMPT_MAX] = "kanxeo> ";
+
+static void shell_prompt_init(const struct kx_client *client)
+{
+	struct kx_response r;
+	const char *instance_name = NULL;
+
+	if (kx_client_request(client, "GET", "/v1/system/site", NULL, &r) == 0) {
+		if (r.status == 200)
+			instance_name = json_str_field(r.json, "instance_name");
+		if (instance_name != NULL && instance_name[0] != '\0')
+			snprintf(g_shell_prompt, sizeof(g_shell_prompt), "%s> ", instance_name);
+		kx_response_free(&r);
+	}
+}
 
 /* Every top-level command dispatch_command() recognizes, plus the
  * shell's own "help"/"exit"/"quit" builtins -- kept as one literal
@@ -7377,7 +7429,7 @@ static int tokenize_line(char *line, char **tokens, int max_tokens)
  * makes on the web dashboard side (web/app.js) for the identical
  * reason (a route table that can't be enumerated by walking code). */
 static const char *const SHELL_COMMANDS[] = {
-	"backup", "boot",      "console",       "daemon-config", "device",   "devicemap", "diskrole",
+	"backup", "boot",      "console",       "container",     "daemon-config", "device",   "devicemap", "diskrole",
 	"disks",  "dns",       "exit",          "files",    "health",    "help",
 	"host-stats", "image", "inspect",       "iso",      "ldap",      "logs",      "network",
 	"ntp",
@@ -7507,7 +7559,8 @@ static void shell_redraw(const char *buf, size_t len, size_t cursor)
 {
 	char tail[32];
 
-	shell_write_all("\r" SHELL_PROMPT, 1 + strlen(SHELL_PROMPT));
+	shell_write_all("\r", 1);
+	shell_write_all(g_shell_prompt, strlen(g_shell_prompt));
 	shell_write_all(buf, len);
 	shell_write_all("\x1b[K", 3);
 	if (cursor < len) {
@@ -7603,7 +7656,7 @@ static int shell_read_line(char *buf, size_t buf_size)
 			len = 0;
 			cursor = 0;
 			hist_pos = -1;
-			shell_write_all(SHELL_PROMPT, strlen(SHELL_PROMPT));
+			shell_write_all(g_shell_prompt, strlen(g_shell_prompt));
 			continue;
 		}
 		if (key == 0x04) { /* Ctrl-D */
@@ -7677,10 +7730,11 @@ static int run_shell_fallback(const struct kx_client *client, int json_mode)
 	char line[SHELL_LINE_MAX];
 	char *tokens[SHELL_MAX_TOKENS];
 
+	shell_prompt_init(client);
 	for (;;) {
 		int n;
 
-		printf(SHELL_PROMPT);
+		printf("%s", g_shell_prompt);
 		fflush(stdout);
 		if (fgets(line, sizeof(line), stdin) == NULL) {
 			printf("\n");
@@ -7726,6 +7780,7 @@ static int run_shell(const struct kx_client *client, int json_mode)
 	if (shell_set_raw_mode(&saved) != 0)
 		return run_shell_fallback(client, json_mode);
 
+	shell_prompt_init(client);
 	for (;;) {
 		int n, rc;
 		struct termios raw = saved;
@@ -7739,7 +7794,7 @@ static int run_shell(const struct kx_client *client, int json_mode)
 		 * call this shell's commands already make. */
 		cfmakeraw(&raw);
 		tcsetattr(STDIN_FILENO, TCSANOW, &raw);
-		shell_write_all(SHELL_PROMPT, strlen(SHELL_PROMPT));
+		shell_write_all(g_shell_prompt, strlen(g_shell_prompt));
 		rc = shell_read_line(line, sizeof(line));
 		tcsetattr(STDIN_FILENO, TCSANOW, &saved); /* cooked mode for command output */
 

@@ -10,7 +10,7 @@ kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 
 - `--host=`/`--port=` — default `127.0.0.1:7620`.
 - `--json` — print the raw API response instead of the default formatted text. Every subcommand supports it.
-- Running `kanxeoctl` with no command at all, from a real terminal (`isatty(stdin)`), drops into an **interactive shell**: one line, one command, reusing the same connection — useful for a session of several related calls without re-establishing a TCP connection each time (`kanxeoctl --json` plus a piped/redirected stdin skips the shell and falls through to the usual usage-error path instead, so scripting is unaffected).
+- Running `kanxeoctl` with no command at all, from a real terminal (`isatty(stdin)`), drops into an **interactive shell**: one line, one command, reusing the same connection — useful for a session of several related calls without re-establishing a TCP connection each time (`kanxeoctl --json` plus a piped/redirected stdin skips the shell and falls through to the usual usage-error path instead, so scripting is unaffected). The prompt is the connected daemon's own `instance_name` (`GET /system/site`, e.g. `myhost> `), not a fixed string — useful the moment more than one Kanxeo install is reachable (ADR-0132).
 - **Exit codes**: `0` success, `1` the API call itself failed (a non-2xx response, or a transport-level failure reaching the daemon), `2` a usage error (bad flags, unknown subcommand) — checked before any network call is made.
 
 ## System
@@ -62,6 +62,7 @@ See [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.m
 | Command | |
 |---|---|
 | `ps` | List all containers |
+| `container ls` | Same as `ps` — a noun-based synonym matching `dns`/`ldap`/`ntp`/etc.'s own `<noun> <verb>` shape (ADR-0132) |
 | `run --name=NAME --image=IMAGE [flags...] -- CMD [ARGS...]` | Create and start a container — see below for the full flag list |
 | `inspect NAME` | Show one container |
 | `stop NAME` | Kill it now, keep its persisted definition (unlike `rm`) |

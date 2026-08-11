@@ -2214,6 +2214,16 @@ Second of the logging/web-UI epic. The consolidated log store stays the one sour
 
 Verified: `test/test_syslogfwd.c` covers the registration bookkeeping (mirroring the existing NTP test's own coverage) plus a genuine wire-level proof -- a real receiver container (a small new fixture binding real UDP `:514` inside its own network namespace) confirmed, via its own transparently-captured stdout, to have received a well-formed RFC 3164 datagram from a real sender container, naming the sender correctly and carrying its message verbatim. Full clean rebuild (`-Wall -Werror`, zero warnings) + full regression sweep (37 test binaries) confirm zero regressions.
 
+## Part 90 (done): real-world fixes after the logging epic -- log panel fixed size/perf, dynamic shell prompt, CLI polish
+
+Direct user feedback after using the logging/web-UI epic (Parts 1-6, ADR-0126-0131) for real. See [ADR-0132](docs/adr/0132-log-panel-fixes-and-cli-polish.md).
+
+The log panel growing instead of staying fixed-size and the dashboard feeling slower turned out to share one root cause chain: a missing `min-height: 0` (a classic flexbox gotcha) let accumulated log entries spill past the panel's fixed height instead of scrolling inside it, and every rendered entry forced its own synchronous browser reflow -- costly once the daemon's own per-request audit log started including the dashboard's own routine ~30-request-per-2s polling cycle (`GET /system/logs` itself became one of those 30 once the merged log panel, ADR-0129, started polling it). Fixed on both sides: the audit log's `GET /health`-only exclusion generalized to every `GET` (a query is never an action; mutations are unaffected), and the client now batches a whole poll's worth of new entries into one DOM update instead of one reflow per entry.
+
+Also: the interactive shell prompt now reflects the connected daemon's own `instance_name` instead of a fixed literal; `process ls` restyled to match `ps`'s own established output convention; a new `container ls` command added as a noun-based synonym for `ps`, matching every other resource command's own `<noun> <verb>` shape, without touching the already-established Docker-familiar container verbs.
+
+Verified: full clean rebuild + full regression sweep (38 test binaries, no test asserted on GET requests in the audit log) confirm zero regressions. A real PTY-driven shell session confirmed the dynamic prompt live.
+
 ## Part 89 (done): logging/web-UI epic Part 6 (final) -- host process list + kill
 
 Closes the logging/web-UI epic (Parts 1-6, ADR-0126 through ADR-0131). `GET`/`DELETE /v1/system/processes` -- a real, direct `/proc` scan of every process on the box, each correlated to a container (if any) by walking its own real host ppid chain against the registry's own known container root pids, rather than a pid-namespace comparison (every container's own init is a direct `clone3()` child of `kanxeod`, so the ppid walk gives the same answer more cheaply). Kill is a real, immediate SIGKILL, refusing only pid 1 and this daemon's own real pid -- a pid belonging to a running container is allowed, since killing it is exactly equivalent to that container crashing on its own and the existing exit handling already covers it. See [ADR-0131](docs/adr/0131-host-process-list-and-kill.md).
