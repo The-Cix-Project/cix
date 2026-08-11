@@ -2,9 +2,11 @@
 #include "persist.h"
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 static char g_nameservers[RESOLV_MAX_NAMESERVERS][RESOLV_IP_STRLEN];
 static int g_count;
@@ -60,8 +62,38 @@ enum resolv_error resolv_set(const char *const *nameservers, int count)
 		off += (size_t)written;
 	}
 
-	if (persist_atomic_write(g_state_path, buf, off) != 0)
-		return RESOLV_ERR_PERSIST_FAILED;
+	/*
+	 * NOT persist_atomic_write(): this file is bind-mounted onto
+	 * /etc/resolv.conf at boot (boot_init(), main.c) so kanxeod's own
+	 * curl/openssl subprocesses -- and every future host-level tool --
+	 * resolve through it live. A bind mount binds to the INODE that
+	 * was at this path at mount time, not the path itself -- persist_
+	 * atomic_write()'s rename(tmp, path) swaps in a NEW inode, which
+	 * silently detaches /etc/resolv.conf's own bind mount from any
+	 * future write (confirmed live: a PUT after boot updated this
+	 * module's own state and GET reported it correctly, but the box's
+	 * real outbound curl fetches kept failing to resolve the exact
+	 * name just configured, until the next reboot re-did the bind
+	 * mount against the by-then-current file). An in-place O_TRUNC
+	 * write, same inode throughout, is what this header's own doc
+	 * comment already promises ("takes effect, immediately, no reboot
+	 * needed") -- trading persist_atomic_write()'s crash-safety
+	 * (a crash mid-write could in principle leave a truncated file)
+	 * for that liveness, a reasonable trade for a small, rarely-
+	 * written file where the alternative is silently not working at
+	 * all until an operator happens to reboot.
+	 */
+	{
+		int fd = open(g_state_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+
+		if (fd < 0)
+			return RESOLV_ERR_PERSIST_FAILED;
+		if (write(fd, buf, off) != (ssize_t)off || fsync(fd) != 0) {
+			close(fd);
+			return RESOLV_ERR_PERSIST_FAILED;
+		}
+		close(fd);
+	}
 
 	g_count = count;
 	for (i = 0; i < count; i++)

@@ -266,6 +266,41 @@ int main(void)
 	}
 	kx_response_free(&r);
 
+	/* 8a. GET/PUT /v1/system/resolv (ADR-0076/ADR-0132): a real
+	 * round-trip proving resolv_set()'s own write mechanism (changed
+	 * from persist_atomic_write() to an in-place O_TRUNC write, so a
+	 * real --init-mode boot's /etc/resolv.conf bind mount stays live
+	 * across a PUT, ADR-0132) still leaves GET reporting exactly what
+	 * was set -- the actual bind-mount liveness itself can't be
+	 * exercised here, since boot_init() only runs under --init-mode
+	 * (not this plain dev/test daemon invocation), same documented
+	 * limitation as every other real-boot-only behavior in this
+	 * project. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT", "/v1/system/resolv",
+	                       "{\"nameservers\":[\"192.168.15.101\",\"192.168.15.102\"]}", &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: PUT /v1/system/resolv, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET", "/v1/system/resolv", NULL, &r) != 0 || r.status != 200) {
+		fprintf(stderr, "FAIL: GET /v1/system/resolv, status=%d\n", r.status);
+		ok = 0;
+	} else {
+		const struct json_value *nameservers = json_object_get(r.json, "nameservers");
+
+		if (nameservers == NULL || nameservers->type != JSON_ARRAY || nameservers->u.array.count != 2 ||
+		    !str_eq(json_as_string(nameservers->u.array.items[0]), "192.168.15.101") ||
+		    !str_eq(json_as_string(nameservers->u.array.items[1]), "192.168.15.102")) {
+			fprintf(stderr, "FAIL: GET /v1/system/resolv did not reflect the PUT\n");
+			ok = 0;
+		}
+	}
+	kx_response_free(&r);
+
 	/* 9. clean shutdown */
 	kill(daemon_pid, SIGTERM);
 	{
