@@ -45,6 +45,7 @@ System
     Daemon
     Devices
     Routes
+    Host Stats
     Logs
     Update
     Backup
@@ -73,6 +74,7 @@ Six tabs, Proxmox-style: **Summary**, **Hardware**, **Options**, **Stats**, **Co
 - **Network detail** — attached interfaces (attach/detach directly from here), IP allocation, and a "Routes on this network" sub-table (routes the kernel resolves to this network's own bridge as their outgoing interface — read-only filter, remove still works from here).
 - **System > Server > Routes** — the box's own real kernel IPv4 routing table (ADR-0066); moved here (under System's Server group) from the Networks tree, since it reads as system-level diagnostic state, not a Kanxeo-managed network resource. Add/remove real routes directly (ADR-0067 Part 3) — a route added or removed here is gone on the next reboot unless something else re-applies it, same as any kernel route not backed by persisted Kanxeo state.
 - **System > Server > Daemon** — `kanxeod`'s own listen port, HTTP/HTTPS toggles, and which network it's currently bound to (Part 0.5). The management-network dropdown only lists networks with their own address (repointing anywhere else is refused server-side). A "Bind IP (optional)" field sets a dedicated second address on the management network's own bridge (ADR-0068) — kanxeod binds there instead of that network's own address; a "Clear bind IP" checkbox reverts to it. Since the dashboard's own requests are relative to the page it was loaded from, saving a change to the port, the management network, or the bind IP disconnects the page the moment it takes effect — confirmed with a dialog before submitting any of them. A "Host swap" block on the same page (ADR-0069) shows whether a swap file is currently enabled, with a size field + Enable button and a Disable button — useful for memory-heavy package builds on a box with limited RAM.
+- **System > Server > Host Stats** — the host-wide counterpart to a container's own Stats tab (ADR-0130): four live graphs (CPU/memory/disk/network, same hand-rolled canvas rendering, no charting library) for `GET /system/stats`, plus a load-average text line. Network is every real interface combined (loopback and every container's own veth included), labeled as such. Polls only while this page is open, same as the container Stats tab.
 - **System > Server > Logs** — configuration only (ADR-0129 moved browsing to the always-visible bottom log panel, see Layout above): a size-cap field for the consolidated log store (8 rotating segments, enforced at segment granularity — not byte-exact) with its own Save button.
 
 ## What's deliberately not here

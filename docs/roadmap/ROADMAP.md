@@ -2214,6 +2214,14 @@ Second of the logging/web-UI epic. The consolidated log store stays the one sour
 
 Verified: `test/test_syslogfwd.c` covers the registration bookkeeping (mirroring the existing NTP test's own coverage) plus a genuine wire-level proof -- a real receiver container (a small new fixture binding real UDP `:514` inside its own network namespace) confirmed, via its own transparently-captured stdout, to have received a well-formed RFC 3164 datagram from a real sender container, naming the sender correctly and carrying its message verbatim. Full clean rebuild (`-Wall -Werror`, zero warnings) + full regression sweep (37 test binaries) confirm zero regressions.
 
+## Part 88 (done): logging/web-UI epic Part 4 -- host stats graphs page
+
+`GET /v1/system/stats` (ADR-0073) has existed in the API since that phase but had zero web dashboard presence until now -- closed with a new System > Server > Host Stats page, four live graphs (CPU/memory/disk/network) reusing the container Stats tab's own hand-rolled canvas chart renderer, plus a load-average text line. See [ADR-0130](docs/adr/0130-host-stats-graphs-page.md).
+
+Host-side CPU% needed a genuinely different computation from the container case (raw `/proc/stat` jiffies and the classic idle-delta formula, vs. a cgroup's own cumulative usage counter) -- not a copy-paste. Network is every real interface summed together, honestly labeled "all interfaces combined" since it necessarily includes loopback and every container's own veth traffic alongside real external I/O.
+
+Verified: `node --check`, response field names cross-checked directly against `daemon/src/main.c`'s own JSON output (not just the OpenAPI doc). Full clean rebuild + full regression sweep (37 test binaries, no daemon-side code changed) confirm zero regressions.
+
 ## Part 87 (done): logging/web-UI epic Part 3 -- merged bottom log panel + toast notifications
 
 User-requested web dashboard reorganization: browsing the consolidated log moved out of its tree page and into the dashboard's own always-visible bottom panel, merged with the panel's pre-existing client-side "web UI activity" stream into one filtered view; the status bar became a fixed-position, auto-dismissing toast that also lands in that same merged panel. See [ADR-0129](docs/adr/0129-merged-log-panel-and-toast.md).

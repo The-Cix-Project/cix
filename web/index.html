@@ -991,6 +991,34 @@
 			<p class="hint">Part 5, ADR-0124: when a rolling image auto-rebuilds, every <code>follow_rolling</code> container on it gets a uniformly-random restart delay up to this window, spreading the restarts out instead of killing them all in the same instant. 0 disables jitter (restart immediately).</p>
 		</section>
 
+		<section class="view" id="view-host-stats" hidden>
+			<h2>Host Stats</h2>
+			<div class="stats-grid">
+				<div class="stats-card">
+					<h3>CPU</h3>
+					<canvas id="hs-stats-cpu" width="420" height="130"></canvas>
+					<p class="hint" id="hs-stats-cpu-label">&hellip;</p>
+				</div>
+				<div class="stats-card">
+					<h3>Memory</h3>
+					<canvas id="hs-stats-mem" width="420" height="130"></canvas>
+					<p class="hint" id="hs-stats-mem-label">&hellip;</p>
+				</div>
+				<div class="stats-card">
+					<h3>Disk</h3>
+					<canvas id="hs-stats-disk" width="420" height="130"></canvas>
+					<p class="hint" id="hs-stats-disk-label">&hellip;</p>
+				</div>
+				<div class="stats-card">
+					<h3>Network (all interfaces combined)</h3>
+					<canvas id="hs-stats-net" width="420" height="130"></canvas>
+					<p class="hint" id="hs-stats-net-label">&hellip;</p>
+				</div>
+			</div>
+			<p class="hint" id="hs-stats-load">Load average: &hellip;</p>
+			<p class="hint">Real, host-side usage (ADR-0073/ADR-0130) -- /proc + statvfs() on the daemon's own data directory, no in-container agent, sampled every 2s while this page stays open. History resets whenever this page (re)opens. Disk is the filesystem kanxeod's own data directory lives on, not every mounted filesystem on the box.</p>
+		</section>
+
 		<section class="view" id="view-logs" hidden>
 			<div class="view-list">
 				<h2>Logs</h2>

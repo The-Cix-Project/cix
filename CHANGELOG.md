@@ -19,6 +19,21 @@ Second of the logging/web-UI epic (Part 1 was ADR-0126). The consolidated log st
 #### Verified
 - Full clean rebuild (`-Wall -Werror`), zero warnings. Full regression sweep (37 test binaries) confirms zero regressions.
 
+### Part 88 (done): logging/web-UI epic Part 4 -- host stats graphs page
+
+User request: "in the system tree, i want to be able to have a page which shows the host stats in graphs and so on?" `GET /v1/system/stats` (ADR-0073) has existed since that ADR but had zero web dashboard presence until now. See [ADR-0130](docs/adr/0130-host-stats-graphs-page.md).
+
+#### Added
+- New tree leaf, System > Server > Host Stats -- four live graphs (CPU/memory/disk/network) reusing the container Stats tab's own `drawChart()` canvas renderer verbatim, plus a load-average text line (load1/5/15 are too slow-moving to graph meaningfully over this page's own ~2-minute window).
+- A new `stats` tree icon (small bar-chart glyph, matching every other tree icon's own style).
+
+#### Notes
+- Host-side CPU% uses the classic `/proc/stat` idle-delta-over-total-delta formula (`GET /system/stats` gives raw cumulative jiffies, not a cgroup `usage_usec` counter the way a container's own stats do) -- a genuinely different computation from the container Stats tab's own CPU chart, not just a copy-paste.
+- Network chart sums every real interface (`GET /system/stats`'s own `networks[]`, not container-scoped) into one aggregate rate -- labeled "all interfaces combined" in the UI since this necessarily includes loopback and every container's own veth traffic, an honest label rather than a curated-but-misleading one.
+
+#### Verified
+- `node --check web/app.js`. Response field names cross-checked directly against `daemon/src/main.c`'s own `jw_key()` calls (not just `openapi.yaml`). Full clean rebuild (`-Wall -Werror`, zero warnings, no daemon-side code changed) + full regression sweep (37 test binaries) confirm zero regressions.
+
 ### Part 87 (done): logging/web-UI epic Part 3 -- merged bottom log panel + toast notifications
 
 User-requested web dashboard reorganization: "let's move the logs themselves (the display) on the web ui to the logs area on the page (bottom)... only the configuration stuff should be in the tree/page" and "the green/red info box... should be a popup with a disappear timer, and it should be shown in the logs." See [ADR-0129](docs/adr/0129-merged-log-panel-and-toast.md).

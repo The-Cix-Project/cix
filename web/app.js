@@ -431,6 +431,7 @@ const CATEGORY_VIEWS = {
 	"pkg-cache": "view-pkg-cache",
 	site: "view-site",
 	"daemon-config": "view-daemon-config",
+	"host-stats": "view-host-stats",
 	logs: "view-logs",
 	backup: "view-backup",
 	update: "view-update",
@@ -471,10 +472,14 @@ function renderCurrentView() {
 			closeConsole();
 		if (statsContainerName !== null)
 			stopStatsPolling();
+		if (route.category !== "host-stats")
+			stopHostStatsPolling();
 		if (route.category === "networks" && route.name !== null)
 			renderNetworkDetail(route.name);
 		else if (route.category === "routes")
 			renderRoutesList();
+		else if (route.category === "host-stats")
+			startHostStatsPolling();
 		else if (route.category === "logs")
 			renderLogsList();
 		else if (route.category === "images" && route.name !== null)
@@ -591,6 +596,8 @@ const TREE_ICONS = {
 		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="4.5" width="7" height="7" rx="0.5"/><line x1="6" y1="1.5" x2="6" y2="4.5"/><line x1="10" y1="1.5" x2="10" y2="4.5"/><line x1="6" y1="11.5" x2="6" y2="14.5"/><line x1="10" y1="11.5" x2="10" y2="14.5"/><line x1="1.5" y1="6" x2="4.5" y2="6"/><line x1="1.5" y1="10" x2="4.5" y2="10"/><line x1="11.5" y1="6" x2="14.5" y2="6"/><line x1="11.5" y1="10" x2="14.5" y2="10"/></g></svg>',
 	update:
 		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M13 8 A5 5 0 1 1 11 4"/><polyline points="13,2 13,5.5 9.5,5.5"/></g></svg>',
+	stats:
+		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><line x1="1.5" y1="14.5" x2="14.5" y2="14.5"/><rect x="3" y="9" width="2.5" height="5.5"/><rect x="6.75" y="5" width="2.5" height="9.5"/><rect x="10.5" y="7.5" width="2.5" height="7"/></g></svg>',
 };
 
 /* colorClass tints the icon itself (via CSS "color", which the icon's
@@ -870,6 +877,7 @@ function renderTree() {
 						{ label: "Daemon", hash: "daemon-config", icon: "system" },
 						{ label: "Devices", hash: "devices", icon: "devices" },
 						{ label: "Routes", hash: "routes", icon: "networks" },
+						{ label: "Host Stats", hash: "host-stats", icon: "stats" },
 						{ label: "Logs", hash: "logs", icon: "system" },
 						{ label: "Update", hash: "update", icon: "update" },
 						{ label: "Backup", hash: "backup", icon: "backup" },
@@ -1588,6 +1596,167 @@ function startStatsPolling(name) {
 	statsContainerName = name;
 	pollStatsOnce(name);
 	statsTimer = setInterval(() => pollStatsOnce(name), POLL_INTERVAL_MS);
+}
+
+/*
+ * ---------- Host stats (ADR-0073/ADR-0130) ----------
+ * Same shape as container stats above (a client-side rolling window,
+ * only kept while this page is open, drawChart() reused verbatim) --
+ * GET /v1/system/stats is the host-wide counterpart, mirroring
+ * GET /containers/{name}/stats' own "raw counters only, caller
+ * computes rates" convention. Two real differences from the container
+ * case: CPU here comes as cumulative /proc/stat jiffies (not a cgroup
+ * usage_usec), needing the classic idle-delta/total-delta CPU% formula
+ * instead of a straight usec/ms ratio; and memory/disk are already
+ * gauges (current free/avail bytes), not something to diff against a
+ * prior sample the way a cgroup's own cumulative usage counters are.
+ */
+const HOST_STATS_HISTORY_MAX = 60;
+
+let hostStatsTimer = null;
+let hostStatsHistory = [];
+
+function stopHostStatsPolling() {
+	if (hostStatsTimer !== null) {
+		clearInterval(hostStatsTimer);
+		hostStatsTimer = null;
+	}
+	hostStatsHistory = [];
+}
+
+function renderHostStatsCharts() {
+	const h = hostStatsHistory;
+
+	if (h.length === 0)
+		return;
+
+	const rateTimes = h.slice(1).map((s) => s.t);
+	const gaugeTimes = h.map((s) => s.t);
+
+	/* Classic /proc/stat CPU% -- idle (only, not iowait -- the same
+	 * "busy" definition top(1) uses by default) as a fraction of total
+	 * jiffies elapsed between two samples. */
+	const cpuPercents = [];
+
+	for (let i = 1; i < h.length; i++) {
+		const dTotal = h[i].cpuTotal - h[i - 1].cpuTotal;
+		const dIdle = h[i].cpuIdle - h[i - 1].cpuIdle;
+
+		cpuPercents.push(dTotal > 0 ? Math.max(0, (1 - dIdle / dTotal) * 100) : 0);
+	}
+	drawChart(document.getElementById("hs-stats-cpu"), [{ values: cpuPercents, color: "#0a84ff" }], {
+		times: rateTimes,
+		maxY: 100,
+		formatY: (v) => v.toFixed(0) + "%",
+	});
+	document.getElementById("hs-stats-cpu-label").textContent =
+		cpuPercents.length > 0 ? cpuPercents[cpuPercents.length - 1].toFixed(1) + "%" : "…";
+
+	const memValues = h.map((s) => s.memUsed);
+	const memTotal = h[h.length - 1].memTotal;
+
+	drawChart(document.getElementById("hs-stats-mem"), [{ values: memValues, color: "#30d158" }], {
+		times: gaugeTimes,
+		maxY: memTotal || 0,
+		formatY: formatBytes,
+	});
+	{
+		const last = h[h.length - 1];
+
+		document.getElementById("hs-stats-mem-label").textContent =
+			formatBytes(last.memUsed) + " (total " + formatBytes(last.memTotal) + ")";
+	}
+
+	const diskValues = h.map((s) => s.diskUsed);
+	const diskTotal = h[h.length - 1].diskTotal;
+
+	drawChart(document.getElementById("hs-stats-disk"), [{ values: diskValues, color: "#ff9f0a" }], {
+		times: gaugeTimes,
+		maxY: diskTotal || 0,
+		formatY: formatBytes,
+	});
+	{
+		const last = h[h.length - 1];
+
+		document.getElementById("hs-stats-disk-label").textContent =
+			formatBytes(last.diskUsed) + " (total " + formatBytes(last.diskTotal) + ")";
+	}
+
+	const rxRates = [];
+	const txRates = [];
+
+	for (let i = 1; i < h.length; i++) {
+		const dMs = h[i].t - h[i - 1].t;
+		const dRx = h[i].netRx - h[i - 1].netRx;
+		const dTx = h[i].netTx - h[i - 1].netTx;
+
+		rxRates.push(dMs > 0 ? Math.max(0, (dRx / dMs) * 1000) : 0);
+		txRates.push(dMs > 0 ? Math.max(0, (dTx / dMs) * 1000) : 0);
+	}
+	drawChart(
+		document.getElementById("hs-stats-net"),
+		[
+			{ values: rxRates, color: "#0a84ff" },
+			{ values: txRates, color: "#ff375f" },
+		],
+		{ times: rateTimes, formatY: (v) => formatBytes(v) + "/s" }
+	);
+	document.getElementById("hs-stats-net-label").textContent =
+		rxRates.length > 0
+			? formatBytes(rxRates[rxRates.length - 1]) + "/s ↓  " + formatBytes(txRates[txRates.length - 1]) + "/s ↑"
+			: "…";
+
+	const last = h[h.length - 1];
+
+	document.getElementById("hs-stats-load").textContent =
+		"Load average: " + last.load1.toFixed(2) + " (1m)  " + last.load5.toFixed(2) + " (5m)  " +
+		last.load15.toFixed(2) + " (15m)";
+}
+
+async function pollHostStatsOnce() {
+	let stats;
+
+	try {
+		stats = await apiRequest("GET", "/v1/system/stats");
+	} catch (e) {
+		return; /* transient -- the next tick resolves it */
+	}
+	if (hostStatsTimer === null)
+		return; /* the page moved on before this request resolved */
+
+	const netRx = (stats.networks || []).reduce((sum, n) => sum + n.rx_bytes, 0);
+	const netTx = (stats.networks || []).reduce((sum, n) => sum + n.tx_bytes, 0);
+	const c = stats.cpu;
+	const cpuTotal = c.user_jiffies + c.nice_jiffies + c.system_jiffies + c.idle_jiffies +
+	                  c.iowait_jiffies + c.irq_jiffies + c.softirq_jiffies + c.steal_jiffies;
+
+	hostStatsHistory.push({
+		t: Date.now(),
+		cpuTotal: cpuTotal,
+		cpuIdle: c.idle_jiffies,
+		memUsed: stats.memory.total_bytes - stats.memory.available_bytes,
+		memTotal: stats.memory.total_bytes,
+		diskUsed: stats.disk.total_bytes - stats.disk.avail_bytes,
+		diskTotal: stats.disk.total_bytes,
+		netRx: netRx,
+		netTx: netTx,
+		load1: stats.load.load1,
+		load5: stats.load.load5,
+		load15: stats.load.load15,
+	});
+	if (hostStatsHistory.length > HOST_STATS_HISTORY_MAX)
+		hostStatsHistory.shift();
+
+	renderHostStatsCharts();
+}
+
+function startHostStatsPolling() {
+	if (hostStatsTimer !== null)
+		return; /* already polling -- a poll-driven re-render of the same
+		         * page must not reset history */
+
+	pollHostStatsOnce();
+	hostStatsTimer = setInterval(pollHostStatsOnce, POLL_INTERVAL_MS);
 }
 
 function consoleKeydown(event) {
