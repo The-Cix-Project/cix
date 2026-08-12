@@ -6624,9 +6624,11 @@ static int create_container_from_body(const char *body, size_t body_len,
 			 * unplugged) is a real error here, not silently retried as
 			 * a raw id.
 			 */
-			n = devicemap_resolve(id, matches, CONTAINER_MAX_DEVICES - device_count);
+			n = devicemap_resolve(id, CONTAINERS_DIR, matches,
+			                       CONTAINER_MAX_DEVICES - device_count);
 			if (n < 0)
-				n = device_find_group(id, matches, CONTAINER_MAX_DEVICES - device_count);
+				n = device_find_group(id, CONTAINERS_DIR, matches,
+				                       CONTAINER_MAX_DEVICES - device_count);
 			if (n <= 0) {
 				json_free(root);
 				snprintf(err_msg, err_msg_size, "unknown, unassignable, or not-currently-present device");
@@ -6687,7 +6689,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 			 * there is no separate "already claimed" check needed here
 			 * beyond this same lookup every other device grant uses. */
 			snprintf(dev_id, sizeof(dev_id), "net:%s", ifname);
-			dd = device_find(dev_id);
+			dd = device_find(dev_id, CONTAINERS_DIR);
 			if (dd == NULL || !dd->assignable) {
 				json_free(root);
 				snprintf(err_msg, err_msg_size, "unknown or unassignable interface");
@@ -8099,7 +8101,7 @@ static void handle_device_list(int fd)
 	jw_init(&w);
 	jw_obj_open(&w);
 	jw_key(&w, "devices");
-	device_write_json_list(&w);
+	device_write_json_list(&w, CONTAINERS_DIR);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -8161,7 +8163,7 @@ static void handle_devicemap_list(int fd)
 	jw_init(&w);
 	jw_obj_open(&w);
 	jw_key(&w, "devicemaps");
-	devicemap_write_json_list(&w);
+	devicemap_write_json_list(&w, CONTAINERS_DIR);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -8206,7 +8208,7 @@ static void handle_devicemap_create(int fd, const char *body, size_t body_len)
 			struct json_writer w;
 
 			jw_init(&w);
-			devicemap_write_json_one(name_buf, &w);
+			devicemap_write_json_one(name_buf, CONTAINERS_DIR, &w);
 			respond_json(fd, 201, "Created", &w);
 			jw_free(&w);
 		}
@@ -14062,6 +14064,13 @@ int main(int argc, char **argv)
 		return 1;
 	if (diskrole_init(DISKROLE_STATE_PATH) != 0)
 		return 1;
+	/* ADR-0142: recover any role-assigned disk this box already
+	 * formatted successfully (possibly in a prior daemon lifetime) but
+	 * that isn't currently mounted -- diskformat.c's own job state is
+	 * purely in-memory and forgotten across every restart, even though
+	 * the real mount doesn't need to be. Best-effort, never fatal to
+	 * startup. */
+	diskformat_remount_present_role_disks(CONTAINERS_DIR, DISKS_MOUNT_DIR);
 	if (quotamap_init(QUOTAMAP_STATE_PATH) != 0)
 		return 1;
 	if (swap_init(SWAP_STATE_PATH, SWAP_FILE_PATH) != 0)

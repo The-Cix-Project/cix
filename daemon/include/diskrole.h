@@ -35,6 +35,15 @@
 enum diskrole_kind {
 	DISKROLE_CONTAINER_STORAGE,
 	DISKROLE_BACKUP,
+	/* ADR-0141: each of these three is a daemon-wide singleton (unlike
+	 * container-storage, which is inherently multi-instance) -- multiple
+	 * disks can carry the same one of these roles (eligible candidates),
+	 * but only one is ever the *active* placement at a time, tracked
+	 * separately (see storageplacement.h). Assigning the role itself
+	 * never moves anything; that's what POST .../migrate is for. */
+	DISKROLE_STATE_STORAGE,
+	DISKROLE_REBUILDABLE_STORAGE,
+	DISKROLE_LOG_STORAGE,
 };
 
 enum diskrole_error {
@@ -52,8 +61,9 @@ enum diskrole_error {
 int diskrole_init(const char *state_path);
 
 /*
- * Assigns role_str ("container-storage" or "backup" -- anything else
- * is DISKROLE_ERR_INVALID_ROLE) to disk_name. disk_name is validated
+ * Assigns role_str ("container-storage", "backup", "state-storage",
+ * "rebuildable-storage", or "log-storage" -- anything else is
+ * DISKROLE_ERR_INVALID_ROLE) to disk_name. disk_name is validated
  * as a plain simple name (same charset every other simple resource
  * name uses) but is NOT required to currently resolve to a real disk
  * (GET /v1/diskroles reports whether it currently does, the same
@@ -75,6 +85,23 @@ enum diskrole_error diskrole_delete(const char *disk_name);
 
 /* NULL if disk_name has no assigned role. */
 const char *diskrole_lookup(const char *disk_name);
+
+/*
+ * ADR-0142: records which real filesystem a disk was last successfully
+ * formatted with (diskformat.c calls this once a format job reaches
+ * DISKFORMAT_STATE_READY) -- diskformat.c's own job state is purely
+ * in-memory and forgotten across a restart, but this persists
+ * alongside the role itself in the same diskroles.json, so a later
+ * boot's own auto-remount pass knows which real fstype to mount with
+ * instead of guessing. No-op (returns DISKROLE_ERR_NOT_FOUND) if
+ * disk_name has no role assigned -- fs_type is only ever meaningful
+ * attached to a real role.
+ */
+enum diskrole_error diskrole_set_fs_type(const char *disk_name, const char *fs_type);
+
+/* NULL if disk_name has no role, or has a role but was never
+ * successfully formatted (diskrole_set_fs_type() never called for it). */
+const char *diskrole_lookup_fs_type(const char *disk_name);
 
 /*
  * Writes one entry (disk_name, role, and -- resolved fresh via

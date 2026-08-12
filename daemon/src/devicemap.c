@@ -201,7 +201,8 @@ enum devicemap_error devicemap_delete(const char *name)
 	return DEVICEMAP_OK;
 }
 
-int devicemap_resolve(const char *name, const struct discovered_device *out[], int cap)
+int devicemap_resolve(const char *name, const char *os_containers_dir,
+                       const struct discovered_device *out[], int cap)
 {
 	static struct discovered_device cache[DEVICE_ENUM_MAX];
 	struct devicemap_entry *m = map_find(name);
@@ -210,7 +211,7 @@ int devicemap_resolve(const char *name, const struct discovered_device *out[], i
 	if (m == NULL)
 		return -1;
 
-	n = device_enumerate(cache, DEVICE_ENUM_MAX);
+	n = device_enumerate(cache, DEVICE_ENUM_MAX, os_containers_dir);
 
 	if (m->kind == DEVICEMAP_EXACT) {
 		for (i = 0; i < n && found < cap; i++) {
@@ -236,10 +237,11 @@ int devicemap_resolve(const char *name, const struct discovered_device *out[], i
 	return found;
 }
 
-static void write_map_json_one(const struct devicemap_entry *m, struct json_writer *w)
+static void write_map_json_one(const struct devicemap_entry *m, const char *os_containers_dir,
+                                struct json_writer *w)
 {
 	const struct discovered_device *matches[DEVICE_ENUM_MAX];
-	int n = devicemap_resolve(m->name, matches, DEVICE_ENUM_MAX);
+	int n = devicemap_resolve(m->name, os_containers_dir, matches, DEVICE_ENUM_MAX);
 	int j;
 
 	jw_obj_open(w);
@@ -259,24 +261,24 @@ static void write_map_json_one(const struct devicemap_entry *m, struct json_writ
 	jw_obj_close(w);
 }
 
-int devicemap_write_json_one(const char *name, struct json_writer *w)
+int devicemap_write_json_one(const char *name, const char *os_containers_dir, struct json_writer *w)
 {
 	struct devicemap_entry *m = map_find(name);
 
 	if (m == NULL)
 		return 0;
-	write_map_json_one(m, w);
+	write_map_json_one(m, os_containers_dir, w);
 	return 1;
 }
 
-void devicemap_write_json_list(struct json_writer *w)
+void devicemap_write_json_list(struct json_writer *w, const char *os_containers_dir)
 {
 	int i;
 
 	jw_arr_open(w);
 	for (i = 0; i < DEVICEMAP_MAX; i++) {
 		if (g_maps[i].in_use)
-			write_map_json_one(&g_maps[i], w);
+			write_map_json_one(&g_maps[i], os_containers_dir, w);
 	}
 	jw_arr_close(w);
 }

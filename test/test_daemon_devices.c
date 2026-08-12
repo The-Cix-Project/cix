@@ -23,6 +23,14 @@
  * "mapping exists but currently resolves to nothing" case correctly
  * failing rather than silently retrying as a literal raw id. Same
  * hardware-dependent guard as the rest of this file.
+ *
+ * Also covers ADR-0142's raw disk passthrough: a non-OS, role-less
+ * whole disk is listed under GET /v1/devices as "disk:<name>", and
+ * assigning/removing a disk role (daemon/src/diskrole.c) correctly
+ * removes/restores it from that list -- proving device.c's own
+ * enumerate_disk() stays in sync with the storage-placement system
+ * rather than offering an already-daemon-owned disk for passthrough
+ * too.
  */
 #include "httpclient.h"
 #include "json.h"
@@ -590,6 +598,182 @@ int main(void)
 				rtnl_link_delete(fd, veth_a);
 			}
 			rtnl_close(fd);
+		}
+	}
+
+	/*
+	 * 6. ADR-0142: raw disk passthrough. device_enumerate() now also
+	 * exposes every non-OS, role-less whole disk as "disk:<name>" (see
+	 * device.c's enumerate_disk()). Genuinely host-dependent (a disk-
+	 * less sandbox is theoretically possible), so this only runs if
+	 * GET /v1/disks actually reports at least one non-OS disk -- true
+	 * on every real machine this project targets, and confirmed true
+	 * in this dev sandbox itself.
+	 */
+	{
+		char disk_name[64] = "";
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/disks", NULL, &r) != 0 || r.status != 200) {
+			fprintf(stderr, "FAIL: GET /v1/disks, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *disks = json_object_get(r.json, "disks");
+			size_t i;
+
+			if (disks != NULL && disks->type == JSON_ARRAY) {
+				for (i = 0; i < disks->u.array.count && disk_name[0] == '\0'; i++) {
+					const struct json_value *d = disks->u.array.items[i];
+					const struct json_value *jos = json_object_get(d, "is_os_disk");
+
+					if (jos != NULL && jos->type == JSON_BOOL && !jos->u.boolean) {
+						snprintf(disk_name, sizeof(disk_name), "%s",
+						         json_str_field(d, "name"));
+					}
+				}
+			}
+		}
+		kx_response_free(&r);
+
+		if (disk_name[0] == '\0') {
+			printf("(no non-OS disk discovered on this host -- scenario 6 skipped)\n");
+		} else {
+			char disk_id[80];
+			char role_body[128];
+			char role_path[96];
+			int listed_before = 0, listed_after_role = 1, listed_after_delete = 0;
+
+			snprintf(disk_id, sizeof(disk_id), "disk:%s", disk_name);
+
+			/* 6a. role-less: must be listed, bus:"disk", assignable, and
+			 * carry a real dev_path/major/minor (never zeroed/blank). */
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "GET", "/v1/devices", NULL, &r) != 0 ||
+			    r.status != 200) {
+				fprintf(stderr, "FAIL: GET /v1/devices (disk scenario, before role), "
+				                "status=%d\n",
+				        r.status);
+				ok = 0;
+			} else {
+				const struct json_value *devices = json_object_get(r.json, "devices");
+				size_t i;
+
+				if (devices != NULL && devices->type == JSON_ARRAY) {
+					for (i = 0; i < devices->u.array.count; i++) {
+						const struct json_value *d = devices->u.array.items[i];
+
+						if (str_eq(json_str_field(d, "id"), disk_id)) {
+							const struct json_value *jassignable =
+							        json_object_get(d, "assignable");
+							const struct json_value *jmajor =
+							        json_object_get(d, "major");
+							const char *dev_path = json_str_field(d, "dev_path");
+
+							listed_before = 1;
+							if (!str_eq(json_str_field(d, "bus"), "disk") ||
+							    jassignable == NULL ||
+							    jassignable->type != JSON_BOOL ||
+							    !jassignable->u.boolean || dev_path == NULL ||
+							    dev_path[0] == '\0' || jmajor == NULL ||
+							    jmajor->type != JSON_NUMBER) {
+								fprintf(stderr,
+								        "FAIL: %s malformed disk device "
+								        "entry\n",
+								        disk_id);
+								ok = 0;
+							}
+						}
+					}
+				}
+			}
+			kx_response_free(&r);
+			if (!listed_before) {
+				fprintf(stderr, "FAIL: %s not listed under GET /v1/devices before a "
+				                "role was assigned\n",
+				        disk_id);
+				ok = 0;
+			}
+
+			/* 6b. assigning it a role removes it from the passthrough
+			 * list -- already daemon-owned storage, never independently
+			 * grantable to a container at the same time. */
+			snprintf(role_body, sizeof(role_body), "{\"disk_name\":\"%s\",\"role\":\"backup\"}",
+			         disk_name);
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "POST", "/v1/diskroles", role_body, &r) != 0 ||
+			    r.status != 201) {
+				fprintf(stderr, "FAIL: POST /v1/diskroles %s, status=%d\n", disk_name,
+				        r.status);
+				ok = 0;
+			}
+			kx_response_free(&r);
+
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "GET", "/v1/devices", NULL, &r) != 0 ||
+			    r.status != 200) {
+				fprintf(stderr, "FAIL: GET /v1/devices (disk scenario, after role), "
+				                "status=%d\n",
+				        r.status);
+				ok = 0;
+			} else {
+				const struct json_value *devices = json_object_get(r.json, "devices");
+				size_t i;
+
+				listed_after_role = 0;
+				if (devices != NULL && devices->type == JSON_ARRAY) {
+					for (i = 0; i < devices->u.array.count; i++) {
+						if (str_eq(json_str_field(devices->u.array.items[i], "id"),
+						           disk_id))
+							listed_after_role = 1;
+					}
+				}
+			}
+			kx_response_free(&r);
+			if (listed_after_role) {
+				fprintf(stderr,
+				        "FAIL: %s still listed under GET /v1/devices after a role "
+				        "was assigned to it\n",
+				        disk_id);
+				ok = 0;
+			}
+
+			/* 6c. removing the role makes it passthrough-eligible again. */
+			snprintf(role_path, sizeof(role_path), "/v1/diskroles/%s", disk_name);
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "DELETE", role_path, NULL, &r) != 0 ||
+			    r.status != 204) {
+				fprintf(stderr, "FAIL: DELETE %s, status=%d\n", role_path, r.status);
+				ok = 0;
+			}
+			kx_response_free(&r);
+
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "GET", "/v1/devices", NULL, &r) != 0 ||
+			    r.status != 200) {
+				fprintf(stderr, "FAIL: GET /v1/devices (disk scenario, after role "
+				                "delete), status=%d\n",
+				        r.status);
+				ok = 0;
+			} else {
+				const struct json_value *devices = json_object_get(r.json, "devices");
+				size_t i;
+
+				if (devices != NULL && devices->type == JSON_ARRAY) {
+					for (i = 0; i < devices->u.array.count; i++) {
+						if (str_eq(json_str_field(devices->u.array.items[i], "id"),
+						           disk_id))
+							listed_after_delete = 1;
+					}
+				}
+			}
+			kx_response_free(&r);
+			if (!listed_after_delete) {
+				fprintf(stderr,
+				        "FAIL: %s not listed under GET /v1/devices again after its "
+				        "role was removed\n",
+				        disk_id);
+				ok = 0;
+			}
 		}
 	}
 

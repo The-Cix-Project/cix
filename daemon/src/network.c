@@ -532,8 +532,11 @@ enum network_error network_attach_interface(const char *name, const char *ifname
 	 * any master (including a previous call here), simply won't be
 	 * assignable -- see enumerate_net_one()'s master-symlink check,
 	 * daemon/src/device.c. */
+	/* NULL: this lookup only ever matches a "net:" id, never a "disk:"
+	 * one -- os_containers_dir (ADR-0142's OS-disk exclusion) has no
+	 * bearing here, see device.h's own doc comment. */
 	snprintf(dev_id, sizeof(dev_id), "net:%s", ifname);
-	dev = device_find(dev_id);
+	dev = device_find(dev_id, NULL);
 	if (dev == NULL || !dev->assignable)
 		return NETWORK_ERR_INTERFACE_NOT_FOUND;
 

@@ -5937,15 +5937,29 @@ components:
           description: A Disk.name from GET /disks (e.g. "sdb") -- not an operator-chosen alias, the real disk's own kernel name.
         role:
           type: string
-          enum: [container-storage, backup]
+          enum: [container-storage, backup, state-storage, rebuildable-storage, log-storage]
           description: >
             A small, fixed, closed vocabulary -- not free-form, since a
-            role is only meaningful insofar as a later phase (mount/
-            format, container-storage migration) actually understands
-            and acts on it. "swap" is deliberately not a role here:
-            this platform already has a dedicated on-demand host swap
-            FILE mechanism (POST /system/swap, ADR-0069) with no
-            disk-level equivalent defined yet.
+            role is only meaningful insofar as this daemon actually
+            understands and acts on it. "swap" is deliberately not a
+            role here: this platform already has a dedicated on-demand
+            host swap FILE mechanism (POST /system/swap, ADR-0069) with
+            no disk-level equivalent defined. state-storage/rebuildable-
+            storage/log-storage (ADR-0141) are each a daemon-wide
+            singleton -- multiple disks can carry the same one of these
+            (eligible candidates), but only one is ever the *active*
+            placement, tracked separately (GET /system/state-storage
+            etc.), not by this role alone.
+        fs_type:
+          type: string
+          enum: [ext4, btrfs]
+          description: >
+            Present once this disk has been successfully formatted
+            (ADR-0142) -- persisted alongside the role itself so a
+            later boot's own auto-remount pass knows which real
+            filesystem to mount with, since POST /disks/{name}/format's
+            own job state is purely in-memory and forgotten across a
+            restart. Absent if this disk has never been formatted.
         present:
           type: boolean
           description: Whether disk_name currently resolves to a real disk (GET /disks) -- re-derived fresh on every call, never cached.
@@ -5958,7 +5972,7 @@ components:
           type: string
         role:
           type: string
-          enum: [container-storage, backup]
+          enum: [container-storage, backup, state-storage, rebuildable-storage, log-storage]
 
     DiskFormatRequest:
       type: object

@@ -90,8 +90,15 @@ enum devicemap_error devicemap_delete(const char *name);
  * -1 if name does not name any mapping at all (the caller -- main.c's
  * own container-creation devices[] parsing -- falls back to treating
  * it as a raw device.h id in that case, not this one).
+ *
+ * os_containers_dir is passed straight through to device_enumerate()
+ * (ADR-0142) -- a mapping's own selector could in principle name a
+ * "disk:" id just as validly as a "usb:"/"pci:"/"net:"/"gpu:" one, so
+ * this needs the same OS-disk exclusion any other device_enumerate()
+ * caller gets, not NULL.
  */
-int devicemap_resolve(const char *name, const struct discovered_device *out[], int cap);
+int devicemap_resolve(const char *name, const char *os_containers_dir,
+                       const struct discovered_device *out[], int cap);
 
 /*
  * Writes one mapping (name, kind, selector, and -- resolved fresh via
@@ -99,10 +106,10 @@ int devicemap_resolve(const char *name, const struct discovered_device *out[], i
  * currently matches) into w. Returns 1 if name is a real mapping, 0
  * (writes nothing) otherwise.
  */
-int devicemap_write_json_one(const char *name, struct json_writer *w);
+int devicemap_write_json_one(const char *name, const char *os_containers_dir, struct json_writer *w);
 
 /* Same per-entry shape as devicemap_write_json_one(), for every
  * mapping, wrapped in a JSON array. */
-void devicemap_write_json_list(struct json_writer *w);
+void devicemap_write_json_list(struct json_writer *w, const char *os_containers_dir);
 
 #endif /* DEVICEMAP_H */

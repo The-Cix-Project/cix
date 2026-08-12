@@ -1,5 +1,8 @@
 #include "device.h"
 
+#include "disk.h"
+#include "diskrole.h"
+
 #include <ctype.h>
 #include <dirent.h>
 #include <limits.h>
@@ -709,6 +712,59 @@ static void enumerate_gpu(struct discovered_device *out, int cap, int *count)
 	}
 }
 
+/*
+ * ADR-0142: raw disk passthrough. Every whole disk disk_enumerate()
+ * reports that is neither the OS disk nor already carrying a role
+ * (diskrole_lookup()) is exposed here as "disk:<name>" -- a disk with
+ * no filesystem/mount concept of its own at all yet (fresh, unlabeled
+ * media straight from a USB enclosure or a PCI passthrough disk) is
+ * exactly the case this closes, alongside a role-assigned disk being
+ * correctly excluded (it's already owned by this daemon's own storage-
+ * placement system, not independently grantable to a container).
+ *
+ * No kernel driver concept exists for a whole disk the way a USB/PCI
+ * device has one -- appearing in disk_enumerate()'s own sysfs walk
+ * plus a resolved major:minor is already the full availability check,
+ * the same "visibility is the availability check" reasoning
+ * enumerate_net_one() already uses for a netdev.
+ */
+static void enumerate_disk(struct discovered_device *out, int cap, int *count,
+                            const char *os_containers_dir)
+{
+	struct discovered_disk disks[DISK_ENUM_MAX];
+	int n = disk_enumerate(disks, DISK_ENUM_MAX, os_containers_dir);
+	int i;
+
+	for (i = 0; i < n && *count < cap; i++) {
+		char attr[PATH_MAX];
+		char devbuf[32];
+		unsigned int major, minor;
+		struct discovered_device *e;
+
+		if (disks[i].is_os_disk || diskrole_lookup(disks[i].name) != NULL)
+			continue;
+
+		snprintf(attr, sizeof(attr), "/sys/class/block/%s/dev", disks[i].name);
+		if (read_sysfs_attr(attr, devbuf, sizeof(devbuf)) != 0)
+			continue;
+		if (sscanf(devbuf, "%u:%u", &major, &minor) != 2)
+			continue;
+
+		e = &out[(*count)++];
+		memset(e, 0, sizeof(*e));
+		snprintf(e->bus, sizeof(e->bus), "disk");
+		snprintf(e->id, sizeof(e->id), "disk:%s", disks[i].name);
+		snprintf(e->description, sizeof(e->description), "%s (%lld bytes%s)",
+		         disks[i].model[0] != '\0' ? disks[i].model : disks[i].name,
+		         (long long)disks[i].size_bytes, disks[i].removable ? ", removable" : "");
+		e->type = DEVICE_NODE_BLOCK;
+		e->major = major;
+		e->minor = minor;
+		snprintf(e->dev_path, sizeof(e->dev_path), "%s", disks[i].dev_path);
+		e->assignable = 1;
+	}
+}
+
 static void enumerate_pci(struct discovered_device *out, int cap, int *count)
 {
 	DIR *d;
@@ -731,7 +787,7 @@ static void enumerate_pci(struct discovered_device *out, int cap, int *count)
 	closedir(d);
 }
 
-int device_enumerate(struct discovered_device *out, int cap)
+int device_enumerate(struct discovered_device *out, int cap, const char *os_containers_dir)
 {
 	int count = 0;
 
@@ -739,13 +795,14 @@ int device_enumerate(struct discovered_device *out, int cap)
 	enumerate_pci(out, cap, &count);
 	enumerate_net(out, cap, &count);
 	enumerate_gpu(out, cap, &count);
+	enumerate_disk(out, cap, &count, os_containers_dir);
 	return count;
 }
 
-const struct discovered_device *device_find(const char *id)
+const struct discovered_device *device_find(const char *id, const char *os_containers_dir)
 {
 	static struct discovered_device cache[DEVICE_ENUM_MAX];
-	int n = device_enumerate(cache, DEVICE_ENUM_MAX);
+	int n = device_enumerate(cache, DEVICE_ENUM_MAX, os_containers_dir);
 	int i;
 
 	for (i = 0; i < n; i++) {
@@ -755,10 +812,11 @@ const struct discovered_device *device_find(const char *id)
 	return NULL;
 }
 
-int device_find_group(const char *id, const struct discovered_device *out[], int cap)
+int device_find_group(const char *id, const char *os_containers_dir,
+                       const struct discovered_device *out[], int cap)
 {
 	static struct discovered_device cache[DEVICE_ENUM_MAX];
-	int n = device_enumerate(cache, DEVICE_ENUM_MAX);
+	int n = device_enumerate(cache, DEVICE_ENUM_MAX, os_containers_dir);
 	char prefix[100];
 	size_t prefix_len;
 	int i, found = 0;
@@ -818,10 +876,10 @@ void device_write_json_one(const struct discovered_device *d, struct json_writer
 	jw_obj_close(w);
 }
 
-void device_write_json_list(struct json_writer *w)
+void device_write_json_list(struct json_writer *w, const char *os_containers_dir)
 {
 	struct discovered_device devices[DEVICE_ENUM_MAX];
-	int n = device_enumerate(devices, DEVICE_ENUM_MAX);
+	int n = device_enumerate(devices, DEVICE_ENUM_MAX, os_containers_dir);
 	int i;
 
 	jw_arr_open(w);

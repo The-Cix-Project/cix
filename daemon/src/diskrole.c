@@ -7,9 +7,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* fs_type is empty until diskrole_set_fs_type() records a real
+ * successful format (ADR-0142) -- never set by diskrole_create()
+ * itself, since assigning a role has no destructive side effect. */
 struct diskrole_entry {
 	char disk_name[DISKROLE_DISK_NAME_MAX];
 	enum diskrole_kind role;
+	char fs_type[16];
 	int in_use;
 };
 
@@ -29,7 +33,36 @@ static struct diskrole_entry *role_find(const char *disk_name)
 
 static const char *role_str(enum diskrole_kind role)
 {
-	return role == DISKROLE_CONTAINER_STORAGE ? "container-storage" : "backup";
+	switch (role) {
+	case DISKROLE_CONTAINER_STORAGE:
+		return "container-storage";
+	case DISKROLE_STATE_STORAGE:
+		return "state-storage";
+	case DISKROLE_REBUILDABLE_STORAGE:
+		return "rebuildable-storage";
+	case DISKROLE_LOG_STORAGE:
+		return "log-storage";
+	case DISKROLE_BACKUP:
+	default:
+		return "backup";
+	}
+}
+
+static int role_from_str(const char *s, enum diskrole_kind *out)
+{
+	if (strcmp(s, "container-storage") == 0)
+		*out = DISKROLE_CONTAINER_STORAGE;
+	else if (strcmp(s, "backup") == 0)
+		*out = DISKROLE_BACKUP;
+	else if (strcmp(s, "state-storage") == 0)
+		*out = DISKROLE_STATE_STORAGE;
+	else if (strcmp(s, "rebuildable-storage") == 0)
+		*out = DISKROLE_REBUILDABLE_STORAGE;
+	else if (strcmp(s, "log-storage") == 0)
+		*out = DISKROLE_LOG_STORAGE;
+	else
+		return -1;
+	return 0;
 }
 
 static int disk_is_os_disk(const char *disk_name, const char *os_containers_dir)
@@ -73,6 +106,10 @@ static int save_state(void)
 		jw_str(&w, g_roles[i].disk_name);
 		jw_key(&w, "role");
 		jw_str(&w, role_str(g_roles[i].role));
+		if (g_roles[i].fs_type[0] != '\0') {
+			jw_key(&w, "fs_type");
+			jw_str(&w, g_roles[i].fs_type);
+		}
 		jw_obj_close(&w);
 	}
 	jw_arr_close(&w);
@@ -111,9 +148,11 @@ static int load_state(void)
 		const struct json_value *item = root->u.array.items[i];
 		const char *disk_name = json_as_string(json_object_get(item, "disk_name"));
 		const char *role = json_as_string(json_object_get(item, "role"));
+		const char *fs_type = json_as_string(json_object_get(item, "fs_type"));
+		enum diskrole_kind role_kind;
 
 		if (!simple_name_is_valid(disk_name, DISKROLE_DISK_NAME_MAX) || role == NULL ||
-		    (strcmp(role, "container-storage") != 0 && strcmp(role, "backup") != 0)) {
+		    role_from_str(role, &role_kind) != 0) {
 			json_free(root);
 			fprintf(stderr, "%s: invalid entry at index %zu\n", g_state_path, i);
 			return -1;
@@ -121,8 +160,9 @@ static int load_state(void)
 
 		memset(&g_roles[count], 0, sizeof(g_roles[count]));
 		snprintf(g_roles[count].disk_name, sizeof(g_roles[count].disk_name), "%s", disk_name);
-		g_roles[count].role =
-		    strcmp(role, "container-storage") == 0 ? DISKROLE_CONTAINER_STORAGE : DISKROLE_BACKUP;
+		g_roles[count].role = role_kind;
+		if (fs_type != NULL)
+			snprintf(g_roles[count].fs_type, sizeof(g_roles[count].fs_type), "%s", fs_type);
 		g_roles[count].in_use = 1;
 		count++;
 	}
@@ -147,13 +187,7 @@ enum diskrole_error diskrole_create(const char *disk_name, const char *role_str_
 
 	if (!simple_name_is_valid(disk_name, DISKROLE_DISK_NAME_MAX))
 		return DISKROLE_ERR_INVALID_DISK_NAME;
-	if (role_str_in == NULL)
-		return DISKROLE_ERR_INVALID_ROLE;
-	if (strcmp(role_str_in, "container-storage") == 0)
-		role = DISKROLE_CONTAINER_STORAGE;
-	else if (strcmp(role_str_in, "backup") == 0)
-		role = DISKROLE_BACKUP;
-	else
+	if (role_str_in == NULL || role_from_str(role_str_in, &role) != 0)
 		return DISKROLE_ERR_INVALID_ROLE;
 
 	if (disk_is_os_disk(disk_name, os_containers_dir))
@@ -202,6 +236,25 @@ const char *diskrole_lookup(const char *disk_name)
 	return (r != NULL) ? role_str(r->role) : NULL;
 }
 
+enum diskrole_error diskrole_set_fs_type(const char *disk_name, const char *fs_type)
+{
+	struct diskrole_entry *r = role_find(disk_name);
+
+	if (r == NULL)
+		return DISKROLE_ERR_NOT_FOUND;
+	snprintf(r->fs_type, sizeof(r->fs_type), "%s", fs_type);
+	if (save_state() != 0)
+		return DISKROLE_ERR_PERSIST_FAILED;
+	return DISKROLE_OK;
+}
+
+const char *diskrole_lookup_fs_type(const char *disk_name)
+{
+	struct diskrole_entry *r = role_find(disk_name);
+
+	return (r != NULL && r->fs_type[0] != '\0') ? r->fs_type : NULL;
+}
+
 static void write_role_json_one(const struct diskrole_entry *r, struct json_writer *w,
                                  const char *os_containers_dir)
 {
@@ -212,6 +265,10 @@ static void write_role_json_one(const struct diskrole_entry *r, struct json_writ
 	jw_str(w, role_str(r->role));
 	jw_key(w, "present");
 	jw_bool(w, disk_currently_present(r->disk_name, os_containers_dir));
+	if (r->fs_type[0] != '\0') {
+		jw_key(w, "fs_type");
+		jw_str(w, r->fs_type);
+	}
 	jw_obj_close(w);
 }
 

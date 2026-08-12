@@ -65,13 +65,13 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | GET | `/containers/{name}/stats` | Real, host-side CPU/memory/disk/network usage, a point-in-time snapshot |
 | GET | `/containers/{name}/files` | Read one file's raw bytes back out of a container's rootfs |
 | GET | `/containers/{name}/console` | Upgrade to a WebSocket; an interactive shell inside the running container |
-| GET | `/devices` | List host PCI/USB/net devices discoverable via sysfs, available for passthrough |
+| GET | `/devices` | List host PCI/USB/net/GPU/disk devices discoverable via sysfs, available for passthrough |
 | GET | `/devicemaps` | List persistent, operator-named device mappings |
 | POST | `/devicemaps` | Create a persistent device mapping (name -> selector) |
 | DELETE | `/devicemaps/{name}` | Remove a device mapping |
 | GET | `/disks` | List real host block devices (whole disks only), for multi-disk management |
 | GET | `/diskroles` | List persisted disk role assignments |
-| POST | `/diskroles` | Assign a role (container-storage/backup) to a disk |
+| POST | `/diskroles` | Assign a role (container-storage/backup/state-storage/rebuildable-storage/log-storage) to a disk |
 | DELETE | `/diskroles/{disk_name}` | Remove a disk's role assignment |
 | GET | `/disks/{disk_name}/format` | Status of the most recent (or running) format+mount job for this disk |
 | POST | `/disks/{disk_name}/format` | Destructive: mkfs (ext4 or btrfs) + mount an already role-assigned disk |
@@ -945,7 +945,7 @@ POST /v1/containers
 }
 ```
 
-- `devices` is optional: 0–N entries, each a discovered device id from `GET /v1/devices` (`"pci:..."`, `"usb:..."`, or `"gpu:N"` for a whole GPU — `gpu:N` is never itself listed by `GET /v1/devices`, only its individual member nodes are), **or** the name of a persistent device mapping (below). Real `/dev` nodes are granted via a `BPF_CGROUP_DEVICE` program on the container's own cgroup (ADR-0017) — nothing else on the host can reach them once bound. A bare `gpu:N` id expands into every node that physical GPU needs in one grant (DRM `cardN`/`renderDN` plus the shared `/dev/kfd` compute node) — see ADR-0028/ADR-0029.
+- `devices` is optional: 0–N entries, each a discovered device id from `GET /v1/devices` (`"pci:..."`, `"usb:..."`, `"gpu:N"` for a whole GPU — `gpu:N` is never itself listed by `GET /v1/devices`, only its individual member nodes are — or `"disk:<name>"` for a raw whole disk, ADR-0142), **or** the name of a persistent device mapping (below). Real `/dev` nodes are granted via a `BPF_CGROUP_DEVICE` program on the container's own cgroup (ADR-0017) — nothing else on the host can reach them once bound. A bare `gpu:N` id expands into every node that physical GPU needs in one grant (DRM `cardN`/`renderDN` plus the shared `/dev/kfd` compute node) — see ADR-0028/ADR-0029. A `"disk:<name>"` entry is any non-OS, role-less whole disk `GET /disks` reports — fresh, unlabeled media straight from a USB enclosure or a PCI-passthrough disk with no filesystem/mount concept of its own, handed to the container as a raw block device; a disk already carrying a role (`POST /diskroles`) is never listed here, since it's already owned by this daemon's own storage-placement system.
 - `interfaces` is optional: 0–N real host network interface names (e.g. `"eth1"`) moved directly into the container's own netns (not a veth pair) — fd-anchored teardown, correct even if the container crashes mid-move. See ADR-0022.
 - `GET /v1/containers` echoes the real, expanded grants actually made, not an echo of what was requested.
 
@@ -977,9 +977,11 @@ POST /v1/diskroles
 {"disk_name": "sdb", "role": "backup"}
 ```
 
-`role` is `"container-storage"` or `"backup"` — a small, fixed, closed vocabulary, not an arbitrary operator-chosen string the way a `devicemap` name is, since a role only means something insofar as a later phase (format/mount, container-storage migration) actually understands and acts on it. `"swap"` is deliberately not a role: this platform already has a dedicated, working, on-demand host swap *file* mechanism (`POST /system/swap`, ADR-0069) with no disk-level equivalent defined yet — adding a same-named disk role would either duplicate or need reconciling with it, a real design question with no answer, so it's left out rather than added as a role nothing can act on.
+`role` is `"container-storage"`, `"backup"`, `"state-storage"`, `"rebuildable-storage"`, or `"log-storage"` (ADR-0141) — a small, fixed, closed vocabulary, not an arbitrary operator-chosen string the way a `devicemap` name is, since a role only means something insofar as this daemon actually understands and acts on it. `"swap"` is deliberately not a role: this platform already has a dedicated, working, on-demand host swap *file* mechanism (`POST /system/swap`, ADR-0069) with no disk-level equivalent defined — adding a same-named disk role would either duplicate or need reconciling with it, a real design question with no answer, so it's left out rather than added as a role nothing can act on. `state-storage`/`rebuildable-storage`/`log-storage` are each a daemon-wide *singleton* placement: several disks can carry the same one of these roles as eligible candidates, but only one is ever the currently-active placement, tracked separately (`GET /system/state-storage` etc.), not by this role field alone.
 
 Real and creatable even for a `disk_name` that isn't currently present (`present: false` on `GET`, not an error — the same tolerant convention `/devicemaps` already established for hardware that might be temporarily absent). Always rejected (`400`) for the disk currently flagged `is_os_disk` on `GET /disks` — the fixed OS-disk layout is never a role-assignment candidate. `409` if `disk_name` already has a role (`DELETE` it first to reassign, the same no-silent-overwrite convention `/devicemaps` already established).
+
+`fs_type` is present on a `GET`/`POST` response once this disk has been successfully formatted at least once (`POST /disks/{name}/format`) — persisted here specifically so it survives a restart even though the format job's own `state` (below) doesn't: at daemon startup, every present, unmounted, role-assigned disk with a remembered `fs_type` is automatically remounted with it (ADR-0142), closing what used to be a real gap where a formatted-but-unmounted disk after a reboot needed a manual, destructive re-format to recover.
 
 ### Format + mount
 

@@ -127,4 +127,28 @@ void diskformat_completed(int exit_status);
  */
 void diskformat_write_status_json(struct json_writer *w, const char *want_disk_name);
 
+/*
+ * ADR-0142: called once at daemon startup (main.c), after diskrole_init()
+ * but before this daemon starts serving requests. Walks every disk
+ * disk_enumerate() currently reports and, for each one that is present,
+ * not the OS disk, not already mounted, has a role assigned, and has a
+ * remembered fs_type (diskrole_lookup_fs_type() -- i.e. it was
+ * successfully formatted at some point, possibly a prior daemon
+ * lifetime), mounts it directly with that same fs_type at
+ * "<mount_base_dir>/<disk_name>" -- a plain mount(2), never a second
+ * mkfs, since the filesystem already exists. Closes the real gap found
+ * live: this job's own DISKFORMAT_STATE_READY is purely in-memory and
+ * forgotten across every restart, even though the real mount (and the
+ * filesystem on disk) both survive fine -- without this, a formatted
+ * disk stays unmounted forever after the first reboot with no operator
+ * action able to fix it short of a destructive re-format.
+ *
+ * A disk that fails to remount (corrupted filesystem, physically
+ * failing) is logged and left unmounted -- never a second automatic
+ * format attempt, which would be destructive. Best-effort and
+ * non-fatal to daemon startup either way; this never returns an error
+ * a caller needs to act on.
+ */
+void diskformat_remount_present_role_disks(const char *os_containers_dir, const char *mount_base_dir);
+
 #endif /* DISKFORMAT_H */
