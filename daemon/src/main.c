@@ -34,7 +34,9 @@
 #include "tlsconn.h"
 #include "version.h"
 
+#include <openssl/bio.h>
 #include <openssl/err.h>
+#include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include "staticfile.h"
 #include "websocket.h"
@@ -2293,6 +2295,23 @@ static void handle_site_put(int fd, const char *body, size_t body_len)
  * or the host cert/key can't be loaded/don't match -- HTTPS simply
  * isn't available yet in that case, exactly the same "not configured"
  * posture other PKI-gated resources in this daemon already have.
+ *
+ * ADR-0136: when an intermediate CA is bootstrapped, host.crt (like
+ * every leaf pki_cert_create() issues) is signed BY the intermediate,
+ * but is itself still just the one leaf certificate on disk --
+ * SSL_CTX_use_certificate_file() below loads exactly that one
+ * certificate and nothing past it, even if the file had more (it
+ * doesn't parse a chain the way SSL_CTX_use_certificate_chain_file()
+ * would). Confirmed live: a client trusting only the root CA can
+ * never validate leaf->intermediate->root with just the leaf in hand
+ * -- it needs the intermediate cert as part of the handshake too.
+ * pki_intermediate_cert_pem() + SSL_CTX_add_extra_chain_cert() below
+ * add it explicitly, the OpenSSL-idiomatic way to extend an
+ * already-loaded leaf's own chain without touching host.crt itself
+ * (which pki_cert_deliver()'s own, separate leaf+intermediate
+ * chain-building for pki_issue-delivered container certs already
+ * assumes is leaf-only -- changing that here would double the
+ * intermediate there).
  */
 static SSL_CTX *create_tls_ctx(void)
 {
@@ -2318,6 +2337,40 @@ static SSL_CTX *create_tls_ctx(void)
 		SSL_CTX_free(ctx);
 		return NULL;
 	}
+
+	{
+		char *intermediate_pem = NULL;
+		size_t intermediate_len = 0;
+		int r = pki_intermediate_cert_pem(&intermediate_pem, &intermediate_len);
+
+		if (r < 0) {
+			fprintf(stderr, "create_tls_ctx: could not read the intermediate CA cert\n");
+			SSL_CTX_free(ctx);
+			return NULL;
+		}
+		if (r == 1) {
+			BIO *bio = BIO_new_mem_buf(intermediate_pem, (int)intermediate_len);
+			X509 *intermediate_x509 = bio != NULL ? PEM_read_bio_X509(bio, NULL, NULL, NULL) : NULL;
+
+			if (bio != NULL)
+				BIO_free(bio);
+			free(intermediate_pem);
+			if (intermediate_x509 == NULL) {
+				fprintf(stderr, "create_tls_ctx: could not parse the intermediate CA cert\n");
+				SSL_CTX_free(ctx);
+				return NULL;
+			}
+			/* Ownership transfers to ctx on success -- never X509_free()
+			 * this one ourselves. */
+			if (SSL_CTX_add_extra_chain_cert(ctx, intermediate_x509) != 1) {
+				ERR_print_errors_fp(stderr);
+				X509_free(intermediate_x509);
+				SSL_CTX_free(ctx);
+				return NULL;
+			}
+		}
+	}
+
 	return ctx;
 }
 

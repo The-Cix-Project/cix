@@ -435,6 +435,15 @@ int pki_intermediate_bootstrapped(void)
 	return stat(g_intermediate_cert_path, &st) == 0 && stat(g_intermediate_key_path, &st) == 0;
 }
 
+int pki_intermediate_cert_pem(char **out_pem, size_t *out_len)
+{
+	if (!pki_intermediate_bootstrapped())
+		return 0;
+	if (persist_read_file(g_intermediate_cert_path, out_pem, out_len) != 0 || *out_pem == NULL)
+		return -1;
+	return 1;
+}
+
 enum pki_error pki_intermediate_create(const char *common_name, int days)
 {
 	char csr_path[PATH_MAX];

@@ -3839,9 +3839,13 @@ document.getElementById("ntp-time-form").addEventListener("submit", async (event
  * from GET /pki/ca|intermediate (cert_pem), not a new API capability
  * (the API-First Mandate is about capabilities existing at the API
  * layer first, and "get the CA cert" already does -- turning already-
- * fetched JSON into a downloadable file is presentation only). */
+ * fetched JSON into a downloadable file is presentation only).
+ * Named/typed as .crt (application/x-x509-ca-cert), not .pem -- same
+ * content (PEM-encoded text), but .crt is what triggers a real
+ * double-click "install certificate" flow on more platforms
+ * (Windows in particular) without a manual rename first. */
 function downloadPem(filename, pemText) {
-	const blob = new Blob([pemText], { type: "application/x-pem-file" });
+	const blob = new Blob([pemText], { type: "application/x-x509-ca-cert" });
 	const url = URL.createObjectURL(blob);
 	const a = document.createElement("a");
 
@@ -3857,7 +3861,7 @@ function buildCaDownloadButton(filename, pemText) {
 	const button = document.createElement("button");
 
 	button.type = "button";
-	button.textContent = "Download certificate (.pem)";
+	button.textContent = "Download certificate (.crt)";
 	button.addEventListener("click", () => downloadPem(filename, pemText));
 	return button;
 }
@@ -3873,7 +3877,7 @@ async function refreshPkiCa() {
 		pkiCaStatus.className = "pki-ca-status bootstrapped";
 		pkiCaStatus.textContent =
 			"Bootstrapped: " + ca.subject + " (serial " + ca.serial + ", expires " + ca.not_after + ") ";
-		pkiCaStatus.appendChild(buildCaDownloadButton("kanxeo-root-ca.pem", ca.cert_pem));
+		pkiCaStatus.appendChild(buildCaDownloadButton("kanxeo-root-ca.crt", ca.cert_pem));
 		pkiCaForm.hidden = true;
 	} catch (e) {
 		cache.pkiCa = null;
@@ -3900,7 +3904,7 @@ async function refreshPkiIntermediate() {
 			", expires " +
 			intermediate.not_after +
 			") ";
-		status.appendChild(buildCaDownloadButton("kanxeo-intermediate-ca.pem", intermediate.cert_pem));
+		status.appendChild(buildCaDownloadButton("kanxeo-intermediate-ca.crt", intermediate.cert_pem));
 		form.hidden = true;
 	} catch (e) {
 		cache.pkiIntermediate = null;

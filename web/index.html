@@ -649,7 +649,7 @@
 		<!-- PKI: Root CA -->
 		<section class="view" id="view-pki-ca" hidden>
 			<h2>PKI: Root CA</h2>
-			<p class="hint">A browser or OS that doesn't already trust this install's own root CA will refuse HTTPS to this dashboard (and to any other kanxeo endpoint) with a certificate warning -- expected, since it's a private, self-signed CA, not a publicly trusted one. Download the certificate below and trust it once on whatever device you connect from; see "Trusting the CA on your own device" in <code>docs/guides/security.md</code> for the full, platform-by-platform steps (Windows/macOS/Linux/Firefox all differ). Short version: import the downloaded <code>.pem</code> into your OS or browser's own trusted-root store, marked to trust it for identifying websites.</p>
+			<p class="hint">A browser or OS that doesn't already trust this install's own root CA will refuse HTTPS to this dashboard (and to any other kanxeo endpoint) with a certificate warning -- expected, since it's a private, self-signed CA, not a publicly trusted one. Download the certificate below and trust it once on whatever device you connect from; see "Trusting the CA on your own device" in <code>docs/guides/security.md</code> for the full, platform-by-platform steps (Windows/macOS/Linux/Firefox all differ). Short version: import the downloaded <code>.crt</code> into your OS or browser's own trusted-root store, marked to trust it for identifying websites.</p>
 			<div id="pki-ca-status" class="pki-ca-status"></div>
 			<form id="pki-ca-form">
 				<label>

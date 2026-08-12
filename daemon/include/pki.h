@@ -70,6 +70,20 @@ enum pki_error pki_ca_get(struct json_writer *w);
 int pki_intermediate_bootstrapped(void);
 
 /*
+ * Reads the intermediate CA's own cert PEM straight off disk, if one
+ * is bootstrapped -- for a caller (main.c's TLS listener setup,
+ * ADR-0136) that needs to add it as an *extra* chain certificate
+ * alongside an already-loaded leaf, distinct from pki_cert_deliver()'s
+ * own chain_pem (which builds a full leaf+intermediate file for a
+ * container to receive) and pki_write_trust_bundle_file()'s own
+ * root+intermediate trust bundle (a different concern -- what this
+ * host trusts outbound, not what it presents inbound). Returns 1 and
+ * fills *out_pem (malloc'd, caller frees)/*out_len if bootstrapped, 0
+ * (leaving *out_pem untouched) if not, -1 on a real read failure.
+ */
+int pki_intermediate_cert_pem(char **out_pem, size_t *out_len);
+
+/*
  * Creates a second CA tier (ADR-0046) -- a real intermediate keypair
  * and cert, signed BY the root (not self-signed), with
  * basicConstraints=CA:TRUE and keyUsage=keyCertSign,cRLSign baked in

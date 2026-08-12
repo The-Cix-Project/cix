@@ -50,19 +50,23 @@ Starts a second, independent listener on `--https-port=` (default `8443`), live 
 
 This install's root CA is private and self-signed — nothing trusts it by default, so a browser or OS hitting `https://<box>:<https-port>/` (the web dashboard, or a direct API call) shows a certificate warning until you trust it once, on each device you connect from. This is expected, not a bug: it's the same reason `curl` needs `--cacert` for a self-signed endpoint. **Found live**: an untrusted browser doesn't just show a warning once — every poll the dashboard's own JavaScript makes (every 2 seconds, and this daemon never does HTTP keep-alive, so each one is a fresh TLS handshake) fails the same way, which can flood `GET /system/logs` and the physical console with `https handshake failed` warnings fast enough to crowd out everything else (ADR-0134 rate-limits the logging itself, but trusting the cert is what actually stops the failures).
 
-**Get the certificate**: web dashboard's System > PKI > Root CA page has a "Download certificate (.pem)" button once the CA is bootstrapped (same for Intermediate CA, if you've bootstrapped one) — or fetch it directly:
+**Get the certificate**: web dashboard's System > PKI > Root CA page has a "Download certificate (.crt)" button once the CA is bootstrapped — or fetch it directly:
 
 ```sh
-kanxeoctl pki ca show --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["cert_pem"])' > kanxeo-root-ca.pem
+kanxeoctl pki ca show --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["cert_pem"])' > kanxeo-root-ca.crt
 ```
+
+Trusting the **root** is enough even if you've also bootstrapped an intermediate CA (System > PKI > Intermediate CA has its own download button too, but you don't need to separately trust it) — the HTTPS listener sends the full leaf+intermediate chain on every handshake (ADR-0136), so a client that trusts only the root can validate the whole path.
 
 **Trust it** — steps differ by platform, since there's no single OS-wide trust store:
 
-- **Windows**: double-click the downloaded file (rename to `.crt` first if Windows doesn't recognize the `.pem` extension) → **Install Certificate** → **Local Machine** (needs admin, trusts it for every user) or **Current User** → **Place all certificates in the following store** → **Trusted Root Certification Authorities**.
+- **Windows**: double-click the downloaded `.crt` file → **Install Certificate** → **Local Machine** (needs admin, trusts it for every user) or **Current User** → **Place all certificates in the following store** → **Trusted Root Certification Authorities**.
 - **macOS**: open **Keychain Access** → **File > Import Items** → select the file (imports to the login keychain by default) → find it in the list, double-click it → expand **Trust** → set **When using this certificate** to **Always Trust** → close (prompts for your password).
-- **Linux, system-wide** (curl, most non-browser tools): `sudo cp kanxeo-root-ca.pem /usr/local/share/ca-certificates/kanxeo-root-ca.crt && sudo update-ca-certificates` (Debian/Ubuntu); `sudo cp kanxeo-root-ca.pem /etc/pki/ca-trust/source/anchors/ && sudo update-ca-trust` (Fedora/RHEL).
+- **Linux, system-wide** (curl, most non-browser tools): `sudo cp kanxeo-root-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates` (Debian/Ubuntu); `sudo cp kanxeo-root-ca.crt /etc/pki/ca-trust/source/anchors/ && sudo update-ca-trust` (Fedora/RHEL).
 - **Firefox** (any OS — it keeps its own trust store, independent of the OS one above): **Settings > Privacy & Security > Certificates > View Certificates > Authorities tab > Import** → select the file → check **Trust this CA to identify websites**.
 - **Chrome/Edge**: uses the OS-level trust store on Windows/macOS (the steps above cover it) and, on Linux, typically the same NSS database Firefox uses — the Linux system-wide step above is usually enough, but if it still isn't trusted, import it the same way as the Firefox step, into Chrome's own **Settings > Privacy and security > Security > Manage certificates**.
+
+**If a browser still shows a warning after trusting the root**, and you're connecting by bare IP address (`https://192.168.x.x:8443/`) rather than a hostname: the daemon's own auto-issued `"host"` leaf certificate only carries this install's DNS FQDN as its Subject Alternative Name (`GET /pki/certs/host`'s own `sans` field), not the raw IP — a browser doing strict hostname verification will flag that as a *different* warning (hostname mismatch, not "untrusted") even with the chain fully trusted. Reach the box by its FQDN instead (whatever your own DNS setup resolves it through), or accept the mismatch warning if IP access is what you need — this endpoint doesn't currently issue IP-SAN certificates.
 
 Once trusted, no further action is needed — the same cert (or its successor after a [chain rotation](#rotating-the-whole-chain), which requires re-trusting) is presented on every future connection to this install.
 
