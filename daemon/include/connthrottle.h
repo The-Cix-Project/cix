@@ -65,7 +65,11 @@ struct throttle_config connthrottle_config_get(void);
 int connthrottle_config_set(int enabled_flag, int threshold, int window_seconds, int block_seconds,
                              int log_interval_seconds);
 
-/* 1 if ip is currently blocked (and throttling is enabled), 0 otherwise. */
+/* 1 if ip is currently blocked (and throttling is enabled), 0 otherwise.
+ * Enforced by the caller against the HTTPS listener only (ADR-0137,
+ * accept_loop()'s is_tls guard) -- only a failed TLS handshake can ever
+ * cause a block in the first place, so this is never checked against
+ * the plain HTTP listener. */
 int connthrottle_should_block(const char *ip);
 
 /*
@@ -108,10 +112,15 @@ int connthrottle_should_log_failure(const char *ip);
  * Clears ip's failure count -- called on a successful TLS handshake,
  * and also on any complete, well-formed HTTP request on either
  * listener (main.c's handle_client_event()): real evidence a source
- * isn't currently misbehaving, regardless of which listener it showed
- * up on, since a block applies to both uniformly. A client that had a
- * handful of transient failures and then behaved normally shouldn't
- * stay one failure away from a block. No-op if ip isn't tracked.
+ * isn't currently misbehaving. Still credited from either listener
+ * even though enforcement itself is HTTPS-only as of ADR-0137 -- a
+ * clean plain-HTTP request is just as real evidence of non-malicious
+ * behavior as a clean HTTPS one, and there is no reason to make a
+ * source's HTTPS block outlive proof it's behaving normally just
+ * because that proof happened to arrive over the other listener. A
+ * client that had a handful of transient failures and then behaved
+ * normally shouldn't stay one failure away from a block. No-op if ip
+ * isn't tracked.
  */
 void connthrottle_record_success(const char *ip);
 

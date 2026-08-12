@@ -13527,10 +13527,15 @@ static void accept_loop(struct conn *listener)
 
 		/* A source already blocked for repeated failed HTTPS
 		 * handshakes (ADR-0134) is refused as cheaply as possible --
-		 * before any malloc/SSL_new, on either listener, since a
-		 * source flooding one is a reasonable thing to also stop
-		 * bothering with on the other. */
-		if (connthrottle_should_block(peer_ip)) {
+		 * before any malloc/SSL_new -- but only on the HTTPS listener
+		 * itself (ADR-0137): only a TLS handshake failure ever counts
+		 * toward the block in the first place (connthrottle_record_
+		 * failure() is only ever called from the HTTPS handshake path),
+		 * so enforcing it against the plain HTTP listener too achieves
+		 * nothing the block is actually for and, found live, can strand
+		 * an otherwise-reachable admin path behind an untrusted-cert
+		 * client's own repeated TLS failures. */
+		if (is_tls && connthrottle_should_block(peer_ip)) {
 			close(client_fd);
 			continue;
 		}

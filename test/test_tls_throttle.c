@@ -7,10 +7,14 @@
  * on every single one. Proves, against a real daemon: the peer IP now
  * appears in the log line; GET/PUT /v1/system/tls-throttle round-trips
  * and validates its fields; enough failures from one source within the
- * configured window trip a real block (further connections from that
- * same source, on the plain HTTP listener too, are refused outright);
- * the block expires on its own after block_seconds; a clean handshake
- * resets an IP's failure count; the enabled=false toggle genuinely
+ * configured window trip a real block (further HTTPS connections from
+ * that same source are refused outright at accept() -- while plain HTTP
+ * from the very same source stays fully reachable throughout, ADR-0137:
+ * only a failed TLS handshake can ever cause a block, so enforcing it
+ * against the listener that had nothing to do with causing it achieves
+ * nothing and only strands a legitimate fallback path); the block
+ * expires on its own after block_seconds; a clean handshake resets an
+ * IP's failure count; the enabled=false toggle genuinely
  * disables enforcement; and -- the one real, non-obvious correctness
  * requirement this feature has -- loopback (127.0.0.1, kanxeoctl's own
  * default --host=) is never throttled, so a hostile source sharing a
@@ -28,6 +32,7 @@
 #include "test_image_fixture.h"
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <netinet/in.h>
 #include <signal.h>
@@ -172,6 +177,97 @@ static int can_reach_health(const char *src_ip)
 	buf[n] = '\0';
 	ok = (strncmp(buf, "HTTP/1.1 200", 12) == 0);
 	return ok;
+}
+
+/* Runs `openssl s_client -bind src_ip:0 -connect 127.0.0.1:HTTPS_PORT
+ * </dev/null`, capturing output to out_path -- same fork/execve
+ * pattern test_https_chain.c's own capture_s_client_output()
+ * established (this project's build has no OpenSSL client bindings
+ * available to a C test more directly). */
+static int capture_probe_handshake(const char *src_ip, const char *out_path)
+{
+	pid_t pid;
+	int status;
+	int devnull;
+	int outfd;
+	char bind_arg[32];
+	char connect_arg[32];
+
+	snprintf(bind_arg, sizeof(bind_arg), "%s:0", src_ip);
+	snprintf(connect_arg, sizeof(connect_arg), "127.0.0.1:%d", HTTPS_PORT);
+
+	devnull = open("/dev/null", O_RDONLY);
+	outfd = open(out_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	if (devnull < 0 || outfd < 0) {
+		if (devnull >= 0)
+			close(devnull);
+		if (outfd >= 0)
+			close(outfd);
+		return -1;
+	}
+
+	pid = fork();
+	if (pid < 0) {
+		close(devnull);
+		close(outfd);
+		return -1;
+	}
+	if (pid == 0) {
+		char *argv[] = { "/usr/bin/openssl", "s_client", "-bind", bind_arg,
+			          "-connect", connect_arg, NULL };
+
+		dup2(devnull, STDIN_FILENO);
+		dup2(outfd, STDOUT_FILENO);
+		dup2(outfd, STDERR_FILENO);
+		execve("/usr/bin/openssl", argv, environ);
+		perror("execve openssl s_client");
+		_exit(127);
+	}
+	close(devnull);
+	close(outfd);
+	if (waitpid(pid, &status, 0) != pid)
+		return -1;
+	return 0;
+}
+
+/* Whether src_ip's connection reaches OpenSSL's own real TLS handshake
+ * processing on the HTTPS listener at all -- found the hard way while
+ * writing this test: garbage bytes (trigger_one_handshake_failure()'s
+ * own plain-HTTP request line) get an immediate connection reset with
+ * zero application data either way, so "blocked before accept()" and
+ * "reached SSL_accept() but failed on garbage input" are indistinguishable
+ * by byte-count alone. A REAL s_client handshake attempt isn't: it
+ * always completes real cipher negotiation ("New, <version>, Cipher is
+ * <name>") once SSL_accept() is reached, regardless of certificate
+ * trust (s_client completes the handshake even against a self-signed,
+ * untrusted cert unless told to fail on that) -- and reports "Cipher is
+ * (NONE)" when the connection was closed before any TLS record was
+ * ever exchanged, i.e. accept_loop()'s own is_tls block check fired
+ * first (ADR-0137). Returns 1 if a real cipher was negotiated (reached
+ * the TLS layer, not currently blocked), 0 otherwise. */
+static int attacker_reaches_https_layer(const char *src_ip)
+{
+	char path[PATH_MAX];
+	FILE *f;
+	char line[256];
+	int reached = 0;
+
+	snprintf(path, sizeof(path), "%s/probe.out", g_data_dir);
+	if (capture_probe_handshake(src_ip, path) != 0)
+		return 0;
+
+	f = fopen(path, "r");
+	if (f == NULL)
+		return 0;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		if (strstr(line, "Cipher is") != NULL && strstr(line, "(NONE)") == NULL) {
+			reached = 1;
+			break;
+		}
+	}
+	fclose(f);
+	unlink(path);
+	return reached;
 }
 
 static int get_int_field(const struct json_value *obj, const char *key)
@@ -348,13 +444,20 @@ int main(void)
 	}
 	kx_response_free(&r);
 
-	/* 8. The blocked attacker is refused outright on the PLAIN HTTP
-	 * listener too (one throttle table, checked uniformly for both) --
-	 * while loopback (127.0.0.1) stays completely unaffected, proving
-	 * the daemon's own local admin access can never be locked out by a
-	 * hostile source sharing the box. */
-	if (ok && can_reach_health(ATTACKER_IP)) {
-		fprintf(stderr, "FAIL: expected the blocked attacker's request to be refused\n");
+	/* 8. The blocked attacker is refused outright on the HTTPS listener
+	 * itself, before ever reaching SSL_accept() -- while, per ADR-0137,
+	 * plain HTTP from that very same source stays fully reachable, since
+	 * only HTTPS handshake failures can cause a block and enforcing it
+	 * on the unrelated listener would strand a legitimate fallback path.
+	 * Loopback (127.0.0.1) also stays completely unaffected throughout,
+	 * proving the daemon's own local admin access can never be locked
+	 * out by a hostile source sharing the box. */
+	if (ok && attacker_reaches_https_layer(ATTACKER_IP)) {
+		fprintf(stderr, "FAIL: expected the blocked attacker's HTTPS connection to be refused at accept()\n");
+		ok = 0;
+	}
+	if (ok && !can_reach_health(ATTACKER_IP)) {
+		fprintf(stderr, "FAIL: plain HTTP must stay reachable for a source blocked only on HTTPS (ADR-0137)\n");
 		ok = 0;
 	}
 	memset(&r, 0, sizeof(r));
@@ -365,14 +468,18 @@ int main(void)
 	}
 	kx_response_free(&r);
 
-	/* 9. The block expires on its own (block_seconds=2) -- poll until
-	 * the attacker source can reach it again rather than a fixed sleep. */
+	/* 9. The block expires on its own (block_seconds=2) -- poll the
+	 * HTTPS layer (the listener the block actually applies to; plain
+	 * HTTP was never blocked in the first place under ADR-0137, so
+	 * can_reach_health() would trivially "recover" immediately and
+	 * prove nothing here) until the attacker source reaches it again,
+	 * rather than a fixed sleep. */
 	if (ok) {
 		int i;
 		int recovered = 0;
 
 		for (i = 0; i < 50; i++) {
-			if (can_reach_health(ATTACKER_IP)) {
+			if (attacker_reaches_https_layer(ATTACKER_IP)) {
 				recovered = 1;
 				break;
 			}
@@ -385,14 +492,20 @@ int main(void)
 	}
 
 	/* 10. A clean request resets the failure count (connthrottle_
-	 * record_success) -- one more malformed handshake (below the
-	 * threshold of 3) followed by a real success must leave fail_count
-	 * at 0, not 1. */
+	 * record_success), credited even when the clean request arrives on
+	 * the *other* listener from the one the failure came in on -- one
+	 * more malformed HTTPS handshake (below the threshold of 3, so the
+	 * HTTPS layer itself must still be reachable) followed by a real
+	 * plain-HTTP success must leave fail_count at 0, not 1. */
 	if (ok) {
 		trigger_one_handshake_failure(ATTACKER_IP);
 
+		if (!attacker_reaches_https_layer(ATTACKER_IP)) {
+			fprintf(stderr, "FAIL: attacker source's HTTPS layer should still be reachable (below threshold)\n");
+			ok = 0;
+		}
 		if (!can_reach_health(ATTACKER_IP)) {
-			fprintf(stderr, "FAIL: attacker source should still be reachable (below threshold)\n");
+			fprintf(stderr, "FAIL: the clean plain-HTTP request itself should succeed\n");
 			ok = 0;
 		}
 
@@ -421,8 +534,9 @@ int main(void)
 	}
 
 	/* 11. enabled=false genuinely disables enforcement -- flood well
-	 * past the configured threshold and confirm the attacker source is
-	 * still able to connect. */
+	 * past the configured threshold and confirm the attacker source's
+	 * HTTPS layer (the listener enforcement actually applies to) is
+	 * still reachable. */
 	memset(&r, 0, sizeof(r));
 	if (ok &&
 	    (kx_client_request(&client, "PUT", "/v1/system/tls-throttle", "{\"enabled\":false}", &r) != 0 ||
@@ -438,8 +552,8 @@ int main(void)
 		for (i = 0; i < 6; i++)
 			trigger_one_handshake_failure(ATTACKER_IP);
 
-		if (!can_reach_health(ATTACKER_IP)) {
-			fprintf(stderr, "FAIL: expected the attacker source to still be reachable with throttling disabled\n");
+		if (!attacker_reaches_https_layer(ATTACKER_IP)) {
+			fprintf(stderr, "FAIL: expected the attacker's HTTPS layer to still be reachable with throttling disabled\n");
 			ok = 0;
 		}
 	}
