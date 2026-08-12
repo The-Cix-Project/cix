@@ -488,7 +488,7 @@ int main(void)
 	{
 		char check_path[PATH_MAX];
 
-		snprintf(check_path, sizeof(check_path), "%s/images/artifactimg/%s/rootfs/usr/bin/imgtool",
+		snprintf(check_path, sizeof(check_path), "%s/rebuildable/images/artifactimg/%s/rootfs/usr/bin/imgtool",
 		         g_data_dir, target_hash);
 		CHECK(access(check_path, F_OK) == 0, "artifact payload file exists in the new rootfs");
 	}

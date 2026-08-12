@@ -2,7 +2,24 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
-### Part 100 (done): web dashboard disk management page (ADR-0140)
+### Part 101 (done): storage layout grouping -- STATE_DIR/REBUILDABLE_DIR, automatic upgrade migration (ADR-0141 Phase 0)
+
+First phase of ADR-0141's multi-disk storage placement work: a prerequisite refactor, no new user-facing capability yet. Every path under `g_base_dir` was flat (`networks.json`, `pki/`, `images/`, `pkg/`, etc. all direct children) -- confirmed directly, not assumed -- with no existing grouping for "the state files" or "the rebuildable files" to later migrate as one unit.
+
+#### Changed
+- New `STATE_DIR` (`g_base_dir/state`) and `REBUILDABLE_DIR` (`g_base_dir/rebuildable`) in `main.c`'s `init_base_dir_paths()`. Every JSON state file, `PKI_DIR`, and `SIGNING_KEYS_DIR` now nest under `STATE_DIR`; `IMAGES_DIR`/`PKG_DIR`/`ARTIFACTS_DIR`/`ISO_DIR` now nest under `REBUILDABLE_DIR`. `CONTAINERS_DIR`/`SWAP_DIR`/`LOG_DIR`/`DISKS_MOUNT_DIR` deliberately stay direct children of `g_base_dir` (each already has its own relocation story, or nothing else to group with).
+- Fixed a latent bug found along the way: `PKGBUILD_TOOLCHAIN_FETCH_PATH` reconstructed `"pkg/..."` directly from `g_base_dir` instead of deriving from the already-existing `PKG_DIR`, unlike every other `PKG_DIR`-relative path -- harmless before this change (the two happened to agree), would have silently broken the moment `PKG_DIR` moved.
+- `docs/api/openapi.yaml`, `docs/api/README.md`, `docs/guides/administration.md`, `docs/guides/remote-development.md` updated wherever they stated a current, living path under the old flat layout. Historical references in ADRs/`ROADMAP.md` left untouched, per this project's own precedent for not rewriting history.
+
+#### Added
+- One-time, idempotent startup migration (`migrate_flat_layout_to_grouped()`): detects old-flat-layout entries still present directly under `g_base_dir` and `rename(2)`s each into its new grouped home before `boot_init()`'s own directory setup or any subsystem `_init()` reads/writes anything -- a no-op on an already-upgraded or genuinely fresh box, so it runs unconditionally on every boot with no separate "have I run" flag.
+- `test/test_layout_upgrade.c`: creates real content (a bootstrapped PKI CA, a site config) through the real API against the new grouped layout, manually relocates it back to the old flat paths (simulating an already-installed, not-yet-upgraded box), restarts the daemon, and confirms both the migration ran and the daemon is genuinely reading the migrated content afterward (not just that a file happens to exist) -- `cert_pem`/`instance_name` byte-for-byte match before and after.
+
+#### Fixed
+- 66 hardcoded old-flat-path references across 26 existing test files (direct filesystem staging/inspection bypassing the API) updated to the new grouped paths -- found and fixed via a precision script that only rewrote occurrences confirmed to format the real daemon data-dir variable, leaving unrelated same-shaped fixture paths (a mock upstream git-archive layout, a mock artifact-server scratch directory) untouched.
+
+#### Verified
+- Full clean rebuild (`-Wall -Werror`, zero warnings), full regression sweep (40 test binaries, including the new upgrade test 3x consecutively) -- zero failures.
 
 Asked directly whether disk management needed adding to the web UI. Checked first rather than assuming: grepped every "disk" reference in `web/` and confirmed all 22 hits were the disk-usage *stat* graphs, never disk *management* -- `GET /disks`, `GET`/`POST`/`DELETE /diskroles`, `GET`/`POST /disks/{name}/format` had existed at the API layer and in `kanxeoctl disks`/`diskrole` since multi-disk management Phases A-C shipped, with zero dashboard surface at all. A real, confirmed API/CLI/web parity gap.
 

@@ -218,7 +218,7 @@ int main(void)
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
-	snprintf(g_pkg_state_dir, sizeof(g_pkg_state_dir), "%s/pkg", g_data_dir);
+	snprintf(g_pkg_state_dir, sizeof(g_pkg_state_dir), "%s/rebuildable/pkg", g_data_dir);
 
 	if (mkdtemp(scratch_dir) == NULL) {
 		fprintf(stderr, "FAIL: mkdtemp\n");

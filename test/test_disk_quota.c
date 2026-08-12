@@ -104,7 +104,7 @@ static int read_quota_projids(char *out, size_t out_size)
 	FILE *f;
 	size_t n;
 
-	snprintf(path, sizeof(path), "%s/quota_projids.json", g_data_dir);
+	snprintf(path, sizeof(path), "%s/state/quota_projids.json", g_data_dir);
 	f = fopen(path, "r");
 	if (f == NULL)
 		return -1;
@@ -140,11 +140,11 @@ int main(void)
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
-	snprintf(g_image_root, sizeof(g_image_root), "%s/images/quotatest/v1/rootfs", g_data_dir);
+	snprintf(g_image_root, sizeof(g_image_root), "%s/rebuildable/images/quotatest/v1/rootfs", g_data_dir);
 	{
 		char image_dir[PATH_MAX];
 
-		snprintf(image_dir, sizeof(image_dir), "%s/images/quotatest", g_data_dir);
+		snprintf(image_dir, sizeof(image_dir), "%s/rebuildable/images/quotatest", g_data_dir);
 		if (test_image_fixture_write_manifest(image_dir, "v1") != 0) {
 			test_data_dir_cleanup(g_data_dir);
 			return 1;

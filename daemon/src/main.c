@@ -99,6 +99,23 @@ extern char **environ;
  * somewhere that can never collide with a real install.
  */
 static char g_base_dir[PATH_MAX] = DEFAULT_BASE_DIR;
+/*
+ * ADR-0141: two grouping directories introduced so state-storage and
+ * rebuildable-storage can each be relocated to a different disk as one
+ * real directory move, rather than a scattered list of a dozen
+ * unrelated paths -- every path below that's conceptually "this
+ * platform's own definition of itself" nests under STATE_DIR; every
+ * path that's "regenerable from recipes/sources if lost" nests under
+ * REBUILDABLE_DIR. CONTAINERS_DIR/SWAP_DIR/LOG_DIR/DISKS_MOUNT_DIR
+ * deliberately stay direct children of g_base_dir -- CONTAINERS_DIR
+ * already has its own relocation mechanism (container-storage, ADR-
+ * 0102), SWAP_DIR is explicitly out of scope (ADR-0069's own separate
+ * mechanism), LOG_DIR is already its own clean subdirectory with
+ * nothing else to group it with, and DISKS_MOUNT_DIR holds mount
+ * points for other disks, not data of its own.
+ */
+static char STATE_DIR[PATH_MAX];
+static char REBUILDABLE_DIR[PATH_MAX];
 static char IMAGES_DIR[PATH_MAX];
 static char CONTAINERS_DIR[PATH_MAX];
 static char NETWORKS_STATE_PATH[PATH_MAX];
@@ -200,24 +217,27 @@ static char CONNTHROTTLE_CONFIG_PATH[PATH_MAX];
  * of them. */
 static void init_base_dir_paths(void)
 {
-	snprintf(IMAGES_DIR, sizeof(IMAGES_DIR), "%s/images", g_base_dir);
+	snprintf(STATE_DIR, sizeof(STATE_DIR), "%s/state", g_base_dir);
+	snprintf(REBUILDABLE_DIR, sizeof(REBUILDABLE_DIR), "%s/rebuildable", g_base_dir);
+
+	snprintf(IMAGES_DIR, sizeof(IMAGES_DIR), "%s/images", REBUILDABLE_DIR);
 	snprintf(CONTAINERS_DIR, sizeof(CONTAINERS_DIR), "%s/containers", g_base_dir);
-	snprintf(NETWORKS_STATE_PATH, sizeof(NETWORKS_STATE_PATH), "%s/networks.json", g_base_dir);
-	snprintf(DNS_RECORDS_STATE_PATH, sizeof(DNS_RECORDS_STATE_PATH), "%s/dns_records.json", g_base_dir);
-	snprintf(DNS_SERVERS_STATE_PATH, sizeof(DNS_SERVERS_STATE_PATH), "%s/dns_servers.json", g_base_dir);
+	snprintf(NETWORKS_STATE_PATH, sizeof(NETWORKS_STATE_PATH), "%s/networks.json", STATE_DIR);
+	snprintf(DNS_RECORDS_STATE_PATH, sizeof(DNS_RECORDS_STATE_PATH), "%s/dns_records.json", STATE_DIR);
+	snprintf(DNS_SERVERS_STATE_PATH, sizeof(DNS_SERVERS_STATE_PATH), "%s/dns_servers.json", STATE_DIR);
 	snprintf(LDAP_SERVERS_STATE_PATH, sizeof(LDAP_SERVERS_STATE_PATH), "%s/ldap_servers.json",
-	         g_base_dir);
-	snprintf(LDAP_USERS_STATE_PATH, sizeof(LDAP_USERS_STATE_PATH), "%s/ldap_users.json", g_base_dir);
+	         STATE_DIR);
+	snprintf(LDAP_USERS_STATE_PATH, sizeof(LDAP_USERS_STATE_PATH), "%s/ldap_users.json", STATE_DIR);
 	snprintf(LDAP_GROUPS_STATE_PATH, sizeof(LDAP_GROUPS_STATE_PATH), "%s/ldap_groups.json",
-	         g_base_dir);
+	         STATE_DIR);
 	snprintf(LDAP_CONFIG_STATE_PATH, sizeof(LDAP_CONFIG_STATE_PATH), "%s/ldap_config.json",
-	         g_base_dir);
+	         STATE_DIR);
 	snprintf(LDAP_SSH_TARGETS_STATE_PATH, sizeof(LDAP_SSH_TARGETS_STATE_PATH),
-	         "%s/ldap_ssh_targets.json", g_base_dir);
-	snprintf(PKI_DIR, sizeof(PKI_DIR), "%s/pki", g_base_dir);
+	         "%s/ldap_ssh_targets.json", STATE_DIR);
+	snprintf(PKI_DIR, sizeof(PKI_DIR), "%s/pki", STATE_DIR);
 	snprintf(PKI_CERTS_STATE_PATH, sizeof(PKI_CERTS_STATE_PATH), "%s/pki_certs.json", PKI_DIR);
 	snprintf(PKI_CERTS_DIR, sizeof(PKI_CERTS_DIR), "%s/certs", PKI_DIR);
-	snprintf(PKG_DIR, sizeof(PKG_DIR), "%s/pkg", g_base_dir);
+	snprintf(PKG_DIR, sizeof(PKG_DIR), "%s/pkg", REBUILDABLE_DIR);
 	snprintf(PKG_INSTALLED_STATE_PATH, sizeof(PKG_INSTALLED_STATE_PATH), "%s/pkg_installed.json", PKG_DIR);
 	snprintf(PKG_RECIPES_DIR, sizeof(PKG_RECIPES_DIR), "%s/recipes", PKG_DIR);
 	snprintf(PKG_REPO_CONFIG_PATH, sizeof(PKG_REPO_CONFIG_PATH), "%s/repo_config.json", PKG_DIR);
@@ -225,30 +245,96 @@ static void init_base_dir_paths(void)
 	snprintf(PKG_CACHE_CONFIG_PATH, sizeof(PKG_CACHE_CONFIG_PATH), "%s/cache_config.json", PKG_DIR);
 	snprintf(PKG_ARTIFACT_CONFIG_PATH, sizeof(PKG_ARTIFACT_CONFIG_PATH), "%s/artifact_config.json",
 	         PKG_DIR);
-	snprintf(ARTIFACTS_DIR, sizeof(ARTIFACTS_DIR), "%s/artifacts", g_base_dir);
-	snprintf(CONTAINER_DEFS_STATE_PATH, sizeof(CONTAINER_DEFS_STATE_PATH), "%s/container_defs.json", g_base_dir);
-	snprintf(ROLLING_CONFIG_PATH, sizeof(ROLLING_CONFIG_PATH), "%s/rolling_config.json", g_base_dir);
-	snprintf(SITE_CONFIG_PATH, sizeof(SITE_CONFIG_PATH), "%s/site_config.json", g_base_dir);
-	snprintf(DEVICEMAP_STATE_PATH, sizeof(DEVICEMAP_STATE_PATH), "%s/devicemaps.json", g_base_dir);
-	snprintf(DISKROLE_STATE_PATH, sizeof(DISKROLE_STATE_PATH), "%s/diskroles.json", g_base_dir);
-	snprintf(DAEMON_CONFIG_PATH, sizeof(DAEMON_CONFIG_PATH), "%s/daemon_config.json", g_base_dir);
-	snprintf(QUOTAMAP_STATE_PATH, sizeof(QUOTAMAP_STATE_PATH), "%s/quota_projids.json", g_base_dir);
-	snprintf(SIGNING_KEYS_DIR, sizeof(SIGNING_KEYS_DIR), "%s/keys", g_base_dir);
-	snprintf(ISO_DIR, sizeof(ISO_DIR), "%s/iso", g_base_dir);
+	snprintf(ARTIFACTS_DIR, sizeof(ARTIFACTS_DIR), "%s/artifacts", REBUILDABLE_DIR);
+	snprintf(CONTAINER_DEFS_STATE_PATH, sizeof(CONTAINER_DEFS_STATE_PATH), "%s/container_defs.json", STATE_DIR);
+	snprintf(ROLLING_CONFIG_PATH, sizeof(ROLLING_CONFIG_PATH), "%s/rolling_config.json", STATE_DIR);
+	snprintf(SITE_CONFIG_PATH, sizeof(SITE_CONFIG_PATH), "%s/site_config.json", STATE_DIR);
+	snprintf(DEVICEMAP_STATE_PATH, sizeof(DEVICEMAP_STATE_PATH), "%s/devicemaps.json", STATE_DIR);
+	snprintf(DISKROLE_STATE_PATH, sizeof(DISKROLE_STATE_PATH), "%s/diskroles.json", STATE_DIR);
+	snprintf(DAEMON_CONFIG_PATH, sizeof(DAEMON_CONFIG_PATH), "%s/daemon_config.json", STATE_DIR);
+	snprintf(QUOTAMAP_STATE_PATH, sizeof(QUOTAMAP_STATE_PATH), "%s/quota_projids.json", STATE_DIR);
+	snprintf(SIGNING_KEYS_DIR, sizeof(SIGNING_KEYS_DIR), "%s/keys", STATE_DIR);
+	snprintf(ISO_DIR, sizeof(ISO_DIR), "%s/iso", REBUILDABLE_DIR);
 	snprintf(PKGBUILD_TOOLCHAIN_FETCH_PATH, sizeof(PKGBUILD_TOOLCHAIN_FETCH_PATH),
-	         "%s/pkg/bootstrap_toolchain.squashfs", g_base_dir);
+	         "%s/bootstrap_toolchain.squashfs", PKG_DIR);
 	snprintf(SWAP_DIR, sizeof(SWAP_DIR), "%s/swap", g_base_dir);
 	snprintf(SWAP_FILE_PATH, sizeof(SWAP_FILE_PATH), "%s/swapfile", SWAP_DIR);
 	snprintf(SWAP_STATE_PATH, sizeof(SWAP_STATE_PATH), "%s/state.json", SWAP_DIR);
 	snprintf(LOG_DIR, sizeof(LOG_DIR), "%s/logs", g_base_dir);
 	snprintf(LOG_STATE_PATH, sizeof(LOG_STATE_PATH), "%s/state.json", LOG_DIR);
 	snprintf(DISKS_MOUNT_DIR, sizeof(DISKS_MOUNT_DIR), "%s/disks", g_base_dir);
-	snprintf(RESOLV_CONF_PATH, sizeof(RESOLV_CONF_PATH), "%s/resolv.conf", g_base_dir);
-	snprintf(NTP_STATE_PATH, sizeof(NTP_STATE_PATH), "%s/ntp.conf", g_base_dir);
-	snprintf(NTP_SERVERS_STATE_PATH, sizeof(NTP_SERVERS_STATE_PATH), "%s/ntp_servers.json", g_base_dir);
-	snprintf(SYSLOGFWD_STATE_PATH, sizeof(SYSLOGFWD_STATE_PATH), "%s/syslog_targets.json", g_base_dir);
-	snprintf(CONNTHROTTLE_CONFIG_PATH, sizeof(CONNTHROTTLE_CONFIG_PATH), "%s/tls_throttle.json", g_base_dir);
+	snprintf(RESOLV_CONF_PATH, sizeof(RESOLV_CONF_PATH), "%s/resolv.conf", STATE_DIR);
+	snprintf(NTP_STATE_PATH, sizeof(NTP_STATE_PATH), "%s/ntp.conf", STATE_DIR);
+	snprintf(NTP_SERVERS_STATE_PATH, sizeof(NTP_SERVERS_STATE_PATH), "%s/ntp_servers.json", STATE_DIR);
+	snprintf(SYSLOGFWD_STATE_PATH, sizeof(SYSLOGFWD_STATE_PATH), "%s/syslog_targets.json", STATE_DIR);
+	snprintf(CONNTHROTTLE_CONFIG_PATH, sizeof(CONNTHROTTLE_CONFIG_PATH), "%s/tls_throttle.json", STATE_DIR);
 }
+
+/*
+ * ADR-0141: moves one old-flat-layout entry (a file or a whole
+ * directory -- rename(2) handles either) from directly under
+ * g_base_dir into new_dir, if it still exists there. A no-op
+ * (lstat() fails ENOENT) on a box that's already upgraded, or a
+ * genuinely fresh install with nothing at the old flat path -- this
+ * makes migrate_flat_layout_to_grouped() below safe to call
+ * unconditionally on every single boot, with no separate "have I
+ * already run" flag needed.
+ */
+static void migrate_one_flat_entry(const char *basename, const char *new_dir)
+{
+	char old_path[PATH_MAX];
+	char new_path[PATH_MAX];
+	struct stat st;
+
+	snprintf(old_path, sizeof(old_path), "%s/%s", g_base_dir, basename);
+	if (lstat(old_path, &st) != 0)
+		return;
+
+	if (persist_mkdir_p(new_dir) != 0) {
+		fprintf(stderr, "migrate_flat_layout_to_grouped: mkdir %s failed: %s\n", new_dir,
+		        strerror(errno));
+		return;
+	}
+	snprintf(new_path, sizeof(new_path), "%s/%s", new_dir, basename);
+	if (rename(old_path, new_path) != 0)
+		fprintf(stderr, "migrate_flat_layout_to_grouped: rename %s -> %s failed: %s\n", old_path,
+		        new_path, strerror(errno));
+}
+
+/*
+ * One-time upgrade path (ADR-0141) for a box that ran before STATE_DIR/
+ * REBUILDABLE_DIR existed -- its real state sits at the OLD flat paths,
+ * directly under g_base_dir, since every one of them used to be
+ * computed that way. Must run after boot_init() has mounted the real
+ * containers partition onto g_base_dir under --init-mode (calling this
+ * any earlier would see an empty pre-mount directory and migrate
+ * nothing) and before anything below -- the ensure_dir() calls that
+ * would otherwise create fresh empty grouped directories, and every
+ * subsystem's own _init() -- ever reads or writes any of these paths.
+ * rename(2), not a copy: both the old and new locations are still on
+ * the same filesystem at this point, since this runs before any real
+ * disk-role/migration machinery (which moves data *across* filesystems)
+ * is even reachable.
+ */
+static void migrate_flat_layout_to_grouped(void)
+{
+	static const char *const state_entries[] = {
+		"networks.json",       "dns_records.json",  "dns_servers.json",     "ldap_servers.json",
+		"ldap_users.json",     "ldap_groups.json",  "ldap_config.json",     "ldap_ssh_targets.json",
+		"pki",                 "container_defs.json", "rolling_config.json", "site_config.json",
+		"devicemaps.json",     "diskroles.json",    "daemon_config.json",   "quota_projids.json",
+		"keys",                "resolv.conf",       "ntp.conf",             "ntp_servers.json",
+		"syslog_targets.json", "tls_throttle.json",
+	};
+	static const char *const rebuildable_entries[] = { "images", "pkg", "artifacts", "iso" };
+	size_t i;
+
+	for (i = 0; i < sizeof(state_entries) / sizeof(state_entries[0]); i++)
+		migrate_one_flat_entry(state_entries[i], STATE_DIR);
+	for (i = 0; i < sizeof(rebuildable_entries) / sizeof(rebuildable_entries[0]); i++)
+		migrate_one_flat_entry(rebuildable_entries[i], REBUILDABLE_DIR);
+}
+
 /*
  * Backoff cap and stability-reset threshold for the crash-restart
  * delay (ADR-0027) -- the base delay itself is per-container
@@ -13837,7 +13923,16 @@ int main(int argc, char **argv)
 		fflush(stdout);
 	}
 
-	if (ensure_dir(g_base_dir) != 0 || ensure_dir(IMAGES_DIR) != 0 ||
+	migrate_flat_layout_to_grouped();
+
+	/* STATE_DIR/REBUILDABLE_DIR themselves first (ADR-0141) -- ensure_dir()
+	 * is a plain single-level mkdir(), not mkdir -p, so every path nested
+	 * under either one below would otherwise fail with ENOENT on a
+	 * genuinely fresh install (nothing for migrate_flat_layout_to_grouped()
+	 * to have created them via already, since there was nothing at the
+	 * old flat paths to migrate). */
+	if (ensure_dir(g_base_dir) != 0 || ensure_dir(STATE_DIR) != 0 ||
+	    ensure_dir(REBUILDABLE_DIR) != 0 || ensure_dir(IMAGES_DIR) != 0 ||
 	    ensure_dir(CONTAINERS_DIR) != 0 || ensure_dir(PKI_DIR) != 0 ||
 	    ensure_dir(PKI_CERTS_DIR) != 0 || ensure_dir(PKG_DIR) != 0 ||
 	    ensure_dir(ARTIFACTS_DIR) != 0 || ensure_dir(SIGNING_KEYS_DIR) != 0 ||

@@ -173,7 +173,7 @@ Response (`201`):
 {"name": "internal", "subnet": "172.31.0.0", "prefix_len": 24, "address": "172.31.0.1"}
 ```
 
-Creating a network creates its bridge immediately via rtnetlink and persists the definition to `/var/lib/kanxeo/networks.json` — unlike containers (safe to be in-memory-only, since they die with the daemon), a bridge outlives this process, so the daemon reloads and recreates every persisted network's bridge idempotently at startup.
+Creating a network creates its bridge immediately via rtnetlink and persists the definition to `/var/lib/kanxeo/state/networks.json` (ADR-0141) — unlike containers (safe to be in-memory-only, since they die with the daemon), a bridge outlives this process, so the daemon reloads and recreates every persisted network's bridge idempotently at startup.
 
 ### Attaching a real host interface
 
@@ -356,7 +356,7 @@ POST /v1/containers
 ```
 
 - `name` must match `[A-Za-z0-9_-]+` — it's used verbatim as the on-disk directory name under `/var/lib/kanxeo/containers/`.
-- `image` must already exist and be populated at `/var/lib/kanxeo/images/{image}/rootfs` — the daemon never creates image content itself (see ADR-0004); a missing image is a `400`, not a silently-empty container.
+- `image` must already exist and be populated at `/var/lib/kanxeo/rebuildable/images/{image}/rootfs` (ADR-0141) — the daemon never creates image content itself (see ADR-0004); a missing image is a `400`, not a silently-empty container.
 - `memory_max`/`pids_max`/`cpu_max`/`cpuset_cpus` are optional cgroup v2 limits; omit for no limit. `cpu_max` is the raw cgroup-native `"<quota> <period>"` string in microseconds (e.g. `"50000 100000"` = 50% of one CPU); `cpuset_cpus` is the raw `cpuset.cpus` range-list value (e.g. `"0-1,3"`), restricting which host CPUs this container's processes may run on. Both are passed straight through, not reinterpreted into a percentage or another unit — the same pass-through convention `memory_max`'s bytes and `pids_max`'s raw count already use.
 - `disk_quota_bytes` is an optional, real, kernel-enforced hard limit on this container's own overlay upperdir — the enforcement mechanism is picked automatically from the backing filesystem's own type, no separate flag needed. On ext4 (the default), this is a project quota (see [ADR-0062](../adr/0062-ext4-project-disk-quotas.md)); writes past it fail with `EDQUOT` at the filesystem level, and it requires the containers partition to have real project-quota support (`mkfs.ext4 -O quota -E quotatype=prjquota`, the default for a system installed via `kanxeo-install.c`). On btrfs, this is a qgroup hard limit set directly on the container's own upperdir subvolume (see [ADR-0103](../adr/0103-btrfs-quota-backend.md)) — equally real, kernel-enforced, not advisory. Either way, if the backing filesystem can't support the requested enforcement, creation fails `500` with a clear error rather than silently not enforcing the limit. Omit for no limit.
 - `disk` is optional (task #638, [ADR-0102](../adr/0102-per-container-disk-selection.md)): a bare disk name (e.g. `"sdb"`, from `GET /disks`) to place this container's own writable storage on, instead of the default OS disk. The disk must already be mounted and carry the `"container-storage"` role (`POST /diskroles`) — `400` if it doesn't exist, isn't mounted, or lacks that role. Echoed back as `disk` on `GET /containers` (`null` for the default placement).
@@ -398,7 +398,7 @@ POST /v1/containers
 }
 ```
 
-This persists the exact request (`/var/lib/kanxeo/container_defs.json`) in addition to creating it live right now. From then on it's replayed automatically at every future daemon boot, and again after any unprompted exit — each restart after a real, exponentially-backed-off delay (`restart_delay_seconds`, 1–300, default 2 — doubling per consecutive failure, capped at 30s, reset to the base value once the container has stayed up at least 30s before exiting again — never instant, so a genuinely crash-looping container doesn't hammer the host).
+This persists the exact request (`/var/lib/kanxeo/state/container_defs.json`, ADR-0141) in addition to creating it live right now. From then on it's replayed automatically at every future daemon boot, and again after any unprompted exit — each restart after a real, exponentially-backed-off delay (`restart_delay_seconds`, 1–300, default 2 — doubling per consecutive failure, capped at 30s, reset to the base value once the container has stayed up at least 30s before exiting again — never instant, so a genuinely crash-looping container doesn't hammer the host).
 
 `restart` has four values:
 - `"always"` — restarts regardless of exit code, including a clean `0` exit.
@@ -1023,7 +1023,7 @@ POST /v1/containers
 
 A package manager built from scratch: recipes are shell scripts (the same format Gentoo ebuilds/Arch PKGBUILDs/CRUX Pkgfiles use), builds happen inside this project's own container runtime, and the daemon **never sources or executes a recipe on the host** — recipe metadata (`pkg_name=`, `pkg_version=`, `pkg_source=`, `pkg_sha256=`, `pkg_depends=`) is read with a strict, non-executing line scanner; the recipe's real shell code (`pkg_build()`/`pkg_install()`) only ever runs inside the isolated, network-less build container. See [`docs/guides/writing-recipes.md`](../guides/writing-recipes.md) for the full recipe-authoring contract.
 
-**Every install targets one image**, `/var/lib/kanxeo/images/{image}/rootfs` — `"base"` by default (any container created with `"image": "base"` gets everything installed there, no separate host/container package paths to keep in sync), or an explicit other one (see [Per-image installs](#per-image-installs) below) for software that shouldn't be part of every container's baseline.
+**Every install targets one image**, `/var/lib/kanxeo/rebuildable/images/{image}/rootfs` (ADR-0141) — `"base"` by default (any container created with `"image": "base"` gets everything installed there, no separate host/container package paths to keep in sync), or an explicit other one (see [Per-image installs](#per-image-installs) below) for software that shouldn't be part of every container's baseline.
 
 **Installs are asynchronous.** The daemon is single-threaded and non-blocking; a network fetch or a real compile can take anywhere from seconds to minutes, so `POST /v1/pkg/install` returns immediately (`202`) and the actual work happens in the background — poll `GET /v1/pkg/{name}` for progress. **Fetching happens on the host** (a `curl` subprocess — this project's networking plane has no outbound NAT, so a build container has no network access at all, a stronger isolation boundary for untrusted build scripts, not a limitation worked around).
 
@@ -1133,7 +1133,7 @@ POST /v1/pkg/install
 {"name": "bird", "image": "router"}
 ```
 
-`bird` (and its dependencies, resolved the same way as always) builds into `/var/lib/kanxeo/images/router/rootfs` — containers created with `"image": "base"` never see it. The same package name is tracked independently per image: `bash` installed into both `base` and `router` are two separate entries, each independently upgradable/removable. `router` above doesn't need to exist beforehand — the first install into a name never seen before creates it implicitly; `POST /v1/images {"name": "router"}` creates one explicitly instead, useful when you want an image to exist (and be immediately usable — its C runtime is seeded right away) before installing anything into it.
+`bird` (and its dependencies, resolved the same way as always) builds into `/var/lib/kanxeo/rebuildable/images/router/rootfs` — containers created with `"image": "base"` never see it. The same package name is tracked independently per image: `bash` installed into both `base` and `router` are two separate entries, each independently upgradable/removable. `router` above doesn't need to exist beforehand — the first install into a name never seen before creates it implicitly; `POST /v1/images {"name": "router"}` creates one explicitly instead, useful when you want an image to exist (and be immediately usable — its C runtime is seeded right away) before installing anything into it.
 
 **An image can also carry a real, persisted manifest** (ADR-0107) — declared package intent, distinct from whatever's actually installed right now:
 
@@ -1144,7 +1144,7 @@ POST /v1/images/router/manifest
 
 `mode: "pinned"` means exactly that version, never auto-advancing; `mode: "rolling"` means `version` is a floor, resolving to the highest available recipe version `>=` it. Re-`POST`ing the same `package` updates its mode/version in place (upsert), never duplicates. `GET /v1/images/router` echoes the full manifest alongside the bare `name` it always returned. `DELETE /v1/images/router/manifest/bird` removes one entry. This only records intent — it does not itself install anything.
 
-**Every install/upgrade/uninstall against an image produces a new, immutable version** (ADR-0108) — `/var/lib/kanxeo/images/router/<version>/rootfs`, where `<version>` is a hash of the image's full installed-package manifest (`name@version` pairs, sorted). Prior versions are never mutated or deleted; a version whose content hash already exists in the image's history is deduplicated (no new directory, `current_version` just repoints). New containers created against `router` are pinned to whatever `current_version` resolves to at creation time (`registry.json`'s own `image_version` field) — they keep running against that exact rootfs even if `router` moves on to a newer version later; only a fresh create or explicit restart-with-replay re-resolves. `GET /v1/images/router` reports both:
+**Every install/upgrade/uninstall against an image produces a new, immutable version** (ADR-0108) — `/var/lib/kanxeo/rebuildable/images/router/<version>/rootfs`, where `<version>` is a hash of the image's full installed-package manifest (`name@version` pairs, sorted). Prior versions are never mutated or deleted; a version whose content hash already exists in the image's history is deduplicated (no new directory, `current_version` just repoints). New containers created against `router` are pinned to whatever `current_version` resolves to at creation time (`registry.json`'s own `image_version` field) — they keep running against that exact rootfs even if `router` moves on to a newer version later; only a fresh create or explicit restart-with-replay re-resolves. `GET /v1/images/router` reports both:
 
 ```json
 {
@@ -1253,7 +1253,7 @@ Bundles platform *configuration* state — container definitions, networks, DNS 
 
 - **Does NOT include workload data.** Each container's own persistent data (a git host's repos, a resolver's zone files, a metrics database) is that container's own concern, backed up with its own native tooling. This endpoint has no way to reach into another container's filesystem and never tries to.
 - **Does NOT include image rootfs content.** Since everything is compiled from source, an image's content is reproducible by re-running `pkg install` for whatever `pkg_installed` records — this bundle is the "shopping list" (what should be installed, where), not the built bytes. Getting all the way back to a fully-populated system after a restore means re-running those installs, not something this endpoint does for you automatically.
-- **Never touches PKI, at all.** The CA private key (and every issued leaf certificate's own key) is never returned over the API anywhere in this system, by existing, deliberate design (see [PKI](#pki-a-ca-chain-and-issued-leaf-certificates) above) — that rule isn't bent or partially relaxed here. Back up `/var/lib/kanxeo/pki/` separately, directly on the host, outside the API entirely.
+- **Never touches PKI, at all.** The CA private key (and every issued leaf certificate's own key) is never returned over the API anywhere in this system, by existing, deliberate design (see [PKI](#pki-a-ca-chain-and-issued-leaf-certificates) above) — that rule isn't bent or partially relaxed here. Back up `/var/lib/kanxeo/state/pki/` (ADR-0141) separately, directly on the host, outside the API entirely.
 
 ```
 POST /v1/system/restore

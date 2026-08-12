@@ -41,8 +41,8 @@ A real installed Kanxeo host has no SSH server and no general shell (ADR-0034, c
 
 ```sh
 kanxeoctl --server=http://<box>:7620 update \
-  --image=/var/lib/kanxeo/pkg/sources/scratch-deploy-1-0.src \
-  --kernel=/var/lib/kanxeo/pkg/sources/<kernel-scratch-path>
+  --image=/var/lib/kanxeo/rebuildable/pkg/sources/scratch-deploy-1-0.src \
+  --kernel=/var/lib/kanxeo/rebuildable/pkg/sources/<kernel-scratch-path>
 kanxeoctl --server=http://<box>:7620 reboot
 ```
 

@@ -95,11 +95,11 @@ int main(void)
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
-	snprintf(g_image_root, sizeof(g_image_root), "%s/images/networkstest/v1/rootfs", g_data_dir);
+	snprintf(g_image_root, sizeof(g_image_root), "%s/rebuildable/images/networkstest/v1/rootfs", g_data_dir);
 	{
 		char image_dir[PATH_MAX];
 
-		snprintf(image_dir, sizeof(image_dir), "%s/images/networkstest", g_data_dir);
+		snprintf(image_dir, sizeof(image_dir), "%s/rebuildable/images/networkstest", g_data_dir);
 		if (test_image_fixture_write_manifest(image_dir, "v1") != 0) {
 			test_data_dir_cleanup(g_data_dir);
 			return 1;
@@ -441,7 +441,7 @@ int main(void)
 		    "{\"name\":\"gwmigrate37\",\"subnet\":\"172.47.0.0\",\"prefix_len\":24}";
 		FILE *f;
 
-		snprintf(state_path, sizeof(state_path), "%s/networks.json", g_data_dir);
+		snprintf(state_path, sizeof(state_path), "%s/state/networks.json", g_data_dir);
 		f = fopen(state_path, "r+");
 		char buf[65536];
 		size_t len = 0;

@@ -224,15 +224,15 @@ int main(void)
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
-	snprintf(g_image_root, sizeof(g_image_root), "%s/images/restarttest/v1/rootfs", g_data_dir);
-	snprintf(g_container_defs_path, sizeof(g_container_defs_path), "%s/container_defs.json",
+	snprintf(g_image_root, sizeof(g_image_root), "%s/rebuildable/images/restarttest/v1/rootfs", g_data_dir);
+	snprintf(g_container_defs_path, sizeof(g_container_defs_path), "%s/state/container_defs.json",
 	         g_data_dir);
 
 	reset_state();
 	{
 		char image_dir[PATH_MAX];
 
-		snprintf(image_dir, sizeof(image_dir), "%s/images/restarttest", g_data_dir);
+		snprintf(image_dir, sizeof(image_dir), "%s/rebuildable/images/restarttest", g_data_dir);
 		if (test_image_fixture_write_manifest(image_dir, "v1") != 0) {
 			test_data_dir_cleanup(g_data_dir);
 			return 1;

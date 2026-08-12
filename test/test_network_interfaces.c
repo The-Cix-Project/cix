@@ -106,7 +106,7 @@ int main(void)
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
-	snprintf(g_image_root, sizeof(g_image_root), "%s/images/netifacetest/rootfs", g_data_dir);
+	snprintf(g_image_root, sizeof(g_image_root), "%s/rebuildable/images/netifacetest/rootfs", g_data_dir);
 
 	if (test_image_fixture_build(g_image_root, "build/daemon_child", "daemon_child") != 0) {
 		test_data_dir_cleanup(g_data_dir);

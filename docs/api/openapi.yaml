@@ -4756,8 +4756,9 @@ components:
           type: string
           description: >
             Name of a pre-existing, pre-populated image whose rootfs lives
-            at /var/lib/kanxeo/images/{image}/rootfs. This daemon never
-            creates image content itself -- only 400s if it's missing.
+            at /var/lib/kanxeo/rebuildable/images/{image}/rootfs (ADR-0141).
+            This daemon never creates image content itself -- only 400s if
+            it's missing.
         cmd:
           type: array
           items:
@@ -6111,8 +6112,9 @@ components:
           type: string
           description: >
             Unique image name. Used verbatim as the directory name under
-            /var/lib/kanxeo/images/, so it is restricted to [A-Za-z0-9_-] --
-            the same rule pkg_install's own image field already follows.
+            /var/lib/kanxeo/rebuildable/images/ (ADR-0141), so it is
+            restricted to [A-Za-z0-9_-] -- the same rule pkg_install's own
+            image field already follows.
 
     Image:
       type: object

@@ -161,14 +161,14 @@ int main(void)
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
-	snprintf(g_pki_state_dir, sizeof(g_pki_state_dir), "%s/pki", g_data_dir);
-	snprintf(g_pki_image_root, sizeof(g_pki_image_root), "%s/images/pkitest/v1/rootfs", g_data_dir);
+	snprintf(g_pki_state_dir, sizeof(g_pki_state_dir), "%s/state/pki", g_data_dir);
+	snprintf(g_pki_image_root, sizeof(g_pki_image_root), "%s/rebuildable/images/pkitest/v1/rootfs", g_data_dir);
 
 	reset_pki_state_dir();
 	{
 		char image_dir[PATH_MAX];
 
-		snprintf(image_dir, sizeof(image_dir), "%s/images/pkitest", g_data_dir);
+		snprintf(image_dir, sizeof(image_dir), "%s/rebuildable/images/pkitest", g_data_dir);
 		if (test_image_fixture_write_manifest(image_dir, "v1") != 0) {
 			test_data_dir_cleanup(g_data_dir);
 			return 1;
@@ -1248,7 +1248,7 @@ int main(void)
 		{
 			char image_dir[PATH_MAX], version[128];
 
-			snprintf(image_dir, sizeof(image_dir), "%s/images/imgtrust", g_data_dir);
+			snprintf(image_dir, sizeof(image_dir), "%s/rebuildable/images/imgtrust", g_data_dir);
 			if (test_image_fixture_read_current_version(image_dir, version, sizeof(version)) != 0)
 				version[0] = '\0';
 			snprintf(bundle_path, sizeof(bundle_path),

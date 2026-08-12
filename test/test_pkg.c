@@ -372,10 +372,10 @@ int main(void)
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
-	snprintf(g_pkg_state_dir, sizeof(g_pkg_state_dir), "%s/pkg", g_data_dir);
-	snprintf(g_pkgbuild_rootfs, sizeof(g_pkgbuild_rootfs), "%s/images/pkgbuild", g_data_dir);
-	snprintf(g_images_base_dir, sizeof(g_images_base_dir), "%s/images/base", g_data_dir);
-	snprintf(g_images_router_dir, sizeof(g_images_router_dir), "%s/images/router", g_data_dir);
+	snprintf(g_pkg_state_dir, sizeof(g_pkg_state_dir), "%s/rebuildable/pkg", g_data_dir);
+	snprintf(g_pkgbuild_rootfs, sizeof(g_pkgbuild_rootfs), "%s/rebuildable/images/pkgbuild", g_data_dir);
+	snprintf(g_images_base_dir, sizeof(g_images_base_dir), "%s/rebuildable/images/base", g_data_dir);
+	snprintf(g_images_router_dir, sizeof(g_images_router_dir), "%s/rebuildable/images/router", g_data_dir);
 
 	reset_pkg_state();
 	run_cmd("mkdir -p '%s/recipes'", g_pkg_state_dir);
@@ -1388,7 +1388,7 @@ skip_recipe_api:
 		/* Read rollingtest's own current_version now, before the
 		 * rebuild -- immutability means this exact directory must
 		 * still exist, byte-for-byte, after the rebuild too. */
-		snprintf(roll_image_dir, sizeof(roll_image_dir), "%s/images/rollingtest", g_data_dir);
+		snprintf(roll_image_dir, sizeof(roll_image_dir), "%s/rebuildable/images/rollingtest", g_data_dir);
 		{
 			char old_version[128], old_rootfs_check[PATH_MAX];
 			struct stat old_st;
@@ -1542,7 +1542,7 @@ skip_rolling_rebuild:
 			goto skip_pin_isolation;
 		}
 
-		snprintf(pin_image_dir, sizeof(pin_image_dir), "%s/images/pintest", g_data_dir);
+		snprintf(pin_image_dir, sizeof(pin_image_dir), "%s/rebuildable/images/pintest", g_data_dir);
 		if (test_image_fixture_read_current_version(pin_image_dir, v1_version,
 		                                             sizeof(v1_version)) != 0) {
 			fprintf(stderr, "FAIL: could not read pintest's version after installing 1.0\n");
@@ -1737,7 +1737,7 @@ skip_pin_isolation:
 		 * validates it as a real sha256, so a fixture-chosen literal
 		 * is exactly as valid as a real one.
 		 */
-		snprintf(hb_image_rootfs, sizeof(hb_image_rootfs), "%s/images/hbimage/hbfixture/rootfs",
+		snprintf(hb_image_rootfs, sizeof(hb_image_rootfs), "%s/rebuildable/images/hbimage/hbfixture/rootfs",
 		         g_data_dir);
 		if (test_image_fixture_stage_toolchain(hb_image_rootfs) != 0) {
 			fprintf(stderr, "FAIL: could not stage hostbuild build_image toolchain\n");
@@ -1747,7 +1747,7 @@ skip_pin_isolation:
 		{
 			char hb_manifest_path[PATH_MAX];
 
-			snprintf(hb_manifest_path, sizeof(hb_manifest_path), "%s/images/hbimage/manifest.json",
+			snprintf(hb_manifest_path, sizeof(hb_manifest_path), "%s/rebuildable/images/hbimage/manifest.json",
 			         g_data_dir);
 			f = fopen(hb_manifest_path, "w");
 			if (f == NULL) {

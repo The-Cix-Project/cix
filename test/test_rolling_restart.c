@@ -281,8 +281,8 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
-	snprintf(pkg_state_dir, sizeof(pkg_state_dir), "%s/pkg", g_data_dir);
-	snprintf(image_dir, sizeof(image_dir), "%s/images/rollctrimg", g_data_dir);
+	snprintf(pkg_state_dir, sizeof(pkg_state_dir), "%s/rebuildable/pkg", g_data_dir);
+	snprintf(image_dir, sizeof(image_dir), "%s/rebuildable/images/rollctrimg", g_data_dir);
 
 	daemon_pid = start_daemon();
 	if (daemon_pid < 0) {

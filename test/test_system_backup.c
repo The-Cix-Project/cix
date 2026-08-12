@@ -153,18 +153,18 @@ int main(void)
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
-	snprintf(g_image_root, sizeof(g_image_root), "%s/images/backuptest/v1/rootfs", g_data_dir);
-	snprintf(g_container_defs_path, sizeof(g_container_defs_path), "%s/container_defs.json",
+	snprintf(g_image_root, sizeof(g_image_root), "%s/rebuildable/images/backuptest/v1/rootfs", g_data_dir);
+	snprintf(g_container_defs_path, sizeof(g_container_defs_path), "%s/state/container_defs.json",
 	         g_data_dir);
-	snprintf(g_networks_path, sizeof(g_networks_path), "%s/networks.json", g_data_dir);
-	snprintf(g_dns_records_path, sizeof(g_dns_records_path), "%s/dns_records.json", g_data_dir);
+	snprintf(g_networks_path, sizeof(g_networks_path), "%s/state/networks.json", g_data_dir);
+	snprintf(g_dns_records_path, sizeof(g_dns_records_path), "%s/state/dns_records.json", g_data_dir);
 	snprintf(g_containers_dir, sizeof(g_containers_dir), "%s/containers", g_data_dir);
 
 	reset_state();
 	{
 		char image_dir[PATH_MAX];
 
-		snprintf(image_dir, sizeof(image_dir), "%s/images/backuptest", g_data_dir);
+		snprintf(image_dir, sizeof(image_dir), "%s/rebuildable/images/backuptest", g_data_dir);
 		if (test_image_fixture_write_manifest(image_dir, "v1") != 0) {
 			test_data_dir_cleanup(g_data_dir);
 			return 1;
@@ -485,7 +485,7 @@ int main(void)
 		kx_response_free(&r);
 		jw_free(&recipe_restore);
 
-		snprintf(expected_path, sizeof(expected_path), "%s/pkg/recipes/restoredpkg/2.0/build.sh",
+		snprintf(expected_path, sizeof(expected_path), "%s/rebuildable/pkg/recipes/restoredpkg/2.0/build.sh",
 		         g_data_dir);
 		if (persist_read_file(expected_path, &on_disk, &on_disk_len) != 0 || on_disk == NULL ||
 		    strstr(on_disk, "pkg_name=restoredpkg") == NULL) {
