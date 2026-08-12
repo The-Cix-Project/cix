@@ -467,9 +467,9 @@ const CATEGORY_VIEWS = {
 	"ldap-config": "view-ldap-config",
 	"ntp-config": "view-ntp-config",
 	"ntp-servers": "view-ntp-servers",
-	"ntp-status": "view-ntp-status",
 	"ntp-time": "view-ntp-time",
 	"pki-ca": "view-pki-ca",
+	"pki-intermediate": "view-pki-intermediate",
 	"pki-certs": "view-pki-certs",
 	packages: "view-packages",
 	recipes: "view-recipes",
@@ -477,6 +477,8 @@ const CATEGORY_VIEWS = {
 	"pkg-cache": "view-pkg-cache",
 	site: "view-site",
 	"daemon-config": "view-daemon-config",
+	"host-swap": "view-host-swap",
+	"rolling-restart": "view-rolling-restart",
 	"host-stats": "view-host-stats",
 	processes: "view-processes",
 	"syslog-targets": "view-syslog-targets",
@@ -850,15 +852,33 @@ function renderTree() {
 			})),
 		},
 		{
+			/* Aliases to its own first child's hash ("images", same as
+			 * Catalog's own address, same as Catalog's own first child
+			 * "Images"'s address) -- same convention every group here
+			 * uses, see System's own comment below for why this matters. */
 			label: "Software",
 			hash: "images",
 			icon: "images",
 			children: [
-				{ label: "Images", hash: "images", icon: "images" },
-				{ label: "Packages", hash: "packages", icon: "packages" },
-				{ label: "Recipes", hash: "recipes", icon: "recipes" },
-				{ label: "Repo & Sync", hash: "pkg-repo", icon: "recipes" },
-				{ label: "Cache & Artifacts", hash: "pkg-cache", icon: "recipes" },
+				{
+					label: "Catalog",
+					hash: "images",
+					icon: "images",
+					children: [
+						{ label: "Images", hash: "images", icon: "images" },
+						{ label: "Packages", hash: "packages", icon: "packages" },
+						{ label: "Recipes", hash: "recipes", icon: "recipes" },
+					],
+				},
+				{
+					label: "Build Pipeline",
+					hash: "pkg-repo",
+					icon: "recipes",
+					children: [
+						{ label: "Repo & Sync", hash: "pkg-repo", icon: "recipes" },
+						{ label: "Cache & Artifacts", hash: "pkg-cache", icon: "recipes" },
+					],
+				},
 			],
 		},
 		{
@@ -886,6 +906,7 @@ function renderTree() {
 					icon: "pki",
 					children: [
 						{ label: "Root CA", hash: "pki-ca", icon: "pki" },
+						{ label: "Intermediate CA", hash: "pki-intermediate", icon: "pki" },
 						{ label: "Certificates", hash: "pki-certs", icon: "pki" },
 					],
 				},
@@ -896,7 +917,6 @@ function renderTree() {
 					children: [
 						{ label: "Records", hash: "dns-records", icon: "dns" },
 						{ label: "Servers", hash: "dns-servers", icon: "dns" },
-						{ label: "Site", hash: "site", icon: "dns" },
 					],
 				},
 				{
@@ -918,25 +938,50 @@ function renderTree() {
 					children: [
 						{ label: "Config", hash: "ntp-config", icon: "dns" },
 						{ label: "Servers", hash: "ntp-servers", icon: "dns" },
-						{ label: "Status", hash: "ntp-status", icon: "dns" },
-						{ label: "Time", hash: "ntp-time", icon: "dns" },
+						{ label: "Time & Sync", hash: "ntp-time", icon: "dns" },
 					],
 				},
 				{
-					/* Aliases to its own first child's hash ("daemon-config"),
-					 * same convention as System's own alias above. */
-					label: "Server",
+					/* Core host identity/hardware/network config -- this
+					 * install's own instance identity (Site), listener
+					 * config, physical device inventory, and the kernel
+					 * routing table, plus the two smaller settings
+					 * (Host Swap, Rolling Restart) that used to be bundled
+					 * onto the Daemon page with no navigation of their own. */
+					label: "Host",
 					hash: "daemon-config",
 					icon: "system",
 					children: [
 						{ label: "Daemon", hash: "daemon-config", icon: "system" },
+						{ label: "Site", hash: "site", icon: "dns" },
 						{ label: "Devices", hash: "devices", icon: "devices" },
 						{ label: "Routes", hash: "routes", icon: "networks" },
+						{ label: "Host Swap", hash: "host-swap", icon: "system" },
+						{ label: "Rolling Restart", hash: "rolling-restart", icon: "system" },
+					],
+				},
+				{
+					/* Everything about observing/recording what the box is
+					 * doing -- live resource graphs, the process table, and
+					 * the two ends of the log pipeline (local store config,
+					 * forward-target registration) together. */
+					label: "Monitoring",
+					hash: "host-stats",
+					icon: "stats",
+					children: [
 						{ label: "Host Stats", hash: "host-stats", icon: "stats" },
 						{ label: "Processes", hash: "processes", icon: "stats" },
+						{ label: "Log Store", hash: "logs", icon: "system" },
 						{ label: "Syslog Targets", hash: "syslog-targets", icon: "system" },
+					],
+				},
+				{
+					/* Protecting and evolving the running system over time. */
+					label: "Maintenance",
+					hash: "tls-throttle",
+					icon: "system",
+					children: [
 						{ label: "TLS Throttle", hash: "tls-throttle", icon: "system" },
-						{ label: "Logs", hash: "logs", icon: "system" },
 						{ label: "Update", hash: "update", icon: "update" },
 						{ label: "Backup", hash: "backup", icon: "backup" },
 					],
@@ -1956,16 +2001,12 @@ for (const tabButton of document.querySelectorAll(".tab-bar .tab-button")) {
 			panel.hidden = panel.dataset.tab !== tabName;
 		if (tabName === "console")
 			document.getElementById("cd-console-output").focus();
-		if (tabButton.id === "cd-tab-stats" && currentContainerDetailName !== null)
+		if (tabButton.id === "cd-tab-summary" && currentContainerDetailName !== null)
 			startStatsPolling(currentContainerDetailName);
 		else if (statsContainerName !== null)
 			stopStatsPolling();
 	});
 }
-
-document.getElementById("cd-backup-goto-system").addEventListener("click", () => {
-	location.hash = "#backup";
-});
 
 function renderContainerDetail(name) {
 	const c = cache.containers.find((x) => x.name === name);
@@ -1985,12 +2026,13 @@ function renderContainerDetail(name) {
 	openConsole(name);
 	/* Keep stats polling pointed at whatever container this view is
 	 * actually showing right now: without this, switching containers
-	 * while the Stats tab stays the active one left the poll loop
+	 * while the Summary tab (which now carries the live stats charts
+	 * directly, ADR-0138) stays the active one left the poll loop
 	 * silently stuck on the previously-viewed container's own name
 	 * (startStatsPolling()/stopStatsPolling() otherwise only ever fire
 	 * from an explicit tab click) -- the graphs looked "stuck" because
 	 * they genuinely were still polling someone else's stats. */
-	if (document.getElementById("cd-tab-stats").classList.contains("active"))
+	if (document.getElementById("cd-tab-summary").classList.contains("active"))
 		startStatsPolling(name);
 	else if (statsContainerName !== null)
 		stopStatsPolling();
@@ -2199,6 +2241,44 @@ function renderNetworkDetail(name) {
 	fields.appendChild(fieldBlock("Subnet", n.subnet));
 	fields.appendChild(fieldBlock("Prefix length", String(n.prefix_len)));
 	fields.appendChild(fieldBlock("Address", n.has_address ? n.address : "(none -- pure L2)"));
+
+	/* Containers on this network -- the reverse of what a container's
+	 * own Hardware tab already shows (network name + IP, from its own
+	 * `networks[]`). Purely a client-side cross-reference against the
+	 * already-cached container list; no dedicated API field for it
+	 * exists or is needed (GET /networks/{name} has no per-container
+	 * view of its own -- see #804's own investigation). */
+	const containersBody = document.querySelector("#nd-containers tbody");
+	const attachedContainers = cache.containers
+		.map((c) => ({ container: c, attachment: (c.networks || []).find((att) => att.name === n.name) }))
+		.filter((x) => x.attachment !== undefined);
+
+	containersBody.textContent = "";
+	if (attachedContainers.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 3;
+		cell.className = "empty";
+		cell.textContent = "No containers on this network";
+		row.appendChild(cell);
+		containersBody.appendChild(row);
+	} else {
+		for (const { container: c, attachment: att } of attachedContainers) {
+			const row = document.createElement("tr");
+			const nameCell = document.createElement("td");
+			const ipCell = document.createElement("td");
+			const statusCell = document.createElement("td");
+
+			nameCell.appendChild(treeLink("#containers/" + encodeURIComponent(c.name), c.name, ""));
+			ipCell.textContent = att.ip;
+			statusCell.textContent = c.status;
+			row.appendChild(nameCell);
+			row.appendChild(ipCell);
+			row.appendChild(statusCell);
+			containersBody.appendChild(row);
+		}
+	}
 
 	const ifBody = document.querySelector("#nd-interfaces tbody");
 
@@ -4908,6 +4988,7 @@ document.getElementById("route-add-form").addEventListener("submit", async (even
 	document.getElementById("route-add-form").reset();
 	document.getElementById("rf-dest").disabled = false;
 	document.getElementById("rf-prefix").disabled = false;
+	closeModal();
 });
 
 document.getElementById("image-form").addEventListener("submit", async (event) => {

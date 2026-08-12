@@ -18,6 +18,7 @@
 			<ul id="create-dropdown-menu" class="create-dropdown-menu" hidden>
 				<li><button type="button" data-modal="run-form" data-title="Run a container">Container</button></li>
 				<li><button type="button" data-modal="network-form" data-title="Create network">Network</button></li>
+				<li><button type="button" data-modal="route-add-form" data-title="Add route">Route</button></li>
 				<li><button type="button" data-modal="image-form" data-title="Create image">Image</button></li>
 				<li><button type="button" data-modal="devicemap-form" data-title="Name a device">Device Mapping</button></li>
 				<li><button type="button" data-modal="dns-record-form" data-title="Create DNS record">DNS Record</button></li>
@@ -77,32 +78,13 @@
 				</div>
 			</div>
 			<div class="tab-bar">
-				<button type="button" class="tab-button" data-tab="summary" id="cd-tab-summary">Summary</button>
+				<button type="button" class="tab-button active" data-tab="summary" id="cd-tab-summary">Summary</button>
 				<button type="button" class="tab-button" data-tab="hardware" id="cd-tab-hardware">Hardware</button>
 				<button type="button" class="tab-button" data-tab="options" id="cd-tab-options">Options</button>
-				<button type="button" class="tab-button" data-tab="stats" id="cd-tab-stats">Stats</button>
-				<button type="button" class="tab-button active" data-tab="console" id="cd-tab-console">Console</button>
-				<button type="button" class="tab-button" data-tab="backup" id="cd-tab-backup">Backup</button>
+				<button type="button" class="tab-button" data-tab="console" id="cd-tab-console">Console</button>
 			</div>
-			<div class="tab-panel" id="cd-panel-summary" data-tab="summary" hidden>
+			<div class="tab-panel" id="cd-panel-summary" data-tab="summary">
 				<div class="detail-grid" id="cd-fields"></div>
-			</div>
-			<div class="tab-panel" id="cd-panel-hardware" data-tab="hardware" hidden>
-				<h3>Devices</h3>
-				<table id="cd-devices"><tbody></tbody></table>
-				<h3>Interfaces</h3>
-				<table id="cd-interfaces"><tbody></tbody></table>
-				<h3>Networks</h3>
-				<table id="cd-networks"><tbody></tbody></table>
-			</div>
-			<div class="tab-panel" id="cd-panel-options" data-tab="options" hidden>
-				<div class="detail-grid" id="cd-options-fields"></div>
-				<h3>Sysctls</h3>
-				<table id="cd-sysctls"><tbody></tbody></table>
-				<h3>Files</h3>
-				<table id="cd-files"><tbody></tbody></table>
-			</div>
-			<div class="tab-panel" id="cd-panel-stats" data-tab="stats" hidden>
 				<div class="stats-grid">
 					<div class="stats-card">
 						<h3>CPU</h3>
@@ -128,20 +110,32 @@
 				<p class="hint">Real, host-side usage (ADR-0054) -- gathered from this container's own
 					cgroup and host-side network interface, no in-container agent -- sampled every 2s
 					while this tab stays open. History resets whenever this tab (re)opens.</p>
+				<p class="hint">Backing up this container means backing up platform configuration as a
+					whole (container definitions, networks, DNS records, package install state +
+					recipes) -- not this container's own filesystem content, which is never included.
+					See <a href="#backup">Backup</a>.</p>
 			</div>
-			<div class="tab-panel" id="cd-panel-console" data-tab="console">
+			<div class="tab-panel" id="cd-panel-hardware" data-tab="hardware" hidden>
+				<h3>Devices</h3>
+				<table id="cd-devices"><tbody></tbody></table>
+				<h3>Interfaces</h3>
+				<table id="cd-interfaces"><tbody></tbody></table>
+				<h3>Networks</h3>
+				<table id="cd-networks"><tbody></tbody></table>
+			</div>
+			<div class="tab-panel" id="cd-panel-options" data-tab="options" hidden>
+				<div class="detail-grid" id="cd-options-fields"></div>
+				<h3>Sysctls</h3>
+				<table id="cd-sysctls"><tbody></tbody></table>
+				<h3>Files</h3>
+				<table id="cd-files"><tbody></tbody></table>
+			</div>
+			<div class="tab-panel" id="cd-panel-console" data-tab="console" hidden>
 				<div class="console-toolbar">
 					<span id="cd-console-status" class="hint">&hellip;</span>
 				</div>
 				<div class="console-output" id="cd-console-output" tabindex="0"></div>
 				<p class="hint">Minimal built-in terminal (no framework, per ADR-0010/ADR-0043) -- handles plain output, colors, and basic input. Full-screen programs (vim, top, less) won't render correctly here; use <code>kanxeoctl console</code> for those.</p>
-			</div>
-			<div class="tab-panel" id="cd-panel-backup" data-tab="backup" hidden>
-				<p class="hint">Kanxeo backs up platform configuration as a single whole (container
-					definitions, networks, DNS records, package install state + recipes) -- not
-					per-container, and not this container's own filesystem content (workload data is
-					never included, same boundary the Backup page's own documentation already covers).</p>
-				<button type="button" id="cd-backup-goto-system">Go to Backup</button>
 			</div>
 		</section>
 
@@ -169,6 +163,17 @@
 		<section class="view" id="view-network-detail" hidden>
 			<h2 id="nd-title"></h2>
 			<div class="detail-grid" id="nd-fields"></div>
+			<h3>Containers on this network</h3>
+			<table id="nd-containers">
+				<thead>
+					<tr>
+						<th>Container</th>
+						<th>IP</th>
+						<th>Status</th>
+					</tr>
+				</thead>
+				<tbody></tbody>
+			</table>
 			<h3>Attached interfaces</h3>
 			<table id="nd-interfaces"><tbody></tbody></table>
 			<form id="nd-attach-form">
@@ -194,7 +199,7 @@
 		<section class="view" id="view-routes" hidden>
 			<div class="view-list">
 				<h2>Routes</h2>
-				<p class="hint">The box's own real kernel IPv4 routing table (ADR-0066) -- not a persisted Kanxeo resource; a route added or removed here is gone on the next reboot unless re-applied by whatever set it up in the first place.</p>
+				<p class="hint">The box's own real kernel IPv4 routing table (ADR-0066) -- not a persisted Kanxeo resource; a route added or removed here is gone on the next reboot unless re-applied by whatever set it up in the first place. Add one via the "+ Create" menu above.</p>
 				<table id="routes">
 					<thead>
 						<tr>
@@ -208,25 +213,6 @@
 						<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
 					</tbody>
 				</table>
-				<form id="route-add-form">
-					<label class="checkbox">
-						<input type="checkbox" id="rf-default">
-						Default route
-					</label>
-					<label>
-						Destination
-						<input type="text" id="rf-dest" placeholder="172.40.0.0">
-					</label>
-					<label>
-						Prefix
-						<input type="number" id="rf-prefix" min="0" max="32" placeholder="24">
-					</label>
-					<label>
-						Gateway (optional)
-						<input type="text" id="rf-gateway" placeholder="172.30.1.1">
-					</label>
-					<button type="submit">Add route</button>
-				</form>
 			</div>
 		</section>
 
@@ -617,23 +603,24 @@
 		</section>
 
 		<!-- NTP Status: most recent sync attempt outcome (task #751) -->
-		<section class="view" id="view-ntp-status" hidden>
-			<h2>NTP Status</h2>
+		<!-- NTP: Time & Sync -- merges what used to be two separate thin
+		     pages (Status, Time) into the one question an operator
+		     actually has: what time does this box think it is, and can
+		     it be trusted. -->
+		<section class="view" id="view-ntp-time" hidden>
+			<h2>NTP: Time &amp; Sync</h2>
 			<p class="hint">
 				The outcome of the most recent sync attempt since the daemon last
 				started -- synced automatically every hour, or on demand below.
 			</p>
 			<div id="ntp-status-box" class="pki-ca-status"></div>
 			<button type="button" id="ntp-sync-now">Sync now</button>
-		</section>
 
-		<!-- NTP Time: manual host clock view/override (task #752) -->
-		<section class="view" id="view-ntp-time" hidden>
-			<h2>Host Date/Time</h2>
+			<h3>Host clock</h3>
 			<p class="hint">
 				The host's current wall clock, read live at every poll. Setting it
 				manually takes effect immediately via <code>clock_settime()</code> --
-				no reboot needed -- and is independent of NTP sync, which will
+				no reboot needed -- and is independent of NTP sync above, which will
 				overwrite it again at its next scheduled attempt.
 			</p>
 			<div id="ntp-time-box" class="pki-ca-status"></div>
@@ -663,25 +650,6 @@
 				<button type="submit">Bootstrap CA</button>
 			</form>
 
-			<h2>PKI: Intermediate CA</h2>
-			<p class="hint">
-				Optional second CA tier -- once bootstrapped, every future certificate
-				issuance is signed by it instead of the root, and delivered certs carry
-				the full chain. Requires the root CA above.
-			</p>
-			<div id="pki-intermediate-status" class="pki-ca-status"></div>
-			<form id="pki-intermediate-form">
-				<label>
-					Common name
-					<input type="text" id="icaf-common-name" placeholder="Kanxeo Intermediate CA">
-				</label>
-				<label>
-					Days
-					<input type="number" id="icaf-days" min="1" placeholder="1825">
-				</label>
-				<button type="submit">Bootstrap intermediate</button>
-			</form>
-
 			<h2>PKI: Reset CA chain</h2>
 			<p class="hint">
 				Wipes and regenerates the root (and intermediate, if bootstrapped),
@@ -703,6 +671,28 @@
 				<button type="submit" class="button-danger">Reset CA chain</button>
 			</form>
 			<div id="pki-reset-result" class="pki-ca-status" hidden></div>
+		</section>
+
+		<!-- PKI: Intermediate CA -->
+		<section class="view" id="view-pki-intermediate" hidden>
+			<h2>PKI: Intermediate CA</h2>
+			<p class="hint">
+				Optional second CA tier -- once bootstrapped, every future certificate
+				issuance is signed by it instead of the root, and delivered certs carry
+				the full chain. Requires the root CA (see Root CA) to already exist.
+			</p>
+			<div id="pki-intermediate-status" class="pki-ca-status"></div>
+			<form id="pki-intermediate-form">
+				<label>
+					Common name
+					<input type="text" id="icaf-common-name" placeholder="Kanxeo Intermediate CA">
+				</label>
+				<label>
+					Days
+					<input type="number" id="icaf-days" min="1" placeholder="1825">
+				</label>
+				<button type="submit">Bootstrap intermediate</button>
+			</form>
 		</section>
 
 		<!-- PKI: Certificates -->
@@ -969,8 +959,10 @@
 			</form>
 			<p class="hint" id="dcf-bind-hint"></p>
 			<p class="hint">Bind IP (ADR-0068) is a second, dedicated address on the management network's own bridge -- kanxeod binds there instead of that network's own address. Leave blank to make no change; check "Clear bind IP" to revert to the network's own address.</p>
+		</section>
 
-			<h3>Host swap</h3>
+		<section class="view" id="view-host-swap" hidden>
+			<h2>Host Swap</h2>
 			<p class="hint" id="swap-status">Swap: unknown</p>
 			<form id="swap-enable-form">
 				<label>
@@ -981,8 +973,10 @@
 				<button type="button" id="swap-disable">Disable</button>
 			</form>
 			<p class="hint">A single on-demand swap file (ADR-0069), off by default -- useful for memory-heavy package builds (e.g. Rust/wasm) on a box with limited RAM. File-backed swap performs identically to a partition on SSD/NVMe-backed storage.</p>
+		</section>
 
-			<h3>Rolling restart jitter</h3>
+		<section class="view" id="view-rolling-restart" hidden>
+			<h2>Rolling Restart</h2>
 			<form id="rc-form">
 				<label>
 					Jitter window (seconds)
@@ -1111,8 +1105,8 @@
 
 		<section class="view" id="view-logs" hidden>
 			<div class="view-list">
-				<h2>Logs</h2>
-				<p class="hint">A consolidated log (ADR-0070/ADR-0126): real kernel dmesg, kanxeod's own diagnostics, a per-request audit trail, and every container's own stdout/stderr -- all in one place, size-capped with the oldest entries dropped first once the cap is reached. Browse it live in the Log panel at the bottom of every page (source filter includes this browser's own local activity too, kept client-side only) -- this page just configures the store itself.</p>
+				<h2>Log Store</h2>
+				<p class="hint">A consolidated log (ADR-0070/ADR-0126): real kernel dmesg, kanxeod's own diagnostics, a per-request audit trail, and every container's own stdout/stderr -- all in one place, size-capped with the oldest entries dropped first once the cap is reached. Browse it live in the Log panel at the bottom of every page (source filter includes this browser's own local activity too, kept client-side only) -- this page just configures the store's size cap, not what's logged.</p>
 				<h3>Size cap</h3>
 				<form id="logs-config-form">
 					<label>
@@ -1357,6 +1351,28 @@
 						<input type="text" id="nf-address" placeholder="(none), or e.g. 172.31.0.1">
 					</label>
 					<button type="submit">Create</button>
+				</form>
+			</div>
+
+			<div id="modal-route-add-form" hidden>
+				<form id="route-add-form">
+					<label class="checkbox">
+						<input type="checkbox" id="rf-default">
+						Default route
+					</label>
+					<label>
+						Destination
+						<input type="text" id="rf-dest" placeholder="172.40.0.0">
+					</label>
+					<label>
+						Prefix
+						<input type="number" id="rf-prefix" min="0" max="32" placeholder="24">
+					</label>
+					<label>
+						Gateway (optional)
+						<input type="text" id="rf-gateway" placeholder="172.30.1.1">
+					</label>
+					<button type="submit">Add route</button>
 				</form>
 			</div>
 

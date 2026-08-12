@@ -2,6 +2,26 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 98 (done): web dashboard information-architecture rework (ADR-0138)
+
+Asked directly to step back and audit the dashboard's own tree/page consistency, independent of any bug: a full pass over every leaf's render function found System > Server holding 10 leaves against siblings' 2-5, several leaf names not matching their actual page content, two thin NTP pages answering one question, Route the only creatable resource not going through the shared modal, and Container detail defaulting to a terminal instead of showing status first. A concrete example raised in the same conversation -- no way to see which containers/IPs are on a given network from that network's own page -- confirmed a real, previously-unfilled data gap alongside the organizational ones.
+
+#### Changed
+- System > Server (10 leaves) split into **Host** (Daemon, Site, Devices, Routes, Host Swap, Rolling Restart), **Monitoring** (Host Stats, Processes, Log Store, Syslog Targets), **Maintenance** (TLS Throttle, Update, Backup) -- each now sized like PKI/DNS/LDAP/NTP's own 2-5-leaf range. Software gained the same two-tier shape: Catalog (Images, Packages, Recipes), Build Pipeline (Repo & Sync, Cache & Artifacts).
+- PKI's "Root CA" leaf (which actually held Root CA bootstrap + Intermediate CA bootstrap + a destructive Reset action) split into separate **Root CA** and **Intermediate CA** leaves.
+- NTP's Status and Time leaves merged into one **Time & Sync** leaf -- sync outcome, Sync-now, current clock, and manual override together.
+- Daemon's bundled Host Swap and Rolling Restart sections split into their own leaves, matching the one-leaf-per-concern pattern NTP/LDAP already used.
+- "Logs" renamed **Log Store** -- it's a size-cap config form, not the log viewer (which has lived in the bottom panel since ADR-0129).
+- Site moved from DNS to Host -- general instance identity consumed by DNS *and* PKI, not DNS-specific.
+- Route creation moved from its own inline form into the shared header `+ Create` modal, matching every other creatable resource; the Routes page is now a plain list.
+- Container detail: Summary absorbed the 4 live stat graphs (polling now keys off the Summary tab instead of a separate Stats tab); the content-free Backup tab (one sentence plus a link elsewhere) was removed, its note folded into Summary; Summary became the default tab instead of Console (6 tabs -> 4: Summary/Hardware/Options/Console).
+
+#### Added
+- Network detail: a "Containers on this network" table (name/IP/status) -- the reverse of what a container's own Hardware tab already shows about itself, built client-side from the already-cached container list (`container.networks[].ip`). No new endpoint.
+
+#### Verified
+- Full `CATEGORY_VIEWS`/`DETAIL_VIEWS`-vs-`index.html` cross-check (script-based, both directions) confirmed zero dangling routes/unreachable views after the rework. Real headless-browser session (Chromium via `puppeteer-core`) against a scratch daemon: extracted the live tree DOM and confirmed it matches the planned structure exactly; screenshotted Root CA, Intermediate CA, Time & Sync, Daemon, Host Swap, the Route creation modal, Network detail's new table, and Container detail's merged Summary tab, all rendering correctly with zero console/page errors. `docs/guides/web-dashboard.md` rewritten to match; `administration.md`/`installing.md`'s stale cross-references corrected. Zero API/daemon changes -- pure `web/` client-side reorganization.
+
 ### Part 97 (done): TLS throttle blocks now only apply to the HTTPS listener (ADR-0137)
 
 Direct follow-up to Part 96: right after that deploy and reboot, the user's desktop briefly seemed unreachable. Live logs showed it was still failing HTTPS handshakes (a genuinely separate, still-unresolved local cert-trust issue on the desktop, unrelated to the chain fix) and had tripped a real ADR-0134 block. The user asked directly whether an HTTPS-triggered block also throttles plain HTTP for that source -- reading `accept_loop()` confirmed it did, by original ADR-0134 design ("uniformly on both listeners"). Since only a failed HTTPS handshake can ever cause a block in the first place, enforcing it against plain HTTP too achieves nothing the block is for and, found live, can strand an otherwise-working fallback path.
