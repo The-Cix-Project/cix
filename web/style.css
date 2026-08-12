@@ -30,6 +30,42 @@
 	}
 }
 
+/*
+ * Manual override for the header's theme toggle (app.js, "kanxeo-theme"
+ * localStorage key) -- an attribute selector on :root outranks the bare
+ * :root a plain @media query targets, in both directions, regardless of
+ * source order, so these two blocks always win over prefers-color-scheme
+ * above once data-theme is set; removing the attribute (the "auto"
+ * state) falls straight back to following the OS/browser preference.
+ * Kept as exact duplicates of the two blocks above rather than a
+ * variable/mixin trick -- this is plain CSS, no preprocessor.
+ */
+:root[data-theme="light"] {
+	--bg: #f5f5f7;
+	--panel: #ffffff;
+	--text: #1c1c1e;
+	--muted: #6e6e73;
+	--border: #d8d8dc;
+	--ok-bg: #e6f4ea;
+	--paused-bg: #fdf0dc;
+	--error-bg: #fce8e6;
+	--unknown-bg: #eeeeee;
+	--tree-active-bg: rgba(0, 0, 0, 0.06);
+}
+
+:root[data-theme="dark"] {
+	--bg: #121214;
+	--panel: #1c1c1e;
+	--text: #f2f2f2;
+	--muted: #9a9a9e;
+	--border: #3a3a3c;
+	--ok-bg: #123321;
+	--paused-bg: #3a2a10;
+	--error-bg: #3a1615;
+	--unknown-bg: #2c2c2e;
+	--tree-active-bg: rgba(255, 255, 255, 0.09);
+}
+
 * {
 	box-sizing: border-box;
 }

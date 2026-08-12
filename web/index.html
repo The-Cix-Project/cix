@@ -5,11 +5,28 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Kanxeo</title>
 <link rel="stylesheet" href="/style.css">
+<script>
+/* Applied synchronously, before body paints, so a saved manual theme
+   choice never flashes the wrong colors for one frame -- the rest of
+   the theme logic (the toggle button itself, cycling through
+   light/dark/auto) lives in app.js, this is only the "apply what was
+   already chosen" half. */
+(function () {
+	try {
+		var t = localStorage.getItem("kanxeo-theme");
+		if (t === "light" || t === "dark")
+			document.documentElement.setAttribute("data-theme", t);
+	} catch (e) {
+		/* localStorage unavailable -- falls through to prefers-color-scheme. */
+	}
+})();
+</script>
 </head>
 <body>
 <header>
 	<h1>Kanxeo<span id="header-instance-name" class="header-instance-name" hidden></span></h1>
 	<div class="header-right">
+		<button type="button" id="theme-toggle" class="button-small" title="Cycle theme: auto / light / dark"></button>
 		<span id="health" class="badge badge-unknown">checking&hellip;</span>
 		<button type="button" id="sys-reboot" class="button-danger button-small">Reboot</button>
 		<button type="button" id="sys-shutdown" class="button-danger button-small">Shutdown</button>

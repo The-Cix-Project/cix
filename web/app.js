@@ -86,6 +86,48 @@ try {
 	/* localStorage unavailable -- default expanded. */
 }
 
+/* ---------- theme toggle (light / dark / auto) ---------- */
+
+const THEME_KEY = "kanxeo-theme";
+const themeToggle = document.getElementById("theme-toggle");
+
+/* "auto" (no stored value, or an unrecognized one) means "follow
+ * prefers-color-scheme" -- represented as no data-theme attribute at
+ * all, never a third CSS variable set, so the browser/OS preference
+ * (style.css's own @media block) is always the real fallback, not a
+ * value this code would ever need to duplicate or get out of sync
+ * with. index.html's own inline bootstrap script already applied
+ * whatever was saved before first paint -- this only needs to pick
+ * the label back up and wire the click handler. */
+function currentTheme() {
+	const attr = document.documentElement.getAttribute("data-theme");
+
+	return attr === "light" || attr === "dark" ? attr : "auto";
+}
+
+function applyTheme(theme) {
+	if (theme === "light" || theme === "dark")
+		document.documentElement.setAttribute("data-theme", theme);
+	else
+		document.documentElement.removeAttribute("data-theme");
+	themeToggle.textContent = theme === "dark" ? "\u{1F319} Dark" : theme === "light" ? "\u{2600}\u{FE0F} Light" : "\u{1F5A5} Auto";
+	try {
+		localStorage.setItem(THEME_KEY, theme);
+	} catch (e) {
+		/* localStorage unavailable -- choice won't survive a reload,
+		 * same posture as every other localStorage-backed preference
+		 * here (tree collapse, log panel collapse). */
+	}
+}
+
+themeToggle.addEventListener("click", () => {
+	const next = { auto: "light", light: "dark", dark: "auto" }[currentTheme()];
+
+	applyTheme(next);
+});
+
+applyTheme(currentTheme());
+
 /* ---------- create modal (header "+ Create" dropdown) ----------
  *
  * One shared modal shell; each create form already lives in the page
@@ -442,6 +484,40 @@ async function refreshHealth() {
 
 /* ---------- routing ---------- */
 
+/*
+ * Remembers the last real page visited (LAST_VIEW_KEY, same
+ * localStorage-preference convention as tree collapse/log panel
+ * collapse/theme above) -- a bare load with no hash at all (a fresh
+ * tab, a bookmark to the plain origin) restores it instead of always
+ * landing on Containers. Reloading with a hash already present in the
+ * URL bar needs none of this -- the browser keeps that on its own;
+ * this only covers the case where there's nothing for the browser
+ * itself to have remembered.
+ */
+const LAST_VIEW_KEY = "kanxeo-last-view";
+
+function saveLastView() {
+	try {
+		localStorage.setItem(LAST_VIEW_KEY, location.hash);
+	} catch (e) {
+		/* localStorage unavailable -- last view just won't survive a
+		 * fresh tab/reload; starts on the default view instead. */
+	}
+}
+
+function restoreLastViewIfNoHash() {
+	if (location.hash !== "")
+		return;
+	try {
+		const saved = localStorage.getItem(LAST_VIEW_KEY);
+
+		if (saved)
+			location.hash = saved;
+	} catch (e) {
+		/* localStorage unavailable -- start on the default view. */
+	}
+}
+
 function parseHash() {
 	const raw = location.hash.replace(/^#/, "");
 	if (raw === "")
@@ -511,6 +587,7 @@ function renderCurrentView() {
 	if (view === null)
 		return;
 	view.hidden = false;
+	saveLastView();
 
 	if (route.category === "containers" && route.name !== null) {
 		renderContainerDetail(route.name);
@@ -5913,5 +5990,6 @@ document.addEventListener("keydown", (event) => {
 });
 document.addEventListener("scroll", hideContextMenu, true);
 
+restoreLastViewIfNoHash();
 poll().then(ensureActiveCategoryExpanded);
 setInterval(poll, POLL_INTERVAL_MS);
