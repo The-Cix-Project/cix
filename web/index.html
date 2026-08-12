@@ -38,6 +38,7 @@
 				<li><button type="button" data-modal="route-add-form" data-title="Add route">Route</button></li>
 				<li><button type="button" data-modal="image-form" data-title="Create image">Image</button></li>
 				<li><button type="button" data-modal="devicemap-form" data-title="Name a device">Device Mapping</button></li>
+				<li><button type="button" data-modal="diskrole-form" data-title="Assign disk role">Disk Role</button></li>
 				<li><button type="button" data-modal="dns-record-form" data-title="Create DNS record">DNS Record</button></li>
 				<li><button type="button" data-modal="dns-server-form" data-title="Register DNS server">DNS Server</button></li>
 				<li><button type="button" data-modal="ldap-server-form" data-title="Register LDAP server">LDAP Server</button></li>
@@ -429,6 +430,36 @@
 				<table>
 					<thead><tr><th>ID</th><th>Description</th><th>Driver</th><th>Assignable</th><th>Name</th><th></th></tr></thead>
 					<tbody id="dev-gpu-body"><tr><td colspan="6" class="empty">Loading&hellip;</td></tr></tbody>
+				</table>
+			</div>
+		</section>
+
+		<!-- Disks (multi-disk management: ADR-0071/ADR-0102/ADR-0104) -->
+		<section class="view" id="view-disks" hidden>
+			<div class="view-list">
+				<h2>Disks</h2>
+				<p class="hint">Real host block devices, discovered live from sysfs every poll -- whole disks
+					only, never partitions. The OS disk (this platform's own fixed ESP/root-a/root-b/config/
+					containers layout) is never a candidate for a role or format. Assigning a role
+					("+ Create > Disk Role" above, or "Assign role&hellip;" on a specific disk below) is a
+					separate, non-destructive step from formatting -- format wipes every byte of existing
+					content and is deliberately its own explicit action per role-assigned disk.</p>
+				<table id="disks">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Model</th>
+							<th>Size</th>
+							<th>OS Disk</th>
+							<th>Mounted</th>
+							<th>Role</th>
+							<th>Format</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="disks-body">
+						<tr><td colspan="8" class="empty">Loading&hellip;</td></tr>
+					</tbody>
 				</table>
 			</div>
 		</section>
@@ -1412,6 +1443,24 @@
 					</label>
 					<p class="hint" id="dmf-selector-hint">A device id from the Devices tabs below (exact), or "vendor_id:product_id" (vendor/model).</p>
 					<button type="submit">Create mapping</button>
+				</form>
+			</div>
+
+			<div id="modal-diskrole-form" hidden>
+				<form id="diskrole-form">
+					<label>
+						Disk
+						<select id="drf-disk-name" required></select>
+					</label>
+					<label>
+						Role
+						<select id="drf-role">
+							<option value="container-storage">container-storage</option>
+							<option value="backup">backup</option>
+						</select>
+					</label>
+					<p class="hint">Assigning a role never touches the disk's own content -- formatting (destructive) is a separate action, available per-disk on the Disks page once a role is assigned.</p>
+					<button type="submit">Assign role</button>
 				</form>
 			</div>
 

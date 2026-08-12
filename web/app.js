@@ -21,6 +21,9 @@ const cache = {
 	images: [],
 	devices: [],
 	deviceMaps: [],
+	disks: [],
+	diskRoles: [],
+	diskFormatStatus: {},
 	dnsRecords: [],
 	dnsServers: [],
 	ldapServers: [],
@@ -534,6 +537,7 @@ const CATEGORY_VIEWS = {
 	routes: "view-routes",
 	images: "view-images",
 	devices: "view-devices",
+	disks: "view-disks",
 	"dns-records": "view-dns-records",
 	"dns-servers": "view-dns-servers",
 	"ldap-servers": "view-ldap-servers",
@@ -620,6 +624,8 @@ function renderCurrentView() {
 			renderImageDetail(route.name);
 		else if (route.category === "devices")
 			renderDevices();
+		else if (route.category === "disks")
+			renderDisks();
 		else if (route.category === "packages")
 			renderPackagesView(route.name);
 		else if (route.category === "recipes")
@@ -732,6 +738,8 @@ const TREE_ICONS = {
 		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M13 8 A5 5 0 1 1 11 4"/><polyline points="13,2 13,5.5 9.5,5.5"/></g></svg>',
 	stats:
 		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><line x1="1.5" y1="14.5" x2="14.5" y2="14.5"/><rect x="3" y="9" width="2.5" height="5.5"/><rect x="6.75" y="5" width="2.5" height="9.5"/><rect x="10.5" y="7.5" width="2.5" height="7"/></g></svg>',
+	disks:
+		'<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="8" cy="4" rx="6" ry="2.2"/><path d="M2 4 V12 A6 2.2 0 0 0 14 12 V4"/><path d="M2 8 A6 2.2 0 0 0 14 8"/></g></svg>',
 };
 
 /* colorClass tints the icon itself (via CSS "color", which the icon's
@@ -1032,6 +1040,7 @@ function renderTree() {
 						{ label: "Daemon", hash: "daemon-config", icon: "system" },
 						{ label: "Site", hash: "site", icon: "dns" },
 						{ label: "Devices", hash: "devices", icon: "devices" },
+						{ label: "Disks", hash: "disks", icon: "disks" },
 						{ label: "Routes", hash: "routes", icon: "networks" },
 						{ label: "Host Swap", hash: "host-swap", icon: "system" },
 						{ label: "Rolling Restart", hash: "rolling-restart", icon: "system" },
@@ -3170,6 +3179,262 @@ async function removeDeviceMap(name) {
 		renderTree();
 	} catch (e) {
 		showStatus("Failed to remove device mapping " + name + ": " + e.message, true);
+	}
+}
+
+/* ---------- Disks (multi-disk management: ADR-0071/ADR-0102/ADR-0104) ---------- */
+
+async function refreshDisks() {
+	const data = await apiRequest("GET", "/v1/disks");
+
+	cache.disks = data.disks;
+	if (parseHash().category === "disks")
+		renderDisks();
+	/* Keeps the "+ Create > Disk Role" modal's own disk select current
+	 * even when opened from the header dropdown rather than a specific
+	 * disk row's own "Assign role…" shortcut (which sets a value
+	 * afterward, same populate-then-select order populateContainerForm
+	 * DeviceLists()/refreshDevices() already establishes). */
+	populateDiskRoleSelect();
+}
+
+async function refreshDiskRoles() {
+	const data = await apiRequest("GET", "/v1/diskroles");
+
+	cache.diskRoles = data.diskroles;
+	if (parseHash().category === "disks")
+		renderDisks();
+	populateDiskRoleSelect();
+}
+
+function diskRoleFor(diskName) {
+	return cache.diskRoles.find((r) => r.disk_name === diskName) || null;
+}
+
+/*
+ * Format status is per-disk (GET /disks/{name}/format), unlike every
+ * other cached resource here which is one list call -- fetched only
+ * while the Disks page is actually showing (same "only while this
+ * page is open" guard refreshImageRecipeApplyStatus() already
+ * established), and only for disks that could ever have a job at all
+ * (role-assigned, non-OS disks) rather than every disk on the box, to
+ * keep this bounded regardless of how many disks exist.
+ */
+async function refreshDiskFormatStatuses() {
+	if (parseHash().category !== "disks")
+		return;
+
+	const candidates = cache.disks.filter((d) => !d.is_os_disk && diskRoleFor(d.name) !== null);
+
+	for (const d of candidates) {
+		try {
+			cache.diskFormatStatus[d.name] = await apiRequest("GET", "/v1/disks/" + encodeURIComponent(d.name) + "/format");
+		} catch (e) {
+			/* Transient -- next poll tick tries again; the row just keeps
+			 * showing whatever status it last had. */
+		}
+	}
+	if (parseHash().category === "disks")
+		renderDisks();
+}
+
+function renderDisks() {
+	const body = document.getElementById("disks-body");
+
+	body.textContent = "";
+	if (cache.disks.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 8;
+		cell.className = "empty";
+		cell.textContent = "No disks found";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+	for (const d of cache.disks)
+		body.appendChild(diskRow(d));
+}
+
+function diskRow(d) {
+	const row = document.createElement("tr");
+
+	const nameCell = document.createElement("td");
+
+	nameCell.textContent = d.name;
+	row.appendChild(nameCell);
+
+	const modelCell = document.createElement("td");
+
+	modelCell.textContent = d.model || "-";
+	row.appendChild(modelCell);
+
+	const sizeCell = document.createElement("td");
+
+	sizeCell.textContent = formatBytes(d.size_bytes);
+	row.appendChild(sizeCell);
+
+	const osCell = document.createElement("td");
+
+	if (d.is_os_disk) {
+		const badge = document.createElement("span");
+
+		badge.className = "badge badge-unknown";
+		badge.textContent = "OS disk";
+		osCell.appendChild(badge);
+	} else {
+		osCell.textContent = "-";
+	}
+	row.appendChild(osCell);
+
+	const mountedCell = document.createElement("td");
+	const mountedBadge = document.createElement("span");
+
+	mountedBadge.className = "badge " + (d.mounted ? "badge-ok" : "badge-unknown");
+	mountedBadge.textContent = d.mounted ? d.mount_path : "not mounted";
+	mountedCell.appendChild(mountedBadge);
+	row.appendChild(mountedCell);
+
+	const role = diskRoleFor(d.name);
+	const roleCell = document.createElement("td");
+
+	roleCell.textContent = role ? role.role : "-";
+	row.appendChild(roleCell);
+
+	const formatStatus = cache.diskFormatStatus[d.name];
+	const formatCell = document.createElement("td");
+
+	if (formatStatus && formatStatus.state !== "none") {
+		const badge = document.createElement("span");
+
+		badge.className =
+			"badge " +
+			(formatStatus.state === "ready" ? "badge-ok" : formatStatus.state === "failed" ? "badge-error" : "badge-paused");
+		badge.textContent = formatStatus.state === "failed" ? "failed: " + formatStatus.error : formatStatus.state;
+		formatCell.appendChild(badge);
+	} else {
+		formatCell.textContent = "-";
+	}
+	row.appendChild(formatCell);
+
+	const actionCell = document.createElement("td");
+
+	if (d.is_os_disk) {
+		/* Never a role/format candidate -- nothing to offer. */
+	} else if (!role) {
+		const assignBtn = document.createElement("button");
+
+		assignBtn.type = "button";
+		assignBtn.textContent = "Assign role…";
+		assignBtn.addEventListener("click", () => {
+			populateDiskRoleSelect();
+			document.getElementById("drf-disk-name").value = d.name;
+			document.getElementById("drf-role").value = "container-storage";
+			openModal("diskrole-form", "Assign disk role");
+		});
+		actionCell.appendChild(assignBtn);
+	} else if (formatStatus && formatStatus.state === "running") {
+		actionCell.appendChild(document.createTextNode("(formatting…)"));
+	} else {
+		const removeRoleBtn = document.createElement("button");
+
+		removeRoleBtn.type = "button";
+		removeRoleBtn.className = "button-small";
+		removeRoleBtn.textContent = "Remove role";
+		removeRoleBtn.addEventListener("click", () => removeDiskRole(d.name));
+		actionCell.appendChild(removeRoleBtn);
+
+		const fsSelect = document.createElement("select");
+
+		for (const fs of ["ext4", "btrfs"]) {
+			const opt = document.createElement("option");
+
+			opt.value = fs;
+			opt.textContent = fs;
+			fsSelect.appendChild(opt);
+		}
+
+		const formatBtn = document.createElement("button");
+
+		formatBtn.type = "button";
+		formatBtn.className = "button-danger button-small";
+		formatBtn.textContent = "Format…";
+		formatBtn.addEventListener("click", () => formatDisk(d.name, fsSelect.value));
+
+		actionCell.appendChild(fsSelect);
+		actionCell.appendChild(formatBtn);
+	}
+	row.appendChild(actionCell);
+
+	return row;
+}
+
+function populateDiskRoleSelect() {
+	const select = document.getElementById("drf-disk-name");
+
+	select.textContent = "";
+	for (const d of cache.disks) {
+		if (d.is_os_disk || diskRoleFor(d.name) !== null)
+			continue;
+		const opt = document.createElement("option");
+
+		opt.value = d.name;
+		opt.textContent = d.name + (d.model ? " (" + d.model + ")" : "");
+		select.appendChild(opt);
+	}
+}
+
+document.getElementById("diskrole-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const diskName = document.getElementById("drf-disk-name").value;
+	const role = document.getElementById("drf-role").value;
+
+	if (diskName === "")
+		return;
+	try {
+		await apiRequest("POST", "/v1/diskroles", { disk_name: diskName, role: role });
+		clearStatus();
+		document.getElementById("diskrole-form").reset();
+		closeModal();
+		await refreshDiskRoles();
+	} catch (e) {
+		showStatus("Failed to assign role to " + diskName + ": " + e.message, true);
+	}
+});
+
+async function removeDiskRole(diskName) {
+	try {
+		await apiRequest("DELETE", "/v1/diskroles/" + encodeURIComponent(diskName));
+		clearStatus();
+		await refreshDiskRoles();
+	} catch (e) {
+		showStatus("Failed to remove role from " + diskName + ": " + e.message, true);
+	}
+}
+
+/* Destructive -- wipes every byte of existing content on the disk, per
+ * the API's own doc comment. The disk is already unambiguous (this
+ * button only ever appears on one specific disk's own row), so a real
+ * confirm() dialog is the actual gate here, the same severity class as
+ * Kill/Reset-CA-chain elsewhere in this dashboard -- confirm_disk_name
+ * is filled in automatically from that same unambiguous context,
+ * mirroring kanxeoctl's own "the operator already specified which disk
+ * by typing its name once" reasoning (cli/src/main.c's cmd_disks_
+ * format()), not asked for a second time as a separate typed field. */
+async function formatDisk(diskName, fsType) {
+	if (!confirm("Format " + diskName + " as " + fsType + "? This destroys every byte of existing content on the disk. This cannot be undone."))
+		return;
+	try {
+		cache.diskFormatStatus[diskName] = await apiRequest("POST", "/v1/disks/" + encodeURIComponent(diskName) + "/format", {
+			confirm_disk_name: diskName,
+			fs_type: fsType,
+		});
+		clearStatus();
+		renderDisks();
+	} catch (e) {
+		showStatus("Failed to format " + diskName + ": " + e.message, true);
 	}
 }
 
@@ -5857,6 +6122,9 @@ async function poll() {
 		await refreshImages();
 		await refreshDevices();
 		await refreshDeviceMaps();
+		await refreshDisks();
+		await refreshDiskRoles();
+		await refreshDiskFormatStatuses();
 		await refreshDnsRecords();
 		await refreshDnsServers();
 		await refreshLdapServers();
