@@ -239,10 +239,12 @@ GET /v1/system/tls-throttle
 ```
 
 ```json
-{"enabled": true, "threshold": 20, "window_seconds": 60, "block_seconds": 300}
+{"enabled": true, "threshold": 20, "window_seconds": 60, "block_seconds": 300, "log_interval_seconds": 5}
 ```
 
 Found live, not designed speculatively: a sustained flood of failed HTTPS handshakes from an untrusting client (several hundred/minute, since this daemon deliberately never does HTTP keep-alive — every attempt is a brand-new TCP+TLS connection) had no peer IP in its own log line and no way to stop the daemon spending a real `accept4()`+`SSL_new()`+`SSL_accept()` attempt on every single one. A source that fails `threshold` handshakes within `window_seconds` is refused outright — a bare `close()`, before any allocation or TLS negotiation — on **both** the HTTPS and plain HTTP listeners, for `block_seconds`. One shared in-memory table, checked once per `accept4()` regardless of which listener it came in on.
+
+`log_interval_seconds` is a second, independent knob: caps how often a "handshake failed" log line is actually written for a given source (`0` logs every single failure). **Found live, again**: a legitimate desktop's own browser repeatedly failing TLS against an untrusted self-signed cert — not a hostile source — flooded the consolidated log store at 10+ lines/sec, crowding out everything else in its rotation window, long before `threshold` failures would ever justify a block. The failure is still counted toward `threshold`/`window_seconds` every time regardless of this setting — only the *logging* is rate-limited, never the accounting a real block still needs to be accurate.
 
 ```
 PUT /v1/system/tls-throttle

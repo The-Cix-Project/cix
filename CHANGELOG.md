@@ -2,6 +2,19 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 95 (done): ADR-0134 follow-up -- rate-limited handshake-failure logging, CA download + trust instructions (ADR-0135)
+
+Same-day follow-up: with Part 94's peer-IP logging live, the real flood source was identified as the user's own desktop -- its browser had the dashboard open over HTTPS and didn't trust the self-signed root CA, so every 2-second poll failed TLS (no keep-alive, so every poll is a fresh handshake), self-resetting below the block threshold via the "clean request forgives past failures" design. Not a hostile source; the block-threshold question was moot.
+
+#### Added
+- `connthrottle.c` gains `log_interval_seconds` (default 5, independent of `threshold`/`window_seconds`/`block_seconds`): at most one log line per source per interval, regardless of real attempt volume -- the failure is still always counted toward the block threshold, only the *logging* is rate-limited. New `connthrottle_should_log_failure()`, sharing the same per-IP table Part 94 already built (`last_logged` alongside `fail_count`/`blocked_until`).
+- Web dashboard PKI > Root CA / Intermediate CA pages: a "Download certificate (.pem)" button once bootstrapped -- pure client-side `Blob` save-as over `cert_pem`, already part of `GET /pki/ca`/`GET /pki/intermediate`'s own response, no new endpoint.
+- `docs/guides/security.md`: new "Trusting the CA on your own device" section -- Windows/macOS/Linux/Firefox all differ meaningfully (OS trust stores vs. Firefox's own independent one).
+- `kanxeoctl tls-throttle set --log-interval-seconds=N`; web dashboard TLS Throttle page gains the matching field.
+
+#### Verified
+- `test/test_tls_throttle.c` extended: a burst of 3 deliberately-triggered handshake failures (well under a second, real time) with `log_interval_seconds=10` now asserts exactly 1 log line, not 3 -- the pre-existing block-trip assertion (checking the real failure count, not the log) is unaffected, confirming logging and accounting are genuinely decoupled. Full clean rebuild (`-Wall -Werror`, zero warnings) + full regression sweep (40 test binaries) confirm zero regressions. Web dashboard PKI download button verified with a real headless-browser click producing a real downloaded file, confirmed byte-identical to the API's own `cert_pem`, for both root and intermediate.
+
 ### Part 94 (done): per-source-IP throttling for repeated failed HTTPS handshakes (ADR-0134)
 
 Found live on 192.168.15.95, watched directly on the physical console: a sustained flood (500+/min) of `https handshake failed: sslv3 alert certificate unknown` -- an untrusting client repeatedly hitting `:8443`. The user asked for the peer IP to be logged and for throttling, explicitly requiring it be API-driven and configurable.

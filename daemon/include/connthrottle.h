@@ -28,9 +28,14 @@
 
 struct throttle_config {
 	int enabled;
-	int threshold;      /* failures within window_seconds before blocking */
-	int window_seconds; /* rolling window the threshold is counted over */
-	int block_seconds;  /* how long a tripped IP stays blocked */
+	int threshold;          /* failures within window_seconds before blocking */
+	int window_seconds;     /* rolling window the threshold is counted over */
+	int block_seconds;      /* how long a tripped IP stays blocked */
+	int log_interval_seconds; /* at most one "handshake failed" log line per
+	                            * source per this many seconds -- 0 logs every
+	                            * single failure (see connthrottle_should_log_
+	                            * failure()'s own doc comment for why this
+	                            * exists independently of threshold/blocking) */
 };
 
 #define CONNTHROTTLE_THRESHOLD_MIN 1
@@ -39,6 +44,8 @@ struct throttle_config {
 #define CONNTHROTTLE_WINDOW_MAX 86400
 #define CONNTHROTTLE_BLOCK_MIN 1
 #define CONNTHROTTLE_BLOCK_MAX 604800
+#define CONNTHROTTLE_LOG_INTERVAL_MIN 0
+#define CONNTHROTTLE_LOG_INTERVAL_MAX 3600
 
 /*
  * Loads persisted config from path (defaults -- enabled, 20 failures
@@ -55,7 +62,8 @@ struct throttle_config connthrottle_config_get(void);
  * Returns 0 on success, -1 if any given field is out of range or the
  * persist write fails.
  */
-int connthrottle_config_set(int enabled_flag, int threshold, int window_seconds, int block_seconds);
+int connthrottle_config_set(int enabled_flag, int threshold, int window_seconds, int block_seconds,
+                             int log_interval_seconds);
 
 /* 1 if ip is currently blocked (and throttling is enabled), 0 otherwise. */
 int connthrottle_should_block(const char *ip);
@@ -72,6 +80,29 @@ int connthrottle_should_block(const char *ip);
  * would be actively counterproductive).
  */
 void connthrottle_record_failure(const char *ip);
+
+/*
+ * 1 if a "handshake failed" log line for ip should actually be written
+ * right now (and, as a side effect, marks that a line was just logged
+ * for it), 0 if one was already logged for this same source within
+ * log_interval_seconds. Independent of connthrottle_record_failure()
+ * and of whether throttling itself is enabled -- found live on
+ * 192.168.15.95: a real, legitimate desktop's own browser repeatedly
+ * failing TLS (an untrusted self-signed cert, not a hostile source)
+ * flooded the consolidated log store at 10+ lines/sec, crowding out
+ * everything else in its rotation window, well before enough failures
+ * from that source would ever justify a block. The failure is still
+ * counted every time via connthrottle_record_failure() regardless of
+ * this function's own return value -- only the *logging* is throttled,
+ * never the accounting a real block still needs to be accurate.
+ * Always creates a tracking entry for ip if one doesn't exist yet
+ * (unlike connthrottle_record_failure(), not gated on `enabled`), so
+ * log rate-limiting works the same whether or not blocking itself is
+ * turned on. Table-full is the one case this fails open on (returns 1,
+ * logs anyway) -- better to log a few extra lines than silently drop
+ * all logging once the tracking table is already saturated.
+ */
+int connthrottle_should_log_failure(const char *ip);
 
 /*
  * Clears ip's failure count -- called on a successful TLS handshake,

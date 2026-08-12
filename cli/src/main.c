@@ -3389,11 +3389,12 @@ static void fmt_tls_throttle(const struct json_value *v)
 {
 	const struct json_value *jenabled = json_object_get(v, "enabled");
 
-	printf("enabled=%s threshold=%ld window_seconds=%ld block_seconds=%ld\n",
+	printf("enabled=%s threshold=%ld window_seconds=%ld block_seconds=%ld log_interval_seconds=%ld\n",
 	       (jenabled != NULL && jenabled->type == JSON_BOOL && jenabled->u.boolean) ? "true" : "false",
 	       (long)json_as_number(json_object_get(v, "threshold")),
 	       (long)json_as_number(json_object_get(v, "window_seconds")),
-	       (long)json_as_number(json_object_get(v, "block_seconds")));
+	       (long)json_as_number(json_object_get(v, "block_seconds")),
+	       (long)json_as_number(json_object_get(v, "log_interval_seconds")));
 }
 
 static int cmd_tls_throttle_show(const struct kx_client *c, int json_mode)
@@ -3412,6 +3413,7 @@ static int cmd_tls_throttle_set(const struct kx_client *c, int json_mode, int ar
 	const char *threshold = NULL;
 	const char *window = NULL;
 	const char *block = NULL;
+	const char *log_interval = NULL;
 	int want_enabled = -1; /* -1: untouched, 0: disable, 1: enable */
 	int i;
 	struct json_writer w;
@@ -3428,14 +3430,17 @@ static int cmd_tls_throttle_set(const struct kx_client *c, int json_mode, int ar
 			window = argv[i] + 17;
 		else if (strncmp(argv[i], "--block-seconds=", 16) == 0)
 			block = argv[i] + 16;
+		else if (strncmp(argv[i], "--log-interval-seconds=", 23) == 0)
+			log_interval = argv[i] + 23;
 		else {
 			fprintf(stderr, "kanxeoctl: unknown tls-throttle set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
-	if (want_enabled == -1 && threshold == NULL && window == NULL && block == NULL) {
+	if (want_enabled == -1 && threshold == NULL && window == NULL && block == NULL && log_interval == NULL) {
 		fprintf(stderr, "usage: kanxeoctl tls-throttle set [--enabled | --disabled] "
-		                "[--threshold=N] [--window-seconds=N] [--block-seconds=N]\n");
+		                "[--threshold=N] [--window-seconds=N] [--block-seconds=N] "
+		                "[--log-interval-seconds=N]\n");
 		return 2;
 	}
 
@@ -3456,6 +3461,10 @@ static int cmd_tls_throttle_set(const struct kx_client *c, int json_mode, int ar
 	if (block != NULL) {
 		jw_key(&w, "block_seconds");
 		jw_int(&w, atol(block));
+	}
+	if (log_interval != NULL) {
+		jw_key(&w, "log_interval_seconds");
+		jw_int(&w, atol(log_interval));
 	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
@@ -3513,7 +3522,8 @@ static int cmd_tls_throttle(const struct kx_client *c, int json_mode, int argc, 
 	if (argc < 1) {
 		fprintf(stderr, "usage: kanxeoctl tls-throttle show\n"
 		                "       kanxeoctl tls-throttle set [--enabled | --disabled] "
-		                "[--threshold=N] [--window-seconds=N] [--block-seconds=N]\n"
+		                "[--threshold=N] [--window-seconds=N] [--block-seconds=N] "
+		                "[--log-interval-seconds=N]\n"
 		                "       kanxeoctl tls-throttle status\n");
 		return 2;
 	}

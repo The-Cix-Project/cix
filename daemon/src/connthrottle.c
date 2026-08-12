@@ -12,6 +12,7 @@ struct throttle_entry {
 	int fail_count;
 	time_t window_start;
 	time_t blocked_until; /* 0 = not currently blocked */
+	time_t last_logged;   /* 0 = never logged yet -- connthrottle_should_log_failure() */
 };
 
 static char g_config_path[512];
@@ -33,6 +34,8 @@ static int save_config(void)
 	jw_int(&w, g_config.window_seconds);
 	jw_key(&w, "block_seconds");
 	jw_int(&w, g_config.block_seconds);
+	jw_key(&w, "log_interval_seconds");
+	jw_int(&w, g_config.log_interval_seconds);
 	jw_obj_close(&w);
 	rc = persist_atomic_write(g_config_path, w.buf, w.len);
 	jw_free(&w);
@@ -70,6 +73,9 @@ static int load_config(void)
 	v = json_object_get(root, "block_seconds");
 	if (v != NULL)
 		g_config.block_seconds = (int)json_as_number(v);
+	v = json_object_get(root, "log_interval_seconds");
+	if (v != NULL)
+		g_config.log_interval_seconds = (int)json_as_number(v);
 
 	json_free(root);
 	return 0;
@@ -84,6 +90,7 @@ int connthrottle_config_init(const char *path)
 	g_config.threshold = 20;
 	g_config.window_seconds = 60;
 	g_config.block_seconds = 300;
+	g_config.log_interval_seconds = 5;
 
 	memset(g_table, 0, sizeof(g_table));
 
@@ -95,13 +102,17 @@ struct throttle_config connthrottle_config_get(void)
 	return g_config;
 }
 
-int connthrottle_config_set(int enabled_flag, int threshold, int window_seconds, int block_seconds)
+int connthrottle_config_set(int enabled_flag, int threshold, int window_seconds, int block_seconds,
+                             int log_interval_seconds)
 {
 	if (threshold != -1 && (threshold < CONNTHROTTLE_THRESHOLD_MIN || threshold > CONNTHROTTLE_THRESHOLD_MAX))
 		return -1;
 	if (window_seconds != -1 && (window_seconds < CONNTHROTTLE_WINDOW_MIN || window_seconds > CONNTHROTTLE_WINDOW_MAX))
 		return -1;
 	if (block_seconds != -1 && (block_seconds < CONNTHROTTLE_BLOCK_MIN || block_seconds > CONNTHROTTLE_BLOCK_MAX))
+		return -1;
+	if (log_interval_seconds != -1 &&
+	    (log_interval_seconds < CONNTHROTTLE_LOG_INTERVAL_MIN || log_interval_seconds > CONNTHROTTLE_LOG_INTERVAL_MAX))
 		return -1;
 
 	if (enabled_flag != -1)
@@ -112,6 +123,8 @@ int connthrottle_config_set(int enabled_flag, int threshold, int window_seconds,
 		g_config.window_seconds = window_seconds;
 	if (block_seconds != -1)
 		g_config.block_seconds = block_seconds;
+	if (log_interval_seconds != -1)
+		g_config.log_interval_seconds = log_interval_seconds;
 
 	return save_config();
 }
@@ -136,6 +149,27 @@ static struct throttle_entry *find_free_slot(void)
 			return &g_table[i];
 	}
 	return NULL;
+}
+
+/* Shared by connthrottle_record_failure() and connthrottle_should_log_
+ * failure() -- both key off the same per-IP table, deliberately (one
+ * source of truth for "have we seen this IP before," not two). */
+static struct throttle_entry *get_or_create_entry(const char *ip, time_t now)
+{
+	struct throttle_entry *e = find_entry(ip);
+
+	if (e != NULL)
+		return e;
+	e = find_free_slot();
+	if (e == NULL)
+		return NULL; /* table full -- see connthrottle.h's own note on this */
+	snprintf(e->ip, sizeof(e->ip), "%s", ip);
+	e->in_use = 1;
+	e->fail_count = 0;
+	e->window_start = now;
+	e->blocked_until = 0;
+	e->last_logged = 0;
+	return e;
 }
 
 /*
@@ -185,17 +219,9 @@ void connthrottle_record_failure(const char *ip)
 		return;
 
 	now = time(NULL);
-	e = find_entry(ip);
-	if (e == NULL) {
-		e = find_free_slot();
-		if (e == NULL)
-			return; /* table full -- see connthrottle.h's own note on this */
-		snprintf(e->ip, sizeof(e->ip), "%s", ip);
-		e->in_use = 1;
-		e->fail_count = 0;
-		e->window_start = now;
-		e->blocked_until = 0;
-	}
+	e = get_or_create_entry(ip, now);
+	if (e == NULL)
+		return;
 
 	/* Outside the rolling window -- start counting fresh rather than
 	 * accumulating failures across unrelated incidents. */
@@ -207,6 +233,20 @@ void connthrottle_record_failure(const char *ip)
 	e->fail_count++;
 	if (e->fail_count >= g_config.threshold)
 		e->blocked_until = now + g_config.block_seconds;
+}
+
+int connthrottle_should_log_failure(const char *ip)
+{
+	time_t now = time(NULL);
+	struct throttle_entry *e = get_or_create_entry(ip, now);
+
+	if (e == NULL)
+		return 1; /* table full -- fail open, see this function's own doc comment */
+	if (g_config.log_interval_seconds > 0 && e->last_logged != 0 &&
+	    now - e->last_logged < g_config.log_interval_seconds)
+		return 0;
+	e->last_logged = now;
+	return 1;
 }
 
 void connthrottle_record_success(const char *ip)

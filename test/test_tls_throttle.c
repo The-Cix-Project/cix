@@ -218,8 +218,8 @@ int main(void)
 			ok = 0;
 		}
 		if (get_int_field(r.json, "threshold") != 20 || get_int_field(r.json, "window_seconds") != 60 ||
-		    get_int_field(r.json, "block_seconds") != 300) {
-			fprintf(stderr, "FAIL: unexpected default threshold/window/block values\n");
+		    get_int_field(r.json, "block_seconds") != 300 || get_int_field(r.json, "log_interval_seconds") != 5) {
+			fprintf(stderr, "FAIL: unexpected default threshold/window/block/log_interval values\n");
 			ok = 0;
 		}
 	}
@@ -235,18 +235,24 @@ int main(void)
 	}
 	kx_response_free(&r);
 
-	/* 3. A real partial update: only threshold/window/block change,
-	 * matching this project's own established config-PUT convention. */
+	/* 3. A real partial update: only threshold/window/block/log_interval
+	 * change, matching this project's own established config-PUT
+	 * convention. log_interval_seconds=10 is deliberately much longer
+	 * than the whole burst of failures step 5 below triggers (well
+	 * under a second, real time), so that burst is expected to produce
+	 * exactly one log line, not one per failure. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (kx_client_request(&client, "PUT", "/v1/system/tls-throttle",
-	                              "{\"threshold\":3,\"window_seconds\":60,\"block_seconds\":2}", &r) != 0 ||
-	           r.status != 200)) {
+	if (ok &&
+	    (kx_client_request(&client, "PUT", "/v1/system/tls-throttle",
+	                        "{\"threshold\":3,\"window_seconds\":60,\"block_seconds\":2,\"log_interval_seconds\":10}",
+	                        &r) != 0 ||
+	     r.status != 200)) {
 		fprintf(stderr, "FAIL: PUT tls-throttle, status=%d\n", r.status);
 		ok = 0;
 	}
 	if (ok && (get_int_field(r.json, "threshold") != 3 || get_int_field(r.json, "window_seconds") != 60 ||
-	           get_int_field(r.json, "block_seconds") != 2)) {
-		fprintf(stderr, "FAIL: PUT did not apply threshold/window/block correctly\n");
+	           get_int_field(r.json, "block_seconds") != 2 || get_int_field(r.json, "log_interval_seconds") != 10)) {
+		fprintf(stderr, "FAIL: PUT did not apply threshold/window/block/log_interval correctly\n");
 		ok = 0;
 	}
 	kx_response_free(&r);
@@ -279,7 +285,11 @@ int main(void)
 	}
 
 	/* 6. The peer IP now appears in the log line -- the actual gap
-	 * this whole feature closes. */
+	 * this whole feature closes. Exactly one line for the whole burst
+	 * of 3 failures, not 3 -- log_interval_seconds=10 easily covers a
+	 * burst that took well under a second in real time, proving the
+	 * log itself is rate-limited independently of the failure count
+	 * (which must still be exactly 3, checked in step 7 below). */
 	memset(&r, 0, sizeof(r));
 	if (ok && (kx_client_request(&client, "GET",
 	                              "/v1/system/logs?source=kanxeod&regex=" ATTACKER_IP "&tail=10", NULL, &r) !=
@@ -288,8 +298,9 @@ int main(void)
 		fprintf(stderr, "FAIL: GET logs regex=" ATTACKER_IP ", status=%d\n", r.status);
 		ok = 0;
 	}
-	if (ok && (r.json == NULL || r.json->type != JSON_ARRAY || r.json->u.array.count == 0)) {
-		fprintf(stderr, "FAIL: expected at least one log entry mentioning the attacker's peer IP\n");
+	if (ok && (r.json == NULL || r.json->type != JSON_ARRAY || r.json->u.array.count != 1)) {
+		fprintf(stderr, "FAIL: expected exactly 1 rate-limited log entry for the attacker's burst, got %d\n",
+		        ok && r.json != NULL && r.json->type == JSON_ARRAY ? (int)r.json->u.array.count : -1);
 		ok = 0;
 	}
 	kx_response_free(&r);

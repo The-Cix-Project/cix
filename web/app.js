@@ -3674,13 +3674,14 @@ async function refreshTlsThrottleConfig() {
 			document.getElementById("ttf-threshold").value = config.threshold;
 			document.getElementById("ttf-window").value = config.window_seconds;
 			document.getElementById("ttf-block").value = config.block_seconds;
+			document.getElementById("ttf-log-interval").value = config.log_interval_seconds;
 		}
 	} catch (e) {
 		/* Best-effort -- the form just stays at whatever was last shown. */
 	}
 }
 
-for (const id of ["ttf-enabled", "ttf-threshold", "ttf-window", "ttf-block"]) {
+for (const id of ["ttf-enabled", "ttf-threshold", "ttf-window", "ttf-block", "ttf-log-interval"]) {
 	document.getElementById(id).addEventListener("input", () => {
 		tlsThrottleConfigDirty = true;
 	});
@@ -3695,6 +3696,7 @@ document.getElementById("ttf-form").addEventListener("submit", async (event) => 
 			threshold: parseInt(document.getElementById("ttf-threshold").value, 10),
 			window_seconds: parseInt(document.getElementById("ttf-window").value, 10),
 			block_seconds: parseInt(document.getElementById("ttf-block").value, 10),
+			log_interval_seconds: parseInt(document.getElementById("ttf-log-interval").value, 10),
 		});
 		clearStatus();
 		showStatus("TLS throttle config saved", false);
@@ -3832,6 +3834,34 @@ document.getElementById("ntp-time-form").addEventListener("submit", async (event
 
 /* ---------- PKI ---------- */
 
+/* Triggers a real browser save-as for pemText, named filename -- a
+ * pure client-side convenience over data this dashboard already has
+ * from GET /pki/ca|intermediate (cert_pem), not a new API capability
+ * (the API-First Mandate is about capabilities existing at the API
+ * layer first, and "get the CA cert" already does -- turning already-
+ * fetched JSON into a downloadable file is presentation only). */
+function downloadPem(filename, pemText) {
+	const blob = new Blob([pemText], { type: "application/x-pem-file" });
+	const url = URL.createObjectURL(blob);
+	const a = document.createElement("a");
+
+	a.href = url;
+	a.download = filename;
+	document.body.appendChild(a);
+	a.click();
+	a.remove();
+	URL.revokeObjectURL(url);
+}
+
+function buildCaDownloadButton(filename, pemText) {
+	const button = document.createElement("button");
+
+	button.type = "button";
+	button.textContent = "Download certificate (.pem)";
+	button.addEventListener("click", () => downloadPem(filename, pemText));
+	return button;
+}
+
 async function refreshPkiCa() {
 	const pkiCaStatus = document.getElementById("pki-ca-status");
 	const pkiCaForm = document.getElementById("pki-ca-form");
@@ -3842,7 +3872,8 @@ async function refreshPkiCa() {
 		cache.pkiCa = ca;
 		pkiCaStatus.className = "pki-ca-status bootstrapped";
 		pkiCaStatus.textContent =
-			"Bootstrapped: " + ca.subject + " (serial " + ca.serial + ", expires " + ca.not_after + ")";
+			"Bootstrapped: " + ca.subject + " (serial " + ca.serial + ", expires " + ca.not_after + ") ";
+		pkiCaStatus.appendChild(buildCaDownloadButton("kanxeo-root-ca.pem", ca.cert_pem));
 		pkiCaForm.hidden = true;
 	} catch (e) {
 		cache.pkiCa = null;
@@ -3868,7 +3899,8 @@ async function refreshPkiIntermediate() {
 			intermediate.serial +
 			", expires " +
 			intermediate.not_after +
-			")";
+			") ";
+		status.appendChild(buildCaDownloadButton("kanxeo-intermediate-ca.pem", intermediate.cert_pem));
 		form.hidden = true;
 	} catch (e) {
 		cache.pkiIntermediate = null;

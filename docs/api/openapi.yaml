@@ -932,6 +932,10 @@ paths:
                   type: integer
                   minimum: 1
                   maximum: 604800
+                log_interval_seconds:
+                  type: integer
+                  minimum: 0
+                  maximum: 3600
       responses:
         "200":
           description: Updated throttle config (same shape as GET)
@@ -7037,7 +7041,7 @@ components:
 
     TlsThrottleConfig:
       type: object
-      required: [enabled, threshold, window_seconds, block_seconds]
+      required: [enabled, threshold, window_seconds, block_seconds, log_interval_seconds]
       properties:
         enabled:
           type: boolean
@@ -7051,6 +7055,12 @@ components:
         block_seconds:
           type: integer
           description: Default 300. How long a tripped source stays blocked.
+        log_interval_seconds:
+          type: integer
+          description: >
+            Default 5. Caps how often a "handshake failed" log line is
+            written for a given source, independent of threshold/blocking --
+            0 logs every single failure.
 
     TlsThrottleStatusEntry:
       type: object

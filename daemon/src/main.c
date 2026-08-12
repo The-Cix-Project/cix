@@ -10502,6 +10502,8 @@ static void handle_tls_throttle_get(int fd)
 	jw_int(&w, cfg.window_seconds);
 	jw_key(&w, "block_seconds");
 	jw_int(&w, cfg.block_seconds);
+	jw_key(&w, "log_interval_seconds");
+	jw_int(&w, cfg.log_interval_seconds);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -10514,6 +10516,7 @@ static void handle_tls_throttle_put(int fd, const char *body, size_t body_len)
 	int threshold = -1;
 	int window_seconds = -1;
 	int block_seconds = -1;
+	int log_interval_seconds = -1;
 
 	if (body_len > 0) {
 		root = json_parse(body, body_len);
@@ -10545,13 +10548,21 @@ static void handle_tls_throttle_put(int fd, const char *body, size_t body_len)
 			if (v != NULL)
 				block_seconds = (int)json_as_number(v);
 		}
+		{
+			const struct json_value *v = json_object_get(root, "log_interval_seconds");
+
+			if (v != NULL)
+				log_interval_seconds = (int)json_as_number(v);
+		}
 	}
 
-	if (connthrottle_config_set(enabled_flag, threshold, window_seconds, block_seconds) != 0) {
+	if (connthrottle_config_set(enabled_flag, threshold, window_seconds, block_seconds,
+	                             log_interval_seconds) != 0) {
 		if (root != NULL)
 			json_free(root);
 		respond_error(fd, 400, "Bad Request",
-		              "threshold must be 1-100000, window_seconds 1-86400, block_seconds 1-604800");
+		              "threshold must be 1-100000, window_seconds 1-86400, block_seconds 1-604800, "
+		              "log_interval_seconds 0-3600");
 		return;
 	}
 	if (root != NULL)
@@ -12467,13 +12478,22 @@ static void handle_console_pty_event(struct conn *cc)
  * absent, closing a real, confirmed gap: a sustained flood of these
  * warnings from one source had no way to identify which client it was
  * coming from.
+ *
+ * should_log (found live, again: a legitimate desktop's own browser
+ * repeatedly failing against an untrusted self-signed cert flooded the
+ * log store at 10+ lines/sec, well below any real block threshold)
+ * lets a caller suppress the actual logstore_write() -- via
+ * connthrottle_should_log_failure()'s own per-source rate limit --
+ * while this function still always drains the full OpenSSL error
+ * queue below regardless, so a suppressed line never lets errors
+ * silently accumulate.
  */
-static void log_tls_error(const char *context, const char *peer_ip)
+static void log_tls_error(const char *context, const char *peer_ip, int should_log)
 {
 	unsigned long first = ERR_get_error();
 	unsigned long e;
 
-	if (first != 0)
+	if (first != 0 && should_log)
 		logstore_write("kanxeod", "warning", "%s from %s: %s", context, peer_ip,
 		                ERR_reason_error_string(first));
 	while ((e = ERR_get_error()) != 0)
@@ -12537,7 +12557,7 @@ static int client_conn_advance_handshake(struct conn *cc)
 		kx_epoll_ctl(g_epfd, EPOLL_CTL_MOD, cc->fd, &ev);
 		return 0;
 	}
-	log_tls_error("https handshake failed", cc->peer_ip);
+	log_tls_error("https handshake failed", cc->peer_ip, connthrottle_should_log_failure(cc->peer_ip));
 	connthrottle_record_failure(cc->peer_ip);
 	return -1;
 }
@@ -13486,7 +13506,7 @@ static void accept_loop(struct conn *listener)
 				 * peer's own throttle score (connthrottle_record_
 				 * failure() is reserved for a real handshake the peer
 				 * actually attempted and failed). */
-				log_tls_error("https accept failed", peer_ip);
+				log_tls_error("https accept failed", peer_ip, 1);
 				if (cc->ssl != NULL)
 					SSL_free(cc->ssl);
 				close(client_fd);
