@@ -2,6 +2,22 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 111 (done): host-auth data model foundation -- bcrypt + real secondary groups (ADR-0144, part 1 of N)
+
+First of several landings under ADR-0144 (real host authentication + real LDAP for container login, replacing the file-rendering SSH-target mechanism) -- this part is the data-model foundation everything else depends on, with no behavior change yet (writes are not gated by anything in this part).
+
+#### Added
+- `daemon/src/vendor/bcrypt.c`/`blowfish.c` (vendored verbatim from OpenBSD's own real, audited reference implementation, ISC-licensed) + `daemon/src/pwhash.c`/`daemon/include/pwhash.h` (thin project wrapper, fixed cost factor 12). Replaces the LDAP user store's prior unsalted-SHA256 `passsha256` field with a real, salted `passbcrypt` -- `glauth` supports this natively (`PassBcrypt`), so this is a strict strengthening with zero directory-compatibility loss.
+- Real secondary/supplementary group membership on `struct ldap_user` (`secondary_groups[]`, up to 16, alongside the existing `primarygroup`) -- matches real POSIX `id -Gn` semantics. New `--secondary-groups=N,N,...` CLI flag, `secondary_groups` REST field, rendered into `glauth.cfg` as `othergroups = [...]` (glauth's own real field).
+- `ldap_user_is_in_group()`/`ldap_user_check_password()`: the two shared primitives every future host-auth backend (local and LDAP) will consult -- one real answer to "is this user valid and in that group," not reimplemented per caller.
+- `docs/adr/0144-host-authentication-and-real-ldap.md`: the full design this and every following part implements.
+
+#### Fixed
+- Mid-work: an `ldap user update` call accidentally clobbered a real user's `givenname`/`sn`/`mail`/`loginshell`/`homedirectory`/`ssh_public_key` fields -- confirmed directly that this endpoint is full-field-replacement (an omitted field resets to empty, not "leave unchanged"), a real, pre-existing, already-documented API behavior (not introduced by this change) that bears repeating here since it was hit live. Restored from values captured immediately beforehand; no data lost.
+
+#### Verified
+- Full clean rebuild (`-Wall -Werror`, zero warnings). Full regression sweep (46 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_restart`, reproduced clean on immediate retry). Standalone bcrypt functional test: correct password accepted, wrong password rejected, empty hash rejected, two hashes of the same password differ (real random salt) and both independently verify. `test_ldap.c` extended: the old literal-SHA256-hash assertions (incompatible with bcrypt's own real, deliberate non-determinism) replaced with real `$2b$` shape + hash-persists-across-update checks; new secondary-group scenarios (echoed correctly on update, rendered as `othergroups`, an unknown gidnumber rejected with 400, cleaned up before group deletion).
+
 ### Part 110 (done): container DNS resolution via an explicit `dns_servers` field (ADR-0143)
 
 Investigated directly (not assumed) after a deferred user question: does a container get DNS resolution via an explicit host mapping/binding, or a standard/global resolv.conf? Neither -- confirmed by reading every relevant code path, a container had **no** DNS resolution capability from Kanxeo at all before this. Closes that real, previously-undiscovered gap.

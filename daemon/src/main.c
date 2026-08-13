@@ -8033,8 +8033,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 			                "/dev/urandom couldn't be read\n",
 			        entry->name);
 		} else {
-			lerr = ldap_user_create(ldap_user_name, uid, g->gidnumber, NULL, NULL, NULL, NULL,
-			                         NULL, secret, 0, entry->name, 1, NULL, &u);
+			lerr = ldap_user_create(ldap_user_name, uid, g->gidnumber, NULL, 0, NULL, NULL, NULL,
+			                         NULL, NULL, secret, 0, entry->name, 1, NULL, &u);
 			if (lerr == LDAP_RECORD_ERR_DUPLICATE) {
 				/* Respawn under restart-always: the account already
 				 * exists (from this container's own first start) --
@@ -8042,9 +8042,10 @@ static int create_container_from_body(const char *body, size_t body_len,
 				 * this respawn's own delivery below is valid. */
 				u = ldap_user_find(ldap_user_name);
 				if (u != NULL)
-					lerr = ldap_user_update(ldap_user_name, uid, g->gidnumber, u->givenname,
-					                         u->sn, u->mail, u->loginshell, u->homedirectory,
-					                         secret, u->disabled, u->ssh_public_key, &u);
+					lerr = ldap_user_update(ldap_user_name, uid, g->gidnumber, u->secondary_groups,
+					                         u->secondary_group_count, u->givenname, u->sn, u->mail,
+					                         u->loginshell, u->homedirectory, secret, u->disabled,
+					                         u->ssh_public_key, &u);
 			}
 			if (lerr != LDAP_RECORD_OK || u == NULL) {
 				fprintf(stderr,
@@ -11075,7 +11076,8 @@ static void respond_ldap_record_error(int fd, enum ldap_record_error err)
 		respond_error(fd, 500, "Internal Server Error", "LDAP record table full");
 		break;
 	case LDAP_RECORD_ERR_GROUP_NOT_FOUND:
-		respond_error(fd, 400, "Bad Request", "primarygroup does not name an existing group");
+		respond_error(fd, 400, "Bad Request",
+		              "primarygroup or a secondary_groups entry does not name an existing group");
 		break;
 	case LDAP_RECORD_ERR_PERSIST_FAILED:
 		respond_error(fd, 500, "Internal Server Error", "failed to persist LDAP record");
@@ -11208,18 +11210,29 @@ static void handle_ldap_group_delete(int fd, const char *name)
  * documented "omit password to keep the existing one" semantics.
  */
 static void parse_ldap_user_body(const struct json_value *root, const char **name, int *uidnumber,
-                                  int *has_uidnumber, int *primarygroup, const char **givenname,
+                                  int *has_uidnumber, int *primarygroup,
+                                  int secondary_groups[LDAP_USER_MAX_SECONDARY_GROUPS],
+                                  int *secondary_group_count, const char **givenname,
                                   const char **sn, const char **mail, const char **loginshell,
                                   const char **homedirectory, const char **password, int *disabled,
                                   const char **ssh_public_key)
 {
 	const struct json_value *jdisabled = json_object_get(root, "disabled");
 	const struct json_value *juidnumber = json_object_get(root, "uidnumber");
+	const struct json_value *jsecondary = json_object_get(root, "secondary_groups");
 
 	*name = json_as_string(json_object_get(root, "name"));
 	*uidnumber = juidnumber != NULL ? (int)json_as_number(juidnumber) : 0;
 	*has_uidnumber = juidnumber != NULL;
 	*primarygroup = (int)json_as_number(json_object_get(root, "primarygroup"));
+	*secondary_group_count = 0;
+	if (jsecondary != NULL && jsecondary->type == JSON_ARRAY) {
+		size_t i;
+
+		for (i = 0; i < jsecondary->u.array.count && (int)i < LDAP_USER_MAX_SECONDARY_GROUPS; i++)
+			secondary_groups[i] = (int)json_as_number(jsecondary->u.array.items[i]);
+		*secondary_group_count = (int)i;
+	}
 	*givenname = json_as_string(json_object_get(root, "givenname"));
 	*sn = json_as_string(json_object_get(root, "sn"));
 	*mail = json_as_string(json_object_get(root, "mail"));
@@ -11236,6 +11249,7 @@ static void handle_ldap_user_create(int fd, const char *body, size_t body_len)
 	const char *name, *givenname, *sn, *mail, *loginshell, *homedirectory, *password;
 	const char *ssh_public_key;
 	int uidnumber, has_uidnumber, primarygroup, disabled;
+	int secondary_groups[LDAP_USER_MAX_SECONDARY_GROUPS], secondary_group_count;
 	struct ldap_user *u;
 	enum ldap_record_error rerr;
 	struct json_writer w;
@@ -11246,9 +11260,9 @@ static void handle_ldap_user_create(int fd, const char *body, size_t body_len)
 		return;
 	}
 
-	parse_ldap_user_body(root, &name, &uidnumber, &has_uidnumber, &primarygroup, &givenname, &sn,
-	                      &mail, &loginshell, &homedirectory, &password, &disabled,
-	                      &ssh_public_key);
+	parse_ldap_user_body(root, &name, &uidnumber, &has_uidnumber, &primarygroup, secondary_groups,
+	                      &secondary_group_count, &givenname, &sn, &mail, &loginshell,
+	                      &homedirectory, &password, &disabled, &ssh_public_key);
 	if (name == NULL) {
 		json_free(root);
 		respond_error(fd, 400, "Bad Request", "name missing");
@@ -11260,8 +11274,9 @@ static void handle_ldap_user_create(int fd, const char *body, size_t body_len)
 	if (!has_uidnumber)
 		uidnumber = ldap_uid_alloc();
 
-	rerr = ldap_user_create(name, uidnumber, primarygroup, givenname, sn, mail, loginshell,
-	                         homedirectory, password, disabled, NULL, 0, ssh_public_key, &u);
+	rerr = ldap_user_create(name, uidnumber, primarygroup, secondary_groups, secondary_group_count,
+	                         givenname, sn, mail, loginshell, homedirectory, password, disabled, NULL,
+	                         0, ssh_public_key, &u);
 	json_free(root); /* u points into ldap.c's own record store, not root -- safe past here */
 	if (rerr != LDAP_RECORD_OK) {
 		respond_ldap_record_error(fd, rerr);
@@ -11280,6 +11295,7 @@ static void handle_ldap_user_update(int fd, const char *name, const char *body, 
 	const char *body_name, *givenname, *sn, *mail, *loginshell, *homedirectory, *password;
 	const char *ssh_public_key;
 	int uidnumber, has_uidnumber, primarygroup, disabled;
+	int secondary_groups[LDAP_USER_MAX_SECONDARY_GROUPS], secondary_group_count;
 	struct ldap_user *u;
 	enum ldap_record_error rerr;
 	struct json_writer w;
@@ -11290,17 +11306,18 @@ static void handle_ldap_user_update(int fd, const char *name, const char *body, 
 		return;
 	}
 
-	parse_ldap_user_body(root, &body_name, &uidnumber, &has_uidnumber, &primarygroup, &givenname,
-	                      &sn, &mail, &loginshell, &homedirectory, &password, &disabled,
-	                      &ssh_public_key);
+	parse_ldap_user_body(root, &body_name, &uidnumber, &has_uidnumber, &primarygroup,
+	                      secondary_groups, &secondary_group_count, &givenname, &sn, &mail,
+	                      &loginshell, &homedirectory, &password, &disabled, &ssh_public_key);
 	(void)body_name; /* the URL path's name is authoritative for PUT, not the body's own */
 	(void)has_uidnumber; /* PUT is full-field-replacement -- an omitted uidnumber here is 0,
 	                       * same pre-existing semantics as every other omittable PUT field
 	                       * (e.g. givenname/sn) resetting to empty; auto-allocation is only
 	                       * for create, where "I don't have an opinion" is a real, common case. */
 
-	rerr = ldap_user_update(name, uidnumber, primarygroup, givenname, sn, mail, loginshell,
-	                         homedirectory, password, disabled, ssh_public_key, &u);
+	rerr = ldap_user_update(name, uidnumber, primarygroup, secondary_groups, secondary_group_count,
+	                         givenname, sn, mail, loginshell, homedirectory, password, disabled,
+	                         ssh_public_key, &u);
 	json_free(root);
 	if (rerr != LDAP_RECORD_OK) {
 		respond_ldap_record_error(fd, rerr);

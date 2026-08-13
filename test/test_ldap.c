@@ -32,6 +32,33 @@ extern char **environ;
 static char g_data_dir[PATH_MAX];
 static char g_image_root[PATH_MAX];
 
+/* Extracts the quoted value following `key = "` in body (a real TOML
+ * rendered field, e.g. `passbcrypt = "$2b$12$..."`) into out. Returns
+ * 0 on success, -1 if key isn't found or the value is unterminated. */
+static int extract_toml_string_value(const char *body, size_t body_len, const char *key, char *out,
+                                      size_t out_size)
+{
+	char needle[64];
+	const void *pos;
+	const char *val_start, *val_end;
+	size_t val_len;
+
+	snprintf(needle, sizeof(needle), "%s = \"", key);
+	pos = memmem(body, body_len, needle, strlen(needle));
+	if (pos == NULL)
+		return -1;
+	val_start = (const char *)pos + strlen(needle);
+	val_end = memchr(val_start, '"', (size_t)(body + body_len - val_start));
+	if (val_end == NULL)
+		return -1;
+	val_len = (size_t)(val_end - val_start);
+	if (val_len >= out_size)
+		return -1;
+	memcpy(out, val_start, val_len);
+	out[val_len] = '\0';
+	return 0;
+}
+
 static int wait_for_daemon(const struct kx_client *c, int max_attempts)
 {
 	int i;
@@ -336,6 +363,7 @@ int main(void)
 	{
 		static const char base_config_prefix[] = "# base config\nwatchconfig = true\n";
 		struct json_value *jval;
+		char passbcrypt_val[80];
 
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "POST", "/v1/containers",
@@ -391,7 +419,7 @@ int main(void)
 		}
 		kx_response_free(&r);
 
-		/* 15. real user create, with a password -- passsha256 must
+		/* 15. real user create, with a password -- passbcrypt must
 		 * never come back over the API (only has_password) */
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "POST", "/v1/ldap/users",
@@ -410,9 +438,13 @@ int main(void)
 		kx_response_free(&r);
 
 		/* 16. the container's own config file now shows the preserved
-		 * prefix plus a correctly-rendered managed tail, including the
-		 * real SHA-256 of "dogood" (independently verified via `printf
-		 * dogood | sha256sum`) */
+		 * prefix plus a correctly-rendered managed tail, including a
+		 * real bcrypt hash of "dogood" (ADR-0144 -- bcrypt is
+		 * deliberately salted/non-deterministic, so unlike the old
+		 * passsha256 field this can't be checked against a fixed
+		 * literal; instead confirm the real $2b$<cost>$ shape and
+		 * capture the exact value to prove it survives an update
+		 * unchanged in step 17). */
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "GET",
 		                       "/v1/containers/ldapcfg/files?path=%2Fetc%2Fglauth%2Fglauth.cfg", NULL,
@@ -430,19 +462,21 @@ int main(void)
 		               NULL ||
 		           memmem(r.body, r.body_len, "name = \"j_doe\"", strlen("name = \"j_doe\"")) == NULL ||
 		           memmem(r.body, r.body_len, "mail = \"j.doe@kanxeo.internal\"",
-		                  strlen("mail = \"j.doe@kanxeo.internal\"")) == NULL ||
-		           memmem(r.body, r.body_len,
-		                  "passsha256 = \"6478579e37aff45f013e14eeb30b3cc56c72ccdc310123bcdf53e0333e"
-		                  "3f416a\"",
-		                  strlen("passsha256 = \"6478579e37aff45f013e14eeb30b3cc56c72ccdc310123bcdf53e"
-		                         "0333e3f416a\"")) == NULL) {
+		                  strlen("mail = \"j.doe@kanxeo.internal\"")) == NULL) {
 			fprintf(stderr, "FAIL: rendered config missing expected group/user fields\n");
+			ok = 0;
+		} else if (extract_toml_string_value(r.body, r.body_len, "passbcrypt", passbcrypt_val,
+		                                      sizeof(passbcrypt_val)) != 0 ||
+		           strncmp(passbcrypt_val, "$2b$", 4) != 0) {
+			fprintf(stderr, "FAIL: rendered config missing a real $2b$ bcrypt hash, got: %s\n",
+			        passbcrypt_val);
 			ok = 0;
 		}
 		kx_response_free(&r);
 
 		/* 17. update: change mail, omit password -- the existing hash
-		 * must survive unchanged in the re-rendered file */
+		 * must survive unchanged (byte-for-byte the same value captured
+		 * above) in the re-rendered file */
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
 		                       "{\"uidnumber\":5001,\"primarygroup\":6001,"
@@ -461,14 +495,105 @@ int main(void)
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: GET ldapcfg config file after update, status=%d\n", r.status);
 			ok = 0;
-		} else if (memmem(r.body, r.body_len, "mail = \"jd@kanxeo.internal\"",
-		                  strlen("mail = \"jd@kanxeo.internal\"")) == NULL ||
-		           memmem(r.body, r.body_len,
-		                  "passsha256 = \"6478579e37aff45f013e14eeb30b3cc56c72ccdc310123bcdf53e0333e"
-		                  "3f416a\"",
-		                  strlen("passsha256 = \"6478579e37aff45f013e14eeb30b3cc56c72ccdc310123bcdf53e"
-		                         "0333e3f416a\"")) == NULL) {
-			fprintf(stderr, "FAIL: update lost the mail change or the existing password hash\n");
+		} else {
+			char passbcrypt_after[80];
+
+			if (memmem(r.body, r.body_len, "mail = \"jd@kanxeo.internal\"",
+			           strlen("mail = \"jd@kanxeo.internal\"")) == NULL) {
+				fprintf(stderr, "FAIL: update lost the mail change\n");
+				ok = 0;
+			} else if (extract_toml_string_value(r.body, r.body_len, "passbcrypt", passbcrypt_after,
+			                                      sizeof(passbcrypt_after)) != 0 ||
+			           strcmp(passbcrypt_after, passbcrypt_val) != 0) {
+				fprintf(stderr,
+				        "FAIL: update lost the existing password hash (was %s, now %s)\n",
+				        passbcrypt_val, passbcrypt_after);
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		/* 17b (ADR-0144): real secondary-group membership -- a second
+		 * group, then j_doe gains it as a secondary group alongside its
+		 * existing primarygroup, echoed correctly on GET and rendered
+		 * as glauth's own "othergroups" array. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/ldap/groups", "{\"name\":\"ops\",\"gidnumber\":6099}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: create group ops, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
+		                       "{\"uidnumber\":5001,\"primarygroup\":6001,"
+		                       "\"mail\":\"jd@kanxeo.internal\",\"secondary_groups\":[6099]}",
+		                       &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: update user j_doe with secondary_groups, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *jsecondary = json_object_get(r.json, "secondary_groups");
+
+			if (jsecondary == NULL || jsecondary->type != JSON_ARRAY || jsecondary->u.array.count != 1 ||
+			    (int)json_as_number(jsecondary->u.array.items[0]) != 6099) {
+				fprintf(stderr, "FAIL: secondary_groups not echoed correctly on update response\n");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET",
+		                       "/v1/containers/ldapcfg/files?path=%2Fetc%2Fglauth%2Fglauth.cfg", NULL,
+		                       &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET ldapcfg config file after secondary_groups update, status=%d\n",
+			        r.status);
+			ok = 0;
+		} else if (memmem(r.body, r.body_len, "othergroups = [6099]", strlen("othergroups = [6099]")) ==
+		           NULL) {
+			fprintf(stderr, "FAIL: rendered config missing othergroups = [6099]\n");
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* An invalid secondary group (no such gidnumber) is rejected,
+		 * same validation primarygroup already gets. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
+		                       "{\"uidnumber\":5001,\"primarygroup\":6001,"
+		                       "\"secondary_groups\":[999999]}",
+		                       &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: update with unknown secondary group expected 400, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* Cleanup: drop the secondary group again before the group
+		 * itself is deleted below (a still-referenced group can still
+		 * be deleted per this module's own "no cascading validation"
+		 * posture, but leaving a dangling reference around isn't the
+		 * point of this test). */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
+		                       "{\"uidnumber\":5001,\"primarygroup\":6001,"
+		                       "\"mail\":\"jd@kanxeo.internal\"}",
+		                       &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: clear secondary_groups, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "DELETE", "/v1/ldap/groups/ops", NULL, &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: delete group ops, status=%d\n", r.status);
 			ok = 0;
 		}
 		kx_response_free(&r);

@@ -146,10 +146,12 @@ static void print_usage(FILE *out)
 	        "  ldap group ls\n"
 	        "  ldap group update --name=NAME --gidnumber=N\n"
 	        "  ldap group rm NAME\n"
-	        "  ldap user add --name=NAME --uidnumber=N --primarygroup=N [--givenname=S]\n"
+	        "  ldap user add --name=NAME --uidnumber=N --primarygroup=N\n"
+	        "               [--secondary-groups=N,N,...] [--givenname=S]\n"
 	        "               [--sn=S] [--mail=S] [--loginshell=S] [--homedirectory=S]\n"
 	        "               [--password=S] [--disabled] [--ssh-key=S]\n"
-	        "  ldap user update --name=NAME [--uidnumber=N] [--primarygroup=N] ...\n"
+	        "  ldap user update --name=NAME [--uidnumber=N] [--primarygroup=N]\n"
+	        "               [--secondary-groups=N,N,...] ...\n"
 	        "  ldap user ls\n"
 	        "  ldap user rm NAME\n"
 	        "  pki ca bootstrap [--common-name=NAME] [--days=N]\n"
@@ -901,14 +903,32 @@ static void fmt_ldap_user_line(const struct json_value *v)
 	const char *ssh_public_key = json_str_field(v, "ssh_public_key");
 	const struct json_value *jhas_password = json_object_get(v, "has_password");
 	const struct json_value *jdisabled = json_object_get(v, "disabled");
+	const struct json_value *jsecondary = json_object_get(v, "secondary_groups");
 	int has_password = jhas_password != NULL && jhas_password->type == JSON_BOOL &&
 	                    jhas_password->u.boolean;
 	int disabled = jdisabled != NULL && jdisabled->type == JSON_BOOL && jdisabled->u.boolean;
 	int has_ssh_key = ssh_public_key != NULL && ssh_public_key[0] != '\0';
+	char secondary_buf[128];
 
-	printf("%-20s uid=%-6ld gid=%-6ld mail=%-30s password=%-4s disabled=%-4s ssh_key=%s\n", name,
-	       uidnumber, primarygroup, mail != NULL ? mail : "", has_password ? "set" : "unset",
-	       disabled ? "yes" : "no", has_ssh_key ? "set" : "unset");
+	secondary_buf[0] = '\0';
+	if (jsecondary != NULL && jsecondary->type == JSON_ARRAY && jsecondary->u.array.count > 0) {
+		size_t off = 0, i;
+
+		for (i = 0; i < jsecondary->u.array.count && off < sizeof(secondary_buf) - 1; i++) {
+			int written = snprintf(secondary_buf + off, sizeof(secondary_buf) - off, "%s%ld",
+			                        i > 0 ? "," : "",
+			                        (long)json_as_number(jsecondary->u.array.items[i]));
+
+			if (written > 0)
+				off += (size_t)written;
+		}
+	}
+
+	printf("%-20s uid=%-6ld gid=%-6ld secondary_gids=%-12s mail=%-30s password=%-4s disabled=%-4s "
+	       "ssh_key=%s\n",
+	       name, uidnumber, primarygroup, secondary_buf[0] != '\0' ? secondary_buf : "-",
+	       mail != NULL ? mail : "", has_password ? "set" : "unset", disabled ? "yes" : "no",
+	       has_ssh_key ? "set" : "unset");
 }
 
 static void fmt_ldap_user_list(const struct json_value *v)
@@ -5953,6 +5973,19 @@ static void build_ldap_user_body(struct json_writer *w, int argc, char **argv,
 		} else if (strncmp(argv[i], "--primarygroup=", 15) == 0) {
 			jw_key(w, "primarygroup");
 			jw_int(w, strtol(argv[i] + 15, NULL, 10));
+		} else if (strncmp(argv[i], "--secondary-groups=", 19) == 0) {
+			/* ADR-0144: comma-separated gidnumbers, e.g.
+			 * --secondary-groups=1000,10000 -- real secondary/
+			 * supplementary group membership, alongside primarygroup. */
+			char buf[256];
+			char *tok, *save = NULL;
+
+			jw_key(w, "secondary_groups");
+			jw_arr_open(w);
+			snprintf(buf, sizeof(buf), "%s", argv[i] + 19);
+			for (tok = strtok_r(buf, ",", &save); tok != NULL; tok = strtok_r(NULL, ",", &save))
+				jw_int(w, strtol(tok, NULL, 10));
+			jw_arr_close(w);
 		} else if (strncmp(argv[i], "--givenname=", 12) == 0) {
 			jw_key(w, "givenname");
 			jw_str(w, argv[i] + 12);

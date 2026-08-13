@@ -2,6 +2,7 @@
 #define LDAP_SERVER_H
 
 #include "json.h"
+#include "pwhash.h"
 
 /*
  * LDAP server registration (task #725) -- mirrors dns.h's own
@@ -117,17 +118,23 @@ void ldap_server_write_json_list(struct json_writer *w);
  * base config with no managed section), the fresh content is simply
  * appended at EOF.
  *
- * Password storage: passsha256 (a real, documented glauth "config"
- * datastore field) via kanxeod's own already-linked OpenSSL libcrypto
- * SHA256 -- not passbcrypt, which would mean hand-rolling bcrypt (a
- * "No Hacks" violation reimplementing a security-critical primitive
- * this project has no audited implementation of) or shelling out. A
- * real, if comparatively weaker, credential mechanism -- documented
- * here so a future reader knows it's a deliberate, scoped trade-off,
- * not an oversight. Capability/ACL grants (glauth's own `capabilities`
- * config stanza) are explicitly out of scope for this task -- directory
- * data only; see task #727/#728 for how a real consuming workload's
- * bind/search rights get provisioned.
+ * Password storage: passbcrypt (a real, documented glauth "config"
+ * datastore field) via a real, vendored, audited bcrypt implementation
+ * (daemon/src/vendor/bcrypt.c + blowfish.c, daemon/include/pwhash.h)
+ * -- ADR-0144. Originally this field held a bare unsalted SHA256 hex
+ * digest instead (passsha256, via kanxeod's own already-linked OpenSSL
+ * libcrypto), a deliberate trade-off at the time specifically to avoid
+ * hand-rolling bcrypt from scratch (a "No Hacks" violation
+ * reimplementing a security-critical primitive with no audit trail).
+ * That reasoning held right up until these same credentials became the
+ * *host's own* authentication root of trust (ADR-0144's host-auth
+ * work) rather than only a container-facing directory password --
+ * vendoring a real, widely-deployed reference implementation verbatim
+ * resolves the original objection without reversing it: still no
+ * hand-rolled crypto, just no longer avoiding bcrypt altogether.
+ * Capability/ACL grants (glauth's own `capabilities` config stanza)
+ * remain a separate, narrower mechanism (can_search below) from the
+ * secondary-group membership this same ADR adds.
  */
 
 #define LDAP_USER_MAX 256
@@ -135,20 +142,30 @@ void ldap_server_write_json_list(struct json_writer *w);
 #define LDAP_USER_NAME_MAX 32     /* POSIX-ish username length */
 #define LDAP_GROUP_NAME_MAX 32
 #define LDAP_USER_FIELD_MAX 128   /* givenname/sn/mail/loginshell/homedirectory */
-#define LDAP_PASSSHA256_LEN 64    /* hex-encoded SHA-256, no null in the count */
 #define LDAP_OWNER_NAME_MAX 64    /* matches REGISTRY_NAME_MAX, no header dependency -- same convention as DNS_OWNER_NAME_MAX */
 #define LDAP_SSH_KEY_MAX 1024     /* comfortably fits any real ed25519/ecdsa/rsa-4096 public key line */
+/* ADR-0144: real secondary/supplementary group membership, alongside
+ * primarygroup below -- matches real POSIX semantics (id -Gn: primary
+ * group plus a real supplementary list), needed for a proper,
+ * configurable group-membership authorization model (host-auth's own
+ * admin-group mapping checks this, not just primarygroup). 16 mirrors
+ * every other project "small membership list" cap (e.g.
+ * CLI_MAX_DEPENDS) -- generous for a real operator's own group
+ * assignments, bounded so a single user record can't grow unboundedly. */
+#define LDAP_USER_MAX_SECONDARY_GROUPS 16
 
 struct ldap_user {
 	char name[LDAP_USER_NAME_MAX];
 	int uidnumber;
 	int primarygroup; /* gidnumber of an existing ldap_group */
+	int secondary_groups[LDAP_USER_MAX_SECONDARY_GROUPS]; /* gidnumbers; ADR-0144 */
+	int secondary_group_count;
 	char givenname[LDAP_USER_FIELD_MAX];
 	char sn[LDAP_USER_FIELD_MAX];
 	char mail[LDAP_USER_FIELD_MAX];
 	char loginshell[LDAP_USER_FIELD_MAX];
 	char homedirectory[LDAP_USER_FIELD_MAX];
-	char passsha256[LDAP_PASSSHA256_LEN + 1]; /* empty: no password set yet */
+	char passbcrypt[PWHASH_BCRYPT_LEN + 1]; /* empty: no password set yet */
 	int disabled;
 	/* Task #727 (container-creation auto-provisioning) only, from here down --
 	 * never settable via the public user-CRUD REST body (POST/PUT .../users). */
@@ -213,18 +230,24 @@ void ldap_group_write_json_one(const struct ldap_group *g, struct json_writer *w
 void ldap_group_write_json_list(struct json_writer *w);
 
 struct ldap_user *ldap_user_find(const char *name);
-/* password == NULL: leave passsha256 unset (create) or unchanged
+/* password == NULL: leave passbcrypt unset (create) or unchanged
  * (update). password == "" is treated the same as NULL -- an empty
  * credential is never written. owner_container/can_search: task
  * #727's own fields (see struct ldap_user's own comment) -- every
- * caller outside the auto-provisioning hook in main.c passes NULL/0. */
+ * caller outside the auto-provisioning hook in main.c passes NULL/0.
+ * secondary_groups/secondary_group_count (ADR-0144): NULL/0 means no
+ * secondary groups; each gidnumber must already name a real group
+ * (LDAP_RECORD_ERR_GROUP_NOT_FOUND otherwise, same validation
+ * primarygroup already gets). */
 enum ldap_record_error ldap_user_create(const char *name, int uidnumber, int primarygroup,
+                                         const int *secondary_groups, int secondary_group_count,
                                          const char *givenname, const char *sn, const char *mail,
                                          const char *loginshell, const char *homedirectory,
                                          const char *password, int disabled,
                                          const char *owner_container, int can_search,
                                          const char *ssh_public_key, struct ldap_user **out);
 enum ldap_record_error ldap_user_update(const char *name, int uidnumber, int primarygroup,
+                                         const int *secondary_groups, int secondary_group_count,
                                          const char *givenname, const char *sn, const char *mail,
                                          const char *loginshell, const char *homedirectory,
                                          const char *password, int disabled,
@@ -232,6 +255,24 @@ enum ldap_record_error ldap_user_update(const char *name, int uidnumber, int pri
 enum ldap_record_error ldap_user_delete(const char *name);
 void ldap_user_write_json_one(const struct ldap_user *u, struct json_writer *w);
 void ldap_user_write_json_list(struct json_writer *w);
+
+/* ADR-0144: real primary-or-secondary group membership check, by
+ * name -- the one place "is this user in that group" is decided,
+ * shared by the local host-auth backend (daemon/src/hostauth.c) and
+ * anything else that ever needs the same POSIX-shaped answer (primary
+ * group counts as membership too, matching real `id -Gn` semantics).
+ * Returns 1 if user_name is disabled==0 and a member (primary or
+ * secondary) of group_name, 0 otherwise (including "no such user" or
+ * "no such group" -- never distinguished from "not a member" to the
+ * caller, same fail-closed posture every other auth check here has). */
+int ldap_user_is_in_group(const char *user_name, const char *group_name);
+
+/* Local, in-process credential check against this daemon's own
+ * already-persisted user record -- real bcrypt verification
+ * (pwhash_bcrypt_check()), no network call. Returns 1 if name exists,
+ * is not disabled, and password matches; 0 otherwise (again, never
+ * distinguishing "no such user" from "wrong password"). */
+int ldap_user_check_password(const char *user_name, const char *password);
 
 /* Best-effort cleanup on container deletion, mirroring dns_record_
  * forget_owner()/pki_cert_forget_owner() exactly: deletes name's

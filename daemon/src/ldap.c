@@ -11,8 +11,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <openssl/sha.h>
-
 static struct ldap_server_binding g_bindings[LDAP_SERVER_MAX];
 static char g_state_path[PATH_MAX];
 
@@ -214,14 +212,15 @@ int ldap_groupname_is_valid(const char *name)
 	return ldap_username_is_valid(name);
 }
 
-static void hash_password(const char *password, char out[LDAP_PASSSHA256_LEN + 1])
+/* ADR-0144: real bcrypt hashing (daemon/include/pwhash.h) -- see
+ * struct ldap_user's own doc comment in ldap.h for why this replaced
+ * the original unsalted-SHA256 passsha256 field. Failure (only
+ * possible from a too-small output buffer, which out's own fixed
+ * PWHASH_BCRYPT_LEN+1 size here never triggers) leaves out untouched;
+ * callers already only invoke this when a real password was given. */
+static void hash_password(const char *password, char out[PWHASH_BCRYPT_LEN + 1])
 {
-	unsigned char digest[SHA256_DIGEST_LENGTH];
-	size_t i;
-
-	SHA256((const unsigned char *)password, strlen(password), digest);
-	for (i = 0; i < SHA256_DIGEST_LENGTH; i++)
-		snprintf(out + i * 2, 3, "%02x", digest[i]);
+	pwhash_bcrypt_new(password, out, PWHASH_BCRYPT_LEN + 1);
 }
 
 /*
@@ -240,6 +239,15 @@ static void write_user_persist_one(const struct ldap_user *u, struct json_writer
 	jw_int(w, u->uidnumber);
 	jw_key(w, "primarygroup");
 	jw_int(w, u->primarygroup);
+	jw_key(w, "secondary_groups");
+	jw_arr_open(w);
+	{
+		int i;
+
+		for (i = 0; i < u->secondary_group_count; i++)
+			jw_int(w, u->secondary_groups[i]);
+	}
+	jw_arr_close(w);
 	jw_key(w, "givenname");
 	jw_str(w, u->givenname);
 	jw_key(w, "sn");
@@ -250,8 +258,8 @@ static void write_user_persist_one(const struct ldap_user *u, struct json_writer
 	jw_str(w, u->loginshell);
 	jw_key(w, "homedirectory");
 	jw_str(w, u->homedirectory);
-	jw_key(w, "passsha256");
-	jw_str(w, u->passsha256);
+	jw_key(w, "passbcrypt");
+	jw_str(w, u->passbcrypt);
 	jw_key(w, "disabled");
 	jw_bool(w, u->disabled != 0);
 	jw_key(w, "owner");
@@ -324,8 +332,9 @@ static int load_users_state(void)
 		const char *mail = json_as_string(json_object_get(item, "mail"));
 		const char *loginshell = json_as_string(json_object_get(item, "loginshell"));
 		const char *homedirectory = json_as_string(json_object_get(item, "homedirectory"));
-		const char *passsha256 = json_as_string(json_object_get(item, "passsha256"));
+		const char *passbcrypt = json_as_string(json_object_get(item, "passbcrypt"));
 		const char *owner = json_as_string(json_object_get(item, "owner"));
+		const struct json_value *jsecondary = json_object_get(item, "secondary_groups");
 		const char *ssh_public_key = json_as_string(json_object_get(item, "ssh_public_key"));
 		struct ldap_user *u;
 
@@ -337,6 +346,14 @@ static int load_users_state(void)
 		strncpy(u->name, name, sizeof(u->name) - 1);
 		u->uidnumber = (int)json_as_number(json_object_get(item, "uidnumber"));
 		u->primarygroup = (int)json_as_number(json_object_get(item, "primarygroup"));
+		if (jsecondary != NULL && jsecondary->type == JSON_ARRAY) {
+			size_t j;
+
+			for (j = 0; j < jsecondary->u.array.count && (int)j < LDAP_USER_MAX_SECONDARY_GROUPS;
+			     j++)
+				u->secondary_groups[j] = (int)json_as_number(jsecondary->u.array.items[j]);
+			u->secondary_group_count = (int)j;
+		}
 		if (givenname != NULL)
 			strncpy(u->givenname, givenname, sizeof(u->givenname) - 1);
 		if (sn != NULL)
@@ -347,8 +364,8 @@ static int load_users_state(void)
 			strncpy(u->loginshell, loginshell, sizeof(u->loginshell) - 1);
 		if (homedirectory != NULL)
 			strncpy(u->homedirectory, homedirectory, sizeof(u->homedirectory) - 1);
-		if (passsha256 != NULL)
-			strncpy(u->passsha256, passsha256, sizeof(u->passsha256) - 1);
+		if (passbcrypt != NULL)
+			strncpy(u->passbcrypt, passbcrypt, sizeof(u->passbcrypt) - 1);
 		if (owner != NULL)
 			strncpy(u->owner_container, owner, sizeof(u->owner_container) - 1);
 		u->disabled = json_as_number(json_object_get(item, "disabled")) != 0;
@@ -654,6 +671,23 @@ static size_t render_users_groups_toml(char *buf, size_t bufsize)
 		toml_append_int(buf, bufsize, &off, u->uidnumber);
 		toml_append_raw(buf, bufsize, &off, "\nprimarygroup = ");
 		toml_append_int(buf, bufsize, &off, u->primarygroup);
+		if (u->secondary_group_count > 0) {
+			int j;
+
+			/* ADR-0144: glauth's own User.OtherGroups []int, field name
+			 * lowercased with no toml tag -- same "verified directly
+			 * against glauth's real struct, no tag means lowercase the
+			 * exact Go field name" convention every other field in this
+			 * render function already follows (see this function's own
+			 * top comment). */
+			toml_append_raw(buf, bufsize, &off, "\nothergroups = [");
+			for (j = 0; j < u->secondary_group_count; j++) {
+				if (j > 0)
+					toml_append_raw(buf, bufsize, &off, ", ");
+				toml_append_int(buf, bufsize, &off, u->secondary_groups[j]);
+			}
+			toml_append_raw(buf, bufsize, &off, "]");
+		}
 		toml_append_raw(buf, bufsize, &off, "\ngivenname = ");
 		toml_append_string(buf, bufsize, &off, u->givenname);
 		toml_append_raw(buf, bufsize, &off, "\nsn = ");
@@ -666,9 +700,9 @@ static size_t render_users_groups_toml(char *buf, size_t bufsize)
 		toml_append_string(buf, bufsize, &off, u->homedirectory);
 		toml_append_raw(buf, bufsize, &off, "\ndisabled = ");
 		toml_append_raw(buf, bufsize, &off, u->disabled ? "true" : "false");
-		if (u->passsha256[0] != '\0') {
-			toml_append_raw(buf, bufsize, &off, "\npasssha256 = ");
-			toml_append_string(buf, bufsize, &off, u->passsha256);
+		if (u->passbcrypt[0] != '\0') {
+			toml_append_raw(buf, bufsize, &off, "\npassbcrypt = ");
+			toml_append_string(buf, bufsize, &off, u->passbcrypt);
 		}
 		toml_append_raw(buf, bufsize, &off, "\n");
 		if (u->can_search) {
@@ -889,22 +923,38 @@ enum ldap_record_error ldap_group_update(const char *name, int gidnumber, struct
 	return LDAP_RECORD_OK;
 }
 
-static enum ldap_record_error validate_user_fields(int uidnumber, int primarygroup)
+static enum ldap_record_error validate_user_fields(int uidnumber, int primarygroup,
+                                                     const int *secondary_groups,
+                                                     int secondary_group_count)
 {
+	int i;
+
 	if (uidnumber <= 0)
 		return LDAP_RECORD_ERR_INVALID_FIELD;
 	if (ldap_group_find_by_gid(primarygroup) == NULL)
 		return LDAP_RECORD_ERR_GROUP_NOT_FOUND;
+	if (secondary_group_count < 0 || secondary_group_count > LDAP_USER_MAX_SECONDARY_GROUPS)
+		return LDAP_RECORD_ERR_INVALID_FIELD;
+	for (i = 0; i < secondary_group_count; i++) {
+		if (ldap_group_find_by_gid(secondary_groups[i]) == NULL)
+			return LDAP_RECORD_ERR_GROUP_NOT_FOUND;
+	}
 	return LDAP_RECORD_OK;
 }
 
 static void fill_user_fields(struct ldap_user *u, int uidnumber, int primarygroup,
+                              const int *secondary_groups, int secondary_group_count,
                               const char *givenname, const char *sn, const char *mail,
                               const char *loginshell, const char *homedirectory,
                               const char *password, int disabled, const char *ssh_public_key)
 {
 	u->uidnumber = uidnumber;
 	u->primarygroup = primarygroup;
+	memset(u->secondary_groups, 0, sizeof(u->secondary_groups));
+	if (secondary_group_count > 0)
+		memcpy(u->secondary_groups, secondary_groups,
+		       (size_t)secondary_group_count * sizeof(*secondary_groups));
+	u->secondary_group_count = secondary_group_count;
 	memset(u->givenname, 0, sizeof(u->givenname));
 	if (givenname != NULL)
 		strncpy(u->givenname, givenname, sizeof(u->givenname) - 1);
@@ -921,7 +971,7 @@ static void fill_user_fields(struct ldap_user *u, int uidnumber, int primarygrou
 	if (homedirectory != NULL)
 		strncpy(u->homedirectory, homedirectory, sizeof(u->homedirectory) - 1);
 	if (password != NULL && password[0] != '\0')
-		hash_password(password, u->passsha256);
+		hash_password(password, u->passbcrypt);
 	u->disabled = disabled ? 1 : 0;
 	memset(u->ssh_public_key, 0, sizeof(u->ssh_public_key));
 	if (ssh_public_key != NULL)
@@ -929,6 +979,7 @@ static void fill_user_fields(struct ldap_user *u, int uidnumber, int primarygrou
 }
 
 enum ldap_record_error ldap_user_create(const char *name, int uidnumber, int primarygroup,
+                                         const int *secondary_groups, int secondary_group_count,
                                          const char *givenname, const char *sn, const char *mail,
                                          const char *loginshell, const char *homedirectory,
                                          const char *password, int disabled,
@@ -941,7 +992,7 @@ enum ldap_record_error ldap_user_create(const char *name, int uidnumber, int pri
 
 	if (!ldap_username_is_valid(name))
 		return LDAP_RECORD_ERR_INVALID_NAME;
-	verr = validate_user_fields(uidnumber, primarygroup);
+	verr = validate_user_fields(uidnumber, primarygroup, secondary_groups, secondary_group_count);
 	if (verr != LDAP_RECORD_OK)
 		return verr;
 	if (ldap_user_find(name) != NULL)
@@ -959,8 +1010,8 @@ enum ldap_record_error ldap_user_create(const char *name, int uidnumber, int pri
 	u = &g_users[slot];
 	memset(u, 0, sizeof(*u));
 	strncpy(u->name, name, sizeof(u->name) - 1);
-	fill_user_fields(u, uidnumber, primarygroup, givenname, sn, mail, loginshell, homedirectory,
-	                  password, disabled, ssh_public_key);
+	fill_user_fields(u, uidnumber, primarygroup, secondary_groups, secondary_group_count, givenname,
+	                  sn, mail, loginshell, homedirectory, password, disabled, ssh_public_key);
 	if (owner_container != NULL)
 		strncpy(u->owner_container, owner_container, sizeof(u->owner_container) - 1);
 	u->can_search = can_search ? 1 : 0;
@@ -976,6 +1027,7 @@ enum ldap_record_error ldap_user_create(const char *name, int uidnumber, int pri
 }
 
 enum ldap_record_error ldap_user_update(const char *name, int uidnumber, int primarygroup,
+                                         const int *secondary_groups, int secondary_group_count,
                                          const char *givenname, const char *sn, const char *mail,
                                          const char *loginshell, const char *homedirectory,
                                          const char *password, int disabled,
@@ -986,15 +1038,15 @@ enum ldap_record_error ldap_user_update(const char *name, int uidnumber, int pri
 
 	if (u == NULL)
 		return LDAP_RECORD_ERR_NOT_FOUND;
-	verr = validate_user_fields(uidnumber, primarygroup);
+	verr = validate_user_fields(uidnumber, primarygroup, secondary_groups, secondary_group_count);
 	if (verr != LDAP_RECORD_OK)
 		return verr;
 
 	/* password == NULL means "keep the existing hash" -- fill_user_
-	 * fields() only overwrites passsha256 when password is non-NULL
-	 * and non-empty, so u->passsha256 is left untouched otherwise. */
-	fill_user_fields(u, uidnumber, primarygroup, givenname, sn, mail, loginshell, homedirectory,
-	                  password, disabled, ssh_public_key);
+	 * fields() only overwrites passbcrypt when password is non-NULL
+	 * and non-empty, so u->passbcrypt is left untouched otherwise. */
+	fill_user_fields(u, uidnumber, primarygroup, secondary_groups, secondary_group_count, givenname,
+	                  sn, mail, loginshell, homedirectory, password, disabled, ssh_public_key);
 
 	if (save_users_state() != 0)
 		return LDAP_RECORD_ERR_PERSIST_FAILED;
@@ -1017,6 +1069,35 @@ enum ldap_record_error ldap_user_delete(const char *name)
 
 	ldap_record_sync_all();
 	return LDAP_RECORD_OK;
+}
+
+int ldap_user_is_in_group(const char *user_name, const char *group_name)
+{
+	struct ldap_user *u = ldap_user_find(user_name);
+	struct ldap_group *g;
+	int i;
+
+	if (u == NULL || u->disabled)
+		return 0;
+	g = ldap_group_find(group_name);
+	if (g == NULL)
+		return 0;
+	if (u->primarygroup == g->gidnumber)
+		return 1;
+	for (i = 0; i < u->secondary_group_count; i++) {
+		if (u->secondary_groups[i] == g->gidnumber)
+			return 1;
+	}
+	return 0;
+}
+
+int ldap_user_check_password(const char *user_name, const char *password)
+{
+	struct ldap_user *u = ldap_user_find(user_name);
+
+	if (u == NULL || u->disabled || u->passbcrypt[0] == '\0' || password == NULL)
+		return 0;
+	return pwhash_bcrypt_check(password, u->passbcrypt);
 }
 
 void ldap_group_write_json_one(const struct ldap_group *g, struct json_writer *w)
@@ -1050,6 +1131,15 @@ void ldap_user_write_json_one(const struct ldap_user *u, struct json_writer *w)
 	jw_int(w, u->uidnumber);
 	jw_key(w, "primarygroup");
 	jw_int(w, u->primarygroup);
+	jw_key(w, "secondary_groups");
+	jw_arr_open(w);
+	{
+		int i;
+
+		for (i = 0; i < u->secondary_group_count; i++)
+			jw_int(w, u->secondary_groups[i]);
+	}
+	jw_arr_close(w);
 	jw_key(w, "givenname");
 	jw_str(w, u->givenname);
 	jw_key(w, "sn");
@@ -1061,7 +1151,7 @@ void ldap_user_write_json_one(const struct ldap_user *u, struct json_writer *w)
 	jw_key(w, "homedirectory");
 	jw_str(w, u->homedirectory);
 	jw_key(w, "has_password");
-	jw_bool(w, u->passsha256[0] != '\0');
+	jw_bool(w, u->passbcrypt[0] != '\0');
 	jw_key(w, "disabled");
 	jw_bool(w, u->disabled != 0);
 	jw_key(w, "owner");
