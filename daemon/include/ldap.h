@@ -274,6 +274,17 @@ int ldap_user_is_in_group(const char *user_name, const char *group_name);
  * distinguishing "no such user" from "wrong password"). */
 int ldap_user_check_password(const char *user_name, const char *password);
 
+/*
+ * Calls fn(name, ctx) for every currently-defined user's own name, in
+ * table order, stopping early the first time fn returns nonzero --
+ * the one real "walk every user" primitive this module exposes,
+ * reused by daemon/src/hostauth.c's own bootstrap-safety check rather
+ * than a second enumeration loop invented there. Returns whatever the
+ * short-circuiting call returned (1 if some fn call returned nonzero,
+ * 0 if every user was visited without one).
+ */
+int ldap_user_for_each(int (*fn)(const char *name, void *ctx), void *ctx);
+
 /* Best-effort cleanup on container deletion, mirroring dns_record_
  * forget_owner()/pki_cert_forget_owner() exactly: deletes name's
  * account iff it exists and its owner_container is container_name

@@ -48,6 +48,18 @@ int kx_client_connect_raw(const struct kx_client *c);
 int kx_client_request(const struct kx_client *c, const char *method, const char *path,
                        const char *body, struct kx_response *out);
 
+/*
+ * Same contract as kx_client_request(), with a real
+ * "Authorization: Bearer <token>" header attached -- ADR-0144's own
+ * host-auth work (kanxeoctl's own login/logout, and every write
+ * command once a session is active, plus this daemon's own test
+ * suite). token may be NULL (identical to a plain kx_client_request()
+ * call in that case) -- callers that don't yet have a session use
+ * this directly rather than needing two near-duplicate call sites.
+ */
+int kx_client_request_with_auth(const struct kx_client *c, const char *method, const char *path,
+                                 const char *token, const char *body, struct kx_response *out);
+
 void kx_response_free(struct kx_response *r);
 
 #endif /* HTTPCLIENT_H */

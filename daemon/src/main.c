@@ -9,6 +9,7 @@
 #include "storagemigrate.h"
 #include "containerstoragemigrate.h"
 #include "backupconfig.h"
+#include "hostauth.h"
 #include "storageplacement.h"
 #include "hostproc.h"
 #include "logstore.h"
@@ -225,6 +226,9 @@ static char CONNTHROTTLE_CONFIG_PATH[PATH_MAX];
  * automatic state-storage backup snapshots (GET/PUT /v1/system/
  * backup-config). */
 static char BACKUP_CONFIG_PATH[PATH_MAX];
+/* ADR-0144: persisted admin-group/idle-timeout config for host
+ * authentication (GET/PUT /v1/system/hostauth-config). */
+static char HOSTAUTH_CONFIG_PATH[PATH_MAX];
 
 /* Computes every path derived from g_base_dir -- called once, right
  * after argv parsing (so --data-dir= has already been applied) and
@@ -270,6 +274,7 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(SYSLOGFWD_STATE_PATH, sizeof(SYSLOGFWD_STATE_PATH), "%s/syslog_targets.json", STATE_DIR);
 	snprintf(CONNTHROTTLE_CONFIG_PATH, sizeof(CONNTHROTTLE_CONFIG_PATH), "%s/tls_throttle.json", STATE_DIR);
 	snprintf(BACKUP_CONFIG_PATH, sizeof(BACKUP_CONFIG_PATH), "%s/backup_config.json", STATE_DIR);
+	snprintf(HOSTAUTH_CONFIG_PATH, sizeof(HOSTAUTH_CONFIG_PATH), "%s/hostauth_config.json", STATE_DIR);
 }
 
 /*
@@ -6198,6 +6203,171 @@ static void handle_backup_config_snapshot_now_post(int fd)
 }
 
 /*
+ * ADR-0144: POST /v1/login -- the one endpoint that always works
+ * regardless of write-gating (dispatch() exempts this exact path, see
+ * its own comment). Real bcrypt verification via hostauth_login()
+ * (which itself calls ldap_user_check_password()) -- no LDAP bind in
+ * this part of the ADR yet, that's a later part's own addition to
+ * this same function's internals, not a new endpoint.
+ */
+static void handle_login(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *username, *password;
+	char token[HOSTAUTH_TOKEN_LEN + 1];
+	int expires_in_seconds;
+	enum hostauth_login_result lerr;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	username = json_as_string(json_object_get(root, "username"));
+	password = json_as_string(json_object_get(root, "password"));
+	if (username == NULL || password == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "username and password are both required");
+		return;
+	}
+
+	lerr = hostauth_login(username, password, token, &expires_in_seconds);
+	json_free(root);
+	if (lerr == HOSTAUTH_LOGIN_INVALID_CREDENTIALS) {
+		respond_error(fd, 401, "Unauthorized", "invalid username or password");
+		return;
+	}
+	if (lerr == HOSTAUTH_LOGIN_TABLE_FULL) {
+		respond_error(fd, 500, "Internal Server Error",
+		              "too many active sessions -- try again shortly");
+		return;
+	}
+
+	{
+		struct json_writer w;
+
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "token");
+		jw_str(&w, token);
+		jw_key(&w, "expires_in_seconds");
+		if (expires_in_seconds > 0)
+			jw_int(&w, expires_in_seconds);
+		else
+			jw_null(&w);
+		jw_obj_close(&w);
+		respond_json(fd, 200, "OK", &w);
+		jw_free(&w);
+	}
+}
+
+/*
+ * POST /v1/logout -- always 204, even for an unknown/already-expired
+ * token (hostauth_logout()'s own idempotent contract) -- a client
+ * logging out never needs to know or care whether its session had
+ * already lapsed server-side.
+ */
+static void handle_logout(int fd, const char *req_headers, size_t req_headers_len)
+{
+	/* Must fit "Bearer " (7) + the real token (HOSTAUTH_TOKEN_LEN) + NUL
+	 * -- a too-small buffer here previously made http_find_header()
+	 * silently report "doesn't fit" (a real, live bug: logout always
+	 * responded 204 per its own idempotent contract, but never actually
+	 * called hostauth_logout() at all, leaving the session valid). */
+	char token[HOSTAUTH_TOKEN_LEN + 16];
+
+	if (http_find_header(req_headers, req_headers_len, "Authorization", token, sizeof(token)) >= 0) {
+		const char *bearer = strncmp(token, "Bearer ", 7) == 0 ? token + 7 : token;
+
+		hostauth_logout(bearer);
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+static void handle_hostauth_config_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	hostauth_write_config_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * PUT /v1/system/hostauth-config -- full replacement (admin_groups is
+ * a list, not a single field with an obvious "partial update" meaning
+ * the way backup-config's own disk/enabled/interval_hours are each
+ * independent) -- the request always supplies both fields, mirroring
+ * daemon-config's own full-object PUT shape for a config resource
+ * whose fields are this tightly coupled (a lone idle_timeout_seconds
+ * change makes little sense to send without knowing what admin_groups
+ * currently is, unlike backup-config's own genuinely-independent
+ * fields).
+ */
+static void handle_hostauth_config_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const struct json_value *jgroups, *jidle;
+	const char *admin_groups[HOSTAUTH_ADMIN_GROUPS_MAX];
+	int admin_group_count = 0;
+	int idle_timeout_seconds;
+	enum hostauth_config_error err;
+	size_t i;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	jgroups = json_object_get(root, "admin_groups");
+	jidle = json_object_get(root, "idle_timeout_seconds");
+	if (jgroups == NULL || jgroups->type != JSON_ARRAY || jidle == NULL ||
+	    jidle->type != JSON_NUMBER) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "admin_groups (array) and idle_timeout_seconds "
+		                                       "(number) are both required");
+		return;
+	}
+	if (jgroups->u.array.count > HOSTAUTH_ADMIN_GROUPS_MAX) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "admin_groups must have at most 8 entries");
+		return;
+	}
+	for (i = 0; i < jgroups->u.array.count; i++) {
+		admin_groups[i] = json_as_string(jgroups->u.array.items[i]);
+		if (admin_groups[i] == NULL) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "admin_groups entries must be strings");
+			return;
+		}
+	}
+	admin_group_count = (int)jgroups->u.array.count;
+	idle_timeout_seconds = (int)json_as_number(jidle);
+
+	err = hostauth_set_config(admin_groups, admin_group_count, idle_timeout_seconds);
+	json_free(root);
+	if (err != HOSTAUTH_CONFIG_OK) {
+		if (err == HOSTAUTH_CONFIG_ERR_INVALID_FIELD)
+			respond_error(fd, 400, "Bad Request",
+			              "idle_timeout_seconds must be >= 0, admin_groups at most 8 entries");
+		else
+			respond_error(fd, 500, "Internal Server Error", "could not persist host-auth config");
+		return;
+	}
+
+	{
+		struct json_writer w;
+
+		jw_init(&w);
+		hostauth_write_config_json(&w);
+		respond_json(fd, 200, "OK", &w);
+		jw_free(&w);
+	}
+}
+
+/*
  * Returns 0 and forks the fetch (state -> FETCHING) on success; -1
  * with err_msg filled otherwise (both url and sha256 are required --
  * unlike a recipe's own pkg_source, there is no "trust whatever
@@ -6468,6 +6638,7 @@ static void finalize_state_storage_migration(void)
 	syslogfwd_repoint(SYSLOGFWD_STATE_PATH);
 	connthrottle_config_repoint(CONNTHROTTLE_CONFIG_PATH);
 	backupconfig_repoint(BACKUP_CONFIG_PATH);
+	hostauth_repoint(HOSTAUTH_CONFIG_PATH);
 	resolv_repoint(RESOLV_CONF_PATH);
 
 	/* Re-establish the real bind mount -- see this function's own top
@@ -12733,6 +12904,54 @@ static void dispatch(int fd, const struct http_request *req)
 	if (strcmp(req->method, "GET") != 0)
 		logstore_write("audit", "info", "%s %s", req->method, req->path);
 
+	if (strcmp(req->method, "POST") == 0 && strcmp(req->path, "/v1/login") == 0) {
+		handle_login(fd, req->body, req->body_len);
+		return;
+	}
+	if (strcmp(req->method, "POST") == 0 && strcmp(req->path, "/v1/logout") == 0) {
+		handle_logout(fd, req->headers, req->headers_len);
+		return;
+	}
+
+	/*
+	 * ADR-0144: write-gating -- the one authorization check every
+	 * mutating request goes through, dispatch-wide, before any route
+	 * below ever sees it. "Mutating" means every non-GET verb, plus
+	 * one deliberate GET-verb exception: the container console
+	 * upgrade is, in real effect, arbitrary command execution inside a
+	 * container, judged here by intent rather than HTTP method (the
+	 * same reasoning the audit-log exclusion just above already
+	 * applies the other way -- a GET is usually "just a query," this
+	 * one specifically isn't). hostauth_authorize_write() itself
+	 * returns true unconditionally while gating isn't active yet (no
+	 * admin-group user exists) -- a fresh install is never locked out
+	 * of its own API by this. /v1/login (above) and /v1/logout are
+	 * the only two paths that bypass this block entirely; every other
+	 * GET is already exempt by construction (needs_auth stays 0).
+	 */
+	{
+		size_t path_len = strlen(req->path);
+		int is_console = strcmp(req->method, "GET") == 0 &&
+		                  strncmp(req->path, CONTAINERS_PREFIX, strlen(CONTAINERS_PREFIX)) == 0 &&
+		                  path_len > 8 && strcmp(req->path + path_len - 8, "/console") == 0;
+		int needs_auth = strcmp(req->method, "GET") != 0 || is_console;
+
+		if (needs_auth) {
+			char token_hdr[HOSTAUTH_TOKEN_LEN + 32];
+			const char *bearer = NULL;
+
+			if (http_find_header(req->headers, req->headers_len, "Authorization", token_hdr,
+			                      sizeof(token_hdr)) >= 0) {
+				bearer = strncmp(token_hdr, "Bearer ", 7) == 0 ? token_hdr + 7 : token_hdr;
+			}
+			if (!hostauth_authorize_write(bearer)) {
+				respond_error(fd, 401, "Unauthorized",
+				              "authentication required -- POST /v1/login first");
+				return;
+			}
+		}
+	}
+
 	if (strcmp(req->method, "GET") == 0 && strcmp(req->path, "/v1/health") == 0) {
 		handle_health(fd);
 		return;
@@ -12775,6 +12994,16 @@ static void dispatch(int fd, const struct http_request *req)
 	    strcmp(req->path, "/v1/system/backup-config/snapshot-now") == 0) {
 		handle_backup_config_snapshot_now_post(fd);
 		return;
+	}
+	if (strcmp(req->path, "/v1/system/hostauth-config") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_hostauth_config_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_hostauth_config_put(fd, req->body, req->body_len);
+			return;
+		}
 	}
 	if (strcmp(req->method, "POST") == 0 && strcmp(req->path, "/v1/system/restore") == 0) {
 		handle_system_restore(fd, req->body, req->body_len);
@@ -15726,6 +15955,8 @@ int main(int argc, char **argv)
 	if (connthrottle_config_init(CONNTHROTTLE_CONFIG_PATH) != 0)
 		return 1;
 	if (backupconfig_init(BACKUP_CONFIG_PATH) != 0)
+		return 1;
+	if (hostauth_init(HOSTAUTH_CONFIG_PATH) != 0)
 		return 1;
 	if (devicemap_init(DEVICEMAP_STATE_PATH) != 0)
 		return 1;

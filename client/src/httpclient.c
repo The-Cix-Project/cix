@@ -150,9 +150,16 @@ static void find_header_value(const char *headers, size_t headers_len, const cha
 int kx_client_request(const struct kx_client *c, const char *method, const char *path,
                        const char *body, struct kx_response *out)
 {
+	return kx_client_request_with_auth(c, method, path, NULL, body, out);
+}
+
+int kx_client_request_with_auth(const struct kx_client *c, const char *method, const char *path,
+                                 const char *token, const char *body, struct kx_response *out)
+{
 	int fd;
 	char header[512];
 	int header_len;
+	char auth_line[128];
 	struct read_buf rb;
 	char *body_start;
 	int status;
@@ -162,14 +169,18 @@ int kx_client_request(const struct kx_client *c, const char *method, const char 
 	if (fd < 0)
 		return -1;
 
+	auth_line[0] = '\0';
+	if (token != NULL && token[0] != '\0')
+		snprintf(auth_line, sizeof(auth_line), "Authorization: Bearer %s\r\n", token);
+
 	if (body != NULL) {
 		header_len = snprintf(header, sizeof(header),
-		                       "%s %s HTTP/1.1\r\nHost: %s\r\n"
+		                       "%s %s HTTP/1.1\r\nHost: %s\r\n%s"
 		                       "Content-Type: application/json\r\nContent-Length: %zu\r\n\r\n",
-		                       method, path, c->host, strlen(body));
+		                       method, path, c->host, auth_line, strlen(body));
 	} else {
-		header_len = snprintf(header, sizeof(header), "%s %s HTTP/1.1\r\nHost: %s\r\n\r\n",
-		                       method, path, c->host);
+		header_len = snprintf(header, sizeof(header), "%s %s HTTP/1.1\r\nHost: %s\r\n%s\r\n", method,
+		                       path, c->host, auth_line);
 	}
 	if (header_len < 0 || (size_t)header_len >= sizeof(header)) {
 		close(fd);

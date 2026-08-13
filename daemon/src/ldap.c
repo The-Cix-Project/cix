@@ -1100,6 +1100,19 @@ int ldap_user_check_password(const char *user_name, const char *password)
 	return pwhash_bcrypt_check(password, u->passbcrypt);
 }
 
+int ldap_user_for_each(int (*fn)(const char *name, void *ctx), void *ctx)
+{
+	int i;
+
+	for (i = 0; i < LDAP_USER_MAX; i++) {
+		if (g_users[i].name[0] == '\0')
+			continue;
+		if (fn(g_users[i].name, ctx))
+			return 1;
+	}
+	return 0;
+}
+
 void ldap_group_write_json_one(const struct ldap_group *g, struct json_writer *w)
 {
 	jw_obj_open(w);

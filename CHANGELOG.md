@@ -2,6 +2,22 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 112 (done): host authentication foundation -- login/logout/write-gating, local backend (ADR-0144, part 2 of N)
+
+`kanxeod`'s REST API had no authentication at all until this part -- every write this entire project has ever made succeeded with zero credentials. Second landing under ADR-0144: real sessions, real write-gating, local-backend credential checking (a later part adds a live LDAP bind ahead of this same login path).
+
+#### Added
+- `daemon/src/hostauth.c`/`daemon/include/hostauth.h`: `POST /v1/login` (bcrypt-verified via `ldap_user_check_password()`, issues an opaque random token), `POST /v1/logout` (idempotent), `GET/PUT /v1/system/hostauth-config` (configurable admin-group list, up to 8, and a sliding idle-timeout in seconds -- 0 means every token is single-use, no session reuse at all).
+- Write-gating in `dispatch()`: every `POST`/`PUT`/`DELETE`, plus the container console (a `GET`-verb WebSocket upgrade that's functionally arbitrary command execution, judged by intent not HTTP method), now requires a valid session belonging to a user in a configured admin group -- *unless* `hostauth_gating_active()` is false, which it always is until the first such user actually exists (`ldap_user_for_each()`, new enumeration primitive in `ldap.c`). A fresh install can never lock itself out of its own API; no separate bootstrap/break-glass credential exists or is needed. `GET` stays open, unconditionally, forever.
+- `kx_client_request_with_auth()` (`client/src/httpclient.c`/`.h`): the shared HTTP client (used by both `kanxeoctl` and this daemon's own test suite) gains a real `Authorization: Bearer` header option -- `kx_client_request()` itself is now a thin wrapper over this with `token=NULL`, not a second implementation.
+- `test/test_hostauth.c`: the full real flow -- bootstrap-safety (writes open with no admin), wrong-password rejection, gating activation the instant an admin-group user exists, unauthenticated/garbage-token rejection, authenticated-but-not-admin rejection (authentication and authorization are different questions), logout invalidation and its own idempotency, and the `idle_timeout_seconds=0` single-use-token behavior.
+
+#### Fixed
+- A real bug caught by the test above, not shipped: `handle_logout()`'s own `Authorization` header buffer was sized to fit only the raw token, not the real `"Bearer "` prefix plus token -- `http_find_header()` correctly reported "doesn't fit" and silently skipped calling `hostauth_logout()` at all, while the handler still unconditionally responded `204` (its own documented idempotent contract). The session was never actually invalidated. Found by the test's own step 11 (`write after logout expected 401, got 201`), fixed before this ever left the sandbox.
+
+#### Verified
+- Full clean rebuild (`-Wall -Werror`, zero warnings). Full regression sweep (47 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_restart`, reproduced clean on immediate retry). Every pre-existing test continues to pass unmodified: none of them ever create an admin-group user, so gating correctly stays inactive throughout -- the bootstrap-safety design's own real proof, not just a claim.
+
 ### Part 111 (done): host-auth data model foundation -- bcrypt + real secondary groups (ADR-0144, part 1 of N)
 
 First of several landings under ADR-0144 (real host authentication + real LDAP for container login, replacing the file-rendering SSH-target mechanism) -- this part is the data-model foundation everything else depends on, with no behavior change yet (writes are not gated by anything in this part).
