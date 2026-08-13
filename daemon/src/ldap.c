@@ -701,8 +701,31 @@ static size_t render_users_groups_toml(char *buf, size_t bufsize)
 		toml_append_raw(buf, bufsize, &off, "\ndisabled = ");
 		toml_append_raw(buf, bufsize, &off, u->disabled ? "true" : "false");
 		if (u->passbcrypt[0] != '\0') {
+			/*
+			 * ADR-0144: glauth's own config-backend bind path (pkg/handler/
+			 * ldapopshelper.go) calls hex.DecodeString(user.PassBcrypt)
+			 * BEFORE treating the result as the actual bcrypt hash bytes
+			 * to compare against -- confirmed directly against glauth's
+			 * own real source, and against live behavior: writing the
+			 * literal bcrypt string here (an earlier version of this
+			 * function did exactly that) parses fine as TOML, but every
+			 * single bind then failed with glauth's own "invalid
+			 * credentials, incorrect stored hash", since hex-decoding an
+			 * already-ASCII "$2b$12$..." string does not recover that
+			 * same string. The bcrypt hash is ASCII-only (base64 alphabet
+			 * plus "$"), so this is a plain byte-for-byte hex encoding of
+			 * the string's own bytes, not a real transcoding -- glauth
+			 * hex-decodes it right back before ever touching bcrypt.
+			 */
+			char passbcrypt_hex[PWHASH_BCRYPT_LEN * 2 + 1];
+			size_t k;
+
+			for (k = 0; u->passbcrypt[k] != '\0' && k < sizeof(u->passbcrypt) - 1; k++)
+				snprintf(passbcrypt_hex + k * 2, 3, "%02x", (unsigned char)u->passbcrypt[k]);
+			passbcrypt_hex[k * 2] = '\0';
+
 			toml_append_raw(buf, bufsize, &off, "\npassbcrypt = ");
-			toml_append_string(buf, bufsize, &off, u->passbcrypt);
+			toml_append_string(buf, bufsize, &off, passbcrypt_hex);
 		}
 		toml_append_raw(buf, bufsize, &off, "\n");
 		if (u->can_search) {

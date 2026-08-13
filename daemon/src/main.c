@@ -6309,10 +6309,15 @@ static void handle_hostauth_config_get(int fd)
 static void handle_hostauth_config_put(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
-	const struct json_value *jgroups, *jidle;
+	const struct json_value *jgroups, *jidle, *jldapen, *jldapservers, *jldapport, *jldapbasedn;
 	const char *admin_groups[HOSTAUTH_ADMIN_GROUPS_MAX];
+	const char *ldap_servers[HOSTAUTH_LDAP_MAX_SERVERS];
 	int admin_group_count = 0;
 	int idle_timeout_seconds;
+	int ldap_enabled = 0;
+	int ldap_server_count = 0;
+	int ldap_port = HOSTAUTH_LDAP_DEFAULT_PORT;
+	const char *ldap_base_dn = "";
 	enum hostauth_config_error err;
 	size_t i;
 
@@ -6346,12 +6351,61 @@ static void handle_hostauth_config_put(int fd, const char *body, size_t body_len
 	admin_group_count = (int)jgroups->u.array.count;
 	idle_timeout_seconds = (int)json_as_number(jidle);
 
-	err = hostauth_set_config(admin_groups, admin_group_count, idle_timeout_seconds);
+	/*
+	 * ADR-0144's own live-LDAP backend fields: all optional, defaulting
+	 * to disabled/empty -- an older-shaped PUT body (just admin_groups/
+	 * idle_timeout_seconds, this endpoint's original contract) still
+	 * works exactly as before rather than being rejected outright.
+	 */
+	jldapen = json_object_get(root, "ldap_enabled");
+	if (jldapen != NULL && jldapen->type == JSON_BOOL)
+		ldap_enabled = jldapen->u.boolean ? 1 : 0;
+	jldapservers = json_object_get(root, "ldap_servers");
+	if (jldapservers != NULL) {
+		if (jldapservers->type != JSON_ARRAY || jldapservers->u.array.count > HOSTAUTH_LDAP_MAX_SERVERS) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "ldap_servers must be an array of at most 3 entries");
+			return;
+		}
+		for (i = 0; i < jldapservers->u.array.count; i++) {
+			ldap_servers[i] = json_as_string(jldapservers->u.array.items[i]);
+			if (ldap_servers[i] == NULL) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request", "ldap_servers entries must be strings");
+				return;
+			}
+		}
+		ldap_server_count = (int)jldapservers->u.array.count;
+	}
+	jldapport = json_object_get(root, "ldap_port");
+	if (jldapport != NULL) {
+		if (jldapport->type != JSON_NUMBER) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "ldap_port must be a number");
+			return;
+		}
+		ldap_port = (int)json_as_number(jldapport);
+	}
+	jldapbasedn = json_object_get(root, "ldap_base_dn");
+	if (jldapbasedn != NULL) {
+		ldap_base_dn = json_as_string(jldapbasedn);
+		if (ldap_base_dn == NULL) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "ldap_base_dn must be a string");
+			return;
+		}
+	}
+
+	err = hostauth_set_config(admin_groups, admin_group_count, idle_timeout_seconds, ldap_enabled,
+	                           ldap_servers, ldap_server_count, ldap_port, ldap_base_dn);
 	json_free(root);
 	if (err != HOSTAUTH_CONFIG_OK) {
 		if (err == HOSTAUTH_CONFIG_ERR_INVALID_FIELD)
 			respond_error(fd, 400, "Bad Request",
-			              "idle_timeout_seconds must be >= 0, admin_groups at most 8 entries");
+			              "idle_timeout_seconds must be >= 0, admin_groups at most 8 entries, "
+			              "ldap_servers at most 3 entries, ldap_port in 1..65535, and "
+			              "ldap_enabled requires at least one ldap_servers entry plus a "
+			              "non-empty ldap_base_dn");
 		else
 			respond_error(fd, 500, "Internal Server Error", "could not persist host-auth config");
 		return;

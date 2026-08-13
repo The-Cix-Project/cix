@@ -2,9 +2,20 @@
  * ADR-0144 end-to-end test: host authentication foundation --
  * POST /v1/login, POST /v1/logout, GET/PUT /v1/system/hostauth-config,
  * and the write-gating check every mutating request goes through in
- * dispatch(). Local backend only (ldap_user_check_password()/
- * ldap_user_is_in_group()) -- the LDAP-bind backend is a later ADR-0144
- * part, not covered here.
+ * dispatch(). Covers the local backend (ldap_user_check_password()/
+ * ldap_user_is_in_group()) in full, plus the live-LDAP backend's own
+ * config validation and its unreachable-server-falls-back-to-local
+ * path (daemon/src/hostauth.c's try_ldap_login()). A real successful
+ * bind against a genuinely running glauth server is NOT exercised here
+ * -- this project doesn't build/vendor a glauth binary as part of its
+ * own toolchain (it's a separate Go project, only ever run as a
+ * container image on a real deployed box), so there's no portable way
+ * to spin one up inside this regression suite; daemon/src/ldapclient.c
+ * was instead verified directly against a real local glauth process
+ * plus the standard ldapsearch/ldapwhoami reference client during its
+ * own development (see CHANGELOG.md/ROADMAP.md's own entry for this
+ * part of ADR-0144 for how, and for the real hex-encoding bug that
+ * verification found in ldap.c's own TOML rendering).
  */
 #include "httpclient.h"
 #include "json.h"
@@ -399,6 +410,186 @@ int main(void)
 			}
 			kx_response_free(&r);
 		}
+	}
+
+	/*
+	 * 13 (ADR-0144's own live-LDAP backend part): hostauth-config
+	 * validation for the ldap_* fields, plus a real functional check
+	 * that an unreachable configured LDAP server correctly falls back
+	 * to the local backend rather than failing the login outright.
+	 * idle_timeout_seconds is 0 from step 12 onward, so every admin
+	 * write below needs its own fresh single-use login.
+	 */
+	{
+		char admin_token[128];
+
+/*
+ * idle_timeout_seconds is 0 from step 12 onward -- hostauth_check_
+ * token()'s own single-use contract consumes a token the moment a
+ * write is authorized, regardless of what the handler itself goes on
+ * to do with the request (accept it, or reject it with a 400 for
+ * invalid fields). Each of steps 13a-13d below needs its OWN fresh
+ * login as a result -- this macro is scoped to this block only.
+ */
+#define RELOGIN_ROOT_ADMIN()                                                                        \
+	do {                                                                                         \
+		memset(&r, 0, sizeof(r));                                                           \
+		if (kx_client_request(&client, "POST", "/v1/login",                                \
+		                       "{\"username\":\"root_admin\",\"password\":\"correct horse " \
+		                       "battery staple\"}",                                        \
+		                       &r) == 0 &&                                                 \
+		    r.status == 200) {                                                             \
+			const char *t = json_str_field(r.json, "token");                           \
+			snprintf(admin_token, sizeof(admin_token), "%s", t != NULL ? t : "");      \
+		} else {                                                                            \
+			fprintf(stderr, "FAIL: re-login for LDAP-config scenario, status=%d\n",     \
+			        r.status);                                                          \
+			ok = 0;                                                                     \
+			admin_token[0] = '\0';                                                      \
+		}                                                                                    \
+		kx_response_free(&r);                                                               \
+	} while (0)
+
+		/* 13a. ldap_enabled=true with zero servers -> rejected. */
+		RELOGIN_ROOT_ADMIN();
+		memset(&r, 0, sizeof(r));
+		if (request_with_token(&client, "PUT", "/v1/system/hostauth-config", admin_token,
+		                        "{\"admin_groups\":[\"admins\"],\"idle_timeout_seconds\":0,"
+		                        "\"ldap_enabled\":true,\"ldap_servers\":[],\"ldap_port\":3893,"
+		                        "\"ldap_base_dn\":\"dc=glauth,dc=com\"}",
+		                        &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: ldap_enabled with no servers expected 400, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 13b. ldap_enabled=true with an empty base DN -> rejected. */
+		RELOGIN_ROOT_ADMIN();
+		memset(&r, 0, sizeof(r));
+		if (request_with_token(&client, "PUT", "/v1/system/hostauth-config", admin_token,
+		                        "{\"admin_groups\":[\"admins\"],\"idle_timeout_seconds\":0,"
+		                        "\"ldap_enabled\":true,\"ldap_servers\":[\"127.0.0.1\"],"
+		                        "\"ldap_port\":3893,\"ldap_base_dn\":\"\"}",
+		                        &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: ldap_enabled with empty base_dn expected 400, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 13c. ldap_port out of range -> rejected, regardless of ldap_enabled. */
+		RELOGIN_ROOT_ADMIN();
+		memset(&r, 0, sizeof(r));
+		if (request_with_token(&client, "PUT", "/v1/system/hostauth-config", admin_token,
+		                        "{\"admin_groups\":[\"admins\"],\"idle_timeout_seconds\":0,"
+		                        "\"ldap_enabled\":false,\"ldap_servers\":[],\"ldap_port\":70000,"
+		                        "\"ldap_base_dn\":\"\"}",
+		                        &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: ldap_port out of range expected 400, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/*
+		 * 13d. A valid config, pointed at a real local port nothing is
+		 * listening on (18189 -- not a port any daemon-linked test
+		 * binds, see the test/*.c PORT_ARG values). Accepted, and GET
+		 * echoes it back exactly.
+		 */
+		RELOGIN_ROOT_ADMIN();
+		memset(&r, 0, sizeof(r));
+		if (request_with_token(&client, "PUT", "/v1/system/hostauth-config", admin_token,
+		                        "{\"admin_groups\":[\"admins\"],\"idle_timeout_seconds\":0,"
+		                        "\"ldap_enabled\":true,\"ldap_servers\":[\"127.0.0.1\"],"
+		                        "\"ldap_port\":18189,\"ldap_base_dn\":\"dc=glauth,dc=com\"}",
+		                        &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: valid ldap config expected 200, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+#undef RELOGIN_ROOT_ADMIN
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/system/hostauth-config", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET hostauth-config after LDAP setup, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *jservers = json_object_get(r.json, "ldap_servers");
+			const struct json_value *jenabled = json_object_get(r.json, "ldap_enabled");
+			const struct json_value *jport = json_object_get(r.json, "ldap_port");
+
+			if (jenabled == NULL || jenabled->type != JSON_BOOL || !jenabled->u.boolean ||
+			    jport == NULL || (int)json_as_number(jport) != 18189 || jservers == NULL ||
+			    jservers->type != JSON_ARRAY || jservers->u.array.count != 1 ||
+			    !str_eq(json_as_string(jservers->u.array.items[0]), "127.0.0.1") ||
+			    !str_eq(json_str_field(r.json, "ldap_base_dn"), "dc=glauth,dc=com")) {
+				fprintf(stderr, "FAIL: GET hostauth-config didn't echo LDAP config correctly\n");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		/*
+		 * 13e. Login as root_admin with the CORRECT local password.
+		 * ldap_enabled is true but the one configured server is
+		 * unreachable (nothing listens on 18189) -- hostauth_login()
+		 * must fall back to the local backend rather than failing the
+		 * login outright. A real token comes back, usable for a write.
+		 */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/login",
+		                       "{\"username\":\"root_admin\",\"password\":\"correct horse battery "
+		                       "staple\"}",
+		                       &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr,
+			        "FAIL: login with unreachable LDAP server expected local-backend fallback "
+			        "(200), got %d\n",
+			        r.status);
+			ok = 0;
+			kx_response_free(&r);
+		} else {
+			const char *t = json_str_field(r.json, "token");
+			char fallback_token[128] = "";
+
+			if (t != NULL)
+				snprintf(fallback_token, sizeof(fallback_token), "%s", t);
+			kx_response_free(&r);
+
+			if (fallback_token[0] != '\0') {
+				memset(&r, 0, sizeof(r));
+				if (request_with_token(&client, "POST", "/v1/ldap/groups", fallback_token,
+				                        "{\"name\":\"ldapfallback\",\"gidnumber\":7009}", &r) !=
+				        0 ||
+				    r.status != 201) {
+					fprintf(stderr,
+					        "FAIL: write with LDAP-fallback token expected 201, got %d\n",
+					        r.status);
+					ok = 0;
+				}
+				kx_response_free(&r);
+			}
+		}
+
+		/*
+		 * 13f. A WRONG password still correctly fails (401) even with
+		 * ldap_enabled and an unreachable server -- the fallback must
+		 * never bypass real credential verification.
+		 */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/login",
+		                       "{\"username\":\"root_admin\",\"password\":\"wrong\"}", &r) != 0 ||
+		    r.status != 401) {
+			fprintf(stderr,
+			        "FAIL: wrong password under LDAP-enabled+unreachable expected 401, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
 	}
 
 	if (stop_daemon(daemon_pid) != 0) {

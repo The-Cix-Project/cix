@@ -32,9 +32,34 @@ extern char **environ;
 static char g_data_dir[PATH_MAX];
 static char g_image_root[PATH_MAX];
 
+/* Decodes a hex string into out -- passbcrypt's own rendered TOML form
+ * is glauth's real expected hex encoding of the bcrypt hash's ASCII
+ * bytes (see ldap.c's render_users_groups_toml() comment on why: glauth
+ * calls hex.DecodeString() on this field before ever touching bcrypt).
+ * Returns 0 on success, -1 on odd length, a non-hex digit, or
+ * insufficient out_size. */
+static int hex_decode(const char *hex, char *out, size_t out_size)
+{
+	size_t hexlen = strlen(hex);
+	size_t i;
+
+	if (hexlen % 2 != 0 || hexlen / 2 >= out_size)
+		return -1;
+	for (i = 0; i < hexlen; i += 2) {
+		unsigned int byte;
+
+		if (sscanf(hex + i, "%2x", &byte) != 1)
+			return -1;
+		out[i / 2] = (char)byte;
+	}
+	out[hexlen / 2] = '\0';
+	return 0;
+}
+
 /* Extracts the quoted value following `key = "` in body (a real TOML
- * rendered field, e.g. `passbcrypt = "$2b$12$..."`) into out. Returns
- * 0 on success, -1 if key isn't found or the value is unterminated. */
+ * rendered field, e.g. `passbcrypt = "<hex-encoded bcrypt hash>"`) into
+ * out. Returns 0 on success, -1 if key isn't found or the value is
+ * unterminated. */
 static int extract_toml_string_value(const char *body, size_t body_len, const char *key, char *out,
                                       size_t out_size)
 {
@@ -363,7 +388,7 @@ int main(void)
 	{
 		static const char base_config_prefix[] = "# base config\nwatchconfig = true\n";
 		struct json_value *jval;
-		char passbcrypt_val[80];
+		char passbcrypt_val[128]; /* hex-encoded PWHASH_BCRYPT_LEN (60) bytes -- 120 hex chars + NUL */
 
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "POST", "/v1/containers",
@@ -466,11 +491,24 @@ int main(void)
 			fprintf(stderr, "FAIL: rendered config missing expected group/user fields\n");
 			ok = 0;
 		} else if (extract_toml_string_value(r.body, r.body_len, "passbcrypt", passbcrypt_val,
-		                                      sizeof(passbcrypt_val)) != 0 ||
-		           strncmp(passbcrypt_val, "$2b$", 4) != 0) {
-			fprintf(stderr, "FAIL: rendered config missing a real $2b$ bcrypt hash, got: %s\n",
-			        passbcrypt_val);
+		                                      sizeof(passbcrypt_val)) != 0) {
+			fprintf(stderr, "FAIL: rendered config missing a passbcrypt field\n");
 			ok = 0;
+		} else {
+			char decoded[64];
+
+			/* passbcrypt is rendered hex-encoded (glauth's own real
+			 * config-backend expectation, see ldap.c's own comment) --
+			 * decode it back to confirm it's genuinely a real $2b$
+			 * bcrypt hash underneath, not just an opaque hex blob. */
+			if (hex_decode(passbcrypt_val, decoded, sizeof(decoded)) != 0 ||
+			    strncmp(decoded, "$2b$", 4) != 0) {
+				fprintf(stderr,
+				        "FAIL: rendered config's passbcrypt didn't hex-decode to a real "
+				        "$2b$ bcrypt hash, got hex: %s\n",
+				        passbcrypt_val);
+				ok = 0;
+			}
 		}
 		kx_response_free(&r);
 
@@ -496,7 +534,7 @@ int main(void)
 			fprintf(stderr, "FAIL: GET ldapcfg config file after update, status=%d\n", r.status);
 			ok = 0;
 		} else {
-			char passbcrypt_after[80];
+			char passbcrypt_after[128];
 
 			if (memmem(r.body, r.body_len, "mail = \"jd@kanxeo.internal\"",
 			           strlen("mail = \"jd@kanxeo.internal\"")) == NULL) {

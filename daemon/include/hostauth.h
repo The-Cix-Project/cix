@@ -16,13 +16,17 @@
  * out of its own API, no separate bootstrap/break-glass credential
  * needed.
  *
- * This module owns sessions and the admin-group/idle-timeout config;
- * it does NOT own credential verification itself -- that's
- * ldap_user_check_password()/ldap_user_is_in_group() (daemon/src/
- * ldap.c, ADR-0144's own data-model part), the local backend, and (a
- * later part of this same ADR) a live LDAP bind+search backend tried
- * first when enabled. One directory, two interchangeable ways to ask
- * it a question -- this module doesn't care which one answered.
+ * This module owns sessions and the admin-group/idle-timeout/LDAP-
+ * backend config; it does NOT own credential verification itself --
+ * that's ldap_user_check_password() (daemon/src/ldap.c, ADR-0144's
+ * own data-model part, the local in-process backend) and
+ * ldapclient_bind() (daemon/src/ldapclient.c, a live LDAP bind against
+ * a real running glauth server, tried first when ldap_enabled). One
+ * directory (Kanxeo's own persisted ldap_user/ldap_group records --
+ * glauth is just a rendered, running view of that same data), two
+ * interchangeable ways to ask it "is this password right": hostauth_
+ * login() itself decides which one answered authoritatively, see its
+ * own doc comment below.
  *
  * Sessions are in-memory only, wiped on every daemon restart --
  * matches this project's own established "ephemeral unless there's a
@@ -37,6 +41,15 @@
 #define HOSTAUTH_ADMIN_GROUPS_MAX 8
 #define HOSTAUTH_GROUP_NAME_MAX 32 /* matches LDAP_GROUP_NAME_MAX, no header dependency */
 #define HOSTAUTH_USERNAME_MAX 32   /* matches LDAP_USER_NAME_MAX, no header dependency */
+
+/* ADR-0144: live-LDAP backend config -- a try-in-order server list, the
+ * same "list of servers, try in order" shape resolv.c's own RESOLV_MAX_
+ * NAMESERVERS/nameservers[] already established for GET/PUT /v1/system/
+ * resolv, reused here rather than inventing a second list convention. */
+#define HOSTAUTH_LDAP_MAX_SERVERS 3
+#define HOSTAUTH_LDAP_HOST_MAX 64      /* an IPv4 dotted-quad or short hostname */
+#define HOSTAUTH_LDAP_BASE_DN_MAX 256
+#define HOSTAUTH_LDAP_DEFAULT_PORT 3893 /* glauth's own real default listen port, see ADR-0109/0113 */
 
 int hostauth_init(const char *config_path);
 void hostauth_repoint(const char *new_config_path);
@@ -59,9 +72,24 @@ enum hostauth_config_error {
  * backupconfig_set() already established. admin_group_count == 0 is
  * valid (no admin groups configured yet -- gating stays inactive).
  * idle_timeout_seconds: 0 means no session reuse (every write
- * re-authenticates); must be >= 0. */
+ * re-authenticates); must be >= 0.
+ *
+ * ADR-0144's own live-LDAP backend config: ldap_enabled, a try-in-order
+ * ldap_servers list (ldap_server_count long, each a host or IP glauth
+ * is reachable on), the shared ldap_port every one of them is queried
+ * on, and ldap_base_dn (e.g. "dc=glauth,dc=com") -- kanxeod has no
+ * other way to learn a running glauth server's own configured baseDN
+ * (see ldap.h's own header comment on why that part of glauth.cfg is
+ * operator-authored and never rendered by this daemon). Rejected
+ * (HOSTAUTH_CONFIG_ERR_INVALID_FIELD) if: ldap_server_count is outside
+ * 0..HOSTAUTH_LDAP_MAX_SERVERS; ldap_port is outside 1..65535; or
+ * ldap_enabled is true while ldap_server_count == 0 or ldap_base_dn is
+ * empty -- "enabled with nothing to bind against" can never be a valid
+ * saved state. */
 enum hostauth_config_error hostauth_set_config(const char *const *admin_groups, int admin_group_count,
-                                                int idle_timeout_seconds);
+                                                int idle_timeout_seconds, int ldap_enabled,
+                                                const char *const *ldap_servers, int ldap_server_count,
+                                                int ldap_port, const char *ldap_base_dn);
 void hostauth_write_config_json(struct json_writer *w);
 
 /* True once at least one user is a member of a configured admin group
@@ -76,12 +104,24 @@ enum hostauth_login_result {
 	HOSTAUTH_LOGIN_TABLE_FULL,
 };
 
-/* Local-backend login: real bcrypt verification against this
- * daemon's own already-persisted LDAP user record (ldap_user_check_
- * password()), no network call. (A later ADR-0144 part adds a live
- * LDAP bind attempted first when enabled -- this function's own
- * contract doesn't change, only what it tries before falling back to
- * this.) On success, issues a real session token into out_token
+/*
+ * Verifies username/password, trying the live LDAP backend first when
+ * ldap_enabled: builds the confirmed-working short-form bind DN
+ * ("cn=<username>,ou=<primary-group-name>,<ldap_base_dn>", from this
+ * daemon's own local ldap_user/ldap_group records -- never from a
+ * search) and attempts a real ldapclient_bind() against each
+ * configured server in order. The first server to answer
+ * authoritatively (bind succeeded, or explicitly rejected the
+ * credentials) decides the outcome -- an unreachable/erroring server
+ * is skipped in favor of the next one, never treated as "wrong
+ * password". Only when EVERY configured server was unreachable (or
+ * LDAP is disabled, or no local user/group record exists yet to build
+ * a DN from) does this fall back to the local, in-process check
+ * (ldap_user_check_password(), no network call) -- the same
+ * underlying passbcrypt data either way, so this fallback changes
+ * availability, never which password is actually correct.
+ *
+ * On success, issues a real session token into out_token
  * (HOSTAUTH_TOKEN_LEN + 1 bytes) and reports its idle-timeout-based
  * initial expiry in *out_expires_in_seconds (-1 means "never expires
  * on idle," i.e. idle_timeout_seconds == 0 is handled the other way:
