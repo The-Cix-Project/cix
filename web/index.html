@@ -455,6 +455,23 @@
 					workload data, never rebuildable content (images/packages), never logs. The target disk
 					must already carry the state-storage role and be currently mounted. Live, no downtime --
 					the daemon keeps operating against the current location until the copy finishes.</p>
+
+				<h3>Log storage placement</h3>
+				<p class="hint" id="ls-current">Log storage: unknown</p>
+				<p class="hint" id="ls-migrate-status" hidden></p>
+				<form id="ls-migrate-form">
+					<label>
+						Migrate to
+						<select id="ls-target-disk">
+							<option value="">(default OS-disk placement)</option>
+						</select>
+					</label>
+					<button type="submit">Migrate</button>
+				</form>
+				<p class="hint">Where the consolidated log store lives (ADR-0141) -- kernel dmesg, this
+					daemon's own diagnostics, the per-request audit trail, every container's stdout/stderr.
+					An independent job slot from state storage above -- both can migrate at the same time.
+					The target disk must already carry the log-storage role and be currently mounted.</p>
 				<p class="hint">Real host block devices, discovered live from sysfs every poll -- whole disks
 					only, never partitions. The OS disk (this platform's own fixed ESP/root-a/root-b/config/
 					containers layout) is never a candidate for a role or format. Assigning a role

@@ -141,6 +141,7 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | `storage state [show]` | Which disk (if any) is the active placement for Kanxeo's own state (ADR-0141) |
 | `storage state migrate [--disk=NAME]` | Move Kanxeo's own state to a disk already carrying the role and mounted; omit `--disk=` for the default OS-disk placement; live, no downtime |
 | `storage state migrate-status` | State/disk/error of the most recent (or running) state-storage migration |
+| `storage logs [show\|migrate [--disk=NAME]\|migrate-status]` | Same shape as `storage state`, for where the consolidated log store lives instead (ADR-0141 Phase 3); an independent job slot from `storage state migrate` |
 
 ## DNS
 

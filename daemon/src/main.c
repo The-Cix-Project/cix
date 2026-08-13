@@ -108,13 +108,16 @@ static char g_base_dir[PATH_MAX] = DEFAULT_BASE_DIR;
  * unrelated paths -- every path below that's conceptually "this
  * platform's own definition of itself" nests under STATE_DIR; every
  * path that's "regenerable from recipes/sources if lost" nests under
- * REBUILDABLE_DIR. CONTAINERS_DIR/SWAP_DIR/LOG_DIR/DISKS_MOUNT_DIR
- * deliberately stay direct children of g_base_dir -- CONTAINERS_DIR
- * already has its own relocation mechanism (container-storage, ADR-
- * 0102), SWAP_DIR is explicitly out of scope (ADR-0069's own separate
- * mechanism), LOG_DIR is already its own clean subdirectory with
- * nothing else to group it with, and DISKS_MOUNT_DIR holds mount
- * points for other disks, not data of its own.
+ * REBUILDABLE_DIR. CONTAINERS_DIR/SWAP_DIR/DISKS_MOUNT_DIR deliberately
+ * stay direct children of g_base_dir -- CONTAINERS_DIR already has its
+ * own relocation mechanism (container-storage, ADR-0102), SWAP_DIR is
+ * explicitly out of scope (ADR-0069's own separate mechanism), and
+ * DISKS_MOUNT_DIR holds mount points for other disks, not data of its
+ * own. LOG_DIR is ALSO independently relocatable (log-storage, ADR-0141
+ * Phase 3) -- it doesn't need STATE_DIR/REBUILDABLE_DIR's own grouping
+ * treatment since it already was its own single, clean subdirectory
+ * with exactly one consumer (logstore.c), unlike the dozen-plus
+ * unrelated things STATE_DIR groups.
  */
 static char STATE_DIR[PATH_MAX];
 static char REBUILDABLE_DIR[PATH_MAX];
@@ -350,6 +353,44 @@ static int resolve_state_storage_placement(void)
 	}
 	fprintf(stderr,
 	        "resolve_state_storage_placement: state-storage's configured disk '%s' is not "
+	        "currently present -- refusing to start\n",
+	        disk_name);
+	return -1;
+}
+
+/*
+ * ADR-0141 Phase 3: same shape and same "fail loud, never silently
+ * fall back" reasoning as resolve_state_storage_placement() above, for
+ * LOG_DIR -- log-storage's own single-consumer relocation (logstore.c
+ * only) needs no compute_*_relative_paths()-style helper, just its one
+ * dependent path (LOG_STATE_PATH) recomputed alongside it.
+ */
+static int resolve_log_storage_placement(void)
+{
+	const char *disk_name = storageplacement_get(STORAGE_KIND_LOG);
+	struct discovered_disk disks[DISK_ENUM_MAX];
+	int n, i;
+
+	if (disk_name == NULL)
+		return 0; /* default OS-disk placement -- nothing to do */
+
+	n = disk_enumerate(disks, DISK_ENUM_MAX, CONTAINERS_DIR);
+	for (i = 0; i < n; i++) {
+		if (strcmp(disks[i].name, disk_name) != 0)
+			continue;
+		if (!disks[i].mounted) {
+			fprintf(stderr,
+			        "resolve_log_storage_placement: log-storage's configured disk "
+			        "'%s' is present but not currently mounted -- refusing to start\n",
+			        disk_name);
+			return -1;
+		}
+		snprintf(LOG_DIR, sizeof(LOG_DIR), "%s/%s/logs", DISKS_MOUNT_DIR, disk_name);
+		snprintf(LOG_STATE_PATH, sizeof(LOG_STATE_PATH), "%s/state.json", LOG_DIR);
+		return 0;
+	}
+	fprintf(stderr,
+	        "resolve_log_storage_placement: log-storage's configured disk '%s' is not "
 	        "currently present -- refusing to start\n",
 	        disk_name);
 	return -1;
@@ -6102,6 +6143,43 @@ static void finalize_state_storage_migration(void)
 	        target_disk[0] != '\0' ? target_disk : "(default OS-disk placement)");
 }
 
+/*
+ * ADR-0141 Phase 3: log-storage's own finalize step -- simpler than
+ * state-storage's (single consumer, no /etc/resolv.conf-style bind
+ * mount to redo), but the same overall shape: second synchronous copy
+ * pass, repoint (logstore_repoint(), which itself handles the
+ * persistently-open segment fd -- see its own doc comment), persist
+ * the new placement, remove the old location.
+ */
+static void finalize_log_storage_migration(void)
+{
+	const char *target_dir = storagemigrate_job_target_dir(STORAGE_KIND_LOG);
+	const char *target_disk = storagemigrate_job_target_disk(STORAGE_KIND_LOG);
+	char old_source_dir[PATH_MAX];
+	char new_state_path[PATH_MAX];
+
+	snprintf(old_source_dir, sizeof(old_source_dir), "%s", storagemigrate_job_source_dir(STORAGE_KIND_LOG));
+
+	if (storagemigrate_finalize(STORAGE_KIND_LOG) != 0) {
+		fprintf(stderr, "log-storage migration: final copy pass failed, migration aborted\n");
+		return;
+	}
+
+	snprintf(LOG_DIR, sizeof(LOG_DIR), "%s", target_dir);
+	snprintf(new_state_path, sizeof(new_state_path), "%s/state.json", LOG_DIR);
+	snprintf(LOG_STATE_PATH, sizeof(LOG_STATE_PATH), "%s", new_state_path);
+	logstore_repoint(LOG_DIR, LOG_STATE_PATH);
+
+	storageplacement_set(STORAGE_KIND_LOG, target_disk[0] != '\0' ? target_disk : NULL);
+
+	if (persist_remove_tree(old_source_dir) != 0)
+		fprintf(stderr, "log-storage migration: could not remove old location %s: %s\n",
+		        old_source_dir, strerror(errno));
+
+	fprintf(stderr, "log-storage migration: complete, now active on %s\n",
+	        target_disk[0] != '\0' ? target_disk : "(default OS-disk placement)");
+}
+
 static void handle_storage_migrate_event(struct conn *cc)
 {
 	int status;
@@ -6121,6 +6199,8 @@ static void handle_storage_migrate_event(struct conn *cc)
 	        exit_status);
 	if (exit_status == 0 && kind == STORAGE_KIND_STATE)
 		finalize_state_storage_migration();
+	else if (exit_status == 0 && kind == STORAGE_KIND_LOG)
+		finalize_log_storage_migration();
 }
 
 static const char *iso_build_state_str(enum iso_build_state s)
@@ -8598,19 +8678,21 @@ static void handle_diskrole_create(int fd, const char *body, size_t body_len)
 
 /*
  * ADR-0141: true if disk_name is the *currently active* placement for
- * one of the daemon-wide storage singletons (state-storage today;
- * rebuildable-storage/log-storage once their own phases land) --
- * removing the role out from under an in-use placement, or destroying
- * it via format, would leave the daemon's own live-location tracking
- * pointing at a disk that, per its own role table, doesn't do that
- * anymore. Shared by handle_diskrole_delete() and
- * handle_disk_format_post() below.
+ * one of the daemon-wide storage singletons (state-storage/log-storage
+ * today; rebuildable-storage once its own phase lands) -- removing the
+ * role out from under an in-use placement, or destroying it via
+ * format, would leave the daemon's own live-location tracking pointing
+ * at a disk that, per its own role table, doesn't do that anymore.
+ * Shared by handle_diskrole_delete() and handle_disk_format_post()
+ * below.
  */
 static int is_active_storage_singleton_placement(const char *disk_name)
 {
 	const char *state_disk = storageplacement_get(STORAGE_KIND_STATE);
+	const char *log_disk = storageplacement_get(STORAGE_KIND_LOG);
 
-	return state_disk != NULL && strcmp(state_disk, disk_name) == 0;
+	return (state_disk != NULL && strcmp(state_disk, disk_name) == 0) ||
+	       (log_disk != NULL && strcmp(log_disk, disk_name) == 0);
 }
 
 static void handle_diskrole_delete(int fd, const char *disk_name)
@@ -8619,9 +8701,9 @@ static void handle_diskrole_delete(int fd, const char *disk_name)
 
 	if (is_active_storage_singleton_placement(disk_name)) {
 		respond_error(fd, 409, "Conflict",
-		              "this disk is the active state-storage placement -- migrate away "
-		              "(POST .../migrate with a different disk, or disk: null for the "
-		              "default OS-disk placement) before removing its role");
+		              "this disk is the active state-storage or log-storage placement -- "
+		              "migrate away (POST .../migrate with a different disk, or disk: null "
+		              "for the default OS-disk placement) before removing its role");
 		return;
 	}
 	derr = diskrole_delete(disk_name);
@@ -8699,8 +8781,8 @@ static void handle_disk_format_post(int fd, const char *disk_name, const char *b
 	if (is_active_storage_singleton_placement(disk_name)) {
 		json_free(root);
 		respond_error(fd, 409, "Conflict",
-		              "this disk is the active state-storage placement -- formatting it "
-		              "would destroy live data; migrate away first");
+		              "this disk is the active state-storage or log-storage placement -- "
+		              "formatting it would destroy live data; migrate away first");
 		return;
 	}
 	/*
@@ -8757,11 +8839,24 @@ static void handle_disk_format_get(int fd, const char *disk_name)
 }
 
 /*
- * ADR-0141 Phase 2: GET/POST /v1/system/state-storage(/migrate). Only
- * state-storage is wired to REST this phase -- rebuildable-storage/
- * log-storage reuse the identical storagemigrate.c/storageplacement.c
- * machinery, just not exposed here yet (Phase 3/4).
+ * ADR-0141 Phase 2/3: GET/POST /v1/system/{state,log}-storage(/migrate).
+ * rebuildable-storage reuses the identical storagemigrate.c/
+ * storageplacement.c machinery, just not exposed here yet (Phase 4).
  */
+static const char *storage_kind_label(enum storage_kind kind)
+{
+	switch (kind) {
+	case STORAGE_KIND_STATE:
+		return "state-storage";
+	case STORAGE_KIND_REBUILDABLE:
+		return "rebuildable-storage";
+	case STORAGE_KIND_LOG:
+		return "log-storage";
+	default:
+		return "state-storage";
+	}
+}
+
 static void handle_state_storage_get(int fd)
 {
 	struct json_writer w;
@@ -8774,11 +8869,26 @@ static void handle_state_storage_get(int fd)
 	jw_free(&w);
 }
 
-static void respond_storagemigrate_error(int fd, enum storagemigrate_error err)
+static void handle_log_storage_get(int fd)
 {
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	storageplacement_write_json(&w, STORAGE_KIND_LOG);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void respond_storagemigrate_error(int fd, enum storage_kind kind, enum storagemigrate_error err)
+{
+	char msg[192];
+
 	switch (err) {
 	case STORAGEMIGRATE_ERR_BUSY:
-		respond_error(fd, 409, "Conflict", "a state-storage migration is already running");
+		snprintf(msg, sizeof(msg), "a %s migration is already running", storage_kind_label(kind));
+		respond_error(fd, 409, "Conflict", msg);
 		break;
 	case STORAGEMIGRATE_ERR_NOT_FOUND:
 		respond_error(fd, 404, "Not Found", "no such disk");
@@ -8788,15 +8898,17 @@ static void respond_storagemigrate_error(int fd, enum storagemigrate_error err)
 		              "this disk holds the fixed OS layout -- it can never be a placement target");
 		break;
 	case STORAGEMIGRATE_ERR_WRONG_ROLE:
-		respond_error(fd, 400, "Bad Request",
-		              "this disk does not carry the state-storage role -- assign it via "
-		              "POST /v1/diskroles first");
+		snprintf(msg, sizeof(msg),
+		         "this disk does not carry the %s role -- assign it via POST /v1/diskroles first",
+		         storage_kind_label(kind));
+		respond_error(fd, 400, "Bad Request", msg);
 		break;
 	case STORAGEMIGRATE_ERR_NOT_MOUNTED:
 		respond_error(fd, 400, "Bad Request", "this disk carries the role but isn't currently mounted");
 		break;
 	case STORAGEMIGRATE_ERR_ALREADY_ACTIVE:
-		respond_error(fd, 409, "Conflict", "this is already the active state-storage placement");
+		snprintf(msg, sizeof(msg), "this is already the active %s placement", storage_kind_label(kind));
+		respond_error(fd, 409, "Conflict", msg);
 		break;
 	case STORAGEMIGRATE_ERR_SPAWN_FAILED:
 	default:
@@ -8848,7 +8960,7 @@ static void handle_state_storage_migrate_post(int fd, const char *body, size_t b
 	merr = storagemigrate_start(STORAGE_KIND_STATE, STATE_DIR, target_dir, disk_name, CONTAINERS_DIR,
 	                             &pid, &pidfd);
 	if (merr != STORAGEMIGRATE_OK) {
-		respond_storagemigrate_error(fd, merr);
+		respond_storagemigrate_error(fd, STORAGE_KIND_STATE, merr);
 		return;
 	}
 	register_storage_migrate_pidfd(STORAGE_KIND_STATE, pid, pidfd);
@@ -8861,6 +8973,74 @@ static void handle_state_storage_migrate_post(int fd, const char *body, size_t b
 		respond_json(fd, 202, "Accepted", &w);
 		jw_free(&w);
 	}
+}
+
+static void handle_log_storage_migrate_post(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const struct json_value *jdisk;
+	const char *disk_name;
+	char disk_name_buf[DISKROLE_DISK_NAME_MAX];
+	char target_dir[PATH_MAX];
+	pid_t pid;
+	int pidfd;
+	enum storagemigrate_error merr;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	jdisk = json_object_get(root, "disk");
+	if (jdisk == NULL || (jdisk->type != JSON_NULL && jdisk->type != JSON_STRING)) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "disk is required -- a disk name, or null for the default OS-disk placement");
+		return;
+	}
+	if (jdisk->type == JSON_NULL) {
+		disk_name = NULL;
+		snprintf(target_dir, sizeof(target_dir), "%s/logs", g_base_dir);
+	} else {
+		disk_name = json_as_string(jdisk);
+		if (disk_name == NULL || disk_name[0] == '\0' ||
+		    strlen(disk_name) >= DISKROLE_DISK_NAME_MAX) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "invalid disk name");
+			return;
+		}
+		snprintf(disk_name_buf, sizeof(disk_name_buf), "%s", disk_name);
+		disk_name = disk_name_buf;
+		snprintf(target_dir, sizeof(target_dir), "%s/%s/logs", DISKS_MOUNT_DIR, disk_name);
+	}
+	json_free(root);
+
+	merr = storagemigrate_start(STORAGE_KIND_LOG, LOG_DIR, target_dir, disk_name, CONTAINERS_DIR,
+	                             &pid, &pidfd);
+	if (merr != STORAGEMIGRATE_OK) {
+		respond_storagemigrate_error(fd, STORAGE_KIND_LOG, merr);
+		return;
+	}
+	register_storage_migrate_pidfd(STORAGE_KIND_LOG, pid, pidfd);
+
+	{
+		struct json_writer w;
+
+		jw_init(&w);
+		storagemigrate_write_status_json(&w, STORAGE_KIND_LOG);
+		respond_json(fd, 202, "Accepted", &w);
+		jw_free(&w);
+	}
+}
+
+static void handle_log_storage_migrate_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	storagemigrate_write_status_json(&w, STORAGE_KIND_LOG);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
 }
 
 static void handle_state_storage_migrate_get(int fd)
@@ -11717,6 +11897,20 @@ static void dispatch(int fd, const struct http_request *req)
 			return;
 		}
 	}
+	if (strcmp(req->path, "/v1/system/log-storage") == 0 && strcmp(req->method, "GET") == 0) {
+		handle_log_storage_get(fd);
+		return;
+	}
+	if (strcmp(req->path, "/v1/system/log-storage/migrate") == 0) {
+		if (strcmp(req->method, "POST") == 0) {
+			handle_log_storage_migrate_post(fd, req->body, req->body_len);
+			return;
+		}
+		if (strcmp(req->method, "GET") == 0) {
+			handle_log_storage_migrate_get(fd);
+			return;
+		}
+	}
 	if (strcmp(req->path, "/v1/system/rolling-config") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_rolling_config_get(fd);
@@ -14364,12 +14558,6 @@ int main(int argc, char **argv)
 	migrate_flat_layout_to_grouped();
 	migrate_diskroles_out_of_state_dir();
 
-	/* STATE_DIR/REBUILDABLE_DIR themselves first (ADR-0141) -- ensure_dir()
-	 * is a plain single-level mkdir(), not mkdir -p, so every path nested
-	 * under either one below would otherwise fail with ENOENT on a
-	 * genuinely fresh install (nothing for migrate_flat_layout_to_grouped()
-	 * to have created them via already, since there was nothing at the
-	 * old flat paths to migrate). */
 	/*
 	 * ADR-0141 Phase 2: g_base_dir and DISKS_MOUNT_DIR only, first --
 	 * diskrole_init()/diskformat_remount_present_role_disks()/
@@ -14397,16 +14585,20 @@ int main(int argc, char **argv)
 		return 1;
 	if (resolve_state_storage_placement() != 0)
 		return 1;
+	if (resolve_log_storage_placement() != 0)
+		return 1;
 
-	/* STATE_DIR/REBUILDABLE_DIR themselves first (ADR-0141) -- ensure_dir()
-	 * is a plain single-level mkdir(), not mkdir -p, so every path nested
-	 * under either one below would otherwise fail with ENOENT on a
-	 * genuinely fresh install (nothing for migrate_flat_layout_to_grouped()
-	 * to have created them via already, since there was nothing at the
-	 * old flat paths to migrate). STATE_DIR here may be a relocated disk's
-	 * own mount path (resolve_state_storage_placement() above) -- either
-	 * way it already exists as a real, mounted directory by this point;
-	 * ensure_dir() only needs to create the "state" subdirectory under it. */
+	/* STATE_DIR/REBUILDABLE_DIR/LOG_DIR themselves first (ADR-0141) --
+	 * ensure_dir() is a plain single-level mkdir(), not mkdir -p, so
+	 * every path nested under any of them below would otherwise fail
+	 * with ENOENT on a genuinely fresh install (nothing for migrate_
+	 * flat_layout_to_grouped() to have created them via already, since
+	 * there was nothing at the old flat paths to migrate). Each of the
+	 * three may be a relocated disk's own mount path (resolve_state_
+	 * storage_placement()/resolve_log_storage_placement() above) --
+	 * either way it already exists as a real, mounted directory by this
+	 * point; ensure_dir() only needs to create the leaf subdirectory
+	 * under it. */
 	if (ensure_dir(STATE_DIR) != 0 ||
 	    ensure_dir(REBUILDABLE_DIR) != 0 || ensure_dir(IMAGES_DIR) != 0 ||
 	    ensure_dir(CONTAINERS_DIR) != 0 || ensure_dir(PKI_DIR) != 0 ||

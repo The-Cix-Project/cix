@@ -870,6 +870,102 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /system/log-storage:
+    get:
+      summary: Which disk (if any) is the active placement for Kanxeo's own consolidated log store (ADR-0141 Phase 3)
+      description: >
+        Same shape and same singleton-placement model as
+        GET /system/state-storage above -- `disk: null` means the
+        default OS-disk placement. A non-null disk carries the
+        `log-storage` role and was successfully migrated onto via
+        POST .../migrate below. Covers the consolidated log store
+        (ADR-0070/ADR-0126: kernel dmesg, this daemon's own diagnostics,
+        the per-request audit trail, and every container's stdout/
+        stderr) -- never state, never rebuildable content.
+      operationId: getLogStorage
+      responses:
+        "200":
+          description: Current log-storage placement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoragePlacement"
+  /system/log-storage/migrate:
+    get:
+      summary: Status of the most recent (or currently running) log-storage migration job
+      description: >
+        Same shape as GET /system/state-storage/migrate above -- only
+        one log-storage migration may be in flight at a time
+        (independent of any concurrent state-storage migration, each
+        kind has its own job slot).
+      operationId: getLogStorageMigrateStatus
+      responses:
+        "200":
+          description: Migration job status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageMigrateStatus"
+    post:
+      summary: Moves Kanxeo's own consolidated log store to a new disk, or back to the default OS-disk placement
+      description: >
+        Same contract as POST /system/state-storage/migrate above --
+        `disk` required (a real, `log-storage`-role, currently-mounted
+        disk name, or `null` for the default). Async, live, no pause:
+        the finalize step is simpler than state-storage's own (a single
+        consumer, `logstore.c`, no `/etc/resolv.conf`-style bind mount
+        to re-establish) but handles the one real wrinkle this concern
+        has that state-storage's files don't -- `logstore.c` holds a
+        persistently-open file handle across writes, closed and
+        re-opened against the new location as part of the repoint, not
+        left silently writing to the old disk.
+      operationId: migrateLogStorage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [disk]
+              properties:
+                disk:
+                  type: string
+                  nullable: true
+                  description: A Disk.name from GET /disks, or null for the default OS-disk placement.
+      responses:
+        "202":
+          description: Migration job started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageMigrateStatus"
+        "400":
+          description: >
+            disk field missing, invalid/unknown disk, disk is the OS
+            disk, disk doesn't carry the log-storage role, or disk
+            carries the role but isn't currently mounted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such disk
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A migration is already running, or this is already the active placement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Could not start the migration job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /system/swap:
     get:
       summary: Whether the host swap file is enabled (ADR-0069)
@@ -1781,8 +1877,8 @@ paths:
           description: >
             A format job is already running (this daemon-wide, v1
             single-job limit), or this disk is the active placement for
-            state-storage (ADR-0141) -- formatting it would destroy
-            live data; migrate away first.
+            state-storage or log-storage (ADR-0141) -- formatting it
+            would destroy live data; migrate away first.
           content:
             application/json:
               schema:
@@ -1979,8 +2075,9 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: >
-            This disk is the active placement for state-storage (ADR-0141) --
-            migrate away first (POST /system/state-storage/migrate).
+            This disk is the active placement for state-storage or
+            log-storage (ADR-0141) -- migrate away first (POST
+            /system/state-storage/migrate or /system/log-storage/migrate).
           content:
             application/json:
               schema:

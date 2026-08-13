@@ -78,6 +78,9 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | GET | `/system/state-storage` | Which disk (if any) is the active placement for Kanxeo's own state |
 | GET | `/system/state-storage/migrate` | Status of the most recent (or running) state-storage migration |
 | POST | `/system/state-storage/migrate` | Move Kanxeo's own state to a new disk, or back to the default |
+| GET | `/system/log-storage` | Which disk (if any) is the active placement for the consolidated log store |
+| GET | `/system/log-storage/migrate` | Status of the most recent (or running) log-storage migration |
+| POST | `/system/log-storage/migrate` | Move the consolidated log store to a new disk, or back to the default |
 | GET | `/networks` | List all networks this daemon knows about |
 | POST | `/networks` | Create a network (a real bridge, persisted across restarts) |
 | GET | `/networks/{name}` | Inspect one network |
@@ -1013,7 +1016,7 @@ GET /v1/system/state-storage
 {"disk": null}
 ```
 
-Which disk (if any) is the *active* placement for Kanxeo's own state — networks, DNS/LDAP/NTP/syslog-forwarding config, PKI (CA keys and every issued cert), container definitions, device mappings, site identity, and daemon/rolling-restart/TLS-throttle configuration. `disk: null` is the default OS-disk placement, unchanged from before this feature existed. Deliberately excludes container workload data (never covered), rebuildable content (images/packages/artifacts — its own separate `rebuildable-storage` concern, not yet exposed via REST), and logs (`log-storage`, likewise not yet exposed) — see `docs/adr/0141-multi-disk-storage-placement.md` for the full role/multiplicity model.
+Which disk (if any) is the *active* placement for Kanxeo's own state — networks, DNS/LDAP/NTP/syslog-forwarding config, PKI (CA keys and every issued cert), container definitions, device mappings, site identity, and daemon/rolling-restart/TLS-throttle configuration. `disk: null` is the default OS-disk placement, unchanged from before this feature existed. Deliberately excludes container workload data (never covered), rebuildable content (images/packages/artifacts — its own separate `rebuildable-storage` concern, not yet exposed via REST), and logs (`log-storage`, its own endpoint below) — see `docs/adr/0141-multi-disk-storage-placement.md` for the full role/multiplicity model.
 
 ```
 POST /v1/system/state-storage/migrate
@@ -1031,7 +1034,17 @@ GET /v1/system/state-storage/migrate
 
 `state` is `"none"`, `"running"`, `"ready"`, or `"failed"` (`error` present on failure). Once the bulk copy (a forked child, `treecopy_recursive()` — the same permission-preserving primitive `POST /system/backup-config/snapshot-now`'s own future implementation and this daemon's package-install pipeline both use, never a second copy of the same logic) finishes successfully, this daemon's own single-threaded reactor does one more synchronous pass — a second, fast copy (cheap, since little changes during the bulk phase) — and only then repoints every affected subsystem's own live path, re-establishes the real `/etc/resolv.conf` bind mount against the new location (a real, previously-live lesson: a bind mount is tied to the inode it captured, not the path — see `CHANGELOG.md`'s Part 103), persists the new placement, and removes the old location's data. A `state:"failed"` migration at any point before that final repoint leaves the daemon still using the old location, completely untouched — the partially-copied new-location data is left for inspection or the next attempt to overwrite.
 
-`DELETE /v1/diskroles/{name}` and `POST /v1/disks/{name}/format` both now refuse (`409`) against a disk that's the current active state-storage placement — removing the role or destroying the disk's content out from under a live placement would silently strand the daemon's own state. Migrate away first (`disk: null` back to the default, or to a different role-eligible disk).
+`DELETE /v1/diskroles/{name}` and `POST /v1/disks/{name}/format` both now refuse (`409`) against a disk that's the current active state-storage *or* log-storage placement — removing the role or destroying the disk's content out from under a live placement would silently strand the daemon's own state. Migrate away first (`disk: null` back to the default, or to a different role-eligible disk).
+
+### Log-storage placement (ADR-0141 Phase 3)
+
+```
+GET  /v1/system/log-storage              {"disk": null}
+GET  /v1/system/log-storage/migrate      {"state": "none"}
+POST /v1/system/log-storage/migrate      {"disk": "sdd"}
+```
+
+Identical contract to state-storage above, for where the consolidated log store (kernel dmesg, this daemon's own diagnostics, the per-request audit trail, every container's stdout/stderr — ADR-0070/ADR-0126) lives, with its own independent job slot (a state-storage migration and a log-storage migration can run concurrently, each acting on its own kind). The one real difference under the hood, not in the contract: `logstore.c` holds a persistently-open file handle across writes (`ensure_current_segment_open()` only reopens when it's `NULL`, not per write) — the finalize step closes it and lets the next write naturally reopen (in append mode, resuming the same logical segment) against the already-migrated new location, rather than leaving it silently still writing to the old disk.
 
 ## Per-container config files + sysctls
 

@@ -221,6 +221,9 @@ static void print_usage(FILE *out)
 	        "               async, no pause -- poll storage state migrate-status\n"
 	        "  storage state migrate-status  -- state/disk/error of the most recent (or\n"
 	        "               running) state-storage migration\n"
+	        "  storage logs [show|migrate [--disk=NAME]|migrate-status]  -- same shape as\n"
+	        "               storage state, for where Kanxeo's own consolidated log store\n"
+	        "               (ADR-0070/ADR-0126) lives instead\n"
 	        "  swap  -- show whether the host swap file is enabled (ADR-0069)\n"
 	        "  swap enable --size-mb=N  -- create and activate a swap file of this size\n"
 	        "  swap disable  -- deactivate and remove it\n"
@@ -1325,20 +1328,28 @@ static void fmt_storage_migrate_status(const struct json_value *v)
 	printf("\n");
 }
 
-static int cmd_storage_state_show(const struct kx_client *c, int json_mode)
+/* endpoint is "state-storage" or "log-storage" -- kanxeoctl storage
+ * {state,logs} both share this identical shape, only the REST path
+ * segment (and thus which daemon-side storage_kind ends up acted on)
+ * differs. */
+static int cmd_storage_kind_show(const struct kx_client *c, int json_mode, const char *endpoint)
 {
+	char path[64];
 	struct kx_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/state-storage", NULL, &r) != 0) {
+	snprintf(path, sizeof(path), "/v1/system/%s", endpoint);
+	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_storage_placement);
 }
 
-static int cmd_storage_state_migrate(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_storage_kind_migrate(const struct kx_client *c, int json_mode, const char *endpoint,
+                                     int argc, char **argv)
 {
 	const char *disk = NULL;
+	char path[64];
 	struct json_writer w;
 	struct kx_response r;
 	int i;
@@ -1347,7 +1358,7 @@ static int cmd_storage_state_migrate(const struct kx_client *c, int json_mode, i
 		if (strncmp(argv[i], "--disk=", 7) == 0)
 			disk = argv[i] + 7;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown storage state migrate option '%s'\n", argv[i]);
+			fprintf(stderr, "kanxeoctl: unknown storage migrate option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -1362,7 +1373,8 @@ static int cmd_storage_state_migrate(const struct kx_client *c, int json_mode, i
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/system/state-storage/migrate", w.buf, &r) != 0) {
+	snprintf(path, sizeof(path), "/v1/system/%s/migrate", endpoint);
+	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
 		return 1;
@@ -1371,36 +1383,41 @@ static int cmd_storage_state_migrate(const struct kx_client *c, int json_mode, i
 	return emit(&r, json_mode, fmt_storage_migrate_status);
 }
 
-static int cmd_storage_state_migrate_status(const struct kx_client *c, int json_mode)
+static int cmd_storage_kind_migrate_status(const struct kx_client *c, int json_mode, const char *endpoint)
 {
+	char path[64];
 	struct kx_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/state-storage/migrate", NULL, &r) != 0) {
+	snprintf(path, sizeof(path), "/v1/system/%s/migrate", endpoint);
+	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_storage_migrate_status);
 }
 
-static int cmd_storage_state(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_storage_kind(const struct kx_client *c, int json_mode, const char *name,
+                             const char *endpoint, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1)
-		return cmd_storage_state_show(c, json_mode);
+		return cmd_storage_kind_show(c, json_mode, endpoint);
 
 	sub = argv[0];
 	if (strcmp(sub, "show") == 0)
-		return cmd_storage_state_show(c, json_mode);
+		return cmd_storage_kind_show(c, json_mode, endpoint);
 	if (strcmp(sub, "migrate") == 0)
-		return cmd_storage_state_migrate(c, json_mode, argc - 1, argv + 1);
+		return cmd_storage_kind_migrate(c, json_mode, endpoint, argc - 1, argv + 1);
 	if (strcmp(sub, "migrate-status") == 0)
-		return cmd_storage_state_migrate_status(c, json_mode);
+		return cmd_storage_kind_migrate_status(c, json_mode, endpoint);
 
-	fprintf(stderr, "usage: kanxeoctl storage state [show]\n"
-	                "       kanxeoctl storage state migrate [--disk=NAME]  -- omit for the default "
-	                "OS-disk placement\n"
-	                "       kanxeoctl storage state migrate-status\n");
+	fprintf(stderr,
+	        "usage: kanxeoctl storage %s [show]\n"
+	        "       kanxeoctl storage %s migrate [--disk=NAME]  -- omit for the default "
+	        "OS-disk placement\n"
+	        "       kanxeoctl storage %s migrate-status\n",
+	        name, name, name);
 	return 2;
 }
 
@@ -1409,14 +1426,16 @@ static int cmd_storage(const struct kx_client *c, int json_mode, int argc, char 
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl storage state [show|migrate|migrate-status]\n");
+		fprintf(stderr, "usage: kanxeoctl storage state|logs [show|migrate|migrate-status]\n");
 		return 2;
 	}
 	sub = argv[0];
 	if (strcmp(sub, "state") == 0)
-		return cmd_storage_state(c, json_mode, argc - 1, argv + 1);
+		return cmd_storage_kind(c, json_mode, "state", "state-storage", argc - 1, argv + 1);
+	if (strcmp(sub, "logs") == 0)
+		return cmd_storage_kind(c, json_mode, "logs", "log-storage", argc - 1, argv + 1);
 
-	fprintf(stderr, "usage: kanxeoctl storage state [show|migrate|migrate-status]\n");
+	fprintf(stderr, "usage: kanxeoctl storage state|logs [show|migrate|migrate-status]\n");
 	return 2;
 }
 

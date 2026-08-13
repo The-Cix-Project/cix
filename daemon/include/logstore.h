@@ -89,6 +89,25 @@ enum logstore_error {
  * store on every boot). dir is created if it doesn't exist. */
 int logstore_init(const char *dir, const char *state_path);
 
+/*
+ * ADR-0141 Phase 3: repoints where future segment writes/config saves
+ * land, for a live log-storage migration -- unlike every other
+ * STATE_DIR-backed module's own *_repoint() (a bare path-buffer
+ * update), this one first closes the currently-open segment file and
+ * nulls g_current_fp, exactly as this module's own ADR-0141 design
+ * note requires: g_current_fp is a persistently-open FILE* held across
+ * writes (ensure_current_segment_open() only reopens when it's NULL,
+ * not per write), so changing g_dir alone would leave already-open
+ * writes still landing on the *old* disk. The next logstore_write()
+ * call naturally reopens (in append mode, resuming the same logical
+ * segment -- g_next_seq is deliberately untouched here) the already-
+ * migrated segment file at new_dir via the existing ensure_current_
+ * segment_open() path, no other change needed. g_max_bytes/g_min_level/
+ * g_next_seq are all left exactly as they were -- this is a repoint,
+ * never a reload.
+ */
+void logstore_repoint(const char *new_dir, const char *new_state_path);
+
 /* Starts the /dev/kmsg reader -- registered into the caller's own
  * epoll loop (main.c's g_epfd) the same way every other fd this
  * daemon watches already is; returns the fd to add (POLLIN), or -1 if

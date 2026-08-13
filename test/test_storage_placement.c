@@ -1,9 +1,10 @@
 /*
- * ADR-0141 Phase 2 end-to-end test: state-storage placement (GET/POST
- * /v1/system/state-storage(/migrate), daemon/src/storageplacement.c +
- * daemon/src/storagemigrate.c) and the safety checks that keep
- * DELETE /diskroles/{name} and POST /disks/{name}/format from pulling
- * a disk out from under an active placement.
+ * ADR-0141 Phase 2/3 end-to-end test: state-storage AND log-storage
+ * placement (GET/POST /v1/system/{state,log}-storage(/migrate),
+ * daemon/src/storageplacement.c + daemon/src/storagemigrate.c) and the
+ * safety checks that keep DELETE /diskroles/{name} and
+ * POST /disks/{name}/format from pulling a disk out from under an
+ * active placement of either kind.
  *
  * The real, successful migration path -- a role-assigned disk actually
  * formatted and mounted, data really copied across, every subsystem's
@@ -299,9 +300,117 @@ int main(void)
 		}
 		kx_response_free(&r);
 
-		/* 7. Cleanup: a role-only assignment (never an active
-		 * placement, since the migrate above never succeeded) must be
-		 * freely removable -- no 409 should ever fire here. */
+		/* 7. Cleanup of the state-storage-role assignment above -- a
+		 * role-only assignment (never an active placement, since the
+		 * migrate above never succeeded) must be freely removable, no
+		 * 409. Frees the disk for the log-storage scenarios below (a
+		 * disk can only carry one role at a time). */
+		{
+			char path[96];
+
+			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 204) {
+				fprintf(stderr,
+				        "FAIL: DELETE diskrole for a never-active disk expected 204, "
+				        "got %d\n",
+				        r.status);
+				ok = 0;
+			}
+			kx_response_free(&r);
+		}
+
+		/* 8. log-storage: default state, then the same wrong-role and
+		 * present-but-unmounted validation paths as state-storage
+		 * above, proving respond_storagemigrate_error()'s own kind-
+		 * aware messages and storagemigrate_start()'s role check
+		 * (role_str_for_kind()) are both wired correctly for this
+		 * second kind, not just copy-pasted and left pointing at
+		 * "state-storage" by mistake. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/system/log-storage", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET /v1/system/log-storage, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *jdisk = json_object_get(r.json, "disk");
+
+			if (jdisk == NULL || jdisk->type != JSON_NULL) {
+				fprintf(stderr, "FAIL: fresh daemon should report log-storage disk:null\n");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"state-storage\"}",
+		         non_os_disk);
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
+			fprintf(stderr, "FAIL: POST /v1/diskroles (wrong role for log test), status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		snprintf(body, sizeof(body), "{\"disk\":\"%s\"}", non_os_disk);
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/system/log-storage/migrate", body, &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: POST log-storage migrate to a wrong-role disk expected 400, "
+			                "got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		{
+			char path[96];
+
+			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
+			memset(&r, 0, sizeof(r));
+			kx_client_request(&client, "DELETE", path, NULL, &r);
+			kx_response_free(&r);
+		}
+
+		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"log-storage\"}", non_os_disk);
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
+			fprintf(stderr, "FAIL: POST /v1/diskroles (log-storage), status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		snprintf(body, sizeof(body), "{\"disk\":\"%s\"}", non_os_disk);
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/system/log-storage/migrate", body, &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr,
+			        "FAIL: POST log-storage migrate to a role-correct but unmounted disk "
+			        "expected 400, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/system/log-storage/migrate", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET /v1/system/log-storage/migrate, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const char *state = json_str_field(r.json, "state");
+
+			if (!(state != NULL && strcmp(state, "none") == 0)) {
+				fprintf(stderr,
+				        "FAIL: log-storage migrate status should still be state:none "
+				        "(no job ever actually started), got %s\n",
+				        state != NULL ? state : "(null)");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		/* 9. Final cleanup. */
 		{
 			char path[96];
 

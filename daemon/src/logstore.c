@@ -235,6 +235,16 @@ static int ensure_current_segment_open(void)
 	return 0;
 }
 
+void logstore_repoint(const char *new_dir, const char *new_state_path)
+{
+	if (g_current_fp != NULL) {
+		fclose(g_current_fp);
+		g_current_fp = NULL;
+	}
+	snprintf(g_dir, sizeof(g_dir), "%s", new_dir);
+	snprintf(g_state_path, sizeof(g_state_path), "%s", new_state_path);
+}
+
 int logstore_init(const char *dir, const char *state_path)
 {
 	if (snprintf(g_dir, sizeof(g_dir), "%s", dir) >= (int)sizeof(g_dir))

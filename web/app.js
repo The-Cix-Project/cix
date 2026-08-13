@@ -26,6 +26,8 @@ const cache = {
 	diskFormatStatus: {},
 	stateStorage: { disk: null },
 	stateStorageMigrate: { state: "none" },
+	logStorage: { disk: null },
+	logStorageMigrate: { state: "none" },
 	dnsRecords: [],
 	dnsServers: [],
 	ldapServers: [],
@@ -628,7 +630,7 @@ function renderCurrentView() {
 			renderDevices();
 		else if (route.category === "disks") {
 			renderDisks();
-			renderStateStorage();
+			renderAllStoragePlacements();
 		}
 		else if (route.category === "packages")
 			renderPackagesView(route.name);
@@ -3242,32 +3244,51 @@ async function refreshDiskFormatStatuses() {
 		renderDisks();
 }
 
-/* ---------- State storage placement (ADR-0141 Phase 2) ---------- */
+/* ---------- Storage placement: state (ADR-0141 Phase 2) + logs (Phase 3) ----------
+ * Both kinds share an identical shape (one daemon-side storage_kind
+ * each, its own independent migration job slot) -- a single
+ * kind-parameterized set of functions here, matching cli/src/main.c's
+ * own cmd_storage_kind() refactor, rather than duplicating this block
+ * a second time for "logs". */
 
-async function refreshStateStorage() {
-	cache.stateStorage = await apiRequest("GET", "/v1/system/state-storage");
+const STORAGE_KINDS = {
+	state: { endpoint: "state-storage", cacheKey: "stateStorage", statusCacheKey: "stateStorageMigrate",
+	         currentId: "ss-current", statusId: "ss-migrate-status", selectId: "ss-target-disk",
+	         formId: "ss-migrate-form", label: "State storage", role: "state-storage" },
+	logs: { endpoint: "log-storage", cacheKey: "logStorage", statusCacheKey: "logStorageMigrate",
+	        currentId: "ls-current", statusId: "ls-migrate-status", selectId: "ls-target-disk",
+	        formId: "ls-migrate-form", label: "Log storage", role: "log-storage" },
+};
+
+async function refreshStoragePlacement(kind) {
+	const k = STORAGE_KINDS[kind];
+
+	cache[k.cacheKey] = await apiRequest("GET", "/v1/system/" + k.endpoint);
 	if (parseHash().category === "disks")
-		renderStateStorage();
+		renderStoragePlacement(kind);
 }
 
-async function refreshStateStorageMigrate() {
+async function refreshStoragePlacementMigrate(kind) {
+	const k = STORAGE_KINDS[kind];
+
 	if (parseHash().category !== "disks")
 		return;
 	try {
-		cache.stateStorageMigrate = await apiRequest("GET", "/v1/system/state-storage/migrate");
+		cache[k.statusCacheKey] = await apiRequest("GET", "/v1/system/" + k.endpoint + "/migrate");
 	} catch (e) {
 		/* Transient -- next poll tick tries again. */
 	}
 	if (parseHash().category === "disks")
-		renderStateStorage();
+		renderStoragePlacement(kind);
 }
 
-function renderStateStorage() {
-	const current = document.getElementById("ss-current");
+function renderStoragePlacement(kind) {
+	const k = STORAGE_KINDS[kind];
+	const current = document.getElementById(k.currentId);
 
-	current.textContent = "State storage: " + (cache.stateStorage.disk || "default OS-disk placement");
+	current.textContent = k.label + ": " + (cache[k.cacheKey].disk || "default OS-disk placement");
 
-	const select = document.getElementById("ss-target-disk");
+	const select = document.getElementById(k.selectId);
 	const prevValue = select.value;
 
 	select.textContent = "";
@@ -3281,7 +3302,7 @@ function renderStateStorage() {
 	for (const d of cache.disks) {
 		const role = diskRoleFor(d.name);
 
-		if (d.is_os_disk || role === null || role.role !== "state-storage")
+		if (d.is_os_disk || role === null || role.role !== k.role)
 			continue;
 		const opt = document.createElement("option");
 
@@ -3291,8 +3312,8 @@ function renderStateStorage() {
 	}
 	select.value = prevValue;
 
-	const statusP = document.getElementById("ss-migrate-status");
-	const m = cache.stateStorageMigrate;
+	const statusP = document.getElementById(k.statusId);
+	const m = cache[k.statusCacheKey];
 
 	if (!m || m.state === "none") {
 		statusP.hidden = true;
@@ -3306,21 +3327,30 @@ function renderStateStorage() {
 	}
 }
 
-document.getElementById("ss-migrate-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
+function renderAllStoragePlacements() {
+	renderStoragePlacement("state");
+	renderStoragePlacement("logs");
+}
 
-	const disk = document.getElementById("ss-target-disk").value;
+for (const kind of Object.keys(STORAGE_KINDS)) {
+	const k = STORAGE_KINDS[kind];
 
-	try {
-		cache.stateStorageMigrate = await apiRequest("POST", "/v1/system/state-storage/migrate", {
-			disk: disk === "" ? null : disk,
-		});
-		clearStatus();
-		renderStateStorage();
-	} catch (e) {
-		showStatus("Failed to start state-storage migration: " + e.message, true);
-	}
-});
+	document.getElementById(k.formId).addEventListener("submit", async (event) => {
+		event.preventDefault();
+
+		const disk = document.getElementById(k.selectId).value;
+
+		try {
+			cache[k.statusCacheKey] = await apiRequest("POST", "/v1/system/" + k.endpoint + "/migrate", {
+				disk: disk === "" ? null : disk,
+			});
+			clearStatus();
+			renderStoragePlacement(kind);
+		} catch (e) {
+			showStatus("Failed to start " + k.label.toLowerCase() + " migration: " + e.message, true);
+		}
+	});
+}
 
 function renderDisks() {
 	const body = document.getElementById("disks-body");
@@ -6209,8 +6239,10 @@ async function poll() {
 		await refreshDisks();
 		await refreshDiskRoles();
 		await refreshDiskFormatStatuses();
-		await refreshStateStorage();
-		await refreshStateStorageMigrate();
+		await refreshStoragePlacement("state");
+		await refreshStoragePlacementMigrate("state");
+		await refreshStoragePlacement("logs");
+		await refreshStoragePlacementMigrate("logs");
 		await refreshDnsRecords();
 		await refreshDnsServers();
 		await refreshLdapServers();
