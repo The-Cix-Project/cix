@@ -674,6 +674,28 @@ static void fmt_disk_line(const struct json_value *v)
 	printf("%-12s %-16s %8.1f GiB  %-32s %-9s %-9s %s\n", dev_path, name, size_gib,
 	       model != NULL && model[0] != '\0' ? model : "-", removable ? "removable" : "fixed",
 	       is_os_disk ? "os-disk" : "assignable", mount_col);
+
+	/* ADR-0142: real, live I/O counters + (when mounted) capacity, on
+	 * their own indented line -- keeps the primary row's own already-
+	 * wide layout unchanged for anyone scripting against its columns. */
+	{
+		long long reads = (long long)json_as_number(json_object_get(v, "reads_completed"));
+		long long writes = (long long)json_as_number(json_object_get(v, "writes_completed"));
+		long long io_time_ms = (long long)json_as_number(json_object_get(v, "io_time_ms"));
+
+		printf("             io: reads=%lld writes=%lld io_time_ms=%lld", reads, writes, io_time_ms);
+		if (mounted) {
+			double used_gib =
+			        (double)(long long)json_as_number(json_object_get(v, "used_bytes")) /
+			        (1024.0 * 1024.0 * 1024.0);
+			double free_gib =
+			        (double)(long long)json_as_number(json_object_get(v, "free_bytes")) /
+			        (1024.0 * 1024.0 * 1024.0);
+
+			printf(" used=%.1fGiB free=%.1fGiB", used_gib, free_gib);
+		}
+		printf("\n");
+	}
 }
 
 static void fmt_disk_list(const struct json_value *v)

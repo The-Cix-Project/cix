@@ -983,6 +983,8 @@ Real host block devices, whole disks only (partitions are never listed independe
 
 `mounted`/`mount_path` are real, current ground truth read fresh from `/proc/mounts` on every call — true if any partition on the disk (or the whole-disk device itself) is currently mounted, regardless of whether this daemon is the one that mounted it. Deliberately independent of the disk format job's own `state` (`GET /diskformat/{name}`, `"ready"` once a format+mount this daemon itself ran succeeds), which is purely in-memory, per-daemon-process state — forgotten across a restart even though the real mount persists, and blind to a disk mounted by hand or from before this mechanism existed. `GET /disks` is the one place to check whether a disk is *actually* mounted right now.
 
+`reads_completed`/`writes_completed`/`sectors_read`/`sectors_written`/`io_time_ms` (ADR-0142) are real, live counters straight from `/sys/block/<name>/stat` — monotonically increasing since boot, the same "poll and difference two samples yourself for a rate" convention this API's other cumulative counters already use, never a rate this daemon computes on your behalf. `io_time_ms` (the kernel's own "time spent doing I/Os") is the closest real, cheaply-available proxy for disk I/O delay/business this daemon exposes. `used_bytes`/`free_bytes` are real `statvfs(2)` numbers for `mount_path` — only meaningful when `mounted` is true; an unmounted disk has no filesystem context to ask, and both are `0` in that case (check `mounted`, don't infer it from these being zero).
+
 ### Persisted disk roles
 
 ```

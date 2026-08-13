@@ -45,6 +45,36 @@ struct discovered_disk {
 	 */
 	int mounted;
 	char mount_path[256];
+	/*
+	 * ADR-0142: real, live I/O counters straight from the kernel's own
+	 * per-block-device accounting (/sys/block/<name>/stat -- see
+	 * Documentation/admin-guide/iostats.rst upstream), fields 1/5/3/7/10
+	 * respectively -- a monotonically-increasing lifetime-since-boot
+	 * counter, the same shape /proc/net/dev-style counters this daemon
+	 * already exposes elsewhere (container network stats) use; a client
+	 * polling this endpoint computes its own rate by differencing two
+	 * samples, this module never tracks a delta of its own. io_time_ms
+	 * (field 10, "time spent doing I/Os") is this device's own I/O-busy
+	 * time -- the closest real, cheaply-available proxy for "disk I/O
+	 * delay" the kernel's own per-block-device stat file offers without
+	 * cgroup io.stat/PSI-level integration, which this daemon has no
+	 * other use for and isn't worth wiring up solely for this one field.
+	 * All zero if /sys/block/<name>/stat couldn't be read.
+	 */
+	unsigned long long reads_completed;
+	unsigned long long writes_completed;
+	unsigned long long sectors_read;
+	unsigned long long sectors_written;
+	unsigned long long io_time_ms;
+	/*
+	 * ADR-0142: real statvfs(2) capacity, only meaningful (and only
+	 * populated) when `mounted` -- an unmounted disk has no filesystem
+	 * context to ask. Both zero when not mounted or if statvfs(2) itself
+	 * failed; a client should treat "not mounted" (already reported) as
+	 * the reason, not infer it from these being zero.
+	 */
+	unsigned long long used_bytes;
+	unsigned long long free_bytes;
 };
 
 /*

@@ -6304,7 +6304,9 @@ components:
 
     Disk:
       type: object
-      required: [name, dev_path, model, size_bytes, removable, is_os_disk, mounted, mount_path]
+      required: [name, dev_path, model, size_bytes, removable, is_os_disk, mounted, mount_path,
+                 reads_completed, writes_completed, sectors_read, sectors_written, io_time_ms,
+                 used_bytes, free_bytes]
       properties:
         name:
           type: string
@@ -6343,6 +6345,35 @@ components:
         mount_path:
           type: string
           description: The real current mountpoint when mounted is true; empty string otherwise.
+        reads_completed:
+          type: integer
+          description: >
+            ADR-0142. Real, live, monotonically-increasing lifetime-
+            since-boot counter straight from /sys/block/<name>/stat --
+            a client polling this endpoint computes its own rate by
+            differencing two samples, the same convention this API's
+            other cumulative counters (container network stats) already
+            use.
+        writes_completed:
+          type: integer
+        sectors_read:
+          type: integer
+        sectors_written:
+          type: integer
+        io_time_ms:
+          type: integer
+          description: >
+            Milliseconds this device has spent with I/O in flight
+            (kernel's own "time spent doing I/Os" field) -- the closest
+            real, cheaply-available proxy for disk I/O delay/business
+            this daemon exposes, short of cgroup io.stat/PSI-level
+            integration.
+        used_bytes:
+          type: integer
+          description: Real statvfs(2) usage of mount_path. Only meaningful (non-zero) when mounted is true.
+        free_bytes:
+          type: integer
+          description: Real statvfs(2) free space of mount_path. Only meaningful (non-zero) when mounted is true.
 
     DiskRole:
       type: object

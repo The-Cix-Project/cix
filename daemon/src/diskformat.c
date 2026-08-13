@@ -202,6 +202,19 @@ void diskformat_write_status_json(struct json_writer *w, const char *want_disk_n
 	jw_obj_close(w);
 }
 
+/* Single mkdir+mount(2) attempt, shared by both the remembered-fs_type
+ * path and the probe path below. Returns 0 on success. */
+static int try_mount_one(const struct discovered_disk *d, const char *fs_type, const char *mount_base_dir,
+                          char *mount_path_out, size_t mount_path_out_size)
+{
+	if (snprintf(mount_path_out, mount_path_out_size, "%s/%s", mount_base_dir, d->name) >=
+	    (int)mount_path_out_size)
+		return -1;
+	if (mkdir(mount_path_out, 0755) != 0 && errno != EEXIST)
+		return -1;
+	return mount(d->dev_path, mount_path_out, fs_type, MS_NOSUID | MS_NODEV, NULL);
+}
+
 void diskformat_remount_present_role_disks(const char *os_containers_dir, const char *mount_base_dir)
 {
 	struct discovered_disk disks[DISK_ENUM_MAX];
@@ -219,26 +232,61 @@ void diskformat_remount_present_role_disks(const char *os_containers_dir, const 
 		if (role == NULL)
 			continue;
 		fs_type = diskrole_lookup_fs_type(disks[i].name);
-		if (fs_type == NULL)
-			continue; /* has a role, but was never successfully formatted */
 
-		if (snprintf(mount_path, sizeof(mount_path), "%s/%s", mount_base_dir, disks[i].name) >=
-		    (int)sizeof(mount_path)) {
-			fprintf(stderr, "diskformat_remount_present_role_disks: %s: mount path too long\n",
-			        disks[i].name);
+		if (fs_type != NULL) {
+			if (try_mount_one(&disks[i], fs_type, mount_base_dir, mount_path, sizeof(mount_path)) !=
+			    0) {
+				fprintf(stderr,
+				        "diskformat_remount_present_role_disks: %s: mount(2) failed: %s\n",
+				        disks[i].name, strerror(errno));
+				continue;
+			}
+			fprintf(stderr, "diskformat_remount_present_role_disks: remounted %s (%s) at %s\n",
+			        disks[i].name, fs_type, mount_path);
 			continue;
 		}
-		if (mkdir(mount_path, 0755) != 0 && errno != EEXIST) {
-			fprintf(stderr, "diskformat_remount_present_role_disks: %s: mkdir %s failed: %s\n",
-			        disks[i].name, mount_path, strerror(errno));
-			continue;
+
+		/*
+		 * No remembered fs_type -- a disk role-assigned and formatted
+		 * before diskrole_set_fs_type() existed (confirmed live: a
+		 * real, already-deployed box had exactly this disk, formatted
+		 * during the original Phase C work, well before this
+		 * persistence mechanism shipped). Rather than leaving it
+		 * permanently unmounted until an operator destructively
+		 * re-formats it, probe the two filesystem types this project's
+		 * own format mechanism has ever produced (fs_type_str()'s own
+		 * complete range) -- mount(2) with a mismatched fstype string
+		 * just fails cleanly (EINVAL, typically), the same safe,
+		 * standard technique real mount tooling already relies on when
+		 * a filesystem type isn't specified up front. Once one
+		 * succeeds, the discovery is persisted so every future boot
+		 * uses the direct, remembered path instead of probing again.
+		 */
+		{
+			static const char *const probe_types[] = { "ext4", "btrfs" };
+			size_t j;
+			int mounted = 0;
+
+			for (j = 0; j < sizeof(probe_types) / sizeof(probe_types[0]) && !mounted; j++) {
+				if (try_mount_one(&disks[i], probe_types[j], mount_base_dir, mount_path,
+				                   sizeof(mount_path)) == 0) {
+					mounted = 1;
+					fs_type = probe_types[j];
+				}
+			}
+			if (!mounted) {
+				fprintf(stderr,
+				        "diskformat_remount_present_role_disks: %s: has a role but no "
+				        "remembered fs_type, and probing ext4/btrfs both failed -- left "
+				        "unmounted\n",
+				        disks[i].name);
+				continue;
+			}
+			diskrole_set_fs_type(disks[i].name, fs_type);
+			fprintf(stderr,
+			        "diskformat_remount_present_role_disks: remounted %s (%s, discovered by "
+			        "probe) at %s\n",
+			        disks[i].name, fs_type, mount_path);
 		}
-		if (mount(disks[i].dev_path, mount_path, fs_type, MS_NOSUID | MS_NODEV, NULL) != 0) {
-			fprintf(stderr, "diskformat_remount_present_role_disks: %s: mount(2) failed: %s\n",
-			        disks[i].name, strerror(errno));
-			continue;
-		}
-		fprintf(stderr, "diskformat_remount_present_role_disks: remounted %s (%s) at %s\n",
-		        disks[i].name, fs_type, mount_path);
 	}
 }

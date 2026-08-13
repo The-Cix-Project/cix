@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/statvfs.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -120,6 +121,54 @@ static int resolve_os_disk_name(const char *os_containers_dir, char *out, size_t
 }
 
 /*
+ * ADR-0142: fills in e's own I/O counters from /sys/block/<name>/stat
+ * -- a fixed-format line of whitespace-separated integers (see
+ * Documentation/admin-guide/iostats.rst upstream); this project only
+ * ever reads fields 1 (reads completed), 3 (sectors read), 5 (writes
+ * completed), 7 (sectors written), and 10 (time spent doing I/Os, ms).
+ * Leaves every field 0 (already the case, out is always memset by the
+ * caller) if the file can't be read or doesn't parse -- never fatal to
+ * the rest of disk_enumerate().
+ */
+static void fill_io_stats(struct discovered_disk *e)
+{
+	char path[PATH_MAX];
+	FILE *f;
+	unsigned long long f1, f2, f3, f4, f5, f6, f7, f8, f9, f10;
+
+	snprintf(path, sizeof(path), "%s/%s/stat", SYS_BLOCK_DIR, e->name);
+	f = fopen(path, "r");
+	if (f == NULL)
+		return;
+	if (fscanf(f, "%llu %llu %llu %llu %llu %llu %llu %llu %llu %llu", &f1, &f2, &f3, &f4, &f5, &f6,
+	           &f7, &f8, &f9, &f10) == 10) {
+		e->reads_completed = f1;
+		e->sectors_read = f3;
+		e->writes_completed = f5;
+		e->sectors_written = f7;
+		e->io_time_ms = f10;
+	}
+	fclose(f);
+}
+
+/*
+ * ADR-0142: real statvfs(2) capacity for e's own mount_path -- caller's
+ * responsibility to only call this once e->mounted is already known
+ * true (fill_mount_status() below runs first). Leaves both fields 0 on
+ * any statvfs(2) failure -- never fatal.
+ */
+static void fill_capacity(struct discovered_disk *e)
+{
+	struct statvfs st;
+
+	if (statvfs(e->mount_path, &st) != 0)
+		return;
+	e->used_bytes = ((unsigned long long)st.f_blocks - (unsigned long long)st.f_bfree) *
+	                (unsigned long long)st.f_frsize;
+	e->free_bytes = (unsigned long long)st.f_bavail * (unsigned long long)st.f_frsize;
+}
+
+/*
  * One real pass over /proc/mounts (the same ground-truth source
  * resolve_os_disk_name() above already trusts), matching each mounted
  * device back to its parent whole disk via disk_name_from_partition()
@@ -156,6 +205,7 @@ static void fill_mount_status(struct discovered_disk *out, int count)
 				continue;
 			out[i].mounted = 1;
 			snprintf(out[i].mount_path, sizeof(out[i].mount_path), "%s", mountpoint);
+			fill_capacity(&out[i]);
 		}
 	}
 	fclose(f);
@@ -219,6 +269,8 @@ int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containe
 		if (os_disk_name[0] != '\0' && strcmp(e->name, os_disk_name) == 0)
 			e->is_os_disk = 1;
 
+		fill_io_stats(e);
+
 		count++;
 	}
 	closedir(d);
@@ -245,6 +297,20 @@ void disk_write_json_one(const struct discovered_disk *d, struct json_writer *w)
 	jw_bool(w, d->mounted);
 	jw_key(w, "mount_path");
 	jw_str(w, d->mount_path);
+	jw_key(w, "reads_completed");
+	jw_int(w, (long long)d->reads_completed);
+	jw_key(w, "writes_completed");
+	jw_int(w, (long long)d->writes_completed);
+	jw_key(w, "sectors_read");
+	jw_int(w, (long long)d->sectors_read);
+	jw_key(w, "sectors_written");
+	jw_int(w, (long long)d->sectors_written);
+	jw_key(w, "io_time_ms");
+	jw_int(w, (long long)d->io_time_ms);
+	jw_key(w, "used_bytes");
+	jw_int(w, (long long)d->used_bytes);
+	jw_key(w, "free_bytes");
+	jw_int(w, (long long)d->free_bytes);
 	jw_obj_close(w);
 }
 

@@ -3371,7 +3371,7 @@ function renderDisks() {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
 
-		cell.colSpan = 8;
+		cell.colSpan = 10;
 		cell.className = "empty";
 		cell.textContent = "No disks found";
 		row.appendChild(cell);
@@ -3420,6 +3420,23 @@ function diskRow(d) {
 	mountedBadge.textContent = d.mounted ? d.mount_path : "not mounted";
 	mountedCell.appendChild(mountedBadge);
 	row.appendChild(mountedCell);
+
+	/* ADR-0142: real statvfs(2) usage, only meaningful while mounted. */
+	const usageCell = document.createElement("td");
+
+	usageCell.textContent = d.mounted
+		? formatBytes(d.used_bytes) + " used / " + formatBytes(d.free_bytes) + " free"
+		: "-";
+	row.appendChild(usageCell);
+
+	/* ADR-0142: real, live, monotonically-increasing counters straight
+	 * from /sys/block/<name>/stat -- not a rate (no client-side delta
+	 * tracking here, each poll just shows the current lifetime totals,
+	 * matching this table's own "state right now" convention). */
+	const ioCell = document.createElement("td");
+
+	ioCell.textContent = "r=" + d.reads_completed + " w=" + d.writes_completed + " busy=" + d.io_time_ms + "ms";
+	row.appendChild(ioCell);
 
 	const role = diskRoleFor(d.name);
 	const roleCell = document.createElement("td");
