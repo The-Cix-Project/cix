@@ -2,6 +2,17 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 118 (done): `nss-pam-ldapd` 0.9.13-2 -- real `/run` pidfile/socket paths, found while wiring `nslcd` for real (ADR-0144, part 8 of N)
+
+A real, confirmed-needed follow-up found while actually starting `nslcd` for the first time (task #833's own part D): `nslcd`'s upstream compiled-in defaults are `/var/run/nslcd/nslcd.pid` and `/var/run/nslcd/socket` -- the exact same "`/var/run` doesn't exist in these images, only `/run` does" gap this project already hit and documented for `dnsmasq`'s and `chrony`'s own default pidfile paths (see `CLAUDE.md`'s environment notes). Not a new TCC-vs-upstream gap; every one of Part 117's own `nss-pam-ldapd` source files still compiles clean unchanged.
+
+#### Fixed
+- `pkg/recipes/nss-pam-ldapd/0.9.13-2/build.sh`: added `--with-nslcd-pidfile=/run/nslcd/nslcd.pid --with-nslcd-socket=/run/nslcd/socket` to the `./configure` invocation -- both real, first-class upstream configure knobs (confirmed via `configure --help`), not a source patch. Package versions are immutable once published (ADR-0107), so this is a new `-2` revision rather than an edit to `0.9.13`.
+
+#### Verified
+- A local reconfigure confirmed the generated `config.h` now defines `NSLCD_PIDFILE "/run/nslcd/nslcd.pid"` / `NSLCD_SOCKET "/run/nslcd/socket"`; a full local `make` through `compat`/`common`/`nss`/`pam`/`nslcd` built clean, and the resulting `nslcd` binary's own strings confirm both paths compiled in.
+- The formal `0.9.13-2` recipe driven through the real `pkg` pipeline end to end on both the local dev daemon and the real target box (192.168.15.95's `jumpbox` image, upgrading cleanly over the already-installed `0.9.13`).
+
 ### Part 117 (done): `nss-pam-ldapd` recipe -- real NSS/PAM LDAP lookups, closes task #832 (ADR-0144, part 7 of N)
 
 Third and final landing of ADR-0144's container-side real-LDAP chain (task #832, now complete): `libnss_ldap.so.2`/`pam_ldap.so`/`nslcd`, built from real source on top of Parts 115-116's own `openldap-client`/`linux-pam` foundations. A container running all three recipes can resolve real Kanxeo LDAP accounts via ordinary `getpwnam()`/`getgrnam()`/PAM -- the mechanism a future PAM-enabled `openssh` rebuild will actually use for real SSH login, replacing the file-rendering SSH-target mechanism this whole ADR set out to retire.
