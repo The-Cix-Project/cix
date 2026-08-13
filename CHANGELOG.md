@@ -2,6 +2,23 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 110 (done): container DNS resolution via an explicit `dns_servers` field (ADR-0143)
+
+Investigated directly (not assumed) after a deferred user question: does a container get DNS resolution via an explicit host mapping/binding, or a standard/global resolv.conf? Neither -- confirmed by reading every relevant code path, a container had **no** DNS resolution capability from Kanxeo at all before this. Closes that real, previously-undiscovered gap.
+
+#### Added
+- New optional `"dns_servers"` array field on `POST /v1/containers`: 0-3 IPv4 addresses (`RESOLV_MAX_NAMESERVERS`, the same cap `PUT /system/resolv` already enforces for the host's own resolver), staged as a real `/etc/resolv.conf` directly into the container's own overlay upperdir before its process ever `execve()`s -- reusing the exact `files[]` pre-clone3 staging mechanism, not a second file-write path. `400` if combined with an explicit `files[]` entry for `/etc/resolv.conf` -- an unresolvable ambiguity, surfaced loudly.
+- `struct registry_entry` gained `dns_server_ips`/`dns_server_count` (display-only, same "id not content" shape `file_paths` already has); echoed on every `GET /containers`/`GET /containers/{name}` response.
+- `kanxeoctl run --dns-server=A.B.C.D` (repeatable, up to 3), and a new "DNS servers" field on the web dashboard's run-form (Networking section) and a matching read-only field on a container's own Options tab.
+- `test/test_container_dns_servers.c`: invalid IP, too-many-entries, the `files[]` conflict, and -- fully testable in this sandbox, no real disposable disk needed -- the real success path: the actual staged `/etc/resolv.conf` content read back from the host side, correct echo on `GET`, and confirmation nothing is staged when the field is omitted.
+- `docs/adr/0143-container-dns-servers-field.md`: the investigation's own findings and the design reasoning (deliberately explicit, no auto-wiring to a registered internal `.internal`-zone DNS server -- same posture ADR-0076 already established for the host's own equivalent case).
+
+#### Changed
+- `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/cli-reference.md` updated together, in this same change.
+
+#### Verified
+- Full clean rebuild (`-Wall -Werror`, zero warnings across all 69 build targets). Full regression sweep (45 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_restart`, reproduced clean on immediate retry, unrelated to this change). Real headless-browser session (Chromium via `puppeteer-core`) confirmed the new Options-tab field renders the real staged nameserver list, and the run-form's own new field exists and is wired.
+
 ### Part 109 (done): container-storage post-creation migration (ADR-0142 Section 4)
 
 The last piece ADR-0141's own six-phase plan explicitly scoped out ("chosen once at POST /containers time, not movable after") and ADR-0142 Section 4 picked back up once the daemon-wide migration mechanism was already proven: `POST/GET /v1/containers/{name}/migrate-storage`, moving one container's own overlay storage to a disk carrying the `container-storage` role (or back to the default OS-disk placement) without a DELETE+recreate.

@@ -7008,6 +7008,9 @@ static int create_container_from_body(const char *body, size_t body_len,
 	int file_count = 0;
 	struct container_sysctl sysctl_specs[CONTAINER_MAX_SYSCTLS];
 	int sysctl_count = 0;
+	const struct json_value *jdns_servers;
+	char dns_server_ips[RESOLV_MAX_NAMESERVERS][RESOLV_IP_STRLEN];
+	int dns_server_count = 0;
 	const struct json_value *jdns_register;
 	int dns_register = 0;
 	const struct json_value *jpki_issue, *jpki_cert_dir, *jpki_days;
@@ -7051,6 +7054,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	jinterfaces = json_object_get(root, "interfaces");
 	jfiles = json_object_get(root, "files");
 	jsysctls = json_object_get(root, "sysctls");
+	jdns_servers = json_object_get(root, "dns_servers");
 	jdns_register = json_object_get(root, "dns_register");
 	jpki_issue = json_object_get(root, "pki_issue");
 	jpki_cert_dir = json_object_get(root, "pki_cert_dir");
@@ -7470,7 +7474,43 @@ static int create_container_from_body(const char *body, size_t body_len,
 				snprintf(err_msg, err_msg_size, "files mode must be 0-0777 octal");
 				return 400;
 			}
+			if (jdns_servers != NULL && strcmp(path, "/etc/resolv.conf") == 0) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size,
+				         "cannot combine dns_servers with an explicit files[] entry for "
+				         "/etc/resolv.conf -- pick one");
+				return 400;
+			}
 		}
+	}
+	/*
+	 * ADR-0143: optional real /etc/resolv.conf staged into the
+	 * container's own upperdir, same shape files[] already uses --
+	 * deliberately explicit (no auto-wiring to any registered internal
+	 * DNS server), same posture ADR-0076 already established for the
+	 * host's own equivalent PUT /system/resolv. RESOLV_MAX_NAMESERVERS
+	 * is resolv.c's own cap (matches glibc's real resolv.conf MAXNS),
+	 * reused here rather than a second invented limit.
+	 */
+	if (jdns_servers != NULL) {
+		if (jdns_servers->type != JSON_ARRAY || jdns_servers->u.array.count > RESOLV_MAX_NAMESERVERS) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "dns_servers must be an array of at most %d entries",
+			         RESOLV_MAX_NAMESERVERS);
+			return 400;
+		}
+		for (i = 0; i < jdns_servers->u.array.count; i++) {
+			const char *ip = json_as_string(jdns_servers->u.array.items[i]);
+			struct in_addr addr;
+
+			if (ip == NULL || inet_pton(AF_INET, ip, &addr) != 1) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size, "dns_servers entries must be valid IPv4 addresses");
+				return 400;
+			}
+			snprintf(dns_server_ips[i], sizeof(dns_server_ips[i]), "%s", ip);
+		}
+		dns_server_count = (int)jdns_servers->u.array.count;
 	}
 	if (jsysctls != NULL) {
 		if (jsysctls->type != JSON_OBJECT || jsysctls->u.object.count > CONTAINER_MAX_SYSCTLS) {
@@ -7650,6 +7690,39 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 		file_count = (int)jfiles->u.array.count;
 	}
+	if (dns_server_count > 0) {
+		char content[RESOLV_MAX_NAMESERVERS * (RESOLV_IP_STRLEN + 16)];
+		size_t content_len = 0;
+		char target[PATH_MAX];
+		char target_dir[PATH_MAX];
+		int fd;
+
+		content[0] = '\0';
+		for (i = 0; i < (size_t)dns_server_count; i++)
+			content_len += (size_t)snprintf(content + content_len, sizeof(content) - content_len,
+			                                 "nameserver %s\n", dns_server_ips[i]);
+
+		if (snprintf(target, sizeof(target), "%s/etc/resolv.conf", upperdir) >= (int)sizeof(target)) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "dns_servers path too long");
+			return 500;
+		}
+		snprintf(target_dir, sizeof(target_dir), "%s/etc", upperdir);
+		if (persist_mkdir_p(target_dir) != 0) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "failed to stage dns_servers");
+			return 500;
+		}
+		fd = open(target, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+		if (fd < 0 || write(fd, content, content_len) != (ssize_t)content_len) {
+			if (fd >= 0)
+				close(fd);
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "failed to stage dns_servers");
+			return 500;
+		}
+		close(fd);
+	}
 
 	memset(&spec, 0, sizeof(spec));
 	spec.ns.clone_flags = CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWNET |
@@ -7774,7 +7847,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 
 	rerr = registry_create(name, image, resolved_image_version, &spec, net_attachments, net_count,
 	                        ip_forward,
-	                        device_attachments, device_count, file_paths, file_count, disk_name, &entry);
+	                        device_attachments, device_count, file_paths, file_count, disk_name,
+	                        dns_server_ips, dns_server_count, &entry);
 	/*
 	 * Captured immediately, before json_free() below -- container_create()
 	 * (via registry_create()) always preserves errno across every one of
@@ -14827,7 +14901,7 @@ static void handle_pkg_fetch_event(struct conn *cc)
 		struct registry_entry *entry;
 		enum registry_error rerr =
 		    registry_create(PKG_BUILD_CONTAINER_NAME, "pkgbuild", "", &spec, NULL, 0, 0, NULL, 0,
-		                     NULL, 0, NULL, &entry);
+		                     NULL, 0, NULL, NULL, 0, &entry);
 
 		/*
 		 * The child (if registry_create() actually forked one)

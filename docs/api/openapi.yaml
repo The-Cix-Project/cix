@@ -5347,6 +5347,27 @@ components:
             mounted, or lacks that role; this is the one thing that
             makes the role (assignable since Phase B) actually
             connect to anything. Omit for the default placement.
+        dns_servers:
+          type: array
+          items:
+            type: string
+          maxItems: 3
+          description: >
+            IPv4 nameserver addresses (ADR-0143) to stage as a real
+            /etc/resolv.conf inside this container's own overlay,
+            before its process ever starts -- the same "written
+            directly into the upperdir pre-clone3()" mechanism `files`
+            above already uses, a dedicated field rather than requiring
+            hand-constructed resolv.conf content via `files`. Up to 3
+            (matches glibc's own resolv.conf MAXNS). Deliberately
+            explicit -- no automatic discovery of a registered internal
+            DNS server container (see `dns server register`); point
+            this at that container's own real IP directly if `.internal`
+            resolution is wanted. 400 if combined with a `files` entry
+            whose path is "/etc/resolv.conf" -- an unresolvable
+            ambiguity about which one should apply. Omit for no
+            resolver config staged (a container brings its own, or has
+            none).
         networks:
           type: array
           items:
@@ -5946,6 +5967,16 @@ components:
             The disk (see ContainerCreateRequest.disk) this
             container's own overlay storage lives on, or null for the
             default OS-disk placement (task #638, ADR-0102).
+        dns_servers:
+          type: array
+          items:
+            type: string
+          description: >
+            The nameserver IPs (see ContainerCreateRequest.dns_servers,
+            ADR-0143) staged into this container's own /etc/resolv.conf
+            at creation time, id-only like `files` above (not the
+            resolv.conf content itself, already implied by the list).
+            Empty if none were given.
         restart:
           type: string
           enum: [always, on-failure, unless-stopped, no]

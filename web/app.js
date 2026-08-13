@@ -2220,6 +2220,7 @@ function renderContainerDetail(name) {
 	);
 	optionsFields.appendChild(fieldBlock("Pinned image version", c.image_version || "-"));
 	optionsFields.appendChild(fieldBlock("Depends on", (c.depends_on || []).join(", ") || "-"));
+	optionsFields.appendChild(fieldBlock("DNS servers", (c.dns_servers || []).join(", ") || "-"));
 	optionsFields.appendChild(
 		fieldBlock(
 			"Readiness",
@@ -5320,6 +5321,7 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 	const ipForward = document.getElementById("f-ip-forward").checked;
 	const dnsRegister = document.getElementById("f-dns-register").checked;
 	const routesText = document.getElementById("f-routes").value.trim();
+	const dnsServersText = document.getElementById("f-dns-servers").value.trim();
 	const devices = Array.from(document.getElementById("f-devices").selectedOptions).map((o) => o.value);
 	const interfaces = Array.from(document.getElementById("f-interfaces").selectedOptions).map((o) => o.value.replace(/^net:/, ""));
 	const restart = document.getElementById("f-restart").value;
@@ -5378,6 +5380,12 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 					via: entry.slice(colonIdx + 1),
 				};
 			});
+	}
+	if (dnsServersText !== "") {
+		body.dns_servers = dnsServersText
+			.split(",")
+			.map((s) => s.trim())
+			.filter((s) => s.length > 0);
 	}
 	if (devices.length > 0)
 		body.devices = devices;

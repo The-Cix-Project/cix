@@ -1100,6 +1100,24 @@ POST /v1/containers
 - Both survive exactly like everything else in `restart: "always"`'s own replay mechanism — no separate persistence work needed. See ADR-0030.
 - `cmd` itself is echoed back on every `GET /containers`/`GET /containers/{name}` response (`ADR-0100`) — previously there was no way to ask a running or stopped container "what is your entrypoint," since the create request's own `argv` only ever pointed into that request's transient parsed body.
 
+## Container DNS resolution (ADR-0143)
+
+```
+POST /v1/containers
+{
+  "name": "app1",
+  "image": "base",
+  "cmd": ["/usr/bin/myapp"],
+  "dns_servers": ["192.168.15.101", "192.168.15.102"]
+}
+```
+
+`dns_servers` is optional: 0–3 IPv4 addresses (matches glibc's own `resolv.conf` `MAXNS`, the same `RESOLV_MAX_NAMESERVERS` constant `PUT /system/resolv` already enforces for the *host's* own resolver). When given, staged as a real `/etc/resolv.conf` (`nameserver a.b.c.d` per line) directly into the container's own overlay before its process ever `execve()`s — the exact same pre-clone3 staging mechanism `files` above already uses, just a dedicated field so an operator doesn't have to hand-construct resolv.conf syntax themselves. `400` if the request also supplies a `files` entry whose `path` is `/etc/resolv.conf` — an unresolvable ambiguity, surfaced loudly rather than one silently overwriting the other. Echoed back on every `GET /containers`/`GET /containers/{name}` response (id-only, like `files`), and survives `restart: "always"`'s own replay mechanism the same way every other creation-time field does.
+
+**Deliberately explicit — no automatic wiring to a registered internal DNS server.** This project's own `.internal`-zone DNS servers (`dns record create`, `dns server register --container=NAME` — see below) are entirely opt-in and there can be zero, one, or several of them on different networks at once; Kanxeo never guesses which one a given container should use, the same posture `PUT /system/resolv` already established for the host's own outbound resolution (ADR-0076). To give a container working `.internal` resolution, point `dns_servers` at that DNS-server container's own real IP directly (`GET /containers/{name}` on it, or `kanxeoctl inspect dns-1`).
+
+Before this field existed, a container had no DNS resolution capability from Kanxeo at all — not even the host's own outbound resolver config was ever propagated into a container's namespace. A container that needs DNS and doesn't set `dns_servers` still has none unless its own image bakes one in.
+
 ## Package manager: source-based, asynchronous installs
 
 A package manager built from scratch: recipes are shell scripts (the same format Gentoo ebuilds/Arch PKGBUILDs/CRUX Pkgfiles use), builds happen inside this project's own container runtime, and the daemon **never sources or executes a recipe on the host** — recipe metadata (`pkg_name=`, `pkg_version=`, `pkg_source=`, `pkg_sha256=`, `pkg_depends=`) is read with a strict, non-executing line scanner; the recipe's real shell code (`pkg_build()`/`pkg_install()`) only ever runs inside the isolated, network-less build container. See [`docs/guides/writing-recipes.md`](../guides/writing-recipes.md) for the full recipe-authoring contract.

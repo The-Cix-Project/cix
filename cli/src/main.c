@@ -69,7 +69,7 @@ static void print_usage(FILE *out)
 	        "      [--route=DEST/PREFIX:VIA ...] [--device=ID ...]\n"
 	        "      [--interface=IFNAME ...] [--restart=always|on-failure|unless-stopped]\n"
 	        "      [--restart-delay=N] [--follow-rolling] [--follow-rolling-jitter-seconds=N]\n"
-	        "      [--depends-on=NAME ...]\n"
+	        "      [--depends-on=NAME ...] [--dns-server=A.B.C.D ...]\n"
 	        "      [--readiness-tcp-port=N [--readiness-timeout=N]] -- CMD [ARGS...]\n"
 	        "  inspect NAME\n"
 	        "  stop NAME  -- kill it now, keep its persisted definition (unlike rm)\n"
@@ -2927,6 +2927,8 @@ static int cmd_console(const struct kx_client *c, int argc, char **argv)
 #define CLI_MAX_FILES 16
 /* Matches daemon's CONTAINER_MAX_SYSCTLS -- see include/container.h. */
 #define CLI_MAX_SYSCTLS 32
+/* Matches daemon's RESOLV_MAX_NAMESERVERS -- see daemon/include/resolv.h (ADR-0143). */
+#define CLI_MAX_DNS_SERVERS 3
 
 struct cli_route {
 	char dest[64];
@@ -4033,6 +4035,8 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	const char *cpuset_cpus = NULL;
 	long long disk_quota_bytes = -1;
 	const char *disk = NULL;
+	const char *dns_servers[CLI_MAX_DNS_SERVERS];
+	int dns_server_count = 0;
 	int i = 0;
 	int cmd_start = -1;
 	struct json_writer w;
@@ -4162,6 +4166,13 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 				return 2;
 			}
 			sysctl_count++;
+		} else if (strncmp(argv[i], "--dns-server=", 13) == 0) {
+			if (dns_server_count >= CLI_MAX_DNS_SERVERS) {
+				fprintf(stderr, "kanxeoctl: too many --dns-server= flags (max %d)\n",
+				        CLI_MAX_DNS_SERVERS);
+				return 2;
+			}
+			dns_servers[dns_server_count++] = argv[i] + 13;
 		} else {
 			fprintf(stderr, "kanxeoctl: unknown run option '%s'\n", argv[i]);
 			return 2;
@@ -4184,6 +4195,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		        "[--depends-on=NAME ...] "
 		        "[--readiness-tcp-port=N [--readiness-timeout=N]] "
 		        "[--file=CONTAINER_PATH=LOCAL_PATH[:MODE] ...] [--sysctl=KEY=VALUE ...] "
+		        "[--dns-server=A.B.C.D ...] "
 		        "-- CMD [ARGS...]\n");
 		return 2;
 	}
@@ -4381,6 +4393,13 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 			jw_str(&w, sysctls[i].value);
 		}
 		jw_obj_close(&w);
+	}
+	if (dns_server_count > 0) {
+		jw_key(&w, "dns_servers");
+		jw_arr_open(&w);
+		for (i = 0; i < dns_server_count; i++)
+			jw_str(&w, dns_servers[i]);
+		jw_arr_close(&w);
 	}
 	jw_obj_close(&w);
 

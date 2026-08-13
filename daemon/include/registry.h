@@ -5,6 +5,7 @@
 #include "diskrole.h"
 #include "json.h"
 #include "network.h"
+#include "resolv.h"
 
 #include <time.h>
 
@@ -163,6 +164,16 @@ struct registry_entry {
 	 */
 	char disk_name[DISKROLE_DISK_NAME_MAX];
 	/*
+	 * The real /etc/resolv.conf nameserver IPs staged into this
+	 * container's own upperdir at creation time (POST /v1/containers'
+	 * own "dns_servers" field, ADR-0143) -- display-only, the exact
+	 * same "id not content" precedent file_paths above already has;
+	 * RESOLV_MAX_NAMESERVERS is resolv.h's own cap, reused here rather
+	 * than a second invented limit.
+	 */
+	char dns_server_ips[RESOLV_MAX_NAMESERVERS][RESOLV_IP_STRLEN];
+	int dns_server_count; /* 0 = no dns_servers given */
+	/*
 	 * Opaque; owned exclusively by main.c's epoll bookkeeping
 	 * (registry.c never reads or writes it beyond zeroing it here).
 	 * Holds the reactor's `struct conn *` wrapper for this entry's
@@ -234,6 +245,11 @@ void registry_init(void);
  * display-only reasoning file_paths/file_count already have; the
  * caller has already resolved the actual filesystem paths (spec->ov.*)
  * before calling this.
+ *
+ * dns_server_ips/dns_server_count (ADR-0143): the same display-only
+ * "already staged onto disk, this is purely so GET can echo it" shape
+ * file_paths/file_count already have, for the "dns_servers" field's
+ * own nameserver list; pass NULL/0 if none.
  */
 enum registry_error registry_create(const char *name, const char *image,
                                      const char *image_version, const struct container_spec *spec,
@@ -243,7 +259,8 @@ enum registry_error registry_create(const char *name, const char *image,
                                      int device_count,
                                      const char file_paths[][CONTAINER_FILE_PATH_MAX],
                                      int file_count, const char *disk_name,
-                                     struct registry_entry **out);
+                                     const char dns_server_ips[][RESOLV_IP_STRLEN],
+                                     int dns_server_count, struct registry_entry **out);
 
 struct registry_entry *registry_find(const char *name);
 

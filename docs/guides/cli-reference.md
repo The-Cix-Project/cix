@@ -103,6 +103,7 @@ run --name=NAME --image=IMAGE
     [--depends-on=NAME ...]
     [--readiness-tcp-port=N [--readiness-timeout=N]]
     [--file=CONTAINER_PATH=LOCAL_PATH[:MODE] ...] [--sysctl=KEY=VALUE ...]
+    [--dns-server=A.B.C.D ...]
     -- CMD [ARGS...]
 ```
 
