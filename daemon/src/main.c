@@ -1113,6 +1113,32 @@ static int boot_init(void)
 	    mount_or_fail("tmpfs", g_base_dir, "tmpfs", MS_NOSUID | MS_NODEV) != 0)
 		return -1;
 	/*
+	 * ADR-0141 fix (found live, 192.168.15.95): must run here, not just
+	 * from main()'s own later call below boot_init()'s return -- the
+	 * resolv.conf open+bind-mount immediately below this comment (and
+	 * any future boot_init() step touching a grouped-layout path) reads
+	 * RESOLV_CONF_PATH/STATE_DIR/REBUILDABLE_DIR *before* main() ever
+	 * gets a chance to migrate an old-flat-layout box's real content
+	 * into them. Confirmed the hard way: on this box's first boot after
+	 * the STATE_DIR/REBUILDABLE_DIR grouping shipped, boot_init()'s own
+	 * O_CREAT (no O_TRUNC) opened a brand-new, empty RESOLV_CONF_PATH
+	 * (nothing had migrated there yet) and bind-mounted /etc/resolv.conf
+	 * onto *that* inode; main()'s later migrate_flat_layout_to_grouped()
+	 * then rename(2)'d the box's real, historical resolv.conf into the
+	 * same path -- which only repoints the directory entry, not the
+	 * already-bind-mounted inode -- leaving /etc/resolv.conf silently,
+	 * permanently empty (every GET/PUT /v1/system/resolv still worked
+	 * correctly, since resolv.c operates on the path, not the stale
+	 * mount) until a second reboot, by which point nothing was left to
+	 * migrate and the race couldn't recur. Calling it here, before any
+	 * grouped-path use in this function, closes the race outright.
+	 * Idempotent (a no-op once already-migrated) -- main()'s own call
+	 * right after boot_init() returns stays in place, unchanged, for
+	 * the non-init-mode (test/dev) path that never reaches this
+	 * function at all.
+	 */
+	migrate_flat_layout_to_grouped();
+	/*
 	 * ADR-0076: the host's own outbound DNS resolver config.
 	 * RESOLV_CONF_PATH (<g_base_dir>/resolv.conf) is real, persisted
 	 * state -- ordinary create-if-missing (O_CREAT, no O_TRUNC, so a
