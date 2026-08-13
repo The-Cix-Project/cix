@@ -2239,6 +2239,9 @@ function renderContainerDetail(name) {
 		"No files staged"
 	);
 
+	renderContainerStorage(name);
+	refreshContainerStorageMigrate(name);
+
 	document.getElementById("cd-start").onclick = () => startContainer(c.name);
 	document.getElementById("cd-pause").onclick = () => pauseContainer(c.name);
 	document.getElementById("cd-unpause").onclick = () => unpauseContainer(c.name);
@@ -3362,6 +3365,98 @@ for (const kind of Object.keys(STORAGE_KINDS)) {
 		}
 	});
 }
+
+/*
+ * ADR-0142 Section 4: one container's own overlay-storage placement --
+ * same shape as STORAGE_KINDS above (current placement text, migrate
+ * form populated from container-storage-role disks, inline migration
+ * status), but keyed by whichever container's detail view is
+ * currently open rather than a fixed daemon-wide slot, since cache.disks/
+ * diskRoleFor() are already kept fresh by the global poll loop
+ * regardless of which view is active.
+ */
+async function refreshContainerStorageMigrate(name) {
+	if (currentContainerDetailName !== name)
+		return;
+	try {
+		cache.containerStorageMigrate = await apiRequest(
+			"GET",
+			"/v1/containers/" + encodeURIComponent(name) + "/migrate-storage"
+		);
+	} catch (e) {
+		cache.containerStorageMigrate = null;
+	}
+	if (currentContainerDetailName === name)
+		renderContainerStorage(name);
+}
+
+function renderContainerStorage(name) {
+	const c = cache.containers.find((x) => x.name === name);
+	const current = document.getElementById("cd-storage-current");
+
+	if (!c)
+		return;
+	current.textContent = "Storage: " + (c.disk || "default OS-disk placement");
+
+	const select = document.getElementById("cd-storage-target-disk");
+	const prevValue = select.value;
+
+	select.textContent = "";
+	{
+		const opt = document.createElement("option");
+
+		opt.value = "";
+		opt.textContent = "(default OS-disk placement)";
+		select.appendChild(opt);
+	}
+	for (const d of cache.disks) {
+		const role = diskRoleFor(d.name);
+
+		if (d.is_os_disk || role === null || role.role !== "container-storage")
+			continue;
+		const opt = document.createElement("option");
+
+		opt.value = d.name;
+		opt.textContent = d.name + (d.model ? " (" + d.model + ")" : "");
+		select.appendChild(opt);
+	}
+	select.value = prevValue;
+
+	const statusP = document.getElementById("cd-storage-migrate-status");
+	const m = cache.containerStorageMigrate;
+
+	if (!m || m.state === "none") {
+		statusP.hidden = true;
+	} else {
+		statusP.hidden = false;
+		statusP.textContent =
+			"Migration: " +
+			m.state +
+			(m.disk ? " (" + m.disk + ")" : "") +
+			(m.state === "failed" && m.error ? " -- " + m.error : "");
+	}
+}
+
+document.getElementById("cd-storage-migrate-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+	if (currentContainerDetailName === null)
+		return;
+
+	const name = currentContainerDetailName;
+	const disk = document.getElementById("cd-storage-target-disk").value;
+
+	try {
+		cache.containerStorageMigrate = await apiRequest(
+			"POST",
+			"/v1/containers/" + encodeURIComponent(name) + "/migrate-storage",
+			{ disk: disk === "" ? null : disk }
+		);
+		clearStatus();
+		renderContainerStorage(name);
+	} catch (e) {
+		showStatus("Failed to start storage migration for " + name + ": " + e.message, true);
+	}
+});
 
 function renderDisks() {
 	const body = document.getElementById("disks-body");

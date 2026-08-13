@@ -143,6 +143,24 @@
 			</div>
 			<div class="tab-panel" id="cd-panel-options" data-tab="options" hidden>
 				<div class="detail-grid" id="cd-options-fields"></div>
+				<h3>Storage placement</h3>
+				<p class="hint" id="cd-storage-current">Storage: unknown</p>
+				<p class="hint" id="cd-storage-migrate-status" hidden></p>
+				<form id="cd-storage-migrate-form">
+					<label>
+						Migrate to
+						<select id="cd-storage-target-disk">
+							<option value="">(default OS-disk placement)</option>
+						</select>
+					</label>
+					<button type="submit">Migrate</button>
+				</form>
+				<p class="hint">Where this container's own overlay storage lives (ADR-0142) -- the target
+					disk must already carry the container-storage role and be currently mounted. Unlike
+					the daemon-wide storage placements on the <a href="#disks">Disks</a> page, this
+					briefly stops and automatically restarts the container for the final cutover once the
+					bulk copy finishes; only available for a container whose restart policy is not
+					"no" (a persisted definition to restart from is required).</p>
 				<h3>Sysctls</h3>
 				<table id="cd-sysctls"><tbody></tbody></table>
 				<h3>Files</h3>

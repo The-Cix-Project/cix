@@ -80,6 +80,8 @@ See [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.m
 | `start NAME` | Bring a stopped-but-defined container back, no daemon restart needed |
 | `pause NAME` / `unpause NAME` | Freeze/thaw via the real cgroup v2 freezer, not `SIGSTOP` |
 | `stats NAME` | Real, host-side CPU/memory/disk/network usage, including this container's own cpu/memory/io pressure-stall (PSI) figures (ADR-0074), one point-in-time snapshot |
+| `migrate-storage NAME [--disk=NAME]` | Move a container's own overlay storage to a disk carrying the `container-storage` role (or `--disk=` omitted for the default OS-disk placement) — briefly stops and automatically restarts the container for the final cutover; requires `restart` other than `"no"` (ADR-0142) |
+| `migrate-storage-status NAME` | State/disk/error of the most recent (or running) container-storage migration |
 | `console NAME [--cmd=PATH]` | Interactive shell inside a running container (`docker exec -it`-style); `--cmd=` overrides the default `/usr/bin/bash` |
 | `files get NAME --path=/some/path [--output=PATH]` | Read one file's raw bytes back out of a container's rootfs; stdout if `--output=` omitted |
 | `rm NAME` | Stop (if running), remove, and forget any persisted definition |

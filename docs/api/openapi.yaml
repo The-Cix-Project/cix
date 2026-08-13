@@ -2072,9 +2072,13 @@ paths:
             A format job is already running (this daemon-wide, v1
             single-job limit), or this disk is the active placement for
             state-storage, log-storage, or rebuildable-storage, or the
-            currently configured backup-config disk (ADR-0141) --
-            formatting it would destroy live data; migrate away
-            first (or, for backup-config, PUT a different disk/null).
+            currently configured backup-config disk (ADR-0141), or one
+            or more containers currently have their own storage on this
+            disk (ADR-0102/ADR-0142) -- formatting it would destroy
+            live data; migrate away first (POST
+            /containers/{name}/migrate-storage for a container, or for
+            the daemon-wide kinds POST .../migrate / PUT a different
+            backup-config disk/null).
           content:
             application/json:
               schema:
@@ -2273,9 +2277,12 @@ paths:
           description: >
             This disk is the active placement for state-storage,
             log-storage, or rebuildable-storage, or the currently
-            configured backup-config disk (ADR-0141) -- migrate away
-            first (POST /system/{state,log,rebuildable}-storage/migrate,
-            or PUT /system/backup-config with a different disk/null).
+            configured backup-config disk (ADR-0141), or one or more
+            containers currently have their own storage on this disk
+            (ADR-0102/ADR-0142) -- migrate away first (POST
+            /system/{state,log,rebuildable}-storage/migrate, PUT
+            /system/backup-config with a different disk/null, or POST
+            /containers/{name}/migrate-storage for a container).
           content:
             application/json:
               schema:
@@ -4810,6 +4817,106 @@ paths:
                 $ref: "#/components/schemas/ContainerStats"
         "404":
           description: No such container
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /containers/{name}/migrate-storage:
+    get:
+      summary: Status of the most recent (or currently running) storage migration job for one container (ADR-0142)
+      description: >
+        Same shape as the daemon-wide `GET /system/{state,log,rebuildable}-storage/migrate`
+        status endpoints, keyed by this one container instead. Reports
+        `{"state":"none"}` if this container has never had a migration
+        started for it.
+      operationId: getContainerStorageMigrateStatus
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+      responses:
+        "200":
+          description: Migration job status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageMigrateStatus"
+        "404":
+          description: No such container
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      summary: Moves one container's own overlay storage to a new disk, or back to the default OS-disk placement (ADR-0142)
+      description: >
+        `disk` is required -- a real disk name (must already carry the
+        `container-storage` role and be currently mounted) or `null` to
+        migrate back to the default OS-disk placement; omitting the
+        field entirely is a 400, the same convention every other
+        storage-placement migration endpoint already has. Requires a
+        persisted definition to exist (`restart` other than `"no"`) --
+        the cutover this triggers always ends with a real stop-then-
+        replay, so a container with nothing to replay from is rejected
+        with a 400 rather than accepted and left half-done.
+
+
+        Unlike the three daemon-wide storage kinds, this is not purely
+        a background repoint: the bulk copy runs asynchronously while
+        the container keeps running and writing normally (same "no
+        pause during the bulk phase" design), but once that finishes
+        this daemon briefly stops the container, does one more
+        synchronous copy pass to capture anything written since, patches
+        the persisted definition's own `disk` field, and automatically
+        restarts the container from the new location -- the real,
+        necessary difference ADR-0142 calls out (a container's own
+        overlay is actively read/written by its own live process the
+        whole time, unlike a daemon-wide singleton this reactor alone
+        touches). A failure at any point after the stop restarts the
+        container from its ORIGINAL location rather than leaving it
+        down -- the migration is all-or-nothing from the caller's point
+        of view. Returns 202 immediately with the job's initial
+        `{"state":"running",...}` status; poll GET on this same path
+        for completion.
+      operationId: migrateContainerStorage
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [disk]
+              properties:
+                disk:
+                  type: string
+                  nullable: true
+                  description: A Disk.name from GET /disks, or null for the default OS-disk placement.
+      responses:
+        "202":
+          description: Migration job started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageMigrateStatus"
+        "400":
+          description: >
+            disk field missing, invalid/unknown disk, disk is the OS
+            disk, disk doesn't carry the container-storage role, disk
+            carries the role but isn't currently mounted, or this
+            container has no persisted definition to restart from
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such container
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A migration for this container is already running, or the requested placement is already active
           content:
             application/json:
               schema:

@@ -67,6 +67,8 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | POST | `/containers/{name}/pause` | Freeze a running container via the cgroup v2 freezer |
 | POST | `/containers/{name}/unpause` | Thaw a paused container |
 | GET | `/containers/{name}/stats` | Real, host-side CPU/memory/disk/network usage, a point-in-time snapshot |
+| GET | `/containers/{name}/migrate-storage` | Status of the most recent (or running) container-storage migration |
+| POST | `/containers/{name}/migrate-storage` | Move this container's own overlay storage to a new disk, or back to the default |
 | GET | `/containers/{name}/files` | Read one file's raw bytes back out of a container's rootfs |
 | GET | `/containers/{name}/console` | Upgrade to a WebSocket; an interactive shell inside the running container |
 | GET | `/devices` | List host PCI/USB/net/GPU/disk devices discoverable via sysfs, available for passthrough |
@@ -1043,7 +1045,7 @@ GET /v1/system/state-storage/migrate
 
 `state` is `"none"`, `"running"`, `"ready"`, or `"failed"` (`error` present on failure). Once the bulk copy (a forked child, `treecopy_recursive()` — the same permission-preserving primitive `POST /system/backup-config/snapshot-now`'s own future implementation and this daemon's package-install pipeline both use, never a second copy of the same logic) finishes successfully, this daemon's own single-threaded reactor does one more synchronous pass — a second, fast copy (cheap, since little changes during the bulk phase) — and only then repoints every affected subsystem's own live path, re-establishes the real `/etc/resolv.conf` bind mount against the new location (a real, previously-live lesson: a bind mount is tied to the inode it captured, not the path — see `CHANGELOG.md`'s Part 103), persists the new placement, and removes the old location's data. A `state:"failed"` migration at any point before that final repoint leaves the daemon still using the old location, completely untouched — the partially-copied new-location data is left for inspection or the next attempt to overwrite.
 
-`DELETE /v1/diskroles/{name}` and `POST /v1/disks/{name}/format` both now refuse (`409`) against a disk that's the current active state-storage, log-storage, or rebuildable-storage placement, *or* the currently configured backup-config disk — removing the role or destroying the disk's content out from under a live placement would silently strand the daemon's own state. Migrate away first (`disk: null` back to the default, or to a different role-eligible disk — or, for backup-config, `PUT /system/backup-config` with a different disk/`null`).
+`DELETE /v1/diskroles/{name}` and `POST /v1/disks/{name}/format` both now refuse (`409`) against a disk that's the current active state-storage, log-storage, or rebuildable-storage placement, *or* the currently configured backup-config disk, *or* a `container-storage`-role disk one or more containers currently have their own storage on (`ADR-0142`, see below) — removing the role or destroying the disk's content out from under a live placement would silently strand the daemon's own state (or a container's own workload data). Migrate away first (`disk: null` back to the default, or to a different role-eligible disk — or, for backup-config, `PUT /system/backup-config` with a different disk/`null` — or, for a container, `POST /containers/{name}/migrate-storage`).
 
 ### Log-storage placement (ADR-0141 Phase 3)
 
@@ -1064,6 +1066,21 @@ POST /v1/system/rebuildable-storage/migrate      {"disk": "sde"}
 ```
 
 Same contract again, for where container images, installed packages, build artifacts, and staged ISOs live — content that's regenerable from recipes/sources, never irreplaceable, the reason it's a separate concern from state-storage in the first place. Its own independent job slot, same as log-storage. Every consumer (`image.c`, and `pkg.c`'s several distinct concerns — package state, repo-sync config, cache config, artifact-fetch config, image-recipe-apply state) was confirmed to cache nothing but plain path strings with no persistently-open handle of its own, so the finalize step is a straightforward repoint across all of them, no `logstore.c`-style extra care needed.
+
+### Container-storage migration (ADR-0142)
+
+```
+GET  /v1/containers/{name}/migrate-storage      {"state": "none"}
+POST /v1/containers/{name}/migrate-storage      {"disk": "sdc"}
+```
+
+Same `{"disk": "name"|null}` contract as the three daemon-wide kinds above, narrowed to one container's own overlay storage (the `disk` field `POST /v1/containers` already accepts at creation time, `ADR-0102`, now movable after the fact too). Requires a persisted definition to restart from — `restart` other than `"no"` — since the cutover below always ends with a real stop-then-replay; a `"no"`-policy container is rejected with `400`, not silently accepted and left half-migrated.
+
+The one real difference from state/log/rebuildable-storage's own contract: those three are daemon-wide singletons this single-threaded reactor alone reads/writes, so repointing a cached path while the bulk copy runs is safe. A container's own overlay is actively read/written by that container's own live process the entire time, so the bulk async copy here is knowingly a first, possibly-stale pass — once it finishes, this daemon briefly **stops the container**, does one more synchronous copy pass (catching anything written since), patches the persisted definition's own `disk` field, and **automatically restarts** the container from the new location, the same `create_container_from_body()` replay `POST /containers/{name}/start` and a crash-restart both already use. A failure at any point after the stop — the final copy pass, or the restart itself — brings the container back up from its **original** location instead of leaving it down: the whole migration is all-or-nothing from the caller's point of view, not a partial state to reconcile by hand.
+
+`404` for an unknown container; `400` for a missing/invalid `disk` field, an unknown/OS disk, a disk with the wrong role, a role-correct disk that isn't currently mounted, or a container with no persisted definition; `409` if a migration for this container is already running or the requested placement is already active.
+
+`DELETE /v1/diskroles/{name}` and `POST /v1/disks/{name}/format` also now refuse (`409`) against a `container-storage`-role disk that one or more real containers currently have their own storage on — the exact same class of protection the four daemon-wide placements already had, extended to cover a gap that predated this ADR entirely (the original `POST /containers` `disk` field, `ADR-0102`, never had this safety check until migrate-storage gave the whole project a reason to add it). Migrate the container(s) away first via this endpoint.
 
 ## Per-container config files + sysctls
 

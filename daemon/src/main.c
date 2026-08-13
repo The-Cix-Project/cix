@@ -7,6 +7,7 @@
 #include "diskformat.h"
 #include "diskrole.h"
 #include "storagemigrate.h"
+#include "containerstoragemigrate.h"
 #include "backupconfig.h"
 #include "storageplacement.h"
 #include "hostproc.h"
@@ -794,6 +795,7 @@ enum conn_kind {
 	CONN_IMAGE_RECIPE_FETCH, /* image-recipe-apply's own whole-rootfs artifact curl fetch (ADR-0123) */
 	CONN_DISK_FORMAT,       /* disk format+mount job (multi-disk management Phase C) */
 	CONN_STORAGE_MIGRATE,   /* state/rebuildable/log-storage migration job (ADR-0141 Phase 2) */
+	CONN_CONTAINER_STORAGE_MIGRATE, /* one container's own overlay-storage migration job (ADR-0142 Section 4) */
 	CONN_PING,              /* GET/POST /v1/system/ping -- the raw ICMP socket half */
 	CONN_PING_TIMER,        /* same job's paired timeout -- see ping_job_teardown() */
 	CONN_NTP_PERIODIC_TIMER, /* permanent, re-arms itself -- fires ntp_sync_start() periodically (task #751) */
@@ -850,8 +852,9 @@ struct conn {
 	 */
 	char output_line_buf[1024];             /* CONN_CONTAINER_OUTPUT only */
 	int output_line_len;                    /* CONN_CONTAINER_OUTPUT only */
-	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE / CONN_ISO_ASSEMBLE / CONN_BOOTSTRAP_FETCH / CONN_DISK_FORMAT / CONN_STORAGE_MIGRATE */
+	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE / CONN_ISO_ASSEMBLE / CONN_BOOTSTRAP_FETCH / CONN_DISK_FORMAT / CONN_STORAGE_MIGRATE / CONN_CONTAINER_STORAGE_MIGRATE */
 	enum storage_kind storage_migrate_kind; /* CONN_STORAGE_MIGRATE only */
+	char container_storage_migrate_name[REGISTRY_NAME_MAX]; /* CONN_CONTAINER_STORAGE_MIGRATE only */
 	char restart_name[REGISTRY_NAME_MAX];   /* CONN_RESTART_TIMER only */
 	char cleanup_ifname[NETWORK_NAME_MAX];  /* CONN_BIND_IP_CLEANUP only */
 	uint32_t cleanup_addr_be;               /* CONN_BIND_IP_CLEANUP only */
@@ -6390,6 +6393,32 @@ static void register_storage_migrate_pidfd(enum storage_kind kind, pid_t pid, in
 	}
 }
 
+/* ADR-0142 Section 4: same shape as register_storage_migrate_pidfd()
+ * above, keyed by container name instead of storage kind. */
+static void register_container_storage_migrate_pidfd(const char *name, pid_t pid, int pidfd)
+{
+	struct conn *cc;
+	struct kx_epoll_event ev;
+
+	cc = malloc(sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (container storage migrate reactor conn)");
+		abort();
+	}
+	cc->kind = CONN_CONTAINER_STORAGE_MIGRATE;
+	cc->fd = pidfd;
+	cc->pkg_fetch_pid = pid;
+	snprintf(cc->container_storage_migrate_name, sizeof(cc->container_storage_migrate_name), "%s", name);
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+		perror("epoll_ctl ADD container storage migrate pidfd");
+		abort();
+	}
+}
+
 /*
  * ADR-0141 Phase 2: the real repoint step, run synchronously once
  * storagemigrate_finalize(STORAGE_KIND_STATE)'s own second copy pass
@@ -8228,6 +8257,157 @@ static void handle_delete(int fd, const char *name)
 }
 
 /*
+ * ADR-0142 Section 4: real cutover for a container-storage migration,
+ * run synchronously once containerstoragemigrate_completed()'s own
+ * bulk async copy pass has already succeeded -- mirrors finalize_
+ * state_storage_migration()'s own overall shape (save the old source
+ * dir first, run the second synchronous copy pass, only then commit),
+ * but with the one real difference ADR-0142 calls out: a container's
+ * own overlay is actively read/written by its own live process, so
+ * unlike a daemon-wide singleton this needs a real stop before the
+ * final copy pass can see a quiescent, fully consistent tree, and a
+ * real restart afterward. Uses the exact same registry_remove()-plus-
+ * reactor-conn-teardown primitive handle_stop()/handle_rolling_restart_
+ * timer_event() already use, and the exact same create_container_
+ * from_body() replay handle_rolling_restart_timer_event() already
+ * uses to bring it back -- one source of truth for "how a container
+ * stops" and "how a definition becomes live" respectively, not a third
+ * bespoke version of either just for this. A container with no
+ * persisted definition can never reach here (the POST handler below
+ * rejects it before ever starting a job), so the replay always has a
+ * real body to work from.
+ *
+ * On any failure after the container has already been stopped (final
+ * copy pass fails, or the replay itself fails), the container is
+ * restarted from its ORIGINAL location rather than left down -- the
+ * migration is treated as a whole, all-or-nothing operation from the
+ * caller's point of view, matching every other storage-placement
+ * migration's own "don't guess, surface it, never leave things half
+ * done" posture.
+ */
+static void finalize_container_storage_migration(const char *name)
+{
+	char old_source_dir[PATH_MAX];
+	char target_dir[PATH_MAX];
+	char target_disk[DISKROLE_DISK_NAME_MAX];
+	char merged[PATH_MAX];
+	struct registry_entry *live;
+	struct container_def *def;
+
+	snprintf(old_source_dir, sizeof(old_source_dir), "%s",
+	         containerstoragemigrate_job_source_dir(name));
+	snprintf(target_dir, sizeof(target_dir), "%s", containerstoragemigrate_job_target_dir(name));
+	snprintf(target_disk, sizeof(target_disk), "%s", containerstoragemigrate_job_target_disk(name));
+
+	live = registry_find(name);
+	if (live != NULL) {
+		if (live->reactor_conn != NULL) {
+			struct conn *rc = live->reactor_conn;
+
+			kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, rc->fd, NULL);
+			free(rc);
+			live->reactor_conn = NULL;
+		}
+		registry_remove(name);
+	}
+
+	/* Best-effort, same tolerant errno handling as DELETE's own crashed-
+	 * container cleanup (handle_delete() above) -- see that function's
+	 * comment for why this can legitimately be a no-op. */
+	snprintf(merged, sizeof(merged), "%s/merged", old_source_dir);
+	if (umount2(merged, MNT_DETACH) != 0 && errno != EINVAL && errno != ENOENT)
+		fprintf(stderr, "%s: container-storage migration: umount2(%s) failed: %s\n", name, merged,
+		        strerror(errno));
+
+	if (containerstoragemigrate_finalize(name) != 0) {
+		fprintf(stderr,
+		        "%s: container-storage migration: final copy pass failed, restarting from the "
+		        "original location\n",
+		        name);
+		def = containerdef_find(name);
+		if (def != NULL) {
+			struct registry_entry *entry;
+			char restart_policy[16];
+			int restart_delay_seconds, depends_on_count, has_readiness, readiness_tcp_port;
+			int readiness_timeout_seconds, follow_rolling, has_follow_rolling_jitter;
+			int follow_rolling_jitter_seconds;
+			char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
+			char err_msg[256];
+
+			if (create_container_from_body(def->body, def->body_len, &entry, restart_policy,
+			                                &restart_delay_seconds, depends_on, &depends_on_count,
+			                                &has_readiness, &readiness_tcp_port,
+			                                &readiness_timeout_seconds, &follow_rolling,
+			                                &has_follow_rolling_jitter,
+			                                &follow_rolling_jitter_seconds, err_msg,
+			                                sizeof(err_msg)) != 0)
+				fprintf(stderr, "%s: container-storage migration: restart after abort failed: %s\n",
+				        name, err_msg);
+		}
+		return;
+	}
+
+	if (containerdef_patch_disk(name, target_disk[0] != '\0' ? target_disk : NULL) != 0)
+		fprintf(stderr,
+		        "%s: container-storage migration: failed to persist the new disk placement -- a "
+		        "future daemon restart would replay the OLD location\n",
+		        name);
+
+	def = containerdef_find(name);
+	if (def != NULL) {
+		struct registry_entry *entry;
+		char restart_policy[16];
+		int restart_delay_seconds, depends_on_count, has_readiness, readiness_tcp_port;
+		int readiness_timeout_seconds, follow_rolling, has_follow_rolling_jitter;
+		int follow_rolling_jitter_seconds;
+		char depends_on[CONTAINERDEF_MAX_DEPENDS][REGISTRY_NAME_MAX];
+		char err_msg[256];
+
+		if (create_container_from_body(def->body, def->body_len, &entry, restart_policy,
+		                                &restart_delay_seconds, depends_on, &depends_on_count,
+		                                &has_readiness, &readiness_tcp_port,
+		                                &readiness_timeout_seconds, &follow_rolling,
+		                                &has_follow_rolling_jitter, &follow_rolling_jitter_seconds,
+		                                err_msg, sizeof(err_msg)) != 0) {
+			containerstoragemigrate_mark_failed(name, err_msg);
+			fprintf(stderr, "%s: container-storage migration: cutover restart failed: %s\n", name,
+			        err_msg);
+			return;
+		}
+	}
+
+	if (persist_remove_tree(old_source_dir) != 0)
+		fprintf(stderr, "%s: container-storage migration: could not remove old location %s: %s\n",
+		        name, old_source_dir, strerror(errno));
+
+	fprintf(stderr, "%s: container-storage migration: complete, now active on %s\n", name,
+	        target_disk[0] != '\0' ? target_disk : "(default OS-disk placement)");
+}
+
+static void handle_container_storage_migrate_event(struct conn *cc)
+{
+	int status;
+	int exit_status;
+	char name[REGISTRY_NAME_MAX];
+
+	snprintf(name, sizeof(name), "%s", cc->container_storage_migrate_name);
+
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
+		exit_status = WEXITSTATUS(status);
+	else
+		exit_status = -1;
+	close(cc->fd);
+	free(cc);
+
+	containerstoragemigrate_completed(name, exit_status);
+	fprintf(stderr, "%s: container-storage migrate: bulk copy job finished (exit_status=%d)\n", name,
+	        exit_status);
+	if (exit_status == 0)
+		finalize_container_storage_migration(name);
+}
+
+/*
  * POST /v1/containers/{name}/start (ADR-0045) -- the counterpart to
  * .../stop: brings a stopped-but-still-defined container back to life
  * without a daemon restart, closing the gap .../stop's own comment
@@ -8811,6 +8991,169 @@ static void handle_stop(int fd, const char *name)
 	jw_free(&w);
 }
 
+static void respond_container_storagemigrate_error(int fd, enum containerstoragemigrate_error err)
+{
+	switch (err) {
+	case CONTAINERSTORAGEMIGRATE_ERR_BUSY:
+		respond_error(fd, 409, "Conflict", "a storage migration for this container is already running");
+		break;
+	case CONTAINERSTORAGEMIGRATE_ERR_ALREADY_ACTIVE:
+		respond_error(fd, 409, "Conflict", "this container's storage is already on that placement");
+		break;
+	case CONTAINERSTORAGEMIGRATE_ERR_TABLE_FULL:
+		respond_error(fd, 500, "Internal Server Error",
+		              "every container-storage migration job slot is in use -- try again shortly");
+		break;
+	case CONTAINERSTORAGEMIGRATE_ERR_SPAWN_FAILED:
+	default:
+		respond_error(fd, 500, "Internal Server Error", "could not start migration job");
+		break;
+	}
+}
+
+/*
+ * POST /v1/containers/{name}/migrate-storage (ADR-0142 Section 4): the
+ * exact same {"disk": "name"|null} contract every other storage-
+ * placement migration endpoint already has, narrowed to one
+ * container's own overlay directory. Requires a persisted definition
+ * (restart_policy != "no") to exist -- the cutover this triggers
+ * always ends with a real stop-then-replay, so a container with
+ * nothing to replay from can never safely reach that point. disk_name
+ * is validated via resolve_container_disk_root() -- the exact same
+ * check POST /v1/containers itself already applies to a "disk" field
+ * at creation time, reused rather than re-implemented (One Source of
+ * Truth).
+ */
+static void handle_container_migrate_storage_post(int fd, const char *name, const char *body,
+                                                    size_t body_len)
+{
+	struct json_value *root;
+	const struct json_value *jdisk;
+	const char *disk_name;
+	char disk_name_buf[DISKROLE_DISK_NAME_MAX];
+	char current_disk[DISKROLE_DISK_NAME_MAX];
+	char source_root[PATH_MAX], target_root[PATH_MAX];
+	char source_base[PATH_MAX], target_base[PATH_MAX];
+	struct registry_entry *live = registry_find(name);
+	struct container_def *def = containerdef_find(name);
+	pid_t pid;
+	int pidfd;
+	enum containerstoragemigrate_error cerr;
+
+	if (live == NULL && def == NULL) {
+		respond_error(fd, 404, "Not Found", "no such container");
+		return;
+	}
+	if (def == NULL) {
+		respond_error(fd, 400, "Bad Request",
+		              "this container has no persisted definition to restart from -- only a "
+		              "restart_policy other than \"no\" supports storage migration");
+		return;
+	}
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	jdisk = json_object_get(root, "disk");
+	if (jdisk == NULL || (jdisk->type != JSON_NULL && jdisk->type != JSON_STRING)) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "disk is required -- a disk name, or null for the default OS-disk placement");
+		return;
+	}
+	if (jdisk->type == JSON_NULL) {
+		disk_name = NULL;
+	} else {
+		disk_name = json_as_string(jdisk);
+		if (disk_name == NULL || disk_name[0] == '\0' || strlen(disk_name) >= DISKROLE_DISK_NAME_MAX) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "invalid disk name");
+			return;
+		}
+		snprintf(disk_name_buf, sizeof(disk_name_buf), "%s", disk_name);
+		disk_name = disk_name_buf;
+	}
+	json_free(root);
+
+	current_disk[0] = '\0';
+	if (live != NULL) {
+		snprintf(current_disk, sizeof(current_disk), "%s", live->disk_name);
+	} else {
+		struct json_value *defroot = json_parse(def->body, def->body_len);
+
+		if (defroot != NULL) {
+			const char *d = json_as_string(json_object_get(defroot, "disk"));
+
+			if (d != NULL)
+				snprintf(current_disk, sizeof(current_disk), "%s", d);
+			json_free(defroot);
+		}
+	}
+
+	if (strcmp(current_disk, disk_name != NULL ? disk_name : "") == 0) {
+		respond_error(fd, 409, "Conflict", "this container's storage is already on that placement");
+		return;
+	}
+
+	if (disk_name != NULL) {
+		int drc = resolve_container_disk_root(disk_name, target_root, sizeof(target_root));
+
+		if (drc != DISK_RESOLVE_OK) {
+			respond_error(fd, 400, "Bad Request",
+			              drc == DISK_RESOLVE_NOT_FOUND
+			                  ? "no such disk"
+			                  : drc == DISK_RESOLVE_NOT_MOUNTED
+			                        ? "disk is not mounted"
+			                        : "disk has no container-storage role assigned");
+			return;
+		}
+	} else {
+		snprintf(target_root, sizeof(target_root), "%s", CONTAINERS_DIR);
+	}
+
+	container_root_for(current_disk[0] != '\0' ? current_disk : NULL, source_root, sizeof(source_root));
+	snprintf(source_base, sizeof(source_base), "%s/%s", source_root, name);
+	snprintf(target_base, sizeof(target_base), "%s/%s", target_root, name);
+
+	if (persist_mkdir_p(target_base) != 0) {
+		respond_error(fd, 500, "Internal Server Error", "failed to create target container directory");
+		return;
+	}
+
+	cerr = containerstoragemigrate_start(name, source_base, target_base, disk_name, &pid, &pidfd);
+	if (cerr != CONTAINERSTORAGEMIGRATE_OK) {
+		respond_container_storagemigrate_error(fd, cerr);
+		return;
+	}
+	register_container_storage_migrate_pidfd(name, pid, pidfd);
+
+	{
+		struct json_writer w;
+
+		jw_init(&w);
+		containerstoragemigrate_write_status_json(&w, name);
+		respond_json(fd, 202, "Accepted", &w);
+		jw_free(&w);
+	}
+}
+
+static void handle_container_migrate_storage_get(int fd, const char *name)
+{
+	struct json_writer w;
+
+	if (registry_find(name) == NULL && containerdef_find(name) == NULL) {
+		respond_error(fd, 404, "Not Found", "no such container");
+		return;
+	}
+
+	jw_init(&w);
+	containerstoragemigrate_write_status_json(&w, name);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_device_list(int fd)
 {
 	struct json_writer w;
@@ -9067,6 +9410,55 @@ static int is_active_storage_singleton_placement(const char *disk_name)
 	       (backup_disk != NULL && strcmp(backup_disk, disk_name) == 0);
 }
 
+/*
+ * ADR-0142 Section 4's own natural extension of the safety check above:
+ * a container-storage-role disk that one or more real containers are
+ * actually placed on (via POST /containers' own original "disk" field,
+ * ADR-0102 -- predating this ADR entirely, migrate-storage is simply
+ * the first thing that ever needed this check to exist) is exactly as
+ * unsafe to pull the role out from under, or reformat, as any of the
+ * four singleton placements above -- doing so would silently orphan or
+ * destroy that container's own live workload data. Checks every live
+ * registry entry (e->disk_name) and every persisted definition
+ * currently between a crash and its next restart (re-parsed from its
+ * own stored body's "disk" field, the same fallback DELETE's own
+ * crashed-container cleanup already uses) -- a container can be using
+ * a disk in either state.
+ */
+static int disk_has_container_in_use(const char *disk_name)
+{
+	char names[CONTAINERDEF_MAX][REGISTRY_NAME_MAX];
+	int count = containerdef_resolve_order(names);
+	int i;
+
+	for (i = 0; i < count; i++) {
+		struct registry_entry *live = registry_find(names[i]);
+
+		if (live != NULL) {
+			if (live->disk_name[0] != '\0' && strcmp(live->disk_name, disk_name) == 0)
+				return 1;
+			continue;
+		}
+		{
+			struct container_def *def = containerdef_find(names[i]);
+			struct json_value *defroot;
+
+			if (def == NULL)
+				continue;
+			defroot = json_parse(def->body, def->body_len);
+			if (defroot != NULL) {
+				const char *d = json_as_string(json_object_get(defroot, "disk"));
+				int match = (d != NULL && strcmp(d, disk_name) == 0);
+
+				json_free(defroot);
+				if (match)
+					return 1;
+			}
+		}
+	}
+	return 0;
+}
+
 static void handle_diskrole_delete(int fd, const char *disk_name)
 {
 	enum diskrole_error derr;
@@ -9077,6 +9469,13 @@ static void handle_diskrole_delete(int fd, const char *disk_name)
 		              "placement, or the configured backup-config disk -- migrate away first "
 		              "(POST .../migrate to a different disk or disk: null, or PUT "
 		              "/v1/system/backup-config with a different disk/null) before removing its role");
+		return;
+	}
+	if (disk_has_container_in_use(disk_name)) {
+		respond_error(fd, 409, "Conflict",
+		              "one or more containers currently have their own storage on this disk -- "
+		              "migrate them away first (POST /containers/{name}/migrate-storage) before "
+		              "removing its role");
 		return;
 	}
 	derr = diskrole_delete(disk_name);
@@ -9156,6 +9555,14 @@ static void handle_disk_format_post(int fd, const char *disk_name, const char *b
 		respond_error(fd, 409, "Conflict",
 		              "this disk is the active state-storage, log-storage, or rebuildable-storage placement, or the configured backup-config disk -- "
 		              "formatting it would destroy live data; migrate away first");
+		return;
+	}
+	if (disk_has_container_in_use(disk_name)) {
+		json_free(root);
+		respond_error(fd, 409, "Conflict",
+		              "one or more containers currently have their own storage on this disk -- "
+		              "formatting it would destroy live data; migrate them away first "
+		              "(POST /containers/{name}/migrate-storage)");
 		return;
 	}
 	/*
@@ -12605,6 +13012,20 @@ static void dispatch(int fd, const struct http_request *req)
 				handle_container_stats(fd, container_name);
 				return;
 			}
+			if (nlen > 16 && strcmp(name + nlen - 16, "/migrate-storage") == 0 &&
+			    nlen - 16 < REGISTRY_NAME_MAX &&
+			    (strcmp(req->method, "POST") == 0 || strcmp(req->method, "GET") == 0)) {
+				char container_name[REGISTRY_NAME_MAX];
+
+				memcpy(container_name, name, nlen - 16);
+				container_name[nlen - 16] = '\0';
+				if (strcmp(req->method, "POST") == 0)
+					handle_container_migrate_storage_post(fd, container_name, req->body,
+					                                       req->body_len);
+				else
+					handle_container_migrate_storage_get(fd, container_name);
+				return;
+			}
 			{
 				/*
 				 * Unlike every other suffix here, "/files" can carry a
@@ -15399,6 +15820,8 @@ int main(int argc, char **argv)
 				handle_disk_format_event(cc);
 			else if (cc->kind == CONN_STORAGE_MIGRATE)
 				handle_storage_migrate_event(cc);
+			else if (cc->kind == CONN_CONTAINER_STORAGE_MIGRATE)
+				handle_container_storage_migrate_event(cc);
 			else if (cc->kind == CONN_PING)
 				handle_ping_socket_event(cc);
 			else if (cc->kind == CONN_PING_TIMER)

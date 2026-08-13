@@ -78,6 +78,15 @@ static void print_usage(FILE *out)
 	        "  unpause NAME\n"
 	        "  stats NAME  -- real, host-side CPU/memory/disk/network usage, gathered from\n"
 	        "               cgroups + the host's own veth (no in-container agent)\n"
+	        "  migrate-storage NAME [--disk=NAME]  -- move this container's own overlay\n"
+	        "               storage to a disk already carrying the container-storage role and\n"
+	        "               currently mounted (ADR-0142); omit --disk= to migrate back to the\n"
+	        "               default OS-disk placement; requires restart_policy != \"no\" (there\n"
+	        "               must be a persisted definition to restart from); briefly stops and\n"
+	        "               automatically restarts the container for the final cutover -- poll\n"
+	        "               migrate-storage-status\n"
+	        "  migrate-storage-status NAME  -- state/disk/error of the most recent (or\n"
+	        "               running) container-storage migration\n"
 	        "  console NAME [--cmd=PATH]  -- interactive shell inside a running container\n"
 	        "               (like `docker exec -it`), over the daemon's own WebSocket\n"
 	        "               upgrade; --cmd= overrides the default /usr/bin/bash\n"
@@ -2428,6 +2437,71 @@ static int cmd_stop(const struct kx_client *c, int json_mode, int argc, char **a
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
+}
+
+/*
+ * ADR-0142 Section 4: same {"disk": "name"|null} contract and
+ * fmt_storage_migrate_status() rendering every `storage <kind> migrate`
+ * subcommand above already uses, narrowed to one container's own
+ * overlay directory -- see main.c's handle_container_migrate_storage_
+ * post()/get() for the full cutover this triggers daemon-side.
+ */
+static int cmd_migrate_storage(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *disk = NULL;
+	char path[300];
+	struct json_writer w;
+	struct kx_response r;
+	int i;
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: migrate-storage requires a container name\n");
+		return 2;
+	}
+	for (i = 1; i < argc; i++) {
+		if (strncmp(argv[i], "--disk=", 7) == 0)
+			disk = argv[i] + 7;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown migrate-storage option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "disk");
+	if (disk != NULL)
+		jw_str(&w, disk);
+	else
+		jw_null(&w);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	snprintf(path, sizeof(path), "/v1/containers/%s/migrate-storage", argv[0]);
+	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_storage_migrate_status);
+}
+
+static int cmd_migrate_storage_status(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	char path[300];
+	struct kx_response r;
+
+	if (argc < 1) {
+		fprintf(stderr, "kanxeoctl: migrate-storage-status requires a container name\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/containers/%s/migrate-storage", argv[0]);
+	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_storage_migrate_status);
 }
 
 static int cmd_start(const struct kx_client *c, int json_mode, int argc, char **argv)
@@ -7839,6 +7913,10 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_unpause(client, json_mode, argc, argv);
 	if (strcmp(cmd, "stats") == 0)
 		return cmd_container_stats(client, json_mode, argc, argv);
+	if (strcmp(cmd, "migrate-storage") == 0)
+		return cmd_migrate_storage(client, json_mode, argc, argv);
+	if (strcmp(cmd, "migrate-storage-status") == 0)
+		return cmd_migrate_storage_status(client, json_mode, argc, argv);
 	if (strcmp(cmd, "console") == 0)
 		return cmd_console(client, argc, argv);
 	if (strcmp(cmd, "files") == 0)
@@ -7947,7 +8025,7 @@ static void shell_prompt_init(const struct kx_client *client)
 static const char *const SHELL_COMMANDS[] = {
 	"backup", "backup-config", "boot",      "console",       "container",     "daemon-config", "device",   "devicemap", "diskrole",
 	"disks",  "dns",       "exit",          "files",    "health",    "help",
-	"host-stats", "image", "inspect",       "iso",      "ldap",      "logs",      "network",
+	"host-stats", "image", "inspect",       "iso",      "ldap",      "logs",      "migrate-storage", "migrate-storage-status", "network",
 	"ntp",
 	"pause",  "ping",      "pkg",           "pki",      "process",   "ps",        "quit",      "reboot",
 	"resolv",

@@ -238,6 +238,26 @@ int containerdef_write_json_stopped_one(const char *name, struct json_writer *w)
 int containerdef_patch_image_version(const char *name, const char *new_version);
 
 /*
+ * ADR-0142 Section 4 (container-storage migration): same raw-surgery
+ * posture as containerdef_patch_image_version() above, applied to the
+ * "disk" field instead -- always writes a value (a quoted disk name,
+ * or the JSON literal null for the default OS-disk placement), never
+ * removes the key, so a subsequent replay's own json_as_string() read
+ * sees exactly what a fresh POST with that same "disk" value would
+ * have produced (a JSON null parses the same as the key being absent
+ * entirely, per create_container_from_body()'s own resolution). If
+ * name's body has no "disk" key yet (created without one, i.e. always
+ * defaulted to the OS disk until now), splices one in using the exact
+ * same "find the trailing '}', insert one more key in front of it"
+ * technique handle_create() already established for image_version.
+ * Returns 0, or -1 if name has no definition or its body is
+ * unexpectedly malformed (no trailing '}' -- real corruption, every
+ * persisted body is guaranteed well-formed JSON by
+ * create_container_from_body()'s own json_parse() at creation time).
+ */
+int containerdef_patch_disk(const char *name, const char *new_disk);
+
+/*
  * Loads (or initializes, if config_path doesn't exist yet)
  * config_path as the persisted rolling-restart jitter window --
  * mirrors pkg_cache_init()'s own "small standalone JSON config file,

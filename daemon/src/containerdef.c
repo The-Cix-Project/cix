@@ -1,4 +1,5 @@
 #include "containerdef.h"
+#include "diskrole.h"
 #include "json.h"
 #include "persist.h"
 
@@ -534,6 +535,88 @@ int containerdef_patch_image_version(const char *name, const char *new_version)
 	memcpy(new_body + prefix_len, new_version, new_version_len);
 	memcpy(new_body + prefix_len + new_version_len, val_end, suffix_len);
 	new_body[new_body_len] = '\0';
+
+	free(d->body);
+	d->body = new_body;
+	d->body_len = new_body_len;
+
+	return save_state();
+}
+
+/*
+ * ADR-0142 Section 4: see this function's own doc comment in
+ * containerdef.h. new_disk == NULL writes the JSON literal null;
+ * otherwise a quoted disk name. Uniformly computes [prefix, value_span,
+ * suffix) around the value's own byte range (whether the existing
+ * value was a quoted string or a bare `null`) and splices the new
+ * value text in between -- the same "know the exact byte span, cut and
+ * paste around it" shape containerdef_patch_image_version() already
+ * uses, generalized to a value that isn't always a quoted string.
+ */
+int containerdef_patch_disk(const char *name, const char *new_disk)
+{
+	struct container_def *d = containerdef_find(name);
+	char *key_pos, *colon, *val_start, *val_end, *new_body;
+	char new_value[DISKROLE_DISK_NAME_MAX + 4];
+	size_t new_value_len, prefix_len, suffix_len, new_body_len;
+
+	if (d == NULL)
+		return -1;
+
+	if (new_disk != NULL)
+		snprintf(new_value, sizeof(new_value), "\"%s\"", new_disk);
+	else
+		snprintf(new_value, sizeof(new_value), "null");
+	new_value_len = strlen(new_value);
+
+	key_pos = strstr(d->body, "\"disk\"");
+	if (key_pos != NULL) {
+		colon = strchr(key_pos, ':');
+		if (colon == NULL)
+			return -1;
+		val_start = colon + 1;
+		while (*val_start == ' ' || *val_start == '\t')
+			val_start++;
+		if (*val_start == '"') {
+			val_end = strchr(val_start + 1, '"');
+			if (val_end == NULL)
+				return -1;
+			val_end++; /* past the closing quote */
+		} else {
+			val_end = val_start;
+			while (*val_end != ',' && *val_end != '}' && *val_end != '\0' && *val_end != ' ' &&
+			       *val_end != '\t' && *val_end != '\n' && *val_end != '\r')
+				val_end++;
+		}
+
+		prefix_len = (size_t)(val_start - d->body);
+		suffix_len = d->body_len - (size_t)(val_end - d->body);
+		new_body_len = prefix_len + new_value_len + suffix_len;
+
+		new_body = malloc(new_body_len + 1);
+		if (new_body == NULL)
+			return -1;
+		memcpy(new_body, d->body, prefix_len);
+		memcpy(new_body + prefix_len, new_value, new_value_len);
+		memcpy(new_body + prefix_len + new_value_len, val_end, suffix_len);
+		new_body[new_body_len] = '\0';
+	} else {
+		size_t trim = d->body_len;
+		int n;
+
+		while (trim > 0 && (d->body[trim - 1] == ' ' || d->body[trim - 1] == '\t' ||
+		                     d->body[trim - 1] == '\n' || d->body[trim - 1] == '\r'))
+			trim--;
+		if (trim == 0 || d->body[trim - 1] != '}')
+			return -1;
+
+		new_body = malloc(trim + new_value_len + 32);
+		if (new_body == NULL)
+			return -1;
+		memcpy(new_body, d->body, trim - 1);
+		n = snprintf(new_body + (trim - 1), new_value_len + 32, ",\"disk\":%s}", new_value);
+		new_body_len = (trim - 1) + (size_t)n;
+	}
 
 	free(d->body);
 	d->body = new_body;
