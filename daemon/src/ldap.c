@@ -727,6 +727,29 @@ static size_t render_users_groups_toml(char *buf, size_t bufsize)
 			toml_append_raw(buf, bufsize, &off, "\npassbcrypt = ");
 			toml_append_string(buf, bufsize, &off, passbcrypt_hex);
 		}
+		if (u->ssh_public_key[0] != '\0') {
+			/*
+			 * ADR-0144 task #838: glauth's own User.SSHKeys []string
+			 * (pkg/config/config.go), TOML tag "sshkeys" -- the real LDAP
+			 * Public Key (LPK) convention, exposed as the `sshPublicKey`
+			 * attribute by default (glauth's own backend-level SSHKeyAttr,
+			 * left at its default here since this project stages no
+			 * override). This project's own data model holds exactly one
+			 * key per user (ldap_user's own single ssh_public_key field,
+			 * not a list), so this always renders a single-element array
+			 * -- glauth's own field is a real []string regardless of how
+			 * many entries are populated, confirmed directly against its
+			 * source (same "verified against glauth's real struct"
+			 * convention every other field in this function follows).
+			 * This is what a live AuthorizedKeysCommand ldapsearch (task
+			 * #838's own next part) queries for -- replacing the
+			 * file-rendered authorized_keys mechanism this whole ADR set
+			 * out to retire.
+			 */
+			toml_append_raw(buf, bufsize, &off, "\nsshkeys = [");
+			toml_append_string(buf, bufsize, &off, u->ssh_public_key);
+			toml_append_raw(buf, bufsize, &off, "]");
+		}
 		toml_append_raw(buf, bufsize, &off, "\n");
 		if (u->can_search) {
 			/* Task #727: a minimal, self-only capability grant for an

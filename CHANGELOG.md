@@ -2,6 +2,16 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 119 (done): LDAP-rendered `sshkeys` array -- real glauth SSH-key attribute, task #838 part A (ADR-0144, part 9 of N)
+
+First landing of task #838 (PAM-enabled `openssh` with a live `AuthorizedKeysCommand` LDAP query): `render_users_groups_toml()` now renders a user's `ssh_public_key` as glauth's own real `sshkeys = [...]` TOML field (`pkg/config/config.go`'s `User.SSHKeys []string`) -- the real LDAP Public Key (LPK) convention, exposed by default as the `sshPublicKey` attribute glauth's own `SSHKeyAttr` backend setting controls. Previously this field was only ever rendered into per-container `authorized_keys` files -- a file-rendered copy, not a live LDAP-queryable attribute -- so it was invisible to any real `ldapsearch` against the directory, which is exactly what this task's next part (a live `AuthorizedKeysCommand` script) needs to query.
+
+#### Added
+- `daemon/src/ldap.c`'s `render_users_groups_toml()`: a `sshkeys = ["<key>"]` single-element array whenever `ssh_public_key` is non-empty. This project's data model holds exactly one key per user, but glauth's own field is a real `[]string` regardless of element count -- confirmed directly against its source, matching the "verified against glauth's real struct" convention every other field in this function already follows.
+
+#### Verified
+- `test/test_ldap.c`'s existing full end-to-end rendered-config test extended: `POST /v1/ldap/users` now also carries a real `ssh_public_key`, and the container's own rendered `glauth.cfg` (read back via the real `GET .../files` endpoint) is asserted to contain the exact `sshkeys = [...]` line. Full regression sweep (`test_ldap`, `test_daemon`, `test_hostauth`, `test_dns`, `test_pki`) -- zero failures, clean `-Wall -Werror` rebuild.
+
 ### Part 118 (done): `nss-pam-ldapd` 0.9.13-2 -- real `/run` pidfile/socket paths, found while wiring `nslcd` for real (ADR-0144, part 8 of N)
 
 A real, confirmed-needed follow-up found while actually starting `nslcd` for the first time (task #833's own part D): `nslcd`'s upstream compiled-in defaults are `/var/run/nslcd/nslcd.pid` and `/var/run/nslcd/socket` -- the exact same "`/var/run` doesn't exist in these images, only `/run` does" gap this project already hit and documented for `dnsmasq`'s and `chrony`'s own default pidfile paths (see `CLAUDE.md`'s environment notes). Not a new TCC-vs-upstream gap; every one of Part 117's own `nss-pam-ldapd` source files still compiles clean unchanged.

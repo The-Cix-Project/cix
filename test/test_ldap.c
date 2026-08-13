@@ -445,11 +445,15 @@ int main(void)
 		kx_response_free(&r);
 
 		/* 15. real user create, with a password -- passbcrypt must
-		 * never come back over the API (only has_password) */
+		 * never come back over the API (only has_password). Also
+		 * carries a real ssh_public_key (ADR-0144 task #838) to prove
+		 * it renders as glauth's own real `sshkeys = [...]` array. */
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "POST", "/v1/ldap/users",
 		                       "{\"name\":\"j_doe\",\"uidnumber\":5001,\"primarygroup\":6001,"
-		                       "\"mail\":\"j.doe@kanxeo.internal\",\"password\":\"dogood\"}",
+		                       "\"mail\":\"j.doe@kanxeo.internal\",\"password\":\"dogood\","
+		                       "\"ssh_public_key\":\"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest "
+		                       "j_doe@kanxeo\"}",
 		                       &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: create user j_doe, status=%d\n", r.status);
@@ -489,6 +493,14 @@ int main(void)
 		           memmem(r.body, r.body_len, "mail = \"j.doe@kanxeo.internal\"",
 		                  strlen("mail = \"j.doe@kanxeo.internal\"")) == NULL) {
 			fprintf(stderr, "FAIL: rendered config missing expected group/user fields\n");
+			ok = 0;
+		} else if (memmem(r.body, r.body_len,
+		                   "sshkeys = [\"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest j_doe@kanxeo\"]",
+		                   strlen("sshkeys = [\"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest "
+		                          "j_doe@kanxeo\"]")) == NULL) {
+			fprintf(stderr,
+			        "FAIL: rendered config missing glauth's real sshkeys = [...] array "
+			        "(ADR-0144 task #838)\n");
 			ok = 0;
 		} else if (extract_toml_string_value(r.body, r.body_len, "passbcrypt", passbcrypt_val,
 		                                      sizeof(passbcrypt_val)) != 0) {
