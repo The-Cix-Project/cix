@@ -648,6 +648,63 @@ int main(void)
 		}
 		kx_response_free(&r);
 
+		/* 17c (ADR-0144 task #838): can_search, now a real public field
+		 * (previously internal-only, set only by the auto-provisioning
+		 * hook) -- off by default, settable via PUT, echoed on GET, and
+		 * rendered as glauth's own [[users.capabilities]] stanza. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
+		                       "{\"uidnumber\":5001,\"primarygroup\":6001,"
+		                       "\"mail\":\"jd@kanxeo.internal\",\"can_search\":true}",
+		                       &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: update user j_doe with can_search, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *jcan_search = json_object_get(r.json, "can_search");
+
+			if (jcan_search == NULL || jcan_search->type != JSON_BOOL || !jcan_search->u.boolean) {
+				fprintf(stderr, "FAIL: can_search not echoed true on update response\n");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET",
+		                       "/v1/containers/ldapcfg/files?path=%2Fetc%2Fglauth%2Fglauth.cfg", NULL,
+		                       &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET ldapcfg config file after can_search update, status=%d\n",
+			        r.status);
+			ok = 0;
+		} else if (memmem(r.body, r.body_len, "[[users.capabilities]]",
+		                   strlen("[[users.capabilities]]")) == NULL) {
+			fprintf(stderr, "FAIL: rendered config missing [[users.capabilities]] stanza\n");
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* PUT is full-field-replacement: omitting can_search now turns
+		 * it back off, same as every other field here. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
+		                       "{\"uidnumber\":5001,\"primarygroup\":6001,"
+		                       "\"mail\":\"jd@kanxeo.internal\"}",
+		                       &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: clear can_search, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *jcan_search = json_object_get(r.json, "can_search");
+
+			if (jcan_search == NULL || jcan_search->type != JSON_BOOL || jcan_search->u.boolean) {
+				fprintf(stderr, "FAIL: can_search not cleared back to false\n");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
 		/* 18. delete the user -> the rendered file no longer names it,
 		 * but the group stanza survives */
 		memset(&r, 0, sizeof(r));

@@ -232,9 +232,14 @@ void ldap_group_write_json_list(struct json_writer *w);
 struct ldap_user *ldap_user_find(const char *name);
 /* password == NULL: leave passbcrypt unset (create) or unchanged
  * (update). password == "" is treated the same as NULL -- an empty
- * credential is never written. owner_container/can_search: task
- * #727's own fields (see struct ldap_user's own comment) -- every
- * caller outside the auto-provisioning hook in main.c passes NULL/0.
+ * credential is never written. owner_container: task #727's own
+ * field (see struct ldap_user's own comment) -- every caller outside
+ * the auto-provisioning hook in main.c passes NULL. can_search
+ * (task #727, exposed on the real public API by ADR-0144 task #838):
+ * a real, durable bind/service account (nslcd's own binddn, a live
+ * AuthorizedKeysCommand's own search bind) needs this grant with no
+ * other legitimate way to get it, so unlike owner_container it is a
+ * real, settable field on both create and update, not internal-only.
  * secondary_groups/secondary_group_count (ADR-0144): NULL/0 means no
  * secondary groups; each gidnumber must already name a real group
  * (LDAP_RECORD_ERR_GROUP_NOT_FOUND otherwise, same validation
@@ -251,7 +256,8 @@ enum ldap_record_error ldap_user_update(const char *name, int uidnumber, int pri
                                          const char *givenname, const char *sn, const char *mail,
                                          const char *loginshell, const char *homedirectory,
                                          const char *password, int disabled,
-                                         const char *ssh_public_key, struct ldap_user **out);
+                                         const char *ssh_public_key, int can_search,
+                                         struct ldap_user **out);
 enum ldap_record_error ldap_user_delete(const char *name);
 void ldap_user_write_json_one(const struct ldap_user *u, struct json_writer *w);
 void ldap_user_write_json_list(struct json_writer *w);

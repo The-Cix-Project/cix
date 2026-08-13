@@ -1077,7 +1077,8 @@ enum ldap_record_error ldap_user_update(const char *name, int uidnumber, int pri
                                          const char *givenname, const char *sn, const char *mail,
                                          const char *loginshell, const char *homedirectory,
                                          const char *password, int disabled,
-                                         const char *ssh_public_key, struct ldap_user **out)
+                                         const char *ssh_public_key, int can_search,
+                                         struct ldap_user **out)
 {
 	struct ldap_user *u = ldap_user_find(name);
 	enum ldap_record_error verr;
@@ -1093,6 +1094,12 @@ enum ldap_record_error ldap_user_update(const char *name, int uidnumber, int pri
 	 * and non-empty, so u->passbcrypt is left untouched otherwise. */
 	fill_user_fields(u, uidnumber, primarygroup, secondary_groups, secondary_group_count, givenname,
 	                  sn, mail, loginshell, homedirectory, password, disabled, ssh_public_key);
+	/* ADR-0144 task #838: can_search, like every other PUT field, is
+	 * full-field-replacement -- an operator managing a real bind/
+	 * service account's search grant through this same endpoint
+	 * expects PUT to set it exactly as given, not silently preserve
+	 * whatever it was before. */
+	u->can_search = can_search ? 1 : 0;
 
 	if (save_users_state() != 0)
 		return LDAP_RECORD_ERR_PERSIST_FAILED;

@@ -8270,7 +8270,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 					lerr = ldap_user_update(ldap_user_name, uid, g->gidnumber, u->secondary_groups,
 					                         u->secondary_group_count, u->givenname, u->sn, u->mail,
 					                         u->loginshell, u->homedirectory, secret, u->disabled,
-					                         u->ssh_public_key, &u);
+					                         u->ssh_public_key, u->can_search, &u);
 			}
 			if (lerr != LDAP_RECORD_OK || u == NULL) {
 				fprintf(stderr,
@@ -11440,11 +11440,12 @@ static void parse_ldap_user_body(const struct json_value *root, const char **nam
                                   int *secondary_group_count, const char **givenname,
                                   const char **sn, const char **mail, const char **loginshell,
                                   const char **homedirectory, const char **password, int *disabled,
-                                  const char **ssh_public_key)
+                                  const char **ssh_public_key, int *can_search)
 {
 	const struct json_value *jdisabled = json_object_get(root, "disabled");
 	const struct json_value *juidnumber = json_object_get(root, "uidnumber");
 	const struct json_value *jsecondary = json_object_get(root, "secondary_groups");
+	const struct json_value *jcan_search = json_object_get(root, "can_search");
 
 	*name = json_as_string(json_object_get(root, "name"));
 	*uidnumber = juidnumber != NULL ? (int)json_as_number(juidnumber) : 0;
@@ -11466,6 +11467,7 @@ static void parse_ldap_user_body(const struct json_value *root, const char **nam
 	*password = json_as_string(json_object_get(root, "password"));
 	*disabled = (jdisabled != NULL && jdisabled->type == JSON_BOOL && jdisabled->u.boolean);
 	*ssh_public_key = json_as_string(json_object_get(root, "ssh_public_key"));
+	*can_search = (jcan_search != NULL && jcan_search->type == JSON_BOOL && jcan_search->u.boolean);
 }
 
 static void handle_ldap_user_create(int fd, const char *body, size_t body_len)
@@ -11473,7 +11475,7 @@ static void handle_ldap_user_create(int fd, const char *body, size_t body_len)
 	struct json_value *root;
 	const char *name, *givenname, *sn, *mail, *loginshell, *homedirectory, *password;
 	const char *ssh_public_key;
-	int uidnumber, has_uidnumber, primarygroup, disabled;
+	int uidnumber, has_uidnumber, primarygroup, disabled, can_search;
 	int secondary_groups[LDAP_USER_MAX_SECONDARY_GROUPS], secondary_group_count;
 	struct ldap_user *u;
 	enum ldap_record_error rerr;
@@ -11487,7 +11489,7 @@ static void handle_ldap_user_create(int fd, const char *body, size_t body_len)
 
 	parse_ldap_user_body(root, &name, &uidnumber, &has_uidnumber, &primarygroup, secondary_groups,
 	                      &secondary_group_count, &givenname, &sn, &mail, &loginshell,
-	                      &homedirectory, &password, &disabled, &ssh_public_key);
+	                      &homedirectory, &password, &disabled, &ssh_public_key, &can_search);
 	if (name == NULL) {
 		json_free(root);
 		respond_error(fd, 400, "Bad Request", "name missing");
@@ -11499,9 +11501,20 @@ static void handle_ldap_user_create(int fd, const char *body, size_t body_len)
 	if (!has_uidnumber)
 		uidnumber = ldap_uid_alloc();
 
+	/*
+	 * ADR-0144 task #838: can_search now settable at create time via
+	 * the real public API, not just the internal container-provisioning
+	 * path (main.c's own auto-created-account call site) -- a real,
+	 * durable bind/service account (nslcd's own binddn, or a live
+	 * AuthorizedKeysCommand's own search bind) needs exactly this
+	 * capability and has no other legitimate way to get it. owner_
+	 * container stays NULL here: that field marks accounts this
+	 * daemon itself auto-provisions and tears down with a specific
+	 * container, not an operator-created one.
+	 */
 	rerr = ldap_user_create(name, uidnumber, primarygroup, secondary_groups, secondary_group_count,
 	                         givenname, sn, mail, loginshell, homedirectory, password, disabled, NULL,
-	                         0, ssh_public_key, &u);
+	                         can_search, ssh_public_key, &u);
 	json_free(root); /* u points into ldap.c's own record store, not root -- safe past here */
 	if (rerr != LDAP_RECORD_OK) {
 		respond_ldap_record_error(fd, rerr);
@@ -11519,7 +11532,7 @@ static void handle_ldap_user_update(int fd, const char *name, const char *body, 
 	struct json_value *root;
 	const char *body_name, *givenname, *sn, *mail, *loginshell, *homedirectory, *password;
 	const char *ssh_public_key;
-	int uidnumber, has_uidnumber, primarygroup, disabled;
+	int uidnumber, has_uidnumber, primarygroup, disabled, can_search;
 	int secondary_groups[LDAP_USER_MAX_SECONDARY_GROUPS], secondary_group_count;
 	struct ldap_user *u;
 	enum ldap_record_error rerr;
@@ -11533,7 +11546,8 @@ static void handle_ldap_user_update(int fd, const char *name, const char *body, 
 
 	parse_ldap_user_body(root, &body_name, &uidnumber, &has_uidnumber, &primarygroup,
 	                      secondary_groups, &secondary_group_count, &givenname, &sn, &mail,
-	                      &loginshell, &homedirectory, &password, &disabled, &ssh_public_key);
+	                      &loginshell, &homedirectory, &password, &disabled, &ssh_public_key,
+	                      &can_search);
 	(void)body_name; /* the URL path's name is authoritative for PUT, not the body's own */
 	(void)has_uidnumber; /* PUT is full-field-replacement -- an omitted uidnumber here is 0,
 	                       * same pre-existing semantics as every other omittable PUT field
@@ -11542,7 +11556,7 @@ static void handle_ldap_user_update(int fd, const char *name, const char *body, 
 
 	rerr = ldap_user_update(name, uidnumber, primarygroup, secondary_groups, secondary_group_count,
 	                         givenname, sn, mail, loginshell, homedirectory, password, disabled,
-	                         ssh_public_key, &u);
+	                         ssh_public_key, can_search, &u);
 	json_free(root);
 	if (rerr != LDAP_RECORD_OK) {
 		respond_ldap_record_error(fd, rerr);

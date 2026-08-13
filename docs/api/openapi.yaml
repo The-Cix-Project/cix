@@ -7200,6 +7200,16 @@ components:
         primarygroup:
           type: integer
           description: Must name an existing group's gidnumber.
+        secondary_groups:
+          type: array
+          items:
+            type: integer
+          description: >
+            (ADR-0144) Zero or more additional gidnumbers, each of which
+            must already name a real group (same validation primarygroup
+            gets). Rendered as glauth's own "othergroups" array. Omitted
+            or empty means no secondary groups; PUT is full-field-
+            replacement like every other field here.
         givenname:
           type: string
         sn:
@@ -7213,9 +7223,11 @@ components:
         password:
           type: string
           description: >
-            Plaintext, hashed server-side with SHA-256 into glauth's own
-            "passsha256" config field -- never persisted or echoed as
-            plaintext. Omitted on PUT: the existing credential is kept.
+            Plaintext, hashed server-side with bcrypt (ADR-0144) into
+            glauth's own "passbcrypt" config field, hex-encoded there to
+            match glauth's own real hex.DecodeString()-then-compare
+            expectation -- never persisted or echoed as plaintext.
+            Omitted on PUT: the existing credential is kept.
         ssh_public_key:
           type: string
           description: >
@@ -7224,7 +7236,19 @@ components:
             SSH target (see POST /ldap/ssh-targets) -- a real Unix account
             plus a dedicated ~/.ssh/authorized_keys file, kept current on
             every subsequent LDAP user/group mutation. Empty/omitted means
-            this user is skipped by SSH target sync entirely.
+            this user is skipped by SSH target sync entirely. Also
+            rendered as glauth's own real "sshkeys" LDAP attribute
+            (ADR-0144 task #838), queryable directly over LDAP.
+        can_search:
+          type: boolean
+          default: false
+          description: >
+            (ADR-0144 task #838) Grants this user glauth's own minimal
+            "search" capability (object "*") -- needed for a real bind/
+            service account used as an nslcd binddn or a live
+            AuthorizedKeysCommand's own search bind. Off by default;
+            most users never need it. Full-field-replacement on PUT like
+            every other field here.
         disabled:
           type: boolean
           default: false
@@ -7239,6 +7263,10 @@ components:
           type: integer
         primarygroup:
           type: integer
+        secondary_groups:
+          type: array
+          items:
+            type: integer
         givenname:
           type: string
         sn:
@@ -7258,6 +7286,8 @@ components:
             Returned as given, unlike password -- an SSH public key is not
             a secret. Empty string means this user is not currently
             eligible for SSH target account sync.
+        can_search:
+          type: boolean
         disabled:
           type: boolean
 
