@@ -22,26 +22,43 @@ pkg_depends=""
 
 # Autotools, not meson -- confirmed directly (configure.ac/Makefile.am,
 # no meson.build). A git-archive snapshot ships no pre-generated
-# ./configure, so autogen.sh must run first; that needs `autopoint`
-# (from the separate Debian "autopoint" package, NOT bundled into the
-# "gettext" package itself -- confirmed the hard way, `gettext` alone
-# left autogen.sh still failing with the same "you must have autopoint
-# installed" error) staged into the toolchain, itself needing
-# /usr/share/gettext (autopoint's own data files, not part of the
-# wholesale /usr/{include,lib,lib64,bin,libexec} copy) and
-# /usr/share/aclocal (the gettext.m4/iconv.m4/etc. macros autoreconf
-# expands during autogen.sh) as two new targeted toolchain extras --
-# see test/test_image_fixture.c's own extras[] list, the same
-# "found by a real build failing, not guessed at" precedent
-# /usr/share/bison already established for iproute2's own bison-needing
-# grammar. --prefix=/usr matches every other recipe in this set;
-# --disable-nls keeps this container-image build simple (no locale
-# infrastructure needed for a diagnostic CLI toolset) -- confirmed via
-# ./configure --help, no other non-default flag needed. ncurses (for
-# top/watch) stays at its real upstream default (enabled) -- already
-# real via this toolchain's own libncurses-dev.
+# ./configure, so autogen.sh must run first; that needs autopoint (part
+# of this project's own from-source gettext.recipe, unlike Debian's
+# split packaging) plus autoconf/automake/libtoolize, all already real,
+# working recipes in this project's own catalog.
+#
+# procps-ng's own autogen.sh calls autopoint/aclocal/automake/
+# libtoolize as bare command names with no env-var override support
+# (confirmed by reading it directly -- unlike libuv's own autogen.sh,
+# which does support ACLOCAL=/AUTOMAKE=/LIBTOOLIZE=). The real,
+# confirmed bug those tools hit here is the same one libuv.recipe's
+# own comment documents in detail: this build sandbox's real automake/
+# aclocal/libtoolize/autopoint are themselves real Perl scripts, and
+# the kernel's own #! shebang-exec path fails to run them directly
+# (ENOEXEC, so the shell's own fallback then mis-parses the Perl
+# source as shell -- "package: command not found", confirmed live
+# against this exact recipe before this fix), even though the exact
+# same file runs fine when Perl is invoked on it explicitly. Since
+# there's no env var to redirect here, small wrapper scripts are
+# placed under their own real bare names (not "-wrap" suffixed, unlike
+# libuv.recipe's own env-var-driven names) in a directory prepended to
+# PATH ahead of autogen.sh, so procps-ng's own bare `automake`/etc.
+# calls resolve to them first.
+#
+# --prefix=/usr matches every other recipe in this set; --disable-nls
+# keeps this container-image build simple (no locale infrastructure
+# needed for a diagnostic CLI toolset) -- confirmed via ./configure
+# --help, no other non-default flag needed. ncurses (for top/watch)
+# stays at its real upstream default (enabled) -- already real via
+# this toolchain's own ncurses.recipe.
 pkg_build() {
-	./autogen.sh
+	mkdir -p /build/toolwrap
+	for tool in aclocal automake libtoolize autopoint; do
+		printf '#!/bin/sh\nexec perl /usr/bin/%s "$@"\n' "$tool" > "/build/toolwrap/$tool"
+		chmod +x "/build/toolwrap/$tool"
+	done
+
+	PATH="/build/toolwrap:$PATH" ./autogen.sh
 	./configure --prefix=/usr --disable-nls
 	make -j"$(nproc)"
 }
