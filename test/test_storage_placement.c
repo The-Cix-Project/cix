@@ -1,10 +1,11 @@
 /*
- * ADR-0141 Phase 2/3 end-to-end test: state-storage AND log-storage
- * placement (GET/POST /v1/system/{state,log}-storage(/migrate),
+ * ADR-0141 Phase 2/3/4 end-to-end test: all three storage kinds --
+ * state, log, and rebuildable -- placement (GET/POST
+ * /v1/system/{state,log,rebuildable}-storage(/migrate),
  * daemon/src/storageplacement.c + daemon/src/storagemigrate.c) and the
  * safety checks that keep DELETE /diskroles/{name} and
  * POST /disks/{name}/format from pulling a disk out from under an
- * active placement of either kind.
+ * active placement of any kind.
  *
  * The real, successful migration path -- a role-assigned disk actually
  * formatted and mounted, data really copied across, every subsystem's
@@ -410,7 +411,112 @@ int main(void)
 		}
 		kx_response_free(&r);
 
-		/* 9. Final cleanup. */
+		/* 9. rebuildable-storage: same validation coverage as state/log
+		 * above, proving the third and final storage_kind is wired
+		 * correctly too. Frees the disk from its log-storage role
+		 * first (one role at a time). */
+		{
+			char path[96];
+
+			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
+			memset(&r, 0, sizeof(r));
+			kx_client_request(&client, "DELETE", path, NULL, &r);
+			kx_response_free(&r);
+		}
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/system/rebuildable-storage", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET /v1/system/rebuildable-storage, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *jdisk = json_object_get(r.json, "disk");
+
+			if (jdisk == NULL || jdisk->type != JSON_NULL) {
+				fprintf(stderr,
+				        "FAIL: fresh daemon should report rebuildable-storage "
+				        "disk:null\n");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"backup\"}", non_os_disk);
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
+			fprintf(stderr, "FAIL: POST /v1/diskroles (wrong role for rebuildable test), "
+			                "status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		snprintf(body, sizeof(body), "{\"disk\":\"%s\"}", non_os_disk);
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/system/rebuildable-storage/migrate", body, &r) !=
+		            0 ||
+		    r.status != 400) {
+			fprintf(stderr,
+			        "FAIL: POST rebuildable-storage migrate to a wrong-role disk expected "
+			        "400, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		{
+			char path[96];
+
+			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
+			memset(&r, 0, sizeof(r));
+			kx_client_request(&client, "DELETE", path, NULL, &r);
+			kx_response_free(&r);
+		}
+
+		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"rebuildable-storage\"}",
+		         non_os_disk);
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
+			fprintf(stderr, "FAIL: POST /v1/diskroles (rebuildable-storage), status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		snprintf(body, sizeof(body), "{\"disk\":\"%s\"}", non_os_disk);
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/system/rebuildable-storage/migrate", body, &r) !=
+		            0 ||
+		    r.status != 400) {
+			fprintf(stderr,
+			        "FAIL: POST rebuildable-storage migrate to a role-correct but "
+			        "unmounted disk expected 400, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/system/rebuildable-storage/migrate", NULL, &r) !=
+		            0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET /v1/system/rebuildable-storage/migrate, status=%d\n",
+			        r.status);
+			ok = 0;
+		} else {
+			const char *state = json_str_field(r.json, "state");
+
+			if (!(state != NULL && strcmp(state, "none") == 0)) {
+				fprintf(stderr,
+				        "FAIL: rebuildable-storage migrate status should still be "
+				        "state:none, got %s\n",
+				        state != NULL ? state : "(null)");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		/* 10. Final cleanup. */
 		{
 			char path[96];
 

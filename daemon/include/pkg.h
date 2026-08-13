@@ -142,6 +142,18 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
               const char *images_dir, const char *artifacts_dir);
 
 /*
+ * ADR-0141 Phase 4: repoints every REBUILDABLE_DIR-derived path this
+ * module caches (and image_recipe_init()'s own, via image_recipe_
+ * repoint()) without touching in-memory package state or any
+ * in-flight job -- see network_repoint()'s own doc comment (daemon/
+ * src/network.c) for the shared reasoning. containers_dir is
+ * deliberately not a parameter -- it never moves as part of this
+ * migration.
+ */
+void pkg_repoint(const char *pkg_dir, const char *installed_state_path, const char *images_dir,
+                  const char *artifacts_dir);
+
+/*
  * Stages a real build toolchain (gcc/make/ld/as/cc1/sh/tar/coreutils
  * and their real headers/libraries) from THIS HOST into the pkgbuild
  * image, by copying whole /usr/{include,lib,lib64,bin,libexec}
@@ -587,6 +599,9 @@ int pkg_image_has_packages(const char *image);
  * every other *_init() in this codebase already has. */
 int pkg_repo_init(const char *config_path);
 
+/* ADR-0141 Phase 4: path-only repoint -- see pkg_repoint()'s own doc comment. */
+void pkg_repo_repoint(const char *new_config_path);
+
 /* {"repo_url","repo_kind","ref","auth_token_set","sync_interval_
  * seconds"} -- the token itself is never echoed back (auth_token_set
  * is a bool), the one piece of secret-shaped state this daemon
@@ -651,6 +666,9 @@ int pkg_sync_in_progress(void);
  * package artifact tarballs are stored, one file per (name,version). */
 int pkg_cache_init(const char *cache_dir, const char *config_path);
 
+/* ADR-0141 Phase 4: path-only repoint -- see pkg_repoint()'s own doc comment. */
+void pkg_cache_repoint(const char *new_cache_dir, const char *new_config_path);
+
 long long pkg_cache_get_max_bytes(void);
 
 /* max_bytes must be > 0 -- there is no "unlimited" mode. */
@@ -672,6 +690,9 @@ void pkg_cache_clear(void);
  * every install simply builds from source, same as before this part
  * existed). */
 int pkg_artifact_init(const char *config_path);
+
+/* ADR-0141 Phase 4: path-only repoint -- see pkg_repoint()'s own doc comment. */
+void pkg_artifact_repoint(const char *new_config_path);
 
 /* {"base_url","auth_token_set"} -- the token itself is never echoed
  * back, same posture pkg_repo_write_json_config() already has. */
@@ -720,6 +741,11 @@ enum pkg_error pkg_artifact_set_config(const char *base_url, const char *auth_to
  * called once at startup alongside pkg_init(), no separate init
  * entry point needed since it shares pkg_init()'s own pkg_dir. */
 void image_recipe_init(const char *pkg_dir);
+
+/* ADR-0141 Phase 4: path-only repoint, never resets the last-apply-
+ * status fields the way image_recipe_init() does -- see pkg_repoint()'s
+ * own doc comment. */
+void image_recipe_repoint(const char *pkg_dir);
 
 /* Parses content before ever writing it -- an unparseable recipe is
  * rejected outright (PKG_ERR_INVALID_RECIPE), never stored half-valid. */

@@ -224,6 +224,9 @@ static void print_usage(FILE *out)
 	        "  storage logs [show|migrate [--disk=NAME]|migrate-status]  -- same shape as\n"
 	        "               storage state, for where Kanxeo's own consolidated log store\n"
 	        "               (ADR-0070/ADR-0126) lives instead\n"
+	        "  storage rebuildable [show|migrate [--disk=NAME]|migrate-status]  -- same shape\n"
+	        "               again, for where images/packages/artifacts (regenerable from\n"
+	        "               recipes/sources, never irreplaceable) live instead\n"
 	        "  swap  -- show whether the host swap file is enabled (ADR-0069)\n"
 	        "  swap enable --size-mb=N  -- create and activate a swap file of this size\n"
 	        "  swap disable  -- deactivate and remove it\n"
@@ -1426,7 +1429,7 @@ static int cmd_storage(const struct kx_client *c, int json_mode, int argc, char 
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl storage state|logs [show|migrate|migrate-status]\n");
+		fprintf(stderr, "usage: kanxeoctl storage state|logs|rebuildable [show|migrate|migrate-status]\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -1434,8 +1437,10 @@ static int cmd_storage(const struct kx_client *c, int json_mode, int argc, char 
 		return cmd_storage_kind(c, json_mode, "state", "state-storage", argc - 1, argv + 1);
 	if (strcmp(sub, "logs") == 0)
 		return cmd_storage_kind(c, json_mode, "logs", "log-storage", argc - 1, argv + 1);
+	if (strcmp(sub, "rebuildable") == 0)
+		return cmd_storage_kind(c, json_mode, "rebuildable", "rebuildable-storage", argc - 1, argv + 1);
 
-	fprintf(stderr, "usage: kanxeoctl storage state|logs [show|migrate|migrate-status]\n");
+	fprintf(stderr, "usage: kanxeoctl storage state|logs|rebuildable [show|migrate|migrate-status]\n");
 	return 2;
 }
 

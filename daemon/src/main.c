@@ -265,13 +265,17 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(CONNTHROTTLE_CONFIG_PATH, sizeof(CONNTHROTTLE_CONFIG_PATH), "%s/tls_throttle.json", STATE_DIR);
 }
 
-static void init_base_dir_paths(void)
+/*
+ * Every path that's REBUILDABLE_DIR-relative (directly or
+ * transitively, e.g. PKG_INSTALLED_STATE_PATH via PKG_DIR) -- split
+ * out of init_base_dir_paths() for the identical reason compute_
+ * state_dir_relative_paths() was (ADR-0141 Phase 4's own resolve_
+ * rebuildable_storage_placement(), below): re-runnable once
+ * REBUILDABLE_DIR's real, possibly-relocated value is known.
+ */
+static void compute_rebuildable_dir_relative_paths(void)
 {
-	snprintf(STATE_DIR, sizeof(STATE_DIR), "%s/state", g_base_dir);
-	snprintf(REBUILDABLE_DIR, sizeof(REBUILDABLE_DIR), "%s/rebuildable", g_base_dir);
-
 	snprintf(IMAGES_DIR, sizeof(IMAGES_DIR), "%s/images", REBUILDABLE_DIR);
-	snprintf(CONTAINERS_DIR, sizeof(CONTAINERS_DIR), "%s/containers", g_base_dir);
 	snprintf(PKG_DIR, sizeof(PKG_DIR), "%s/pkg", REBUILDABLE_DIR);
 	snprintf(PKG_INSTALLED_STATE_PATH, sizeof(PKG_INSTALLED_STATE_PATH), "%s/pkg_installed.json", PKG_DIR);
 	snprintf(PKG_RECIPES_DIR, sizeof(PKG_RECIPES_DIR), "%s/recipes", PKG_DIR);
@@ -281,6 +285,17 @@ static void init_base_dir_paths(void)
 	snprintf(PKG_ARTIFACT_CONFIG_PATH, sizeof(PKG_ARTIFACT_CONFIG_PATH), "%s/artifact_config.json",
 	         PKG_DIR);
 	snprintf(ARTIFACTS_DIR, sizeof(ARTIFACTS_DIR), "%s/artifacts", REBUILDABLE_DIR);
+	snprintf(ISO_DIR, sizeof(ISO_DIR), "%s/iso", REBUILDABLE_DIR);
+	snprintf(PKGBUILD_TOOLCHAIN_FETCH_PATH, sizeof(PKGBUILD_TOOLCHAIN_FETCH_PATH),
+	         "%s/bootstrap_toolchain.squashfs", PKG_DIR);
+}
+
+static void init_base_dir_paths(void)
+{
+	snprintf(STATE_DIR, sizeof(STATE_DIR), "%s/state", g_base_dir);
+	snprintf(REBUILDABLE_DIR, sizeof(REBUILDABLE_DIR), "%s/rebuildable", g_base_dir);
+
+	snprintf(CONTAINERS_DIR, sizeof(CONTAINERS_DIR), "%s/containers", g_base_dir);
 	/*
 	 * Deliberately g_base_dir-relative, NOT STATE_DIR-relative (ADR-0141
 	 * Phase 2 correction) -- disk role assignments are bootstrap-level
@@ -294,9 +309,6 @@ static void init_base_dir_paths(void)
 	snprintf(DISKROLE_STATE_PATH, sizeof(DISKROLE_STATE_PATH), "%s/diskroles.json", g_base_dir);
 	snprintf(STORAGE_PLACEMENT_PATH, sizeof(STORAGE_PLACEMENT_PATH), "%s/storage_placement.json",
 	         g_base_dir);
-	snprintf(ISO_DIR, sizeof(ISO_DIR), "%s/iso", REBUILDABLE_DIR);
-	snprintf(PKGBUILD_TOOLCHAIN_FETCH_PATH, sizeof(PKGBUILD_TOOLCHAIN_FETCH_PATH),
-	         "%s/bootstrap_toolchain.squashfs", PKG_DIR);
 	snprintf(SWAP_DIR, sizeof(SWAP_DIR), "%s/swap", g_base_dir);
 	snprintf(SWAP_FILE_PATH, sizeof(SWAP_FILE_PATH), "%s/swapfile", SWAP_DIR);
 	snprintf(SWAP_STATE_PATH, sizeof(SWAP_STATE_PATH), "%s/state.json", SWAP_DIR);
@@ -305,6 +317,7 @@ static void init_base_dir_paths(void)
 	snprintf(DISKS_MOUNT_DIR, sizeof(DISKS_MOUNT_DIR), "%s/disks", g_base_dir);
 
 	compute_state_dir_relative_paths();
+	compute_rebuildable_dir_relative_paths();
 }
 
 /*
@@ -392,6 +405,46 @@ static int resolve_log_storage_placement(void)
 	fprintf(stderr,
 	        "resolve_log_storage_placement: log-storage's configured disk '%s' is not "
 	        "currently present -- refusing to start\n",
+	        disk_name);
+	return -1;
+}
+
+/*
+ * ADR-0141 Phase 4: same shape as resolve_state_storage_placement()/
+ * resolve_log_storage_placement() above, for REBUILDABLE_DIR --
+ * recomputes every REBUILDABLE_DIR-relative path via compute_
+ * rebuildable_dir_relative_paths() once REBUILDABLE_DIR itself is
+ * resolved, same "fail loud, never silently fall back" posture.
+ */
+static int resolve_rebuildable_storage_placement(void)
+{
+	const char *disk_name = storageplacement_get(STORAGE_KIND_REBUILDABLE);
+	struct discovered_disk disks[DISK_ENUM_MAX];
+	int n, i;
+
+	if (disk_name == NULL)
+		return 0; /* default OS-disk placement -- nothing to do */
+
+	n = disk_enumerate(disks, DISK_ENUM_MAX, CONTAINERS_DIR);
+	for (i = 0; i < n; i++) {
+		if (strcmp(disks[i].name, disk_name) != 0)
+			continue;
+		if (!disks[i].mounted) {
+			fprintf(stderr,
+			        "resolve_rebuildable_storage_placement: rebuildable-storage's "
+			        "configured disk '%s' is present but not currently mounted -- "
+			        "refusing to start\n",
+			        disk_name);
+			return -1;
+		}
+		snprintf(REBUILDABLE_DIR, sizeof(REBUILDABLE_DIR), "%s/%s/rebuildable", DISKS_MOUNT_DIR,
+		         disk_name);
+		compute_rebuildable_dir_relative_paths();
+		return 0;
+	}
+	fprintf(stderr,
+	        "resolve_rebuildable_storage_placement: rebuildable-storage's configured disk "
+	        "'%s' is not currently present -- refusing to start\n",
 	        disk_name);
 	return -1;
 }
@@ -6180,6 +6233,48 @@ static void finalize_log_storage_migration(void)
 	        target_disk[0] != '\0' ? target_disk : "(default OS-disk placement)");
 }
 
+/*
+ * ADR-0141 Phase 4: rebuildable-storage's own finalize -- like state-
+ * storage's, several distinct modules (image.c, pkg.c's own several
+ * concerns) each need repointing, but unlike state-storage there's no
+ * /etc/resolv.conf-style external bind mount, and unlike log-storage
+ * there's no persistently-open file handle -- every consumer here was
+ * confirmed (not assumed, per ADR-0141's own original review note) to
+ * cache nothing but plain path strings.
+ */
+static void finalize_rebuildable_storage_migration(void)
+{
+	const char *target_dir = storagemigrate_job_target_dir(STORAGE_KIND_REBUILDABLE);
+	const char *target_disk = storagemigrate_job_target_disk(STORAGE_KIND_REBUILDABLE);
+	char old_source_dir[PATH_MAX];
+
+	snprintf(old_source_dir, sizeof(old_source_dir), "%s",
+	         storagemigrate_job_source_dir(STORAGE_KIND_REBUILDABLE));
+
+	if (storagemigrate_finalize(STORAGE_KIND_REBUILDABLE) != 0) {
+		fprintf(stderr, "rebuildable-storage migration: final copy pass failed, migration aborted\n");
+		return;
+	}
+
+	snprintf(REBUILDABLE_DIR, sizeof(REBUILDABLE_DIR), "%s", target_dir);
+	compute_rebuildable_dir_relative_paths();
+
+	image_init(IMAGES_DIR);
+	pkg_repoint(PKG_DIR, PKG_INSTALLED_STATE_PATH, IMAGES_DIR, ARTIFACTS_DIR);
+	pkg_repo_repoint(PKG_REPO_CONFIG_PATH);
+	pkg_cache_repoint(PKG_CACHE_DIR, PKG_CACHE_CONFIG_PATH);
+	pkg_artifact_repoint(PKG_ARTIFACT_CONFIG_PATH);
+
+	storageplacement_set(STORAGE_KIND_REBUILDABLE, target_disk[0] != '\0' ? target_disk : NULL);
+
+	if (persist_remove_tree(old_source_dir) != 0)
+		fprintf(stderr, "rebuildable-storage migration: could not remove old location %s: %s\n",
+		        old_source_dir, strerror(errno));
+
+	fprintf(stderr, "rebuildable-storage migration: complete, now active on %s\n",
+	        target_disk[0] != '\0' ? target_disk : "(default OS-disk placement)");
+}
+
 static void handle_storage_migrate_event(struct conn *cc)
 {
 	int status;
@@ -6201,6 +6296,8 @@ static void handle_storage_migrate_event(struct conn *cc)
 		finalize_state_storage_migration();
 	else if (exit_status == 0 && kind == STORAGE_KIND_LOG)
 		finalize_log_storage_migration();
+	else if (exit_status == 0 && kind == STORAGE_KIND_REBUILDABLE)
+		finalize_rebuildable_storage_migration();
 }
 
 static const char *iso_build_state_str(enum iso_build_state s)
@@ -8678,21 +8775,22 @@ static void handle_diskrole_create(int fd, const char *body, size_t body_len)
 
 /*
  * ADR-0141: true if disk_name is the *currently active* placement for
- * one of the daemon-wide storage singletons (state-storage/log-storage
- * today; rebuildable-storage once its own phase lands) -- removing the
- * role out from under an in-use placement, or destroying it via
- * format, would leave the daemon's own live-location tracking pointing
- * at a disk that, per its own role table, doesn't do that anymore.
- * Shared by handle_diskrole_delete() and handle_disk_format_post()
- * below.
+ * any of the three daemon-wide storage singletons (state-storage/
+ * log-storage/rebuildable-storage) -- removing the role out from under
+ * an in-use placement, or destroying it via format, would leave the
+ * daemon's own live-location tracking pointing at a disk that, per its
+ * own role table, doesn't do that anymore. Shared by handle_diskrole_
+ * delete() and handle_disk_format_post() below.
  */
 static int is_active_storage_singleton_placement(const char *disk_name)
 {
 	const char *state_disk = storageplacement_get(STORAGE_KIND_STATE);
 	const char *log_disk = storageplacement_get(STORAGE_KIND_LOG);
+	const char *rebuildable_disk = storageplacement_get(STORAGE_KIND_REBUILDABLE);
 
 	return (state_disk != NULL && strcmp(state_disk, disk_name) == 0) ||
-	       (log_disk != NULL && strcmp(log_disk, disk_name) == 0);
+	       (log_disk != NULL && strcmp(log_disk, disk_name) == 0) ||
+	       (rebuildable_disk != NULL && strcmp(rebuildable_disk, disk_name) == 0);
 }
 
 static void handle_diskrole_delete(int fd, const char *disk_name)
@@ -8701,7 +8799,7 @@ static void handle_diskrole_delete(int fd, const char *disk_name)
 
 	if (is_active_storage_singleton_placement(disk_name)) {
 		respond_error(fd, 409, "Conflict",
-		              "this disk is the active state-storage or log-storage placement -- "
+		              "this disk is the active state-storage, log-storage, or rebuildable-storage placement -- "
 		              "migrate away (POST .../migrate with a different disk, or disk: null "
 		              "for the default OS-disk placement) before removing its role");
 		return;
@@ -8781,7 +8879,7 @@ static void handle_disk_format_post(int fd, const char *disk_name, const char *b
 	if (is_active_storage_singleton_placement(disk_name)) {
 		json_free(root);
 		respond_error(fd, 409, "Conflict",
-		              "this disk is the active state-storage or log-storage placement -- "
+		              "this disk is the active state-storage, log-storage, or rebuildable-storage placement -- "
 		              "formatting it would destroy live data; migrate away first");
 		return;
 	}
@@ -9049,6 +9147,86 @@ static void handle_state_storage_migrate_get(int fd)
 
 	jw_init(&w);
 	storagemigrate_write_status_json(&w, STORAGE_KIND_STATE);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_rebuildable_storage_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	storageplacement_write_json(&w, STORAGE_KIND_REBUILDABLE);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_rebuildable_storage_migrate_post(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const struct json_value *jdisk;
+	const char *disk_name;
+	char disk_name_buf[DISKROLE_DISK_NAME_MAX];
+	char target_dir[PATH_MAX];
+	pid_t pid;
+	int pidfd;
+	enum storagemigrate_error merr;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	jdisk = json_object_get(root, "disk");
+	if (jdisk == NULL || (jdisk->type != JSON_NULL && jdisk->type != JSON_STRING)) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "disk is required -- a disk name, or null for the default OS-disk placement");
+		return;
+	}
+	if (jdisk->type == JSON_NULL) {
+		disk_name = NULL;
+		snprintf(target_dir, sizeof(target_dir), "%s/rebuildable", g_base_dir);
+	} else {
+		disk_name = json_as_string(jdisk);
+		if (disk_name == NULL || disk_name[0] == '\0' ||
+		    strlen(disk_name) >= DISKROLE_DISK_NAME_MAX) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "invalid disk name");
+			return;
+		}
+		snprintf(disk_name_buf, sizeof(disk_name_buf), "%s", disk_name);
+		disk_name = disk_name_buf;
+		snprintf(target_dir, sizeof(target_dir), "%s/%s/rebuildable", DISKS_MOUNT_DIR, disk_name);
+	}
+	json_free(root);
+
+	merr = storagemigrate_start(STORAGE_KIND_REBUILDABLE, REBUILDABLE_DIR, target_dir, disk_name,
+	                             CONTAINERS_DIR, &pid, &pidfd);
+	if (merr != STORAGEMIGRATE_OK) {
+		respond_storagemigrate_error(fd, STORAGE_KIND_REBUILDABLE, merr);
+		return;
+	}
+	register_storage_migrate_pidfd(STORAGE_KIND_REBUILDABLE, pid, pidfd);
+
+	{
+		struct json_writer w;
+
+		jw_init(&w);
+		storagemigrate_write_status_json(&w, STORAGE_KIND_REBUILDABLE);
+		respond_json(fd, 202, "Accepted", &w);
+		jw_free(&w);
+	}
+}
+
+static void handle_rebuildable_storage_migrate_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	storagemigrate_write_status_json(&w, STORAGE_KIND_REBUILDABLE);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
@@ -11911,6 +12089,20 @@ static void dispatch(int fd, const struct http_request *req)
 			return;
 		}
 	}
+	if (strcmp(req->path, "/v1/system/rebuildable-storage") == 0 && strcmp(req->method, "GET") == 0) {
+		handle_rebuildable_storage_get(fd);
+		return;
+	}
+	if (strcmp(req->path, "/v1/system/rebuildable-storage/migrate") == 0) {
+		if (strcmp(req->method, "POST") == 0) {
+			handle_rebuildable_storage_migrate_post(fd, req->body, req->body_len);
+			return;
+		}
+		if (strcmp(req->method, "GET") == 0) {
+			handle_rebuildable_storage_migrate_get(fd);
+			return;
+		}
+	}
 	if (strcmp(req->path, "/v1/system/rolling-config") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_rolling_config_get(fd);
@@ -14587,6 +14779,8 @@ int main(int argc, char **argv)
 		return 1;
 	if (resolve_log_storage_placement() != 0)
 		return 1;
+	if (resolve_rebuildable_storage_placement() != 0)
+		return 1;
 
 	/* STATE_DIR/REBUILDABLE_DIR/LOG_DIR themselves first (ADR-0141) --
 	 * ensure_dir() is a plain single-level mkdir(), not mkdir -p, so
@@ -14595,10 +14789,10 @@ int main(int argc, char **argv)
 	 * flat_layout_to_grouped() to have created them via already, since
 	 * there was nothing at the old flat paths to migrate). Each of the
 	 * three may be a relocated disk's own mount path (resolve_state_
-	 * storage_placement()/resolve_log_storage_placement() above) --
-	 * either way it already exists as a real, mounted directory by this
-	 * point; ensure_dir() only needs to create the leaf subdirectory
-	 * under it. */
+	 * storage_placement()/resolve_log_storage_placement()/resolve_
+	 * rebuildable_storage_placement() above) -- either way it already
+	 * exists as a real, mounted directory by this point; ensure_dir()
+	 * only needs to create the leaf subdirectory under it. */
 	if (ensure_dir(STATE_DIR) != 0 ||
 	    ensure_dir(REBUILDABLE_DIR) != 0 || ensure_dir(IMAGES_DIR) != 0 ||
 	    ensure_dir(CONTAINERS_DIR) != 0 || ensure_dir(PKI_DIR) != 0 ||

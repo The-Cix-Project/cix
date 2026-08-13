@@ -966,6 +966,96 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /system/rebuildable-storage:
+    get:
+      summary: Which disk (if any) is the active placement for images/packages/artifacts (ADR-0141 Phase 4)
+      description: >
+        Same shape and singleton-placement model as GET /system/state-
+        storage. Covers content that's regenerable from recipes/sources
+        if lost -- container images, installed packages, build
+        artifacts, staged ISOs -- never state, never logs.
+      operationId: getRebuildableStorage
+      responses:
+        "200":
+          description: Current rebuildable-storage placement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoragePlacement"
+  /system/rebuildable-storage/migrate:
+    get:
+      summary: Status of the most recent (or currently running) rebuildable-storage migration job
+      description: >
+        Same shape as GET /system/state-storage/migrate -- its own
+        independent job slot, alongside any concurrent state-storage or
+        log-storage migration.
+      operationId: getRebuildableStorageMigrateStatus
+      responses:
+        "200":
+          description: Migration job status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageMigrateStatus"
+    post:
+      summary: Moves images/packages/artifacts to a new disk, or back to the default OS-disk placement
+      description: >
+        Same contract as POST /system/state-storage/migrate -- `disk`
+        required (a real, `rebuildable-storage`-role, currently-mounted
+        disk name, or `null` for the default). Async, live, no pause.
+        Every consumer of this content (`image.c`, and `pkg.c`'s several
+        distinct concerns -- package state, repo-sync config, cache
+        config, artifact-fetch config, image-recipe-apply state) was
+        confirmed, not assumed, to cache nothing but plain path strings
+        with no persistently-open file handle of its own, so the
+        finalize step is a straightforward repoint of each.
+      operationId: migrateRebuildableStorage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [disk]
+              properties:
+                disk:
+                  type: string
+                  nullable: true
+                  description: A Disk.name from GET /disks, or null for the default OS-disk placement.
+      responses:
+        "202":
+          description: Migration job started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageMigrateStatus"
+        "400":
+          description: >
+            disk field missing, invalid/unknown disk, disk is the OS
+            disk, disk doesn't carry the rebuildable-storage role, or
+            disk carries the role but isn't currently mounted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such disk
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A migration is already running, or this is already the active placement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Could not start the migration job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /system/swap:
     get:
       summary: Whether the host swap file is enabled (ADR-0069)
@@ -1877,8 +1967,9 @@ paths:
           description: >
             A format job is already running (this daemon-wide, v1
             single-job limit), or this disk is the active placement for
-            state-storage or log-storage (ADR-0141) -- formatting it
-            would destroy live data; migrate away first.
+            state-storage, log-storage, or rebuildable-storage
+            (ADR-0141) -- formatting it would destroy live data;
+            migrate away first.
           content:
             application/json:
               schema:
@@ -2075,9 +2166,9 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: >
-            This disk is the active placement for state-storage or
-            log-storage (ADR-0141) -- migrate away first (POST
-            /system/state-storage/migrate or /system/log-storage/migrate).
+            This disk is the active placement for state-storage,
+            log-storage, or rebuildable-storage (ADR-0141) -- migrate
+            away first (POST /system/{state,log,rebuildable}-storage/migrate).
           content:
             application/json:
               schema:

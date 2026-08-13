@@ -28,6 +28,8 @@ const cache = {
 	stateStorageMigrate: { state: "none" },
 	logStorage: { disk: null },
 	logStorageMigrate: { state: "none" },
+	rebuildableStorage: { disk: null },
+	rebuildableStorageMigrate: { state: "none" },
 	dnsRecords: [],
 	dnsServers: [],
 	ldapServers: [],
@@ -3258,6 +3260,10 @@ const STORAGE_KINDS = {
 	logs: { endpoint: "log-storage", cacheKey: "logStorage", statusCacheKey: "logStorageMigrate",
 	        currentId: "ls-current", statusId: "ls-migrate-status", selectId: "ls-target-disk",
 	        formId: "ls-migrate-form", label: "Log storage", role: "log-storage" },
+	rebuildable: { endpoint: "rebuildable-storage", cacheKey: "rebuildableStorage",
+	               statusCacheKey: "rebuildableStorageMigrate", currentId: "rs-current",
+	               statusId: "rs-migrate-status", selectId: "rs-target-disk", formId: "rs-migrate-form",
+	               label: "Rebuildable storage", role: "rebuildable-storage" },
 };
 
 async function refreshStoragePlacement(kind) {
@@ -3330,6 +3336,7 @@ function renderStoragePlacement(kind) {
 function renderAllStoragePlacements() {
 	renderStoragePlacement("state");
 	renderStoragePlacement("logs");
+	renderStoragePlacement("rebuildable");
 }
 
 for (const kind of Object.keys(STORAGE_KINDS)) {
@@ -6243,6 +6250,8 @@ async function poll() {
 		await refreshStoragePlacementMigrate("state");
 		await refreshStoragePlacement("logs");
 		await refreshStoragePlacementMigrate("logs");
+		await refreshStoragePlacement("rebuildable");
+		await refreshStoragePlacementMigrate("rebuildable");
 		await refreshDnsRecords();
 		await refreshDnsServers();
 		await refreshLdapServers();

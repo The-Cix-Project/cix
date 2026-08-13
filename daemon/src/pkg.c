@@ -1348,6 +1348,32 @@ static int load_state(void)
 	return rc;
 }
 
+/*
+ * ADR-0141 Phase 4: repoints every REBUILDABLE_DIR-derived path this
+ * module caches, without touching in-memory package state, any
+ * in-flight job, or image_recipe_init()'s own last-apply-status
+ * fields -- see network_repoint()'s own doc comment (daemon/src/
+ * network.c) for the shared reasoning every STATE_DIR-backed module's
+ * *_repoint() already established; this module's own multiple
+ * concerns (main package state, repo-sync config, cache config,
+ * artifact config, image-recipe-apply state) each get the identical
+ * treatment below via their own repoint functions. containers_dir is
+ * deliberately not a parameter here -- CONTAINERS_DIR never moves as
+ * part of a rebuildable-storage migration, nothing to repoint.
+ */
+void pkg_repoint(const char *pkg_dir, const char *installed_state_path, const char *images_dir,
+                  const char *artifacts_dir)
+{
+	snprintf(g_pkg_dir, sizeof(g_pkg_dir), "%s", pkg_dir);
+	snprintf(g_recipes_dir, sizeof(g_recipes_dir), "%s/recipes", pkg_dir);
+	snprintf(g_sources_dir, sizeof(g_sources_dir), "%s/sources", pkg_dir);
+	snprintf(g_installed_state_path, sizeof(g_installed_state_path), "%s", installed_state_path);
+	snprintf(g_images_dir, sizeof(g_images_dir), "%s", images_dir);
+	snprintf(g_pkgbuild_rootfs, sizeof(g_pkgbuild_rootfs), "%s/pkgbuild/rootfs", images_dir);
+	snprintf(g_artifacts_dir, sizeof(g_artifacts_dir), "%s", artifacts_dir);
+	image_recipe_repoint(pkg_dir);
+}
+
 int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *containers_dir,
               const char *images_dir, const char *artifacts_dir)
 {
@@ -3489,6 +3515,13 @@ static int save_repo_config(void)
 	return rc;
 }
 
+/* ADR-0141 Phase 4: path-only repoint -- see pkg_repoint()'s own doc
+ * comment for the shared reasoning. */
+void pkg_repo_repoint(const char *new_config_path)
+{
+	snprintf(g_repo_config_path, sizeof(g_repo_config_path), "%s", new_config_path);
+}
+
 int pkg_repo_init(const char *config_path)
 {
 	char *buf;
@@ -3925,6 +3958,14 @@ static int save_cache_config(void)
 	return rc;
 }
 
+/* ADR-0141 Phase 4: path-only repoint -- see pkg_repoint()'s own doc
+ * comment for the shared reasoning. */
+void pkg_cache_repoint(const char *new_cache_dir, const char *new_config_path)
+{
+	snprintf(g_cache_dir, sizeof(g_cache_dir), "%s", new_cache_dir);
+	snprintf(g_cache_config_path, sizeof(g_cache_config_path), "%s", new_config_path);
+}
+
 int pkg_cache_init(const char *cache_dir, const char *config_path)
 {
 	char *buf;
@@ -4250,6 +4291,13 @@ static int save_artifact_config(void)
 	return rc;
 }
 
+/* ADR-0141 Phase 4: path-only repoint -- see pkg_repoint()'s own doc
+ * comment for the shared reasoning. */
+void pkg_artifact_repoint(const char *new_config_path)
+{
+	snprintf(g_artifact_config_path, sizeof(g_artifact_config_path), "%s", new_config_path);
+}
+
 int pkg_artifact_init(const char *config_path)
 {
 	char *buf;
@@ -4378,6 +4426,15 @@ void image_recipe_init(const char *pkg_dir)
 	g_image_apply_last_image[0] = '\0';
 	g_image_apply_last_attempt = 0;
 	g_image_apply_last_error[0] = '\0';
+}
+
+/* ADR-0141 Phase 4: path-only repoint, called from pkg_repoint() --
+ * unlike image_recipe_init(), never resets the last-apply-status
+ * fields (a live migration mid-apply-status has nothing to do with
+ * where the recipe files themselves live). */
+void image_recipe_repoint(const char *pkg_dir)
+{
+	snprintf(g_image_recipes_dir, sizeof(g_image_recipes_dir), "%s/image-recipes", pkg_dir);
 }
 
 static void image_recipe_path(const char *name, char *out, size_t out_size)

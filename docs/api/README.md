@@ -81,6 +81,9 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | GET | `/system/log-storage` | Which disk (if any) is the active placement for the consolidated log store |
 | GET | `/system/log-storage/migrate` | Status of the most recent (or running) log-storage migration |
 | POST | `/system/log-storage/migrate` | Move the consolidated log store to a new disk, or back to the default |
+| GET | `/system/rebuildable-storage` | Which disk (if any) is the active placement for images/packages/artifacts |
+| GET | `/system/rebuildable-storage/migrate` | Status of the most recent (or running) rebuildable-storage migration |
+| POST | `/system/rebuildable-storage/migrate` | Move images/packages/artifacts to a new disk, or back to the default |
 | GET | `/networks` | List all networks this daemon knows about |
 | POST | `/networks` | Create a network (a real bridge, persisted across restarts) |
 | GET | `/networks/{name}` | Inspect one network |
@@ -1034,7 +1037,7 @@ GET /v1/system/state-storage/migrate
 
 `state` is `"none"`, `"running"`, `"ready"`, or `"failed"` (`error` present on failure). Once the bulk copy (a forked child, `treecopy_recursive()` — the same permission-preserving primitive `POST /system/backup-config/snapshot-now`'s own future implementation and this daemon's package-install pipeline both use, never a second copy of the same logic) finishes successfully, this daemon's own single-threaded reactor does one more synchronous pass — a second, fast copy (cheap, since little changes during the bulk phase) — and only then repoints every affected subsystem's own live path, re-establishes the real `/etc/resolv.conf` bind mount against the new location (a real, previously-live lesson: a bind mount is tied to the inode it captured, not the path — see `CHANGELOG.md`'s Part 103), persists the new placement, and removes the old location's data. A `state:"failed"` migration at any point before that final repoint leaves the daemon still using the old location, completely untouched — the partially-copied new-location data is left for inspection or the next attempt to overwrite.
 
-`DELETE /v1/diskroles/{name}` and `POST /v1/disks/{name}/format` both now refuse (`409`) against a disk that's the current active state-storage *or* log-storage placement — removing the role or destroying the disk's content out from under a live placement would silently strand the daemon's own state. Migrate away first (`disk: null` back to the default, or to a different role-eligible disk).
+`DELETE /v1/diskroles/{name}` and `POST /v1/disks/{name}/format` both now refuse (`409`) against a disk that's the current active state-storage, log-storage, *or* rebuildable-storage placement — removing the role or destroying the disk's content out from under a live placement would silently strand the daemon's own state. Migrate away first (`disk: null` back to the default, or to a different role-eligible disk).
 
 ### Log-storage placement (ADR-0141 Phase 3)
 
@@ -1045,6 +1048,16 @@ POST /v1/system/log-storage/migrate      {"disk": "sdd"}
 ```
 
 Identical contract to state-storage above, for where the consolidated log store (kernel dmesg, this daemon's own diagnostics, the per-request audit trail, every container's stdout/stderr — ADR-0070/ADR-0126) lives, with its own independent job slot (a state-storage migration and a log-storage migration can run concurrently, each acting on its own kind). The one real difference under the hood, not in the contract: `logstore.c` holds a persistently-open file handle across writes (`ensure_current_segment_open()` only reopens when it's `NULL`, not per write) — the finalize step closes it and lets the next write naturally reopen (in append mode, resuming the same logical segment) against the already-migrated new location, rather than leaving it silently still writing to the old disk.
+
+### Rebuildable-storage placement (ADR-0141 Phase 4)
+
+```
+GET  /v1/system/rebuildable-storage              {"disk": null}
+GET  /v1/system/rebuildable-storage/migrate      {"state": "none"}
+POST /v1/system/rebuildable-storage/migrate      {"disk": "sde"}
+```
+
+Same contract again, for where container images, installed packages, build artifacts, and staged ISOs live — content that's regenerable from recipes/sources, never irreplaceable, the reason it's a separate concern from state-storage in the first place. Its own independent job slot, same as log-storage. Every consumer (`image.c`, and `pkg.c`'s several distinct concerns — package state, repo-sync config, cache config, artifact-fetch config, image-recipe-apply state) was confirmed to cache nothing but plain path strings with no persistently-open handle of its own, so the finalize step is a straightforward repoint across all of them, no `logstore.c`-style extra care needed.
 
 ## Per-container config files + sysctls
 

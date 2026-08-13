@@ -2,6 +2,23 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 106 (done): multi-disk storage placement Phase 4 -- rebuildable-storage end to end (ADR-0141)
+
+Fifth of six phases for ADR-0141's multi-disk storage placement work -- the third and final storage kind wired to real REST/CLI/web surfaces. Confirmed directly (not assumed, per ADR-0141's own original review note flagging this as needing confirmation) that every `REBUILDABLE_DIR` consumer (`image.c`, and `pkg.c`'s several distinct concerns: package state, repo-sync config, cache config, artifact-fetch config, image-recipe-apply state) caches nothing but plain path strings with no persistently-open file handle -- so this phase needed neither Phase 2's diskroles.json-relocation-class design correction nor Phase 3's logstore.c-class fd handling, just wiring the now-proven pattern through a third, larger set of consumer modules.
+
+#### Added
+- `GET/POST /v1/system/rebuildable-storage(/migrate)`, `kanxeoctl storage rebuildable show|migrate [--disk=NAME]|migrate-status`, and a third Disks-page web section -- identical contract and shape to state/log-storage, its own independent migration job slot.
+- `pkg_repoint()`, `pkg_repo_repoint()`, `pkg_cache_repoint()`, `pkg_artifact_repoint()`, `image_recipe_repoint()`: path-only repoints for each of `pkg.c`'s five distinct init-time concerns, mirroring every `*_repoint()` already built for `STATE_DIR`'s own ~15 subsystems in Phase 2 -- none reload in-memory state (installed-package list, in-flight job, cache/repo/artifact config) or reset `image_recipe_init()`'s own last-apply-status fields, exactly the same discipline as before.
+- `compute_rebuildable_dir_relative_paths()`/`resolve_rebuildable_storage_placement()`: same split-and-re-runnable pattern `compute_state_dir_relative_paths()`/`resolve_state_storage_placement()` established in Phase 2, for `REBUILDABLE_DIR` and its own dependent paths (`IMAGES_DIR`, `PKG_DIR` and everything under it, `ARTIFACTS_DIR`, `ISO_DIR`).
+- `test/test_storage_placement.c` extended with the identical validation-path coverage (default `disk:null`, wrong role, role-correct-but-unmounted) for rebuildable-storage, completing coverage of all three storage kinds in one shared test file.
+
+#### Changed
+- `is_active_storage_singleton_placement()` and the two 409 error messages (`DELETE /diskroles/{name}`, `POST /disks/{name}/format`) now account for all three kinds.
+- `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/cli-reference.md`/`docs/guides/web-dashboard.md` updated together, in this same change.
+
+#### Verified
+- Full clean rebuild (`-Wall -Werror`, zero warnings across all 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing flake, `test_container_lifecycle`, reproduced clean on immediate retry). Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently on the Disks page and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 message through the dashboard's shared status mechanism.
+
 ### Part 105 (done): multi-disk storage placement Phase 3 -- log-storage end to end (ADR-0141)
 
 Fourth phase of ADR-0141's multi-disk storage placement work. Much smaller than Phase 2: the shared migration/placement machinery (`storagemigrate.c`/`storageplacement.c`) and the boot-time resolution pattern already existed generically for all three storage kinds, so this phase was mostly wiring `STORAGE_KIND_LOG` up to real REST/CLI/web surfaces plus handling the one real difference `LOG_DIR` has from `STATE_DIR`'s ~15-subsystem fan-out: a single consumer (`logstore.c`) with its own persistently-open file handle.
