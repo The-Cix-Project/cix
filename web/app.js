@@ -24,6 +24,8 @@ const cache = {
 	disks: [],
 	diskRoles: [],
 	diskFormatStatus: {},
+	stateStorage: { disk: null },
+	stateStorageMigrate: { state: "none" },
 	dnsRecords: [],
 	dnsServers: [],
 	ldapServers: [],
@@ -624,8 +626,10 @@ function renderCurrentView() {
 			renderImageDetail(route.name);
 		else if (route.category === "devices")
 			renderDevices();
-		else if (route.category === "disks")
+		else if (route.category === "disks") {
 			renderDisks();
+			renderStateStorage();
+		}
 		else if (route.category === "packages")
 			renderPackagesView(route.name);
 		else if (route.category === "recipes")
@@ -3237,6 +3241,86 @@ async function refreshDiskFormatStatuses() {
 	if (parseHash().category === "disks")
 		renderDisks();
 }
+
+/* ---------- State storage placement (ADR-0141 Phase 2) ---------- */
+
+async function refreshStateStorage() {
+	cache.stateStorage = await apiRequest("GET", "/v1/system/state-storage");
+	if (parseHash().category === "disks")
+		renderStateStorage();
+}
+
+async function refreshStateStorageMigrate() {
+	if (parseHash().category !== "disks")
+		return;
+	try {
+		cache.stateStorageMigrate = await apiRequest("GET", "/v1/system/state-storage/migrate");
+	} catch (e) {
+		/* Transient -- next poll tick tries again. */
+	}
+	if (parseHash().category === "disks")
+		renderStateStorage();
+}
+
+function renderStateStorage() {
+	const current = document.getElementById("ss-current");
+
+	current.textContent = "State storage: " + (cache.stateStorage.disk || "default OS-disk placement");
+
+	const select = document.getElementById("ss-target-disk");
+	const prevValue = select.value;
+
+	select.textContent = "";
+	{
+		const opt = document.createElement("option");
+
+		opt.value = "";
+		opt.textContent = "(default OS-disk placement)";
+		select.appendChild(opt);
+	}
+	for (const d of cache.disks) {
+		const role = diskRoleFor(d.name);
+
+		if (d.is_os_disk || role === null || role.role !== "state-storage")
+			continue;
+		const opt = document.createElement("option");
+
+		opt.value = d.name;
+		opt.textContent = d.name + (d.model ? " (" + d.model + ")" : "");
+		select.appendChild(opt);
+	}
+	select.value = prevValue;
+
+	const statusP = document.getElementById("ss-migrate-status");
+	const m = cache.stateStorageMigrate;
+
+	if (!m || m.state === "none") {
+		statusP.hidden = true;
+	} else {
+		statusP.hidden = false;
+		statusP.textContent =
+			"Migration: " +
+			m.state +
+			(m.disk ? " (" + m.disk + ")" : "") +
+			(m.state === "failed" && m.error ? " -- " + m.error : "");
+	}
+}
+
+document.getElementById("ss-migrate-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const disk = document.getElementById("ss-target-disk").value;
+
+	try {
+		cache.stateStorageMigrate = await apiRequest("POST", "/v1/system/state-storage/migrate", {
+			disk: disk === "" ? null : disk,
+		});
+		clearStatus();
+		renderStateStorage();
+	} catch (e) {
+		showStatus("Failed to start state-storage migration: " + e.message, true);
+	}
+});
 
 function renderDisks() {
 	const body = document.getElementById("disks-body");
@@ -6125,6 +6209,8 @@ async function poll() {
 		await refreshDisks();
 		await refreshDiskRoles();
 		await refreshDiskFormatStatuses();
+		await refreshStateStorage();
+		await refreshStateStorageMigrate();
 		await refreshDnsRecords();
 		await refreshDnsServers();
 		await refreshLdapServers();

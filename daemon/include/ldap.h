@@ -58,6 +58,10 @@ enum ldap_server_error {
 /* Loads persisted bindings (if any) at startup. */
 int ldap_init(const char *state_path);
 
+/* ADR-0141 Phase 2: repoints without reloading -- see network_repoint()'s
+ * own doc comment for the shared reasoning. */
+void ldap_repoint(const char *new_state_path);
+
 /*
  * Registers container_name as the LDAP-serving target, with
  * config_path (its own view of the absolute path to glauth's own
@@ -188,6 +192,8 @@ enum ldap_record_error {
  * alongside ldap_init() -- see main.c. */
 int ldap_record_init(const char *users_state_path, const char *groups_state_path);
 
+void ldap_record_repoint(const char *new_users_state_path, const char *new_groups_state_path);
+
 int ldap_username_is_valid(const char *name);
 int ldap_groupname_is_valid(const char *name);
 
@@ -259,6 +265,8 @@ struct ldap_config {
  * ldap_record_init(). A missing file means the compiled-in defaults
  * above -- not an error. */
 int ldap_config_init(const char *state_path);
+
+void ldap_config_repoint(const char *new_state_path);
 
 /* Never NULL -- returns the compiled-in defaults if ldap_config_set()
  * has never been called. */
@@ -355,6 +363,8 @@ enum ldap_ssh_error {
 
 /* Loads persisted SSH targets (if any) at startup, alongside ldap_init(). */
 int ldap_ssh_init(const char *state_path);
+
+void ldap_ssh_repoint(const char *new_state_path);
 
 /* container_name must already exist and be running (self-contained
  * check via registry_find(), same as ntp_server_register() -- not

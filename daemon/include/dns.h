@@ -47,6 +47,12 @@ enum dns_error {
  * independent files. */
 int dns_init(const char *state_path, const char *servers_state_path);
 
+/* ADR-0141 Phase 2: repoints where future saves write to, without
+ * reloading/discarding already-live in-memory records/bindings -- see
+ * network_repoint()'s own doc comment for the full reasoning, shared
+ * verbatim by every STATE_DIR-backed module. */
+void dns_repoint(const char *new_state_path, const char *new_servers_state_path);
+
 /*
  * Hostname validation (dot-separated labels of [A-Za-z0-9-], each
  * 1-63 chars, <=DNS_NAME_MAX-1 total -- RFC 1035). Exported so other

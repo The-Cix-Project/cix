@@ -35,6 +35,14 @@ enum resolv_error {
 int resolv_init(const char *state_path);
 
 /*
+ * ADR-0141 Phase 2: repoints without reloading -- see network_repoint()'s
+ * own doc comment for the shared reasoning, and this module's own .c
+ * file comment for why the real /etc/resolv.conf bind mount is
+ * deliberately NOT this function's concern.
+ */
+void resolv_repoint(const char *new_state_path);
+
+/*
  * Replaces the full nameserver list and rewrites the persisted file
  * with literal "nameserver A.B.C.D" lines, one per entry -- in order,
  * matching resolv.conf's own documented try-in-order semantics.

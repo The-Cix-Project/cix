@@ -77,6 +77,18 @@ struct network_def {
 int network_init(const char *state_path);
 
 /*
+ * ADR-0141 Phase 2: repoints where future save_state() calls write to,
+ * for a live state-storage migration -- deliberately NOT a second
+ * network_init() call (which would re-open a fresh rtnl socket and
+ * reload g_networks[] from whatever's at the new path, discarding this
+ * process's already-live in-memory bridge state). The migration job's
+ * own bulk copy has already placed a correct, current copy of the old
+ * state_path's content at new_state_path before this is ever called --
+ * this only changes where the *next* save goes.
+ */
+void network_repoint(const char *new_state_path);
+
+/*
  * Validates name (1-15 chars, [A-Za-z0-9_-], unique), that subnet_str
  * parses as an IPv4 network address whose host bits are actually zero
  * for prefix_len (e.g. "172.31.0.5" with prefix_len 24 is rejected --

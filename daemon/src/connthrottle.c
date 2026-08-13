@@ -81,6 +81,11 @@ static int load_config(void)
 	return 0;
 }
 
+void connthrottle_config_repoint(const char *new_path)
+{
+	snprintf(g_config_path, sizeof(g_config_path), "%s", new_path);
+}
+
 int connthrottle_config_init(const char *path)
 {
 	if (snprintf(g_config_path, sizeof(g_config_path), "%s", path) >= (int)sizeof(g_config_path))

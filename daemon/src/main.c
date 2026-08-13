@@ -6,6 +6,8 @@
 #include "disk.h"
 #include "diskformat.h"
 #include "diskrole.h"
+#include "storagemigrate.h"
+#include "storageplacement.h"
 #include "hostproc.h"
 #include "logstore.h"
 #include "ntp.h"
@@ -145,6 +147,11 @@ static char ROLLING_CONFIG_PATH[PATH_MAX]; /* ADR-0124 */
 static char SITE_CONFIG_PATH[PATH_MAX];
 static char DEVICEMAP_STATE_PATH[PATH_MAX];
 static char DISKROLE_STATE_PATH[PATH_MAX];
+/* ADR-0141 Phase 2: which disk (if any) is the active placement for
+ * state-storage/rebuildable-storage/log-storage -- g_base_dir-relative,
+ * never STATE_DIR-relative, same bootstrap-circularity reasoning as
+ * DISKROLE_STATE_PATH's own comment. */
+static char STORAGE_PLACEMENT_PATH[PATH_MAX];
 static char DAEMON_CONFIG_PATH[PATH_MAX];
 static char QUOTAMAP_STATE_PATH[PATH_MAX];
 /*
@@ -215,13 +222,17 @@ static char CONNTHROTTLE_CONFIG_PATH[PATH_MAX];
  * before anything (including boot_init(), which mounts the real
  * containers partition at g_base_dir under --init-mode) touches any
  * of them. */
-static void init_base_dir_paths(void)
+/*
+ * Every path that's STATE_DIR-relative (directly or transitively, e.g.
+ * PKI_CERTS_DIR via PKI_DIR) -- split out of init_base_dir_paths() so
+ * it can be re-run a second time (ADR-0141 Phase 2's own
+ * resolve_state_storage_placement(), below) once STATE_DIR's real,
+ * possibly-relocated value is known, without duplicating this list of
+ * snprintf() calls. Callable any number of times; always recomputes
+ * every one of these paths from STATE_DIR's *current* value.
+ */
+static void compute_state_dir_relative_paths(void)
 {
-	snprintf(STATE_DIR, sizeof(STATE_DIR), "%s/state", g_base_dir);
-	snprintf(REBUILDABLE_DIR, sizeof(REBUILDABLE_DIR), "%s/rebuildable", g_base_dir);
-
-	snprintf(IMAGES_DIR, sizeof(IMAGES_DIR), "%s/images", REBUILDABLE_DIR);
-	snprintf(CONTAINERS_DIR, sizeof(CONTAINERS_DIR), "%s/containers", g_base_dir);
 	snprintf(NETWORKS_STATE_PATH, sizeof(NETWORKS_STATE_PATH), "%s/networks.json", STATE_DIR);
 	snprintf(DNS_RECORDS_STATE_PATH, sizeof(DNS_RECORDS_STATE_PATH), "%s/dns_records.json", STATE_DIR);
 	snprintf(DNS_SERVERS_STATE_PATH, sizeof(DNS_SERVERS_STATE_PATH), "%s/dns_servers.json", STATE_DIR);
@@ -237,6 +248,27 @@ static void init_base_dir_paths(void)
 	snprintf(PKI_DIR, sizeof(PKI_DIR), "%s/pki", STATE_DIR);
 	snprintf(PKI_CERTS_STATE_PATH, sizeof(PKI_CERTS_STATE_PATH), "%s/pki_certs.json", PKI_DIR);
 	snprintf(PKI_CERTS_DIR, sizeof(PKI_CERTS_DIR), "%s/certs", PKI_DIR);
+	snprintf(CONTAINER_DEFS_STATE_PATH, sizeof(CONTAINER_DEFS_STATE_PATH), "%s/container_defs.json", STATE_DIR);
+	snprintf(ROLLING_CONFIG_PATH, sizeof(ROLLING_CONFIG_PATH), "%s/rolling_config.json", STATE_DIR);
+	snprintf(SITE_CONFIG_PATH, sizeof(SITE_CONFIG_PATH), "%s/site_config.json", STATE_DIR);
+	snprintf(DEVICEMAP_STATE_PATH, sizeof(DEVICEMAP_STATE_PATH), "%s/devicemaps.json", STATE_DIR);
+	snprintf(DAEMON_CONFIG_PATH, sizeof(DAEMON_CONFIG_PATH), "%s/daemon_config.json", STATE_DIR);
+	snprintf(QUOTAMAP_STATE_PATH, sizeof(QUOTAMAP_STATE_PATH), "%s/quota_projids.json", STATE_DIR);
+	snprintf(SIGNING_KEYS_DIR, sizeof(SIGNING_KEYS_DIR), "%s/keys", STATE_DIR);
+	snprintf(RESOLV_CONF_PATH, sizeof(RESOLV_CONF_PATH), "%s/resolv.conf", STATE_DIR);
+	snprintf(NTP_STATE_PATH, sizeof(NTP_STATE_PATH), "%s/ntp.conf", STATE_DIR);
+	snprintf(NTP_SERVERS_STATE_PATH, sizeof(NTP_SERVERS_STATE_PATH), "%s/ntp_servers.json", STATE_DIR);
+	snprintf(SYSLOGFWD_STATE_PATH, sizeof(SYSLOGFWD_STATE_PATH), "%s/syslog_targets.json", STATE_DIR);
+	snprintf(CONNTHROTTLE_CONFIG_PATH, sizeof(CONNTHROTTLE_CONFIG_PATH), "%s/tls_throttle.json", STATE_DIR);
+}
+
+static void init_base_dir_paths(void)
+{
+	snprintf(STATE_DIR, sizeof(STATE_DIR), "%s/state", g_base_dir);
+	snprintf(REBUILDABLE_DIR, sizeof(REBUILDABLE_DIR), "%s/rebuildable", g_base_dir);
+
+	snprintf(IMAGES_DIR, sizeof(IMAGES_DIR), "%s/images", REBUILDABLE_DIR);
+	snprintf(CONTAINERS_DIR, sizeof(CONTAINERS_DIR), "%s/containers", g_base_dir);
 	snprintf(PKG_DIR, sizeof(PKG_DIR), "%s/pkg", REBUILDABLE_DIR);
 	snprintf(PKG_INSTALLED_STATE_PATH, sizeof(PKG_INSTALLED_STATE_PATH), "%s/pkg_installed.json", PKG_DIR);
 	snprintf(PKG_RECIPES_DIR, sizeof(PKG_RECIPES_DIR), "%s/recipes", PKG_DIR);
@@ -246,14 +278,19 @@ static void init_base_dir_paths(void)
 	snprintf(PKG_ARTIFACT_CONFIG_PATH, sizeof(PKG_ARTIFACT_CONFIG_PATH), "%s/artifact_config.json",
 	         PKG_DIR);
 	snprintf(ARTIFACTS_DIR, sizeof(ARTIFACTS_DIR), "%s/artifacts", REBUILDABLE_DIR);
-	snprintf(CONTAINER_DEFS_STATE_PATH, sizeof(CONTAINER_DEFS_STATE_PATH), "%s/container_defs.json", STATE_DIR);
-	snprintf(ROLLING_CONFIG_PATH, sizeof(ROLLING_CONFIG_PATH), "%s/rolling_config.json", STATE_DIR);
-	snprintf(SITE_CONFIG_PATH, sizeof(SITE_CONFIG_PATH), "%s/site_config.json", STATE_DIR);
-	snprintf(DEVICEMAP_STATE_PATH, sizeof(DEVICEMAP_STATE_PATH), "%s/devicemaps.json", STATE_DIR);
-	snprintf(DISKROLE_STATE_PATH, sizeof(DISKROLE_STATE_PATH), "%s/diskroles.json", STATE_DIR);
-	snprintf(DAEMON_CONFIG_PATH, sizeof(DAEMON_CONFIG_PATH), "%s/daemon_config.json", STATE_DIR);
-	snprintf(QUOTAMAP_STATE_PATH, sizeof(QUOTAMAP_STATE_PATH), "%s/quota_projids.json", STATE_DIR);
-	snprintf(SIGNING_KEYS_DIR, sizeof(SIGNING_KEYS_DIR), "%s/keys", STATE_DIR);
+	/*
+	 * Deliberately g_base_dir-relative, NOT STATE_DIR-relative (ADR-0141
+	 * Phase 2 correction) -- disk role assignments are bootstrap-level
+	 * data needed to even determine *where* STATE_DIR itself lives once
+	 * state-storage becomes a relocatable, disk-role-driven placement:
+	 * putting diskroles.json inside STATE_DIR would make "which disk is
+	 * state-storage on" depend on reading a file that might itself be on
+	 * that same disk, a real circular dependency caught before it ever
+	 * shipped as a working migration. STORAGE_PLACEMENT_PATH (below)
+	 * needs the same fixed treatment for the identical reason. */
+	snprintf(DISKROLE_STATE_PATH, sizeof(DISKROLE_STATE_PATH), "%s/diskroles.json", g_base_dir);
+	snprintf(STORAGE_PLACEMENT_PATH, sizeof(STORAGE_PLACEMENT_PATH), "%s/storage_placement.json",
+	         g_base_dir);
 	snprintf(ISO_DIR, sizeof(ISO_DIR), "%s/iso", REBUILDABLE_DIR);
 	snprintf(PKGBUILD_TOOLCHAIN_FETCH_PATH, sizeof(PKGBUILD_TOOLCHAIN_FETCH_PATH),
 	         "%s/bootstrap_toolchain.squashfs", PKG_DIR);
@@ -263,11 +300,59 @@ static void init_base_dir_paths(void)
 	snprintf(LOG_DIR, sizeof(LOG_DIR), "%s/logs", g_base_dir);
 	snprintf(LOG_STATE_PATH, sizeof(LOG_STATE_PATH), "%s/state.json", LOG_DIR);
 	snprintf(DISKS_MOUNT_DIR, sizeof(DISKS_MOUNT_DIR), "%s/disks", g_base_dir);
-	snprintf(RESOLV_CONF_PATH, sizeof(RESOLV_CONF_PATH), "%s/resolv.conf", STATE_DIR);
-	snprintf(NTP_STATE_PATH, sizeof(NTP_STATE_PATH), "%s/ntp.conf", STATE_DIR);
-	snprintf(NTP_SERVERS_STATE_PATH, sizeof(NTP_SERVERS_STATE_PATH), "%s/ntp_servers.json", STATE_DIR);
-	snprintf(SYSLOGFWD_STATE_PATH, sizeof(SYSLOGFWD_STATE_PATH), "%s/syslog_targets.json", STATE_DIR);
-	snprintf(CONNTHROTTLE_CONFIG_PATH, sizeof(CONNTHROTTLE_CONFIG_PATH), "%s/tls_throttle.json", STATE_DIR);
+
+	compute_state_dir_relative_paths();
+}
+
+/*
+ * ADR-0141 Phase 2: called once at boot, after diskrole_init() and
+ * diskformat_remount_present_role_disks() have run (this needs both --
+ * knowing state-storage's assigned disk, and that disk actually being
+ * mounted) but before ensure_dir()/any subsystem _init() reads or
+ * writes a STATE_DIR-relative path. If storageplacement_get(STORAGE_
+ * KIND_STATE) names a disk, and disk_enumerate() confirms it's
+ * currently mounted, STATE_DIR is repointed to that disk's own mount
+ * path and every STATE_DIR-relative path is recomputed to match --
+ * otherwise STATE_DIR is left at init_base_dir_paths()'s own default
+ * (g_base_dir/state), unchanged.
+ *
+ * Deliberately fails loud (returns -1, main() treats this exactly like
+ * any other _init() failure) rather than silently falling back to the
+ * default location when a configured placement disk isn't currently
+ * available -- falling back would mean starting this daemon against a
+ * STATE_DIR that's either empty or stale, which is a far worse outcome
+ * than refusing to boot with a clear, actionable error (reattach the
+ * disk, or manually clear the placement via a future recovery path).
+ */
+static int resolve_state_storage_placement(void)
+{
+	const char *disk_name = storageplacement_get(STORAGE_KIND_STATE);
+	struct discovered_disk disks[DISK_ENUM_MAX];
+	int n, i;
+
+	if (disk_name == NULL)
+		return 0; /* default OS-disk placement -- nothing to do */
+
+	n = disk_enumerate(disks, DISK_ENUM_MAX, CONTAINERS_DIR);
+	for (i = 0; i < n; i++) {
+		if (strcmp(disks[i].name, disk_name) != 0)
+			continue;
+		if (!disks[i].mounted) {
+			fprintf(stderr,
+			        "resolve_state_storage_placement: state-storage's configured disk "
+			        "'%s' is present but not currently mounted -- refusing to start\n",
+			        disk_name);
+			return -1;
+		}
+		snprintf(STATE_DIR, sizeof(STATE_DIR), "%s/%s/state", DISKS_MOUNT_DIR, disk_name);
+		compute_state_dir_relative_paths();
+		return 0;
+	}
+	fprintf(stderr,
+	        "resolve_state_storage_placement: state-storage's configured disk '%s' is not "
+	        "currently present -- refusing to start\n",
+	        disk_name);
+	return -1;
 }
 
 /*
@@ -322,9 +407,18 @@ static void migrate_flat_layout_to_grouped(void)
 		"networks.json",       "dns_records.json",  "dns_servers.json",     "ldap_servers.json",
 		"ldap_users.json",     "ldap_groups.json",  "ldap_config.json",     "ldap_ssh_targets.json",
 		"pki",                 "container_defs.json", "rolling_config.json", "site_config.json",
-		"devicemaps.json",     "diskroles.json",    "daemon_config.json",   "quota_projids.json",
+		"devicemaps.json",     "daemon_config.json", "quota_projids.json",
 		"keys",                "resolv.conf",       "ntp.conf",             "ntp_servers.json",
 		"syslog_targets.json", "tls_throttle.json",
+		/*
+		 * "diskroles.json" deliberately NOT here (ADR-0141 Phase 2
+		 * correction) -- it stays a fixed g_base_dir child, never
+		 * STATE_DIR-relative; see DISKROLE_STATE_PATH's own comment in
+		 * init_base_dir_paths(). migrate_diskroles_out_of_state_dir()
+		 * below handles the one-time reverse move for any box that
+		 * already migrated it into STATE_DIR under the original,
+		 * since-corrected Phase 0 list.
+		 */
 	};
 	static const char *const rebuildable_entries[] = { "images", "pkg", "artifacts", "iso" };
 	size_t i;
@@ -333,6 +427,34 @@ static void migrate_flat_layout_to_grouped(void)
 		migrate_one_flat_entry(state_entries[i], STATE_DIR);
 	for (i = 0; i < sizeof(rebuildable_entries) / sizeof(rebuildable_entries[0]); i++)
 		migrate_one_flat_entry(rebuildable_entries[i], REBUILDABLE_DIR);
+}
+
+/*
+ * ADR-0141 Phase 2 correction, one-time and idempotent exactly like
+ * migrate_flat_layout_to_grouped() above (same rename(2)-is-a-no-op-on-
+ * ENOENT safety, safe to call unconditionally on every boot): moves
+ * diskroles.json back OUT of STATE_DIR to its own fixed g_base_dir
+ * location, for any box that already ran the original Phase 0 upgrade
+ * (which incorrectly grouped it in). A no-op on a box that's never had
+ * a STATE_DIR/diskroles.json at all -- a genuinely fresh install always
+ * writes it straight to the fixed path via DISKROLE_STATE_PATH, nothing
+ * to move. Must run before diskrole_init() ever reads DISKROLE_STATE_PATH,
+ * same ordering discipline (and same two call sites -- inside boot_init()
+ * and again in main() for the non-init-mode path) as its sibling.
+ */
+static void migrate_diskroles_out_of_state_dir(void)
+{
+	char old_path[PATH_MAX];
+	struct stat st;
+
+	if (snprintf(old_path, sizeof(old_path), "%s/diskroles.json", STATE_DIR) >=
+	    (int)sizeof(old_path))
+		return;
+	if (lstat(old_path, &st) != 0)
+		return; /* nothing to migrate -- already fixed, or a fresh install */
+	if (rename(old_path, DISKROLE_STATE_PATH) != 0)
+		fprintf(stderr, "migrate_diskroles_out_of_state_dir: rename %s -> %s failed: %s\n",
+		        old_path, DISKROLE_STATE_PATH, strerror(errno));
 }
 
 /*
@@ -570,6 +692,7 @@ enum conn_kind {
 	CONN_PKG_SYNC_PERIODIC_TIMER, /* permanent, re-arms itself -- fires pkg_sync_start() periodically if configured (ADR-0121) */
 	CONN_IMAGE_RECIPE_FETCH, /* image-recipe-apply's own whole-rootfs artifact curl fetch (ADR-0123) */
 	CONN_DISK_FORMAT,       /* disk format+mount job (multi-disk management Phase C) */
+	CONN_STORAGE_MIGRATE,   /* state/rebuildable/log-storage migration job (ADR-0141 Phase 2) */
 	CONN_PING,              /* GET/POST /v1/system/ping -- the raw ICMP socket half */
 	CONN_PING_TIMER,        /* same job's paired timeout -- see ping_job_teardown() */
 	CONN_NTP_PERIODIC_TIMER, /* permanent, re-arms itself -- fires ntp_sync_start() periodically (task #751) */
@@ -626,7 +749,8 @@ struct conn {
 	 */
 	char output_line_buf[1024];             /* CONN_CONTAINER_OUTPUT only */
 	int output_line_len;                    /* CONN_CONTAINER_OUTPUT only */
-	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE / CONN_ISO_ASSEMBLE / CONN_BOOTSTRAP_FETCH / CONN_DISK_FORMAT */
+	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE / CONN_ISO_ASSEMBLE / CONN_BOOTSTRAP_FETCH / CONN_DISK_FORMAT / CONN_STORAGE_MIGRATE */
+	enum storage_kind storage_migrate_kind; /* CONN_STORAGE_MIGRATE only */
 	char restart_name[REGISTRY_NAME_MAX];   /* CONN_RESTART_TIMER only */
 	char cleanup_ifname[NETWORK_NAME_MAX];  /* CONN_BIND_IP_CLEANUP only */
 	uint32_t cleanup_addr_be;               /* CONN_BIND_IP_CLEANUP only */
@@ -1138,9 +1262,10 @@ static int boot_init(void)
 	 * function at all.
 	 */
 	migrate_flat_layout_to_grouped();
+	migrate_diskroles_out_of_state_dir();
 	/*
 	 * ADR-0076: the host's own outbound DNS resolver config.
-	 * RESOLV_CONF_PATH (<g_base_dir>/resolv.conf) is real, persisted
+	 * RESOLV_CONF_PATH (STATE_DIR/resolv.conf) is real, persisted
 	 * state -- ordinary create-if-missing (O_CREAT, no O_TRUNC, so a
 	 * real reboot never wipes an operator-configured resolver) rather
 	 * than resolv_init()'s own later, read-only load, since that
@@ -5876,6 +6001,128 @@ static void handle_disk_format_event(struct conn *cc)
 	fprintf(stderr, "disk format: job finished (exit_status=%d)\n", exit_status);
 }
 
+/*
+ * ADR-0141 Phase 2: registers the async bulk-copy job storagemigrate_
+ * start() already forked, the same split every other async host job
+ * uses (storagemigrate.c has no epoll/conn knowledge of its own).
+ */
+static void register_storage_migrate_pidfd(enum storage_kind kind, pid_t pid, int pidfd)
+{
+	struct conn *cc;
+	struct kx_epoll_event ev;
+
+	cc = malloc(sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (storage migrate reactor conn)");
+		abort();
+	}
+	cc->kind = CONN_STORAGE_MIGRATE;
+	cc->fd = pidfd;
+	cc->pkg_fetch_pid = pid;
+	cc->storage_migrate_kind = kind;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+		perror("epoll_ctl ADD storage migrate pidfd");
+		abort();
+	}
+}
+
+/*
+ * ADR-0141 Phase 2: the real repoint step, run synchronously once
+ * storagemigrate_finalize(STORAGE_KIND_STATE)'s own second copy pass
+ * has already succeeded -- repoints every STATE_DIR-backed module's
+ * own private path (never a bare STATE_DIR string mutation alone;
+ * each module caches its own copy at _init() time, see every *_repoint()
+ * function's own doc comment), re-establishes the /etc/resolv.conf
+ * bind mount against the new location (the exact Part 103 lesson:
+ * a bind mount is tied to the inode it captured, not the path -- a
+ * plain STATE_DIR change alone would leave it silently stale), persists
+ * the new active placement, and removes the old location's data. Only
+ * ever called with the daemon's single-threaded reactor as the sole
+ * caller (ADR-0009) -- inherently atomic from every other request's
+ * point of view, no locking needed.
+ */
+static void finalize_state_storage_migration(void)
+{
+	const char *target_dir = storagemigrate_job_target_dir(STORAGE_KIND_STATE);
+	const char *target_disk = storagemigrate_job_target_disk(STORAGE_KIND_STATE);
+	char old_source_dir[PATH_MAX];
+	char new_resolv_path[PATH_MAX];
+
+	snprintf(old_source_dir, sizeof(old_source_dir), "%s", storagemigrate_job_source_dir(STORAGE_KIND_STATE));
+
+	if (storagemigrate_finalize(STORAGE_KIND_STATE) != 0) {
+		fprintf(stderr, "state-storage migration: final copy pass failed, migration aborted\n");
+		return;
+	}
+
+	snprintf(STATE_DIR, sizeof(STATE_DIR), "%s", target_dir);
+	compute_state_dir_relative_paths();
+
+	network_repoint(NETWORKS_STATE_PATH);
+	dns_repoint(DNS_RECORDS_STATE_PATH, DNS_SERVERS_STATE_PATH);
+	ldap_repoint(LDAP_SERVERS_STATE_PATH);
+	ldap_record_repoint(LDAP_USERS_STATE_PATH, LDAP_GROUPS_STATE_PATH);
+	ldap_config_repoint(LDAP_CONFIG_STATE_PATH);
+	ldap_ssh_repoint(LDAP_SSH_TARGETS_STATE_PATH);
+	pki_repoint(PKI_DIR, PKI_CERTS_STATE_PATH);
+	containerdef_repoint(CONTAINER_DEFS_STATE_PATH);
+	containerdef_rolling_config_repoint(ROLLING_CONFIG_PATH);
+	siteconfig_repoint(SITE_CONFIG_PATH);
+	devicemap_repoint(DEVICEMAP_STATE_PATH);
+	daemon_config_repoint(DAEMON_CONFIG_PATH);
+	quotamap_repoint(QUOTAMAP_STATE_PATH);
+	ntp_repoint(NTP_STATE_PATH, NTP_SERVERS_STATE_PATH);
+	syslogfwd_repoint(SYSLOGFWD_STATE_PATH);
+	connthrottle_config_repoint(CONNTHROTTLE_CONFIG_PATH);
+	resolv_repoint(RESOLV_CONF_PATH);
+
+	/* Re-establish the real bind mount -- see this function's own top
+	 * comment. Best-effort: a failure here leaves /etc/resolv.conf
+	 * stale until a real reboot re-does boot_init()'s own bind-mount
+	 * setup against the now-correct RESOLV_CONF_PATH, not fatal to the
+	 * migration itself (matches boot_init()'s own non-fatal posture for
+	 * this exact bind mount). */
+	snprintf(new_resolv_path, sizeof(new_resolv_path), "%s", RESOLV_CONF_PATH);
+	if (umount2("/etc/resolv.conf", MNT_DETACH) != 0)
+		perror("state-storage migration: /etc/resolv.conf umount");
+	if (mount(new_resolv_path, "/etc/resolv.conf", NULL, MS_BIND, NULL) != 0)
+		perror("state-storage migration: /etc/resolv.conf re-bind-mount");
+
+	storageplacement_set(STORAGE_KIND_STATE, target_disk[0] != '\0' ? target_disk : NULL);
+
+	if (persist_remove_tree(old_source_dir) != 0)
+		fprintf(stderr, "state-storage migration: could not remove old location %s: %s\n",
+		        old_source_dir, strerror(errno));
+
+	fprintf(stderr, "state-storage migration: complete, now active on %s\n",
+	        target_disk[0] != '\0' ? target_disk : "(default OS-disk placement)");
+}
+
+static void handle_storage_migrate_event(struct conn *cc)
+{
+	int status;
+	int exit_status;
+	enum storage_kind kind = cc->storage_migrate_kind;
+
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
+		exit_status = WEXITSTATUS(status);
+	else
+		exit_status = -1;
+	close(cc->fd);
+	free(cc);
+
+	storagemigrate_completed(kind, exit_status);
+	fprintf(stderr, "storage migrate: bulk copy job finished (kind=%d exit_status=%d)\n", (int)kind,
+	        exit_status);
+	if (exit_status == 0 && kind == STORAGE_KIND_STATE)
+		finalize_state_storage_migration();
+}
+
 static const char *iso_build_state_str(enum iso_build_state s)
 {
 	switch (s) {
@@ -8349,10 +8596,35 @@ static void handle_diskrole_create(int fd, const char *body, size_t body_len)
 	}
 }
 
+/*
+ * ADR-0141: true if disk_name is the *currently active* placement for
+ * one of the daemon-wide storage singletons (state-storage today;
+ * rebuildable-storage/log-storage once their own phases land) --
+ * removing the role out from under an in-use placement, or destroying
+ * it via format, would leave the daemon's own live-location tracking
+ * pointing at a disk that, per its own role table, doesn't do that
+ * anymore. Shared by handle_diskrole_delete() and
+ * handle_disk_format_post() below.
+ */
+static int is_active_storage_singleton_placement(const char *disk_name)
+{
+	const char *state_disk = storageplacement_get(STORAGE_KIND_STATE);
+
+	return state_disk != NULL && strcmp(state_disk, disk_name) == 0;
+}
+
 static void handle_diskrole_delete(int fd, const char *disk_name)
 {
-	enum diskrole_error derr = diskrole_delete(disk_name);
+	enum diskrole_error derr;
 
+	if (is_active_storage_singleton_placement(disk_name)) {
+		respond_error(fd, 409, "Conflict",
+		              "this disk is the active state-storage placement -- migrate away "
+		              "(POST .../migrate with a different disk, or disk: null for the "
+		              "default OS-disk placement) before removing its role");
+		return;
+	}
+	derr = diskrole_delete(disk_name);
 	if (derr != DISKROLE_OK) {
 		respond_diskrole_error(fd, derr);
 		return;
@@ -8424,6 +8696,13 @@ static void handle_disk_format_post(int fd, const char *disk_name, const char *b
 		              "this is a destructive operation");
 		return;
 	}
+	if (is_active_storage_singleton_placement(disk_name)) {
+		json_free(root);
+		respond_error(fd, 409, "Conflict",
+		              "this disk is the active state-storage placement -- formatting it "
+		              "would destroy live data; migrate away first");
+		return;
+	}
 	/*
 	 * fs_type (ADR-0104, task #732): optional, defaults to "ext4" --
 	 * every pre-existing request body (no fs_type field at all) keeps
@@ -8473,6 +8752,123 @@ static void handle_disk_format_get(int fd, const char *disk_name)
 
 	jw_init(&w);
 	diskformat_write_status_json(&w, disk_name);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * ADR-0141 Phase 2: GET/POST /v1/system/state-storage(/migrate). Only
+ * state-storage is wired to REST this phase -- rebuildable-storage/
+ * log-storage reuse the identical storagemigrate.c/storageplacement.c
+ * machinery, just not exposed here yet (Phase 3/4).
+ */
+static void handle_state_storage_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	storageplacement_write_json(&w, STORAGE_KIND_STATE);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void respond_storagemigrate_error(int fd, enum storagemigrate_error err)
+{
+	switch (err) {
+	case STORAGEMIGRATE_ERR_BUSY:
+		respond_error(fd, 409, "Conflict", "a state-storage migration is already running");
+		break;
+	case STORAGEMIGRATE_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such disk");
+		break;
+	case STORAGEMIGRATE_ERR_IS_OS_DISK:
+		respond_error(fd, 400, "Bad Request",
+		              "this disk holds the fixed OS layout -- it can never be a placement target");
+		break;
+	case STORAGEMIGRATE_ERR_WRONG_ROLE:
+		respond_error(fd, 400, "Bad Request",
+		              "this disk does not carry the state-storage role -- assign it via "
+		              "POST /v1/diskroles first");
+		break;
+	case STORAGEMIGRATE_ERR_NOT_MOUNTED:
+		respond_error(fd, 400, "Bad Request", "this disk carries the role but isn't currently mounted");
+		break;
+	case STORAGEMIGRATE_ERR_ALREADY_ACTIVE:
+		respond_error(fd, 409, "Conflict", "this is already the active state-storage placement");
+		break;
+	case STORAGEMIGRATE_ERR_SPAWN_FAILED:
+	default:
+		respond_error(fd, 500, "Internal Server Error", "could not start migration job");
+		break;
+	}
+}
+
+static void handle_state_storage_migrate_post(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const struct json_value *jdisk;
+	const char *disk_name;
+	char disk_name_buf[DISKROLE_DISK_NAME_MAX];
+	char target_dir[PATH_MAX];
+	pid_t pid;
+	int pidfd;
+	enum storagemigrate_error merr;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	jdisk = json_object_get(root, "disk");
+	if (jdisk == NULL || (jdisk->type != JSON_NULL && jdisk->type != JSON_STRING)) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "disk is required -- a disk name, or null for the default OS-disk placement");
+		return;
+	}
+	if (jdisk->type == JSON_NULL) {
+		disk_name = NULL;
+		snprintf(target_dir, sizeof(target_dir), "%s/state", g_base_dir);
+	} else {
+		disk_name = json_as_string(jdisk);
+		if (disk_name == NULL || disk_name[0] == '\0' ||
+		    strlen(disk_name) >= DISKROLE_DISK_NAME_MAX) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "invalid disk name");
+			return;
+		}
+		snprintf(disk_name_buf, sizeof(disk_name_buf), "%s", disk_name);
+		disk_name = disk_name_buf;
+		snprintf(target_dir, sizeof(target_dir), "%s/%s/state", DISKS_MOUNT_DIR, disk_name);
+	}
+	json_free(root);
+
+	merr = storagemigrate_start(STORAGE_KIND_STATE, STATE_DIR, target_dir, disk_name, CONTAINERS_DIR,
+	                             &pid, &pidfd);
+	if (merr != STORAGEMIGRATE_OK) {
+		respond_storagemigrate_error(fd, merr);
+		return;
+	}
+	register_storage_migrate_pidfd(STORAGE_KIND_STATE, pid, pidfd);
+
+	{
+		struct json_writer w;
+
+		jw_init(&w);
+		storagemigrate_write_status_json(&w, STORAGE_KIND_STATE);
+		respond_json(fd, 202, "Accepted", &w);
+		jw_free(&w);
+	}
+}
+
+static void handle_state_storage_migrate_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	storagemigrate_write_status_json(&w, STORAGE_KIND_STATE);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
@@ -11307,6 +11703,20 @@ static void dispatch(int fd, const struct http_request *req)
 			return;
 		}
 	}
+	if (strcmp(req->path, "/v1/system/state-storage") == 0 && strcmp(req->method, "GET") == 0) {
+		handle_state_storage_get(fd);
+		return;
+	}
+	if (strcmp(req->path, "/v1/system/state-storage/migrate") == 0) {
+		if (strcmp(req->method, "POST") == 0) {
+			handle_state_storage_migrate_post(fd, req->body, req->body_len);
+			return;
+		}
+		if (strcmp(req->method, "GET") == 0) {
+			handle_state_storage_migrate_get(fd);
+			return;
+		}
+	}
 	if (strcmp(req->path, "/v1/system/rolling-config") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_rolling_config_get(fd);
@@ -13952,6 +14362,7 @@ int main(int argc, char **argv)
 	}
 
 	migrate_flat_layout_to_grouped();
+	migrate_diskroles_out_of_state_dir();
 
 	/* STATE_DIR/REBUILDABLE_DIR themselves first (ADR-0141) -- ensure_dir()
 	 * is a plain single-level mkdir(), not mkdir -p, so every path nested
@@ -13959,13 +14370,49 @@ int main(int argc, char **argv)
 	 * genuinely fresh install (nothing for migrate_flat_layout_to_grouped()
 	 * to have created them via already, since there was nothing at the
 	 * old flat paths to migrate). */
-	if (ensure_dir(g_base_dir) != 0 || ensure_dir(STATE_DIR) != 0 ||
+	/*
+	 * ADR-0141 Phase 2: g_base_dir and DISKS_MOUNT_DIR only, first --
+	 * diskrole_init()/diskformat_remount_present_role_disks()/
+	 * resolve_state_storage_placement() below need DISKS_MOUNT_DIR to
+	 * already exist (so a disk can actually be mounted under it) and
+	 * must themselves run before STATE_DIR's real, possibly-relocated
+	 * value is known -- everything else's ensure_dir() moves below
+	 * that resolution instead of staying bundled in one block the way
+	 * it was before this phase.
+	 */
+	if (ensure_dir(g_base_dir) != 0 || ensure_dir(DISKS_MOUNT_DIR) != 0)
+		return 1;
+	if (diskrole_init(DISKROLE_STATE_PATH) != 0)
+		return 1;
+	/* ADR-0142: recover any role-assigned disk this box already
+	 * formatted successfully (possibly in a prior daemon lifetime) but
+	 * that isn't currently mounted -- diskformat.c's own job state is
+	 * purely in-memory and forgotten across every restart, even though
+	 * the real mount doesn't need to be. Best-effort, never fatal to
+	 * startup. Must run before resolve_state_storage_placement() below,
+	 * which depends on state-storage's own configured disk (if any)
+	 * already being mounted by the time it checks. */
+	diskformat_remount_present_role_disks(CONTAINERS_DIR, DISKS_MOUNT_DIR);
+	if (storageplacement_init(STORAGE_PLACEMENT_PATH) != 0)
+		return 1;
+	if (resolve_state_storage_placement() != 0)
+		return 1;
+
+	/* STATE_DIR/REBUILDABLE_DIR themselves first (ADR-0141) -- ensure_dir()
+	 * is a plain single-level mkdir(), not mkdir -p, so every path nested
+	 * under either one below would otherwise fail with ENOENT on a
+	 * genuinely fresh install (nothing for migrate_flat_layout_to_grouped()
+	 * to have created them via already, since there was nothing at the
+	 * old flat paths to migrate). STATE_DIR here may be a relocated disk's
+	 * own mount path (resolve_state_storage_placement() above) -- either
+	 * way it already exists as a real, mounted directory by this point;
+	 * ensure_dir() only needs to create the "state" subdirectory under it. */
+	if (ensure_dir(STATE_DIR) != 0 ||
 	    ensure_dir(REBUILDABLE_DIR) != 0 || ensure_dir(IMAGES_DIR) != 0 ||
 	    ensure_dir(CONTAINERS_DIR) != 0 || ensure_dir(PKI_DIR) != 0 ||
 	    ensure_dir(PKI_CERTS_DIR) != 0 || ensure_dir(PKG_DIR) != 0 ||
 	    ensure_dir(ARTIFACTS_DIR) != 0 || ensure_dir(SIGNING_KEYS_DIR) != 0 ||
-	    ensure_dir(ISO_DIR) != 0 || ensure_dir(SWAP_DIR) != 0 || ensure_dir(LOG_DIR) != 0 ||
-	    ensure_dir(DISKS_MOUNT_DIR) != 0)
+	    ensure_dir(ISO_DIR) != 0 || ensure_dir(SWAP_DIR) != 0 || ensure_dir(LOG_DIR) != 0)
 		return 1;
 
 	if (network_init(NETWORKS_STATE_PATH) != 0)
@@ -14088,15 +14535,10 @@ int main(int argc, char **argv)
 		return 1;
 	if (devicemap_init(DEVICEMAP_STATE_PATH) != 0)
 		return 1;
-	if (diskrole_init(DISKROLE_STATE_PATH) != 0)
-		return 1;
-	/* ADR-0142: recover any role-assigned disk this box already
-	 * formatted successfully (possibly in a prior daemon lifetime) but
-	 * that isn't currently mounted -- diskformat.c's own job state is
-	 * purely in-memory and forgotten across every restart, even though
-	 * the real mount doesn't need to be. Best-effort, never fatal to
-	 * startup. */
-	diskformat_remount_present_role_disks(CONTAINERS_DIR, DISKS_MOUNT_DIR);
+	/* diskrole_init()/diskformat_remount_present_role_disks() now run
+	 * much earlier (ADR-0141 Phase 2) -- see the resolve_state_storage_
+	 * placement() block above, which needs both before it can determine
+	 * STATE_DIR's own real location. */
 	if (quotamap_init(QUOTAMAP_STATE_PATH) != 0)
 		return 1;
 	if (swap_init(SWAP_STATE_PATH, SWAP_FILE_PATH) != 0)
@@ -14270,6 +14712,8 @@ int main(int argc, char **argv)
 				handle_image_recipe_fetch_event(cc);
 			else if (cc->kind == CONN_DISK_FORMAT)
 				handle_disk_format_event(cc);
+			else if (cc->kind == CONN_STORAGE_MIGRATE)
+				handle_storage_migrate_event(cc);
 			else if (cc->kind == CONN_PING)
 				handle_ping_socket_event(cc);
 			else if (cc->kind == CONN_PING_TIMER)

@@ -78,6 +78,10 @@ enum ntp_error {
  */
 int ntp_init(const char *state_path, const char *servers_state_path);
 
+/* ADR-0141 Phase 2: repoints without reloading -- see network_repoint()'s
+ * own doc comment for the shared reasoning. */
+void ntp_repoint(const char *new_state_path, const char *new_servers_state_path);
+
 /*
  * Replaces the full upstream address list and rewrites the persisted
  * file. count == 0 clears it entirely (host then relies solely on any

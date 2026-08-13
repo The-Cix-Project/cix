@@ -200,15 +200,27 @@ static void print_usage(FILE *out)
 	        "  routes rm --dest=A.B.C.D --prefix=N  -- remove one; or --default\n"
 	        "  disks  -- real host block devices (whole disks only); which one is the\n"
 	        "               fixed OS disk vs. assignable is flagged per entry\n"
-	        "  diskrole create --disk=NAME --role=container-storage|backup  -- assign a\n"
-	        "               persisted role to a disk (never the OS disk)\n"
+	        "  diskrole create --disk=NAME\n"
+	        "               --role=container-storage|backup|state-storage|rebuildable-storage|log-storage\n"
+	        "               -- assign a persisted role to a disk (never the OS disk)\n"
 	        "  diskrole ls / diskrole rm NAME  -- list assigned roles (with whether each\n"
-	        "               disk is currently present) / remove one\n"
+	        "               disk is currently present) / remove one; refused (409) if the\n"
+	        "               disk is the active state-storage placement (storage state migrate\n"
+	        "               away first)\n"
 	        "  disks format NAME [--fs-type=ext4|btrfs]  -- destructive: mkfs + mount an\n"
 	        "               already role-assigned, non-OS disk (assign a role first via\n"
-	        "               diskrole create); fs_type defaults to ext4\n"
+	        "               diskrole create); fs_type defaults to ext4; refused (409) if the\n"
+	        "               disk is the active state-storage placement\n"
 	        "  disks format-status NAME  -- state/mount_path/error of the most recent\n"
 	        "               format job for this disk\n"
+	        "  storage state [show]  -- which disk (if any) is the active placement for\n"
+	        "               Kanxeo's own state (ADR-0141); default (null) is the OS disk\n"
+	        "  storage state migrate [--disk=NAME]  -- move Kanxeo's own state to a disk\n"
+	        "               already carrying the state-storage role and currently mounted;\n"
+	        "               omit --disk= to migrate back to the default OS-disk placement;\n"
+	        "               async, no pause -- poll storage state migrate-status\n"
+	        "  storage state migrate-status  -- state/disk/error of the most recent (or\n"
+	        "               running) state-storage migration\n"
 	        "  swap  -- show whether the host swap file is enabled (ADR-0069)\n"
 	        "  swap enable --size-mb=N  -- create and activate a swap file of this size\n"
 	        "  swap disable  -- deactivate and remove it\n"
@@ -1272,6 +1284,139 @@ static int cmd_disks(const struct kx_client *c, int json_mode, int argc, char **
 	fprintf(stderr, "usage: kanxeoctl disks [ls]\n"
 	                "       kanxeoctl disks format NAME [--fs-type=ext4|btrfs]\n"
 	                "       kanxeoctl disks format-status NAME\n");
+	return 2;
+}
+
+/*
+ * ADR-0141 Phase 2: only "state" is wired to a real REST resource yet
+ * (GET/POST /v1/system/state-storage(/migrate)) -- "rebuildable"/"logs"
+ * reuse the identical daemon-side machinery once their own phases land
+ * (Phase 3/4), at which point they'll take this exact same shape.
+ */
+static void fmt_storage_placement(const struct json_value *v)
+{
+	const struct json_value *jdisk = json_object_get(v, "disk");
+	const char *disk = json_as_string(jdisk);
+
+	if (jdisk == NULL || jdisk->type == JSON_NULL || disk == NULL)
+		printf("default OS-disk placement\n");
+	else
+		printf("%s\n", disk);
+}
+
+static void fmt_storage_migrate_status(const struct json_value *v)
+{
+	const char *state = json_str_field(v, "state");
+	const struct json_value *jdisk = json_object_get(v, "disk");
+	const char *disk = json_as_string(jdisk);
+	const char *error = json_str_field(v, "error");
+
+	if (state == NULL || strcmp(state, "none") == 0) {
+		printf("no migration has run\n");
+		return;
+	}
+	printf("%s", state);
+	if (jdisk != NULL && jdisk->type != JSON_NULL && disk != NULL)
+		printf(" disk=%s", disk);
+	else if (jdisk != NULL)
+		printf(" disk=(default OS-disk placement)");
+	if (error != NULL)
+		printf(" error=%s", error);
+	printf("\n");
+}
+
+static int cmd_storage_state_show(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/state-storage", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_storage_placement);
+}
+
+static int cmd_storage_state_migrate(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *disk = NULL;
+	struct json_writer w;
+	struct kx_response r;
+	int i;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--disk=", 7) == 0)
+			disk = argv[i] + 7;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown storage state migrate option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "disk");
+	if (disk != NULL)
+		jw_str(&w, disk);
+	else
+		jw_null(&w);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/system/state-storage/migrate", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_storage_migrate_status);
+}
+
+static int cmd_storage_state_migrate_status(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/state-storage/migrate", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_storage_migrate_status);
+}
+
+static int cmd_storage_state(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1)
+		return cmd_storage_state_show(c, json_mode);
+
+	sub = argv[0];
+	if (strcmp(sub, "show") == 0)
+		return cmd_storage_state_show(c, json_mode);
+	if (strcmp(sub, "migrate") == 0)
+		return cmd_storage_state_migrate(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "migrate-status") == 0)
+		return cmd_storage_state_migrate_status(c, json_mode);
+
+	fprintf(stderr, "usage: kanxeoctl storage state [show]\n"
+	                "       kanxeoctl storage state migrate [--disk=NAME]  -- omit for the default "
+	                "OS-disk placement\n"
+	                "       kanxeoctl storage state migrate-status\n");
+	return 2;
+}
+
+static int cmd_storage(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl storage state [show|migrate|migrate-status]\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "state") == 0)
+		return cmd_storage_state(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "usage: kanxeoctl storage state [show|migrate|migrate-status]\n");
 	return 2;
 }
 
@@ -4725,7 +4870,7 @@ static int cmd_diskrole_create(const struct kx_client *c, int json_mode, int arg
 	}
 	if (disk_name == NULL || role == NULL) {
 		fprintf(stderr,
-		        "usage: kanxeoctl diskrole create --disk=NAME --role=container-storage|backup\n");
+		        "usage: kanxeoctl diskrole create --disk=NAME --role=container-storage|backup|state-storage|rebuildable-storage|log-storage\n");
 		return 2;
 	}
 
@@ -4781,7 +4926,7 @@ static int cmd_diskrole(const struct kx_client *c, int json_mode, int argc, char
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl diskrole create --disk=NAME --role=container-storage|backup\n"
+		fprintf(stderr, "usage: kanxeoctl diskrole create --disk=NAME --role=container-storage|backup|state-storage|rebuildable-storage|log-storage\n"
 		                "       kanxeoctl diskrole ls\n"
 		                "       kanxeoctl diskrole rm NAME\n");
 		return 2;
@@ -7450,6 +7595,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_disks(client, json_mode, argc, argv);
 	if (strcmp(cmd, "diskrole") == 0)
 		return cmd_diskrole(client, json_mode, argc, argv);
+	if (strcmp(cmd, "storage") == 0)
+		return cmd_storage(client, json_mode, argc, argv);
 	if (strcmp(cmd, "logs") == 0)
 		return cmd_logs_top(client, json_mode, argc, argv);
 	if (strcmp(cmd, "swap") == 0)
@@ -7599,7 +7746,7 @@ static const char *const SHELL_COMMANDS[] = {
 	"pause",  "ping",      "pkg",           "pki",      "process",   "ps",        "quit",      "reboot",
 	"resolv",
 	"restore", "rm",       "rolling-config", "routes",        "run",      "shutdown",  "site",
-	"start",  "stats",     "stop",          "swap",     "syslog",    "time",      "tls-throttle", "unpause",   "update",
+	"start",  "stats",     "stop",          "storage",  "swap",     "syslog",    "time",      "tls-throttle", "unpause",   "update",
 	NULL
 };
 

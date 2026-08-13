@@ -56,6 +56,10 @@ enum syslogfwd_error {
  */
 int syslogfwd_init(const char *state_path);
 
+/* ADR-0141 Phase 2: repoints without reloading -- see network_repoint()'s
+ * own doc comment for the shared reasoning. */
+void syslogfwd_repoint(const char *new_state_path);
+
 /*
  * Registers container_name as a syslog forward target. container_name
  * must already exist and be running (SYSLOGFWD_ERR_CONTAINER_NOT_RUNNING

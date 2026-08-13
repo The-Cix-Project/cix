@@ -241,6 +241,11 @@ static int network_apply_interface(int fd, const struct network_def *net,
 	return 0;
 }
 
+void network_repoint(const char *new_state_path)
+{
+	snprintf(g_state_path, sizeof(g_state_path), "%s", new_state_path);
+}
+
 int network_init(const char *state_path)
 {
 	int fd;

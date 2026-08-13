@@ -52,6 +52,11 @@ enum pki_error {
  */
 int pki_init(const char *pki_dir, const char *certs_state_path);
 
+/* ADR-0141 Phase 2: repoints without reloading g_certs[] -- see
+ * network_repoint()'s own doc comment for the shared reasoning.
+ * Returns -1 on a path-too-long error, 0 otherwise. */
+int pki_repoint(const char *new_pki_dir, const char *new_certs_state_path);
+
 int pki_ca_bootstrapped(void);
 
 /* common_name must not contain '/' or control characters -- it is

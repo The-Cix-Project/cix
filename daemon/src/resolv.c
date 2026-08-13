@@ -12,6 +12,23 @@ static char g_nameservers[RESOLV_MAX_NAMESERVERS][RESOLV_IP_STRLEN];
 static int g_count;
 static char g_state_path[512];
 
+/*
+ * ADR-0141 Phase 2: repoints where the next resolv_set() write lands,
+ * without reloading g_nameservers[] -- see network_repoint()'s own doc
+ * comment for the shared reasoning. Deliberately does NOT touch the
+ * real /etc/resolv.conf bind mount -- this module has no mount(2)
+ * knowledge of its own (main.c owns that, same split boot_init()'s own
+ * bind-mount setup already has); the caller (main.c's own migration
+ * finalize step) is responsible for unmounting and re-establishing
+ * that bind mount against new_state_path itself, the same lesson
+ * Part 103's own boot-order race already taught: a bind mount is tied
+ * to the inode it captured at mount time, not the path.
+ */
+void resolv_repoint(const char *new_state_path)
+{
+	snprintf(g_state_path, sizeof(g_state_path), "%s", new_state_path);
+}
+
 int resolv_init(const char *state_path)
 {
 	FILE *f;

@@ -27,6 +27,10 @@
 
 int quotamap_init(const char *state_path);
 
+/* ADR-0141 Phase 2: repoints without reloading -- see network_repoint()'s
+ * own doc comment for the shared reasoning. */
+void quotamap_repoint(const char *new_state_path);
+
 /*
  * Returns name's already-assigned project id in *out_projid if one
  * exists, or allocates a fresh one (the persisted counter's next

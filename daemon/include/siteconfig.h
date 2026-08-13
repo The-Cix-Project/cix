@@ -55,6 +55,10 @@ enum siteconfig_error {
  */
 int siteconfig_init(const char *state_path);
 
+/* ADR-0141 Phase 2: repoints without reloading -- see network_repoint()'s
+ * own doc comment for the shared reasoning. */
+void siteconfig_repoint(const char *new_state_path);
+
 /*
  * Sets all three fields (PUT semantics -- always all together, so
  * there is never a moment where a persisted field silently

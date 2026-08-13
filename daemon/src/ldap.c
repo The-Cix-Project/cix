@@ -81,6 +81,11 @@ static int load_state(void)
 	return 0;
 }
 
+void ldap_repoint(const char *new_state_path)
+{
+	snprintf(g_state_path, sizeof(g_state_path), "%s", new_state_path);
+}
+
 int ldap_init(const char *state_path)
 {
 	if (snprintf(g_state_path, sizeof(g_state_path), "%s", state_path) >= (int)sizeof(g_state_path))
@@ -395,6 +400,12 @@ static int load_groups_state(void)
 	return 0;
 }
 
+void ldap_record_repoint(const char *new_users_state_path, const char *new_groups_state_path)
+{
+	snprintf(g_users_state_path, sizeof(g_users_state_path), "%s", new_users_state_path);
+	snprintf(g_groups_state_path, sizeof(g_groups_state_path), "%s", new_groups_state_path);
+}
+
 int ldap_record_init(const char *users_state_path, const char *groups_state_path)
 {
 	if (snprintf(g_users_state_path, sizeof(g_users_state_path), "%s", users_state_path) >=
@@ -409,6 +420,11 @@ int ldap_record_init(const char *users_state_path, const char *groups_state_path
 	if (load_groups_state() != 0)
 		return -1;
 	return load_users_state();
+}
+
+void ldap_config_repoint(const char *new_state_path)
+{
+	snprintf(g_config_state_path, sizeof(g_config_state_path), "%s", new_state_path);
 }
 
 int ldap_config_init(const char *state_path)
@@ -1205,6 +1221,11 @@ static int load_ssh_state(void)
 	}
 	json_free(root);
 	return 0;
+}
+
+void ldap_ssh_repoint(const char *new_state_path)
+{
+	snprintf(g_ssh_state_path, sizeof(g_ssh_state_path), "%s", new_state_path);
 }
 
 int ldap_ssh_init(const char *state_path)

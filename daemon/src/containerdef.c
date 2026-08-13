@@ -482,6 +482,11 @@ static int load_state(void)
 	return rc;
 }
 
+void containerdef_repoint(const char *new_state_path)
+{
+	snprintf(g_state_path, sizeof(g_state_path), "%s", new_state_path);
+}
+
 int containerdef_init(const char *state_path)
 {
 	if (snprintf(g_state_path, sizeof(g_state_path), "%s", state_path) >=
@@ -555,6 +560,11 @@ static int save_rolling_config(void)
 	rc = persist_atomic_write(g_rolling_config_path, w.buf, w.len);
 	jw_free(&w);
 	return rc;
+}
+
+void containerdef_rolling_config_repoint(const char *new_config_path)
+{
+	snprintf(g_rolling_config_path, sizeof(g_rolling_config_path), "%s", new_config_path);
 }
 
 int containerdef_rolling_config_init(const char *config_path)

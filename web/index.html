@@ -438,6 +438,23 @@
 		<section class="view" id="view-disks" hidden>
 			<div class="view-list">
 				<h2>Disks</h2>
+				<h3>State storage placement</h3>
+				<p class="hint" id="ss-current">State storage: unknown</p>
+				<p class="hint" id="ss-migrate-status" hidden></p>
+				<form id="ss-migrate-form">
+					<label>
+						Migrate to
+						<select id="ss-target-disk">
+							<option value="">(default OS-disk placement)</option>
+						</select>
+					</label>
+					<button type="submit">Migrate</button>
+				</form>
+				<p class="hint">Where Kanxeo's own state lives (ADR-0141) -- networks, DNS/LDAP/NTP/syslog
+					config, PKI, container definitions, site identity, daemon config. Never container
+					workload data, never rebuildable content (images/packages), never logs. The target disk
+					must already carry the state-storage role and be currently mounted. Live, no downtime --
+					the daemon keeps operating against the current location until the copy finishes.</p>
 				<p class="hint">Real host block devices, discovered live from sysfs every poll -- whole disks
 					only, never partitions. The OS disk (this platform's own fixed ESP/root-a/root-b/config/
 					containers layout) is never a candidate for a role or format. Assigning a role
@@ -1457,6 +1474,9 @@
 						<select id="drf-role">
 							<option value="container-storage">container-storage</option>
 							<option value="backup">backup</option>
+							<option value="state-storage">state-storage</option>
+							<option value="rebuildable-storage">rebuildable-storage</option>
+							<option value="log-storage">log-storage</option>
 						</select>
 					</label>
 					<p class="hint">Assigning a role never touches the disk's own content -- formatting (destructive) is a separate action, available per-disk on the Disks page once a role is assigned.</p>

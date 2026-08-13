@@ -75,6 +75,9 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | DELETE | `/diskroles/{disk_name}` | Remove a disk's role assignment |
 | GET | `/disks/{disk_name}/format` | Status of the most recent (or running) format+mount job for this disk |
 | POST | `/disks/{disk_name}/format` | Destructive: mkfs (ext4 or btrfs) + mount an already role-assigned disk |
+| GET | `/system/state-storage` | Which disk (if any) is the active placement for Kanxeo's own state |
+| GET | `/system/state-storage/migrate` | Status of the most recent (or running) state-storage migration |
+| POST | `/system/state-storage/migrate` | Move Kanxeo's own state to a new disk, or back to the default |
 | GET | `/networks` | List all networks this daemon knows about |
 | POST | `/networks` | Create a network (a real bridge, persisted across restarts) |
 | GET | `/networks/{name}` | Inspect one network |
@@ -1002,6 +1005,33 @@ GET /v1/disks/sdb/format
 ```
 
 `state` is `"none"` (no job has ever run for this disk — including when a job ran/is running for a *different* disk, so a status check never shows another disk's unrelated job), `"running"`, `"ready"`, or `"failed"` (`error` distinguishes `mkfs.<fs_type>` failing outright from it succeeding but the subsequent `mount(2)` failing). Only one format job may run daemon-wide at a time (`409` otherwise) — the same v1 single-job constraint every other async job here already has. Mounted at a fixed path under this platform's own data directory by default; a `container-storage`-role disk can also be selected explicitly per container via `POST /containers`' own `disk` field (ADR-0102, Phase D, already built).
+
+## Multi-disk storage placement (ADR-0141)
+
+```
+GET /v1/system/state-storage
+{"disk": null}
+```
+
+Which disk (if any) is the *active* placement for Kanxeo's own state — networks, DNS/LDAP/NTP/syslog-forwarding config, PKI (CA keys and every issued cert), container definitions, device mappings, site identity, and daemon/rolling-restart/TLS-throttle configuration. `disk: null` is the default OS-disk placement, unchanged from before this feature existed. Deliberately excludes container workload data (never covered), rebuildable content (images/packages/artifacts — its own separate `rebuildable-storage` concern, not yet exposed via REST), and logs (`log-storage`, likewise not yet exposed) — see `docs/adr/0141-multi-disk-storage-placement.md` for the full role/multiplicity model.
+
+```
+POST /v1/system/state-storage/migrate
+{"disk": "sdc"}
+```
+
+`disk` is required — a real disk name that already carries the `state-storage` role (`POST /diskroles`) and is currently mounted, or `null` to migrate *back* to the default OS-disk placement (a real, symmetric operation, not a dead end once you've moved off the OS disk once). Omitting the field entirely is a `400` — deliberately distinct from an explicit `null`, since the two mean different things. `404` for an unknown disk; `400` for the OS disk itself, a disk with the wrong role, or a role-correct disk that isn't currently mounted; `409` if a migration is already running or the requested disk is already the active placement.
+
+Async and genuinely live — the daemon keeps operating normally against the *current* location for the entire bulk-copy phase, no pause, no readonly window:
+
+```
+GET /v1/system/state-storage/migrate
+{"state": "ready", "disk": "sdc"}
+```
+
+`state` is `"none"`, `"running"`, `"ready"`, or `"failed"` (`error` present on failure). Once the bulk copy (a forked child, `treecopy_recursive()` — the same permission-preserving primitive `POST /system/backup-config/snapshot-now`'s own future implementation and this daemon's package-install pipeline both use, never a second copy of the same logic) finishes successfully, this daemon's own single-threaded reactor does one more synchronous pass — a second, fast copy (cheap, since little changes during the bulk phase) — and only then repoints every affected subsystem's own live path, re-establishes the real `/etc/resolv.conf` bind mount against the new location (a real, previously-live lesson: a bind mount is tied to the inode it captured, not the path — see `CHANGELOG.md`'s Part 103), persists the new placement, and removes the old location's data. A `state:"failed"` migration at any point before that final repoint leaves the daemon still using the old location, completely untouched — the partially-copied new-location data is left for inspection or the next attempt to overwrite.
+
+`DELETE /v1/diskroles/{name}` and `POST /v1/disks/{name}/format` both now refuse (`409`) against a disk that's the current active state-storage placement — removing the role or destroying the disk's content out from under a live placement would silently strand the daemon's own state. Migrate away first (`disk: null` back to the default, or to a different role-eligible disk).
 
 ## Per-container config files + sysctls
 

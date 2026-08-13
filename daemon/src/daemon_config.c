@@ -106,6 +106,11 @@ static int save_state(void)
 	return rc;
 }
 
+void daemon_config_repoint(const char *new_state_path)
+{
+	snprintf(g_state_path, sizeof(g_state_path), "%s", new_state_path);
+}
+
 int daemon_config_init(const char *state_path)
 {
 	if (snprintf(g_state_path, sizeof(g_state_path), "%s", state_path) >= (int)sizeof(g_state_path))

@@ -134,10 +134,13 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | `devicemap create --name=NAME --kind=exact\|vendor_model --selector=SELECTOR` | A persisted, named device binding, usable in place of a raw id in `run --device=` |
 | `devicemap ls` / `devicemap rm NAME` | List (shows whether each mapping currently resolves to real hardware) / remove |
 | `disks [ls]` | Real host block devices (whole disks only), flagging which one is the fixed OS disk |
-| `diskrole create --disk=NAME --role=container-storage\|backup` | Assign a persisted role to a disk (never the OS disk) |
-| `diskrole ls` / `diskrole rm NAME` | List assigned roles (with whether each disk is currently present) / remove one |
-| `disks format NAME [--fs-type=ext4\|btrfs]` | Destructive: mkfs (ext4 by default, or btrfs, ADR-0104) + mount an already role-assigned, non-OS disk |
+| `diskrole create --disk=NAME --role=container-storage\|backup\|state-storage\|rebuildable-storage\|log-storage` | Assign a persisted role to a disk (never the OS disk) |
+| `diskrole ls` / `diskrole rm NAME` | List assigned roles (with whether each disk is currently present) / remove one (409 if the disk is the active state-storage placement) |
+| `disks format NAME [--fs-type=ext4\|btrfs]` | Destructive: mkfs (ext4 by default, or btrfs, ADR-0104) + mount an already role-assigned, non-OS disk (409 against the active state-storage placement) |
 | `disks format-status NAME` | State/mount_path/error of the most recent format job for this disk |
+| `storage state [show]` | Which disk (if any) is the active placement for Kanxeo's own state (ADR-0141) |
+| `storage state migrate [--disk=NAME]` | Move Kanxeo's own state to a disk already carrying the role and mounted; omit `--disk=` for the default OS-disk placement; live, no downtime |
+| `storage state migrate-status` | State/disk/error of the most recent (or running) state-storage migration |
 
 ## DNS
 

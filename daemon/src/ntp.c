@@ -189,6 +189,12 @@ static void load_server_state(void)
 	json_free(root);
 }
 
+void ntp_repoint(const char *new_state_path, const char *new_servers_state_path)
+{
+	snprintf(g_state_path, sizeof(g_state_path), "%s", new_state_path);
+	snprintf(g_servers_state_path, sizeof(g_servers_state_path), "%s", new_servers_state_path);
+}
+
 int ntp_init(const char *state_path, const char *servers_state_path)
 {
 	if (snprintf(g_state_path, sizeof(g_state_path), "%s", state_path) >= (int)sizeof(g_state_path))

@@ -77,6 +77,11 @@ static void load_state(void)
 	json_free(root);
 }
 
+void syslogfwd_repoint(const char *new_state_path)
+{
+	snprintf(g_state_path, sizeof(g_state_path), "%s", new_state_path);
+}
+
 int syslogfwd_init(const char *state_path)
 {
 	if (snprintf(g_state_path, sizeof(g_state_path), "%s", state_path) >= (int)sizeof(g_state_path))

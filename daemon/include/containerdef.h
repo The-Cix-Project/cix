@@ -128,6 +128,10 @@ struct container_def {
  */
 int containerdef_init(const char *state_path);
 
+/* ADR-0141 Phase 2: repoints without reloading -- see network_repoint()'s
+ * own doc comment for the shared reasoning. */
+void containerdef_repoint(const char *new_state_path);
+
 /*
  * Persists name's definition (body verbatim, depends_on/readiness/
  * restart_policy/restart_delay_seconds already parsed/validated by the
@@ -243,6 +247,8 @@ int containerdef_patch_image_version(const char *name, const char *new_version);
  * other persisted-state loader here).
  */
 int containerdef_rolling_config_init(const char *config_path);
+
+void containerdef_rolling_config_repoint(const char *new_config_path);
 
 /* Current jitter window, seconds -- CONTAINERDEF_JITTER_DEFAULT_SECONDS
  * until containerdef_jitter_window_set() is ever called. */

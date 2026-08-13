@@ -65,6 +65,10 @@ enum devicemap_error {
 /* Loads state_path (the persisted mapping list, if any) at startup. */
 int devicemap_init(const char *state_path);
 
+/* ADR-0141 Phase 2: repoints without reloading -- see network_repoint()'s
+ * own doc comment for the shared reasoning. */
+void devicemap_repoint(const char *new_state_path);
+
 /*
  * Creates a new mapping. kind_str must be exactly "exact" or
  * "vendor_model". For "exact", selector is a device id verbatim (not

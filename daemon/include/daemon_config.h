@@ -52,6 +52,10 @@ enum daemon_config_error {
  */
 int daemon_config_init(const char *state_path);
 
+/* ADR-0141 Phase 2: repoints without reloading -- see network_repoint()'s
+ * own doc comment for the shared reasoning. */
+void daemon_config_repoint(const char *new_state_path);
+
 /* The persisted port, or 0 if none has ever been set (main() falls
  * back to argv's --port=/DEFAULT_PORT in that case). */
 int daemon_config_port(void);

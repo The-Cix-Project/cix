@@ -54,6 +54,10 @@ struct throttle_config {
  */
 int connthrottle_config_init(const char *path);
 
+/* ADR-0141 Phase 2: repoints without reloading -- see network_repoint()'s
+ * own doc comment for the shared reasoning. */
+void connthrottle_config_repoint(const char *new_path);
+
 struct throttle_config connthrottle_config_get(void);
 
 /*

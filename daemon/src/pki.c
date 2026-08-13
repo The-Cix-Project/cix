@@ -291,7 +291,7 @@ static int load_state(void)
 	return rc;
 }
 
-int pki_init(const char *pki_dir, const char *certs_state_path)
+static int set_paths(const char *pki_dir, const char *certs_state_path)
 {
 	if (snprintf(g_pki_dir, sizeof(g_pki_dir), "%s", pki_dir) >= (int)sizeof(g_pki_dir))
 		return -1;
@@ -312,6 +312,22 @@ int pki_init(const char *pki_dir, const char *certs_state_path)
 		return -1;
 	if (snprintf(g_certs_state_path, sizeof(g_certs_state_path), "%s", certs_state_path) >=
 	    (int)sizeof(g_certs_state_path))
+		return -1;
+	return 0;
+}
+
+/* ADR-0141 Phase 2: repoints every one of this module's own derived
+ * paths without reloading g_certs[] -- see network_repoint()'s own doc
+ * comment for the shared reasoning. Returns -1 on a path-too-long
+ * error (same bound set_paths() itself already enforces), 0 otherwise. */
+int pki_repoint(const char *new_pki_dir, const char *new_certs_state_path)
+{
+	return set_paths(new_pki_dir, new_certs_state_path);
+}
+
+int pki_init(const char *pki_dir, const char *certs_state_path)
+{
+	if (set_paths(pki_dir, certs_state_path) != 0)
 		return -1;
 
 	memset(g_certs, 0, sizeof(g_certs));
