@@ -13,6 +13,13 @@
 struct kx_client {
 	char host[64];
 	int port;
+	/* ADR-0144: an optional session token, attached automatically by
+	 * plain kx_client_request() (see kx_client_set_token() below) once
+	 * set -- 64 comfortably fits the daemon's own real 48-hex-char
+	 * token (HOSTAUTH_TOKEN_LEN, daemon/include/hostauth.h) without
+	 * this client-side header needing to depend on that daemon-only
+	 * one. Empty means "no session," identical to today's behavior. */
+	char token[64];
 };
 
 #define KX_CONTENT_TYPE_MAX 64
@@ -26,6 +33,16 @@ struct kx_response {
 };
 
 void kx_client_init(struct kx_client *c, const char *host, int port);
+
+/*
+ * ADR-0144: sets (or, with token == NULL/"", clears) the session token
+ * every subsequent plain kx_client_request() call on c automatically
+ * attaches as its own Authorization header -- callers that already
+ * have a session (kanxeoctl's own persisted-token load at startup, the
+ * web dashboard's login flow) call this once instead of switching
+ * every call site over to kx_client_request_with_auth() themselves.
+ */
+void kx_client_set_token(struct kx_client *c, const char *token);
 
 /*
  * Opens a raw, connected TCP socket to c's host/port -- the same

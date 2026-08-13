@@ -9,6 +9,10 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/health` | Liveness check -- minimal, low-latency, no build/slot identity |
+| POST | `/login` | Authenticate, get a session token (ADR-0144) -- always open, exempt from write-gating |
+| POST | `/logout` | Invalidate the current session (idempotent) |
+| GET | `/system/hostauth-config` | Current admin-group list, session idle timeout, live-LDAP backend config |
+| PUT | `/system/hostauth-config` | Replace host-auth config (full replacement of admin_groups/idle_timeout_seconds; ldap_* fields optional) |
 | GET | `/system/boot` | Build version/time, A/B slot, kernel version (`uname`) |
 | POST | `/system/shutdown` | Stop `kanxeod`; powers off the host too when running as real PID 1 |
 | POST | `/system/reboot` | Stop `kanxeod`; restarts the host too when running as real PID 1 |
@@ -169,6 +173,26 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | DELETE | `/pkg/{name}` | Uninstall a package, or clear a permanently-failed entry (never actually merged into any image, so no new image version is produced) |
 
 Every error response is `{"error": "message"}` with an appropriate 4xx/5xx status. Every mutating endpoint that touches disk or spawns a subprocess can in principle also return `500` (a real I/O or subprocess failure, not a client mistake) — see `openapi.yaml`'s own per-path `"500"` response for exactly which internal failure each one covers; the specific set differs per endpoint and isn't repeated here.
+
+## Host authentication (ADR-0144)
+
+`kanxeod` had no authentication at all until ADR-0144: every write below succeeded with zero credentials. The rule now is one and applies uniformly, not per-endpoint: every `POST`/`PUT`/`DELETE` in this document, plus `GET .../containers/{name}/console` (a WebSocket upgrade that is arbitrary command execution in real effect, gated by intent rather than HTTP method), needs a valid `Authorization: Bearer <token>` naming a user who is currently a member of one of the configured admin groups. Every `GET` — including every one already listed above — stays open, unconditionally, always; reads were never the concern. `openapi.yaml`'s `components.securitySchemes.bearerAuth` carries this note once rather than repeating it on all ~130 mutating operations individually.
+
+```
+POST /v1/login
+{"username": "alice", "password": "correct horse battery staple"}
+-> 200 {"token": "6245f4...", "expires_in_seconds": 900}
+
+POST /v1/containers            (subsequent writes)
+Authorization: Bearer 6245f4...
+{"name": "web-1", ...}
+```
+
+**Gating only ever activates once someone exists to gate for.** `GET /system/hostauth-config` reports the current `admin_groups` list; as long as it's empty, or none of its groups has a member yet, every write stays open — a fresh install, or one where an operator hasn't gotten around to configuring this yet, can never lock itself out of its own API. There is no separate break-glass credential; the moment a real LDAP user (`POST /ldap/users`, below) becomes a member of a configured admin group, gating activates for every subsequent request.
+
+**Sessions are a sliding idle window, in memory only** — wiped on every daemon restart, same as the container registry itself. `idle_timeout_seconds` (`PUT /system/hostauth-config`) refreshes on every authenticated request that presents a still-valid token; `0` means something deliberately stronger — no session reuse at all, a token is consumed the instant it's used once, and every subsequent write needs a fresh `POST /login`.
+
+**One directory, two interchangeable ways to check a password.** `POST /login` always checks against this platform's own LDAP user store (`POST /ldap/users`, below) — the same store, the same `passbcrypt` field, regardless of which path answers. With `ldap_enabled: false` (the default), it's a local, in-process bcrypt check, no network call. With `ldap_enabled: true`, a real LDAP simple-bind is attempted first against each server in `ldap_servers`, in order (a hand-rolled minimal LDAPv3 client, `daemon/src/ldapclient.c` — no `libldap` dependency, matching this project's own precedent for the daemon's other wire protocols); the first server to answer authoritatively — a successful bind, or a real credential rejection — decides the outcome, and only when every configured server is unreachable does this fall back to the local check. The fallback changes *availability*, never *which password is actually correct*.
 
 ## Creating a network
 

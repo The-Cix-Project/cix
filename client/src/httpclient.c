@@ -19,6 +19,11 @@ void kx_client_init(struct kx_client *c, const char *host, int port)
 	c->port = port;
 }
 
+void kx_client_set_token(struct kx_client *c, const char *token)
+{
+	snprintf(c->token, sizeof(c->token), "%s", token != NULL ? token : "");
+}
+
 int kx_client_connect_raw(const struct kx_client *c)
 {
 	int fd;
@@ -150,7 +155,8 @@ static void find_header_value(const char *headers, size_t headers_len, const cha
 int kx_client_request(const struct kx_client *c, const char *method, const char *path,
                        const char *body, struct kx_response *out)
 {
-	return kx_client_request_with_auth(c, method, path, NULL, body, out);
+	return kx_client_request_with_auth(c, method, path, c->token[0] != '\0' ? c->token : NULL, body,
+	                                    out);
 }
 
 int kx_client_request_with_auth(const struct kx_client *c, const char *method, const char *path,

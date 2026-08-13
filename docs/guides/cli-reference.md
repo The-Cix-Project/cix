@@ -12,11 +12,14 @@ kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 - `--json` — print the raw API response instead of the default formatted text. Every subcommand supports it except `console` (an interactive terminal session, not a per-call response) and `files get` (its own raw file bytes are the CLI's one non-JSON response body) — `--json` is silently ignored on those two.
 - Running `kanxeoctl` with no command at all, from a real terminal (`isatty(stdin)`), drops into an **interactive shell**: one line, one command, reusing the same connection — useful for a session of several related calls without re-establishing a TCP connection each time (`kanxeoctl --json` plus a piped/redirected stdin skips the shell and falls through to the usual usage-error path instead, so scripting is unaffected). The prompt is the connected daemon's own `instance_name` (`GET /system/site`, e.g. `myhost> `), not a fixed string — useful the moment more than one Kanxeo install is reachable (ADR-0132).
 - **Exit codes**: `0` success, `1` the API call itself failed (a non-2xx response, or a transport-level failure reaching the daemon), `2` a usage error (bad flags, unknown subcommand) — checked before any network call is made.
+- **Authentication (ADR-0144)**: once a daemon has write-gating active (see [`docs/api/README.md`'s own "Host authentication" section](../api/README.md#host-authentication-adr-0144)), every mutating command needs a session — run `login` once and every subsequent `kanxeoctl` invocation on this machine authenticates automatically via the persisted token, until `logout` or the session's own idle timeout expires it. `GET`-only commands (`health`, `ps`, every `... ls`/`... show`) never need one.
 
 ## System
 
 | Command | |
 |---|---|
+| `login [--username=NAME] [--password=PASS]` | Authenticate (ADR-0144) -- prompts for whichever of username/password isn't given as a flag, with terminal echo off for the password; on success persists the session token to `~/.kanxeoctl_token` (mode `0600`) so every subsequent invocation authenticates automatically. A no-op-equivalent (succeeds, but nothing enforces it) on a daemon where write-gating was never activated (no admin-group user exists yet) |
+| `logout` | Invalidate the current session (if any) and remove the persisted token; always succeeds, even when not currently logged in |
 | `health` | Liveness check -- minimal, no build/slot identity |
 | `boot` | Build version/time, A/B slot, kernel version (ADR-0077) |
 | `shutdown` | Stop `kanxeod`; powers off the host too when running as real PID 1 |

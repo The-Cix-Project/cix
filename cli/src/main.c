@@ -11,6 +11,8 @@
 #include "json.h"
 
 #include <ctype.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -154,6 +156,16 @@ static void print_usage(FILE *out)
 	        "               [--secondary-groups=N,N,...] ...\n"
 	        "  ldap user ls\n"
 	        "  ldap user rm NAME\n"
+	        "  login [--username=NAME] [--password=PASS]  -- ADR-0144: authenticates against\n"
+	        "               the daemon's own host-auth backend (prompts for whichever of\n"
+	        "               username/password isn't given as a flag, with echo off for the\n"
+	        "               password); on success persists the session token to\n"
+	        "               ~/.kanxeoctl_token (mode 0600) so every subsequent kanxeoctl\n"
+	        "               invocation authenticates automatically -- a no-op, harmlessly, on a\n"
+	        "               daemon where write-gating was never activated (no admin-group user\n"
+	        "               exists yet)\n"
+	        "  logout  -- invalidates the current session (if any) and removes the persisted\n"
+	        "               token; always succeeds, even if not currently logged in\n"
 	        "  pki ca bootstrap [--common-name=NAME] [--days=N]\n"
 	        "  pki ca show\n"
 	        "  pki intermediate bootstrap [--common-name=NAME] [--days=N]  -- second CA tier,\n"
@@ -7884,6 +7896,218 @@ static int cmd_iso(const struct kx_client *c, int json_mode, int argc, char **ar
 }
 
 /*
+ * ADR-0144: kanxeoctl's own persisted-session support -- a single
+ * dotfile (~/.kanxeoctl_token, mode 0600, since it holds a live bearer
+ * credential), read once at startup (see main()) and written by
+ * cmd_login() / removed by cmd_logout(). No prior precedent for local
+ * state in this CLI (it has always been a pure, stateless REST
+ * client, per this file's own top-of-file comment) -- a session token
+ * is the one thing that genuinely can't work any other way without
+ * forcing every single command invocation to re-authenticate.
+ */
+static int token_file_path(char *out, size_t out_size)
+{
+	const char *home = getenv("HOME");
+
+	if (home == NULL || home[0] == '\0')
+		return -1;
+	if ((size_t)snprintf(out, out_size, "%s/.kanxeoctl_token", home) >= out_size)
+		return -1;
+	return 0;
+}
+
+static int load_token_file(char *out, size_t out_size)
+{
+	char path[PATH_MAX];
+	FILE *f;
+	size_t n;
+
+	if (token_file_path(path, sizeof(path)) != 0)
+		return -1;
+	f = fopen(path, "r");
+	if (f == NULL)
+		return -1;
+	n = fread(out, 1, out_size - 1, f);
+	fclose(f);
+	if (n == 0)
+		return -1;
+	out[n] = '\0';
+	while (n > 0 && (out[n - 1] == '\n' || out[n - 1] == '\r'))
+		out[--n] = '\0';
+	return out[0] != '\0' ? 0 : -1;
+}
+
+static int save_token_file(const char *token)
+{
+	char path[PATH_MAX];
+	int fd;
+	size_t len = strlen(token);
+
+	if (token_file_path(path, sizeof(path)) != 0)
+		return -1;
+	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	if (fd < 0)
+		return -1;
+	if (write(fd, token, len) != (ssize_t)len) {
+		close(fd);
+		return -1;
+	}
+	close(fd);
+	return 0;
+}
+
+static void clear_token_file(void)
+{
+	char path[PATH_MAX];
+
+	if (token_file_path(path, sizeof(path)) == 0)
+		unlink(path);
+}
+
+/* Reads a line from stdin into out, with terminal echo turned off for
+ * the duration when stdin is a real terminal (a piped/scripted
+ * invocation has no terminal to control, so it's read as plain input
+ * instead -- the caller's own --password= flag is the right tool for
+ * genuinely non-interactive use anyway). Strips a trailing newline.
+ * Returns 0 on success, -1 on EOF/read error. */
+static int read_line_noecho(const char *prompt, char *out, size_t out_size)
+{
+	struct termios saved, raw;
+	int is_tty = isatty(STDIN_FILENO);
+	size_t n;
+
+	printf("%s", prompt);
+	fflush(stdout);
+
+	if (is_tty) {
+		if (tcgetattr(STDIN_FILENO, &saved) != 0)
+			return -1;
+		raw = saved;
+		raw.c_lflag &= ~(tcflag_t)ECHO;
+		tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+	}
+
+	if (fgets(out, (int)out_size, stdin) == NULL) {
+		if (is_tty)
+			tcsetattr(STDIN_FILENO, TCSANOW, &saved);
+		return -1;
+	}
+
+	if (is_tty) {
+		tcsetattr(STDIN_FILENO, TCSANOW, &saved);
+		printf("\n");
+	}
+
+	n = strlen(out);
+	while (n > 0 && (out[n - 1] == '\n' || out[n - 1] == '\r'))
+		out[--n] = '\0';
+	return 0;
+}
+
+static int cmd_login(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *username = NULL;
+	const char *password = NULL;
+	char username_buf[128];
+	char password_buf[256];
+	struct json_writer w;
+	struct kx_response r;
+	int i;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--username=", 11) == 0)
+			username = argv[i] + 11;
+		else if (strncmp(argv[i], "--password=", 11) == 0)
+			password = argv[i] + 11;
+		else {
+			fprintf(stderr, "usage: kanxeoctl login [--username=NAME] [--password=PASS]\n");
+			return 2;
+		}
+	}
+
+	if (username == NULL) {
+		if (read_line_noecho("Username: ", username_buf, sizeof(username_buf)) != 0) {
+			fprintf(stderr, "kanxeoctl: no username given\n");
+			return 2;
+		}
+		username = username_buf;
+	}
+	if (password == NULL) {
+		if (read_line_noecho("Password: ", password_buf, sizeof(password_buf)) != 0) {
+			fprintf(stderr, "kanxeoctl: no password given\n");
+			return 2;
+		}
+		password = password_buf;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "username");
+	jw_str(&w, username);
+	jw_key(&w, "password");
+	jw_str(&w, password);
+	jw_obj_close(&w);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(c, "POST", "/v1/login", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	if (r.status != 200) {
+		const char *msg = json_str_field(r.json, "error");
+
+		fprintf(stderr, "kanxeoctl: login failed: %s (HTTP %d)\n", msg != NULL ? msg : "?",
+		        r.status);
+		kx_response_free(&r);
+		return 1;
+	}
+
+	{
+		const char *token = json_str_field(r.json, "token");
+
+		if (token == NULL || token[0] == '\0') {
+			fprintf(stderr, "kanxeoctl: login response missing a token\n");
+			kx_response_free(&r);
+			return 1;
+		}
+		if (save_token_file(token) != 0) {
+			fprintf(stderr,
+			        "kanxeoctl: warning: could not persist session token (%s) -- you'll "
+			        "need to log in again for the next command\n",
+			        strerror(errno));
+		}
+		if (json_mode)
+			print_raw_json(r.json);
+		else
+			printf("Logged in as %s.\n", username);
+	}
+	kx_response_free(&r);
+	return 0;
+}
+
+static int cmd_logout(const struct kx_client *c, int json_mode)
+{
+	char token[64];
+	struct kx_response r;
+
+	if (load_token_file(token, sizeof(token)) == 0) {
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request_with_auth(c, "POST", "/v1/logout", token, NULL, &r) == 0)
+			kx_response_free(&r);
+	}
+	clear_token_file();
+
+	if (json_mode)
+		printf("{}\n");
+	else
+		printf("Logged out.\n");
+	return 0;
+}
+
+/*
  * The one dispatch table, shared by main()'s own one-shot invocation
  * and run_shell()'s interactive loop below -- extracted so both call
  * exactly the same code per command instead of two copies of this
@@ -7897,6 +8121,10 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 {
 	if (strcmp(cmd, "health") == 0)
 		return cmd_health(client, json_mode);
+	if (strcmp(cmd, "login") == 0)
+		return cmd_login(client, json_mode, argc, argv);
+	if (strcmp(cmd, "logout") == 0)
+		return cmd_logout(client, json_mode);
 	if (strcmp(cmd, "boot") == 0)
 		return cmd_boot(client, json_mode);
 	if (strcmp(cmd, "shutdown") == 0)
@@ -8077,7 +8305,7 @@ static void shell_prompt_init(const struct kx_client *client)
 static const char *const SHELL_COMMANDS[] = {
 	"backup", "backup-config", "boot",      "console",       "container",     "daemon-config", "device",   "devicemap", "diskrole",
 	"disks",  "dns",       "exit",          "files",    "health",    "help",
-	"host-stats", "image", "inspect",       "iso",      "ldap",      "logs",      "migrate-storage", "migrate-storage-status", "network",
+	"host-stats", "image", "inspect",       "iso",      "ldap",      "login",     "logout",    "logs",      "migrate-storage", "migrate-storage-status", "network",
 	"ntp",
 	"pause",  "ping",      "pkg",           "pki",      "process",   "ps",        "quit",      "reboot",
 	"resolv",
@@ -8490,6 +8718,12 @@ int main(int argc, char **argv)
 	}
 
 	kx_client_init(&client, host, port);
+	{
+		char saved_token[64];
+
+		if (load_token_file(saved_token, sizeof(saved_token)) == 0)
+			kx_client_set_token(&client, saved_token);
+	}
 
 	if (i >= argc) {
 		if (isatty(STDIN_FILENO))

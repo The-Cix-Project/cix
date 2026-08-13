@@ -28,6 +28,8 @@
 	<div class="header-right">
 		<button type="button" id="theme-toggle" class="button-small" title="Cycle theme: auto / light / dark"></button>
 		<span id="health" class="badge badge-unknown">checking&hellip;</span>
+		<span id="auth-status" class="badge badge-ok" hidden></span>
+		<button type="button" id="auth-action-btn" class="button-small">Log in</button>
 		<button type="button" id="sys-reboot" class="button-danger button-small">Reboot</button>
 		<button type="button" id="sys-shutdown" class="button-danger button-small">Shutdown</button>
 		<div class="create-dropdown">
@@ -1325,6 +1327,20 @@
 			<button type="button" id="modal-close" class="modal-close" aria-label="Close">&times;</button>
 		</div>
 		<div class="modal-body">
+			<div id="modal-login-form" hidden>
+				<form id="login-form">
+					<label>
+						Username
+						<input type="text" id="lf-username" autocomplete="username" required>
+					</label>
+					<label>
+						Password
+						<input type="password" id="lf-password" autocomplete="current-password" required>
+					</label>
+					<button type="submit" id="lf-submit">Log in</button>
+				</form>
+			</div>
+
 			<div id="modal-run-form" hidden>
 				<form id="run-form">
 					<fieldset>

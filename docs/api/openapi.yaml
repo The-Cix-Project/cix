@@ -34,6 +34,174 @@ paths:
                     type: string
                     enum: [ok]
 
+  /login:
+    post:
+      summary: Authenticate and obtain a session token (ADR-0144)
+      description: >
+        Always reachable regardless of write-gating state (this is the
+        one endpoint exempt from the Authorization check every other
+        mutating request needs -- see the write-gating note under
+        `components.securitySchemes.bearerAuth` below). Verifies
+        username/password against this platform's own LDAP user store
+        -- a live LDAP bind against a configured `glauth` server first
+        when `PUT /system/hostauth-config`'s own `ldap_enabled` is set
+        (falling back to a local, in-process bcrypt check if every
+        configured server is unreachable), or the local check alone
+        when LDAP is disabled. `expires_in_seconds` is `null` when
+        `idle_timeout_seconds` is configured as `0` -- the returned
+        token is then single-use, consumed by the very next request
+        that presents it, matching that configuration's own documented
+        "every write re-authenticates" contract.
+      operationId: postLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, expires_in_seconds]
+                properties:
+                  token:
+                    type: string
+                    description: "Opaque bearer token -- present as `Authorization: Bearer <token>` on subsequent requests."
+                  expires_in_seconds:
+                    type: integer
+                    nullable: true
+                    description: Idle-timeout window in seconds, refreshed on every use; null means the token is single-use (idle_timeout_seconds == 0).
+        "400":
+          description: Missing username or password, or an invalid JSON body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid username or password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /logout:
+    post:
+      summary: Invalidate the current session (ADR-0144)
+      description: >
+        Idempotent: always `204`, whether the presented token names a
+        real, still-live session or not -- a client never needs to
+        know or care whether its session had already lapsed
+        server-side. Also exempt from write-gating, the same as
+        `POST /login` (a client that isn't authenticated has nothing
+        meaningful to log out of, but the call still succeeds).
+      operationId: postLogout
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: Session invalidated (or was already gone)
+
+  /system/hostauth-config:
+    get:
+      summary: Current host-authentication configuration (ADR-0144)
+      operationId: getHostauthConfig
+      responses:
+        "200":
+          description: Current config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HostauthConfig"
+    put:
+      summary: Replace the host-authentication configuration (ADR-0144)
+      description: >
+        Full replacement, not a partial merge -- a request that omits
+        `admin_groups`/`idle_timeout_seconds` is rejected outright
+        (`400`); the four `ldap_*` fields are each individually
+        optional and default to disabled/empty when omitted, so an
+        older-shaped request body (from before the live-LDAP backend
+        existed) still works unchanged. Write-gating (see
+        `components.securitySchemes.bearerAuth`) only ever activates
+        once at least one user is a member of one of `admin_groups` --
+        a fresh install can never lock itself out of its own API by
+        misconfiguring this endpoint, no separate break-glass
+        credential exists or is needed.
+      operationId: putHostauthConfig
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [admin_groups, idle_timeout_seconds]
+              properties:
+                admin_groups:
+                  type: array
+                  maxItems: 8
+                  items:
+                    type: string
+                  description: LDAP group names whose members may perform mutating requests.
+                idle_timeout_seconds:
+                  type: integer
+                  minimum: 0
+                  description: Sliding idle window for a session token; 0 means every token is single-use (no session reuse at all).
+                ldap_enabled:
+                  type: boolean
+                  default: false
+                  description: When true, POST /login tries a live LDAP bind against ldap_servers first (see that endpoint's own description).
+                ldap_servers:
+                  type: array
+                  maxItems: 3
+                  items:
+                    type: string
+                  description: Host or IP of each configured glauth server, tried in order. Required (at least one) when ldap_enabled is true.
+                ldap_port:
+                  type: integer
+                  minimum: 1
+                  maximum: 65535
+                  default: 3893
+                  description: Shared port every entry in ldap_servers is queried on (glauth's own real default is 3893).
+                ldap_base_dn:
+                  type: string
+                  description: e.g. "dc=glauth,dc=com" -- required, non-empty, when ldap_enabled is true (this daemon has no other way to learn a running glauth server's own configured baseDN).
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HostauthConfig"
+        "400":
+          description: Invalid JSON body, or a field outside its documented bounds
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Write-gating is active and the caller isn't an authenticated admin-group member
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Could not persist the config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /system/boot:
     get:
       summary: Build/slot/kernel identity
@@ -6034,6 +6202,26 @@ components:
             depends_on above; null if none was configured or restart is
             "no".
 
+    HostauthConfig:
+      type: object
+      required: [admin_groups, idle_timeout_seconds, ldap_enabled, ldap_servers, ldap_port, ldap_base_dn]
+      properties:
+        admin_groups:
+          type: array
+          items:
+            type: string
+        idle_timeout_seconds:
+          type: integer
+        ldap_enabled:
+          type: boolean
+        ldap_servers:
+          type: array
+          items:
+            type: string
+        ldap_port:
+          type: integer
+        ldap_base_dn:
+          type: string
     ResolvConfig:
       type: object
       required: [nameservers]
@@ -7854,3 +8042,27 @@ components:
       properties:
         error:
           type: string
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        ADR-0144's write-gating: every POST/PUT/DELETE, plus the
+        container console (`GET .../console`, a WebSocket upgrade that
+        is arbitrary command execution in real effect, gated by intent
+        rather than HTTP method), needs a valid `Authorization: Bearer
+        <token>` from `POST /login` naming a user in one of the
+        configured `admin_groups` (`GET/PUT /system/hostauth-config`).
+        Every `GET` (this one included) stays open, unconditionally,
+        always -- reads were never the concern. Gating itself only
+        activates once at least one such admin-group user actually
+        exists (`hostauth_gating_active()`) -- a fresh install can
+        never lock itself out of its own API, and every mutating
+        operation in this document behaves exactly as documented
+        whether or not gating happens to be active on a given
+        deployment. This scheme is referenced explicitly on `POST
+        /logout` and `PUT /system/hostauth-config` above as the two
+        operations most directly about authentication itself; it is
+        the same requirement every other mutating operation in this
+        document is subject to, not repeated on each one individually.

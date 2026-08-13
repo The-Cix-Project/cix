@@ -166,6 +166,10 @@ function closeModal() {
 	ldapUserEditName = null;
 	document.getElementById("luf-name").readOnly = false;
 	document.getElementById("luf-submit").textContent = "Create";
+
+	/* Never leave a typed password sitting in the DOM past this modal
+	 * session, whether closed by submit, X, Escape, or an outside click. */
+	document.getElementById("lf-password").value = "";
 }
 
 function openModal(formId, title) {
@@ -201,6 +205,98 @@ for (const item of createDropdownMenu.querySelectorAll("button[data-modal]")) {
 		openModal(item.dataset.modal, item.dataset.title);
 	});
 }
+
+/*
+ * ---------- host authentication (ADR-0144) ----------
+ *
+ * A session token, persisted in localStorage -- this dashboard's own
+ * analog of kanxeoctl's ~/.kanxeoctl_token dotfile, so a page reload
+ * doesn't force a fresh login. GET requests never need it (the
+ * daemon's write-gating leaves every GET open, always, regardless of
+ * auth state); apiRequest()/apiRequestRaw() below attach it to every
+ * request automatically once set -- one place, not every one of this
+ * file's many call sites, the same design kx_client_set_token() gives
+ * kanxeoctl (client/include/httpclient.h).
+ */
+let authToken = localStorage.getItem("kanxeo-auth-token") || null;
+let authUsername = localStorage.getItem("kanxeo-auth-username") || null;
+
+const authStatusEl = document.getElementById("auth-status");
+const authActionBtn = document.getElementById("auth-action-btn");
+
+function updateAuthUi() {
+	if (authToken) {
+		authStatusEl.hidden = false;
+		authStatusEl.className = "badge badge-ok";
+		authStatusEl.textContent = authUsername ? "logged in: " + authUsername : "logged in";
+		authActionBtn.textContent = "Log out";
+	} else {
+		authStatusEl.hidden = true;
+		authActionBtn.textContent = "Log in";
+	}
+}
+
+function setAuth(token, username) {
+	authToken = token;
+	authUsername = username;
+	if (token) {
+		localStorage.setItem("kanxeo-auth-token", token);
+		localStorage.setItem("kanxeo-auth-username", username || "");
+	} else {
+		localStorage.removeItem("kanxeo-auth-token");
+		localStorage.removeItem("kanxeo-auth-username");
+	}
+	updateAuthUi();
+}
+
+/* Opens the login modal on a 401 from any request, so "why did my
+ * action just fail" has an immediate, actionable answer instead of
+ * only a status-bar error -- the same reasoning kanxeoctl's own
+ * "authentication required -- POST /v1/login first" message serves,
+ * adapted to a UI that can just show the form directly. Guarded so a
+ * burst of 401s from one poll cycle (several concurrent GETs are
+ * never gated, but a save-in-flight write easily could be) only ever
+ * opens it once. */
+function promptReauth() {
+	if (modalOverlay.hidden)
+		openModal("login-form", "Log in");
+}
+
+authActionBtn.addEventListener("click", async () => {
+	if (authToken) {
+		try {
+			await apiRequest("POST", "/v1/logout");
+		} catch (e) {
+			/* best-effort -- matches kanxeoctl's own idempotent-logout
+			 * posture; the local session clears either way */
+		}
+		setAuth(null, null);
+		clearStatus();
+	} else {
+		openModal("login-form", "Log in");
+		document.getElementById("lf-username").focus();
+	}
+});
+
+document.getElementById("login-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const username = document.getElementById("lf-username").value.trim();
+	const password = document.getElementById("lf-password").value;
+
+	try {
+		const result = await apiRequest("POST", "/v1/login", { username: username, password: password });
+
+		setAuth(result.token, username);
+		document.getElementById("login-form").reset();
+		closeModal();
+		clearStatus();
+	} catch (e) {
+		showStatus("Login failed: " + e.message, true);
+	}
+});
+
+updateAuthUi();
 
 /*
  * Merged log panel (bottom of every page, ADR-0129): one stream, one
@@ -419,6 +515,8 @@ function clearStatus() {
 
 async function apiRequest(method, path, body) {
 	const opts = { method: method, headers: {} };
+	if (authToken)
+		opts.headers["Authorization"] = "Bearer " + authToken;
 	if (body !== undefined) {
 		opts.headers["Content-Type"] = "application/json";
 		opts.body = JSON.stringify(body);
@@ -437,6 +535,8 @@ async function apiRequest(method, path, body) {
 
 		if (method !== "GET")
 			logLine(method, path, "-> " + res.status + " " + message, "error");
+		if (res.status === 401 && path !== "/v1/login")
+			promptReauth();
 		throw new Error(message);
 	}
 	if (method !== "GET")
@@ -449,9 +549,11 @@ async function apiRequest(method, path, body) {
  * round trip, not re-serialized" guarantee kanxeoctl's own backup/
  * restore commands already have (cli/src/main.c). */
 async function apiRequestRaw(method, path, rawBody) {
-	const opts = { method: method };
+	const opts = { method: method, headers: {} };
+	if (authToken)
+		opts.headers["Authorization"] = "Bearer " + authToken;
 	if (rawBody !== undefined) {
-		opts.headers = { "Content-Type": "application/json" };
+		opts.headers["Content-Type"] = "application/json";
 		opts.body = rawBody;
 	}
 	const res = await fetch(path, opts);
@@ -466,6 +568,8 @@ async function apiRequestRaw(method, path, rawBody) {
 			/* not JSON -- keep the generic message */
 		}
 		logLine(method, path, "-> " + res.status + " " + message, "error");
+		if (res.status === 401)
+			promptReauth();
 		throw new Error(message);
 	}
 	logLine(method, path, "-> " + res.status, "ok");
