@@ -151,7 +151,7 @@ static void print_usage(FILE *out)
 	        "  ldap user add --name=NAME --uidnumber=N --primarygroup=N\n"
 	        "               [--secondary-groups=N,N,...] [--givenname=S]\n"
 	        "               [--sn=S] [--mail=S] [--loginshell=S] [--homedirectory=S]\n"
-	        "               [--password=S] [--disabled] [--ssh-key=S]\n"
+	        "               [--password=S] [--disabled] [--ssh-key=S] [--can-search]\n"
 	        "  ldap user update --name=NAME [--uidnumber=N] [--primarygroup=N]\n"
 	        "               [--secondary-groups=N,N,...] ...\n"
 	        "  ldap user ls\n"
@@ -916,10 +916,12 @@ static void fmt_ldap_user_line(const struct json_value *v)
 	const struct json_value *jhas_password = json_object_get(v, "has_password");
 	const struct json_value *jdisabled = json_object_get(v, "disabled");
 	const struct json_value *jsecondary = json_object_get(v, "secondary_groups");
+	const struct json_value *jcan_search = json_object_get(v, "can_search");
 	int has_password = jhas_password != NULL && jhas_password->type == JSON_BOOL &&
 	                    jhas_password->u.boolean;
 	int disabled = jdisabled != NULL && jdisabled->type == JSON_BOOL && jdisabled->u.boolean;
 	int has_ssh_key = ssh_public_key != NULL && ssh_public_key[0] != '\0';
+	int can_search = jcan_search != NULL && jcan_search->type == JSON_BOOL && jcan_search->u.boolean;
 	char secondary_buf[128];
 
 	secondary_buf[0] = '\0';
@@ -937,10 +939,10 @@ static void fmt_ldap_user_line(const struct json_value *v)
 	}
 
 	printf("%-20s uid=%-6ld gid=%-6ld secondary_gids=%-12s mail=%-30s password=%-4s disabled=%-4s "
-	       "ssh_key=%s\n",
+	       "ssh_key=%-6s can_search=%s\n",
 	       name, uidnumber, primarygroup, secondary_buf[0] != '\0' ? secondary_buf : "-",
 	       mail != NULL ? mail : "", has_password ? "set" : "unset", disabled ? "yes" : "no",
-	       has_ssh_key ? "set" : "unset");
+	       has_ssh_key ? "set" : "unset", can_search ? "yes" : "no");
 }
 
 static void fmt_ldap_user_list(const struct json_value *v)
@@ -6022,6 +6024,9 @@ static void build_ldap_user_body(struct json_writer *w, int argc, char **argv,
 		} else if (strncmp(argv[i], "--ssh-key=", 10) == 0) {
 			jw_key(w, "ssh_public_key");
 			jw_str(w, argv[i] + 10);
+		} else if (strcmp(argv[i], "--can-search") == 0) {
+			jw_key(w, "can_search");
+			jw_bool(w, 1);
 		}
 	}
 	jw_obj_close(w);
@@ -6042,7 +6047,7 @@ static int cmd_ldap_user_add(const struct kx_client *c, int json_mode, int argc,
 		        "usage: kanxeoctl ldap user add --name=NAME [--uidnumber=N] "
 		        "--primarygroup=N [--givenname=S] [--sn=S] [--mail=S] "
 		        "[--loginshell=S] [--homedirectory=S] [--password=S] [--disabled] "
-		        "[--ssh-key=S]\n");
+		        "[--ssh-key=S] [--can-search]\n");
 		return 2;
 	}
 	w.buf[w.len] = '\0';
@@ -6075,7 +6080,7 @@ static int cmd_ldap_user_update(const struct kx_client *c, int json_mode, int ar
 		        "usage: kanxeoctl ldap user update --name=NAME [--uidnumber=N] "
 		        "[--primarygroup=N] [--givenname=S] [--sn=S] [--mail=S] "
 		        "[--loginshell=S] [--homedirectory=S] [--password=S] [--disabled] "
-		        "[--ssh-key=S]\n");
+		        "[--ssh-key=S] [--can-search]\n");
 		return 2;
 	}
 	w.buf[w.len] = '\0';

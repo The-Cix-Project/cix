@@ -170,7 +170,7 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | `ldap group add --name=NAME [--gidnumber=N]` | Create a group (task #726) -- `--gidnumber=` optional, auto-allocated if omitted (task #748) |
 | `ldap group update --name=NAME --gidnumber=N` | Edit an existing group's gidnumber in place (task #750) |
 | `ldap group ls` / `ldap group rm NAME` | List / remove |
-| `ldap user add --name=NAME [--uidnumber=N] --primarygroup=N [--givenname=S] [--sn=S] [--mail=S] [--loginshell=S] [--homedirectory=S] [--password=S] [--disabled] [--ssh-key=S]` | Create a user -- `--uidnumber=` optional, auto-allocated if omitted (task #748); `--ssh-key=` optional, enables SSH target account sync (task #731) |
+| `ldap user add --name=NAME [--uidnumber=N] --primarygroup=N [--secondary-groups=N,N,...] [--givenname=S] [--sn=S] [--mail=S] [--loginshell=S] [--homedirectory=S] [--password=S] [--disabled] [--ssh-key=S] [--can-search]` | Create a user -- `--uidnumber=` optional, auto-allocated if omitted (task #748); `--ssh-key=` optional, enables SSH target account sync and is rendered as glauth's own `sshkeys` LDAP attribute (task #731/ADR-0144); `--can-search` grants glauth's own minimal search capability, needed for a real bind/service account (`nslcd`, a live `AuthorizedKeysCommand`, ADR-0144 task #838), off by default |
 | `ldap user update --name=NAME ...` | Edit an existing user in place -- full field replacement, same fields as `add` (task #731) |
 | `ldap user ls` / `ldap user rm NAME` | List / remove |
 | `ldap config show` | Show the current `start_uid`/`start_gid` auto-allocation floor (task #748) |
