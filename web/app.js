@@ -30,6 +30,8 @@ const cache = {
 	logStorageMigrate: { state: "none" },
 	rebuildableStorage: { disk: null },
 	rebuildableStorageMigrate: { state: "none" },
+	backupConfig: { disk: null, enabled: false, interval_hours: 0 },
+	backupStatus: { state: "never" },
 	dnsRecords: [],
 	dnsServers: [],
 	ldapServers: [],
@@ -638,6 +640,8 @@ function renderCurrentView() {
 			renderPackagesView(route.name);
 		else if (route.category === "recipes")
 			renderRecipesList();
+		else if (route.category === "backup")
+			renderBackupConfig();
 	}
 
 	renderTreeActive();
@@ -6183,6 +6187,103 @@ document.getElementById("sys-restore-form").addEventListener("submit", async (ev
 	}
 });
 
+/* ---------- Automatic backup snapshots (ADR-0141 Phase 5) ---------- */
+
+async function refreshBackupConfig() {
+	cache.backupConfig = await apiRequest("GET", "/v1/system/backup-config");
+	if (parseHash().category === "backup")
+		renderBackupConfig();
+}
+
+async function refreshBackupStatus() {
+	if (parseHash().category !== "backup")
+		return;
+	try {
+		cache.backupStatus = await apiRequest("GET", "/v1/system/backup-config/status");
+	} catch (e) {
+		/* Transient -- next poll tick tries again. */
+	}
+	if (parseHash().category === "backup")
+		renderBackupConfig();
+}
+
+function renderBackupConfig() {
+	const select = document.getElementById("bc-disk");
+	const prevValue = select.value;
+
+	select.textContent = "";
+	{
+		const opt = document.createElement("option");
+
+		opt.value = "";
+		opt.textContent = "(none -- automatic snapshots disabled)";
+		select.appendChild(opt);
+	}
+	for (const d of cache.disks) {
+		const role = diskRoleFor(d.name);
+
+		if (d.is_os_disk || role === null || role.role !== "backup")
+			continue;
+		const opt = document.createElement("option");
+
+		opt.value = d.name;
+		opt.textContent = d.name + (d.model ? " (" + d.model + ")" : "");
+		select.appendChild(opt);
+	}
+	select.value = cache.backupConfig.disk || prevValue;
+
+	document.getElementById("bc-enabled").checked = !!cache.backupConfig.enabled;
+	document.getElementById("bc-interval").value = cache.backupConfig.interval_hours || 0;
+
+	const s = cache.backupStatus;
+	const statusP = document.getElementById("bc-status");
+
+	if (!s || s.state === "never") {
+		statusP.textContent = "Snapshots: no attempt has run yet";
+	} else {
+		statusP.textContent =
+			"Snapshots: " +
+			s.state +
+			(s.last_attempt_unixtime
+				? " (last attempt " + new Date(s.last_attempt_unixtime * 1000).toLocaleString() + ")"
+				: "") +
+			(s.state === "failed" && s.error ? " -- " + s.error : "");
+	}
+}
+
+document.getElementById("bc-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const disk = document.getElementById("bc-disk").value;
+	const enabled = document.getElementById("bc-enabled").checked;
+	const intervalHours = parseInt(document.getElementById("bc-interval").value, 10) || 0;
+
+	try {
+		cache.backupConfig = await apiRequest("PUT", "/v1/system/backup-config", {
+			disk: disk === "" ? null : disk,
+			enabled: enabled,
+			interval_hours: intervalHours,
+		});
+		clearStatus();
+		renderBackupConfig();
+	} catch (e) {
+		showStatus("Failed to save backup config: " + e.message, true);
+	}
+});
+
+document.getElementById("bc-snapshot-now").addEventListener("click", async () => {
+	try {
+		cache.backupStatus = await apiRequest("POST", "/v1/system/backup-config/snapshot-now");
+		if (cache.backupStatus.state === "failed")
+			showStatus("Snapshot failed: " + cache.backupStatus.error, true);
+		else
+			showStatus("Snapshot written.", false);
+		renderBackupConfig();
+	} catch (e) {
+		showStatus("Failed to trigger snapshot: " + e.message, true);
+	}
+});
+
 document.getElementById("sys-update-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 
@@ -6252,6 +6353,8 @@ async function poll() {
 		await refreshStoragePlacementMigrate("logs");
 		await refreshStoragePlacement("rebuildable");
 		await refreshStoragePlacementMigrate("rebuildable");
+		await refreshBackupConfig();
+		await refreshBackupStatus();
 		await refreshDnsRecords();
 		await refreshDnsServers();
 		await refreshLdapServers();

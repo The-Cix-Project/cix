@@ -47,6 +47,16 @@ static void print_usage(FILE *out)
 	        "  restore --input=PATH  -- writes a previously-saved backup bundle's fields\n"
 	        "               back to their real state files; does NOT reboot or hot-reload --\n"
 	        "               call reboot separately for it to take effect on the next boot\n"
+	        "  backup-config show  -- which disk (if any) automatic backup snapshots write\n"
+	        "               to, whether enabled, and the auto-snapshot interval (ADR-0141)\n"
+	        "  backup-config set [--disk=NAME | --clear-disk] [--enable | --disable]\n"
+	        "               [--interval-hours=N]  -- only the fields given are changed; the\n"
+	        "               target disk must carry the backup role; 0 hours means no automatic\n"
+	        "               schedule (manual snapshot-now only)\n"
+	        "  backup-config status  -- state/last_attempt_unixtime/error of the most recent\n"
+	        "               snapshot attempt (manual or automatic)\n"
+	        "  backup-config snapshot-now  -- write the same bundle GET /system/backup\n"
+	        "               produces to the configured disk right now, regardless of schedule\n"
 	        "  ps\n"
 	        "  container ls  -- same as `ps` (every provisioned container and its current state);\n"
 	        "               a noun-based synonym matching dns/ldap/ntp/syslog/network/etc.'s own\n"
@@ -3467,6 +3477,154 @@ static int cmd_daemon_config(const struct kx_client *c, int json_mode, int argc,
 		return cmd_daemon_config_set(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "kanxeoctl: unknown daemon-config subcommand '%s'\n", sub);
+	return 2;
+}
+
+/* ADR-0141 Phase 5: kanxeoctl backup-config show|set|status|snapshot-now
+ * -- turns the `backup` disk role from a pure inert label into a real,
+ * scheduled state-storage snapshot mechanism. */
+static void fmt_backup_config(const struct json_value *v)
+{
+	const char *disk = json_str_field(v, "disk");
+	const struct json_value *jenabled = json_object_get(v, "enabled");
+
+	printf("disk=%s enabled=%s interval_hours=%ld\n", disk != NULL ? disk : "(none)",
+	       (jenabled != NULL && jenabled->type == JSON_BOOL && jenabled->u.boolean) ? "true" : "false",
+	       (long)json_as_number(json_object_get(v, "interval_hours")));
+}
+
+static void fmt_backup_status(const struct json_value *v)
+{
+	const char *state = json_str_field(v, "state");
+	const struct json_value *jattempt = json_object_get(v, "last_attempt_unixtime");
+	const char *error = json_str_field(v, "error");
+
+	printf("%s", state != NULL ? state : "?");
+	if (jattempt != NULL)
+		printf(" last_attempt_unixtime=%lld", (long long)json_as_number(jattempt));
+	if (error != NULL)
+		printf(" error=%s", error);
+	printf("\n");
+}
+
+static int cmd_backup_config_show(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/backup-config", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_backup_config);
+}
+
+static int cmd_backup_config_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *disk = NULL;
+	int clear_disk = 0;
+	int want_enabled = -1; /* -1: not given */
+	const char *interval_hours = NULL;
+	struct json_writer w;
+	struct kx_response r;
+	int i;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--disk=", 7) == 0)
+			disk = argv[i] + 7;
+		else if (strcmp(argv[i], "--clear-disk") == 0)
+			clear_disk = 1;
+		else if (strcmp(argv[i], "--enable") == 0)
+			want_enabled = 1;
+		else if (strcmp(argv[i], "--disable") == 0)
+			want_enabled = 0;
+		else if (strncmp(argv[i], "--interval-hours=", 17) == 0)
+			interval_hours = argv[i] + 17;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown backup-config set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (disk != NULL && clear_disk) {
+		fprintf(stderr, "kanxeoctl: --disk= and --clear-disk are mutually exclusive\n");
+		return 2;
+	}
+	if (disk == NULL && !clear_disk && want_enabled == -1 && interval_hours == NULL) {
+		fprintf(stderr,
+		        "usage: kanxeoctl backup-config set [--disk=NAME | --clear-disk] "
+		        "[--enable | --disable] [--interval-hours=N]\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	if (disk != NULL) {
+		jw_key(&w, "disk");
+		jw_str(&w, disk);
+	} else if (clear_disk) {
+		jw_key(&w, "disk");
+		jw_null(&w);
+	}
+	if (want_enabled != -1) {
+		jw_key(&w, "enabled");
+		jw_bool(&w, want_enabled);
+	}
+	if (interval_hours != NULL) {
+		jw_key(&w, "interval_hours");
+		jw_int(&w, atol(interval_hours));
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "PUT", "/v1/system/backup-config", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_backup_config);
+}
+
+static int cmd_backup_config_status(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/backup-config/status", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_backup_status);
+}
+
+static int cmd_backup_config_snapshot_now(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "POST", "/v1/system/backup-config/snapshot-now", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_backup_status);
+}
+
+static int cmd_backup_config(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl backup-config show|set|status|snapshot-now\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "show") == 0)
+		return cmd_backup_config_show(c, json_mode);
+	if (strcmp(sub, "set") == 0)
+		return cmd_backup_config_set(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "status") == 0)
+		return cmd_backup_config_status(c, json_mode);
+	if (strcmp(sub, "snapshot-now") == 0)
+		return cmd_backup_config_snapshot_now(c, json_mode);
+
+	fprintf(stderr, "kanxeoctl: unknown backup-config subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -7607,6 +7765,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_site(client, json_mode, argc, argv);
 	if (strcmp(cmd, "daemon-config") == 0)
 		return cmd_daemon_config(client, json_mode, argc, argv);
+	if (strcmp(cmd, "backup-config") == 0)
+		return cmd_backup_config(client, json_mode, argc, argv);
 	if (strcmp(cmd, "rolling-config") == 0)
 		return cmd_rolling_config(client, json_mode, argc, argv);
 	if (strcmp(cmd, "tls-throttle") == 0)
@@ -7763,7 +7923,7 @@ static void shell_prompt_init(const struct kx_client *client)
  * makes on the web dashboard side (web/app.js) for the identical
  * reason (a route table that can't be enumerated by walking code). */
 static const char *const SHELL_COMMANDS[] = {
-	"backup", "boot",      "console",       "container",     "daemon-config", "device",   "devicemap", "diskrole",
+	"backup", "backup-config", "boot",      "console",       "container",     "daemon-config", "device",   "devicemap", "diskrole",
 	"disks",  "dns",       "exit",          "files",    "health",    "help",
 	"host-stats", "image", "inspect",       "iso",      "ldap",      "logs",      "network",
 	"ntp",

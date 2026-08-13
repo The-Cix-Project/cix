@@ -1233,6 +1233,30 @@
 			</form>
 			<p class="hint">Writes fields back to their real state files. Does not reboot or hot-reload --
 				reboot separately for it to take effect.</p>
+
+			<h3>Automatic snapshots</h3>
+			<p class="hint" id="bc-status">Snapshots: unknown</p>
+			<form id="bc-form">
+				<label>
+					Disk
+					<select id="bc-disk">
+						<option value="">(none -- automatic snapshots disabled)</option>
+					</select>
+				</label>
+				<label>
+					<input type="checkbox" id="bc-enabled">
+					Enabled
+				</label>
+				<label>
+					Interval (hours, 0 = manual only)
+					<input type="number" id="bc-interval" min="0" value="0">
+				</label>
+				<button type="submit">Save</button>
+				<button type="button" id="bc-snapshot-now">Snapshot now</button>
+			</form>
+			<p class="hint">Writes the same bundle above to a disk carrying the <code>backup</code> role
+				(ADR-0141) -- a single, always-current snapshot, not a timestamped history. The target
+				disk is validated when a snapshot actually runs, not when saved here.</p>
 		</section>
 
 		<section class="view" id="view-update" hidden>

@@ -7,6 +7,7 @@
 #include "diskformat.h"
 #include "diskrole.h"
 #include "storagemigrate.h"
+#include "backupconfig.h"
 #include "storageplacement.h"
 #include "hostproc.h"
 #include "logstore.h"
@@ -219,6 +220,10 @@ static char SYSLOGFWD_STATE_PATH[PATH_MAX];
  * in-memory only, never persisted, same posture as every other
  * transient in-flight daemon state. */
 static char CONNTHROTTLE_CONFIG_PATH[PATH_MAX];
+/* ADR-0141 Phase 5: persisted disk/enabled/interval_hours config for
+ * automatic state-storage backup snapshots (GET/PUT /v1/system/
+ * backup-config). */
+static char BACKUP_CONFIG_PATH[PATH_MAX];
 
 /* Computes every path derived from g_base_dir -- called once, right
  * after argv parsing (so --data-dir= has already been applied) and
@@ -263,6 +268,7 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(NTP_SERVERS_STATE_PATH, sizeof(NTP_SERVERS_STATE_PATH), "%s/ntp_servers.json", STATE_DIR);
 	snprintf(SYSLOGFWD_STATE_PATH, sizeof(SYSLOGFWD_STATE_PATH), "%s/syslog_targets.json", STATE_DIR);
 	snprintf(CONNTHROTTLE_CONFIG_PATH, sizeof(CONNTHROTTLE_CONFIG_PATH), "%s/tls_throttle.json", STATE_DIR);
+	snprintf(BACKUP_CONFIG_PATH, sizeof(BACKUP_CONFIG_PATH), "%s/backup_config.json", STATE_DIR);
 }
 
 /*
@@ -784,6 +790,7 @@ enum conn_kind {
 	CONN_BOOTSTRAP_FETCH,   /* pkg/bootstrap's own toolchain_url curl fetch (ADR-0065) */
 	CONN_PKG_SYNC_FETCH,    /* pkg sync's own repo-archive curl fetch (ADR-0121) */
 	CONN_PKG_SYNC_PERIODIC_TIMER, /* permanent, re-arms itself -- fires pkg_sync_start() periodically if configured (ADR-0121) */
+	CONN_BACKUP_PERIODIC_TIMER, /* permanent, re-arms itself -- fires do_backup_snapshot_now() periodically if enabled+configured (ADR-0141 Phase 5) */
 	CONN_IMAGE_RECIPE_FETCH, /* image-recipe-apply's own whole-rootfs artifact curl fetch (ADR-0123) */
 	CONN_DISK_FORMAT,       /* disk format+mount job (multi-disk management Phase C) */
 	CONN_STORAGE_MIGRATE,   /* state/rebuildable/log-storage migration job (ADR-0141 Phase 2) */
@@ -2179,6 +2186,71 @@ static void handle_system_backup(int fd)
 	do_system_backup(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
+}
+
+/*
+ * ADR-0141 Phase 5: the real backup snapshot write -- validates the
+ * configured disk (must carry the "backup" role, must currently be
+ * mounted, the same class of check storagemigrate_start() already
+ * does for the other three storage kinds), writes do_system_backup()'s
+ * own bundle to "<mount_path>/backup.json" (a single, always-current
+ * snapshot -- see backupconfig.h's own top comment for why this is
+ * deliberately not a timestamped history), and records the outcome via
+ * backupconfig_record_attempt(). Synchronous (a plain JSON write, not
+ * a network fetch or external process -- nothing here justifies this
+ * daemon's usual fork+pidfd async-job machinery), called both from
+ * POST /v1/system/backup-config/snapshot-now and the periodic timer
+ * below.
+ */
+static void do_backup_snapshot_now(void)
+{
+	const char *disk_name = backupconfig_disk();
+	struct discovered_disk disks[DISK_ENUM_MAX];
+	int n, i;
+	const struct discovered_disk *found = NULL;
+	char target_path[PATH_MAX];
+	struct json_writer w;
+
+	if (disk_name == NULL) {
+		backupconfig_record_attempt(0, "no backup disk configured");
+		return;
+	}
+
+	n = disk_enumerate(disks, DISK_ENUM_MAX, CONTAINERS_DIR);
+	for (i = 0; i < n; i++) {
+		if (strcmp(disks[i].name, disk_name) == 0) {
+			found = &disks[i];
+			break;
+		}
+	}
+	if (found == NULL) {
+		backupconfig_record_attempt(0, "configured backup disk is not currently present");
+		return;
+	}
+	{
+		const char *role = diskrole_lookup(disk_name);
+
+		if (role == NULL || strcmp(role, "backup") != 0) {
+			backupconfig_record_attempt(0,
+			                             "configured backup disk no longer carries the backup role");
+			return;
+		}
+	}
+	if (!found->mounted) {
+		backupconfig_record_attempt(0, "configured backup disk is present but not currently mounted");
+		return;
+	}
+
+	snprintf(target_path, sizeof(target_path), "%s/backup.json", found->mount_path);
+
+	do_system_backup(&w);
+	if (persist_atomic_write(target_path, w.buf, w.len) != 0) {
+		jw_free(&w);
+		backupconfig_record_attempt(0, "failed to write snapshot to disk");
+		return;
+	}
+	jw_free(&w);
+	backupconfig_record_attempt(1, NULL);
 }
 
 /*
@@ -5929,6 +6001,200 @@ static void start_pkg_sync_periodic_timer(void)
 }
 
 /*
+ * ADR-0141 Phase 5: same shape as arm_pkg_sync_periodic_timer() --
+ * interval_hours of 0 (the default, "no automatic schedule") or
+ * `enabled` false means the timer is simply never (re)armed, and
+ * manual POST /v1/system/backup-config/snapshot-now remains the only
+ * trigger until an operator sets both a real interval and enabled:true.
+ */
+static struct conn g_backup_periodic_conn;
+
+static void arm_backup_periodic_timer(void)
+{
+	struct itimerspec its;
+	int interval_hours = backupconfig_interval_hours();
+
+	if (!backupconfig_enabled() || interval_hours <= 0 || g_backup_periodic_conn.fd < 0)
+		return;
+	memset(&its, 0, sizeof(its));
+	its.it_value.tv_sec = (time_t)interval_hours * 3600;
+	if (timerfd_settime(g_backup_periodic_conn.fd, 0, &its, NULL) != 0)
+		perror("timerfd_settime (backup periodic re-arm)");
+}
+
+static void handle_backup_periodic_timer_event(struct conn *cc)
+{
+	uint64_t expirations;
+
+	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
+		perror("read (backup periodic timerfd)");
+	do_backup_snapshot_now();
+	arm_backup_periodic_timer();
+}
+
+/* Best-effort, same "never block daemon startup" posture as start_ntp_
+ * periodic_timer()/start_pkg_sync_periodic_timer() -- a timerfd_create()
+ * failure just means no automatic snapshot ever happens; GET/PUT
+ * /v1/system/backup-config and manual snapshot-now remain fully usable
+ * regardless. */
+static void start_backup_periodic_timer(void)
+{
+	struct kx_epoll_event ev;
+	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+
+	g_backup_periodic_conn.fd = -1;
+	if (fd < 0) {
+		perror("timerfd_create (backup periodic)");
+		return;
+	}
+	g_backup_periodic_conn.kind = CONN_BACKUP_PERIODIC_TIMER;
+	g_backup_periodic_conn.fd = fd;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = &g_backup_periodic_conn;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+		close(fd);
+		g_backup_periodic_conn.fd = -1;
+		return;
+	}
+	arm_backup_periodic_timer();
+}
+
+static void handle_backup_config_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	backupconfig_write_json(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * PUT /v1/system/backup-config -- mirrors PUT /v1/system/daemon-
+ * config's own "only the fields given are changed" partial-update
+ * convention (ADR-0141's own explicit design note): reads the three
+ * current values back from backupconfig.c's own getters, overrides
+ * whichever fields this request body actually supplied (disk's own
+ * JSON_NULL is a real, meaningful "clear it" distinct from the field
+ * being absent entirely, same distinction POST .../migrate's own body
+ * already makes), then persists the merged triple as one unit --
+ * backupconfig_set() itself has no partial-update concept of its own.
+ * Does NOT itself arm/disarm the periodic timer as a side effect of
+ * every unrelated field edit -- only re-arms when enabled/interval_
+ * hours actually changed, so an operator flipping some future
+ * unrelated field (none exist yet, but the check is here for when one
+ * does) never silently resets an in-flight countdown.
+ */
+static void handle_backup_config_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const struct json_value *jdisk, *jenabled, *jinterval;
+	const char *disk_name;
+	char disk_name_buf[64];
+	int enabled;
+	int interval_hours;
+	int schedule_changed;
+	enum backupconfig_error err;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+
+	disk_name = backupconfig_disk();
+	if (disk_name != NULL)
+		snprintf(disk_name_buf, sizeof(disk_name_buf), "%s", disk_name);
+	else
+		disk_name_buf[0] = '\0';
+	enabled = backupconfig_enabled();
+	interval_hours = backupconfig_interval_hours();
+
+	jdisk = json_object_get(root, "disk");
+	if (jdisk != NULL) {
+		if (jdisk->type == JSON_NULL) {
+			disk_name_buf[0] = '\0';
+		} else if (jdisk->type == JSON_STRING && json_as_string(jdisk) != NULL) {
+			snprintf(disk_name_buf, sizeof(disk_name_buf), "%s", json_as_string(jdisk));
+		} else {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "disk must be a string or null");
+			return;
+		}
+	}
+	jenabled = json_object_get(root, "enabled");
+	if (jenabled != NULL) {
+		if (jenabled->type != JSON_BOOL) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "enabled must be a boolean");
+			return;
+		}
+		enabled = jenabled->u.boolean;
+	}
+	jinterval = json_object_get(root, "interval_hours");
+	if (jinterval != NULL) {
+		if (jinterval->type != JSON_NUMBER) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "interval_hours must be a number");
+			return;
+		}
+		interval_hours = (int)json_as_number(jinterval);
+	}
+	json_free(root);
+
+	schedule_changed = (enabled != backupconfig_enabled()) || (interval_hours != backupconfig_interval_hours());
+
+	err = backupconfig_set(disk_name_buf[0] != '\0' ? disk_name_buf : NULL, enabled, interval_hours);
+	if (err != BACKUPCONFIG_OK) {
+		if (err == BACKUPCONFIG_ERR_INVALID_INTERVAL)
+			respond_error(fd, 400, "Bad Request", "interval_hours must be 0 or a positive number");
+		else
+			respond_error(fd, 500, "Internal Server Error", "could not persist backup config");
+		return;
+	}
+	if (schedule_changed)
+		arm_backup_periodic_timer();
+
+	{
+		struct json_writer w;
+
+		jw_init(&w);
+		jw_obj_open(&w);
+		backupconfig_write_json(&w);
+		jw_obj_close(&w);
+		respond_json(fd, 200, "OK", &w);
+		jw_free(&w);
+	}
+}
+
+static void handle_backup_config_status_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	backupconfig_write_status_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_backup_config_snapshot_now_post(int fd)
+{
+	do_backup_snapshot_now();
+
+	{
+		struct json_writer w;
+
+		jw_init(&w);
+		backupconfig_write_status_json(&w);
+		respond_json(fd, 200, "OK", &w);
+		jw_free(&w);
+	}
+}
+
+/*
  * Returns 0 and forks the fetch (state -> FETCHING) on success; -1
  * with err_msg filled otherwise (both url and sha256 are required --
  * unlike a recipe's own pkg_source, there is no "trust whatever
@@ -6172,6 +6438,7 @@ static void finalize_state_storage_migration(void)
 	ntp_repoint(NTP_STATE_PATH, NTP_SERVERS_STATE_PATH);
 	syslogfwd_repoint(SYSLOGFWD_STATE_PATH);
 	connthrottle_config_repoint(CONNTHROTTLE_CONFIG_PATH);
+	backupconfig_repoint(BACKUP_CONFIG_PATH);
 	resolv_repoint(RESOLV_CONF_PATH);
 
 	/* Re-establish the real bind mount -- see this function's own top
@@ -8776,21 +9043,28 @@ static void handle_diskrole_create(int fd, const char *body, size_t body_len)
 /*
  * ADR-0141: true if disk_name is the *currently active* placement for
  * any of the three daemon-wide storage singletons (state-storage/
- * log-storage/rebuildable-storage) -- removing the role out from under
- * an in-use placement, or destroying it via format, would leave the
- * daemon's own live-location tracking pointing at a disk that, per its
- * own role table, doesn't do that anymore. Shared by handle_diskrole_
- * delete() and handle_disk_format_post() below.
+ * log-storage/rebuildable-storage), OR the currently configured
+ * backup-config disk -- removing the role out from under an in-use
+ * placement, or destroying it via format, would leave the daemon's own
+ * live-location tracking (or, for backup, the operator's own configured
+ * disaster-recovery target) pointing at a disk that, per its own role
+ * table, doesn't do that anymore. Shared by handle_diskrole_delete()
+ * and handle_disk_format_post() below. Named for the three storage
+ * kinds since they came first, but backup-config's own disk is checked
+ * here too -- ADR-0141's own safety-check section lists it explicitly
+ * alongside the three, not as an afterthought.
  */
 static int is_active_storage_singleton_placement(const char *disk_name)
 {
 	const char *state_disk = storageplacement_get(STORAGE_KIND_STATE);
 	const char *log_disk = storageplacement_get(STORAGE_KIND_LOG);
 	const char *rebuildable_disk = storageplacement_get(STORAGE_KIND_REBUILDABLE);
+	const char *backup_disk = backupconfig_disk();
 
 	return (state_disk != NULL && strcmp(state_disk, disk_name) == 0) ||
 	       (log_disk != NULL && strcmp(log_disk, disk_name) == 0) ||
-	       (rebuildable_disk != NULL && strcmp(rebuildable_disk, disk_name) == 0);
+	       (rebuildable_disk != NULL && strcmp(rebuildable_disk, disk_name) == 0) ||
+	       (backup_disk != NULL && strcmp(backup_disk, disk_name) == 0);
 }
 
 static void handle_diskrole_delete(int fd, const char *disk_name)
@@ -8799,9 +9073,10 @@ static void handle_diskrole_delete(int fd, const char *disk_name)
 
 	if (is_active_storage_singleton_placement(disk_name)) {
 		respond_error(fd, 409, "Conflict",
-		              "this disk is the active state-storage, log-storage, or rebuildable-storage placement -- "
-		              "migrate away (POST .../migrate with a different disk, or disk: null "
-		              "for the default OS-disk placement) before removing its role");
+		              "this disk is the active state-storage, log-storage, or rebuildable-storage "
+		              "placement, or the configured backup-config disk -- migrate away first "
+		              "(POST .../migrate to a different disk or disk: null, or PUT "
+		              "/v1/system/backup-config with a different disk/null) before removing its role");
 		return;
 	}
 	derr = diskrole_delete(disk_name);
@@ -8879,7 +9154,7 @@ static void handle_disk_format_post(int fd, const char *disk_name, const char *b
 	if (is_active_storage_singleton_placement(disk_name)) {
 		json_free(root);
 		respond_error(fd, 409, "Conflict",
-		              "this disk is the active state-storage, log-storage, or rebuildable-storage placement -- "
+		              "this disk is the active state-storage, log-storage, or rebuildable-storage placement, or the configured backup-config disk -- "
 		              "formatting it would destroy live data; migrate away first");
 		return;
 	}
@@ -11984,6 +12259,25 @@ static void dispatch(int fd, const struct http_request *req)
 		handle_system_backup(fd);
 		return;
 	}
+	if (strcmp(req->path, "/v1/system/backup-config") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_backup_config_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_backup_config_put(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->method, "GET") == 0 && strcmp(req->path, "/v1/system/backup-config/status") == 0) {
+		handle_backup_config_status_get(fd);
+		return;
+	}
+	if (strcmp(req->method, "POST") == 0 &&
+	    strcmp(req->path, "/v1/system/backup-config/snapshot-now") == 0) {
+		handle_backup_config_snapshot_now_post(fd);
+		return;
+	}
 	if (strcmp(req->method, "POST") == 0 && strcmp(req->path, "/v1/system/restore") == 0) {
 		handle_system_restore(fd, req->body, req->body_len);
 		return;
@@ -14919,6 +15213,8 @@ int main(int argc, char **argv)
 		return 1;
 	if (connthrottle_config_init(CONNTHROTTLE_CONFIG_PATH) != 0)
 		return 1;
+	if (backupconfig_init(BACKUP_CONFIG_PATH) != 0)
+		return 1;
 	if (devicemap_init(DEVICEMAP_STATE_PATH) != 0)
 		return 1;
 	/* diskrole_init()/diskformat_remount_present_role_disks() now run
@@ -15020,6 +15316,7 @@ int main(int argc, char **argv)
 	start_kmsg_watch(); /* needs g_epfd, only just created above -- best-effort, see its own comment */
 	start_ntp_periodic_timer(); /* same g_epfd/best-effort posture, task #751 */
 	start_pkg_sync_periodic_timer(); /* same posture, ADR-0121 -- no-op until an interval is configured */
+	start_backup_periodic_timer(); /* same posture, ADR-0141 Phase 5 -- no-op until enabled+interval configured */
 	fflush(stdout);
 
 	/* "About to serve traffic" is the honest definition of healthy this
@@ -15094,6 +15391,8 @@ int main(int argc, char **argv)
 				handle_pkg_sync_fetch_event(cc);
 			else if (cc->kind == CONN_PKG_SYNC_PERIODIC_TIMER)
 				handle_pkg_sync_periodic_timer_event(cc);
+			else if (cc->kind == CONN_BACKUP_PERIODIC_TIMER)
+				handle_backup_periodic_timer_event(cc);
 			else if (cc->kind == CONN_IMAGE_RECIPE_FETCH)
 				handle_image_recipe_fetch_event(cc);
 			else if (cc->kind == CONN_DISK_FORMAT)

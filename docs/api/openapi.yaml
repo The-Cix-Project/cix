@@ -320,6 +320,110 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/backup-config:
+    get:
+      summary: Automatic backup-snapshot configuration (ADR-0141 Phase 5)
+      description: >
+        Turns the `backup` disk role (present since multi-disk
+        management Phase B, but until this phase a pure inert label
+        nothing ever acted on) into a real, working mechanism.
+        `disk: null` means no automatic snapshots are possible
+        regardless of `enabled` -- a disk must be configured first.
+      operationId: getBackupConfig
+      responses:
+        "200":
+          description: Current backup-snapshot configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupConfig"
+    put:
+      summary: Update automatic backup-snapshot configuration
+      description: >
+        Mirrors PUT /system/daemon-config's own "only the fields given
+        are changed" convention -- a request may set just `disk`, just
+        `enabled`, just `interval_hours`, or any combination. `disk`
+        must already carry the `backup` role -- validated at snapshot
+        time (GET .../status shows the real outcome), not at PUT time,
+        the same "pure bookkeeping, real validation happens where the
+        real action happens" split every other storage-placement
+        endpoint in this API already uses. `interval_hours: 0` means no
+        automatic schedule -- POST .../snapshot-now remains the only
+        trigger. When `enabled` or `interval_hours` actually change,
+        the daemon's own periodic timer is re-armed immediately.
+      operationId: putBackupConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BackupConfigUpdateRequest"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupConfig"
+        "400":
+          description: A present field failed its own type/range validation (interval_hours must be >= 0)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Could not persist the config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /system/backup-config/status:
+    get:
+      summary: Outcome of the most recent backup-snapshot attempt (manual or automatic)
+      description: >
+        `state: "never"` if no attempt has ever run this daemon
+        lifetime. A snapshot attempt is synchronous (a plain JSON write
+        to the configured disk, not a network fetch or external
+        process), so this reports the immediately-preceding attempt,
+        not an in-flight job the way disk format/storage migration
+        status does.
+      operationId: getBackupConfigStatus
+      responses:
+        "200":
+          description: Most recent snapshot attempt outcome
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupSnapshotStatus"
+  /system/backup-config/snapshot-now:
+    post:
+      summary: Writes a backup snapshot to the configured disk right now, regardless of schedule
+      description: >
+        Writes exactly the same bundle GET /system/backup itself
+        produces (container definitions, networks, DNS records,
+        installed-package state, every on-disk package recipe version,
+        site config -- deliberately, and pre-existingly, never PKI
+        keys/certs, the same scope GET /system/backup itself has always
+        had) to "<mount_path>/backup.json" on the configured disk -- a
+        single, always-current snapshot, not a timestamped history.
+        `400` if no disk is configured, the configured disk doesn't
+        carry the `backup` role, or it isn't currently mounted -- the
+        real reason is in GET .../status's own `error` field either
+        way, since this endpoint's own response is that same status
+        object.
+      operationId: postBackupConfigSnapshotNow
+      responses:
+        "200":
+          description: >
+            The snapshot attempt's own outcome (state may be "ok" or
+            "failed" -- this always returns 200, since a failed
+            snapshot attempt is a real, valid, fully-reported outcome,
+            not a malformed request)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupSnapshotStatus"
+
   /system/site:
     get:
       summary: This install's declared identity (ADR-0046)
@@ -1967,9 +2071,10 @@ paths:
           description: >
             A format job is already running (this daemon-wide, v1
             single-job limit), or this disk is the active placement for
-            state-storage, log-storage, or rebuildable-storage
-            (ADR-0141) -- formatting it would destroy live data;
-            migrate away first.
+            state-storage, log-storage, or rebuildable-storage, or the
+            currently configured backup-config disk (ADR-0141) --
+            formatting it would destroy live data; migrate away
+            first (or, for backup-config, PUT a different disk/null).
           content:
             application/json:
               schema:
@@ -2167,8 +2272,10 @@ paths:
         "409":
           description: >
             This disk is the active placement for state-storage,
-            log-storage, or rebuildable-storage (ADR-0141) -- migrate
-            away first (POST /system/{state,log,rebuildable}-storage/migrate).
+            log-storage, or rebuildable-storage, or the currently
+            configured backup-config disk (ADR-0141) -- migrate away
+            first (POST /system/{state,log,rebuildable}-storage/migrate,
+            or PUT /system/backup-config with a different disk/null).
           content:
             application/json:
               schema:
@@ -6354,6 +6461,47 @@ components:
             The migration's own target (omitted when state is "none") --
             null means this job migrated back to the default OS-disk
             placement.
+        error:
+          type: string
+          description: Present once state is "failed".
+
+    BackupConfig:
+      type: object
+      required: [disk, enabled, interval_hours]
+      properties:
+        disk:
+          type: string
+          nullable: true
+          description: Must carry the `backup` role. Null means no automatic snapshots are possible.
+        enabled:
+          type: boolean
+        interval_hours:
+          type: integer
+          description: 0 means no automatic schedule -- POST .../snapshot-now is the only trigger.
+
+    BackupConfigUpdateRequest:
+      type: object
+      properties:
+        disk:
+          type: string
+          nullable: true
+        enabled:
+          type: boolean
+        interval_hours:
+          type: integer
+          minimum: 0
+      description: All fields optional -- only the ones present are changed (at least one expected).
+
+    BackupSnapshotStatus:
+      type: object
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [never, ok, failed]
+        last_attempt_unixtime:
+          type: integer
+          description: Present once state is "ok" or "failed" (omitted when "never").
         error:
           type: string
           description: Present once state is "failed".

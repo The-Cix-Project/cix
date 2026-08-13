@@ -24,6 +24,10 @@ kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `update [--image=PATH] [--kernel=PATH]` | Write a fresh control-plane squashfs and/or kernel to the inactive A/B slot; does not reboot |
 | `backup [--output=PATH]` | Bundle platform config state; prints it (or `--json`) by default, `--output=` saves verbatim for `restore --input=` |
 | `restore --input=PATH` | Write a previously-saved bundle back; does not reboot or hot-reload |
+| `backup-config show` | Which disk (if any) automatic backup snapshots write to, whether enabled, interval (ADR-0141) |
+| `backup-config set [--disk=NAME\|--clear-disk] [--enable\|--disable] [--interval-hours=N]` | Only the fields given are changed; target disk must carry the `backup` role |
+| `backup-config status` | Outcome of the most recent backup-snapshot attempt (manual or automatic) |
+| `backup-config snapshot-now` | Write the same bundle `backup` produces to the configured disk right now |
 | `site show` | This install's `instance_name`/`site_name`/`domain_suffix` |
 | `site set [--instance-name=NAME] [--site-name=NAME] [--domain-suffix=NAME]` | Set them |
 | `daemon-config show` | `kanxeod`'s own listen port, HTTP/HTTPS exposure, and which network is currently its management one |

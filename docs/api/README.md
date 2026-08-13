@@ -15,6 +15,10 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | POST | `/system/update` | Write a fresh control-plane squashfs and/or a fresh kernel onto this daemon's own inactive A/B slot |
 | GET | `/system/backup` | Bundle platform configuration state (container defs, networks, DNS, package state, site config) |
 | POST | `/system/restore` | Write a previously-backed-up bundle back to its real state files |
+| GET | `/system/backup-config` | Which disk (if any) automatic backup snapshots write to, whether enabled, interval |
+| PUT | `/system/backup-config` | Update backup-snapshot config (only the fields given are changed) |
+| GET | `/system/backup-config/status` | Outcome of the most recent backup-snapshot attempt |
+| POST | `/system/backup-config/snapshot-now` | Write a backup snapshot to the configured disk right now |
 | GET | `/system/site` | This install's declared identity (`instance_name`/`site_name`/`domain_suffix`) |
 | PUT | `/system/site` | Set this install's site identity |
 | GET | `/system/daemon-config` | kanxeod's own listen port, HTTP/HTTPS exposure, and which network is currently its management one |
@@ -1037,7 +1041,7 @@ GET /v1/system/state-storage/migrate
 
 `state` is `"none"`, `"running"`, `"ready"`, or `"failed"` (`error` present on failure). Once the bulk copy (a forked child, `treecopy_recursive()` — the same permission-preserving primitive `POST /system/backup-config/snapshot-now`'s own future implementation and this daemon's package-install pipeline both use, never a second copy of the same logic) finishes successfully, this daemon's own single-threaded reactor does one more synchronous pass — a second, fast copy (cheap, since little changes during the bulk phase) — and only then repoints every affected subsystem's own live path, re-establishes the real `/etc/resolv.conf` bind mount against the new location (a real, previously-live lesson: a bind mount is tied to the inode it captured, not the path — see `CHANGELOG.md`'s Part 103), persists the new placement, and removes the old location's data. A `state:"failed"` migration at any point before that final repoint leaves the daemon still using the old location, completely untouched — the partially-copied new-location data is left for inspection or the next attempt to overwrite.
 
-`DELETE /v1/diskroles/{name}` and `POST /v1/disks/{name}/format` both now refuse (`409`) against a disk that's the current active state-storage, log-storage, *or* rebuildable-storage placement — removing the role or destroying the disk's content out from under a live placement would silently strand the daemon's own state. Migrate away first (`disk: null` back to the default, or to a different role-eligible disk).
+`DELETE /v1/diskroles/{name}` and `POST /v1/disks/{name}/format` both now refuse (`409`) against a disk that's the current active state-storage, log-storage, or rebuildable-storage placement, *or* the currently configured backup-config disk — removing the role or destroying the disk's content out from under a live placement would silently strand the daemon's own state. Migrate away first (`disk: null` back to the default, or to a different role-eligible disk — or, for backup-config, `PUT /system/backup-config` with a different disk/`null`).
 
 ### Log-storage placement (ADR-0141 Phase 3)
 
@@ -1323,6 +1327,32 @@ The reverse of `GET /system/backup` — same shape, every field optional and ind
 **Does not reboot or take effect immediately.** Restored files only get picked up on the next boot — the same startup sequence (including container autostart) that already runs every time. Call the existing `POST /system/reboot` once you're ready to actually cut over. A typical disaster-recovery sequence: boot a fresh install once (normal empty first boot) → `POST /system/restore` with your saved bundle → `POST /system/reboot` → the second boot comes up with your restored state.
 
 `kanxeoctl backup --output=PATH` saves the bundle verbatim (byte-for-byte, not re-serialized) for later use with `kanxeoctl restore --input=PATH` — the same file round-trips exactly. A scheduled backup job (a container with network reachability to `kanxeod`, or a simple host-level cron entry — either is equally valid, this is a plain REST client either way) can run `kanxeoctl backup` on a schedule and ship the result off-host.
+
+### Automatic backup snapshots (ADR-0141 Phase 5)
+
+```
+GET /v1/system/backup-config
+{"disk": null, "enabled": false, "interval_hours": 0}
+```
+
+Turns the `backup` disk role (present since multi-disk management Phase B, but until this phase a pure inert label nothing ever acted on) into a real, working mechanism. `disk: null` means no automatic snapshots are possible regardless of `enabled` — a disk carrying the `backup` role must be configured first (`POST /diskroles`).
+
+```
+PUT /v1/system/backup-config
+{"interval_hours": 6}
+```
+
+Mirrors `PUT /system/daemon-config`'s own "only the fields given are changed" convention — set just `disk`, just `enabled`, just `interval_hours`, or any combination. `disk` is *not* validated at PUT time (it doesn't need to already be mounted, or even exist yet) — real validation happens at snapshot time, the same "pure bookkeeping vs. real action" split every other storage-placement endpoint here already uses; check `GET .../status` for what actually happened. `interval_hours: 0` means no automatic schedule — `POST .../snapshot-now` remains the only trigger. Changing `enabled` or `interval_hours` re-arms the daemon's own periodic timer immediately, the same shape NTP's hourly auto-sync and `pkg/repo-config`'s own sync interval already use.
+
+```
+POST /v1/system/backup-config/snapshot-now
+GET  /v1/system/backup-config/status
+{"state": "ok", "last_attempt_unixtime": 1786600000}
+```
+
+Writes **exactly the same bundle `GET /system/backup` itself produces** — container definitions, networks, DNS records, installed-package state, every on-disk recipe version, site config, and (unchanged from `GET /system/backup`'s own long-standing, deliberate design) **never PKI keys/certs** — to `<mount_path>/backup.json` on the configured disk. A single, always-current snapshot, not a timestamped history: this mechanism exists to guarantee a real, fresh disaster-recovery copy always exists somewhere off the OS disk, not to be a backup-retention system in its own right. Synchronous (a plain JSON write, not a network fetch or external process), so `POST .../snapshot-now`'s own response *is* the resulting status object — no separate poll needed, though `GET .../status` reports the identical thing for checking after the fact or after an automatic run. `state: "never"` if no attempt (manual or automatic) has ever run this daemon lifetime.
+
+`DELETE /v1/diskroles/{name}` and `POST /v1/disks/{name}/format` both refuse (`409`) against the currently configured backup-config disk, the same safety net every storage-placement kind already has — reconfigure `backup-config` (a different disk, or `disk: null`) first.
 
 ## Current scope boundaries (v1, deliberate — see ADR-0007)
 
