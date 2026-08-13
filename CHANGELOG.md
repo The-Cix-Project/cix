@@ -17,7 +17,7 @@ Investigated directly (not assumed) after a deferred user question: does a conta
 - `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/cli-reference.md` updated together, in this same change.
 
 #### Verified
-- Full clean rebuild (`-Wall -Werror`, zero warnings across all 69 build targets). Full regression sweep (45 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_restart`, reproduced clean on immediate retry, unrelated to this change). Real headless-browser session (Chromium via `puppeteer-core`) confirmed the new Options-tab field renders the real staged nameserver list, and the run-form's own new field exists and is wired.
+- Full clean rebuild (`-Wall -Werror`, zero warnings across all 69 build targets). Full regression sweep (45 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_restart`, reproduced clean on immediate retry, unrelated to this change). Real headless-browser session (Chromium via `puppeteer-core`) confirmed the new Options-tab field renders the real staged nameserver list, and the run-form's own new field exists and is wired. Deployed to 192.168.15.95 (v1.40.0 -> v1.41.0); a throwaway verification container created with `--dns-server=192.168.15.101 --dns-server=192.168.15.102` (real internal `dns-1`/`dns-2` server addresses) confirmed the full REST contract live -- `dns_servers` correctly echoed back on `GET /containers/{name}` -- before being removed.
 
 ### Part 109 (done): container-storage post-creation migration (ADR-0142 Section 4)
 
