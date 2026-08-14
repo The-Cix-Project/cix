@@ -8297,9 +8297,10 @@ static int create_container_from_body(const char *body, size_t body_len,
 				 * this respawn's own delivery below is valid. */
 				u = ldap_user_find(ldap_user_name);
 				if (u != NULL)
-					lerr = ldap_user_update(ldap_user_name, uid, g->gidnumber, u->secondary_groups,
-					                         u->secondary_group_count, u->givenname, u->sn, u->mail,
-					                         u->loginshell, u->homedirectory, secret, u->disabled,
+					lerr = ldap_user_update(ldap_user_name, NULL, uid, g->gidnumber,
+					                         u->secondary_groups, u->secondary_group_count,
+					                         u->givenname, u->sn, u->mail, u->loginshell,
+					                         u->homedirectory, secret, u->disabled,
 					                         u->ssh_public_key, u->can_search, &u);
 			}
 			if (lerr != LDAP_RECORD_OK || u == NULL) {
@@ -11320,8 +11321,9 @@ static void handle_ldap_group_get_one(int fd, const char *name)
 static void handle_ldap_group_update(int fd, const char *name, const char *body, size_t body_len)
 {
 	struct json_value *root;
-	const struct json_value *jgidnumber;
+	const struct json_value *jgidnumber, *jname;
 	int gidnumber;
+	const char *new_name;
 	struct ldap_group *g;
 	enum ldap_record_error rerr;
 	struct json_writer w;
@@ -11334,9 +11336,15 @@ static void handle_ldap_group_update(int fd, const char *name, const char *body,
 
 	jgidnumber = json_object_get(root, "gidnumber");
 	gidnumber = jgidnumber != NULL ? (int)json_as_number(jgidnumber) : 0;
-	json_free(root);
+	/* ADR-0147: an explicit body "name" differing from the URL path's
+	 * own {name} renames the group; omitted or identical means no
+	 * rename, matching every other PUT field's own "give it to change
+	 * it" convention here. */
+	jname = json_object_get(root, "name");
+	new_name = jname != NULL ? json_as_string(jname) : NULL;
 
-	rerr = ldap_group_update(name, gidnumber, &g);
+	rerr = ldap_group_update(name, new_name, gidnumber, &g);
+	json_free(root);
 	if (rerr != LDAP_RECORD_OK) {
 		respond_ldap_record_error(fd, rerr);
 		return;
@@ -11481,15 +11489,19 @@ static void handle_ldap_user_update(int fd, const char *name, const char *body, 
 	                      secondary_groups, &secondary_group_count, &givenname, &sn, &mail,
 	                      &loginshell, &homedirectory, &password, &disabled, &ssh_public_key,
 	                      &can_search);
-	(void)body_name; /* the URL path's name is authoritative for PUT, not the body's own */
+	/* ADR-0147: body_name differing from the URL path's own {name} now
+	 * renames the user -- previously discarded entirely (comment used
+	 * to read "the URL path's name is authoritative for PUT, not the
+	 * body's own", true for every OTHER field but left renaming with
+	 * no path at all). */
 	(void)has_uidnumber; /* PUT is full-field-replacement -- an omitted uidnumber here is 0,
 	                       * same pre-existing semantics as every other omittable PUT field
 	                       * (e.g. givenname/sn) resetting to empty; auto-allocation is only
 	                       * for create, where "I don't have an opinion" is a real, common case. */
 
-	rerr = ldap_user_update(name, uidnumber, primarygroup, secondary_groups, secondary_group_count,
-	                         givenname, sn, mail, loginshell, homedirectory, password, disabled,
-	                         ssh_public_key, can_search, &u);
+	rerr = ldap_user_update(name, body_name, uidnumber, primarygroup, secondary_groups,
+	                         secondary_group_count, givenname, sn, mail, loginshell, homedirectory,
+	                         password, disabled, ssh_public_key, can_search, &u);
 	json_free(root);
 	if (rerr != LDAP_RECORD_OK) {
 		respond_ldap_record_error(fd, rerr);

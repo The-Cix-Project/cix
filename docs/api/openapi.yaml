@@ -3359,16 +3359,25 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
     put:
-      summary: Edit an existing LDAP group's gidnumber in place (task #750)
+      summary: Edit an existing LDAP group's gidnumber in place, or rename it (task #750, ADR-0147)
       description: >
-        Full field replacement of `gidnumber` only -- `name` is authoritative
-        from the URL path and is never re-qualified by this call. Unlike `POST
+        Full field replacement of `gidnumber`, `name` is authoritative from
+        the URL path for identifying WHICH group -- but a real, different
+        `name` given in the body renames the group (ADR-0147; omitted or
+        identical means no rename, the original behavior). Unlike `POST
         /ldap/groups`, gidnumber is never auto-allocated here: it is always
         required in the body, matching every other PUT resource's "full
-        replacement, no create-time convenience" semantics. Does not cascade
-        to any user currently referencing the old gidnumber -- callers editing
-        a group's gidnumber are responsible for updating affected users
-        themselves if needed.
+        replacement, no create-time convenience" semantics. gidnumber changes
+        do not cascade to any user currently referencing the old gidnumber --
+        callers are responsible for updating affected users themselves if
+        needed. A rename, however, DOES cascade in exactly one place: if the
+        group's old name is currently a member of `hostauth-config`'s own
+        `admin_groups` list, that list is rewritten to the new name too,
+        automatically -- a renamed admin group can never silently fall out of
+        write-gating. External config referencing the group's old rendered
+        LDAP DN (`cn=<user>,ou=<old-name>,<base-dn>` for each of its members)
+        is not automatically updated -- this daemon has no visibility into
+        config it didn't itself render.
       operationId: updateLdapGroup
       parameters:
         - $ref: "#/components/parameters/LdapGroupName"
@@ -3382,6 +3391,11 @@ paths:
               properties:
                 gidnumber:
                   type: integer
+                name:
+                  type: string
+                  description: >
+                    Omit, or repeat the current name, to leave it unchanged.
+                    A real, different name renames the group in place.
       responses:
         "200":
           description: Group updated
@@ -3390,7 +3404,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/LdapGroup"
         "400":
-          description: Invalid gidnumber
+          description: Invalid gidnumber, or invalid new name
           content:
             application/json:
               schema:
@@ -3402,7 +3416,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: gidnumber already used by a different group
+          description: gidnumber already used by a different group, or new name already taken
           content:
             application/json:
               schema:
@@ -3498,6 +3512,14 @@ paths:
         password: omitting it from the request body leaves the existing
         credential unchanged (an empty string is treated the same as
         omitting it).
+      description: >
+        `name` in the URL path identifies WHICH user; a real, different
+        `name` in the body renames it (ADR-0147 -- omitted or identical means
+        no rename). No cascade needed on the user side (nothing in this
+        directory indexes another record by a user's own name the way
+        `admin_groups` indexes `hostauth-config` by group name); external
+        config referencing the user's old rendered LDAP DN is not
+        automatically updated, same caveat as an LDAP group rename.
       operationId: updateLdapUser
       parameters:
         - $ref: "#/components/parameters/LdapUserName"
@@ -3515,13 +3537,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/LdapUser"
         "400":
-          description: Invalid uidnumber, or primarygroup doesn't name an existing group
+          description: Invalid uidnumber, invalid new name, or primarygroup doesn't name an existing group
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "404":
           description: No such user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: New name already taken by a different user
           content:
             application/json:
               schema:

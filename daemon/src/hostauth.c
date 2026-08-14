@@ -188,6 +188,27 @@ enum hostauth_config_error hostauth_set_config(const char *const *admin_groups, 
 	return HOSTAUTH_CONFIG_OK;
 }
 
+int hostauth_rename_admin_group(const char *old_name, const char *new_name)
+{
+	struct hostauth_config old = g_config;
+	int i, changed = 0;
+
+	for (i = 0; i < g_config.admin_group_count; i++) {
+		if (strcmp(g_config.admin_groups[i], old_name) == 0) {
+			snprintf(g_config.admin_groups[i], sizeof(g_config.admin_groups[0]), "%s", new_name);
+			changed = 1;
+		}
+	}
+	if (!changed)
+		return 1;
+
+	if (save_config() != 0) {
+		g_config = old;
+		return 0;
+	}
+	return 1;
+}
+
 void hostauth_write_config_json(struct json_writer *w)
 {
 	int i;

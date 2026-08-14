@@ -1,4 +1,5 @@
 #include "ldap.h"
+#include "hostauth.h"
 #include "persist.h"
 #include "registry.h"
 
@@ -939,16 +940,25 @@ enum ldap_record_error ldap_group_delete(const char *name)
 	return LDAP_RECORD_OK;
 }
 
-enum ldap_record_error ldap_group_update(const char *name, int gidnumber, struct ldap_group **out)
+enum ldap_record_error ldap_group_update(const char *name, const char *new_name, int gidnumber,
+                                          struct ldap_group **out)
 {
 	struct ldap_group *g = ldap_group_find(name);
 	struct ldap_group *collision;
 	int old_gidnumber;
+	int renaming = new_name != NULL && new_name[0] != '\0' && strcmp(new_name, name) != 0;
+	char old_name[LDAP_GROUP_NAME_MAX];
 
 	if (g == NULL)
 		return LDAP_RECORD_ERR_NOT_FOUND;
 	if (gidnumber <= 0)
 		return LDAP_RECORD_ERR_INVALID_FIELD;
+	if (renaming) {
+		if (!ldap_groupname_is_valid(new_name))
+			return LDAP_RECORD_ERR_INVALID_NAME;
+		if (ldap_group_find(new_name) != NULL)
+			return LDAP_RECORD_ERR_DUPLICATE;
+	}
 
 	collision = ldap_group_find_by_gid(gidnumber);
 	if (collision != NULL && collision != g)
@@ -956,9 +966,28 @@ enum ldap_record_error ldap_group_update(const char *name, int gidnumber, struct
 
 	old_gidnumber = g->gidnumber;
 	g->gidnumber = gidnumber;
+	if (renaming) {
+		snprintf(old_name, sizeof(old_name), "%s", g->name);
+		snprintf(g->name, sizeof(g->name), "%s", new_name);
+	}
 
 	if (save_groups_state() != 0) {
 		g->gidnumber = old_gidnumber;
+		if (renaming)
+			snprintf(g->name, sizeof(g->name), "%s", old_name);
+		return LDAP_RECORD_ERR_PERSIST_FAILED;
+	}
+
+	/* admin_groups propagation happens after groups_state is durably
+	 * saved (so a persist failure there never leaves the group's own
+	 * record renamed with no way to reconcile) but before this function
+	 * returns success -- a caller seeing LDAP_RECORD_OK must never
+	 * observe a state where the rename landed but admin_groups still
+	 * names the old, now-nonexistent group. */
+	if (renaming && !hostauth_rename_admin_group(old_name, new_name)) {
+		snprintf(g->name, sizeof(g->name), "%s", old_name);
+		g->gidnumber = old_gidnumber;
+		save_groups_state(); /* best-effort revert of the on-disk group record too */
 		return LDAP_RECORD_ERR_PERSIST_FAILED;
 	}
 
@@ -1070,22 +1099,30 @@ enum ldap_record_error ldap_user_create(const char *name, int uidnumber, int pri
 	return LDAP_RECORD_OK;
 }
 
-enum ldap_record_error ldap_user_update(const char *name, int uidnumber, int primarygroup,
-                                         const int *secondary_groups, int secondary_group_count,
-                                         const char *givenname, const char *sn, const char *mail,
-                                         const char *loginshell, const char *homedirectory,
-                                         const char *password, int disabled,
+enum ldap_record_error ldap_user_update(const char *name, const char *new_name, int uidnumber,
+                                         int primarygroup, const int *secondary_groups,
+                                         int secondary_group_count, const char *givenname,
+                                         const char *sn, const char *mail, const char *loginshell,
+                                         const char *homedirectory, const char *password, int disabled,
                                          const char *ssh_public_key, int can_search,
                                          struct ldap_user **out)
 {
 	struct ldap_user *u = ldap_user_find(name);
 	enum ldap_record_error verr;
+	int renaming = new_name != NULL && new_name[0] != '\0' && strcmp(new_name, name) != 0;
+	char old_name[LDAP_USER_NAME_MAX];
 
 	if (u == NULL)
 		return LDAP_RECORD_ERR_NOT_FOUND;
 	verr = validate_user_fields(uidnumber, primarygroup, secondary_groups, secondary_group_count);
 	if (verr != LDAP_RECORD_OK)
 		return verr;
+	if (renaming) {
+		if (!ldap_username_is_valid(new_name))
+			return LDAP_RECORD_ERR_INVALID_NAME;
+		if (ldap_user_find(new_name) != NULL)
+			return LDAP_RECORD_ERR_DUPLICATE;
+	}
 
 	/* password == NULL means "keep the existing hash" -- fill_user_
 	 * fields() only overwrites passbcrypt when password is non-NULL
@@ -1098,9 +1135,22 @@ enum ldap_record_error ldap_user_update(const char *name, int uidnumber, int pri
 	 * expects PUT to set it exactly as given, not silently preserve
 	 * whatever it was before. */
 	u->can_search = can_search ? 1 : 0;
+	if (renaming) {
+		snprintf(old_name, sizeof(old_name), "%s", u->name);
+		snprintf(u->name, sizeof(u->name), "%s", new_name);
+	}
 
-	if (save_users_state() != 0)
+	if (save_users_state() != 0) {
+		/* Unlike the other fields above (a pre-existing, unfixed gap
+		 * this function has always had -- not this change's to fix),
+		 * the name is a real lookup key: leaving it renamed in memory
+		 * but not on disk would make this user briefly unfindable
+		 * under either name after a restart, worth reverting on its
+		 * own even though nothing else here rolls back. */
+		if (renaming)
+			snprintf(u->name, sizeof(u->name), "%s", old_name);
 		return LDAP_RECORD_ERR_PERSIST_FAILED;
+	}
 
 	ldap_record_sync_all();
 	*out = u;

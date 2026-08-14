@@ -2,6 +2,21 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 130 (done): renaming an LDAP user or group in place (ADR-0147)
+
+User-requested, following the live-infrastructure re-provisioning: `PUT /v1/ldap/users|groups/{name}` previously discarded the request body's own `name` field outright (`(void)body_name; /* the URL path's name is authoritative for PUT, not the body's own */`) -- the only way to rename a record was delete-then-recreate.
+
+#### Added
+- `PUT /v1/ldap/groups/{name}` and `PUT /v1/ldap/users/{name}`: a real, different `name` in the body now renames the record (omitted or identical: no rename, unchanged behavior). Validated the same way `POST .../create` validates a new name.
+- **Real, deliberate cascade on the group side only**: `daemon/src/hostauth.c`'s new `hostauth_rename_admin_group()` -- if the group's old name is currently a member of `hostauth-config`'s own `admin_groups` list, it's rewritten to the new name and persisted, called from `ldap_group_update()` after the group's own rename is durably saved but before the request is considered successful. A renamed admin group can never silently drop out of write-gating -- the same class of incident ADR-0146 closed once already, a different cause this time.
+- `kanxeoctl ldap group update --name=NAME --gidnumber=N [--new-name=NEWNAME]`, `kanxeoctl ldap user update --name=NAME [--new-name=NEWNAME] ...` -- a distinct flag from `--name=` (which keeps meaning "which record"), not a reused one.
+
+#### Fixed
+- A pre-existing gap in `ldap_user_update()`, found while adding rename's own revert-on-persist-failure path: no field was ever rolled back in memory on a `save_users_state()` failure (only the newly-added name-revert is; the rest of that gap is unchanged, out of scope for this change).
+
+#### Verified
+- Full clean rebuild (`-Wall -Werror`, zero warnings). `test/test_ldap.c`: rename mechanics for both users and groups (old name gone, new name resolves, collision rejected). `test/test_hostauth.c`: the critical safety property -- renaming the *currently active* admin group, confirming `admin_groups` follows automatically, and that a fresh login still succeeds immediately after. 3 consecutive clean runs of both, plus the full daemon-linked regression sweep.
+
 ### Part 129 (done): full live-infrastructure re-provisioning after the ADR-0146 reinstall -- DNS, LDAP (+ live backend activation), syslog forward targets, jumpbox1 -- plus a real openssh privsep-chroot fix found along the way
 
 The reinstalled real box (192.168.15.95) was a genuine blank slate -- no images, no containers, only the management network survived. User-requested: rebuild DNS, LDAP (including switching host-auth from the local backend Part 126/127 activated to the live-LDAP backend), syslog forwarding, and jumpbox1's live-LDAP SSH login, all from scratch.

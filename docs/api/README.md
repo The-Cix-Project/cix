@@ -126,12 +126,12 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/ldap/groups` | List every LDAP group |
 | POST | `/ldap/groups` | Create an LDAP group (`gidnumber` optional -- auto-allocated if omitted, task #748) |
 | GET | `/ldap/groups/{name}` | Inspect one LDAP group |
-| PUT | `/ldap/groups/{name}` | Edit an existing LDAP group's gidnumber in place (task #750) |
+| PUT | `/ldap/groups/{name}` | Edit an existing LDAP group's gidnumber in place (task #750); a real, different `name` in the body renames it (ADR-0147) |
 | DELETE | `/ldap/groups/{name}` | Delete an LDAP group |
 | GET | `/ldap/users` | List every LDAP user |
 | POST | `/ldap/users` | Create an LDAP user (`uidnumber` optional -- auto-allocated if omitted, task #748; `ssh_public_key` optional, task #731) |
 | GET | `/ldap/users/{name}` | Inspect one LDAP user |
-| PUT | `/ldap/users/{name}` | Update an existing LDAP user (full field replacement; `password` omitted keeps the existing credential) |
+| PUT | `/ldap/users/{name}` | Update an existing LDAP user (full field replacement; `password` omitted keeps the existing credential); a real, different `name` in the body renames it (ADR-0147) |
 | DELETE | `/ldap/users/{name}` | Delete an LDAP user |
 | GET | `/ldap/config` | Fetch the current `start_uid`/`start_gid` auto-allocation floor (task #748) |
 | PUT | `/ldap/config` | Set the `start_uid`/`start_gid` floor -- takes effect for future allocations only, does not renumber existing records |
@@ -831,7 +831,9 @@ POST /v1/ldap/users
 - `can_search` (ADR-0144 task #838) grants glauth's own minimal "search" capability (object `"*"`) — off by default. A real bind/service account (an `nslcd` `binddn`, a live `AuthorizedKeysCommand`'s own search bind) needs this to search the directory at all; ordinary user accounts don't. Settable directly on `POST`/`PUT` like any other field — the auto-provisioned service accounts below (task #727) are simply one caller among others now, not the only path that can grant it.
 - `gidnumber`/`uidnumber` are optional on `POST` (task #748): omit either one and it's auto-allocated — `ldap_gid_alloc()`/`ldap_uid_alloc()` scan upward from a configurable floor (see below) for the next value not already in use, the same "scan for next free above floor" algorithm both have always used, just with the floor itself now settable instead of a hardcoded `10000`.
 
-`GET`/`DELETE` follow the same `/v1/ldap/users/{name}` and `/v1/ldap/groups/{name}` shape as every other named resource in this API; `PUT /v1/ldap/users/{name}` updates an existing user (full field replacement, `password` optional as above); `PUT /v1/ldap/groups/{name}` updates an existing group's `gidnumber` (task #750) — unlike `POST`, `gidnumber` is always required in the body on `PUT` and is never auto-allocated, matching every other PUT resource's full-replacement semantics. Neither `PUT` cascades to records referencing the old value: editing a group's `gidnumber` does not update any user's `primarygroup`, and callers are responsible for that themselves if needed.
+`GET`/`DELETE` follow the same `/v1/ldap/users/{name}` and `/v1/ldap/groups/{name}` shape as every other named resource in this API; `PUT /v1/ldap/users/{name}` updates an existing user (full field replacement, `password` optional as above); `PUT /v1/ldap/groups/{name}` updates an existing group's `gidnumber` (task #750) — unlike `POST`, `gidnumber` is always required in the body on `PUT` and is never auto-allocated, matching every other PUT resource's full-replacement semantics. gidnumber changes don't cascade to records referencing the old value: editing a group's `gidnumber` does not update any user's `primarygroup`, and callers are responsible for that themselves if needed.
+
+**Renaming (ADR-0147)**: on either `PUT`, a real, different `name` in the body — not the URL path's own `{name}`, which always identifies WHICH record — renames it in place. Omitted, or identical to the current name, means no rename (the pre-existing behavior). A group rename has one real, deliberate cascade: if the group's old name is currently a member of `hostauth-config`'s own `admin_groups` list, that list is automatically rewritten to the new name too, before the rename is considered committed — a renamed admin group can never silently drop out of write-gating, the same class of incident ADR-0146 closed once already for a different cause. A user rename has no equivalent cascade (nothing else in this directory indexes a record by a user's own name; group membership is already by `gidnumber`, not name). Neither rename updates external config that referenced the record's old rendered LDAP DN (`cn=<user>,ou=<group>,<base-dn>`) — `nslcd.conf`'s own `binddn`, for instance — this daemon has no visibility into config it didn't itself render, so that stays the operator's own responsibility, same as it already was for a `gidnumber` change.
 
 ### Configurable uid/gid auto-allocation floor
 

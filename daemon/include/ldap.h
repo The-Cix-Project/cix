@@ -225,8 +225,28 @@ enum ldap_record_error ldap_group_create(const char *name, int gidnumber, struct
  * with a DIFFERENT existing group (LDAP_RECORD_ERR_DUPLICATE); does
  * NOT cascade-update any user whose primarygroup referenced the old
  * gidnumber -- same "no cascading validation" posture this module
- * already has everywhere else. */
-enum ldap_record_error ldap_group_update(const char *name, int gidnumber, struct ldap_group **out);
+ * already has everywhere else.
+ *
+ * new_name (ADR-0147): NULL or equal to name means no rename, the
+ * pre-existing behavior. A real, different new_name renames the
+ * group in place -- validated the same way ldap_group_create() would
+ * (ldap_groupname_is_valid(), no collision with a different existing
+ * group). Unlike gidnumber, renaming a group DOES have one real,
+ * deliberate cascade: if the group's OLD name is currently a member
+ * of hostauth-config's own admin_groups list, it's rewritten to the
+ * new name there too (hostauth_rename_admin_group()) before this
+ * function's own rename is considered committed -- a renamed admin
+ * group must never silently fall out of write-gating, the exact
+ * class of incident ADR-0146 already closed once for a different
+ * cause. Every user's own primarygroup (a gidnumber, not a name) is
+ * unaffected by a group rename; only the *rendered LDAP DN* of its
+ * members changes (cn=<user>,ou=<new-name>,<base-dn>), which any
+ * external config referencing the old DN (nslcd.conf's own binddn,
+ * for instance) does not learn about automatically -- documented,
+ * not silently handled, matching this module's existing posture on
+ * cross-references it cannot see. */
+enum ldap_record_error ldap_group_update(const char *name, const char *new_name, int gidnumber,
+                                          struct ldap_group **out);
 enum ldap_record_error ldap_group_delete(const char *name);
 void ldap_group_write_json_one(const struct ldap_group *g, struct json_writer *w);
 void ldap_group_write_json_list(struct json_writer *w);
@@ -253,11 +273,22 @@ enum ldap_record_error ldap_user_create(const char *name, int uidnumber, int pri
                                          const char *password, int disabled,
                                          const char *owner_container, int can_search,
                                          const char *ssh_public_key, struct ldap_user **out);
-enum ldap_record_error ldap_user_update(const char *name, int uidnumber, int primarygroup,
-                                         const int *secondary_groups, int secondary_group_count,
-                                         const char *givenname, const char *sn, const char *mail,
-                                         const char *loginshell, const char *homedirectory,
-                                         const char *password, int disabled,
+/* new_name (ADR-0147): NULL or equal to name means no rename, the
+ * pre-existing behavior. A real, different new_name renames the user
+ * in place (ldap_username_is_valid(), no collision with a different
+ * existing user) -- no cross-reference cascade needed on the user
+ * side (nothing in this codebase indexes another record by a user's
+ * name the way admin_groups indexes hostauth-config by group name;
+ * secondary/primary group membership is already by gidnumber, not
+ * name). External config referencing the user's old rendered DN
+ * (e.g. a nslcd.conf binddn built from this exact user) is, same as
+ * for a group rename, not automatically updated -- documented, not
+ * silently handled. */
+enum ldap_record_error ldap_user_update(const char *name, const char *new_name, int uidnumber,
+                                         int primarygroup, const int *secondary_groups,
+                                         int secondary_group_count, const char *givenname,
+                                         const char *sn, const char *mail, const char *loginshell,
+                                         const char *homedirectory, const char *password, int disabled,
                                          const char *ssh_public_key, int can_search,
                                          struct ldap_user **out);
 enum ldap_record_error ldap_user_delete(const char *name);

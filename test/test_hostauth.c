@@ -592,6 +592,113 @@ int main(void)
 		kx_response_free(&r);
 	}
 
+	/*
+	 * 14. ADR-0147: renaming the ACTIVE admin group must not silently
+	 * drop it out of write-gating -- the exact class of self-inflicted
+	 * lockout ADR-0146 was raised to prevent, just from a different
+	 * cause (a rename instead of a stale LDAP-server config). "admins"
+	 * (gidnumber 7002) is real, currently-active admin_groups content
+	 * by this point in the test.
+	 */
+	{
+		char rename_token[128] = "";
+
+		/* A fresh token, not the one captured back at step 7 -- several
+		 * steps since then (idle_timeout_seconds=0 in particular) may
+		 * have already consumed or expired it; this block's own
+		 * correctness shouldn't depend on exactly how much of the rest
+		 * of this file ran before it. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/login",
+		                       "{\"username\":\"root_admin\",\"password\":\"correct horse battery "
+		                       "staple\"}",
+		                       &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: fresh login before rename block, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const char *t = json_str_field(r.json, "token");
+
+			if (t != NULL)
+				snprintf(rename_token, sizeof(rename_token), "%s", t);
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (request_with_token(&client, "PUT", "/v1/ldap/groups/admins", rename_token,
+		                        "{\"name\":\"root-admins\",\"gidnumber\":7002}", &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: rename active admin group, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* hostauth-config's own admin_groups must now read
+		 * "root-admins", not "admins" -- the daemon-side propagation,
+		 * not anything this test itself did. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/system/hostauth-config", NULL, &r) != 0 ||
+		    r.status != 200 ||
+		    memmem(r.body, r.body_len, "\"root-admins\"", strlen("\"root-admins\"")) == NULL ||
+		    memmem(r.body, r.body_len, "\"admins\"", strlen("\"admins\"")) != NULL) {
+			fprintf(stderr,
+			        "FAIL: admin_groups did not follow the rename (expected root-admins only, "
+			        "not admins), status=%d, body=%.*s\n",
+			        r.status, (int)r.body_len, r.body);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* root_admin's own primarygroup is a gidnumber (7002), unaffected
+		 * by the rename -- a fresh login must still succeed, proving
+		 * gating genuinely still recognizes this user as an admin under
+		 * the group's new name, not just that the config string changed. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/login",
+		                       "{\"username\":\"root_admin\",\"password\":\"correct horse battery "
+		                       "staple\"}",
+		                       &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: login after admin-group rename expected 200, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* Another fresh token (idle_timeout_seconds=0 by this point in
+		 * the file means single-use) -- login as root_admin still
+		 * works under the group's NEW name, itself further proof the
+		 * rename didn't break gating. */
+		rename_token[0] = '\0';
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/login",
+		                       "{\"username\":\"root_admin\",\"password\":\"correct horse battery "
+		                       "staple\"}",
+		                       &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: fresh login before collision check, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const char *t = json_str_field(r.json, "token");
+
+			if (t != NULL)
+				snprintf(rename_token, sizeof(rename_token), "%s", t);
+		}
+		kx_response_free(&r);
+
+		/* Renaming to a name that already exists is a real, rejected
+		 * collision (409-shaped LDAP_RECORD_ERR_DUPLICATE), not silently
+		 * accepted. */
+		memset(&r, 0, sizeof(r));
+		if (request_with_token(&client, "PUT", "/v1/ldap/groups/root-admins", rename_token,
+		                        "{\"name\":\"unrelated\",\"gidnumber\":7002}", &r) != 0 ||
+		    r.status != 409) {
+			fprintf(stderr, "FAIL: rename to an already-existing group name expected 409, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+	}
+
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM\n");
 		ok = 0;

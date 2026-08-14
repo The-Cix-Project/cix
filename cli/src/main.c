@@ -141,14 +141,15 @@ static void print_usage(FILE *out)
 	        "  ldap server unregister CONTAINER\n"
 	        "  ldap group add --name=NAME --gidnumber=N\n"
 	        "  ldap group ls\n"
-	        "  ldap group update --name=NAME --gidnumber=N\n"
+	        "  ldap group update --name=NAME --gidnumber=N [--new-name=NEWNAME]  -- renaming an\n"
+	        "               admin group keeps hostauth-config's own admin_groups pointed at it\n"
 	        "  ldap group rm NAME\n"
 	        "  ldap user add --name=NAME --uidnumber=N --primarygroup=N\n"
 	        "               [--secondary-groups=N,N,...] [--givenname=S]\n"
 	        "               [--sn=S] [--mail=S] [--loginshell=S] [--homedirectory=S]\n"
 	        "               [--password=S] [--disabled] [--ssh-key=S] [--can-search]\n"
-	        "  ldap user update --name=NAME [--uidnumber=N] [--primarygroup=N]\n"
-	        "               [--secondary-groups=N,N,...] ...\n"
+	        "  ldap user update --name=NAME [--new-name=NEWNAME] [--uidnumber=N]\n"
+	        "               [--primarygroup=N] [--secondary-groups=N,N,...] ...\n"
 	        "  ldap user ls\n"
 	        "  ldap user rm NAME\n"
 	        "  login [--username=NAME] [--password=PASS]  -- ADR-0144: authenticates against\n"
@@ -6096,6 +6097,7 @@ static int cmd_ldap_group_update(const struct kx_client *c, int json_mode, int a
 {
 	const char *name = NULL;
 	const char *gidnumber = NULL;
+	const char *new_name = NULL;
 	int i;
 	struct json_writer w;
 	struct kx_response r;
@@ -6106,6 +6108,8 @@ static int cmd_ldap_group_update(const struct kx_client *c, int json_mode, int a
 			name = argv[i] + 7;
 		else if (strncmp(argv[i], "--gidnumber=", 12) == 0)
 			gidnumber = argv[i] + 12;
+		else if (strncmp(argv[i], "--new-name=", 11) == 0)
+			new_name = argv[i] + 11;
 		else {
 			fprintf(stderr, "kanxeoctl: unknown ldap group update option '%s'\n", argv[i]);
 			return 2;
@@ -6113,7 +6117,8 @@ static int cmd_ldap_group_update(const struct kx_client *c, int json_mode, int a
 	}
 
 	if (name == NULL || gidnumber == NULL) {
-		fprintf(stderr, "usage: kanxeoctl ldap group update --name=NAME --gidnumber=N\n");
+		fprintf(stderr,
+		        "usage: kanxeoctl ldap group update --name=NAME --gidnumber=N [--new-name=NEWNAME]\n");
 		return 2;
 	}
 
@@ -6121,6 +6126,14 @@ static int cmd_ldap_group_update(const struct kx_client *c, int json_mode, int a
 	jw_obj_open(&w);
 	jw_key(&w, "gidnumber");
 	jw_int(&w, strtol(gidnumber, NULL, 10));
+	if (new_name != NULL) {
+		/* ADR-0147: renames the group -- if it's currently an admin
+		 * group (hostauth-config's own admin_groups), the daemon side
+		 * keeps that list pointed at the new name automatically, so a
+		 * rename can never silently drop a group out of write-gating. */
+		jw_key(&w, "name");
+		jw_str(&w, new_name);
+	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -6158,7 +6171,8 @@ static int cmd_ldap_group(const struct kx_client *c, int json_mode, int argc, ch
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: kanxeoctl ldap group add --name=NAME [--gidnumber=N]\n"
-		                "       kanxeoctl ldap group update --name=NAME --gidnumber=N\n"
+		                "       kanxeoctl ldap group update --name=NAME --gidnumber=N "
+		                "[--new-name=NEWNAME]\n"
 		                "       kanxeoctl ldap group ls\n"
 		                "       kanxeoctl ldap group rm NAME\n");
 		return 2;
@@ -6179,7 +6193,15 @@ static int cmd_ldap_group(const struct kx_client *c, int json_mode, int argc, ch
 
 /* Shared by "ldap user add" and a future "ldap user update" -- parses
  * every optional field kanxeoctl exposes into a JSON request body. */
-static void build_ldap_user_body(struct json_writer *w, int argc, char **argv,
+/* is_update: for `add`, --name= both selects the outgoing "name" field
+ * and is the record's own real name being created, so it's written into
+ * the body as-is. For `update`, --name= only ever identifies WHICH user
+ * (the URL path) -- ADR-0147's own rename support is a distinct
+ * --new-name= flag, so the body's own "name" key is written only when
+ * that's given (a real rename request), never a same-value echo of
+ * --name= that PUT's full-field-replacement semantics would otherwise
+ * harmlessly (but pointlessly) re-assert on every update call. */
+static void build_ldap_user_body(struct json_writer *w, int argc, char **argv, int is_update,
                                   const char **out_name)
 {
 	int i;
@@ -6189,8 +6211,13 @@ static void build_ldap_user_body(struct json_writer *w, int argc, char **argv,
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0) {
 			name = argv[i] + 7;
+			if (!is_update) {
+				jw_key(w, "name");
+				jw_str(w, name);
+			}
+		} else if (is_update && strncmp(argv[i], "--new-name=", 11) == 0) {
 			jw_key(w, "name");
-			jw_str(w, name);
+			jw_str(w, argv[i] + 11);
 		} else if (strncmp(argv[i], "--uidnumber=", 12) == 0) {
 			jw_key(w, "uidnumber");
 			jw_int(w, strtol(argv[i] + 12, NULL, 10));
@@ -6250,7 +6277,7 @@ static int cmd_ldap_user_add(const struct kx_client *c, int json_mode, int argc,
 	const char *name;
 
 	jw_init(&w);
-	build_ldap_user_body(&w, argc, argv, &name);
+	build_ldap_user_body(&w, argc, argv, 0, &name);
 	if (name == NULL) {
 		jw_free(&w);
 		fprintf(stderr,
@@ -6283,12 +6310,12 @@ static int cmd_ldap_user_update(const struct kx_client *c, int json_mode, int ar
 	char path[256];
 
 	jw_init(&w);
-	build_ldap_user_body(&w, argc, argv, &name);
+	build_ldap_user_body(&w, argc, argv, 1, &name);
 	if (name == NULL) {
 		jw_free(&w);
 		fprintf(stderr,
-		        "usage: kanxeoctl ldap user update --name=NAME [--uidnumber=N] "
-		        "[--primarygroup=N] [--givenname=S] [--sn=S] [--mail=S] "
+		        "usage: kanxeoctl ldap user update --name=NAME [--new-name=NEWNAME] "
+		        "[--uidnumber=N] [--primarygroup=N] [--givenname=S] [--sn=S] [--mail=S] "
 		        "[--loginshell=S] [--homedirectory=S] [--password=S] [--disabled] "
 		        "[--ssh-key=S] [--can-search]\n");
 		return 2;

@@ -1001,9 +1001,80 @@ int main(void)
 		}
 		kx_response_free(&r);
 
-		kx_client_request(&client, "DELETE", "/v1/ldap/users/autouid1", NULL, &r);
+		/* 34. ADR-0147: renaming a group in place -- old name gone, new
+		 * name resolves with every other field (gidnumber) untouched. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/ldap/groups/autogid1",
+		                       "{\"name\":\"autogid1renamed\",\"gidnumber\":10999}", &r) != 0 ||
+		    r.status != 200 ||
+		    strcmp(json_str_field(r.json, "name"), "autogid1renamed") != 0) {
+			fprintf(stderr, "FAIL: rename group autogid1, status=%d\n", r.status);
+			ok = 0;
+		}
 		kx_response_free(&r);
-		kx_client_request(&client, "DELETE", "/v1/ldap/groups/autogid1", NULL, &r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/ldap/groups/autogid1", NULL, &r) != 0 ||
+		    r.status != 404) {
+			fprintf(stderr, "FAIL: old group name should be gone after rename, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/ldap/groups/autogid1renamed", NULL, &r) != 0 ||
+		    r.status != 200 ||
+		    (long)json_as_number(json_object_get(r.json, "gidnumber")) != 10999) {
+			fprintf(stderr, "FAIL: renamed group not found under new name, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* Renaming to an already-taken name is a real, rejected
+		 * collision, not silently accepted. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/ldap/groups/autogid1renamed",
+		                       "{\"name\":\"autogid2\",\"gidnumber\":10999}", &r) != 0 ||
+		    r.status != 409) {
+			fprintf(stderr, "FAIL: rename group to an existing name expected 409, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 35. Same mechanics, for a user. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/ldap/users/autouid1",
+		                       "{\"name\":\"autouid1renamed\",\"uidnumber\":10000,\"primarygroup\":10999}",
+		                       &r) != 0 ||
+		    r.status != 200 ||
+		    strcmp(json_str_field(r.json, "name"), "autouid1renamed") != 0) {
+			fprintf(stderr, "FAIL: rename user autouid1, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/ldap/users/autouid1", NULL, &r) != 0 ||
+		    r.status != 404) {
+			fprintf(stderr, "FAIL: old user name should be gone after rename, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/ldap/users/autouid1renamed", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: renamed user not found under new name, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		kx_client_request(&client, "DELETE", "/v1/ldap/users/autouid1renamed", NULL, &r);
+		kx_response_free(&r);
+		kx_client_request(&client, "DELETE", "/v1/ldap/groups/autogid1renamed", NULL, &r);
 		kx_response_free(&r);
 		kx_client_request(&client, "DELETE", "/v1/ldap/groups/autogid2", NULL, &r);
 		kx_response_free(&r);

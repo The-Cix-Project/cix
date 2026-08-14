@@ -168,10 +168,10 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | `ldap server register --container=NAME --config-path=PATH` | Register a running container as the LDAP-serving target (task #725) -- `config_path` is its own absolute view of glauth's own config file |
 | `ldap server ls` / `ldap server unregister CONTAINER` | List / unregister |
 | `ldap group add --name=NAME [--gidnumber=N]` | Create a group (task #726) -- `--gidnumber=` optional, auto-allocated if omitted (task #748) |
-| `ldap group update --name=NAME --gidnumber=N` | Edit an existing group's gidnumber in place (task #750) |
+| `ldap group update --name=NAME --gidnumber=N [--new-name=NEWNAME]` | Edit an existing group's gidnumber in place (task #750); `--new-name=` renames it (ADR-0147) -- if it's currently an admin group, `hostauth-config`'s own `admin_groups` follows the rename automatically |
 | `ldap group ls` / `ldap group rm NAME` | List / remove |
 | `ldap user add --name=NAME [--uidnumber=N] --primarygroup=N [--secondary-groups=N,N,...] [--givenname=S] [--sn=S] [--mail=S] [--loginshell=S] [--homedirectory=S] [--password=S] [--disabled] [--ssh-key=S] [--can-search]` | Create a user -- `--uidnumber=` optional, auto-allocated if omitted (task #748); `--ssh-key=` optional, rendered as glauth's own `sshkeys` LDAP attribute, queried live by a container's own `AuthorizedKeysCommand` (task #731/ADR-0144 task #838); `--can-search` grants glauth's own minimal search capability, needed for a real bind/service account (`nslcd`, a live `AuthorizedKeysCommand`, ADR-0144 task #838), off by default |
-| `ldap user update --name=NAME ...` | Edit an existing user in place -- full field replacement, same fields as `add` (task #731) |
+| `ldap user update --name=NAME [--new-name=NEWNAME] ...` | Edit an existing user in place -- full field replacement, same fields as `add` (task #731); `--new-name=` renames it (ADR-0147) |
 | `ldap user ls` / `ldap user rm NAME` | List / remove |
 | `ldap config show` | Show the current `start_uid`/`start_gid` auto-allocation floor (task #748) |
 | `ldap config set --start-uid=N --start-gid=N` | Set the floor -- takes effect for future auto-allocations only, does not renumber existing users/groups |

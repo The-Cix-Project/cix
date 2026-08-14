@@ -92,6 +92,19 @@ enum hostauth_config_error hostauth_set_config(const char *const *admin_groups, 
                                                 int ldap_port, const char *ldap_base_dn);
 void hostauth_write_config_json(struct json_writer *w);
 
+/* Called by ldap_group_rename() (ADR-0147) before it commits an LDAP
+ * group rename -- if old_name currently appears in admin_groups, it's
+ * rewritten to new_name in place and persisted, so a renamed admin
+ * group never silently drops out of write-gating (the exact class of
+ * incident ADR-0146 already closed once for a different cause; a
+ * rename that orphaned admin_groups would be a self-inflicted repeat
+ * of it). A no-op, returning 1, if old_name isn't currently an admin
+ * group at all. Returns 0 on a real persist failure -- the caller
+ * (ldap_group_rename()) treats that as reason to refuse the rename
+ * outright rather than leave admin_groups and the group's own name
+ * inconsistent. */
+int hostauth_rename_admin_group(const char *old_name, const char *new_name);
+
 /* True once at least one user is a member of a configured admin group
  * -- the bootstrap-safety check every write-gating decision starts
  * from. False (writes stay open) if no admin group is configured, or
