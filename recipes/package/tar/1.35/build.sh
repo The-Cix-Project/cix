@@ -30,7 +30,7 @@ pkg_depends=""
 # comment already established (this build container runs everything
 # as root with no texinfo present).
 pkg_build() {
-	FORCE_UNSAFE_CONFIGURE=1 ./configure --prefix=/usr MAKEINFO=true
+	FORCE_UNSAFE_CONFIGURE=1 CC=tcc ./configure --prefix=/usr MAKEINFO=true
 	make -j"$(nproc)" MAKEINFO=true
 }
 

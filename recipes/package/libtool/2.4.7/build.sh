@@ -18,7 +18,7 @@ pkg_depends="bash m4"
 
 # Plain autotools, confirmed directly.
 pkg_build() {
-	./configure --prefix=/usr
+	CC=tcc ./configure --prefix=/usr
 	make -j"$(nproc)" MAKEINFO=true
 }
 

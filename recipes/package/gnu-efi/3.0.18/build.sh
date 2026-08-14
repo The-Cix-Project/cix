@@ -21,7 +21,7 @@ pkg_sha256="7f212c96ee66547eeefb531267b641e5473d7d8529f0bd8ccdefd33cf7413f5c"
 pkg_depends=""
 
 pkg_build() {
-	make -j"$(nproc)" PREFIX=/usr
+	make -j"$(nproc)" CC=tcc PREFIX=/usr
 }
 
 pkg_install() {

@@ -28,7 +28,7 @@ pkg_depends=""
 
 pkg_build() {
 	make clean
-	make -f Makefile-libbz2_so -j"$(nproc)"
+	make -f Makefile-libbz2_so -j"$(nproc)" CC=tcc
 }
 
 # No `make install` target supports DESTDIR here (a real, confirmed

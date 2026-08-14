@@ -16,7 +16,7 @@ pkg_sha256="b71457ffeb210d7ea61825ff72b3e49dc8f2c1a04102bbe23591d783d1bfe996"
 pkg_depends=""
 
 pkg_build() {
-	./configure --prefix=/usr
+	CC=tcc ./configure --prefix=/usr
 	make -j"$(nproc)" MAKEINFO=true
 }
 

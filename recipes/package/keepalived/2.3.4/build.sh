@@ -31,7 +31,7 @@ pkg_depends=""
 # already documents -- every one of them was actually found here, so
 # this is a real, full-featured build, not a stripped one.
 pkg_build() {
-	./configure --prefix=/usr
+	CC=tcc ./configure --prefix=/usr
 	make -j"$(nproc)"
 }
 

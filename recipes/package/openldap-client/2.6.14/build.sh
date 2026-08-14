@@ -86,7 +86,7 @@ pkg_depends="openssl libuuid"
 # process loading that module would then also need resolvable.
 pkg_build() {
 	CPPFLAGS="-D__STDC_NO_VLA__=1" ac_cv_func_pthread_kill_other_threads_np=no \
-	./configure --prefix=/usr \
+	CC=tcc ./configure --prefix=/usr \
 	            --disable-slapd --disable-backends --without-systemd \
 	            --enable-static=yes --enable-shared=no --enable-versioning=no \
 	            --with-tls=openssl

@@ -20,7 +20,7 @@ pkg_depends=""
 # Plain autotools, confirmed directly. MAKEINFO=true skips texinfo doc
 # generation, same reasoning as every other recipe in this batch.
 pkg_build() {
-	./configure --prefix=/usr
+	CC=tcc ./configure --prefix=/usr
 	make -j"$(nproc)" MAKEINFO=true
 }
 

@@ -26,7 +26,7 @@ pkg_depends="autoconf"
 # aclocal/automake are themselves real Perl scripts (sed-substituted
 # from bin/aclocal.in/bin/automake.in), not compiled binaries.
 pkg_build() {
-	./configure --prefix=/usr
+	CC=tcc ./configure --prefix=/usr
 	make -j"$(nproc)" MAKEINFO=true
 }
 

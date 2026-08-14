@@ -26,7 +26,7 @@ pkg_depends=""
 # stages whatever the host itself has), configure uses those instead,
 # which is fine either way.
 pkg_build() {
-	./configure --prefix=/usr
+	CC=tcc ./configure --prefix=/usr
 	make -j"$(nproc)"
 }
 

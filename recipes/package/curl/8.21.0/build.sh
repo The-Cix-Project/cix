@@ -36,7 +36,7 @@ pkg_depends="openssl zlib"
 # skip the built-in `curl --manual` text blob and the docs/ tree
 # (matching every other recipe's own doc-stripping convention).
 pkg_build() {
-	./configure --prefix=/usr --with-openssl --without-libpsl \
+	CC=tcc ./configure --prefix=/usr --with-openssl --without-libpsl \
 	            --disable-ldap --disable-ldaps --without-libidn2 \
 	            --without-nghttp2 --without-librtmp --without-libssh2 \
 	            --without-brotli --without-zstd --without-gssapi \

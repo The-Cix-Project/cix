@@ -20,7 +20,7 @@ pkg_depends=""
 # and interactive dialog-mode line-editing is irrelevant to
 # grub-mkrescue's own non-interactive use of xorriso.
 pkg_build() {
-	./configure --prefix=/usr --disable-libreadline
+	CC=tcc ./configure --prefix=/usr --disable-libreadline
 	make -j"$(nproc)"
 }
 

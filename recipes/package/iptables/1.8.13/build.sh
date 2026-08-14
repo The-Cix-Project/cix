@@ -37,7 +37,7 @@ pkg_depends=""
 # MASQUERADE) link against, confirmed via ldd to need nothing external
 # beyond libc once built this way.
 pkg_build() {
-	./configure --prefix=/usr --enable-shared --disable-nftables
+	CC=tcc ./configure --prefix=/usr --enable-shared --disable-nftables
 	make -j"$(nproc)"
 }
 

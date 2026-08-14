@@ -2,6 +2,17 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 140 (done): audit every recipe for the ambient-gcc-contamination risk (task #845)
+
+CLAUDE.md's own environment notes already documented a real, confirmed bug class: this session's `openssh/10.4p1-7`/`-8` recipes needed an explicit `CC=tcc` after the shared build sandbox's own bare `cc` silently started resolving to real GCC instead of TCC (`gcc.recipe`'s own toolchain output merging into the cumulative sandbox). Audited every one of the 78 package recipes for the same exposure.
+
+#### Fixed
+- 68 recipes had a real, confirmed `./configure` or plain `make` invocation with no explicit compiler pin -- every one now sets `CC=tcc` (or, for `perl.recipe`, Perl's own documented `-Dcc=tcc` `Configure` flag, since its bespoke `Configure` script doesn't reliably honor a bare environment `CC=` under `-des`).
+- A real mistake caught during this same pass, not shipped: the first automated sweep also added `CC=tcc` to `tcc.recipe` itself, which its own header comment explicitly documents as deliberately built with the shared sandbox's **real gcc** (bootstrapping) -- reverted before committing. `gcc.recipe`'s own `CC=tcc` (bootstrapping gcc *from* tcc) is correct and was kept; `kernel.recipe`/`openssl.recipe`/`gitea.recipe`/`kanxeo.recipe` were confirmed, by their own existing header comments, to already be deliberate real-gcc exceptions and were left untouched.
+
+#### Scope, stated explicitly, not left an unstated gap
+- **Not rebuild-verified.** No bootstrapped local toolchain sandbox was available during this audit (the real box, 192.168.15.95, was unreachable at the time -- see the same session's kanxeod-hang incident), so none of these 68 recipes were actually rebuilt end to end after the change. Each edit is a minimal, mechanical, additive compiler pin matching the exact pattern already proven correct for `openssh`/`sysklogd` -- low-risk, but genuinely unverified by a real build, and flagged as such rather than assumed safe.
+
 ### Part 139 (done): host-auth session listing + revoke (ADR-0152)
 
 User-asked directly: where do tokens live, can they be listed (issuer, last-used), do they survive a restart, and is there a CLI/web surface? Investigated: `g_sessions[]` is a plain in-memory array with zero introspection anywhere -- no endpoint, no CLI, no web panel. Confirmed with the user this was worth closing ("yes we want to build that... with all the bells and whistles").

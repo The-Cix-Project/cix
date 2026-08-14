@@ -20,7 +20,7 @@ pkg_depends=""
 # against the built binary). MAKEINFO=true skips texinfo doc
 # generation, same convention every other from-source recipe here uses.
 pkg_build() {
-	./configure --prefix=/usr
+	CC=tcc ./configure --prefix=/usr
 	make -j"$(nproc)" MAKEINFO=true
 }
 

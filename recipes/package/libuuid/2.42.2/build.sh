@@ -15,7 +15,7 @@ pkg_sha256="03a05d3adf9602ef128f2da05b84b3205ce60c351e5737c0370f74000679ce8a"
 pkg_depends=""
 
 pkg_build() {
-	./configure --prefix=/usr --disable-all-programs --enable-libuuid
+	CC=tcc ./configure --prefix=/usr --disable-all-programs --enable-libuuid
 	make -j"$(nproc)"
 }
 

@@ -27,7 +27,7 @@ pkg_depends=""
 # needed, unlike procps.recipe's own /usr/share/gettext+aclocal gap).
 # PREFIX=/usr matches every other recipe in this set.
 pkg_build() {
-	make -j"$(nproc)" PREFIX=/usr
+	make -j"$(nproc)" CC=tcc PREFIX=/usr
 }
 
 # iw links against libnl-3/libnl-genl-3 -- confirmed directly via ldd

@@ -34,7 +34,7 @@ pkg_depends=""
 # (ncursesw.pc et al) for consumers that probe via pkg-config instead
 # of AC_CHECK_LIB.
 pkg_build() {
-	./configure --prefix=/usr --with-shared --without-normal \
+	CC=tcc ./configure --prefix=/usr --with-shared --without-normal \
 	            --without-debug --without-ada --enable-widec \
 	            --enable-pc-files --with-pkg-config-libdir=/usr/lib/pkgconfig
 	make -j"$(nproc)"

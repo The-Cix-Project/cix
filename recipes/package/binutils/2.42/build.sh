@@ -30,7 +30,7 @@ pkg_depends=""
 pkg_build() {
 	mkdir -p build
 	cd build
-	../configure --prefix=/usr --disable-multilib --disable-gold \
+	CC=tcc ../configure --prefix=/usr --disable-multilib --disable-gold \
 		--disable-gprofng --enable-deterministic-archives
 	make -j"$(nproc)" MAKEINFO=true
 }

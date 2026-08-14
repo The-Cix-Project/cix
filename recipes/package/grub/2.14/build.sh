@@ -37,7 +37,7 @@ pkg_sha256="bc8d3c73535b8838d8c8e2654d73edc4e6ae8c8acdb45d5df5dc9a1547446d43"
 pkg_depends="gettext patch"
 
 pkg_build() {
-	./configure --prefix=/usr --sysconfdir=/etc --target=x86_64 \
+	CC=tcc ./configure --prefix=/usr --sysconfdir=/etc --target=x86_64 \
 		--with-platform=efi --disable-efiemu --disable-werror
 	make -j"$(nproc)"
 }

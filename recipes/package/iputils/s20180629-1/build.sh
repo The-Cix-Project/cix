@@ -35,7 +35,7 @@ pkg_build() {
 	# symbol" way -- GCC >= 10 defaults to -fno-common, which turns
 	# that into a real "multiple definition of `device'" link error.
 	# Confirmed directly (first build attempt failed exactly this way).
-	make CFLAGS="-O3 -g -fno-strict-aliasing -Wstrict-prototypes -Wall -fcommon" \
+	make CC=tcc CFLAGS="-O3 -g -fno-strict-aliasing -Wstrict-prototypes -Wall -fcommon" \
 	     USE_CAP=no USE_IDN=no USE_NETTLE=no USE_GCRYPT=no USE_CRYPTO=no USE_RESOLV=yes \
 	     ENABLE_RDISC_SERVER=no ping tracepath arping
 }

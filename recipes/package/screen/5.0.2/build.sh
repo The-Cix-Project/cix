@@ -42,7 +42,7 @@ pkg_depends="ncurses"
 # "curses" candidate instead purely because that alias happens to
 # exist here).
 pkg_build() {
-	./configure --prefix=/usr --disable-pam --disable-socket-dir
+	CC=tcc ./configure --prefix=/usr --disable-pam --disable-socket-dir
 	make -j"$(nproc)"
 }
 

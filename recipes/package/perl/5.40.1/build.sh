@@ -23,9 +23,16 @@ pkg_depends=""
 # confirmed to work directly inside the isolated build container.
 # -Dusethreads matches this build host's own perl (confirmed via
 # `perl -V:usethreads` on the host), so anything that assumes a
-# thread-capable perl still works the same way here.
+# thread-capable perl still works the same way here. -Dcc=tcc is
+# Perl's own documented Configure flag for overriding the compiler
+# (not a bare CC= environment guess -- Configure's own interactive-
+# default-skipping logic under -des doesn't reliably honor environment
+# overrides the way autotools' ./configure does) -- added as part of
+# task #845's audit of every recipe missing an explicit tcc pin; not
+# yet rebuild-verified in this sandbox (no bootstrapped local toolchain
+# available at audit time), flagged honestly rather than assumed.
 pkg_build() {
-	./Configure -des -Dprefix=/usr -Dusethreads
+	./Configure -des -Dcc=tcc -Dprefix=/usr -Dusethreads
 	make -j"$(nproc)"
 }
 

@@ -44,7 +44,7 @@ pkg_sha256="d1f55cc2971398c9142eaa79d203e63d586a3b4b867f956664a1d68322cd4e34"
 pkg_depends="zlib libuuid libblkid pkgconf"
 
 pkg_build() {
-	./configure --prefix=/usr --disable-documentation --disable-python \
+	CC=tcc ./configure --prefix=/usr --disable-documentation --disable-python \
 	            --disable-convert --disable-libudev --disable-zoned \
 	            --with-crypto=builtin --disable-zstd --disable-lzo
 	make -j"$(nproc)" mkfs.btrfs

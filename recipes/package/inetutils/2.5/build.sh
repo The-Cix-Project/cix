@@ -22,7 +22,7 @@ pkg_sha256="87697d60a31e10b5cb86a9f0651e1ec7bee98320d048c0739431aac3d5764fb6"
 pkg_depends="ncurses"
 
 pkg_build() {
-	./configure --prefix=/usr --disable-servers --disable-clients --enable-telnet
+	CC=tcc ./configure --prefix=/usr --disable-servers --disable-clients --enable-telnet
 	make -j"$(nproc)"
 }
 

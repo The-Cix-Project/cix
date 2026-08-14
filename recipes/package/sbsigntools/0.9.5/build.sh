@@ -66,7 +66,7 @@ pkg_build() {
 	autoconf
 	automake --add-missing -Wno-portability
 
-	./configure --prefix=/usr
+	CC=tcc ./configure --prefix=/usr
 	# SUBDIRS override: real, upstream SUBDIRS is "lib/ccan src docs
 	# tests" -- docs needs help2man (not staged anywhere in this
 	# project, and would only regenerate man pages pkg_install() below

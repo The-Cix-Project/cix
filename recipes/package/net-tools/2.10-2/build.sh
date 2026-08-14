@@ -73,7 +73,7 @@ pkg_build() {
 	# this exact parse restriction doesn't apply.
 	sed -i 's/static char no_rarp_message\[\] = N_("This kernel does not support RARP\.\\n");/static char no_rarp_message[] = "This kernel does not support RARP.\\n";/' rarp.c
 
-	make -j"$(nproc)"
+	make -j"$(nproc)" CC=tcc
 }
 
 pkg_install() {

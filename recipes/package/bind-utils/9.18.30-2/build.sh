@@ -29,7 +29,7 @@ pkg_sha256="9f6817640970267317e5aa143ecf70531040f2155636b1a63ea45379aa09034a"
 pkg_depends="libuv openssl"
 
 pkg_build() {
-	./configure --prefix=/usr --without-python --disable-linux-caps \
+	CC=tcc ./configure --prefix=/usr --without-python --disable-linux-caps \
 	            --without-lmdb --without-libxml2 --without-json-c \
 	            --without-maxminddb --without-gssapi --without-readline \
 	            --disable-geoip --disable-doh

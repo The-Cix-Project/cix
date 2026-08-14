@@ -18,7 +18,7 @@ pkg_depends="ncurses"
 # integration features, no use case here. terminfo left at its real
 # default (auto-detected via ncurses, already a dependency).
 pkg_build() {
-	./configure --prefix=/usr --without-x --disable-gui --disable-nls \
+	CC=tcc ./configure --prefix=/usr --without-x --disable-gui --disable-nls \
 	            --disable-channel --disable-netbeans
 	make -j"$(nproc)"
 }

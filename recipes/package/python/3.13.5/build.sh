@@ -37,7 +37,7 @@ pkg_depends=""
 # _dbm (a legacy ndbm-compat interface; _gdbm, the real modern
 # equivalent `dbm.gnu` uses, builds fine and covers the same need).
 pkg_build() {
-	./configure --prefix=/usr --enable-shared --with-ensurepip=no
+	CC=tcc ./configure --prefix=/usr --enable-shared --with-ensurepip=no
 	make -j"$(nproc)"
 }
 

@@ -40,7 +40,7 @@ pkg_depends="openssl zlib"
 # own real /run convention (confirmed present on every image, unlike
 # /tmp which minimal images lack).
 pkg_build() {
-	./configure --prefix=/usr --sysconfdir=/etc/ssh \
+	CC=tcc ./configure --prefix=/usr --sysconfdir=/etc/ssh \
 	            --with-privsep-path=/var/empty --with-privsep-user=sshd \
 	            --with-pid-dir=/run
 	make -j"$(nproc)"

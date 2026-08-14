@@ -51,7 +51,7 @@ pkg_depends="ncurses"
 # proportion for this task.
 pkg_build() {
 	./bootstrap.sh
-	./configure --prefix=/usr --without-gtk --without-jansson --without-ipinfo
+	CC=tcc ./configure --prefix=/usr --without-gtk --without-jansson --without-ipinfo
 	make -j"$(nproc)"
 }
 

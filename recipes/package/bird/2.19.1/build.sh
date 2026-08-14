@@ -41,7 +41,7 @@ pkg_depends=""
 # still wouldn't exist without it even with a populated /run elsewhere.
 pkg_build() {
 	autoreconf -fi
-	./configure --prefix=/usr --runstatedir=/run
+	CC=tcc ./configure --prefix=/usr --runstatedir=/run
 	make -j"$(nproc)"
 }
 

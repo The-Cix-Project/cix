@@ -90,7 +90,7 @@ pkg_build() {
 		libpam/include/pam_cc_compat.h
 
 	CPPFLAGS="-D__STDC_NO_VLA__=1" ac_cv_func_pthread_kill_other_threads_np=no \
-	./configure --prefix=/usr --libdir=/lib/x86_64-linux-gnu \
+	CC=tcc ./configure --prefix=/usr --libdir=/lib/x86_64-linux-gnu \
 	            --disable-nls --disable-doc --disable-selinux --disable-audit \
 	            --disable-systemd --disable-econf --disable-nis --disable-db \
 	            --disable-lckpwdf

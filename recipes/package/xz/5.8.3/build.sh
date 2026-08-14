@@ -33,7 +33,7 @@ pkg_depends=""
 # not "docs" (confirmed via a real local `./configure --help`, unlike
 # curl's own --disable-docs spelling above).
 pkg_build() {
-	./configure --prefix=/usr --disable-doc
+	CC=tcc ./configure --prefix=/usr --disable-doc
 	make -j"$(nproc)"
 }
 

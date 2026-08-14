@@ -40,7 +40,7 @@ pkg_build() {
 
 	ACLOCAL=/build/toolwrap/aclocal-wrap AUTOMAKE=/build/toolwrap/automake-wrap \
 	LIBTOOLIZE=/build/toolwrap/libtoolize-wrap ./autogen.sh
-	./configure --prefix=/usr --disable-static
+	CC=tcc ./configure --prefix=/usr --disable-static
 	make -j"$(nproc)"
 }
 

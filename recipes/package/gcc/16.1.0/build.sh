@@ -64,7 +64,7 @@ pkg_build() {
 	tar xf /build/extra/isl-0.24.tar.bz2 && mv isl-0.24 isl
 	mkdir -p build
 	cd build
-	../configure --prefix=/usr --disable-multilib --disable-bootstrap \
+	CC=tcc ../configure --prefix=/usr --disable-multilib --disable-bootstrap \
 		--enable-languages=c,c++ --disable-libsanitizer --with-system-zlib
 	make -j"$(nproc)"
 }

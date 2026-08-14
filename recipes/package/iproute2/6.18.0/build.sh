@@ -20,7 +20,7 @@ pkg_depends=""
 # optional dependency isn't found, exactly like every other
 # --without-*-by-default open-source build in this recipe set.
 pkg_build() {
-	./configure
+	CC=tcc ./configure
 	make -j"$(nproc)"
 }
 

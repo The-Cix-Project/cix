@@ -35,7 +35,7 @@ pkg_depends=""
 # unconditionally required, no graceful degradation -- unlike
 # iproute2's own optional libmnl use.
 pkg_build() {
-	./configure --prefix=/usr --with-kmod=no
+	CC=tcc ./configure --prefix=/usr --with-kmod=no
 	make -j"$(nproc)"
 }
 

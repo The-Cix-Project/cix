@@ -26,7 +26,7 @@ pkg_depends=""
 # tarball -- autotools used here for consistency with the rest of this
 # recipe set, confirmed to work directly.
 pkg_build() {
-	./configure --prefix=/usr
+	CC=tcc ./configure --prefix=/usr
 	make -j"$(nproc)"
 }
 

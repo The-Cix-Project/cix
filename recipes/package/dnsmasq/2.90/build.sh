@@ -38,7 +38,7 @@ pkg_depends=""
 # defaults to /usr/local, which would land in the wrong place once
 # merged into the shared base image).
 pkg_build() {
-	make -j"$(nproc)" PREFIX=/usr
+	make -j"$(nproc)" CC=tcc PREFIX=/usr
 }
 
 # `ldd` against the real build above confirms zero runtime library

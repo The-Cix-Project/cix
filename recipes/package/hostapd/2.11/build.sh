@@ -36,7 +36,7 @@ pkg_build() {
 	cd hostapd
 	cp defconfig .config
 	printf 'CONFIG_IEEE80211W=y\nCONFIG_SAE=y\n' >> .config
-	make -j"$(nproc)"
+	make -j"$(nproc)" CC=tcc
 }
 
 # hostapd links against libnl-3/libnl-genl-3 (CONFIG_LIBNL32's own

@@ -44,7 +44,7 @@ pkg_depends=""
 # way for dnsmasq -- see CLAUDE.md's own environment notes) rather
 # than chrony's own real upstream default of /var/run/chrony/chronyd.pid.
 pkg_build() {
-	./configure --prefix=/usr --disable-readline --without-nss \
+	CC=tcc ./configure --prefix=/usr --disable-readline --without-nss \
 	            --without-nettle --without-gnutls --without-tomcrypt \
 	            --without-libcap --without-seccomp --disable-nts \
 	            --with-user=root --with-pidfile=/run/chronyd.pid

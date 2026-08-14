@@ -76,7 +76,7 @@ pkg_depends="openldap-client linux-pam"
 pkg_build() {
 	CPPFLAGS="-D__STDC_NO_VLA__=1" LDFLAGS="-L/lib/x86_64-linux-gnu" \
 	LIBS="-llber -lssl -lcrypto" ac_cv_func_pthread_kill_other_threads_np=no \
-	./configure --prefix=/usr --sysconfdir=/etc --libdir=/lib/x86_64-linux-gnu \
+	CC=tcc ./configure --prefix=/usr --sysconfdir=/etc --libdir=/lib/x86_64-linux-gnu \
 	            --with-pam-seclib-dir=/lib/x86_64-linux-gnu/security
 
 	sed -i 's/-Wl,-h,\$(NSS_LDAP_SONAME) -Wl,--version-script,exports.map/-Wl,-soname,$(NSS_LDAP_SONAME)/' \

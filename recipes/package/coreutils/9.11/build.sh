@@ -32,7 +32,7 @@ pkg_depends=""
 # confirmed via `pkg_build` running inside the same real environment),
 # and this recipe never runs `make check`.
 pkg_build() {
-	FORCE_UNSAFE_CONFIGURE=1 ./configure --prefix=/usr
+	FORCE_UNSAFE_CONFIGURE=1 CC=tcc ./configure --prefix=/usr
 	make -j"$(nproc)" MAKEINFO=true
 }
 

@@ -2445,6 +2445,14 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 140 (done): audit every recipe for the ambient-gcc-contamination risk (task #845)
+
+CLAUDE.md's own environment notes already documented a real, confirmed bug class: `openssh/10.4p1-7`/`-8` needed an explicit `CC=tcc` after the shared build sandbox's own bare `cc` started silently resolving to real GCC instead of TCC. Audited all 78 package recipes for the same exposure -- 68 had a real, confirmed `./configure` or plain `make` with no compiler pin, now fixed (`perl.recipe` uses Perl's own `-Dcc=tcc` `Configure` flag instead, since a bare environment `CC=` isn't reliably honored there).
+
+A real mistake was caught mid-audit, not shipped: the first automated pass also added `CC=tcc` to `tcc.recipe` itself, which its own header explicitly documents as deliberately built with real gcc (bootstrapping) -- reverted before committing. `gcc.recipe`'s own `CC=tcc` (bootstrapping gcc from tcc) was correctly kept; `kernel`/`openssl`/`gitea`/`kanxeo` were confirmed, by their own existing header comments, to be deliberate real-gcc exceptions and left untouched.
+
+**Not rebuild-verified** -- no bootstrapped local toolchain sandbox was available during this audit (the real box was unreachable at the time), so none of the 68 recipes were actually rebuilt after the change. Each edit is a minimal, additive compiler pin matching the exact pattern already proven correct for `openssh`/`sysklogd` -- low-risk, but genuinely unverified by a real build, flagged honestly rather than assumed safe.
+
 ## Part 139 (done): host-auth session listing + revoke (ADR-0152)
 
 User-asked directly: where do tokens live, can they be listed, do they survive a restart, is there a CLI/web surface? `g_sessions[]` turned out to have zero introspection anywhere. Confirmed with the user this was worth closing.

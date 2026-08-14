@@ -21,7 +21,7 @@ pkg_depends=""
 # zlib's own configure is a hand-written script, not autoconf, but
 # accepts the same --prefix= convention.
 pkg_build() {
-	./configure --prefix=/usr
+	CC=tcc ./configure --prefix=/usr
 	make -j"$(nproc)"
 }
 

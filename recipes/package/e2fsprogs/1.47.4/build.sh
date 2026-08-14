@@ -35,7 +35,7 @@ pkg_depends=""
 # beyond libc -- no libblkid/libext2fs/libe2p .so at all, since this
 # default build statically links those into mke2fs itself.
 pkg_build() {
-	./configure --prefix=/usr --disable-nls
+	CC=tcc ./configure --prefix=/usr --disable-nls
 	make -j"$(nproc)"
 }
 

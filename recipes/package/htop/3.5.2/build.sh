@@ -28,7 +28,7 @@ pkg_depends="ncurses"
 # around in a given build container. --with-curses=ncursesw pins the
 # real dependency by name rather than letting the default probe guess.
 pkg_build() {
-	./configure --prefix=/usr --with-curses=ncursesw \
+	CC=tcc ./configure --prefix=/usr --with-curses=ncursesw \
 	            --disable-capabilities --disable-delayacct \
 	            --disable-sensors --disable-hwloc
 	make -j"$(nproc)"

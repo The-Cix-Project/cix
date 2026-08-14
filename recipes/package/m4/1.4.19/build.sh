@@ -22,7 +22,7 @@ pkg_depends=""
 # unusual flags needed. --prefix=/usr matches every other recipe in
 # this project.
 pkg_build() {
-	./configure --prefix=/usr
+	CC=tcc ./configure --prefix=/usr
 	make -j"$(nproc)"
 }
 

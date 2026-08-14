@@ -59,7 +59,7 @@ pkg_build() {
 	done
 
 	PATH="/build/toolwrap:$PATH" ./autogen.sh
-	./configure --prefix=/usr --disable-nls
+	CC=tcc ./configure --prefix=/usr --disable-nls
 	make -j"$(nproc)"
 }
 

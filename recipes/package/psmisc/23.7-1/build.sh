@@ -18,7 +18,7 @@ pkg_sha256="58c55d9c1402474065adae669511c191de374b0871eec781239ab400b907c327"
 pkg_depends="ncurses"
 
 pkg_build() {
-	./configure --prefix=/usr
+	CC=tcc ./configure --prefix=/usr
 	make -j"$(nproc)"
 }
 

@@ -19,7 +19,7 @@ pkg_depends="m4"
 # Plain autotools, confirmed directly. MAKEINFO=true skips texinfo doc
 # generation, same reasoning as binutils.recipe/procps.recipe.
 pkg_build() {
-	./configure --prefix=/usr
+	CC=tcc ./configure --prefix=/usr
 	make -j"$(nproc)" MAKEINFO=true
 }
 

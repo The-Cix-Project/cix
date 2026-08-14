@@ -20,7 +20,7 @@ pkg_sha256="616099beae24aba11f9b63d86ca6cc8d566d968b802391334c91df54eab416b4"
 pkg_depends=""
 
 pkg_build() {
-	./configure --prefix=/usr --disable-debuginfod --disable-libdebuginfod
+	CC=tcc ./configure --prefix=/usr --disable-debuginfod --disable-libdebuginfod
 	make -j"$(nproc)"
 }
 

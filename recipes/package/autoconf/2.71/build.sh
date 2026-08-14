@@ -22,7 +22,7 @@ pkg_depends="m4 perl gawk"
 # from .in templates at build time (confirmed via `file`), not C
 # binaries.
 pkg_build() {
-	./configure --prefix=/usr
+	CC=tcc ./configure --prefix=/usr
 	make -j"$(nproc)" MAKEINFO=true
 }
 

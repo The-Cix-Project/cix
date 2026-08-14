@@ -50,7 +50,7 @@ pkg_depends=""
 # confirmed directly -- configure found everything it needed with no
 # extra staging.
 pkg_build() {
-	./configure --prefix=/usr
+	CC=tcc ./configure --prefix=/usr
 	make -j"$(nproc)" NO_RUST=1 NO_GETTEXT=1 NO_TCLTK=1
 }
 

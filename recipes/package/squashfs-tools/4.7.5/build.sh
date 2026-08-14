@@ -42,7 +42,7 @@ pkg_depends="xz"
 # these flags.
 pkg_build() {
 	cd squashfs-tools
-	make -j"$(nproc)" GZIP_SUPPORT=0 XZ_SUPPORT=1 LZO_SUPPORT=0 \
+	make -j"$(nproc)" CC=tcc GZIP_SUPPORT=0 XZ_SUPPORT=1 LZO_SUPPORT=0 \
 	                  LZ4_SUPPORT=0 ZSTD_SUPPORT=0 XATTR_SUPPORT=0 \
 	                  COMP_DEFAULT=xz
 }

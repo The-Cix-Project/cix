@@ -16,7 +16,7 @@ pkg_sha256="71132a3fb71e68245b8f2ac4e9e97137d3e5c02f415636eb508ae607bc01add7"
 pkg_depends=""
 
 pkg_build() {
-	./configure --prefix=/usr --disable-java --disable-native-java \
+	CC=tcc ./configure --prefix=/usr --disable-java --disable-native-java \
 		--disable-openmp --without-emacs
 	make -j"$(nproc)"
 }

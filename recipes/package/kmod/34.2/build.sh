@@ -33,7 +33,7 @@ pkg_depends=""
 # rmmod into $(sbindir) by default, which would otherwise land somewhere
 # nothing on this project's own PATH (/usr/bin:/bin) ever looks.
 pkg_build() {
-	./configure --prefix=/usr --sbindir=/usr/bin --disable-manpages
+	CC=tcc ./configure --prefix=/usr --sbindir=/usr/bin --disable-manpages
 	make -j"$(nproc)"
 }
 
