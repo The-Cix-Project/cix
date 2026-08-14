@@ -1181,6 +1181,121 @@ int main(void)
 		kx_response_free(&r);
 	}
 
+	/*
+	 * ADR-0148: glauth's own baseDN becomes daemon-managed, derived
+	 * from hostauth-config's own real, canonical ldap_base_dn -- not a
+	 * fourth independently-typed copy. A registered server's own
+	 * prefix carries a real baseDN line here (unlike every earlier
+	 * test container in this file, which never sets one at all, so
+	 * none of them exercise this path).
+	 */
+	{
+		static const char basedn_prefix[] =
+		    "[backend]\n  datastore = \"config\"\n  baseDN = \"dc=old,dc=example\"\n\n"
+		    "[behaviors]\n  IgnoreCapabilities = true\n";
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"basedntest\",\"image\":\"ldaptest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+		                       "\"files\":[{\"path\":\"/etc/glauth/glauth.cfg\","
+		                       "\"content\":\"[backend]\\n  datastore = \\\"config\\\"\\n  "
+		                       "baseDN = \\\"dc=old,dc=example\\\"\\n\\n[behaviors]\\n  "
+		                       "IgnoreCapabilities = true\\n\"}]}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST basedntest, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/ldap/servers",
+		                       "{\"container\":\"basedntest\",\"config_path\":\"/etc/glauth/glauth.cfg\"}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: register basedntest, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* Registration itself already triggers a sync -- confirm the
+		 * rewrite already landed, before hostauth-config is even
+		 * touched by anything else in this test file. Wait, actually:
+		 * ldap_base_dn is still empty at this point (never configured
+		 * in this test file before now), so the rewrite is a
+		 * deliberate no-op here -- the OLD value must still be intact. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET",
+		                       "/v1/containers/basedntest/files?path=%2Fetc%2Fglauth%2Fglauth.cfg",
+		                       NULL, &r) != 0 ||
+		    r.status != 200 ||
+		    memmem(r.body, r.body_len, "dc=old,dc=example", strlen("dc=old,dc=example")) == NULL) {
+			fprintf(stderr,
+			        "FAIL: basedntest config should still show the old baseDN before "
+			        "ldap_base_dn is ever configured, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* Now set the real, canonical ldap_base_dn. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/system/hostauth-config",
+		                       "{\"admin_groups\":[],\"idle_timeout_seconds\":900,"
+		                       "\"ldap_base_dn\":\"dc=new,dc=test\"}",
+		                       &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: PUT hostauth-config ldap_base_dn, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* Any LDAP mutation triggers ldap_record_sync_all() -- a
+		 * throwaway group create is as good as any other for that. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/ldap/groups",
+		                       "{\"name\":\"basedntrigger\",\"gidnumber\":6501}", &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: create group basedntrigger, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET",
+		                       "/v1/containers/basedntest/files?path=%2Fetc%2Fglauth%2Fglauth.cfg",
+		                       NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET basedntest config after ldap_base_dn set, status=%d\n",
+			        r.status);
+			ok = 0;
+		} else {
+			int has_new = memmem(r.body, r.body_len, "dc=new,dc=test", strlen("dc=new,dc=test")) !=
+			              NULL;
+			int has_old =
+			    memmem(r.body, r.body_len, "dc=old,dc=example", strlen("dc=old,dc=example")) != NULL;
+			int has_datastore =
+			    memmem(r.body, r.body_len, "datastore = \"config\"",
+			           strlen("datastore = \"config\"")) != NULL;
+			int has_behavior =
+			    memmem(r.body, r.body_len, "IgnoreCapabilities = true",
+			           strlen("IgnoreCapabilities = true")) != NULL;
+
+			if (!has_new || has_old || !has_datastore || !has_behavior) {
+				fprintf(stderr,
+				        "FAIL: baseDN rewrite incorrect (new=%d old=%d datastore=%d "
+				        "behavior=%d), body=%.*s\n",
+				        has_new, has_old, has_datastore, has_behavior, (int)r.body_len, r.body);
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		kx_client_request(&client, "DELETE", "/v1/ldap/groups/basedntrigger", NULL, &r);
+		kx_response_free(&r);
+	}
+
 	stop_daemon(daemon_pid);
 	test_data_dir_cleanup(g_data_dir);
 

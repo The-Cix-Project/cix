@@ -175,7 +175,14 @@ paths:
                   description: Shared port every entry in ldap_servers is queried on (glauth's own real default is 3893).
                 ldap_base_dn:
                   type: string
-                  description: e.g. "dc=glauth,dc=com" -- required, non-empty, when ldap_enabled is true (this daemon has no other way to learn a running glauth server's own configured baseDN).
+                  description: >
+                    e.g. "dc=glauth,dc=com" -- required, non-empty, when
+                    ldap_enabled is true. This is the real, canonical source
+                    of truth for the base DN (ADR-0148): once set, every
+                    currently-registered LDAP server's own config file has
+                    its baseDN line kept in sync with this value automatically
+                    (see POST /ldap/servers), rather than being a separately
+                    hand-typed copy that can drift.
       responses:
         "200":
           description: Updated
@@ -3226,13 +3233,15 @@ paths:
     post:
       summary: >
         Register a running container as the LDAP-serving target (task #725, mirrors
-        POST /dns/servers). Unlike DNS, registration itself never touches the
-        container's filesystem or sends any signal -- glauth runs a real fsnotify
-        watcher on its own config file (`watchconfig = true`) and reloads
-        automatically on any change, so registration is pure bookkeeping: it
-        records where config_path (glauth's own config file, the one it was
-        started with -c) lives, for the LDAP user/group CRUD endpoints (task #726)
-        to render into.
+        POST /dns/servers). Unlike DNS, registration never sends a signal -- glauth
+        runs a real fsnotify watcher on its own config file (`watchconfig = true`)
+        and reloads automatically on any change. It does, however, immediately
+        write into the container's own config file (task #726): the full current
+        user/group set (so a fresh/replacement instance starts current instead of
+        empty) and, as of ADR-0148, the baseDN line kept in sync with
+        hostauth-config's own real ldap_base_dn. config_path (glauth's own config
+        file, the one it was started with -c) is what's recorded for every future
+        LDAP user/group CRUD call (task #726) to render into the same way.
       operationId: createLdapServer
       requestBody:
         required: true

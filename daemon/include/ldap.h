@@ -113,10 +113,15 @@ void ldap_server_write_json_list(struct json_writer *w);
  * syntactically unambiguous TOML array-of-tables boundary -- these
  * headers can only ever start a line at column 0) and truncating
  * there before appending the freshly-rendered tail; everything above
- * that point (baseDN, listen address, watchconfig, TLS paths) is
- * preserved byte-for-byte. If neither marker is present yet (a fresh
- * base config with no managed section), the fresh content is simply
- * appended at EOF.
+ * that point (listen address, watchconfig, TLS paths) is preserved
+ * byte-for-byte. If neither marker is present yet (a fresh base config
+ * with no managed section), the fresh content is simply appended at
+ * EOF. baseDN is the one field of that prefix this module DOES also
+ * own, as of ADR-0148: rewrite_basedn() rewrites just that one quoted
+ * value (if present in the recognized "baseDN = "..."" form) to match
+ * hostauth_ldap_base_dn(), the real, canonical source, before the
+ * prefix is otherwise preserved untouched -- closing what used to be a
+ * fourth independently-typed copy of the same value.
  *
  * Password storage: passbcrypt (a real, documented glauth "config"
  * datastore field) via a real, vendored, audited bcrypt implementation

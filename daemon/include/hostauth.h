@@ -59,6 +59,7 @@ void hostauth_repoint(const char *new_config_path);
 int hostauth_admin_group_count(void);
 const char *hostauth_admin_group(int index);
 int hostauth_idle_timeout_seconds(void);
+const char *hostauth_ldap_base_dn(void); /* ADR-0148: real, canonical, empty ("") when unset */
 
 enum hostauth_config_error {
 	HOSTAUTH_CONFIG_OK = 0,
@@ -77,10 +78,14 @@ enum hostauth_config_error {
  * ADR-0144's own live-LDAP backend config: ldap_enabled, a try-in-order
  * ldap_servers list (ldap_server_count long, each a host or IP glauth
  * is reachable on), the shared ldap_port every one of them is queried
- * on, and ldap_base_dn (e.g. "dc=glauth,dc=com") -- kanxeod has no
- * other way to learn a running glauth server's own configured baseDN
- * (see ldap.h's own header comment on why that part of glauth.cfg is
- * operator-authored and never rendered by this daemon). Rejected
+ * on, and ldap_base_dn (e.g. "dc=glauth,dc=com") -- this value is the
+ * one real, canonical source of truth for the base DN as of ADR-0148
+ * (hostauth_ldap_base_dn()): ldap.c's own config-file renderer keeps a
+ * registered server's own glauth.cfg baseDN line in sync with it on
+ * every write, closing what used to be a fourth independently-typed
+ * copy of the same value. The rest of that file (listener/TLS/
+ * behaviors) stays genuinely operator-authored -- see ldap.h's own
+ * header comment. Rejected
  * (HOSTAUTH_CONFIG_ERR_INVALID_FIELD) if: ldap_server_count is outside
  * 0..HOSTAUTH_LDAP_MAX_SERVERS; ldap_port is outside 1..65535; or
  * ldap_enabled is true while ldap_server_count == 0 or ldap_base_dn is

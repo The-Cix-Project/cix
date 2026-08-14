@@ -2,6 +2,23 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 131 (done): glauth's own baseDN becomes daemon-managed (ADR-0148)
+
+Direct follow-up to Part 130: the user asked whether the LDAP base DN should be "genuinely dynamic" rather than fixed by hand. Investigated directly: it lived in four independently-authored places (`hostauth-config.ldap_base_dn`, each registered server's own `glauth.cfg [backend] baseDN`, and each *client* container's own `nslcd.conf`/`ldap-authkeys.conf`), agreeing only because the same string had been typed into all four this session.
+
+#### Added
+- `hostauth_ldap_base_dn()` (`daemon/src/hostauth.c`): the real getter for what's now genuinely the one canonical source of truth.
+- `rewrite_basedn()` (`daemon/src/ldap.c`): finds a `baseDN = "..."` line (glauth's own real, confirmed double-quoted TOML convention) within a registered server's preserved config prefix and rewrites just that value to match `hostauth_ldap_base_dn()`, on every write `ldap_write_config_file()` already does (registration, every user/group mutation). No match (single-quoted, or absent) is a legitimate no-op -- never invents structure. An empty (never-configured) `ldap_base_dn` skips the rewrite rather than blanking out a working value.
+
+#### Fixed
+- Two pre-existing doc inaccuracies, found while auditing this exact area, both predating this change: `docs/api/openapi.yaml`/`docs/api/README.md` both claimed LDAP server registration "never touches the container's filesystem" -- false since task #726 (registration has always immediately pushed the current user/group set). Only "never sends a signal" was ever accurate.
+
+#### Scope, stated explicitly, not left an unexplained gap
+- Client-side files (`nslcd.conf`, `ldap-authkeys.conf`, anything else staged into an arbitrary container's own `files[]`) stay deliberately, permanently manual -- Kanxeo has no model of those containers to safely template into, and inventing one would be exactly the kind of unintuitive magic this change was asked to avoid, not fix.
+
+#### Verified
+- Full clean rebuild, zero warnings. New `test/test_ldap.c` coverage: a registered server's own real `baseDN = "dc=old,dc=example"` line survives untouched while `ldap_base_dn` is still unset, then gets correctly rewritten (new value present, old gone, every other prefix line -- `datastore`, `IgnoreCapabilities` -- intact) once `ldap_base_dn` is set and any LDAP mutation triggers the next sync. 3 consecutive clean runs, full daemon-linked regression sweep.
+
 ### Part 130 (done): renaming an LDAP user or group in place (ADR-0147)
 
 User-requested, following the live-infrastructure re-provisioning: `PUT /v1/ldap/users|groups/{name}` previously discarded the request body's own `name` field outright (`(void)body_name; /* the URL path's name is authoritative for PUT, not the body's own */`) -- the only way to rename a record was delete-then-recreate.

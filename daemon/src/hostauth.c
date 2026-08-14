@@ -148,6 +148,20 @@ int hostauth_idle_timeout_seconds(void)
 	return g_config.idle_timeout_seconds;
 }
 
+/* ADR-0148: the one real, canonical source of truth for the LDAP base
+ * DN -- ldap.c's own config-file renderer uses this to keep a
+ * registered glauth server's own baseDN in sync, instead of it being
+ * a fourth independently-typed copy (hostauth-config, the server's
+ * own glauth.cfg, and every client container's own nslcd.conf/
+ * ldap-authkeys.conf were the other three -- only the first of those
+ * four is actually fixed by this change; see that ADR for why the
+ * other two stay deliberately manual). Empty ("") when unset, same as
+ * every other string field here -- never NULL. */
+const char *hostauth_ldap_base_dn(void)
+{
+	return g_config.ldap_base_dn;
+}
+
 enum hostauth_config_error hostauth_set_config(const char *const *admin_groups, int admin_group_count,
                                                 int idle_timeout_seconds, int ldap_enabled,
                                                 const char *const *ldap_servers, int ldap_server_count,

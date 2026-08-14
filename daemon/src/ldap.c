@@ -784,6 +784,79 @@ static size_t render_users_groups_toml(char *buf, size_t bufsize)
  * base config sets `watchconfig = true`) notices the write and
  * reloads on its own, confirmed directly against glauth's real source.
  */
+/*
+ * ADR-0148: finds a "baseDN = "..."" line anywhere within [prefix,
+ * prefix+prefix_len) -- the operator-authored portion of a registered
+ * glauth server's own config, never the managed [[users]]/[[groups]]
+ * tail this file's own render already owns -- and rewrites just its
+ * quoted value to new_basedn, leaving every other byte (the line's
+ * own indentation, everything else in [backend]/[ldap]/[behaviors])
+ * untouched. Matches glauth's own real, confirmed convention
+ * (double-quoted TOML basic strings, e.g. `baseDN = "dc=glauth,dc=com"`
+ * -- see sample-simple.cfg) -- a config spelling it with single quotes,
+ * or omitting it entirely, is a legitimate no-op (*out_buf untouched,
+ * returns 0): this function only ever edits a value already present in
+ * the exact form it recognizes, it never invents structure the
+ * operator's own file doesn't already have. On a real match, *out_buf
+ * is a fresh malloc'd copy of the full rewritten prefix (caller frees)
+ * and *out_len its length; returns 1. Returns -1 only on malloc
+ * failure. */
+static int rewrite_basedn(const char *prefix, size_t prefix_len, const char *new_basedn,
+                           char **out_buf, size_t *out_len)
+{
+	const char *end = prefix + prefix_len;
+	const char *line_start = prefix;
+	const char *key = NULL;
+	const char *eq, *quote_open, *quote_close;
+	size_t head_len, new_len, tail_len;
+	char *buf;
+
+	for (;;) {
+		const char *t = line_start;
+		const char *nl;
+
+		while (t < end && (*t == ' ' || *t == '\t'))
+			t++;
+		if ((size_t)(end - t) >= 6 && strncmp(t, "baseDN", 6) == 0) {
+			key = t;
+			break;
+		}
+		nl = memchr(line_start, '\n', (size_t)(end - line_start));
+		if (nl == NULL)
+			return 0; /* no baseDN line at all -- legitimate no-op */
+		line_start = nl + 1;
+	}
+
+	eq = key + 6;
+	while (eq < end && (*eq == ' ' || *eq == '\t'))
+		eq++;
+	if (eq >= end || *eq != '=')
+		return 0;
+	eq++;
+	while (eq < end && (*eq == ' ' || *eq == '\t'))
+		eq++;
+	if (eq >= end || *eq != '"')
+		return 0; /* not a double-quoted value -- see this function's own comment */
+	quote_open = eq;
+	quote_close = memchr(quote_open + 1, '"', (size_t)(end - (quote_open + 1)));
+	if (quote_close == NULL)
+		return 0;
+
+	head_len = (size_t)(quote_open + 1 - prefix);
+	new_len = strlen(new_basedn);
+	tail_len = (size_t)(end - quote_close);
+
+	buf = malloc(head_len + new_len + tail_len);
+	if (buf == NULL)
+		return -1;
+	memcpy(buf, prefix, head_len);
+	memcpy(buf + head_len, new_basedn, new_len);
+	memcpy(buf + head_len + new_len, quote_close, tail_len);
+	*out_buf = buf;
+	*out_len = head_len + new_len + tail_len;
+	return 1;
+}
+
 static int ldap_write_config_file(const char *full_path)
 {
 	char *current = NULL;
@@ -827,6 +900,32 @@ static int ldap_write_config_file(const char *full_path)
 			prefix_len = (size_t)(users_marker - current);
 		else if (groups_marker != NULL)
 			prefix_len = (size_t)(groups_marker - current);
+	}
+
+	/* ADR-0148: the prefix's own baseDN, if it has one in the form
+	 * recognized, is kept in sync with hostauth-config's real,
+	 * canonical ldap_base_dn -- an empty ldap_base_dn (never yet
+	 * configured) intentionally skips this rather than blanking out
+	 * whatever the operator already has working. */
+	{
+		const char *canonical_basedn = hostauth_ldap_base_dn();
+		char *rewritten_prefix = NULL;
+		size_t rewritten_len = 0;
+
+		if (prefix_len > 0 && canonical_basedn[0] != '\0') {
+			int rrc = rewrite_basedn(current, prefix_len, canonical_basedn, &rewritten_prefix,
+			                          &rewritten_len);
+
+			if (rrc < 0) {
+				free(current);
+				return -1;
+			}
+			if (rrc == 1) {
+				free(current);
+				current = rewritten_prefix;
+				prefix_len = rewritten_len; /* current is now exactly the (rewritten) prefix */
+			}
+		}
 	}
 
 	final_len = prefix_len + rendered_len;
