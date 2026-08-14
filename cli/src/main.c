@@ -208,6 +208,14 @@ static void print_usage(FILE *out)
 	        "               (ADR-0068) is a second, dedicated address on the management\n"
 	        "               network's own bridge -- kanxeod binds there instead of that\n"
 	        "               network's own address; --clear-bind-ip reverts to it\n"
+	        "  hostauth-config show  -- current admin_groups/idle_timeout_seconds/live-LDAP\n"
+	        "               backend settings (ADR-0144)\n"
+	        "  hostauth-config set [--admin-group=NAME ...] [--idle-timeout-seconds=N]\n"
+	        "               [--ldap-enable | --ldap-disable] [--ldap-server=HOST ...]\n"
+	        "               [--ldap-port=N] [--ldap-base-dn=NAME]\n"
+	        "               -- read-modify-write; only the flags given are changed, everything\n"
+	        "               else keeps its current value. Write-gating activates the instant\n"
+	        "               a real user is a member of one of admin_groups\n"
 	        "  rolling-config show  -- current daemon-wide rolling-restart jitter window default\n"
 	        "               (Part 5, ADR-0124)\n"
 	        "  rolling-config set --jitter-window-seconds=N  -- 0-3600, 0 = no jitter (restart\n"
@@ -4030,6 +4038,215 @@ static int cmd_tls_throttle(const struct kx_client *c, int json_mode, int argc, 
 		return cmd_tls_throttle_status(c, json_mode);
 
 	fprintf(stderr, "kanxeoctl: unknown tls-throttle subcommand '%s'\n", sub);
+	return 2;
+}
+
+/* ADR-0144: PUT /system/hostauth-config is full-replacement (unlike
+ * tls-throttle's own partial-merge PUT above) -- admin_groups and
+ * idle_timeout_seconds are always required in the body. "set" here
+ * does a real client-side read-modify-write: GET the current config
+ * first, apply only the flags actually given, then PUT the complete
+ * result -- so `hostauth-config set --ldap-enable` alone doesn't
+ * silently wipe an already-configured admin_groups list back to
+ * empty. */
+static void fmt_hostauth_config(const struct json_value *v)
+{
+	const struct json_value *jgroups = json_object_get(v, "admin_groups");
+	const struct json_value *jldap_enabled = json_object_get(v, "ldap_enabled");
+	const struct json_value *jservers = json_object_get(v, "ldap_servers");
+	const char *base_dn = json_str_field(v, "ldap_base_dn");
+	size_t i;
+
+	printf("admin_groups=");
+	if (jgroups != NULL && jgroups->type == JSON_ARRAY && jgroups->u.array.count > 0) {
+		for (i = 0; i < jgroups->u.array.count; i++)
+			printf("%s%s", i > 0 ? "," : "", json_as_string(jgroups->u.array.items[i]));
+	} else {
+		printf("-");
+	}
+	printf(" idle_timeout_seconds=%ld ldap_enabled=%s ldap_servers=",
+	       (long)json_as_number(json_object_get(v, "idle_timeout_seconds")),
+	       (jldap_enabled != NULL && jldap_enabled->type == JSON_BOOL && jldap_enabled->u.boolean)
+	           ? "true"
+	           : "false");
+	if (jservers != NULL && jservers->type == JSON_ARRAY && jservers->u.array.count > 0) {
+		for (i = 0; i < jservers->u.array.count; i++)
+			printf("%s%s", i > 0 ? "," : "", json_as_string(jservers->u.array.items[i]));
+	} else {
+		printf("-");
+	}
+	printf(" ldap_port=%ld ldap_base_dn=%s\n",
+	       (long)json_as_number(json_object_get(v, "ldap_port")),
+	       base_dn != NULL && base_dn[0] != '\0' ? base_dn : "-");
+}
+
+static int cmd_hostauth_config_show(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/hostauth-config", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_hostauth_config);
+}
+
+static int cmd_hostauth_config_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *admin_groups[8];
+	int admin_group_count = -1; /* -1: not given, keep current */
+	const char *idle_timeout = NULL;
+	int want_ldap_enabled = -1; /* -1: untouched, 0: disable, 1: enable */
+	const char *ldap_servers[3];
+	int ldap_server_count = -1;
+	const char *ldap_port = NULL;
+	const char *ldap_base_dn = NULL;
+	int i;
+	struct json_value *current;
+	struct kx_response r;
+	struct json_writer w;
+
+	admin_group_count = 0;
+	ldap_server_count = 0;
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--admin-group=", 14) == 0) {
+			if (admin_group_count >= 8) {
+				fprintf(stderr, "kanxeoctl: too many --admin-group= flags (max 8)\n");
+				return 2;
+			}
+			admin_groups[admin_group_count++] = argv[i] + 14;
+		} else if (strncmp(argv[i], "--idle-timeout-seconds=", 23) == 0) {
+			idle_timeout = argv[i] + 23;
+		} else if (strcmp(argv[i], "--ldap-enable") == 0) {
+			want_ldap_enabled = 1;
+		} else if (strcmp(argv[i], "--ldap-disable") == 0) {
+			want_ldap_enabled = 0;
+		} else if (strncmp(argv[i], "--ldap-server=", 14) == 0) {
+			if (ldap_server_count >= 3) {
+				fprintf(stderr, "kanxeoctl: too many --ldap-server= flags (max 3)\n");
+				return 2;
+			}
+			ldap_servers[ldap_server_count++] = argv[i] + 14;
+		} else if (strncmp(argv[i], "--ldap-port=", 12) == 0) {
+			ldap_port = argv[i] + 12;
+		} else if (strncmp(argv[i], "--ldap-base-dn=", 15) == 0) {
+			ldap_base_dn = argv[i] + 15;
+		} else {
+			fprintf(stderr, "kanxeoctl: unknown hostauth-config set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (admin_group_count == 0)
+		admin_group_count = -1;
+	if (ldap_server_count == 0)
+		ldap_server_count = -1;
+	if (admin_group_count == -1 && idle_timeout == NULL && want_ldap_enabled == -1 &&
+	    ldap_server_count == -1 && ldap_port == NULL && ldap_base_dn == NULL) {
+		fprintf(stderr,
+		        "usage: kanxeoctl hostauth-config set [--admin-group=NAME ...] "
+		        "[--idle-timeout-seconds=N] [--ldap-enable | --ldap-disable] "
+		        "[--ldap-server=HOST ...] [--ldap-port=N] [--ldap-base-dn=NAME]\n");
+		return 2;
+	}
+
+	/* Read-modify-write: fetch the current config so any flag NOT
+	 * given here is preserved exactly, not reset by the server's own
+	 * full-replacement PUT semantics. */
+	if (kx_client_request(c, "GET", "/v1/system/hostauth-config", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	current = r.json;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "admin_groups");
+	jw_arr_open(&w);
+	if (admin_group_count >= 0) {
+		for (i = 0; i < admin_group_count; i++)
+			jw_str(&w, admin_groups[i]);
+	} else {
+		const struct json_value *jcur = json_object_get(current, "admin_groups");
+
+		if (jcur != NULL && jcur->type == JSON_ARRAY) {
+			size_t j;
+
+			for (j = 0; j < jcur->u.array.count; j++)
+				jw_str(&w, json_as_string(jcur->u.array.items[j]));
+		}
+	}
+	jw_arr_close(&w);
+	jw_key(&w, "idle_timeout_seconds");
+	jw_int(&w, idle_timeout != NULL ? atol(idle_timeout)
+	                                 : (long)json_as_number(json_object_get(
+	                                       current, "idle_timeout_seconds")));
+	{
+		const struct json_value *jcur_enabled = json_object_get(current, "ldap_enabled");
+		int cur_enabled = jcur_enabled != NULL && jcur_enabled->type == JSON_BOOL &&
+		                   jcur_enabled->u.boolean;
+
+		jw_key(&w, "ldap_enabled");
+		jw_bool(&w, want_ldap_enabled != -1 ? want_ldap_enabled : cur_enabled);
+	}
+	jw_key(&w, "ldap_servers");
+	jw_arr_open(&w);
+	if (ldap_server_count >= 0) {
+		for (i = 0; i < ldap_server_count; i++)
+			jw_str(&w, ldap_servers[i]);
+	} else {
+		const struct json_value *jcur = json_object_get(current, "ldap_servers");
+
+		if (jcur != NULL && jcur->type == JSON_ARRAY) {
+			size_t j;
+
+			for (j = 0; j < jcur->u.array.count; j++)
+				jw_str(&w, json_as_string(jcur->u.array.items[j]));
+		}
+	}
+	jw_arr_close(&w);
+	jw_key(&w, "ldap_port");
+	jw_int(&w, ldap_port != NULL
+	               ? atol(ldap_port)
+	               : (long)json_as_number(json_object_get(current, "ldap_port")));
+	{
+		const char *cur_base_dn = json_str_field(current, "ldap_base_dn");
+
+		jw_key(&w, "ldap_base_dn");
+		jw_str(&w, ldap_base_dn != NULL ? ldap_base_dn : (cur_base_dn != NULL ? cur_base_dn : ""));
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	kx_response_free(&r);
+
+	if (kx_client_request(c, "PUT", "/v1/system/hostauth-config", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_hostauth_config);
+}
+
+static int cmd_hostauth_config(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr,
+		        "usage: kanxeoctl hostauth-config show\n"
+		        "       kanxeoctl hostauth-config set [--admin-group=NAME ...] "
+		        "[--idle-timeout-seconds=N] [--ldap-enable | --ldap-disable] "
+		        "[--ldap-server=HOST ...] [--ldap-port=N] [--ldap-base-dn=NAME]\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "show") == 0)
+		return cmd_hostauth_config_show(c, json_mode);
+	if (strcmp(sub, "set") == 0)
+		return cmd_hostauth_config_set(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown hostauth-config subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -8142,6 +8359,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_rolling_config(client, json_mode, argc, argv);
 	if (strcmp(cmd, "tls-throttle") == 0)
 		return cmd_tls_throttle(client, json_mode, argc, argv);
+	if (strcmp(cmd, "hostauth-config") == 0)
+		return cmd_hostauth_config(client, json_mode, argc, argv);
 	if (strcmp(cmd, "iso") == 0)
 		return cmd_iso(client, json_mode, argc, argv);
 	if (strcmp(cmd, "routes") == 0)
@@ -8300,7 +8519,7 @@ static void shell_prompt_init(const struct kx_client *client)
 static const char *const SHELL_COMMANDS[] = {
 	"backup", "backup-config", "boot",      "console",       "container",     "daemon-config", "device",   "devicemap", "diskrole",
 	"disks",  "dns",       "exit",          "files",    "health",    "help",
-	"host-stats", "image", "inspect",       "iso",      "ldap",      "login",     "logout",    "logs",      "migrate-storage", "migrate-storage-status", "network",
+	"host-stats", "hostauth-config", "image", "inspect",       "iso",      "ldap",      "login",     "logout",    "logs",      "migrate-storage", "migrate-storage-status", "network",
 	"ntp",
 	"pause",  "ping",      "pkg",           "pki",      "process",   "ps",        "quit",      "reboot",
 	"resolv",

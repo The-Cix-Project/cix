@@ -2,6 +2,16 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 125 (done): `kanxeoctl hostauth-config` -- the last CLI gap before activating write-gating for real (ADR-0144, part 14 of N)
+
+`GET`/`PUT /v1/system/hostauth-config` (ADR-0144) had no CLI surface at all -- the only way to manage host-auth's own admin-group/LDAP-backend settings was raw `curl`. Closed while preparing to actually turn write-gating on for real on the real box (task #843): `kanxeoctl hostauth-config show`/`set`.
+
+#### Added
+- `hostauth-config set` does a real client-side read-modify-write: the underlying `PUT` is full-replacement (`admin_groups`/`idle_timeout_seconds` always required in the body), so the command fetches the current config first and only overrides the flags actually given -- `hostauth-config set --ldap-enable` alone doesn't silently wipe an already-configured `admin_groups` list back to empty.
+
+#### Verified
+- Local round-trip: `set --admin-group=... --idle-timeout-seconds=...` followed by a second `set --ldap-enable --ldap-server=... --ldap-base-dn=...` correctly preserved the first call's fields, confirming the read-modify-write logic. Clean `-Wall -Werror` rebuild. No dedicated CLI-level test added, matching this project's own established precedent (`tls-throttle`/`daemon-config`, comparably thin config wrappers, have none either) -- the underlying API is already fully covered by `test_hostauth.c`.
+
 ### Part 124 (done): retire the file-rendered SSH-target sync mechanism (ADR-0145)
 
 ADR-0144's own Decision section already stated the intent: real live-LDAP SSH login "replaces the file-rendering SSH-target mechanism entirely." With Part 122 verified end to end on the real box, the user asked directly to complete that replacement now: "let's remove the old mechanism." Removed outright, not deprecated in place -- see [ADR-0145](docs/adr/0145-retire-file-rendered-ssh-target-sync.md) for the full reasoning.

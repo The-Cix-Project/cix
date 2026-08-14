@@ -35,6 +35,8 @@ kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `site set [--instance-name=NAME] [--site-name=NAME] [--domain-suffix=NAME]` | Set them |
 | `daemon-config show` | `kanxeod`'s own listen port, HTTP/HTTPS exposure, and which network is currently its management one |
 | `daemon-config set [--port=N] [--https-port=N] [--enable-http] [--disable-http] [--enable-https] [--disable-https] [--management-network=NAME] [--bind-ip=A.B.C.D \| --clear-bind-ip]` | Live, no-restart change — only the fields given are touched. `bind_ip` (ADR-0068) is a dedicated second address on the management network's own bridge; `--clear-bind-ip` reverts to that network's own address |
+| `hostauth-config show` | Current `admin_groups`/`idle_timeout_seconds`/live-LDAP backend settings (ADR-0144) |
+| `hostauth-config set [--admin-group=NAME ...] [--idle-timeout-seconds=N] [--ldap-enable \| --ldap-disable] [--ldap-server=HOST ...] [--ldap-port=N] [--ldap-base-dn=NAME]` | Read-modify-write (the underlying `PUT` is full-replacement, but this command fetches the current config first so only the flags given actually change) -- write-gating activates the instant a real user is a member of one of `admin_groups` |
 | `rolling-config show` | The configured rolling-restart jitter window (`jitter_window_seconds`) used by `run --follow-rolling` (ADR-0124) |
 | `rolling-config set --jitter-window-seconds=N` | Set the jitter window — `0` disables jitter (restart happens immediately on every rolling reconcile) |
 | `tls-throttle show` | Per-source-IP throttling config for repeated failed HTTPS handshakes (ADR-0134) |

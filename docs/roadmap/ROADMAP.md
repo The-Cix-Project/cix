@@ -2445,6 +2445,12 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 125 (done): `kanxeoctl hostauth-config` -- the last CLI gap before activating write-gating for real (ADR-0144, part 14 of N)
+
+`GET`/`PUT /v1/system/hostauth-config` had no CLI surface -- raw `curl` was the only way to manage admin-group/LDAP-backend settings. Closed while preparing to actually activate write-gating on the real box (task #843): `hostauth-config show`/`set`, the latter a real client-side read-modify-write (the underlying `PUT` is full-replacement) so a single-flag change never silently wipes the rest of the config.
+
+Verified via a local round-trip confirming the read-modify-write logic preserves untouched fields across two separate `set` calls. No dedicated CLI-level test added, matching this project's own precedent for comparably thin config wrappers (`tls-throttle`/`daemon-config`) -- the underlying API is already fully covered.
+
 ## Part 124 (done): retire the file-rendered SSH-target sync mechanism (ADR-0145)
 
 ADR-0144's own Decision section already stated the intent: real live-LDAP SSH login "replaces the file-rendering SSH-target mechanism entirely." With Part 122 verified end to end, the user asked directly to complete that replacement: "let's remove the old mechanism." Removed outright -- `daemon/src/ldap.c`'s whole SSH-backed sync block and every call site, the `POST`/`GET`/`DELETE /v1/ldap/ssh-targets` API surface, the `kanxeoctl ldap ssh-target ...` CLI commands, and every current-state doc reference (rewritten, not just deleted, where an operator guide needed the real replacement instructions instead). `ssh_public_key` itself is untouched -- still rendered as glauth's own `sshkeys` attribute, its one real consumer now.
