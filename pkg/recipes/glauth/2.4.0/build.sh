@@ -60,10 +60,20 @@
 # actually used for this recipe's own real end-to-end build/install
 # verification through the real kanxeod pipeline (not just locally).
 #
+# Re-assembled and re-served during the LDAP re-provisioning session that
+# followed the full-box reinstall (ADR-0146's own incident) -- the prior
+# pkg_source URL above (192.168.15.31:8904) pointed at a long-gone earlier
+# session's own scratch LAN server. Same offline-vendored assembly process
+# documented above, same real end-to-end verification (glauth 2.4.0 tag,
+# embed_sqlite shim, `go mod vendor`, built and run for real against the
+# real Kanxeo pkg pipeline) -- just re-hosted, since neither URL was ever
+# meant to be a permanent artifact home (this project's own dev sandbox has
+# no such thing yet). Whoever re-serves this next should do the same:
+# rebuild per the steps above, re-host, update pkg_source/pkg_sha256 here.
 pkg_name="glauth"
 pkg_version="2.4.0"
-pkg_source="http://192.168.15.31:8904/glauth-build/glauth-2.4.0.tarball"
-pkg_sha256="86e95cb60a8782b705f3833007c9bb3743c126fdb828d290aaf8779d0898bdf6"
+pkg_source="http://192.168.15.31:8920/glauth-2.4.0.tarball"
+pkg_sha256="3f654908f498ede1ec99eb951b3120c9f907df1fe380db0b5311b6ba46394170"
 pkg_depends=""
 
 # CGO_ENABLED=1 is load-bearing: mattn/go-sqlite3 compiles SQLite's own C
