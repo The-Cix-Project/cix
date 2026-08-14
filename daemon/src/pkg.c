@@ -1372,6 +1372,7 @@ void pkg_repoint(const char *pkg_dir, const char *installed_state_path, const ch
 	snprintf(g_pkgbuild_rootfs, sizeof(g_pkgbuild_rootfs), "%s/pkgbuild/rootfs", images_dir);
 	snprintf(g_artifacts_dir, sizeof(g_artifacts_dir), "%s", artifacts_dir);
 	image_recipe_repoint(pkg_dir);
+	container_recipe_repoint(pkg_dir);
 }
 
 int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *containers_dir,
@@ -1407,6 +1408,7 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
 	g_dep_queue_pos = 0;
 	g_dep_queue_is_upgrade = 0;
 	image_recipe_init(pkg_dir);
+	container_recipe_init(pkg_dir);
 	return load_state();
 }
 
@@ -3922,12 +3924,81 @@ static void sync_walk_image_recipes(const char *images_root, int *added, int *sk
 	closedir(names_d);
 }
 
+/*
+ * Same shape as sync_walk_image_recipes() above -- highest version per
+ * name directory wins, container_recipe_add() always overwrites (no
+ * version-keying at the daemon layer, ADR-0151, mirroring ADR-0123's
+ * image-recipe design) -- but the leaf filename is container.json,
+ * not build.sh, since a container recipe's content is a JSON body,
+ * never a shell script.
+ */
+static void sync_walk_container_recipes(const char *containers_root, int *added, int *skipped,
+                                         int *failed)
+{
+	DIR *names_d;
+	struct dirent *name_de;
+
+	names_d = opendir(containers_root);
+	if (names_d == NULL)
+		return;
+	while ((name_de = readdir(names_d)) != NULL) {
+		char name_dir[PATH_MAX];
+		char best_version[PKG_VERSION_MAX];
+		char json_path[PATH_MAX];
+		char *content;
+		size_t content_len;
+		DIR *vd;
+		struct dirent *vde;
+		int have_best = 0;
+		enum pkg_error rc;
+
+		if (name_de->d_name[0] == '.')
+			continue;
+		snprintf(name_dir, sizeof(name_dir), "%s/%s", containers_root, name_de->d_name);
+		vd = opendir(name_dir);
+		if (vd == NULL)
+			continue;
+		while ((vde = readdir(vd)) != NULL) {
+			char candidate[PATH_MAX];
+			struct stat st;
+
+			if (vde->d_name[0] == '.')
+				continue;
+			snprintf(candidate, sizeof(candidate), "%s/%s/container.json", name_dir,
+			         vde->d_name);
+			if (stat(candidate, &st) != 0 || !S_ISREG(st.st_mode))
+				continue;
+			if (!have_best || pkg_version_compare(vde->d_name, best_version) > 0) {
+				snprintf(best_version, sizeof(best_version), "%s", vde->d_name);
+				have_best = 1;
+			}
+		}
+		closedir(vd);
+		if (!have_best)
+			continue;
+
+		snprintf(json_path, sizeof(json_path), "%s/%s/container.json", name_dir, best_version);
+		if (persist_read_file(json_path, &content, &content_len) != 0 || content == NULL)
+			continue;
+		rc = container_recipe_add(name_de->d_name, content);
+		free(content);
+		if (rc == PKG_OK)
+			(*added)++;
+		else if (rc == PKG_ERR_DUPLICATE)
+			(*skipped)++;
+		else
+			(*failed)++;
+	}
+	closedir(names_d);
+}
+
 void pkg_sync_completed(int exit_status)
 {
 	char tarball_path[PATH_MAX];
 	char extract_dir[PATH_MAX];
 	char recipes_root[PATH_MAX];
 	char images_root[PATH_MAX];
+	char containers_root[PATH_MAX];
 	DIR *names_d;
 	struct dirent *name_de;
 	int added = 0, skipped = 0, failed = 0;
@@ -4010,6 +4081,9 @@ void pkg_sync_completed(int exit_status)
 
 	snprintf(images_root, sizeof(images_root), "%s/recipes/image", extract_dir);
 	sync_walk_image_recipes(images_root, &added, &skipped, &failed);
+
+	snprintf(containers_root, sizeof(containers_root), "%s/recipes/container", extract_dir);
+	sync_walk_container_recipes(containers_root, &added, &skipped, &failed);
 
 	{
 		char *rm_argv[] = { (char *)PKG_RM_BIN, "-rf", extract_dir, NULL };
@@ -4712,6 +4786,256 @@ void image_recipe_write_json_list(struct json_writer *w)
 		closedir(d);
 	}
 	jw_arr_close(w);
+}
+
+/*
+ * Container recipes (ADR-0151): a git-syncable, reproducible template
+ * for a real POST /v1/containers body -- cmd/files/network/restart-
+ * policy/sysctls, everything an image recipe deliberately does NOT
+ * cover (ADR-0123's own image_packages= is package-manifest-only by
+ * design; a container recipe is the missing other half). Unlike an
+ * image recipe, content is stored and applied AS-IS: it must already
+ * be the exact JSON body create_container_from_body() (main.c) would
+ * accept, including its own "name" field, which must match the name
+ * this recipe is published under (same "uploaded name must match the
+ * content's own declared name" contract pkg_recipe_add() already has
+ * for pkg_name=, and image recipes deliberately don't need since they
+ * carry no internal name field of their own). A recipe MAY embed
+ * {{SECRET:KEY}} tokens inside any string value (typically staged
+ * file content) -- container_recipe_apply_start() substitutes them
+ * from the apply request's own secrets map before ever calling
+ * create_container_from_body(), so a real credential never has to be
+ * committed to git (the same class of gap kanxeo.recipe's own
+ * REPLACE_WITH_REAL_TOKEN placeholder already established a
+ * convention for, generalized here into a real substitution
+ * mechanism instead of a manual find-and-replace).
+ */
+static char g_container_recipes_dir[PATH_MAX];
+
+void container_recipe_init(const char *pkg_dir)
+{
+	snprintf(g_container_recipes_dir, sizeof(g_container_recipes_dir), "%s/container-recipes",
+	         pkg_dir);
+}
+
+/* ADR-0141 Phase 4 style path-only repoint, mirroring image_recipe_
+ * repoint()'s own doc comment exactly -- see pkg_repoint(). */
+void container_recipe_repoint(const char *pkg_dir)
+{
+	snprintf(g_container_recipes_dir, sizeof(g_container_recipes_dir), "%s/container-recipes",
+	         pkg_dir);
+}
+
+static void container_recipe_path(const char *name, char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/%s.recipe", g_container_recipes_dir, name);
+}
+
+enum pkg_error container_recipe_add(const char *name, const char *content)
+{
+	struct json_value *root;
+	const struct json_value *jname;
+	const char *body_name;
+	char staging_path[PATH_MAX], path[PATH_MAX];
+	int fd;
+	size_t len;
+	ssize_t written;
+
+	if (!pkg_name_is_valid(name))
+		return PKG_ERR_INVALID_NAME;
+
+	/* Must parse as real JSON (placeholder tokens are plain text INSIDE
+	 * an already-open string value, e.g. "content":"...{{SECRET:X}}...",
+	 * so a well-formed recipe with placeholders is still well-formed
+	 * JSON -- this check catches a genuinely malformed recipe, not
+	 * anything placeholder-related), and its own "name" field must
+	 * match name, the same contract pkg_recipe_add() already has for
+	 * pkg_name= -- a mismatch is rejected outright rather than silently
+	 * publishing a recipe that would create a differently-named
+	 * container than its own catalog entry implies. */
+	root = json_parse(content, strlen(content));
+	if (root == NULL)
+		return PKG_ERR_INVALID_RECIPE;
+	jname = json_object_get(root, "name");
+	body_name = json_as_string(jname);
+	if (body_name == NULL || strcmp(body_name, name) != 0) {
+		json_free(root);
+		return PKG_ERR_INVALID_RECIPE;
+	}
+	json_free(root);
+
+	if (persist_mkdir_p(g_container_recipes_dir) != 0)
+		return PKG_ERR_PERSIST_FAILED;
+
+	/* Staged then renamed into place -- same crash-safety convention
+	 * image_recipe_add()/pkg_recipe_add() already established. */
+	snprintf(staging_path, sizeof(staging_path), "%s/.%s.recipe.new", g_container_recipes_dir,
+	         name);
+	fd = open(staging_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd < 0)
+		return PKG_ERR_PERSIST_FAILED;
+	len = strlen(content);
+	written = write(fd, content, len);
+	close(fd);
+	if (written < 0 || (size_t)written != len) {
+		unlink(staging_path);
+		return PKG_ERR_PERSIST_FAILED;
+	}
+	container_recipe_path(name, path, sizeof(path));
+	if (rename(staging_path, path) != 0) {
+		unlink(staging_path);
+		return PKG_ERR_PERSIST_FAILED;
+	}
+	return PKG_OK;
+}
+
+enum pkg_error container_recipe_get(const char *name, char **out_content, size_t *out_len)
+{
+	char path[PATH_MAX];
+
+	if (!pkg_name_is_valid(name))
+		return PKG_ERR_INVALID_NAME;
+	container_recipe_path(name, path, sizeof(path));
+	if (persist_read_file(path, out_content, out_len) != 0 || *out_content == NULL)
+		return PKG_ERR_NOT_FOUND;
+	return PKG_OK;
+}
+
+enum pkg_error container_recipe_rm(const char *name)
+{
+	char path[PATH_MAX];
+
+	if (!pkg_name_is_valid(name))
+		return PKG_ERR_INVALID_NAME;
+	container_recipe_path(name, path, sizeof(path));
+	if (unlink(path) != 0)
+		return (errno == ENOENT) ? PKG_ERR_NOT_FOUND : PKG_ERR_PERSIST_FAILED;
+	return PKG_OK;
+}
+
+void container_recipe_write_json_list(struct json_writer *w)
+{
+	DIR *d = opendir(g_container_recipes_dir);
+	struct dirent *de;
+
+	jw_arr_open(w);
+	if (d != NULL) {
+		while ((de = readdir(d)) != NULL) {
+			size_t nlen = strlen(de->d_name);
+			char namebuf[PKG_NAME_MAX];
+			size_t copy_len;
+
+			if (de->d_name[0] == '.' || nlen <= 7 ||
+			    strcmp(de->d_name + nlen - 7, ".recipe") != 0)
+				continue;
+			copy_len = nlen - 7;
+			if (copy_len >= sizeof(namebuf))
+				copy_len = sizeof(namebuf) - 1;
+			memcpy(namebuf, de->d_name, copy_len);
+			namebuf[copy_len] = '\0';
+			jw_obj_open(w);
+			jw_key(w, "name");
+			jw_str(w, namebuf);
+			jw_obj_close(w);
+		}
+		closedir(d);
+	}
+	jw_arr_close(w);
+}
+
+/*
+ * Substitutes every {{SECRET:KEY}} token in content with secrets[KEY]
+ * (from the apply request's own "secrets" object), JSON-escaping each
+ * substituted value via jw_raw_escaped_content() since it's spliced
+ * into the middle of an already-open JSON string literal -- content
+ * itself is copied through verbatim (jw_raw_text()) everywhere else.
+ * An unmatched token (no such key in secrets) is left completely
+ * untouched, on purpose: a missing secret should surface as whatever
+ * error create_container_from_body() gives for the resulting
+ * malformed value (e.g. a literal "{{SECRET:X}}" landing in a config
+ * file), not silently swallowed here, and a recipe author previewing
+ * raw content via container_recipe_get() should always see the real,
+ * unsubstituted token, never a guess. Returns a newly allocated
+ * string the caller frees, or NULL on allocation failure.
+ */
+static char *container_recipe_substitute_secrets(const char *content,
+                                                   const struct json_value *secrets)
+{
+	struct json_writer w;
+	const char *p = content;
+	char *out;
+
+	jw_init(&w);
+	while (*p != '\0') {
+		const char *tok = strstr(p, "{{SECRET:");
+		const char *key_end;
+		char key[128];
+		size_t key_len;
+		const struct json_value *jval;
+		const char *val;
+
+		if (tok == NULL) {
+			jw_raw_text(&w, p, strlen(p));
+			break;
+		}
+		jw_raw_text(&w, p, (size_t)(tok - p));
+
+		key_end = strstr(tok + 9, "}}");
+		if (key_end == NULL) {
+			/* No closing "}}" anywhere -- not a real token, copy the
+			 * rest verbatim rather than loop forever. */
+			jw_raw_text(&w, tok, strlen(tok));
+			break;
+		}
+		key_len = (size_t)(key_end - (tok + 9));
+		if (key_len == 0 || key_len >= sizeof(key)) {
+			jw_raw_text(&w, tok, (size_t)(key_end + 2 - tok));
+			p = key_end + 2;
+			continue;
+		}
+		memcpy(key, tok + 9, key_len);
+		key[key_len] = '\0';
+
+		jval = secrets != NULL ? json_object_get(secrets, key) : NULL;
+		val = json_as_string(jval);
+		if (val != NULL)
+			jw_raw_escaped_content(&w, val);
+		else
+			jw_raw_text(&w, tok, (size_t)(key_end + 2 - tok));
+		p = key_end + 2;
+	}
+
+	out = malloc(w.len + 1);
+	if (out != NULL) {
+		memcpy(out, w.buf, w.len);
+		out[w.len] = '\0';
+	}
+	jw_free(&w);
+	return out;
+}
+
+char *container_recipe_render(const char *name, const struct json_value *secrets,
+                               enum pkg_error *out_err)
+{
+	char *content;
+	size_t content_len;
+	char *rendered;
+	enum pkg_error rc;
+
+	rc = container_recipe_get(name, &content, &content_len);
+	if (rc != PKG_OK) {
+		*out_err = rc;
+		return NULL;
+	}
+
+	rendered = container_recipe_substitute_secrets(content, secrets);
+	free(content);
+	if (rendered == NULL) {
+		*out_err = PKG_ERR_PERSIST_FAILED;
+		return NULL;
+	}
+	*out_err = PKG_OK;
+	return rendered;
 }
 
 struct image_recipe_ref {

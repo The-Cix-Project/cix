@@ -642,12 +642,14 @@ enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd);
  * already-published (name,version) comes back PKG_ERR_DUPLICATE and is
  * silently skipped (merge semantics: sync only ever adds, never
  * deletes or overwrites, so a locally-added-only recipe is always
- * safe). Also walks recipes/image/<name>/<version>/build.sh (ADR-0149),
- * picking the highest version per image name and image_recipe_add()ing
- * it -- that call always overwrites (no version-keying at the daemon
- * layer, ADR-0123), so an image recipe never comes back
- * PKG_ERR_DUPLICATE the way a package recipe can. Records combined
- * added/skipped counts and any error for pkg_sync_write_json_status().
+ * safe). Also walks recipes/image/<name>/<version>/build.sh (ADR-0149)
+ * and recipes/container/<name>/<version>/container.json (ADR-0151),
+ * each picking the highest version per name and add()ing it via its
+ * own image_recipe_add()/container_recipe_add() -- both always
+ * overwrite (no version-keying at the daemon layer, ADR-0123/ADR-0151),
+ * so neither ever comes back PKG_ERR_DUPLICATE the way a package
+ * recipe can. Records combined added/skipped counts and any error for
+ * pkg_sync_write_json_status().
  */
 void pkg_sync_completed(int exit_status);
 
@@ -796,5 +798,35 @@ void pkg_image_recipe_apply_completed(int exit_status);
 /* {"state":"never"|"running"|"success"|"failed","image":<string or
  * null>,"last_attempt":<epoch or null>,"error":<string or null>}. */
 void pkg_image_recipe_apply_write_json_status(struct json_writer *w);
+
+/*
+ * Container recipes (ADR-0151): a git-syncable, reproducible template
+ * for a real POST /v1/containers body -- everything an image recipe
+ * deliberately doesn't cover (cmd/files/network/restart-policy/
+ * sysctls). name-keyed flat file (<pkg_dir>/container-recipes/
+ * <name>.recipe), content stored and applied as-is (must already be
+ * the exact JSON create_container_from_body() would accept, including
+ * its own "name" field matching the recipe's own name). See
+ * daemon/src/pkg.c's own doc comment above container_recipe_add() for
+ * the full {{SECRET:KEY}} substitution mechanism.
+ */
+void container_recipe_init(const char *pkg_dir);
+void container_recipe_repoint(const char *pkg_dir);
+enum pkg_error container_recipe_add(const char *name, const char *content);
+enum pkg_error container_recipe_get(const char *name, char **out_content, size_t *out_len);
+enum pkg_error container_recipe_rm(const char *name);
+void container_recipe_write_json_list(struct json_writer *w);
+
+/*
+ * Substitutes every {{SECRET:KEY}} token in the named recipe's own
+ * content from secrets (an already-parsed JSON object, NULL for none)
+ * and returns the result -- caller frees. NULL + *out_err set on any
+ * failure (recipe not found). This is the one step between a stored
+ * recipe and a real create_container_from_body() call; main.c's own
+ * apply handler does exactly: container_recipe_render() -> pass the
+ * result straight to handle_create()'s own body-handling path.
+ */
+char *container_recipe_render(const char *name, const struct json_value *secrets,
+                               enum pkg_error *out_err);
 
 #endif /* PKG_H */

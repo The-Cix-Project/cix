@@ -90,6 +90,14 @@ void jw_arr_close(struct json_writer *w);
 void jw_key(struct json_writer *w, const char *key);
 
 void jw_str(struct json_writer *w, const char *s);
+/* Splicing primitives for callers that need to build JSON text outside
+ * the normal obj/arr/key/value call sequence (container-recipe secret
+ * substitution, daemon/src/pkg.c) -- jw_raw_text() copies bytes
+ * verbatim, jw_raw_escaped_content() escapes s the same way jw_str()
+ * does but with no surrounding quotes, for splicing into the middle
+ * of a JSON string literal that's already open. */
+void jw_raw_text(struct json_writer *w, const char *s, size_t n);
+void jw_raw_escaped_content(struct json_writer *w, const char *s);
 void jw_int(struct json_writer *w, long long v);
 /* Fixed two-decimal-place formatting -- see jw_num()'s own comment in
  * json.c for why (matches /proc/loadavg's real precision, and every

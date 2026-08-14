@@ -2398,11 +2398,22 @@ static int cmd_ps(const struct kx_client *c, int json_mode)
  * the operations themselves are their own real usability value, not
  * something this adds to replace, only to give a second, equally
  * discoverable entry point into for a plain "list what's running". */
+static int cmd_container_recipe(const struct kx_client *c, int json_mode, int argc, char **argv);
+static int cmd_container_apply_recipe(const struct kx_client *c, int json_mode, int argc,
+                                       char **argv);
+
 static int cmd_container(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
+	if (argc >= 1 && strcmp(argv[0], "recipe") == 0)
+		return cmd_container_recipe(c, json_mode, argc - 1, argv + 1);
+	if (argc >= 1 && strcmp(argv[0], "apply-recipe") == 0)
+		return cmd_container_apply_recipe(c, json_mode, argc - 1, argv + 1);
 	if (argc < 1 || strcmp(argv[0], "ls") != 0) {
 		fprintf(stderr, "usage: kanxeoctl container ls  -- every provisioned container and its "
-		                "current state (same as `ps`)\n");
+		                "current state (same as `ps`)\n"
+		                "       kanxeoctl container recipe add --name=NAME --file=PATH\n"
+		                "       kanxeoctl container recipe show|rm NAME / container recipe ls\n"
+		                "       kanxeoctl container apply-recipe NAME [--secret=KEY=VALUE ...]\n");
 		return 2;
 	}
 	return cmd_ps(c, json_mode);
@@ -5420,6 +5431,264 @@ static int cmd_image_recipe_apply_status(const struct kx_client *c, int json_mod
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_image_recipe_apply_status);
+}
+
+/* ---- ADR-0151: container recipes ---- */
+
+static void fmt_container_recipe_line(const struct json_value *v)
+{
+	const char *name = json_str_field(v, "name");
+
+	printf("%s\n", name != NULL ? name : "");
+}
+
+static void fmt_container_recipe_list(const struct json_value *v)
+{
+	const struct json_value *recipes = json_object_get(v, "recipes");
+	size_t i;
+
+	if (recipes == NULL || recipes->type != JSON_ARRAY)
+		return;
+	for (i = 0; i < recipes->u.array.count; i++)
+		fmt_container_recipe_line(recipes->u.array.items[i]);
+}
+
+static int cmd_container_recipe_ls(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/containers/recipes", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_container_recipe_list);
+}
+
+/* --name= is the recipe's own name AND must match the "name" field
+ * already inside --file='s own content (ADR-0151, mirroring
+ * pkg_recipe_add()'s pkg_name= contract) -- unlike an image recipe,
+ * a container recipe's content is a real POST /v1/containers body, so
+ * it necessarily already carries its own name. */
+static int cmd_container_recipe_add(const struct kx_client *c, int json_mode, int argc,
+                                     char **argv)
+{
+	const char *name = NULL;
+	const char *file = NULL;
+	char *content;
+	size_t content_len;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--name=", 7) == 0)
+			name = argv[i] + 7;
+		else if (strncmp(argv[i], "--file=", 7) == 0)
+			file = argv[i] + 7;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown container recipe add option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL || file == NULL) {
+		fprintf(stderr, "usage: kanxeoctl container recipe add --name=NAME --file=PATH\n");
+		return 2;
+	}
+	if (read_local_file(file, &content, &content_len) != 0) {
+		fprintf(stderr, "kanxeoctl: could not read %s\n", file);
+		return 1;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "content");
+	jw_str(&w, content);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	free(content);
+
+	if (kx_client_request(c, "POST", "/v1/containers/recipes", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	if (r.status < 200 || r.status >= 300) {
+		const char *msg = json_str_field(r.json, "error");
+
+		fprintf(stderr, "kanxeoctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		        r.status);
+		kx_response_free(&r);
+		return 1;
+	}
+	printf("container recipe '%s' added\n", name);
+	kx_response_free(&r);
+	return 0;
+}
+
+static void fmt_container_recipe_show(const struct json_value *v)
+{
+	const char *content = json_str_field(v, "content");
+
+	printf("%s", content != NULL ? content : "");
+}
+
+static int cmd_container_recipe_show(const struct kx_client *c, int json_mode, int argc,
+                                      char **argv)
+{
+	struct kx_response r;
+	char path[256];
+	const char *name = NULL;
+	int i;
+
+	for (i = 0; i < argc; i++) {
+		if (name == NULL)
+			name = argv[i];
+		else {
+			fprintf(stderr, "kanxeoctl: unknown container recipe show option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL) {
+		fprintf(stderr, "usage: kanxeoctl container recipe show NAME\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/containers/recipes/%s", name);
+	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_container_recipe_show);
+}
+
+static int cmd_container_recipe_rm(const struct kx_client *c, int json_mode, int argc,
+                                    char **argv)
+{
+	struct kx_response r;
+	char path[256];
+	const char *name = NULL;
+	int i;
+
+	for (i = 0; i < argc; i++) {
+		if (name == NULL)
+			name = argv[i];
+		else {
+			fprintf(stderr, "kanxeoctl: unknown container recipe rm option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL) {
+		fprintf(stderr, "usage: kanxeoctl container recipe rm NAME\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/containers/recipes/%s", name);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static int cmd_container_recipe(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl container recipe add --name=NAME --file=PATH\n"
+		                "       kanxeoctl container recipe show NAME\n"
+		                "       kanxeoctl container recipe rm NAME\n"
+		                "       kanxeoctl container recipe ls\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "add") == 0)
+		return cmd_container_recipe_add(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "show") == 0)
+		return cmd_container_recipe_show(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "rm") == 0)
+		return cmd_container_recipe_rm(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "ls") == 0)
+		return cmd_container_recipe_ls(c, json_mode);
+
+	fprintf(stderr, "kanxeoctl: unknown container recipe subcommand '%s'\n", sub);
+	return 2;
+}
+
+/*
+ * Applies NAME's own already-stored recipe (ADR-0151): renders it
+ * (substituting any {{SECRET:KEY}} token from --secret=KEY=VALUE
+ * flags) and creates the container -- a real, synchronous
+ * POST /v1/containers under the hood, so this always returns 201 or a
+ * real error, never an async job to poll (unlike image recipes' own
+ * artifact-fetch fast path, which containers have no equivalent of).
+ */
+static int cmd_container_apply_recipe(const struct kx_client *c, int json_mode, int argc,
+                                       char **argv)
+{
+	struct kx_response r;
+	char path[256];
+	const char *name = NULL;
+	int i;
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "secrets");
+	jw_obj_open(&w);
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--secret=", 9) == 0) {
+			char *eq = strchr(argv[i] + 9, '=');
+
+			if (eq == NULL) {
+				fprintf(stderr,
+				        "kanxeoctl: invalid --secret= value '%s' (expected KEY=VALUE)\n",
+				        argv[i] + 9);
+				jw_free(&w);
+				return 2;
+			}
+			*eq = '\0';
+			jw_key(&w, argv[i] + 9);
+			jw_str(&w, eq + 1);
+			*eq = '=';
+		} else if (name == NULL) {
+			name = argv[i];
+		} else {
+			fprintf(stderr, "kanxeoctl: unknown container apply-recipe option '%s'\n", argv[i]);
+			jw_free(&w);
+			return 2;
+		}
+	}
+	jw_obj_close(&w);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (name == NULL) {
+		fprintf(stderr,
+		        "usage: kanxeoctl container apply-recipe NAME [--secret=KEY=VALUE ...]\n");
+		jw_free(&w);
+		return 2;
+	}
+
+	snprintf(path, sizeof(path), "/v1/containers/recipes/%s/apply", name);
+	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	if (r.status < 200 || r.status >= 300) {
+		const char *msg = json_str_field(r.json, "error");
+
+		fprintf(stderr, "kanxeoctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		        r.status);
+		kx_response_free(&r);
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_container_line);
 }
 
 static int cmd_image(const struct kx_client *c, int json_mode, int argc, char **argv)

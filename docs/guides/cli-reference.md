@@ -90,6 +90,11 @@ See [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.m
 | `console NAME [--cmd=PATH]` | Interactive shell inside a running container (`docker exec -it`-style); `--cmd=` overrides the default `/usr/bin/bash` |
 | `files get NAME --path=/some/path [--output=PATH]` | Read one file's raw bytes back out of a container's rootfs; stdout if `--output=` omitted |
 | `rm NAME` | Stop (if running), remove, and forget any persisted definition |
+| `container recipe add --name=NAME --file=PATH` | Publish a container recipe (ADR-0151) -- content must already be a full `POST /containers` body, its own `"name"` matching NAME |
+| `container recipe show NAME` | Print a recipe's own raw, unsubstituted content |
+| `container recipe rm NAME` | Remove a stored container recipe |
+| `container recipe ls` | List container recipes (metadata only) |
+| `container apply-recipe NAME [--secret=KEY=VALUE ...]` | Render `NAME`'s own stored recipe (substituting `{{SECRET:KEY}}` tokens) and create the container -- always synchronous, real `POST /containers` under the hood |
 
 `run`'s full flag set:
 

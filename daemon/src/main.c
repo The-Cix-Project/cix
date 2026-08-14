@@ -746,6 +746,7 @@ static int set_disk_quota(const char *base_path, uint32_t projid, long long quot
 
 #define MAX_EVENTS 64
 #define CONTAINERS_PREFIX "/v1/containers/"
+#define CONTAINER_RECIPES_PREFIX "/v1/containers/recipes/"
 #define NETWORKS_PREFIX "/v1/networks/"
 #define DNS_RECORDS_PREFIX "/v1/dns/records/"
 #define DNS_SERVERS_PREFIX "/v1/dns/servers/"
@@ -10786,6 +10787,151 @@ static void handle_image_recipe_apply_status_get(int fd)
 	jw_free(&w);
 }
 
+/*
+ * Container recipes (ADR-0151) -- same shape as the image-recipe
+ * handlers immediately above, minus the async artifact-fetch path
+ * (containers create synchronously, always).
+ */
+static void respond_container_recipe_error(int fd, enum pkg_error err)
+{
+	switch (err) {
+	case PKG_ERR_INVALID_NAME:
+		respond_error(fd, 400, "Bad Request", "invalid container recipe name");
+		break;
+	case PKG_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such container recipe");
+		break;
+	case PKG_ERR_INVALID_RECIPE:
+		respond_error(fd, 400, "Bad Request",
+		              "recipe content failed to parse -- must be valid JSON matching a POST "
+		              "/v1/containers body, including a \"name\" field equal to the recipe's "
+		              "own name");
+		break;
+	case PKG_ERR_PERSIST_FAILED:
+	default:
+		respond_error(fd, 500, "Internal Server Error", "container recipe operation failed");
+		break;
+	}
+}
+
+static void handle_container_recipe_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "recipes");
+	container_recipe_write_json_list(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_container_recipe_add(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *name;
+	const char *content;
+	enum pkg_error perr;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	name = json_as_string(json_object_get(root, "name"));
+	content = json_as_string(json_object_get(root, "content"));
+	if (name == NULL || content == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "name and content both required");
+		return;
+	}
+
+	perr = container_recipe_add(name, content);
+	json_free(root);
+	if (perr != PKG_OK) {
+		respond_container_recipe_error(fd, perr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+static void handle_container_recipe_get(int fd, const char *name)
+{
+	char *content;
+	size_t content_len;
+	enum pkg_error perr;
+	struct json_writer w;
+
+	perr = container_recipe_get(name, &content, &content_len);
+	if (perr != PKG_OK) {
+		respond_container_recipe_error(fd, perr);
+		return;
+	}
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "content");
+	jw_str(&w, content);
+	jw_obj_close(&w);
+	free(content);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_container_recipe_delete(int fd, const char *name)
+{
+	enum pkg_error perr = container_recipe_rm(name);
+
+	if (perr != PKG_OK) {
+		respond_container_recipe_error(fd, perr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+/*
+ * POST /v1/containers/recipes/{name}/apply -- renders the recipe
+ * (substituting any {{SECRET:KEY}} tokens from the request body's own
+ * "secrets" object) and hands the result to handle_create()'s own
+ * body-handling path unchanged -- a container recipe apply IS a
+ * container create, just sourced from a stored, git-syncable template
+ * instead of an inline request body. handle_create() itself responds
+ * (201 + the new container, or whatever error create_container_from_
+ * body() surfaces) -- nothing left to do here afterward.
+ */
+static void handle_container_recipe_apply(int fd, const char *name, const char *body,
+                                           size_t body_len)
+{
+	struct json_value *root = NULL;
+	const struct json_value *secrets = NULL;
+	char *rendered;
+	enum pkg_error perr;
+
+	if (body != NULL && body_len > 0) {
+		root = json_parse(body, body_len);
+		if (root == NULL) {
+			respond_error(fd, 400, "Bad Request", "invalid JSON body");
+			return;
+		}
+		secrets = json_object_get(root, "secrets");
+	}
+
+	rendered = container_recipe_render(name, secrets, &perr);
+	if (root != NULL)
+		json_free(root);
+	if (rendered == NULL) {
+		respond_container_recipe_error(fd, perr);
+		return;
+	}
+
+	handle_create(fd, rendered, strlen(rendered));
+	free(rendered);
+}
+
 static void respond_dns_error(int fd, enum dns_error err)
 {
 	switch (err) {
@@ -13277,6 +13423,48 @@ static void dispatch(int fd, const struct http_request *req)
 		if (strcmp(req->method, "POST") == 0) {
 			handle_system_iso_post(fd, req->body, req->body_len);
 			return;
+		}
+	}
+	/*
+	 * ADR-0151: container recipes' own reserved paths, checked before
+	 * the generic CONTAINERS_PREFIX/{name} fallback below -- same
+	 * "recipes" reserved-word boundary ADR-0123's own image recipes
+	 * already established one level up (a container literally named
+	 * "recipes" would otherwise be unreachable via GET/DELETE
+	 * /v1/containers/{name}).
+	 */
+	if (strcmp(req->path, "/v1/containers/recipes") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_container_recipe_list(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_container_recipe_add(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strncmp(req->path, CONTAINER_RECIPES_PREFIX, strlen(CONTAINER_RECIPES_PREFIX)) == 0) {
+		name = req->path + strlen(CONTAINER_RECIPES_PREFIX);
+		if (name[0] != '\0') {
+			size_t nlen = strlen(name);
+
+			if (nlen > 6 && strcmp(name + nlen - 6, "/apply") == 0 &&
+			    strcmp(req->method, "POST") == 0 && nlen - 6 < PKG_NAME_MAX) {
+				char recipe_name[PKG_NAME_MAX];
+
+				memcpy(recipe_name, name, nlen - 6);
+				recipe_name[nlen - 6] = '\0';
+				handle_container_recipe_apply(fd, recipe_name, req->body, req->body_len);
+				return;
+			}
+			if (strcmp(req->method, "GET") == 0) {
+				handle_container_recipe_get(fd, name);
+				return;
+			}
+			if (strcmp(req->method, "DELETE") == 0) {
+				handle_container_recipe_delete(fd, name);
+				return;
+			}
 		}
 	}
 	if (strcmp(req->path, "/v1/containers") == 0) {

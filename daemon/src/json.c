@@ -496,11 +496,18 @@ static void jw_raw_str(struct json_writer *w, const char *s)
 	jw_raw(w, s, strlen(s));
 }
 
-static void jw_escaped_string(struct json_writer *w, const char *s)
+/*
+ * Shared by jw_escaped_string() (a full quoted value) and the exported
+ * jw_raw_escaped_content() below (content only, no surrounding quotes
+ * -- for splicing escaped text into the middle of a JSON string
+ * literal that's already open, e.g. container-recipe secret
+ * substitution, daemon/src/pkg.c's container_recipe_substitute_
+ * secrets()) -- one escaping ruleset, never two drifting copies.
+ */
+static void jw_escape_content(struct json_writer *w, const char *s)
 {
 	char buf[8];
 
-	jw_raw(w, "\"", 1);
 	for (; *s != '\0'; s++) {
 		char c = *s;
 
@@ -521,7 +528,39 @@ static void jw_escaped_string(struct json_writer *w, const char *s)
 			}
 		}
 	}
+}
+
+static void jw_escaped_string(struct json_writer *w, const char *s)
+{
 	jw_raw(w, "\"", 1);
+	jw_escape_content(w, s);
+	jw_raw(w, "\"", 1);
+}
+
+/*
+ * Public wrapper for jw_escape_content() -- appends s's escaped
+ * CONTENT directly onto w's own growable buffer, no surrounding
+ * quotes, no value-prefix/comma bookkeeping (unlike jw_str()). Callers
+ * outside json.c that need to splice escaped text into the middle of
+ * an already-open JSON string literal (rather than write a complete,
+ * standalone value) use this instead of hand-rolling a second escaper.
+ */
+void jw_raw_escaped_content(struct json_writer *w, const char *s)
+{
+	jw_escape_content(w, s);
+}
+
+/*
+ * Public wrapper for jw_raw() -- appends n bytes of s verbatim, no
+ * escaping, no value-prefix/comma bookkeeping. Paired with
+ * jw_raw_escaped_content() above by the same external callers: a
+ * placeholder-substitution pass copies the JSON text BETWEEN tokens
+ * verbatim (this function) and the substituted value's escaped
+ * content AT each token (that one).
+ */
+void jw_raw_text(struct json_writer *w, const char *s, size_t n)
+{
+	jw_raw(w, s, n);
 }
 
 static void jw_value_prefix(struct json_writer *w)

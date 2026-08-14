@@ -2445,6 +2445,18 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 137 (done): container recipes -- a third recipe kind, alongside package/image (ADR-0151)
+
+User-requested directly, motivated by this session's own repeated pain: `jumpbox1`/`dns-1`/`dns-2`/`ldap-1`/`ldap-2`/`syslog-1`/`syslog-2` have each been recreated multiple times, every time hand-retyping the full `cmd`/`files`/network/restart definition from memory, nothing git-tracked to source it from.
+
+`recipes/container/<name>/<version>/container.json`: content is a real `POST /v1/containers` body verbatim. Daemon storage mirrors `image_recipe_*` (one current recipe per name, no daemon-side version-keying). New `{{SECRET:KEY}}` substitution mechanism (generalizing `kanxeo.recipe`'s own manual `REPLACE_WITH_REAL_TOKEN` convention into something mechanical) lets a recipe's staged file content reference a credential without ever committing the real value to git -- correctly JSON-escaped via two new small `json.c` primitives sharing the one existing escaping ruleset. `POST /v1/containers/recipes/{name}/apply` renders the recipe and calls the exact same `handle_create()` a direct `POST /containers` uses. `pkg sync` extended a third time. CLI: `container recipe add|show|rm|ls`, `container apply-recipe NAME [--secret=KEY=VALUE ...]`.
+
+Verified: full clean rebuild, zero warnings. New `test/test_container_recipe.c` covers name/content mismatch rejection, add/list/get, apply with a secret (correctly escaped, including a value containing a literal `"`), apply with no secret (token left untouched), 404 on an unknown name, and rm. Full regression sweep clean. See [ADR-0151](../adr/0151-container-recipes.md).
+
+## Part 136 (done): dns-1/dns-2 repointed at real LAN resolvers
+
+User-requested: `dns-1`/`dns-2`'s own upstream forwarders (`dnsmasq --server=`) were still `1.1.1.1`/`8.8.8.8` from initial re-provisioning -- switched to the real LAN resolvers `192.168.15.200`/`192.168.15.100`, which know `home.arpa` addresses this public-DNS pair never could. Both containers recreated one at a time (never simultaneously, to avoid a full management-network DNS outage), verified reachable and forwarding correctly (`dig` against each) before moving to the next.
+
 ## Part 135 (done): all 4 image manifests switch to rolling, closing a dead follow_rolling flag
 
 Direct follow-up to Part 132/ADR-0149: publishing the 4 captured image recipes surfaced that every one declared its packages `pinned`. Asked directly whether that was intentional; the user pointed to Kanxeo's own charter (`CLAUDE.md`'s opening line calls it "a custom, rolling-release... platform") -- pinned was never the actual policy, just what got captured from what happened to be installed. A deeper check found the consequence was real: all 4 images' manifests had zero entries, meaning jumpbox1's own `follow_rolling=true` (set in an earlier session) had nothing to follow and had been silently inert the whole time.

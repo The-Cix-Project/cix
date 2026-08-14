@@ -2,6 +2,25 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 137 (done): container recipes -- a third recipe kind, alongside package/image (ADR-0151)
+
+User-requested directly: "let's make the container recipes so it will make things easier in the future." Motivated by this session's own repeated pain -- `jumpbox1`/`dns-1`/`dns-2`/`ldap-1`/`ldap-2`/`syslog-1`/`syslog-2` have each been recreated multiple times, every time hand-retyping the full `cmd`/`files`/network/restart definition from memory, with nothing git-tracked to source it from.
+
+#### Added
+- `recipes/container/<name>/<version>/container.json` (ADR-0151's own layout, ADR-0149's versioning convention): content is a real `POST /v1/containers` body verbatim, including its own `"name"` field.
+- Daemon storage (`daemon/src/pkg.c`): `container_recipe_init/_repoint/_add/_get/_rm/_write_json_list`, mirroring `image_recipe_*` almost exactly -- `<data-dir>/pkg/container-recipes/<name>.recipe`, one current recipe per name, no version-keying at the daemon layer.
+- `{{SECRET:KEY}}` substitution: a real, generalized mechanism (not LDAP-specific) so a recipe's staged file content can reference a credential without ever committing the real value to git -- the same problem `kanxeo.recipe`'s own `REPLACE_WITH_REAL_TOKEN` placeholder solved by hand, now mechanical. Two new small primitives in `daemon/src/json.c` (`jw_raw_text()`, `jw_raw_escaped_content()`) do the splicing, sharing the one existing escaping ruleset rather than a second copy.
+- REST: `GET`/`POST /v1/containers/recipes`, `GET`/`DELETE /v1/containers/recipes/{name}`, `POST /v1/containers/recipes/{name}/apply` -- apply renders the recipe and calls `handle_create()`, the exact same handler a direct `POST /containers` uses (no new container-creation logic).
+- `pkg sync` extended a third time: walks `recipes/container/`, publishing the highest version per name.
+- CLI: `kanxeoctl container recipe add|show|rm|ls`, `kanxeoctl container apply-recipe NAME [--secret=KEY=VALUE ...]`.
+
+#### Verified
+- Full clean rebuild, zero warnings. Manual smoke test against a real local daemon confirmed a secret containing a literal `"` round-trips correctly through substitution and JSON-escaping before this was ever written as a permanent test. New `test/test_container_recipe.c`: name/content mismatch and non-JSON content rejected; add/list/get show the unsubstituted token; apply with a secret creates a real container with the correctly-escaped substituted value; apply with no secret leaves the token untouched; apply on an unknown name is 404; recipe rm round-trips. Full regression sweep clean.
+
+### Part 136 (done): dns-1/dns-2 repointed at real LAN resolvers
+
+User-requested: `dns-1`/`dns-2`'s own upstream forwarders (`dnsmasq --server=`) were still `1.1.1.1`/`8.8.8.8` from initial re-provisioning -- switched to the real LAN resolvers `192.168.15.200`/`192.168.15.100`, which know `home.arpa` addresses this public-DNS pair never could. Both containers recreated one at a time (never simultaneously, to avoid a full management-network DNS outage), verified reachable and forwarding correctly (`dig` against each) before moving to the next.
+
 ### Part 135 (done): all 4 image manifests switch to rolling, closing a dead `follow_rolling` flag
 
 Direct follow-up to Part 132/ADR-0149: publishing the 4 captured image recipes surfaced that every one of them declared its packages `pinned`. Asked directly (`AskUserQuestion`) whether that was intentional; user pointed out Kanxeo's own charter (`CLAUDE.md`'s opening line) calls it "a custom, **rolling-release**... platform" -- pinned was never the actual policy, just what got captured from what happened to be installed. A deeper check found the consequence was real: every one of the 4 images' manifests had **zero entries** (`image show` confirmed `"manifest": []` across the board), meaning jumpbox1's own `follow_rolling=true` (set in an earlier session) had nothing to follow and had been silently inert the entire time.

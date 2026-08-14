@@ -2997,6 +2997,154 @@ paths:
               schema:
                 $ref: "#/components/schemas/ImageRecipeApplyStatus"
 
+  /containers/recipes:
+    get:
+      summary: >
+        List container recipes found on disk (ADR-0151) -- metadata only,
+        one entry per recipe name (a recipe's own name is always the
+        container name it creates when applied).
+      operationId: listContainerRecipes
+      responses:
+        "200":
+          description: Recipe list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [recipes]
+                properties:
+                  recipes:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ContainerRecipe"
+    post:
+      summary: >
+        Adds or replaces the container recipe for name. content must parse
+        as valid JSON with its own "name" field equal to name (a mismatch
+        is rejected, 400) -- content is stored and applied as-is, never
+        interpreted beyond that one check; validity as a real container
+        body is only checked when the recipe is actually applied.
+      operationId: addContainerRecipe
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, content]
+              properties:
+                name:
+                  type: string
+                  description: Also the container name this recipe creates -- must equal content's own "name" field.
+                content:
+                  type: string
+                  description: A complete POST /containers body, as raw JSON text; may embed {{SECRET:KEY}} tokens.
+      responses:
+        "204":
+          description: Recipe added/replaced
+        "400":
+          description: name/content missing, invalid name, content isn't valid JSON, or its "name" field doesn't match
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Validated but writing the recipe file to disk failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /containers/recipes/{name}:
+    get:
+      summary: One container recipe's own {name,content} -- the raw, unsubstituted recipe text.
+      operationId: getContainerRecipe
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+      responses:
+        "200":
+          description: Recipe detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContainerRecipeDetail"
+        "404":
+          description: No recipe with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Removes name's own container recipe. Does not affect any container already created from it.
+      operationId: deleteContainerRecipe
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+      responses:
+        "204":
+          description: Recipe removed
+        "404":
+          description: No recipe with this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /containers/recipes/{name}/apply:
+    post:
+      summary: >
+        Renders name's own already-stored recipe -- substituting every
+        {{SECRET:KEY}} token from this request's own secrets object
+        (JSON-escaped correctly, since a secret value is spliced into the
+        middle of an already-open JSON string literal) -- and creates the
+        container from the result, via the identical code path a real
+        POST /containers would use. Always synchronous: 201 with the new
+        container, or whatever error a real container create would give
+        (a name collision, a missing image, invalid cmd, ...); there is no
+        async path here the way image recipes' own artifact-fetch fast
+        path has, since a container always creates synchronously. An
+        unmatched {{SECRET:KEY}} token (no such key in secrets) is left
+        completely untouched -- never silently swallowed or blanked.
+      operationId: applyContainerRecipe
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                secrets:
+                  type: object
+                  additionalProperties:
+                    type: string
+                  description: KEY -> real value, one per {{SECRET:KEY}} token the recipe's own content references.
+      responses:
+        "201":
+          description: Container created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Container"
+        "400":
+          description: Invalid secrets JSON, or the rendered body failed real container-create validation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No recipe stored under this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A container with this name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /dns/records:
     get:
       summary: List all DNS records known to this daemon
@@ -7760,6 +7908,29 @@ components:
           type: string
           nullable: true
           description: Set when state is "failed" (fetch failure, checksum mismatch, or extraction failure).
+
+    ContainerRecipe:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Also the container's own name this recipe creates when applied (ADR-0151).
+
+    ContainerRecipeDetail:
+      allOf:
+        - $ref: "#/components/schemas/ContainerRecipe"
+        - type: object
+          required: [content]
+          properties:
+            content:
+              type: string
+              description: >
+                The full, raw JSON text of the container recipe -- must already be
+                a valid POST /containers body, including its own "name" field
+                equal to the recipe's own name. May contain {{SECRET:KEY}} tokens
+                anywhere inside a string value (typically staged file content);
+                shown here exactly as stored, never substituted.
 
     PkgRepoConfig:
       type: object
