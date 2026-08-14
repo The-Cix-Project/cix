@@ -6423,6 +6423,31 @@ static void handle_hostauth_config_put(int fd, const char *body, size_t body_len
 	}
 }
 
+static void handle_hostauth_sessions_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "sessions");
+	hostauth_write_sessions_json(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/* DELETE /v1/system/hostauth/sessions/{username} -- revokes every
+ * active session for that user ("log out everywhere"). Always 204,
+ * even if the user had no active session (the same idempotent-logout
+ * posture handle_logout() already has), since the end state (no
+ * active session for this user) is identical either way. */
+static void handle_hostauth_sessions_revoke(int fd, const char *username)
+{
+	hostauth_revoke_sessions_for_user(username);
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
 /*
  * Returns 0 and forks the fetch (state -> FETCHING) on success; -1
  * with err_msg filled otherwise (both url and sha256 are required --
@@ -13161,6 +13186,19 @@ static void dispatch(int fd, const struct http_request *req)
 		}
 		if (strcmp(req->method, "PUT") == 0) {
 			handle_hostauth_config_put(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/system/hostauth/sessions") == 0 && strcmp(req->method, "GET") == 0) {
+		handle_hostauth_sessions_get(fd);
+		return;
+	}
+	if (strncmp(req->path, "/v1/system/hostauth/sessions/", 29) == 0 &&
+	    strcmp(req->method, "DELETE") == 0) {
+		const char *username = req->path + 29;
+
+		if (username[0] != '\0') {
+			handle_hostauth_sessions_revoke(fd, username);
 			return;
 		}
 	}

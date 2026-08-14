@@ -2445,6 +2445,14 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 139 (done): host-auth session listing + revoke (ADR-0152)
+
+User-asked directly: where do tokens live, can they be listed, do they survive a restart, is there a CLI/web surface? `g_sessions[]` turned out to have zero introspection anywhere. Confirmed with the user this was worth closing.
+
+`GET /v1/system/hostauth/sessions` (username + expires_in_seconds, never the raw token) and `DELETE /v1/system/hostauth/sessions/{username}` (revoke every active session for that user -- deliberately per-username, since the only real per-session identifier is the token itself, never surfaced past its one-time login response). New `kanxeoctl hostauth-sessions ls|revoke`, and a new `System > Host > Sessions` web page.
+
+A real off-by-one bug in the route's own prefix-length arithmetic was caught by the new test before shipping (the revoke endpoint 404'd unconditionally). Verified: full clean rebuild, zero warnings, `test/test_hostauth.c` covers real expiry data, no token leakage, revoke invalidating the token immediately, and a no-op revoke for a user with no session. Web panel verified via the Chrome DevTools Protocol directly: real login, real session shown, real revoke confirmed via the dashboard's own audit log. See [ADR-0152](../adr/0152-hostauth-session-introspection.md).
+
 ## Part 138 (done): web dashboard Software Catalogue -- one page, three recipe tabs
 
 User-requested direct follow-up to Part 137: the "Recipes" page was package-recipes-only; image recipes were only reachable buried inside each image's own detail page, and the new container recipes had zero UI. `#view-recipes` restructured into a real 3-tab catalogue (Packages/Images/Containers), each with its own client-side name search and Apply/Edit/Delete directly from the list.

@@ -259,6 +259,105 @@ int main(void)
 	}
 	kx_response_free(&r);
 
+	/* 9b. ADR-0152: session listing shows the real active session, a
+	 * real expires_in_seconds (idle_timeout_seconds=900 here, so never
+	 * null), and never a raw token anywhere in the response. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET", "/v1/system/hostauth/sessions", NULL, &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: GET hostauth sessions, status=%d\n", r.status);
+		ok = 0;
+	} else {
+		const struct json_value *sessions = json_object_get(r.json, "sessions");
+		int found = 0;
+
+		if (sessions == NULL || sessions->type != JSON_ARRAY) {
+			fprintf(stderr, "FAIL: hostauth sessions response missing a sessions array\n");
+			ok = 0;
+		} else {
+			size_t i;
+
+			for (i = 0; i < sessions->u.array.count; i++) {
+				const struct json_value *s = sessions->u.array.items[i];
+				const char *uname = json_str_field(s, "username");
+				const struct json_value *jexp = json_object_get(s, "expires_in_seconds");
+
+				if (uname != NULL && str_eq(uname, "root_admin")) {
+					found = 1;
+					if (jexp == NULL || jexp->type != JSON_NUMBER || json_as_number(jexp) <= 0) {
+						fprintf(stderr,
+						        "FAIL: root_admin session missing a real "
+						        "expires_in_seconds\n");
+						ok = 0;
+					}
+				}
+				if (json_object_get(s, "token") != NULL) {
+					fprintf(stderr, "FAIL: a raw token leaked into the sessions listing\n");
+					ok = 0;
+				}
+			}
+		}
+		if (!found) {
+			fprintf(stderr, "FAIL: root_admin's own active session not found in the listing\n");
+			ok = 0;
+		}
+	}
+	kx_response_free(&r);
+
+	/* 9c. Revoking root_admin's sessions logs it out everywhere -- its
+	 * existing token stops working immediately. This DELETE is itself
+	 * a write, subject to the same gating as anything else -- needs
+	 * the still-valid token attached, same as step 8's group create. */
+	memset(&r, 0, sizeof(r));
+	if (request_with_token(&client, "DELETE", "/v1/system/hostauth/sessions/root_admin", token,
+	                        NULL, &r) != 0 ||
+	    r.status != 204) {
+		fprintf(stderr, "FAIL: DELETE hostauth sessions for root_admin, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (request_with_token(&client, "POST", "/v1/ldap/groups", token,
+	                        "{\"name\":\"post-revoke\",\"gidnumber\":7005}", &r) != 0 ||
+	    r.status != 401) {
+		fprintf(stderr, "FAIL: revoked token should be rejected like any other, got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	/* Re-authenticate -- the revoke above killed the only token this
+	 * test had, and the no-op check right below is itself a write,
+	 * needing a real one attached. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/login",
+	                       "{\"username\":\"root_admin\",\"password\":\"correct horse battery staple\"}",
+	                       &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: re-login after revoke, status=%d\n", r.status);
+		ok = 0;
+	} else {
+		const char *t = json_str_field(r.json, "token");
+
+		if (t != NULL)
+			snprintf(token, sizeof(token), "%s", t);
+	}
+	kx_response_free(&r);
+
+	/* Revoking a user with no active session at all is a real no-op,
+	 * not an error -- same idempotent posture handle_logout() already
+	 * has. */
+	memset(&r, 0, sizeof(r));
+	if (request_with_token(&client, "DELETE", "/v1/system/hostauth/sessions/nosuchuser", token,
+	                        NULL, &r) != 0 ||
+	    r.status != 204) {
+		fprintf(stderr, "FAIL: revoking a user with no session should still be 204, got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
 	/* 10. A real user who is NOT in the admin group authenticates fine
 	 * but still can't write -- authentication and authorization are
 	 * two different questions. */

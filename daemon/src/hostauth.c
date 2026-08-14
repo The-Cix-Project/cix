@@ -425,6 +425,70 @@ void hostauth_logout(const char *token)
 	}
 }
 
+/*
+ * {"sessions":[{"username":...,"expires_in_seconds":<int or null>}, ...]}
+ * -- every currently active session, real admin visibility into a
+ * table that previously had none at all (no endpoint, no CLI, no web
+ * panel). The raw token is never included, before or after issuance --
+ * only hostauth_login()'s own one-time response ever carries it. An
+ * expired-but-not-yet-reaped entry (idle_timeout_seconds > 0, past its
+ * own expires_at) is skipped -- it would report a negative
+ * expires_in_seconds otherwise, and it's not really "active" by the
+ * same definition hostauth_check_token()'s own opportunistic reaping
+ * already uses. idle_timeout_seconds == 0 sessions (single-use,
+ * consumed on next check) report null -- there is no meaningful
+ * "expires in" for a session that's valid for exactly one more
+ * request, whenever that happens to be.
+ */
+void hostauth_write_sessions_json(struct json_writer *w)
+{
+	int i;
+	time_t now = time(NULL);
+
+	jw_arr_open(w);
+	for (i = 0; i < HOSTAUTH_SESSION_MAX; i++) {
+		if (!g_sessions[i].in_use)
+			continue;
+		if (g_config.idle_timeout_seconds > 0 && g_sessions[i].expires_at <= now)
+			continue;
+
+		jw_obj_open(w);
+		jw_key(w, "username");
+		jw_str(w, g_sessions[i].username);
+		jw_key(w, "expires_in_seconds");
+		if (g_config.idle_timeout_seconds > 0)
+			jw_int(w, (long long)(g_sessions[i].expires_at - now));
+		else
+			jw_null(w);
+		jw_obj_close(w);
+	}
+	jw_arr_close(w);
+}
+
+/*
+ * Revokes every currently active session belonging to username --
+ * "log this account out everywhere," the meaningful admin action for
+ * a table that can hold more than one concurrent session per user
+ * (no per-session opaque ID is exposed at all, so there is no
+ * "revoke just this one" -- the raw token is the only real per-session
+ * identifier, and that is never surfaced past its one-time login
+ * response). Returns the number of sessions actually revoked.
+ */
+int hostauth_revoke_sessions_for_user(const char *username)
+{
+	int i, revoked = 0;
+
+	if (username == NULL || username[0] == '\0')
+		return 0;
+	for (i = 0; i < HOSTAUTH_SESSION_MAX; i++) {
+		if (g_sessions[i].in_use && strcmp(g_sessions[i].username, username) == 0) {
+			memset(&g_sessions[i], 0, sizeof(g_sessions[i]));
+			revoked++;
+		}
+	}
+	return revoked;
+}
+
 int hostauth_check_token(const char *token, char *out_username, size_t out_username_size)
 {
 	int i;

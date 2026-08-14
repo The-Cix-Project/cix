@@ -164,6 +164,18 @@ void hostauth_logout(const char *token);
  */
 int hostauth_check_token(const char *token, char *out_username, size_t out_username_size);
 
+/* {"sessions":[{"username":...,"expires_in_seconds":<int or null>}, ...]}
+ * -- every currently active session. Never includes a raw token, an
+ * opaque session ID, or anything else that would let a caller target
+ * one specific session; see hostauth_revoke_sessions_for_user()'s own
+ * doc comment for why revocation is per-username, not per-session. */
+void hostauth_write_sessions_json(struct json_writer *w);
+
+/* Revokes every active session for username ("log this account out
+ * everywhere"). Returns the count actually revoked (0 if none were
+ * active). */
+int hostauth_revoke_sessions_for_user(const char *username);
+
 /*
  * The one real authorization decision dispatch() consults for every
  * mutating request: returns 1 if the write should proceed. That's

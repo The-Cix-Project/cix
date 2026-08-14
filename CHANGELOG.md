@@ -2,6 +2,23 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 139 (done): host-auth session listing + revoke (ADR-0152)
+
+User-asked directly: where do tokens live, can they be listed (issuer, last-used), do they survive a restart, and is there a CLI/web surface? Investigated: `g_sessions[]` is a plain in-memory array with zero introspection anywhere -- no endpoint, no CLI, no web panel. Confirmed with the user this was worth closing ("yes we want to build that... with all the bells and whistles").
+
+#### Added
+- `GET /v1/system/hostauth/sessions` -- `{username, expires_in_seconds}` per active session, never the raw token.
+- `DELETE /v1/system/hostauth/sessions/{username}` -- revokes every active session for that user ("log out everywhere"), deliberately per-username rather than per-session: the only real per-session identifier is the token itself, never surfaced past its one-time login response, so there's no safe way to target just one.
+- `daemon/src/hostauth.c`: `hostauth_write_sessions_json()`, `hostauth_revoke_sessions_for_user()`.
+- CLI: `kanxeoctl hostauth-sessions ls`, `kanxeoctl hostauth-sessions revoke USERNAME`.
+- Web: new `System > Host > Sessions` page, a table with a "Log out everywhere" button per row.
+
+#### Fixed
+- A real off-by-one bug in the new route's own `strncmp()`/pointer-arithmetic (prefix length 30 instead of the real 29-character `"/v1/system/hostauth/sessions/"`) caught by the new test before it ever shipped -- the revoke endpoint 404'd unconditionally until this was found and fixed.
+
+#### Verified
+- Full clean rebuild, zero warnings. New `test/test_hostauth.c` coverage: real `expires_in_seconds` shown, no raw token anywhere in the response, revoking a user immediately invalidates its existing token, revoking a user with no session is a real no-op (204). Full regression sweep clean. Web panel verified via the Chrome DevTools Protocol directly against a real daemon: logged in through the actual login form, confirmed the resulting session appears with live data, clicked "Log out everywhere," and confirmed via the dashboard's own audit-log panel that a real `DELETE .../sessions/osakka -> 204` fired and the table emptied.
+
 ### Part 138 (done): web dashboard Software Catalogue -- one page, three recipe tabs
 
 User-requested direct follow-up to Part 137: the "Recipes" page was package-recipes-only (a flat table); image recipes were only reachable buried inside each image's own detail page, and the new container recipes had zero UI. Turned `#view-recipes` into a real 3-tab catalogue (Packages/Images/Containers, ADR-0040/ADR-0123/ADR-0151), each with its own client-side name search and an "Add recipe…" button, plus Apply/Edit/Delete actions directly from the list -- no need to first navigate to a specific image's own page just to apply its recipe.

@@ -672,6 +672,7 @@ const CATEGORY_VIEWS = {
 	"daemon-config": "view-daemon-config",
 	"host-swap": "view-host-swap",
 	"rolling-restart": "view-rolling-restart",
+	"hostauth-sessions": "view-hostauth-sessions",
 	"host-stats": "view-host-stats",
 	processes: "view-processes",
 	"syslog-targets": "view-syslog-targets",
@@ -750,6 +751,8 @@ function renderCurrentView() {
 		}
 		else if (route.category === "backup")
 			renderBackupConfig();
+		else if (route.category === "hostauth-sessions")
+			refreshHostauthSessions();
 	}
 
 	renderTreeActive();
@@ -1163,6 +1166,7 @@ function renderTree() {
 						{ label: "Routes", hash: "routes", icon: "networks" },
 						{ label: "Host Swap", hash: "host-swap", icon: "system" },
 						{ label: "Rolling Restart", hash: "rolling-restart", icon: "system" },
+						{ label: "Sessions", hash: "hostauth-sessions", icon: "system" },
 					],
 				},
 				{
@@ -5429,6 +5433,71 @@ document.getElementById("pkg-cache-clear").addEventListener("click", async () =>
 /* ---- Rolling-restart jitter config (Part 5, ADR-0124) ---- */
 
 let rollingConfigDirty = false;
+
+/* ---- ADR-0152: hostauth session listing/revoke -- real admin
+ * visibility into a table that previously had none (no endpoint, no
+ * CLI, no web panel) ---- */
+
+async function refreshHostauthSessions() {
+	try {
+		const data = await apiRequest("GET", "/v1/system/hostauth/sessions");
+
+		renderHostauthSessions(data.sessions || []);
+	} catch (e) {
+		showStatus("Failed to load active sessions: " + e.message, true);
+	}
+}
+
+function renderHostauthSessions(sessions) {
+	const body = document.getElementById("hostauth-sessions-body");
+
+	body.textContent = "";
+	if (sessions.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 3;
+		cell.className = "empty";
+		cell.textContent = "No active sessions";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+
+	for (const s of sessions) {
+		const row = document.createElement("tr");
+
+		const nameCell = document.createElement("td");
+		nameCell.textContent = s.username;
+		row.appendChild(nameCell);
+
+		const expiresCell = document.createElement("td");
+		expiresCell.textContent =
+			s.expires_in_seconds === null || s.expires_in_seconds === undefined
+				? "single-use (no idle timeout configured)"
+				: s.expires_in_seconds + "s";
+		row.appendChild(expiresCell);
+
+		const actionCell = document.createElement("td");
+		const revokeButton = document.createElement("button");
+
+		revokeButton.textContent = "Log out everywhere";
+		revokeButton.className = "button-danger";
+		revokeButton.addEventListener("click", async () => {
+			try {
+				await apiRequest("DELETE", "/v1/system/hostauth/sessions/" + encodeURIComponent(s.username));
+				clearStatus();
+				await refreshHostauthSessions();
+			} catch (e) {
+				showStatus("Failed to revoke sessions for " + s.username + ": " + e.message, true);
+			}
+		});
+		actionCell.appendChild(revokeButton);
+		row.appendChild(actionCell);
+
+		body.appendChild(row);
+	}
+}
 
 async function refreshRollingConfig() {
 	try {

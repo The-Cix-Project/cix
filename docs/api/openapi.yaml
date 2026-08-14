@@ -209,6 +209,55 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/hostauth/sessions:
+    get:
+      summary: >
+        Every currently active host-auth session (ADR-0152) -- username
+        and expires_in_seconds only, never the raw token (it is shown
+        exactly once, in POST /login's own response, and never again).
+      operationId: listHostauthSessions
+      responses:
+        "200":
+          description: Active session list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessions]
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/HostauthSession"
+
+  /system/hostauth/sessions/{username}:
+    delete:
+      summary: >
+        Revokes every active session belonging to username -- "log
+        this account out everywhere." Deliberately per-username, not
+        per-session (ADR-0152): the only real per-session identifier
+        is the raw token itself, never surfaced past its one-time
+        login response, so there is no safe way to target just one.
+        Always 204, even if username had no active session (the same
+        idempotent posture POST /logout already has for an unknown
+        token).
+      operationId: revokeHostauthSessions
+      parameters:
+        - name: username
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Revoked (or was already a no-op)
+        "401":
+          description: Write-gating is active and the caller isn't an authenticated admin-group member
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /system/boot:
     get:
       summary: Build/slot/kernel identity
@@ -6327,6 +6376,16 @@ components:
           type: integer
         ldap_base_dn:
           type: string
+    HostauthSession:
+      type: object
+      required: [username, expires_in_seconds]
+      properties:
+        username:
+          type: string
+        expires_in_seconds:
+          type: integer
+          nullable: true
+          description: Null when idle_timeout_seconds is 0 (every token single-use -- no meaningful "expires in" applies).
     ResolvConfig:
       type: object
       required: [nameservers]

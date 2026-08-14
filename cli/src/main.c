@@ -217,6 +217,9 @@ static void print_usage(FILE *out)
 	        "               -- read-modify-write; only the flags given are changed, everything\n"
 	        "               else keeps its current value. Write-gating activates the instant\n"
 	        "               a real user is a member of one of admin_groups\n"
+	        "  hostauth-sessions ls  -- every active session (username, expires-in) -- never\n"
+	        "               a raw token, before or after issuance\n"
+	        "  hostauth-sessions revoke USERNAME  -- log that user out everywhere (ADR-0152)\n"
 	        "  rolling-config show  -- current daemon-wide rolling-restart jitter window default\n"
 	        "               (Part 5, ADR-0124)\n"
 	        "  rolling-config set --jitter-window-seconds=N  -- 0-3600, 0 = no jitter (restart\n"
@@ -4259,6 +4262,81 @@ static int cmd_hostauth_config(const struct kx_client *c, int json_mode, int arg
 		return cmd_hostauth_config_set(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "kanxeoctl: unknown hostauth-config subcommand '%s'\n", sub);
+	return 2;
+}
+
+static void fmt_hostauth_session_line(const struct json_value *v)
+{
+	const char *username = json_str_field(v, "username");
+	const struct json_value *jexpires = json_object_get(v, "expires_in_seconds");
+
+	printf("%-24s", username != NULL ? username : "");
+	if (jexpires != NULL && jexpires->type == JSON_NUMBER)
+		printf("expires_in=%lds\n", (long)json_as_number(jexpires));
+	else
+		printf("expires_in=- (single-use)\n");
+}
+
+static void fmt_hostauth_sessions_list(const struct json_value *v)
+{
+	const struct json_value *sessions = json_object_get(v, "sessions");
+	size_t i;
+
+	if (sessions == NULL || sessions->type != JSON_ARRAY)
+		return;
+	if (sessions->u.array.count == 0) {
+		printf("no active sessions\n");
+		return;
+	}
+	for (i = 0; i < sessions->u.array.count; i++)
+		fmt_hostauth_session_line(sessions->u.array.items[i]);
+}
+
+static int cmd_hostauth_sessions_ls(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/hostauth/sessions", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_hostauth_sessions_list);
+}
+
+static int cmd_hostauth_sessions_revoke(const struct kx_client *c, int json_mode, int argc,
+                                         char **argv)
+{
+	struct kx_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl hostauth-sessions revoke USERNAME\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/system/hostauth/sessions/%s", argv[0]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_removed);
+}
+
+static int cmd_hostauth_sessions(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl hostauth-sessions ls\n"
+		                "       kanxeoctl hostauth-sessions revoke USERNAME  -- log out everywhere\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "ls") == 0)
+		return cmd_hostauth_sessions_ls(c, json_mode);
+	if (strcmp(sub, "revoke") == 0)
+		return cmd_hostauth_sessions_revoke(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown hostauth-sessions subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -8658,6 +8736,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_tls_throttle(client, json_mode, argc, argv);
 	if (strcmp(cmd, "hostauth-config") == 0)
 		return cmd_hostauth_config(client, json_mode, argc, argv);
+	if (strcmp(cmd, "hostauth-sessions") == 0)
+		return cmd_hostauth_sessions(client, json_mode, argc, argv);
 	if (strcmp(cmd, "iso") == 0)
 		return cmd_iso(client, json_mode, argc, argv);
 	if (strcmp(cmd, "routes") == 0)
