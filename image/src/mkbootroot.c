@@ -56,13 +56,44 @@ static int ensure_dir_under(const char *image_root, const char *rel)
 	return ensure_dir(path);
 }
 
-static int run_mksquashfs(const char *mksquashfs_bin, const char *image_root, const char *out_path)
+/*
+ * host_tools_dir, when non-empty, is a real, ordinary image rootfs
+ * (squashfs-tools.recipe's own install, ADR-0078) -- mksquashfs is
+ * dynamically linked against liblzma.so.5 (this project's own
+ * "never -static" rule), which that recipe stages at
+ * <host_tools_dir>/lib/x86_64-linux-gnu/, an arbitrary filesystem
+ * path the dynamic linker has no reason to search: it isn't a chroot
+ * root (unlike an ordinary pkg build container, which reaches its own
+ * libs via a real pivot_root, mkbootroot execve()s this binary
+ * directly off the bare host), so nothing wires that directory into
+ * ld.so's search path on its own. A genuinely missing/unresolvable
+ * shared library normally fails loudly (dynamic linker startup exits
+ * nonzero before main() even runs, correctly caught by the
+ * WIFEXITED/WEXITSTATUS check below) -- but if the box's own bare
+ * host environment happens to already have *some* liblzma.so.5
+ * resolvable via the ordinary system search path (a different build,
+ * a different version), the dynamic linker silently prefers that one
+ * instead, with no error at all: mksquashfs runs and exits 0, but
+ * against a library it was never actually built/tested against,
+ * which is exactly the failure this real, live task #865 deploy hit
+ * (`POST /system/update` correctly rejected the result as "not a
+ * squashfs image" -- a genuine on-disk corruption, not a
+ * misdiagnosis). Fixed by explicitly prepending host_tools_dir's own
+ * library directories to LD_LIBRARY_PATH for this one child only,
+ * so its own liblzma.so.5 is what actually gets linked, not whatever
+ * the bare host happens to already have lying around.
+ */
+static int run_mksquashfs(const char *mksquashfs_bin, const char *image_root,
+                           const char *out_path, const char *host_tools_dir)
 {
 	pid_t pid;
 	int status;
 	struct stat st;
 	char *argv[] = { (char *)mksquashfs_bin, (char *)image_root, (char *)out_path,
 		          "-noappend", "-comp", "xz", "-quiet", NULL };
+	char ld_library_path[PATH_MAX];
+	char *child_envp[64];
+	int envc;
 
 	/*
 	 * A precise, disambiguating check before exec -- ADR-0083's own
@@ -84,13 +115,42 @@ static int run_mksquashfs(const char *mksquashfs_bin, const char *image_root, co
 	 * -noappend, so any leftover has to go first. */
 	unlink(out_path);
 
+	envc = 0;
+	if (host_tools_dir != NULL && host_tools_dir[0] != '\0') {
+		int i;
+
+		if (snprintf(ld_library_path, sizeof(ld_library_path),
+		             "LD_LIBRARY_PATH=%s/lib/x86_64-linux-gnu:%s/usr/lib:%s/lib", host_tools_dir,
+		             host_tools_dir, host_tools_dir) >= (int)sizeof(ld_library_path)) {
+			fprintf(stderr, "path too long: LD_LIBRARY_PATH for %s\n", host_tools_dir);
+			return -1;
+		}
+		/* Copy the real inherited environment forward -- this is a real
+		 * child process replacing the whole environment would silently
+		 * drop, not add to, whatever else the daemon's own process was
+		 * started with. Only room for 62 real entries plus this one
+		 * plus the NULL terminator (sizeof(child_envp)/sizeof(*) == 64)
+		 * -- a real, live daemon environment this large would be
+		 * genuinely abnormal, so failing loudly here is correct, not a
+		 * silent truncation. */
+		for (i = 0; environ[i] != NULL; i++) {
+			if (envc >= (int)(sizeof(child_envp) / sizeof(child_envp[0])) - 2) {
+				fprintf(stderr, "too many environment variables to add LD_LIBRARY_PATH\n");
+				return -1;
+			}
+			child_envp[envc++] = environ[i];
+		}
+		child_envp[envc++] = ld_library_path;
+	}
+	child_envp[envc] = NULL;
+
 	pid = fork();
 	if (pid < 0) {
 		perror("fork");
 		return -1;
 	}
 	if (pid == 0) {
-		execve(mksquashfs_bin, argv, environ);
+		execve(mksquashfs_bin, argv, envc > 0 ? child_envp : environ);
 		fprintf(stderr, "execve %s: %s\n", mksquashfs_bin, strerror(errno));
 		_exit(127);
 	}
@@ -734,7 +794,7 @@ int main(int argc, char **argv)
 		} else {
 			use_mksquashfs = MKSQUASHFS_BIN;
 		}
-		if (run_mksquashfs(use_mksquashfs, image_root, out_path) != 0)
+		if (run_mksquashfs(use_mksquashfs, image_root, out_path, host_tools_dir) != 0)
 			return 1;
 	}
 
