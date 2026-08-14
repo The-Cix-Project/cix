@@ -41,4 +41,13 @@ void dual_perror(const char *s);
  */
 int run_subprocess_dual_console(const char *bin, char *const argv[]);
 
+/*
+ * Blocks until a byte arrives on whichever console still has one open,
+ * discards it, and returns 0 -- kanxeo-install.c's own end-of-install
+ * "press Enter to reboot" prompt, so an operator watching either
+ * console can proceed without needing to know which one is "live."
+ * Returns -1 if neither console is open (nothing left to wait on).
+ */
+int dual_console_wait_for_key(void);
+
 #endif /* DUAL_CONSOLE_H */

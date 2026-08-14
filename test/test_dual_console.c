@@ -21,6 +21,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -102,6 +103,12 @@ static int wait_for_marker(int master, const char *marker, char *out, size_t out
 		if (strstr(out, marker) != NULL)
 			return 0;
 	}
+}
+
+static void alarm_timeout(int sig)
+{
+	(void)sig;
+	_exit(2);
 }
 
 static int write_line(int master, const char *line)
@@ -197,6 +204,52 @@ int main(void)
 		                "(status 0x%x)\n",
 		        (unsigned)status);
 		ok = 0;
+	}
+
+	/* 3. dual_console_wait_for_key() -- kanxeo-install.c's own
+	 * end-of-install "press Enter to reboot" prompt (ADR-0146 follow-up
+	 * UX fix), not exercised by the relay above at all. Confirms it
+	 * unblocks the instant a byte arrives on console B (the "other"
+	 * one relative to the earlier input tests, proving both consoles,
+	 * not just A, wake it). Bounded by its own alarm(): if the wait
+	 * never unblocks, the child exits with a distinct status (2)
+	 * instead of hanging the whole suite. */
+	if (ok) {
+		pid_t key_pid = fork();
+
+		if (key_pid < 0) {
+			perror("fork");
+			ok = 0;
+		} else if (key_pid == 0) {
+			close(master_a);
+			close(master_b);
+			signal(SIGALRM, alarm_timeout);
+			alarm(5);
+			dual_console_open(slave_a, slave_b);
+			_exit(dual_console_wait_for_key() == 0 ? 0 : 1);
+		} else {
+			usleep(200000); /* give the child time to open+poll before sending */
+			/* The console defaults to canonical (line-buffered) mode --
+			 * a byte with no newline never becomes readable, matching
+			 * dual_console_wait_for_key()'s real "press Enter" contract
+			 * (see kanxeo-install.c's own end-of-install prompt). */
+			if (write_line(master_b, "x\n") != 0) {
+				fprintf(stderr, "FAIL: could not write key line to master_b\n");
+				ok = 0;
+			}
+			if (waitpid(key_pid, &status, 0) != key_pid) {
+				perror("waitpid key_pid");
+				ok = 0;
+			} else if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+				fprintf(stderr,
+				        "FAIL: dual_console_wait_for_key() did not return promptly after "
+				        "a byte arrived on console B (status 0x%x, 2=timed out)\n",
+				        (unsigned)status);
+				ok = 0;
+			} else {
+				printf("dual_console_wait_for_key() unblocked on a byte from console B\n");
+			}
+		}
 	}
 
 	close(master_a);

@@ -68,6 +68,60 @@ void dual_perror(const char *s)
 	dual_printf("%s: %s\n", s, strerror(errno));
 }
 
+int dual_console_wait_for_key(void)
+{
+	for (;;) {
+		struct pollfd pfds[2];
+		nfds_t nfds = 0;
+		int fd0_idx = -1, fd1_idx = -1;
+		int prc;
+		char c;
+		ssize_t n;
+
+		if (g_fd0 < 0 && g_fd1 < 0)
+			return -1;
+
+		if (g_fd0 >= 0) {
+			pfds[nfds].fd = g_fd0;
+			pfds[nfds].events = POLLIN;
+			fd0_idx = (int)nfds;
+			nfds++;
+		}
+		if (g_fd1 >= 0) {
+			pfds[nfds].fd = g_fd1;
+			pfds[nfds].events = POLLIN;
+			fd1_idx = (int)nfds;
+			nfds++;
+		}
+
+		prc = poll(pfds, nfds, -1);
+		if (prc < 0) {
+			if (errno == EINTR)
+				continue;
+			return -1;
+		}
+
+		if (fd0_idx >= 0 && (pfds[fd0_idx].revents & POLLIN)) {
+			n = read(g_fd0, &c, 1);
+			if (n > 0)
+				return 0;
+			if (!(n < 0 && (errno == EINTR || errno == EAGAIN)))
+				g_fd0 = -1;
+		}
+		if (fd1_idx >= 0 && (pfds[fd1_idx].revents & POLLIN)) {
+			n = read(g_fd1, &c, 1);
+			if (n > 0)
+				return 0;
+			if (!(n < 0 && (errno == EINTR || errno == EAGAIN)))
+				g_fd1 = -1;
+		}
+		if (fd0_idx >= 0 && (pfds[fd0_idx].revents & (POLLHUP | POLLERR)))
+			g_fd0 = -1;
+		if (fd1_idx >= 0 && (pfds[fd1_idx].revents & (POLLHUP | POLLERR)))
+			g_fd1 = -1;
+	}
+}
+
 int run_subprocess_dual_console(const char *bin, char *const argv[])
 {
 	int master;

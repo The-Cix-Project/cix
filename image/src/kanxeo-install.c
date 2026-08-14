@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
+#include <sys/reboot.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -491,6 +492,9 @@ static int enroll_signing_key(void)
 	dual_printf("kanxeo-install: enrolling the Kanxeo Secure Boot signing key -- choose a "
 	            "temporary password now; you'll need it once more at the very next reboot, in "
 	            "the blue MokManager screen, to confirm it\n");
+	dual_printf("(mokutil may print \"Can't open /proc/keys\"/\"Failed to access kernel "
+	            "trusted keyring\" below -- harmless in this minimal environment, the "
+	            "enrollment request itself is still written correctly)\n");
 
 	{
 		char *argv[] = { (char *)MOKUTIL_BIN, "--import", (char *)SIGNING_CERT_SRC, NULL };
@@ -776,5 +780,27 @@ int main(int argc, char **argv)
 	}
 
 	dual_printf("kanxeo-install: install complete\n");
-	return 0;
+	dual_printf("\n");
+	dual_printf("=====================================================================\n");
+	dual_printf("  Installation complete. Remove the installation media, then press\n");
+	dual_printf("  Enter to reboot into the newly-installed system.\n");
+	dual_printf("=====================================================================\n");
+
+	/*
+	 * Without this, kanxeo-install (running as PID 1) simply returns
+	 * from main() here -- the kernel's response to init exiting is an
+	 * immediate, unprompted panic, which read to a real operator as the
+	 * installer silently freezing rather than finishing (found live,
+	 * reported directly: "libkeyutils..." warnings during MOK
+	 * enrollment above, then this final silence, with nothing telling
+	 * them it was actually done). dual_console_wait_for_key() blocks on
+	 * whichever console the operator is actually watching; reboot(2)
+	 * only returns on failure, in which case the panic above is at
+	 * least no worse than the prior behavior.
+	 */
+	dual_console_wait_for_key();
+	sync();
+	reboot(RB_AUTOBOOT);
+	dual_perror("reboot");
+	return 1;
 }
