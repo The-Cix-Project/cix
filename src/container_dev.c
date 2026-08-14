@@ -153,6 +153,16 @@ int container_dev_mknod(const struct device_spec *devices, int device_count)
 		          makedev(devices[i].major, devices[i].minor)) != 0 &&
 		    errno != EEXIST)
 			return -1;
+		/* mknod()'s own requested mode is subject to the calling
+		 * process's umask (POSIX) -- explicit chmod() guarantees the
+		 * real 0666 this function already intends, regardless of
+		 * whatever umask this daemon happens to have inherited. See
+		 * pkg_seed_image_baseline()'s own identical fix and comment
+		 * for the live confirmation (a real /dev/null ended up 0644,
+		 * not 0666, the same class of bug this device-passthrough
+		 * path shares. */
+		if (chmod(devices[i].dev_path, mode & 07777) != 0)
+			return -1;
 	}
 
 	return 0;

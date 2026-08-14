@@ -1616,6 +1616,28 @@ enum pkg_error pkg_seed_image_baseline(const char *rootfs_path)
 			        0 &&
 			    errno != EEXIST)
 				return PKG_ERR_PERSIST_FAILED;
+			/*
+			 * mknod()'s own requested mode is subject to the calling
+			 * process's umask like any other file-creation call (POSIX;
+			 * confirmed live -- a real /dev/null created this way ended
+			 * up 0644, not the 0666 requested here, since nothing in
+			 * this daemon ever calls umask(0)). A standard device node
+			 * MUST stay world-writable regardless of whatever umask
+			 * this daemon process happens to inherit at startup -- a
+			 * non-root process inside a container writing to /dev/null
+			 * (e.g. redirecting a subprocess's own stderr, ADR-0144
+			 * task #838's own AuthorizedKeysCommand script) is a
+			 * completely ordinary, expected operation, not something
+			 * that should ever depend on this daemon's own environment.
+			 * chmod() explicitly here, unconditionally (even on the
+			 * EEXIST/idempotent-rerun path above, to also correct any
+			 * node an earlier, umask-affected run already created
+			 * wrong) -- deliberately not a process-wide umask(0) call,
+			 * which would affect every other file this daemon creates
+			 * too, not just these five nodes.
+			 */
+			if (chmod(path, 0666) != 0)
+				return PKG_ERR_PERSIST_FAILED;
 		}
 	}
 
