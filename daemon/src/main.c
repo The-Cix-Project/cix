@@ -133,7 +133,6 @@ static char LDAP_SERVERS_STATE_PATH[PATH_MAX];
 static char LDAP_USERS_STATE_PATH[PATH_MAX];
 static char LDAP_GROUPS_STATE_PATH[PATH_MAX];
 static char LDAP_CONFIG_STATE_PATH[PATH_MAX];
-static char LDAP_SSH_TARGETS_STATE_PATH[PATH_MAX];
 static char PKI_DIR[PATH_MAX];
 static char PKI_CERTS_STATE_PATH[PATH_MAX];
 static char PKI_CERTS_DIR[PATH_MAX];
@@ -256,8 +255,6 @@ static void compute_state_dir_relative_paths(void)
 	         STATE_DIR);
 	snprintf(LDAP_CONFIG_STATE_PATH, sizeof(LDAP_CONFIG_STATE_PATH), "%s/ldap_config.json",
 	         STATE_DIR);
-	snprintf(LDAP_SSH_TARGETS_STATE_PATH, sizeof(LDAP_SSH_TARGETS_STATE_PATH),
-	         "%s/ldap_ssh_targets.json", STATE_DIR);
 	snprintf(PKI_DIR, sizeof(PKI_DIR), "%s/pki", STATE_DIR);
 	snprintf(PKI_CERTS_STATE_PATH, sizeof(PKI_CERTS_STATE_PATH), "%s/pki_certs.json", PKI_DIR);
 	snprintf(PKI_CERTS_DIR, sizeof(PKI_CERTS_DIR), "%s/certs", PKI_DIR);
@@ -511,7 +508,7 @@ static void migrate_flat_layout_to_grouped(void)
 {
 	static const char *const state_entries[] = {
 		"networks.json",       "dns_records.json",  "dns_servers.json",     "ldap_servers.json",
-		"ldap_users.json",     "ldap_groups.json",  "ldap_config.json",     "ldap_ssh_targets.json",
+		"ldap_users.json",     "ldap_groups.json",  "ldap_config.json",
 		"pki",                 "container_defs.json", "rolling_config.json", "site_config.json",
 		"devicemaps.json",     "daemon_config.json", "quota_projids.json",
 		"keys",                "resolv.conf",       "ntp.conf",             "ntp_servers.json",
@@ -755,7 +752,6 @@ static int set_disk_quota(const char *base_path, uint32_t projid, long long quot
 #define LDAP_SERVERS_PREFIX "/v1/ldap/servers/"
 #define LDAP_GROUPS_PREFIX "/v1/ldap/groups/"
 #define LDAP_USERS_PREFIX "/v1/ldap/users/"
-#define LDAP_SSH_TARGETS_PREFIX "/v1/ldap/ssh-targets/"
 #define NTP_SERVERS_PREFIX "/v1/ntp/servers/"
 #define SYSLOG_TARGETS_PREFIX "/v1/syslog/targets/"
 #define PROCESSES_PREFIX "/v1/system/processes/"
@@ -6680,7 +6676,6 @@ static void finalize_state_storage_migration(void)
 	ldap_repoint(LDAP_SERVERS_STATE_PATH);
 	ldap_record_repoint(LDAP_USERS_STATE_PATH, LDAP_GROUPS_STATE_PATH);
 	ldap_config_repoint(LDAP_CONFIG_STATE_PATH);
-	ldap_ssh_repoint(LDAP_SSH_TARGETS_STATE_PATH);
 	pki_repoint(PKI_DIR, PKI_CERTS_STATE_PATH);
 	containerdef_repoint(CONTAINER_DEFS_STATE_PATH);
 	containerdef_rolling_config_repoint(ROLLING_CONFIG_PATH);
@@ -8571,7 +8566,6 @@ static void handle_delete(int fd, const char *name)
 	ldap_user_forget_owner(name);
 	pki_cert_forget_owner(name);
 	ntp_server_forget(name);
-	ldap_ssh_target_forget(name);
 	syslogfwd_target_forget(name);
 
 	/*
@@ -11176,102 +11170,6 @@ static void handle_ldap_server_delete(int fd, const char *name)
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
-static void respond_ldap_ssh_error(int fd, enum ldap_ssh_error err)
-{
-	switch (err) {
-	case LDAP_SSH_ERR_DUPLICATE:
-		respond_error(fd, 409, "Conflict", "this container is already registered as an SSH target");
-		break;
-	case LDAP_SSH_ERR_FULL:
-		respond_error(fd, 400, "Bad Request", "SSH target table full");
-		break;
-	case LDAP_SSH_ERR_CONTAINER_NOT_FOUND:
-		respond_error(fd, 404, "Not Found", "no such container");
-		break;
-	case LDAP_SSH_ERR_CONTAINER_NOT_RUNNING:
-		respond_error(fd, 404, "Not Found", "container is not running");
-		break;
-	case LDAP_SSH_ERR_PERSIST_FAILED:
-		respond_error(fd, 500, "Internal Server Error", "failed to persist SSH target registration");
-		break;
-	case LDAP_SSH_ERR_NOT_FOUND:
-	default:
-		respond_error(fd, 404, "Not Found", "no such SSH target registration");
-		break;
-	}
-}
-
-/*
- * Task #731: register a running container as an SSH target so that
- * ldap_ssh_sync_all() (triggered by every subsequent LDAP user/group
- * mutation via ldap_record_sync_all()) renders real Unix accounts +
- * authorized_keys files into it. Mirrors handle_ldap_server_create()'s
- * exact shape; unlike that path there is no config_path -- the target
- * is purely a container name, resolved fresh at sync time via
- * registry_find() (see ldap_ssh_target_register()'s own doc comment).
- */
-static void handle_ldap_ssh_target_create(int fd, const char *body, size_t body_len)
-{
-	struct json_value *root;
-	const char *container_name;
-	enum ldap_ssh_error serr;
-	struct json_writer w;
-
-	root = json_parse(body, body_len);
-	if (root == NULL) {
-		respond_error(fd, 400, "Bad Request", "invalid JSON body");
-		return;
-	}
-
-	container_name = json_as_string(json_object_get(root, "container"));
-	if (container_name == NULL) {
-		json_free(root);
-		respond_error(fd, 400, "Bad Request", "container missing");
-		return;
-	}
-
-	serr = ldap_ssh_target_register(container_name);
-	if (serr != LDAP_SSH_OK) {
-		json_free(root);
-		respond_ldap_ssh_error(fd, serr);
-		return;
-	}
-
-	jw_init(&w);
-	jw_obj_open(&w);
-	jw_key(&w, "container");
-	jw_str(&w, container_name);
-	jw_obj_close(&w);
-	json_free(root);
-	respond_json(fd, 201, "Created", &w);
-	jw_free(&w);
-}
-
-static void handle_ldap_ssh_target_list(int fd)
-{
-	struct json_writer w;
-
-	jw_init(&w);
-	jw_obj_open(&w);
-	jw_key(&w, "ssh_targets");
-	ldap_ssh_target_write_json_list(&w);
-	jw_obj_close(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
-static void handle_ldap_ssh_target_delete(int fd, const char *name)
-{
-	enum ldap_ssh_error serr = ldap_ssh_target_unregister(name);
-
-	if (serr != LDAP_SSH_OK) {
-		respond_ldap_ssh_error(fd, serr);
-		return;
-	}
-	http_set_blocking(fd);
-	http_write_response(fd, 204, "No Content", "application/json", "", 0);
-}
-
 /* ---- LDAP uid/gid allocation config (task #748) ---- */
 
 static void handle_ldap_config_get(int fd)
@@ -13767,23 +13665,6 @@ static void dispatch(int fd, const struct http_request *req)
 			return;
 		}
 	}
-	if (strcmp(req->path, "/v1/ldap/ssh-targets") == 0) {
-		if (strcmp(req->method, "GET") == 0) {
-			handle_ldap_ssh_target_list(fd);
-			return;
-		}
-		if (strcmp(req->method, "POST") == 0) {
-			handle_ldap_ssh_target_create(fd, req->body, req->body_len);
-			return;
-		}
-	}
-	if (strncmp(req->path, LDAP_SSH_TARGETS_PREFIX, strlen(LDAP_SSH_TARGETS_PREFIX)) == 0) {
-		name = req->path + strlen(LDAP_SSH_TARGETS_PREFIX);
-		if (name[0] != '\0' && strcmp(req->method, "DELETE") == 0) {
-			handle_ldap_ssh_target_delete(fd, name);
-			return;
-		}
-	}
 	if (strcmp(req->path, "/v1/ldap/config") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_ldap_config_get(fd);
@@ -16001,8 +15882,6 @@ int main(int argc, char **argv)
 	if (ldap_record_init(LDAP_USERS_STATE_PATH, LDAP_GROUPS_STATE_PATH) != 0)
 		return 1;
 	if (ldap_config_init(LDAP_CONFIG_STATE_PATH) != 0)
-		return 1;
-	if (ldap_ssh_init(LDAP_SSH_TARGETS_STATE_PATH) != 0)
 		return 1;
 	if (pki_init(PKI_DIR, PKI_CERTS_STATE_PATH) != 0)
 		return 1;

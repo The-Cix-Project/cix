@@ -2,6 +2,22 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 124 (done): retire the file-rendered SSH-target sync mechanism (ADR-0145)
+
+ADR-0144's own Decision section already stated the intent: real live-LDAP SSH login "replaces the file-rendering SSH-target mechanism entirely." With Part 122 verified end to end on the real box, the user asked directly to complete that replacement now: "let's remove the old mechanism." Removed outright, not deprecated in place -- see [ADR-0145](docs/adr/0145-retire-file-rendered-ssh-target-sync.md) for the full reasoning.
+
+#### Removed
+- `daemon/src/ldap.c`'s whole SSH-backed login sync block (`g_ssh_targets`, `ldap_ssh_target_register`/`unregister`/`forget`, `write_managed_tail()`, `write_accounts_for_pid()`, `ldap_ssh_sync_all()`) and every call site (`ldap_record_sync_all()`, container-delete cleanup, daemon startup init/repoint, legacy flat-layout migration list). `daemon/include/ldap.h`'s matching declarations.
+- `POST`/`GET /v1/ldap/ssh-targets`, `DELETE /v1/ldap/ssh-targets/{container}` -- gone from `docs/api/openapi.yaml`, not deprecated.
+- `kanxeoctl ldap ssh-target register/ls/unregister` -- gone from the CLI and its own help text.
+- `docs/api/README.md`'s "SSH target account sync" section, `docs/guides/security.md`'s matching example (rewritten to the real live-LDAP setup instead), and every current-state doc reference to the old endpoint/CLI surface.
+
+`ssh_public_key` itself is untouched -- still a real `ldap_user` field, now rendered exclusively as glauth's own `sshkeys = [...]` attribute (Part 119), the one real consumer left.
+
+#### Verified
+- Confirmed `GET /v1/ldap/ssh-targets` returned no registrations on the real box immediately before the daemon code was deleted -- `jumpbox1` (the only container ever registered) had already been recreated onto the live-LDAP mechanism in Part 122, so this removal breaks nothing live.
+- Full clean rebuild (every one of this project's ~70 build targets, `-Wall -Werror`) and full daemon-linked regression sweep (`test_daemon`, `test_cli`, `test_web`, `test_ldap`, `test_container_files`, `test_container_lifecycle`, `test_images`, `test_hostauth`, `test_dns`, `test_pki`) -- zero failures.
+
 ### Part 123 (done): real per-file owner/group on `POST /containers`' `files[]` (ADR-0144, part 13 of N)
 
 A real gap surfaced by Part 122's own `AuthorizedKeysCommand` credentials file: `files[]` had `path`/`content`/`mode` but no way to say *who* should own a staged file, so a file only one specific non-root process should be able to read had no way to actually be restricted to it -- `mode` alone can restrict *what* is allowed, never *who*. Raised directly by the user after Part 122's own summary disclosed the resulting compromise (`ldap-authkeys.conf` staged world-readable, `0644`, since that was the only way to make it readable by the non-root `AuthorizedKeysCommandUser`) -- "no hacky manual changes." Fixed as a real, general platform capability, not a one-off patch for that single file.

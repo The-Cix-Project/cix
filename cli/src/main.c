@@ -139,11 +139,6 @@ static void print_usage(FILE *out)
 	        "               its own absolute view of glauth's own config file\n"
 	        "  ldap server ls\n"
 	        "  ldap server unregister CONTAINER\n"
-	        "  ldap ssh-target register --container=NAME  -- registers a running container to\n"
-	        "               receive real Unix accounts + authorized_keys rendered from LDAP\n"
-	        "               users that carry an --ssh-key= (task #731)\n"
-	        "  ldap ssh-target ls\n"
-	        "  ldap ssh-target unregister CONTAINER\n"
 	        "  ldap group add --name=NAME --gidnumber=N\n"
 	        "  ldap group ls\n"
 	        "  ldap group update --name=NAME --gidnumber=N\n"
@@ -859,24 +854,6 @@ static void fmt_ldap_server_list(const struct json_value *v)
 		return;
 	for (i = 0; i < servers->u.array.count; i++)
 		fmt_ldap_server_line(servers->u.array.items[i]);
-}
-
-static void fmt_ldap_ssh_target_line(const struct json_value *v)
-{
-	const char *container = json_str_field(v, "container");
-
-	printf("%s\n", container);
-}
-
-static void fmt_ldap_ssh_target_list(const struct json_value *v)
-{
-	const struct json_value *targets = json_object_get(v, "ssh_targets");
-	size_t i;
-
-	if (targets == NULL || targets->type != JSON_ARRAY)
-		return;
-	for (i = 0; i < targets->u.array.count; i++)
-		fmt_ldap_ssh_target_line(targets->u.array.items[i]);
 }
 
 static void fmt_ldap_config_line(const struct json_value *v)
@@ -5840,104 +5817,6 @@ static int cmd_ldap_server(const struct kx_client *c, int json_mode, int argc, c
 	return 2;
 }
 
-/* Task #731: register a running container as an SSH target -- every
- * subsequent "ldap user"/"ldap group" mutation then renders real Unix
- * accounts + authorized_keys files into it (see ldap.h's own doc
- * comments for the full design rationale). Mirrors cmd_ldap_server's
- * exact shape, minus the config_path (there is none for this kind of
- * target). */
-static int cmd_ldap_ssh_target_register(const struct kx_client *c, int json_mode, int argc,
-                                         char **argv)
-{
-	const char *container = NULL;
-	int i;
-	struct json_writer w;
-	struct kx_response r;
-
-	for (i = 0; i < argc; i++) {
-		if (strncmp(argv[i], "--container=", 12) == 0)
-			container = argv[i] + 12;
-		else {
-			fprintf(stderr, "kanxeoctl: unknown ldap ssh-target register option '%s'\n",
-			        argv[i]);
-			return 2;
-		}
-	}
-
-	if (container == NULL) {
-		fprintf(stderr, "usage: kanxeoctl ldap ssh-target register --container=NAME\n");
-		return 2;
-	}
-
-	jw_init(&w);
-	jw_obj_open(&w);
-	jw_key(&w, "container");
-	jw_str(&w, container);
-	jw_obj_close(&w);
-	w.buf[w.len] = '\0';
-
-	if (kx_client_request(c, "POST", "/v1/ldap/ssh-targets", w.buf, &r) != 0) {
-		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
-		return 1;
-	}
-	jw_free(&w);
-
-	return emit(&r, json_mode, fmt_ldap_ssh_target_line);
-}
-
-static int cmd_ldap_ssh_target_ls(const struct kx_client *c, int json_mode)
-{
-	struct kx_response r;
-
-	if (kx_client_request(c, "GET", "/v1/ldap/ssh-targets", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
-		return 1;
-	}
-	return emit(&r, json_mode, fmt_ldap_ssh_target_list);
-}
-
-static int cmd_ldap_ssh_target_unregister(const struct kx_client *c, int json_mode, int argc,
-                                           char **argv)
-{
-	struct kx_response r;
-	char path[256];
-
-	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: ldap ssh-target unregister requires a container name\n");
-		return 2;
-	}
-	snprintf(path, sizeof(path), "/v1/ldap/ssh-targets/%s", argv[0]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
-		return 1;
-	}
-	return emit(&r, json_mode, fmt_removed);
-}
-
-static int cmd_ldap_ssh_target(const struct kx_client *c, int json_mode, int argc, char **argv)
-{
-	const char *sub;
-
-	if (argc < 1) {
-		fprintf(stderr,
-		        "usage: kanxeoctl ldap ssh-target register --container=NAME\n"
-		        "       kanxeoctl ldap ssh-target ls\n"
-		        "       kanxeoctl ldap ssh-target unregister CONTAINER\n");
-		return 2;
-	}
-	sub = argv[0];
-	if (strcmp(sub, "register") == 0)
-		return cmd_ldap_ssh_target_register(c, json_mode, argc - 1, argv + 1);
-	if (strcmp(sub, "ls") == 0)
-		return cmd_ldap_ssh_target_ls(c, json_mode);
-	if (strcmp(sub, "unregister") == 0)
-		return cmd_ldap_ssh_target_unregister(c, json_mode, argc - 1, argv + 1);
-
-	fprintf(stderr, "kanxeoctl: unknown ldap ssh-target subcommand '%s'\n", sub);
-	return 2;
-}
-
 static int cmd_ldap_group_add(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
@@ -6342,7 +6221,6 @@ static int cmd_ldap(const struct kx_client *c, int json_mode, int argc, char **a
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: kanxeoctl ldap server ...\n"
-		                "       kanxeoctl ldap ssh-target ...\n"
 		                "       kanxeoctl ldap config ...\n"
 		                "       kanxeoctl ldap group ...\n"
 		                "       kanxeoctl ldap user ...\n");
@@ -6351,8 +6229,6 @@ static int cmd_ldap(const struct kx_client *c, int json_mode, int argc, char **a
 	sub = argv[0];
 	if (strcmp(sub, "server") == 0)
 		return cmd_ldap_server(c, json_mode, argc - 1, argv + 1);
-	if (strcmp(sub, "ssh-target") == 0)
-		return cmd_ldap_ssh_target(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "config") == 0)
 		return cmd_ldap_config(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "group") == 0)

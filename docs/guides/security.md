@@ -95,18 +95,21 @@ kanxeoctl ldap group add --name=superheros --gidnumber=5501
 kanxeoctl ldap user add --name=j_doe --primarygroup=5501 --mail=j.doe@kanxeo.internal --password=dogood
 ```
 
-`uidnumber`/`gidnumber` are optional — auto-allocated from a configurable floor (`kanxeoctl ldap config show`/`set --start-uid=N --start-gid=N`, default `10000`, changing it only affects future allocations). A password, if given, is SHA-256-hashed on the daemon side — never stored or returned in plaintext, only a `has_password` boolean is exposed.
+`uidnumber`/`gidnumber` are optional — auto-allocated from a configurable floor (`kanxeoctl ldap config show`/`set --start-uid=N --start-gid=N`, default `10000`, changing it only affects future allocations). A password, if given, is bcrypt-hashed on the daemon side (ADR-0144) — never stored or returned in plaintext, only a `has_password` boolean is exposed.
 
-### Real SSH accounts on a jump box
+### Real SSH accounts on a jump box (ADR-0144 task #838)
 
-This project has no real LDAP-protocol NSS/PAM stack (`openssh.recipe` was deliberately built without PAM). Instead, registering a container as an SSH target renders real `/etc/passwd`/`/etc/group`/`/etc/shadow` entries plus each user's own `~/.ssh/authorized_keys` directly onto its filesystem — sshd itself never talks to LDAP, it just reads ordinary account files kept in sync on every LDAP user/group change:
+`sshd` queries LDAP live at connection time — real password auth via `pam_ldap.so`'s own bind-as-user check, real pubkey auth via a live `AuthorizedKeysCommand` `ldapsearch` for the user's `sshPublicKey` attribute. Not a `kanxeoctl` one-liner: the target container needs `openssh` built `--with-pam` plus `linux-pam`/`nss-pam-ldapd` already installed, and real per-container config (`/etc/nslcd.conf`, `/etc/nsswitch.conf`, `/etc/pam.d/sshd`, `UsePAM yes`/`AuthorizedKeysCommand` in `sshd_config`) staged via `files[]` at creation time — see [`docs/api/README.md`'s "Real, live-LDAP SSH login"](../api/README.md#real-live-ldap-ssh-login-adr-0144-task-838) for the full field-by-field setup, and [ADR-0144](../adr/0144-host-authentication-and-real-ldap.md)/[ADR-0145](../adr/0145-retire-file-rendered-ssh-target-sync.md) for why it's built this way.
+
+`nslcd` and the `AuthorizedKeysCommand` script both need a real bind identity with search capability — grant one via `--can-search` on a dedicated service account, never a human login account:
 
 ```sh
-kanxeoctl ldap ssh-target register --container=jumpbox1
-kanxeoctl ldap user add --name=j_doe --primarygroup=5501 --ssh-key="ssh-ed25519 AAAA..." --password=dogood
+kanxeoctl ldap group add --name=service-accounts --gidnumber=10001
+kanxeoctl ldap user add --name=svc-nslcd --primarygroup=10001 --password=<a-real-secret> --can-search
+kanxeoctl ldap user add --name=j_doe --primarygroup=5501 --ssh-key="ssh-ed25519 AAAA..." --password=dogood --loginshell=/usr/bin/bash
 ```
 
-Only a user with a non-empty `--ssh-key=` and not `--disabled` gets a rendered account; everyone else stays an ordinary directory entry with no shell access. `kanxeoctl ldap ssh-target unregister CONTAINER` does not touch already-rendered accounts on that container's own filesystem — it only stops future syncs.
+`--ssh-key=` is rendered as glauth's own real `sshkeys` LDAP attribute, queried live rather than copied to a file. `--loginshell=` matters here in a way it didn't before: an empty one renders as glauth's own default, which doesn't resolve on this project's own minimal images (`/usr/bin/bash` is the real path, not `/bin/bash`) — `sshd` rejects the login outright if it can't find the configured shell.
 
 ### Service accounts for containers themselves
 

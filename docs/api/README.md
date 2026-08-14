@@ -123,9 +123,6 @@ Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `dae
 | GET | `/ldap/servers` | List all registered LDAP server bindings |
 | POST | `/ldap/servers` | Register a running container as the LDAP-serving target |
 | DELETE | `/ldap/servers/{container}` | Unregister an LDAP server binding |
-| GET | `/ldap/ssh-targets` | List all registered LDAP SSH targets (task #731) |
-| POST | `/ldap/ssh-targets` | Register a running container to receive real Unix accounts + `authorized_keys` rendered from LDAP users |
-| DELETE | `/ldap/ssh-targets/{container}` | Unregister an LDAP SSH target (does not touch the container's own filesystem) |
 | GET | `/ldap/groups` | List every LDAP group |
 | POST | `/ldap/groups` | Create an LDAP group (`gidnumber` optional -- auto-allocated if omitted, task #748) |
 | GET | `/ldap/groups/{name}` | Inspect one LDAP group |
@@ -848,31 +845,9 @@ PUT /v1/ldap/config
 
 `start_uid`/`start_gid` (task #748) are the floors `ldap_uid_alloc()`/`ldap_gid_alloc()` scan upward from when `POST /v1/ldap/users`/`POST /v1/ldap/groups` omits `uidnumber`/`gidnumber`. Both default to `10000` until changed. Setting a new floor takes effect immediately for the *next* auto-allocation only — it never renumbers any user or group that already exists, and both values must be positive integers (`400` otherwise). Persisted to `<data-dir>/ldap_config.json`, survives a daemon restart.
 
-### SSH target account sync (task #731) — file-rendered, the original mechanism
-
-This is the *first* of two real SSH-login mechanisms this platform now has (see "Real, live-LDAP SSH login" below for the second, newer one) — kept, not replaced: still real, still functional, and still the simpler choice for an image whose `openssh` build has no PAM support. It extends the same "Kanxeo owns the durable record, renders into the consumer's own filesystem" pattern DNS and LDAP-for-glauth above already establish, a third time: registering a container renders real `/etc/passwd`/`/etc/group`/`/etc/shadow` entries plus a per-user `~/.ssh/authorized_keys` file directly onto its filesystem for every LDAP user carrying a non-empty `ssh_public_key` — sshd itself never talks to LDAP or kanxeod, it just reads ordinary, locally-resolvable account files that happen to be kept in sync.
-
-```
-POST /v1/ldap/ssh-targets
-{"container": "jumpbox1"}
-
-POST /v1/ldap/users
-{"name": "j_doe", "uidnumber": 5001, "primarygroup": 5501,
- "ssh_public_key": "ssh-ed25519 AAAA...", "password": "dogood"}
-```
-
-- `container` must already exist and be running (`404` otherwise, same rule `POST /v1/ldap/servers` enforces) — validated directly against the registry, not a pre-check elsewhere.
-- Registering a target syncs it immediately, so a fresh registration starts current rather than empty — the same behavior `POST /v1/ldap/servers` already has.
-- Every subsequent `POST`/`PUT`/`DELETE` against `/ldap/users` or `/ldap/groups` re-syncs every registered, currently-running SSH target automatically (`ldap_ssh_sync_all()`, called from the same `ldap_record_sync_all()` every other LDAP mutation already goes through) — no separate sync call is ever needed.
-- Only users with a non-empty `ssh_public_key` and `disabled: false` get an account; disabled or key-less users are skipped by SSH target sync entirely (though they remain ordinary directory entries for glauth's own purposes).
-- The rendered shadow entry always uses `*` (locked password, pubkey auth still works), never `!` (which OpenSSH treats as a fully locked account, blocking *all* auth methods including pubkey) — a real gotcha, confirmed the hard way during task #730's own manual provisioning.
-- `/etc/passwd`/`/etc/group`/`/etc/shadow` writes use a marker-line-based "managed tail" (`write_managed_tail()`), not a whole-file rewrite: everything above the marker (root/sshd's own pre-provisioned entries) is preserved byte-for-byte, only the managed tail below it is replaced on every sync — the same conceptual approach `ldap_write_config_file()` uses for glauth's TOML, adapted for a format with no natural stanza boundary.
-- `GET /v1/ldap/ssh-targets` lists every current registration; `DELETE /v1/ldap/ssh-targets/{container}` unregisters one (does not touch the container's own filesystem — already-rendered accounts are left in place). Deleting the container automatically removes its registration (`ldap_ssh_target_forget()`, same cleanup path as `ldap_server_forget()`). Persisted to `<data-dir>/ldap_ssh_targets.json`, survives a daemon restart.
-- A general, related fix landed alongside this feature: every newly-created image now gets `libnss_files.so.2` staged into its shared-lib closure and a default `/etc/nsswitch.conf` (`passwd/group/shadow/hosts: files`) written if one doesn't already exist (`pkg_seed_image_baseline()`) — without it, even a correctly-rendered `/etc/passwd` entry fails to resolve at all (`getpwnam()` silently empty), since glibc's NSS "files" backend is a `dlopen()`ed module, never picked up by the `ldd`-based shared-library closure staging that already handles every ELF-`NEEDED` dependency.
-
 ### Real, live-LDAP SSH login (ADR-0144 task #838)
 
-The second, newer SSH-login mechanism: `sshd` itself queries LDAP live, at connection time, instead of reading files Kanxeo pre-renders. Needs `openssh` built `--with-pam` (`pkg/recipes/openssh/10.4p1-7/build.sh` onward), plus `linux-pam` and `nss-pam-ldapd` (Parts 116-118) already installed on the target image. Not a container-creation flag — this is real per-container runtime configuration, staged the same way `glauth.cfg`/`dnsmasq.conf`/`chrony.conf` already are, via the container's own `files` entries at creation time:
+`sshd` queries LDAP live, at connection time, instead of reading files Kanxeo pre-renders — this platform's one real SSH-login mechanism (an earlier, file-rendered alternative from task #731 existed briefly during ADR-0144's own development and was retired once this one was proven working end to end; see [ADR-0145](../adr/0145-retire-file-rendered-ssh-target-sync.md) for why). Needs `openssh` built `--with-pam` (`pkg/recipes/openssh/10.4p1-7/build.sh` onward), plus `linux-pam` and `nss-pam-ldapd` (Parts 116-118) already installed on the target image. Not a container-creation flag — this is real per-container runtime configuration, staged the same way `glauth.cfg`/`dnsmasq.conf`/`chrony.conf` already are, via the container's own `files` entries at creation time:
 
 - `/etc/nslcd.conf` (mode `0600`, root-only): `uri`/`base`/`binddn`/`bindpw` pointing at the real LDAP servers (`ldap-1`/`ldap-2`) and a real bind/service account carrying `can_search: true` (see below) — `nslcd` itself runs as root in this project's minimal images (no `uid`/`gid` directive; matches `chrony.recipe`'s own "no privilege drop" precedent), so no separate account is needed just for it to read its own config.
 - `/etc/nsswitch.conf`: `passwd`/`group`/`shadow: files ldap` — routes `getpwnam()`/`getgrnam()` through `nslcd`'s NSS module for any account not already in the container's own local `/etc/passwd`.
