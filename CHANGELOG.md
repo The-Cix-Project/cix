@@ -2,6 +2,17 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 142 (done): validate + document image-version pinning for running containers (task #874)
+
+User-reported, after installing `procps` onto the real box's jumpbox image and finding the already-running `jumpbox1` container still had no `ps`: "when we adjust an image, it's not picking things up? Or a container? the cool thing about our approach is that we package manage containers on the fly, right?" Investigated and confirmed the answer is **no, by deliberate design** (ADR-0107/0108/0124, already implemented and already covered by `test/test_rolling_restart.c`, re-run clean here as live confirmation) -- every install against an image produces a new, immutable, content-addressed rootfs version, never a mutation in place; a container pins the specific version it was created against and keeps running against that exact directory forever. The only previously-undiscovered gap was that this well-established mechanism had no plain-language, operator-facing explanation anywhere outside the ADRs and a dense `api/README.md` paragraph.
+
+#### Added
+- `docs/guides/administration.md`: new "Does installing a package onto an image reach containers already running from it?" section -- the direct answer, plus the two real ways to actually get new content onto a running container (recreate, or opt into `follow_rolling: true`), and a pointer to ADR-0153's live single-file `PUT .../files` for the unrelated "quick config patch" case.
+- `recipes/container/README.md`: a real worked example container recipe (`echo-web`), closing a genuine dangling link -- `recipes/README.md` has linked to `recipes/container/` since ADR-0151 (Part 137), but the directory had never actually held any committed content (git doesn't track empty directories), so the link 404'd. Found via a repo-wide, script-based markdown link/anchor resolution sweep (177 files, 0 broken afterward) run as part of this task's own verification.
+
+#### Scope
+- Purely additive documentation plus one pre-existing dangling-link fix -- no code changes; the underlying mechanism (ADR-0107/0108/0124) was already fully implemented and tested before this task.
+
 ### Part 141 (done): live, single-file container updates without a recreate (ADR-0153, task #861)
 
 `PUT /v1/containers/{name}/files?path=...` writes or overwrites one file inside an already-existing container -- running (via `/proc/<pid>/root`, overlay copy-up lands it in the real upperdir) or stopped/exited (direct to upperdir) -- without recreating the container. Deliberately live and ephemeral: never touches the container's own persisted `files[]` body, so a future restart/recreate replays the original definition unchanged. The durable "survive a recreate" path stays a container recipe (ADR-0151).
