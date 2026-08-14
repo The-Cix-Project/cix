@@ -111,6 +111,8 @@ kanxeoctl ldap user add --name=j_doe --primarygroup=5501 --ssh-key="ssh-ed25519 
 
 `--ssh-key=` is rendered as glauth's own real `sshkeys` LDAP attribute, queried live rather than copied to a file. `--loginshell=` matters here in a way it didn't before: an empty one renders as glauth's own default, which doesn't resolve on this project's own minimal images (`/usr/bin/bash` is the real path, not `/bin/bash`) — `sshd` rejects the login outright if it can't find the configured shell.
 
+Two more real, non-obvious gotchas confirmed live re-provisioning this from scratch (both closed, neither is a hack -- both are the standard, documented fix for the class of problem they are): `nslcd.conf` needs `pam_authc_ppolicy no` -- glauth's `config` backend doesn't recognize the LDAP password-policy control `nslcd` requests by default, and returns a spurious "Invalid credentials" rather than ignoring the unsupported control gracefully; and `openssh` needs `pkg/recipes/openssh/10.4p1-8/build.sh` specifically, not `-7` -- with `UsePAM yes`, the actual PAM conversation runs inside `sshd`'s own privsep pre-auth child, which `chroot()`s to `--with-privsep-path` before that conversation ever happens, so `pam_ldap.so`'s attempt to reach `nslcd`'s local socket fails unless that chroot target lives on the same filesystem the socket does (`-8` moves it from `/var/empty` to `/run/sshd-empty`, alongside `nslcd`'s own `/run/nslcd/socket`, and the container's own startup command hard-links the socket into the chroot once `nslcd` has bound it -- see `docs/api/README.md`'s own worked example for the exact sequencing).
+
 ### Service accounts for containers themselves
 
 A container can provision its own LDAP bind account at creation time, separate from the human accounts above:
