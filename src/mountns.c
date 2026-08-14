@@ -126,5 +126,47 @@ int mountns_pivot(const char *new_root, const struct mount_spec *mnt)
 		return -1;
 	}
 
+	/*
+	 * The same devpts gap task #764/ADR-pending-#426 already found and
+	 * fixed for the daemon's own host-namespace console-exec feature
+	 * (kanxeod's exec.c posix_openpt()s /dev/ptmx fine regardless --
+	 * that device is always reachable -- but opening the SLAVE path
+	 * ptsname_r() hands back fails with a bare ENOENT unless a real
+	 * devpts filesystem is mounted at /dev/pts), one namespace layer
+	 * deeper: each container gets its own mount namespace here, so the
+	 * host's own /dev/pts mount is never inherited into it, and this
+	 * project's own containers use a plain overlay /dev (no devtmpfs,
+	 * unlike the host) with only pkg_seed_image_baseline()'s five
+	 * static device nodes -- no /dev/ptmx at all. A container-side
+	 * process needing a real pty (sshd's own interactive session
+	 * allocation being the case that surfaced this) fails outright
+	 * with no such device. Fresh on every start, same as /proc/​/sys/​
+	 * /run above -- mount points never persist across a container
+	 * restart, only the underlying rootfs files do. Same mount options
+	 * as the host's own copy (main.c's boot_init(), kanxeo-install.c's
+	 * early_mounts()) for the same reason: ptmxmode=0666 so a non-root
+	 * process inside the container can still allocate a pty.
+	 */
+	/* Unlike /proc, /sys, /run (all fresh top-level dirs regardless of
+	 * what the lowerdir provides), /dev itself is only guaranteed to
+	 * exist for a real Kanxeo-managed image (pkg_seed_image_baseline()
+	 * creates it) -- a minimal hand-built rootfs with no /dev at all is
+	 * a legitimate case (mkdir("/dev/pts", ...) would otherwise fail
+	 * ENOENT, its parent missing), so /dev itself gets the same
+	 * guaranteed-present treatment first. */
+	if (mkdir("/dev", 0755) != 0 && errno != EEXIST) {
+		perror("mountns_pivot: mkdir(/dev)");
+		return -1;
+	}
+	if (mkdir("/dev/pts", 0755) != 0 && errno != EEXIST) {
+		perror("mountns_pivot: mkdir(/dev/pts)");
+		return -1;
+	}
+	if (mount("devpts", "/dev/pts", "devpts", MS_NOSUID | MS_NOEXEC,
+	          "mode=0620,ptmxmode=0666") != 0) {
+		perror("mountns_pivot: mount(devpts)");
+		return -1;
+	}
+
 	return 0;
 }

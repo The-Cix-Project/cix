@@ -1639,6 +1639,31 @@ enum pkg_error pkg_seed_image_baseline(const char *rootfs_path)
 			if (chmod(path, 0666) != 0)
 				return PKG_ERR_PERSIST_FAILED;
 		}
+
+		/*
+		 * /dev/ptmx as a symlink to pts/ptmx, the real devpts-provided
+		 * multiplexor device -- a static mknod()'d node the way the
+		 * five above are can't work here: this project's containers
+		 * use a plain overlay /dev (no devtmpfs), and pty allocation
+		 * needs a genuine devpts filesystem actually mounted, which
+		 * only happens fresh on each container start (mountns_pivot(),
+		 * src/mountns.c) -- this symlink is the static, one-time part
+		 * of that fix; the mount itself can't be seeded here since
+		 * mount points don't persist in image content. Same convention
+		 * every real distro/container runtime uses (glibc's own
+		 * posix_openpt() opens literally "/dev/ptmx"), not invented
+		 * here. See mountns_pivot()'s own doc comment for the full
+		 * root cause this closes (found investigating a real "PTY
+		 * allocation request failed" during an interactive SSH
+		 * session).
+		 */
+		{
+			char ptmx_path[PATH_MAX];
+
+			snprintf(ptmx_path, sizeof(ptmx_path), "%s/ptmx", dev_dir);
+			if (symlink("pts/ptmx", ptmx_path) != 0 && errno != EEXIST)
+				return PKG_ERR_PERSIST_FAILED;
+		}
 	}
 
 	{

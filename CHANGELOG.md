@@ -2,6 +2,21 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 133 (done): every container gets a real devpts mount + /dev/ptmx (ADR-0150, task #865)
+
+User-reported, real: an interactive `ssh osakka@192.168.15.109` (jumpbox1) failed with `PTY allocation request failed on channel 0` -- every prior test only ever used non-interactive `ssh ... id`, never exercising real pty allocation. Root cause, confirmed by reading the code: `pkg_seed_image_baseline()` never seeded a `/dev/ptmx` node (only `null`/`zero`/`full`/`random`/`urandom`), and `mountns_pivot()` never mounted `devpts` inside a container's own mount namespace -- the identical bug class task #764 already fixed once for the daemon's own host-namespace console-exec feature, one namespace layer deeper, never addressed for containers themselves.
+
+#### Added
+- `src/mountns.c`'s `mountns_pivot()`: a fresh `devpts` mount at `/dev/pts` on every container start (`mode=0620,ptmxmode=0666`, identical options to the host's own `boot_init()` mount), same "fresh every start" treatment as `/proc`/`/sys`/`/run`.
+- `daemon/src/pkg.c`'s `pkg_seed_image_baseline()`: a `/dev/ptmx` symlink to `pts/ptmx`, seeded alongside the five existing static device nodes -- self-heals into every pre-existing image automatically, since this function re-runs on every install, not just an image's first version.
+- New permanent regression test, `test/test_container_pty.c` + `test/pty_child.c`: a real container allocates a pty exactly the way `sshd`'s own interactive session does (`posix_openpt`/`grantpt`/`unlockpt`/`ptsname_r`/open the slave/round-trip a byte).
+
+#### Fixed
+- A real regression caught by the new test's own first run, before it ever left this session: the first version of the `mountns_pivot()` change assumed `/dev` already existed, which broke `test_overlay.c`/`test_container_net.c`'s own minimal hand-built lowerdirs (no `/dev` at all) outright. Fixed by giving `/dev` itself the same guaranteed-present treatment as `/proc`/`/sys`/`/run`.
+
+#### Verified
+- Full clean rebuild, zero warnings. New test passes; full regression sweep (15 daemon-linked and standalone container/pkg/ldap/hostauth tests) confirmed clean after the `/dev` fix.
+
 ### Part 132 (done): unified `recipes/package/` + `recipes/image/` git layout (ADR-0149)
 
 Follow-up to task #867 (commit the 4 already-built image recipes to git, wire `pkg sync` to walk them, closing the gap ADR-0123 flagged): mid-implementation, the user pointed out `pkg/recipes/` (versioned) and the new `pkg/image-recipes/` (flat, name-only) didn't read as one coherent system. Proposed layout, confirmed with the user via `AskUserQuestion` given the real tension with ADR-0123's deliberate "image recipes aren't versioned" decision: version both, but let "version" mean the *recipe's own* revision history for images (a new declared package list is a new version), a separate axis from an image's content-addressed build version (ADR-0108) -- not a reversal of ADR-0123's daemon-side API design, which stays exactly as it was.
