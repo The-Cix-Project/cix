@@ -2,6 +2,18 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 135 (done): all 4 image manifests switch to rolling, closing a dead `follow_rolling` flag
+
+Direct follow-up to Part 132/ADR-0149: publishing the 4 captured image recipes surfaced that every one of them declared its packages `pinned`. Asked directly (`AskUserQuestion`) whether that was intentional; user pointed out Kanxeo's own charter (`CLAUDE.md`'s opening line) calls it "a custom, **rolling-release**... platform" -- pinned was never the actual policy, just what got captured from what happened to be installed. A deeper check found the consequence was real: every one of the 4 images' manifests had **zero entries** (`image show` confirmed `"manifest": []` across the board), meaning jumpbox1's own `follow_rolling=true` (set in an earlier session) had nothing to follow and had been silently inert the entire time.
+
+#### Changed
+- `recipes/image/{dns,ldap,syslog,jumpbox}/1.1.0/build.sh`: every `image_packages=` entry switched from `pinned` to `rolling`.
+- Published and applied on the real box (`image recipe add` + `image apply-recipe`, the synchronous bulk-declare path, ADR-0123 -- no rootfs touched, only `manifest.json`). All 4 manifests confirmed populated and `rolling` via a live `image show` round-trip.
+
+#### Consequences
+- `queue_rolling_rebuilds_for()` (`daemon/src/pkg.c`, ADR-0107) is now live for real: the moment any of these images' packages gets a newer recipe version published (`pkg recipe add`/`pkg sync`), a real rebuild queues automatically, and jumpbox1's `follow_rolling` (confirmed re-set to `true` this time, Part 134) will pick it up with a jittered restart (ADR-0124) with no operator action needed.
+- Saved as a standing correction (`feedback_rolling_release_default` memory): don't infer an image-manifest "prefer pinned" policy from the unrelated fact that individual package recipes pin their own build source -- those are different layers.
+
 ### Part 134 (done): jumpbox1 auto-creates LDAP home directories (task #864), gains real admin tooling
 
 Second half of the two real interactive-SSH gaps reported this session (the first, PTY allocation, is Part 133/ADR-0150). `linux-pam/1.6.1-2/build.sh` adds `modules/pam_mkhomedir` to the existing baseline module set -- glauth has no home-directory-provisioning concept of its own (it's purely a directory server), and this project's minimal images ship no `/home` content, so an LDAP account's first login had nowhere to land. `/etc/pam.d/sshd` on jumpbox1 gained `session required pam_mkhomedir.so skel=/etc/skel umask=0077`.
