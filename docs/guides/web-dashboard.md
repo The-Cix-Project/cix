@@ -1,6 +1,6 @@
 # Web dashboard tour
 
-The dashboard is served by `kanxeod` itself, same origin and port as the API (`http://<host>:7620/` -- no separate process, no build step, vanilla HTML/CSS/JS, ADR-0010). It's a pure REST client exactly like `kanxeoctl` -- every action it takes is a call to the same endpoints documented in [`docs/api/README.md`](../api/README.md); this page covers the UI itself, not the API calls behind it.
+The dashboard is served by `kanxeod` itself, same origin and port as the API (`http://<host>/` -- no separate process, no build step, vanilla HTML/CSS/JS, ADR-0010). It's a pure REST client exactly like `kanxeoctl` -- every action it takes is a call to the same endpoints documented in [`docs/api/README.md`](../api/README.md); this page covers the UI itself, not the API calls behind it.
 
 ## Layout
 

@@ -101,12 +101,12 @@ kanxeoctl --host=<install-ip> daemon-config set --management-network=lan1
 Or, equivalently, straight `curl` (every `kanxeoctl` subcommand is exactly one HTTP call, per the API-First Mandate):
 
 ```sh
-curl http://<install-ip>:7620/v1/system/daemon-config
-curl -X PUT http://<install-ip>:7620/v1/system/daemon-config \
+curl http://<install-ip>:80/v1/system/daemon-config
+curl -X PUT http://<install-ip>:80/v1/system/daemon-config \
      -d '{"port": 8080}'
-curl -X PUT http://<install-ip>:7620/v1/system/daemon-config \
+curl -X PUT http://<install-ip>:80/v1/system/daemon-config \
      -d '{"https_enabled": true}'
-curl -X PUT http://<install-ip>:7620/v1/system/daemon-config \
+curl -X PUT http://<install-ip>:80/v1/system/daemon-config \
      -d '{"management_network": "lan1"}'
 ```
 

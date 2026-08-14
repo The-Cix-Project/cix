@@ -217,7 +217,7 @@
   <rect x="415" y="185" width="90" height="17" rx="8.5" fill="#ffffff" stroke="#c7d2fe"/>
   <text x="460" y="197" text-anchor="middle" class="arrow-label" fill="#3454d1">HTTP / JSON</text>
   <rect x="725" y="185" width="110" height="17" rx="8.5" fill="#ffffff" stroke="#c7d2fe"/>
-  <text x="780" y="197" text-anchor="middle" class="arrow-label" fill="#3454d1">loopback :7620</text>
+  <text x="780" y="197" text-anchor="middle" class="arrow-label" fill="#3454d1">loopback :80</text>
 
   <!-- ============ DAEMON LAYER ============ -->
   <circle cx="36" cy="238" r="4" fill="#4338ca"/>

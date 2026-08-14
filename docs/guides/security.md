@@ -44,7 +44,7 @@ Requires a bootstrapped root CA first (`kanxeoctl pki ca bootstrap`, above) — 
 kanxeoctl daemon-config set --enable-https
 ```
 
-Starts a second, independent listener on `--https-port=` (default `8443`), live immediately. See [`networking.md`](networking.md#the-management-network) for the rest of `daemon-config`'s own contract (port, management-network repoint, a dedicated bind IP) — this is one field of that same live-reconfigurable resource, not a separate mechanism.
+Starts a second, independent listener on `--https-port=` (default `443`), live immediately. See [`networking.md`](networking.md#the-management-network) for the rest of `daemon-config`'s own contract (port, management-network repoint, a dedicated bind IP) — this is one field of that same live-reconfigurable resource, not a separate mechanism.
 
 ## Trusting the CA on your own device
 
@@ -66,7 +66,7 @@ Trusting the **root** is enough even if you've also bootstrapped an intermediate
 - **Firefox** (any OS — it keeps its own trust store, independent of the OS one above): **Settings > Privacy & Security > Certificates > View Certificates > Authorities tab > Import** → select the file → check **Trust this CA to identify websites**.
 - **Chrome/Edge**: uses the OS-level trust store on Windows/macOS (the steps above cover it) and, on Linux, typically the same NSS database Firefox uses — the Linux system-wide step above is usually enough, but if it still isn't trusted, import it the same way as the Firefox step, into Chrome's own **Settings > Privacy and security > Security > Manage certificates**.
 
-**If a browser still shows a warning after trusting the root**, and you're connecting by bare IP address (`https://192.168.x.x:8443/`) rather than a hostname: the daemon's own auto-issued `"host"` leaf certificate only carries this install's DNS FQDN as its Subject Alternative Name (`GET /pki/certs/host`'s own `sans` field), not the raw IP — a browser doing strict hostname verification will flag that as a *different* warning (hostname mismatch, not "untrusted") even with the chain fully trusted. Reach the box by its FQDN instead (whatever your own DNS setup resolves it through), or accept the mismatch warning if IP access is what you need — this endpoint doesn't currently issue IP-SAN certificates.
+**If a browser still shows a warning after trusting the root**, and you're connecting by bare IP address (`https://192.168.x.x/`) rather than a hostname: the daemon's own auto-issued `"host"` leaf certificate only carries this install's DNS FQDN as its Subject Alternative Name (`GET /pki/certs/host`'s own `sans` field), not the raw IP — a browser doing strict hostname verification will flag that as a *different* warning (hostname mismatch, not "untrusted") even with the chain fully trusted. Reach the box by its FQDN instead (whatever your own DNS setup resolves it through), or accept the mismatch warning if IP access is what you need — this endpoint doesn't currently issue IP-SAN certificates.
 
 Once trusted, no further action is needed — the same cert (or its successor after a [chain rotation](#rotating-the-whole-chain), which requires re-trusting) is presented on every future connection to this install.
 

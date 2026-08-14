@@ -10,7 +10,7 @@ info:
     pure clients of this API -- every capability either surface offers
     must exist here first.
 servers:
-  - url: http://127.0.0.1:7620/v1
+  - url: http://127.0.0.1/v1
 
 paths:
   /health:
@@ -667,8 +667,8 @@ paths:
         resource's own stored state: it's reported here by querying
         network.c's own is_management flag live (GET /networks), the
         one source of truth for which network kanxeod is bound to.
-        Always 200s -- defaults (port 7620, http_enabled true,
-        https_enabled false, https_port 8443) apply until the first PUT.
+        Always 200s -- defaults (port 80, http_enabled true,
+        https_enabled false, https_port 443) apply until the first PUT.
       operationId: getDaemonConfig
       responses:
         "200":
@@ -7281,7 +7281,7 @@ components:
       properties:
         port:
           type: integer
-          default: 7620
+          default: 80
           description: The plain-HTTP listener's port.
         bind:
           type: string
@@ -7322,7 +7322,7 @@ components:
           description: Whether the HTTPS listener is currently up. Reuses the PKI-issued "host" leaf certificate (see POST /pki/ca) -- no separate cert-issuance path.
         https_port:
           type: integer
-          default: 8443
+          default: 443
           description: The HTTPS listener's port.
 
     DaemonConfigPutRequest:

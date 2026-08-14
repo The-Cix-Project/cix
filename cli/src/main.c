@@ -21,7 +21,7 @@
 #include <unistd.h>
 
 #define DEFAULT_HOST "127.0.0.1"
-#define DEFAULT_PORT 7620
+#define DEFAULT_PORT 80
 
 static void print_usage(FILE *out)
 {
@@ -8259,6 +8259,7 @@ static int cmd_login(const struct kx_client *c, int json_mode, int argc, char **
 	jw_key(&w, "password");
 	jw_str(&w, password);
 	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
 
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(c, "POST", "/v1/login", w.buf, &r) != 0) {

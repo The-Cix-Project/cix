@@ -2,7 +2,7 @@
 
 [`openapi.yaml`](openapi.yaml) (OpenAPI 3.0) is the **authoritative** contract — every field, schema, and status code is defined there, not here. This page is a human-friendly index into it, per the project's API-First Mandate: the REST daemon (`daemon/`, binary `kanxeod`) is the only process with direct access to the container runtime, and everything else (CLI, web dashboard) is built by reading this contract, never the daemon's source.
 
-Default base URL: `http://127.0.0.1:7620/v1` (loopback-only by default; see `daemon/src/main.c`'s `--bind`/`--port` flags).
+Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see `daemon/src/main.c`'s `--bind`/`--port` flags).
 
 ## Endpoints at a glance
 
@@ -231,7 +231,7 @@ GET /v1/system/daemon-config
 ```
 
 ```json
-{"port": 7620, "bind": "192.168.50.10", "bind_ip": null, "management_network": "management", "http_enabled": true, "https_enabled": false, "https_port": 8443}
+{"port": 80, "bind": "192.168.50.10", "bind_ip": null, "management_network": "management", "http_enabled": true, "https_enabled": false, "https_port": 443}
 ```
 
 ```
@@ -264,7 +264,7 @@ PUT /v1/system/daemon-config
 {"https_enabled": true}
 ```
 
-Starts a second, independent listener on `https_port` (default `8443`), reusing the already-issued PKI `"host"` leaf certificate (see [PKI](#pki-a-ca-chain-and-issued-leaf-certificates) below) — `500` if no root CA has been bootstrapped yet (`POST /pki/ca`), since there's no certificate to serve TLS with. `http_enabled` and `https_enabled` can each be toggled off, but never both in the same request (`400`) — kanxeod must always have at least one live listener, since (installed) it runs as real PID 1 with no "restart" to fall back on. Every change here — port, network repoint, HTTP/HTTPS toggle — is live immediately and also persisted, so it survives a real reboot.
+Starts a second, independent listener on `https_port` (default `443`), reusing the already-issued PKI `"host"` leaf certificate (see [PKI](#pki-a-ca-chain-and-issued-leaf-certificates) below) — `500` if no root CA has been bootstrapped yet (`POST /pki/ca`), since there's no certificate to serve TLS with. `http_enabled` and `https_enabled` can each be toggled off, but never both in the same request (`400`) — kanxeod must always have at least one live listener, since (installed) it runs as real PID 1 with no "restart" to fall back on. Every change here — port, network repoint, HTTP/HTTPS toggle — is live immediately and also persisted, so it survives a real reboot.
 
 Since kanxeod is PID 1 on an installed system, there is no way to reach it again over the network if it's ever pointed at an address you can't get to — double-check reachability of a new `management_network` (or a firewalled `https_port`) before relying on it as your only way in; physical console access (`docs/guides/installing.md`'s "Console login") is always the fallback.
 

@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define DEFAULT_HTTPS_PORT 8443
+#define DEFAULT_HTTPS_PORT 443
 
 static char g_state_path[512];
 static int g_port;          /* 0: no persisted override */

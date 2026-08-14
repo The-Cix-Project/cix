@@ -59,7 +59,7 @@ build/kanxeoctl ps
 build/kanxeoctl console hello   # a real interactive shell inside it, if it's still running
 ```
 
-Or open `http://127.0.0.1:7620/` in a browser for the same thing visually — see [`web-dashboard.md`](web-dashboard.md).
+Or open `http://127.0.0.1/` in a browser for the same thing visually — see [`web-dashboard.md`](web-dashboard.md).
 
 ## Where to go next
 

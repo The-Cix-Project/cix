@@ -2,6 +2,24 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 128 (done): default HTTP/HTTPS ports become 80/443, plus a real `kanxeoctl login` bug found along the way
+
+User-requested: `kanxeod`'s default listen ports should be the standard 80 (HTTP) and 443 (HTTPS) instead of 7620/8443. Applied live to 192.168.15.95 first (`PUT /v1/system/daemon-config {"port":80,"https_port":443}`, confirmed both new ports answering and 7620 gone), then made the actual default so a *fresh* install starts here too.
+
+#### Changed
+- `daemon/src/main.c`: `DEFAULT_PORT` 7620 -> 80.
+- `daemon/src/daemon_config.c`: `DEFAULT_HTTPS_PORT` 8443 -> 443.
+- `cli/src/main.c`: `DEFAULT_PORT` 7620 -> 80, matching (a `kanxeoctl` with no `--port=` now reaches a freshly-started `kanxeod` with no `--port=` by default, same as before this change just at the new numbers).
+- `docs/api/openapi.yaml`, `docs/api/README.md`, and every guide referencing the old port numbers (`quickstart.md`, `cli-reference.md`, `security.md`, `building-kanxeo.md`, `installing.md`, `web-dashboard.md`, `architecture.svg`'s own loopback-arrow label) updated to match.
+
+#### Fixed
+- **A real, previously-undiscovered bug found while testing this change live**: `kanxeoctl login`'s `cmd_login()` was the one call site in the entire CLI that built a `struct json_writer` body and passed it straight to `kx_client_request()` without the `w.buf[w.len] = '\0';` null-termination every other command already does before using the writer's buffer as a C string. `jw_ensure()`'s growth policy reserves capacity for that trailing NUL but never writes it itself (a deliberate "caller writes it" contract) -- so `kx_client_request()`'s own `strlen(body)` read past the real JSON content into uninitialized heap memory, producing a corrupted request body that intermittently failed with a genuinely confusing `invalid JSON body (HTTP 400)` -- confirmed reproducible against a fresh local scratch daemon, not a server-side or network issue. Fixed with the same one-line fix every other command already uses.
+- `docs/guides/remote-development.md` had a separate, pre-existing, unrelated drift caught while editing these same lines for the port update: every example used a `--server=http://<box>:PORT` flag that doesn't exist on this project's `kanxeoctl` (it's `--host=`/`--port=`), and one step used a bare `recipe add`/`recipe rm` that isn't a real top-level subcommand (`pkg recipe add --name=... --file=...`/`pkg recipe rm` is) -- fixed to the real, working invocations.
+
+#### Verified
+- Full clean rebuild (`-Wall -Werror`, zero warnings). Full daemon-linked regression sweep (`test_daemon`, `test_cli`, `test_web`, `test_ldap`, `test_hostauth`) -- zero failures (these tests use their own explicit scratch ports throughout, unaffected by the default change).
+- Live on 192.168.15.95: `PUT /v1/system/daemon-config` round-trip confirmed port 80/443 both answering, port 7620 gone; `kanxeoctl login` (with the fix) confirmed working against both the real box and a local scratch daemon.
+
 ### Part 127 (done): installer end-of-install UX fix -- a clear "remove media, press Enter to reboot" prompt instead of a silent freeze
 
 Real feedback from actually using the Part 126 ISO for a reinstall: after entering the MOK enrollment password twice, the installer appeared to freeze with no indication it had finished -- `kanxeo-install` (running as PID 1) simply returned from `main()`, which the kernel answers with an immediate, unprompted panic. Also flagged: `mokutil`'s own `"libkeyutils: Can't open /proc/keys"`/`"Failed to access kernel trusted keyring"` warnings during MOK enrollment, harmless but alarming with no context.

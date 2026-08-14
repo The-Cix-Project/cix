@@ -8,7 +8,7 @@ Requires `tcc` and a Linux kernel with cgroup v2 and `clone3`/`CLONE_INTO_CGROUP
 
 ```sh
 make                       # builds everything into build/, -Wall -Werror, zero warnings
-sudo build/kanxeod         # start the daemon (REST API + web dashboard on :7620)
+sudo build/kanxeod         # start the daemon (REST API + web dashboard on :80)
 build/kanxeoctl health     # talk to it with the CLI
 make clean
 ```

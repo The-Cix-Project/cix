@@ -8,7 +8,7 @@
 kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 ```
 
-- `--host=`/`--port=` — default `127.0.0.1:7620`.
+- `--host=`/`--port=` — default `127.0.0.1:80`.
 - `--json` — print the raw API response instead of the default formatted text. Every subcommand supports it except `console` (an interactive terminal session, not a per-call response) and `files get` (its own raw file bytes are the CLI's one non-JSON response body) — `--json` is silently ignored on those two.
 - Running `kanxeoctl` with no command at all, from a real terminal (`isatty(stdin)`), drops into an **interactive shell**: one line, one command, reusing the same connection — useful for a session of several related calls without re-establishing a TCP connection each time (`kanxeoctl --json` plus a piped/redirected stdin skips the shell and falls through to the usual usage-error path instead, so scripting is unaffected). The prompt is the connected daemon's own `instance_name` (`GET /system/site`, e.g. `myhost> `), not a fixed string — useful the moment more than one Kanxeo install is reachable (ADR-0132).
 - **Exit codes**: `0` success, `1` the API call itself failed (a non-2xx response, or a transport-level failure reaching the daemon), `2` a usage error (bad flags, unknown subcommand) — checked before any network call is made.

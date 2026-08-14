@@ -81,7 +81,7 @@
 
 extern char **environ;
 
-#define DEFAULT_PORT 7620
+#define DEFAULT_PORT 80
 #define DEFAULT_BIND "127.0.0.1"
 #define DEFAULT_WEB_ROOT "web"
 #define DEFAULT_BASE_DIR "/var/lib/kanxeo"
