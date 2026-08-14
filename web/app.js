@@ -48,6 +48,8 @@ const cache = {
 	pkiCerts: [],
 	pkgRecipes: [],
 	pkgList: [],
+	imageRecipes: [],
+	containerRecipes: [],
 	pkgRepoConfig: null,
 	pkgSyncStatus: null,
 	pkgCacheConfig: null,
@@ -165,6 +167,7 @@ function closeModal() {
 	ldapUserEditName = null;
 	document.getElementById("luf-name").readOnly = false;
 	document.getElementById("luf-submit").textContent = "Create";
+	document.getElementById("irf-name").readOnly = false;
 
 	/* Never leave a typed password sitting in the DOM past this modal
 	 * session, whether closed by submit, X, Escape, or an outside click. */
@@ -740,8 +743,11 @@ function renderCurrentView() {
 		}
 		else if (route.category === "packages")
 			renderPackagesView(route.name);
-		else if (route.category === "recipes")
+		else if (route.category === "recipes") {
 			renderRecipesList();
+			renderImageRecipesTable();
+			renderContainerRecipesTable();
+		}
 		else if (route.category === "backup")
 			renderBackupConfig();
 	}
@@ -2716,6 +2722,7 @@ function renderImageRecipeTab(name) {
 		}
 		openModal("image-recipe-form", "Edit image recipe");
 		document.getElementById("irf-name").value = name;
+		document.getElementById("irf-name").readOnly = true;
 		document.getElementById("irf-content").value = content;
 	};
 	document.getElementById("imgd-remove-recipe").onclick = async () => {
@@ -2791,6 +2798,7 @@ document.getElementById("image-recipe-form").addEventListener("submit", async (e
 		imageRecipeContentCache = { name: null, content: null };
 		if (parseHash().category === "images" && parseHash().name === name)
 			renderImageRecipeTab(name);
+		await refreshImageRecipesList();
 	} catch (e) {
 		showStatus("Failed to save image recipe for " + name + ": " + e.message, true);
 	}
@@ -4756,21 +4764,23 @@ function renderPackagesList() {
  * not the same data sliced two ways. */
 function renderRecipesList() {
 	const body = document.getElementById("recipes-body");
+	const filter = document.getElementById("recipes-pkg-search").value.trim().toLowerCase();
+	const rows = cache.pkgRecipes.filter((r) => r.name.toLowerCase().includes(filter));
 
 	body.textContent = "";
-	if (cache.pkgRecipes.length === 0) {
+	if (rows.length === 0) {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
 
 		cell.colSpan = 4;
 		cell.className = "empty";
-		cell.textContent = "No recipes";
+		cell.textContent = cache.pkgRecipes.length === 0 ? "No recipes" : "No match";
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
 	}
 
-	for (const r of cache.pkgRecipes) {
+	for (const r of rows) {
 		const row = document.createElement("tr");
 
 		const nameCell = document.createElement("td");
@@ -4967,6 +4977,260 @@ async function removePkgRecipe(name) {
 		showStatus("Failed to remove recipe " + name + ": " + e.message, true);
 	}
 }
+
+/* ---- Software Catalogue: Image + Container recipe tabs ----
+ * The Packages tab (renderRecipesList()) already existed; these two
+ * make the catalogue actually cover all three recipe kinds (ADR-0151)
+ * instead of leaving image/container recipes only reachable buried in
+ * an image's own detail page (image) or not browsable at all
+ * (container, brand new). Both filtered client-side by their own
+ * search box -- these lists are small, no server-side search needed. */
+
+async function refreshImageRecipesList() {
+	const data = await apiRequest("GET", "/v1/images/recipes");
+
+	cache.imageRecipes = data.recipes;
+	if (parseHash().category === "recipes")
+		renderImageRecipesTable();
+}
+
+async function refreshContainerRecipesList() {
+	const data = await apiRequest("GET", "/v1/containers/recipes");
+
+	cache.containerRecipes = data.recipes;
+	if (parseHash().category === "recipes")
+		renderContainerRecipesTable();
+}
+
+function renderImageRecipesTable() {
+	const body = document.getElementById("image-recipes-body");
+	const filter = document.getElementById("recipes-image-search").value.trim().toLowerCase();
+	const rows = cache.imageRecipes.filter((r) => r.name.toLowerCase().includes(filter));
+
+	body.textContent = "";
+	if (rows.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 2;
+		cell.className = "empty";
+		cell.textContent = cache.imageRecipes.length === 0 ? "No image recipes" : "No match";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+
+	for (const r of rows) {
+		const row = document.createElement("tr");
+
+		const nameCell = document.createElement("td");
+		nameCell.appendChild(treeLink("#images/" + encodeURIComponent(r.name), r.name, ""));
+		row.appendChild(nameCell);
+
+		const actionCell = document.createElement("td");
+
+		const applyButton = document.createElement("button");
+		applyButton.textContent = "Apply";
+		applyButton.addEventListener("click", async () => {
+			try {
+				const result = await apiRequest("POST", "/v1/images/" + encodeURIComponent(r.name) + "/apply-recipe");
+
+				clearStatus();
+				showStatus(
+					result && result.state === "running"
+						? "Recipe apply started for " + r.name + " (async artifact fetch)"
+						: "Recipe applied for " + r.name,
+					false
+				);
+			} catch (e) {
+				showStatus("Failed to apply recipe for " + r.name + ": " + e.message, true);
+			}
+		});
+		actionCell.appendChild(applyButton);
+
+		const editButton = document.createElement("button");
+		editButton.textContent = "Edit";
+		editButton.addEventListener("click", async () => {
+			let content = "";
+
+			try {
+				content = await loadImageRecipeContent(r.name);
+			} catch (e) {
+				/* Shouldn't happen for a name the list itself just returned. */
+			}
+			openModal("image-recipe-form", "Edit image recipe");
+			document.getElementById("irf-name").value = r.name;
+			document.getElementById("irf-name").readOnly = true;
+			document.getElementById("irf-content").value = content;
+		});
+		actionCell.appendChild(editButton);
+
+		const rmButton = document.createElement("button");
+		rmButton.textContent = "Delete";
+		rmButton.className = "button-danger";
+		rmButton.addEventListener("click", async () => {
+			try {
+				await apiRequest("DELETE", "/v1/images/recipes/" + encodeURIComponent(r.name));
+				clearStatus();
+				imageRecipeContentCache = { name: null, content: null };
+				await refreshImageRecipesList();
+			} catch (e) {
+				showStatus("Failed to remove image recipe for " + r.name + ": " + e.message, true);
+			}
+		});
+		actionCell.appendChild(rmButton);
+
+		row.appendChild(actionCell);
+		body.appendChild(row);
+	}
+}
+
+let containerRecipeContentCache = { name: null, content: null };
+
+async function loadContainerRecipeContent(name) {
+	if (containerRecipeContentCache.name === name)
+		return containerRecipeContentCache.content;
+	const data = await apiRequest("GET", "/v1/containers/recipes/" + encodeURIComponent(name));
+
+	containerRecipeContentCache = { name: name, content: data.content };
+	return containerRecipeContentCache.content;
+}
+
+function renderContainerRecipesTable() {
+	const body = document.getElementById("container-recipes-body");
+	const filter = document.getElementById("recipes-container-search").value.trim().toLowerCase();
+	const rows = cache.containerRecipes.filter((r) => r.name.toLowerCase().includes(filter));
+
+	body.textContent = "";
+	if (rows.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 2;
+		cell.className = "empty";
+		cell.textContent = cache.containerRecipes.length === 0 ? "No container recipes" : "No match";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+
+	for (const r of rows) {
+		const row = document.createElement("tr");
+
+		const nameCell = document.createElement("td");
+		nameCell.textContent = r.name;
+		row.appendChild(nameCell);
+
+		const actionCell = document.createElement("td");
+
+		const applyButton = document.createElement("button");
+		applyButton.textContent = "Apply…";
+		applyButton.addEventListener("click", () => {
+			openModal("container-recipe-apply-form", "Apply recipe: " + r.name);
+			document.getElementById("craf-name").value = r.name;
+			document.getElementById("craf-secrets").value = "{}";
+		});
+		actionCell.appendChild(applyButton);
+
+		const editButton = document.createElement("button");
+		editButton.textContent = "Edit";
+		editButton.addEventListener("click", async () => {
+			let content = "";
+
+			try {
+				content = await loadContainerRecipeContent(r.name);
+			} catch (e) {
+				/* Shouldn't happen for a name the list itself just returned. */
+			}
+			openModal("container-recipe-form", "Edit container recipe");
+			document.getElementById("crf-name").value = r.name;
+			document.getElementById("crf-content").value = content;
+		});
+		actionCell.appendChild(editButton);
+
+		const rmButton = document.createElement("button");
+		rmButton.textContent = "Delete";
+		rmButton.className = "button-danger";
+		rmButton.addEventListener("click", async () => {
+			try {
+				await apiRequest("DELETE", "/v1/containers/recipes/" + encodeURIComponent(r.name));
+				clearStatus();
+				containerRecipeContentCache = { name: null, content: null };
+				await refreshContainerRecipesList();
+			} catch (e) {
+				showStatus("Failed to remove container recipe for " + r.name + ": " + e.message, true);
+			}
+		});
+		actionCell.appendChild(rmButton);
+
+		row.appendChild(actionCell);
+		body.appendChild(row);
+	}
+}
+
+document.getElementById("recipes-pkg-search").addEventListener("input", renderRecipesList);
+document.getElementById("recipes-image-search").addEventListener("input", renderImageRecipesTable);
+document.getElementById("recipes-container-search").addEventListener("input", renderContainerRecipesTable);
+
+document.getElementById("recipes-pkg-add").addEventListener("click", () => openModal("pkg-recipe-form", "Add recipe"));
+document.getElementById("recipes-image-add").addEventListener("click", () => {
+	openModal("image-recipe-form", "Add image recipe");
+	document.getElementById("irf-name").readOnly = false;
+});
+document.getElementById("recipes-container-add").addEventListener("click", () => openModal("container-recipe-form", "Add container recipe"));
+
+document.getElementById("container-recipe-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const name = document.getElementById("crf-name").value.trim();
+	const fileInput = document.getElementById("crf-file");
+	const contentField = document.getElementById("crf-content");
+
+	if (fileInput.files.length === 0 && contentField.value.trim() === "")
+		return;
+
+	try {
+		const content = fileInput.files.length > 0 ? await readFileAsText(fileInput.files[0]) : contentField.value;
+
+		await apiRequest("POST", "/v1/containers/recipes", { name: name, content: content });
+		clearStatus();
+		document.getElementById("container-recipe-form").reset();
+		closeModal();
+		containerRecipeContentCache = { name: null, content: null };
+		await refreshContainerRecipesList();
+	} catch (e) {
+		showStatus("Failed to save container recipe " + name + ": " + e.message, true);
+	}
+});
+
+document.getElementById("container-recipe-apply-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const name = document.getElementById("craf-name").value;
+	const secretsText = document.getElementById("craf-secrets").value.trim();
+	let secrets = {};
+
+	if (secretsText !== "") {
+		try {
+			secrets = JSON.parse(secretsText);
+		} catch (e) {
+			showStatus("Secrets must be valid JSON: " + e.message, true);
+			return;
+		}
+	}
+
+	try {
+		await apiRequest("POST", "/v1/containers/recipes/" + encodeURIComponent(name) + "/apply", { secrets: secrets });
+		clearStatus();
+		showStatus("Container " + name + " created from recipe.", false);
+		document.getElementById("container-recipe-apply-form").reset();
+		closeModal();
+		await refreshContainers();
+		renderTree();
+	} catch (e) {
+		showStatus("Failed to apply recipe " + name + ": " + e.message, true);
+	}
+});
 
 async function refreshPkgList() {
 	const data = await apiRequest("GET", "/v1/pkg");
@@ -6521,6 +6785,8 @@ async function poll() {
 		await refreshPkiIntermediate();
 		await refreshPkiCerts();
 		await refreshPkgRecipes();
+		await refreshImageRecipesList();
+		await refreshContainerRecipesList();
 		await refreshPkgList();
 		await refreshPkgRepoConfig();
 		await refreshPkgSyncStatus();

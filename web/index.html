@@ -839,22 +839,79 @@
 		<section class="view" id="view-recipes" hidden>
 			<div class="view-list">
 				<h2>Recipes</h2>
-				<p class="hint">The buildable-definition catalog (ADR-0040) -- a recipe here isn't
-					necessarily installed anywhere yet. Click a name for its full content and every
-					image it's installed on.</p>
-				<table id="recipes">
-					<thead>
-						<tr>
-							<th>Name</th>
-							<th>Version</th>
-							<th>Depends</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="recipes-body">
-						<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
+				<p class="hint">Three git-syncable recipe kinds (ADR-0040/ADR-0123/ADR-0151), one catalog:
+					<strong>Packages</strong> build one piece of software from source; <strong>Images</strong>
+					declare a whole package manifest for an image in one shot; <strong>Containers</strong>
+					capture a full, reproducible container definition (cmd/files/network/restart) that
+					creates a real container when applied.</p>
+				<div class="tab-bar">
+					<button type="button" class="tab-button active" data-tab="pkg-recipes" id="recipes-tab-pkg">Packages</button>
+					<button type="button" class="tab-button" data-tab="image-recipes" id="recipes-tab-image">Images</button>
+					<button type="button" class="tab-button" data-tab="container-recipes" id="recipes-tab-container">Containers</button>
+				</div>
+
+				<div class="tab-panel" id="recipes-panel-pkg" data-tab="pkg-recipes">
+					<div class="list-toolbar">
+						<input type="search" id="recipes-pkg-search" placeholder="Search package recipes by name&hellip;">
+						<button type="button" id="recipes-pkg-add">Add recipe&hellip;</button>
+					</div>
+					<table id="recipes">
+						<thead>
+							<tr>
+								<th>Name</th>
+								<th>Version</th>
+								<th>Depends</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody id="recipes-body">
+							<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
+						</tbody>
+					</table>
+				</div>
+
+				<div class="tab-panel" id="recipes-panel-image" data-tab="image-recipes" hidden>
+					<div class="list-toolbar">
+						<input type="search" id="recipes-image-search" placeholder="Search image recipes by name&hellip;">
+						<button type="button" id="recipes-image-add">Add recipe&hellip;</button>
+					</div>
+					<p class="hint">A recipe's own name is always its target image's name (1:1, ADR-0123) --
+						applying bulk-declares that image's manifest (or, for a fully-pinned recipe with a
+						matching artifact server, fetches one whole-rootfs tarball).</p>
+					<table id="image-recipes">
+						<thead>
+							<tr>
+								<th>Image</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody id="image-recipes-body">
+							<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
+						</tbody>
+					</table>
+				</div>
+
+				<div class="tab-panel" id="recipes-panel-container" data-tab="container-recipes" hidden>
+					<div class="list-toolbar">
+						<input type="search" id="recipes-container-search" placeholder="Search container recipes by name&hellip;">
+						<button type="button" id="recipes-container-add">Add recipe&hellip;</button>
+					</div>
+					<p class="hint">A recipe's own name is always the container it creates (ADR-0151) --
+						content is a real <code>POST /containers</code> body; applying creates that
+						container. A recipe may embed <code>{{SECRET:KEY}}</code> tokens in staged file
+						content -- supply real values only at apply time, never committed to git.</p>
+					<table id="container-recipes">
+						<thead>
+							<tr>
+								<th>Name</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody id="container-recipes-body">
+							<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
+						</tbody>
+					</table>
+				</div>
 			</div>
 		</section>
 
@@ -1748,7 +1805,7 @@
 				<form id="image-recipe-form">
 					<label>
 						Image name
-						<input type="text" id="irf-name" pattern="[A-Za-z0-9_-]+" required readonly>
+						<input type="text" id="irf-name" pattern="[A-Za-z0-9_-]+" required>
 					</label>
 					<label class="wide">
 						Content
@@ -1760,6 +1817,42 @@
 				<p class="hint">Replaces the whole recipe -- image_packages= is required
 					(whitespace-separated "package:mode:version" entries); image_artifact_sha256= is
 					optional (ADR-0123).</p>
+			</div>
+
+			<div id="modal-container-recipe-form" hidden>
+				<form id="container-recipe-form">
+					<label>
+						Name
+						<input type="text" id="crf-name" pattern="[A-Za-z0-9_-]+" required>
+					</label>
+					<label class="wide">
+						Recipe file (leave blank to paste/edit content below instead)
+						<input type="file" id="crf-file">
+					</label>
+					<label class="wide">
+						Content -- a real POST /containers body, as JSON
+						<textarea id="crf-content" rows="16" spellcheck="false"
+							placeholder='{"name":"NAME","image":"base","cmd":["/usr/bin/bash"],"restart":"always"}'></textarea>
+					</label>
+					<button type="submit">Add / update</button>
+				</form>
+				<p class="hint">content's own <code>"name"</code> field must equal Name above (ADR-0151) --
+					a mismatch is rejected. May embed <code>{{SECRET:KEY}}</code> tokens inside any staged
+					file's <code>content</code> string; supply real values only when applying.</p>
+			</div>
+
+			<div id="modal-container-recipe-apply-form" hidden>
+				<form id="container-recipe-apply-form">
+					<input type="hidden" id="craf-name">
+					<label class="wide">
+						Secrets -- JSON object, KEY -&gt; real value for each <code>{{SECRET:KEY}}</code>
+						token the recipe references
+						<textarea id="craf-secrets" rows="6" spellcheck="false" placeholder="{}"></textarea>
+					</label>
+					<button type="submit">Apply -- create container</button>
+				</form>
+				<p class="hint">Creates a real container named after this recipe. An unmatched
+					<code>{{SECRET:KEY}}</code> token is left exactly as-is, never silently blanked.</p>
 			</div>
 
 			<div id="modal-pkg-bootstrap-form" hidden>

@@ -2445,6 +2445,14 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 138 (done): web dashboard Software Catalogue -- one page, three recipe tabs
+
+User-requested direct follow-up to Part 137: the "Recipes" page was package-recipes-only; image recipes were only reachable buried inside each image's own detail page, and the new container recipes had zero UI. `#view-recipes` restructured into a real 3-tab catalogue (Packages/Images/Containers), each with its own client-side name search and Apply/Edit/Delete directly from the list.
+
+New `container-recipe-form`/`container-recipe-apply-form` modals (the latter taking a `secrets` JSON object for `{{SECRET:KEY}}` substitution). `image-recipe-form`'s name field is no longer hardcoded readonly -- toggled per open path.
+
+Verified: real headless-Chromium session via the Chrome DevTools Protocol directly (`puppeteer-core` unavailable here) -- all three tabs render with real data, the container-recipe Apply modal submits and a real container gets created (confirmed via a direct API check), the image-recipe Edit modal loads existing content correctly.
+
 ## Part 137 (done): container recipes -- a third recipe kind, alongside package/image (ADR-0151)
 
 User-requested directly, motivated by this session's own repeated pain: `jumpbox1`/`dns-1`/`dns-2`/`ldap-1`/`ldap-2`/`syslog-1`/`syslog-2` have each been recreated multiple times, every time hand-retyping the full `cmd`/`files`/network/restart definition from memory, nothing git-tracked to source it from.

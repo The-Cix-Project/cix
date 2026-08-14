@@ -2,6 +2,18 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 138 (done): web dashboard Software Catalogue -- one page, three recipe tabs
+
+User-requested direct follow-up to Part 137: the "Recipes" page was package-recipes-only (a flat table); image recipes were only reachable buried inside each image's own detail page, and the new container recipes had zero UI. Turned `#view-recipes` into a real 3-tab catalogue (Packages/Images/Containers, ADR-0040/ADR-0123/ADR-0151), each with its own client-side name search and an "Add recipe…" button, plus Apply/Edit/Delete actions directly from the list -- no need to first navigate to a specific image's own page just to apply its recipe.
+
+#### Added
+- `web/index.html`: `#view-recipes` restructured with a `tab-bar` (reusing the exact generic tab-switching JS every other detail page's tabs already share) and three panels; two new modals, `container-recipe-form` (add/edit) and `container-recipe-apply-form` (a `secrets` JSON textarea for `{{SECRET:KEY}}` substitution at apply time).
+- `web/app.js`: `refreshImageRecipesList()`/`refreshContainerRecipesList()`, `renderImageRecipesTable()`/`renderContainerRecipesTable()` (search-filtered), full add/edit/apply/delete wiring for both new tabs. `image-recipe-form`'s own name field is no longer hardcoded `readonly` -- toggled per open path (locked when editing from the catalogue or an image's own detail page, unlocked when adding fresh from the catalogue).
+- `web/style.css`: a small `.list-toolbar` rule (search input + add button row) -- the first search UI this dashboard has needed.
+
+#### Verified
+- Real headless-Chromium session (via the Chrome DevTools Protocol directly, `puppeteer-core` unavailable in this sandbox): all three tabs render correctly with real data; the container-recipe Apply modal opens pre-filled, submits, and a real `GET /v1/containers/{name}` confirms the container was actually created; the image-recipe Edit modal correctly loads existing content with the name field locked.
+
 ### Part 137 (done): container recipes -- a third recipe kind, alongside package/image (ADR-0151)
 
 User-requested directly: "let's make the container recipes so it will make things easier in the future." Motivated by this session's own repeated pain -- `jumpbox1`/`dns-1`/`dns-2`/`ldap-1`/`ldap-2`/`syslog-1`/`syslog-2` have each been recreated multiple times, every time hand-retyping the full `cmd`/`files`/network/restart definition from memory, with nothing git-tracked to source it from.
