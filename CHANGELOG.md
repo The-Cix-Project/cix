@@ -2,6 +2,17 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 134 (done): jumpbox1 auto-creates LDAP home directories (task #864), gains real admin tooling
+
+Second half of the two real interactive-SSH gaps reported this session (the first, PTY allocation, is Part 133/ADR-0150). `linux-pam/1.6.1-2/build.sh` adds `modules/pam_mkhomedir` to the existing baseline module set -- glauth has no home-directory-provisioning concept of its own (it's purely a directory server), and this project's minimal images ship no `/home` content, so an LDAP account's first login had nowhere to land. `/etc/pam.d/sshd` on jumpbox1 gained `session required pam_mkhomedir.so skel=/etc/skel umask=0077`.
+
+Also closes most of task #842 (jumpbox tooling audit): `psmisc`, `screen`, `htop`, `inetutils`, `mtr`, `iproute2` (plus their shared `ncurses` dependency) installed onto the jumpbox image -- all six recipes existed in git already but had never been published to the real box's own catalog.
+
+jumpbox1 recreated with both changes plus `--follow-rolling` (confirmed, via a real `container ls --json` inspection, that this flag had actually been `false` on the live box this whole time despite an earlier session's own intent to set it -- corrected here, and now meaningful once Part 135's rolling-manifest work lands).
+
+#### Verified
+- Real SSH login against `jumpbox1`: `/home/osakka` auto-created (`drwx------ osakka admins`), a fresh session's `pwd` resolves to it directly. `pkg ls --image=jumpbox` confirms all 6 new tools plus `ncurses` installed.
+
 ### Part 133 (done): every container gets a real devpts mount + /dev/ptmx (ADR-0150, task #865)
 
 User-reported, real: an interactive `ssh osakka@192.168.15.109` (jumpbox1) failed with `PTY allocation request failed on channel 0` -- every prior test only ever used non-interactive `ssh ... id`, never exercising real pty allocation. Root cause, confirmed by reading the code: `pkg_seed_image_baseline()` never seeded a `/dev/ptmx` node (only `null`/`zero`/`full`/`random`/`urandom`), and `mountns_pivot()` never mounted `devpts` inside a container's own mount namespace -- the identical bug class task #764 already fixed once for the daemon's own host-namespace console-exec feature, one namespace layer deeper, never addressed for containers themselves.

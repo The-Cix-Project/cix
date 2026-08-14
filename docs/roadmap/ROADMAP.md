@@ -2445,6 +2445,16 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 134 (done): jumpbox1 auto-creates LDAP home directories (task #864), gains real admin tooling
+
+Second of two real interactive-SSH gaps reported this session (the other, PTY allocation, is Part 133/ADR-0150). `recipes/package/linux-pam/1.6.1-2/build.sh` adds `modules/pam_mkhomedir` to the existing module set -- glauth has no home-directory-provisioning concept, and this project's minimal images ship no `/home` content, so an LDAP account's first login had nowhere to land. jumpbox1's `/etc/pam.d/sshd` gained `session required pam_mkhomedir.so skel=/etc/skel umask=0077`.
+
+Also closes most of task #842: `psmisc`/`screen`/`htop`/`inetutils`/`mtr`/`iproute2` (plus `ncurses`) installed onto the jumpbox image -- all six recipes already existed in git but had never been published to the real box.
+
+jumpbox1 recreated with both changes plus `--follow-rolling` (a real `container ls --json` inspection found this had actually been `false` on the live box despite an earlier intent to set it -- corrected here).
+
+Verified: real SSH login confirms `/home/osakka` auto-creates (`drwx------ osakka admins`) and a fresh session lands in it directly. `pkg ls --image=jumpbox` confirms all 6 tools plus `ncurses` installed.
+
 ## Part 133 (done): every container gets a real devpts mount + /dev/ptmx (ADR-0150, task #865)
 
 User-reported, real: interactive SSH into jumpbox1 failed with "PTY allocation request failed on channel 0" -- every prior test this session only ever used non-interactive `ssh ... id`. Root cause: `pkg_seed_image_baseline()` never seeded a `/dev/ptmx` node, and `mountns_pivot()` never mounted `devpts` inside a container's own mount namespace -- the same bug class task #764 already fixed once for the daemon's own host-namespace console-exec feature, one layer deeper, never addressed for containers.
