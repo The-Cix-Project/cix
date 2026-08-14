@@ -5465,6 +5465,80 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+    put:
+      summary: >
+        Write or overwrite one file inside an already-existing container,
+        live, without a recreate (see ADR-0153).
+      description: >
+        Same content/mode/owner/group shape as a POST /containers "files[]"
+        entry, applied to one already-existing container instead of staged
+        at creation time. Deliberately LIVE and EPHEMERAL: this never
+        touches the container's own persisted "files[]" body, so a future
+        restart or recreate replays the original definition unchanged with
+        no memory of this write. The durable "this change should survive a
+        recreate" path is a container recipe (ADR-0151, POST
+        /containers/recipes/{name}/apply) instead -- edit the recipe,
+        re-apply it.
+
+
+        Path resolution mirrors GET's own running/not-running split:
+        while running, written through /proc/<pid>/root/<path> (the
+        overlay's own copy-up lands the result in the container's real
+        upperdir, same as any in-container process writing that path
+        would produce); once stopped or exited, written directly into the
+        container's own upperdir. Same traversal-free, absolute-path
+        validation as GET's own "path" parameter.
+      operationId: putContainerFile
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Absolute, container-relative file path, e.g. "/etc/hosts".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - content
+              properties:
+                content:
+                  type: string
+                  description: The file's full new content (replaces, does not append).
+                mode:
+                  type: string
+                  description: Octal file mode string, e.g. "0644". Defaults to "0644".
+                owner:
+                  type: integer
+                  description: Numeric uid. Defaults to unchanged (root-owned on a freshly created file).
+                group:
+                  type: integer
+                  description: Numeric gid. Defaults to unchanged (root-owned on a freshly created file).
+      responses:
+        "204":
+          description: File written successfully.
+        "400":
+          description: Missing/unsafe path, or a missing "content" field.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such container.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Failed to create the parent directory, or to open/write/chmod/chown the file.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
 components:
   parameters:

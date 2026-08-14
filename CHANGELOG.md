@@ -2,6 +2,21 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 141 (done): live, single-file container updates without a recreate (ADR-0153, task #861)
+
+`PUT /v1/containers/{name}/files?path=...` writes or overwrites one file inside an already-existing container -- running (via `/proc/<pid>/root`, overlay copy-up lands it in the real upperdir) or stopped/exited (direct to upperdir) -- without recreating the container. Deliberately live and ephemeral: never touches the container's own persisted `files[]` body, so a future restart/recreate replays the original definition unchanged. The durable "survive a recreate" path stays a container recipe (ADR-0151).
+
+#### Added
+- `PUT /v1/containers/{name}/files?path=...` (`daemon/src/main.c`'s `handle_container_file_write()`), same `{content, mode, owner, group}` shape as a `files[]` entry.
+- `kanxeoctl files put NAME --path=/some/path --file=LOCAL_PATH [--mode=0644]`.
+- New permanent test coverage in `test/test_container_files.c`: a full write/read round-trip against a *running* container (proving the `/proc/<pid>/root` + overlay-copy-up path, checked directly against the real host-visible `upper/` file's content/mode/owner/group, not just a 204), an overwrite-replaces-not-appends check, the same traversal/no-leading-slash/missing-content/unknown-container rejections the read side already has, and a write/read round-trip against an already-exited container (the `!running` branch).
+
+#### Fixed
+- A real use-after-free caught during this feature's own verification, before it shipped: the first implementation read `content` as a pointer straight out of the parsed JSON tree, then called `json_free(root)` *before* using that same pointer in the subsequent `write()` -- a real end-to-end test wrote 17 bytes and read back 17 bytes of garbage instead of the actual content. Fixed by taking an owned `strdup()` copy before freeing the JSON tree, freed explicitly on every return path.
+
+#### Scope, stated explicitly
+- `cmd`, network attachment, and other non-file option updates without a recreate remain unimplemented -- task #861 stays open for that remaining scope; this part closes the files-only piece of it.
+
 ### Part 140 (done): audit every recipe for the ambient-gcc-contamination risk (task #845)
 
 CLAUDE.md's own environment notes already documented a real, confirmed bug class: this session's `openssh/10.4p1-7`/`-8` recipes needed an explicit `CC=tcc` after the shared build sandbox's own bare `cc` silently started resolving to real GCC instead of TCC (`gcc.recipe`'s own toolchain output merging into the cumulative sandbox). Audited every one of the 78 package recipes for the same exposure.

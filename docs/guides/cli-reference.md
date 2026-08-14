@@ -9,7 +9,7 @@ kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 ```
 
 - `--host=`/`--port=` — default `127.0.0.1:80`.
-- `--json` — print the raw API response instead of the default formatted text. Every subcommand supports it except `console` (an interactive terminal session, not a per-call response) and `files get` (its own raw file bytes are the CLI's one non-JSON response body) — `--json` is silently ignored on those two.
+- `--json` — print the raw API response instead of the default formatted text. Every subcommand supports it except `console` (an interactive terminal session, not a per-call response) and `files get`/`files put` (`get`'s own raw file bytes are the CLI's one non-JSON response body, and `put`'s own success response is a real `204 No Content` with nothing to render as JSON) — `--json` is silently ignored on all three.
 - Running `kanxeoctl` with no command at all, from a real terminal (`isatty(stdin)`), drops into an **interactive shell**: one line, one command, reusing the same connection — useful for a session of several related calls without re-establishing a TCP connection each time (`kanxeoctl --json` plus a piped/redirected stdin skips the shell and falls through to the usual usage-error path instead, so scripting is unaffected). The prompt is the connected daemon's own `instance_name` (`GET /system/site`, e.g. `myhost> `), not a fixed string — useful the moment more than one Kanxeo install is reachable (ADR-0132).
 - **Exit codes**: `0` success, `1` the API call itself failed (a non-2xx response, or a transport-level failure reaching the daemon), `2` a usage error (bad flags, unknown subcommand) — checked before any network call is made.
 - **Authentication (ADR-0144)**: once a daemon has write-gating active (see [`docs/api/README.md`'s own "Host authentication" section](../api/README.md#host-authentication-adr-0144)), every mutating command needs a session — run `login` once and every subsequent `kanxeoctl` invocation on this machine authenticates automatically via the persisted token, until `logout` or the session's own idle timeout expires it. `GET`-only commands (`health`, `ps`, every `... ls`/`... show`) never need one.
@@ -91,6 +91,7 @@ See [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.m
 | `migrate-storage-status NAME` | State/disk/error of the most recent (or running) container-storage migration |
 | `console NAME [--cmd=PATH]` | Interactive shell inside a running container (`docker exec -it`-style); `--cmd=` overrides the default `/usr/bin/bash` |
 | `files get NAME --path=/some/path [--output=PATH]` | Read one file's raw bytes back out of a container's rootfs; stdout if `--output=` omitted |
+| `files put NAME --path=/some/path --file=LOCAL_PATH [--mode=0644]` | Write/overwrite one file inside an already-existing container, live and ephemeral, without a recreate (ADR-0153) |
 | `rm NAME` | Stop (if running), remove, and forget any persisted definition |
 | `container recipe add --name=NAME --file=PATH` | Publish a container recipe (ADR-0151) -- content must already be a full `POST /containers` body, its own `"name"` matching NAME |
 | `container recipe show NAME` | Print a recipe's own raw, unsubstituted content |

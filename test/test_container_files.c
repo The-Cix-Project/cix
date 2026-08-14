@@ -604,6 +604,193 @@ int main(void)
 		kx_response_free(&r);
 	}
 
+	/* 8. PUT .../files?path=... (ADR-0153) writes a new file into a
+	 * still-running container via /proc/<pid>/root -- the overlay
+	 * copy-up lands it in the real, host-visible upper/ dir, checked
+	 * directly with stat()+fopen(), and a follow-up GET proves the
+	 * daemon's own read path sees the exact same bytes. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"writetest\",\"image\":\"filestest\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST writetest, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT",
+	                       "/v1/containers/writetest/files?path=%2Fetc%2Flive.conf",
+	                       "{\"content\":\"hello live world\\n\",\"mode\":\"0640\","
+	                       "\"owner\":75,\"group\":76}",
+	                       &r) != 0 ||
+	    r.status != 204) {
+		fprintf(stderr, "FAIL: PUT files (running) status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	{
+		char live_conf_path[PATH_MAX];
+		FILE *f;
+		char buf[128];
+		struct stat st;
+
+		snprintf(live_conf_path, sizeof(live_conf_path), "%s/writetest/upper/etc/live.conf",
+		         g_containers_dir);
+		f = fopen(live_conf_path, "r");
+		if (f == NULL) {
+			fprintf(stderr, "FAIL: PUT'd file not found on disk (running)\n");
+			ok = 0;
+		} else {
+			if (fgets(buf, sizeof(buf), f) == NULL || strcmp(buf, "hello live world\n") != 0) {
+				fprintf(stderr, "FAIL: PUT'd file content wrong (running): '%s'\n", buf);
+				ok = 0;
+			}
+			fclose(f);
+		}
+		if (stat(live_conf_path, &st) != 0) {
+			fprintf(stderr, "FAIL: stat(%s): %s\n", live_conf_path, strerror(errno));
+			ok = 0;
+		} else if (st.st_uid != 75 || st.st_gid != 76 || (st.st_mode & 0777) != 0640) {
+			fprintf(stderr,
+			        "FAIL: PUT'd file got uid=%d gid=%d mode=%o, want uid=75 gid=76 mode=0640\n",
+			        (int)st.st_uid, (int)st.st_gid, st.st_mode & 0777);
+			ok = 0;
+		}
+	}
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET", "/v1/containers/writetest/files?path=%2Fetc%2Flive.conf",
+	                       NULL, &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: GET files after PUT (running) status=%d\n", r.status);
+		ok = 0;
+	} else if (r.body == NULL || r.body_len != strlen("hello live world\n") ||
+	           memcmp(r.body, "hello live world\n", r.body_len) != 0) {
+		fprintf(stderr, "FAIL: GET files after PUT (running) wrong content\n");
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	/* overwriting an existing file replaces its content, not appends. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT",
+	                       "/v1/containers/writetest/files?path=%2Fetc%2Flive.conf",
+	                       "{\"content\":\"replaced\\n\"}", &r) != 0 ||
+	    r.status != 204) {
+		fprintf(stderr, "FAIL: PUT files (overwrite) status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET", "/v1/containers/writetest/files?path=%2Fetc%2Flive.conf",
+	                       NULL, &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: GET files after overwrite status=%d\n", r.status);
+		ok = 0;
+	} else if (r.body == NULL || r.body_len != strlen("replaced\n") ||
+	           memcmp(r.body, "replaced\n", r.body_len) != 0) {
+		fprintf(stderr, "FAIL: GET files after overwrite wrong content ('%.*s')\n",
+		        (int)r.body_len, r.body ? r.body : "");
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	/* path traversal / missing leading slash / missing content / unknown
+	 * container all rejected the same way the read side already is. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT",
+	                       "/v1/containers/writetest/files?path=%2F..%2F..%2Fetc%2Fpasswd",
+	                       "{\"content\":\"x\"}", &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: PUT files traversal expected 400, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT", "/v1/containers/writetest/files?path=etc%2Fhosts",
+	                       "{\"content\":\"x\"}", &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: PUT files no-leading-slash expected 400, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT", "/v1/containers/writetest/files?path=%2Fetc%2Fx", "{}",
+	                       &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: PUT files missing content expected 400, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT",
+	                       "/v1/containers/nosuchcontainer/files?path=%2Fetc%2Fx",
+	                       "{\"content\":\"x\"}", &r) != 0 ||
+	    r.status != 404) {
+		fprintf(stderr, "FAIL: PUT files unknown container expected 404, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	kx_client_request(&client, "DELETE", "/v1/containers/writetest", NULL, &r);
+	kx_response_free(&r);
+
+	/* 9. PUT against a container that has exited on its own (the !running
+	 * branch, writing straight into upper/ rather than through
+	 * /proc/<pid>/root) -- and confirms the write is live/ephemeral: it
+	 * never touches the container's own persisted files[] body, so it is
+	 * NOT what a recreate would replay (that durability boundary belongs
+	 * to a container recipe instead, by design -- see ADR-0153). */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"writetest2\",\"image\":\"filestest\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"]}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST writetest2, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	usleep(500000);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT",
+	                       "/v1/containers/writetest2/files?path=%2Fetc%2Fstopped.conf",
+	                       "{\"content\":\"written while stopped\\n\"}", &r) != 0 ||
+	    r.status != 204) {
+		fprintf(stderr, "FAIL: PUT files (!running) status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET",
+	                       "/v1/containers/writetest2/files?path=%2Fetc%2Fstopped.conf", NULL,
+	                       &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: GET files after PUT (!running) status=%d\n", r.status);
+		ok = 0;
+	} else if (r.body == NULL || r.body_len != strlen("written while stopped\n") ||
+	           memcmp(r.body, "written while stopped\n", r.body_len) != 0) {
+		fprintf(stderr, "FAIL: GET files after PUT (!running) wrong content\n");
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	kx_client_request(&client, "DELETE", "/v1/containers/writetest2", NULL, &r);
+	kx_response_free(&r);
+
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM (second instance)\n");
 		ok = 0;

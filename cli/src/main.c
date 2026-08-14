@@ -3292,17 +3292,104 @@ static int cmd_files_get(const struct kx_client *c, int argc, char **argv)
 	return 0;
 }
 
+/*
+ * PUT /v1/containers/{name}/files?path=... (ADR-0153, task #861): a
+ * live, immediate hotfix to one file inside a running (or stopped-
+ * but-defined) container -- deliberately not persisted into the
+ * container's own definition (a future restart replays the original
+ * persisted body unchanged). See the daemon's own doc comment on
+ * handle_container_file_write() for why: the durable "this should
+ * survive a recreate" path is a container recipe (`container recipe
+ * add`/`container apply-recipe`), not this command.
+ */
+static int cmd_files_put(const struct kx_client *c, int argc, char **argv)
+{
+	const char *name = NULL;
+	const char *path_arg = NULL;
+	const char *file_arg = NULL;
+	const char *mode_arg = NULL;
+	char *content = NULL;
+	size_t content_len;
+	char encoded_path[256 * 3];
+	char path[400];
+	struct json_writer w;
+	struct kx_response r;
+	int i;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--path=", 7) == 0)
+			path_arg = argv[i] + 7;
+		else if (strncmp(argv[i], "--file=", 7) == 0)
+			file_arg = argv[i] + 7;
+		else if (strncmp(argv[i], "--mode=", 7) == 0)
+			mode_arg = argv[i] + 7;
+		else if (name == NULL)
+			name = argv[i];
+		else {
+			fprintf(stderr, "kanxeoctl: unknown files put option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL || path_arg == NULL || file_arg == NULL) {
+		fprintf(stderr,
+		        "usage: kanxeoctl files put NAME --path=/some/path --file=LOCAL_PATH "
+		        "[--mode=0644]\n");
+		return 2;
+	}
+	if (read_local_file(file_arg, &content, &content_len) != 0) {
+		fprintf(stderr, "kanxeoctl: could not read %s\n", file_arg);
+		return 1;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "content");
+	jw_str(&w, content);
+	if (mode_arg != NULL) {
+		jw_key(&w, "mode");
+		jw_str(&w, mode_arg);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	free(content);
+
+	url_encode_query_value(path_arg, encoded_path, sizeof(encoded_path));
+	snprintf(path, sizeof(path), "/v1/containers/%s/files?path=%s", name, encoded_path);
+
+	if (kx_client_request(c, "PUT", path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	if (r.status < 200 || r.status >= 300) {
+		const char *msg = json_str_field(r.json, "error");
+
+		fprintf(stderr, "kanxeoctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed", r.status);
+		kx_response_free(&r);
+		return 1;
+	}
+	printf("wrote %s on %s\n", path_arg, name);
+	kx_response_free(&r);
+	return 0;
+}
+
 static int cmd_files(const struct kx_client *c, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl files get NAME --path=/some/path [--output=PATH]\n");
+		fprintf(stderr, "usage: kanxeoctl files get NAME --path=/some/path [--output=PATH]\n"
+		                "       kanxeoctl files put NAME --path=/some/path --file=LOCAL_PATH "
+		                "[--mode=0644]\n");
 		return 2;
 	}
 	sub = argv[0];
 	if (strcmp(sub, "get") == 0)
 		return cmd_files_get(c, argc - 1, argv + 1);
+	if (strcmp(sub, "put") == 0)
+		return cmd_files_put(c, argc - 1, argv + 1);
 
 	fprintf(stderr, "kanxeoctl: unknown files subcommand '%s'\n", sub);
 	return 2;

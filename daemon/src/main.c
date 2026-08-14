@@ -9144,6 +9144,136 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 }
 
 /*
+ * PUT /v1/containers/{name}/files?path=... (ADR-0153, task #861): the
+ * write-path counterpart to handle_container_file_read() immediately
+ * above -- same running/!running path resolution (running:
+ * /proc/<pid>/root<path>, kernel-resolved through the container's own
+ * mount namespace, no setns() needed; !running: <containers-dir>/
+ * <name>/upper<path> directly, the same real host directory overlay_
+ * create() already mounts as the upper layer). Reuses the exact
+ * write-then-chmod/chown sequence create-time files[] staging already
+ * established (handle_create()'s own inline loop) rather than a
+ * second copy.
+ *
+ * Deliberately LIVE and EPHEMERAL, not persisted into the container's
+ * own definition -- this is a hotfix primitive (patch a running
+ * container the way an operator would hand-edit a file over SSH),
+ * not a way to durably change what a future restart/recreate produces.
+ * A restart replays the persisted create-body unchanged, and this
+ * write is never folded into it, on purpose: merging one file update
+ * into an arbitrary already-persisted JSON files[] array is real,
+ * separate complexity (matching an existing entry by path vs.
+ * appending a new one, preserving every other field) that doesn't
+ * belong bolted onto a same primitive that's supposed to stay simple
+ * and immediate. The durable path for "this change should survive a
+ * recreate" is a container recipe (ADR-0151): capture the updated
+ * file content there and re-apply, the same reproducible path this
+ * project already uses for exactly that. Both together (live patch
+ * now, recipe update for later) intentionally mirror how `pkg
+ * install` (live, immediate) and an image recipe's own package list
+ * (declared intent for a future build) already relate.
+ */
+static void handle_container_file_write(int fd, const char *name, const char *rel_path,
+                                         const char *body, size_t body_len)
+{
+	struct registry_entry *e = registry_find(name);
+	struct json_value *root;
+	const char *raw_content;
+	char *content;
+	const char *mode_str;
+	const struct json_value *jowner, *jgroup;
+	long mode;
+	uid_t owner;
+	gid_t group;
+	size_t content_len;
+	char full_path[PATH_MAX];
+	char target_dir[PATH_MAX];
+	char *slash;
+	int file_fd;
+
+	if (e == NULL) {
+		respond_error(fd, 404, "Not Found", "no such container");
+		return;
+	}
+	if (rel_path == NULL || rel_path[0] != '/' || strlen(rel_path) >= CONTAINER_FILE_PATH_MAX ||
+	    !file_path_is_safe(rel_path)) {
+		respond_error(fd, 400, "Bad Request", "invalid or missing path");
+		return;
+	}
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	raw_content = json_as_string(json_object_get(root, "content"));
+	if (raw_content == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "content is required");
+		return;
+	}
+	/*
+	 * A copy, not the json_value's own pointer -- content is used below
+	 * in a real write(2) call, which must happen before root (and
+	 * everything it owns, including raw_content) is freed. Freeing
+	 * root first and using the string afterward was a real use-after-
+	 * free caught live during this same feature's own verification
+	 * pass (a real write produced garbage bytes, not the file's actual
+	 * content) -- fixed here, not worked around.
+	 */
+	content = strdup(raw_content);
+	if (content == NULL) {
+		json_free(root);
+		respond_error(fd, 500, "Internal Server Error", "out of memory");
+		return;
+	}
+	mode_str = json_as_string(json_object_get(root, "mode"));
+	mode = mode_str != NULL ? strtol(mode_str, NULL, 8) : 0644;
+	jowner = json_object_get(root, "owner");
+	jgroup = json_object_get(root, "group");
+	owner = jowner != NULL ? (uid_t)json_as_number(jowner) : (uid_t)-1;
+	group = jgroup != NULL ? (gid_t)json_as_number(jgroup) : (gid_t)-1;
+	content_len = strlen(content);
+
+	if (e->running) {
+		snprintf(full_path, sizeof(full_path), "/proc/%d/root%s", (int)e->handle.pid, rel_path);
+	} else {
+		char container_root[PATH_MAX];
+
+		container_root_for(e->disk_name, container_root, sizeof(container_root));
+		snprintf(full_path, sizeof(full_path), "%s/%s/upper%s", container_root, name, rel_path);
+	}
+	json_free(root);
+
+	snprintf(target_dir, sizeof(target_dir), "%s", full_path);
+	slash = strrchr(target_dir, '/');
+	if (slash != NULL)
+		*slash = '\0';
+	if (persist_mkdir_p(target_dir) != 0) {
+		free(content);
+		respond_error(fd, 500, "Internal Server Error", "failed to create parent directory");
+		return;
+	}
+
+	file_fd = open(full_path, O_CREAT | O_TRUNC | O_WRONLY, (mode_t)mode);
+	if (file_fd < 0 ||
+	    (content_len > 0 && write(file_fd, content, content_len) != (ssize_t)content_len) ||
+	    (fchmod(file_fd, (mode_t)mode) != 0) ||
+	    ((owner != (uid_t)-1 || group != (gid_t)-1) && fchown(file_fd, owner, group) != 0)) {
+		if (file_fd >= 0)
+			close(file_fd);
+		free(content);
+		respond_error(fd, 500, "Internal Server Error", "failed to write file");
+		return;
+	}
+	close(file_fd);
+	free(content);
+
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+/*
  * GET /v1/containers/{name}/stats (ADR-0054): real, host-side CPU/
  * memory/disk/network usage for one container, gathered entirely from
  * kernel interfaces the daemon already has open (cgroup_fd) or can
@@ -13597,7 +13727,8 @@ static void dispatch(int fd, const struct http_request *req)
 				size_t qlen = strcspn(name, "?");
 
 				if (qlen > 6 && strncmp(name + qlen - 6, "/files", 6) == 0 &&
-				    strcmp(req->method, "GET") == 0 && qlen - 6 < REGISTRY_NAME_MAX) {
+				    qlen - 6 < REGISTRY_NAME_MAX &&
+				    (strcmp(req->method, "GET") == 0 || strcmp(req->method, "PUT") == 0)) {
 					char container_name[REGISTRY_NAME_MAX];
 					char rel_path[CONTAINER_FILE_PATH_MAX];
 
@@ -13607,7 +13738,11 @@ static void dispatch(int fd, const struct http_request *req)
 						respond_error(fd, 400, "Bad Request", "missing path query parameter");
 						return;
 					}
-					handle_container_file_read(fd, container_name, rel_path);
+					if (strcmp(req->method, "GET") == 0)
+						handle_container_file_read(fd, container_name, rel_path);
+					else
+						handle_container_file_write(fd, container_name, rel_path, req->body,
+						                             req->body_len);
 					return;
 				}
 			}

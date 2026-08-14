@@ -76,6 +76,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/containers/{name}/migrate-storage` | Status of the most recent (or running) container-storage migration |
 | POST | `/containers/{name}/migrate-storage` | Move this container's own overlay storage to a new disk, or back to the default |
 | GET | `/containers/{name}/files` | Read one file's raw bytes back out of a container's rootfs |
+| PUT | `/containers/{name}/files` | Write/overwrite one file inside an already-existing container, live, without a recreate (ADR-0153) |
 | GET | `/containers/{name}/console` | Upgrade to a WebSocket; an interactive shell inside the running container |
 | GET | `/containers/recipes` | List container recipes (metadata only) (ADR-0151) |
 | POST | `/containers/recipes` | Add/replace a container recipe -- content must be a real `POST /containers` body, its own `"name"` matching the recipe's |
@@ -682,6 +683,19 @@ Path resolution depends on whether the container is currently running: while run
 
 `path` must be an absolute, `/`-leading, traversal-free path (no `.`/`..` component, no empty `//` component) — the exact same validation `POST /containers`' own `files[].path` already applies, reused verbatim. A path resolving to a directory is `400`, not a directory listing — this endpoint reads one file, it does not browse a tree. `kanxeoctl files get NAME --path=/some/path [--output=PATH]` is the CLI surface (stdout if `--output=` is omitted).
 
+## Writing a file into an existing container, live, without a recreate
+
+```
+PUT /v1/containers/{name}/files?path=/etc/motd
+{"content": "...", "mode": "0644", "owner": 0, "group": 0}
+```
+
+The write-path counterpart to the read above (ADR-0153) — same request shape as a `POST /containers` `files[]` entry (`content` required, `mode`/`owner`/`group` optional), applied to a container that already exists instead of staged at creation time. `204` on success.
+
+Path resolution mirrors the read side's own running/not-running split: while running, written through `/proc/<pid>/root/<path>` (the overlay's own copy-up lands the result in the container's real upperdir, same as any in-container process writing that path would produce); once stopped or exited, written directly into the container's own upperdir. Same traversal-free, absolute-path validation as the read side.
+
+**Deliberately live and ephemeral, never persisted into the container's own `files[]` body** — a future restart or recreate replays the original persisted definition unchanged, with no memory of this write. If the change needs to survive a recreate, the durable path is a container recipe (ADR-0151): edit the recipe, `POST .../recipes/{name}/apply`. `kanxeoctl files put NAME --path=/some/path --file=LOCAL_PATH [--mode=0644]` is the CLI surface.
+
 ## Making a container act as a router
 
 A container attached to two networks with `ip_forward` on will actually forward packets between them — enough for a container running BIRD/FRR to do dynamic routing on top, or for pure static routing on its own:
@@ -1121,7 +1135,7 @@ POST /v1/containers
 }
 ```
 
-- `files` is optional: 0–N `{path, content, mode}` entries, staged directly onto the container's own filesystem *before* its process ever `execve()`s — so `cmd` can point straight at a staged script (e.g. `pbr.sh` above). `path` must be absolute with no `.`/`..` component (`400` otherwise); `content` is bounded at 64KiB per file. `GET /containers/{name}/files?path=...` (above) is the read-path counterpart, for after the container is running.
+- `files` is optional: 0–N `{path, content, mode}` entries, staged directly onto the container's own filesystem *before* its process ever `execve()`s — so `cmd` can point straight at a staged script (e.g. `pbr.sh` above). `path` must be absolute with no `.`/`..` component (`400` otherwise); `content` is bounded at 64KiB per file. `GET`/`PUT /containers/{name}/files?path=...` (above) are the read/write counterparts for after the container already exists — `PUT` there is live/ephemeral only, unlike this creation-time `files[]`, which is part of the container's real persisted definition.
 - `sysctls` is optional: 0–N `{key, value}` entries; `key` must start with `net.` (the one sysctl subtree the kernel actually namespaces end to end — `400` for anything else, a real security boundary, not incidental). Applied inside the container's own netns right after `clone3()`, the same mechanism `ip_forward` already uses.
 - Both survive exactly like everything else in `restart: "always"`'s own replay mechanism — no separate persistence work needed. See ADR-0030.
 - `cmd` itself is echoed back on every `GET /containers`/`GET /containers/{name}` response (`ADR-0100`) — previously there was no way to ask a running or stopped container "what is your entrypoint," since the create request's own `argv` only ever pointed into that request's transient parsed body.
