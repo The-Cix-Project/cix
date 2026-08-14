@@ -2,6 +2,29 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 126 (done): LDAP startup resync (root-causing a real total-lockout incident) + `kanxeo-recover` break-glass boot tool (ADR-0146)
+
+Activating write-gating for real (task #843) produced a genuine, total API lockout on the real box -- every login failing for every user, with no in-band way back in (this OS has no shell anywhere, by design; the REST API is the entire control surface). Root cause: `ldap_init()` loads registered LDAP server bindings at daemon startup, but nothing re-pushed live user/group content into those servers until the next explicit LDAP write -- since every container (including LDAP servers) is recreated on every host reboot, a restart silently left the LDAP config empty, and write-gating's own deliberately-strict login logic treats an authoritative-but-empty LDAP answer as a real rejection, never falling back to the local copy. The identical gap ADR-0091 already fixed once for DNS, never mirrored to LDAP. Immediate unblock required a full reinstall; a fresh installer ISO (kernel through `mkinstalleriso`) was built from scratch and delivered for that reinstall. This part fixes the actual bug and adds a genuine recovery mechanism for next time -- see [ADR-0146](docs/adr/0146-ldap-startup-resync-and-break-glass-recovery.md).
+
+#### Fixed
+- `daemon/src/main.c`: added `ldap_record_sync_all();` at daemon startup, immediately after the existing `dns_server_sync_all()` call -- every registered LDAP server's live config is now re-pushed on every startup, not just on the next mutation.
+
+#### Added
+- `image/src/kanxeo-recover.c`: a new, deliberately tiny (~230 line) break-glass boot tool. Boots from a second GRUB menu entry on the same installer media as `kanxeo-install`; mounts the already-installed system's own containers partition (`/dev/vda5`) read-write; resets only `admin_groups` in the persisted host-auth config back to empty (every other field preserved byte-for-byte); requires a typed `RESET` confirmation before touching anything; touches no container, LDAP record, or LDAP backend setting. Deliberately does not share `kanxeo-install.c`'s own partition-discovery machinery -- a recovery tool's real security property is how small and auditable its own code is.
+- `image/src/mkinstalleriso.c`: now takes a `kanxeo-recover-bin` argument (argv grew 11 -> 12), stages it as a second `/bin/` binary sharing the installer's already-staged runtime libs, and writes a second `"Kanxeo Recovery"` GRUB `menuentry` (`init=/bin/kanxeo-recover`, no kernel args needed) alongside the existing `"Kanxeo Install"` entry.
+- `Makefile`: `build/kanxeo-recover` build rule.
+
+#### Changed
+- `daemon/src/main.c`'s `iso_build_start()` (`POST /v1/system/iso`, ADR-0064) and `test/test_installer.c`'s own build-and-boot verification updated to match `mkinstalleriso`'s new 12-argument contract, including a `kanxeo-recover` path in the required-artifacts check.
+
+#### Verified
+- New regression test in `test/test_ldap.c`: register an LDAP server, create a group, confirm it renders, do a real `stop_daemon()`+`start_daemon()`+`wait_for_daemon()` cycle with zero LDAP writes in between, confirm the group still renders afterward -- proves the startup-resync fix.
+- Full clean rebuild (`-Wall -Werror`, zero warnings) of every affected target. `mkinstalleriso` run for real against the current kernel/signing keys/isotools artifacts: produced a real bootable ISO with both GRUB entries present and both binaries correctly staged (confirmed via direct inspection of the generated `grub.cfg` and staged `/bin/`).
+- `test/test_installer`'s full QEMU boot-and-install verification re-run against the updated pipeline.
+
+#### Known gap (tracked separately)
+- `pkg/recipes/kanxeo/v1.4.0/build.sh` (the self-hosted `POST /v1/system/iso` artifact source) is pinned to a git tag that predates `kanxeo-recover.c` -- a box relying on that hostbuild path will now correctly report a missing-artifact error rather than silently omit the recovery entry, until that recipe is re-pinned to a current tag (needs a live self-hosted build round-trip to verify, not a blind edit).
+
 ### Part 125 (done): `kanxeoctl hostauth-config` -- the last CLI gap before activating write-gating for real (ADR-0144, part 14 of N)
 
 `GET`/`PUT /v1/system/hostauth-config` (ADR-0144) had no CLI surface at all -- the only way to manage host-auth's own admin-group/LDAP-backend settings was raw `curl`. Closed while preparing to actually turn write-gating on for real on the real box (task #843): `kanxeoctl hostauth-config show`/`set`.

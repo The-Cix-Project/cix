@@ -44,7 +44,6 @@
 				<li><button type="button" data-modal="dns-record-form" data-title="Create DNS record">DNS Record</button></li>
 				<li><button type="button" data-modal="dns-server-form" data-title="Register DNS server">DNS Server</button></li>
 				<li><button type="button" data-modal="ldap-server-form" data-title="Register LDAP server">LDAP Server</button></li>
-				<li><button type="button" data-modal="ldap-ssh-target-form" data-title="Register LDAP SSH target">LDAP SSH Target</button></li>
 				<li><button type="button" data-modal="ldap-group-form" data-title="Create LDAP group">LDAP Group</button></li>
 				<li><button type="button" data-modal="ldap-user-form" data-title="Create LDAP user">LDAP User</button></li>
 				<li><button type="button" data-modal="ntp-server-form" data-title="Register NTP server">NTP Server</button></li>
@@ -590,31 +589,6 @@
 					</thead>
 					<tbody id="ldap-servers-body">
 						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-		</section>
-
-		<!-- LDAP SSH Targets (task #731) -->
-		<section class="view" id="view-ldap-ssh-targets" hidden>
-			<div class="view-list">
-				<h2>LDAP SSH Targets</h2>
-				<p class="hint">
-					A registered container receives real Unix accounts
-					(<code>/etc/passwd</code>/<code>/etc/group</code>/<code>/etc/shadow</code>)
-					and per-user <code>~/.ssh/authorized_keys</code> files rendered directly
-					onto its filesystem for every LDAP user that carries an SSH public key --
-					kept in sync on every user/group change. sshd itself never talks to LDAP.
-				</p>
-				<table id="ldap-ssh-targets">
-					<thead>
-						<tr>
-							<th>Container</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="ldap-ssh-targets-body">
-						<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
 					</tbody>
 				</table>
 			</div>
@@ -1728,19 +1702,6 @@
 						<input type="checkbox" id="luf-disabled"> Disabled
 					</label>
 					<button type="submit" id="luf-submit">Create</button>
-				</form>
-			</div>
-
-			<div id="modal-ldap-ssh-target-form" hidden>
-				<form id="ldap-ssh-target-form">
-					<label>
-						Container
-						<input type="text" id="lstf-container" pattern="[A-Za-z0-9_-]+" required>
-					</label>
-					<p class="hint">
-						The container must already exist and be running.
-					</p>
-					<button type="submit">Register</button>
 				</form>
 			</div>
 

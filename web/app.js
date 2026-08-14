@@ -35,7 +35,6 @@ const cache = {
 	dnsRecords: [],
 	dnsServers: [],
 	ldapServers: [],
-	ldapSshTargets: [],
 	ldapGroups: [],
 	ldapUsers: [],
 	ldapConfig: null,
@@ -653,7 +652,6 @@ const CATEGORY_VIEWS = {
 	"dns-records": "view-dns-records",
 	"dns-servers": "view-dns-servers",
 	"ldap-servers": "view-ldap-servers",
-	"ldap-ssh-targets": "view-ldap-ssh-targets",
 	"ldap-groups": "view-ldap-groups",
 	"ldap-users": "view-ldap-users",
 	"ldap-config": "view-ldap-config",
@@ -1126,7 +1124,6 @@ function renderTree() {
 					icon: "dns",
 					children: [
 						{ label: "Servers", hash: "ldap-servers", icon: "dns" },
-						{ label: "SSH Targets", hash: "ldap-ssh-targets", icon: "dns" },
 						{ label: "Groups", hash: "ldap-groups", icon: "dns" },
 						{ label: "Users", hash: "ldap-users", icon: "dns" },
 						{ label: "Config", hash: "ldap-config", icon: "dns" },
@@ -3977,60 +3974,6 @@ async function removeLdapServer(container) {
 	}
 }
 
-/* ---------- LDAP SSH Targets (task #731) ---------- */
-
-function renderLdapSshTargets(targets) {
-	const body = document.getElementById("ldap-ssh-targets-body");
-
-	body.textContent = "";
-	if (targets.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
-
-		cell.colSpan = 2;
-		cell.className = "empty";
-		cell.textContent = "No SSH targets registered";
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
-	}
-
-	for (const t of targets) {
-		const row = document.createElement("tr");
-
-		const containerCell = document.createElement("td");
-		containerCell.textContent = t.container;
-		row.appendChild(containerCell);
-
-		const actionCell = document.createElement("td");
-		const rmButton = document.createElement("button");
-
-		rmButton.textContent = "Unregister";
-		rmButton.className = "button-danger";
-		rmButton.addEventListener("click", () => removeLdapSshTarget(t.container));
-		actionCell.appendChild(rmButton);
-		row.appendChild(actionCell);
-
-		body.appendChild(row);
-	}
-}
-
-async function refreshLdapSshTargets() {
-	const data = await apiRequest("GET", "/v1/ldap/ssh-targets");
-	cache.ldapSshTargets = data.ssh_targets;
-	renderLdapSshTargets(cache.ldapSshTargets);
-}
-
-async function removeLdapSshTarget(container) {
-	try {
-		await apiRequest("DELETE", "/v1/ldap/ssh-targets/" + encodeURIComponent(container));
-		clearStatus();
-		await refreshLdapSshTargets();
-	} catch (e) {
-		showStatus("Failed to unregister SSH target " + container + ": " + e.message, true);
-	}
-}
-
 /* ---------- LDAP Groups (task #726) ---------- */
 
 /* Set while the LDAP group modal form is open in edit mode (task #750) --
@@ -5753,22 +5696,6 @@ document.getElementById("ldap-server-form").addEventListener("submit", async (ev
 	}
 });
 
-document.getElementById("ldap-ssh-target-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-
-	const container = document.getElementById("lstf-container").value.trim();
-
-	try {
-		await apiRequest("POST", "/v1/ldap/ssh-targets", { container: container });
-		clearStatus();
-		document.getElementById("ldap-ssh-target-form").reset();
-		closeModal();
-		await refreshLdapSshTargets();
-	} catch (e) {
-		showStatus("Failed to register SSH target: " + e.message, true);
-	}
-});
-
 document.getElementById("ldap-group-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 
@@ -6582,7 +6509,6 @@ async function poll() {
 		await refreshDnsRecords();
 		await refreshDnsServers();
 		await refreshLdapServers();
-		await refreshLdapSshTargets();
 		await refreshLdapGroups();
 		await refreshLdapUsers();
 		await refreshLdapConfig();

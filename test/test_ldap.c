@@ -1009,6 +1009,107 @@ int main(void)
 		kx_response_free(&r);
 	}
 
+	/*
+	 * ADR-0146: a real, previously-undiscovered gap -- ldap_init()
+	 * loads registered server bindings from disk before any container
+	 * has started, so a server-serving container that comes back up on
+	 * daemon restart (restart:"always", the exact shape a real
+	 * long-lived glauth deployment has) gets a fresh, empty managed
+	 * user/group section unless something explicitly re-pushes current
+	 * state afterward -- confirmed live to produce a real host-auth
+	 * lockout (every account's own LDAP entry silently vanished after
+	 * a routine reboot, with no new LDAP write in between to trigger a
+	 * resync). Mirrors the identical, already-tested dns_server_sync_
+	 * all()-after-restart fix (ADR-0091) -- this is ldap_record_sync_
+	 * all()'s own missing counterpart, now called from the same
+	 * daemon-startup point. Proven here the only way that actually
+	 * matters: restart:"always" container, real content rendered
+	 * in, a real daemon restart, then confirm the SAME content is
+	 * still there with zero new LDAP writes in between.
+	 */
+	{
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"ldapresync\",\"image\":\"ldaptest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],\"restart\":\"always\","
+		                       "\"files\":[{\"path\":\"/etc/glauth/glauth.cfg\","
+		                       "\"content\":\"watchconfig = true\\n\"}]}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST ldapresync, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/ldap/servers",
+		                       "{\"container\":\"ldapresync\",\"config_path\":\"/etc/glauth/glauth.cfg\"}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: register ldapresync, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/ldap/groups",
+		                       "{\"name\":\"resyncgrp\",\"gidnumber\":6501}", &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: create group resyncgrp, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET",
+		                       "/v1/containers/ldapresync/files?path=%2Fetc%2Fglauth%2Fglauth.cfg",
+		                       NULL, &r) != 0 ||
+		    r.status != 200 ||
+		    memmem(r.body, r.body_len, "name = \"resyncgrp\"", strlen("name = \"resyncgrp\"")) ==
+		        NULL) {
+			fprintf(stderr, "FAIL: ldapresync config missing resyncgrp before restart\n");
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		if (stop_daemon(daemon_pid) != 0) {
+			fprintf(stderr, "FAIL: daemon did not exit cleanly (ldapresync)\n");
+			ok = 0;
+		}
+		daemon_pid = start_daemon();
+		if (daemon_pid < 0) {
+			test_data_dir_cleanup(g_data_dir);
+			return 1;
+		}
+		if (wait_for_daemon(&client, 50) != 0) {
+			fprintf(stderr, "FAIL: daemon never came back up after restart (ldapresync)\n");
+			ok = 0;
+		} else {
+			/* No new LDAP write anywhere in between -- if this still
+			 * shows resyncgrp, the fresh, restart:"always"-respawned
+			 * container's own config was genuinely re-synced by the
+			 * daemon's own startup path, not by anything this test
+			 * itself did. */
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "GET",
+			                       "/v1/containers/ldapresync/files?path=%2Fetc%2Fglauth%2Fglauth.cfg",
+			                       NULL, &r) != 0 ||
+			    r.status != 200 ||
+			    memmem(r.body, r.body_len, "name = \"resyncgrp\"", strlen("name = \"resyncgrp\"")) ==
+			        NULL) {
+				fprintf(stderr,
+				        "FAIL: ldapresync config lost resyncgrp after a daemon restart -- "
+				        "startup resync regressed\n");
+				ok = 0;
+			}
+			kx_response_free(&r);
+		}
+
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "DELETE", "/v1/ldap/groups/resyncgrp", NULL, &r);
+		kx_response_free(&r);
+	}
+
 	stop_daemon(daemon_pid);
 	test_data_dir_cleanup(g_data_dir);
 

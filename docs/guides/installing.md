@@ -30,19 +30,21 @@ This gives you `/tmp/linux-firmware/amdgpu` — pass that path as `mkbootroot`'s
 
 This section covers the dev-machine path (`mkbootroot`/`mkinstalleriso` run by hand). A running Kanxeo host can also assemble a fresh ISO itself, no separate dev machine involved — see [`building-kanxeo.md`'s "Build a fresh installer ISO, server-side"](building-kanxeo.md#4-build-a-fresh-installer-iso-server-side) (`POST /system/iso` / `kanxeoctl iso build`, ADR-0064). Either path produces the same kind of ISO, described below.
 
-Once `build/kanxeod`, `build/kanxeo-install`, `build/bzImage`, and the signing key above all exist:
+Once `build/kanxeod`, `build/kanxeo-install`, `build/kanxeo-recover`, `build/bzImage`, and the signing key above all exist:
 
 ```sh
 sudo build/mkbootroot  /tmp/root_stage build/kanxeod build/kanxeoctl web /tmp/kanxeod-root.squashfs \
      /tmp/linux-firmware/amdgpu \  # or "" to skip GPU firmware entirely
      /path/to/kernel-hostbuild-artifact/lib/modules \  # or "" to skip kernel modules
      /path/to/kmod-usr-bin                             # or "" to skip modprobe/depmod/etc
-sudo build/mkinstalleriso build/iso_stage build/kanxeo-install build/bzImage \
+sudo build/mkinstalleriso build/iso_stage build/kanxeo-install build/kanxeo-recover build/bzImage \
      /tmp/kanxeod-root.squashfs \
      image/keys/kanxeo-signing.key image/keys/kanxeo-signing.crt image/keys/kanxeo-signing.cer \
      build/kanxeo-install.iso \
      "--disk=/dev/CHANGEME --ip=CHANGEME --prefix=24 --gateway=CHANGEME --interface=CHANGEME --auto-partition"
 ```
+
+The generated media carries a second GRUB entry, "Kanxeo Recovery" — a break-glass tool for resetting host-auth admin_groups on an already-installed system if you're ever locked out of the API; see [`security.md`'s recovery section](security.md#break-glass-recovery) and [ADR-0146](../adr/0146-ldap-startup-resync-and-break-glass-recovery.md). It never reformats or reinstalls anything, so keeping this same ISO around after a normal install is worthwhile on its own.
 
 This produces `build/kanxeo-install.iso` — attach it as a CD-ROM/optical drive to a VM (or a real machine) and boot from it. The placeholder args are deliberate: at the GRUB boot menu (it waits 10s before auto-booting, giving you a real chance to interrupt it), press `e` to edit the boot entry, replace `/dev/CHANGEME`/`CHANGEME`/`CHANGEME`/`CHANGEME` with the real target disk, IP address, gateway, and physical interface name (e.g. `eth0` — check `ls /sys/class/net` from a rescue shell if you're not sure which one is which) for this install, then `Ctrl-X` to boot. If you forget, `kanxeo-install`'s own disk check fails safely — it refuses to touch a disk that doesn't exist rather than silently doing the wrong thing.
 

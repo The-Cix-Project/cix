@@ -5687,6 +5687,7 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 {
 	char mkinstalleriso_bin[PATH_MAX];
 	char kanxeo_install_bin[PATH_MAX];
+	char kanxeo_recover_bin[PATH_MAX];
 	char bzimage_path[PATH_MAX];
 	char squashfs_path[PATH_MAX];
 	char isotools_root[PATH_MAX];
@@ -5695,7 +5696,7 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	char signing_cert_der[PATH_MAX];
 	char stage_dir[PATH_MAX];
 	char kernel_args[512];
-	char *argv[12];
+	char *argv[13];
 	pid_t pid;
 	int pidfd;
 	struct {
@@ -5704,6 +5705,7 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	} required[] = {
 	    {mkinstalleriso_bin, "mkinstalleriso (from a \"kanxeo\" hostbuild)"},
 	    {kanxeo_install_bin, "kanxeo-install (from a \"kanxeo\" hostbuild)"},
+	    {kanxeo_recover_bin, "kanxeo-recover (from a \"kanxeo\" hostbuild, ADR-0146)"},
 	    {bzimage_path, "bzImage (from a \"kernel\" hostbuild)"},
 	    {squashfs_path, "kanxeod-root.squashfs (from a \"kanxeo\" hostbuild)"},
 	    {isotools_root, "isotools artifact directory (from an \"isotools\" hostbuild)"},
@@ -5716,6 +5718,8 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	snprintf(mkinstalleriso_bin, sizeof(mkinstalleriso_bin), "%s/kanxeo/mkinstalleriso",
 	         ARTIFACTS_DIR);
 	snprintf(kanxeo_install_bin, sizeof(kanxeo_install_bin), "%s/kanxeo/kanxeo-install",
+	         ARTIFACTS_DIR);
+	snprintf(kanxeo_recover_bin, sizeof(kanxeo_recover_bin), "%s/kanxeo/kanxeo-recover",
 	         ARTIFACTS_DIR);
 	snprintf(bzimage_path, sizeof(bzimage_path), "%s/kernel/bzImage", ARTIFACTS_DIR);
 	snprintf(squashfs_path, sizeof(squashfs_path), "%s/kanxeo/kanxeod-root.squashfs",
@@ -5746,15 +5750,16 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	argv[0] = mkinstalleriso_bin;
 	argv[1] = stage_dir;
 	argv[2] = kanxeo_install_bin;
-	argv[3] = bzimage_path;
-	argv[4] = squashfs_path;
-	argv[5] = signing_key;
-	argv[6] = signing_cert_pem;
-	argv[7] = signing_cert_der;
-	argv[8] = ISO_OUTPUT_PATH;
-	argv[9] = kernel_args;
-	argv[10] = isotools_root;
-	argv[11] = NULL;
+	argv[3] = kanxeo_recover_bin;
+	argv[4] = bzimage_path;
+	argv[5] = squashfs_path;
+	argv[6] = signing_key;
+	argv[7] = signing_cert_pem;
+	argv[8] = signing_cert_der;
+	argv[9] = ISO_OUTPUT_PATH;
+	argv[10] = kernel_args;
+	argv[11] = isotools_root;
+	argv[12] = NULL;
 
 	pid = fork();
 	if (pid < 0) {
@@ -16060,6 +16065,26 @@ int main(int argc, char **argv)
 	 * run a DNS-serving container).
 	 */
 	dns_server_sync_all();
+
+	/*
+	 * The identical gap, for LDAP (ADR-0146): every registered LDAP
+	 * server binding needs its own live config re-pushed here too, for
+	 * the exact same reason dns_server_sync_all() above already has to
+	 * be -- ldap_init() loaded the bindings themselves from disk before
+	 * any container had started, and the server-side write in
+	 * ldap_record_sync_all()/ldap_write_config_file() reaches through
+	 * /proc/<pid>/root, which needs that container's pid to already be
+	 * real. Without this, a freshly-restarted LDAP-serving container
+	 * boots with an empty managed user/group section -- silently
+	 * indistinguishable, from a login attempt's own perspective, from
+	 * "every account was deleted," and a live-LDAP-backed admin login
+	 * then gets a real, authoritative rejection instead of a stale-but-
+	 * working one. Confirmed the hard way: this exact gap produced a
+	 * genuine host-auth lockout on the real deployment the first time
+	 * write-gating was activated against a host that had rebooted more
+	 * than once since its last direct LDAP user/group mutation.
+	 */
+	ldap_record_sync_all();
 
 	/* Console login (Phase 19): a real console needs something to walk
 	 * up to, once boot is fully healthy -- never for a dev/test kanxeod

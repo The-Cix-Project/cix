@@ -120,3 +120,15 @@ kanxeoctl run --name=svc1 --image=myapp --ldap-provision --ldap-group=svcaccts -
 ```
 
 Delivers a freshly-generated `bind.secret` (never persisted in plaintext anywhere in Kanxeo's own state — only its hash survives) into `/etc/kanxeo-ldap/` inside the container by default. `--ldap-group=` must already exist; `--ldap-user=` defaults to the container's own name. The account is removed automatically when the container is.
+
+### Break-glass recovery (ADR-0146)
+
+Host-auth write-gating (`GET`/`PUT /system/hostauth-config`, [`docs/api/README.md`'s "Host authentication"](../api/README.md#host-authentication-adr-0144)) has no in-band bypass once active, by design — nothing reachable over the REST API can turn it off from the outside. If every login genuinely stops working (every configured admin-group user's credential rejected, or the LDAP backend serving stale/empty config after a reboot — see [ADR-0146](../adr/0146-ldap-startup-resync-and-break-glass-recovery.md) for the real incident that motivated this tool), the only way back in is physical or hypervisor console access to the machine itself:
+
+1. Attach the same installer ISO used to originally install this system (`docs/guides/installing.md`) as boot media, and force a reboot.
+2. At the GRUB menu, select **"Kanxeo Recovery"** instead of the normal install entry.
+3. The tool mounts the already-installed system's own containers partition, shows the current host-auth config for confirmation, and requires typing `RESET` (all capitals) before changing anything.
+4. Confirming resets **only** `admin_groups` back to empty — the same state a fresh install starts in, where every write is open with no login required. Every other setting (LDAP backend config, session idle timeout, every container, every LDAP user/group record) is left completely untouched.
+5. Remove the recovery media and reboot into the normal installed system. Every API write is open again — reconfigure a real admin group (`kanxeoctl hostauth-config set --admin-group=...`) before anyone relies on gating again.
+
+This is deliberately **not** a network-reachable escape hatch: reaching this tool at all requires the same level of access needed to attach different boot media and power-cycle the machine, which a remote attacker manipulating the REST API alone can never do. The typed confirmation is a second, independent gate on top of that physical-access requirement — a stray or accidental boot into this entry can't silently disable write-gating.

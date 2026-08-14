@@ -149,6 +149,7 @@ int main(int argc, char **argv)
 {
 	const char *stage_dir;
 	const char *kanxeo_install_bin;
+	const char *kanxeo_recover_bin;
 	const char *bzimage_path;
 	const char *control_plane_squashfs;
 	const char *signing_key;
@@ -165,11 +166,14 @@ int main(int argc, char **argv)
 	char isotools_lib_dir[600];
 	int i;
 
-	if (argc != 11) {
+	if (argc != 12) {
 		fprintf(stderr,
-		        "usage: %s <staging-dir> <kanxeo-install-bin> <bzImage> "
-		        "<control-plane-squashfs> <signing-key> <signing-cert.crt> "
+		        "usage: %s <staging-dir> <kanxeo-install-bin> <kanxeo-recover-bin> "
+		        "<bzImage> <control-plane-squashfs> <signing-key> <signing-cert.crt> "
 		        "<signing-cert.cer> <out.iso> <kernel-args> <isotools-root>\n"
+		        "  kanxeo-recover-bin: the break-glass recovery tool (ADR-0146), staged as\n"
+		        "  a second GRUB menu entry on the SAME media -- boots straight to a\n"
+		        "  console prompt, no kernel-args needed (it takes none).\n"
 		        "  signing-key/signing-cert.crt/signing-cert.cer: the Kanxeo Secure Boot\n"
 		        "  signing key pair (image/keys/kanxeo-signing.{key,crt,cer} -- .crt is\n"
 		        "  PEM, for sbsign; .cer is DER, for mokutil) -- used to sign systemd-boot\n"
@@ -192,14 +196,15 @@ int main(int argc, char **argv)
 	}
 	stage_dir = argv[1];
 	kanxeo_install_bin = argv[2];
-	bzimage_path = argv[3];
-	control_plane_squashfs = argv[4];
-	signing_key = argv[5];
-	signing_cert_pem = argv[6];
-	signing_cert_der = argv[7];
-	out_iso = argv[8];
-	kernel_args = argv[9];
-	snprintf(g_isotools_root, sizeof(g_isotools_root), "%s", argv[10]);
+	kanxeo_recover_bin = argv[3];
+	bzimage_path = argv[4];
+	control_plane_squashfs = argv[5];
+	signing_key = argv[6];
+	signing_cert_pem = argv[7];
+	signing_cert_der = argv[8];
+	out_iso = argv[9];
+	kernel_args = argv[10];
+	snprintf(g_isotools_root, sizeof(g_isotools_root), "%s", argv[11]);
 
 	snprintf(g_grub_mkrescue_bin, sizeof(g_grub_mkrescue_bin), "%s/bin/grub-mkrescue",
 	         g_isotools_root);
@@ -229,6 +234,22 @@ int main(int argc, char **argv)
 		return 1;
 	if (test_image_fixture_build(stage_dir, kanxeo_install_bin, "kanxeo-install") != 0)
 		return 1;
+	/*
+	 * kanxeo-recover (ADR-0146) is dynamically linked against nothing
+	 * beyond plain libc -- the exact same runtime test_image_fixture_build()
+	 * just staged for kanxeo-install above (ld-linux-x86-64.so.2, libc.so.6
+	 * under lib64/ and lib/x86_64-linux-gnu/ respectively). A second full
+	 * _build() call would just re-copy those same two files under a second,
+	 * redundant name; a plain file copy into the already-staged bin/ is
+	 * the correct, minimal step here.
+	 */
+	{
+		char recover_dst[600];
+
+		snprintf(recover_dst, sizeof(recover_dst), "%s/bin/kanxeo-recover", stage_dir);
+		if (test_image_fixture_copy_file(kanxeo_recover_bin, recover_dst) != 0)
+			return 1;
+	}
 
 	if (ensure_dir_under(stage_dir, "usr") != 0)
 		return 1;
@@ -365,6 +386,13 @@ int main(int argc, char **argv)
 	if (sbsign_to(signing_key, signing_cert_pem, bzimage_path, dst) != 0)
 		return 1;
 
+	/*
+	 * Second, distinct boot target on the SAME media (ADR-0146):
+	 * kanxeo-recover never reformats/reinstalls anything, so it needs no
+	 * kernel-args of its own -- everything it needs (which system disk to
+	 * touch, what to reset) is either hardcoded (its own header comment
+	 * explains why) or gathered interactively at its own console prompt.
+	 */
 	snprintf(grub_cfg, sizeof(grub_cfg),
 	         "set timeout=10\n"
 	         "set default=0\n"
@@ -372,6 +400,11 @@ int main(int argc, char **argv)
 	         "menuentry \"Kanxeo Install\" {\n"
 	         "    linux /boot/kanxeo-bzImage console=tty0 console=ttyS0 root=/dev/sr0 "
 	         "rootfstype=iso9660 ro init=/bin/kanxeo-install -- %s\n"
+	         "}\n"
+	         "\n"
+	         "menuentry \"Kanxeo Recovery (reset host-auth admin_groups)\" {\n"
+	         "    linux /boot/kanxeo-bzImage console=tty0 console=ttyS0 root=/dev/sr0 "
+	         "rootfstype=iso9660 ro init=/bin/kanxeo-recover\n"
 	         "}\n",
 	         kernel_args);
 	snprintf(grub_cfg_path, sizeof(grub_cfg_path), "%s/boot/grub/grub.cfg", stage_dir);

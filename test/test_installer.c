@@ -64,6 +64,7 @@
 #define KANXEOD_BIN "build/kanxeod"
 #define KANXEOCTL_BIN "build/kanxeoctl"
 #define KANXEO_INSTALL_BIN "build/kanxeo-install"
+#define KANXEO_RECOVER_BIN "build/kanxeo-recover"
 #define MKINSTALLERISO_BIN "build/mkinstalleriso"
 #define BZIMAGE_PATH "build/bzImage"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
@@ -225,11 +226,12 @@ int main(void)
 	         TEST_PREFIX, TEST_GATEWAY, TEST_IFACE);
 	{
 		char *mkiso_argv[] = { (char *)MKINSTALLERISO_BIN, installer_stage,
-			                (char *)KANXEO_INSTALL_BIN,    (char *)BZIMAGE_PATH,
-			                control_plane_squashfs,        (char *)SIGNING_KEY,
-			                (char *)SIGNING_CERT_PEM,      (char *)SIGNING_CERT_DER,
-			                installer_iso,                 kernel_args,
-			                (char *)ISOTOOLS_ROOT,         NULL };
+			                (char *)KANXEO_INSTALL_BIN,    (char *)KANXEO_RECOVER_BIN,
+			                (char *)BZIMAGE_PATH,          control_plane_squashfs,
+			                (char *)SIGNING_KEY,           (char *)SIGNING_CERT_PEM,
+			                (char *)SIGNING_CERT_DER,      installer_iso,
+			                kernel_args,                   (char *)ISOTOOLS_ROOT,
+			                NULL };
 		if (run_subprocess(MKINSTALLERISO_BIN, mkiso_argv) != 0)
 			return 1;
 	}
@@ -687,9 +689,21 @@ int main(void)
 		} else {
 			char *ls_argv[] = { (char *)DEBUGFS_BIN, "-R", "ls -l /", containers_extract, NULL };
 
+			/*
+			 * ADR-0141's layout-grouping refactor moved images/, pki/,
+			 * pkg/ out from directly under the partition root -- by the
+			 * time this session-3 boot has actually run kanxeod once,
+			 * migrate_flat_layout_to_grouped() has already relocated
+			 * them into state/pki and rebuildable/{images,pkg}. Checking
+			 * for the pre-ADR-0141 flat names here was stale (confirmed
+			 * failing against a real boot before this fix) -- "state"/
+			 * "rebuildable"/"containers" are the real, current top-level
+			 * grouped-layout directories (daemon/src/main.c's own
+			 * STATE_DIR/REBUILDABLE_DIR/CONTAINERS_DIR).
+			 */
 			if (run_subprocess_capture(DEBUGFS_BIN, ls_argv, listing, sizeof(listing)) != 0 ||
-			    strstr(listing, "images") == NULL || strstr(listing, "containers") == NULL ||
-			    strstr(listing, "pki") == NULL || strstr(listing, "pkg") == NULL) {
+			    strstr(listing, "state") == NULL || strstr(listing, "containers") == NULL ||
+			    strstr(listing, "rebuildable") == NULL) {
 				fprintf(stderr,
 				        "containers partition missing kanxeod's own directories after a "
 				        "real boot -- BASE_DIR was not actually the real partition. "
@@ -712,10 +726,16 @@ int main(void)
 		 * dynamically linked a package installs could ever execve()
 		 * successfully (confirmed directly this session). */
 		if (ok) {
-			char *ls_lib64_argv[] = { (char *)DEBUGFS_BIN, "-R", "ls -l images/base/rootfs/lib64",
+			/* rebuildable/images/..., not the pre-ADR-0141 flat images/...
+			 * -- kanxeo-install.c itself still seeds this at the OLD flat
+			 * path by design (migrate_flat_layout_to_grouped() relocates
+			 * it on kanxeod's first real startup, which session 3's own
+			 * boot above has already triggered by this point). */
+			char *ls_lib64_argv[] = { (char *)DEBUGFS_BIN, "-R",
+				                   "ls -l rebuildable/images/base/rootfs/lib64",
 				                   containers_extract, NULL };
 			char *ls_lib_argv[] = { (char *)DEBUGFS_BIN, "-R",
-				                 "ls -l images/base/rootfs/lib/x86_64-linux-gnu",
+				                 "ls -l rebuildable/images/base/rootfs/lib/x86_64-linux-gnu",
 				                 containers_extract, NULL };
 			char lib64_listing[2048], lib_listing[2048];
 
@@ -752,7 +772,7 @@ int main(void)
 				                NULL };
 			char write_cmd[700];
 
-			snprintf(write_cmd, sizeof(write_cmd), "write %s images/PERSISTENCE_MARKER",
+			snprintf(write_cmd, sizeof(write_cmd), "write %s rebuildable/images/PERSISTENCE_MARKER",
 			         marker_src);
 			write_argv[3] = write_cmd;
 			if (run_subprocess(DEBUGFS_BIN, write_argv) != 0) {
@@ -808,7 +828,7 @@ int main(void)
 			fprintf(stderr, "could not extract containers partition after session 4\n");
 			ok = 0;
 		} else {
-			char *cat_argv[] = { (char *)DEBUGFS_BIN, "-R", "cat images/PERSISTENCE_MARKER",
+			char *cat_argv[] = { (char *)DEBUGFS_BIN, "-R", "cat rebuildable/images/PERSISTENCE_MARKER",
 				              containers_extract, NULL };
 
 			if (run_subprocess_capture(DEBUGFS_BIN, cat_argv, marker_readback,
