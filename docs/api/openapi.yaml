@@ -5955,6 +5955,19 @@ components:
           type: string
           default: "0644"
           description: Octal permission string, e.g. "0755" for a script.
+        owner:
+          type: integer
+          description: >
+            (ADR-0144) Numeric uid this file lands owned as. Staged
+            before the container's own process ever execve()s, so no
+            NSS lookup and no ordering dependency on another staged
+            file (e.g. a /etc/passwd entry) existing first -- always a
+            raw uid, never a username. Omitted means root (this
+            daemon's own real euid), the same default every file had
+            before this field existed.
+        group:
+          type: integer
+          description: Numeric gid, same real semantics as owner above. Omitted means root's own real egid.
 
     Readiness:
       type: object

@@ -10,6 +10,7 @@
 #include "json.h"
 #include "test_image_fixture.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <sched.h>
@@ -564,6 +565,44 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	kx_client_request(&client, "DELETE", "/v1/containers/readtest", NULL, &r);
 	kx_response_free(&r);
+
+	/* owner/group (ADR-0144): a staged file's real on-disk uid/gid,
+	 * checked directly via stat() against the container's own
+	 * upperdir -- the GET .../files endpoint reads content, not
+	 * metadata, so this is the only way to actually confirm fchown()
+	 * took effect rather than just trusting it compiled. */
+	{
+		struct stat st;
+		char owned_path[PATH_MAX];
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"ownertest\",\"image\":\"filestest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+		                       "\"files\":[{\"path\":\"/etc/owned\",\"content\":\"x\\n\","
+		                       "\"mode\":\"0640\",\"owner\":75,\"group\":76}]}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST ownertest, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		snprintf(owned_path, sizeof(owned_path), "%s/ownertest/upper/etc/owned", g_containers_dir);
+		if (stat(owned_path, &st) != 0) {
+			fprintf(stderr, "FAIL: stat(%s): %s\n", owned_path, strerror(errno));
+			ok = 0;
+		} else if (st.st_uid != 75 || st.st_gid != 76 || (st.st_mode & 0777) != 0640) {
+			fprintf(stderr,
+			        "FAIL: owned file got uid=%d gid=%d mode=%o, want uid=75 gid=76 mode=0640\n",
+			        (int)st.st_uid, (int)st.st_gid, st.st_mode & 0777);
+			ok = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "DELETE", "/v1/containers/ownertest", NULL, &r);
+		kx_response_free(&r);
+	}
 
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM (second instance)\n");

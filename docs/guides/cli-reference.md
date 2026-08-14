@@ -105,7 +105,7 @@ run --name=NAME --image=IMAGE
     [--follow-rolling] [--follow-rolling-jitter-seconds=N]
     [--depends-on=NAME ...]
     [--readiness-tcp-port=N [--readiness-timeout=N]]
-    [--file=CONTAINER_PATH=LOCAL_PATH[:MODE] ...] [--sysctl=KEY=VALUE ...]
+    [--file=CONTAINER_PATH=LOCAL_PATH[:MODE] ...] [--file-owner=CONTAINER_PATH:UID:GID ...] [--sysctl=KEY=VALUE ...]
     [--dns-server=A.B.C.D ...]
     -- CMD [ARGS...]
 ```

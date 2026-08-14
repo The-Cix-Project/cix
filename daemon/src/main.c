@@ -7684,6 +7684,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 			const char *path = json_as_string(json_object_get(item, "path"));
 			const char *content = json_as_string(json_object_get(item, "content"));
 			const char *mode_str = json_as_string(json_object_get(item, "mode"));
+			const struct json_value *jowner = json_object_get(item, "owner");
+			const struct json_value *jgroup = json_object_get(item, "group");
 			long mode;
 
 			if (path == NULL || content == NULL || path[0] != '/' ||
@@ -7697,6 +7699,29 @@ static int create_container_from_body(const char *body, size_t body_len,
 			if (mode < 0 || mode > 0777) {
 				json_free(root);
 				snprintf(err_msg, err_msg_size, "files mode must be 0-0777 octal");
+				return 400;
+			}
+			/*
+			 * owner/group (ADR-0144): a real, numeric uid/gid this
+			 * exact file lands owned as, staged before the container's
+			 * own process ever execve()s (same pre-clone3() write this
+			 * whole block already does) -- no NSS lookup involved, no
+			 * ordering dependency on some OTHER staged file (e.g.
+			 * /etc/passwd) being written first. Omitted means root:root
+			 * (this daemon's own real euid/egid, unchanged from before
+			 * this field existed). Real need: a file only a specific
+			 * non-root container user should be able to read (e.g. a
+			 * bind credential an AuthorizedKeysCommand script -- never
+			 * root -- must read but nothing else on the box should).
+			 */
+			if (jowner != NULL && (jowner->type != JSON_NUMBER || json_as_number(jowner) < 0)) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size, "files owner must be a non-negative uid");
+				return 400;
+			}
+			if (jgroup != NULL && (jgroup->type != JSON_NUMBER || json_as_number(jgroup) < 0)) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size, "files group must be a non-negative gid");
 				return 400;
 			}
 			if (jdns_servers != NULL && strcmp(path, "/etc/resolv.conf") == 0) {
@@ -7879,7 +7904,11 @@ static int create_container_from_body(const char *body, size_t body_len,
 			const char *path = json_as_string(json_object_get(item, "path"));
 			const char *content = json_as_string(json_object_get(item, "content"));
 			const char *mode_str = json_as_string(json_object_get(item, "mode"));
+			const struct json_value *jowner = json_object_get(item, "owner");
+			const struct json_value *jgroup = json_object_get(item, "group");
 			long mode = mode_str != NULL ? strtol(mode_str, NULL, 8) : 0644;
+			uid_t owner = jowner != NULL ? (uid_t)json_as_number(jowner) : (uid_t)-1;
+			gid_t group = jgroup != NULL ? (gid_t)json_as_number(jgroup) : (gid_t)-1;
 			size_t content_len = strlen(content);
 			char target[PATH_MAX];
 			char target_dir[PATH_MAX];
@@ -7903,7 +7932,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 			}
 			fd = open(target, O_CREAT | O_TRUNC | O_WRONLY, (mode_t)mode);
 			if (fd < 0 ||
-			    (content_len > 0 && write(fd, content, content_len) != (ssize_t)content_len)) {
+			    (content_len > 0 && write(fd, content, content_len) != (ssize_t)content_len) ||
+			    ((owner != (uid_t)-1 || group != (gid_t)-1) && fchown(fd, owner, group) != 0)) {
 				if (fd >= 0)
 					close(fd);
 				json_free(root);

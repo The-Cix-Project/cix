@@ -3041,6 +3041,8 @@ struct cli_file_attach {
 	char container_path[256]; /* matches daemon's CONTAINER_FILE_PATH_MAX */
 	char local_path[PATH_MAX];
 	char mode[8]; /* e.g. "0755"; empty means "let the daemon default it" */
+	char owner[16]; /* raw numeric uid as text; empty means "let the daemon default it (root)" */
+	char group[16]; /* raw numeric gid as text; empty means "let the daemon default it (root)" */
 };
 
 /*
@@ -3051,7 +3053,16 @@ struct cli_file_attach {
  * mode override and strips it; otherwise the whole remainder is the
  * local path (no mode given, daemon defaults to 0644). File content
  * itself is read from local_path by the caller, not here -- this
- * function only splits the flag's own text.
+ * function only splits the flag's own text. owner/group (ADR-0144)
+ * are deliberately NOT part of this same flag's grammar: a numeric
+ * uid/gid and a 1-4-digit octal mode look identical (e.g. "75" is
+ * simultaneously a plausible uid AND a valid two-digit octal mode --
+ * confirmed the hard way, a first attempt at layering OWNER:GROUP
+ * onto this same trailing-colon heuristic silently mis-parsed real
+ * values), so there is no way to add them here without real,
+ * silent ambiguity. See parse_file_owner_flag()/--file-owner= below
+ * instead -- a separate flag, matched by container_path, keeps this
+ * one's own existing MODE-only grammar completely unambiguous.
  */
 static int parse_file_flag(const char *s, struct cli_file_attach *out)
 {
@@ -3095,6 +3106,53 @@ static int parse_file_flag(const char *s, struct cli_file_attach *out)
 	memcpy(out->local_path, local_start, local_len);
 	out->local_path[local_len] = '\0';
 
+	return 0;
+}
+
+/*
+ * Parses "--file-owner=CONTAINER_PATH:UID:GID" -- a separate flag
+ * (not layered onto --file= itself, see that function's own comment
+ * for why) that annotates an already-given --file= entry, matched by
+ * its exact container_path. Applied after every --file= flag has been
+ * parsed (run's own option loop calls this immediately, but the
+ * actual match against `files[]` happens once all of them are known --
+ * see the caller). Returns 0 and fills *out_uid/*out_gid, or -1 on a
+ * malformed flag (not a matching container_path -- that's a runtime
+ * "unknown --file-owner= target" error the caller reports instead).
+ */
+static int parse_file_owner_flag(const char *s, char *out_path, size_t out_path_size, long *out_uid,
+                                  long *out_gid)
+{
+	const char *first_colon = strchr(s, ':');
+	const char *second_colon;
+	size_t path_len;
+	char uid_buf[16], gid_buf[16];
+	size_t uid_len, gid_len;
+
+	if (first_colon == NULL)
+		return -1;
+	second_colon = strchr(first_colon + 1, ':');
+	if (second_colon == NULL)
+		return -1;
+
+	path_len = (size_t)(first_colon - s);
+	if (path_len == 0 || path_len >= out_path_size)
+		return -1;
+	memcpy(out_path, s, path_len);
+	out_path[path_len] = '\0';
+
+	uid_len = (size_t)(second_colon - (first_colon + 1));
+	gid_len = strlen(second_colon + 1);
+	if (uid_len == 0 || uid_len >= sizeof(uid_buf) || gid_len == 0 || gid_len >= sizeof(gid_buf) ||
+	    strspn(first_colon + 1, "0123456789") != uid_len ||
+	    strspn(second_colon + 1, "0123456789") != gid_len)
+		return -1;
+	memcpy(uid_buf, first_colon + 1, uid_len);
+	uid_buf[uid_len] = '\0';
+	snprintf(gid_buf, sizeof(gid_buf), "%s", second_colon + 1);
+
+	*out_uid = atol(uid_buf);
+	*out_gid = atol(gid_buf);
 	return 0;
 }
 
@@ -4061,6 +4119,12 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	int route_count = 0;
 	struct cli_file_attach files[CLI_MAX_FILES];
 	int file_count = 0;
+	struct {
+		char path[256];
+		long uid;
+		long gid;
+	} file_owners[CLI_MAX_FILES];
+	int file_owner_count = 0;
 	struct cli_sysctl sysctls[CLI_MAX_SYSCTLS];
 	int sysctl_count = 0;
 	long memory_max = -1;
@@ -4187,6 +4251,23 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 				return 2;
 			}
 			file_count++;
+		} else if (strncmp(argv[i], "--file-owner=", 13) == 0) {
+			if (file_owner_count >= CLI_MAX_FILES) {
+				fprintf(stderr, "kanxeoctl: too many --file-owner= flags (max %d)\n",
+				        CLI_MAX_FILES);
+				return 2;
+			}
+			if (parse_file_owner_flag(argv[i] + 13, file_owners[file_owner_count].path,
+			                          sizeof(file_owners[file_owner_count].path),
+			                          &file_owners[file_owner_count].uid,
+			                          &file_owners[file_owner_count].gid) != 0) {
+				fprintf(stderr,
+				        "kanxeoctl: invalid --file-owner= value '%s' (expected "
+				        "CONTAINER_PATH:UID:GID)\n",
+				        argv[i] + 13);
+				return 2;
+			}
+			file_owner_count++;
 		} else if (strncmp(argv[i], "--sysctl=", 9) == 0) {
 			if (sysctl_count >= CLI_MAX_SYSCTLS) {
 				fprintf(stderr, "kanxeoctl: too many --sysctl= flags (max %d)\n",
@@ -4228,10 +4309,35 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		        "[--follow-rolling] [--follow-rolling-jitter-seconds=N] "
 		        "[--depends-on=NAME ...] "
 		        "[--readiness-tcp-port=N [--readiness-timeout=N]] "
-		        "[--file=CONTAINER_PATH=LOCAL_PATH[:MODE] ...] [--sysctl=KEY=VALUE ...] "
+		        "[--file=CONTAINER_PATH=LOCAL_PATH[:MODE] ...] "
+		        "[--file-owner=CONTAINER_PATH:UID:GID ...] [--sysctl=KEY=VALUE ...] "
 		        "[--dns-server=A.B.C.D ...] "
 		        "-- CMD [ARGS...]\n");
 		return 2;
+	}
+
+	/* Match each --file-owner= against its --file= target by
+	 * container_path (see parse_file_owner_flag()'s own comment for
+	 * why this is a separate flag, not part of --file='s own
+	 * grammar) -- an unmatched --file-owner= is a real usage error,
+	 * not silently ignored. */
+	for (i = 0; i < file_owner_count; i++) {
+		int j, matched = 0;
+
+		for (j = 0; j < file_count; j++) {
+			if (strcmp(files[j].container_path, file_owners[i].path) == 0) {
+				snprintf(files[j].owner, sizeof(files[j].owner), "%ld", file_owners[i].uid);
+				snprintf(files[j].group, sizeof(files[j].group), "%ld", file_owners[i].gid);
+				matched = 1;
+				break;
+			}
+		}
+		if (!matched) {
+			fprintf(stderr,
+			        "kanxeoctl: --file-owner=%s:... has no matching --file=%s=... entry\n",
+			        file_owners[i].path, file_owners[i].path);
+			return 2;
+		}
 	}
 
 	/*
@@ -4413,6 +4519,14 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 			if (files[i].mode[0] != '\0') {
 				jw_key(&w, "mode");
 				jw_str(&w, files[i].mode);
+			}
+			if (files[i].owner[0] != '\0') {
+				jw_key(&w, "owner");
+				jw_int(&w, atol(files[i].owner));
+			}
+			if (files[i].group[0] != '\0') {
+				jw_key(&w, "group");
+				jw_int(&w, atol(files[i].group));
 			}
 			jw_obj_close(&w);
 			free(content);
