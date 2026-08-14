@@ -2,6 +2,16 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 143 (done): jumpbox tooling audit closes a real One Source of Truth gap -- procps missing from the git-tracked recipe (task #842)
+
+Auditing `recipes/image/jumpbox/1.1.0/build.sh` directly against the real box's own `pkg ls --image=jumpbox` output found a real drift: `procps` (`ps`/`top`/`free`/`kill`/etc., an existing recipe since Phase 31) was installed live onto the real box's jumpbox image during this same session (task #835) to fix a real "psmisc has pstree, not ps" gap the user hit directly -- but was never added to the git-tracked image recipe itself. The same class of bug task #837 already closed once for a different set of recipes: the recipe, not the live box, is what a fresh or rebuilt jumpbox actually gets built from, so a live-only addition is invisible to every future deployment.
+
+#### Fixed
+- `recipes/image/jumpbox/1.2.0/build.sh` (new version, recipe versions are immutable once published): adds `procps:rolling:4.0.6` to `image_packages`. No new transitive dependency -- `procps.recipe` declares no `pkg_depends`.
+
+#### Verified
+- `test_pkg_sync`/`test_image_recipe` clean. With this fix, the jumpbox tooling audit (task #842) is now genuinely complete: every tool installed live on the real box's jumpbox image is also present in the git-tracked recipe that would rebuild it.
+
 ### Part 142 (done): validate + document image-version pinning for running containers (task #874)
 
 User-reported, after installing `procps` onto the real box's jumpbox image and finding the already-running `jumpbox1` container still had no `ps`: "when we adjust an image, it's not picking things up? Or a container? the cool thing about our approach is that we package manage containers on the fly, right?" Investigated and confirmed the answer is **no, by deliberate design** (ADR-0107/0108/0124, already implemented and already covered by `test/test_rolling_restart.c`, re-run clean here as live confirmation) -- every install against an image produces a new, immutable, content-addressed rootfs version, never a mutation in place; a container pins the specific version it was created against and keeps running against that exact directory forever. The only previously-undiscovered gap was that this well-established mechanism had no plain-language, operator-facing explanation anywhere outside the ADRs and a dense `api/README.md` paragraph.
