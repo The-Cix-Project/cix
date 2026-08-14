@@ -44,7 +44,7 @@ client/        shared HTTP client library used by the CLI and the daemon's own t
 cli/           kanxeoctl: pure REST API client, no direct runtime access
 web/           browser dashboard: vanilla HTML/CSS/JS, no framework, no build step, served by kanxeod
 image/         bare-metal boot tooling (Phase 11): kernel config, mkbootroot, kanxeo-install, mkinstalleriso
-pkg/recipes/   .recipe files for `pkg install` — source URL, sha256, and a real pkg_build()/pkg_install() shell build, per package (see pkg/recipes/README.md and docs/guides/writing-recipes.md)
+recipes/       package/ + image/ build & manifest recipes for `pkg install`/`image apply-recipe` (see recipes/README.md and docs/guides/writing-recipes.md)
 test/          one demonstrable test (+ exec target, where needed) per phase/part
 docs/          mission/roadmap/adr/api/architecture/guides — see docs/README.md for what lives where
 build/         compiled output (gitignored)

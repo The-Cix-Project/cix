@@ -3645,7 +3645,7 @@ int pkg_repo_is_configured(void)
  * deliberately lenient, not just simple: a real, confirmed bug (found
  * live, not in review) was a naive "split at the LAST slash" version
  * silently mis-parsing a real browser browse URL an operator pasted
- * verbatim (e.g. ".../itdlabs/kanxeo/src/branch/master/pkg/recipes",
+ * verbatim (e.g. ".../itdlabs/kanxeo/src/branch/master/recipes/package",
  * exactly what a forge's own address bar shows while browsing a repo
  * -- an entirely natural thing to copy-paste) into a garbage owner
  * ("itdlabs/kanxeo/src/branch/master/pkg") and repo ("recipes"),
@@ -3819,11 +3819,90 @@ enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd)
 	return PKG_OK;
 }
 
+/*
+ * Image recipes (ADR-0123) are versioned in git for the same reason
+ * package recipes are (a real revision history as the declared
+ * package list changes over time, ADR-0149) but the daemon's own
+ * image_recipe_add() stores exactly one current manifest per image
+ * name -- there is no "pin to an old image recipe version" concept
+ * at the API layer, since an image's actual build result is already
+ * content-addressed independently (ADR-0108). So sync only ever
+ * needs the highest version per name directory, same selection rule
+ * find_recipe_path() already uses for an unpinned package install.
+ */
+static void sync_walk_image_recipes(const char *images_root, int *added, int *skipped,
+                                     int *failed)
+{
+	DIR *names_d;
+	struct dirent *name_de;
+
+	names_d = opendir(images_root);
+	if (names_d == NULL)
+		return;
+	while ((name_de = readdir(names_d)) != NULL) {
+		char name_dir[PATH_MAX];
+		char best_version[PKG_VERSION_MAX];
+		char script_path[PATH_MAX];
+		char *content;
+		size_t content_len;
+		DIR *vd;
+		struct dirent *vde;
+		int have_best = 0;
+		enum pkg_error rc;
+
+		if (name_de->d_name[0] == '.')
+			continue;
+		snprintf(name_dir, sizeof(name_dir), "%s/%s", images_root, name_de->d_name);
+		vd = opendir(name_dir);
+		if (vd == NULL)
+			continue;
+		while ((vde = readdir(vd)) != NULL) {
+			char candidate[PATH_MAX];
+			struct stat st;
+
+			if (vde->d_name[0] == '.')
+				continue;
+			snprintf(candidate, sizeof(candidate), "%s/%s/build.sh", name_dir, vde->d_name);
+			if (stat(candidate, &st) != 0 || !S_ISREG(st.st_mode))
+				continue;
+			if (!have_best || pkg_version_compare(vde->d_name, best_version) > 0) {
+				snprintf(best_version, sizeof(best_version), "%s", vde->d_name);
+				have_best = 1;
+			}
+		}
+		closedir(vd);
+		if (!have_best)
+			continue;
+
+		snprintf(script_path, sizeof(script_path), "%s/%s/build.sh", name_dir, best_version);
+		if (persist_read_file(script_path, &content, &content_len) != 0 || content == NULL)
+			continue;
+		rc = image_recipe_add(name_de->d_name, content);
+		free(content);
+		/* image_recipe_add() always overwrites (name-keyed, no
+		 * version-keying of its own, ADR-0123) -- it never returns
+		 * PKG_ERR_DUPLICATE the way pkg_recipe_add()'s immutable
+		 * package versions can. Every successful sync of an image
+		 * recipe therefore lands in "added", even on a re-sync of
+		 * identical content; the skipped branch is kept for the same
+		 * counting shape as the package walk below, not because it
+		 * can currently trigger. */
+		if (rc == PKG_OK)
+			(*added)++;
+		else if (rc == PKG_ERR_DUPLICATE)
+			(*skipped)++;
+		else
+			(*failed)++;
+	}
+	closedir(names_d);
+}
+
 void pkg_sync_completed(int exit_status)
 {
 	char tarball_path[PATH_MAX];
 	char extract_dir[PATH_MAX];
 	char recipes_root[PATH_MAX];
+	char images_root[PATH_MAX];
 	DIR *names_d;
 	struct dirent *name_de;
 	int added = 0, skipped = 0, failed = 0;
@@ -3860,7 +3939,7 @@ void pkg_sync_completed(int exit_status)
 	}
 	unlink(tarball_path);
 
-	snprintf(recipes_root, sizeof(recipes_root), "%s/pkg/recipes", extract_dir);
+	snprintf(recipes_root, sizeof(recipes_root), "%s/recipes/package", extract_dir);
 	names_d = opendir(recipes_root);
 	if (names_d != NULL) {
 		while ((name_de = readdir(names_d)) != NULL) {
@@ -3903,6 +3982,9 @@ void pkg_sync_completed(int exit_status)
 		}
 		closedir(names_d);
 	}
+
+	snprintf(images_root, sizeof(images_root), "%s/recipes/image", extract_dir);
+	sync_walk_image_recipes(images_root, &added, &skipped, &failed);
 
 	{
 		char *rm_argv[] = { (char *)PKG_RM_BIN, "-rf", extract_dir, NULL };

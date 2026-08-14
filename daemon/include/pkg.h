@@ -637,13 +637,17 @@ enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd);
 /*
  * Called once the curl child from pkg_sync_start() exits. A non-zero
  * exit_status is a fetch failure, recorded and nothing else happens.
- * On success: extracts the archive, walks pkg/recipes/<name>/<version>/
- * build.sh within it, and pkg_recipe_add()s every one -- an already-
- * published (name,version) comes back PKG_ERR_DUPLICATE and is
+ * On success: extracts the archive, walks recipes/package/<name>/
+ * <version>/build.sh within it, and pkg_recipe_add()s every one -- an
+ * already-published (name,version) comes back PKG_ERR_DUPLICATE and is
  * silently skipped (merge semantics: sync only ever adds, never
  * deletes or overwrites, so a locally-added-only recipe is always
- * safe). Records added/skipped counts and any error for pkg_sync_
- * write_json_status().
+ * safe). Also walks recipes/image/<name>/<version>/build.sh (ADR-0149),
+ * picking the highest version per image name and image_recipe_add()ing
+ * it -- that call always overwrites (no version-keying at the daemon
+ * layer, ADR-0123), so an image recipe never comes back
+ * PKG_ERR_DUPLICATE the way a package recipe can. Records combined
+ * added/skipped counts and any error for pkg_sync_write_json_status().
  */
 void pkg_sync_completed(int exit_status);
 

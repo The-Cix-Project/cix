@@ -43,7 +43,7 @@ extern char **environ;
  * /usr/bin path -- ADR-0064 closes the API-First Mandate gap ADR-0063
  * left open (kanxeod itself can now assemble an ISO server-side, via
  * POST /v1/system/iso) by pointing these at a real, self-built
- * isotools hostbuild artifact (pkg/recipes/isotools.recipe) instead of
+ * isotools hostbuild artifact (recipes/package/isotools) instead of
  * whatever happens to be pre-installed on the machine running this
  * tool. g_isotools_root is set once in main() from argv and used by
  * every helper below; a bare manual/dev invocation passes a plain

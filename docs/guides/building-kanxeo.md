@@ -58,7 +58,7 @@ kanxeoctl pkg install --name=e2fsprogs --image=kanxeo-hosttools
 
 ### 2. Point `kanxeo.recipe` at a real source snapshot
 
-`pkg/recipes/kanxeo.recipe`'s `pkg_source` is this repo's own self-hosted git remote's archive-download endpoint, pinned to a real tag — never floating `main`, the same fixed-version discipline every other recipe in this catalog follows:
+`recipes/package/kanxeo/`'s `pkg_source` is this repo's own self-hosted git remote's archive-download endpoint, pinned to a real tag — never floating `main`, the same fixed-version discipline every other recipe in this catalog follows:
 
 ```sh
 pkg_source="https://<user>:<TOKEN>@<git-host>/api/v1/repos/<org>/kanxeo/archive/<tag>.tar.gz"

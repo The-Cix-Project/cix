@@ -152,15 +152,23 @@ static int stop_http_server(pid_t pid)
 
 /* Builds <scratch>/api/v1/repos/testowner/testrepo/archive/master.tar.gz,
  * a real git-archive-shaped tarball (single top-level "testrepo-master/"
- * prefix) containing one recipe at pkg/recipes/synctest/1.0/build.sh. */
+ * prefix) containing one package recipe at
+ * recipes/package/synctest/1.0/build.sh and one image recipe at
+ * recipes/image/synctest-image/1.0.0/build.sh (ADR-0149's unified
+ * layout) -- also stages a stale, lower-versioned image recipe
+ * directory (0.9.0) alongside the real one to prove sync picks the
+ * highest version per name, the same selection rule find_recipe_path()
+ * already uses for an unpinned package install. */
 static int stage_fixture_archive(const char *scratch_dir)
 {
 	char stage_dir[PATH_MAX], recipe_dir[PATH_MAX], recipe_path[PATH_MAX];
+	char image_dir[PATH_MAX], image_path[PATH_MAX];
+	char stale_image_dir[PATH_MAX], stale_image_path[PATH_MAX];
 	char archive_dir[PATH_MAX], archive_path[PATH_MAX];
 	FILE *f;
 
 	snprintf(stage_dir, sizeof(stage_dir), "%s/stage/testrepo-master", scratch_dir);
-	snprintf(recipe_dir, sizeof(recipe_dir), "%s/pkg/recipes/synctest/1.0", stage_dir);
+	snprintf(recipe_dir, sizeof(recipe_dir), "%s/recipes/package/synctest/1.0", stage_dir);
 	if (run_cmd("mkdir -p '%s'", recipe_dir) != 0)
 		return -1;
 
@@ -173,6 +181,27 @@ static int stage_fixture_archive(const char *scratch_dir)
 	fprintf(f, "pkg_source=file:///nonexistent/synctest-1.0.tar\n");
 	fprintf(f, "pkg_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n");
 	fprintf(f, "pkg_depends=\"\"\n");
+	fclose(f);
+
+	snprintf(stale_image_dir, sizeof(stale_image_dir),
+	         "%s/recipes/image/synctest-image/0.9.0", stage_dir);
+	if (run_cmd("mkdir -p '%s'", stale_image_dir) != 0)
+		return -1;
+	snprintf(stale_image_path, sizeof(stale_image_path), "%s/build.sh", stale_image_dir);
+	f = fopen(stale_image_path, "w");
+	if (f == NULL)
+		return -1;
+	fprintf(f, "image_packages=\"synctest:pinned:0.9\"\n");
+	fclose(f);
+
+	snprintf(image_dir, sizeof(image_dir), "%s/recipes/image/synctest-image/1.0.0", stage_dir);
+	if (run_cmd("mkdir -p '%s'", image_dir) != 0)
+		return -1;
+	snprintf(image_path, sizeof(image_path), "%s/build.sh", image_dir);
+	f = fopen(image_path, "w");
+	if (f == NULL)
+		return -1;
+	fprintf(f, "image_packages=\"synctest:pinned:1.0\"\n");
 	fclose(f);
 
 	snprintf(archive_dir, sizeof(archive_dir), "%s/api/v1/repos/testowner/testrepo/archive",
@@ -353,7 +382,7 @@ int main(void)
 		long skipped = (long)json_as_number(json_object_get(r.json, "skipped"));
 
 		CHECK(state != NULL && strcmp(state, "success") == 0, "first sync succeeds");
-		CHECK(added == 1, "first sync adds exactly the one fixture recipe");
+		CHECK(added == 2, "first sync adds the package recipe and the image recipe");
 		CHECK(skipped == 0, "first sync skips nothing (nothing pre-existing)");
 	}
 	kx_response_free(&r);
@@ -367,6 +396,22 @@ int main(void)
 		      "synced recipe content matches the fixture");
 		free(content);
 	}
+
+	/* Image recipe sync (ADR-0149): landed via the real API, and the
+	 * higher of the two staged versions (1.0.0, not the stale 0.9.0)
+	 * won. */
+	memset(&r, 0, sizeof(r));
+	CHECK(kx_client_request(&client, "GET", "/v1/images/recipes/synctest-image", NULL, &r) == 0 &&
+	              r.status == 200,
+	      "synced image recipe reachable via GET /v1/images/recipes/{name}");
+	if (r.json != NULL) {
+		const char *recipe_content = json_str_field(r.json, "content");
+
+		CHECK(recipe_content != NULL && strstr(recipe_content, "synctest:pinned:1.0") != NULL &&
+		              strstr(recipe_content, "synctest:pinned:0.9") == NULL,
+		      "synced image recipe picked the higher of the two staged versions (1.0.0)");
+	}
+	kx_response_free(&r);
 
 	/* --- scenario 5: re-sync is additive/merge, not destructive -- the
 	 * same recipe is skipped as a duplicate, not re-added or rejected. */
@@ -383,8 +428,10 @@ int main(void)
 		long skipped = (long)json_as_number(json_object_get(r.json, "skipped"));
 
 		CHECK(state != NULL && strcmp(state, "success") == 0, "second sync succeeds");
-		CHECK(added == 0, "second sync adds nothing new");
-		CHECK(skipped == 1, "second sync skips the already-present recipe (merge semantics)");
+		CHECK(added == 1,
+		      "second sync adds only the image recipe (it always overwrites, ADR-0123)");
+		CHECK(skipped == 1,
+		      "second sync skips the already-present package recipe (merge semantics)");
 	}
 	kx_response_free(&r);
 
@@ -400,7 +447,8 @@ int main(void)
 	 * correctly skip the same already-present fixture recipe. */
 	memset(&r, 0, sizeof(r));
 	snprintf(put_body, sizeof(put_body),
-	         "{\"repo_url\":\"http://127.0.0.1:%d/testowner/testrepo/src/branch/master/pkg/recipes\"}",
+	         "{\"repo_url\":\"http://127.0.0.1:%d/testowner/testrepo/src/branch/master/recipes/"
+	         "package\"}",
 	         HTTP_PORT);
 	CHECK(kx_client_request(&client, "PUT", "/v1/pkg/repo-config", put_body, &r) == 0 &&
 	              r.status == 200,
@@ -421,7 +469,7 @@ int main(void)
 
 		CHECK(state != NULL && strcmp(state, "success") == 0,
 		      "sync with a browse-URL-style suffix still succeeds (owner/repo correctly parsed)");
-		CHECK(added == 0 && skipped == 1,
+		CHECK(added == 1 && skipped == 1,
 		      "browse-URL-suffix sync resolves to the SAME repo as the bare owner/repo URL did");
 	}
 	kx_response_free(&r);

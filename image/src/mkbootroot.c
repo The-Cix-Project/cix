@@ -133,12 +133,13 @@ int main(int argc, char **argv)
 	firmware_dir = argv[6];
 	/*
 	 * Part 3 (bare-metal-readiness plan): modules_dir is a real kernel
-	 * hostbuild's own harvested "lib/modules" directory (pkg/recipes/
-	 * kernel.recipe's pkg_install(), INSTALL_MOD_PATH= + a real depmod
-	 * already run there) -- containing exactly one <kernelrelease>
-	 * subdirectory, copied wholesale below. kmod_bin_dir is a real
-	 * kmod build's own "usr/bin" (pkg/recipes/kmod.recipe, e.g.
-	 * extracted from wherever it was pkg-installed) -- modprobe/depmod/
+	 * hostbuild's own harvested "lib/modules" directory (recipes/
+	 * package/kernel's own pkg_install(), INSTALL_MOD_PATH= + a real
+	 * depmod already run there) -- containing exactly one
+	 * <kernelrelease> subdirectory, copied wholesale below.
+	 * kmod_bin_dir is a real kmod build's own "usr/bin" (recipes/
+	 * package/kmod, e.g. extracted from wherever it was pkg-installed)
+	 * -- modprobe/depmod/
 	 * insmod/lsmod/modinfo/rmmod, all symlinks to one real "kmod"
 	 * binary. Both default to "" (skip), the exact same tolerant-
 	 * default shape firmware_dir above already established -- a plain
@@ -644,7 +645,7 @@ int main(int argc, char **argv)
 	}
 
 	/* modprobe/depmod/insmod/lsmod/modinfo/rmmod -- all symlinks to one
-	 * real "kmod" binary (pkg/recipes/kmod.recipe). copy_dir_files()'s
+	 * real "kmod" binary (recipes/package/kmod). copy_dir_files()'s
 	 * own stat() (not lstat()) dereferences each symlink and copies the
 	 * real bytes it points at -- a real, working "kmod" binary landing
 	 * at each of the 6 tool names instead of a preserved symlink, a few

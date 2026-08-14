@@ -2,6 +2,19 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 132 (done): unified `recipes/package/` + `recipes/image/` git layout (ADR-0149)
+
+Follow-up to task #867 (commit the 4 already-built image recipes to git, wire `pkg sync` to walk them, closing the gap ADR-0123 flagged): mid-implementation, the user pointed out `pkg/recipes/` (versioned) and the new `pkg/image-recipes/` (flat, name-only) didn't read as one coherent system. Proposed layout, confirmed with the user via `AskUserQuestion` given the real tension with ADR-0123's deliberate "image recipes aren't versioned" decision: version both, but let "version" mean the *recipe's own* revision history for images (a new declared package list is a new version), a separate axis from an image's content-addressed build version (ADR-0108) -- not a reversal of ADR-0123's daemon-side API design, which stays exactly as it was.
+
+#### Changed
+- `pkg/recipes/` -> `recipes/package/` (77 packages, unchanged `<name>/<version>/build.sh` format/content).
+- `pkg/image-recipes/` (never committed) -> `recipes/image/<name>/<version>/build.sh`; the 4 image recipes captured this session (`dns`, `ldap`, `syslog`, `jumpbox`) now live at version `1.0.0` each -- a real starting point for their own revision history, not a placeholder. `image_recipe_add()`'s own daemon-side API is unchanged: still one current, unversioned manifest per image name (ADR-0123).
+- `daemon/src/pkg.c`'s `pkg_sync_completed()`: package-recipe walk root moved to `recipes/package`; new `sync_walk_image_recipes()` walks `recipes/image`, picks the highest version per image name (`pkg_version_compare()`, the same rule an unpinned `pkg install NAME` already uses), and publishes it via `image_recipe_add()`.
+- `recipes/README.md` (replacing `pkg/recipes/README.md`) documents both kinds under one roof, explicit about the two different meanings of "version" so a future recipe author doesn't conflate them.
+
+#### Verified
+- Full clean rebuild (`-Wall -Werror`), zero warnings. `test/test_pkg_sync.c` extended: fixture archive now stages a package recipe and two image-recipe versions (`0.9.0`, `1.0.0`) side by side; confirms the first sync adds both kinds, that the higher image-recipe version wins (`GET /v1/images/recipes/{name}` returns `1.0.0`'s content, not `0.9.0`'s), and that a re-sync shows the real added/skipped asymmetry between the two kinds (image recipes always overwrite and land in "added" again; package recipes are immutable and land in "skipped"). Full regression sweep clean.
+
 ### Part 131 (done): glauth's own baseDN becomes daemon-managed (ADR-0148)
 
 Direct follow-up to Part 130: the user asked whether the LDAP base DN should be "genuinely dynamic" rather than fixed by hand. Investigated directly: it lived in four independently-authored places (`hostauth-config.ldap_base_dn`, each registered server's own `glauth.cfg [backend] baseDN`, and each *client* container's own `nslcd.conf`/`ldap-authkeys.conf`), agreeing only because the same string had been typed into all four this session.

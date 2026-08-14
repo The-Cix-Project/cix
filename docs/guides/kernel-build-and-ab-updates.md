@@ -25,11 +25,11 @@ make ARCH=x86_64 INSTALL_MOD_PATH=<repo>/build modules_install
 depmod -b <repo>/build "$(make -s ARCH=x86_64 kernelrelease)"
 ```
 
-A real GCC toolchain, not TCC — this is unmodified upstream software, not this project's own code, so the TCC mandate doesn't apply to it (same split as any other real software this platform runs as a workload rather than authors itself). The last two lines (Part 3, bare-metal-readiness plan) harvest a real `.ko` tree for the `=m` drivers `image/kernel/qemu-part1.config` enables (a curated set of common real-hardware NICs/USB controllers, see ADR-0061 for exactly which and why) — needs a real `depmod` (`kmod`, any distro package or `pkg/recipes/kmod.recipe`) on this dev machine's own `PATH`.
+A real GCC toolchain, not TCC — this is unmodified upstream software, not this project's own code, so the TCC mandate doesn't apply to it (same split as any other real software this platform runs as a workload rather than authors itself). The last two lines (Part 3, bare-metal-readiness plan) harvest a real `.ko` tree for the `=m` drivers `image/kernel/qemu-part1.config` enables (a curated set of common real-hardware NICs/USB controllers, see ADR-0061 for exactly which and why) — needs a real `depmod` (`kmod`, any distro package or `recipes/package/kmod/`) on this dev machine's own `PATH`.
 
 ### Self-hosted, from a running Kanxeo box
 
-Using the [hostbuild](writing-recipes.md#the-hostbuild-variant) mechanism against `pkg/recipes/kernel.recipe`, which reproduces the identical sequence above (including the modules build + a real `depmod`) inside a build container:
+Using the [hostbuild](writing-recipes.md#the-hostbuild-variant) mechanism against `recipes/package/kernel/`, which reproduces the identical sequence above (including the modules build + a real `depmod`) inside a build container:
 
 `kernel.recipe`'s own `pkg_source` fetches `image/kernel/qemu-part1.config` from `http://127.0.0.1:8901/qemu-part1.config` (curl'd host-side, before the build container starts, same as the kernel tarball itself) — that address is never automatically served by anything, so start a plain local HTTP server pointed at the config's own directory first, from wherever this daemon's own host filesystem has the repo checked out:
 
