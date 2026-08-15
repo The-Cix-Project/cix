@@ -14146,24 +14146,38 @@ static void handle_rolling_config_put(int fd, const char *body, size_t body_len)
 static void handle_pkg_build_config_get(int fd)
 {
 	struct json_writer w;
+	const char *cpu_max = pkg_build_get_cpu_max();
 
 	jw_init(&w);
 	jw_obj_open(&w);
 	jw_key(&w, "max_concurrent_jobs");
 	jw_int(&w, pkg_build_get_max_jobs());
+	jw_key(&w, "memory_max");
+	jw_int(&w, pkg_build_get_memory_max());
+	jw_key(&w, "cpu_max");
+	if (cpu_max != NULL)
+		jw_str(&w, cpu_max);
+	else
+		jw_null(&w);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
 
+/* Partial update -- only the fields given are changed, same convention
+ * daemon-config/hostauth-config already use for a multi-field config
+ * resource (ADR-0165 adds memory_max/cpu_max alongside the original
+ * max_concurrent_jobs, which stays required-when-present for backward
+ * behavior but is no longer the only field a caller can set). */
 static void handle_pkg_build_config_put(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
-	const struct json_value *mj;
+	const struct json_value *mj, *jmem, *jcpu;
 	enum pkg_error perr;
 
 	if (body_len == 0) {
-		respond_error(fd, 400, "Bad Request", "max_concurrent_jobs is required");
+		respond_error(fd, 400, "Bad Request",
+		              "at least one of max_concurrent_jobs/memory_max/cpu_max is required");
 		return;
 	}
 	root = json_parse(body, body_len);
@@ -14172,24 +14186,58 @@ static void handle_pkg_build_config_put(int fd, const char *body, size_t body_le
 		return;
 	}
 	mj = json_object_get(root, "max_concurrent_jobs");
-	if (mj == NULL) {
+	jmem = json_object_get(root, "memory_max");
+	jcpu = json_object_get(root, "cpu_max");
+	if (mj == NULL && jmem == NULL && jcpu == NULL) {
 		json_free(root);
-		respond_error(fd, 400, "Bad Request", "max_concurrent_jobs is required");
+		respond_error(fd, 400, "Bad Request",
+		              "at least one of max_concurrent_jobs/memory_max/cpu_max is required");
 		return;
 	}
-	perr = pkg_build_set_max_jobs((int)json_as_number(mj));
-	json_free(root);
-	if (perr == PKG_ERR_INVALID_NAME) {
-		char msg[80];
+	if (mj != NULL) {
+		perr = pkg_build_set_max_jobs((int)json_as_number(mj));
+		if (perr == PKG_ERR_INVALID_NAME) {
+			char msg[80];
 
-		snprintf(msg, sizeof(msg), "max_concurrent_jobs must be 1-%d", PKG_MAX_CONCURRENT_JOBS);
-		respond_error(fd, 400, "Bad Request", msg);
-		return;
+			snprintf(msg, sizeof(msg), "max_concurrent_jobs must be 1-%d",
+			         PKG_MAX_CONCURRENT_JOBS);
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", msg);
+			return;
+		}
+		if (perr != PKG_OK) {
+			json_free(root);
+			respond_pkg_error(fd, perr);
+			return;
+		}
 	}
-	if (perr != PKG_OK) {
-		respond_pkg_error(fd, perr);
-		return;
+	if (jmem != NULL) {
+		perr = pkg_build_set_memory_max(jmem->type == JSON_NULL ? 0 : (long long)json_as_number(jmem));
+		if (perr == PKG_ERR_INVALID_NAME) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "memory_max must be >= 0");
+			return;
+		}
+		if (perr != PKG_OK) {
+			json_free(root);
+			respond_pkg_error(fd, perr);
+			return;
+		}
 	}
+	if (jcpu != NULL) {
+		perr = pkg_build_set_cpu_max(jcpu->type == JSON_NULL ? NULL : json_as_string(jcpu));
+		if (perr == PKG_ERR_INVALID_NAME) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "cpu_max is too long");
+			return;
+		}
+		if (perr != PKG_OK) {
+			json_free(root);
+			respond_pkg_error(fd, perr);
+			return;
+		}
+	}
+	json_free(root);
 	handle_pkg_build_config_get(fd);
 }
 

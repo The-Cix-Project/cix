@@ -815,6 +815,24 @@ int pkg_build_get_max_jobs(void);
  * chain-allocation decision (chain_alloc()). */
 enum pkg_error pkg_build_set_max_jobs(int max_jobs);
 
+/* ---- ADR-0165: real cgroup resource ceilings on the pkgbuild sandbox ---- */
+
+/* Bytes; 0 means unlimited. Applied to every __pkgbuild-N container's
+ * own cgroup (struct cgroup_limits.memory_max) -- the exact same
+ * mechanism every regular container's own run --memory-max= already
+ * uses, not a second one. */
+long long pkg_build_get_memory_max(void);
+enum pkg_error pkg_build_set_memory_max(long long memory_max);
+
+/* Raw cgroup v2 cpu.max syntax ("QUOTA PERIOD" in microseconds, e.g.
+ * "100000 100000" for one full CPU's worth); NULL means unlimited.
+ * Same pass-through convention as run --cpu-max=, applied via the
+ * identical struct cgroup_limits.cpu_max field. The returned pointer
+ * is only valid until the next pkg_build_set_cpu_max()/
+ * pkg_build_config_init() call -- copy it if it needs to outlive that. */
+const char *pkg_build_get_cpu_max(void);
+enum pkg_error pkg_build_set_cpu_max(const char *cpu_max);
+
 /* ---- pkg/ redesign Part 3b (ADR-0122): plain-HTTP precompiled-artifact server config ---- */
 
 #define PKGARTIFACT_URL_MAX 512

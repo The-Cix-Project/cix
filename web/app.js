@@ -5721,30 +5721,39 @@ async function refreshPkgBuildConfig() {
 		const config = await apiRequest("GET", "/v1/system/pkg-build-config");
 
 		cache.pkgBuildConfig = config;
-		if (!pkgBuildConfigDirty)
+		if (!pkgBuildConfigDirty) {
 			document.getElementById("pbc-max-jobs").value = config.max_concurrent_jobs;
+			document.getElementById("pbc-memory-max").value = config.memory_max;
+			document.getElementById("pbc-cpu-max").value = config.cpu_max || "";
+		}
 	} catch (e) {
 		/* Best-effort -- the form just stays at whatever was last shown. */
 	}
 }
 
-document.getElementById("pbc-max-jobs").addEventListener("input", () => {
-	pkgBuildConfigDirty = true;
-});
+for (const id of ["pbc-max-jobs", "pbc-memory-max", "pbc-cpu-max"]) {
+	document.getElementById(id).addEventListener("input", () => {
+		pkgBuildConfigDirty = true;
+	});
+}
 
 document.getElementById("pbc-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 
 	try {
+		const cpuMax = document.getElementById("pbc-cpu-max").value.trim();
+
 		await apiRequest("PUT", "/v1/system/pkg-build-config", {
 			max_concurrent_jobs: parseInt(document.getElementById("pbc-max-jobs").value, 10),
+			memory_max: parseInt(document.getElementById("pbc-memory-max").value, 10),
+			cpu_max: cpuMax === "" ? null : cpuMax,
 		});
 		clearStatus();
-		showStatus("Package-build concurrency config saved", false);
+		showStatus("Package-build config saved", false);
 		pkgBuildConfigDirty = false;
 		await refreshPkgBuildConfig();
 	} catch (e) {
-		showStatus("Failed to save package-build concurrency config: " + e.message, true);
+		showStatus("Failed to save package-build config: " + e.message, true);
 	}
 });
 

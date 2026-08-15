@@ -228,9 +228,15 @@ static void print_usage(FILE *out)
 	        "               a single follow_rolling container can override this default via\n"
 	        "               run --follow-rolling-jitter-seconds=N at creation time\n"
 	        "  pkg-build-config show  -- how many pkg install/hostbuild jobs may genuinely\n"
-	        "               run at once (ADR-0157)\n"
-	        "  pkg-build-config set --max-concurrent-jobs=N  -- 1-10; lowering it doesn't\n"
-	        "               disrupt jobs already in flight, only future ones\n"
+	        "               run at once, and the memory/CPU ceiling each one's own pkgbuild\n"
+	        "               sandbox is capped to (ADR-0157/ADR-0165)\n"
+	        "  pkg-build-config set [--max-concurrent-jobs=N] [--memory-max=BYTES]\n"
+	        "               [--cpu-max=\"QUOTA PERIOD\"]  -- partial update, only the flags given\n"
+	        "               are changed; max-concurrent-jobs is 1-10 and lowering it doesn't\n"
+	        "               disrupt jobs already in flight, only future ones; memory-max=0 or\n"
+	        "               cpu-max=\"\" means unlimited; cpu-max is raw cgroup v2 cpu.max syntax\n"
+	        "               (microseconds quota/period, e.g. \"100000 100000\" for one full CPU),\n"
+	        "               same format as run --cpu-max=\n"
 	        "  iso build [--disk=DEV --ip=A.B.C.D --prefix=N --gateway=A.B.C.D\n"
 	        "               --interface=IFNAME] [--wait]  -- assembles a fresh installer ISO\n"
 	        "               server-side (ADR-0064), from the most recent \"thinc\"/\"kernel\"/\n"
@@ -4944,13 +4950,20 @@ static int cmd_rolling_config(const struct kx_client *c, int json_mode, int argc
 }
 
 /*
- * ADR-0157 Phase 3: thincctl pkg-build-config show|set -- mirrors
- * cmd_rolling_config's own shape exactly, one field instead of several.
+ * ADR-0157 Phase 3 / ADR-0165: thincctl pkg-build-config show|set --
+ * mirrors cmd_rolling_config's own shape, now three independently
+ * settable fields (partial update, only the flags given are changed)
+ * instead of one.
  */
 static void fmt_pkg_build_config(const struct json_value *v)
 {
+	const struct json_value *jcpu = json_object_get(v, "cpu_max");
+	const char *cpu_max = jcpu != NULL ? json_as_string(jcpu) : NULL;
+
 	printf("max_concurrent_jobs=%ld\n",
 	       (long)json_as_number(json_object_get(v, "max_concurrent_jobs")));
+	printf("memory_max=%.0f\n", json_as_number(json_object_get(v, "memory_max")));
+	printf("cpu_max=%s\n", cpu_max != NULL ? cpu_max : "(none)");
 }
 
 static int cmd_pkg_build_config_show(const struct kx_client *c, int json_mode)
@@ -4967,6 +4980,8 @@ static int cmd_pkg_build_config_show(const struct kx_client *c, int json_mode)
 static int cmd_pkg_build_config_set(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *max_jobs = NULL;
+	const char *memory_max = NULL;
+	const char *cpu_max = NULL;
 	int i;
 	struct json_writer w;
 	struct kx_response r;
@@ -4974,20 +4989,35 @@ static int cmd_pkg_build_config_set(const struct kx_client *c, int json_mode, in
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--max-concurrent-jobs=", 23) == 0)
 			max_jobs = argv[i] + 23;
+		else if (strncmp(argv[i], "--memory-max=", 13) == 0)
+			memory_max = argv[i] + 13;
+		else if (strncmp(argv[i], "--cpu-max=", 10) == 0)
+			cpu_max = argv[i] + 10;
 		else {
 			fprintf(stderr, "thincctl: unknown pkg-build-config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
-	if (max_jobs == NULL) {
-		fprintf(stderr, "usage: thincctl pkg-build-config set --max-concurrent-jobs=N\n");
+	if (max_jobs == NULL && memory_max == NULL && cpu_max == NULL) {
+		fprintf(stderr, "usage: thincctl pkg-build-config set [--max-concurrent-jobs=N] "
+		                "[--memory-max=BYTES] [--cpu-max=\"QUOTA PERIOD\"]\n");
 		return 2;
 	}
 
 	jw_init(&w);
 	jw_obj_open(&w);
-	jw_key(&w, "max_concurrent_jobs");
-	jw_int(&w, atol(max_jobs));
+	if (max_jobs != NULL) {
+		jw_key(&w, "max_concurrent_jobs");
+		jw_int(&w, atol(max_jobs));
+	}
+	if (memory_max != NULL) {
+		jw_key(&w, "memory_max");
+		jw_int(&w, atoll(memory_max));
+	}
+	if (cpu_max != NULL) {
+		jw_key(&w, "cpu_max");
+		jw_str(&w, cpu_max);
+	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 

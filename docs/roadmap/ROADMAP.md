@@ -2445,6 +2445,12 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 162 (done): real cgroup memory/CPU limits on the pkgbuild sandbox (ADR-0165)
+
+A burst of concurrent `pkg install` calls hung `thincd` entirely on 192.168.15.95 -- matches ROADMAP Part 144's own earlier, similarly-triggered incident, and like that one, the exact blocking mechanism inside the daemon's event loop remains unconfirmed (Proxmox showed flat memory and idle CPU throughout, not the classic OOM/thrashing signature). What's real and fixed regardless: every `__pkgbuild-N` build sandbox already used the same `struct cgroup_limits` mechanism a regular container has, but `memory_max`/`cpu_max` were always left unset. Full reasoning: ADR-0165.
+
+`pkg-build-config` gains `memory_max` (2GiB default) and `cpu_max` (one full CPU default, raw cgroup v2 syntax); `PUT` is now a genuine partial update. Verified live against a real running build: the actual `__pkgbuild-0` cgroup's `memory.max`/`cpu.max` files reflected the configured values, and the build completed successfully under them.
+
 ## Part 161 (done): installer ISO no longer boots blind
 
 `mkinstalleriso`'s generated `grub.cfg` never set `gfxpayload`, so GRUB always tried to negotiate a graphical video mode for the kernel handoff despite both menu entries using plain text consoles only -- confirmed live on a real Proxmox VM ("no suitable video mode found, Booting in blind mode" on every boot). Fixed with `set gfxpayload=text`; verified via two real QEMU boots (a video-device-less harness is inherently unaffected either way; with a real video device present, the warning is now gone where it previously always appeared).

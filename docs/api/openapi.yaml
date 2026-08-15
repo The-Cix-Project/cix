@@ -1982,25 +1982,29 @@ paths:
   /system/pkg-build-config:
     get:
       summary: >
-        The configured pkg install/hostbuild concurrency ceiling (ADR-0157) --
-        how many build chains may genuinely run at once.
+        The configured pkg install/hostbuild concurrency ceiling (ADR-0157)
+        and per-build memory/CPU cgroup limits (ADR-0165).
       operationId: getSystemPkgBuildConfig
       responses:
         "200":
-          description: Current pkg-build concurrency config
+          description: Current pkg-build config
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/PkgBuildConfig"
     put:
-      summary: Set the pkg install/hostbuild concurrency ceiling (ADR-0157)
+      summary: Set pkg-build concurrency and/or per-build resource limits (ADR-0157/ADR-0165)
       description: >
-        Within [1, 10] -- 10 is both the real default and the daemon's own
-        hard compile-time array bound (PKG_MAX_CONCURRENT_JOBS), not just a
-        soft suggestion. Lowering it doesn't disrupt chains already in
-        flight; they run to completion in their already-allocated slots.
-        The new, lower ceiling only takes effect for the next chain a
-        POST /pkg/install or /pkg/hostbuild tries to start.
+        Partial update -- only the fields given are changed, same convention
+        daemon-config/hostauth-config already use. max_concurrent_jobs must
+        be within [1, 10] -- 10 is both the real default and the daemon's
+        own hard compile-time array bound (PKG_MAX_CONCURRENT_JOBS), not
+        just a soft suggestion; lowering it doesn't disrupt chains already
+        in flight, only the next chain a POST /pkg/install or /pkg/hostbuild
+        tries to start. memory_max/cpu_max apply to every future build's own
+        sandbox container from the next build onward (an already-running
+        build's cgroup is not retroactively adjusted) -- 0/null means
+        unlimited for either, a deliberate opt-out, not a validation error.
       operationId: putSystemPkgBuildConfig
       requestBody:
         required: true
@@ -2008,21 +2012,27 @@ paths:
           application/json:
             schema:
               type: object
-              required: [max_concurrent_jobs]
+              minProperties: 1
               properties:
                 max_concurrent_jobs:
                   type: integer
                   minimum: 1
                   maximum: 10
+                memory_max:
+                  type: integer
+                  minimum: 0
+                cpu_max:
+                  type: string
+                  nullable: true
       responses:
         "200":
-          description: Updated pkg-build concurrency config (same shape as GET)
+          description: Updated pkg-build config (same shape as GET)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/PkgBuildConfig"
         "400":
-          description: max_concurrent_jobs missing, not a number, or out of the 1-10 range
+          description: no fields given, or a given field is invalid (max_concurrent_jobs out of 1-10, memory_max negative, cpu_max too long)
           content:
             application/json:
               schema:
@@ -9311,7 +9321,7 @@ components:
 
     PkgBuildConfig:
       type: object
-      required: [max_concurrent_jobs]
+      required: [max_concurrent_jobs, memory_max, cpu_max]
       properties:
         max_concurrent_jobs:
           type: integer
@@ -9322,6 +9332,22 @@ components:
             genuinely run at once, each in its own build container. Lowering
             it doesn't disrupt jobs already in flight -- only future ones,
             once the new, lower ceiling is reached.
+        memory_max:
+          type: integer
+          minimum: 0
+          description: >
+            Default 2147483648 (2GiB, ADR-0165). Bytes; 0 means unlimited.
+            Applied to every individual build's own sandbox container via
+            the identical cgroup mechanism a regular container's own
+            POST /containers memory_max already uses -- not a second one.
+        cpu_max:
+          type: string
+          nullable: true
+          description: >
+            Default "100000 100000" (one full CPU's worth, ADR-0165). Raw
+            cgroup v2 cpu.max syntax ("QUOTA PERIOD" in microseconds); null
+            means unlimited. Same pass-through convention as a regular
+            container's own POST /containers cpu_max.
 
     TlsThrottleConfig:
       type: object

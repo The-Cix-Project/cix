@@ -3099,6 +3099,10 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 	    CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWCGROUP | CLONE_INTO_CGROUP;
 	spec_out->ns.hostname = e->build_container_name;
 	spec_out->cg.name = e->build_container_name;
+	/* ADR-0165: a real resource ceiling on every pkgbuild sandbox, not
+	 * just a job-count limit -- found missing the hard way. */
+	spec_out->cg.memory_max = pkg_build_get_memory_max();
+	spec_out->cg.cpu_max = pkg_build_get_cpu_max();
 	spec_out->ov.lowerdir = e->build_lowerdir;
 	spec_out->ov.upperdir = e->build_upperdir;
 	spec_out->ov.workdir = e->build_workdir;
@@ -4689,6 +4693,25 @@ void pkg_cache_clear(void)
 
 static char g_build_config_path[PATH_MAX];
 static int g_build_max_jobs = PKG_BUILD_MAX_JOBS_DEFAULT;
+/*
+ * Real resource ceilings for the pkgbuild sandbox (found missing the
+ * hard way: a burst of concurrent installs hung thincd entirely on
+ * 192.168.15.95, TCP still accepting but no HTTP request ever
+ * completing again -- see ADR-0165). 0/NULL means "no limit," matching
+ * cgroup_create()'s own existing gate (struct cgroup_limits, already
+ * used by every regular container) -- this reuses that exact
+ * mechanism rather than inventing a second one, since __pkgbuild-N
+ * containers already go through container_create() like any other.
+ * Defaults are deliberately NOT 0/NULL (unlimited) -- 2GiB memory, one
+ * full CPU's worth of quota (cgroup v2 "quota period" syntax, the same
+ * raw pass-through format run --cpu-max= already uses) -- a real
+ * ceiling from the very first boot, not an opt-in an operator has to
+ * remember to configure after getting burned once.
+ */
+#define PKG_BUILD_MEMORY_MAX_DEFAULT (2LL * 1024 * 1024 * 1024)
+#define PKG_BUILD_CPU_MAX_DEFAULT "100000 100000"
+static long long g_build_memory_max = PKG_BUILD_MEMORY_MAX_DEFAULT;
+static char g_build_cpu_max[64] = PKG_BUILD_CPU_MAX_DEFAULT;
 
 static int save_build_config(void)
 {
@@ -4699,6 +4722,13 @@ static int save_build_config(void)
 	jw_obj_open(&w);
 	jw_key(&w, "max_concurrent_jobs");
 	jw_int(&w, g_build_max_jobs);
+	jw_key(&w, "memory_max");
+	jw_int(&w, g_build_memory_max);
+	jw_key(&w, "cpu_max");
+	if (g_build_cpu_max[0] != '\0')
+		jw_str(&w, g_build_cpu_max);
+	else
+		jw_null(&w);
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -4718,15 +4748,17 @@ int pkg_build_config_init(const char *config_path)
 	char *buf;
 	size_t len;
 	struct json_value *root;
-	const struct json_value *mj;
+	const struct json_value *mj, *jmem, *jcpu;
 
 	if (snprintf(g_build_config_path, sizeof(g_build_config_path), "%s", config_path) >=
 	    (int)sizeof(g_build_config_path))
 		return -1;
 	g_build_max_jobs = PKG_BUILD_MAX_JOBS_DEFAULT;
+	g_build_memory_max = PKG_BUILD_MEMORY_MAX_DEFAULT;
+	snprintf(g_build_cpu_max, sizeof(g_build_cpu_max), "%s", PKG_BUILD_CPU_MAX_DEFAULT);
 
 	if (persist_read_file(config_path, &buf, &len) != 0 || buf == NULL)
-		return 0; /* no persisted config yet -- the default stands */
+		return 0; /* no persisted config yet -- the defaults stand */
 
 	root = json_parse(buf, len);
 	free(buf);
@@ -4739,6 +4771,20 @@ int pkg_build_config_init(const char *config_path)
 
 		if (v >= 1 && v <= PKG_MAX_CONCURRENT_JOBS)
 			g_build_max_jobs = (int)v;
+	}
+	jmem = json_object_get(root, "memory_max");
+	if (jmem != NULL && jmem->type != JSON_NULL) {
+		double v = json_as_number(jmem);
+
+		if (v >= 0)
+			g_build_memory_max = (long long)v;
+	}
+	jcpu = json_object_get(root, "cpu_max");
+	if (jcpu != NULL && jcpu->type != JSON_NULL) {
+		const char *s = json_as_string(jcpu);
+
+		if (s != NULL)
+			snprintf(g_build_cpu_max, sizeof(g_build_cpu_max), "%s", s);
 	}
 	json_free(root);
 	return 0;
@@ -4754,6 +4800,52 @@ enum pkg_error pkg_build_set_max_jobs(int max_jobs)
 	if (max_jobs < 1 || max_jobs > PKG_MAX_CONCURRENT_JOBS)
 		return PKG_ERR_INVALID_NAME;
 	g_build_max_jobs = max_jobs;
+	if (save_build_config() != 0)
+		return PKG_ERR_PERSIST_FAILED;
+	return PKG_OK;
+}
+
+long long pkg_build_get_memory_max(void)
+{
+	return g_build_memory_max;
+}
+
+/* 0 means unlimited (cgroup_create()'s own existing "memory_max > 0"
+ * gate) -- a deliberate, explicit opt-out, not a validation failure,
+ * matching a real operator choice ("I have plenty of RAM, don't
+ * bother"). Negative is rejected -- there's no such thing as negative
+ * memory. */
+enum pkg_error pkg_build_set_memory_max(long long memory_max)
+{
+	if (memory_max < 0)
+		return PKG_ERR_INVALID_NAME;
+	g_build_memory_max = memory_max;
+	if (save_build_config() != 0)
+		return PKG_ERR_PERSIST_FAILED;
+	return PKG_OK;
+}
+
+const char *pkg_build_get_cpu_max(void)
+{
+	return g_build_cpu_max[0] != '\0' ? g_build_cpu_max : NULL;
+}
+
+/* NULL/empty means unlimited (cgroup_create()'s own "cpu_max != NULL"
+ * gate) -- same deliberate-opt-out reasoning as memory_max above. No
+ * syntax validation beyond length here -- cgroup v2's own cpu.max file
+ * is the real authority on whether "QUOTA PERIOD" parses, the same
+ * "pass it straight through, let the kernel be the judge" posture
+ * struct cgroup_limits.cpu_max already has for every regular
+ * container's own run --cpu-max=. */
+enum pkg_error pkg_build_set_cpu_max(const char *cpu_max)
+{
+	if (cpu_max == NULL || cpu_max[0] == '\0') {
+		g_build_cpu_max[0] = '\0';
+	} else {
+		if (strlen(cpu_max) >= sizeof(g_build_cpu_max))
+			return PKG_ERR_INVALID_NAME;
+		snprintf(g_build_cpu_max, sizeof(g_build_cpu_max), "%s", cpu_max);
+	}
 	if (save_build_config() != 0)
 		return PKG_ERR_PERSIST_FAILED;
 	return PKG_OK;

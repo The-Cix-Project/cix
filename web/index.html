@@ -1326,9 +1326,18 @@
 					Max concurrent jobs
 					<input type="number" id="pbc-max-jobs" min="1" max="10" value="10">
 				</label>
+				<label>
+					Memory limit per build (bytes, 0 = unlimited)
+					<input type="number" id="pbc-memory-max" min="0" value="2147483648">
+				</label>
+				<label class="wide">
+					CPU limit per build (raw cgroup v2 "quota period", empty = unlimited)
+					<input type="text" id="pbc-cpu-max" placeholder="100000 100000">
+				</label>
 				<button type="submit">Save</button>
 			</form>
 			<p class="hint">ADR-0157: how many <code>pkg install</code>/<code>pkg hostbuild</code> jobs may genuinely run at once, each in its own build container. Lowering this doesn't disrupt jobs already in flight -- only future ones once the new, lower ceiling is reached.</p>
+			<p class="hint">ADR-0165: the memory/CPU ceiling applied to every individual build's own sandbox container -- the same cgroup mechanism a regular container's own <code>--memory-max=</code>/<code>--cpu-max=</code> already uses. Found missing the hard way: a burst of concurrent installs with no ceiling hung a real box's daemon entirely. CPU quota is microseconds of CPU time per 100000-microsecond period -- "100000 100000" is one full CPU's worth, "50000 100000" is half a CPU.</p>
 		</section>
 
 		<section class="view" id="view-hostauth-sessions" hidden>

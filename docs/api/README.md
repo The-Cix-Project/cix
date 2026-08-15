@@ -62,8 +62,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/system/kmod-build` | Rebuild the kernel with extra in-tree `=m` modules; poll via `/pkg/hostbuild/kernel` |
 | GET | `/system/rolling-config` | The configured rolling-restart jitter window (`jitter_window_seconds`) |
 | PUT | `/system/rolling-config` | Set the jitter window -- 0 disables jitter, restart happens immediately |
-| GET | `/system/pkg-build-config` | The configured pkg install/hostbuild concurrency ceiling (`max_concurrent_jobs`) |
-| PUT | `/system/pkg-build-config` | Set it -- 1-10; lowering it doesn't disrupt jobs already in flight |
+| GET | `/system/pkg-build-config` | The configured pkg install/hostbuild concurrency ceiling (`max_concurrent_jobs`) and per-build memory/CPU cgroup limits (`memory_max`/`cpu_max`, ADR-0165) |
+| PUT | `/system/pkg-build-config` | Partial update -- only the fields given are changed; `max_concurrent_jobs` 1-10 (lowering it doesn't disrupt jobs already in flight); `memory_max`/`cpu_max` apply to every build's own sandbox from the next build onward, 0/null means unlimited |
 | GET | `/system/tls-throttle` | Per-source-IP throttling config for repeated failed HTTPS handshakes |
 | PUT | `/system/tls-throttle` | Partially update it -- fields omitted are left unchanged |
 | GET | `/system/tls-throttle/status` | Every source currently tracked for failed handshakes, live |
@@ -1336,6 +1336,8 @@ A package manager built from scratch: recipes are shell scripts (the same format
 **Installs are asynchronous.** The daemon is single-threaded and non-blocking; a network fetch or a real compile can take anywhere from seconds to minutes, so `POST /v1/pkg/install` returns immediately (`202`) and the actual work happens in the background — poll `GET /v1/pkg/{name}` for progress. **Fetching happens on the host** (a `curl` subprocess — this project's networking plane has no outbound NAT, so a build container has no network access at all, a stronger isolation boundary for untrusted build scripts, not a limitation worked around).
 
 **Up to `max_concurrent_jobs` install/hostbuild jobs may genuinely run at once (ADR-0157), default 10** — each its own independent chain, its own build container, its own captured output; a `POST /pkg/install`/`POST /pkg/hostbuild` while every chain slot is already busy gets `409`, same as before this existed (v1 was hardcoded to exactly one). `GET`/`PUT /v1/system/pkg-build-config` (`max_concurrent_jobs`, range 1-10 — 10 is also the daemon's own hard compile-time ceiling, not just this config's default) show/set the real ceiling; lowering it never disrupts jobs already in flight, only future ones. `GET /v1/pkg/build/log`'s own `?name=&image=` query params (below) exist specifically because more than one build can now be live-tailed at once.
+
+**Every build's own sandbox is now cgroup-limited (ADR-0165), not just its job-count slot** — found missing the hard way: a burst of concurrent installs with no per-build resource ceiling hung a real production `thincd` entirely (TCP still accepted connections, no HTTP request ever completed again). `memory_max` (bytes, default 2GiB) and `cpu_max` (raw cgroup v2 `cpu.max` syntax, default `"100000 100000"` — one full CPU's worth) are the same `PUT /v1/system/pkg-build-config` resource, applied to every `__pkgbuild-N` container's own cgroup via the identical mechanism a regular container's own `memory_max`/`cpu_max` fields already use — not a second implementation. 0/null means unlimited for either field, a deliberate opt-out for a box that genuinely has spare capacity to give, not a validation error.
 
 One-time setup, before installing anything:
 
