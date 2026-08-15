@@ -117,12 +117,22 @@ function currentTheme() {
 	return attr === "light" || attr === "dark" ? attr : "auto";
 }
 
+/* Same inline-SVG style as TREE_ICONS (viewBox 16x16, currentColor
+ * stroke, 1.3 stroke-width) -- sun / crescent-moon / monitor, so the
+ * toggle reads as an icon button instead of an emoji+text label. */
+const THEME_ICONS = {
+	light: '<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="3"/><line x1="8" y1="1" x2="8" y2="2.5"/><line x1="8" y1="13.5" x2="8" y2="15"/><line x1="1" y1="8" x2="2.5" y2="8"/><line x1="13.5" y1="8" x2="15" y2="8"/><line x1="3.05" y1="3.05" x2="4.1" y2="4.1"/><line x1="11.9" y1="11.9" x2="12.95" y2="12.95"/><line x1="3.05" y1="12.95" x2="4.1" y2="11.9"/><line x1="11.9" y1="4.1" x2="12.95" y2="3.05"/></g></svg>',
+	dark: '<svg viewBox="0 0 16 16" width="14" height="14"><path d="M13 8.5 A5.5 5.5 0 1 1 7.5 3 A4.2 4.2 0 0 0 13 8.5 Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+	auto: '<svg viewBox="0 0 16 16" width="14" height="14"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="8" rx="1"/><line x1="5.5" y1="14" x2="10.5" y2="14"/><line x1="8" y1="11" x2="8" y2="14"/></g></svg>',
+};
+
 function applyTheme(theme) {
 	if (theme === "light" || theme === "dark")
 		document.documentElement.setAttribute("data-theme", theme);
 	else
 		document.documentElement.removeAttribute("data-theme");
-	themeToggle.textContent = theme === "dark" ? "\u{1F319} Dark" : theme === "light" ? "\u{2600}\u{FE0F} Light" : "\u{1F5A5} Auto";
+	themeToggle.innerHTML = THEME_ICONS[theme];
+	themeToggle.title = "Theme: " + (theme === "dark" ? "Dark" : theme === "light" ? "Light" : "Auto") + " (click to cycle)";
 	try {
 		localStorage.setItem(THEME_KEY, theme);
 	} catch (e) {
@@ -191,22 +201,80 @@ document.addEventListener("keydown", (event) => {
 		closeModal();
 });
 
-const createDropdownToggle = document.getElementById("create-dropdown-toggle");
-const createDropdownMenu = document.getElementById("create-dropdown-menu");
+/*
+ * ---------- header menu bar ----------
+ *
+ * One generalized handler for every .menu-dropdown in the header
+ * (logo/Create/Software/User-Group/Network Services/Hardware/Host/
+ * Monitoring) instead of one hardcoded pair -- a click on a toggle
+ * closes every other open menu and toggles this one; a click on any
+ * link or button inside a menu closes it (event delegation on the
+ * menu itself, so it covers plain nav <a>s, data-modal create
+ * actions, and the logo menu's own special-purpose buttons -- reboot/
+ * shutdown/login -- with no per-item wiring needed here).
+ */
+function closeAllMenus() {
+	for (const menu of document.querySelectorAll(".menu-dropdown-menu"))
+		menu.hidden = true;
+}
 
-createDropdownToggle.addEventListener("click", (event) => {
-	event.stopPropagation();
-	createDropdownMenu.hidden = !createDropdownMenu.hidden;
-});
-document.addEventListener("click", () => {
-	createDropdownMenu.hidden = true;
-});
-for (const item of createDropdownMenu.querySelectorAll("button[data-modal]")) {
-	item.addEventListener("click", () => {
-		createDropdownMenu.hidden = true;
-		openModal(item.dataset.modal, item.dataset.title);
+for (const dropdown of document.querySelectorAll(".menu-dropdown")) {
+	const toggle = dropdown.querySelector(".menu-dropdown-toggle");
+	const menu = dropdown.querySelector(".menu-dropdown-menu");
+
+	toggle.addEventListener("click", (event) => {
+		event.stopPropagation();
+		const shouldOpen = menu.hidden;
+		closeAllMenus();
+		menu.hidden = !shouldOpen;
+	});
+	menu.addEventListener("click", (event) => {
+		if (event.target.closest("a, button"))
+			menu.hidden = true;
 	});
 }
+document.addEventListener("click", closeAllMenus);
+document.addEventListener("keydown", (event) => {
+	if (event.key === "Escape")
+		closeAllMenus();
+});
+
+/* Create-action items (data-modal, shared across every topical menu
+ * above) all open the same modal shell the old single +Create
+ * dropdown already used -- only where they live changed. */
+for (const item of document.querySelectorAll(".menu-dropdown-menu button[data-modal]")) {
+	item.addEventListener("click", () => openModal(item.dataset.modal, item.dataset.title));
+}
+
+/* About thinC: read-only, fetched fresh on every open rather than
+ * cached -- build/slot/kernel can change under an operator's feet
+ * (an update staged to the inactive slot, a reboot) and this is the
+ * one place meant to answer "what is this box actually running right
+ * now," so a stale answer would defeat its own purpose. */
+document.getElementById("menu-about").addEventListener("click", async () => {
+	const instanceEl = document.getElementById("about-instance");
+	const buildEl = document.getElementById("about-build");
+	const slotEl = document.getElementById("about-slot");
+	const kernelEl = document.getElementById("about-kernel");
+
+	instanceEl.textContent = buildEl.textContent = slotEl.textContent = kernelEl.textContent = "…";
+	try {
+		const [boot, site] = await Promise.all([
+			apiRequest("GET", "/v1/system/boot"),
+			apiRequest("GET", "/v1/system/site"),
+		]);
+		const fqdn = site.site_name
+			? site.instance_name + "." + site.site_name + "." + site.domain_suffix
+			: site.instance_name + "." + site.domain_suffix;
+
+		instanceEl.textContent = fqdn;
+		buildEl.textContent = boot.build_version + " (" + boot.build_time + ")";
+		slotEl.textContent = boot.slot || "(none)";
+		kernelEl.textContent = boot.kernel_version || "(unknown)";
+	} catch (e) {
+		buildEl.textContent = "unavailable";
+	}
+});
 
 /*
  * ---------- host authentication (ADR-0144) ----------
@@ -224,7 +292,7 @@ let authToken = localStorage.getItem("thinc-auth-token") || null;
 let authUsername = localStorage.getItem("thinc-auth-username") || null;
 
 const authStatusEl = document.getElementById("auth-status");
-const authActionBtn = document.getElementById("auth-action-btn");
+const authActionBtn = document.getElementById("menu-auth-action");
 
 function updateAuthUi() {
 	if (authToken) {
@@ -589,13 +657,17 @@ function readFileAsText(file) {
 }
 
 async function refreshHealth() {
+	const start = performance.now();
+
 	try {
 		await apiRequest("GET", "/v1/health");
-		healthBadge.textContent = "daemon reachable";
-		healthBadge.className = "badge badge-ok";
+		const ms = Math.round(performance.now() - start);
+
+		healthBadge.className = "health-dot health-dot-ok";
+		healthBadge.title = "Daemon reachable — " + ms + "ms";
 	} catch (e) {
-		healthBadge.textContent = "daemon unreachable";
-		healthBadge.className = "badge badge-error";
+		healthBadge.className = "health-dot health-dot-error";
+		healthBadge.title = "Daemon unreachable";
 	}
 }
 
@@ -6832,7 +6904,7 @@ document.getElementById("sys-update-form").addEventListener("submit", async (eve
 	}
 });
 
-document.getElementById("sys-reboot").addEventListener("click", async () => {
+document.getElementById("menu-reboot").addEventListener("click", async () => {
 	if (!confirm("Reboot this host now?"))
 		return;
 	try {
@@ -6844,7 +6916,7 @@ document.getElementById("sys-reboot").addEventListener("click", async () => {
 	}
 });
 
-document.getElementById("sys-shutdown").addEventListener("click", async () => {
+document.getElementById("menu-shutdown").addEventListener("click", async () => {
 	if (!confirm("Shut down this host now?"))
 		return;
 	try {
