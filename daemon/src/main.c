@@ -15588,6 +15588,22 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 		g_bootroot_assembly_completed = g_bootroot_assembly_started;
 		fprintf(stderr, "kanxeo bootroot assembly: succeeded\n");
 		logstore_write("kanxeod", "info", "kanxeo bootroot assembly: succeeded");
+		/*
+		 * A real diagnostic gap closed here, not just for tonight:
+		 * mkbootroot exiting 0 was previously trusted as the whole
+		 * story, but a genuinely successful process can still print a
+		 * real, useful warning on its way to producing bad output (a
+		 * dynamic-linker note, a compressor warning) -- exactly the
+		 * class of thing that made ADR-0154's own mksquashfs/
+		 * LD_LIBRARY_PATH bug hard to diagnose the first time: "exit 0"
+		 * and "correct output" were silently being treated as the same
+		 * fact when they aren't. Logged at "info" here (unlike the
+		 * "error"-level failure branches below) since a successful run
+		 * printing something is not itself a problem, just worth
+		 * keeping visible.
+		 */
+		if (output_len > 0)
+			logstore_write("kanxeod", "info", "kanxeo bootroot assembly: output: %s", output);
 	} else if (reaped != cc->pkg_fetch_pid) {
 		fprintf(stderr, "kanxeo bootroot assembly: waitpid failed\n");
 		logstore_write("kanxeod", "error", "kanxeo bootroot assembly: waitpid failed: %s",
