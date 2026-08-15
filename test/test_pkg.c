@@ -391,7 +391,9 @@ int main(void)
 		return 1;
 	}
 	if (write_recipe("greeter", "1.0", tarball_path, sha256, "") != 0 ||
-	    write_recipe("concurrent", "1.0", tarball_path, sha256, "") != 0) {
+	    write_recipe("concurrent", "1.0", tarball_path, sha256, "") != 0 ||
+	    write_recipe("overflow", "1.0", tarball_path, sha256, "") != 0 ||
+	    write_recipe("hbconcurrent", "1.0", tarball_path, sha256, "") != 0) {
 		fprintf(stderr, "FAIL: could not write recipes\n");
 		return 1;
 	}
@@ -443,22 +445,43 @@ int main(void)
 	}
 	kx_response_free(&r);
 
-	/* 4. a second install (a DIFFERENT package) while greeter is still
-	 * in flight -> 409 busy. Issued immediately, before any polling --
-	 * fork() for the fetch subprocess just happened microseconds ago,
-	 * so greeter is still "fetching" at this exact point, deterministically. */
+	/* 4. ADR-0157 Phase 2: a second install (a DIFFERENT package) while
+	 * greeter is still in flight now genuinely fits -> 202, not 409.
+	 * Issued immediately, before any polling -- fork() for the fetch
+	 * subprocess just happened microseconds ago, so greeter is still
+	 * "fetching" at this exact point, deterministically. Both chains
+	 * build from the SAME source tarball (see write_recipe() above)
+	 * concurrently, each installing under its own binary name into the
+	 * SAME target image -- real proof this isn't just "two unrelated
+	 * jobs happen not to collide," but genuine concurrent-chain
+	 * isolation (distinct build containers, distinct output-capture
+	 * pipes, a correctly-serialized final merge into one image). */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"concurrent\"}", &r) !=
 	        0 ||
-	    r.status != 409) {
-		fprintf(stderr, "FAIL: concurrent install while busy expected 409, got %d\n", r.status);
+	    r.status != 202 || !str_eq(json_str_field(r.json, "state"), "fetching")) {
+		fprintf(stderr, "FAIL: POST install concurrent (2nd chain) status=%d, state=%s\n", r.status,
+		        json_str_field(r.json, "state") ? json_str_field(r.json, "state") : "(null)");
 		ok = 0;
 	}
 	kx_response_free(&r);
 
-	/* 5. poll until greeter finishes; confirm it actually installed and
-	 * the binary genuinely runs from the base image -- the real payoff,
-	 * not just files with the right names. */
+	/* 4b. a THIRD distinct install while both chain slots are occupied
+	 * -> 409 -- proves both slots are genuinely in use (not just that
+	 * "concurrent" above got lucky some other way), and that the
+	 * PKG_MAX_CONCURRENT_JOBS ceiling is still real and enforced. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"overflow\"}", &r) != 0 ||
+	    r.status != 409) {
+		fprintf(stderr, "FAIL: overflow install with both chains busy expected 409, got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	/* 5. poll until BOTH greeter and concurrent finish; confirm each
+	 * actually installed and its binary genuinely runs from the base
+	 * image -- the real payoff, not just files with the right names. */
 	if (poll_pkg_state(&client, "greeter", state, sizeof(state), 60) != 0) {
 		fprintf(stderr, "FAIL: greeter never left fetching/building\n");
 		ok = 0;
@@ -472,6 +495,27 @@ int main(void)
 		if (fp == NULL || fgets(run_out, sizeof(run_out), fp) == NULL ||
 		    strstr(run_out, "hello from greeter") == NULL) {
 			fprintf(stderr, "FAIL: installed greeter binary did not run/produce expected output, got: %s\n",
+			        run_out);
+			ok = 0;
+		}
+		if (fp != NULL)
+			pclose(fp);
+	}
+
+	if (poll_pkg_state(&client, "concurrent", state, sizeof(state), 60) != 0) {
+		fprintf(stderr, "FAIL: concurrent never left fetching/building\n");
+		ok = 0;
+	} else if (strcmp(state, "installed") != 0) {
+		fprintf(stderr, "FAIL: concurrent ended in state '%s', not installed\n", state);
+		ok = 0;
+	} else {
+		char run_out[256] = { 0 };
+		FILE *fp = popen(base_path("/usr/bin/concurrent"), "r");
+
+		if (fp == NULL || fgets(run_out, sizeof(run_out), fp) == NULL ||
+		    strstr(run_out, "hello from greeter") == NULL) {
+			fprintf(stderr,
+			        "FAIL: installed concurrent binary did not run/produce expected output, got: %s\n",
 			        run_out);
 			ok = 0;
 		}
@@ -567,6 +611,32 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "GET", "/v1/pkg/greeter", NULL, &r) != 0 || r.status != 404) {
 		fprintf(stderr, "FAIL: GET greeter after delete expected 404, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	/* 8b. same cleanup for "concurrent" (step 4's second chain) -- left
+	 * installed until now so later steps don't have to account for its
+	 * presence; nothing past this point depends on it. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "DELETE", "/v1/pkg/concurrent", NULL, &r) != 0 || r.status != 204) {
+		fprintf(stderr, "FAIL: DELETE concurrent expected 204, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	{
+		struct stat st;
+
+		if (stat(base_path("/usr/bin/concurrent"), &st) == 0) {
+			fprintf(stderr, "FAIL: concurrent binary still exists in base image after delete\n");
+			ok = 0;
+		}
+	}
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET", "/v1/pkg/concurrent", NULL, &r) != 0 || r.status != 404) {
+		fprintf(stderr, "FAIL: GET concurrent after delete expected 404, got %d\n", r.status);
 		ok = 0;
 	}
 	kx_response_free(&r);
@@ -1798,19 +1868,42 @@ skip_pin_isolation:
 		}
 		kx_response_free(&r);
 
-		/* while it's in flight, a concurrent *ordinary* install must
-		 * be rejected with the exact same PKG_ERR_BUSY every other
-		 * job type already shares (step 4's own scenario, mirrored
-		 * here in the other direction: hostbuild busy blocking an
-		 * ordinary install). "badsum" was staged at startup and never
-		 * successfully installed (step 7 left it FAILED), so this
-		 * exercises the busy check itself, not a duplicate-install
-		 * check. */
+		/* ADR-0157 Phase 2: while it's in flight, a concurrent
+		 * *ordinary* install now genuinely fits in the second chain
+		 * slot -> 202, mirroring step 4's own top-level proof in the
+		 * other direction (a hostbuild and an ordinary install sharing
+		 * the two chain slots, not two ordinary installs). A fresh,
+		 * never-yet-installed name ("hbconcurrent") -- unlike badsum,
+		 * this one has a real, valid tarball/checksum, so it takes a
+		 * genuine gcc build to finish rather than failing fast on a
+		 * checksum mismatch during the fetch step alone; the overflow
+		 * check right below needs both chains to still be provably
+		 * busy by the time it fires, which a same-tick fetch failure
+		 * could otherwise race past (confirmed live: badsum's own
+		 * checksum failure was fast enough to free its chain slot
+		 * before the overflow request even landed). */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"badsum\"}", &r) != 0 ||
+		if (kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"hbconcurrent\"}", &r) !=
+		        0 ||
+		    r.status != 202 || !str_eq(json_str_field(r.json, "state"), "fetching")) {
+			fprintf(stderr,
+			        "FAIL: ordinary install alongside hostbuild (2nd chain) status=%d, state=%s\n",
+			        r.status, json_str_field(r.json, "state") ? json_str_field(r.json, "state") : "(null)");
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* a THIRD job attempt now that both chain slots are genuinely
+		 * occupied (hbtest's hostbuild + hbconcurrent's fetch/build)
+		 * -> 409 -- "overflow" is the same never-yet-installed recipe
+		 * step 4b already proved gets rejected the same way at the
+		 * top level. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"overflow\"}", &r) !=
+		        0 ||
 		    r.status != 409) {
 			fprintf(stderr,
-			        "FAIL: ordinary install while hostbuild in flight expected 409, got %d\n",
+			        "FAIL: overflow install with both chains busy (hostbuild case) expected 409, got %d\n",
 			        r.status);
 			ok = 0;
 		}
@@ -1847,6 +1940,30 @@ skip_pin_isolation:
 			ok = 0;
 			goto skip_hostbuild;
 		}
+
+		/* hbconcurrent's own chain (started alongside hbtest's
+		 * hostbuild above) must also have finished by now -- drained
+		 * here, before the hbdepstest busy-check further below, which
+		 * depends on BOTH chain slots genuinely being free again. */
+		if (poll_pkg_state(&client, "hbconcurrent", state, sizeof(state), 60) != 0) {
+			fprintf(stderr, "FAIL: hbconcurrent (alongside hostbuild) never left fetching/building\n");
+			ok = 0;
+		} else if (strcmp(state, "installed") != 0) {
+			fprintf(stderr,
+			        "FAIL: hbconcurrent (alongside hostbuild) ended in state '%s', expected installed\n",
+			        state);
+			ok = 0;
+		} else if (stat(base_path("/usr/bin/hbconcurrent"), &st) != 0) {
+			fprintf(stderr, "FAIL: hbconcurrent binary missing from base image after install\n");
+			ok = 0;
+		}
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "DELETE", "/v1/pkg/hbconcurrent", NULL, &r) != 0 ||
+		    r.status != 204) {
+			fprintf(stderr, "FAIL: DELETE hbconcurrent (2nd chain) expected 204, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
 
 		/* the response itself must say is_hostbuild=true and give the
 		 * real artifact_path -- not just that the job finished. */

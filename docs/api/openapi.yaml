@@ -5392,8 +5392,34 @@ paths:
         no build is currently in progress at all -- this endpoint has
         nothing to do with a completed/failed build's own logged
         output (see GET /pkg/{name}'s `error` field for that).
+
+
+        ADR-0157 Phase 2: up to two package builds can genuinely be in
+        flight at once. `name` (and optionally `image`, defaulting like
+        every other image-optional endpoint) picks which one to attach
+        to. Omitting `name` falls back to "the one build in progress"
+        when that's unambiguous (zero or one build running); with two
+        builds running at once, omitting `name` gets a 400 asking for
+        an explicit one rather than guessing.
       operationId: pkgBuildLog
       parameters:
+        - name: name
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            Which in-flight build to attach to. May be omitted only
+            while at most one build is genuinely in progress.
+        - name: image
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            The target image of the build named by `name` (defaults to
+            "base" like every other image-optional endpoint). Ignored
+            if `name` is omitted.
         - name: Upgrade
           in: header
           required: true
@@ -5421,13 +5447,13 @@ paths:
         "101":
           description: Switching Protocols -- the connection is now a WebSocket streaming the build's own output live, per this endpoint's own description above.
         "400":
-          description: Missing/invalid Upgrade, Connection, Sec-WebSocket-Key, or Sec-WebSocket-Version header.
+          description: Missing/invalid Upgrade, Connection, Sec-WebSocket-Key, or Sec-WebSocket-Version header, OR two builds are genuinely in progress and `name` was omitted.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "404":
-          description: No package build is currently in progress.
+          description: No package build matching `name`/`image` (or, if omitted, no package build at all) is currently in progress.
           content:
             application/json:
               schema:

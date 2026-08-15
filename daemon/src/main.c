@@ -872,6 +872,7 @@ struct conn {
 	char output_line_buf[1024];             /* CONN_CONTAINER_OUTPUT only */
 	int output_line_len;                    /* CONN_CONTAINER_OUTPUT only */
 	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE / CONN_ISO_ASSEMBLE / CONN_BOOTSTRAP_FETCH / CONN_DISK_FORMAT / CONN_STORAGE_MIGRATE / CONN_CONTAINER_STORAGE_MIGRATE */
+	int pkg_chain_idx;                      /* CONN_PKG_FETCH / CONN_PKG_BUILD_OUTPUT / CONN_PKG_BUILD_LOG_WS -- ADR-0157 Phase 2: which g_chains[] slot this conn belongs to */
 	enum storage_kind storage_migrate_kind; /* CONN_STORAGE_MIGRATE only */
 	char container_storage_migrate_name[REGISTRY_NAME_MAX]; /* CONN_CONTAINER_STORAGE_MIGRATE only */
 	char restart_name[REGISTRY_NAME_MAX];   /* CONN_RESTART_TIMER only */
@@ -5709,7 +5710,7 @@ static void register_container_pidfd(struct registry_entry *entry)
  * CLONE_PIDFD-obtained pidfd already gets, via the explicit
  * sys_pidfd_open() equivalent for an already-forked pid.
  */
-static void register_pkg_fetch_pidfd(pid_t pid, int pidfd)
+static void register_pkg_fetch_pidfd(pid_t pid, int pidfd, int chain_idx)
 {
 	struct conn *cc;
 	struct kx_epoll_event ev;
@@ -5722,6 +5723,7 @@ static void register_pkg_fetch_pidfd(pid_t pid, int pidfd)
 	cc->kind = CONN_PKG_FETCH;
 	cc->fd = pidfd;
 	cc->pkg_fetch_pid = pid;
+	cc->pkg_chain_idx = chain_idx;
 
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
@@ -5759,9 +5761,10 @@ static void try_start_queued_pkg_rebuild(void)
 {
 	pid_t pkg_pid;
 	int pkg_pidfd;
+	int pkg_chain_idx;
 
-	if (pkg_try_start_queued_rebuild(&pkg_pid, &pkg_pidfd))
-		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd);
+	if (pkg_try_start_queued_rebuild(&pkg_pid, &pkg_pidfd, &pkg_chain_idx))
+		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
 	apply_rolling_container_restarts();
 }
 
@@ -5779,7 +5782,7 @@ static void try_start_queued_pkg_rebuild(void)
  * output_fd is -1 (pipe2() itself failed at build-spawn time, or no
  * build is in flight).
  */
-static void register_pkg_build_output(int output_fd)
+static void register_pkg_build_output(int output_fd, int chain_idx)
 {
 	struct conn *cc;
 	struct kx_epoll_event ev;
@@ -5794,6 +5797,7 @@ static void register_pkg_build_output(int output_fd)
 	}
 	cc->kind = CONN_PKG_BUILD_OUTPUT;
 	cc->fd = output_fd;
+	cc->pkg_chain_idx = chain_idx;
 
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
@@ -5829,17 +5833,23 @@ static void build_log_ws_detach(struct conn *cc)
 }
 
 /* Sends a chunk of newly-drained build output to every attached
- * live-tail client. A write failure just detaches that one client
+ * live-tail client watching THIS chain (ADR-0157 Phase 2 -- a client
+ * watching a different concurrent build must never see another
+ * build's output). A write failure just detaches that one client
  * (its own next epoll event, or this immediate teardown, reflects a
  * gone-away peer) -- never lets one broken viewer affect the others
  * or the build itself, which never blocks on this at all. */
-static void build_log_ws_broadcast(const void *data, size_t len)
+static void build_log_ws_broadcast(int chain_idx, const void *data, size_t len)
 {
 	int i;
 
 	for (i = 0; i < g_build_log_ws_conn_count;) {
 		struct conn *cc = g_build_log_ws_conns[i];
 
+		if (cc->pkg_chain_idx != chain_idx) {
+			i++;
+			continue;
+		}
 		if (ws_write_frame(cc->fd, WS_OPCODE_TEXT, data, len) != 0) {
 			kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 			ws_conn_free(&cc->ws);
@@ -5853,25 +5863,32 @@ static void build_log_ws_broadcast(const void *data, size_t len)
 	}
 }
 
-/* Called once the build's own output pipe reaches EOF (the build
- * finished, one way or another) -- tells every still-attached
- * live-tail client the stream is over via a real WS close frame, then
- * tears each one down. Without this a client would just hang waiting
- * for more output that will never come. */
-static void build_log_ws_teardown_all(void)
+/* Called once THIS chain's build output pipe reaches EOF (that chain's
+ * build finished, one way or another) -- tells every still-attached
+ * live-tail client watching that same chain the stream is over via a
+ * real WS close frame, then tears each one down. Without this a client
+ * would just hang waiting for more output that will never come. Only
+ * touches conns watching chain_idx -- a client attached to a different,
+ * still-running concurrent build is left alone. */
+static void build_log_ws_teardown_all(int chain_idx)
 {
 	int i;
 
-	for (i = 0; i < g_build_log_ws_conn_count; i++) {
+	for (i = 0; i < g_build_log_ws_conn_count;) {
 		struct conn *cc = g_build_log_ws_conns[i];
 
+		if (cc->pkg_chain_idx != chain_idx) {
+			i++;
+			continue;
+		}
 		ws_write_frame(cc->fd, WS_OPCODE_CLOSE, NULL, 0);
 		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 		ws_conn_free(&cc->ws);
 		close(cc->fd);
 		free(cc);
+		g_build_log_ws_conns[i] = g_build_log_ws_conns[g_build_log_ws_conn_count - 1];
+		g_build_log_ws_conn_count--;
 	}
-	g_build_log_ws_conn_count = 0;
 }
 
 /*
@@ -5892,13 +5909,13 @@ static void handle_pkg_build_output_event(struct conn *cc)
 	int new_len = 0;
 	int eof;
 
-	eof = pkg_build_output_readable(new_data, (int)sizeof(new_data), &new_len);
+	eof = pkg_build_output_readable(cc->pkg_chain_idx, new_data, (int)sizeof(new_data), &new_len);
 	if (new_len > 0 && g_build_log_ws_conn_count > 0)
-		build_log_ws_broadcast(new_data, (size_t)new_len);
+		build_log_ws_broadcast(cc->pkg_chain_idx, new_data, (size_t)new_len);
 	if (eof) {
 		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
-		pkg_build_output_close();
-		build_log_ws_teardown_all();
+		pkg_build_output_close(cc->pkg_chain_idx);
+		build_log_ws_teardown_all(cc->pkg_chain_idx);
 		free(cc);
 	}
 }
@@ -10671,7 +10688,7 @@ static void handle_stop(int fd, const char *name)
 	struct registry_entry *e = registry_find(name);
 	struct conn *cc;
 	struct json_writer w;
-	int was_pkgbuild = (strcmp(name, PKG_BUILD_CONTAINER_NAME) == 0);
+	int was_pkgbuild = (pkg_build_container_chain_index(name) >= 0);
 
 	if (e == NULL && containerdef_find(name) == NULL) {
 		respond_error(fd, 404, "Not Found", "no such container");
@@ -10689,11 +10706,12 @@ static void handle_stop(int fd, const char *name)
 		if (was_pkgbuild) {
 			pid_t pkg_pid;
 			int pkg_pidfd;
+			int pkg_chain_idx;
 			char hostbuild_done_name[PKG_NAME_MAX];
 
 			if (pkg_build_completed(name, e->exit_status, &pkg_pid, &pkg_pidfd,
-			                         hostbuild_done_name))
-				register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd);
+			                         &pkg_chain_idx, hostbuild_done_name))
+				register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
 			else
 				try_start_queued_pkg_rebuild();
 		}
@@ -14336,6 +14354,7 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 	char started_name[PKG_NAME_MAX];
 	pid_t pid;
 	int pidfd;
+	int chain_idx;
 	enum pkg_error perr;
 	struct json_writer w;
 
@@ -14358,7 +14377,7 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 	upgrade = (jupgrade != NULL && jupgrade->type == JSON_BOOL && jupgrade->u.boolean);
 
 	perr = pkg_install_start(name, image, version, upgrade, started_name, sizeof(started_name),
-	                          &pid, &pidfd);
+	                          &pid, &pidfd, &chain_idx);
 	if (perr != PKG_OK) {
 		json_free(root);
 		respond_pkg_error(fd, perr);
@@ -14380,7 +14399,7 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 		return;
 	}
 	json_free(root);
-	register_pkg_fetch_pidfd(pid, pidfd);
+	register_pkg_fetch_pidfd(pid, pidfd, chain_idx);
 	respond_json(fd, 202, "Accepted", &w);
 	jw_free(&w);
 }
@@ -14404,6 +14423,7 @@ static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
 	int upgrade;
 	pid_t pid;
 	int pidfd;
+	int chain_idx;
 	enum pkg_error perr;
 	struct json_writer w;
 
@@ -14425,7 +14445,7 @@ static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
 	jupgrade = json_object_get(root, "upgrade");
 	upgrade = (jupgrade != NULL && jupgrade->type == JSON_BOOL && jupgrade->u.boolean);
 
-	perr = pkg_hostbuild_start(name, build_image, version, upgrade, NULL, &pid, &pidfd);
+	perr = pkg_hostbuild_start(name, build_image, version, upgrade, NULL, &pid, &pidfd, &chain_idx);
 	if (perr != PKG_OK) {
 		json_free(root);
 		respond_pkg_error(fd, perr);
@@ -14442,7 +14462,7 @@ static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
 		return;
 	}
 	json_free(root);
-	register_pkg_fetch_pidfd(pid, pidfd);
+	register_pkg_fetch_pidfd(pid, pidfd, chain_idx);
 	respond_json(fd, 202, "Accepted", &w);
 	jw_free(&w);
 }
@@ -14521,6 +14541,7 @@ static void handle_kmod_build_post(int fd, const char *body, size_t body_len)
 	size_t symbols_len = 0;
 	pid_t pid;
 	int pidfd;
+	int chain_idx;
 	enum pkg_error perr;
 	struct json_writer w;
 
@@ -14577,7 +14598,7 @@ static void handle_kmod_build_post(int fd, const char *body, size_t body_len)
 	json_free(root);
 
 	perr = pkg_hostbuild_start("kernel", build_image, version[0] != '\0' ? version : NULL, upgrade,
-	                            symbols[0] != '\0' ? symbols : NULL, &pid, &pidfd);
+	                            symbols[0] != '\0' ? symbols : NULL, &pid, &pidfd, &chain_idx);
 	if (perr != PKG_OK) {
 		respond_pkg_error(fd, perr);
 		return;
@@ -14590,7 +14611,7 @@ static void handle_kmod_build_post(int fd, const char *body, size_t body_len)
 		              "hostbuild started but could not be read back");
 		return;
 	}
-	register_pkg_fetch_pidfd(pid, pidfd);
+	register_pkg_fetch_pidfd(pid, pidfd, chain_idx);
 	respond_json(fd, 202, "Accepted", &w);
 	jw_free(&w);
 }
@@ -14615,6 +14636,7 @@ static void handle_pkg_update_all(int fd)
 	char started_name[PKG_NAME_MAX];
 	pid_t pid;
 	int pidfd;
+	int chain_idx;
 	enum pkg_error perr;
 	struct json_writer w;
 
@@ -14630,7 +14652,7 @@ static void handle_pkg_update_all(int fd)
 	}
 
 	perr = pkg_install_start(name, image, NULL, 1, started_name, sizeof(started_name), &pid,
-	                          &pidfd);
+	                          &pidfd, &chain_idx);
 	if (perr != PKG_OK) {
 		respond_pkg_error(fd, perr);
 		return;
@@ -14644,7 +14666,7 @@ static void handle_pkg_update_all(int fd)
 		              "package started but could not be read back");
 		return;
 	}
-	register_pkg_fetch_pidfd(pid, pidfd);
+	register_pkg_fetch_pidfd(pid, pidfd, chain_idx);
 	respond_json(fd, 202, "Accepted", &w);
 	jw_free(&w);
 }
@@ -16287,10 +16309,21 @@ static enum console_route_result try_pkg_build_log_upgrade(struct conn *cc, cons
 	 * private to pkg.c. */
 	char snapshot[4096];
 	int snapshot_len;
+	size_t qlen;
+	char target_name[PKG_NAME_MAX];
+	char target_image[PKG_IMAGE_NAME_MAX];
+	char build_container_name[PKG_NAME_MAX];
+	int chain_idx;
 
 	if (strcmp(req->method, "GET") != 0)
 		return CONSOLE_NOT_MATCHED;
-	if (strcmp(req->path, PKG_BUILD_LOG_PATH) != 0)
+	/* May carry a trailing "?name=...&image=..." query string (ADR-0157
+	 * Phase 2: which of the now-possibly-several concurrent builds to
+	 * attach to) -- matched by base-path length, the same convention
+	 * "/v1/system/logs"/.../files' own "?..." handling already
+	 * established, not a raw strcmp against the full req->path. */
+	qlen = strcspn(req->path, "?");
+	if (qlen != strlen(PKG_BUILD_LOG_PATH) || strncmp(req->path, PKG_BUILD_LOG_PATH, qlen) != 0)
 		return CONSOLE_NOT_MATCHED;
 
 	if (http_find_header(req->headers, req->headers_len, "Upgrade", upgrade_val, sizeof(upgrade_val)) < 0 ||
@@ -16313,7 +16346,40 @@ static enum console_route_result try_pkg_build_log_upgrade(struct conn *cc, cons
 		return CONSOLE_FAILED;
 	}
 
-	entry = registry_find(PKG_BUILD_CONTAINER_NAME);
+	/*
+	 * ADR-0157 Phase 2: ?name= (required if given; ?image= optional,
+	 * defaults like every other image-optional entry point) picks which
+	 * of the now-possibly-several concurrent builds to attach to. A
+	 * caller supplying neither (every client predating this phase, and
+	 * the common real-world case even now: PKG_MAX_CONCURRENT_JOBS
+	 * being > 1 doesn't mean an operator usually has more than one
+	 * build actually running at once) falls back to "the one build in
+	 * progress" when that's unambiguous.
+	 */
+	if (url_query_param(req->path, "name", target_name, sizeof(target_name)) == 0) {
+		if (url_query_param(req->path, "image", target_image, sizeof(target_image)) != 0)
+			target_image[0] = '\0';
+		chain_idx = pkg_chain_index_for_target(target_name, target_image);
+	} else {
+		int active[PKG_MAX_CONCURRENT_JOBS];
+		int active_count = pkg_active_chain_indices(active);
+
+		if (active_count == 0) {
+			chain_idx = -1;
+		} else if (active_count == 1) {
+			chain_idx = active[0];
+		} else {
+			respond_error(cc->fd, 400, "Bad Request",
+			              "multiple builds in progress -- specify ?name=&image=");
+			return CONSOLE_FAILED;
+		}
+	}
+	if (chain_idx < 0) {
+		respond_error(cc->fd, 404, "Not Found", "no build in progress");
+		return CONSOLE_FAILED;
+	}
+	pkg_build_container_name(chain_idx, build_container_name, sizeof(build_container_name));
+	entry = registry_find(build_container_name);
 	if (entry == NULL || !entry->running) {
 		respond_error(cc->fd, 404, "Not Found", "no build in progress");
 		return CONSOLE_FAILED;
@@ -16357,13 +16423,14 @@ static enum console_route_result try_pkg_build_log_upgrade(struct conn *cc, cons
 	 * this is the ENTIRE repurposing, not just one half of a pair. */
 	http_conn_free(&cc->http);
 	cc->kind = CONN_PKG_BUILD_LOG_WS;
+	cc->pkg_chain_idx = chain_idx;
 	ws_conn_init(&cc->ws);
 	g_build_log_ws_conns[g_build_log_ws_conn_count++] = cc;
 
 	/* cc->fd is already registered for EPOLLIN -- no epoll_ctl needed,
 	 * same as try_console_upgrade()'s own WS half. */
 
-	snapshot_len = pkg_build_output_snapshot(snapshot, sizeof(snapshot));
+	snapshot_len = pkg_build_output_snapshot(chain_idx, snapshot, sizeof(snapshot));
 	if (snapshot_len > 0 && ws_write_frame(cc->fd, WS_OPCODE_TEXT, snapshot, (size_t)snapshot_len) != 0) {
 		build_log_ws_detach(cc);
 		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
@@ -17072,6 +17139,7 @@ static void handle_container_event(struct conn *cc)
 	struct container_def *def;
 	pid_t pkg_pid;
 	int pkg_pidfd;
+	int pkg_chain_idx;
 	int chained;
 	char hostbuild_done_name[PKG_NAME_MAX];
 
@@ -17097,11 +17165,11 @@ static void handle_container_event(struct conn *cc)
 	 * install already does.
 	 */
 	chained = pkg_build_completed(entry->name, entry->exit_status, &pkg_pid, &pkg_pidfd,
-	                               hostbuild_done_name);
-	if (strcmp(entry->name, PKG_BUILD_CONTAINER_NAME) == 0)
+	                               &pkg_chain_idx, hostbuild_done_name);
+	if (pkg_build_container_chain_index(entry->name) >= 0)
 		registry_remove(entry->name);
 	if (chained)
-		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd);
+		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
 	else
 		try_start_queued_pkg_rebuild();
 
@@ -17185,6 +17253,7 @@ static void handle_pkg_fetch_event(struct conn *cc)
 	int exit_status;
 	struct container_spec spec;
 	int stdio_write_fd;
+	int chain_idx = cc->pkg_chain_idx;
 
 	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
@@ -17194,11 +17263,14 @@ static void handle_pkg_fetch_event(struct conn *cc)
 	close(cc->fd);
 	free(cc);
 
-	if (pkg_fetch_completed(exit_status, &spec, &stdio_write_fd)) {
+	if (pkg_fetch_completed(chain_idx, exit_status, &spec, &stdio_write_fd)) {
 		struct registry_entry *entry;
-		enum registry_error rerr =
-		    registry_create(PKG_BUILD_CONTAINER_NAME, "pkgbuild", "", &spec, NULL, 0, 0, NULL, 0,
-		                     NULL, 0, NULL, NULL, 0, &entry);
+		char build_container_name[PKG_NAME_MAX];
+		enum registry_error rerr;
+
+		pkg_build_container_name(chain_idx, build_container_name, sizeof(build_container_name));
+		rerr = registry_create(build_container_name, "pkgbuild", "", &spec, NULL, 0, 0, NULL, 0,
+		                        NULL, 0, NULL, NULL, 0, &entry);
 
 		/*
 		 * The child (if registry_create() actually forked one)
@@ -17211,11 +17283,11 @@ static void handle_pkg_fetch_event(struct conn *cc)
 			close(stdio_write_fd);
 
 		if (rerr != REGISTRY_OK) {
-			pkg_build_spawn_failed();
+			pkg_build_spawn_failed(chain_idx);
 			try_start_queued_pkg_rebuild();
 		} else {
 			register_container_pidfd(entry);
-			register_pkg_build_output(pkg_build_output_fd());
+			register_pkg_build_output(pkg_build_output_fd(chain_idx), chain_idx);
 		}
 	} else {
 		try_start_queued_pkg_rebuild();

@@ -88,10 +88,22 @@
  * already sets, not an unbounded list. */
 #define PKG_MAX_SOURCES 16
 
-/* Reserved container name for the single in-flight build (v1
- * serializes installs -- at most one at a time). Shows up in the
- * normal GET /v1/containers listing too, deliberately -- one source
- * of truth for "what's running," not a second hidden tracking path. */
+/* ADR-0157 Phase 2: max number of build/install/hostbuild chains that
+ * may be genuinely in flight at once. Declared here (not just in
+ * pkg.c) because main.c needs it too, to size/bound its own per-chain
+ * WS conn tracking (g_build_log_ws_conns[]) and, in Phase 3, the
+ * pkg-build-config endpoint's valid range. One source of truth for
+ * both translation units -- never redefined independently in pkg.c. */
+#define PKG_MAX_CONCURRENT_JOBS 2
+
+/* Reserved container name prefix for an in-flight build. The real,
+ * per-chain container name is "<PKG_BUILD_CONTAINER_NAME>-<chain_idx>"
+ * (pkg_build_container_name()) -- ADR-0157 Phase 2 moved this off a
+ * single fixed name once concurrent builds became possible, since
+ * registry_create() rejects a duplicate container name outright. Each
+ * per-chain name still shows up in the normal GET /v1/containers
+ * listing, deliberately -- one source of truth for "what's running,"
+ * not a second hidden tracking path. */
 #define PKG_BUILD_CONTAINER_NAME "__pkgbuild"
 
 /*
@@ -352,10 +364,17 @@ enum pkg_error pkg_recipe_delete(const char *name, const char *version);
  * installed, never transitively to its build-time prerequisites.
  * PKG_ERR_INVALID_RECIPE if version is given but no such (name,version)
  * recipe exists.
+ *
+ * out_chain_idx (ADR-0157 Phase 2): only meaningful on PKG_OK, the
+ * index into pkg.c's own small g_chains[] table this job was assigned
+ * -- the caller must thread it through register_pkg_fetch_pidfd() so
+ * the corresponding fetch-exit event routes back to the right chain
+ * (see that function's own doc comment, daemon/src/main.c).
  */
 enum pkg_error pkg_install_start(const char *name, const char *image, const char *version,
                                   int upgrade, char *out_started_name,
-                                  size_t out_started_name_size, pid_t *out_pid, int *out_pidfd);
+                                  size_t out_started_name_size, pid_t *out_pid, int *out_pidfd,
+                                  int *out_chain_idx);
 
 /*
  * A second mode of the same fetch/build pipeline pkg_install_start()
@@ -411,10 +430,13 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
  * pkg_build() actually reads that variable; any other recipe simply
  * ignores it. PKG_ERR_INVALID_NAME if it doesn't fit
  * PKG_HOSTBUILD_EXTRA_SYMBOLS_MAX.
+ *
+ * out_chain_idx (ADR-0157 Phase 2): same contract as pkg_install_
+ * start()'s own out_chain_idx -- only meaningful on PKG_OK.
  */
 enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, const char *version,
                                     int upgrade, const char *extra_config_symbols, pid_t *out_pid,
-                                    int *out_pidfd);
+                                    int *out_pidfd, int *out_chain_idx);
 
 /*
  * Called once the tracked fetch subprocess's pidfd fires (caller has
@@ -438,13 +460,22 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
  * registry_create() the build container, 0 if the job already ended
  * (FAILED -- bad exit status or checksum mismatch) and there is
  * nothing to build.
+ *
+ * chain_idx (ADR-0157 Phase 2): identifies which chain this fetch
+ * completion belongs to -- the caller's own conn already knows this
+ * (register_pkg_fetch_pidfd()'s own chain_idx parameter, threaded
+ * through struct conn), so it's passed straight in rather than
+ * re-derived. Every "the" build this function's own comments still
+ * refer to below is that specific chain's build, not a singular
+ * daemon-wide one.
  */
-int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *out_stdio_write_fd);
+int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *spec_out,
+                         int *out_stdio_write_fd);
 
 /* Called if registry_create() itself fails for the build container
  * pkg_fetch_completed() just prepared -- transitions the in-flight
  * job to FAILED (there is no container to wait for in this case). */
-void pkg_build_spawn_failed(void);
+void pkg_build_spawn_failed(int chain_idx);
 
 /*
  * Called from main.c's container-exit path unconditionally, after
@@ -481,9 +512,55 @@ void pkg_build_spawn_failed(void);
  * *means* (ADR-0057's own ARTIFACTS_DIR/<name>/kanxeod-root.squashfs
  * assembly for name=="kanxeo" specifically is main.c's business, not
  * this module's).
+ *
+ * out_chain_idx (ADR-0157 Phase 2): only meaningful when this
+ * function returns 1 -- the same chain the just-completed build
+ * belonged to (a dependency chain always advances within its own
+ * chain slot, never migrates), for the caller to thread into
+ * register_pkg_fetch_pidfd() for the newly-started next fetch.
  */
 int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_pid, int *out_pidfd,
-                         char *out_hostbuild_done_name);
+                         int *out_chain_idx, char *out_hostbuild_done_name);
+
+/*
+ * ADR-0157 Phase 2: computes this chain's own real, distinct build
+ * container name ("__pkgbuild-<chain_idx>") -- exported so main.c's
+ * own registry_create() call (handle_pkg_fetch_event()) can pass the
+ * same name pkg_fetch_completed() already put in spec_out->ns.
+ * hostname/cg.name. out must be at least PKG_NAME_MAX bytes.
+ */
+void pkg_build_container_name(int chain_idx, char *out, size_t out_size);
+
+/*
+ * ADR-0157 Phase 2: the inverse of pkg_build_container_name() -- given
+ * a real container name (e.g. from a registry_remove()/handle_stop()
+ * event), returns which chain it belongs to, or -1 if container_name
+ * doesn't match the "<PKG_BUILD_CONTAINER_NAME>-<chain_idx>" shape at
+ * all (the overwhelming majority of real container names, since a
+ * build container is never the only kind that can be stopped).
+ */
+int pkg_build_container_chain_index(const char *container_name);
+
+/*
+ * ADR-0157 Phase 2: resolves a caller-supplied name+image pair (e.g.
+ * GET /v1/pkg/build/log's own ?name=&image= query params) to the
+ * concrete chain_idx currently building that target, now that a fixed
+ * single build no longer exists to attach to implicitly. image may be
+ * NULL/"" (defaults exactly like every other image-optional entry
+ * point in this file). Returns -1 if no chain is currently building
+ * that target.
+ */
+int pkg_chain_index_for_target(const char *name, const char *image);
+
+/*
+ * ADR-0157 Phase 2: fills out_indices (room for at least
+ * PKG_MAX_CONCURRENT_JOBS ints) with every currently-busy chain's
+ * index, returning how many. Used by main.c's own GET /v1/pkg/build/
+ * log handler to fall back to "the one build in progress" when a
+ * caller supplies no ?name= -- unambiguous exactly when this returns
+ * 1, matching the old single-build behavior.
+ */
+int pkg_active_chain_indices(int *out_indices);
 
 /*
  * ADR-0107: publishing a new recipe version (pkg_recipe_add()) queues a
@@ -506,8 +583,12 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
  * real job AND drain any number of already-satisfied entries ahead of
  * it. Returns 0 if a job is already in flight or the queue is (now)
  * empty.
+ *
+ * out_chain_idx (ADR-0157 Phase 2): same contract as pkg_install_
+ * start()'s own out_chain_idx -- only meaningful when this function
+ * returns nonzero.
  */
-int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd);
+int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_idx);
 
 /*
  * The build-output capture pipe's read end (see pkg_fetch_completed()'s
@@ -516,11 +597,11 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd);
  * this only once, after the container has already exited, deadlocks
  * any build whose combined stdout+stderr exceeds the pipe's 64KB
  * kernel buffer, since nothing would read from it while the build is
- * still running. Returns -1 if no build is in flight or the pipe2()
- * call itself failed (capture is a diagnostic nicety, never a reason
- * to fail the build).
+ * still running. Returns -1 if no build is in flight for chain_idx or
+ * the pipe2() call itself failed (capture is a diagnostic nicety,
+ * never a reason to fail the build).
  */
-int pkg_build_output_fd(void);
+int pkg_build_output_fd(int chain_idx);
 
 /*
  * Called whenever pkg_build_output_fd()'s fd reports EPOLLIN --
@@ -538,7 +619,7 @@ int pkg_build_output_fd(void);
  * call pkg_build_output_close()), 0 if there may still be more to
  * come later.
  */
-int pkg_build_output_readable(char *new_data, int new_data_cap, int *new_data_len);
+int pkg_build_output_readable(int chain_idx, char *new_data, int new_data_cap, int *new_data_len);
 
 /*
  * Copies the current sliding-window tail (up to out_cap bytes) into
@@ -546,7 +627,7 @@ int pkg_build_output_readable(char *new_data, int new_data_cap, int *new_data_le
  * captured so far before streaming further chunks. Returns the number
  * of bytes copied.
  */
-int pkg_build_output_snapshot(char *out, int out_cap);
+int pkg_build_output_snapshot(int chain_idx, char *out, int out_cap);
 
 /* Closes pkg_build_output_fd()'s fd and clears it -- called by the
  * caller once pkg_build_output_readable() returns 1, or directly by
@@ -554,7 +635,7 @@ int pkg_build_output_snapshot(char *out, int out_cap);
  * never actually spawned a container to produce any output at all
  * (no epoll registration ever existed to drive the EOF path in that
  * case). Safe to call when already closed (no-op). */
-void pkg_build_output_close(void);
+void pkg_build_output_close(int chain_idx);
 
 /* Metadata for every known package (installed or in-flight): name,
  * image, version, state, error (null unless FAILED), files (manifest,
