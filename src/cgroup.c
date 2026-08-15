@@ -43,6 +43,17 @@ static int write_cgroup_file(const char *dir, const char *file, const char *valu
 	return 0;
 }
 
+/*
+ * Every failure path below logs via perror() with a distinct, greppable
+ * prefix identifying exactly which sub-step failed -- container_create()'s
+ * own caller (registry_create()) only ever gets a bare -1/errno back, and
+ * this project's real production box (192.168.15.95) has no shell access
+ * at all, so a silent -1 here is otherwise completely undiagnosable in the
+ * field. perror() output reaches the consolidated log store the same way
+ * cgroup_enable_controllers()'s own diagnostics already do (thincd's own
+ * stderr is mirrored into it, source=thincd) -- no new plumbing needed,
+ * just filling in the missing calls this function never had.
+ */
 int cgroup_create(const struct cgroup_limits *lim, int *out_fd)
 {
 	char dir[PATH_MAX];
@@ -54,29 +65,39 @@ int cgroup_create(const struct cgroup_limits *lim, int *out_fd)
 		return -1;
 	}
 
-	if (mkdir(dir, 0755) != 0 && errno != EEXIST)
+	if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+		perror("cgroup_create: mkdir");
 		return -1;
+	}
 
 	if (lim->memory_max > 0) {
 		snprintf(value, sizeof(value), "%lld", lim->memory_max);
-		if (write_cgroup_file(dir, "memory.max", value) != 0)
+		if (write_cgroup_file(dir, "memory.max", value) != 0) {
+			perror("cgroup_create: write memory.max");
 			return -1;
+		}
 	}
 
 	if (lim->pids_max > 0) {
 		snprintf(value, sizeof(value), "%lld", lim->pids_max);
-		if (write_cgroup_file(dir, "pids.max", value) != 0)
+		if (write_cgroup_file(dir, "pids.max", value) != 0) {
+			perror("cgroup_create: write pids.max");
 			return -1;
+		}
 	}
 
 	if (lim->cpu_max != NULL) {
-		if (write_cgroup_file(dir, "cpu.max", lim->cpu_max) != 0)
+		if (write_cgroup_file(dir, "cpu.max", lim->cpu_max) != 0) {
+			perror("cgroup_create: write cpu.max");
 			return -1;
+		}
 	}
 
 	if (lim->cpuset_cpus != NULL) {
-		if (write_cgroup_file(dir, "cpuset.cpus", lim->cpuset_cpus) != 0)
+		if (write_cgroup_file(dir, "cpuset.cpus", lim->cpuset_cpus) != 0) {
+			perror("cgroup_create: write cpuset.cpus");
 			return -1;
+		}
 	}
 
 	/*
@@ -87,8 +108,10 @@ int cgroup_create(const struct cgroup_limits *lim, int *out_fd)
 	 * past that child's own execve().
 	 */
 	fd = open(dir, O_PATH | O_CLOEXEC);
-	if (fd < 0)
+	if (fd < 0) {
+		perror("cgroup_create: open(O_PATH)");
 		return -1;
+	}
 
 	*out_fd = fd;
 	return 0;
