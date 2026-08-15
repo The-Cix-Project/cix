@@ -28,7 +28,7 @@
 	<nav class="menu-bar">
 		<div class="menu-dropdown menu-dropdown-logo">
 			<button type="button" class="menu-dropdown-toggle menu-dropdown-toggle-logo" data-menu="logo">
-				<img src="/thinc-mark.svg" alt="" class="header-mark">thinC<span id="header-instance-name" class="header-instance-name" hidden></span>
+				<span class="header-thin">thin</span><img src="/thinc-mark.svg" alt="thinC" class="header-mark">
 			</button>
 			<ul class="menu-dropdown-menu" data-menu="logo" hidden>
 				<li><button type="button" id="menu-about" data-modal="about-form" data-title="About thinC">About thinC</button></li>
@@ -148,7 +148,10 @@
 </header>
 
 <div class="layout">
-	<nav id="tree" class="tree"></nav>
+	<div class="tree-panel">
+		<div id="tree-instance-label" class="tree-instance-label" hidden></div>
+		<nav id="tree" class="tree"></nav>
+	</div>
 
 	<main>
 	<div id="content-scroll">

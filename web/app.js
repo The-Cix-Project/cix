@@ -6449,10 +6449,10 @@ async function refreshSiteConfig() {
 		document.getElementById("df-name").placeholder = suggestedFqdn("db") || "db.internal";
 		document.getElementById("pf-name").placeholder = suggestedFqdn("svc") || "svc.internal";
 
-		const badge = document.getElementById("header-instance-name");
+		const label = document.getElementById("tree-instance-label");
 
-		badge.textContent = site.instance_name;
-		badge.hidden = false;
+		label.textContent = site.instance_name;
+		label.hidden = false;
 		document.title = "thinC — " + site.instance_name;
 	} catch (e) {
 		/* Best-effort -- the form/header just stay at whatever was last shown. */

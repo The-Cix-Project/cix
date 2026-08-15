@@ -93,17 +93,6 @@ header {
 	flex: 0 0 auto;
 }
 
-.header-instance-name {
-	margin-left: 0.5rem;
-	font-size: 0.85rem;
-	font-weight: normal;
-	color: var(--muted);
-}
-
-.header-instance-name::before {
-	content: "\2014 ";
-}
-
 .header-right {
 	display: flex;
 	align-items: center;
@@ -154,15 +143,18 @@ header {
 .menu-dropdown-toggle-logo {
 	display: flex;
 	align-items: center;
-	font-size: 1.1rem;
-	font-weight: 600;
 	padding: 0.4rem 0.6rem;
+}
+
+.header-thin {
+	font-weight: 200;
+	font-size: 1.1rem;
+	margin-right: 0.3rem;
 }
 
 .header-mark {
 	height: 1.1rem;
 	width: auto;
-	margin-right: 0.45rem;
 }
 
 .menu-dropdown-menu {
@@ -364,7 +356,7 @@ header {
 		grid-template-columns: 1fr;
 		display: block;
 	}
-	.tree {
+	.tree-panel {
 		height: auto;
 		max-height: 40vh;
 		border-right: none;
@@ -380,11 +372,30 @@ header {
 	}
 }
 
-.tree {
+.tree-panel {
+	display: flex;
+	flex-direction: column;
 	height: 100%;
+	min-height: 0;
+	border-right: 1px solid var(--border);
+}
+
+.tree-instance-label {
+	flex: 0 0 auto;
+	padding: 0.75rem 1rem 0.5rem;
+	font-size: 0.7rem;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--muted);
+	border-bottom: 1px solid var(--border);
+}
+
+.tree {
+	flex: 1 1 auto;
+	min-height: 0;
 	overflow-y: auto;
 	overflow-x: auto;
-	border-right: 1px solid var(--border);
 	padding: 1rem 0;
 }
 
