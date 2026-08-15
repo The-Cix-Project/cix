@@ -117,6 +117,21 @@ int container_net_teardown_interfaces(const char *const *interfaces, int interfa
                                        int netns_fd);
 
 /*
+ * ADR-0156/task #861: live network attach/detach on an already-running
+ * container -- see container_net.c's own doc comments for exactly how
+ * each works. attach's veth_host/veth_ctr must be caller-generated,
+ * unique host-wide names (main.c derives them from child_pid + the
+ * container's own current net_count, mirroring container_net_host_setup()'s
+ * own vh<pid>-<idx>/vc<pid>-<idx> scheme). ifname is the name the
+ * interface gets inside the container's own netns (main.c: "eth<idx>",
+ * continuing the same numbering create-time attachments already use).
+ */
+int container_net_attach_running(const char *bridge, uint32_t container_ip_be, int prefix_len,
+                                  pid_t child_pid, const char *veth_host, const char *veth_ctr,
+                                  const char *ifname);
+int container_net_detach_running(const char *veth_host);
+
+/*
  * Child side, called after container_net_child_configure() (if any)
  * succeeds, before PR_SET_PDEATHSIG/execve. Installs each of routes[]
  * in order via one rtnetlink session; a no-op that returns 0

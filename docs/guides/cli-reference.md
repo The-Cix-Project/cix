@@ -98,6 +98,8 @@ See [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.m
 | `container recipe rm NAME` | Remove a stored container recipe |
 | `container recipe ls` | List container recipes (metadata only) |
 | `container apply-recipe NAME [--secret=KEY=VALUE ...]` | Render `NAME`'s own stored recipe (substituting `{{SECRET:KEY}}` tokens) and create the container -- always synchronous, real `POST /containers` under the hood |
+| `container network attach NAME --network=NETWORK [--ip=A.B.C.D]` | Attach a network to an already-running container, live, without a recreate (ADR-0156) |
+| `container network detach NAME NETWORK` | Detach a live-attached network; refuses (409) a network attached at container creation |
 
 `run`'s full flag set:
 

@@ -232,6 +232,99 @@ int container_net_teardown_interfaces(const char *const *interfaces, int interfa
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
+/*
+ * ADR-0156/task #861: attaches a network to an ALREADY-RUNNING
+ * container (not at clone3()-time -- container_net_host_setup()/
+ * container_net_child_configure() above are that path's own pair,
+ * cooperating via a ready_pipe the child reads before its own
+ * execve()). No such cooperating child exists here, so the daemon
+ * does every step itself: create the veth pair, move its container
+ * side into child_pid's own netns, attach the host side to the
+ * bridge and bring it up (exactly container_net_host_setup()'s own
+ * sequence) -- then, since renaming/addressing/bringing up the
+ * container-side end can only be done from inside the netns it now
+ * lives in, a short-lived forked helper setns()s in and does that
+ * part, mirroring container_net_host_attach_interfaces()'s own
+ * identical dance for physical interfaces.
+ */
+int container_net_attach_running(const char *bridge, uint32_t container_ip_be, int prefix_len,
+                                  pid_t child_pid, const char *veth_host, const char *veth_ctr,
+                                  const char *ifname)
+{
+	int fd;
+	int netns_fd;
+	char ns_path[64];
+	pid_t helper;
+	int status;
+
+	fd = rtnl_open();
+	if (fd < 0)
+		return -1;
+
+	if (rtnl_veth_create(fd, veth_host, veth_ctr) != 0 ||
+	    rtnl_link_set_netns_pid(fd, veth_ctr, child_pid) != 0 ||
+	    rtnl_link_set_master(fd, veth_host, bridge) != 0 || rtnl_link_set_up(fd, veth_host) != 0) {
+		rtnl_close(fd);
+		return -1;
+	}
+	rtnl_close(fd);
+
+	snprintf(ns_path, sizeof(ns_path), "/proc/%d/ns/net", (int)child_pid);
+	netns_fd = open(ns_path, O_RDONLY);
+	if (netns_fd < 0)
+		return -1;
+
+	helper = fork();
+	if (helper < 0) {
+		close(netns_fd);
+		return -1;
+	}
+	if (helper == 0) {
+		int hfd;
+
+		if (setns(netns_fd, CLONE_NEWNET) != 0)
+			_exit(1);
+		hfd = rtnl_open();
+		if (hfd < 0)
+			_exit(1);
+		if (rtnl_link_rename(hfd, veth_ctr, ifname) != 0 ||
+		    rtnl_addr_add_ipv4(hfd, ifname, container_ip_be, prefix_len) != 0 ||
+		    rtnl_link_set_up(hfd, ifname) != 0) {
+			rtnl_close(hfd);
+			_exit(1);
+		}
+		rtnl_close(hfd);
+		_exit(0);
+	}
+	close(netns_fd);
+	if (waitpid(helper, &status, 0) != helper || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		return -1;
+	return 0;
+}
+
+/*
+ * The reverse of the above -- deliberately simple: veth_host is
+ * always the HOST-side end of the pair, still living in the daemon's
+ * own default netns, so no setns() dance is needed at all here.
+ * Deleting either end of a veth pair deletes both (confirmed kernel
+ * behavior, already relied on implicitly everywhere a container's own
+ * netns teardown already frees its create-time veths) -- so this one
+ * rtnl_link_delete() also removes the container-side end from inside
+ * the still-running container's own netns, with no need to enter it.
+ */
+int container_net_detach_running(const char *veth_host)
+{
+	int fd;
+	int rc;
+
+	fd = rtnl_open();
+	if (fd < 0)
+		return -1;
+	rc = rtnl_link_delete(fd, veth_host);
+	rtnl_close(fd);
+	return rc;
+}
+
 int container_net_install_routes(const struct route_spec *routes, int route_count)
 {
 	int fd;

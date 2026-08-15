@@ -299,6 +299,38 @@ int registry_remove(const char *name)
 	return 0;
 }
 
+int registry_network_attach(struct registry_entry *e, const struct registry_network_attachment *net)
+{
+	int i;
+
+	if (e->net_count >= CONTAINER_MAX_NETWORKS)
+		return -1;
+	for (i = 0; i < e->net_count; i++) {
+		if (strcmp(e->nets[i].name, net->name) == 0)
+			return -1;
+	}
+	e->nets[e->net_count] = *net;
+	e->net_count++;
+	return 0;
+}
+
+int registry_network_detach(struct registry_entry *e, const char *network_name,
+                             struct registry_network_attachment *out)
+{
+	int i;
+
+	for (i = 0; i < e->net_count; i++) {
+		if (strcmp(e->nets[i].name, network_name) != 0)
+			continue;
+		*out = e->nets[i];
+		for (; i < e->net_count - 1; i++)
+			e->nets[i] = e->nets[i + 1];
+		e->net_count--;
+		return 0;
+	}
+	return -1;
+}
+
 void registry_write_json_one(const struct registry_entry *entry, struct json_writer *w)
 {
 	int i;
@@ -344,6 +376,10 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 		inet_ntop(AF_INET, &a, ipstr, sizeof(ipstr));
 		jw_key(w, "ip");
 		jw_str(w, ipstr);
+		jw_key(w, "ifname");
+		jw_str(w, entry->nets[i].ifname);
+		jw_key(w, "live");
+		jw_bool(w, entry->nets[i].veth_host[0] != '\0');
 		jw_obj_close(w);
 	}
 	jw_arr_close(w);

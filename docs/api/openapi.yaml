@@ -5540,6 +5540,124 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /containers/{name}/networks:
+    post:
+      summary: >
+        Attach a network to an already-running container, live, without
+        a recreate (see ADR-0156).
+      description: >
+        Same request shape as one entry of POST /containers' own
+        "networks" array -- a bare network-name string for an
+        auto-allocated IP, or {"name":..., "ip":...} for an
+        operator-chosen one. Deliberately live and ephemeral, the same
+        posture ADR-0153 already established for PUT
+        .../files: never persisted into the container's own create-request
+        body, so a future restart or recreate replays the original
+        definition unchanged, this attachment gone. The durable path is
+        editing the container's own definition (a container recipe,
+        ADR-0151) and re-applying it.
+
+
+        A real veth pair is created, the container-side end moved into
+        the running container's own network namespace via setns(), the
+        interface renamed/addressed/brought up from inside it -- the
+        same mechanism POST /containers' own "networks"/"interfaces"
+        fields already use at creation time, just performed against an
+        already-running container's netns instead of a brand-new one.
+      operationId: attachContainerNetwork
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: string
+                  description: Network name; an IP is auto-allocated.
+                - type: object
+                  required:
+                    - name
+                  properties:
+                    name:
+                      type: string
+                    ip:
+                      type: string
+                      description: An explicit, operator-chosen IPv4 address on this network.
+      responses:
+        "200":
+          description: The container's own full current state, networks included.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Container"
+        "400":
+          description: Invalid network entry, or the given ip is not available on this network.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such running container, or no such network.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Already attached to this network, or the container already has the maximum number of networks.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Failed to attach the network (a real rtnetlink/setns failure).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /containers/{name}/networks/{network}:
+    delete:
+      summary: >
+        Detach a live-attached network from an already-running
+        container (see ADR-0156).
+      description: >
+        Only ever removes a network attached via POST .../networks
+        above -- a network attached the ordinary way, at container
+        creation, has no standalone detach path (409): tearing it down
+        mid-life would silently diverge the running container from its
+        own persisted definition, which nothing else in this API does
+        either. Deleting the veth pair's own host-side end removes both
+        ends (a real kernel behavior), so no setns() is needed for this
+        direction.
+      operationId: detachContainerNetwork
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+        - name: network
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The container's own full current state, network removed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Container"
+        "404":
+          description: No such running container, or not attached to this network.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: This network was attached at container creation, not live -- recreate the container to remove it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
 components:
   parameters:
     ContainerName:

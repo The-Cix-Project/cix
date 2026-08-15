@@ -77,6 +77,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/containers/{name}/migrate-storage` | Move this container's own overlay storage to a new disk, or back to the default |
 | GET | `/containers/{name}/files` | Read one file's raw bytes back out of a container's rootfs |
 | PUT | `/containers/{name}/files` | Write/overwrite one file inside an already-existing container, live, without a recreate (ADR-0153) |
+| POST | `/containers/{name}/networks` | Attach a network to an already-running container, live, without a recreate (ADR-0156) |
+| DELETE | `/containers/{name}/networks/{network}` | Detach a live-attached network; refuses a create-time attachment (409) |
 | GET | `/containers/{name}/console` | Upgrade to a WebSocket; an interactive shell inside the running container |
 | GET | `/containers/recipes` | List container recipes (metadata only) (ADR-0151) |
 | POST | `/containers/recipes` | Add/replace a container recipe -- content must be a real `POST /containers` body, its own `"name"` matching the recipe's |
@@ -695,6 +697,25 @@ The write-path counterpart to the read above (ADR-0153) — same request shape a
 Path resolution mirrors the read side's own running/not-running split: while running, written through `/proc/<pid>/root/<path>` (the overlay's own copy-up lands the result in the container's real upperdir, same as any in-container process writing that path would produce); once stopped or exited, written directly into the container's own upperdir. Same traversal-free, absolute-path validation as the read side.
 
 **Deliberately live and ephemeral, never persisted into the container's own `files[]` body** — a future restart or recreate replays the original persisted definition unchanged, with no memory of this write. If the change needs to survive a recreate, the durable path is a container recipe (ADR-0151): edit the recipe, `POST .../recipes/{name}/apply`. `kanxeoctl files put NAME --path=/some/path --file=LOCAL_PATH [--mode=0644]` is the CLI surface.
+
+## Attaching/detaching a network on an already-running container
+
+```
+POST /v1/containers/{name}/networks
+{"name": "internal", "ip": "172.31.0.42"}
+```
+
+Same request shape as one entry of `POST /containers`' own `"networks"` array (a bare name string for an auto-allocated IP, or `{"name":..., "ip":...}` for an operator-chosen one) — attaches a network to a container that's already running, live, no recreate (ADR-0156). A real veth pair is created, moved into the running container's own network namespace via `setns()`, and the interface renamed/addressed/brought up from inside it — the identical mechanism `POST /containers` already uses at creation time, just performed against a live netns instead of a brand-new one. `200` with the container's full current state, networks included.
+
+```
+DELETE /v1/containers/{name}/networks/{network}
+```
+
+The reverse — but **only for a network attached this same live way**. A network attached the ordinary way, at container creation, gets `409` (not silently torn down): tearing it down mid-life would diverge the running container from its own persisted definition, which nothing else in this API does. `GET /containers/{name}`'s own `networks[]` entries each carry a `"live"` boolean so it's always clear which is which.
+
+**Deliberately live and ephemeral, the same posture as `PUT .../files` above** — never persisted into the container's own definition; a restart or recreate replays the original `"networks"` list unchanged, any live attachment gone. The durable path is again a container recipe. `kanxeoctl container network attach NAME --network=NETWORK [--ip=A.B.C.D]` / `container network detach NAME NETWORK` is the CLI surface.
+
+**`cmd` has no equivalent, permanently, not just unimplemented** (ADR-0156): changing a running container's command means killing its own init process, which — per `pid_namespaces(7)` — makes the kernel `SIGKILL` every other process in that PID namespace and permanently retires it. There is no way to swap what a container runs without destroying and recreating its PID namespace, which is architecturally a real recreate regardless of what it's called.
 
 ## Making a container act as a router
 

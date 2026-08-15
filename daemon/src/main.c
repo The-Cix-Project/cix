@@ -1,6 +1,7 @@
 #include "connthrottle.h"
 #include "container.h"
 #include "containerdef.h"
+#include "internal.h"
 #include "device.h"
 #include "devicemap.h"
 #include "disk.h"
@@ -7879,9 +7880,13 @@ static int create_container_from_body(const char *body, size_t body_len,
 				snprintf(err_msg, err_msg_size, "no free IP addresses");
 				return 500;
 			}
-			memset(net_attachments[i].name, 0, sizeof(net_attachments[i].name));
+			memset(&net_attachments[i], 0, sizeof(net_attachments[i]));
 			strncpy(net_attachments[i].name, n, sizeof(net_attachments[i].name) - 1);
 			net_attachments[i].ip_be = ip_be;
+			snprintf(net_attachments[i].ifname, sizeof(net_attachments[i].ifname), "eth%d", (int)i);
+			/* veth_host stays empty -- only a live attachment (task #861)
+			 * ever needs a standalone detach path; see its own comment
+			 * in registry.h. */
 		}
 	}
 
@@ -8890,6 +8895,183 @@ static void handle_unpause(int fd, const char *name)
 	if (registry_set_paused(e, 0) != 0) {
 		respond_error(fd, 500, "Internal Server Error", "cgroup thaw failed");
 		return;
+	}
+
+	jw_init(&w);
+	registry_write_json_one(e, &w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * POST /v1/containers/{name}/networks (ADR-0156, task #861): attaches
+ * one more network to an ALREADY-RUNNING container, live -- no
+ * recreate. Deliberately LIVE and EPHEMERAL, the same posture ADR-0153
+ * already established for PUT .../files: never touches the
+ * container's own persisted create-request body, so a future restart
+ * or recreate replays the original definition, this attachment gone.
+ * If it needs to survive a recreate, the durable path is editing the
+ * container's own definition (a container recipe, ADR-0151) and
+ * re-applying it -- not this endpoint, same division of responsibility
+ * ADR-0153 already drew for files.
+ *
+ * Body shape is deliberately identical to one entry of POST
+ * /containers' own "networks" array (parse_network_entry(), reused
+ * verbatim) -- a bare network-name string for an auto-allocated IP, or
+ * {"name":..., "ip":...} for an operator-chosen one.
+ */
+static void handle_container_network_attach(int fd, const char *container_name, const char *body,
+                                              size_t body_len)
+{
+	struct registry_entry *e;
+	struct json_value *root;
+	char net_name[NETWORK_NAME_MAX];
+	uint32_t ip_be;
+	int has_ip;
+	struct network_def *net;
+	struct registry_network_attachment att;
+	char veth_host[16], veth_ctr[16], ifname[16];
+	struct json_writer w;
+	int i;
+
+	e = registry_find(container_name);
+	if (e == NULL || !e->running) {
+		respond_error(fd, 404, "Not Found", "no such running container");
+		return;
+	}
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	if (parse_network_entry(root, net_name, sizeof(net_name), &ip_be, &has_ip) != 0) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "invalid network entry");
+		return;
+	}
+	json_free(root);
+
+	net = network_find(net_name);
+	if (net == NULL) {
+		respond_error(fd, 404, "Not Found", "no such network");
+		return;
+	}
+	for (i = 0; i < e->net_count; i++) {
+		if (strcmp(e->nets[i].name, net_name) == 0) {
+			respond_error(fd, 409, "Conflict", "already attached to this network");
+			return;
+		}
+	}
+	if (e->net_count >= CONTAINER_MAX_NETWORKS) {
+		respond_error(fd, 409, "Conflict", "container already has the maximum number of networks");
+		return;
+	}
+
+	if (has_ip) {
+		if (network_ip_available(net_name, ip_be) != NETWORK_OK) {
+			respond_error(fd, 400, "Bad Request", "ip is not available on this network");
+			return;
+		}
+	} else if (network_alloc_ip(net_name, &ip_be) != 0) {
+		respond_error(fd, 500, "Internal Server Error", "no free IP addresses");
+		return;
+	}
+
+	/* Same vh<pid>-<idx>/vc<pid>-<idx> naming scheme
+	 * container_net_host_setup() uses at create time -- "a<idx>" instead
+	 * of a bare "<idx>" only to keep a live-attached veth's own name
+	 * visibly distinct from a create-time one at a glance (both are
+	 * already guaranteed collision-free by pid+idx alone). idx is this
+	 * container's own net_count *before* this attachment, exactly like
+	 * create-time attachments' own idx is their position in that same
+	 * array -- collision-free against both earlier create-time and
+	 * earlier live attachments. */
+	snprintf(veth_host, sizeof(veth_host), "vh%d-a%d", (int)e->handle.pid, e->net_count);
+	snprintf(veth_ctr, sizeof(veth_ctr), "vc%d-a%d", (int)e->handle.pid, e->net_count);
+	snprintf(ifname, sizeof(ifname), "eth%d", e->net_count);
+
+	if (container_net_attach_running(net->name, ip_be, net->prefix_len, e->handle.pid, veth_host,
+	                                  veth_ctr, ifname) != 0) {
+		respond_error(fd, 500, "Internal Server Error", "failed to attach network");
+		return;
+	}
+
+	memset(&att, 0, sizeof(att));
+	strncpy(att.name, net_name, sizeof(att.name) - 1);
+	att.ip_be = ip_be;
+	strncpy(att.veth_host, veth_host, sizeof(att.veth_host) - 1);
+	strncpy(att.ifname, ifname, sizeof(att.ifname) - 1);
+	if (registry_network_attach(e, &att) != 0) {
+		/* Shouldn't happen (bounds/dup already checked above) but the
+		 * veth pair is already live at this point -- tear it back down
+		 * rather than leaving an orphan the registry doesn't know
+		 * about. */
+		container_net_detach_running(veth_host);
+		respond_error(fd, 500, "Internal Server Error", "failed to record network attachment");
+		return;
+	}
+
+	jw_init(&w);
+	registry_write_json_one(e, &w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * DELETE /v1/containers/{name}/networks/{network} (ADR-0156, task #861):
+ * the reverse of the above. Only ever removes a LIVE attachment (its
+ * own veth_host is non-empty) -- a network attached the ordinary way,
+ * at container creation, has no standalone detach path (same
+ * reasoning ADR-0153 gives for why a create-time "files[]" entry isn't
+ * independently removable either): tearing it down mid-life would
+ * silently diverge the running container from its own persisted
+ * definition in a way nothing else in this API does.
+ */
+static void handle_container_network_detach(int fd, const char *container_name,
+                                              const char *network_name)
+{
+	struct registry_entry *e;
+	struct registry_network_attachment removed;
+	struct json_writer w;
+	int i;
+	int is_live = 0;
+
+	e = registry_find(container_name);
+	if (e == NULL || !e->running) {
+		respond_error(fd, 404, "Not Found", "no such running container");
+		return;
+	}
+	for (i = 0; i < e->net_count; i++) {
+		if (strcmp(e->nets[i].name, network_name) == 0) {
+			is_live = e->nets[i].veth_host[0] != '\0';
+			break;
+		}
+	}
+	if (i == e->net_count) {
+		respond_error(fd, 404, "Not Found", "not attached to this network");
+		return;
+	}
+	if (!is_live) {
+		respond_error(fd, 409, "Conflict",
+		              "this network was attached at container creation, not live -- recreate the "
+		              "container to remove it");
+		return;
+	}
+
+	if (registry_network_detach(e, network_name, &removed) != 0) {
+		respond_error(fd, 500, "Internal Server Error", "failed to update registry");
+		return;
+	}
+	if (container_net_detach_running(removed.veth_host) != 0) {
+		/* Registry already updated (GET now correctly shows it gone) --
+		 * a real, orphaned host-side veth left over from a failed
+		 * delete is a rare kernel-level failure, not something worth
+		 * re-adding the registry entry over (that would just make GET
+		 * lie about the network being reachable, which it now isn't
+		 * either way). */
+		fprintf(stderr, "%s: failed to remove live veth %s for network %s\n", container_name,
+		        removed.veth_host, network_name);
 	}
 
 	jw_init(&w);
@@ -13744,6 +13926,38 @@ static void dispatch(int fd, const struct http_request *req)
 						handle_container_file_write(fd, container_name, rel_path, req->body,
 						                             req->body_len);
 					return;
+				}
+			}
+			{
+				/*
+				 * "/networks" (attach) and "/networks/{network}"
+				 * (detach) -- container names are '/'-free, so the
+				 * first '/' in name (if any) unambiguously starts this
+				 * sub-resource, same reasoning the "/files" block above
+				 * already uses.
+				 */
+				char *slash = strchr(name, '/');
+
+				if (slash != NULL && (size_t)(slash - name) < REGISTRY_NAME_MAX) {
+					if (strcmp(slash, "/networks") == 0 && strcmp(req->method, "POST") == 0) {
+						char container_name[REGISTRY_NAME_MAX];
+
+						memcpy(container_name, name, slash - name);
+						container_name[slash - name] = '\0';
+						handle_container_network_attach(fd, container_name, req->body,
+						                                 req->body_len);
+						return;
+					}
+					if (strncmp(slash, "/networks/", 10) == 0 &&
+					    strcmp(req->method, "DELETE") == 0 && slash[10] != '\0' &&
+					    strlen(slash + 10) < NETWORK_NAME_MAX) {
+						char container_name[REGISTRY_NAME_MAX];
+
+						memcpy(container_name, name, slash - name);
+						container_name[slash - name] = '\0';
+						handle_container_network_detach(fd, container_name, slash + 10);
+						return;
+					}
 				}
 			}
 			if (strcmp(req->method, "GET") == 0) {

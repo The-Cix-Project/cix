@@ -30,6 +30,21 @@ enum registry_error {
 struct registry_network_attachment {
 	char name[NETWORK_NAME_MAX];
 	uint32_t ip_be; /* network byte order */
+	/*
+	 * veth_host/ifname (ADR-0156): only ever populated for a LIVE
+	 * attachment (POST .../networks on an already-running container,
+	 * task #861) -- empty for every attachment made the ordinary way,
+	 * at container-creation time, since those never need a standalone
+	 * detach path (the whole container tears down together). veth_host
+	 * is the real host-side veth interface name (deleting it removes
+	 * both ends of the pair, including the container-side one, no
+	 * setns() needed for detach); ifname is the interface name inside
+	 * the container's own netns (echoed back so an operator can tell
+	 * which live-attached interface is which without cross-referencing
+	 * anything else).
+	 */
+	char veth_host[16];
+	char ifname[16];
 };
 
 /*
@@ -348,6 +363,25 @@ void registry_mark_exited(struct registry_entry *entry);
  * Returns 0, or -1 if no such container.
  */
 int registry_remove(const char *name);
+
+/*
+ * ADR-0156/task #861: appends one live network attachment to e->nets[]
+ * (which caller must have already fully populated, veth_host/ifname
+ * included) and increments e->net_count. Returns 0, or -1 (net_count
+ * already at CONTAINER_MAX_NETWORKS, or this exact network name is
+ * already attached) without modifying e.
+ */
+int registry_network_attach(struct registry_entry *e, const struct registry_network_attachment *net);
+
+/*
+ * ADR-0156/task #861: the reverse -- finds network_name in e->nets[],
+ * copies it into *out (so the caller can still reach its veth_host
+ * after this call removes it from the table) and removes it, shifting
+ * later entries down and decrementing net_count. Returns 0, or -1 (no
+ * such attachment on e) leaving e and *out untouched.
+ */
+int registry_network_detach(struct registry_entry *e, const char *network_name,
+                             struct registry_network_attachment *out);
 
 void registry_write_json_one(const struct registry_entry *entry, struct json_writer *w);
 void registry_write_json_list(struct json_writer *w);

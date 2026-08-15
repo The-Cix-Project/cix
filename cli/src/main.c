@@ -2405,18 +2405,108 @@ static int cmd_container_recipe(const struct kx_client *c, int json_mode, int ar
 static int cmd_container_apply_recipe(const struct kx_client *c, int json_mode, int argc,
                                        char **argv);
 
+/*
+ * ADR-0156/task #861: attach/detach a network on an already-running
+ * container, live -- no recreate. See daemon/src/main.c's own doc
+ * comment on handle_container_network_attach() for the full
+ * live/ephemeral design reasoning.
+ */
+static int cmd_container_network_attach(const struct kx_client *c, int json_mode, int argc,
+                                         char **argv)
+{
+	const char *name = NULL;
+	const char *network = NULL;
+	const char *ip = NULL;
+	struct json_writer w;
+	char path[300];
+	struct kx_response r;
+	int i;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--network=", 10) == 0)
+			network = argv[i] + 10;
+		else if (strncmp(argv[i], "--ip=", 5) == 0)
+			ip = argv[i] + 5;
+		else if (name == NULL)
+			name = argv[i];
+		else {
+			fprintf(stderr, "kanxeoctl: unknown container network attach option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL || network == NULL) {
+		fprintf(stderr,
+		        "usage: kanxeoctl container network attach NAME --network=NETWORK [--ip=A.B.C.D]\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, network);
+	if (ip != NULL) {
+		jw_key(&w, "ip");
+		jw_str(&w, ip);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	snprintf(path, sizeof(path), "/v1/containers/%s/networks", name);
+	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_container_line);
+}
+
+static int cmd_container_network_detach(const struct kx_client *c, int json_mode, int argc,
+                                         char **argv)
+{
+	struct kx_response r;
+	char path[300];
+
+	if (argc < 2) {
+		fprintf(stderr, "usage: kanxeoctl container network detach NAME NETWORK\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/containers/%s/networks/%s", argv[0], argv[1]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_container_line);
+}
+
+static int cmd_container_network(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	if (argc >= 1 && strcmp(argv[0], "attach") == 0)
+		return cmd_container_network_attach(c, json_mode, argc - 1, argv + 1);
+	if (argc >= 1 && strcmp(argv[0], "detach") == 0)
+		return cmd_container_network_detach(c, json_mode, argc - 1, argv + 1);
+	fprintf(stderr, "usage: kanxeoctl container network attach NAME --network=NETWORK [--ip=A.B.C.D]\n"
+	                "       kanxeoctl container network detach NAME NETWORK\n");
+	return 2;
+}
+
 static int cmd_container(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	if (argc >= 1 && strcmp(argv[0], "recipe") == 0)
 		return cmd_container_recipe(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "apply-recipe") == 0)
 		return cmd_container_apply_recipe(c, json_mode, argc - 1, argv + 1);
+	if (argc >= 1 && strcmp(argv[0], "network") == 0)
+		return cmd_container_network(c, json_mode, argc - 1, argv + 1);
 	if (argc < 1 || strcmp(argv[0], "ls") != 0) {
 		fprintf(stderr, "usage: kanxeoctl container ls  -- every provisioned container and its "
 		                "current state (same as `ps`)\n"
 		                "       kanxeoctl container recipe add --name=NAME --file=PATH\n"
 		                "       kanxeoctl container recipe show|rm NAME / container recipe ls\n"
-		                "       kanxeoctl container apply-recipe NAME [--secret=KEY=VALUE ...]\n");
+		                "       kanxeoctl container apply-recipe NAME [--secret=KEY=VALUE ...]\n"
+		                "       kanxeoctl container network attach NAME --network=NETWORK "
+		                "[--ip=A.B.C.D]\n"
+		                "       kanxeoctl container network detach NAME NETWORK\n");
 		return 2;
 	}
 	return cmd_ps(c, json_mode);

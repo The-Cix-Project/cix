@@ -489,6 +489,213 @@ int main(void)
 		kx_response_free(&r);
 	}
 
+	/* 9.5 (ADR-0156/task #861): live network attach/detach on an
+	 * already-running container, no recreate. n6 starts with ZERO
+	 * networks -- net_child (0.0.0.0 wildcard bind, before any
+	 * interface exists) is already listening by the time the live
+	 * attach happens, proving the attach itself is what makes the new
+	 * interface reachable, not something baked in at creation. */
+	{
+		char n6_ip[64] = { 0 };
+		char n6_ip2[64] = { 0 };
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"n6\",\"image\":\"nettest\","
+		                       "\"cmd\":[\"/bin/net_child\",\"2\"]}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST n6 (no networks), status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* attach to a nonexistent network -> 404 */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers/n6/networks",
+		                       "{\"name\":\"bogus\"}", &r) != 0 ||
+		    r.status != 404) {
+			fprintf(stderr, "FAIL: live attach to bogus network expected 404, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* attach to a nonexistent/not-running container -> 404 */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers/nosuchcontainer/networks",
+		                       "{\"name\":\"" TEST_NETWORK_NAME "\"}", &r) != 0 ||
+		    r.status != 404) {
+			fprintf(stderr, "FAIL: live attach to unknown container expected 404, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* the real attach */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers/n6/networks",
+		                       "{\"name\":\"" TEST_NETWORK_NAME "\"}", &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: live attach n6 to %s, status=%d\n", TEST_NETWORK_NAME, r.status);
+			ok = 0;
+		} else {
+			const char *ip = network_ip_in_response(r.json, TEST_NETWORK_NAME);
+
+			if (ip == NULL) {
+				fprintf(stderr, "FAIL: live-attached n6 has no ip on %s\n", TEST_NETWORK_NAME);
+				ok = 0;
+			} else {
+				snprintf(n6_ip, sizeof(n6_ip), "%s", ip);
+				if (!connect_and_echo(n6_ip)) {
+					fprintf(stderr,
+					        "FAIL: could not connect to live-attached n6 at %s -- the whole "
+					        "point of this feature\n",
+					        n6_ip);
+					ok = 0;
+				}
+			}
+		}
+		kx_response_free(&r);
+
+		/* re-attaching the same network -> 409 */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers/n6/networks",
+		                       "{\"name\":\"" TEST_NETWORK_NAME "\"}", &r) != 0 ||
+		    r.status != 409) {
+			fprintf(stderr, "FAIL: re-attaching already-attached network expected 409, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* GET reflects it, marked live */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/containers/n6", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET n6 after live attach\n");
+			ok = 0;
+		} else {
+			const struct json_value *networks = json_object_get(r.json, "networks");
+			int found_live = 0;
+			size_t i;
+
+			if (networks != NULL && networks->type == JSON_ARRAY) {
+				for (i = 0; i < networks->u.array.count; i++) {
+					const struct json_value *item = networks->u.array.items[i];
+					const struct json_value *live = json_object_get(item, "live");
+
+					if (str_eq(json_str_field(item, "name"), TEST_NETWORK_NAME) && live != NULL &&
+					    live->type == JSON_BOOL && live->u.boolean)
+						found_live = 1;
+				}
+			}
+			if (!found_live) {
+				fprintf(stderr, "FAIL: GET n6 does not show %s as a live attachment\n",
+				        TEST_NETWORK_NAME);
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		/* detaching a network never attached -> 404 */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "DELETE", "/v1/containers/n6/networks/" TEST_NETWORK_NAME2,
+		                       NULL, &r) != 0 ||
+		    r.status != 404) {
+			fprintf(stderr, "FAIL: detach never-attached network expected 404, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* the real detach */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "DELETE", "/v1/containers/n6/networks/" TEST_NETWORK_NAME,
+		                       NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: live detach n6 from %s, status=%d\n", TEST_NETWORK_NAME,
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* GET no longer shows it at all */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/containers/n6", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET n6 after live detach\n");
+			ok = 0;
+		} else {
+			const struct json_value *networks = json_object_get(r.json, "networks");
+
+			if (networks == NULL || networks->type != JSON_ARRAY || networks->u.array.count != 0) {
+				fprintf(stderr, "FAIL: GET n6 after detach should have an empty networks array\n");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		/* re-attach after detach -- proves veth-naming collision-free
+		 * across a full attach/detach/attach cycle, and that the same
+		 * container can still reach the network again through a fresh
+		 * pair. n6 still has one more accept() left (want_connections=2). */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers/n6/networks",
+		                       "{\"name\":\"" TEST_NETWORK_NAME "\"}", &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: re-attach n6 to %s after detach, status=%d\n", TEST_NETWORK_NAME,
+			        r.status);
+			ok = 0;
+		} else {
+			const char *ip = network_ip_in_response(r.json, TEST_NETWORK_NAME);
+
+			if (ip == NULL) {
+				fprintf(stderr, "FAIL: re-attached n6 has no ip on %s\n", TEST_NETWORK_NAME);
+				ok = 0;
+			} else {
+				snprintf(n6_ip2, sizeof(n6_ip2), "%s", ip);
+				if (!connect_and_echo(n6_ip2)) {
+					fprintf(stderr, "FAIL: could not connect to re-attached n6 at %s\n", n6_ip2);
+					ok = 0;
+				}
+			}
+		}
+		kx_response_free(&r);
+
+		/* detaching a create-time (non-live) attachment -> 409, not
+		 * silently torn down. A fresh, dedicated container for this --
+		 * n5's own net_child already exited after its 2 real
+		 * connections in scenario 8, so it's no longer `running` and
+		 * would wrongly test the "not running" 404 path instead of
+		 * this one. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"n7\",\"image\":\"nettest\",\"cmd\":[\"/bin/net_child\"],"
+		                       "\"networks\":[\"" TEST_NETWORK_NAME "\"]}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST n7, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "DELETE", "/v1/containers/n7/networks/" TEST_NETWORK_NAME,
+		                       NULL, &r) != 0 ||
+		    r.status != 409) {
+			fprintf(stderr,
+			        "FAIL: detaching a create-time network attachment expected 409, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		kx_client_request(&client, "DELETE", "/v1/containers/n7", NULL, &r);
+		kx_response_free(&r);
+
+		kx_client_request(&client, "DELETE", "/v1/containers/n6", NULL, &r);
+		kx_response_free(&r);
+	}
+
 	/* 10. deleting a network still in use by a container -> 409 */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "DELETE", "/v1/networks/" TEST_NETWORK_NAME, NULL, &r) != 0 ||
