@@ -57,6 +57,13 @@ kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `sysctl get KEY` | The true current live value of one host-level sysctl (persisted or not), e.g. `net.ipv4.ip_forward` |
 | `sysctl set KEY --value=V [--value=V ...] [--no-persist]` | Live write against the host's real `/proc/sys` — no key allowlist, dots translate to slashes. Repeat `--value=` for a tuple-shaped key (e.g. `net.ipv4.ip_local_port_range --value=32768 --value=60999`). Persists for reapply at every boot unless `--no-persist` is given |
 | `sysctl rm KEY` | Remove a key from the persisted boot-apply list only — never touches the live value |
+| `kmod [ls]` | Every currently-loaded kernel module (live `/proc/modules`, ADR-0159) |
+| `kmod show NAME` | Real `modinfo`: description, params, depends, in-tree vs. out-of-tree — for a module that's built/available whether loaded or not |
+| `kmod load NAME [--option=KEY=VALUE ...]` | Real `modprobe`; no `--option=` falls back to this module's own persisted `kmod-config` default options |
+| `kmod unload NAME` | Real `modprobe -r` (reverse-dependency-aware) |
+| `kmod-config [ls]` | Every module with a persisted default-options and/or autoload entry |
+| `kmod-config set NAME [--option=KEY=VALUE ...] [--autoload \| --no-autoload]` | Read-modify-write — only the fields given are touched |
+| `kmod-config rm NAME` | Clear a module's persisted config entirely — never touches whether it's currently loaded |
 | `time [show]` | The host's current date/time (ADR-0110) |
 | `time set --unixtime=N` | Manually set the host clock (real `clock_settime()`, immediate, no reboot) |
 | `ntp config [show]` | Upstream NTP server address list used to sync the host clock (ADR-0110) |

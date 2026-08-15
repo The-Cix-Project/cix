@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — every open question resolved directly with the user (see "Resolved open questions" below); implementation not yet started.
+Accepted — every open question resolved directly with the user (see "Resolved open questions" below). Phase A implemented (task #882); Phase B/C not yet started.
 
 ## Context
 

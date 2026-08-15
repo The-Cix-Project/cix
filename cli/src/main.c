@@ -297,6 +297,15 @@ static void print_usage(FILE *out)
 	        "               net.ipv4.ip_local_port_range); persists by default (reapplied on\n"
 	        "               every boot), --no-persist for a one-shot change\n"
 	        "  sysctl rm KEY  -- stop reapplying at boot; never touches the live value\n"
+	        "  kmod [ls]  -- every currently-loaded kernel module (/proc/modules, ADR-0159)\n"
+	        "  kmod show NAME  -- modinfo: description, params, depends, in-tree/out-of-tree\n"
+	        "  kmod load NAME [--option=KEY=VALUE ...]  -- real modprobe; no --option= falls\n"
+	        "               back to this module's own persisted kmod-config default_options\n"
+	        "  kmod unload NAME  -- real modprobe -r (reverse-dependency-aware)\n"
+	        "  kmod-config [ls]  -- every module with a persisted default_options/autoload\n"
+	        "  kmod-config set NAME [--option=KEY=VALUE ...] [--autoload|--no-autoload]  --\n"
+	        "               read-modify-write, only the fields given are touched\n"
+	        "  kmod-config rm NAME  -- clears both fields\n"
 	        "  time [show]  -- the host's current date/time (ADR-0110)\n"
 	        "  time set --unixtime=N  -- manually set the host clock (clock_settime())\n"
 	        "  ntp config [show]  -- upstream NTP server address list used to sync the\n"
@@ -1874,6 +1883,420 @@ static int cmd_sysctl(const struct kx_client *c, int json_mode, int argc, char *
 	                "       kanxeoctl sysctl get KEY  -- live current value, persisted or not\n"
 	                "       kanxeoctl sysctl set KEY --value=V [--value=V ...] [--no-persist]\n"
 	                "       kanxeoctl sysctl rm KEY  -- stop reapplying at boot (live value untouched)\n");
+	return 2;
+}
+
+/* ADR-0159 Phase A: `kanxeoctl kmod ls|show|load|unload` (management)
+ * and `kanxeoctl kmod-config set|ls|rm` (persisted default options +
+ * boot autoload). */
+
+static void fmt_kmod_options_obj(const struct json_value *obj)
+{
+	size_t i;
+
+	if (obj == NULL || obj->type != JSON_OBJECT || obj->u.object.count == 0) {
+		printf("(none)");
+		return;
+	}
+	for (i = 0; i < obj->u.object.count; i++) {
+		if (i > 0)
+			printf(" ");
+		printf("%s=%s", obj->u.object.keys[i], json_as_string(obj->u.object.values[i]));
+	}
+}
+
+static void fmt_kmod_module_one(const struct json_value *v)
+{
+	const struct json_value *deps = json_object_get(v, "used_by");
+	size_t i;
+
+	printf("%-24s %8.0f  used_by=%.0f", json_str_field(v, "name"), json_as_number(json_object_get(v, "size")),
+	       json_as_number(json_object_get(v, "used_by_count")));
+	if (deps != NULL && deps->type == JSON_ARRAY && deps->u.array.count > 0) {
+		printf(" [");
+		for (i = 0; i < deps->u.array.count; i++) {
+			if (i > 0)
+				printf(",");
+			printf("%s", json_as_string(deps->u.array.items[i]));
+		}
+		printf("]");
+	}
+	printf("  %s\n", json_str_field(v, "state"));
+}
+
+static void fmt_kmod_list(const struct json_value *v)
+{
+	const struct json_value *arr = json_object_get(v, "modules");
+	size_t i;
+
+	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		printf("(no modules loaded)\n");
+		return;
+	}
+	for (i = 0; i < arr->u.array.count; i++)
+		fmt_kmod_module_one(arr->u.array.items[i]);
+}
+
+static void fmt_kmod_info(const struct json_value *v)
+{
+	const struct json_value *depends = json_object_get(v, "depends");
+	const struct json_value *params = json_object_get(v, "params");
+	size_t i;
+
+	printf("name: %s\n", json_str_field(v, "name"));
+	if (json_object_get(v, "filename") != NULL)
+		printf("filename: %s\n", json_str_field(v, "filename"));
+	if (json_object_get(v, "description") != NULL)
+		printf("description: %s\n", json_str_field(v, "description"));
+	if (json_object_get(v, "version") != NULL)
+		printf("version: %s\n", json_str_field(v, "version"));
+	if (json_object_get(v, "license") != NULL)
+		printf("license: %s\n", json_str_field(v, "license"));
+	if (json_object_get(v, "author") != NULL)
+		printf("author: %s\n", json_str_field(v, "author"));
+	printf("in_tree: %s\n",
+	       json_object_get(v, "in_tree") != NULL && json_as_number(json_object_get(v, "in_tree")) != 0
+	           ? "yes"
+	           : "no");
+	printf("depends: ");
+	if (depends == NULL || depends->type != JSON_ARRAY || depends->u.array.count == 0) {
+		printf("(none)\n");
+	} else {
+		for (i = 0; i < depends->u.array.count; i++) {
+			if (i > 0)
+				printf(",");
+			printf("%s", json_as_string(depends->u.array.items[i]));
+		}
+		printf("\n");
+	}
+	if (params != NULL && params->type == JSON_ARRAY && params->u.array.count > 0) {
+		printf("params:\n");
+		for (i = 0; i < params->u.array.count; i++) {
+			const struct json_value *p = params->u.array.items[i];
+
+			printf("  %s (%s): %s\n", json_str_field(p, "name"), json_str_field(p, "type"),
+			       json_str_field(p, "description"));
+		}
+	}
+}
+
+static int cmd_kmod_ls(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/kmod", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_kmod_list);
+}
+
+static int cmd_kmod_show(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	char path[192];
+	struct kx_response r;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl kmod show NAME\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/system/kmod/%s", argv[0]);
+	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_kmod_info);
+}
+
+#define CLI_KMOD_MAX_OPTIONS 8
+
+static int cmd_kmod_load(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *name;
+	const char *options[CLI_KMOD_MAX_OPTIONS];
+	int option_count = 0;
+	int i;
+	char path[192];
+	struct json_writer w;
+	struct kx_response r;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl kmod load NAME [--option=KEY=VALUE ...]\n");
+		return 2;
+	}
+	name = argv[0];
+	for (i = 1; i < argc; i++) {
+		if (strncmp(argv[i], "--option=", 9) == 0) {
+			if (option_count >= CLI_KMOD_MAX_OPTIONS) {
+				fprintf(stderr, "kanxeoctl: too many --option= flags (max %d)\n",
+				        CLI_KMOD_MAX_OPTIONS);
+				return 2;
+			}
+			options[option_count++] = argv[i] + 9;
+		} else {
+			fprintf(stderr, "kanxeoctl: unknown kmod load option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "options");
+	jw_obj_open(&w);
+	for (i = 0; i < option_count; i++) {
+		char buf[128];
+		char *eq;
+
+		snprintf(buf, sizeof(buf), "%s", options[i]);
+		eq = strchr(buf, '=');
+		if (eq == NULL) {
+			fprintf(stderr, "kanxeoctl: --option= must be KEY=VALUE, got '%s'\n", options[i]);
+			jw_free(&w);
+			return 2;
+		}
+		*eq = '\0';
+		jw_key(&w, buf);
+		jw_str(&w, eq + 1);
+	}
+	jw_obj_close(&w);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	snprintf(path, sizeof(path), "/v1/system/kmod/%s", name);
+	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	if (json_mode) {
+		printf("{\"status\":%d}\n", r.status);
+		kx_response_free(&r);
+		return r.status == 200 ? 0 : 1;
+	}
+	if (r.status == 200)
+		printf("loaded %s\n", name);
+	else
+		printf("error: status %d\n", r.status);
+	kx_response_free(&r);
+	return r.status == 200 ? 0 : 1;
+}
+
+static int cmd_kmod_unload(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	char path[192];
+	struct kx_response r;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl kmod unload NAME\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/system/kmod/%s", argv[0]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	if (json_mode) {
+		printf("{\"status\":%d}\n", r.status);
+		kx_response_free(&r);
+		return r.status == 204 ? 0 : 1;
+	}
+	if (r.status == 204)
+		printf("unloaded %s\n", argv[0]);
+	else
+		printf("error: status %d\n", r.status);
+	kx_response_free(&r);
+	return r.status == 204 ? 0 : 1;
+}
+
+static int cmd_kmod(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1)
+		return cmd_kmod_ls(c, json_mode);
+
+	sub = argv[0];
+	if (strcmp(sub, "ls") == 0)
+		return cmd_kmod_ls(c, json_mode);
+	if (strcmp(sub, "show") == 0)
+		return cmd_kmod_show(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "load") == 0)
+		return cmd_kmod_load(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "unload") == 0)
+		return cmd_kmod_unload(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "usage: kanxeoctl kmod [ls]  -- every currently-loaded module (/proc/modules)\n"
+	                "       kanxeoctl kmod show NAME  -- modinfo: description, params, depends\n"
+	                "       kanxeoctl kmod load NAME [--option=KEY=VALUE ...]  -- real modprobe;\n"
+	                "               no --option= falls back to this module's own persisted\n"
+	                "               kmod-config default_options, if any\n"
+	                "       kanxeoctl kmod unload NAME  -- real modprobe -r\n");
+	return 2;
+}
+
+static void fmt_kmodconfig_one(const struct json_value *v)
+{
+	printf("%s: default_options=", json_str_field(v, "name"));
+	fmt_kmod_options_obj(json_object_get(v, "default_options"));
+	printf(" autoload=%s\n",
+	       json_as_number(json_object_get(v, "autoload")) != 0 ? "yes" : "no");
+}
+
+static void fmt_kmodconfig_list(const struct json_value *v)
+{
+	const struct json_value *arr = json_object_get(v, "kmod_config");
+	size_t i;
+
+	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		printf("(no kmod config persisted)\n");
+		return;
+	}
+	for (i = 0; i < arr->u.array.count; i++)
+		fmt_kmodconfig_one(arr->u.array.items[i]);
+}
+
+static int cmd_kmodconfig_ls(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/kmod-config", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_kmodconfig_list);
+}
+
+static int cmd_kmodconfig_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *name;
+	const char *options[CLI_KMOD_MAX_OPTIONS];
+	int option_count = 0;
+	int have_options = 0;
+	int have_autoload = 0;
+	int autoload_value = 0;
+	int i;
+	char path[192];
+	struct json_writer w;
+	struct kx_response r;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl kmod-config set NAME [--option=KEY=VALUE ...] "
+		                "[--autoload|--no-autoload]\n");
+		return 2;
+	}
+	name = argv[0];
+	for (i = 1; i < argc; i++) {
+		if (strncmp(argv[i], "--option=", 9) == 0) {
+			if (option_count >= CLI_KMOD_MAX_OPTIONS) {
+				fprintf(stderr, "kanxeoctl: too many --option= flags (max %d)\n",
+				        CLI_KMOD_MAX_OPTIONS);
+				return 2;
+			}
+			options[option_count++] = argv[i] + 9;
+			have_options = 1;
+		} else if (strcmp(argv[i], "--autoload") == 0) {
+			have_autoload = 1;
+			autoload_value = 1;
+		} else if (strcmp(argv[i], "--no-autoload") == 0) {
+			have_autoload = 1;
+			autoload_value = 0;
+		} else {
+			fprintf(stderr, "kanxeoctl: unknown kmod-config set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (!have_options && !have_autoload) {
+		fprintf(stderr, "kanxeoctl: kmod-config set requires --option= and/or "
+		                "--autoload/--no-autoload\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	if (have_options) {
+		jw_key(&w, "default_options");
+		jw_obj_open(&w);
+		for (i = 0; i < option_count; i++) {
+			char buf[128];
+			char *eq;
+
+			snprintf(buf, sizeof(buf), "%s", options[i]);
+			eq = strchr(buf, '=');
+			if (eq == NULL) {
+				fprintf(stderr, "kanxeoctl: --option= must be KEY=VALUE, got '%s'\n", options[i]);
+				jw_free(&w);
+				return 2;
+			}
+			*eq = '\0';
+			jw_key(&w, buf);
+			jw_str(&w, eq + 1);
+		}
+		jw_obj_close(&w);
+	}
+	if (have_autoload) {
+		jw_key(&w, "autoload");
+		jw_bool(&w, autoload_value);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	snprintf(path, sizeof(path), "/v1/system/kmod-config/%s", name);
+	if (kx_client_request(c, "PUT", path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_kmodconfig_one);
+}
+
+static int cmd_kmodconfig_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	char path[192];
+	struct kx_response r;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl kmod-config rm NAME\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/system/kmod-config/%s", argv[0]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	if (json_mode) {
+		printf("{\"status\":%d}\n", r.status);
+		kx_response_free(&r);
+		return r.status == 204 ? 0 : 1;
+	}
+	if (r.status == 204)
+		printf("removed kmod-config for %s\n", argv[0]);
+	else
+		printf("error: status %d\n", r.status);
+	kx_response_free(&r);
+	return r.status == 204 ? 0 : 1;
+}
+
+static int cmd_kmodconfig(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1)
+		return cmd_kmodconfig_ls(c, json_mode);
+
+	sub = argv[0];
+	if (strcmp(sub, "ls") == 0)
+		return cmd_kmodconfig_ls(c, json_mode);
+	if (strcmp(sub, "set") == 0)
+		return cmd_kmodconfig_set(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "rm") == 0)
+		return cmd_kmodconfig_rm(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "usage: kanxeoctl kmod-config [ls]  -- every module with a persisted default\n"
+	                "       kanxeoctl kmod-config set NAME [--option=KEY=VALUE ...] "
+	                "[--autoload|--no-autoload]\n"
+	                "       kanxeoctl kmod-config rm NAME  -- clears both fields\n");
 	return 2;
 }
 
@@ -9308,6 +9731,10 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_resolv(client, json_mode, argc, argv);
 	if (strcmp(cmd, "sysctl") == 0)
 		return cmd_sysctl(client, json_mode, argc, argv);
+	if (strcmp(cmd, "kmod") == 0)
+		return cmd_kmod(client, json_mode, argc, argv);
+	if (strcmp(cmd, "kmod-config") == 0)
+		return cmd_kmodconfig(client, json_mode, argc, argv);
 	if (strcmp(cmd, "ntp") == 0)
 		return cmd_ntp(client, json_mode, argc, argv);
 	if (strcmp(cmd, "syslog") == 0)

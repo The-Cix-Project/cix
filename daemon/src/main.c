@@ -8,6 +8,8 @@
 #include "diskformat.h"
 #include "diskpart.h"
 #include "diskrole.h"
+#include "kmod.h"
+#include "kmodconfig.h"
 #include "sysctlconfig.h"
 #include "storagemigrate.h"
 #include "containerstoragemigrate.h"
@@ -155,6 +157,7 @@ static char ROLLING_CONFIG_PATH[PATH_MAX]; /* ADR-0124 */
 static char SITE_CONFIG_PATH[PATH_MAX];
 static char DEVICEMAP_STATE_PATH[PATH_MAX];
 static char SYSCTLCONFIG_STATE_PATH[PATH_MAX]; /* ADR-0160 */
+static char KMODCONFIG_STATE_PATH[PATH_MAX]; /* ADR-0159 */
 static char DISKROLE_STATE_PATH[PATH_MAX];
 /* ADR-0141 Phase 2: which disk (if any) is the active placement for
  * state-storage/rebuildable-storage/log-storage -- g_base_dir-relative,
@@ -267,6 +270,7 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(SITE_CONFIG_PATH, sizeof(SITE_CONFIG_PATH), "%s/site_config.json", STATE_DIR);
 	snprintf(DEVICEMAP_STATE_PATH, sizeof(DEVICEMAP_STATE_PATH), "%s/devicemaps.json", STATE_DIR);
 	snprintf(SYSCTLCONFIG_STATE_PATH, sizeof(SYSCTLCONFIG_STATE_PATH), "%s/sysctl_config.json", STATE_DIR);
+	snprintf(KMODCONFIG_STATE_PATH, sizeof(KMODCONFIG_STATE_PATH), "%s/kmod_config.json", STATE_DIR);
 	snprintf(DAEMON_CONFIG_PATH, sizeof(DAEMON_CONFIG_PATH), "%s/daemon_config.json", STATE_DIR);
 	snprintf(QUOTAMAP_STATE_PATH, sizeof(QUOTAMAP_STATE_PATH), "%s/quota_projids.json", STATE_DIR);
 	snprintf(SIGNING_KEYS_DIR, sizeof(SIGNING_KEYS_DIR), "%s/keys", STATE_DIR);
@@ -762,6 +766,8 @@ static int set_disk_quota(const char *base_path, uint32_t projid, long long quot
 #define SYSLOG_TARGETS_PREFIX "/v1/syslog/targets/"
 #define PROCESSES_PREFIX "/v1/system/processes/"
 #define SYSCTL_PREFIX "/v1/system/sysctl/" /* ADR-0160 */
+#define KMOD_PREFIX "/v1/system/kmod/" /* ADR-0159 */
+#define KMODCONFIG_PREFIX "/v1/system/kmod-config/" /* ADR-0159 */
 #define PKI_CERTS_PREFIX "/v1/pki/certs/"
 #define PKG_PREFIX "/v1/pkg/"
 #define PKG_RECIPES_PREFIX "/v1/pkg/recipes/"
@@ -1203,6 +1209,31 @@ static void apply_one_configured_sysctl(const char *key, const char *value, void
 static void apply_configured_sysctls(void)
 {
 	sysctlconfig_foreach(apply_one_configured_sysctl, NULL);
+}
+
+/*
+ * ADR-0159 Phase A: the REST-managed autoload counterpart to
+ * load_boot_modules() above -- runs last of the four (after
+ * bootstrap_management_network(), not before it): operator-configured
+ * autoload is the least boot-critical of the four steps, and a
+ * container-usable driver loaded slightly later than the management
+ * network is fine, unlike load_boot_modules()'s own hardware-detection
+ * list, which genuinely must precede that bootstrap. Best-effort per
+ * module, same posture as load_boot_modules(): a module an operator
+ * configured for autoload but that fails to load (hardware not
+ * present, or never actually got built) is logged and skipped, never a
+ * reason to fail boot.
+ */
+static void load_one_configured_module(const char *name, const char *options, void *ctx)
+{
+	(void)ctx;
+	if (kmod_load(name, options) != 0)
+		fprintf(stderr, "load_configured_modules: %s failed\n", name);
+}
+
+static void load_configured_modules(void)
+{
+	kmodconfig_foreach_autoload(load_one_configured_module, NULL);
 }
 
 /*
@@ -4176,6 +4207,231 @@ static void handle_sysctl_list(int fd)
 }
 
 /*
+ * ADR-0159 Phase A: POST/DELETE/GET /v1/system/kmod/{name} (real
+ * modprobe/modinfo, see kmod.c) and GET /v1/system/kmod (a live
+ * /proc/modules dump). A modprobe/modinfo failure -- overwhelmingly
+ * "no such module" in practice, the one case a bare exit code can't
+ * usefully distinguish from "bad option" or "tool not staged" -- is
+ * reported as 404 uniformly across all three, rather than guessing at
+ * a finer-grained status from output this project never parses for
+ * that purpose.
+ */
+static void handle_kmod_post(int fd, const char *name, const char *body, size_t body_len)
+{
+	char options[KMOD_OPTIONS_MAX];
+	struct json_value *root = NULL;
+	const struct json_value *joptions = NULL;
+
+	if (!kmod_name_is_valid(name)) {
+		respond_error(fd, 400, "Bad Request", "invalid module name");
+		return;
+	}
+
+	if (body_len > 0) {
+		root = json_parse(body, body_len);
+		if (root == NULL) {
+			respond_error(fd, 400, "Bad Request", "invalid JSON body");
+			return;
+		}
+		joptions = json_object_get(root, "options");
+	}
+
+	if (joptions != NULL) {
+		if (kmod_options_from_json(joptions, options, sizeof(options)) != 0) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request",
+			              "options must be an object of string values");
+			return;
+		}
+	} else {
+		const char *def = kmodconfig_get_options(name);
+
+		snprintf(options, sizeof(options), "%s", def != NULL ? def : "");
+	}
+	json_free(root);
+
+	if (kmod_load(name, options) != 0) {
+		respond_error(fd, 404, "Not Found", "modprobe could not load this module");
+		return;
+	}
+
+	{
+		struct json_writer w;
+
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "name");
+		jw_str(&w, name);
+		jw_key(&w, "options");
+		kmod_options_write_json(options, &w);
+		jw_obj_close(&w);
+		respond_json(fd, 200, "OK", &w);
+		jw_free(&w);
+	}
+}
+
+static void handle_kmod_delete(int fd, const char *name)
+{
+	if (!kmod_name_is_valid(name)) {
+		respond_error(fd, 400, "Bad Request", "invalid module name");
+		return;
+	}
+	if (kmod_unload(name) != 0) {
+		respond_error(fd, 404, "Not Found", "modprobe -r could not unload this module");
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+static void handle_kmod_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "modules");
+	kmod_write_json_loaded(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_kmod_get(int fd, const char *name)
+{
+	struct json_writer w;
+
+	if (!kmod_name_is_valid(name)) {
+		respond_error(fd, 400, "Bad Request", "invalid module name");
+		return;
+	}
+	jw_init(&w);
+	if (kmod_write_json_info(name, &w) != 0) {
+		jw_free(&w);
+		respond_error(fd, 404, "Not Found", "no such module (not built/available)");
+		return;
+	}
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void respond_kmodconfig_error(int fd, enum kmodconfig_error kerr)
+{
+	switch (kerr) {
+	case KMODCONFIG_ERR_INVALID_NAME:
+		respond_error(fd, 400, "Bad Request", "invalid module name, or options too long");
+		break;
+	case KMODCONFIG_ERR_FULL:
+		respond_error(fd, 500, "Internal Server Error", "kmod config table full");
+		break;
+	case KMODCONFIG_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no persisted kmod config for this module");
+		break;
+	case KMODCONFIG_ERR_PERSIST_FAILED:
+	default:
+		respond_error(fd, 500, "Internal Server Error", "kmod config operation failed");
+		break;
+	}
+}
+
+static void handle_kmodconfig_put(int fd, const char *name, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const struct json_value *joptions;
+	const struct json_value *jautoload;
+	char options[KMOD_OPTIONS_MAX];
+	const char *options_ptr = NULL;
+	int has_autoload = 0;
+	int autoload_value = 0;
+	enum kmodconfig_error kerr;
+
+	if (!kmod_name_is_valid(name)) {
+		respond_error(fd, 400, "Bad Request", "invalid module name");
+		return;
+	}
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+
+	joptions = json_object_get(root, "default_options");
+	if (joptions != NULL) {
+		if (kmod_options_from_json(joptions, options, sizeof(options)) != 0) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request",
+			              "default_options must be an object of string values");
+			return;
+		}
+		options_ptr = options;
+	}
+
+	jautoload = json_object_get(root, "autoload");
+	if (jautoload != NULL) {
+		if (jautoload->type != JSON_BOOL) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "autoload must be a boolean");
+			return;
+		}
+		has_autoload = 1;
+		autoload_value = jautoload->u.boolean;
+	}
+	json_free(root);
+
+	if (options_ptr == NULL && !has_autoload) {
+		respond_error(fd, 400, "Bad Request",
+		              "at least one of default_options/autoload is required");
+		return;
+	}
+
+	kerr = kmodconfig_set(name, options_ptr, has_autoload, autoload_value);
+	if (kerr != KMODCONFIG_OK) {
+		respond_kmodconfig_error(fd, kerr);
+		return;
+	}
+
+	{
+		struct json_writer w;
+
+		jw_init(&w);
+		kmodconfig_write_json_one(name, &w);
+		respond_json(fd, 200, "OK", &w);
+		jw_free(&w);
+	}
+}
+
+static void handle_kmodconfig_delete(int fd, const char *name)
+{
+	enum kmodconfig_error kerr;
+
+	if (!kmod_name_is_valid(name)) {
+		respond_error(fd, 400, "Bad Request", "invalid module name");
+		return;
+	}
+	kerr = kmodconfig_delete(name);
+	if (kerr != KMODCONFIG_OK) {
+		respond_kmodconfig_error(fd, kerr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+static void handle_kmodconfig_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "kmod_config");
+	kmodconfig_write_json_list(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
  * GET/PUT /v1/system/daemon-config (Part 0.5): kanxeod's own listen
  * port and which network is currently its management one -- a
  * dedicated resource, distinct from generic network CRUD, since
@@ -6950,6 +7206,7 @@ static void finalize_state_storage_migration(void)
 	siteconfig_repoint(SITE_CONFIG_PATH);
 	devicemap_repoint(DEVICEMAP_STATE_PATH);
 	sysctlconfig_repoint(SYSCTLCONFIG_STATE_PATH);
+	kmodconfig_repoint(KMODCONFIG_STATE_PATH);
 	daemon_config_repoint(DAEMON_CONFIG_PATH);
 	quotamap_repoint(QUOTAMAP_STATE_PATH);
 	ntp_repoint(NTP_STATE_PATH, NTP_SERVERS_STATE_PATH);
@@ -14025,6 +14282,44 @@ static void dispatch(int fd, const struct http_request *req)
 			}
 		}
 	}
+	if (strcmp(req->path, "/v1/system/kmod") == 0 && strcmp(req->method, "GET") == 0) {
+		handle_kmod_list(fd);
+		return;
+	}
+	if (strncmp(req->path, KMOD_PREFIX, strlen(KMOD_PREFIX)) == 0) {
+		name = req->path + strlen(KMOD_PREFIX);
+		if (name[0] != '\0') {
+			if (strcmp(req->method, "GET") == 0) {
+				handle_kmod_get(fd, name);
+				return;
+			}
+			if (strcmp(req->method, "POST") == 0) {
+				handle_kmod_post(fd, name, req->body, req->body_len);
+				return;
+			}
+			if (strcmp(req->method, "DELETE") == 0) {
+				handle_kmod_delete(fd, name);
+				return;
+			}
+		}
+	}
+	if (strcmp(req->path, "/v1/system/kmod-config") == 0 && strcmp(req->method, "GET") == 0) {
+		handle_kmodconfig_list(fd);
+		return;
+	}
+	if (strncmp(req->path, KMODCONFIG_PREFIX, strlen(KMODCONFIG_PREFIX)) == 0) {
+		name = req->path + strlen(KMODCONFIG_PREFIX);
+		if (name[0] != '\0') {
+			if (strcmp(req->method, "PUT") == 0) {
+				handle_kmodconfig_put(fd, name, req->body, req->body_len);
+				return;
+			}
+			if (strcmp(req->method, "DELETE") == 0) {
+				handle_kmodconfig_delete(fd, name);
+				return;
+			}
+		}
+	}
 	if (strcmp(req->path, "/v1/system/state-storage") == 0 && strcmp(req->method, "GET") == 0) {
 		handle_state_storage_get(fd);
 		return;
@@ -16900,6 +17195,14 @@ int main(int argc, char **argv)
 	 * this ordering requirement. */
 	if (sysctlconfig_init(SYSCTLCONFIG_STATE_PATH) != 0)
 		return 1;
+	/* Same reasoning as sysctlconfig_init() above, for load_configured_
+	 * modules() (ADR-0159) -- that step runs much later (after
+	 * bootstrap_management_network()), but there's no reason to defer
+	 * loading its own persisted table that long, and keeping it next to
+	 * its sibling here is clearer than reproducing the same "must run
+	 * before its own boot step" comment a second time further down. */
+	if (kmodconfig_init(KMODCONFIG_STATE_PATH) != 0)
+		return 1;
 	/*
 	 * Root-netns net.ipv4.ip_forward -- distinct from struct
 	 * container_spec's own per-container ip_forward field (which
@@ -16957,6 +17260,13 @@ int main(int argc, char **argv)
 	 * management network and simply keeps whatever --bind= it was given. */
 	if (init_mode && bootstrap_management_network() != 0)
 		return 1;
+	/* ADR-0159 Phase A: last of the four boot-time module/sysctl steps
+	 * (see load_configured_modules()'s own comment for why it runs
+	 * here, after the management network rather than before it). Same
+	 * init_mode gate as its three neighbors above -- no real /usr/bin/
+	 * modprobe to run in a plain/test invocation. */
+	if (init_mode)
+		load_configured_modules();
 	if (daemon_config_init(DAEMON_CONFIG_PATH) != 0)
 		return 1;
 	/* A persisted port change (PUT /v1/system/daemon-config) survives a

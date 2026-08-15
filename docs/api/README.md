@@ -51,6 +51,13 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/system/sysctl/{key}` | Live current value of one host-level sysctl (persisted or not) |
 | PUT | `/system/sysctl/{key}` | Write one host-level sysctl, live; persists by default |
 | DELETE | `/system/sysctl/{key}` | Stop reapplying at boot; never touches the live value |
+| GET | `/system/kmod` | Every currently-loaded kernel module (live `/proc/modules`) |
+| GET | `/system/kmod/{name}` | Real `modinfo` for a built/available module, whether loaded or not |
+| POST | `/system/kmod/{name}` | Load it (real `modprobe`); options fall back to its own persisted default |
+| DELETE | `/system/kmod/{name}` | Unload it (real `modprobe -r`) |
+| GET | `/system/kmod-config` | Every module with persisted default options and/or boot autoload |
+| PUT | `/system/kmod-config/{name}` | Set default options and/or autoload; only fields given are touched |
+| DELETE | `/system/kmod-config/{name}` | Clear a module's persisted config; never touches whether it's loaded |
 | GET | `/system/rolling-config` | The configured rolling-restart jitter window (`jitter_window_seconds`) |
 | PUT | `/system/rolling-config` | Set the jitter window -- 0 disables jitter, restart happens immediately |
 | GET | `/system/tls-throttle` | Per-source-IP throttling config for repeated failed HTTPS handshakes |
@@ -559,6 +566,36 @@ PUT /v1/system/sysctl/net.ipv4.ip_local_port_range
 ```
 
 Every successful `PUT` takes effect immediately (a real `write()` against `/proc/sys`) and, by default, is also persisted to be reapplied automatically at every boot, right after configured kernel modules load and before the management network comes up. Pass `"persist": false` to write the live value without adding it to that boot-apply list -- useful for a one-off tuning change that shouldn't survive a reboot. `GET /v1/system/sysctl/{key}` always reports the true current live value, whether or not it's persisted. `DELETE /v1/system/sysctl/{key}` removes a key from the persisted boot-apply list only -- it never touches the live value (`404` if the key wasn't persisted to begin with). `GET /v1/system/sysctl` lists every currently-persisted key and its value; it is not a dump of the full kernel sysctl tree.
+
+## Kernel module management (ADR-0159 Phase A)
+
+```
+GET /v1/system/kmod
+```
+
+A live `/proc/modules` read (no fork at all) -- every module the kernel currently has loaded, whether or not it has a persisted `kmod-config` entry below.
+
+```
+POST /v1/system/kmod/e1000e
+{"options": {"debug": "1"}}
+```
+
+Real `modprobe <name> [key=value ...]` -- real dependency resolution (via the already-harvested `modules.dep`, see `kernel.recipe`/ADR-0061) and real module-parameter passing, neither reimplemented. `options` given in the body is used as-is; an omitted (or entirely absent) `options` field falls back to this module's own persisted `default_options` below, if one exists, otherwise loads with none. `DELETE /v1/system/kmod/{name}` is `modprobe -r <name>` -- real, reverse-dependency-aware removal, not a bare `rmmod` that would leave now-unused dependencies loaded. Both respond `404` if `modprobe` itself failed -- overwhelmingly "no such module" in practice, the one case a bare exit code can't usefully distinguish from "bad option" or "the real binary isn't staged on this box at all" (this project's own dev/build sandbox has neither `modprobe` nor `modinfo` -- only a real installed image does, via `kmod.recipe`).
+
+```
+GET /v1/system/kmod/e1000e
+```
+
+Real `modinfo <name>` output, parsed -- the one place this can't be replaced by `GET /v1/system/kmod` above, which only ever shows what's currently *loaded*, not what's available to load. Reports description, version, license, author, `depends` (an array), `in_tree` (built as part of this project's own kernel source vs. a genuinely third-party module), and `params` (every real `module_param()` the module declares, with its type and description) -- `404` if the module isn't built/available at all.
+
+**Persisted per-module defaults + boot autoload** -- `kmod-config`, a small persisted table distinct from, and unrelated to, ADR-0061's own hardcoded, hardware-detection boot module list:
+
+```
+PUT /v1/system/kmod-config/e1000e
+{"default_options": {"debug": "1"}, "autoload": true}
+```
+
+Read-modify-write, matching `daemon-config`'s own established `PUT` shape -- either field alone updates just that field (`400` if neither is given). `default_options` is what a bare `POST /v1/system/kmod/{name}` with no body falls back to; `autoload` marks this module for reload on every future boot, applied last of four ordered boot-time steps (`load_boot_modules()` -- ADR-0061's own fixed hardware-detection list -- then `apply_configured_sysctls()`, then the management network, then this one) -- deliberately last, since operator-configured autoload is the least boot-critical of the four. Best-effort per module at boot: a module that fails to load (hardware not present, or never actually got built) is logged and skipped, never a reason to fail boot, matching `load_boot_modules()`'s own established posture. `GET /v1/system/kmod-config` lists every module with a persisted entry; `DELETE /v1/system/kmod-config/{name}` clears both fields (`404` if there wasn't one) -- it never touches whether the module is currently loaded.
 
 ## NTP: host clock sync (ADR-0110)
 

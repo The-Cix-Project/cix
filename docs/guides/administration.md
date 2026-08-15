@@ -22,6 +22,17 @@ kanxeoctl sysctl show
 
 Direct, live tuning of the host's own `/proc/sys` — no key allowlist (fully open, matching this platform's own "no curated sysctl schema" scope decision), and distinct from the per-container `--sysctl=` flag at `run`/`POST /v1/containers` time, which is `net.*`-only and scoped to that container's own netns. Repeat `--value=` for a tuple-shaped key (`ip_local_port_range` above); a single-token key takes one `--value=`. Persists by default for reapply at every boot, right after configured kernel modules load and before the management network comes up — pass `--no-persist` for a one-shot change that shouldn't survive a reboot. `kanxeoctl sysctl rm KEY` drops a key from the boot-apply list only; it never touches the live value. Full detail: [`docs/api/README.md`](../api/README.md#host-level-sysctl-adr-0160).
 
+## Kernel modules
+
+```sh
+kanxeoctl kmod ls
+kanxeoctl kmod show e1000e
+kanxeoctl kmod-config set e1000e --autoload
+kanxeoctl kmod load e1000e
+```
+
+Wraps real `modprobe`/`modinfo` (ADR-0159 Phase A) -- `kmod ls` reads the kernel's own live `/proc/modules`; `kmod show NAME` is real `modinfo` output (description, module parameters, dependencies, in-tree vs. out-of-tree) for a module that's built and available, whether or not it's currently loaded. `kmod load NAME [--option=KEY=VALUE ...]` is real `modprobe`, with real dependency resolution -- omit `--option=` and it falls back to that module's own persisted `kmod-config` default, if one exists. `kmod-config set NAME --autoload` marks a module for automatic reload on every future boot (its own small, REST-managed list -- distinct from this platform's separate, fixed hardware-detection module list, which needs no configuration at all); `kmod-config set NAME --option=KEY=VALUE` sets the persisted default options a bare `kmod load NAME` falls back to. Building an *additional* module not already present in this platform's own curated kernel build -- rather than just loading one that's already there -- goes through the kernel rebuild + A/B cutover path in [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md), not this command.
+
 ## Backup and restore
 
 ```sh
