@@ -12,11 +12,11 @@ Presented with that fix, the user pushed back, correctly: baking a fixed recipe 
 
 ## Decision
 
-Revert ADR-0039's install-time staging entirely (`mkinstalleriso.c`/`kanxeo-install.c`/`test_installer.c`/`README.md` back to their pre-ADR-0039 shape — confirmed byte-for-byte via a clean recompile). Recipes are managed live, on an already-running system, via a real REST API:
+Revert ADR-0039's install-time staging entirely (`mkinstalleriso.c`/`thinc-install.c`/`test_installer.c`/`README.md` back to their pre-ADR-0039 shape — confirmed byte-for-byte via a clean recompile). Recipes are managed live, on an already-running system, via a real REST API:
 
 - `POST /pkg/recipes` (body: `{"name", "content"}`) — adds a new recipe or replaces an existing one with the same name (upsert). `content` is written to a staging file under `pkg_dir/recipes/` first and validated with the exact same `parse_recipe()` every install-time lookup already uses (`name` must be a valid package name, and must equal `content`'s own `pkg_name=` field — the same invariant `resolve_chain()`'s dependency lookups already rely on). Only on success is the staging file atomically `rename()`d over `{name}.recipe` — an invalid upload can never clobber a recipe that was already working.
 - `DELETE /pkg/recipes/{name}` — removes a recipe. Doesn't touch anything already installed through it (a build's output is merged into an image at install time; nothing about an already-installed package depends on its own recipe file continuing to exist).
-- CLI: `kanxeoctl pkg recipe add --name=NAME --file=PATH` (reads a local `.recipe` file, same `read_local_file()`-then-`jw_str()` pattern `run --file=` already uses for container config staging) and `kanxeoctl pkg recipe rm NAME`.
+- CLI: `thincctl pkg recipe add --name=NAME --file=PATH` (reads a local `.recipe` file, same `read_local_file()`-then-`jw_str()` pattern `run --file=` already uses for container config staging) and `thincctl pkg recipe rm NAME`.
 
 `pkg.c`'s existing `parse_recipe()`/`g_recipes_dir` needed no changes — this is purely a new way to get a well-formed `.recipe` file onto disk at that same path, alongside the pre-existing manual-copy convenience this project's own dev sandbox has always used informally.
 

@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-Raised directly by the user reporting real, live-observed memory growth on 192.168.15.95 ("kanxeo's real host") — investigating that surfaced this, a second and more foundational finding, along the way.
+Raised directly by the user reporting real, live-observed memory growth on 192.168.15.95 ("thinc's real host") — investigating that surfaced this, a second and more foundational finding, along the way.
 
 The memory question itself: guest-internal accounting (`GET /v1/system/stats`, sourced from `/proc/meminfo`) showed a flat, tiny ~62MB "used" across repeated polls minutes apart, while the user's own outer view (Proxmox's own reported VM memory) kept climbing from ~460MB toward ~546MB with nothing running. There is no internal leak — `image/kernel/qemu-part1.config` never enabled `CONFIG_VIRTIO_BALLOON`, so this KVM guest has no way to hand physical pages back to the host once touched; QEMU's own host-side RSS for the VM can only grow, regardless of what the guest kernel itself frees internally. Fixed by adding `CONFIG_VIRTIO_BALLOON=y` to the kernel config (see this ADR's own Decision section; not itself the more significant finding this ADR is really about).
 

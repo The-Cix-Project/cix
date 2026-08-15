@@ -22,7 +22,7 @@ image_packages="bird:pinned:2.19.1 keepalived:rolling:2.3.4"
 image_artifact_sha256="<optional>"
 ```
 
-`image_packages=` is a whitespace-separated list of `package:mode:version` tokens (`mode` is `pinned` or `rolling`, matching `enum image_pkg_mode` exactly). `CRUD` via `GET`/`POST /v1/images/recipes`, `GET`/`DELETE /v1/images/recipes/{name}` — deliberately the same shape as Part 2's package-recipe endpoints (`kanxeoctl image recipe add|show|rm|ls`), including the same reserved-path-before-generic-fallback dispatch ordering `PKG_RECIPES_PREFIX` already established (an image literally named "recipes" would otherwise be unreachable via `GET`/`DELETE /v1/images/{name}`).
+`image_packages=` is a whitespace-separated list of `package:mode:version` tokens (`mode` is `pinned` or `rolling`, matching `enum image_pkg_mode` exactly). `CRUD` via `GET`/`POST /v1/images/recipes`, `GET`/`DELETE /v1/images/recipes/{name}` — deliberately the same shape as Part 2's package-recipe endpoints (`thincctl image recipe add|show|rm|ls`), including the same reserved-path-before-generic-fallback dispatch ordering `PKG_RECIPES_PREFIX` already established (an image literally named "recipes" would otherwise be unreachable via `GET`/`DELETE /v1/images/{name}`).
 
 **Applying a recipe** (`POST /v1/images/{name}/apply-recipe`, `pkg_image_recipe_apply_start()`): resolves per the two decisions above —
 

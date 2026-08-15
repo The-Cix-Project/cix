@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-Before this change, an image was a purely implicit concept: a directory under `images_dir` that came into existence either at real system install time (`base`, via `kanxeo-install.c`) or as a side effect of the first `pkg install` targeting a name never seen before (ADR-0020). `GET /v1/devices` and `GET /v1/pkg` were the only two places an image name was even visible in the API. There was no way to list what images exist, create one explicitly (before installing anything into it), or delete one no longer needed — confirmed directly by grepping the API surface, not assumed.
+Before this change, an image was a purely implicit concept: a directory under `images_dir` that came into existence either at real system install time (`base`, via `thinc-install.c`) or as a side effect of the first `pkg install` targeting a name never seen before (ADR-0020). `GET /v1/devices` and `GET /v1/pkg` were the only two places an image name was even visible in the API. There was no way to list what images exist, create one explicitly (before installing anything into it), or delete one no longer needed — confirmed directly by grepping the API surface, not assumed.
 
 ## Decision
 

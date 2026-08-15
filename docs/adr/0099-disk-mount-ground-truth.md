@@ -14,6 +14,6 @@ Task #672: there was no REST-visible way to confirm a disk is actually mounted. 
 
 ## Consequences
 
-- An operator (or the dashboard, once a Disks view exists) can now tell whether a disk is mounted without caring whether Kanxeo itself did the mounting, or has restarted since.
+- An operator (or the dashboard, once a Disks view exists) can now tell whether a disk is mounted without caring whether thinC itself did the mounting, or has restarted since.
 - No behavior change to `diskformat.c`'s own job-state tracking — it still answers a different, narrower question ("did my most recent format job succeed") and is left alone.
 - Full local regression sweep clean, zero compiler warnings. No new dedicated test was added — `GET /disks` has never had one (real, live `/sys/class/block` enumeration isn't practical to exercise deterministically in the existing sandboxed test harness with no attachable disks); a real, pre-existing gap this change doesn't close but also doesn't worsen.

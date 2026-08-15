@@ -38,7 +38,7 @@ A third, related gap became unavoidable once `start` existed as a concept: for `
 
 ## Consequences
 
-- A stopped container is now genuinely recoverable — via CLI (`kanxeoctl start/pause/unpause NAME`), REST, or the web dashboard (buttons gated on `Container.status`, right-click context menu, a distinct amber tree-status dot for paused) — without ever needing a daemon restart.
+- A stopped container is now genuinely recoverable — via CLI (`thincctl start/pause/unpause NAME`), REST, or the web dashboard (buttons gated on `Container.status`, right-click context menu, a distinct amber tree-status dot for paused) — without ever needing a daemon restart.
 - The autostart stale-flag fix is a real behavior change for any container that was manually stopped and later revived by a daemon restart: it is now eligible for crash-restart again, matching its own declared policy, instead of silently never restarting again for the rest of that daemon's uptime.
 - `GET /v1/containers`' response shape grows a new possible `status` value (`"stopped"`) and a synthesized entry shape for it; every existing consumer (CLI formatters, the web dashboard, `test_*.c` harnesses) was checked against this and found to degrade gracefully (an unrecognized status string is simply displayed as-is, not treated as an error) — additive, not breaking.
 - No new authentication/authorization boundary — these endpoints are exactly as protected as every other existing mutating endpoint (network reachability only), the same posture ADR-0043 already named for the console endpoint.

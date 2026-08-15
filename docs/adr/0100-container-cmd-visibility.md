@@ -18,6 +18,6 @@ Two sources, matching where each kind of container's data already lives — no n
 ## Consequences
 
 - `GET /containers`/`GET /containers/{name}` now report `cmd` for every container in every state, sourced from whichever of the two already-existing stores actually applies — no new persistence mechanism, no duplication between them.
-- `kanxeoctl`'s container listing gained a trailing `cmd=...` column (space-joined argv), and the web dashboard's container JSON now carries the field for any future UI use.
+- `thincctl`'s container listing gained a trailing `cmd=...` column (space-joined argv), and the web dashboard's container JSON now carries the field for any future UI use.
 - `CONTAINER_MAX_ARGV` (64) matches the pre-existing (previously unnamed) parse-time cap exactly — no behavior change to what a create request can contain, only to what's now retrievable afterward.
 - Full local regression sweep clean, zero compiler warnings.

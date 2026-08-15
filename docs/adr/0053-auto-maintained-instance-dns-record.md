@@ -21,7 +21,7 @@ Called from two points: once at daemon startup, right after `siteconfig_init()` 
 
 **The rename-tracking variable is deliberately in-process only, not persisted.** A rename that happens to straddle a daemon restart with no `PUT /system/site` ever registering the "old" name during that process's own lifetime is a real, narrow gap this doesn't solve -- accepted rather than adding persistence machinery for a self-heals-on-next-real-PUT edge case (the *next* actual rename, whenever it happens, correctly cleans up whatever's currently registered from that point forward).
 
-**Works today even without a DNS server actually serving it (Phase 38 Part 6, deferred).** The record sits in the same table `dns_record_create()`/`GET /dns/records` already expose -- inert until something consumes it, exactly like any other unconsumed record already behaves in this codebase. Whether your desktop can actually resolve it depends on a management-plane DNS server existing and being reachable from outside Kanxeo's own managed networks, a separate, larger, deliberately-not-yet-built piece (see the DNS-server-container item in this same identity work, still pending).
+**Works today even without a DNS server actually serving it (Phase 38 Part 6, deferred).** The record sits in the same table `dns_record_create()`/`GET /dns/records` already expose -- inert until something consumes it, exactly like any other unconsumed record already behaves in this codebase. Whether your desktop can actually resolve it depends on a management-plane DNS server existing and being reachable from outside thinC's own managed networks, a separate, larger, deliberately-not-yet-built piece (see the DNS-server-container item in this same identity work, still pending).
 
 ## Consequences
 

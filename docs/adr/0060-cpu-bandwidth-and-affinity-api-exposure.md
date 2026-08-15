@@ -18,7 +18,7 @@ Parts 1 and 2 of the bare-metal-readiness plan (the smallest, highest-confidence
 
 ## Consequences
 
-- Verified for both: `test/test_container_lifecycle.c` creates a container with a real value over HTTP, then reads the value directly back from `/sys/fs/cgroup/<name>/{cpu.max,cpuset.cpus}` — the kernel-authoritative value, not a claim the API response makes about itself. Also manually verified through the real, compiled `kanxeoctl --cpu-max=`/`--cpuset=` flags against a live daemon.
+- Verified for both: `test/test_container_lifecycle.c` creates a container with a real value over HTTP, then reads the value directly back from `/sys/fs/cgroup/<name>/{cpu.max,cpuset.cpus}` — the kernel-authoritative value, not a claim the API response makes about itself. Also manually verified through the real, compiled `thincctl --cpu-max=`/`--cpuset=` flags against a live daemon.
 - `image/kernel/qemu-part1.config` gains `CONFIG_CPUSETS=y` — not yet verified by an actual kernel rebuild + boot test at the time this ADR is written; deferred and batched with Part 3's (kernel modules) and Part 4's (disk quota) own kernel config additions, per this plan's own kernel-config-consolidation decision (one rebuild+boot cycle covering all three, not three separate multi-hour cycles) rather than assumed working from the config line alone.
 - `docs/api/openapi.yaml`/`docs/api/README.md`/`docs/guides/cli-reference.md` document both fields/flags.
 - Parts 3-5 (kernel modules, disk quotas, ISO self-build) remain the larger, less-precedented remainder of the bare-metal-readiness plan.

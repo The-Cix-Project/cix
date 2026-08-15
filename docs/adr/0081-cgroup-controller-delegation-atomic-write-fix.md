@@ -20,6 +20,6 @@ Not a reversal of ADR-0079's underlying decision (delegate `io`/`cpuset`/`memory
 
 ## Consequences
 
-- Fixes the real regression this ADR's own Context section describes: `--cpuset=` works again, and `--memory-max=`/`--pids-max=` now actually take effect too, confirmed live against `kanxeo-builder` (a real image with genuine executables, unlike the empty `base` image ADR-0080's own investigation used first and had to correct for).
+- Fixes the real regression this ADR's own Context section describes: `--cpuset=` works again, and `--memory-max=`/`--pids-max=` now actually take effect too, confirmed live against `thinc-builder` (a real image with genuine executables, unlike the empty `base` image ADR-0080's own investigation used first and had to correct for).
 - No functional change on a kernel where all five controllers are genuinely available (the overwhelming common case) -- the computed request string is identical to ADR-0079's own fixed one in that case.
 - General lesson, worth carrying forward: a cgroup v2 `subtree_control` write's atomicity across tokens means any future addition to this same request list should go through this same "check `cgroup.controllers` first" pattern, not a second hand-written literal.

@@ -92,7 +92,7 @@ fatal" posture for cleanup-adjacent operations elsewhere (e.g.
 
 ### Scope: a still-mounted `merged` from *before* this fix is not retroactively fixed
 
-A container deleted by an older `kanxeod` build (before this ADR) has a
+A container deleted by an older `thincd` build (before this ADR) has a
 `merged` overlay mount that was already leaked into the daemon's own root
 mount namespace with no registry entry left to find it by -- this fix
 only prevents new leaks going forward, on the delete path. A live,

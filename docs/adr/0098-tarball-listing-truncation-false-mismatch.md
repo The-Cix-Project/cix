@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-ADR-0093 added `tarball_has_common_top_dir()` to `daemon/src/pkg.c`, capturing up to 64KB of a tarball's `tar -tf` listing to decide whether `extract_tarball()` should pass `--strip-components=1`. Found live installing `coreutils` (3881 files) onto the `kanxeo-hosttools` image as part of fixing task #735 (the server-side mkbootroot re-assembly's own missing-`sha256sum` gap): `coreutils-9.11.tar.xz`'s own `tar -tf` listing is 137,883 bytes, well over double the 64KB cap, and the whole tarball got wrongly rejected as having "no common top dir" even though every one of its 3881 real entries shares the same `coreutils-9.11/` prefix — silently landing every recipe's `pkg_build()` one directory level too deep (`./configure: No such file or directory`, a failure that reads like a recipe bug but isn't).
+ADR-0093 added `tarball_has_common_top_dir()` to `daemon/src/pkg.c`, capturing up to 64KB of a tarball's `tar -tf` listing to decide whether `extract_tarball()` should pass `--strip-components=1`. Found live installing `coreutils` (3881 files) onto the `thinc-hosttools` image as part of fixing task #735 (the server-side mkbootroot re-assembly's own missing-`sha256sum` gap): `coreutils-9.11.tar.xz`'s own `tar -tf` listing is 137,883 bytes, well over double the 64KB cap, and the whole tarball got wrongly rejected as having "no common top dir" even though every one of its 3881 real entries shares the same `coreutils-9.11/` prefix — silently landing every recipe's `pkg_build()` one directory level too deep (`./configure: No such file or directory`, a failure that reads like a recipe bug but isn't).
 
 Two distinct bugs compounded here, found in sequence, the second only after the first fix alone didn't actually resolve the live symptom:
 

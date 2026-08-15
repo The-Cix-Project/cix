@@ -23,6 +23,6 @@ Raw usage counters (`cpu.usage_usec`, `memory.current`, `io.stat`'s `rbytes`/`wb
 ## Consequences
 
 - Purely additive to both existing endpoints' response shapes — no field removed, no schema-breaking change.
-- `kanxeoctl stats NAME` and `kanxeoctl host-stats` both gain one summary pressure line per resource (`cpu.pressure some.avg10=... full.avg10=...`, etc.) via a shared `print_pressure_line()` CLI helper.
+- `thincctl stats NAME` and `thincctl host-stats` both gain one summary pressure line per resource (`cpu.pressure some.avg10=... full.avg10=...`, etc.) via a shared `print_pressure_line()` CLI helper.
 - Verified live against a real running daemon: host-level PSI confirmed nonzero and plausible (this build sandbox's own CPU pressure genuinely elevated during the concurrent `lldap` build); per-container PSI wiring verified via the existing `test_container_stats` regression test passing end-to-end after the change (the reader itself was independently verified live against the real root cgroup, and container leaf cgroups expose the identical file set).
 - Does not add server-side history or graphing — same "raw point-in-time snapshot, client computes anything derived" posture ADR-0054/ADR-0073 already established; a web dashboard graph over time is a client-side concern layered on repeated polling, not a new capability this ADR needs to provide.

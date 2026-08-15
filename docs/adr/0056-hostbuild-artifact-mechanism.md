@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-Part of a larger self-hosted rebuild goal: once Kanxeo is running with no separate dev machine at all, an operator needs to rebuild the Linux kernel it boots (and, in a later phase, `kanxeod`/`kanxeoctl` themselves) from inside Kanxeo's own container+recipe mechanism, using its own hardware. The existing `pkg install` pipeline (`daemon/src/pkg.c`) only ever does one thing with a build's output: merge it into a target *image's* rootfs, for containers to later run. A kernel build's output isn't runtime content for a container image at all — it's a standalone file (`bzImage`) an operator needs to hand to `/system/update`. Nothing in the existing mechanism had a way to say "build this, but hand me the result directly instead of merging it anywhere."
+Part of a larger self-hosted rebuild goal: once thinC is running with no separate dev machine at all, an operator needs to rebuild the Linux kernel it boots (and, in a later phase, `thincd`/`thincctl` themselves) from inside thinC's own container+recipe mechanism, using its own hardware. The existing `pkg install` pipeline (`daemon/src/pkg.c`) only ever does one thing with a build's output: merge it into a target *image's* rootfs, for containers to later run. A kernel build's output isn't runtime content for a container image at all — it's a standalone file (`bzImage`) an operator needs to hand to `/system/update`. Nothing in the existing mechanism had a way to say "build this, but hand me the result directly instead of merging it anywhere."
 
 ## Decision
 
@@ -63,6 +63,6 @@ The real payoff — an actual from-scratch Linux 6.18.40 kernel building end-to-
 
 - `pkg_init()` gained a new `artifacts_dir` parameter; `ARTIFACTS_DIR` follows the exact same runtime-resolved, `--data-dir=`-isolated pattern `IMAGES_DIR`/`CONTAINERS_DIR` already established (ADR-0044).
 - `merge_tree()` is now genuinely dual-purpose (manifested image-merge, or plain unmanifested copy) rather than a second, parallel tree-copier being written for the harvest case — one function, two callers, matching this project's own "solve a problem once" standard.
-- `kanxeoctl pkg hostbuild <name> --build-image=<image> [--wait] [--deploy]` is the CLI surface; `--deploy` (for `name=="kernel"` specifically, an honest explicit case rather than a fake-generic dispatcher) reads the artifact and calls the existing, unmodified `cmd_update()`.
+- `thincctl pkg hostbuild <name> --build-image=<image> [--wait] [--deploy]` is the CLI surface; `--deploy` (for `name=="kernel"` specifically, an honest explicit case rather than a fake-generic dispatcher) reads the artifact and calls the existing, unmodified `cmd_update()`.
 - Concurrent hostbuilds are out of scope (the existing v1 one-job-at-a-time invariant, unchanged); so is any change to `/system/update`/`/system/reboot` themselves.
 - The eight new base-tool recipes and the `bash`/`bison`/`libc-dev` fixes are real, general improvements to this project's own recipe catalog — every one of them benefits any future recipe with the same real-world need, not just `kernel.recipe`.

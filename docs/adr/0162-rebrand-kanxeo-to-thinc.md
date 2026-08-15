@@ -1,0 +1,28 @@
+# 0162 — Rebrand: Kanxeo → thinC
+
+## Status
+
+Accepted
+
+## Context
+
+The project's original name, "Kanxeo," wasn't memorable — the user's own stated reasoning for revisiting it. A new name, "thinC" (pronounced "think," formal full name "thinC OS," tagline "Thin host. C core."), was chosen and a full logo system commissioned before this decision was written up, then refined directly against the real codebase (see `brand/GUIDELINES.md`'s own "Corrections from the first draft" section for the errors found and fixed in an AI-generated first pass at the brand narrative).
+
+Unlike most ADRs here, this one isn't a technical trade-off between implementation approaches — it's a naming decision with real, wide-reaching, and in a few places genuinely hard-to-reverse technical consequences, which is exactly the bar `docs/adr/0000-adr-process.md` sets for warranting a record: a choice that would be expensive to reverse, and isn't obvious from reading the code alone.
+
+## Decision
+
+Full rebrand, executed in five sequenced phases (tracked as tasks #885-889):
+
+1. **Brand assets** (`brand/`) — a rebuilt logo mark (the original hand-drawn SVGs had a visible gap between the C-bracket and K-chevron elements; redrawn as one fused path), four lockup variants, an ASCII rendering, and corrected brand guidelines.
+2. **Code-level rename** — binaries (`kanxeod`→`thincd`, `kanxeoctl`→`thincctl`, `kanxeo-install`/`-recover`→`thinc-install`/`-recover`), default paths (`/var/lib/kanxeo`→`/var/lib/thinc`, `/etc/kanxeo-{tls,ldap}`→`/etc/thinc-{tls,ldap}`), the default instance name and FQDN (`kanxeo`→`thinc`, `kanxeo.internal`→`thinc.internal`), a **newly generated** Secure Boot signing key (not a bytes-preserving rename — a deliberate choice, see "Consequences" below), and every code identifier, test fixture, and web dashboard reference.
+3. **Current-state docs** — README, API docs, guides, the architecture diagram, CLAUDE.md. `docs/mission/MISSION.md` deliberately excluded: it's frozen by its own explicit rule ("never edited except by a genuinely new charter from the user") — a proposed new charter opening is drafted separately for the user's own review, not applied as part of this mechanical pass.
+4. **Historical docs** — `CHANGELOG.md`, `docs/roadmap/ROADMAP.md`, and every ADR's own body prose, mechanically renamed. This ADR is itself the marker entry for when and why the rename happened, alongside matching CHANGELOG/ROADMAP entries.
+5. **Live deployment** — the one real box (192.168.15.95) migrates last, and via a full reinstall from a freshly built thinC installer ISO (the user's own choice, made mid-rebrand: a clean install exercises the real install path — kernel module + sysctl management, both added since the box's own last full install — rather than just patching a running system in place) rather than an in-place binary/data-directory migration.
+
+## Consequences
+
+- **A real, deliberate design tension, resolved in favor of full consistency over minimal historical-record disruption**: `CHANGELOG.md`/`ROADMAP.md`/every ADR's body prose is a chronological record of what happened, under whatever name was in use at the time — renaming that prose is, in a narrow sense, describing history using words that weren't the words used at the time. Weighed against that: this project's own docs already treat "Kanxeo" and "thinC" as the exact same underlying system, continuously developed, not two different projects — a reader encountering `kanxeoctl` in a two-year-old CHANGELOG entry while every other document, and the actual running binary, says `thincctl` would find that far more confusing than a uniformly-renamed history. This ADR is the record of that choice, findable by anyone who later wonders why old entries don't say "Kanxeo."
+- **The Secure Boot signing key changed bytes, not just its filename** — any real hardware already MOK-enrolled under the old `kanxeo-signing` key needs to redo enrollment (an interactive, physical-console MokManager step) before a `thinc-signing`-signed boot chain will be trusted there. Accepted directly by the user rather than preserving the old key under a new name, since a clean rebrand of the certificate's own embedded identity (`CN=thinC Secure Boot Signing Key`) was judged more valuable than avoiding a one-time re-enrollment step.
+- **The git repository itself was renamed** (`git.home.arpa/itdlabs/kanxeo` → `itdlabs/thinc`), done directly by the user via the Gitea web UI (an external, infrastructure-level action outside what this ADR's own code changes could safely automate). Gitea's redirect was verified live to cover both git-protocol operations and the `api/v1/repos/.../archive/...` REST endpoint every self-hosting recipe's `pkg_source=` depends on — but recipes were still repointed to the canonical new path directly rather than relying on the redirect indefinitely.
+- **The live box's own on-disk state** (container definitions, networks, DNS records, PKI certs, LDAP data — everything under the old `/var/lib/kanxeo`) does not carry over automatically through a fresh-ISO reinstall the way an in-place migration would have. `POST /system/backup`'s existing config-only bundle (container defs, networks, DNS records, installed-package state and recipes, site config — never workload data, never PKI keys, an existing and deliberate boundary from ADR-0033) is the real mechanism for carrying configuration across the reinstall; PKI/LDAP data that bundle doesn't cover is re-provisioned fresh, the same real-world sequence this box has already been through once before (see `docs/roadmap/ROADMAP.md`'s own account of the write-gating-lockout recovery).

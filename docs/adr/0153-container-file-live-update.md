@@ -24,7 +24,7 @@ Reuses the exact open/write/`fchmod`/`fchown` sequence `handle_create()`'s own i
 
 **Deliberately LIVE and EPHEMERAL, never persisted into the container's own definition.** A `PUT` here does not touch the container's stored `files[]` body at all — a future restart or recreate replays the *original* persisted definition unchanged, with no memory of this write. This is a real, permanent design boundary, not an oversight: merging one ad-hoc file write into an arbitrary already-persisted `files[]` JSON array (dedup by path, handle removal, keep it consistent across repeated writes) is real complexity this feature does not need to take on. The durable path — "this change should survive a recreate" — is a container recipe (ADR-0151): edit the recipe, re-apply it. `PUT .../files` is for the other case: a quick live patch (updating a config file to unstick a running service, dropping in a diagnostic script) that intentionally does not want to become part of the container's permanent definition.
 
-**CLI**: `kanxeoctl files put NAME --path=/some/path --file=LOCAL_PATH [--mode=0644]` — reads a local file and PUTs its content, mirroring `files get`'s own existing shape.
+**CLI**: `thincctl files put NAME --path=/some/path --file=LOCAL_PATH [--mode=0644]` — reads a local file and PUTs its content, mirroring `files get`'s own existing shape.
 
 ## Verification
 
