@@ -2445,6 +2445,10 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 161 (done): installer ISO no longer boots blind
+
+`mkinstalleriso`'s generated `grub.cfg` never set `gfxpayload`, so GRUB always tried to negotiate a graphical video mode for the kernel handoff despite both menu entries using plain text consoles only -- confirmed live on a real Proxmox VM ("no suitable video mode found, Booting in blind mode" on every boot). Fixed with `set gfxpayload=text`; verified via two real QEMU boots (a video-device-less harness is inherently unaffected either way; with a real video device present, the warning is now gone where it previously always appeared).
+
 ## Part 160 (done): CLI prompt shows host.site.tld + real auth state, plus a real mid-session login/logout bug (ADR-0164)
 
 `thincctl`'s interactive shell prompt now shows the full site FQDN and a real `>`/`#` auth indicator, backed by a new, deliberately non-mutating `GET /whoami`. Verifying it surfaced a genuine bug: mid-session `login`/`logout` updated the on-disk token but never the current process's own live client, so the current session silently stayed unauthenticated (or, on logout, kept sending an invalidated token) until restart. Full reasoning: ADR-0164.
