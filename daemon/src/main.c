@@ -17885,6 +17885,40 @@ static void containerdef_autostart_all(void)
 	}
 }
 
+/*
+ * Every one of the ~20 boot_subsystem_init() call sites below loads one
+ * subsystem's own persisted JSON state file during boot. A load failure
+ * there (malformed/truncated/empty JSON, an invalid field) almost always
+ * means "this one file is stale or foreign," not "the host itself is
+ * broken" -- each loader already applies its own safe defaults before
+ * attempting to parse anything, so its in-memory state is well-defined
+ * either way (an empty/default subsystem, not a partially-constructed
+ * one -- the parse failure is always caught before any field-level
+ * mutation of that state). Treating that as fatal made sense for a
+ * dev/test invocation (fail fast, not real PID 1, an ordinary process
+ * exit) but is a genuine, confirmed-the-hard-way bug for a real
+ * --init-mode boot: thincd IS real PID 1 there, so main() returning at
+ * all is a kernel panic ("Attempted to kill init!"), not just a failed
+ * daemon start -- a single corrupted state file (a bad restore, a
+ * truncated write, disk corruption) was capable of taking the entire
+ * box down, unrecoverable short of a full reinstall. This is the one
+ * gate every one of those calls goes through now: --init-mode logs and
+ * continues (that subsystem keeps its already-applied defaults), a
+ * plain/test invocation keeps the original fail-fast behavior exactly
+ * as before. Deliberately NOT applied to the handful of boot steps with
+ * real mount/network side effects (bootstrap_management_network(), the
+ * resolve_*_storage_placement() family, ensure_dir()) -- those fail in
+ * a materially different way than "one JSON file didn't parse" and
+ * deserve their own dedicated review, not a blanket fix bundled in here.
+ */
+static int boot_subsystem_init(int init_mode, const char *name, int rc)
+{
+	if (rc == 0 || !init_mode)
+		return rc;
+	fprintf(stderr, "warning: %s failed to initialize (rc=%d) -- continuing with defaults\n", name, rc);
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	int port = DEFAULT_PORT;
@@ -18009,7 +18043,7 @@ int main(int argc, char **argv)
 	 */
 	if (ensure_dir(g_base_dir) != 0 || ensure_dir(DISKS_MOUNT_DIR) != 0)
 		return 1;
-	if (diskrole_init(DISKROLE_STATE_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "diskrole", diskrole_init(DISKROLE_STATE_PATH)) != 0)
 		return 1;
 	/* ADR-0142: recover any role-assigned disk this box already
 	 * formatted successfully (possibly in a prior daemon lifetime) but
@@ -18020,7 +18054,7 @@ int main(int argc, char **argv)
 	 * which depends on state-storage's own configured disk (if any)
 	 * already being mounted by the time it checks. */
 	diskformat_remount_present_role_disks(CONTAINERS_DIR, DISKS_MOUNT_DIR);
-	if (storageplacement_init(STORAGE_PLACEMENT_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "storageplacement", storageplacement_init(STORAGE_PLACEMENT_PATH)) != 0)
 		return 1;
 	if (resolve_state_storage_placement() != 0)
 		return 1;
@@ -18048,13 +18082,13 @@ int main(int argc, char **argv)
 	    ensure_dir(ISO_DIR) != 0 || ensure_dir(SWAP_DIR) != 0 || ensure_dir(LOG_DIR) != 0)
 		return 1;
 
-	if (network_init(NETWORKS_STATE_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "network", network_init(NETWORKS_STATE_PATH)) != 0)
 		return 1;
 	/* Must be initialized before apply_configured_sysctls() below can
 	 * read anything out of it (ADR-0160) -- moved up from alongside
 	 * this function's other, later _init() calls specifically for
 	 * this ordering requirement. */
-	if (sysctlconfig_init(SYSCTLCONFIG_STATE_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "sysctlconfig", sysctlconfig_init(SYSCTLCONFIG_STATE_PATH)) != 0)
 		return 1;
 	/* Same reasoning as sysctlconfig_init() above, for load_configured_
 	 * modules() (ADR-0159) -- that step runs much later (after
@@ -18062,7 +18096,7 @@ int main(int argc, char **argv)
 	 * loading its own persisted table that long, and keeping it next to
 	 * its sibling here is clearer than reproducing the same "must run
 	 * before its own boot step" comment a second time further down. */
-	if (kmodconfig_init(KMODCONFIG_STATE_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "kmodconfig", kmodconfig_init(KMODCONFIG_STATE_PATH)) != 0)
 		return 1;
 	/*
 	 * Root-netns net.ipv4.ip_forward -- distinct from struct
@@ -18128,7 +18162,7 @@ int main(int argc, char **argv)
 	 * modprobe to run in a plain/test invocation. */
 	if (init_mode)
 		load_configured_modules();
-	if (daemon_config_init(DAEMON_CONFIG_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "daemon_config", daemon_config_init(DAEMON_CONFIG_PATH)) != 0)
 		return 1;
 	/* A persisted port change (PUT /v1/system/daemon-config) survives a
 	 * real reboot -- but an explicit --port= on argv (every test/dev
@@ -18137,32 +18171,32 @@ int main(int argc, char **argv)
 	if (!port_explicit && daemon_config_port() != 0)
 		port = daemon_config_port();
 	g_port = port;
-	if (dns_init(DNS_RECORDS_STATE_PATH, DNS_SERVERS_STATE_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "dns", dns_init(DNS_RECORDS_STATE_PATH, DNS_SERVERS_STATE_PATH)) != 0)
 		return 1;
-	if (ntp_init(NTP_STATE_PATH, NTP_SERVERS_STATE_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "ntp", ntp_init(NTP_STATE_PATH, NTP_SERVERS_STATE_PATH)) != 0)
 		return 1;
-	if (syslogfwd_init(SYSLOGFWD_STATE_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "syslogfwd", syslogfwd_init(SYSLOGFWD_STATE_PATH)) != 0)
 		return 1;
-	if (ldap_init(LDAP_SERVERS_STATE_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "ldap", ldap_init(LDAP_SERVERS_STATE_PATH)) != 0)
 		return 1;
-	if (ldap_record_init(LDAP_USERS_STATE_PATH, LDAP_GROUPS_STATE_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "ldap_record", ldap_record_init(LDAP_USERS_STATE_PATH, LDAP_GROUPS_STATE_PATH)) != 0)
 		return 1;
-	if (ldap_config_init(LDAP_CONFIG_STATE_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "ldap_config", ldap_config_init(LDAP_CONFIG_STATE_PATH)) != 0)
 		return 1;
-	if (pki_init(PKI_DIR, PKI_CERTS_STATE_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "pki", pki_init(PKI_DIR, PKI_CERTS_STATE_PATH)) != 0)
 		return 1;
-	if (siteconfig_init(SITE_CONFIG_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "siteconfig", siteconfig_init(SITE_CONFIG_PATH)) != 0)
 		return 1;
 	reconcile_instance_dns_record();
-	if (pkg_init(PKG_DIR, PKG_INSTALLED_STATE_PATH, CONTAINERS_DIR, IMAGES_DIR, ARTIFACTS_DIR) != 0)
+	if (boot_subsystem_init(init_mode, "pkg", pkg_init(PKG_DIR, PKG_INSTALLED_STATE_PATH, CONTAINERS_DIR, IMAGES_DIR, ARTIFACTS_DIR)) != 0)
 		return 1;
-	if (pkg_repo_init(PKG_REPO_CONFIG_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "pkg_repo", pkg_repo_init(PKG_REPO_CONFIG_PATH)) != 0)
 		return 1;
-	if (pkg_cache_init(PKG_CACHE_DIR, PKG_CACHE_CONFIG_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "pkg_cache", pkg_cache_init(PKG_CACHE_DIR, PKG_CACHE_CONFIG_PATH)) != 0)
 		return 1;
-	if (pkg_artifact_init(PKG_ARTIFACT_CONFIG_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "pkg_artifact", pkg_artifact_init(PKG_ARTIFACT_CONFIG_PATH)) != 0)
 		return 1;
-	if (pkg_build_config_init(PKG_BUILD_CONFIG_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "pkg_build_config", pkg_build_config_init(PKG_BUILD_CONFIG_PATH)) != 0)
 		return 1;
 
 	/*
@@ -18193,29 +18227,29 @@ int main(int argc, char **argv)
 	}
 
 	image_init(IMAGES_DIR);
-	if (containerdef_init(CONTAINER_DEFS_STATE_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "containerdef", containerdef_init(CONTAINER_DEFS_STATE_PATH)) != 0)
 		return 1;
-	if (containerdef_rolling_config_init(ROLLING_CONFIG_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "containerdef_rolling_config", containerdef_rolling_config_init(ROLLING_CONFIG_PATH)) != 0)
 		return 1;
-	if (connthrottle_config_init(CONNTHROTTLE_CONFIG_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "connthrottle_config", connthrottle_config_init(CONNTHROTTLE_CONFIG_PATH)) != 0)
 		return 1;
-	if (backupconfig_init(BACKUP_CONFIG_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "backupconfig", backupconfig_init(BACKUP_CONFIG_PATH)) != 0)
 		return 1;
-	if (hostauth_init(HOSTAUTH_CONFIG_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "hostauth", hostauth_init(HOSTAUTH_CONFIG_PATH)) != 0)
 		return 1;
-	if (devicemap_init(DEVICEMAP_STATE_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "devicemap", devicemap_init(DEVICEMAP_STATE_PATH)) != 0)
 		return 1;
 	/* diskrole_init()/diskformat_remount_present_role_disks() now run
 	 * much earlier (ADR-0141 Phase 2) -- see the resolve_state_storage_
 	 * placement() block above, which needs both before it can determine
 	 * STATE_DIR's own real location. */
-	if (quotamap_init(QUOTAMAP_STATE_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "quotamap", quotamap_init(QUOTAMAP_STATE_PATH)) != 0)
 		return 1;
-	if (swap_init(SWAP_STATE_PATH, SWAP_FILE_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "swap", swap_init(SWAP_STATE_PATH, SWAP_FILE_PATH)) != 0)
 		return 1;
-	if (logstore_init(LOG_DIR, LOG_STATE_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "logstore", logstore_init(LOG_DIR, LOG_STATE_PATH)) != 0)
 		return 1;
-	if (resolv_init(RESOLV_CONF_PATH) != 0)
+	if (boot_subsystem_init(init_mode, "resolv", resolv_init(RESOLV_CONF_PATH)) != 0)
 		return 1;
 
 	/*

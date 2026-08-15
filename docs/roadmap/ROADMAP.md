@@ -2445,6 +2445,12 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 159 (done): a malformed persisted state file must never be fatal to boot (ADR-0163)
+
+A real production incident during the Phase 5 rebrand migration: a config restore wrote an empty string as `site_config.json`'s content (a legitimate empty backup field, an existing validator that correctly allows empty content for most fields, wrong for this one), and the next boot's failed JSON parse turned into a full kernel panic -- `thincd` is real PID 1 on an installed system, so `main()`'s existing "any subsystem init failure is fatal" boot sequence had no distinction between "a config file is stale" and "the box is unbootable." Full reasoning, the two-layer fix (`siteconfig_load()`'s own graceful fallback, plus a new `boot_subsystem_init()` gate covering all ~20 persisted-JSON-state loaders in the real boot sequence), and what was deliberately left out of scope: ADR-0163.
+
+Verified: reproduced the exact failure directly (an empty `site_config.json`, plain daemon start) -- now logs a warning and boots with defaults instead of failing. Full regression sweep (`test_daemon`, `test_system_backup`, `test_networks`, `test_daemon_net`) confirms the non-init-mode fail-fast path (dev/test invocations, not real PID 1) is unchanged.
+
 ## Part 158 (done): full rebrand, Kanxeo -> thinC (ADR-0162, tasks #885-889)
 
 The project is renamed: Kanxeo -> **thinC** ("thinC OS", pronounced "think"), chosen for memorability -- "Kanxeo" wasn't. Full reasoning and consequences: ADR-0162.

@@ -33,8 +33,21 @@ static int load_state(void)
 	root = json_parse(buf, len);
 	free(buf);
 	if (root == NULL) {
-		fprintf(stderr, "%s: malformed persisted site config\n", g_state_path);
-		return -1;
+		/* A malformed/truncated/empty persisted file is recoverable --
+		 * apply_defaults() already ran before load_state() was called,
+		 * so falling through and returning success here just means
+		 * "boot with defaults," never a fatal error. thincd runs as
+		 * real PID 1 on an installed system (main()'s own init sequence
+		 * treats any siteconfig_init() failure as fatal, returning 1
+		 * straight out of main -- which is a kernel panic there, not an
+		 * ordinary process exit) -- confirmed the hard way: a bad
+		 * restore wrote an empty site_config.json and took the whole
+		 * box down with "Attempted to kill init!" rather than just
+		 * losing a site-identity setting an operator can trivially
+		 * re-set via PUT /system/site. No corrupted config file should
+		 * ever be able to do that. */
+		fprintf(stderr, "%s: malformed persisted site config, using defaults\n", g_state_path);
+		return 0;
 	}
 
 	instance_name = json_as_string(json_object_get(root, "instance_name"));
@@ -42,13 +55,14 @@ static int load_state(void)
 	domain_suffix = json_as_string(json_object_get(root, "domain_suffix"));
 	/* instance_name absent -- a file persisted before this field existed --
 	 * is not an error, the default already applied by apply_defaults()
-	 * stands; present but invalid is. */
+	 * stands; present but invalid is -- same non-fatal posture as the
+	 * malformed-JSON case above, for the same reason. */
 	if ((instance_name != NULL && !dns_name_is_valid(instance_name)) ||
 	    domain_suffix == NULL || !dns_name_is_valid(domain_suffix) ||
 	    (site_name != NULL && site_name[0] != '\0' && !dns_name_is_valid(site_name))) {
 		json_free(root);
-		fprintf(stderr, "%s: invalid persisted site config\n", g_state_path);
-		return -1;
+		fprintf(stderr, "%s: invalid persisted site config, using defaults\n", g_state_path);
+		return 0;
 	}
 
 	if (instance_name != NULL)
