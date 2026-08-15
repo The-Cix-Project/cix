@@ -238,8 +238,17 @@ static void print_usage(FILE *out)
 	        "  routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]  -- add a real\n"
 	        "               kernel route (ADR-0067 Part 3); or --default --gateway=A.B.C.D\n"
 	        "  routes rm --dest=A.B.C.D --prefix=N  -- remove one; or --default\n"
-	        "  disks  -- real host block devices (whole disks only); which one is the\n"
-	        "               fixed OS disk vs. assignable is flagged per entry\n"
+	        "  disks  -- real host block devices, including any partitions on them\n"
+	        "               (task #844); which one is the fixed OS disk vs. assignable is\n"
+	        "               flagged per entry, and a partition entry names its parent disk\n"
+	        "  disks partition-table NAME  -- destructive: writes a fresh, empty GPT\n"
+	        "               partition table to a non-OS whole disk with no role or\n"
+	        "               partitions of its own currently in use\n"
+	        "  disks add-partition NAME --name=PART_NAME [--size-mib=N]  -- appends one\n"
+	        "               new partition to a disk's existing table (never touches an\n"
+	        "               existing partition); omit --size-mib for \"rest of the disk\"\n"
+	        "  disks rm-partition DISK_NAME PARTITION_NAME  -- removes one partition;\n"
+	        "               refused (409) if it still has a role assigned (diskrole rm first)\n"
 	        "  diskrole create --disk=NAME\n"
 	        "               --role=container-storage|backup|state-storage|rebuildable-storage|log-storage\n"
 	        "               -- assign a persisted role to a disk (never the OS disk)\n"
@@ -688,12 +697,16 @@ static void fmt_disk_line(const struct json_value *v)
 	const struct json_value *jremovable = json_object_get(v, "removable");
 	const struct json_value *jos = json_object_get(v, "is_os_disk");
 	const struct json_value *jmounted = json_object_get(v, "mounted");
+	const struct json_value *jpart = json_object_get(v, "is_partition");
+	const char *parent_disk = json_str_field(v, "parent_disk");
 	const char *mount_path = json_str_field(v, "mount_path");
 	int removable = jremovable != NULL && jremovable->type == JSON_BOOL && jremovable->u.boolean;
 	int is_os_disk = jos != NULL && jos->type == JSON_BOOL && jos->u.boolean;
 	int mounted = jmounted != NULL && jmounted->type == JSON_BOOL && jmounted->u.boolean;
+	int is_partition = jpart != NULL && jpart->type == JSON_BOOL && jpart->u.boolean;
 	double size_gib = (double)size_bytes / (1024.0 * 1024.0 * 1024.0);
 	char mount_col[288];
+	char kind_col[32];
 
 	if (mounted)
 		snprintf(mount_col, sizeof(mount_col), "mounted@%s",
@@ -701,9 +714,19 @@ static void fmt_disk_line(const struct json_value *v)
 	else
 		snprintf(mount_col, sizeof(mount_col), "not-mounted");
 
-	printf("%-12s %-16s %8.1f GiB  %-32s %-9s %-9s %s\n", dev_path, name, size_gib,
+	if (is_os_disk)
+		snprintf(kind_col, sizeof(kind_col), "os-disk");
+	else if (is_partition)
+		snprintf(kind_col, sizeof(kind_col), "partition");
+	else
+		snprintf(kind_col, sizeof(kind_col), "assignable");
+
+	printf("%-12s %-16s %8.1f GiB  %-32s %-9s %-9s %s", dev_path, name, size_gib,
 	       model != NULL && model[0] != '\0' ? model : "-", removable ? "removable" : "fixed",
-	       is_os_disk ? "os-disk" : "assignable", mount_col);
+	       kind_col, mount_col);
+	if (is_partition && parent_disk != NULL && parent_disk[0] != '\0')
+		printf("  (part of %s)", parent_disk);
+	printf("\n");
 
 	/* ADR-0142: real, live I/O counters + (when mounted) capacity, on
 	 * their own indented line -- keeps the primary row's own already-
@@ -1336,6 +1359,133 @@ static int cmd_disks_format_status(const struct kx_client *c, int json_mode, int
 	return emit(&r, json_mode, fmt_diskformat_status);
 }
 
+/*
+ * Partition-level disk management (ROADMAP.md task #844). Same
+ * double-confirmation posture as "disks format" for the destructive
+ * partition-table-create -- adding or removing one partition is not
+ * itself destructive to the rest of the table, so those two skip the
+ * confirm field.
+ */
+static void fmt_disk_or_partitions(const struct json_value *v)
+{
+	const struct json_value *partitions = json_object_get(v, "partitions");
+
+	if (partitions != NULL && partitions->type == JSON_ARRAY) {
+		size_t i;
+
+		for (i = 0; i < partitions->u.array.count; i++)
+			fmt_disk_line(partitions->u.array.items[i]);
+		return;
+	}
+	fmt_disk_line(v);
+}
+
+static int cmd_disks_partition_table(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *disk_name;
+	char path[256];
+	struct json_writer w;
+	struct kx_response r;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl disks partition-table NAME\n");
+		return 2;
+	}
+	disk_name = argv[0];
+	snprintf(path, sizeof(path), "/v1/disks/%s/partition-table", disk_name);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "confirm_disk_name");
+	jw_str(&w, disk_name);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_disk_or_partitions);
+}
+
+static int cmd_disks_add_partition(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *disk_name;
+	const char *part_name = NULL;
+	unsigned long long size_mib = 0;
+	char path[256];
+	struct json_writer w;
+	struct kx_response r;
+	int i;
+
+	if (argc < 2) {
+		fprintf(stderr,
+		        "usage: kanxeoctl disks add-partition NAME --name=PART_NAME [--size-mib=N]\n"
+		        "       (omit --size-mib to consume all remaining space on the disk)\n");
+		return 2;
+	}
+	disk_name = argv[0];
+	for (i = 1; i < argc; i++) {
+		if (strncmp(argv[i], "--name=", 7) == 0)
+			part_name = argv[i] + 7;
+		else if (strncmp(argv[i], "--size-mib=", 11) == 0)
+			size_mib = strtoull(argv[i] + 11, NULL, 10);
+	}
+	if (part_name == NULL) {
+		fprintf(stderr, "kanxeoctl: disks add-partition requires --name=PART_NAME\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/disks/%s/partitions", disk_name);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, part_name);
+	if (size_mib > 0) {
+		jw_key(&w, "size_mib");
+		jw_int(&w, (long long)size_mib);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_disk_or_partitions);
+}
+
+static int cmd_disks_rm_partition(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	char path[256];
+	struct kx_response r;
+
+	if (argc < 2) {
+		fprintf(stderr, "usage: kanxeoctl disks rm-partition DISK_NAME PARTITION_NAME\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/disks/%s/partitions/%s", argv[0], argv[1]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	if (json_mode) {
+		printf("{\"status\":%d}\n", r.status);
+		kx_response_free(&r);
+		return r.status == 204 ? 0 : 1;
+	}
+	if (r.status == 204)
+		printf("partition removed\n");
+	else
+		printf("error: status %d\n", r.status);
+	kx_response_free(&r);
+	return r.status == 204 ? 0 : 1;
+}
+
 static int cmd_disks(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
@@ -1350,10 +1500,19 @@ static int cmd_disks(const struct kx_client *c, int json_mode, int argc, char **
 		return cmd_disks_format(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "format-status") == 0)
 		return cmd_disks_format_status(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "partition-table") == 0)
+		return cmd_disks_partition_table(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "add-partition") == 0)
+		return cmd_disks_add_partition(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "rm-partition") == 0)
+		return cmd_disks_rm_partition(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "usage: kanxeoctl disks [ls]\n"
 	                "       kanxeoctl disks format NAME [--fs-type=ext4|btrfs]\n"
-	                "       kanxeoctl disks format-status NAME\n");
+	                "       kanxeoctl disks format-status NAME\n"
+	                "       kanxeoctl disks partition-table NAME\n"
+	                "       kanxeoctl disks add-partition NAME --name=PART_NAME [--size-mib=N]\n"
+	                "       kanxeoctl disks rm-partition DISK_NAME PARTITION_NAME\n");
 	return 2;
 }
 

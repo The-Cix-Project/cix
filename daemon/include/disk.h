@@ -4,14 +4,32 @@
 #include "json.h"
 
 /*
- * Real host block devices (whole disks, never partitions), discovered
- * fresh from sysfs on every call -- the same "never persisted, hardware
- * this daemon doesn't create or own, re-enumerated every time"
- * convention device.c's own struct discovered_device already
- * established for USB/PCI/net/GPU (ADR-0012's atomic-JSON persistence
- * is for daemon-owned state, not this).
+ * Real host block devices (whole disks, and -- since partition-level
+ * disk management, ROADMAP.md task #844 -- their partitions too),
+ * discovered fresh from sysfs on every call -- the same "never
+ * persisted, hardware this daemon doesn't create or own, re-enumerated
+ * every time" convention device.c's own struct discovered_device
+ * already established for USB/PCI/net/GPU (ADR-0012's atomic-JSON
+ * persistence is for daemon-owned state, not this).
+ *
+ * 64 (this constant's value until task #844) proved too small in
+ * direct, real testing: a dev/build sandbox whose /sys/class/block is
+ * shared with its own LXC host ends up seeing every one of the host's
+ * own unrelated LVM dm-* volumes (72 of them, confirmed directly) in
+ * the same enumeration -- readdir() order is not guaranteed to put a
+ * real target disk's own whole-disk/partition entries before that
+ * clutter, so the old cap could silently truncate a real disk (or, as
+ * found here, all of its partitions) out of the result entirely with
+ * no error. Not a new problem task #844 introduced -- whole-disk
+ * enumeration already shared this same fixed-size array -- but adding
+ * partitions to the same budget makes it easier to hit, which is how
+ * it was actually found. 256 comfortably covers this sandbox's own
+ * real 89-entry /sys/class/block plus headroom for a real target's own
+ * disks and their partitions; a plain stack array of this size (a few
+ * hundred bytes per entry) is still trivially cheap for every existing
+ * single-level call site.
  */
-#define DISK_ENUM_MAX 64
+#define DISK_ENUM_MAX 256
 
 struct discovered_disk {
 	char name[32];		/* e.g. "vda", "sdb", "nvme0n1" -- no "/dev/" prefix */
@@ -75,13 +93,31 @@ struct discovered_disk {
 	 */
 	unsigned long long used_bytes;
 	unsigned long long free_bytes;
+	/*
+	 * Partition-level disk management: true for an entry that is itself
+	 * one partition of a larger disk (e.g. "sdb1", "nvme0n1p1"), rather
+	 * than an independently-addressable whole disk. parent_disk is that
+	 * partition's own whole-disk name ("sdb", "nvme0n1") -- empty when
+	 * !is_partition. A partition entry is otherwise a full, ordinary
+	 * struct discovered_disk (same name/dev_path/size_bytes/mounted/
+	 * is_os_disk/etc. fields, all populated the same way) so that
+	 * diskrole.c/diskformat.c, which only ever operate on a disk's own
+	 * name/dev_path/is_os_disk, work identically on a partition with no
+	 * changes of their own -- model/removable are always empty/0 for a
+	 * partition (neither sysfs attribute exists per-partition, only on
+	 * the parent whole disk). is_os_disk is propagated from the parent:
+	 * every partition of the real OS disk is just as much off-limits to
+	 * role assignment/reformatting as the whole OS disk itself.
+	 */
+	int is_partition;
+	char parent_disk[32];
 };
 
 /*
- * Walks /sys/class/block fresh, writing up to cap whole-disk entries
- * into out (partitions -- anything with a "partition" sysfs attribute
- * -- are skipped entirely, they're not independently assignable).
- * Returns the count written.
+ * Walks /sys/class/block fresh, writing up to cap entries into out: every
+ * whole disk, plus every partition on it (anything with a "partition"
+ * sysfs attribute -- is_partition/parent_disk above). Returns the count
+ * written.
  *
  * os_containers_dir, if non-NULL, is resolved (realpath + a /proc/mounts
  * walk, the same "find the owning mount" algorithm main.c's own

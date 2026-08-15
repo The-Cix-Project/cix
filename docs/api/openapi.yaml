@@ -2186,19 +2186,23 @@ paths:
 
   /disks:
     get:
-      summary: List real host block devices (whole disks only), for multi-disk management
+      summary: List real host block devices, including their partitions, for multi-disk management
       description: >
         Read-only, live-enumerated from /sys/class/block on every call
         (never persisted), the same real-hardware convention /devices
-        already established -- partitions are never listed, only
-        independently assignable whole disks. `is_os_disk` flags the
-        one disk holding this platform's own fixed ESP/root-a/root-b/
-        config/containers partition layout (never a candidate for role
-        assignment or formatting); every other disk is available for a
-        role (POST /diskroles) and, once role-assigned, formatting
-        (POST /disks/{disk_name}/format). A container's own storage
-        disk is selected at creation time (POST /containers' `disk`
-        field, ADR-0102) -- moving an *existing* container's storage
+        already established. Since task #844, every partition on a disk
+        is also listed as its own ordinary entry (`is_partition`/
+        `parent_disk`), alongside the whole disk itself -- a partition
+        is independently addressable everywhere a whole disk name is
+        accepted (POST /diskroles, POST /disks/{name}/format). `is_os_disk`
+        flags the one disk (and, transitively, every one of its own
+        partitions) holding this platform's own fixed ESP/root-a/root-b/
+        config/containers partition layout -- never a candidate for role
+        assignment or formatting; every other disk or partition is
+        available for a role (POST /diskroles) and, once role-assigned,
+        formatting (POST /disks/{disk_name}/format). A container's own
+        storage disk is selected at creation time (POST /containers'
+        `disk` field, ADR-0102) -- moving an *existing* container's storage
         after creation is a separate, not-yet-built follow-up
         (ADR-0142, see docs/roadmap/ROADMAP.md).
       operationId: listDisks
@@ -2309,6 +2313,170 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500":
           description: Could not create the mount point directory, or could not start the format job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /disks/{disk_name}/partition-table:
+    post:
+      summary: Destructively writes a fresh, empty GPT partition table to a whole disk (task #844)
+      description: >
+        Wipes any existing partition table and everything on it. Rejects
+        a disk_name that doesn't currently resolve to a real whole disk,
+        is itself a partition, is the OS disk, already has a role
+        assigned directly to it (remove the role first if repurposing
+        the disk from whole-disk to partitioned use), or is currently
+        mounted. Synchronous -- partition-table creation is metadata-only
+        and near-instantaneous, unlike POST .../format's mkfs, so this
+        has no async job/poll shape.
+      operationId: createDiskPartitionTable
+      parameters:
+        - name: disk_name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DiskPartitionTableRequest"
+      responses:
+        "200":
+          description: Table created; the disk's own current entry (now with no partitions)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Disk"
+        "400":
+          description: >
+            confirm_disk_name missing/mismatched, invalid disk name, disk
+            is itself a partition, or disk is the OS disk
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such disk
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: This disk already has a role assigned, or is currently mounted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: sfdisk failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /disks/{disk_name}/partitions:
+    post:
+      summary: Appends one new partition to a disk's existing partition table (task #844)
+      description: >
+        Never touches any partition already on the disk (sfdisk
+        --append). Same disk_name preconditions as POST .../partition-table
+        (must be a present, non-partition, non-OS whole disk with no role
+        of its own and not mounted). Synchronous, same reasoning as
+        partition-table creation above.
+      operationId: addDiskPartition
+      parameters:
+        - name: disk_name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DiskAddPartitionRequest"
+      responses:
+        "201":
+          description: Partition added; every partition currently on this disk
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiskPartitionsResponse"
+        "400":
+          description: >
+            name missing/invalid, invalid disk name, disk is itself a
+            partition, or disk is the OS disk
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such disk
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: This disk already has a role assigned, or is currently mounted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: sfdisk failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /disks/{disk_name}/partitions/{partition_name}:
+    delete:
+      summary: Removes one partition from a disk's table (task #844)
+      description: >
+        Every other partition on the disk is untouched. Rejects a
+        partition_name that doesn't currently exist, isn't actually a
+        partition, doesn't belong to disk_name, is part of the OS disk,
+        still has a role assigned (remove the role first, POST
+        /diskroles), or is currently mounted.
+      operationId: deleteDiskPartition
+      parameters:
+        - name: disk_name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: partition_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Partition removed
+        "400":
+          description: partition_name is itself a whole disk, not a partition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such partition, or it doesn't belong to disk_name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: This partition still has a role assigned, or is currently mounted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: sfdisk failed
           content:
             application/json:
               schema:
@@ -6988,7 +7156,7 @@ components:
       type: object
       required: [name, dev_path, model, size_bytes, removable, is_os_disk, mounted, mount_path,
                  reads_completed, writes_completed, sectors_read, sectors_written, io_time_ms,
-                 used_bytes, free_bytes]
+                 used_bytes, free_bytes, is_partition, parent_disk]
       properties:
         name:
           type: string
@@ -7056,6 +7224,20 @@ components:
         free_bytes:
           type: integer
           description: Real statvfs(2) free space of mount_path. Only meaningful (non-zero) when mounted is true.
+        is_partition:
+          type: boolean
+          description: >
+            Task #844. True for an entry that is itself one partition of
+            a larger disk (e.g. "sdb1", "nvme0n1p1") rather than an
+            independently-addressable whole disk. model/removable are
+            always empty/false for a partition entry -- neither sysfs
+            attribute exists per-partition. is_os_disk is propagated
+            from the parent: every partition of the real OS disk is just
+            as off-limits to role assignment/reformatting as the whole
+            OS disk itself.
+        parent_disk:
+          type: string
+          description: This partition's own whole-disk name (a Disk.name elsewhere in the same list). Empty when is_partition is false.
 
     DiskRole:
       type: object
@@ -7150,6 +7332,48 @@ components:
             Present once state is "failed" -- distinguishes "mkfs.<fs_type>
             failed" from "mkfs.<fs_type> succeeded but mount(2) failed" from
             an abnormal job process exit.
+
+    DiskPartitionTableRequest:
+      type: object
+      required: [confirm_disk_name]
+      properties:
+        confirm_disk_name:
+          type: string
+          description: >
+            Must exactly match disk_name in the URL path -- the same
+            double-confirmation /disks/{disk_name}/format already
+            requires. Writing a fresh, empty GPT table wipes any
+            existing table and everything on the disk.
+
+    DiskAddPartitionRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: >
+            The new partition's GPT name attribute -- purely cosmetic;
+            GET /disks reports the new partition by its real kernel
+            device name (e.g. "sdb2"), never by this. Same charset/length
+            rules as every other simple resource name in this API.
+        size_mib:
+          type: integer
+          description: >
+            The new partition's size in MiB. Omitted or 0 means "consume
+            all remaining space on the disk" -- must be the last
+            partition added to the disk if so.
+
+    DiskPartitionsResponse:
+      type: object
+      required: [disk_name, partitions]
+      properties:
+        disk_name:
+          type: string
+        partitions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Disk"
+          description: Every partition currently on disk_name, after the add.
 
     StoragePlacement:
       type: object

@@ -2,6 +2,23 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 148 (done): partition-level disk management (ADR-0158, task #844)
+
+`disk_enumerate()` now reports partitions as ordinary entries (`is_partition`/`parent_disk`), not just whole disks -- `diskrole.c`/`diskformat.c` needed zero code changes of their own, since both already key every operation purely off `disk_enumerate()`'s own name/dev_path/is_os_disk fields. A new `diskpart.c` adds synchronous, `sfdisk`-scripted primitives (partition-table creation is metadata-only and near-instantaneous, unlike `format`'s async mkfs).
+
+#### Added
+- `POST /v1/disks/{name}/partition-table` -- destructive: writes a fresh, empty GPT table to a non-OS whole disk with no role or partitions of its own currently in use. Same `confirm_disk_name` double-confirmation as `POST .../format`.
+- `POST /v1/disks/{name}/partitions` -- appends one new partition via `sfdisk --append` (never touches an existing one); `size_mib` omitted/0 means "rest of the disk," the same convention the installer's own fixed-layout `auto_partition()` already established.
+- `DELETE /v1/disks/{name}/partitions/{partition_name}` -- removes one partition; `409` if it still has a role assigned or is mounted.
+- `kanxeoctl disks partition-table|add-partition|rm-partition` + matching web-adjacent CLI docs.
+
+#### Fixed
+- `DISK_ENUM_MAX` raised `64` -> `256` -- a real, previously-undiscovered silent-truncation gap found live while testing this task: a dev sandbox whose `/sys/class/block` is shared with its own LXC host sees every one of the host's own unrelated LVM `dm-*` volumes (72 of them here) in the same enumeration, and `readdir()` order doesn't guarantee a real target disk's own entries come first, so the old cap could silently drop a real disk (or here, all of its partitions) with no error. Not new to this task -- whole-disk enumeration already shared the same array -- but partitions sharing the same budget made it easier to hit.
+
+#### Verified
+- Real, against a spawned `kanxeod`: `GET /v1/disks` correctly reports `is_partition`/`parent_disk`/empty-model/removable:false for this sandbox's own real, pre-existing partitions, with parent linkage verified against the same list. Every validation-only rejection path (invalid name, not found, wrong resource kind, wrong parent, missing field, wrong confirm) exercised as real HTTP requests. A disk (and separately a partition) with a role assigned directly to it correctly rejects the destructive operation with 409 -- safe to test for real since role assignment is pure daemon-side bookkeeping.
+- NOT verified: the real `sfdisk`-invoking success path end to end through the daemon -- this sandbox has no loop devices and no safe, disposable real block device. The exact sfdisk script syntax was instead confirmed by hand against a scratch disk image file (sfdisk operates identically on a plain file as a real block device). See ADR-0158's own Verification section for the full disclosure.
+
 ### Part 147 (done): parallel package builds -- design only (ADR-0157, task #841)
 
 A complete, actionable design for task #841 (configurable concurrent package builds, default 10) -- deliberately not implemented in the same session it was designed. `pkg.c`'s "one job at a time" turns out to be woven into at least ten module-level statics, a hardcoded single build-container name, and a single-purpose reactor conn kind -- real, substantial surgery on the single most heavily-used subsystem in the project, not something to rush at the tail end of a long session, per this project's own "Outline -- Execute -- Verify" workflow.

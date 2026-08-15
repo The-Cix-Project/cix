@@ -24,7 +24,7 @@ Restoring does not take effect immediately or reboot for you — a typical disas
 
 ## Disk management
 
-`kanxeoctl disks` lists every real host block device (whole disks only), live-enumerated on every call, flagging which one is the fixed OS disk — never a candidate for a role or for formatting. Every other disk goes through two explicit, separate steps before it holds anything:
+`kanxeoctl disks` lists every real host block device, live-enumerated on every call, including any partitions already on it — flagging which one is the fixed OS disk (and, transitively, every one of its own partitions) — never a candidate for a role, formatting, or repartitioning. Every other disk (or partition — a partition is addressable everywhere a whole disk name is, once it exists) goes through two explicit, separate steps before it holds anything:
 
 ```sh
 kanxeoctl diskrole create --disk=sdb --role=container-storage
@@ -36,6 +36,24 @@ kanxeoctl disks format-status sdb
 2. **Format + mount** — destructive, requires an already-assigned role, and double-confirms the disk name before touching anything. Defaults to `ext4`; `--fs-type=btrfs` is the other supported option (ADR-0104). Async — poll `format-status` for completion (`state`: `none`/`running`/`ready`/`failed`).
 
 A `container-storage`-role, formatted disk can then be selected per container at creation time (`run --disk=NAME`, ADR-0102) instead of the default location. Independently, a container can also be given a real, kernel-enforced disk quota on its own overlay storage (`run --disk-quota=BYTES`) — ext4 project quotas or btrfs qgroups, picked automatically from the backing filesystem, not something a disk role or format choice affects.
+
+### Partitioning a data disk (task #844)
+
+A whole disk with no role or existing partitions of its own can instead be split into several independently role-assignable partitions:
+
+```sh
+kanxeoctl disks partition-table sdc
+kanxeoctl disks add-partition sdc --name=containers --size-mib=51200
+kanxeoctl disks add-partition sdc --name=backups
+kanxeoctl diskrole create --disk=sdc1 --role=container-storage
+kanxeoctl diskrole create --disk=sdc2 --role=backup
+kanxeoctl disks format sdc1
+kanxeoctl disks format sdc2
+```
+
+`partition-table` writes a fresh, empty GPT table — destructive (wipes anything already on the disk), same double-confirmation posture as `format`. `add-partition` appends one partition at a time (never disturbs an existing one); omit `--size-mib` on the last one to consume all remaining space, the same convention the installer's own fixed OS-disk layout already uses internally. Each resulting partition (`sdc1`, `sdc2`, ...) is then just an ordinary disk name everywhere else in this API — `diskrole create`/`disks format` need no partition-specific syntax at all. `disks rm-partition sdc sdc2` removes one partition (`409` if it still has a role assigned — remove the role first, same as any other disk).
+
+A disk is used in exactly one of two mutually-exclusive modes: role assigned directly to the whole disk, or partitioned with roles assigned to the individual partitions instead — `partition-table`/`add-partition` both refuse to touch a whole disk that already has a role of its own.
 
 **Host swap**, if a package build (Rust/wasm builds are the confirmed real-world case) runs a box out of RAM: `kanxeoctl swap enable --size-mb=8192` / `kanxeoctl swap disable` / bare `kanxeoctl swap` to check current state (ADR-0069). A single on-demand file, off by default, persisted and re-applied automatically on every daemon start including a real reboot.
 

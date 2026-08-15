@@ -89,12 +89,15 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/devicemaps` | List persistent, operator-named device mappings |
 | POST | `/devicemaps` | Create a persistent device mapping (name -> selector) |
 | DELETE | `/devicemaps/{name}` | Remove a device mapping |
-| GET | `/disks` | List real host block devices (whole disks only), for multi-disk management |
+| GET | `/disks` | List real host block devices, including their partitions, for multi-disk management |
 | GET | `/diskroles` | List persisted disk role assignments |
-| POST | `/diskroles` | Assign a role (container-storage/backup/state-storage/rebuildable-storage/log-storage) to a disk |
+| POST | `/diskroles` | Assign a role (container-storage/backup/state-storage/rebuildable-storage/log-storage) to a disk or partition |
 | DELETE | `/diskroles/{disk_name}` | Remove a disk's role assignment |
 | GET | `/disks/{disk_name}/format` | Status of the most recent (or running) format+mount job for this disk |
 | POST | `/disks/{disk_name}/format` | Destructive: mkfs (ext4 or btrfs) + mount an already role-assigned disk |
+| POST | `/disks/{disk_name}/partition-table` | Destructive: writes a fresh, empty GPT partition table to a whole disk |
+| POST | `/disks/{disk_name}/partitions` | Append one new partition to a disk's existing table |
+| DELETE | `/disks/{disk_name}/partitions/{partition_name}` | Remove one partition |
 | GET | `/system/state-storage` | Which disk (if any) is the active placement for Kanxeo's own state |
 | GET | `/system/state-storage/migrate` | Status of the most recent (or running) state-storage migration |
 | POST | `/system/state-storage/migrate` | Move Kanxeo's own state to a new disk, or back to the default |
@@ -1042,7 +1045,7 @@ POST /v1/devicemaps
 GET /v1/disks
 ```
 
-Real host block devices, whole disks only (partitions are never listed independently — they aren't independently assignable), live-enumerated from `/sys/class/block` on every call, the same "real hardware, never persisted" convention `GET /devices` already established. `is_os_disk` flags the one disk holding this platform's own fixed ESP/root-a/root-b/config/containers layout — never a candidate for a role of its own or for formatting; every other disk is available for a role assignment and, once role-assigned, formatting.
+Real host block devices, live-enumerated from `/sys/class/block` on every call, the same "real hardware, never persisted" convention `GET /devices` already established. Since task #844, every partition on a disk is also listed as its own ordinary entry (`is_partition`/`parent_disk`) alongside the whole disk itself — a partition is independently assignable everywhere a whole disk name is accepted (`POST /diskroles`, `POST /disks/{name}/format`, and see "Partition-level disk management" below). `model`/`removable` are always empty/`false` for a partition entry — neither sysfs attribute exists per-partition, only on the parent whole disk. `is_os_disk` flags the one disk holding this platform's own fixed ESP/root-a/root-b/config/containers layout, and (propagated) every one of its own partitions — never a candidate for a role of its own or for formatting/repartitioning; every other disk or partition is available for a role assignment and, once role-assigned, formatting.
 
 `mounted`/`mount_path` are real, current ground truth read fresh from `/proc/mounts` on every call — true if any partition on the disk (or the whole-disk device itself) is currently mounted, regardless of whether this daemon is the one that mounted it. Deliberately independent of the disk format job's own `state` (`GET /diskformat/{name}`, `"ready"` once a format+mount this daemon itself ran succeeds), which is purely in-memory, per-daemon-process state — forgotten across a restart even though the real mount persists, and blind to a disk mounted by hand or from before this mechanism existed. `GET /disks` is the one place to check whether a disk is *actually* mounted right now.
 
@@ -1080,6 +1083,34 @@ GET /v1/disks/sdb/format
 ```
 
 `state` is `"none"` (no job has ever run for this disk — including when a job ran/is running for a *different* disk, so a status check never shows another disk's unrelated job), `"running"`, `"ready"`, or `"failed"` (`error` distinguishes `mkfs.<fs_type>` failing outright from it succeeding but the subsequent `mount(2)` failing). Only one format job may run daemon-wide at a time (`409` otherwise) — the same v1 single-job constraint every other async job here already has. Mounted at a fixed path under this platform's own data directory by default; a `container-storage`-role disk can also be selected explicitly per container via `POST /containers`' own `disk` field (ADR-0102, Phase D, already built).
+
+### Partition-level disk management (task #844, ADR-0158)
+
+```
+POST /v1/disks/sdb/partition-table
+{"confirm_disk_name": "sdb"}
+```
+
+Writes a fresh, empty GPT partition table to a whole disk — destructive (wipes any existing table and everything on it), same double-confirmation as `POST .../format`. Rejected (`400`) if `disk_name` is itself a partition or the OS disk, `409` if it already has a role assigned directly to it or is currently mounted. Synchronous — unlike `mkfs`, writing a partition table is metadata-only and near-instantaneous, so there's no async job/poll shape here.
+
+```
+POST /v1/disks/sdb/partitions
+{"name": "data", "size_mib": 51200}
+```
+
+Appends one new partition to a disk's existing table via `sfdisk --append` — never touches any partition already on the disk. `name` is the new partition's cosmetic GPT name attribute; `GET /disks` reports the new partition by its real kernel device name (e.g. `"sdb2"`), never by this. `size_mib` is optional — omit it (or `0`) to consume all remaining space on the disk (must be the last partition added, if so). Same preconditions as `partition-table` above: a disk in whole-disk role/format use must never also be partitioned underneath that use. Response is every partition currently on the disk after the add:
+
+```
+{"disk_name": "sdb", "partitions": [{"name": "sdb1", "is_partition": true, "parent_disk": "sdb", ...}]}
+```
+
+```
+DELETE /v1/disks/sdb/partitions/sdb1
+```
+
+Removes one partition — every other partition on the disk is untouched. `404` if `partition_name` doesn't currently exist or doesn't actually belong to `disk_name`; `400` if it isn't actually a partition at all (a whole disk name given where a partition was expected); `409` if it's part of the OS disk's own layout, still has a role assigned (`DELETE /diskroles/{name}` first, same no-silent-data-loss convention role removal already has elsewhere), or is currently mounted.
+
+A disk is used in exactly one of two mutually-exclusive modes: role assigned directly to the whole disk (the original model), or partitioned with roles assigned to the individual partitions instead — `diskrole.c`/`diskformat.c` needed no code changes of their own for this, since both already operate purely on whatever `GET /disks` reports, partition or whole disk alike.
 
 ## Multi-disk storage placement (ADR-0141)
 

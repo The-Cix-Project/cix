@@ -155,11 +155,14 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | `device ls` | Host PCI/USB/GPU devices from sysfs, with each one's `id` (pass to `run --device=`) and whether it's assignable |
 | `devicemap create --name=NAME --kind=exact\|vendor_model --selector=SELECTOR` | A persisted, named device binding, usable in place of a raw id in `run --device=` |
 | `devicemap ls` / `devicemap rm NAME` | List (shows whether each mapping currently resolves to real hardware) / remove |
-| `disks [ls]` | Real host block devices (whole disks only), flagging which one is the fixed OS disk |
-| `diskrole create --disk=NAME --role=container-storage\|backup\|state-storage\|rebuildable-storage\|log-storage` | Assign a persisted role to a disk (never the OS disk) |
+| `disks [ls]` | Real host block devices, including their partitions (task #844), flagging which one is the fixed OS disk |
+| `diskrole create --disk=NAME --role=container-storage\|backup\|state-storage\|rebuildable-storage\|log-storage` | Assign a persisted role to a disk or partition (never the OS disk) |
 | `diskrole ls` / `diskrole rm NAME` | List assigned roles (with whether each disk is currently present) / remove one (409 if the disk is the active state-storage placement) |
 | `disks format NAME [--fs-type=ext4\|btrfs]` | Destructive: mkfs (ext4 by default, or btrfs, ADR-0104) + mount an already role-assigned, non-OS disk (409 against the active state-storage placement) |
 | `disks format-status NAME` | State/mount_path/error of the most recent format job for this disk |
+| `disks partition-table NAME` | Destructive: writes a fresh, empty GPT partition table to a non-OS whole disk with no role or partitions of its own in use |
+| `disks add-partition NAME --name=PART_NAME [--size-mib=N]` | Appends one new partition to a disk's existing table; omit `--size-mib` for "rest of the disk" |
+| `disks rm-partition DISK_NAME PARTITION_NAME` | Removes one partition (409 if it still has a role assigned) |
 | `storage state [show]` | Which disk (if any) is the active placement for Kanxeo's own state (ADR-0141) |
 | `storage state migrate [--disk=NAME]` | Move Kanxeo's own state to a disk already carrying the role and mounted; omit `--disk=` for the default OS-disk placement; live, no downtime |
 | `storage state migrate-status` | State/disk/error of the most recent (or running) state-storage migration |

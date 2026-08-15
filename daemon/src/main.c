@@ -6,6 +6,7 @@
 #include "devicemap.h"
 #include "disk.h"
 #include "diskformat.h"
+#include "diskpart.h"
 #include "diskrole.h"
 #include "storagemigrate.h"
 #include "containerstoragemigrate.h"
@@ -10287,6 +10288,182 @@ static void handle_disk_format_get(int fd, const char *disk_name)
 }
 
 /*
+ * Partition-level disk management (ROADMAP.md task #844) -- diskpart.h's
+ * own doc comment covers the design; these three handlers are thin REST
+ * wrappers, the same shape every other disk-management handler above
+ * already has.
+ */
+static void respond_diskpart_error(int fd, enum diskpart_error err)
+{
+	switch (err) {
+	case DISKPART_ERR_INVALID_DISK_NAME:
+		respond_error(fd, 400, "Bad Request", "invalid disk name");
+		break;
+	case DISKPART_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such disk or partition");
+		break;
+	case DISKPART_ERR_IS_PARTITION:
+		respond_error(fd, 400, "Bad Request",
+		              "this name is itself a partition -- partition-table operations target a whole disk");
+		break;
+	case DISKPART_ERR_NOT_A_PARTITION:
+		respond_error(fd, 400, "Bad Request", "this name is a whole disk, not a partition");
+		break;
+	case DISKPART_ERR_WRONG_PARENT:
+		respond_error(fd, 404, "Not Found", "this partition does not belong to the named disk");
+		break;
+	case DISKPART_ERR_IS_OS_DISK:
+		respond_error(fd, 400, "Bad Request",
+		              "this disk holds the fixed OS layout -- it can never be repartitioned");
+		break;
+	case DISKPART_ERR_HAS_ROLE:
+		respond_error(fd, 409, "Conflict",
+		              "this disk or partition already has a role assigned -- remove it first "
+		              "(DELETE /v1/diskroles/{name})");
+		break;
+	case DISKPART_ERR_MOUNTED:
+		respond_error(fd, 409, "Conflict", "this disk or partition is currently mounted");
+		break;
+	case DISKPART_ERR_INVALID_PART_NAME:
+		respond_error(fd, 400, "Bad Request", "invalid partition name");
+		break;
+	case DISKPART_ERR_INVALID_SIZE:
+		respond_error(fd, 400, "Bad Request", "invalid size_mib");
+		break;
+	case DISKPART_ERR_SFDISK_FAILED:
+	default:
+		respond_error(fd, 500, "Internal Server Error", "sfdisk failed");
+		break;
+	}
+}
+
+static void handle_disk_partition_table_post(int fd, const char *disk_name, const char *body,
+                                              size_t body_len)
+{
+	struct json_value *root;
+	const char *confirm;
+	enum diskpart_error derr;
+	struct discovered_disk d;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	confirm = json_as_string(json_object_get(root, "confirm_disk_name"));
+	if (confirm == NULL || strcmp(confirm, disk_name) != 0) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "confirm_disk_name must be given and must match the disk name in the URL -- "
+		              "this is a destructive operation");
+		return;
+	}
+	json_free(root);
+
+	derr = diskpart_create_table(disk_name, CONTAINERS_DIR);
+	if (derr != DISKPART_OK) {
+		respond_diskpart_error(fd, derr);
+		return;
+	}
+
+	{
+		struct discovered_disk disks[DISK_ENUM_MAX];
+		int n = disk_enumerate(disks, DISK_ENUM_MAX, CONTAINERS_DIR);
+		int i;
+		struct json_writer w;
+
+		for (i = 0; i < n; i++) {
+			if (strcmp(disks[i].name, disk_name) == 0) {
+				d = disks[i];
+				break;
+			}
+		}
+		jw_init(&w);
+		disk_write_json_one(&d, &w);
+		respond_json(fd, 200, "OK", &w);
+		jw_free(&w);
+	}
+}
+
+static void handle_disk_partitions_post(int fd, const char *disk_name, const char *body,
+                                         size_t body_len)
+{
+	struct json_value *root;
+	const char *part_name;
+	const struct json_value *jsize;
+	unsigned long long size_mib = 0;
+	enum diskpart_error derr;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	part_name = json_as_string(json_object_get(root, "name"));
+	if (part_name == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "name is required");
+		return;
+	}
+	jsize = json_object_get(root, "size_mib");
+	if (jsize != NULL) {
+		if (jsize->type != JSON_NUMBER || json_as_number(jsize) < 0) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "size_mib must be a non-negative number");
+			return;
+		}
+		size_mib = (unsigned long long)json_as_number(jsize);
+	}
+
+	{
+		char part_name_buf[DISKPART_NAME_MAX];
+
+		snprintf(part_name_buf, sizeof(part_name_buf), "%s", part_name);
+		json_free(root);
+
+		derr = diskpart_add(disk_name, CONTAINERS_DIR, part_name_buf, size_mib);
+		if (derr != DISKPART_OK) {
+			respond_diskpart_error(fd, derr);
+			return;
+		}
+	}
+
+	{
+		struct discovered_disk disks[DISK_ENUM_MAX];
+		int n = disk_enumerate(disks, DISK_ENUM_MAX, CONTAINERS_DIR);
+		int i;
+		struct json_writer w;
+
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "disk_name");
+		jw_str(&w, disk_name);
+		jw_key(&w, "partitions");
+		jw_arr_open(&w);
+		for (i = 0; i < n; i++) {
+			if (disks[i].is_partition && strcmp(disks[i].parent_disk, disk_name) == 0)
+				disk_write_json_one(&disks[i], &w);
+		}
+		jw_arr_close(&w);
+		jw_obj_close(&w);
+		respond_json(fd, 201, "Created", &w);
+		jw_free(&w);
+	}
+}
+
+static void handle_disk_partition_delete(int fd, const char *disk_name, const char *partition_name)
+{
+	enum diskpart_error derr = diskpart_delete(disk_name, partition_name, CONTAINERS_DIR);
+
+	if (derr != DISKPART_OK) {
+		respond_diskpart_error(fd, derr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+/*
  * ADR-0141 Phase 2/3: GET/POST /v1/system/{state,log}-storage(/migrate).
  * rebuildable-storage reuses the identical storagemigrate.c/
  * storageplacement.c machinery, just not exposed here yet (Phase 4).
@@ -13995,6 +14172,41 @@ static void dispatch(int fd, const struct http_request *req)
 			if (strcmp(req->method, "GET") == 0) {
 				handle_disk_format_get(fd, disk_name);
 				return;
+			}
+		}
+		{
+			/*
+			 * "/partition-table" (create), "/partitions" (add),
+			 * "/partitions/{partition_name}" (delete) -- disk
+			 * names are '/'-free, so the first '/' in name (if
+			 * any) unambiguously starts this sub-resource, same
+			 * reasoning the container "/networks" block already
+			 * uses.
+			 */
+			char *slash = strchr(name, '/');
+
+			if (slash != NULL && (size_t)(slash - name) < DISKROLE_DISK_NAME_MAX) {
+				char disk_name[DISKROLE_DISK_NAME_MAX];
+
+				memcpy(disk_name, name, slash - name);
+				disk_name[slash - name] = '\0';
+
+				if (strcmp(slash, "/partition-table") == 0 &&
+				    strcmp(req->method, "POST") == 0) {
+					handle_disk_partition_table_post(fd, disk_name, req->body,
+					                                  req->body_len);
+					return;
+				}
+				if (strcmp(slash, "/partitions") == 0 && strcmp(req->method, "POST") == 0) {
+					handle_disk_partitions_post(fd, disk_name, req->body, req->body_len);
+					return;
+				}
+				if (strncmp(slash, "/partitions/", 12) == 0 &&
+				    strcmp(req->method, "DELETE") == 0 && slash[12] != '\0' &&
+				    strlen(slash + 12) < DISKROLE_DISK_NAME_MAX) {
+					handle_disk_partition_delete(fd, disk_name, slash + 12);
+					return;
+				}
 			}
 		}
 	}

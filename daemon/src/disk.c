@@ -211,6 +211,24 @@ static void fill_mount_status(struct discovered_disk *out, int count)
 	fclose(f);
 }
 
+/*
+ * Fills in the fields common to both a whole disk and a partition entry
+ * (name/dev_path/size_bytes/io_stats) -- everything disk_enumerate()'s
+ * two passes below share. model/removable/is_os_disk are set by the
+ * caller afterward, since they differ (or need a parent lookup) between
+ * the two passes.
+ */
+static void fill_common(struct discovered_disk *e, const char *d_name, const char *size_str)
+{
+	memset(e, 0, sizeof(*e));
+	snprintf(e->name, sizeof(e->name), "%s", d_name);
+	snprintf(e->dev_path, sizeof(e->dev_path), "/dev/%s", d_name);
+	/* sysfs "size" is always in 512-byte sectors, regardless of the
+	 * device's own real logical block size. */
+	e->size_bytes = strtoull(size_str, NULL, 10) * 512ULL;
+	fill_io_stats(e);
+}
+
 int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containers_dir)
 {
 	DIR *d;
@@ -220,6 +238,11 @@ int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containe
 
 	resolve_os_disk_name(os_containers_dir, os_disk_name, sizeof(os_disk_name));
 
+	/* Pass 1: whole disks only -- every partition's own is_os_disk
+	 * (pass 2 below) is propagated from its parent's entry here, so
+	 * every whole disk must already be in out[] before pass 2 looks
+	 * any of them up; readdir() order is not guaranteed to put a
+	 * parent before its own partitions. */
 	d = opendir(SYS_BLOCK_DIR);
 	if (d == NULL)
 		return 0;
@@ -236,24 +259,16 @@ int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containe
 
 		snprintf(base, sizeof(base), "%s/%s", SYS_BLOCK_DIR, ent->d_name);
 
-		/* A partition (not an independently assignable whole disk)
-		 * has its own "partition" sysfs attribute -- absent on
-		 * every whole-disk entry. */
 		snprintf(partition_marker, sizeof(partition_marker), "%s/partition", base);
 		if (sysfs_path_exists(partition_marker))
-			continue;
+			continue; /* handled in pass 2 below */
 
 		snprintf(attr_path, sizeof(attr_path), "%s/size", base);
 		if (read_sysfs_attr(attr_path, size_str, sizeof(size_str)) != 0)
 			continue; /* not a real block device (e.g. "loop-control") */
 
 		e = &out[count];
-		memset(e, 0, sizeof(*e));
-		snprintf(e->name, sizeof(e->name), "%s", ent->d_name);
-		snprintf(e->dev_path, sizeof(e->dev_path), "/dev/%s", ent->d_name);
-		/* sysfs "size" is always in 512-byte sectors, regardless of
-		 * the device's own real logical block size. */
-		e->size_bytes = strtoull(size_str, NULL, 10) * 512ULL;
+		fill_common(e, ent->d_name, size_str);
 
 		snprintf(attr_path, sizeof(attr_path), "%s/device/model", base);
 		read_sysfs_attr(attr_path, e->model, sizeof(e->model));
@@ -269,11 +284,57 @@ int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containe
 		if (os_disk_name[0] != '\0' && strcmp(e->name, os_disk_name) == 0)
 			e->is_os_disk = 1;
 
-		fill_io_stats(e);
+		count++;
+	}
+	closedir(d);
+
+	/* Pass 2: partitions -- a second, fresh directory walk (cheap;
+	 * /sys/class/block has at most a few dozen entries on a real
+	 * host) rather than buffering dirents from pass 1, since nothing
+	 * else in this function needs to remember them. */
+	d = opendir(SYS_BLOCK_DIR);
+	if (d == NULL)
+		return count;
+
+	while (count < cap && (ent = readdir(d)) != NULL) {
+		char base[PATH_MAX];
+		char attr_path[PATH_MAX];
+		char partition_marker[PATH_MAX];
+		char size_str[32];
+		char parent_name[32];
+		struct discovered_disk *e;
+		int i;
+
+		if (ent->d_name[0] == '.')
+			continue;
+
+		snprintf(base, sizeof(base), "%s/%s", SYS_BLOCK_DIR, ent->d_name);
+
+		snprintf(partition_marker, sizeof(partition_marker), "%s/partition", base);
+		if (!sysfs_path_exists(partition_marker))
+			continue; /* a whole disk -- already handled in pass 1 */
+
+		snprintf(attr_path, sizeof(attr_path), "%s/size", base);
+		if (read_sysfs_attr(attr_path, size_str, sizeof(size_str)) != 0)
+			continue;
+
+		e = &out[count];
+		fill_common(e, ent->d_name, size_str);
+		e->is_partition = 1;
+
+		disk_name_from_partition(ent->d_name, parent_name, sizeof(parent_name));
+		snprintf(e->parent_disk, sizeof(e->parent_disk), "%s", parent_name);
+		for (i = 0; i < count; i++) {
+			if (strcmp(out[i].name, parent_name) == 0) {
+				e->is_os_disk = out[i].is_os_disk;
+				break;
+			}
+		}
 
 		count++;
 	}
 	closedir(d);
+
 	fill_mount_status(out, count);
 	return count;
 }
@@ -311,6 +372,10 @@ void disk_write_json_one(const struct discovered_disk *d, struct json_writer *w)
 	jw_int(w, (long long)d->used_bytes);
 	jw_key(w, "free_bytes");
 	jw_int(w, (long long)d->free_bytes);
+	jw_key(w, "is_partition");
+	jw_bool(w, d->is_partition);
+	jw_key(w, "parent_disk");
+	jw_str(w, d->parent_disk);
 	jw_obj_close(w);
 }
 
