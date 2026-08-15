@@ -50,6 +50,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	if (container_dev_bpf_attach(cgroup_fd, spec->devices, spec->device_count,
 	                              &bpf_prog_fd) != 0) {
 		int saved_errno = errno;
+		perror("container_create: container_dev_bpf_attach");
 		close(cgroup_fd);
 		errno = saved_errno;
 		return -1;
@@ -57,6 +58,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 
 	if (want_net && pipe(net_pipe) != 0) {
 		int saved_errno = errno;
+		perror("container_create: pipe(net_pipe)");
 		if (bpf_prog_fd >= 0)
 			close(bpf_prog_fd);
 		close(cgroup_fd);
@@ -74,6 +76,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	 */
 	if (pipe2(diag_pipe, O_CLOEXEC) != 0) {
 		int saved_errno = errno;
+		perror("container_create: pipe2(diag_pipe)");
 		if (want_net) {
 			close(net_pipe[0]);
 			close(net_pipe[1]);
@@ -88,6 +91,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	ret = ns_clone3(spec->ns.clone_flags, cgroup_fd, &pidfd);
 	if (ret < 0) {
 		int saved_errno = errno;
+		perror("container_create: ns_clone3");
 		close(diag_pipe[0]);
 		close(diag_pipe[1]);
 		if (want_net) {
@@ -263,6 +267,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			int saved_errno = errno;
 			siginfo_t info;
 
+			perror("container_create: container_net_host_setup");
 			close(net_pipe[1]);
 			waitid(P_PIDFD, pidfd, &info, WEXITED);
 			close(diag_pipe[0]);
@@ -296,6 +301,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			int saved_errno = errno;
 			siginfo_t info;
 
+			perror("container_create: container_net_host_attach_interfaces");
 			sys_pidfd_send_signal(pidfd, SIGKILL);
 			waitid(P_PIDFD, pidfd, &info, WEXITED);
 			close(diag_pipe[0]);
