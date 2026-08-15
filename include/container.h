@@ -354,6 +354,11 @@ int cgroup_read_single_value(int cgroup_fd, const char *filename, long long *out
 int cgroup_read_io_totals(int cgroup_fd, long long *out_rbytes, long long *out_wbytes,
                            long long *out_rios, long long *out_wios);
 
+/* cpu.max's raw "QUOTA PERIOD" text, trailing newline stripped -- see
+ * this function's own doc comment in src/cgroup.c for why it's
+ * returned verbatim rather than reinterpreted. */
+int cgroup_read_cpu_max(int cgroup_fd, char *out, size_t out_size);
+
 /*
  * One cgroup v2 pressure-stall (PSI) file's own "some"/"full" lines
  * (cpu.pressure/io.pressure/memory.pressure) -- avg10/avg60/avg300 are

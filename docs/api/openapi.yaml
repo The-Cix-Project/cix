@@ -7419,6 +7419,33 @@ components:
             Sourced live from the persisted definition, same as restart/
             depends_on above; null if none was configured or restart is
             "no".
+        memory_max:
+          type: integer
+          format: int64
+          nullable: true
+          description: >
+            The memory.max cgroup limit in bytes, read live from this
+            container's own real cgroup (not echoed from what
+            ContainerCreateRequest.memory_max was given at creation) --
+            valid for a running container and for one that has since
+            exited but stays registered alike. null means unlimited.
+            Previously write-only: acceptable on POST /containers, but
+            never returned by any GET until this field was added (Part
+            163, ADR-0165 follow-up).
+        cpu_max:
+          type: string
+          nullable: true
+          description: >
+            The cpu.max cgroup limit, read live the same way as
+            memory_max above, in the same raw "QUOTA PERIOD"
+            microseconds syntax as ContainerCreateRequest.cpu_max (e.g.
+            "50000 100000" is half a CPU). null means unlimited.
+        pids_max:
+          type: integer
+          nullable: true
+          description: >
+            The pids.max cgroup limit, read live the same way as
+            memory_max above. null means unlimited.
 
     HostauthConfig:
       type: object

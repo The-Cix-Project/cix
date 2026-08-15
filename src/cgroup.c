@@ -289,6 +289,36 @@ int cgroup_read_single_value(int cgroup_fd, const char *filename, long long *out
 }
 
 /*
+ * Reads cpu.max via cgroup_fd into out (raw "QUOTA PERIOD" text,
+ * trailing newline stripped) -- the exact same string shape
+ * struct cgroup_limits.cpu_max is written from, so a caller wanting
+ * to show "what's actually configured right now" gets it back
+ * verbatim, no reinterpretation either direction. The kernel's own
+ * unlimited spelling ("max 100000") is returned as-is, not translated
+ * to NULL/empty -- that translation is a caller-side display choice,
+ * not this function's job. Returns -1 only on a real I/O error (the
+ * file not existing at all, e.g. the cpu controller isn't delegated
+ * here) -- distinct from "no limit set," which reads back as literal
+ * "max <period>" text, not a read failure.
+ */
+int cgroup_read_cpu_max(int cgroup_fd, char *out, size_t out_size)
+{
+	char buf[64];
+	size_t len;
+
+	out[0] = '\0';
+	if (read_whole_file_at(cgroup_fd, "cpu.max", buf, sizeof(buf)) < 0)
+		return -1;
+
+	len = strlen(buf);
+	if (len > 0 && buf[len - 1] == '\n')
+		buf[len - 1] = '\0';
+
+	snprintf(out, out_size, "%s", buf);
+	return 0;
+}
+
+/*
  * Sums rbytes/wbytes/rios/wios across every device line in io.stat via
  * cgroup_fd. A container with no tracked block I/O yet has a genuinely
  * empty io.stat (or the io controller might not be enabled at all, see

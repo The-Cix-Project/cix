@@ -623,6 +623,51 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 			jw_null(w);
 		}
 	}
+	/*
+	 * Resource limits, read live from the real cgroup (entry->handle.
+	 * cgroup_fd stays a valid O_PATH fd for as long as this entry
+	 * remains registered -- registry_remove() is the only thing that
+	 * closes it, well after this) -- not mirrored from whatever was
+	 * requested at creation, so this reflects what's actually
+	 * enforced right now. Found missing entirely until now: creation
+	 * accepted memory_max/cpu_max/pids_max, but nothing ever read them
+	 * back -- confirmed live, the user could set a pkgbuild sandbox's
+	 * limits but had no way to see them again afterward (ADR-0165).
+	 * null means unlimited for all three, a deliberate, uniform
+	 * "nothing configured" reading, not a read failure.
+	 */
+	{
+		long long memory_max, pids_max;
+		int mem_unlimited = 1, pids_unlimited = 1;
+		char cpu_max[64];
+		int have_cpu_max = 0;
+
+		if (cgroup_read_single_value(entry->handle.cgroup_fd, "memory.max", &memory_max,
+		                              &mem_unlimited) != 0)
+			mem_unlimited = 1;
+		if (cgroup_read_single_value(entry->handle.cgroup_fd, "pids.max", &pids_max,
+		                              &pids_unlimited) != 0)
+			pids_unlimited = 1;
+		if (cgroup_read_cpu_max(entry->handle.cgroup_fd, cpu_max, sizeof(cpu_max)) == 0 &&
+		    strncmp(cpu_max, "max ", 4) != 0)
+			have_cpu_max = 1;
+
+		jw_key(w, "memory_max");
+		if (mem_unlimited)
+			jw_null(w);
+		else
+			jw_int(w, memory_max);
+		jw_key(w, "cpu_max");
+		if (have_cpu_max)
+			jw_str(w, cpu_max);
+		else
+			jw_null(w);
+		jw_key(w, "pids_max");
+		if (pids_unlimited)
+			jw_null(w);
+		else
+			jw_int(w, pids_max);
+	}
 	jw_obj_close(w);
 }
 

@@ -1827,6 +1827,20 @@ let statsTimer = null;
 let statsContainerName = null;
 let statsHistory = [];
 
+/* cpu_max is the raw cgroup v2 "QUOTA PERIOD" pass-through text (see
+ * ADR-0165) -- shown as a computed percentage-of-one-core alongside the
+ * raw pair, since "50000 100000" means nothing to an operator at a
+ * glance the way "50%" does. */
+function formatCpuMax(cpuMax) {
+	if (!cpuMax) return "-";
+	const parts = cpuMax.split(" ");
+	if (parts.length !== 2) return cpuMax;
+	const quota = Number(parts[0]);
+	const period = Number(parts[1]);
+	if (!period || Number.isNaN(quota) || Number.isNaN(period)) return cpuMax;
+	return ((quota / period) * 100).toFixed(0) + "% (" + cpuMax + ")";
+}
+
 function formatBytes(n) {
 	const units = ["B", "KiB", "MiB", "GiB", "TiB"];
 	let v = n;
@@ -2437,6 +2451,19 @@ function renderContainerDetail(name) {
 		fieldBlock("Exit status", c.exit_status === null || c.exit_status === undefined ? "-" : String(c.exit_status))
 	);
 	fields.appendChild(fieldBlock("Command", (c.cmd || []).join(" ") || "-"));
+
+	/* Resource limits -- read live from the real cgroup by the daemon
+	 * (ADR-0165), not just whatever was requested at creation. Until
+	 * now these were write-only: settable via POST /containers but
+	 * never shown back anywhere, so there was no way to tell what a
+	 * running container (a pkgbuild sandbox included) actually had. */
+	fields.appendChild(
+		fieldBlock("Memory limit", c.memory_max === null || c.memory_max === undefined ? "unlimited" : formatBytes(c.memory_max))
+	);
+	fields.appendChild(fieldBlock("CPU limit", formatCpuMax(c.cpu_max) === "-" ? "unlimited" : formatCpuMax(c.cpu_max)));
+	fields.appendChild(
+		fieldBlock("Process limit", c.pids_max === null || c.pids_max === undefined ? "unlimited" : String(c.pids_max))
+	);
 
 	/* Hardware -- devices/interfaces/network attachments granted at creation.
 	 * Links back to Devices when the granted id has a real "exact" name

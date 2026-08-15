@@ -442,12 +442,17 @@ static void fmt_container_line(const struct json_value *v)
 	const struct json_value *files = json_object_get(v, "files");
 	const struct json_value *sysctls = json_object_get(v, "sysctls");
 	const struct json_value *cmd = json_object_get(v, "cmd");
+	const struct json_value *memory_max = json_object_get(v, "memory_max");
+	const struct json_value *cpu_max = json_object_get(v, "cpu_max");
+	const struct json_value *pids_max = json_object_get(v, "pids_max");
 	char exit_buf[16];
 	char net_buf[256];
 	char readiness_buf[32];
 	char delay_buf[16];
 	char jitter_buf[16];
 	char cmd_buf[256];
+	char mem_buf[24];
+	char pids_buf[16];
 	size_t off = 0;
 	size_t cmd_off = 0;
 	size_t i;
@@ -501,8 +506,19 @@ static void fmt_container_line(const struct json_value *v)
 		}
 	}
 
+	if (memory_max != NULL && memory_max->type == JSON_NUMBER)
+		snprintf(mem_buf, sizeof(mem_buf), "%lld", (long long)json_as_number(memory_max));
+	else
+		snprintf(mem_buf, sizeof(mem_buf), "-");
+
+	if (pids_max != NULL && pids_max->type == JSON_NUMBER)
+		snprintf(pids_buf, sizeof(pids_buf), "%lld", (long long)json_as_number(pids_max));
+	else
+		snprintf(pids_buf, sizeof(pids_buf), "-");
+
 	printf("%-20s %-8s pid=%-8ld exit_status=%-6s networks=%-20s fwd=%-4s restart=%-15s "
-	       "delay=%-4s roll=%-4s jitter=%-4s stopped=%-5s readiness=%-10s files=%-3zu sysctls=%-3zu cmd=%s\n",
+	       "delay=%-4s roll=%-4s jitter=%-4s stopped=%-5s readiness=%-10s files=%-3zu sysctls=%-3zu "
+	       "memory_max=%-12s cpu_max=%-14s pids_max=%-5s cmd=%s\n",
 	       name, status, pid, exit_buf, net_buf[0] != '\0' ? net_buf : "-",
 	       (ip_forward != NULL && ip_forward->type == JSON_BOOL && ip_forward->u.boolean) ? "yes"
 	                                                                                        : "no",
@@ -513,7 +529,8 @@ static void fmt_container_line(const struct json_value *v)
 	       jitter_buf,
 	       (stopped != NULL && stopped->type == JSON_BOOL && stopped->u.boolean) ? "yes" : "no",
 	       readiness_buf, files != NULL && files->type == JSON_ARRAY ? files->u.array.count : 0,
-	       sysctls != NULL && sysctls->type == JSON_OBJECT ? sysctls->u.object.count : 0,
+	       sysctls != NULL && sysctls->type == JSON_OBJECT ? sysctls->u.object.count : 0, mem_buf,
+	       cpu_max != NULL && cpu_max->type == JSON_STRING ? cpu_max->u.string : "-", pids_buf,
 	       cmd_buf[0] != '\0' ? cmd_buf : "-");
 }
 
