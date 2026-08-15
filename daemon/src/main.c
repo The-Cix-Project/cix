@@ -7050,6 +7050,49 @@ static void handle_logout(int fd, const char *req_headers, size_t req_headers_le
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
+/*
+ * GET /v1/whoami -- introspection only, never mutates a session
+ * (hostauth_peek_token(), not hostauth_check_token() -- see that
+ * function's own doc comment for why the distinction matters under a
+ * single-use/idle_timeout_seconds==0 config). Exists specifically so a
+ * client can answer "is my current bearer token actually still valid"
+ * without write-gating's own GETs-are-always-open rule making that
+ * otherwise undeterminable (every ordinary GET succeeds whether or not
+ * a token is supplied, by design) -- thincctl's own interactive shell
+ * prompt (ADR-0164) is the first real caller. No Authorization header
+ * at all, or one naming an unknown/expired/absent-session token, both
+ * report the same authenticated:false -- this endpoint doesn't
+ * distinguish "never logged in" from "session lapsed," the same way
+ * GET /v1/health doesn't distinguish flavors of "not ok."
+ */
+static void handle_whoami(int fd, const char *req_headers, size_t req_headers_len)
+{
+	char token_hdr[HOSTAUTH_TOKEN_LEN + 16];
+	char username[HOSTAUTH_USERNAME_MAX];
+	struct json_writer w;
+	int authenticated = 0;
+
+	if (http_find_header(req_headers, req_headers_len, "Authorization", token_hdr,
+	                      sizeof(token_hdr)) >= 0) {
+		const char *bearer = strncmp(token_hdr, "Bearer ", 7) == 0 ? token_hdr + 7 : token_hdr;
+
+		authenticated = hostauth_peek_token(bearer, username, sizeof(username));
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "authenticated");
+	jw_bool(&w, authenticated);
+	jw_key(&w, "username");
+	if (authenticated)
+		jw_str(&w, username);
+	else
+		jw_null(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_hostauth_config_get(int fd)
 {
 	struct json_writer w;
@@ -14849,6 +14892,10 @@ static void dispatch(int fd, const struct http_request *req)
 	}
 	if (strcmp(req->method, "POST") == 0 && strcmp(req->path, "/v1/logout") == 0) {
 		handle_logout(fd, req->headers, req->headers_len);
+		return;
+	}
+	if (strcmp(req->method, "GET") == 0 && strcmp(req->path, "/v1/whoami") == 0) {
+		handle_whoami(fd, req->headers, req->headers_len);
 		return;
 	}
 

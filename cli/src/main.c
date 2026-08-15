@@ -9896,6 +9896,19 @@ static int cmd_login(const struct kx_client *c, int json_mode, int argc, char **
 			        "need to log in again for the next command\n",
 			        strerror(errno));
 		}
+		/* Real bug, found via ADR-0164's own new prompt indicator (which
+		 * surfaced it immediately -- it never flipped to "#" after a
+		 * mid-session login): saving the token to disk makes it visible
+		 * to the *next* thincctl invocation (main() loads it once at
+		 * startup), but did nothing for *this* one -- every command run
+		 * for the rest of the current interactive shell session,
+		 * including the prompt's own whoami check, kept using whatever
+		 * (possibly empty) token this process started with. c's real
+		 * underlying storage is always main()'s own non-const `client`;
+		 * the const here is routing-only (every cmd_*() handler takes
+		 * one shared signature), so mutating it through this cast is
+		 * safe, not a layer violation. */
+		kx_client_set_token((struct kx_client *)c, token);
 		if (json_mode)
 			print_raw_json(r.json);
 		else
@@ -9916,6 +9929,11 @@ static int cmd_logout(const struct kx_client *c, int json_mode)
 			kx_response_free(&r);
 	}
 	clear_token_file();
+	/* Same reasoning as cmd_login()'s own matching call -- clear the
+	 * current process's live in-memory token too, not just the on-disk
+	 * copy, so the rest of *this* session doesn't keep sending a token
+	 * the server was just told to invalidate. */
+	kx_client_set_token((struct kx_client *)c, NULL);
 
 	if (json_mode)
 		printf("{}\n");
@@ -10101,28 +10119,60 @@ static int tokenize_line(char *line, char **tokens, int max_tokens)
 #define SHELL_LINE_MAX 4096
 #define SHELL_HISTORY_MAX 100
 
-/* The connected daemon's own instance_name (GET /v1/system/site,
- * ADR-0046), not a fixed "thinc> " -- fetched once at shell startup
- * by shell_prompt_init() below, so the prompt actually identifies
- * *which* box this session is talking to (useful the moment an
- * operator has more than one thinC install reachable). Falls back to
- * the literal string "thinc" (site config's own documented default)
- * if the fetch fails for any reason -- never leaves the prompt blank. */
+/* The connected daemon's own full site identity (GET /v1/system/site,
+ * ADR-0046) as instance.site.domain (or instance.domain when no site
+ * tier is set -- mirrors daemon/src/siteconfig.c's own
+ * siteconfig_host_fqdn(), client-side, since the CLI has no access to
+ * that daemon-internal function), not a fixed "thinc> ". Trailing
+ * character follows real shell/network-device convention: "#" once
+ * GET /v1/whoami (ADR-0164) reports an authenticated session, ">"
+ * otherwise -- including whenever host-auth write-gating isn't even
+ * active yet (a fresh install), the same as an unprivileged prompt on
+ * a box with no root password set. Fetched once at shell startup by
+ * shell_prompt_init() below, so the prompt actually identifies *which*
+ * box this session is talking to (useful the moment an operator has
+ * more than one thinC install reachable) and *whether* it's currently
+ * privileged to write. Falls back to the literal string "thinc" (site
+ * config's own documented default) if the fetch fails for any reason
+ * -- never leaves the prompt blank. Re-run after every "login"/
+ * "logout" command (see the dispatch loops below) so the prompt
+ * reflects a state change immediately, not just at shell startup. */
 #define SHELL_PROMPT_MAX 96
 static char g_shell_prompt[SHELL_PROMPT_MAX] = "thinc> ";
 
 static void shell_prompt_init(const struct kx_client *client)
 {
-	struct kx_response r;
-	const char *instance_name = NULL;
+	struct kx_response site_r, whoami_r;
+	char fqdn[SHELL_PROMPT_MAX] = "thinc";
+	int authenticated = 0;
 
-	if (kx_client_request(client, "GET", "/v1/system/site", NULL, &r) == 0) {
-		if (r.status == 200)
-			instance_name = json_str_field(r.json, "instance_name");
-		if (instance_name != NULL && instance_name[0] != '\0')
-			snprintf(g_shell_prompt, sizeof(g_shell_prompt), "%s> ", instance_name);
-		kx_response_free(&r);
+	if (kx_client_request(client, "GET", "/v1/system/site", NULL, &site_r) == 0) {
+		if (site_r.status == 200) {
+			const char *instance_name = json_str_field(site_r.json, "instance_name");
+			const char *site_name = json_str_field(site_r.json, "site_name");
+			const char *domain_suffix = json_str_field(site_r.json, "domain_suffix");
+
+			if (instance_name != NULL && instance_name[0] != '\0' && domain_suffix != NULL) {
+				if (site_name != NULL && site_name[0] != '\0')
+					snprintf(fqdn, sizeof(fqdn), "%s.%s.%s", instance_name, site_name,
+					         domain_suffix);
+				else
+					snprintf(fqdn, sizeof(fqdn), "%s.%s", instance_name, domain_suffix);
+			}
+		}
+		kx_response_free(&site_r);
 	}
+
+	if (kx_client_request(client, "GET", "/v1/whoami", NULL, &whoami_r) == 0) {
+		if (whoami_r.status == 200) {
+			const struct json_value *jauth = json_object_get(whoami_r.json, "authenticated");
+
+			authenticated = jauth != NULL && jauth->type == JSON_BOOL && jauth->u.boolean;
+		}
+		kx_response_free(&whoami_r);
+	}
+
+	snprintf(g_shell_prompt, sizeof(g_shell_prompt), "%s%s ", fqdn, authenticated ? "#" : ">");
 }
 
 /* Every top-level command dispatch_command() recognizes, plus the
@@ -10455,6 +10505,8 @@ static int run_shell_fallback(const struct kx_client *client, int json_mode)
 			continue;
 		}
 		dispatch_command(client, json_mode, tokens[0], n - 1, tokens + 1);
+		if (strcmp(tokens[0], "login") == 0 || strcmp(tokens[0], "logout") == 0)
+			shell_prompt_init(client); /* auth state just changed -- reflect it immediately */
 	}
 	return 0;
 }
@@ -10518,6 +10570,8 @@ static int run_shell(const struct kx_client *client, int json_mode)
 			continue;
 		}
 		dispatch_command(client, json_mode, tokens[0], n - 1, tokens + 1);
+		if (strcmp(tokens[0], "login") == 0 || strcmp(tokens[0], "logout") == 0)
+			shell_prompt_init(client); /* auth state just changed -- reflect it immediately */
 	}
 
 	tcsetattr(STDIN_FILENO, TCSANOW, &saved);

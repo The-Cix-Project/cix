@@ -518,6 +518,24 @@ int hostauth_check_token(const char *token, char *out_username, size_t out_usern
 	return 0;
 }
 
+int hostauth_peek_token(const char *token, char *out_username, size_t out_username_size)
+{
+	int i;
+	time_t now = time(NULL);
+
+	if (token == NULL || token[0] == '\0')
+		return 0;
+	for (i = 0; i < HOSTAUTH_SESSION_MAX; i++) {
+		if (!g_sessions[i].in_use || strcmp(g_sessions[i].token, token) != 0)
+			continue;
+		if (g_config.idle_timeout_seconds != 0 && g_sessions[i].expires_at <= now)
+			return 0; /* expired -- leave reaping it to the next real check */
+		snprintf(out_username, out_username_size, "%s", g_sessions[i].username);
+		return 1;
+	}
+	return 0;
+}
+
 int hostauth_authorize_write(const char *token)
 {
 	char username[HOSTAUTH_USERNAME_MAX];

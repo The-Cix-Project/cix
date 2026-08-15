@@ -111,6 +111,42 @@ paths:
         "204":
           description: Session invalidated (or was already gone)
 
+  /whoami:
+    get:
+      summary: Is the caller's own bearer token currently authenticated (ADR-0164)
+      description: >
+        Introspection only, and read-only in a stronger sense than an
+        ordinary GET: it never mutates a session, unlike a request
+        that goes through the real write-gating check
+        (`hostauth_authorize_write()`/`hostauth_check_token()`), which
+        under a single-use config (`idle_timeout_seconds: 0`) would
+        consume the token just by checking it. Exists because write-
+        gating leaves every ordinary GET open regardless of auth state
+        (by design), so there was previously no way for a client to
+        answer "is my token still good" without attempting a real
+        mutation. No `Authorization` header, or one naming an unknown/
+        expired/absent session, both report `authenticated: false` --
+        this endpoint doesn't distinguish "never logged in" from
+        "session lapsed." `thincctl`'s own interactive shell prompt
+        (`host.site.tld>` unauthenticated, `host.site.tld#`
+        authenticated) is the first real caller.
+      operationId: getWhoami
+      responses:
+        "200":
+          description: Always 200, whether authenticated or not -- see authenticated field
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [authenticated, username]
+                properties:
+                  authenticated:
+                    type: boolean
+                  username:
+                    type: string
+                    nullable: true
+                    description: The session's real username when authenticated; null otherwise.
+
   /system/hostauth-config:
     get:
       summary: Current host-authentication configuration (ADR-0144)

@@ -2445,6 +2445,14 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 160 (done): CLI prompt shows host.site.tld + real auth state, plus a real mid-session login/logout bug (ADR-0164)
+
+`thincctl`'s interactive shell prompt now shows the full site FQDN and a real `>`/`#` auth indicator, backed by a new, deliberately non-mutating `GET /whoami`. Verifying it surfaced a genuine bug: mid-session `login`/`logout` updated the on-disk token but never the current process's own live client, so the current session silently stayed unauthenticated (or, on logout, kept sending an invalidated token) until restart. Full reasoning: ADR-0164.
+
+Also fixed along the way: 5 commands (`kmod`/`kmod-build`/`kmod-config`/`sysctl`/`hostauth-sessions`) were dispatchable and documented but missing from the shell's own Tab-completion list -- found by diffing programmatically, not by eye.
+
+Verified: a real login/logout cycle through a real pty against a live daemon, confirming the actual `>`/`#` prompt text transitions, not just the underlying API responses. Full regression sweep (`test_cli`, `test_hostauth`, `test_daemon`) -- zero failures.
+
 ## Part 159 (done): a malformed persisted state file must never be fatal to boot (ADR-0163)
 
 A real production incident during the Phase 5 rebrand migration: a config restore wrote an empty string as `site_config.json`'s content (a legitimate empty backup field, an existing validator that correctly allows empty content for most fields, wrong for this one), and the next boot's failed JSON parse turned into a full kernel panic -- `thincd` is real PID 1 on an installed system, so `main()`'s existing "any subsystem init failure is fatal" boot sequence had no distinction between "a config file is stale" and "the box is unbootable." Full reasoning, the two-layer fix (`siteconfig_load()`'s own graceful fallback, plus a new `boot_subsystem_init()` gate covering all ~20 persisted-JSON-state loaders in the real boot sequence), and what was deliberately left out of scope: ADR-0163.

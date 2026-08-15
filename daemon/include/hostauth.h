@@ -164,6 +164,16 @@ void hostauth_logout(const char *token);
  */
 int hostauth_check_token(const char *token, char *out_username, size_t out_username_size);
 
+/* Read-only sibling of hostauth_check_token() -- same validity check
+ * (unknown/expired token both return 0), but never mutates a session:
+ * no sliding-window expiry refresh, and critically, never consumes a
+ * single-use (idle_timeout_seconds == 0) token the way the real check
+ * does. For introspection only (GET /v1/hostauth/whoami) -- calling
+ * this can never itself invalidate a session, which repeatedly calling
+ * hostauth_check_token() for the same purpose would, under a single-
+ * use config. */
+int hostauth_peek_token(const char *token, char *out_username, size_t out_username_size);
+
 /* {"sessions":[{"username":...,"expires_in_seconds":<int or null>}, ...]}
  * -- every currently active session. Never includes a raw token, an
  * opaque session ID, or anything else that would let a caller target
