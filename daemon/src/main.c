@@ -150,6 +150,7 @@ static char PKG_REPO_CONFIG_PATH[PATH_MAX]; /* ADR-0121 */
 static char PKG_CACHE_DIR[PATH_MAX];              /* ADR-0122 */
 static char PKG_CACHE_CONFIG_PATH[PATH_MAX];      /* ADR-0122 */
 static char PKG_ARTIFACT_CONFIG_PATH[PATH_MAX];   /* ADR-0122 */
+static char PKG_BUILD_CONFIG_PATH[PATH_MAX];      /* ADR-0157 Phase 3 */
 /* Where a hostbuild job's own harvested output lands (ADR-0056) --
  * ARTIFACTS_DIR/<name>/..., a plain host directory, never a container-
  * visible path. */
@@ -304,6 +305,7 @@ static void compute_rebuildable_dir_relative_paths(void)
 	snprintf(PKG_CACHE_CONFIG_PATH, sizeof(PKG_CACHE_CONFIG_PATH), "%s/cache_config.json", PKG_DIR);
 	snprintf(PKG_ARTIFACT_CONFIG_PATH, sizeof(PKG_ARTIFACT_CONFIG_PATH), "%s/artifact_config.json",
 	         PKG_DIR);
+	snprintf(PKG_BUILD_CONFIG_PATH, sizeof(PKG_BUILD_CONFIG_PATH), "%s/build_config.json", PKG_DIR);
 	snprintf(ARTIFACTS_DIR, sizeof(ARTIFACTS_DIR), "%s/artifacts", REBUILDABLE_DIR);
 	snprintf(ISO_DIR, sizeof(ISO_DIR), "%s/iso", REBUILDABLE_DIR);
 	snprintf(PKGBUILD_TOOLCHAIN_FETCH_PATH, sizeof(PKGBUILD_TOOLCHAIN_FETCH_PATH),
@@ -7574,6 +7576,7 @@ static void finalize_rebuildable_storage_migration(void)
 	pkg_repo_repoint(PKG_REPO_CONFIG_PATH);
 	pkg_cache_repoint(PKG_CACHE_DIR, PKG_CACHE_CONFIG_PATH);
 	pkg_artifact_repoint(PKG_ARTIFACT_CONFIG_PATH);
+	pkg_build_config_repoint(PKG_BUILD_CONFIG_PATH);
 
 	storageplacement_set(STORAGE_KIND_REBUILDABLE, target_disk[0] != '\0' ? target_disk : NULL);
 
@@ -14088,6 +14091,66 @@ static void handle_rolling_config_put(int fd, const char *body, size_t body_len)
 }
 
 /*
+ * ADR-0157 Phase 3: GET/PUT /v1/system/pkg-build-config -- mirrors
+ * handle_pkg_cache_config_get/put()'s own shape exactly, one field,
+ * same "PUT re-reads via GET on success" convention. Controls how
+ * many pkg install/hostbuild chains may genuinely run at once, within
+ * [1, PKG_MAX_CONCURRENT_JOBS] (a real compile-time array bound, not
+ * just a soft suggestion) -- see pkg_build_set_max_jobs()'s own doc
+ * comment for what happens to already-in-flight chains when this is
+ * lowered.
+ */
+static void handle_pkg_build_config_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "max_concurrent_jobs");
+	jw_int(&w, pkg_build_get_max_jobs());
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_pkg_build_config_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const struct json_value *mj;
+	enum pkg_error perr;
+
+	if (body_len == 0) {
+		respond_error(fd, 400, "Bad Request", "max_concurrent_jobs is required");
+		return;
+	}
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	mj = json_object_get(root, "max_concurrent_jobs");
+	if (mj == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "max_concurrent_jobs is required");
+		return;
+	}
+	perr = pkg_build_set_max_jobs((int)json_as_number(mj));
+	json_free(root);
+	if (perr == PKG_ERR_INVALID_NAME) {
+		char msg[80];
+
+		snprintf(msg, sizeof(msg), "max_concurrent_jobs must be 1-%d", PKG_MAX_CONCURRENT_JOBS);
+		respond_error(fd, 400, "Bad Request", msg);
+		return;
+	}
+	if (perr != PKG_OK) {
+		respond_pkg_error(fd, perr);
+		return;
+	}
+	handle_pkg_build_config_get(fd);
+}
+
+/*
  * GET/PUT /v1/system/tls-throttle, GET /v1/system/tls-throttle/status
  * (ADR-0134) -- per-source-IP throttling for repeated failed HTTPS
  * handshakes. PUT is a real partial update, same convention pkg_repo_
@@ -15083,6 +15146,16 @@ static void dispatch(int fd, const struct http_request *req)
 		}
 		if (strcmp(req->method, "PUT") == 0) {
 			handle_rolling_config_put(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/system/pkg-build-config") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_pkg_build_config_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_pkg_build_config_put(fd, req->body, req->body_len);
 			return;
 		}
 	}
@@ -18088,6 +18161,8 @@ int main(int argc, char **argv)
 	if (pkg_cache_init(PKG_CACHE_DIR, PKG_CACHE_CONFIG_PATH) != 0)
 		return 1;
 	if (pkg_artifact_init(PKG_ARTIFACT_CONFIG_PATH) != 0)
+		return 1;
+	if (pkg_build_config_init(PKG_BUILD_CONFIG_PATH) != 0)
 		return 1;
 
 	/*

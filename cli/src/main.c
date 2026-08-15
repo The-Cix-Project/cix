@@ -227,6 +227,10 @@ static void print_usage(FILE *out)
 	        "               follow_rolling container sharing an image that just rebuilt --\n"
 	        "               a single follow_rolling container can override this default via\n"
 	        "               run --follow-rolling-jitter-seconds=N at creation time\n"
+	        "  pkg-build-config show  -- how many pkg install/hostbuild jobs may genuinely\n"
+	        "               run at once (ADR-0157)\n"
+	        "  pkg-build-config set --max-concurrent-jobs=N  -- 1-10; lowering it doesn't\n"
+	        "               disrupt jobs already in flight, only future ones\n"
 	        "  iso build [--disk=DEV --ip=A.B.C.D --prefix=N --gateway=A.B.C.D\n"
 	        "               --interface=IFNAME] [--wait]  -- assembles a fresh installer ISO\n"
 	        "               server-side (ADR-0064), from the most recent \"kanxeo\"/\"kernel\"/\n"
@@ -4936,6 +4940,83 @@ static int cmd_rolling_config(const struct kx_client *c, int json_mode, int argc
 		return cmd_rolling_config_set(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "kanxeoctl: unknown rolling-config subcommand '%s'\n", sub);
+	return 2;
+}
+
+/*
+ * ADR-0157 Phase 3: kanxeoctl pkg-build-config show|set -- mirrors
+ * cmd_rolling_config's own shape exactly, one field instead of several.
+ */
+static void fmt_pkg_build_config(const struct json_value *v)
+{
+	printf("max_concurrent_jobs=%ld\n",
+	       (long)json_as_number(json_object_get(v, "max_concurrent_jobs")));
+}
+
+static int cmd_pkg_build_config_show(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/pkg-build-config", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_pkg_build_config);
+}
+
+static int cmd_pkg_build_config_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *max_jobs = NULL;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--max-concurrent-jobs=", 23) == 0)
+			max_jobs = argv[i] + 23;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown pkg-build-config set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (max_jobs == NULL) {
+		fprintf(stderr, "usage: kanxeoctl pkg-build-config set --max-concurrent-jobs=N\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "max_concurrent_jobs");
+	jw_int(&w, atol(max_jobs));
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "PUT", "/v1/system/pkg-build-config", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_pkg_build_config);
+}
+
+static int cmd_pkg_build_config(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl pkg-build-config show\n"
+		                "       kanxeoctl pkg-build-config set --max-concurrent-jobs=N\n");
+		return 2;
+	}
+	sub = argv[0];
+	if (strcmp(sub, "show") == 0)
+		return cmd_pkg_build_config_show(c, json_mode);
+	if (strcmp(sub, "set") == 0)
+		return cmd_pkg_build_config_set(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "kanxeoctl: unknown pkg-build-config subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -9881,6 +9962,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_backup_config(client, json_mode, argc, argv);
 	if (strcmp(cmd, "rolling-config") == 0)
 		return cmd_rolling_config(client, json_mode, argc, argv);
+	if (strcmp(cmd, "pkg-build-config") == 0)
+		return cmd_pkg_build_config(client, json_mode, argc, argv);
 	if (strcmp(cmd, "tls-throttle") == 0)
 		return cmd_tls_throttle(client, json_mode, argc, argv);
 	if (strcmp(cmd, "hostauth-config") == 0)
@@ -10055,7 +10138,7 @@ static const char *const SHELL_COMMANDS[] = {
 	"disks",  "dns",       "exit",          "files",    "health",    "help",
 	"host-stats", "hostauth-config", "image", "inspect",       "iso",      "ldap",      "login",     "logout",    "logs",      "migrate-storage", "migrate-storage-status", "network",
 	"ntp",
-	"pause",  "ping",      "pkg",           "pki",      "process",   "ps",        "quit",      "reboot",
+	"pause",  "ping",      "pkg",           "pkg-build-config", "pki",      "process",   "ps",        "quit",      "reboot",
 	"resolv",
 	"restore", "rm",       "rolling-config", "routes",        "run",      "shutdown",  "site",
 	"start",  "stats",     "stop",          "storage",  "swap",     "syslog",    "time",      "tls-throttle", "unpause",   "update",

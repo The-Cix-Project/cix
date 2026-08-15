@@ -229,8 +229,9 @@ static char g_image_apply_image[PKG_IMAGE_NAME_MAX];
 static int chain_alloc(void)
 {
 	int i;
+	int max_jobs = pkg_build_get_max_jobs();
 
-	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
+	for (i = 0; i < max_jobs; i++) {
 		if (g_chains[i].name[0] == '\0')
 			return i;
 	}
@@ -4676,6 +4677,86 @@ void pkg_cache_clear(void)
 		unlink(path);
 	}
 	closedir(d);
+}
+
+/* ---- ADR-0157 Phase 3: operator-configured concurrent-build limit ----
+ *
+ * Mirrors pkg_cache_get_max_bytes()/pkg_cache_set_max_bytes()'s own
+ * shape exactly (one persisted field, load-with-default, save-on-set) --
+ * the same precedent ADR-0122/ADR-0124 already established for every
+ * other small daemon-wide *-config resource in this codebase.
+ */
+
+static char g_build_config_path[PATH_MAX];
+static int g_build_max_jobs = PKG_BUILD_MAX_JOBS_DEFAULT;
+
+static int save_build_config(void)
+{
+	struct json_writer w;
+	int rc;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "max_concurrent_jobs");
+	jw_int(&w, g_build_max_jobs);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	rc = persist_atomic_write(g_build_config_path, w.buf, w.len);
+	jw_free(&w);
+	return rc;
+}
+
+/* ADR-0141 Phase 4: path-only repoint -- see pkg_repoint()'s own doc comment. */
+void pkg_build_config_repoint(const char *new_config_path)
+{
+	snprintf(g_build_config_path, sizeof(g_build_config_path), "%s", new_config_path);
+}
+
+int pkg_build_config_init(const char *config_path)
+{
+	char *buf;
+	size_t len;
+	struct json_value *root;
+	const struct json_value *mj;
+
+	if (snprintf(g_build_config_path, sizeof(g_build_config_path), "%s", config_path) >=
+	    (int)sizeof(g_build_config_path))
+		return -1;
+	g_build_max_jobs = PKG_BUILD_MAX_JOBS_DEFAULT;
+
+	if (persist_read_file(config_path, &buf, &len) != 0 || buf == NULL)
+		return 0; /* no persisted config yet -- the default stands */
+
+	root = json_parse(buf, len);
+	free(buf);
+	if (root == NULL)
+		return 0;
+
+	mj = json_object_get(root, "max_concurrent_jobs");
+	if (mj != NULL) {
+		double v = json_as_number(mj);
+
+		if (v >= 1 && v <= PKG_MAX_CONCURRENT_JOBS)
+			g_build_max_jobs = (int)v;
+	}
+	json_free(root);
+	return 0;
+}
+
+int pkg_build_get_max_jobs(void)
+{
+	return g_build_max_jobs;
+}
+
+enum pkg_error pkg_build_set_max_jobs(int max_jobs)
+{
+	if (max_jobs < 1 || max_jobs > PKG_MAX_CONCURRENT_JOBS)
+		return PKG_ERR_INVALID_NAME;
+	g_build_max_jobs = max_jobs;
+	if (save_build_config() != 0)
+		return PKG_ERR_PERSIST_FAILED;
+	return PKG_OK;
 }
 
 /* ---- pkg/ redesign Part 3b (ADR-0122): plain-HTTP precompiled-artifact server config ----

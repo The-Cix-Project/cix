@@ -88,13 +88,25 @@
  * already sets, not an unbounded list. */
 #define PKG_MAX_SOURCES 16
 
-/* ADR-0157 Phase 2: max number of build/install/hostbuild chains that
- * may be genuinely in flight at once. Declared here (not just in
- * pkg.c) because main.c needs it too, to size/bound its own per-chain
- * WS conn tracking (g_build_log_ws_conns[]) and, in Phase 3, the
- * pkg-build-config endpoint's valid range. One source of truth for
- * both translation units -- never redefined independently in pkg.c. */
-#define PKG_MAX_CONCURRENT_JOBS 2
+/* ADR-0157: the hard compile-time ceiling on build/install/hostbuild
+ * chains that may exist at once -- sizes g_chains[]/g_build_output_
+ * entries[] (pkg.c) and bounds main.c's own per-chain WS conn tracking
+ * (g_build_log_ws_conns[]). Declared here, not pkg.c, because main.c
+ * needs it too -- one source of truth for both translation units,
+ * never redefined independently in pkg.c. This is the array size, not
+ * the *operator-configured* limit -- see PKG_BUILD_MAX_JOBS_DEFAULT
+ * and pkg_build_get_max_jobs()/pkg_build_set_max_jobs() (Phase 3) for
+ * the actual, runtime-adjustable ceiling within [1, this]. Raised from
+ * Phase 2's placeholder 2 to the task's own real target of 10. */
+#define PKG_MAX_CONCURRENT_JOBS 10
+
+/* ADR-0157 Phase 3: the operator-configured concurrency ceiling
+ * (GET/PUT /v1/system/pkg-build-config's own `max_concurrent_jobs`)
+ * defaults to this -- the task's own explicit ask ("configurable
+ * limit, default 10"), and not coincidentally equal to the compile-
+ * time ceiling above: out of the box, every array slot this daemon
+ * ever allocates for a build chain is actually usable. */
+#define PKG_BUILD_MAX_JOBS_DEFAULT PKG_MAX_CONCURRENT_JOBS
 
 /* Reserved container name prefix for an in-flight build. The real,
  * per-chain container name is "<PKG_BUILD_CONTAINER_NAME>-<chain_idx>"
@@ -782,6 +794,26 @@ void pkg_cache_write_json_status(struct json_writer *w);
 /* Removes every cached artifact -- an explicit operator reset; nothing
  * else in this module ever calls this itself. */
 void pkg_cache_clear(void);
+
+/* ---- ADR-0157 Phase 3: operator-configured concurrent-build limit ---- */
+
+/* Loads any persisted build-concurrency config (default:
+ * PKG_BUILD_MAX_JOBS_DEFAULT, same "missing file = first-ever startup,
+ * not an error" tolerance every other *_init() here already has). */
+int pkg_build_config_init(const char *config_path);
+
+/* ADR-0141 Phase 4: path-only repoint -- see pkg_repoint()'s own doc comment. */
+void pkg_build_config_repoint(const char *new_config_path);
+
+int pkg_build_get_max_jobs(void);
+
+/* max_jobs must be in [1, PKG_MAX_CONCURRENT_JOBS] -- the compile-time
+ * ceiling above it is a real array bound, not just a soft suggestion.
+ * Lowering it below the count of chains already in flight does not
+ * disrupt them -- they run to completion in their already-allocated
+ * slots; the new, lower ceiling only takes effect for the *next*
+ * chain-allocation decision (chain_alloc()). */
+enum pkg_error pkg_build_set_max_jobs(int max_jobs);
 
 /* ---- pkg/ redesign Part 3b (ADR-0122): plain-HTTP precompiled-artifact server config ---- */
 

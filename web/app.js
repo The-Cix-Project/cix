@@ -672,6 +672,7 @@ const CATEGORY_VIEWS = {
 	"daemon-config": "view-daemon-config",
 	"host-swap": "view-host-swap",
 	"rolling-restart": "view-rolling-restart",
+	"pkg-build-config": "view-pkg-build-config",
 	"hostauth-sessions": "view-hostauth-sessions",
 	"host-stats": "view-host-stats",
 	processes: "view-processes",
@@ -1166,6 +1167,7 @@ function renderTree() {
 						{ label: "Routes", hash: "routes", icon: "networks" },
 						{ label: "Host Swap", hash: "host-swap", icon: "system" },
 						{ label: "Rolling Restart", hash: "rolling-restart", icon: "system" },
+						{ label: "Package Builds", hash: "pkg-build-config", icon: "system" },
 						{ label: "Sessions", hash: "hostauth-sessions", icon: "system" },
 					],
 				},
@@ -5531,6 +5533,42 @@ document.getElementById("rc-form").addEventListener("submit", async (event) => {
 	}
 });
 
+/* ---- ADR-0157 Phase 3: pkg-build concurrency config ---- */
+
+let pkgBuildConfigDirty = false;
+
+async function refreshPkgBuildConfig() {
+	try {
+		const config = await apiRequest("GET", "/v1/system/pkg-build-config");
+
+		cache.pkgBuildConfig = config;
+		if (!pkgBuildConfigDirty)
+			document.getElementById("pbc-max-jobs").value = config.max_concurrent_jobs;
+	} catch (e) {
+		/* Best-effort -- the form just stays at whatever was last shown. */
+	}
+}
+
+document.getElementById("pbc-max-jobs").addEventListener("input", () => {
+	pkgBuildConfigDirty = true;
+});
+
+document.getElementById("pbc-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	try {
+		await apiRequest("PUT", "/v1/system/pkg-build-config", {
+			max_concurrent_jobs: parseInt(document.getElementById("pbc-max-jobs").value, 10),
+		});
+		clearStatus();
+		showStatus("Package-build concurrency config saved", false);
+		pkgBuildConfigDirty = false;
+		await refreshPkgBuildConfig();
+	} catch (e) {
+		showStatus("Failed to save package-build concurrency config: " + e.message, true);
+	}
+});
+
 let pkgArtifactConfigDirty = false;
 
 async function refreshPkgArtifactConfig() {
@@ -6866,6 +6904,7 @@ async function poll() {
 		await refreshSiteConfig();
 		await refreshDaemonConfig();
 		await refreshRollingConfig();
+		await refreshPkgBuildConfig();
 		await refreshRoutes();
 		await refreshSwap();
 		await refreshTlsThrottleConfig();

@@ -61,6 +61,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/system/kmod-build` | Rebuild the kernel with extra in-tree `=m` modules; poll via `/pkg/hostbuild/kernel` |
 | GET | `/system/rolling-config` | The configured rolling-restart jitter window (`jitter_window_seconds`) |
 | PUT | `/system/rolling-config` | Set the jitter window -- 0 disables jitter, restart happens immediately |
+| GET | `/system/pkg-build-config` | The configured pkg install/hostbuild concurrency ceiling (`max_concurrent_jobs`) |
+| PUT | `/system/pkg-build-config` | Set it -- 1-10; lowering it doesn't disrupt jobs already in flight |
 | GET | `/system/tls-throttle` | Per-source-IP throttling config for repeated failed HTTPS handshakes |
 | PUT | `/system/tls-throttle` | Partially update it -- fields omitted are left unchanged |
 | GET | `/system/tls-throttle/status` | Every source currently tracked for failed handshakes, live |
@@ -607,7 +609,7 @@ POST /v1/system/kmod-build
 {"build_image": "dev", "config_symbols": ["CONFIG_DUMMY"]}
 ```
 
-For a driver that isn't already in this platform's own curated `=m` module set, but does live in mainline Linux (the overwhelmingly common case) -- an ordinary hostbuild against the `kernel` recipe itself, the exact same mechanism `POST /pkg/hostbuild` drives (same v1 single-job-in-flight slot, same `409`/`PkgEntry` response shape, progress polled the identical way via `GET /pkg/hostbuild/kernel`), gaining only an optional `config_symbols` list. Each entry (a bare `CONFIG_*` name) is merged into the same curated kernel config this platform already builds from, forced to `=m`, via a second `merge_config.sh` fragment -- strictly additive: an empty or omitted list reproduces the exact existing kernel build unchanged. `build_image` needs a real GCC toolchain and `kmod` installed, same requirement as any other kernel hostbuild (see [`kernel-build-and-ab-updates.md`](../guides/kernel-build-and-ab-updates.md)).
+For a driver that isn't already in this platform's own curated `=m` module set, but does live in mainline Linux (the overwhelmingly common case) -- an ordinary hostbuild against the `kernel` recipe itself, the exact same mechanism `POST /pkg/hostbuild` drives (same shared pool of pkg-build chain slots, same `409`/`PkgEntry` response shape, progress polled the identical way via `GET /pkg/hostbuild/kernel`), gaining only an optional `config_symbols` list. Each entry (a bare `CONFIG_*` name) is merged into the same curated kernel config this platform already builds from, forced to `=m`, via a second `merge_config.sh` fragment -- strictly additive: an empty or omitted list reproduces the exact existing kernel build unchanged. `build_image` needs a real GCC toolchain and `kmod` installed, same requirement as any other kernel hostbuild (see [`kernel-build-and-ab-updates.md`](../guides/kernel-build-and-ab-updates.md)).
 
 Deliberately **not** a new, separate, persistent kernel-build-tree mechanism -- an initial design draft proposed exactly that (a `KDIR` kept around indefinitely for on-demand module builds), abandoned per direct "keep the mechanics simple, no extra moving parts" feedback in favor of reusing the already-proven whole-kernel rebuild this platform's own `kernel.recipe` already does, which guarantees kernel/module ABI match by construction rather than needing new freshness-tracking bookkeeping. The real, honestly-stated tradeoff: this rebuilds the *whole* kernel (heavier than compiling one driver) and needs a reboot to take effect -- the resulting `bzImage` + `lib/modules/` tree only actually applies via the existing A/B kernel-update cutover, never a live, same-boot addition. Genuinely out-of-tree (third-party, not-in-mainline) module support is deliberately left undesigned until a real, concrete need for it shows up (ADR-0159's own Phase C).
 
@@ -1330,6 +1332,8 @@ A package manager built from scratch: recipes are shell scripts (the same format
 
 **Installs are asynchronous.** The daemon is single-threaded and non-blocking; a network fetch or a real compile can take anywhere from seconds to minutes, so `POST /v1/pkg/install` returns immediately (`202`) and the actual work happens in the background — poll `GET /v1/pkg/{name}` for progress. **Fetching happens on the host** (a `curl` subprocess — this project's networking plane has no outbound NAT, so a build container has no network access at all, a stronger isolation boundary for untrusted build scripts, not a limitation worked around).
 
+**Up to `max_concurrent_jobs` install/hostbuild jobs may genuinely run at once (ADR-0157), default 10** — each its own independent chain, its own build container, its own captured output; a `POST /pkg/install`/`POST /pkg/hostbuild` while every chain slot is already busy gets `409`, same as before this existed (v1 was hardcoded to exactly one). `GET`/`PUT /v1/system/pkg-build-config` (`max_concurrent_jobs`, range 1-10 — 10 is also the daemon's own hard compile-time ceiling, not just this config's default) show/set the real ceiling; lowering it never disrupts jobs already in flight, only future ones. `GET /v1/pkg/build/log`'s own `?name=&image=` query params (below) exist specifically because more than one build can now be live-tailed at once.
+
 One-time setup, before installing anything:
 
 ```
@@ -1387,7 +1391,7 @@ Poll `GET /v1/pkg/hello` until `state` leaves `fetching`/`building`:
 
 `state: "failed"` populates `error` (checksum mismatch, build failure, etc.) — the package stays visible via `GET` so the failure is diagnosable, not silently dropped. `DELETE /v1/pkg/hello` unlinks every file in its manifest from the base image, not just the registry entry.
 
-v1 serializes installs — only one may be in flight at a time (`POST /v1/pkg/install` for a second package while another is still `fetching`/`building` is a `409`). Hostbuild jobs (below) share this exact same job slot.
+Up to `max_concurrent_jobs` installs may be in flight at once (ADR-0157, default 10; see [Package manager](#package-manager-source-based-asynchronous-installs) above) — a `POST /v1/pkg/install` while every chain slot is already busy is `409`. Hostbuild jobs (below) share this exact same pool of slots.
 
 ### Dependencies
 
@@ -1531,7 +1535,7 @@ See [`docs/guides/kernel-build-and-ab-updates.md`](../guides/kernel-build-and-ab
 POST /v1/pkg/update-all
 ```
 
-- Finds the first installed package (across every image) whose recipe's `pkg_version=` has drifted and starts an upgrade for it, reusing `POST /pkg/install {"upgrade": true}`'s entire existing mechanism — `202` with the started package's state, or `200 {"status": "nothing to update"}` if everything's already current. Starts at most one job at a time (the same v1 single-install-in-flight constraint every other install path has, honestly respected rather than worked around); call again once that job finishes to drain the whole backlog.
+- Finds the first installed package (across every image) whose recipe's `pkg_version=` has drifted and starts an upgrade for it, reusing `POST /pkg/install {"upgrade": true}`'s entire existing mechanism — `202` with the started package's state, or `200 {"status": "nothing to update"}` if everything's already current. Starts at most one job per call (a deliberate, still-current design choice, independent of ADR-0157's own concurrency ceiling — each call finds and starts exactly one drifted package, `409` only if every pkg-build chain slot happens to already be busy); call again to find and start the next drifted package, repeating until the whole backlog drains.
 
 ## This install's identity (site config)
 
@@ -1605,7 +1609,7 @@ Writes **exactly the same bundle `GET /system/backup` itself produces** — cont
 - Routes are set-once at creation and not echoed back or introspectable afterward; modifying them on a running container would need a new "enter another netns from outside" primitive, not built yet. See `docs/roadmap/ROADMAP.md`.
 - DNS and LDAP server bindings are both persisted (ADR-0091 fixed this for DNS; LDAP's own binding table, task #725, was built with persistence from the start). DNS: only one hosts-format record type; no CNAME/MX/TXT/etc.
 - PKI: no certificate revocation/CRL, no CSR-submission flow (the daemon always generates both the keypair and the cert itself). CA regeneration/rotation **is** built (`POST /pki/reset`, above) — that gap has closed since this list was first written.
-- Package manager: only one install/hostbuild in flight at a time (dependency chains, and `POST /pkg/update-all`'s own successive calls, still serialize through that same single slot — see [Host + package updates](#host--package-updates) above); no version-constrained dependencies (any installed version satisfies a dependency); symlinks in a package's own `DESTDIR` output are skipped (regular files and directories only).
+- Package manager: up to `max_concurrent_jobs` (default/max 10, ADR-0157) install/hostbuild chains may run at once, but each individual dependency chain still resolves and builds serially within itself (a chain's own dependencies-then-target order never parallelizes), and `POST /pkg/update-all`'s own successive calls still compete for that same shared pool of slots — see [Package manager](#package-manager-source-based-asynchronous-installs) above; no version-constrained dependencies (any installed version satisfies a dependency); symlinks in a package's own `DESTDIR` output are skipped (regular files and directories only).
 - No scheduled/periodic trigger for `POST /system/update` or `POST /pkg/update-all` — both are on-demand, operator- or cron-invoked; no automatic "update then reboot" chaining.
 - No volume/bind-mount concept beyond small, content-inlined `files` (see [Per-container config files + sysctls](#per-container-config-files--sysctls) above) — a large binary asset or directory tree has no home in this model yet.
 - Per-connection log lines elsewhere in this daemon (the audit trail, container lifecycle events) still don't carry a peer IP the way `log_tls_error()` now does (ADR-0134) — closed for the one case that was actually flooding a real deployment's logs, not generalized to every log line this daemon writes.

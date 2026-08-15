@@ -1943,6 +1943,55 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/pkg-build-config:
+    get:
+      summary: >
+        The configured pkg install/hostbuild concurrency ceiling (ADR-0157) --
+        how many build chains may genuinely run at once.
+      operationId: getSystemPkgBuildConfig
+      responses:
+        "200":
+          description: Current pkg-build concurrency config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgBuildConfig"
+    put:
+      summary: Set the pkg install/hostbuild concurrency ceiling (ADR-0157)
+      description: >
+        Within [1, 10] -- 10 is both the real default and the daemon's own
+        hard compile-time array bound (PKG_MAX_CONCURRENT_JOBS), not just a
+        soft suggestion. Lowering it doesn't disrupt chains already in
+        flight; they run to completion in their already-allocated slots.
+        The new, lower ceiling only takes effect for the next chain a
+        POST /pkg/install or /pkg/hostbuild tries to start.
+      operationId: putSystemPkgBuildConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [max_concurrent_jobs]
+              properties:
+                max_concurrent_jobs:
+                  type: integer
+                  minimum: 1
+                  maximum: 10
+      responses:
+        "200":
+          description: Updated pkg-build concurrency config (same shape as GET)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgBuildConfig"
+        "400":
+          description: max_concurrent_jobs missing, not a number, or out of the 1-10 range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /system/tls-throttle:
     get:
       summary: >
@@ -9223,6 +9272,20 @@ components:
           description: >
             Default 60. 0 disables jitter -- a follow_rolling container
             restarts immediately when its image's rolling version advances.
+
+    PkgBuildConfig:
+      type: object
+      required: [max_concurrent_jobs]
+      properties:
+        max_concurrent_jobs:
+          type: integer
+          minimum: 1
+          maximum: 10
+          description: >
+            Default 10 (ADR-0157). How many pkg install/hostbuild jobs may
+            genuinely run at once, each in its own build container. Lowering
+            it doesn't disrupt jobs already in flight -- only future ones,
+            once the new, lower ceiling is reached.
 
     TlsThrottleConfig:
       type: object

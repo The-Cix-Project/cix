@@ -417,10 +417,37 @@ int main(void)
 		return 1;
 	}
 
+	/* ADR-0157 Phase 3: the real, unmodified default before this test
+	 * touches it at all. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET", "/v1/system/pkg-build-config", NULL, &r) != 0 ||
+	    r.status != 200 || json_as_number(json_object_get(r.json, "max_concurrent_jobs")) != 10) {
+		fprintf(stderr, "FAIL: GET pkg-build-config expected 200 max_concurrent_jobs=10, got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
 	/* 1. bootstrap the build toolchain image */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/pkg/bootstrap", NULL, &r) != 0 || r.status != 204) {
 		fprintf(stderr, "FAIL: POST /v1/pkg/bootstrap, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	/* ADR-0157 Phase 3 raised the real default ceiling to 10 -- lowered
+	 * here to a small, deterministic 2 so every "N chains busy" boundary
+	 * check below (originally written against Phase 2's placeholder
+	 * default) stays meaningful without needing 10+ concurrent installs
+	 * to actually exhaust it. The config endpoint's own behavior
+	 * (validation, and the ceiling genuinely taking effect) is proven
+	 * separately, later in this test, by deliberately varying it. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT", "/v1/system/pkg-build-config",
+	                       "{\"max_concurrent_jobs\":2}", &r) != 0 || r.status != 200) {
+		fprintf(stderr, "FAIL: PUT pkg-build-config max_concurrent_jobs=2 (test setup), got %d\n",
+		        r.status);
 		ok = 0;
 	}
 	kx_response_free(&r);
@@ -2056,6 +2083,96 @@ skip_pin_isolation:
 		kx_response_free(&r);
 	}
 skip_hostbuild:
+
+	/* ADR-0157 Phase 3: PUT /v1/system/pkg-build-config validation --
+	 * still at the ceiling=2 this test set right after startup. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT", "/v1/system/pkg-build-config",
+	                       "{\"max_concurrent_jobs\":0}", &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: PUT pkg-build-config max_concurrent_jobs=0 expected 400, got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT", "/v1/system/pkg-build-config",
+	                       "{\"max_concurrent_jobs\":11}", &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: PUT pkg-build-config max_concurrent_jobs=11 expected 400, got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	/* Lowering the ceiling to 1 and confirming chain_alloc() actually
+	 * honors it (not just the compile-time PKG_MAX_CONCURRENT_JOBS
+	 * array bound) is the real proof this config is load-bearing, not
+	 * just a number that gets echoed back. "overflow"/"hbconcurrent"
+	 * are both still fresh, never-installed recipes at this point. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT", "/v1/system/pkg-build-config",
+	                       "{\"max_concurrent_jobs\":1}", &r) != 0 ||
+	    r.status != 200 || json_as_number(json_object_get(r.json, "max_concurrent_jobs")) != 1) {
+		fprintf(stderr, "FAIL: PUT pkg-build-config max_concurrent_jobs=1, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"overflow\"}", &r) != 0 ||
+	    r.status != 202) {
+		fprintf(stderr, "FAIL: POST install overflow (ceiling=1) status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"hbconcurrent\"}", &r) !=
+	        0 ||
+	    r.status != 409) {
+		fprintf(stderr,
+		        "FAIL: POST install hbconcurrent while ceiling=1 already busy expected 409, got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	if (poll_pkg_state(&client, "overflow", state, sizeof(state), 60) != 0 ||
+	    strcmp(state, "installed") != 0) {
+		fprintf(stderr, "FAIL: overflow (ceiling=1) ended in state '%s', expected installed\n",
+		        state);
+		ok = 0;
+	}
+
+	/* Restored to the real default before the second install below --
+	 * proves raising the ceiling back up re-admits genuine concurrency
+	 * immediately, not just that lowering it worked. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT", "/v1/system/pkg-build-config",
+	                       "{\"max_concurrent_jobs\":10}", &r) != 0 || r.status != 200) {
+		fprintf(stderr, "FAIL: PUT pkg-build-config restore max_concurrent_jobs=10, got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"hbconcurrent\"}", &r) !=
+	        0 ||
+	    r.status != 202) {
+		fprintf(stderr,
+		        "FAIL: POST install hbconcurrent after restoring ceiling=10 status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	if (poll_pkg_state(&client, "hbconcurrent", state, sizeof(state), 60) != 0 ||
+	    strcmp(state, "installed") != 0) {
+		fprintf(stderr, "FAIL: hbconcurrent (restored ceiling) ended in state '%s'\n", state);
+		ok = 0;
+	}
 
 	/* cleanup */
 	run_cmd("rm -rf '%s'", scratch_dir);

@@ -41,6 +41,8 @@ kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `hostauth-sessions revoke USERNAME` | Log that user out everywhere -- revokes every active session for it at once |
 | `rolling-config show` | The configured rolling-restart jitter window (`jitter_window_seconds`) used by `run --follow-rolling` (ADR-0124) |
 | `rolling-config set --jitter-window-seconds=N` | Set the jitter window — `0` disables jitter (restart happens immediately on every rolling reconcile) |
+| `pkg-build-config show` | The configured pkg install/hostbuild concurrency ceiling (`max_concurrent_jobs`, default 10, ADR-0157) |
+| `pkg-build-config set --max-concurrent-jobs=N` | Set it — 1-10; lowering it doesn't disrupt jobs already in flight, only future ones |
 | `tls-throttle show` | Per-source-IP throttling config for repeated failed HTTPS handshakes (ADR-0134) |
 | `tls-throttle set [--enabled \| --disabled] [--threshold=N] [--window-seconds=N] [--block-seconds=N] [--log-interval-seconds=N]` | Partial update — only the fields given are touched. `threshold` failures within `window-seconds` blocks a source, on both listeners, for `block-seconds`; loopback is never throttled. `log-interval-seconds` separately caps how often a repeatedly-failing source's own log line is written — `0` logs every failure |
 | `tls-throttle status` | Every source currently tracked for failed handshakes, live (in-memory, not persisted) |
