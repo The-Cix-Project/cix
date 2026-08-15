@@ -12,7 +12,7 @@
 # list), and upstream ships NO release tarball at all -- only git tags
 # -- so pkg_source below fetches a real git-archive snapshot from
 # cgit's own /snapshot/ endpoint instead (a real, byte-stable tarball
-# of that exact tag's tree, the same shape kanxeo.recipe's own
+# of that exact tag's tree, the same shape thinc.recipe's own
 # self-hosted-gitea archive-download already relies on for the same
 # reason).
 #

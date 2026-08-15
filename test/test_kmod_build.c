@@ -4,7 +4,7 @@
  * pkg_hostbuild_start() mechanism test_pkg.c's own step 17 already
  * proves generically) gaining an optional config_symbols parameter
  * threaded through as the build container's own real
- * KANXEO_KMOD_EXTRA_SYMBOLS environment variable.
+ * THINC_KMOD_EXTRA_SYMBOLS environment variable.
  *
  * Not a real kernel build (far too slow for this suite, and the real
  * 6.18.40 kernel.recipe lives in this project's own git-tracked
@@ -48,7 +48,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/kanxeod";
+	dargv[0] = "build/thincd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -59,8 +59,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/kanxeod", dargv, environ);
-		perror("execve build/kanxeod");
+		execve("build/thincd", dargv, environ);
+		perror("execve build/thincd");
 		_exit(127);
 	}
 	return pid;
@@ -165,7 +165,7 @@ static int stage_fixture_tarball(const char *scratch_dir, char *out_tarball_path
 	return compute_file_sha256(out_tarball_path, out_sha256, sha256_size);
 }
 
-/* pkg_build() writes $KANXEO_KMOD_EXTRA_SYMBOLS to symbols.txt --
+/* pkg_build() writes $THINC_KMOD_EXTRA_SYMBOLS to symbols.txt --
  * unset/empty just produces an empty file, exactly mirroring the real
  * kernel.recipe's own "strictly additive, unset changes nothing" shape
  * (its own merge_config.sh branch is skipped the same way). */
@@ -185,7 +185,7 @@ static int write_kernel_fixture_recipe(const char *tarball_path, const char *sha
 		return -1;
 	fprintf(f, "pkg_name=kernel\npkg_version=1.0\npkg_source=file://%s\n", tarball_path);
 	fprintf(f, "pkg_sha256=%s\npkg_depends=\"\"\n\n", sha256);
-	fprintf(f, "pkg_build() {\n\tgcc -o hello hello.c\n\techo -n \"$KANXEO_KMOD_EXTRA_SYMBOLS\" "
+	fprintf(f, "pkg_build() {\n\tgcc -o hello hello.c\n\techo -n \"$THINC_KMOD_EXTRA_SYMBOLS\" "
 	           "> symbols.txt\n}\n\n");
 	fprintf(f, "pkg_install() {\n\tcp hello \"$PKG_DESTDIR/hello\"\n\tcp symbols.txt "
 	           "\"$PKG_DESTDIR/symbols.txt\"\n}\n");
@@ -212,7 +212,7 @@ int main(void)
 	struct kx_client client;
 	int ok = 1;
 	struct kx_response r;
-	char scratch_dir[] = "/tmp/kanxeo_test_kmod_build_XXXXXX";
+	char scratch_dir[] = "/tmp/thinc_test_kmod_build_XXXXXX";
 	char tarball_path[512], sha256[128];
 	char artifact_path[PATH_MAX] = "";
 	char state[32];
@@ -325,7 +325,7 @@ int main(void)
 	kx_response_free(&r);
 
 	/* 2. The real payoff: config_symbols actually reaches the build
-	 * container as KANXEO_KMOD_EXTRA_SYMBOLS, space-joined. */
+	 * container as THINC_KMOD_EXTRA_SYMBOLS, space-joined. */
 	memset(&r, 0, sizeof(r));
 	if (ok && (kx_client_request(&client, "POST", "/v1/system/kmod-build",
 	                              "{\"build_image\":\"hbimage\","
@@ -401,7 +401,7 @@ int main(void)
 			ok = 0;
 		} else if (strcmp(symbols_content, "CONFIG_FOO CONFIG_BAR") != 0) {
 			fprintf(stderr,
-			        "FAIL: KANXEO_KMOD_EXTRA_SYMBOLS did not reach the build container "
+			        "FAIL: THINC_KMOD_EXTRA_SYMBOLS did not reach the build container "
 			        "correctly -- got '%s', expected 'CONFIG_FOO CONFIG_BAR'\n",
 			        symbols_content);
 			ok = 0;

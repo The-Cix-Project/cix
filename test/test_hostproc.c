@@ -1,7 +1,7 @@
 /*
  * Logging/web-UI epic Part 6 end-to-end test (ADR-0131): proves the
  * host process list + kill subsystem (daemon/src/hostproc.c) over
- * real HTTP against a real kanxeod subprocess --
+ * real HTTP against a real thincd subprocess --
  *   - GET /v1/system/processes: a real /proc scan lists real processes
  *     (this test's own daemon subprocess among them), and a real
  *     running container's own process is correlated to it by name via
@@ -91,7 +91,7 @@ int main(void)
 	}
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/kanxeod";
+	dargv[0] = "build/thincd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -103,8 +103,8 @@ int main(void)
 		return 1;
 	}
 	if (daemon_pid == 0) {
-		execve("build/kanxeod", dargv, environ);
-		perror("execve build/kanxeod");
+		execve("build/thincd", dargv, environ);
+		perror("execve build/thincd");
 		_exit(127);
 	}
 
@@ -131,8 +131,8 @@ int main(void)
 		for (i = 0; i < r.json->u.array.count; i++) {
 			if (json_num_field(r.json->u.array.items[i], "pid") == (long)daemon_pid) {
 				found = 1;
-				if (!str_eq(json_str_field(r.json->u.array.items[i], "comm"), "kanxeod")) {
-					fprintf(stderr, "FAIL: daemon's own process has comm=%s, expected kanxeod\n",
+				if (!str_eq(json_str_field(r.json->u.array.items[i], "comm"), "thincd")) {
+					fprintf(stderr, "FAIL: daemon's own process has comm=%s, expected thincd\n",
 					        json_str_field(r.json->u.array.items[i], "comm"));
 					ok = 0;
 				}

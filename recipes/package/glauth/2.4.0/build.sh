@@ -1,13 +1,13 @@
 #
 # glauth -- a lightweight, single-binary LDAP server (github.com/glauth/glauth),
-# replacing lldap as Kanxeo's own standard integrable LDAP provider. Chosen
+# replacing lldap as thinC's own standard integrable LDAP provider. Chosen
 # over lldap for this project's own LDAP redesign (tasks #723-731) because
 # its SQLite backend can be built directly into the main binary (no
 # separate embedded web UI/Rust+WASM frontend build lldap needed, ADR-0036) --
-# a much smaller, simpler dependency footprint for something Kanxeo's own
+# a much smaller, simpler dependency footprint for something thinC's own
 # REST layer manages entirely (task #726), never a human-facing admin UI.
 #
-# Read by kanxeod's own non-executing metadata scanner (pkg_name=/
+# Read by thincd's own non-executing metadata scanner (pkg_name=/
 # pkg_version=/pkg_source=/pkg_sha256=/pkg_depends=, daemon/src/pkg.c's
 # parse_recipe()) AND sourced as a real POSIX shell script inside the
 # isolated, network-less build container (". /build/recipe.sh") to run
@@ -15,7 +15,7 @@
 #
 # pkg_source is NOT glauth's own plain upstream tarball -- glauth v2 needs
 # real assembly first, all done once, reproducibly, off-box (this project's
-# own build sandbox has real internet access; a deployed Kanxeo host does
+# own build sandbox has real internet access; a deployed thinC host does
 # not, ADR-0034/the "no outbound DNS by default" finding):
 #
 #   1. git clone --branch v2.4.0 --depth 1 https://github.com/glauth/glauth.git
@@ -50,7 +50,7 @@
 #      build containers have no network access at all (same reasoning
 #      gitea.recipe's own GOFLAGS=-mod=vendor already established).
 #   7. Drop .git/, docker/, and the other three unused plugin submodules
-#      (glauth-mysql/glauth-postgres/glauth-pam -- Kanxeo only ever uses the
+#      (glauth-mysql/glauth-postgres/glauth-pam -- thinC only ever uses the
 #      embedded SQLite backend) to keep the tarball reasonably sized.
 #   8. tar -cf glauth-2.4.0.tarball glauth-2.4.0/ (with the above tree
 #      renamed to that top-level directory name).
@@ -58,7 +58,7 @@
 # pkg_sha256 below is this exact custom-assembled tarball's own checksum,
 # not upstream's release/tag tarball -- verified directly against the copy
 # actually used for this recipe's own real end-to-end build/install
-# verification through the real kanxeod pipeline (not just locally).
+# verification through the real thincd pipeline (not just locally).
 #
 # Re-assembled and re-served during the LDAP re-provisioning session that
 # followed the full-box reinstall (ADR-0146's own incident) -- the prior
@@ -66,7 +66,7 @@
 # session's own scratch LAN server. Same offline-vendored assembly process
 # documented above, same real end-to-end verification (glauth 2.4.0 tag,
 # embed_sqlite shim, `go mod vendor`, built and run for real against the
-# real Kanxeo pkg pipeline) -- just re-hosted, since neither URL was ever
+# real thinC pkg pipeline) -- just re-hosted, since neither URL was ever
 # meant to be a permanent artifact home (this project's own dev sandbox has
 # no such thing yet). Whoever re-serves this next should do the same:
 # rebuild per the steps above, re-host, update pkg_source/pkg_sha256 here.
@@ -79,7 +79,7 @@ pkg_depends=""
 # CGO_ENABLED=1 is load-bearing: mattn/go-sqlite3 compiles SQLite's own C
 # amalgamation directly (no external libsqlite3 needed, matching gitea.recipe's
 # own CGO+sqlite precedent) -- this is why the build image needs a working C
-# toolchain staged (tcc/libc-dev, e.g. kanxeo-builder), not just Go.
+# toolchain staged (tcc/libc-dev, e.g. thinc-builder), not just Go.
 # GOFLAGS=-mod=vendor + GOPROXY=off make any accidental network module
 # fetch fail loudly and immediately, same defensive posture gitea.recipe's
 # own build already established, rather than silently depending on Go's

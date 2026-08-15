@@ -14,7 +14,7 @@
  * Exec target is test/dual_console_child.c (already used by
  * test_dual_console.c as a trivial line-echo stand-in) -- reused here
  * rather than duplicated, staged into a real container image and run
- * via X-Kanxeo-Exec-Cmd instead of as a bare host subprocess. The
+ * via X-thinC-Exec-Cmd instead of as a bare host subprocess. The
  * container's own long-lived process is test/daemon_child.c (already
  * used across this project's other daemon tests for exactly "stay
  * alive for a controlled duration").
@@ -70,7 +70,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/kanxeod";
+	dargv[0] = "build/thincd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -81,8 +81,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/kanxeod", dargv, environ);
-		perror("execve build/kanxeod");
+		execve("build/thincd", dargv, environ);
+		perror("execve build/thincd");
 		_exit(127);
 	}
 	return pid;
@@ -370,7 +370,7 @@ int main(void)
 		                 "Connection: Upgrade\r\n"
 		                 "Sec-WebSocket-Key: %s\r\n"
 		                 "Sec-WebSocket-Version: 13\r\n"
-		                 "X-Kanxeo-Exec-Cmd: /bin/dual_console_child\r\n"
+		                 "X-thinC-Exec-Cmd: /bin/dual_console_child\r\n"
 		                 "\r\n",
 		                 TEST_WS_KEY);
 		CHECK(write_all_raw(fd, req, (size_t)rlen) == 0, "send upgrade request");

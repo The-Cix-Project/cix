@@ -4,17 +4,17 @@
 # merged into any container image. Closes the real gap ADR-0063 left
 # open: those four packages already build from source (grub.recipe,
 # sbsigntools.recipe, xorriso.recipe, mtools.recipe) but only ever
-# land inside a *container* image's rootfs -- useless to kanxeod
+# land inside a *container* image's rootfs -- useless to thincd
 # itself, which runs unsandboxed on the host and needs real,
 # execve()-able binaries at a known host filesystem path to assemble
 # an installer ISO (image/src/mkinstalleriso.c) server-side, the same
-# way ADR-0057's kanxeo hostbuild needs a real host-side mkbootroot.
+# way ADR-0057's thinc hostbuild needs a real host-side mkbootroot.
 #
 # --build-image= must already have grub, sbsigntools, xorriso, and
 # mtools installed via ordinary `pkg install` first (the "dev" image
 # built up over Part 5 of the bare-metal-readiness plan has all four)
 # -- a hard precondition documented here in a comment rather than via
-# pkg_depends=, the same posture kernel.recipe/kanxeo.recipe already
+# pkg_depends=, the same posture kernel.recipe/thinc.recipe already
 # established: pkg_depends='s automatic dependency-chain-installer
 # resolves against a *target image*, which a hostbuild job has none
 # of, so it is deliberately left empty for every hostbuild recipe in

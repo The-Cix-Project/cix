@@ -25,7 +25,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define BRIDGE_NAME "kanxeo-test0"
+#define BRIDGE_NAME "thinc-test0"
 #define VETH_HOST "vt-a"
 #define VETH_CTR "vt-b"
 #define TEST_PORT 17623

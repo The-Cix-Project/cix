@@ -130,7 +130,7 @@ static int extract_field(const char *output, const char *prefix, char *out, size
 }
 
 /*
- * A CA's common_name is a free-form display label ("Kanxeo Root CA"),
+ * A CA's common_name is a free-form display label ("thinC Root CA"),
  * not a hostname -- dns_name_is_valid() doesn't apply. It is however
  * embedded verbatim into an openssl `-subj "/CN=<common_name>"`
  * argument, so an unvalidated '/' would let a caller inject

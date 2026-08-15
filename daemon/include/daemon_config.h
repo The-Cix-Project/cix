@@ -4,7 +4,7 @@
 #include "json.h"
 
 /*
- * kanxeod's own live-reconfigurable settings (Part 0.5) -- deliberately
+ * thincd's own live-reconfigurable settings (Part 0.5) -- deliberately
  * small. Which network is the management one (network_def.is_management,
  * network_set_management()/network_find_management()) is NOT duplicated
  * here: that's network.c's own persisted state, and this module only
@@ -93,7 +93,7 @@ enum daemon_config_error daemon_config_set_https_port(int port);
 
 /*
  * The persisted dedicated bind IP (ADR-0068), or NULL if none is set
- * -- in which case kanxeod binds to the management network's own
+ * -- in which case thincd binds to the management network's own
  * address instead (main.c's own fallback, this module knows nothing
  * about which network that is). A non-NULL value is always a second,
  * explicit IPv4 address living on the management network's bridge

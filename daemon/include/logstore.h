@@ -7,21 +7,21 @@
 
 /*
  * A consolidated, API-accessible, size-bounded log (raised directly
- * by the user: kernel dmesg, kanxeod's own diagnostics, and a per-
+ * by the user: kernel dmesg, thincd's own diagnostics, and a per-
  * request audit trail should all land in one place, retrievable over
  * the API like everything else in this project -- no SSH, no general
  * shell, ADR-0034, so a local log file an operator can't reach on a
  * real install isn't good enough).
  *
  * Every entry is one JSON-lines record: {"ts": <unix seconds>,
- * "source": "kernel"|"kanxeod"|"audit", "level": "...", "msg": "..."}.
+ * "source": "kernel"|"thincd"|"audit", "level": "...", "msg": "..."}.
  * "source" distinguishes the real Linux kernel ring buffer (read from
- * /dev/kmsg), kanxeod's own internal diagnostics (its existing
+ * /dev/kmsg), thincd's own internal diagnostics (its existing
  * scattered stderr prints, now also captured here rather than
  * replaced -- stderr still matters during boot, before the API is
  * reachable), and a per-REST-request audit entry (one hook in
  * dispatch(), daemon/src/main.c's single top-level request router --
- * every kanxeoctl command and every web UI action already goes
+ * every thincctl command and every web UI action already goes
  * through this exact function, API-First Mandate, so this is a
  * complete audit trail with zero client-side instrumentation needed).
  *
@@ -76,7 +76,7 @@ enum logstore_error {
  * level_filter (which only ever filters what's already stored).
  * Covers the full real syslog severity range kernel dmesg entries
  * already carry (emerg..debug, kmsg_level_name()'s own names) since
- * that's genuinely the noisiest source today; kanxeod/audit's own
+ * that's genuinely the noisiest source today; thincd/audit's own
  * "info"/"error" entries map onto the same scale. Default "debug"
  * (log everything) preserves this store's exact pre-existing
  * behavior for anyone who never touches the setting.
@@ -111,7 +111,7 @@ void logstore_repoint(const char *new_dir, const char *new_state_path);
 /* Starts the /dev/kmsg reader -- registered into the caller's own
  * epoll loop (main.c's g_epfd) the same way every other fd this
  * daemon watches already is; returns the fd to add (POLLIN), or -1 if
- * /dev/kmsg couldn't be opened (non-fatal -- logged as a kanxeod-
+ * /dev/kmsg couldn't be opened (non-fatal -- logged as a thincd-
  * source entry, kernel-source entries just won't be captured). Call
  * logstore_kmsg_readable() when that fd becomes readable.
  */
@@ -128,7 +128,7 @@ void logstore_write(const char *source, const char *level, const char *fmt, ...)
 	__attribute__((format(printf, 3, 4)));
 
 /*
- * Transparent container-log capture (added alongside kernel/kanxeod/
+ * Transparent container-log capture (added alongside kernel/thincd/
  * audit): every container's stdout/stderr is always piped and drained
  * (main.c's handle_container_output_event(), unconditional since this
  * feature landed -- no longer gated behind the per-container
@@ -165,7 +165,7 @@ int64_t logstore_max_bytes(void);
 /*
  * min_level must be one of the real syslog severity names
  * (kmsg_level_name()'s own set: "emerg", "alert", "crit", "err" or
- * "error" (both accepted -- kanxeod/audit's own convention is
+ * "error" (both accepted -- thincd/audit's own convention is
  * "error", the kernel's is "err"), "warning" or "warn" (both
  * accepted), "notice", "info", "debug") -- anything else is
  * LOGSTORE_ERR_INVALID_MIN_LEVEL. Applied at logstore_write() time,

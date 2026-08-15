@@ -12,7 +12,7 @@
  * needs to create/grow/shrink the partition table itself.
  *
  * sfdisk (util-linux) is the real tool driving this -- the same one
- * image/src/kanxeo-install.c's own auto_partition() already uses for
+ * image/src/thinc-install.c's own auto_partition() already uses for
  * the fixed OS-disk layout at install time. This module drives it the
  * same way (a scripted stdin body) but incrementally, on an
  * operator-chosen data disk, after install:

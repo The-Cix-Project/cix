@@ -2,12 +2,12 @@
  * Phase 11 part 4/5 demonstrable test: proves the actual installer *and*
  * its real, distributable .iso packaging both work -- given a raw,
  * blank target disk and the same 5-partition layout an operator would
- * leave behind after a real, interactive fdisk session, kanxeo-install
+ * leave behind after a real, interactive fdisk session, thinc-install
  * (booted from the real .iso build/mkinstalleriso produces, via QEMU's
  * -cdrom, not a test-only disk-image approximation) partitions its role-
  * detection, formats, writes the real payload, and configures a static
  * IP -- then more, completely separate boots prove the freshly-installed
- * disk actually comes up as a real, running kanxeod *with Secure Boot
+ * disk actually comes up as a real, running thincd *with Secure Boot
  * genuinely enforced* (ADR-0015). "Install" and "boot what was
  * installed" are the same real code paths already proven in parts 1-2,
  * and "the ISO an operator would actually use" is now the same artifact
@@ -20,7 +20,7 @@
  * (GRUB's own menu; fdisk's own interactive UI, see step 4's own comment
  * for why this replaced cfdisk), then the three-session Secure Boot flow:
  *   1. build/mkinstalleriso's real .iso + a blank target disk,
- *      partitioned by kanxeo-install itself via --auto-partition (its
+ *      partitioned by thinc-install itself via --auto-partition (its
  *      own scripted sfdisk, the exact same layout a real fdisk session
  *      produces -- this session's own job is proving the installer's
  *      role-detection/format/write logic, not re-proving *interactive*
@@ -39,8 +39,8 @@
  *      scripted through shim's real MokManager UI to confirm the
  *      pending enrollment.
  *   3. The target disk again, Secure Boot still enforced, boots for
- *      real -- kanxeod --init-mode --slot=a off the partition
- *      kanxeo-install wrote, now via the fully-trusted shim -> signed
+ *      real -- thincd --init-mode --slot=a off the partition
+ *      thinc-install wrote, now via the fully-trusted shim -> signed
  *      systemd-boot -> signed kernel chain.
  *
  * Verification of what the installer actually wrote happens from the
@@ -61,24 +61,24 @@
 #include <unistd.h>
 
 #define MKBOOTROOT_BIN "build/mkbootroot"
-#define KANXEOD_BIN "build/kanxeod"
-#define KANXEOCTL_BIN "build/kanxeoctl"
-#define KANXEO_INSTALL_BIN "build/kanxeo-install"
-#define KANXEO_RECOVER_BIN "build/kanxeo-recover"
+#define THINCD_BIN "build/thincd"
+#define THINCCTL_BIN "build/thincctl"
+#define THINC_INSTALL_BIN "build/thinc-install"
+#define THINC_RECOVER_BIN "build/thinc-recover"
 #define MKINSTALLERISO_BIN "build/mkinstalleriso"
 #define BZIMAGE_PATH "build/bzImage"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
 #define DEBUGFS_BIN "/usr/sbin/debugfs"
 #define OVMF_VARS_TEMPLATE "/usr/share/OVMF/OVMF_VARS_4M.ms.fd"
-#define SIGNING_KEY "image/keys/kanxeo-signing.key"
-#define SIGNING_CERT_PEM "image/keys/kanxeo-signing.crt"
-#define SIGNING_CERT_DER "image/keys/kanxeo-signing.cer"
+#define SIGNING_KEY "image/keys/thinc-signing.key"
+#define SIGNING_CERT_PEM "image/keys/thinc-signing.crt"
+#define SIGNING_CERT_DER "image/keys/thinc-signing.cer"
 /* ADR-0064: mkinstalleriso now takes an explicit isotools-root rather
  * than a hardcoded /usr/bin/grub-mkrescue -- "/usr" reproduces this
  * tool's original host-borrowed behavior, exactly what this dev
  * sandbox's own real grub-mkrescue/sbsign install already is. */
 #define ISOTOOLS_ROOT "/usr"
-#define MOK_PASSWORD "kanxeotest"
+#define MOK_PASSWORD "thinctest"
 
 #define E2FSCK_BIN "/sbin/e2fsck"
 
@@ -90,8 +90,8 @@
 
 #define INSTALL_TIMEOUT_SECONDS 180
 #define BOOT_TIMEOUT_SECONDS 120
-#define INSTALL_SUCCESS_MARKER "kanxeo-install: install complete"
-#define BOOT_SUCCESS_MARKER "kanxeod listening on"
+#define INSTALL_SUCCESS_MARKER "thinc-install: install complete"
+#define BOOT_SUCCESS_MARKER "thincd listening on"
 
 #define TEST_IP "192.168.50.10"
 #define TEST_PREFIX 24
@@ -99,15 +99,15 @@
 /* This project's own qemu-part1.config disables predictable network
  * interface naming, so a virtio-net device always shows up as "eth0"
  * in a fresh QEMU guest (confirmed live, not assumed -- this is the
- * exact --interface= value kanxeo-install.c needs to pass through,
+ * exact --interface= value thinc-install.c needs to pass through,
  * Part 0.5). */
 #define TEST_IFACE "eth0"
 
 /* A blank disk file of the standard test size -- shared by the real
  * GRUB-path smoke test and the main Secure Boot flow below, each
  * against its own disk file. Unpartitioned: every session in this file
- * now boots with --auto-partition (kanxeo-install's own scripted
- * sfdisk, image/src/kanxeo-install.c) rather than this test pre-
+ * now boots with --auto-partition (thinc-install's own scripted
+ * sfdisk, image/src/thinc-install.c) rather than this test pre-
  * partitioning host-side -- one source of truth for the partition
  * layout, not two copies of the same sfdisk script kept in sync by
  * hand. */
@@ -170,7 +170,7 @@ static int run_e2fsck_fy(const char *path)
 
 int main(void)
 {
-	char workdir[] = "/tmp/kanxeo_test_installer_XXXXXX";
+	char workdir[] = "/tmp/thinc_test_installer_XXXXXX";
 	char stage_dir[600], control_plane_squashfs[600], installer_stage[600], installer_iso[600];
 	char target_disk_img[600];
 	char ovmf_vars[600];
@@ -189,21 +189,21 @@ int main(void)
 		return 1;
 	}
 	snprintf(stage_dir, sizeof(stage_dir), "%s/cp_stage", workdir);
-	snprintf(control_plane_squashfs, sizeof(control_plane_squashfs), "%s/kanxeod-root.squashfs", workdir);
+	snprintf(control_plane_squashfs, sizeof(control_plane_squashfs), "%s/thincd-root.squashfs", workdir);
 	snprintf(installer_stage, sizeof(installer_stage), "%s/installer_stage", workdir);
 	snprintf(installer_iso, sizeof(installer_iso), "%s/installer.iso", workdir);
 	snprintf(target_disk_img, sizeof(target_disk_img), "%s/target_disk.img", workdir);
 	snprintf(ovmf_vars, sizeof(ovmf_vars), "%s/OVMF_VARS.fd", workdir);
 
-	/* 1. The payload: kanxeod's own control-plane squashfs, unchanged
-	 * from parts 1-2 except now also carrying web/ (kanxeod's own
+	/* 1. The payload: thincd's own control-plane squashfs, unchanged
+	 * from parts 1-2 except now also carrying web/ (thincd's own
 	 * DEFAULT_WEB_ROOT is a relative path, resolved against PID 1's own
 	 * CWD -- never staged before, so the installed system's dashboard
 	 * 404'd on every request despite the REST API working fine; found
 	 * live, after a real install). */
 	{
-		char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN, stage_dir, (char *)KANXEOD_BIN,
-			                     (char *)KANXEOCTL_BIN, "web", control_plane_squashfs,
+		char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN, stage_dir, (char *)THINCD_BIN,
+			                     (char *)THINCCTL_BIN, "web", control_plane_squashfs,
 			                     "", /* no real GPU firmware needed for a boot test */
 			                     "", /* no kernel modules needed for a boot test */
 			                     "", /* no kmod tools needed for a boot test */
@@ -217,7 +217,7 @@ int main(void)
 	 * same kind of artifact an operator would actually use, just with
 	 * real test values plus --auto-partition standing in for a real
 	 * operator's own --disk=/--ip=/... choice at the GRUB boot-menu edit
-	 * prompt (--auto-partition itself -- kanxeo-install's own scripted
+	 * prompt (--auto-partition itself -- thinc-install's own scripted
 	 * sfdisk, added as a convenience once typing the fixed fdisk sequence
 	 * by hand for every VM/scripted install proved to be pure friction --
 	 * gets exercised for real right here, this session's own install). */
@@ -226,7 +226,7 @@ int main(void)
 	         TEST_PREFIX, TEST_GATEWAY, TEST_IFACE);
 	{
 		char *mkiso_argv[] = { (char *)MKINSTALLERISO_BIN, installer_stage,
-			                (char *)KANXEO_INSTALL_BIN,    (char *)KANXEO_RECOVER_BIN,
+			                (char *)THINC_INSTALL_BIN,    (char *)THINC_RECOVER_BIN,
 			                (char *)BZIMAGE_PATH,          control_plane_squashfs,
 			                (char *)SIGNING_KEY,           (char *)SIGNING_CERT_PEM,
 			                (char *)SIGNING_CERT_DER,      installer_iso,
@@ -251,7 +251,7 @@ int main(void)
 	 * runs (not an instant, uninterruptible auto-boot) before the
 	 * default entry boots and completes -- a throwaway disk, since this
 	 * is only proving the boot *mechanism*, not re-verifying what
-	 * kanxeo-install itself writes (already covered by session 1). */
+	 * thinc-install itself writes (already covered by session 1). */
 	{
 		char grub_smoke_disk[600], grub_smoke_vars[600];
 		struct qemu_boot_opts opts;
@@ -277,7 +277,7 @@ int main(void)
 		opts.scripted_input = mok_password;
 		opts.n_scripted_input = 2;
 		outcome = qemu_boot_capture(&opts, captured, sizeof(captured));
-		if (outcome != QEMU_BOOT_SUCCESS || strstr(captured, "Kanxeo Install") == NULL ||
+		if (outcome != QEMU_BOOT_SUCCESS || strstr(captured, "thinC Install") == NULL ||
 		    strstr(captured, "will be executed automatically") == NULL) {
 			fprintf(stderr,
 			        "real GRUB-path boot did not show a menu/countdown or complete "
@@ -288,7 +288,7 @@ int main(void)
 		}
 	}
 
-	/* 4. fdisk-interactive smoke test: kanxeo-install's real partitioning
+	/* 4. fdisk-interactive smoke test: thinc-install's real partitioning
 	 * path -- without --skip-partition, it shells out to a real,
 	 * interactive fdisk (switched from cfdisk: fdisk's own ncurses-free,
 	 * command-letter/line-based UI can actually be scripted via plain
@@ -301,7 +301,7 @@ int main(void)
 	 * real fdisk first (not guessed): create a GPT label, five
 	 * partitions sized to match this project's own layout, set
 	 * partition 1's type to EFI System, then (fdisk's expert submenu)
-	 * name all five to the exact GPT names kanxeo-install itself reads
+	 * name all five to the exact GPT names thinc-install itself reads
 	 * back -- confirmed byte-for-byte via `sfdisk -d` against the
 	 * existing sfdisk-scripted layout used elsewhere in this project.
 	 * Boots via direct_kernel with kernel_args built fresh here (neither
@@ -341,19 +341,19 @@ int main(void)
 			{ "Command (m for help): ", "x\n" },
 			{ "Expert command (m for help): ", "n\n" },
 			{ "Partition number (", "1\n" },
-			{ "New name: ", "kanxeo-esp\n" },
+			{ "New name: ", "thinc-esp\n" },
 			{ "Expert command (m for help): ", "n\n" },
 			{ "Partition number (", "2\n" },
-			{ "New name: ", "kanxeo-root-a\n" },
+			{ "New name: ", "thinc-root-a\n" },
 			{ "Expert command (m for help): ", "n\n" },
 			{ "Partition number (", "3\n" },
-			{ "New name: ", "kanxeo-root-b\n" },
+			{ "New name: ", "thinc-root-b\n" },
 			{ "Expert command (m for help): ", "n\n" },
 			{ "Partition number (", "4\n" },
-			{ "New name: ", "kanxeo-config\n" },
+			{ "New name: ", "thinc-config\n" },
 			{ "Expert command (m for help): ", "n\n" },
 			{ "Partition number (", "5\n" },
-			{ "New name: ", "kanxeo-containers\n" },
+			{ "New name: ", "thinc-containers\n" },
 			{ "Expert command (m for help): ", "r\n" },
 			{ "Command (m for help): ", "w\n" },
 			{ "input password: ", MOK_PASSWORD "\n" },
@@ -363,7 +363,7 @@ int main(void)
 		snprintf(fdisk_smoke_disk, sizeof(fdisk_smoke_disk), "%s/fdisk_smoke_disk.img", workdir);
 		snprintf(fdisk_smoke_vars, sizeof(fdisk_smoke_vars), "%s/fdisk_smoke_vars.fd", workdir);
 		snprintf(fdisk_kernel_args, sizeof(fdisk_kernel_args),
-		         "console=ttyS0 root=/dev/sr0 rootfstype=iso9660 ro init=/bin/kanxeo-install -- "
+		         "console=ttyS0 root=/dev/sr0 rootfstype=iso9660 ro init=/bin/thinc-install -- "
 		         "--disk=/dev/vda --ip=%s --prefix=%d --gateway=%s --interface=%s",
 		         TEST_IP, TEST_PREFIX, TEST_GATEWAY, TEST_IFACE);
 		{
@@ -424,7 +424,7 @@ int main(void)
 	 * empirically to bypass firmware's normal LoadImage-based Secure Boot
 	 * check entirely) is what makes this safe: a pure test-harness
 	 * convenience standing in for what, on real hardware, is a genuine
-	 * "Secure Boot off for this one boot" step -- kanxeo-install's own
+	 * "Secure Boot off for this one boot" step -- thinc-install's own
 	 * code runs identically either way.
 	 *
 	 * enroll_signing_key()'s "mokutil --import" prompts twice for a
@@ -439,7 +439,7 @@ int main(void)
 		char direct_args[512];
 
 		snprintf(direct_args, sizeof(direct_args),
-		         "console=ttyS0 root=/dev/sr0 rootfstype=iso9660 ro init=/bin/kanxeo-install "
+		         "console=ttyS0 root=/dev/sr0 rootfstype=iso9660 ro init=/bin/thinc-install "
 		         "-- %s",
 		         kernel_args);
 
@@ -486,7 +486,7 @@ int main(void)
 
 		snprintf(drive_arg, sizeof(drive_arg), "%s@@%ld", target_disk_img, esp_start_sec * SECTOR_SIZE);
 		if (run_subprocess_capture("/usr/bin/mdir", mdir_argv, listing, sizeof(listing)) != 0 ||
-		    strstr(listing, "KANXEO") == NULL) {
+		    strstr(listing, "THINC") == NULL) {
 			fprintf(stderr, "installed ESP has no loader entry -- listing:\n%s\n", listing);
 			ok = 0;
 		} else {
@@ -622,12 +622,12 @@ int main(void)
 	/* 9. Session 3: the actual end-to-end proof -- boot the target disk
 	 * alone, for real, with Secure Boot still enforced (secure_boot=1)
 	 * and a real NIC attached this time, and confirm it comes up as a
-	 * genuinely working kanxeod that actually bootstrapped its
+	 * genuinely working thincd that actually bootstrapped its
 	 * management network from the static IP/gateway/interface configured at
 	 * install time (Part 0.5). Nothing here is test-built; this is
 	 * exactly what an operator would see after rebooting a freshly
-	 * installed, MOK-confirmed machine -- shim -> the Kanxeo-signed
-	 * grubx64.efi (systemd-boot) -> the Kanxeo-signed kernel, all now
+	 * installed, MOK-confirmed machine -- shim -> the thinC-signed
+	 * grubx64.efi (systemd-boot) -> the thinC-signed kernel, all now
 	 * trusted, zero further exceptions. */
 	{
 		struct qemu_boot_opts opts;
@@ -655,7 +655,7 @@ int main(void)
 	}
 
 	/* 10. The actual persistence proof (ADR-0018): BASE_DIR
-	 * (/var/lib/kanxeo) must be the real kanxeo-containers partition
+	 * (/var/lib/thinc) must be the real thinc-containers partition
 	 * boot_init() now mounts, not a fresh tmpfs -- session 3's boot
 	 * above already exercised ensure_dir()'s own directory creation
 	 * (images/, containers/, pki/, pkg/) against whatever BASE_DIR
@@ -667,14 +667,14 @@ int main(void)
 	 * partition (debugfs -w, no mount needed) BEFORE a second,
 	 * completely independent boot, still present with the exact same
 	 * content AFTER it, is the stronger proof that matters here: real
-	 * data genuinely survives a real reboot, not just that kanxeod
+	 * data genuinely survives a real reboot, not just that thincd
 	 * created some directories once. */
 	{
 		char containers_extract[600];
 		char marker_src[600];
 		char listing[4096];
 		char marker_readback[256];
-		const char *marker_content = "kanxeo-persistence-test-marker\n";
+		const char *marker_content = "thinc-persistence-test-marker\n";
 
 		snprintf(containers_extract, sizeof(containers_extract), "%s/containers_extract.img",
 		         workdir);
@@ -692,7 +692,7 @@ int main(void)
 			/*
 			 * ADR-0141's layout-grouping refactor moved images/, pki/,
 			 * pkg/ out from directly under the partition root -- by the
-			 * time this session-3 boot has actually run kanxeod once,
+			 * time this session-3 boot has actually run thincd once,
 			 * migrate_flat_layout_to_grouped() has already relocated
 			 * them into state/pki and rebuildable/{images,pkg}. Checking
 			 * for the pre-ADR-0141 flat names here was stale (confirmed
@@ -705,21 +705,21 @@ int main(void)
 			    strstr(listing, "state") == NULL || strstr(listing, "containers") == NULL ||
 			    strstr(listing, "rebuildable") == NULL) {
 				fprintf(stderr,
-				        "containers partition missing kanxeod's own directories after a "
+				        "containers partition missing thincd's own directories after a "
 				        "real boot -- BASE_DIR was not actually the real partition. "
 				        "listing:\n%s\n",
 				        listing);
 				ok = 0;
 			} else {
-				printf("containers partition after session 3 (real kanxeod state, not "
+				printf("containers partition after session 3 (real thincd state, not "
 				       "tmpfs):\n%s\n",
 				       listing);
 			}
 		}
 
-		/* The "base" image's own C runtime (kanxeo-install.c's own
+		/* The "base" image's own C runtime (thinc-install.c's own
 		 * containers-partition block, staged from mkinstalleriso.c's
-		 * KANXEO_RUNTIME_DIR_SRC payload) must already be present right
+		 * THINC_RUNTIME_DIR_SRC payload) must already be present right
 		 * here, before session 4 and before any pkg install ever runs
 		 * -- proving the installer itself wrote it, not something a
 		 * later boot happened to create. Without this, nothing
@@ -727,9 +727,9 @@ int main(void)
 		 * successfully (confirmed directly this session). */
 		if (ok) {
 			/* rebuildable/images/..., not the pre-ADR-0141 flat images/...
-			 * -- kanxeo-install.c itself still seeds this at the OLD flat
+			 * -- thinc-install.c itself still seeds this at the OLD flat
 			 * path by design (migrate_flat_layout_to_grouped() relocates
-			 * it on kanxeod's first real startup, which session 3's own
+			 * it on thincd's first real startup, which session 3's own
 			 * boot above has already triggered by this point). */
 			char *ls_lib64_argv[] = { (char *)DEBUGFS_BIN, "-R",
 				                   "ls -l rebuildable/images/base/rootfs/lib64",
@@ -797,9 +797,9 @@ int main(void)
 		 * still required even though this check has nothing to do with
 		 * networking: the ESP's own loader entry (written by session
 		 * 1's install) bakes in --bind=<the configured static IP> on
-		 * kanxeod's kernel command line unconditionally, on every boot
+		 * thincd's kernel command line unconditionally, on every boot
 		 * of this disk -- omitting the NIC here means that address is
-		 * never actually assigned to any interface, so kanxeod's own
+		 * never actually assigned to any interface, so thincd's own
 		 * bind() fails and PID 1 exits, panicking the kernel (found
 		 * directly by first omitting it here). */
 		{

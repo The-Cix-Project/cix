@@ -200,7 +200,7 @@ static void consume(struct client_ws_buf *b, size_t frame_len)
 
 /*
  * Shared WS handshake for both kx_console_run() (path always
- * /v1/containers/{name}/console, optional X-Kanxeo-Exec-Cmd header)
+ * /v1/containers/{name}/console, optional X-thinC-Exec-Cmd header)
  * and kx_pkg_build_log_run() below (fixed path, no such header) --
  * label identifies which one for error messages, path is the exact
  * request-line target to send.
@@ -236,7 +236,7 @@ static int do_ws_handshake(const struct kx_client *c, const char *label, const c
 		                 "Connection: Upgrade\r\n"
 		                 "Sec-WebSocket-Key: %s\r\n"
 		                 "Sec-WebSocket-Version: 13\r\n"
-		                 "X-Kanxeo-Exec-Cmd: %s\r\n"
+		                 "X-thinC-Exec-Cmd: %s\r\n"
 		                 "\r\n",
 		                 path, c->host, c->port, key, exec_cmd_header);
 	} else {

@@ -778,7 +778,7 @@ void network_write_json_list(struct json_writer *w)
 
 /* ADR-0066: a real, read-only view of the box's own kernel routing
  * table -- the daemon is the only way to ever inspect a running
- * Kanxeo install (ADR-0034, no SSH/general shell), and until now
+ * thinC install (ADR-0034, no SSH/general shell), and until now
  * there was no way to see this at all. */
 #define ROUTE_DUMP_MAX 64
 

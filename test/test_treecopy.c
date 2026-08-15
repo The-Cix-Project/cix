@@ -63,8 +63,8 @@ int main(void)
 	char path[PATH_MAX];
 	int ok = 1;
 
-	snprintf(src, sizeof(src), "/tmp/kanxeo_test_treecopy_src_%d", (int)getpid());
-	snprintf(dst, sizeof(dst), "/tmp/kanxeo_test_treecopy_dst_%d", (int)getpid());
+	snprintf(src, sizeof(src), "/tmp/thinc_test_treecopy_src_%d", (int)getpid());
+	snprintf(dst, sizeof(dst), "/tmp/thinc_test_treecopy_dst_%d", (int)getpid());
 	mkdir(src, 0755);
 	mkdir(dst, 0755);
 

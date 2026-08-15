@@ -100,7 +100,7 @@ int cgroup_create(const struct cgroup_limits *lim, int *out_fd)
  * v2 controller this project's own container/host-stats code needs,
  * in the root's own subtree_control -- io/cpuset (this function's own
  * original scope) plus memory/pids/cpu, added after a real, confirmed
- * gap: a genuinely fresh cgroup v2 hierarchy (kanxeod running as real
+ * gap: a genuinely fresh cgroup v2 hierarchy (thincd running as real
  * PID 1, no systemd ever pre-delegating anything to its own default
  * slices, unlike every dev/test environment this project had
  * exercised so far) starts with a completely EMPTY root

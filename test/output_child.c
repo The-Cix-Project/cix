@@ -13,7 +13,7 @@
  * escape that raw control byte to stay valid JSON, and json_parse()
  * used to reject any \uXXXX escape outright -- silently failing the
  * ENTIRE response parse the moment any captured_output contained one
- * (found live: `kanxeoctl ps` returned nothing against a real box
+ * (found live: `thincctl ps` returned nothing against a real box
  * with LDAP containers running). This line exists so that regression
  * is caught here, locally, rather than only live again.
  */

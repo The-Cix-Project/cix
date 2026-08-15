@@ -1,6 +1,6 @@
 /*
  * Part 4 (bare-metal-readiness plan, ADR-0062) end-to-end test: proves
- * disk_quota_bytes' real wiring over real HTTP against a real kanxeod
+ * disk_quota_bytes' real wiring over real HTTP against a real thincd
  * subprocess -- JSON parsing, quotamap_get_or_assign()'s real,
  * persisted project-id allocation (same name always gets the same id
  * back; a fresh name gets a fresh, incrementing one), and the full
@@ -50,7 +50,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/kanxeod";
+	dargv[0] = "build/thincd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -61,8 +61,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/kanxeod", dargv, environ);
-		perror("execve build/kanxeod");
+		execve("build/thincd", dargv, environ);
+		perror("execve build/thincd");
 		_exit(127);
 	}
 	return pid;
@@ -94,7 +94,7 @@ static int wait_for_daemon(const struct kx_client *c, int max_attempts)
 }
 
 /* Real, whole-file read of the daemon's own persisted project-id map
- * -- the same kanxeo_test_data_dir_XXXXXX path start_daemon() itself
+ * -- the same thinc_test_data_dir_XXXXXX path start_daemon() itself
  * was pointed at, so this is the exact file quotamap_init()/
  * quotamap_get_or_assign() actually read and wrote, not a guess at
  * its shape. */

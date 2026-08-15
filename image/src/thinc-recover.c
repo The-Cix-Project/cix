@@ -1,7 +1,7 @@
 /*
- * kanxeo-recover: a deliberately tiny, independent break-glass tool
+ * thinc-recover: a deliberately tiny, independent break-glass tool
  * (ADR-0146) -- boots as its own init= target from the SAME installer
- * media as kanxeo-install (a second GRUB menu entry, see
+ * media as thinc-install (a second GRUB menu entry, see
  * mkinstalleriso.c), but never reformats or reinstalls anything. It
  * mounts the ALREADY-INSTALLED system's own real containers partition
  * read-write, resets exactly one field (admin_groups, back to "no one
@@ -9,12 +9,12 @@
  * everything else -- every container, every LDAP record, the LDAP
  * backend settings themselves -- completely untouched.
  *
- * Deliberately NOT sharing kanxeo-install.c's own partition-discovery
+ * Deliberately NOT sharing thinc-install.c's own partition-discovery
  * machinery (sfdisk -d + GPT-name lookup): this tool's own real,
  * fixed target is always /dev/vda5, the exact same hardcoded
- * "kanxeo-containers is always here once a system is actually
+ * "thinc-containers is always here once a system is actually
  * installed" convention daemon/src/main.c's own CONTAINERS_DEVICE and
- * kanxeo-install.c's own BOOT_TIME_DISK_PREFIX already rely on (a
+ * thinc-install.c's own BOOT_TIME_DISK_PREFIX already rely on (a
  * fresh install's own disk can be attached at any device path while
  * the installer runs, but the *result* is always addressed this way
  * from then on). A recovery tool's own real security property is how
@@ -26,7 +26,7 @@
  * "not trivial" bar: reaching this code at all already requires
  * hypervisor/physical console access to attach different boot media
  * and force a reboot -- something no network-side attacker
- * manipulating kanxeod's own REST API could ever do, gated or not.
+ * manipulating thincd's own REST API could ever do, gated or not.
  * On top of that, this tool also requires a real typed confirmation
  * at the console before touching anything, so a stray or accidental
  * boot into this entry can't silently disable write-gating.
@@ -167,16 +167,16 @@ int main(void)
 
 	dual_printf("\n");
 	dual_printf("=====================================================================\n");
-	dual_printf("  Kanxeo Recovery: reset host-auth admin_groups (ADR-0146)\n");
+	dual_printf("  thinC Recovery: reset host-auth admin_groups (ADR-0146)\n");
 	dual_printf("=====================================================================\n");
 	dual_printf("This resets ONLY the admin_groups list in the already-installed\n");
 	dual_printf("system's own persisted host-auth config back to empty -- the same\n");
-	dual_printf("state a fresh install starts in, where every kanxeod API write is\n");
+	dual_printf("state a fresh install starts in, where every thincd API write is\n");
 	dual_printf("open with no login required. Nothing else is touched: no container,\n");
 	dual_printf("no LDAP user/group record, no LDAP backend setting, no data of any\n");
 	dual_printf("kind is modified or deleted.\n");
 	dual_printf("\n");
-	dual_printf("Use this only if you are genuinely locked out of kanxeod's own API\n");
+	dual_printf("Use this only if you are genuinely locked out of thincd's own API\n");
 	dual_printf("(every login attempt failing) and have no other way back in.\n");
 	dual_printf("\n");
 
@@ -186,7 +186,7 @@ int main(void)
 		dual_perror("mount " CONTAINERS_DEVICE);
 		dual_printf(
 		    "Could not mount %s -- this recovery tool only supports the standard layout\n"
-		    "(host-auth state on the primary OS disk's own kanxeo-containers partition).\n"
+		    "(host-auth state on the primary OS disk's own thinc-containers partition).\n"
 		    "A system whose state storage was relocated to a different disk needs manual\n"
 		    "recovery instead.\n",
 		    CONTAINERS_DEVICE);
@@ -279,8 +279,8 @@ int main(void)
 		dual_perror("umount " CONTAINERS_MOUNT);
 
 	dual_printf("\nDone -- admin_groups reset to empty. Remove this recovery media and\n");
-	dual_printf("reboot into the normal installed system; every kanxeod API write is\n");
-	dual_printf("open again until you configure a real admin group (kanxeoctl\n");
+	dual_printf("reboot into the normal installed system; every thincd API write is\n");
+	dual_printf("open again until you configure a real admin group (thincctl\n");
 	dual_printf("hostauth-config set --admin-group=...).\n");
 	return 0;
 }

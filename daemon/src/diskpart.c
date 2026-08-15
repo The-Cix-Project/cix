@@ -12,7 +12,7 @@
 
 extern char **environ;
 
-/* Same shape as image/src/kanxeo-install.c's own run_subprocess_stdin()
+/* Same shape as image/src/thinc-install.c's own run_subprocess_stdin()
  * (that copy drives the exact same sfdisk scripted-partition-table
  * mode, just for the fixed install-time layout rather than an
  * operator-chosen data disk after install) -- duplicated rather than

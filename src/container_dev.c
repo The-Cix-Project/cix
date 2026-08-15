@@ -104,7 +104,7 @@ int container_dev_bpf_attach(int cgroup_fd, const struct device_spec *devices, i
 	load_attr.insns = (uint64_t)(uintptr_t)prog;
 	load_attr.license = (uint64_t)(uintptr_t)license;
 	load_attr.expected_attach_type = KX_BPF_CGROUP_DEVICE;
-	memcpy(load_attr.prog_name, "kanxeo_devcg", sizeof("kanxeo_devcg"));
+	memcpy(load_attr.prog_name, "thinc_devcg", sizeof("thinc_devcg"));
 
 	prog_fd = (int)sys_bpf(KX_BPF_PROG_LOAD, &load_attr, sizeof(load_attr));
 	if (prog_fd < 0)

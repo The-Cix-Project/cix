@@ -8,7 +8,7 @@
  * with this project's own established precedent of hand-rolling
  * protocols for the trusted daemon process itself rather than linking
  * external client libraries (rtnetlink instead of iproute2/libnl,
- * hand-rolled HTTP/WebSocket/JSON) -- kanxeod already speaks several
+ * hand-rolled HTTP/WebSocket/JSON) -- thincd already speaks several
  * real wire protocols this way, LDAP's own BIND/SEARCH operations are
  * a small, well-specified (RFC 4511) subset to add one more.
  *

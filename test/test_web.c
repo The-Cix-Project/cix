@@ -1,5 +1,5 @@
 /*
- * Phase 5 end-to-end test: proves kanxeod's static-file serving
+ * Phase 5 end-to-end test: proves thincd's static-file serving
  * (daemon/src/staticfile.c) works over real HTTP -- correct status/
  * content-type per asset, 404 for missing files, path traversal
  * rejected, and that adding this didn't regress /v1/... routing.
@@ -86,7 +86,7 @@ int main(void)
 		return 1;
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", data_dir);
 
-	dargv[0] = "build/kanxeod";
+	dargv[0] = "build/thincd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -98,8 +98,8 @@ int main(void)
 		return 1;
 	}
 	if (daemon_pid == 0) {
-		execve("build/kanxeod", dargv, environ);
-		perror("execve build/kanxeod");
+		execve("build/thincd", dargv, environ);
+		perror("execve build/thincd");
 		_exit(127);
 	}
 
@@ -114,7 +114,7 @@ int main(void)
 	}
 
 	/* 1-2. index and its title marker */
-	check(&client, "/", 200, "text/html", "Kanxeo", NULL, &ok);
+	check(&client, "/", 200, "text/html", "thinC", NULL, &ok);
 	/* 3. app.js */
 	check(&client, "/app.js", 200, "application/javascript", "docs/api/openapi.yaml", NULL, &ok);
 	/* 4. style.css */

@@ -1,5 +1,5 @@
 /*
- * kanxeoctl: a pure REST client for the Kanxeo host API
+ * thincctl: a pure REST client for the thinC host API
  * (docs/api/openapi.yaml). Per the project's API-First Mandate
  * (CLAUDE.md, ADR-0005), this file holds no namespace/cgroup/mount
  * logic of its own -- every subcommand is exactly one HTTP call via
@@ -26,15 +26,15 @@
 static void print_usage(FILE *out)
 {
 	fprintf(out,
-	        "usage: kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args]\n"
+	        "usage: thincctl [--host=ADDR] [--port=N] [--json] <command> [args]\n"
 	        "\n"
 	        "commands:\n"
 	        "  health\n"
 	        "  boot      -- build version/time, A/B slot, kernel version (uname)\n"
-	        "  shutdown  -- stop kanxeod; powers off the host too when it's running as\n"
-	        "               real PID 1 (an installed system) -- a dev/interactive kanxeod\n"
+	        "  shutdown  -- stop thincd; powers off the host too when it's running as\n"
+	        "               real PID 1 (an installed system) -- a dev/interactive thincd\n"
 	        "               just exits, same as it always has on SIGTERM\n"
-	        "  reboot    -- stop kanxeod; restarts the host too when running as PID 1\n"
+	        "  reboot    -- stop thincd; restarts the host too when running as PID 1\n"
 	        "  update [--image=PATH] [--kernel=PATH]  -- writes a fresh control-plane\n"
 	        "               squashfs and/or a fresh kernel (already transferred onto the\n"
 	        "               box, e.g. via scp) onto this daemon's own inactive A/B slot and\n"
@@ -156,7 +156,7 @@ static void print_usage(FILE *out)
 	        "               the daemon's own host-auth backend (prompts for whichever of\n"
 	        "               username/password isn't given as a flag, with echo off for the\n"
 	        "               password); on success persists the session token to\n"
-	        "               ~/.kanxeoctl_token (mode 0600) so every subsequent kanxeoctl\n"
+	        "               ~/.thincctl_token (mode 0600) so every subsequent thincctl\n"
 	        "               invocation authenticates automatically -- a no-op, harmlessly, on a\n"
 	        "               daemon where write-gating was never activated (no admin-group user\n"
 	        "               exists yet)\n"
@@ -200,14 +200,14 @@ static void print_usage(FILE *out)
 	        "               (ADR-0046); convenience for identification + suggesting FQDNs,\n"
 	        "               never enforced\n"
 	        "  site set [--instance-name=NAME] [--site-name=NAME] [--domain-suffix=NAME]\n"
-	        "  daemon-config show  -- kanxeod's own listen port, HTTP/HTTPS exposure, and\n"
+	        "  daemon-config show  -- thincd's own listen port, HTTP/HTTPS exposure, and\n"
 	        "               which network is currently its management one\n"
 	        "  daemon-config set [--port=N] [--https-port=N] [--enable-http] [--disable-http]\n"
 	        "               [--enable-https] [--disable-https] [--management-network=NAME]\n"
 	        "               [--bind-ip=A.B.C.D | --clear-bind-ip]\n"
 	        "               -- live, no-restart; only the fields given are changed. bind_ip\n"
 	        "               (ADR-0068) is a second, dedicated address on the management\n"
-	        "               network's own bridge -- kanxeod binds there instead of that\n"
+	        "               network's own bridge -- thincd binds there instead of that\n"
 	        "               network's own address; --clear-bind-ip reverts to it\n"
 	        "  hostauth-config show  -- current admin_groups/idle_timeout_seconds/live-LDAP\n"
 	        "               backend settings (ADR-0144)\n"
@@ -233,7 +233,7 @@ static void print_usage(FILE *out)
 	        "               disrupt jobs already in flight, only future ones\n"
 	        "  iso build [--disk=DEV --ip=A.B.C.D --prefix=N --gateway=A.B.C.D\n"
 	        "               --interface=IFNAME] [--wait]  -- assembles a fresh installer ISO\n"
-	        "               server-side (ADR-0064), from the most recent \"kanxeo\"/\"kernel\"/\n"
+	        "               server-side (ADR-0064), from the most recent \"thinc\"/\"kernel\"/\n"
 	        "               \"isotools\" hostbuild artifacts; every flag is optional, an empty\n"
 	        "               call reproduces the original edit-at-the-GRUB-menu placeholder ISO\n"
 	        "  iso status  -- state/iso_path/error of the most recent ISO build\n"
@@ -267,15 +267,15 @@ static void print_usage(FILE *out)
 	        "  disks format-status NAME  -- state/mount_path/error of the most recent\n"
 	        "               format job for this disk\n"
 	        "  storage state [show]  -- which disk (if any) is the active placement for\n"
-	        "               Kanxeo's own state (ADR-0141); default (null) is the OS disk\n"
-	        "  storage state migrate [--disk=NAME]  -- move Kanxeo's own state to a disk\n"
+	        "               thinC's own state (ADR-0141); default (null) is the OS disk\n"
+	        "  storage state migrate [--disk=NAME]  -- move thinC's own state to a disk\n"
 	        "               already carrying the state-storage role and currently mounted;\n"
 	        "               omit --disk= to migrate back to the default OS-disk placement;\n"
 	        "               async, no pause -- poll storage state migrate-status\n"
 	        "  storage state migrate-status  -- state/disk/error of the most recent (or\n"
 	        "               running) state-storage migration\n"
 	        "  storage logs [show|migrate [--disk=NAME]|migrate-status]  -- same shape as\n"
-	        "               storage state, for where Kanxeo's own consolidated log store\n"
+	        "               storage state, for where thinC's own consolidated log store\n"
 	        "               (ADR-0070/ADR-0126) lives instead\n"
 	        "  storage rebuildable [show|migrate [--disk=NAME]|migrate-status]  -- same shape\n"
 	        "               again, for where images/packages/artifacts (regenerable from\n"
@@ -333,9 +333,9 @@ static void print_usage(FILE *out)
 	        "               store 'logs' below already reads from (ADR-0127)\n"
 	        "  syslog target ls\n"
 	        "  syslog target unregister CONTAINER\n"
-	        "  logs [--source=kernel|kanxeod|audit|container] [--level=...] [--container=NAME]\n"
+	        "  logs [--source=kernel|thincd|audit|container] [--level=...] [--container=NAME]\n"
 	        "               [--regex=PATTERN] [--tail=N] [--since=UNIXTS]\n"
-	        "               -- the consolidated log (kernel dmesg + kanxeod's own\n"
+	        "               -- the consolidated log (kernel dmesg + thincd's own\n"
 	        "               diagnostics + a per-request audit trail + every container's\n"
 	        "               own stdout/stderr, transparently, ADR-0070/ADR-0126);\n"
 	        "               --container= filters to one container's own lines,\n"
@@ -1065,7 +1065,7 @@ static void fmt_pki_ca(const struct json_value *v)
 
 /* Reissued leaves' own cert_pem/key_pem are real (shown once, same
  * as a fresh cert create()) but omitted here -- this is a summary
- * view; kanxeoctl pki cert ls / a saved --json capture is how an
+ * view; thincctl pki cert ls / a saved --json capture is how an
  * operator gets the full material for every reissued leaf at once. */
 static void fmt_pki_reset(const struct json_value *v)
 {
@@ -1104,7 +1104,7 @@ static int emit(struct kx_response *r, int json_mode, void (*fmt)(const struct j
 	if (r->status < 200 || r->status >= 300) {
 		const char *msg = json_str_field(r->json, "error");
 
-		fprintf(stderr, "kanxeoctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r->status);
 		rc = 1;
 	} else if (json_mode || fmt == NULL) {
@@ -1123,7 +1123,7 @@ static int cmd_health(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/health", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
@@ -1134,7 +1134,7 @@ static int cmd_boot(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/boot", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_boot);
@@ -1145,7 +1145,7 @@ static int cmd_routes_ls(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/routes", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_route_list);
@@ -1171,15 +1171,15 @@ static int cmd_routes_add(const struct kx_client *c, int json_mode, int argc, ch
 		else if (strcmp(argv[i], "--default") == 0)
 			is_default = 1;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown routes add option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown routes add option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (!is_default && (dest == NULL || prefix == NULL)) {
 		fprintf(stderr,
-		        "usage: kanxeoctl routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]\n"
-		        "       kanxeoctl routes add --default --gateway=A.B.C.D\n");
+		        "usage: thincctl routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]\n"
+		        "       thincctl routes add --default --gateway=A.B.C.D\n");
 		return 2;
 	}
 
@@ -1200,7 +1200,7 @@ static int cmd_routes_add(const struct kx_client *c, int json_mode, int argc, ch
 
 	if (kx_client_request(c, "POST", "/v1/system/routes", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -1225,15 +1225,15 @@ static int cmd_routes_rm(const struct kx_client *c, int json_mode, int argc, cha
 		else if (strcmp(argv[i], "--default") == 0)
 			is_default = 1;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown routes rm option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown routes rm option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (!is_default && (dest == NULL || prefix == NULL)) {
 		fprintf(stderr,
-		        "usage: kanxeoctl routes rm --dest=A.B.C.D --prefix=N\n"
-		        "       kanxeoctl routes rm --default\n");
+		        "usage: thincctl routes rm --dest=A.B.C.D --prefix=N\n"
+		        "       thincctl routes rm --default\n");
 		return 2;
 	}
 
@@ -1250,7 +1250,7 @@ static int cmd_routes_rm(const struct kx_client *c, int json_mode, int argc, cha
 
 	if (kx_client_request(c, "DELETE", "/v1/system/routes", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -1274,11 +1274,11 @@ static int cmd_routes(const struct kx_client *c, int json_mode, int argc, char *
 		return cmd_routes_ls(c, json_mode);
 
 	fprintf(stderr,
-	        "usage: kanxeoctl routes [ls]\n"
-	        "       kanxeoctl routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]\n"
-	        "       kanxeoctl routes add --default --gateway=A.B.C.D\n"
-	        "       kanxeoctl routes rm --dest=A.B.C.D --prefix=N\n"
-	        "       kanxeoctl routes rm --default\n");
+	        "usage: thincctl routes [ls]\n"
+	        "       thincctl routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]\n"
+	        "       thincctl routes add --default --gateway=A.B.C.D\n"
+	        "       thincctl routes rm --dest=A.B.C.D --prefix=N\n"
+	        "       thincctl routes rm --default\n");
 	return 2;
 }
 
@@ -1287,7 +1287,7 @@ static int cmd_disks_ls(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/disks", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_disk_list);
@@ -1336,7 +1336,7 @@ static int cmd_disks_format(const struct kx_client *c, int json_mode, int argc, 
 	int i;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl disks format NAME [--fs-type=ext4|btrfs]\n");
+		fprintf(stderr, "usage: thincctl disks format NAME [--fs-type=ext4|btrfs]\n");
 		return 2;
 	}
 	disk_name = argv[0];
@@ -1359,7 +1359,7 @@ static int cmd_disks_format(const struct kx_client *c, int json_mode, int argc, 
 
 	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -1373,13 +1373,13 @@ static int cmd_disks_format_status(const struct kx_client *c, int json_mode, int
 	struct kx_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl disks format-status NAME\n");
+		fprintf(stderr, "usage: thincctl disks format-status NAME\n");
 		return 2;
 	}
 	disk_name = argv[0];
 	snprintf(path, sizeof(path), "/v1/disks/%s/format", disk_name);
 	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_diskformat_status);
@@ -1414,7 +1414,7 @@ static int cmd_disks_partition_table(const struct kx_client *c, int json_mode, i
 	struct kx_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl disks partition-table NAME\n");
+		fprintf(stderr, "usage: thincctl disks partition-table NAME\n");
 		return 2;
 	}
 	disk_name = argv[0];
@@ -1429,7 +1429,7 @@ static int cmd_disks_partition_table(const struct kx_client *c, int json_mode, i
 
 	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -1448,7 +1448,7 @@ static int cmd_disks_add_partition(const struct kx_client *c, int json_mode, int
 
 	if (argc < 2) {
 		fprintf(stderr,
-		        "usage: kanxeoctl disks add-partition NAME --name=PART_NAME [--size-mib=N]\n"
+		        "usage: thincctl disks add-partition NAME --name=PART_NAME [--size-mib=N]\n"
 		        "       (omit --size-mib to consume all remaining space on the disk)\n");
 		return 2;
 	}
@@ -1460,7 +1460,7 @@ static int cmd_disks_add_partition(const struct kx_client *c, int json_mode, int
 			size_mib = strtoull(argv[i] + 11, NULL, 10);
 	}
 	if (part_name == NULL) {
-		fprintf(stderr, "kanxeoctl: disks add-partition requires --name=PART_NAME\n");
+		fprintf(stderr, "thincctl: disks add-partition requires --name=PART_NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/disks/%s/partitions", disk_name);
@@ -1478,7 +1478,7 @@ static int cmd_disks_add_partition(const struct kx_client *c, int json_mode, int
 
 	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -1491,12 +1491,12 @@ static int cmd_disks_rm_partition(const struct kx_client *c, int json_mode, int 
 	struct kx_response r;
 
 	if (argc < 2) {
-		fprintf(stderr, "usage: kanxeoctl disks rm-partition DISK_NAME PARTITION_NAME\n");
+		fprintf(stderr, "usage: thincctl disks rm-partition DISK_NAME PARTITION_NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/disks/%s/partitions/%s", argv[0], argv[1]);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	if (json_mode) {
@@ -1533,12 +1533,12 @@ static int cmd_disks(const struct kx_client *c, int json_mode, int argc, char **
 	if (strcmp(sub, "rm-partition") == 0)
 		return cmd_disks_rm_partition(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "usage: kanxeoctl disks [ls]\n"
-	                "       kanxeoctl disks format NAME [--fs-type=ext4|btrfs]\n"
-	                "       kanxeoctl disks format-status NAME\n"
-	                "       kanxeoctl disks partition-table NAME\n"
-	                "       kanxeoctl disks add-partition NAME --name=PART_NAME [--size-mib=N]\n"
-	                "       kanxeoctl disks rm-partition DISK_NAME PARTITION_NAME\n");
+	fprintf(stderr, "usage: thincctl disks [ls]\n"
+	                "       thincctl disks format NAME [--fs-type=ext4|btrfs]\n"
+	                "       thincctl disks format-status NAME\n"
+	                "       thincctl disks partition-table NAME\n"
+	                "       thincctl disks add-partition NAME --name=PART_NAME [--size-mib=N]\n"
+	                "       thincctl disks rm-partition DISK_NAME PARTITION_NAME\n");
 	return 2;
 }
 
@@ -1580,7 +1580,7 @@ static void fmt_storage_migrate_status(const struct json_value *v)
 	printf("\n");
 }
 
-/* endpoint is "state-storage" or "log-storage" -- kanxeoctl storage
+/* endpoint is "state-storage" or "log-storage" -- thincctl storage
  * {state,logs} both share this identical shape, only the REST path
  * segment (and thus which daemon-side storage_kind ends up acted on)
  * differs. */
@@ -1591,7 +1591,7 @@ static int cmd_storage_kind_show(const struct kx_client *c, int json_mode, const
 
 	snprintf(path, sizeof(path), "/v1/system/%s", endpoint);
 	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_storage_placement);
@@ -1610,7 +1610,7 @@ static int cmd_storage_kind_migrate(const struct kx_client *c, int json_mode, co
 		if (strncmp(argv[i], "--disk=", 7) == 0)
 			disk = argv[i] + 7;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown storage migrate option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown storage migrate option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -1628,7 +1628,7 @@ static int cmd_storage_kind_migrate(const struct kx_client *c, int json_mode, co
 	snprintf(path, sizeof(path), "/v1/system/%s/migrate", endpoint);
 	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -1642,7 +1642,7 @@ static int cmd_storage_kind_migrate_status(const struct kx_client *c, int json_m
 
 	snprintf(path, sizeof(path), "/v1/system/%s/migrate", endpoint);
 	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_storage_migrate_status);
@@ -1665,10 +1665,10 @@ static int cmd_storage_kind(const struct kx_client *c, int json_mode, const char
 		return cmd_storage_kind_migrate_status(c, json_mode, endpoint);
 
 	fprintf(stderr,
-	        "usage: kanxeoctl storage %s [show]\n"
-	        "       kanxeoctl storage %s migrate [--disk=NAME]  -- omit for the default "
+	        "usage: thincctl storage %s [show]\n"
+	        "       thincctl storage %s migrate [--disk=NAME]  -- omit for the default "
 	        "OS-disk placement\n"
-	        "       kanxeoctl storage %s migrate-status\n",
+	        "       thincctl storage %s migrate-status\n",
 	        name, name, name);
 	return 2;
 }
@@ -1678,7 +1678,7 @@ static int cmd_storage(const struct kx_client *c, int json_mode, int argc, char 
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl storage state|logs|rebuildable [show|migrate|migrate-status]\n");
+		fprintf(stderr, "usage: thincctl storage state|logs|rebuildable [show|migrate|migrate-status]\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -1689,11 +1689,11 @@ static int cmd_storage(const struct kx_client *c, int json_mode, int argc, char 
 	if (strcmp(sub, "rebuildable") == 0)
 		return cmd_storage_kind(c, json_mode, "rebuildable", "rebuildable-storage", argc - 1, argv + 1);
 
-	fprintf(stderr, "usage: kanxeoctl storage state|logs|rebuildable [show|migrate|migrate-status]\n");
+	fprintf(stderr, "usage: thincctl storage state|logs|rebuildable [show|migrate|migrate-status]\n");
 	return 2;
 }
 
-/* ADR-0160: kanxeoctl sysctl show|get|set|rm -- host-level /proc/sys,
+/* ADR-0160: thincctl sysctl show|get|set|rm -- host-level /proc/sys,
  * live, fully open (no allowlist, host-auth write-gating is the only
  * access control). Distinct from run's own --sysctl= (create-time,
  * net.*-only, per-container) -- this is a separate host-wide surface,
@@ -1750,7 +1750,7 @@ static int cmd_sysctl_show(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/sysctl", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_sysctl_list);
@@ -1762,18 +1762,18 @@ static int cmd_sysctl_get(const struct kx_client *c, int json_mode, int argc, ch
 	struct kx_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl sysctl get KEY\n");
+		fprintf(stderr, "usage: thincctl sysctl get KEY\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/system/sysctl/%s", argv[0]);
 	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_sysctl_one);
 }
 
-/* kanxeoctl sysctl set KEY --value=V [--value=V ...] [--no-persist]
+/* thincctl sysctl set KEY --value=V [--value=V ...] [--no-persist]
  * -- repeatable --value= (matching resolv set's own --nameserver=
  * repeatable-flag convention) builds a JSON array when given more
  * than once, a bare JSON string when given exactly once -- either
@@ -1792,14 +1792,14 @@ static int cmd_sysctl_set(const struct kx_client *c, int json_mode, int argc, ch
 	struct kx_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl sysctl set KEY --value=V [--value=V ...] [--no-persist]\n");
+		fprintf(stderr, "usage: thincctl sysctl set KEY --value=V [--value=V ...] [--no-persist]\n");
 		return 2;
 	}
 	key = argv[0];
 	for (i = 1; i < argc; i++) {
 		if (strncmp(argv[i], "--value=", 8) == 0) {
 			if (value_count >= CLI_SYSCTL_MAX_VALUES) {
-				fprintf(stderr, "kanxeoctl: too many --value= flags (max %d)\n",
+				fprintf(stderr, "thincctl: too many --value= flags (max %d)\n",
 				        CLI_SYSCTL_MAX_VALUES);
 				return 2;
 			}
@@ -1807,12 +1807,12 @@ static int cmd_sysctl_set(const struct kx_client *c, int json_mode, int argc, ch
 		} else if (strcmp(argv[i], "--no-persist") == 0) {
 			persist = 0;
 		} else {
-			fprintf(stderr, "kanxeoctl: unknown sysctl set option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown sysctl set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (value_count == 0) {
-		fprintf(stderr, "kanxeoctl: sysctl set requires at least one --value=\n");
+		fprintf(stderr, "thincctl: sysctl set requires at least one --value=\n");
 		return 2;
 	}
 
@@ -1837,7 +1837,7 @@ static int cmd_sysctl_set(const struct kx_client *c, int json_mode, int argc, ch
 	snprintf(path, sizeof(path), "/v1/system/sysctl/%s", key);
 	if (kx_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -1850,12 +1850,12 @@ static int cmd_sysctl_rm(const struct kx_client *c, int json_mode, int argc, cha
 	struct kx_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl sysctl rm KEY\n");
+		fprintf(stderr, "usage: thincctl sysctl rm KEY\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/system/sysctl/%s", argv[0]);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	if (json_mode) {
@@ -1888,15 +1888,15 @@ static int cmd_sysctl(const struct kx_client *c, int json_mode, int argc, char *
 	if (strcmp(sub, "rm") == 0)
 		return cmd_sysctl_rm(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "usage: kanxeoctl sysctl [show]  -- every persisted (daemon-managed) key\n"
-	                "       kanxeoctl sysctl get KEY  -- live current value, persisted or not\n"
-	                "       kanxeoctl sysctl set KEY --value=V [--value=V ...] [--no-persist]\n"
-	                "       kanxeoctl sysctl rm KEY  -- stop reapplying at boot (live value untouched)\n");
+	fprintf(stderr, "usage: thincctl sysctl [show]  -- every persisted (daemon-managed) key\n"
+	                "       thincctl sysctl get KEY  -- live current value, persisted or not\n"
+	                "       thincctl sysctl set KEY --value=V [--value=V ...] [--no-persist]\n"
+	                "       thincctl sysctl rm KEY  -- stop reapplying at boot (live value untouched)\n");
 	return 2;
 }
 
-/* ADR-0159 Phase A: `kanxeoctl kmod ls|show|load|unload` (management)
- * and `kanxeoctl kmod-config set|ls|rm` (persisted default options +
+/* ADR-0159 Phase A: `thincctl kmod ls|show|load|unload` (management)
+ * and `thincctl kmod-config set|ls|rm` (persisted default options +
  * boot autoload). */
 
 static void fmt_kmod_options_obj(const struct json_value *obj)
@@ -1994,7 +1994,7 @@ static int cmd_kmod_ls(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/kmod", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_kmod_list);
@@ -2006,12 +2006,12 @@ static int cmd_kmod_show(const struct kx_client *c, int json_mode, int argc, cha
 	struct kx_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl kmod show NAME\n");
+		fprintf(stderr, "usage: thincctl kmod show NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/system/kmod/%s", argv[0]);
 	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_kmod_info);
@@ -2030,20 +2030,20 @@ static int cmd_kmod_load(const struct kx_client *c, int json_mode, int argc, cha
 	struct kx_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl kmod load NAME [--option=KEY=VALUE ...]\n");
+		fprintf(stderr, "usage: thincctl kmod load NAME [--option=KEY=VALUE ...]\n");
 		return 2;
 	}
 	name = argv[0];
 	for (i = 1; i < argc; i++) {
 		if (strncmp(argv[i], "--option=", 9) == 0) {
 			if (option_count >= CLI_KMOD_MAX_OPTIONS) {
-				fprintf(stderr, "kanxeoctl: too many --option= flags (max %d)\n",
+				fprintf(stderr, "thincctl: too many --option= flags (max %d)\n",
 				        CLI_KMOD_MAX_OPTIONS);
 				return 2;
 			}
 			options[option_count++] = argv[i] + 9;
 		} else {
-			fprintf(stderr, "kanxeoctl: unknown kmod load option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown kmod load option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -2059,7 +2059,7 @@ static int cmd_kmod_load(const struct kx_client *c, int json_mode, int argc, cha
 		snprintf(buf, sizeof(buf), "%s", options[i]);
 		eq = strchr(buf, '=');
 		if (eq == NULL) {
-			fprintf(stderr, "kanxeoctl: --option= must be KEY=VALUE, got '%s'\n", options[i]);
+			fprintf(stderr, "thincctl: --option= must be KEY=VALUE, got '%s'\n", options[i]);
 			jw_free(&w);
 			return 2;
 		}
@@ -2074,7 +2074,7 @@ static int cmd_kmod_load(const struct kx_client *c, int json_mode, int argc, cha
 	snprintf(path, sizeof(path), "/v1/system/kmod/%s", name);
 	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -2097,12 +2097,12 @@ static int cmd_kmod_unload(const struct kx_client *c, int json_mode, int argc, c
 	struct kx_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl kmod unload NAME\n");
+		fprintf(stderr, "usage: thincctl kmod unload NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/system/kmod/%s", argv[0]);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	if (json_mode) {
@@ -2135,12 +2135,12 @@ static int cmd_kmod(const struct kx_client *c, int json_mode, int argc, char **a
 	if (strcmp(sub, "unload") == 0)
 		return cmd_kmod_unload(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "usage: kanxeoctl kmod [ls]  -- every currently-loaded module (/proc/modules)\n"
-	                "       kanxeoctl kmod show NAME  -- modinfo: description, params, depends\n"
-	                "       kanxeoctl kmod load NAME [--option=KEY=VALUE ...]  -- real modprobe;\n"
+	fprintf(stderr, "usage: thincctl kmod [ls]  -- every currently-loaded module (/proc/modules)\n"
+	                "       thincctl kmod show NAME  -- modinfo: description, params, depends\n"
+	                "       thincctl kmod load NAME [--option=KEY=VALUE ...]  -- real modprobe;\n"
 	                "               no --option= falls back to this module's own persisted\n"
 	                "               kmod-config default_options, if any\n"
-	                "       kanxeoctl kmod unload NAME  -- real modprobe -r\n");
+	                "       thincctl kmod unload NAME  -- real modprobe -r\n");
 	return 2;
 }
 
@@ -2170,7 +2170,7 @@ static int cmd_kmodconfig_ls(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/kmod-config", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_kmodconfig_list);
@@ -2190,7 +2190,7 @@ static int cmd_kmodconfig_set(const struct kx_client *c, int json_mode, int argc
 	struct kx_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl kmod-config set NAME [--option=KEY=VALUE ...] "
+		fprintf(stderr, "usage: thincctl kmod-config set NAME [--option=KEY=VALUE ...] "
 		                "[--autoload|--no-autoload]\n");
 		return 2;
 	}
@@ -2198,7 +2198,7 @@ static int cmd_kmodconfig_set(const struct kx_client *c, int json_mode, int argc
 	for (i = 1; i < argc; i++) {
 		if (strncmp(argv[i], "--option=", 9) == 0) {
 			if (option_count >= CLI_KMOD_MAX_OPTIONS) {
-				fprintf(stderr, "kanxeoctl: too many --option= flags (max %d)\n",
+				fprintf(stderr, "thincctl: too many --option= flags (max %d)\n",
 				        CLI_KMOD_MAX_OPTIONS);
 				return 2;
 			}
@@ -2211,12 +2211,12 @@ static int cmd_kmodconfig_set(const struct kx_client *c, int json_mode, int argc
 			have_autoload = 1;
 			autoload_value = 0;
 		} else {
-			fprintf(stderr, "kanxeoctl: unknown kmod-config set option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown kmod-config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (!have_options && !have_autoload) {
-		fprintf(stderr, "kanxeoctl: kmod-config set requires --option= and/or "
+		fprintf(stderr, "thincctl: kmod-config set requires --option= and/or "
 		                "--autoload/--no-autoload\n");
 		return 2;
 	}
@@ -2233,7 +2233,7 @@ static int cmd_kmodconfig_set(const struct kx_client *c, int json_mode, int argc
 			snprintf(buf, sizeof(buf), "%s", options[i]);
 			eq = strchr(buf, '=');
 			if (eq == NULL) {
-				fprintf(stderr, "kanxeoctl: --option= must be KEY=VALUE, got '%s'\n", options[i]);
+				fprintf(stderr, "thincctl: --option= must be KEY=VALUE, got '%s'\n", options[i]);
 				jw_free(&w);
 				return 2;
 			}
@@ -2253,7 +2253,7 @@ static int cmd_kmodconfig_set(const struct kx_client *c, int json_mode, int argc
 	snprintf(path, sizeof(path), "/v1/system/kmod-config/%s", name);
 	if (kx_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -2266,12 +2266,12 @@ static int cmd_kmodconfig_rm(const struct kx_client *c, int json_mode, int argc,
 	struct kx_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl kmod-config rm NAME\n");
+		fprintf(stderr, "usage: thincctl kmod-config rm NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/system/kmod-config/%s", argv[0]);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	if (json_mode) {
@@ -2302,10 +2302,10 @@ static int cmd_kmodconfig(const struct kx_client *c, int json_mode, int argc, ch
 	if (strcmp(sub, "rm") == 0)
 		return cmd_kmodconfig_rm(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "usage: kanxeoctl kmod-config [ls]  -- every module with a persisted default\n"
-	                "       kanxeoctl kmod-config set NAME [--option=KEY=VALUE ...] "
+	fprintf(stderr, "usage: thincctl kmod-config [ls]  -- every module with a persisted default\n"
+	                "       thincctl kmod-config set NAME [--option=KEY=VALUE ...] "
 	                "[--autoload|--no-autoload]\n"
-	                "       kanxeoctl kmod-config rm NAME  -- clears both fields\n");
+	                "       thincctl kmod-config rm NAME  -- clears both fields\n");
 	return 2;
 }
 
@@ -2329,13 +2329,13 @@ static int cmd_resolv_show(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/resolv", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_resolv);
 }
 
-/* kanxeoctl resolv set --nameserver=A.B.C.D [--nameserver=A.B.C.D ...]
+/* thincctl resolv set --nameserver=A.B.C.D [--nameserver=A.B.C.D ...]
  * -- repeatable, same convention run's own --network=/--device=/
  * --interface= already use. No flags at all means an empty list --
  * clears the host's own resolver config entirely, same "the absence
@@ -2352,13 +2352,13 @@ static int cmd_resolv_set(const struct kx_client *c, int json_mode, int argc, ch
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--nameserver=", 13) == 0) {
 			if (count >= CLI_RESOLV_MAX_NAMESERVERS) {
-				fprintf(stderr, "kanxeoctl: too many --nameserver= flags (max %d)\n",
+				fprintf(stderr, "thincctl: too many --nameserver= flags (max %d)\n",
 				        CLI_RESOLV_MAX_NAMESERVERS);
 				return 2;
 			}
 			nameservers[count++] = argv[i] + 13;
 		} else {
-			fprintf(stderr, "kanxeoctl: unknown resolv set option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown resolv set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -2375,7 +2375,7 @@ static int cmd_resolv_set(const struct kx_client *c, int json_mode, int argc, ch
 
 	if (kx_client_request(c, "PUT", "/v1/system/resolv", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -2396,13 +2396,13 @@ static int cmd_resolv(const struct kx_client *c, int json_mode, int argc, char *
 		return cmd_resolv_set(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr,
-	        "usage: kanxeoctl resolv [show]\n"
-	        "       kanxeoctl resolv set [--nameserver=A.B.C.D ...]\n");
+	        "usage: thincctl resolv [show]\n"
+	        "       thincctl resolv set [--nameserver=A.B.C.D ...]\n");
 	return 2;
 }
 
-/* kanxeoctl ntp config show/set, ntp status, ntp server register/ls/
- * unregister, and the separate kanxeoctl time show/set -- task
+/* thincctl ntp config show/set, ntp status, ntp server register/ls/
+ * unregister, and the separate thincctl time show/set -- task
  * #751-755, mirroring resolv's own upstream-list shape (config) plus
  * dns/ldap server's own registration shape (server), kept as two
  * genuinely different resources exactly like the daemon's own REST
@@ -2428,7 +2428,7 @@ static int cmd_ntp_config_show(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/ntp", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_ntp_config);
@@ -2445,13 +2445,13 @@ static int cmd_ntp_config_set(const struct kx_client *c, int json_mode, int argc
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--server=", 9) == 0) {
 			if (count >= CLI_NTP_MAX_UPSTREAM) {
-				fprintf(stderr, "kanxeoctl: too many --server= flags (max %d)\n",
+				fprintf(stderr, "thincctl: too many --server= flags (max %d)\n",
 				        CLI_NTP_MAX_UPSTREAM);
 				return 2;
 			}
 			upstream[count++] = argv[i] + 9;
 		} else {
-			fprintf(stderr, "kanxeoctl: unknown ntp config set option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown ntp config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -2468,7 +2468,7 @@ static int cmd_ntp_config_set(const struct kx_client *c, int json_mode, int argc
 
 	if (kx_client_request(c, "PUT", "/v1/system/ntp", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -2489,8 +2489,8 @@ static int cmd_ntp_config(const struct kx_client *c, int json_mode, int argc, ch
 		return cmd_ntp_config_set(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr,
-	        "usage: kanxeoctl ntp config [show]\n"
-	        "       kanxeoctl ntp config set [--server=A.B.C.D ...]\n");
+	        "usage: thincctl ntp config [show]\n"
+	        "       thincctl ntp config set [--server=A.B.C.D ...]\n");
 	return 2;
 }
 
@@ -2513,7 +2513,7 @@ static int cmd_ntp_status(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/ntp/status", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_ntp_status);
@@ -2527,13 +2527,13 @@ static int cmd_ntp_sync(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "POST", "/v1/system/ntp/sync", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	if (r.status != 202) {
 		const char *msg = json_str_field(r.json, "error");
 
-		fprintf(stderr, "kanxeoctl: %s (HTTP %d)\n", msg != NULL ? msg : "sync failed to start",
+		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "sync failed to start",
 		        r.status);
 		kx_response_free(&r);
 		return 1;
@@ -2575,12 +2575,12 @@ static int cmd_ntp_server_register(const struct kx_client *c, int json_mode, int
 		if (strncmp(argv[i], "--container=", 12) == 0)
 			container = argv[i] + 12;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown ntp server register option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown ntp server register option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (container == NULL) {
-		fprintf(stderr, "usage: kanxeoctl ntp server register --container=NAME\n");
+		fprintf(stderr, "usage: thincctl ntp server register --container=NAME\n");
 		return 2;
 	}
 
@@ -2593,7 +2593,7 @@ static int cmd_ntp_server_register(const struct kx_client *c, int json_mode, int
 
 	if (kx_client_request(c, "POST", "/v1/ntp/servers", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -2605,7 +2605,7 @@ static int cmd_ntp_server_ls(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/ntp/servers", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_ntp_server_list);
@@ -2618,12 +2618,12 @@ static int cmd_ntp_server_unregister(const struct kx_client *c, int json_mode, i
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: ntp server unregister requires a container name\n");
+		fprintf(stderr, "thincctl: ntp server unregister requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/ntp/servers/%s", argv[0]);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -2635,9 +2635,9 @@ static int cmd_ntp_server(const struct kx_client *c, int json_mode, int argc, ch
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: kanxeoctl ntp server register --container=NAME\n"
-		        "       kanxeoctl ntp server ls\n"
-		        "       kanxeoctl ntp server unregister CONTAINER\n");
+		        "usage: thincctl ntp server register --container=NAME\n"
+		        "       thincctl ntp server ls\n"
+		        "       thincctl ntp server unregister CONTAINER\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -2648,7 +2648,7 @@ static int cmd_ntp_server(const struct kx_client *c, int json_mode, int argc, ch
 	if (strcmp(sub, "unregister") == 0)
 		return cmd_ntp_server_unregister(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown ntp server subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown ntp server subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -2658,14 +2658,14 @@ static int cmd_ntp(const struct kx_client *c, int json_mode, int argc, char **ar
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: kanxeoctl ntp config [show]\n"
-		        "       kanxeoctl ntp config set [--server=A.B.C.D ...]\n"
-		        "       kanxeoctl ntp status\n"
-		        "       kanxeoctl ntp sync  -- trigger a sync attempt now, don't wait for the\n"
+		        "usage: thincctl ntp config [show]\n"
+		        "       thincctl ntp config set [--server=A.B.C.D ...]\n"
+		        "       thincctl ntp status\n"
+		        "       thincctl ntp sync  -- trigger a sync attempt now, don't wait for the\n"
 		        "               next hourly automatic one\n"
-		        "       kanxeoctl ntp server register --container=NAME\n"
-		        "       kanxeoctl ntp server ls\n"
-		        "       kanxeoctl ntp server unregister CONTAINER\n");
+		        "       thincctl ntp server register --container=NAME\n"
+		        "       thincctl ntp server ls\n"
+		        "       thincctl ntp server unregister CONTAINER\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -2678,7 +2678,7 @@ static int cmd_ntp(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (strcmp(sub, "server") == 0)
 		return cmd_ntp_server(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown ntp subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown ntp subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -2711,12 +2711,12 @@ static int cmd_syslog_target_register(const struct kx_client *c, int json_mode, 
 		if (strncmp(argv[i], "--container=", 12) == 0)
 			container = argv[i] + 12;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown syslog target register option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown syslog target register option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (container == NULL) {
-		fprintf(stderr, "usage: kanxeoctl syslog target register --container=NAME\n");
+		fprintf(stderr, "usage: thincctl syslog target register --container=NAME\n");
 		return 2;
 	}
 
@@ -2729,7 +2729,7 @@ static int cmd_syslog_target_register(const struct kx_client *c, int json_mode, 
 
 	if (kx_client_request(c, "POST", "/v1/syslog/targets", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -2741,7 +2741,7 @@ static int cmd_syslog_target_ls(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/syslog/targets", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_syslog_target_list);
@@ -2754,12 +2754,12 @@ static int cmd_syslog_target_unregister(const struct kx_client *c, int json_mode
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: syslog target unregister requires a container name\n");
+		fprintf(stderr, "thincctl: syslog target unregister requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/syslog/targets/%s", argv[0]);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -2771,9 +2771,9 @@ static int cmd_syslog_target(const struct kx_client *c, int json_mode, int argc,
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: kanxeoctl syslog target register --container=NAME\n"
-		        "       kanxeoctl syslog target ls\n"
-		        "       kanxeoctl syslog target unregister CONTAINER\n");
+		        "usage: thincctl syslog target register --container=NAME\n"
+		        "       thincctl syslog target ls\n"
+		        "       thincctl syslog target unregister CONTAINER\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -2784,7 +2784,7 @@ static int cmd_syslog_target(const struct kx_client *c, int json_mode, int argc,
 	if (strcmp(sub, "unregister") == 0)
 		return cmd_syslog_target_unregister(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown syslog target subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown syslog target subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -2794,21 +2794,21 @@ static int cmd_syslog(const struct kx_client *c, int json_mode, int argc, char *
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: kanxeoctl syslog target register --container=NAME  -- forward every\n"
+		        "usage: thincctl syslog target register --container=NAME  -- forward every\n"
 		        "               container-sourced log line to this running container as a real\n"
 		        "               RFC 3164 UDP syslog datagram (e.g. syslog-1/syslog-2 running\n"
 		        "               sysklogd), alongside (never instead of) the consolidated log\n"
-		        "               store every other 'kanxeoctl logs' call already reads from\n"
+		        "               store every other 'thincctl logs' call already reads from\n"
 		        "               (ADR-0127)\n"
-		        "       kanxeoctl syslog target ls\n"
-		        "       kanxeoctl syslog target unregister CONTAINER\n");
+		        "       thincctl syslog target ls\n"
+		        "       thincctl syslog target unregister CONTAINER\n");
 		return 2;
 	}
 	sub = argv[0];
 	if (strcmp(sub, "target") == 0)
 		return cmd_syslog_target(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown syslog subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown syslog subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -2825,7 +2825,7 @@ static int cmd_time_show(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/time", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_time);
@@ -2842,12 +2842,12 @@ static int cmd_time_set(const struct kx_client *c, int json_mode, int argc, char
 		if (strncmp(argv[i], "--unixtime=", 11) == 0)
 			unixtime = argv[i] + 11;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown time set option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown time set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (unixtime == NULL) {
-		fprintf(stderr, "usage: kanxeoctl time set --unixtime=N\n");
+		fprintf(stderr, "usage: thincctl time set --unixtime=N\n");
 		return 2;
 	}
 
@@ -2860,7 +2860,7 @@ static int cmd_time_set(const struct kx_client *c, int json_mode, int argc, char
 
 	if (kx_client_request(c, "PUT", "/v1/system/time", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -2881,8 +2881,8 @@ static int cmd_time(const struct kx_client *c, int json_mode, int argc, char **a
 		return cmd_time_set(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr,
-	        "usage: kanxeoctl time [show]\n"
-	        "       kanxeoctl time set --unixtime=N\n");
+	        "usage: thincctl time [show]\n"
+	        "       thincctl time set --unixtime=N\n");
 	return 2;
 }
 
@@ -2891,7 +2891,7 @@ static int cmd_swap_status(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/swap", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_swap);
@@ -2908,12 +2908,12 @@ static int cmd_swap_enable(const struct kx_client *c, int json_mode, int argc, c
 		if (strncmp(argv[i], "--size-mb=", 10) == 0)
 			size_mb = argv[i] + 10;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown swap enable option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown swap enable option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (size_mb == NULL) {
-		fprintf(stderr, "usage: kanxeoctl swap enable --size-mb=N\n");
+		fprintf(stderr, "usage: thincctl swap enable --size-mb=N\n");
 		return 2;
 	}
 
@@ -2926,7 +2926,7 @@ static int cmd_swap_enable(const struct kx_client *c, int json_mode, int argc, c
 
 	if (kx_client_request(c, "POST", "/v1/system/swap", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -2939,7 +2939,7 @@ static int cmd_swap_disable(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "DELETE", "/v1/system/swap", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -2983,7 +2983,7 @@ static int cmd_logs(const struct kx_client *c, int json_mode, int argc, char **a
 		else if (strncmp(argv[i], "--since=", 8) == 0)
 			since = argv[i] + 8;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown logs option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown logs option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -3007,11 +3007,11 @@ static int cmd_logs(const struct kx_client *c, int json_mode, int argc, char **a
 		(void)snprintf(path + o, sizeof(path) - o, "since=%s&", since);
 
 	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	if (r.status == 400) {
-		fprintf(stderr, "kanxeoctl: %s\n",
+		fprintf(stderr, "thincctl: %s\n",
 		        json_str_field(r.json, "error") != NULL ? json_str_field(r.json, "error") :
 		                                                   "bad request");
 		kx_response_free(&r);
@@ -3033,14 +3033,14 @@ static int cmd_logs_config(const struct kx_client *c, int json_mode, int argc, c
 		else if (strncmp(argv[i], "--min-level=", 12) == 0)
 			min_level = argv[i] + 12;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown logs config option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown logs config option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (max_bytes == NULL && min_level == NULL) {
 		if (kx_client_request(c, "GET", "/v1/system/logs/config", NULL, &r) != 0) {
-			fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
 		}
 		return emit(&r, json_mode, fmt_logs_config);
@@ -3064,7 +3064,7 @@ static int cmd_logs_config(const struct kx_client *c, int json_mode, int argc, c
 
 		if (kx_client_request(c, "PUT", "/v1/system/logs/config", w.buf, &r) != 0) {
 			jw_free(&w);
-			fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
 		}
 		jw_free(&w);
@@ -3095,9 +3095,9 @@ static int cmd_swap(const struct kx_client *c, int json_mode, int argc, char **a
 		return cmd_swap_disable(c, json_mode);
 
 	fprintf(stderr,
-	        "usage: kanxeoctl swap [status]\n"
-	        "       kanxeoctl swap enable --size-mb=N\n"
-	        "       kanxeoctl swap disable\n");
+	        "usage: thincctl swap [status]\n"
+	        "       thincctl swap enable --size-mb=N\n"
+	        "       thincctl swap disable\n");
 	return 2;
 }
 
@@ -3106,7 +3106,7 @@ static int cmd_shutdown(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "POST", "/v1/system/shutdown", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
@@ -3117,7 +3117,7 @@ static int cmd_reboot(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "POST", "/v1/system/reboot", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
@@ -3151,12 +3151,12 @@ static int cmd_update(const struct kx_client *c, int json_mode, int argc, char *
 		else if (strncmp(argv[i], "--kernel=", 9) == 0)
 			kernel = argv[i] + 9;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown update option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown update option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (image == NULL && kernel == NULL) {
-		fprintf(stderr, "usage: kanxeoctl update [--image=PATH] [--kernel=PATH]\n");
+		fprintf(stderr, "usage: thincctl update [--image=PATH] [--kernel=PATH]\n");
 		return 2;
 	}
 
@@ -3175,7 +3175,7 @@ static int cmd_update(const struct kx_client *c, int json_mode, int argc, char *
 
 	if (kx_client_request(c, "POST", "/v1/system/update", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -3188,7 +3188,7 @@ static int cmd_ps(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/containers", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_list);
@@ -3231,13 +3231,13 @@ static int cmd_container_network_attach(const struct kx_client *c, int json_mode
 		else if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "kanxeoctl: unknown container network attach option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown container network attach option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL || network == NULL) {
 		fprintf(stderr,
-		        "usage: kanxeoctl container network attach NAME --network=NETWORK [--ip=A.B.C.D]\n");
+		        "usage: thincctl container network attach NAME --network=NETWORK [--ip=A.B.C.D]\n");
 		return 2;
 	}
 
@@ -3255,7 +3255,7 @@ static int cmd_container_network_attach(const struct kx_client *c, int json_mode
 	snprintf(path, sizeof(path), "/v1/containers/%s/networks", name);
 	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -3269,12 +3269,12 @@ static int cmd_container_network_detach(const struct kx_client *c, int json_mode
 	char path[300];
 
 	if (argc < 2) {
-		fprintf(stderr, "usage: kanxeoctl container network detach NAME NETWORK\n");
+		fprintf(stderr, "usage: thincctl container network detach NAME NETWORK\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/networks/%s", argv[0], argv[1]);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_container_line);
@@ -3286,12 +3286,12 @@ static int cmd_container_network(const struct kx_client *c, int json_mode, int a
 		return cmd_container_network_attach(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "detach") == 0)
 		return cmd_container_network_detach(c, json_mode, argc - 1, argv + 1);
-	fprintf(stderr, "usage: kanxeoctl container network attach NAME --network=NETWORK [--ip=A.B.C.D]\n"
-	                "       kanxeoctl container network detach NAME NETWORK\n");
+	fprintf(stderr, "usage: thincctl container network attach NAME --network=NETWORK [--ip=A.B.C.D]\n"
+	                "       thincctl container network detach NAME NETWORK\n");
 	return 2;
 }
 
-/* ADR-0161 Phase D: `kanxeoctl container device attach|detach` -- the
+/* ADR-0161 Phase D: `thincctl container device attach|detach` -- the
  * manual REST primitive POST/DELETE /v1/containers/{name}/devices,
  * same shape as container network attach/detach above (a real,
  * callable-by-hand primitive first; Phase C's own hotplug listener is
@@ -3305,7 +3305,7 @@ static int cmd_container_device_attach(const struct kx_client *c, int json_mode,
 	struct json_writer w;
 
 	if (argc < 2) {
-		fprintf(stderr, "usage: kanxeoctl container device attach NAME ID\n");
+		fprintf(stderr, "usage: thincctl container device attach NAME ID\n");
 		return 2;
 	}
 
@@ -3319,7 +3319,7 @@ static int cmd_container_device_attach(const struct kx_client *c, int json_mode,
 	snprintf(path, sizeof(path), "/v1/containers/%s/devices", argv[0]);
 	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -3333,12 +3333,12 @@ static int cmd_container_device_detach(const struct kx_client *c, int json_mode,
 	char path[400];
 
 	if (argc < 2) {
-		fprintf(stderr, "usage: kanxeoctl container device detach NAME ID\n");
+		fprintf(stderr, "usage: thincctl container device detach NAME ID\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/devices/%s", argv[0], argv[1]);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_container_line);
@@ -3350,9 +3350,9 @@ static int cmd_container_device(const struct kx_client *c, int json_mode, int ar
 		return cmd_container_device_attach(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "detach") == 0)
 		return cmd_container_device_detach(c, json_mode, argc - 1, argv + 1);
-	fprintf(stderr, "usage: kanxeoctl container device attach NAME ID  -- a real device id or "
+	fprintf(stderr, "usage: thincctl container device attach NAME ID  -- a real device id or "
 	                "devicemap name, resolved live\n"
-	                "       kanxeoctl container device detach NAME ID  -- refuses a device "
+	                "       thincctl container device detach NAME ID  -- refuses a device "
 	                "granted at container creation (409)\n");
 	return 2;
 }
@@ -3368,16 +3368,16 @@ static int cmd_container(const struct kx_client *c, int json_mode, int argc, cha
 	if (argc >= 1 && strcmp(argv[0], "device") == 0)
 		return cmd_container_device(c, json_mode, argc - 1, argv + 1);
 	if (argc < 1 || strcmp(argv[0], "ls") != 0) {
-		fprintf(stderr, "usage: kanxeoctl container ls  -- every provisioned container and its "
+		fprintf(stderr, "usage: thincctl container ls  -- every provisioned container and its "
 		                "current state (same as `ps`)\n"
-		                "       kanxeoctl container recipe add --name=NAME --file=PATH\n"
-		                "       kanxeoctl container recipe show|rm NAME / container recipe ls\n"
-		                "       kanxeoctl container apply-recipe NAME [--secret=KEY=VALUE ...]\n"
-		                "       kanxeoctl container network attach NAME --network=NETWORK "
+		                "       thincctl container recipe add --name=NAME --file=PATH\n"
+		                "       thincctl container recipe show|rm NAME / container recipe ls\n"
+		                "       thincctl container apply-recipe NAME [--secret=KEY=VALUE ...]\n"
+		                "       thincctl container network attach NAME --network=NETWORK "
 		                "[--ip=A.B.C.D]\n"
-		                "       kanxeoctl container network detach NAME NETWORK\n"
-		                "       kanxeoctl container device attach NAME ID\n"
-		                "       kanxeoctl container device detach NAME ID\n");
+		                "       thincctl container network detach NAME NETWORK\n"
+		                "       thincctl container device attach NAME ID\n"
+		                "       thincctl container device detach NAME ID\n");
 		return 2;
 	}
 	return cmd_ps(c, json_mode);
@@ -3389,12 +3389,12 @@ static int cmd_inspect(const struct kx_client *c, int json_mode, int argc, char 
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: inspect requires a container name\n");
+		fprintf(stderr, "thincctl: inspect requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s", argv[0]);
 	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_container_line);
@@ -3406,12 +3406,12 @@ static int cmd_rm(const struct kx_client *c, int json_mode, int argc, char **arg
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: rm requires a container name\n");
+		fprintf(stderr, "thincctl: rm requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s", argv[0]);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -3423,12 +3423,12 @@ static int cmd_stop(const struct kx_client *c, int json_mode, int argc, char **a
 	char path[300];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: stop requires a container name\n");
+		fprintf(stderr, "thincctl: stop requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/stop", argv[0]);
 	if (kx_client_request(c, "POST", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
@@ -3450,14 +3450,14 @@ static int cmd_migrate_storage(const struct kx_client *c, int json_mode, int arg
 	int i;
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: migrate-storage requires a container name\n");
+		fprintf(stderr, "thincctl: migrate-storage requires a container name\n");
 		return 2;
 	}
 	for (i = 1; i < argc; i++) {
 		if (strncmp(argv[i], "--disk=", 7) == 0)
 			disk = argv[i] + 7;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown migrate-storage option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown migrate-storage option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -3475,7 +3475,7 @@ static int cmd_migrate_storage(const struct kx_client *c, int json_mode, int arg
 	snprintf(path, sizeof(path), "/v1/containers/%s/migrate-storage", argv[0]);
 	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -3488,12 +3488,12 @@ static int cmd_migrate_storage_status(const struct kx_client *c, int json_mode, 
 	struct kx_response r;
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: migrate-storage-status requires a container name\n");
+		fprintf(stderr, "thincctl: migrate-storage-status requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/migrate-storage", argv[0]);
 	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_storage_migrate_status);
@@ -3505,12 +3505,12 @@ static int cmd_start(const struct kx_client *c, int json_mode, int argc, char **
 	char path[300];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: start requires a container name\n");
+		fprintf(stderr, "thincctl: start requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/start", argv[0]);
 	if (kx_client_request(c, "POST", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
@@ -3522,12 +3522,12 @@ static int cmd_pause(const struct kx_client *c, int json_mode, int argc, char **
 	char path[300];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: pause requires a container name\n");
+		fprintf(stderr, "thincctl: pause requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/pause", argv[0]);
 	if (kx_client_request(c, "POST", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
@@ -3539,12 +3539,12 @@ static int cmd_unpause(const struct kx_client *c, int json_mode, int argc, char 
 	char path[300];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: unpause requires a container name\n");
+		fprintf(stderr, "thincctl: unpause requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/unpause", argv[0]);
 	if (kx_client_request(c, "POST", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
@@ -3572,7 +3572,7 @@ static void print_pressure_line(const char *label, const struct json_value *pres
 }
 
 /*
- * kanxeoctl host-stats -- the host-wide counterpart to `stats NAME`,
+ * thincctl host-stats -- the host-wide counterpart to `stats NAME`,
  * same one-shot fetch-and-print/raw-counters convention (no rate or
  * percentage computed here; a live-refreshing view is the web
  * dashboard's own job).
@@ -3639,7 +3639,7 @@ static int cmd_host_stats(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/stats", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_host_stats);
@@ -3681,7 +3681,7 @@ static int cmd_process_ls(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/processes", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_process_list);
@@ -3693,12 +3693,12 @@ static int cmd_process_kill(const struct kx_client *c, int json_mode, int argc, 
 	char path[64];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: process kill requires a pid\n");
+		fprintf(stderr, "thincctl: process kill requires a pid\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/system/processes/%s", argv[0]);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -3710,9 +3710,9 @@ static int cmd_process(const struct kx_client *c, int json_mode, int argc, char 
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: kanxeoctl process ls  -- every real process on the box, correlated to a\n"
+		        "usage: thincctl process ls  -- every real process on the box, correlated to a\n"
 		        "               container by its own real host ppid chain (ADR-0131)\n"
-		        "       kanxeoctl process kill PID  -- a real, immediate SIGKILL; refuses pid 1\n"
+		        "       thincctl process kill PID  -- a real, immediate SIGKILL; refuses pid 1\n"
 		        "               and this daemon's own pid\n");
 		return 2;
 	}
@@ -3722,7 +3722,7 @@ static int cmd_process(const struct kx_client *c, int json_mode, int argc, char 
 	if (strcmp(sub, "kill") == 0)
 		return cmd_process_kill(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown process subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown process subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -3751,7 +3751,7 @@ static int poll_ping(const struct kx_client *c, struct kx_response *out)
 		const char *state;
 
 		if (kx_client_request(c, "GET", "/v1/system/ping", NULL, out) != 0) {
-			fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return -1;
 		}
 		state = json_str_field(out->json, "state");
@@ -3769,7 +3769,7 @@ static int cmd_ping(const struct kx_client *c, int json_mode, int argc, char **a
 	int rc;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl ping HOST\n");
+		fprintf(stderr, "usage: thincctl ping HOST\n");
 		return 2;
 	}
 
@@ -3782,13 +3782,13 @@ static int cmd_ping(const struct kx_client *c, int json_mode, int argc, char **a
 
 	if (kx_client_request(c, "POST", "/v1/system/ping", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	if (r.status == 409) {
 		kx_response_free(&r);
-		fprintf(stderr, "kanxeoctl: another ping is already in flight\n");
+		fprintf(stderr, "thincctl: another ping is already in flight\n");
 		return 1;
 	}
 	if (r.status != 202) {
@@ -3812,7 +3812,7 @@ static int cmd_ping(const struct kx_client *c, int json_mode, int argc, char **a
 }
 
 /*
- * kanxeoctl container stats <name> -- one-shot fetch-and-print, plain
+ * thincctl container stats <name> -- one-shot fetch-and-print, plain
  * key/value lines. Raw counters exactly as the daemon returns them
  * (ADR-0054: no rate/percentage computed here) -- a live-refreshing
  * view belongs to the web dashboard's own Stats tab, not this CLI.
@@ -3874,12 +3874,12 @@ static int cmd_container_stats(const struct kx_client *c, int json_mode, int arg
 	char path[300];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: stats requires a container name\n");
+		fprintf(stderr, "thincctl: stats requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/stats", argv[0]);
 	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_container_stats);
@@ -3897,12 +3897,12 @@ static int cmd_console(const struct kx_client *c, int argc, char **argv)
 		else if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "kanxeoctl: unknown console option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown console option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: kanxeoctl console NAME [--cmd=PATH]\n");
+		fprintf(stderr, "usage: thincctl console NAME [--cmd=PATH]\n");
 		return 2;
 	}
 
@@ -4204,12 +4204,12 @@ static int cmd_files_get(const struct kx_client *c, int argc, char **argv)
 		else if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "kanxeoctl: unknown files get option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown files get option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL || path_arg == NULL) {
-		fprintf(stderr, "usage: kanxeoctl files get NAME --path=/some/path [--output=PATH]\n");
+		fprintf(stderr, "usage: thincctl files get NAME --path=/some/path [--output=PATH]\n");
 		return 2;
 	}
 
@@ -4217,13 +4217,13 @@ static int cmd_files_get(const struct kx_client *c, int argc, char **argv)
 	snprintf(path, sizeof(path), "/v1/containers/%s/files?path=%s", name, encoded_path);
 
 	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	if (r.status < 200 || r.status >= 300) {
 		const char *msg = json_str_field(r.json, "error");
 
-		fprintf(stderr, "kanxeoctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed", r.status);
+		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed", r.status);
 		kx_response_free(&r);
 		return 1;
 	}
@@ -4287,18 +4287,18 @@ static int cmd_files_put(const struct kx_client *c, int argc, char **argv)
 		else if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "kanxeoctl: unknown files put option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown files put option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL || path_arg == NULL || file_arg == NULL) {
 		fprintf(stderr,
-		        "usage: kanxeoctl files put NAME --path=/some/path --file=LOCAL_PATH "
+		        "usage: thincctl files put NAME --path=/some/path --file=LOCAL_PATH "
 		        "[--mode=0644]\n");
 		return 2;
 	}
 	if (read_local_file(file_arg, &content, &content_len) != 0) {
-		fprintf(stderr, "kanxeoctl: could not read %s\n", file_arg);
+		fprintf(stderr, "thincctl: could not read %s\n", file_arg);
 		return 1;
 	}
 
@@ -4319,7 +4319,7 @@ static int cmd_files_put(const struct kx_client *c, int argc, char **argv)
 
 	if (kx_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -4327,7 +4327,7 @@ static int cmd_files_put(const struct kx_client *c, int argc, char **argv)
 	if (r.status < 200 || r.status >= 300) {
 		const char *msg = json_str_field(r.json, "error");
 
-		fprintf(stderr, "kanxeoctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed", r.status);
+		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed", r.status);
 		kx_response_free(&r);
 		return 1;
 	}
@@ -4341,8 +4341,8 @@ static int cmd_files(const struct kx_client *c, int argc, char **argv)
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl files get NAME --path=/some/path [--output=PATH]\n"
-		                "       kanxeoctl files put NAME --path=/some/path --file=LOCAL_PATH "
+		fprintf(stderr, "usage: thincctl files get NAME --path=/some/path [--output=PATH]\n"
+		                "       thincctl files put NAME --path=/some/path --file=LOCAL_PATH "
 		                "[--mode=0644]\n");
 		return 2;
 	}
@@ -4352,7 +4352,7 @@ static int cmd_files(const struct kx_client *c, int argc, char **argv)
 	if (strcmp(sub, "put") == 0)
 		return cmd_files_put(c, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown files subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown files subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -4366,19 +4366,19 @@ static int cmd_backup(const struct kx_client *c, int json_mode, int argc, char *
 		if (strncmp(argv[i], "--output=", 9) == 0)
 			output = argv[i] + 9;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown backup option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown backup option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (kx_client_request(c, "GET", "/v1/system/backup", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	if (r.status < 200 || r.status >= 300) {
 		const char *msg = json_str_field(r.json, "error");
 
-		fprintf(stderr, "kanxeoctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r.status);
 		kx_response_free(&r);
 		return 1;
@@ -4419,22 +4419,22 @@ static int cmd_restore(const struct kx_client *c, int json_mode, int argc, char 
 		if (strncmp(argv[i], "--input=", 8) == 0)
 			input = argv[i] + 8;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown restore option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown restore option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (input == NULL) {
-		fprintf(stderr, "usage: kanxeoctl restore --input=PATH\n");
+		fprintf(stderr, "usage: thincctl restore --input=PATH\n");
 		return 2;
 	}
 	if (read_local_file(input, &buf, &len) != 0) {
-		fprintf(stderr, "kanxeoctl: could not read %s\n", input);
+		fprintf(stderr, "thincctl: could not read %s\n", input);
 		return 1;
 	}
 
 	if (kx_client_request(c, "POST", "/v1/system/restore", buf, &r) != 0) {
 		free(buf);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	free(buf);
@@ -4459,7 +4459,7 @@ static int cmd_site_show(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/site", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_site_config);
@@ -4494,27 +4494,27 @@ static int cmd_site_set(const struct kx_client *c, int json_mode, int argc, char
 		else if (strncmp(argv[i], "--domain-suffix=", 16) == 0)
 			new_domain_suffix = argv[i] + 16;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown site set option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown site set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (new_instance_name == NULL && new_site_name == NULL && new_domain_suffix == NULL) {
-		fprintf(stderr, "usage: kanxeoctl site set [--instance-name=NAME] [--site-name=NAME] "
+		fprintf(stderr, "usage: thincctl site set [--instance-name=NAME] [--site-name=NAME] "
 		                "[--domain-suffix=NAME]\n");
 		return 2;
 	}
 
 	if (kx_client_request(c, "GET", "/v1/system/site", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	if (r.status < 200 || r.status >= 300) {
-		fprintf(stderr, "kanxeoctl: could not read current site config (HTTP %d)\n", r.status);
+		fprintf(stderr, "thincctl: could not read current site config (HTTP %d)\n", r.status);
 		kx_response_free(&r);
 		return 1;
 	}
 	cur = json_str_field(r.json, "instance_name");
-	snprintf(instance_name, sizeof(instance_name), "%s", cur != NULL ? cur : "kanxeo");
+	snprintf(instance_name, sizeof(instance_name), "%s", cur != NULL ? cur : "thinc");
 	cur = json_str_field(r.json, "site_name");
 	snprintf(site_name, sizeof(site_name), "%s", cur != NULL ? cur : "");
 	cur = json_str_field(r.json, "domain_suffix");
@@ -4541,7 +4541,7 @@ static int cmd_site_set(const struct kx_client *c, int json_mode, int argc, char
 
 	if (kx_client_request(c, "PUT", "/v1/system/site", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -4554,8 +4554,8 @@ static int cmd_site(const struct kx_client *c, int json_mode, int argc, char **a
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl site show\n"
-		                "       kanxeoctl site set [--instance-name=NAME] [--site-name=NAME] "
+		fprintf(stderr, "usage: thincctl site show\n"
+		                "       thincctl site set [--instance-name=NAME] [--site-name=NAME] "
 		                "[--domain-suffix=NAME]\n");
 		return 2;
 	}
@@ -4565,7 +4565,7 @@ static int cmd_site(const struct kx_client *c, int json_mode, int argc, char **a
 	if (strcmp(sub, "set") == 0)
 		return cmd_site_set(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown site subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown site subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -4592,7 +4592,7 @@ static int cmd_daemon_config_show(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/daemon-config", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_daemon_config);
@@ -4638,18 +4638,18 @@ static int cmd_daemon_config_set(const struct kx_client *c, int json_mode, int a
 		else if (strcmp(argv[i], "--disable-https") == 0)
 			want_https = 0;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown daemon-config set option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown daemon-config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (bind_ip != NULL && clear_bind_ip) {
-		fprintf(stderr, "kanxeoctl: --bind-ip= and --clear-bind-ip are mutually exclusive\n");
+		fprintf(stderr, "thincctl: --bind-ip= and --clear-bind-ip are mutually exclusive\n");
 		return 2;
 	}
 	if (port == NULL && https_port == NULL && management_network == NULL && bind_ip == NULL &&
 	    !clear_bind_ip && want_http == -1 && want_https == -1) {
 		fprintf(stderr,
-		        "usage: kanxeoctl daemon-config set [--port=N] [--https-port=N] "
+		        "usage: thincctl daemon-config set [--port=N] [--https-port=N] "
 		        "[--enable-http] [--disable-http] [--enable-https] [--disable-https] "
 		        "[--management-network=NAME] [--bind-ip=A.B.C.D | --clear-bind-ip]\n");
 		return 2;
@@ -4689,7 +4689,7 @@ static int cmd_daemon_config_set(const struct kx_client *c, int json_mode, int a
 
 	if (kx_client_request(c, "PUT", "/v1/system/daemon-config", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -4702,8 +4702,8 @@ static int cmd_daemon_config(const struct kx_client *c, int json_mode, int argc,
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl daemon-config show\n"
-		                "       kanxeoctl daemon-config set [--port=N] [--https-port=N] "
+		fprintf(stderr, "usage: thincctl daemon-config show\n"
+		                "       thincctl daemon-config set [--port=N] [--https-port=N] "
 		                "[--enable-http] [--disable-http] [--enable-https] [--disable-https] "
 		                "[--management-network=NAME] [--bind-ip=A.B.C.D | --clear-bind-ip]\n");
 		return 2;
@@ -4714,11 +4714,11 @@ static int cmd_daemon_config(const struct kx_client *c, int json_mode, int argc,
 	if (strcmp(sub, "set") == 0)
 		return cmd_daemon_config_set(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown daemon-config subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown daemon-config subcommand '%s'\n", sub);
 	return 2;
 }
 
-/* ADR-0141 Phase 5: kanxeoctl backup-config show|set|status|snapshot-now
+/* ADR-0141 Phase 5: thincctl backup-config show|set|status|snapshot-now
  * -- turns the `backup` disk role from a pure inert label into a real,
  * scheduled state-storage snapshot mechanism. */
 static void fmt_backup_config(const struct json_value *v)
@@ -4750,7 +4750,7 @@ static int cmd_backup_config_show(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/backup-config", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_backup_config);
@@ -4778,17 +4778,17 @@ static int cmd_backup_config_set(const struct kx_client *c, int json_mode, int a
 		else if (strncmp(argv[i], "--interval-hours=", 17) == 0)
 			interval_hours = argv[i] + 17;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown backup-config set option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown backup-config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (disk != NULL && clear_disk) {
-		fprintf(stderr, "kanxeoctl: --disk= and --clear-disk are mutually exclusive\n");
+		fprintf(stderr, "thincctl: --disk= and --clear-disk are mutually exclusive\n");
 		return 2;
 	}
 	if (disk == NULL && !clear_disk && want_enabled == -1 && interval_hours == NULL) {
 		fprintf(stderr,
-		        "usage: kanxeoctl backup-config set [--disk=NAME | --clear-disk] "
+		        "usage: thincctl backup-config set [--disk=NAME | --clear-disk] "
 		        "[--enable | --disable] [--interval-hours=N]\n");
 		return 2;
 	}
@@ -4815,7 +4815,7 @@ static int cmd_backup_config_set(const struct kx_client *c, int json_mode, int a
 
 	if (kx_client_request(c, "PUT", "/v1/system/backup-config", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -4827,7 +4827,7 @@ static int cmd_backup_config_status(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/backup-config/status", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_backup_status);
@@ -4838,7 +4838,7 @@ static int cmd_backup_config_snapshot_now(const struct kx_client *c, int json_mo
 	struct kx_response r;
 
 	if (kx_client_request(c, "POST", "/v1/system/backup-config/snapshot-now", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_backup_status);
@@ -4849,7 +4849,7 @@ static int cmd_backup_config(const struct kx_client *c, int json_mode, int argc,
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl backup-config show|set|status|snapshot-now\n");
+		fprintf(stderr, "usage: thincctl backup-config show|set|status|snapshot-now\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -4862,12 +4862,12 @@ static int cmd_backup_config(const struct kx_client *c, int json_mode, int argc,
 	if (strcmp(sub, "snapshot-now") == 0)
 		return cmd_backup_config_snapshot_now(c, json_mode);
 
-	fprintf(stderr, "kanxeoctl: unknown backup-config subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown backup-config subcommand '%s'\n", sub);
 	return 2;
 }
 
 /*
- * Part 5 (ADR-0124): kanxeoctl rolling-config show|set -- mirrors
+ * Part 5 (ADR-0124): thincctl rolling-config show|set -- mirrors
  * cmd_daemon_config's own shape exactly, one field instead of several.
  */
 static void fmt_rolling_config(const struct json_value *v)
@@ -4881,7 +4881,7 @@ static int cmd_rolling_config_show(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/rolling-config", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_rolling_config);
@@ -4898,12 +4898,12 @@ static int cmd_rolling_config_set(const struct kx_client *c, int json_mode, int 
 		if (strncmp(argv[i], "--jitter-window-seconds=", 24) == 0)
 			window = argv[i] + 24;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown rolling-config set option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown rolling-config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (window == NULL) {
-		fprintf(stderr, "usage: kanxeoctl rolling-config set --jitter-window-seconds=N\n");
+		fprintf(stderr, "usage: thincctl rolling-config set --jitter-window-seconds=N\n");
 		return 2;
 	}
 
@@ -4916,7 +4916,7 @@ static int cmd_rolling_config_set(const struct kx_client *c, int json_mode, int 
 
 	if (kx_client_request(c, "PUT", "/v1/system/rolling-config", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -4929,8 +4929,8 @@ static int cmd_rolling_config(const struct kx_client *c, int json_mode, int argc
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl rolling-config show\n"
-		                "       kanxeoctl rolling-config set --jitter-window-seconds=N\n");
+		fprintf(stderr, "usage: thincctl rolling-config show\n"
+		                "       thincctl rolling-config set --jitter-window-seconds=N\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -4939,12 +4939,12 @@ static int cmd_rolling_config(const struct kx_client *c, int json_mode, int argc
 	if (strcmp(sub, "set") == 0)
 		return cmd_rolling_config_set(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown rolling-config subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown rolling-config subcommand '%s'\n", sub);
 	return 2;
 }
 
 /*
- * ADR-0157 Phase 3: kanxeoctl pkg-build-config show|set -- mirrors
+ * ADR-0157 Phase 3: thincctl pkg-build-config show|set -- mirrors
  * cmd_rolling_config's own shape exactly, one field instead of several.
  */
 static void fmt_pkg_build_config(const struct json_value *v)
@@ -4958,7 +4958,7 @@ static int cmd_pkg_build_config_show(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/pkg-build-config", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_build_config);
@@ -4975,12 +4975,12 @@ static int cmd_pkg_build_config_set(const struct kx_client *c, int json_mode, in
 		if (strncmp(argv[i], "--max-concurrent-jobs=", 23) == 0)
 			max_jobs = argv[i] + 23;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown pkg-build-config set option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown pkg-build-config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (max_jobs == NULL) {
-		fprintf(stderr, "usage: kanxeoctl pkg-build-config set --max-concurrent-jobs=N\n");
+		fprintf(stderr, "usage: thincctl pkg-build-config set --max-concurrent-jobs=N\n");
 		return 2;
 	}
 
@@ -4993,7 +4993,7 @@ static int cmd_pkg_build_config_set(const struct kx_client *c, int json_mode, in
 
 	if (kx_client_request(c, "PUT", "/v1/system/pkg-build-config", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -5006,8 +5006,8 @@ static int cmd_pkg_build_config(const struct kx_client *c, int json_mode, int ar
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl pkg-build-config show\n"
-		                "       kanxeoctl pkg-build-config set --max-concurrent-jobs=N\n");
+		fprintf(stderr, "usage: thincctl pkg-build-config show\n"
+		                "       thincctl pkg-build-config set --max-concurrent-jobs=N\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -5016,12 +5016,12 @@ static int cmd_pkg_build_config(const struct kx_client *c, int json_mode, int ar
 	if (strcmp(sub, "set") == 0)
 		return cmd_pkg_build_config_set(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown pkg-build-config subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown pkg-build-config subcommand '%s'\n", sub);
 	return 2;
 }
 
 /*
- * ADR-0134: kanxeoctl tls-throttle show|set|status -- per-source-IP
+ * ADR-0134: thincctl tls-throttle show|set|status -- per-source-IP
  * throttling for repeated failed HTTPS handshakes. show/set mirror
  * daemon-config's own multi-field partial-update shape; status has no
  * daemon-config equivalent (there's nothing analogous to show there)
@@ -5044,7 +5044,7 @@ static int cmd_tls_throttle_show(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/tls-throttle", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_tls_throttle);
@@ -5075,12 +5075,12 @@ static int cmd_tls_throttle_set(const struct kx_client *c, int json_mode, int ar
 		else if (strncmp(argv[i], "--log-interval-seconds=", 23) == 0)
 			log_interval = argv[i] + 23;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown tls-throttle set option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown tls-throttle set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (want_enabled == -1 && threshold == NULL && window == NULL && block == NULL && log_interval == NULL) {
-		fprintf(stderr, "usage: kanxeoctl tls-throttle set [--enabled | --disabled] "
+		fprintf(stderr, "usage: thincctl tls-throttle set [--enabled | --disabled] "
 		                "[--threshold=N] [--window-seconds=N] [--block-seconds=N] "
 		                "[--log-interval-seconds=N]\n");
 		return 2;
@@ -5113,7 +5113,7 @@ static int cmd_tls_throttle_set(const struct kx_client *c, int json_mode, int ar
 
 	if (kx_client_request(c, "PUT", "/v1/system/tls-throttle", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -5151,7 +5151,7 @@ static int cmd_tls_throttle_status(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/tls-throttle/status", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_tls_throttle_status);
@@ -5162,11 +5162,11 @@ static int cmd_tls_throttle(const struct kx_client *c, int json_mode, int argc, 
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl tls-throttle show\n"
-		                "       kanxeoctl tls-throttle set [--enabled | --disabled] "
+		fprintf(stderr, "usage: thincctl tls-throttle show\n"
+		                "       thincctl tls-throttle set [--enabled | --disabled] "
 		                "[--threshold=N] [--window-seconds=N] [--block-seconds=N] "
 		                "[--log-interval-seconds=N]\n"
-		                "       kanxeoctl tls-throttle status\n");
+		                "       thincctl tls-throttle status\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -5177,7 +5177,7 @@ static int cmd_tls_throttle(const struct kx_client *c, int json_mode, int argc, 
 	if (strcmp(sub, "status") == 0)
 		return cmd_tls_throttle_status(c, json_mode);
 
-	fprintf(stderr, "kanxeoctl: unknown tls-throttle subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown tls-throttle subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -5225,7 +5225,7 @@ static int cmd_hostauth_config_show(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/hostauth-config", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_hostauth_config);
@@ -5251,7 +5251,7 @@ static int cmd_hostauth_config_set(const struct kx_client *c, int json_mode, int
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--admin-group=", 14) == 0) {
 			if (admin_group_count >= 8) {
-				fprintf(stderr, "kanxeoctl: too many --admin-group= flags (max 8)\n");
+				fprintf(stderr, "thincctl: too many --admin-group= flags (max 8)\n");
 				return 2;
 			}
 			admin_groups[admin_group_count++] = argv[i] + 14;
@@ -5263,7 +5263,7 @@ static int cmd_hostauth_config_set(const struct kx_client *c, int json_mode, int
 			want_ldap_enabled = 0;
 		} else if (strncmp(argv[i], "--ldap-server=", 14) == 0) {
 			if (ldap_server_count >= 3) {
-				fprintf(stderr, "kanxeoctl: too many --ldap-server= flags (max 3)\n");
+				fprintf(stderr, "thincctl: too many --ldap-server= flags (max 3)\n");
 				return 2;
 			}
 			ldap_servers[ldap_server_count++] = argv[i] + 14;
@@ -5272,7 +5272,7 @@ static int cmd_hostauth_config_set(const struct kx_client *c, int json_mode, int
 		} else if (strncmp(argv[i], "--ldap-base-dn=", 15) == 0) {
 			ldap_base_dn = argv[i] + 15;
 		} else {
-			fprintf(stderr, "kanxeoctl: unknown hostauth-config set option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown hostauth-config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -5283,7 +5283,7 @@ static int cmd_hostauth_config_set(const struct kx_client *c, int json_mode, int
 	if (admin_group_count == -1 && idle_timeout == NULL && want_ldap_enabled == -1 &&
 	    ldap_server_count == -1 && ldap_port == NULL && ldap_base_dn == NULL) {
 		fprintf(stderr,
-		        "usage: kanxeoctl hostauth-config set [--admin-group=NAME ...] "
+		        "usage: thincctl hostauth-config set [--admin-group=NAME ...] "
 		        "[--idle-timeout-seconds=N] [--ldap-enable | --ldap-disable] "
 		        "[--ldap-server=HOST ...] [--ldap-port=N] [--ldap-base-dn=NAME]\n");
 		return 2;
@@ -5293,7 +5293,7 @@ static int cmd_hostauth_config_set(const struct kx_client *c, int json_mode, int
 	 * given here is preserved exactly, not reset by the server's own
 	 * full-replacement PUT semantics. */
 	if (kx_client_request(c, "GET", "/v1/system/hostauth-config", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	current = r.json;
@@ -5360,7 +5360,7 @@ static int cmd_hostauth_config_set(const struct kx_client *c, int json_mode, int
 
 	if (kx_client_request(c, "PUT", "/v1/system/hostauth-config", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -5374,8 +5374,8 @@ static int cmd_hostauth_config(const struct kx_client *c, int json_mode, int arg
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: kanxeoctl hostauth-config show\n"
-		        "       kanxeoctl hostauth-config set [--admin-group=NAME ...] "
+		        "usage: thincctl hostauth-config show\n"
+		        "       thincctl hostauth-config set [--admin-group=NAME ...] "
 		        "[--idle-timeout-seconds=N] [--ldap-enable | --ldap-disable] "
 		        "[--ldap-server=HOST ...] [--ldap-port=N] [--ldap-base-dn=NAME]\n");
 		return 2;
@@ -5386,7 +5386,7 @@ static int cmd_hostauth_config(const struct kx_client *c, int json_mode, int arg
 	if (strcmp(sub, "set") == 0)
 		return cmd_hostauth_config_set(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown hostauth-config subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown hostauth-config subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -5422,7 +5422,7 @@ static int cmd_hostauth_sessions_ls(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/hostauth/sessions", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_hostauth_sessions_list);
@@ -5435,12 +5435,12 @@ static int cmd_hostauth_sessions_revoke(const struct kx_client *c, int json_mode
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl hostauth-sessions revoke USERNAME\n");
+		fprintf(stderr, "usage: thincctl hostauth-sessions revoke USERNAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/system/hostauth/sessions/%s", argv[0]);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -5451,8 +5451,8 @@ static int cmd_hostauth_sessions(const struct kx_client *c, int json_mode, int a
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl hostauth-sessions ls\n"
-		                "       kanxeoctl hostauth-sessions revoke USERNAME  -- log out everywhere\n");
+		fprintf(stderr, "usage: thincctl hostauth-sessions ls\n"
+		                "       thincctl hostauth-sessions revoke USERNAME  -- log out everywhere\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -5461,7 +5461,7 @@ static int cmd_hostauth_sessions(const struct kx_client *c, int json_mode, int a
 	if (strcmp(sub, "revoke") == 0)
 		return cmd_hostauth_sessions_revoke(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown hostauth-sessions subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown hostauth-sessions subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -5578,32 +5578,32 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 			disk = argv[i] + 7;
 		else if (strncmp(argv[i], "--network=", 10) == 0) {
 			if (network_count >= CLI_MAX_NETWORKS) {
-				fprintf(stderr, "kanxeoctl: too many --network= flags (max %d)\n",
+				fprintf(stderr, "thincctl: too many --network= flags (max %d)\n",
 				        CLI_MAX_NETWORKS);
 				return 2;
 			}
 			if (parse_network_flag(argv[i] + 10, &networks[network_count]) != 0) {
-				fprintf(stderr, "kanxeoctl: invalid --network= value '%s'\n", argv[i] + 10);
+				fprintf(stderr, "thincctl: invalid --network= value '%s'\n", argv[i] + 10);
 				return 2;
 			}
 			network_count++;
 		} else if (strncmp(argv[i], "--device=", 9) == 0) {
 			if (device_count >= CLI_MAX_DEVICES) {
-				fprintf(stderr, "kanxeoctl: too many --device= flags (max %d)\n",
+				fprintf(stderr, "thincctl: too many --device= flags (max %d)\n",
 				        CLI_MAX_DEVICES);
 				return 2;
 			}
 			devices[device_count++] = argv[i] + 9;
 		} else if (strncmp(argv[i], "--optional-device=", 18) == 0) {
 			if (optional_device_count >= CLI_MAX_DEVICES) {
-				fprintf(stderr, "kanxeoctl: too many --optional-device= flags (max %d)\n",
+				fprintf(stderr, "thincctl: too many --optional-device= flags (max %d)\n",
 				        CLI_MAX_DEVICES);
 				return 2;
 			}
 			optional_devices[optional_device_count++] = argv[i] + 18;
 		} else if (strncmp(argv[i], "--interface=", 12) == 0) {
 			if (interface_count >= CLI_MAX_INTERFACES) {
-				fprintf(stderr, "kanxeoctl: too many --interface= flags (max %d)\n",
+				fprintf(stderr, "thincctl: too many --interface= flags (max %d)\n",
 				        CLI_MAX_INTERFACES);
 				return 2;
 			}
@@ -5618,7 +5618,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 			follow_rolling_jitter = atol(argv[i] + 32);
 		} else if (strncmp(argv[i], "--depends-on=", 13) == 0) {
 			if (depends_on_count >= CLI_MAX_DEPENDS) {
-				fprintf(stderr, "kanxeoctl: too many --depends-on= flags (max %d)\n",
+				fprintf(stderr, "thincctl: too many --depends-on= flags (max %d)\n",
 				        CLI_MAX_DEPENDS);
 				return 2;
 			}
@@ -5649,25 +5649,25 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 			ldap_secret_dir = argv[i] + 18;
 		} else if (strncmp(argv[i], "--route=", 8) == 0) {
 			if (route_count >= CLI_MAX_ROUTES) {
-				fprintf(stderr, "kanxeoctl: too many --route= flags (max %d)\n",
+				fprintf(stderr, "thincctl: too many --route= flags (max %d)\n",
 				        CLI_MAX_ROUTES);
 				return 2;
 			}
 			if (parse_route_flag(argv[i] + 8, &routes[route_count]) != 0) {
 				fprintf(stderr,
-				        "kanxeoctl: invalid --route= value '%s' (expected DEST/PREFIX:VIA)\n",
+				        "thincctl: invalid --route= value '%s' (expected DEST/PREFIX:VIA)\n",
 				        argv[i] + 8);
 				return 2;
 			}
 			route_count++;
 		} else if (strncmp(argv[i], "--file=", 7) == 0) {
 			if (file_count >= CLI_MAX_FILES) {
-				fprintf(stderr, "kanxeoctl: too many --file= flags (max %d)\n", CLI_MAX_FILES);
+				fprintf(stderr, "thincctl: too many --file= flags (max %d)\n", CLI_MAX_FILES);
 				return 2;
 			}
 			if (parse_file_flag(argv[i] + 7, &files[file_count]) != 0) {
 				fprintf(stderr,
-				        "kanxeoctl: invalid --file= value '%s' (expected "
+				        "thincctl: invalid --file= value '%s' (expected "
 				        "CONTAINER_PATH=LOCAL_PATH[:MODE])\n",
 				        argv[i] + 7);
 				return 2;
@@ -5675,7 +5675,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 			file_count++;
 		} else if (strncmp(argv[i], "--file-owner=", 13) == 0) {
 			if (file_owner_count >= CLI_MAX_FILES) {
-				fprintf(stderr, "kanxeoctl: too many --file-owner= flags (max %d)\n",
+				fprintf(stderr, "thincctl: too many --file-owner= flags (max %d)\n",
 				        CLI_MAX_FILES);
 				return 2;
 			}
@@ -5684,7 +5684,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 			                          &file_owners[file_owner_count].uid,
 			                          &file_owners[file_owner_count].gid) != 0) {
 				fprintf(stderr,
-				        "kanxeoctl: invalid --file-owner= value '%s' (expected "
+				        "thincctl: invalid --file-owner= value '%s' (expected "
 				        "CONTAINER_PATH:UID:GID)\n",
 				        argv[i] + 13);
 				return 2;
@@ -5692,26 +5692,26 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 			file_owner_count++;
 		} else if (strncmp(argv[i], "--sysctl=", 9) == 0) {
 			if (sysctl_count >= CLI_MAX_SYSCTLS) {
-				fprintf(stderr, "kanxeoctl: too many --sysctl= flags (max %d)\n",
+				fprintf(stderr, "thincctl: too many --sysctl= flags (max %d)\n",
 				        CLI_MAX_SYSCTLS);
 				return 2;
 			}
 			if (parse_sysctl_flag(argv[i] + 9, &sysctls[sysctl_count]) != 0) {
 				fprintf(stderr,
-				        "kanxeoctl: invalid --sysctl= value '%s' (expected KEY=VALUE)\n",
+				        "thincctl: invalid --sysctl= value '%s' (expected KEY=VALUE)\n",
 				        argv[i] + 9);
 				return 2;
 			}
 			sysctl_count++;
 		} else if (strncmp(argv[i], "--dns-server=", 13) == 0) {
 			if (dns_server_count >= CLI_MAX_DNS_SERVERS) {
-				fprintf(stderr, "kanxeoctl: too many --dns-server= flags (max %d)\n",
+				fprintf(stderr, "thincctl: too many --dns-server= flags (max %d)\n",
 				        CLI_MAX_DNS_SERVERS);
 				return 2;
 			}
 			dns_servers[dns_server_count++] = argv[i] + 13;
 		} else {
-			fprintf(stderr, "kanxeoctl: unknown run option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown run option '%s'\n", argv[i]);
 			return 2;
 		}
 		i++;
@@ -5719,7 +5719,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 
 	if (name == NULL || image == NULL || cmd_start < 0 || cmd_start >= argc) {
 		fprintf(stderr,
-		        "usage: kanxeoctl run --name=NAME --image=IMAGE [--memory-max=N] "
+		        "usage: thincctl run --name=NAME --image=IMAGE [--memory-max=N] "
 		        "[--pids-max=N] [--cpu-max=\"QUOTA PERIOD\"] [--cpuset=0-1,3] "
 		        "[--disk-quota=BYTES] [--disk=NAME] "
 		        "[--network=NAME[:IP] ...] [--ip-forward] [--dns-register] "
@@ -5757,7 +5757,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		}
 		if (!matched) {
 			fprintf(stderr,
-			        "kanxeoctl: --file-owner=%s:... has no matching --file=%s=... entry\n",
+			        "thincctl: --file-owner=%s:... has no matching --file=%s=... entry\n",
 			        file_owners[i].path, file_owners[i].path);
 			return 2;
 		}
@@ -5992,7 +5992,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 
 	if (kx_client_request(c, "POST", "/v1/containers", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -6020,14 +6020,14 @@ static int cmd_network_create(const struct kx_client *c, int json_mode, int argc
 		else if (strncmp(argv[i], "--address=", 10) == 0)
 			address = argv[i] + 10;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown network create option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown network create option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (name == NULL || subnet == NULL || prefix_len < 0) {
 		fprintf(stderr,
-		        "usage: kanxeoctl network create --name=NAME --subnet=A.B.C.D --prefix=N "
+		        "usage: thincctl network create --name=NAME --subnet=A.B.C.D --prefix=N "
 		        "[--address=A.B.C.D]\n"
 		        "  no --address= means the bridge stays pure L2 (no host-owned address) --\n"
 		        "  the default. Pass --address= only when the host itself should have an\n"
@@ -6052,7 +6052,7 @@ static int cmd_network_create(const struct kx_client *c, int json_mode, int argc
 
 	if (kx_client_request(c, "POST", "/v1/networks", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -6065,7 +6065,7 @@ static int cmd_network_ls(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/networks", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_network_list);
@@ -6077,12 +6077,12 @@ static int cmd_network_rm(const struct kx_client *c, int json_mode, int argc, ch
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: network rm requires a network name\n");
+		fprintf(stderr, "thincctl: network rm requires a network name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/networks/%s", argv[0]);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -6100,7 +6100,7 @@ static int cmd_network_attach_interface(const struct kx_client *c, int json_mode
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: network attach-interface requires a network name\n");
+		fprintf(stderr, "thincctl: network attach-interface requires a network name\n");
 		return 2;
 	}
 	net_name = argv[0];
@@ -6110,13 +6110,13 @@ static int cmd_network_attach_interface(const struct kx_client *c, int json_mode
 		else if (strncmp(argv[i], "--vlan=", 7) == 0)
 			vlan_id = atol(argv[i] + 7);
 		else {
-			fprintf(stderr, "kanxeoctl: unknown network attach-interface option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown network attach-interface option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (ifname == NULL) {
 		fprintf(stderr,
-		        "usage: kanxeoctl network attach-interface NAME --interface=IFNAME [--vlan=N]\n");
+		        "usage: thincctl network attach-interface NAME --interface=IFNAME [--vlan=N]\n");
 		return 2;
 	}
 
@@ -6134,7 +6134,7 @@ static int cmd_network_attach_interface(const struct kx_client *c, int json_mode
 	snprintf(path, sizeof(path), "/v1/networks/%s/interfaces", net_name);
 	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -6152,7 +6152,7 @@ static int cmd_network_detach_interface(const struct kx_client *c, int json_mode
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: network detach-interface requires a network name\n");
+		fprintf(stderr, "thincctl: network detach-interface requires a network name\n");
 		return 2;
 	}
 	net_name = argv[0];
@@ -6160,18 +6160,18 @@ static int cmd_network_detach_interface(const struct kx_client *c, int json_mode
 		if (strncmp(argv[i], "--interface=", 12) == 0)
 			ifname = argv[i] + 12;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown network detach-interface option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown network detach-interface option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (ifname == NULL) {
-		fprintf(stderr, "usage: kanxeoctl network detach-interface NAME --interface=IFNAME\n");
+		fprintf(stderr, "usage: thincctl network detach-interface NAME --interface=IFNAME\n");
 		return 2;
 	}
 
 	snprintf(path, sizeof(path), "/v1/networks/%s/interfaces/%s", net_name, ifname);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -6183,12 +6183,12 @@ static int cmd_network(const struct kx_client *c, int json_mode, int argc, char 
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: kanxeoctl network create --name=NAME --subnet=A.B.C.D --prefix=N "
+		        "usage: thincctl network create --name=NAME --subnet=A.B.C.D --prefix=N "
 		        "[--address=A.B.C.D]\n"
-		        "       kanxeoctl network ls\n"
-		        "       kanxeoctl network rm NAME\n"
-		        "       kanxeoctl network attach-interface NAME --interface=IFNAME [--vlan=N]\n"
-		        "       kanxeoctl network detach-interface NAME --interface=IFNAME\n");
+		        "       thincctl network ls\n"
+		        "       thincctl network rm NAME\n"
+		        "       thincctl network attach-interface NAME --interface=IFNAME [--vlan=N]\n"
+		        "       thincctl network detach-interface NAME --interface=IFNAME\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -6203,7 +6203,7 @@ static int cmd_network(const struct kx_client *c, int json_mode, int argc, char 
 	if (strcmp(sub, "detach-interface") == 0)
 		return cmd_network_detach_interface(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown network subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown network subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -6218,13 +6218,13 @@ static int cmd_image_create(const struct kx_client *c, int json_mode, int argc, 
 		if (strncmp(argv[i], "--name=", 7) == 0)
 			name = argv[i] + 7;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown image create option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown image create option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (name == NULL) {
-		fprintf(stderr, "usage: kanxeoctl image create --name=NAME\n");
+		fprintf(stderr, "usage: thincctl image create --name=NAME\n");
 		return 2;
 	}
 
@@ -6237,7 +6237,7 @@ static int cmd_image_create(const struct kx_client *c, int json_mode, int argc, 
 
 	if (kx_client_request(c, "POST", "/v1/images", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -6250,7 +6250,7 @@ static int cmd_image_ls(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/images", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_image_list);
@@ -6262,12 +6262,12 @@ static int cmd_image_rm(const struct kx_client *c, int json_mode, int argc, char
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: image rm requires an image name\n");
+		fprintf(stderr, "thincctl: image rm requires an image name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/images/%s", argv[0]);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -6279,12 +6279,12 @@ static int cmd_image_show(const struct kx_client *c, int json_mode, int argc, ch
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl image show NAME\n");
+		fprintf(stderr, "usage: thincctl image show NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/images/%s", argv[0]);
 	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_image_detail);
@@ -6313,13 +6313,13 @@ static int cmd_image_manifest_set(const struct kx_client *c, int json_mode, int 
 		else if (strncmp(argv[i], "--version=", 10) == 0)
 			version = argv[i] + 10;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown image manifest set option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown image manifest set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (image == NULL || package == NULL || mode == NULL || version == NULL) {
 		fprintf(stderr,
-		        "usage: kanxeoctl image manifest set --image=NAME --package=NAME "
+		        "usage: thincctl image manifest set --image=NAME --package=NAME "
 		        "--mode=pinned|rolling --version=VERSION\n");
 		return 2;
 	}
@@ -6338,7 +6338,7 @@ static int cmd_image_manifest_set(const struct kx_client *c, int json_mode, int 
 	snprintf(path, sizeof(path), "/v1/images/%s/manifest", image);
 	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -6346,7 +6346,7 @@ static int cmd_image_manifest_set(const struct kx_client *c, int json_mode, int 
 	if (r.status < 200 || r.status >= 300) {
 		const char *msg = json_str_field(r.json, "error");
 
-		fprintf(stderr, "kanxeoctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r.status);
 		kx_response_free(&r);
 		return 1;
@@ -6370,18 +6370,18 @@ static int cmd_image_manifest_rm(const struct kx_client *c, int json_mode, int a
 		else if (strncmp(argv[i], "--package=", 10) == 0)
 			package = argv[i] + 10;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown image manifest rm option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown image manifest rm option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (image == NULL || package == NULL) {
-		fprintf(stderr, "usage: kanxeoctl image manifest rm --image=NAME --package=NAME\n");
+		fprintf(stderr, "usage: thincctl image manifest rm --image=NAME --package=NAME\n");
 		return 2;
 	}
 
 	snprintf(path, sizeof(path), "/v1/images/%s/manifest/%s", image, package);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -6393,9 +6393,9 @@ static int cmd_image_manifest(const struct kx_client *c, int json_mode, int argc
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: kanxeoctl image manifest set --image=NAME --package=NAME "
+		        "usage: thincctl image manifest set --image=NAME --package=NAME "
 		        "--mode=pinned|rolling --version=VERSION\n"
-		        "       kanxeoctl image manifest rm --image=NAME --package=NAME\n");
+		        "       thincctl image manifest rm --image=NAME --package=NAME\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -6404,7 +6404,7 @@ static int cmd_image_manifest(const struct kx_client *c, int json_mode, int argc
 	if (strcmp(sub, "rm") == 0)
 		return cmd_image_manifest_rm(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown image manifest subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown image manifest subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -6433,7 +6433,7 @@ static int cmd_image_recipe_ls(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/images/recipes", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_image_recipe_list);
@@ -6458,16 +6458,16 @@ static int cmd_image_recipe_add(const struct kx_client *c, int json_mode, int ar
 		else if (strncmp(argv[i], "--file=", 7) == 0)
 			file = argv[i] + 7;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown image recipe add option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown image recipe add option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL || file == NULL) {
-		fprintf(stderr, "usage: kanxeoctl image recipe add --name=NAME --file=PATH\n");
+		fprintf(stderr, "usage: thincctl image recipe add --name=NAME --file=PATH\n");
 		return 2;
 	}
 	if (read_local_file(file, &content, &content_len) != 0) {
-		fprintf(stderr, "kanxeoctl: could not read %s\n", file);
+		fprintf(stderr, "thincctl: could not read %s\n", file);
 		return 1;
 	}
 
@@ -6483,7 +6483,7 @@ static int cmd_image_recipe_add(const struct kx_client *c, int json_mode, int ar
 
 	if (kx_client_request(c, "POST", "/v1/images/recipes", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -6491,7 +6491,7 @@ static int cmd_image_recipe_add(const struct kx_client *c, int json_mode, int ar
 	if (r.status < 200 || r.status >= 300) {
 		const char *msg = json_str_field(r.json, "error");
 
-		fprintf(stderr, "kanxeoctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r.status);
 		kx_response_free(&r);
 		return 1;
@@ -6519,17 +6519,17 @@ static int cmd_image_recipe_show(const struct kx_client *c, int json_mode, int a
 		if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "kanxeoctl: unknown image recipe show option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown image recipe show option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: kanxeoctl image recipe show NAME\n");
+		fprintf(stderr, "usage: thincctl image recipe show NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/images/recipes/%s", name);
 	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_image_recipe_show);
@@ -6546,17 +6546,17 @@ static int cmd_image_recipe_rm(const struct kx_client *c, int json_mode, int arg
 		if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "kanxeoctl: unknown image recipe rm option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown image recipe rm option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: kanxeoctl image recipe rm NAME\n");
+		fprintf(stderr, "usage: thincctl image recipe rm NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/images/recipes/%s", name);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -6567,10 +6567,10 @@ static int cmd_image_recipe(const struct kx_client *c, int json_mode, int argc, 
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl image recipe add --name=NAME --file=PATH\n"
-		                "       kanxeoctl image recipe show NAME\n"
-		                "       kanxeoctl image recipe rm NAME\n"
-		                "       kanxeoctl image recipe ls\n");
+		fprintf(stderr, "usage: thincctl image recipe add --name=NAME --file=PATH\n"
+		                "       thincctl image recipe show NAME\n"
+		                "       thincctl image recipe rm NAME\n"
+		                "       thincctl image recipe ls\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -6583,7 +6583,7 @@ static int cmd_image_recipe(const struct kx_client *c, int json_mode, int argc, 
 	if (strcmp(sub, "ls") == 0)
 		return cmd_image_recipe_ls(c, json_mode);
 
-	fprintf(stderr, "kanxeoctl: unknown image recipe subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown image recipe subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -6606,23 +6606,23 @@ static int cmd_image_apply_recipe(const struct kx_client *c, int json_mode, int 
 		if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "kanxeoctl: unknown image apply-recipe option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown image apply-recipe option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: kanxeoctl image apply-recipe NAME\n");
+		fprintf(stderr, "usage: thincctl image apply-recipe NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/images/%s/apply-recipe", name);
 	if (kx_client_request(c, "POST", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	if (r.status < 200 || r.status >= 300) {
 		const char *msg = json_str_field(r.json, "error");
 
-		fprintf(stderr, "kanxeoctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r.status);
 		kx_response_free(&r);
 		return 1;
@@ -6652,7 +6652,7 @@ static int cmd_image_recipe_apply_status(const struct kx_client *c, int json_mod
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/images/recipe-apply-status", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_image_recipe_apply_status);
@@ -6683,7 +6683,7 @@ static int cmd_container_recipe_ls(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/containers/recipes", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_container_recipe_list);
@@ -6711,16 +6711,16 @@ static int cmd_container_recipe_add(const struct kx_client *c, int json_mode, in
 		else if (strncmp(argv[i], "--file=", 7) == 0)
 			file = argv[i] + 7;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown container recipe add option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown container recipe add option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL || file == NULL) {
-		fprintf(stderr, "usage: kanxeoctl container recipe add --name=NAME --file=PATH\n");
+		fprintf(stderr, "usage: thincctl container recipe add --name=NAME --file=PATH\n");
 		return 2;
 	}
 	if (read_local_file(file, &content, &content_len) != 0) {
-		fprintf(stderr, "kanxeoctl: could not read %s\n", file);
+		fprintf(stderr, "thincctl: could not read %s\n", file);
 		return 1;
 	}
 
@@ -6736,7 +6736,7 @@ static int cmd_container_recipe_add(const struct kx_client *c, int json_mode, in
 
 	if (kx_client_request(c, "POST", "/v1/containers/recipes", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -6744,7 +6744,7 @@ static int cmd_container_recipe_add(const struct kx_client *c, int json_mode, in
 	if (r.status < 200 || r.status >= 300) {
 		const char *msg = json_str_field(r.json, "error");
 
-		fprintf(stderr, "kanxeoctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r.status);
 		kx_response_free(&r);
 		return 1;
@@ -6773,17 +6773,17 @@ static int cmd_container_recipe_show(const struct kx_client *c, int json_mode, i
 		if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "kanxeoctl: unknown container recipe show option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown container recipe show option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: kanxeoctl container recipe show NAME\n");
+		fprintf(stderr, "usage: thincctl container recipe show NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/recipes/%s", name);
 	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_container_recipe_show);
@@ -6801,17 +6801,17 @@ static int cmd_container_recipe_rm(const struct kx_client *c, int json_mode, int
 		if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "kanxeoctl: unknown container recipe rm option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown container recipe rm option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: kanxeoctl container recipe rm NAME\n");
+		fprintf(stderr, "usage: thincctl container recipe rm NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/recipes/%s", name);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -6822,10 +6822,10 @@ static int cmd_container_recipe(const struct kx_client *c, int json_mode, int ar
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl container recipe add --name=NAME --file=PATH\n"
-		                "       kanxeoctl container recipe show NAME\n"
-		                "       kanxeoctl container recipe rm NAME\n"
-		                "       kanxeoctl container recipe ls\n");
+		fprintf(stderr, "usage: thincctl container recipe add --name=NAME --file=PATH\n"
+		                "       thincctl container recipe show NAME\n"
+		                "       thincctl container recipe rm NAME\n"
+		                "       thincctl container recipe ls\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -6838,7 +6838,7 @@ static int cmd_container_recipe(const struct kx_client *c, int json_mode, int ar
 	if (strcmp(sub, "ls") == 0)
 		return cmd_container_recipe_ls(c, json_mode);
 
-	fprintf(stderr, "kanxeoctl: unknown container recipe subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown container recipe subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -6869,7 +6869,7 @@ static int cmd_container_apply_recipe(const struct kx_client *c, int json_mode, 
 
 			if (eq == NULL) {
 				fprintf(stderr,
-				        "kanxeoctl: invalid --secret= value '%s' (expected KEY=VALUE)\n",
+				        "thincctl: invalid --secret= value '%s' (expected KEY=VALUE)\n",
 				        argv[i] + 9);
 				jw_free(&w);
 				return 2;
@@ -6881,7 +6881,7 @@ static int cmd_container_apply_recipe(const struct kx_client *c, int json_mode, 
 		} else if (name == NULL) {
 			name = argv[i];
 		} else {
-			fprintf(stderr, "kanxeoctl: unknown container apply-recipe option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown container apply-recipe option '%s'\n", argv[i]);
 			jw_free(&w);
 			return 2;
 		}
@@ -6892,7 +6892,7 @@ static int cmd_container_apply_recipe(const struct kx_client *c, int json_mode, 
 
 	if (name == NULL) {
 		fprintf(stderr,
-		        "usage: kanxeoctl container apply-recipe NAME [--secret=KEY=VALUE ...]\n");
+		        "usage: thincctl container apply-recipe NAME [--secret=KEY=VALUE ...]\n");
 		jw_free(&w);
 		return 2;
 	}
@@ -6900,7 +6900,7 @@ static int cmd_container_apply_recipe(const struct kx_client *c, int json_mode, 
 	snprintf(path, sizeof(path), "/v1/containers/recipes/%s/apply", name);
 	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -6908,7 +6908,7 @@ static int cmd_container_apply_recipe(const struct kx_client *c, int json_mode, 
 	if (r.status < 200 || r.status >= 300) {
 		const char *msg = json_str_field(r.json, "error");
 
-		fprintf(stderr, "kanxeoctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r.status);
 		kx_response_free(&r);
 		return 1;
@@ -6921,18 +6921,18 @@ static int cmd_image(const struct kx_client *c, int json_mode, int argc, char **
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl image create --name=NAME\n"
-		                "       kanxeoctl image ls\n"
-		                "       kanxeoctl image show NAME\n"
-		                "       kanxeoctl image rm NAME\n"
-		                "       kanxeoctl image manifest set --image=NAME --package=NAME "
+		fprintf(stderr, "usage: thincctl image create --name=NAME\n"
+		                "       thincctl image ls\n"
+		                "       thincctl image show NAME\n"
+		                "       thincctl image rm NAME\n"
+		                "       thincctl image manifest set --image=NAME --package=NAME "
 		                "--mode=pinned|rolling --version=VERSION\n"
-		                "       kanxeoctl image manifest rm --image=NAME --package=NAME\n"
-		                "       kanxeoctl image recipe add --name=NAME --file=PATH\n"
-		                "       kanxeoctl image recipe show|rm NAME\n"
-		                "       kanxeoctl image recipe ls\n"
-		                "       kanxeoctl image apply-recipe NAME\n"
-		                "       kanxeoctl image recipe-apply-status\n");
+		                "       thincctl image manifest rm --image=NAME --package=NAME\n"
+		                "       thincctl image recipe add --name=NAME --file=PATH\n"
+		                "       thincctl image recipe show|rm NAME\n"
+		                "       thincctl image recipe ls\n"
+		                "       thincctl image apply-recipe NAME\n"
+		                "       thincctl image recipe-apply-status\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -6953,7 +6953,7 @@ static int cmd_image(const struct kx_client *c, int json_mode, int argc, char **
 	if (strcmp(sub, "recipe-apply-status") == 0)
 		return cmd_image_recipe_apply_status(c, json_mode);
 
-	fprintf(stderr, "kanxeoctl: unknown image subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown image subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -6962,7 +6962,7 @@ static int cmd_device_ls(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/devices", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_device_list);
@@ -6973,14 +6973,14 @@ static int cmd_device(const struct kx_client *c, int json_mode, int argc, char *
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl device ls\n");
+		fprintf(stderr, "usage: thincctl device ls\n");
 		return 2;
 	}
 	sub = argv[0];
 	if (strcmp(sub, "ls") == 0)
 		return cmd_device_ls(c, json_mode);
 
-	fprintf(stderr, "kanxeoctl: unknown device subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown device subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -6998,13 +6998,13 @@ static int cmd_diskrole_create(const struct kx_client *c, int json_mode, int arg
 		else if (strncmp(argv[i], "--role=", 7) == 0)
 			role = argv[i] + 7;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown diskrole create option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown diskrole create option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (disk_name == NULL || role == NULL) {
 		fprintf(stderr,
-		        "usage: kanxeoctl diskrole create --disk=NAME --role=container-storage|backup|state-storage|rebuildable-storage|log-storage\n");
+		        "usage: thincctl diskrole create --disk=NAME --role=container-storage|backup|state-storage|rebuildable-storage|log-storage\n");
 		return 2;
 	}
 
@@ -7019,7 +7019,7 @@ static int cmd_diskrole_create(const struct kx_client *c, int json_mode, int arg
 
 	if (kx_client_request(c, "POST", "/v1/diskroles", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -7032,7 +7032,7 @@ static int cmd_diskrole_ls(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/diskroles", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_diskrole_list);
@@ -7044,12 +7044,12 @@ static int cmd_diskrole_rm(const struct kx_client *c, int json_mode, int argc, c
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: diskrole rm requires a disk name\n");
+		fprintf(stderr, "thincctl: diskrole rm requires a disk name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/diskroles/%s", argv[0]);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -7060,9 +7060,9 @@ static int cmd_diskrole(const struct kx_client *c, int json_mode, int argc, char
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl diskrole create --disk=NAME --role=container-storage|backup|state-storage|rebuildable-storage|log-storage\n"
-		                "       kanxeoctl diskrole ls\n"
-		                "       kanxeoctl diskrole rm NAME\n");
+		fprintf(stderr, "usage: thincctl diskrole create --disk=NAME --role=container-storage|backup|state-storage|rebuildable-storage|log-storage\n"
+		                "       thincctl diskrole ls\n"
+		                "       thincctl diskrole rm NAME\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -7073,7 +7073,7 @@ static int cmd_diskrole(const struct kx_client *c, int json_mode, int argc, char
 	if (strcmp(sub, "rm") == 0)
 		return cmd_diskrole_rm(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown diskrole subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown diskrole subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -7094,13 +7094,13 @@ static int cmd_devicemap_create(const struct kx_client *c, int json_mode, int ar
 		else if (strncmp(argv[i], "--selector=", 11) == 0)
 			selector = argv[i] + 11;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown devicemap create option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown devicemap create option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL || kind == NULL || selector == NULL) {
 		fprintf(stderr,
-		        "usage: kanxeoctl devicemap create --name=NAME --kind=exact|vendor_model "
+		        "usage: thincctl devicemap create --name=NAME --kind=exact|vendor_model "
 		        "--selector=SELECTOR\n");
 		return 2;
 	}
@@ -7118,7 +7118,7 @@ static int cmd_devicemap_create(const struct kx_client *c, int json_mode, int ar
 
 	if (kx_client_request(c, "POST", "/v1/devicemaps", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -7131,7 +7131,7 @@ static int cmd_devicemap_ls(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/devicemaps", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_devicemap_list);
@@ -7143,12 +7143,12 @@ static int cmd_devicemap_rm(const struct kx_client *c, int json_mode, int argc, 
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: devicemap rm requires a mapping name\n");
+		fprintf(stderr, "thincctl: devicemap rm requires a mapping name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/devicemaps/%s", argv[0]);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -7160,10 +7160,10 @@ static int cmd_devicemap(const struct kx_client *c, int json_mode, int argc, cha
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: kanxeoctl devicemap create --name=NAME --kind=exact|vendor_model "
+		        "usage: thincctl devicemap create --name=NAME --kind=exact|vendor_model "
 		        "--selector=SELECTOR\n"
-		        "       kanxeoctl devicemap ls\n"
-		        "       kanxeoctl devicemap rm NAME\n");
+		        "       thincctl devicemap ls\n"
+		        "       thincctl devicemap rm NAME\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -7174,7 +7174,7 @@ static int cmd_devicemap(const struct kx_client *c, int json_mode, int argc, cha
 	if (strcmp(sub, "rm") == 0)
 		return cmd_devicemap_rm(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown devicemap subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown devicemap subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -7192,13 +7192,13 @@ static int cmd_dns_record_create(const struct kx_client *c, int json_mode, int a
 		else if (strncmp(argv[i], "--ip=", 5) == 0)
 			ip = argv[i] + 5;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown dns record create option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown dns record create option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (name == NULL || ip == NULL) {
-		fprintf(stderr, "usage: kanxeoctl dns record create --name=NAME --ip=A.B.C.D\n");
+		fprintf(stderr, "usage: thincctl dns record create --name=NAME --ip=A.B.C.D\n");
 		return 2;
 	}
 
@@ -7213,7 +7213,7 @@ static int cmd_dns_record_create(const struct kx_client *c, int json_mode, int a
 
 	if (kx_client_request(c, "POST", "/v1/dns/records", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -7226,7 +7226,7 @@ static int cmd_dns_record_ls(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/dns/records", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_dns_record_list);
@@ -7247,13 +7247,13 @@ static int cmd_dns_record_update(const struct kx_client *c, int json_mode, int a
 		else if (strncmp(argv[i], "--ip=", 5) == 0)
 			ip = argv[i] + 5;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown dns record update option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown dns record update option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (name == NULL || ip == NULL) {
-		fprintf(stderr, "usage: kanxeoctl dns record update --name=NAME --ip=A.B.C.D\n");
+		fprintf(stderr, "usage: thincctl dns record update --name=NAME --ip=A.B.C.D\n");
 		return 2;
 	}
 
@@ -7267,7 +7267,7 @@ static int cmd_dns_record_update(const struct kx_client *c, int json_mode, int a
 	snprintf(path, sizeof(path), "/v1/dns/records/%s", name);
 	if (kx_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -7281,12 +7281,12 @@ static int cmd_dns_record_rm(const struct kx_client *c, int json_mode, int argc,
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: dns record rm requires a record name\n");
+		fprintf(stderr, "thincctl: dns record rm requires a record name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/dns/records/%s", argv[0]);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -7298,10 +7298,10 @@ static int cmd_dns_record(const struct kx_client *c, int json_mode, int argc, ch
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: kanxeoctl dns record create --name=NAME --ip=A.B.C.D\n"
-		        "       kanxeoctl dns record update --name=NAME --ip=A.B.C.D\n"
-		        "       kanxeoctl dns record ls\n"
-		        "       kanxeoctl dns record rm NAME\n");
+		        "usage: thincctl dns record create --name=NAME --ip=A.B.C.D\n"
+		        "       thincctl dns record update --name=NAME --ip=A.B.C.D\n"
+		        "       thincctl dns record ls\n"
+		        "       thincctl dns record rm NAME\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -7314,7 +7314,7 @@ static int cmd_dns_record(const struct kx_client *c, int json_mode, int argc, ch
 	if (strcmp(sub, "rm") == 0)
 		return cmd_dns_record_rm(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown dns record subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown dns record subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -7332,14 +7332,14 @@ static int cmd_dns_server_register(const struct kx_client *c, int json_mode, int
 		else if (strncmp(argv[i], "--hosts-path=", 13) == 0)
 			hosts_path = argv[i] + 13;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown dns server register option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown dns server register option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (container == NULL || hosts_path == NULL) {
 		fprintf(stderr,
-		        "usage: kanxeoctl dns server register --container=NAME --hosts-path=PATH\n");
+		        "usage: thincctl dns server register --container=NAME --hosts-path=PATH\n");
 		return 2;
 	}
 
@@ -7354,7 +7354,7 @@ static int cmd_dns_server_register(const struct kx_client *c, int json_mode, int
 
 	if (kx_client_request(c, "POST", "/v1/dns/servers", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -7367,7 +7367,7 @@ static int cmd_dns_server_ls(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/dns/servers", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_dns_server_list);
@@ -7380,12 +7380,12 @@ static int cmd_dns_server_unregister(const struct kx_client *c, int json_mode, i
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: dns server unregister requires a container name\n");
+		fprintf(stderr, "thincctl: dns server unregister requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/dns/servers/%s", argv[0]);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -7397,9 +7397,9 @@ static int cmd_dns_server(const struct kx_client *c, int json_mode, int argc, ch
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: kanxeoctl dns server register --container=NAME --hosts-path=PATH\n"
-		        "       kanxeoctl dns server ls\n"
-		        "       kanxeoctl dns server unregister CONTAINER\n");
+		        "usage: thincctl dns server register --container=NAME --hosts-path=PATH\n"
+		        "       thincctl dns server ls\n"
+		        "       thincctl dns server unregister CONTAINER\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -7410,7 +7410,7 @@ static int cmd_dns_server(const struct kx_client *c, int json_mode, int argc, ch
 	if (strcmp(sub, "unregister") == 0)
 		return cmd_dns_server_unregister(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown dns server subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown dns server subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -7419,8 +7419,8 @@ static int cmd_dns(const struct kx_client *c, int json_mode, int argc, char **ar
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl dns record ...\n"
-		                "       kanxeoctl dns server ...\n");
+		fprintf(stderr, "usage: thincctl dns record ...\n"
+		                "       thincctl dns server ...\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -7429,7 +7429,7 @@ static int cmd_dns(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (strcmp(sub, "server") == 0)
 		return cmd_dns_server(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown dns subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown dns subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -7447,14 +7447,14 @@ static int cmd_ldap_server_register(const struct kx_client *c, int json_mode, in
 		else if (strncmp(argv[i], "--config-path=", 14) == 0)
 			config_path = argv[i] + 14;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown ldap server register option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown ldap server register option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (container == NULL || config_path == NULL) {
 		fprintf(stderr,
-		        "usage: kanxeoctl ldap server register --container=NAME --config-path=PATH\n");
+		        "usage: thincctl ldap server register --container=NAME --config-path=PATH\n");
 		return 2;
 	}
 
@@ -7469,7 +7469,7 @@ static int cmd_ldap_server_register(const struct kx_client *c, int json_mode, in
 
 	if (kx_client_request(c, "POST", "/v1/ldap/servers", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -7482,7 +7482,7 @@ static int cmd_ldap_server_ls(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/ldap/servers", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_ldap_server_list);
@@ -7495,12 +7495,12 @@ static int cmd_ldap_server_unregister(const struct kx_client *c, int json_mode, 
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: ldap server unregister requires a container name\n");
+		fprintf(stderr, "thincctl: ldap server unregister requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/ldap/servers/%s", argv[0]);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -7512,9 +7512,9 @@ static int cmd_ldap_server(const struct kx_client *c, int json_mode, int argc, c
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: kanxeoctl ldap server register --container=NAME --config-path=PATH\n"
-		        "       kanxeoctl ldap server ls\n"
-		        "       kanxeoctl ldap server unregister CONTAINER\n");
+		        "usage: thincctl ldap server register --container=NAME --config-path=PATH\n"
+		        "       thincctl ldap server ls\n"
+		        "       thincctl ldap server unregister CONTAINER\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -7525,7 +7525,7 @@ static int cmd_ldap_server(const struct kx_client *c, int json_mode, int argc, c
 	if (strcmp(sub, "unregister") == 0)
 		return cmd_ldap_server_unregister(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown ldap server subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown ldap server subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -7543,13 +7543,13 @@ static int cmd_ldap_group_add(const struct kx_client *c, int json_mode, int argc
 		else if (strncmp(argv[i], "--gidnumber=", 12) == 0)
 			gidnumber = argv[i] + 12;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown ldap group add option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown ldap group add option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (name == NULL) {
-		fprintf(stderr, "usage: kanxeoctl ldap group add --name=NAME [--gidnumber=N]\n");
+		fprintf(stderr, "usage: thincctl ldap group add --name=NAME [--gidnumber=N]\n");
 		return 2;
 	}
 
@@ -7568,7 +7568,7 @@ static int cmd_ldap_group_add(const struct kx_client *c, int json_mode, int argc
 
 	if (kx_client_request(c, "POST", "/v1/ldap/groups", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -7581,7 +7581,7 @@ static int cmd_ldap_group_ls(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/ldap/groups", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_ldap_group_list);
@@ -7605,14 +7605,14 @@ static int cmd_ldap_group_update(const struct kx_client *c, int json_mode, int a
 		else if (strncmp(argv[i], "--new-name=", 11) == 0)
 			new_name = argv[i] + 11;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown ldap group update option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown ldap group update option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (name == NULL || gidnumber == NULL) {
 		fprintf(stderr,
-		        "usage: kanxeoctl ldap group update --name=NAME --gidnumber=N [--new-name=NEWNAME]\n");
+		        "usage: thincctl ldap group update --name=NAME --gidnumber=N [--new-name=NEWNAME]\n");
 		return 2;
 	}
 
@@ -7634,7 +7634,7 @@ static int cmd_ldap_group_update(const struct kx_client *c, int json_mode, int a
 	snprintf(path, sizeof(path), "/v1/ldap/groups/%s", name);
 	if (kx_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -7648,12 +7648,12 @@ static int cmd_ldap_group_rm(const struct kx_client *c, int json_mode, int argc,
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: ldap group rm requires a group name\n");
+		fprintf(stderr, "thincctl: ldap group rm requires a group name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/ldap/groups/%s", argv[0]);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -7664,11 +7664,11 @@ static int cmd_ldap_group(const struct kx_client *c, int json_mode, int argc, ch
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl ldap group add --name=NAME [--gidnumber=N]\n"
-		                "       kanxeoctl ldap group update --name=NAME --gidnumber=N "
+		fprintf(stderr, "usage: thincctl ldap group add --name=NAME [--gidnumber=N]\n"
+		                "       thincctl ldap group update --name=NAME --gidnumber=N "
 		                "[--new-name=NEWNAME]\n"
-		                "       kanxeoctl ldap group ls\n"
-		                "       kanxeoctl ldap group rm NAME\n");
+		                "       thincctl ldap group ls\n"
+		                "       thincctl ldap group rm NAME\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -7681,12 +7681,12 @@ static int cmd_ldap_group(const struct kx_client *c, int json_mode, int argc, ch
 	if (strcmp(sub, "rm") == 0)
 		return cmd_ldap_group_rm(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown ldap group subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown ldap group subcommand '%s'\n", sub);
 	return 2;
 }
 
 /* Shared by "ldap user add" and a future "ldap user update" -- parses
- * every optional field kanxeoctl exposes into a JSON request body. */
+ * every optional field thincctl exposes into a JSON request body. */
 /* is_update: for `add`, --name= both selects the outgoing "name" field
  * and is the record's own real name being created, so it's written into
  * the body as-is. For `update`, --name= only ever identifies WHICH user
@@ -7775,7 +7775,7 @@ static int cmd_ldap_user_add(const struct kx_client *c, int json_mode, int argc,
 	if (name == NULL) {
 		jw_free(&w);
 		fprintf(stderr,
-		        "usage: kanxeoctl ldap user add --name=NAME [--uidnumber=N] "
+		        "usage: thincctl ldap user add --name=NAME [--uidnumber=N] "
 		        "--primarygroup=N [--givenname=S] [--sn=S] [--mail=S] "
 		        "[--loginshell=S] [--homedirectory=S] [--password=S] [--disabled] "
 		        "[--ssh-key=S] [--can-search]\n");
@@ -7785,7 +7785,7 @@ static int cmd_ldap_user_add(const struct kx_client *c, int json_mode, int argc,
 
 	if (kx_client_request(c, "POST", "/v1/ldap/users", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -7808,7 +7808,7 @@ static int cmd_ldap_user_update(const struct kx_client *c, int json_mode, int ar
 	if (name == NULL) {
 		jw_free(&w);
 		fprintf(stderr,
-		        "usage: kanxeoctl ldap user update --name=NAME [--new-name=NEWNAME] "
+		        "usage: thincctl ldap user update --name=NAME [--new-name=NEWNAME] "
 		        "[--uidnumber=N] [--primarygroup=N] [--givenname=S] [--sn=S] [--mail=S] "
 		        "[--loginshell=S] [--homedirectory=S] [--password=S] [--disabled] "
 		        "[--ssh-key=S] [--can-search]\n");
@@ -7819,7 +7819,7 @@ static int cmd_ldap_user_update(const struct kx_client *c, int json_mode, int ar
 	snprintf(path, sizeof(path), "/v1/ldap/users/%s", name);
 	if (kx_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -7832,7 +7832,7 @@ static int cmd_ldap_user_ls(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/ldap/users", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_ldap_user_list);
@@ -7844,12 +7844,12 @@ static int cmd_ldap_user_rm(const struct kx_client *c, int json_mode, int argc, 
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: ldap user rm requires a user name\n");
+		fprintf(stderr, "thincctl: ldap user rm requires a user name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/ldap/users/%s", argv[0]);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -7860,11 +7860,11 @@ static int cmd_ldap_user(const struct kx_client *c, int json_mode, int argc, cha
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl ldap user add --name=NAME --uidnumber=N "
+		fprintf(stderr, "usage: thincctl ldap user add --name=NAME --uidnumber=N "
 		                "--primarygroup=N ...\n"
-		                "       kanxeoctl ldap user update --name=NAME ...\n"
-		                "       kanxeoctl ldap user ls\n"
-		                "       kanxeoctl ldap user rm NAME\n");
+		                "       thincctl ldap user update --name=NAME ...\n"
+		                "       thincctl ldap user ls\n"
+		                "       thincctl ldap user rm NAME\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -7877,7 +7877,7 @@ static int cmd_ldap_user(const struct kx_client *c, int json_mode, int argc, cha
 	if (strcmp(sub, "rm") == 0)
 		return cmd_ldap_user_rm(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown ldap user subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown ldap user subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -7886,7 +7886,7 @@ static int cmd_ldap_config_show(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/ldap/config", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_ldap_config_line);
@@ -7905,13 +7905,13 @@ static int cmd_ldap_config_set(const struct kx_client *c, int json_mode, int arg
 		else if (strncmp(argv[i], "--start-gid=", 12) == 0)
 			start_gid = strtol(argv[i] + 12, NULL, 10);
 		else {
-			fprintf(stderr, "kanxeoctl: unknown ldap config set option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown ldap config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (start_uid < 0 || start_gid < 0) {
-		fprintf(stderr, "usage: kanxeoctl ldap config set --start-uid=N --start-gid=N\n");
+		fprintf(stderr, "usage: thincctl ldap config set --start-uid=N --start-gid=N\n");
 		return 2;
 	}
 
@@ -7926,7 +7926,7 @@ static int cmd_ldap_config_set(const struct kx_client *c, int json_mode, int arg
 
 	if (kx_client_request(c, "PUT", "/v1/ldap/config", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -7939,8 +7939,8 @@ static int cmd_ldap_config(const struct kx_client *c, int json_mode, int argc, c
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl ldap config show\n"
-		                "       kanxeoctl ldap config set --start-uid=N --start-gid=N\n");
+		fprintf(stderr, "usage: thincctl ldap config show\n"
+		                "       thincctl ldap config set --start-uid=N --start-gid=N\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -7949,7 +7949,7 @@ static int cmd_ldap_config(const struct kx_client *c, int json_mode, int argc, c
 	if (strcmp(sub, "set") == 0)
 		return cmd_ldap_config_set(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown ldap config subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown ldap config subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -7958,10 +7958,10 @@ static int cmd_ldap(const struct kx_client *c, int json_mode, int argc, char **a
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl ldap server ...\n"
-		                "       kanxeoctl ldap config ...\n"
-		                "       kanxeoctl ldap group ...\n"
-		                "       kanxeoctl ldap user ...\n");
+		fprintf(stderr, "usage: thincctl ldap server ...\n"
+		                "       thincctl ldap config ...\n"
+		                "       thincctl ldap group ...\n"
+		                "       thincctl ldap user ...\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -7974,7 +7974,7 @@ static int cmd_ldap(const struct kx_client *c, int json_mode, int argc, char **a
 	if (strcmp(sub, "user") == 0)
 		return cmd_ldap_user(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown ldap subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown ldap subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -7992,7 +7992,7 @@ static int cmd_pki_ca_bootstrap(const struct kx_client *c, int json_mode, int ar
 		else if (strncmp(argv[i], "--days=", 7) == 0)
 			days = atol(argv[i] + 7);
 		else {
-			fprintf(stderr, "kanxeoctl: unknown pki ca bootstrap option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown pki ca bootstrap option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -8012,7 +8012,7 @@ static int cmd_pki_ca_bootstrap(const struct kx_client *c, int json_mode, int ar
 
 	if (kx_client_request(c, "POST", "/v1/pki/ca", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -8025,7 +8025,7 @@ static int cmd_pki_ca_show(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/pki/ca", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pki_ca);
@@ -8036,8 +8036,8 @@ static int cmd_pki_ca(const struct kx_client *c, int json_mode, int argc, char *
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl pki ca bootstrap [--common-name=NAME] [--days=N]\n"
-		                "       kanxeoctl pki ca show\n");
+		fprintf(stderr, "usage: thincctl pki ca bootstrap [--common-name=NAME] [--days=N]\n"
+		                "       thincctl pki ca show\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -8046,7 +8046,7 @@ static int cmd_pki_ca(const struct kx_client *c, int json_mode, int argc, char *
 	if (strcmp(sub, "show") == 0)
 		return cmd_pki_ca_show(c, json_mode);
 
-	fprintf(stderr, "kanxeoctl: unknown pki ca subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown pki ca subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -8065,7 +8065,7 @@ static int cmd_pki_intermediate_bootstrap(const struct kx_client *c, int json_mo
 		else if (strncmp(argv[i], "--days=", 7) == 0)
 			days = atol(argv[i] + 7);
 		else {
-			fprintf(stderr, "kanxeoctl: unknown pki intermediate bootstrap option '%s'\n",
+			fprintf(stderr, "thincctl: unknown pki intermediate bootstrap option '%s'\n",
 			        argv[i]);
 			return 2;
 		}
@@ -8086,7 +8086,7 @@ static int cmd_pki_intermediate_bootstrap(const struct kx_client *c, int json_mo
 
 	if (kx_client_request(c, "POST", "/v1/pki/intermediate", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -8099,7 +8099,7 @@ static int cmd_pki_intermediate_show(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/pki/intermediate", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pki_ca);
@@ -8110,8 +8110,8 @@ static int cmd_pki_intermediate(const struct kx_client *c, int json_mode, int ar
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl pki intermediate bootstrap [--common-name=NAME] [--days=N]\n"
-		                "       kanxeoctl pki intermediate show\n");
+		fprintf(stderr, "usage: thincctl pki intermediate bootstrap [--common-name=NAME] [--days=N]\n"
+		                "       thincctl pki intermediate show\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -8120,7 +8120,7 @@ static int cmd_pki_intermediate(const struct kx_client *c, int json_mode, int ar
 	if (strcmp(sub, "show") == 0)
 		return cmd_pki_intermediate_show(c, json_mode);
 
-	fprintf(stderr, "kanxeoctl: unknown pki intermediate subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown pki intermediate subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -8141,13 +8141,13 @@ static int cmd_pki_cert_create(const struct kx_client *c, int json_mode, int arg
 		else if (strncmp(argv[i], "--days=", 7) == 0)
 			days = atol(argv[i] + 7);
 		else {
-			fprintf(stderr, "kanxeoctl: unknown pki cert create option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown pki cert create option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (name == NULL) {
-		fprintf(stderr, "usage: kanxeoctl pki cert create --name=NAME [--sans=a,b,c] [--days=N]\n");
+		fprintf(stderr, "usage: thincctl pki cert create --name=NAME [--sans=a,b,c] [--days=N]\n");
 		return 2;
 	}
 
@@ -8178,7 +8178,7 @@ static int cmd_pki_cert_create(const struct kx_client *c, int json_mode, int arg
 
 	if (kx_client_request(c, "POST", "/v1/pki/certs", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -8191,7 +8191,7 @@ static int cmd_pki_cert_ls(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/pki/certs", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pki_cert_list);
@@ -8203,12 +8203,12 @@ static int cmd_pki_cert_rm(const struct kx_client *c, int json_mode, int argc, c
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: pki cert rm requires a cert name\n");
+		fprintf(stderr, "thincctl: pki cert rm requires a cert name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/pki/certs/%s", argv[0]);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -8219,9 +8219,9 @@ static int cmd_pki_cert(const struct kx_client *c, int json_mode, int argc, char
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl pki cert create --name=NAME [--sans=a,b,c] [--days=N]\n"
-		                "       kanxeoctl pki cert ls\n"
-		                "       kanxeoctl pki cert rm NAME\n");
+		fprintf(stderr, "usage: thincctl pki cert create --name=NAME [--sans=a,b,c] [--days=N]\n"
+		                "       thincctl pki cert ls\n"
+		                "       thincctl pki cert rm NAME\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -8232,7 +8232,7 @@ static int cmd_pki_cert(const struct kx_client *c, int json_mode, int argc, char
 	if (strcmp(sub, "rm") == 0)
 		return cmd_pki_cert_rm(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown pki cert subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown pki cert subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -8240,7 +8240,7 @@ static int cmd_pki_cert(const struct kx_client *c, int json_mode, int argc, char
  * Destructive: wipes and regenerates the whole CA chain (root, plus
  * the intermediate if one exists), reissuing every currently-tracked
  * leaf under the new chain. No separate --yes confirmation flag --
- * matches every other destructive kanxeoctl subcommand's own direct-
+ * matches every other destructive thincctl subcommand's own direct-
  * execution convention (pki cert rm, network rm, ...); the web
  * dashboard's own confirm dialog is where the "are you sure" prompt
  * lives for this project.
@@ -8268,7 +8268,7 @@ static int cmd_pki_reset(const struct kx_client *c, int json_mode, int argc, cha
 		else if (strncmp(argv[i], "--leaf-days=", 12) == 0)
 			leaf_days = atol(argv[i] + 12);
 		else {
-			fprintf(stderr, "kanxeoctl: unknown pki reset option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown pki reset option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -8300,7 +8300,7 @@ static int cmd_pki_reset(const struct kx_client *c, int json_mode, int argc, cha
 
 	if (kx_client_request(c, "POST", "/v1/pki/reset", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -8313,15 +8313,15 @@ static int cmd_pki(const struct kx_client *c, int json_mode, int argc, char **ar
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl pki ca ...\n"
-		                "       kanxeoctl pki intermediate ...\n"
-		                "       kanxeoctl pki cert ...\n"
-		                "       kanxeoctl pki reset [--root-common-name=NAME]\n"
+		fprintf(stderr, "usage: thincctl pki ca ...\n"
+		                "       thincctl pki intermediate ...\n"
+		                "       thincctl pki cert ...\n"
+		                "       thincctl pki reset [--root-common-name=NAME]\n"
 		                "               [--intermediate-common-name=NAME] [--root-days=N]\n"
 		                "               [--intermediate-days=N] [--leaf-days=N]  -- wipes and\n"
 		                "               regenerates the whole CA chain, reissuing every leaf\n"
 		                "               currently tracked; defaults name each tier after this\n"
-		                "               install's own domain_suffix (kanxeoctl site show)\n");
+		                "               install's own domain_suffix (thincctl site show)\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -8334,7 +8334,7 @@ static int cmd_pki(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (strcmp(sub, "reset") == 0)
 		return cmd_pki_reset(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown pki subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown pki subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -8364,7 +8364,7 @@ static int poll_bootstrap_fetch(const struct kx_client *c, struct kx_response *o
 		const char *state;
 
 		if (kx_client_request(c, "GET", "/v1/pkg/bootstrap", NULL, out) != 0) {
-			fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return -1;
 		}
 		state = json_str_field(out->json, "state");
@@ -8426,7 +8426,7 @@ static int cmd_pkg_bootstrap_status(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/pkg/bootstrap", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_bootstrap_fetch_status);
@@ -8451,7 +8451,7 @@ static int cmd_pkg_bootstrap(const struct kx_client *c, int json_mode, int argc,
 		else if (strcmp(argv[i], "--wait") == 0)
 			wait = 1;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown pkg bootstrap option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown pkg bootstrap option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -8472,7 +8472,7 @@ static int cmd_pkg_bootstrap(const struct kx_client *c, int json_mode, int argc,
 
 		if (kx_client_request(c, "POST", "/v1/pkg/bootstrap", w.buf, &r) != 0) {
 			jw_free(&w);
-			fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
 		}
 		jw_free(&w);
@@ -8487,7 +8487,7 @@ static int cmd_pkg_bootstrap(const struct kx_client *c, int json_mode, int argc,
 
 	if (toolchain == NULL) {
 		if (kx_client_request(c, "POST", "/v1/pkg/bootstrap", NULL, &r) != 0) {
-			fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
 		}
 	} else {
@@ -8502,7 +8502,7 @@ static int cmd_pkg_bootstrap(const struct kx_client *c, int json_mode, int argc,
 
 		if (kx_client_request(c, "POST", "/v1/pkg/bootstrap", w.buf, &r) != 0) {
 			jw_free(&w);
-			fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
 		}
 		jw_free(&w);
@@ -8535,7 +8535,7 @@ static int cmd_pkg_repo_config_show(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/pkg/repo-config", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_repo_config);
@@ -8566,7 +8566,7 @@ static int cmd_pkg_repo_config_set(const struct kx_client *c, int json_mode, int
 		else if (strncmp(argv[i], "--sync-interval=", 16) == 0)
 			interval = strtol(argv[i] + 16, NULL, 10);
 		else {
-			fprintf(stderr, "kanxeoctl: unknown pkg repo-config set option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown pkg repo-config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -8598,7 +8598,7 @@ static int cmd_pkg_repo_config_set(const struct kx_client *c, int json_mode, int
 
 	if (kx_client_request(c, "PUT", "/v1/pkg/repo-config", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -8610,8 +8610,8 @@ static int cmd_pkg_repo_config(const struct kx_client *c, int json_mode, int arg
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl pkg repo-config show\n"
-		                "       kanxeoctl pkg repo-config set [--url=URL] [--kind=gitea|github|gitlab] "
+		fprintf(stderr, "usage: thincctl pkg repo-config show\n"
+		                "       thincctl pkg repo-config set [--url=URL] [--kind=gitea|github|gitlab] "
 		                "[--ref=REF] [--token=TOKEN | --clear-token] [--sync-interval=SECONDS]\n");
 		return 2;
 	}
@@ -8620,7 +8620,7 @@ static int cmd_pkg_repo_config(const struct kx_client *c, int json_mode, int arg
 		return cmd_pkg_repo_config_show(c, json_mode);
 	if (strcmp(sub, "set") == 0)
 		return cmd_pkg_repo_config_set(c, json_mode, argc - 1, argv + 1);
-	fprintf(stderr, "kanxeoctl: unknown pkg repo-config subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown pkg repo-config subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -8649,7 +8649,7 @@ static int poll_pkg_sync(const struct kx_client *c, struct kx_response *out)
 		const char *state;
 
 		if (kx_client_request(c, "GET", "/v1/pkg/sync", NULL, out) != 0) {
-			fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return -1;
 		}
 		state = json_str_field(out->json, "state");
@@ -8670,13 +8670,13 @@ static int cmd_pkg_sync(const struct kx_client *c, int json_mode, int argc, char
 		if (strcmp(argv[i], "--wait") == 0)
 			wait = 1;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown pkg sync option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown pkg sync option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
 	if (kx_client_request(c, "POST", "/v1/pkg/sync", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	if (r.status != 202) {
@@ -8690,7 +8690,7 @@ static int cmd_pkg_sync(const struct kx_client *c, int json_mode, int argc, char
 		if (poll_pkg_sync(c, &r) != 0)
 			return 1;
 	} else if (kx_client_request(c, "GET", "/v1/pkg/sync", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_sync_status);
@@ -8701,7 +8701,7 @@ static int cmd_pkg_sync_status(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/pkg/sync", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_sync_status);
@@ -8722,7 +8722,7 @@ static int cmd_pkg_cache_config_show(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/pkg/cache-config", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_cache_status);
@@ -8739,18 +8739,18 @@ static int cmd_pkg_cache_config_set(const struct kx_client *c, int json_mode, in
 		if (strncmp(argv[i], "--max-bytes=", 12) == 0)
 			max_bytes = strtol(argv[i] + 12, NULL, 10);
 		else {
-			fprintf(stderr, "kanxeoctl: unknown pkg cache-config set option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown pkg cache-config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (max_bytes <= 0) {
-		fprintf(stderr, "usage: kanxeoctl pkg cache-config set --max-bytes=N\n");
+		fprintf(stderr, "usage: thincctl pkg cache-config set --max-bytes=N\n");
 		return 2;
 	}
 
 	snprintf(body, sizeof(body), "{\"max_bytes\":%ld}", max_bytes);
 	if (kx_client_request(c, "PUT", "/v1/pkg/cache-config", body, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_cache_status);
@@ -8761,8 +8761,8 @@ static int cmd_pkg_cache_config(const struct kx_client *c, int json_mode, int ar
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl pkg cache-config show\n"
-		                "       kanxeoctl pkg cache-config set --max-bytes=N\n");
+		fprintf(stderr, "usage: thincctl pkg cache-config show\n"
+		                "       thincctl pkg cache-config set --max-bytes=N\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -8770,7 +8770,7 @@ static int cmd_pkg_cache_config(const struct kx_client *c, int json_mode, int ar
 		return cmd_pkg_cache_config_show(c, json_mode);
 	if (strcmp(sub, "set") == 0)
 		return cmd_pkg_cache_config_set(c, json_mode, argc - 1, argv + 1);
-	fprintf(stderr, "kanxeoctl: unknown pkg cache-config subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown pkg cache-config subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -8779,7 +8779,7 @@ static int cmd_pkg_cache_status(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/pkg/cache", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_cache_status);
@@ -8790,7 +8790,7 @@ static int cmd_pkg_cache_clear(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "DELETE", "/v1/pkg/cache", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -8815,7 +8815,7 @@ static int cmd_pkg_artifact_config_show(const struct kx_client *c, int json_mode
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/pkg/artifact-config", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_artifact_config);
@@ -8838,7 +8838,7 @@ static int cmd_pkg_artifact_config_set(const struct kx_client *c, int json_mode,
 		else if (strcmp(argv[i], "--clear-token") == 0)
 			token = "";
 		else {
-			fprintf(stderr, "kanxeoctl: unknown pkg artifact-config set option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown pkg artifact-config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -8858,7 +8858,7 @@ static int cmd_pkg_artifact_config_set(const struct kx_client *c, int json_mode,
 
 	if (kx_client_request(c, "PUT", "/v1/pkg/artifact-config", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -8870,8 +8870,8 @@ static int cmd_pkg_artifact_config(const struct kx_client *c, int json_mode, int
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl pkg artifact-config show\n"
-		                "       kanxeoctl pkg artifact-config set [--url=URL] "
+		fprintf(stderr, "usage: thincctl pkg artifact-config show\n"
+		                "       thincctl pkg artifact-config set [--url=URL] "
 		                "[--token=TOKEN | --clear-token]\n");
 		return 2;
 	}
@@ -8880,7 +8880,7 @@ static int cmd_pkg_artifact_config(const struct kx_client *c, int json_mode, int
 		return cmd_pkg_artifact_config_show(c, json_mode);
 	if (strcmp(sub, "set") == 0)
 		return cmd_pkg_artifact_config_set(c, json_mode, argc - 1, argv + 1);
-	fprintf(stderr, "kanxeoctl: unknown pkg artifact-config subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown pkg artifact-config subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -8889,7 +8889,7 @@ static int cmd_pkg_recipes(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/pkg/recipes", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_recipe_list);
@@ -8917,16 +8917,16 @@ static int cmd_pkg_recipe_add(const struct kx_client *c, int json_mode, int argc
 		else if (strncmp(argv[i], "--file=", 7) == 0)
 			file = argv[i] + 7;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown pkg recipe add option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown pkg recipe add option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL || file == NULL) {
-		fprintf(stderr, "usage: kanxeoctl pkg recipe add --name=NAME --file=PATH\n");
+		fprintf(stderr, "usage: thincctl pkg recipe add --name=NAME --file=PATH\n");
 		return 2;
 	}
 	if (read_local_file(file, &content, &content_len) != 0) {
-		fprintf(stderr, "kanxeoctl: could not read %s\n", file);
+		fprintf(stderr, "thincctl: could not read %s\n", file);
 		return 1;
 	}
 
@@ -8942,7 +8942,7 @@ static int cmd_pkg_recipe_add(const struct kx_client *c, int json_mode, int argc
 
 	if (kx_client_request(c, "POST", "/v1/pkg/recipes", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -8950,7 +8950,7 @@ static int cmd_pkg_recipe_add(const struct kx_client *c, int json_mode, int argc
 	if (r.status < 200 || r.status >= 300) {
 		const char *msg = json_str_field(r.json, "error");
 
-		fprintf(stderr, "kanxeoctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
+		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r.status);
 		kx_response_free(&r);
 		return 1;
@@ -8984,12 +8984,12 @@ static int cmd_pkg_recipe_show(const struct kx_client *c, int json_mode, int arg
 		else if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "kanxeoctl: unknown pkg recipe show option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown pkg recipe show option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: kanxeoctl pkg recipe show NAME [--version=VERSION]\n");
+		fprintf(stderr, "usage: thincctl pkg recipe show NAME [--version=VERSION]\n");
 		return 2;
 	}
 	if (version != NULL)
@@ -8997,7 +8997,7 @@ static int cmd_pkg_recipe_show(const struct kx_client *c, int json_mode, int arg
 	else
 		snprintf(path, sizeof(path), "/v1/pkg/recipes/%s", name);
 	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_recipe_show);
@@ -9019,12 +9019,12 @@ static int cmd_pkg_recipe_rm(const struct kx_client *c, int json_mode, int argc,
 		else if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "kanxeoctl: unknown pkg recipe rm option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown pkg recipe rm option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL) {
-		fprintf(stderr, "usage: kanxeoctl pkg recipe rm NAME [--version=VERSION]\n");
+		fprintf(stderr, "usage: thincctl pkg recipe rm NAME [--version=VERSION]\n");
 		return 2;
 	}
 	if (version != NULL)
@@ -9032,7 +9032,7 @@ static int cmd_pkg_recipe_rm(const struct kx_client *c, int json_mode, int argc,
 	else
 		snprintf(path, sizeof(path), "/v1/pkg/recipes/%s", name);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -9043,9 +9043,9 @@ static int cmd_pkg_recipe(const struct kx_client *c, int json_mode, int argc, ch
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl pkg recipe add --name=NAME --file=PATH\n"
-		                "       kanxeoctl pkg recipe show NAME [--version=VERSION]\n"
-		                "       kanxeoctl pkg recipe rm NAME [--version=VERSION]\n");
+		fprintf(stderr, "usage: thincctl pkg recipe add --name=NAME --file=PATH\n"
+		                "       thincctl pkg recipe show NAME [--version=VERSION]\n"
+		                "       thincctl pkg recipe rm NAME [--version=VERSION]\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -9056,7 +9056,7 @@ static int cmd_pkg_recipe(const struct kx_client *c, int json_mode, int argc, ch
 	if (strcmp(sub, "rm") == 0)
 		return cmd_pkg_recipe_rm(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown pkg recipe subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown pkg recipe subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -9080,13 +9080,13 @@ static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, c
 		else if (strcmp(argv[i], "--upgrade") == 0)
 			upgrade = 1;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown pkg install option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown pkg install option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL) {
 		fprintf(stderr,
-		        "usage: kanxeoctl pkg install --name=NAME [--image=IMAGE] "
+		        "usage: thincctl pkg install --name=NAME [--image=IMAGE] "
 		        "[--version=VERSION] [--upgrade]\n");
 		return 2;
 	}
@@ -9113,7 +9113,7 @@ static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, c
 
 	if (kx_client_request(c, "POST", "/v1/pkg/install", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -9137,7 +9137,7 @@ static int poll_hostbuild(const struct kx_client *c, const char *name, struct kx
 		const char *state;
 
 		if (kx_client_request(c, "GET", path, NULL, out) != 0) {
-			fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return -1;
 		}
 		state = json_str_field(out->json, "state");
@@ -9149,7 +9149,7 @@ static int poll_hostbuild(const struct kx_client *c, const char *name, struct kx
 }
 
 /*
- * Real GET /system/boot read for the kanxeo bootroot-assembly
+ * Real GET /system/boot read for the thinc bootroot-assembly
  * generation counters (task #737, ADR-0058/ADR-0104-adjacent fix).
  * Returns 0 with *out_completed/*out_running filled, -1 if the daemon
  * became unreachable.
@@ -9160,7 +9160,7 @@ static int get_bootroot_assembly_generation(const struct kx_client *c, long *out
 	const struct json_value *jrunning;
 
 	if (kx_client_request(c, "GET", "/v1/system/boot", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return -1;
 	}
 	*out_completed = (long)json_as_number(json_object_get(r.json, "bootroot_assembly_completed_generation"));
@@ -9171,7 +9171,7 @@ static int get_bootroot_assembly_generation(const struct kx_client *c, long *out
 }
 
 /*
- * The real fix for task #737: `kanxeod-root.squashfs` existing is not
+ * The real fix for task #737: `thincd-root.squashfs` existing is not
  * the same as it being *this* hostbuild round's own fresh artifact --
  * it's a leftover from whichever server-side bootroot assembly
  * (ADR-0057) last succeeded, which may still be a round or more behind
@@ -9196,7 +9196,7 @@ static int wait_for_fresh_bootroot_assembly(const struct kx_client *c, long base
 			return 0;
 		if (!running) {
 			fprintf(stderr,
-			        "kanxeoctl: kanxeo bootroot assembly did not produce a fresh artifact "
+			        "thincctl: thinc bootroot assembly did not produce a fresh artifact "
 			        "(see GET /system/logs for the real failure)\n");
 			return -1;
 		}
@@ -9229,13 +9229,13 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 		else if (name == NULL)
 			name = argv[i];
 		else {
-			fprintf(stderr, "kanxeoctl: unknown pkg hostbuild option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown pkg hostbuild option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (name == NULL || build_image == NULL) {
 		fprintf(stderr,
-		        "usage: kanxeoctl pkg hostbuild NAME --build-image=IMAGE [--version=VERSION] "
+		        "usage: thincctl pkg hostbuild NAME --build-image=IMAGE [--version=VERSION] "
 		        "[--wait] [--deploy] [--upgrade]\n");
 		return 2;
 	}
@@ -9248,11 +9248,11 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 	 * later (e.g. right before the deploy step) could itself already
 	 * be racing a slow-but-real assembly from an EARLIER round that
 	 * just hasn't finished yet, which would wrongly look like "the
-	 * baseline" to a check done later. "kanxeo" only: every other
+	 * baseline" to a check done later. "thinc" only: every other
 	 * hostbuild name deploys straight from its own artifact_path with
 	 * no server-side follow-on assembly to wait for.
 	 */
-	if (deploy && strcmp(name, "kanxeo") == 0) {
+	if (deploy && strcmp(name, "thinc") == 0) {
 		int running;
 
 		if (get_bootroot_assembly_generation(c, &bootroot_baseline_completed, &running) != 0)
@@ -9276,7 +9276,7 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 
 	if (kx_client_request(c, "POST", "/v1/pkg/hostbuild", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -9312,7 +9312,7 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 
 		if (state == NULL || strcmp(state, "installed") != 0 || artifact_path == NULL) {
 			kx_response_free(&r);
-			fprintf(stderr, "kanxeoctl: hostbuild did not produce an artifact to deploy\n");
+			fprintf(stderr, "thincctl: hostbuild did not produce an artifact to deploy\n");
 			return 1;
 		}
 		/* Honest, explicit per-name handling -- only what this
@@ -9321,9 +9321,9 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 		 * every possible hostbuild recipe name. */
 		if (strcmp(name, "kernel") == 0)
 			snprintf(deploy_arg, sizeof(deploy_arg), "--kernel=%s/bzImage", artifact_path);
-		else if (strcmp(name, "kanxeo") == 0) {
+		else if (strcmp(name, "thinc") == 0) {
 			/*
-			 * kanxeod-root.squashfs is assembled server-side by the
+			 * thincd-root.squashfs is assembled server-side by the
 			 * daemon itself (ADR-0057), asynchronously, once this
 			 * hostbuild's own artifacts finish harvesting -- state
 			 * =="installed" only means pkg_build_completed() ran, not
@@ -9341,11 +9341,11 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 				kx_response_free(&r);
 				return 1;
 			}
-			snprintf(deploy_arg, sizeof(deploy_arg), "--image=%s/kanxeod-root.squashfs",
+			snprintf(deploy_arg, sizeof(deploy_arg), "--image=%s/thincd-root.squashfs",
 			         artifact_path);
 		} else {
 			kx_response_free(&r);
-			fprintf(stderr, "kanxeoctl: --deploy has no rule for hostbuild '%s' yet\n", name);
+			fprintf(stderr, "thincctl: --deploy has no rule for hostbuild '%s' yet\n", name);
 			return 1;
 		}
 		kx_response_free(&r);
@@ -9355,7 +9355,7 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 	}
 }
 
-/* kanxeoctl kmod-build --build-image=IMAGE [--version=VERSION]
+/* thincctl kmod-build --build-image=IMAGE [--version=VERSION]
  * [--symbol=CONFIG_FOO ...] [--upgrade] [--wait]  -- ADR-0159 Phase B:
  * an ordinary `pkg hostbuild kernel` under the hood, reusing
  * poll_hostbuild()/fmt_pkg_line() completely unmodified (this is the
@@ -9381,7 +9381,7 @@ static int cmd_kmod_build(const struct kx_client *c, int json_mode, int argc, ch
 			version = argv[i] + 10;
 		else if (strncmp(argv[i], "--symbol=", 9) == 0) {
 			if (symbol_count >= CLI_KMOD_BUILD_MAX_SYMBOLS) {
-				fprintf(stderr, "kanxeoctl: too many --symbol= flags (max %d)\n",
+				fprintf(stderr, "thincctl: too many --symbol= flags (max %d)\n",
 				        CLI_KMOD_BUILD_MAX_SYMBOLS);
 				return 2;
 			}
@@ -9391,12 +9391,12 @@ static int cmd_kmod_build(const struct kx_client *c, int json_mode, int argc, ch
 		else if (strcmp(argv[i], "--wait") == 0)
 			wait = 1;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown kmod-build option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown kmod-build option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (build_image == NULL) {
-		fprintf(stderr, "usage: kanxeoctl kmod-build --build-image=IMAGE [--version=VERSION] "
+		fprintf(stderr, "usage: thincctl kmod-build --build-image=IMAGE [--version=VERSION] "
 		                "[--symbol=CONFIG_FOO ...] [--upgrade] [--wait]\n");
 		return 2;
 	}
@@ -9423,7 +9423,7 @@ static int cmd_kmod_build(const struct kx_client *c, int json_mode, int argc, ch
 
 	if (kx_client_request(c, "POST", "/v1/system/kmod-build", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -9443,7 +9443,7 @@ static int cmd_pkg_ls(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/pkg", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_list);
@@ -9455,12 +9455,12 @@ static int cmd_pkg_rm(const struct kx_client *c, int json_mode, int argc, char *
 	char path[256];
 
 	if (argc < 1) {
-		fprintf(stderr, "kanxeoctl: pkg rm requires a package name\n");
+		fprintf(stderr, "thincctl: pkg rm requires a package name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/pkg/%s", argv[0]);
 	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
@@ -9486,7 +9486,7 @@ static int cmd_pkg_update_all(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "POST", "/v1/pkg/update-all", "{}", &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_update_all);
@@ -9506,32 +9506,32 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: kanxeoctl pkg bootstrap [--toolchain=PATH]\n"
-		                "       kanxeoctl pkg bootstrap --toolchain-url=URL --toolchain-sha256=SHA256 [--wait]\n"
-		                "       kanxeoctl pkg bootstrap-status\n"
-		                "       kanxeoctl pkg recipes\n"
-		                "       kanxeoctl pkg recipe add --name=NAME --file=PATH\n"
-		                "       kanxeoctl pkg recipe show NAME [--version=VERSION]\n"
-		                "       kanxeoctl pkg recipe rm NAME [--version=VERSION]\n"
-		                "       kanxeoctl pkg install --name=NAME [--image=IMAGE] [--version=VERSION] "
+		fprintf(stderr, "usage: thincctl pkg bootstrap [--toolchain=PATH]\n"
+		                "       thincctl pkg bootstrap --toolchain-url=URL --toolchain-sha256=SHA256 [--wait]\n"
+		                "       thincctl pkg bootstrap-status\n"
+		                "       thincctl pkg recipes\n"
+		                "       thincctl pkg recipe add --name=NAME --file=PATH\n"
+		                "       thincctl pkg recipe show NAME [--version=VERSION]\n"
+		                "       thincctl pkg recipe rm NAME [--version=VERSION]\n"
+		                "       thincctl pkg install --name=NAME [--image=IMAGE] [--version=VERSION] "
 		                "[--upgrade]\n"
-		                "       kanxeoctl pkg hostbuild NAME --build-image=IMAGE [--version=VERSION] "
+		                "       thincctl pkg hostbuild NAME --build-image=IMAGE [--version=VERSION] "
 		                "[--wait] [--deploy] [--upgrade]\n"
-		                "       kanxeoctl pkg build-log\n"
-		                "       kanxeoctl pkg ls\n"
-		                "       kanxeoctl pkg rm NAME[@IMAGE]\n"
-		                "       kanxeoctl pkg update-all\n"
-		                "       kanxeoctl pkg repo-config show\n"
-		                "       kanxeoctl pkg repo-config set [--url=URL] [--kind=gitea|github|gitlab] "
+		                "       thincctl pkg build-log\n"
+		                "       thincctl pkg ls\n"
+		                "       thincctl pkg rm NAME[@IMAGE]\n"
+		                "       thincctl pkg update-all\n"
+		                "       thincctl pkg repo-config show\n"
+		                "       thincctl pkg repo-config set [--url=URL] [--kind=gitea|github|gitlab] "
 		                "[--ref=REF] [--token=TOKEN | --clear-token] [--sync-interval=SECONDS]\n"
-		                "       kanxeoctl pkg sync [--wait]\n"
-		                "       kanxeoctl pkg sync-status\n"
-		                "       kanxeoctl pkg cache-config show\n"
-		                "       kanxeoctl pkg cache-config set --max-bytes=N\n"
-		                "       kanxeoctl pkg cache-status\n"
-		                "       kanxeoctl pkg cache-clear\n"
-		                "       kanxeoctl pkg artifact-config show\n"
-		                "       kanxeoctl pkg artifact-config set [--url=URL] "
+		                "       thincctl pkg sync [--wait]\n"
+		                "       thincctl pkg sync-status\n"
+		                "       thincctl pkg cache-config show\n"
+		                "       thincctl pkg cache-config set --max-bytes=N\n"
+		                "       thincctl pkg cache-status\n"
+		                "       thincctl pkg cache-clear\n"
+		                "       thincctl pkg artifact-config show\n"
+		                "       thincctl pkg artifact-config set [--url=URL] "
 		                "[--token=TOKEN | --clear-token]\n");
 		return 2;
 	}
@@ -9571,7 +9571,7 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (strcmp(sub, "artifact-config") == 0)
 		return cmd_pkg_artifact_config(c, json_mode, argc - 1, argv + 1);
 
-	fprintf(stderr, "kanxeoctl: unknown pkg subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown pkg subcommand '%s'\n", sub);
 	return 2;
 }
 
@@ -9597,7 +9597,7 @@ static int poll_iso(const struct kx_client *c, struct kx_response *out)
 		const char *state;
 
 		if (kx_client_request(c, "GET", "/v1/system/iso", NULL, out) != 0) {
-			fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return -1;
 		}
 		state = json_str_field(out->json, "state");
@@ -9613,7 +9613,7 @@ static int cmd_iso_status(const struct kx_client *c, int json_mode)
 	struct kx_response r;
 
 	if (kx_client_request(c, "GET", "/v1/system/iso", NULL, &r) != 0) {
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_iso_status);
@@ -9645,7 +9645,7 @@ static int cmd_iso_build(const struct kx_client *c, int json_mode, int argc, cha
 		else if (strcmp(argv[i], "--wait") == 0)
 			wait = 1;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown iso build option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown iso build option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
@@ -9677,7 +9677,7 @@ static int cmd_iso_build(const struct kx_client *c, int json_mode, int argc, cha
 
 	if (kx_client_request(c, "POST", "/v1/system/iso", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -9696,9 +9696,9 @@ static int cmd_iso(const struct kx_client *c, int json_mode, int argc, char **ar
 
 	if (argc < 1) {
 		fprintf(stderr,
-		        "usage: kanxeoctl iso build [--disk=DEV --ip=A.B.C.D --prefix=N "
+		        "usage: thincctl iso build [--disk=DEV --ip=A.B.C.D --prefix=N "
 		        "--gateway=A.B.C.D --interface=IFNAME] [--wait]\n"
-		        "       kanxeoctl iso status\n");
+		        "       thincctl iso status\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -9707,13 +9707,13 @@ static int cmd_iso(const struct kx_client *c, int json_mode, int argc, char **ar
 	if (strcmp(sub, "status") == 0)
 		return cmd_iso_status(c, json_mode);
 
-	fprintf(stderr, "kanxeoctl: unknown iso subcommand '%s'\n", sub);
+	fprintf(stderr, "thincctl: unknown iso subcommand '%s'\n", sub);
 	return 2;
 }
 
 /*
- * ADR-0144: kanxeoctl's own persisted-session support -- a single
- * dotfile (~/.kanxeoctl_token, mode 0600, since it holds a live bearer
+ * ADR-0144: thincctl's own persisted-session support -- a single
+ * dotfile (~/.thincctl_token, mode 0600, since it holds a live bearer
  * credential), read once at startup (see main()) and written by
  * cmd_login() / removed by cmd_logout(). No prior precedent for local
  * state in this CLI (it has always been a pure, stateless REST
@@ -9727,7 +9727,7 @@ static int token_file_path(char *out, size_t out_size)
 
 	if (home == NULL || home[0] == '\0')
 		return -1;
-	if ((size_t)snprintf(out, out_size, "%s/.kanxeoctl_token", home) >= out_size)
+	if ((size_t)snprintf(out, out_size, "%s/.thincctl_token", home) >= out_size)
 		return -1;
 	return 0;
 }
@@ -9836,21 +9836,21 @@ static int cmd_login(const struct kx_client *c, int json_mode, int argc, char **
 		else if (strncmp(argv[i], "--password=", 11) == 0)
 			password = argv[i] + 11;
 		else {
-			fprintf(stderr, "usage: kanxeoctl login [--username=NAME] [--password=PASS]\n");
+			fprintf(stderr, "usage: thincctl login [--username=NAME] [--password=PASS]\n");
 			return 2;
 		}
 	}
 
 	if (username == NULL) {
 		if (read_line_noecho("Username: ", username_buf, sizeof(username_buf)) != 0) {
-			fprintf(stderr, "kanxeoctl: no username given\n");
+			fprintf(stderr, "thincctl: no username given\n");
 			return 2;
 		}
 		username = username_buf;
 	}
 	if (password == NULL) {
 		if (read_line_noecho("Password: ", password_buf, sizeof(password_buf)) != 0) {
-			fprintf(stderr, "kanxeoctl: no password given\n");
+			fprintf(stderr, "thincctl: no password given\n");
 			return 2;
 		}
 		password = password_buf;
@@ -9868,7 +9868,7 @@ static int cmd_login(const struct kx_client *c, int json_mode, int argc, char **
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(c, "POST", "/v1/login", w.buf, &r) != 0) {
 		jw_free(&w);
-		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
@@ -9876,7 +9876,7 @@ static int cmd_login(const struct kx_client *c, int json_mode, int argc, char **
 	if (r.status != 200) {
 		const char *msg = json_str_field(r.json, "error");
 
-		fprintf(stderr, "kanxeoctl: login failed: %s (HTTP %d)\n", msg != NULL ? msg : "?",
+		fprintf(stderr, "thincctl: login failed: %s (HTTP %d)\n", msg != NULL ? msg : "?",
 		        r.status);
 		kx_response_free(&r);
 		return 1;
@@ -9886,13 +9886,13 @@ static int cmd_login(const struct kx_client *c, int json_mode, int argc, char **
 		const char *token = json_str_field(r.json, "token");
 
 		if (token == NULL || token[0] == '\0') {
-			fprintf(stderr, "kanxeoctl: login response missing a token\n");
+			fprintf(stderr, "thincctl: login response missing a token\n");
 			kx_response_free(&r);
 			return 1;
 		}
 		if (save_token_file(token) != 0) {
 			fprintf(stderr,
-			        "kanxeoctl: warning: could not persist session token (%s) -- you'll "
+			        "thincctl: warning: could not persist session token (%s) -- you'll "
 			        "need to log in again for the next command\n",
 			        strerror(errno));
 		}
@@ -10051,7 +10051,7 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 	if (strcmp(cmd, "pkg") == 0)
 		return cmd_pkg(client, json_mode, argc, argv);
 
-	fprintf(stderr, "kanxeoctl: unknown command '%s'\n", cmd);
+	fprintf(stderr, "thincctl: unknown command '%s'\n", cmd);
 	print_usage(stderr);
 	return 2;
 }
@@ -10102,14 +10102,14 @@ static int tokenize_line(char *line, char **tokens, int max_tokens)
 #define SHELL_HISTORY_MAX 100
 
 /* The connected daemon's own instance_name (GET /v1/system/site,
- * ADR-0046), not a fixed "kanxeo> " -- fetched once at shell startup
+ * ADR-0046), not a fixed "thinc> " -- fetched once at shell startup
  * by shell_prompt_init() below, so the prompt actually identifies
  * *which* box this session is talking to (useful the moment an
- * operator has more than one Kanxeo install reachable). Falls back to
- * the literal string "kanxeo" (site config's own documented default)
+ * operator has more than one thinC install reachable). Falls back to
+ * the literal string "thinc" (site config's own documented default)
  * if the fetch fails for any reason -- never leaves the prompt blank. */
 #define SHELL_PROMPT_MAX 96
-static char g_shell_prompt[SHELL_PROMPT_MAX] = "kanxeo> ";
+static char g_shell_prompt[SHELL_PROMPT_MAX] = "thinc> ";
 
 static void shell_prompt_init(const struct kx_client *client)
 {
@@ -10460,7 +10460,7 @@ static int run_shell_fallback(const struct kx_client *client, int json_mode)
 }
 
 /*
- * Interactive shell: entered when kanxeoctl is invoked with no command
+ * Interactive shell: entered when thincctl is invoked with no command
  * and stdin is a real terminal (see main()) -- one persistent client,
  * one dispatch_command() call per typed line, no reconnect-per-command
  * ceremony. A real, if minimal, line editor: history (Up/Down),
@@ -10480,7 +10480,7 @@ static int run_shell(const struct kx_client *client, int json_mode)
 	char line[SHELL_LINE_MAX];
 	char *tokens[SHELL_MAX_TOKENS];
 
-	printf("kanxeoctl interactive shell -- type a command (e.g. \"ps\"), \"help\", or \"exit\"\n");
+	printf("thincctl interactive shell -- type a command (e.g. \"ps\"), \"help\", or \"exit\"\n");
 
 	if (shell_set_raw_mode(&saved) != 0)
 		return run_shell_fallback(client, json_mode);
@@ -10541,7 +10541,7 @@ int main(int argc, char **argv)
 		else if (strcmp(argv[i], "--json") == 0)
 			json_mode = 1;
 		else {
-			fprintf(stderr, "kanxeoctl: unknown option '%s'\n", argv[i]);
+			fprintf(stderr, "thincctl: unknown option '%s'\n", argv[i]);
 			print_usage(stderr);
 			return 2;
 		}

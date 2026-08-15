@@ -4,8 +4,8 @@
 #include "json.h"
 
 /*
- * A small, reusable HTTP/1.1 client for talking to the Kanxeo REST
- * daemon (docs/api/openapi.yaml) -- used by kanxeoctl (cli/) and by
+ * A small, reusable HTTP/1.1 client for talking to the thinC REST
+ * daemon (docs/api/openapi.yaml) -- used by thincctl (cli/) and by
  * the daemon's own test suite (test/test_daemon.c), so there is one
  * implementation of "how to talk to the API," not two.
  */
@@ -38,7 +38,7 @@ void kx_client_init(struct kx_client *c, const char *host, int port);
  * ADR-0144: sets (or, with token == NULL/"", clears) the session token
  * every subsequent plain kx_client_request() call on c automatically
  * attaches as its own Authorization header -- callers that already
- * have a session (kanxeoctl's own persisted-token load at startup, the
+ * have a session (thincctl's own persisted-token load at startup, the
  * web dashboard's login flow) call this once instead of switching
  * every call site over to kx_client_request_with_auth() themselves.
  */
@@ -68,7 +68,7 @@ int kx_client_request(const struct kx_client *c, const char *method, const char 
 /*
  * Same contract as kx_client_request(), with a real
  * "Authorization: Bearer <token>" header attached -- ADR-0144's own
- * host-auth work (kanxeoctl's own login/logout, and every write
+ * host-auth work (thincctl's own login/logout, and every write
  * command once a session is active, plus this daemon's own test
  * suite). token may be NULL (identical to a plain kx_client_request()
  * call in that case) -- callers that don't yet have a session use

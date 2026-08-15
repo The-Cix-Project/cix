@@ -1,5 +1,5 @@
 /*
- * kanxeo-install: takes a raw disk (already partitioned by the operator
+ * thinc-install: takes a raw disk (already partitioned by the operator
  * via a real, interactive fdisk session -- or pre-partitioned by other
  * tooling, see --skip-partition) and produces the real Phase 11 layout:
  * ESP, root A, root B, config, containers (docs/roadmap/ROADMAP.md's Phase 11
@@ -18,8 +18,8 @@
  * Partition roles are read back from GPT partition *names* (sfdisk -d),
  * not just types -- root A/B/config/containers would otherwise all
  * share a generic "Linux filesystem" type with nothing to tell them
- * apart: kanxeo-esp, kanxeo-root-a, kanxeo-root-b, kanxeo-config,
- * kanxeo-containers.
+ * apart: thinc-esp, thinc-root-a, thinc-root-b, thinc-config,
+ * thinc-containers.
  */
 #include "dual_console.h"
 
@@ -51,19 +51,19 @@ extern char **environ;
  * The target ESP's Secure Boot chain (see populate_esp() and ADR-0015):
  * shim (Microsoft-signed, trusted with zero enrollment) chain-loads
  * whatever it finds at its own hardcoded "grubx64.efi" lookup -- here,
- * systemd-boot itself, Kanxeo-signed and deliberately kept under that
+ * systemd-boot itself, thinC-signed and deliberately kept under that
  * name. mmx64.efi is MokManager (Debian-signed), auto-invoked by shim
  * once enroll_signing_key() below stages a pending enrollment request. */
-#define SHIM_EFI_SRC "/payload/kanxeo-shim.efi"
-#define MOKMANAGER_EFI_SRC "/payload/kanxeo-mm.efi"
-#define SIGNED_SYSTEMD_BOOT_SRC "/payload/kanxeo-grubx64.efi"
-#define SIGNING_CERT_SRC "/payload/kanxeo-signing.cer"
-#define BZIMAGE_SRC "/boot/kanxeo-bzImage"
-#define ROOT_SQUASHFS_SRC "/payload/kanxeo-root.squashfs"
+#define SHIM_EFI_SRC "/payload/thinc-shim.efi"
+#define MOKMANAGER_EFI_SRC "/payload/thinc-mm.efi"
+#define SIGNED_SYSTEMD_BOOT_SRC "/payload/thinc-grubx64.efi"
+#define SIGNING_CERT_SRC "/payload/thinc-signing.cer"
+#define BZIMAGE_SRC "/boot/thinc-bzImage"
+#define ROOT_SQUASHFS_SRC "/payload/thinc-root.squashfs"
 /* image/src/mkinstalleriso.c stages a C runtime (ld.so, libc.so.6,
  * libtinfo.so.6) here -- see the containers-partition block below for
  * why the shared "base" container image needs it. */
-#define KANXEO_RUNTIME_DIR_SRC "/payload/kanxeo-runtime"
+#define THINC_RUNTIME_DIR_SRC "/payload/thinc-runtime"
 
 #define ESP_MOUNT "/mnt/esp"
 #define CONFIG_MOUNT "/mnt/config"
@@ -169,7 +169,7 @@ static int run_subprocess_capture(const char *bin, char *const argv[], char *out
  * auto_partition() to drive sfdisk's own scripted-partition-table mode
  * (the same mechanism test/test_disk_image.c's own run_subprocess_stdin()
  * already uses host-side to pre-partition test disks; needed here too
- * now that kanxeo-install can do the same partitioning itself). */
+ * now that thinc-install can do the same partitioning itself). */
 static int run_subprocess_stdin(const char *bin, char *const argv[], const char *script)
 {
 	int pipefd[2];
@@ -287,7 +287,7 @@ static int write_whole_file_to_device(const char *src_path, const char *device_p
 /*
  * Finds the device path for the partition whose GPT name matches
  * want_name in `sfdisk -d`'s dump output -- lines look like
- * "/dev/vdb2 : start=..., size=..., type=..., name=\"kanxeo-root-a\"".
+ * "/dev/vdb2 : start=..., size=..., type=..., name=\"thinc-root-a\"".
  */
 static int find_partition_device(const char *dump, const char *want_name, char *out_device,
                                   size_t out_size)
@@ -343,7 +343,7 @@ static int mkfs_vfat(const char *device)
  * ignored no-ops on ext4's own mount(8) man page -- confirmed, not
  * assumed -- this is the modern journaled-quota-via-feature-bit
  * mechanism, not the legacy mount-option-driven one). Only the
- * containers partition needs this -- the ESP and kanxeo-config
+ * containers partition needs this -- the ESP and thinc-config
  * partitions never hold container overlay data, so quota tracking on
  * them would be real, unexercised scope.
  */
@@ -375,11 +375,11 @@ static int auto_partition(const char *disk)
 
 	snprintf(script, sizeof(script),
 	         "label: gpt\n"
-	         "size=%dMiB, type=uefi, name=\"kanxeo-esp\"\n"
-	         "size=%dMiB, type=linux, name=\"kanxeo-root-a\"\n"
-	         "size=%dMiB, type=linux, name=\"kanxeo-root-b\"\n"
-	         "size=%dMiB, type=linux, name=\"kanxeo-config\"\n"
-	         "type=linux, name=\"kanxeo-containers\"\n",
+	         "size=%dMiB, type=uefi, name=\"thinc-esp\"\n"
+	         "size=%dMiB, type=linux, name=\"thinc-root-a\"\n"
+	         "size=%dMiB, type=linux, name=\"thinc-root-b\"\n"
+	         "size=%dMiB, type=linux, name=\"thinc-config\"\n"
+	         "type=linux, name=\"thinc-containers\"\n",
 	         AUTO_ESP_SIZE_MIB, AUTO_ROOT_SIZE_MIB, AUTO_ROOT_SIZE_MIB, AUTO_CONFIG_SIZE_MIB);
 	return run_subprocess_stdin(SFDISK_BIN, sfdisk_argv, script);
 }
@@ -389,11 +389,11 @@ static int auto_partition(const char *disk)
  * convention part 2 already proved, applied uniformly to the very first
  * install rather than treating it as a special pre-trusted case.
  *
- * The loader entry's own "--bind=<ip>" (kanxeod's real, working flag,
- * previously never passed here at all -- kanxeod silently fell back to
+ * The loader entry's own "--bind=<ip>" (thincd's real, working flag,
+ * previously never passed here at all -- thincd silently fell back to
  * its 127.0.0.1-only default despite apply_static_ip() already having
  * configured this exact address on eth0) binds the *specific* address
- * just configured, not 0.0.0.0 -- kanxeod already knows the one real
+ * just configured, not 0.0.0.0 -- thincd already knows the one real
  * address this install is for; no reason to listen on every interface
  * when exactly one is correct. */
 static int populate_esp(const char *esp_mount, const char *ip)
@@ -418,7 +418,7 @@ static int populate_esp(const char *esp_mount, const char *ip)
 		return -1;
 
 	/*
-	 * Per-slot kernel files, not one shared /kanxeo-bzImage -- a future
+	 * Per-slot kernel files, not one shared /thinc-bzImage -- a future
 	 * kernel update (like a root update already does) has to be able to
 	 * write the *inactive* slot's own kernel file without touching
 	 * whatever the currently-booted slot references, the same reasoning
@@ -432,10 +432,10 @@ static int populate_esp(const char *esp_mount, const char *ip)
 	 * reason that has nothing to do with what they actually asked to
 	 * change. See ADR-0032.
 	 */
-	snprintf(path, sizeof(path), "%s/kanxeo-bzImage-a", esp_mount);
+	snprintf(path, sizeof(path), "%s/thinc-bzImage-a", esp_mount);
 	if (copy_file(BZIMAGE_SRC, path) != 0)
 		return -1;
-	snprintf(path, sizeof(path), "%s/kanxeo-bzImage-b", esp_mount);
+	snprintf(path, sizeof(path), "%s/thinc-bzImage-b", esp_mount);
 	if (copy_file(BZIMAGE_SRC, path) != 0)
 		return -1;
 
@@ -443,19 +443,19 @@ static int populate_esp(const char *esp_mount, const char *ip)
 	if (ensure_dir(path) != 0)
 		return -1;
 	snprintf(path, sizeof(path), "%s/loader/loader.conf", esp_mount);
-	if (write_text_file(path, "default kanxeo-*\ntimeout 0\n") != 0)
+	if (write_text_file(path, "default thinc-*\ntimeout 0\n") != 0)
 		return -1;
 
 	snprintf(path, sizeof(path), "%s/loader/entries", esp_mount);
 	if (ensure_dir(path) != 0)
 		return -1;
-	snprintf(path, sizeof(path), "%s/loader/entries/kanxeo-a+%d.conf", esp_mount, ROOT_A_TRIES);
+	snprintf(path, sizeof(path), "%s/loader/entries/thinc-a+%d.conf", esp_mount, ROOT_A_TRIES);
 	snprintf(loader_conf, sizeof(loader_conf),
-	         "title Kanxeo (A)\n"
-	         "sort-key kanxeo\n"
+	         "title thinC (A)\n"
+	         "sort-key thinc\n"
 	         "version 1\n"
-	         "linux /kanxeo-bzImage-a\n"
-	         "options console=tty0 console=ttyS0 root=%s2 rw init=/bin/kanxeod -- --init-mode "
+	         "linux /thinc-bzImage-a\n"
+	         "options console=tty0 console=ttyS0 root=%s2 rw init=/bin/thincd -- --init-mode "
 	         "--slot=a --bind=%s\n",
 	         BOOT_TIME_DISK_PREFIX, ip);
 	if (write_text_file(path, loader_conf) != 0)
@@ -465,7 +465,7 @@ static int populate_esp(const char *esp_mount, const char *ip)
 }
 
 /*
- * Stages a MOK (Machine Owner Key) enrollment request for the Kanxeo
+ * Stages a MOK (Machine Owner Key) enrollment request for the thinC
  * signing key -- shim can already run the signed systemd-boot/kernel
  * chain populate_esp() just wrote, but only once that key is actually
  * trusted. mokutil --import writes the pending request into the
@@ -489,7 +489,7 @@ static int enroll_signing_key(void)
 		return -1;
 	}
 
-	dual_printf("kanxeo-install: enrolling the Kanxeo Secure Boot signing key -- choose a "
+	dual_printf("thinc-install: enrolling the thinC Secure Boot signing key -- choose a "
 	            "temporary password now; you'll need it once more at the very next reboot, in "
 	            "the blue MokManager screen, to confirm it\n");
 	dual_printf("(mokutil may print \"Can't open /proc/keys\"/\"Failed to access kernel "
@@ -504,12 +504,12 @@ static int enroll_signing_key(void)
 }
 
 /*
- * kanxeo-install runs as its own init= target, the same PID-1 boot shape
- * kanxeod's own --init-mode uses (daemon/src/main.c's boot_init()) --
+ * thinc-install runs as its own init= target, the same PID-1 boot shape
+ * thincd's own --init-mode uses (daemon/src/main.c's boot_init()) --
  * needs the same minimal proc/sysfs mounts before fdisk/sfdisk/mkfs.*
  * can be trusted to work at all. devtmpfs auto-populates /dev before
  * init ever runs (CONFIG_DEVTMPFS_MOUNT), so no /dev mount here either,
- * same as kanxeod's own boot_init(). devpts (ADR-0042) is the one
+ * same as thincd's own boot_init(). devpts (ADR-0042) is the one
  * genuinely new mount here -- posix_openpt()'s slave device only shows
  * up under /dev/pts once that filesystem is actually mounted; nothing
  * else in this from-scratch environment ever does it.
@@ -595,7 +595,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	dual_printf("kanxeo-install: target disk %s -- ALL DATA ON THIS DISK WILL BE DESTROYED\n", disk);
+	dual_printf("thinc-install: target disk %s -- ALL DATA ON THIS DISK WILL BE DESTROYED\n", disk);
 
 	if (auto_partition_flag) {
 		if (auto_partition(disk) != 0) {
@@ -620,15 +620,15 @@ int main(int argc, char **argv)
 		}
 	}
 
-	if (find_partition_device(sfdisk_dump, "kanxeo-esp", esp_dev, sizeof(esp_dev)) != 0)
+	if (find_partition_device(sfdisk_dump, "thinc-esp", esp_dev, sizeof(esp_dev)) != 0)
 		return 1;
-	if (find_partition_device(sfdisk_dump, "kanxeo-root-a", root_a_dev, sizeof(root_a_dev)) != 0)
+	if (find_partition_device(sfdisk_dump, "thinc-root-a", root_a_dev, sizeof(root_a_dev)) != 0)
 		return 1;
-	if (find_partition_device(sfdisk_dump, "kanxeo-root-b", root_b_dev, sizeof(root_b_dev)) != 0)
+	if (find_partition_device(sfdisk_dump, "thinc-root-b", root_b_dev, sizeof(root_b_dev)) != 0)
 		return 1;
-	if (find_partition_device(sfdisk_dump, "kanxeo-config", config_dev, sizeof(config_dev)) != 0)
+	if (find_partition_device(sfdisk_dump, "thinc-config", config_dev, sizeof(config_dev)) != 0)
 		return 1;
-	if (find_partition_device(sfdisk_dump, "kanxeo-containers", containers_dev,
+	if (find_partition_device(sfdisk_dump, "thinc-containers", containers_dev,
 	                           sizeof(containers_dev)) != 0)
 		return 1;
 	/* root_b_dev is intentionally never used beyond this existence
@@ -636,24 +636,24 @@ int main(int argc, char **argv)
 	 * update ever writes there (this part's own confirmed scope). */
 	(void)root_b_dev;
 
-	dual_printf("kanxeo-install: found all 5 partitions (esp=%s root-a=%s root-b=%s config=%s "
+	dual_printf("thinc-install: found all 5 partitions (esp=%s root-a=%s root-b=%s config=%s "
 	            "containers=%s)\n",
 	            esp_dev, root_a_dev, root_b_dev, config_dev, containers_dev);
 
 	if (mkfs_vfat(esp_dev) != 0)
 		return 1;
-	if (mkfs_ext4(config_dev, "kanxeo-config", 0) != 0)
+	if (mkfs_ext4(config_dev, "thinc-config", 0) != 0)
 		return 1;
-	/* "kanxeo-containers" is 17 characters -- one over ext4's 16-char
+	/* "thinc-containers" is 17 characters -- one over ext4's 16-char
 	 * label limit (EXT2_LABEL_LEN), which mke2fs would otherwise
-	 * silently truncate to "kanxeo-container" anyway with just a
+	 * silently truncate to "thinc-container" anyway with just a
 	 * warning. This is purely the filesystem's own cosmetic volume
-	 * label (blkid/lsblk output) -- kanxeo-install itself always
+	 * label (blkid/lsblk output) -- thinc-install itself always
 	 * identifies partitions by their GPT *name* (find_partition_device()
 	 * above, via sfdisk -d), never this label, so truncation here has
 	 * no functional effect either way; picking the fit deliberately
 	 * just avoids the warning. */
-	if (mkfs_ext4(containers_dev, "kanxeo-container", 1) != 0)
+	if (mkfs_ext4(containers_dev, "thinc-container", 1) != 0)
 		return 1;
 
 	if (ensure_dir(ESP_MOUNT) != 0)
@@ -700,7 +700,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	/* Containers partition: kanxeod's own existing ensure_dir()/
+	/* Containers partition: thincd's own existing ensure_dir()/
 	 * pkg_init() machinery populates most of it at first real boot, the
 	 * same "fall through to unmodified existing logic" precedent parts
 	 * 1-2 already established for BASE_DIR's own subdirectories -- but
@@ -752,21 +752,21 @@ int main(int argc, char **argv)
 			return 1;
 		}
 
-		snprintf(src, sizeof(src), "%s/lib64/ld-linux-x86-64.so.2", KANXEO_RUNTIME_DIR_SRC);
+		snprintf(src, sizeof(src), "%s/lib64/ld-linux-x86-64.so.2", THINC_RUNTIME_DIR_SRC);
 		snprintf(path, sizeof(path), "%s/images/base/rootfs/lib64/ld-linux-x86-64.so.2",
 		         CONTAINERS_MOUNT);
 		if (copy_file(src, path) != 0) {
 			umount(CONTAINERS_MOUNT);
 			return 1;
 		}
-		snprintf(src, sizeof(src), "%s/lib/x86_64-linux-gnu/libc.so.6", KANXEO_RUNTIME_DIR_SRC);
+		snprintf(src, sizeof(src), "%s/lib/x86_64-linux-gnu/libc.so.6", THINC_RUNTIME_DIR_SRC);
 		snprintf(path, sizeof(path), "%s/images/base/rootfs/lib/x86_64-linux-gnu/libc.so.6",
 		         CONTAINERS_MOUNT);
 		if (copy_file(src, path) != 0) {
 			umount(CONTAINERS_MOUNT);
 			return 1;
 		}
-		snprintf(src, sizeof(src), "%s/lib/x86_64-linux-gnu/libtinfo.so.6", KANXEO_RUNTIME_DIR_SRC);
+		snprintf(src, sizeof(src), "%s/lib/x86_64-linux-gnu/libtinfo.so.6", THINC_RUNTIME_DIR_SRC);
 		snprintf(path, sizeof(path), "%s/images/base/rootfs/lib/x86_64-linux-gnu/libtinfo.so.6",
 		         CONTAINERS_MOUNT);
 		if (copy_file(src, path) != 0) {
@@ -779,7 +779,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	dual_printf("kanxeo-install: install complete\n");
+	dual_printf("thinc-install: install complete\n");
 	dual_printf("\n");
 	dual_printf("=====================================================================\n");
 	dual_printf("  Installation complete. Remove the installation media, then press\n");
@@ -787,7 +787,7 @@ int main(int argc, char **argv)
 	dual_printf("=====================================================================\n");
 
 	/*
-	 * Without this, kanxeo-install (running as PID 1) simply returns
+	 * Without this, thinc-install (running as PID 1) simply returns
 	 * from main() here -- the kernel's response to init exiting is an
 	 * immediate, unprompted panic, which read to a real operator as the
 	 * installer silently freezing rather than finishing (found live,

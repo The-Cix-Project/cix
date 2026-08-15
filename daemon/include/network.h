@@ -36,7 +36,7 @@ enum network_error {
 	NETWORK_ERR_INTERFACE_NOT_ATTACHED, /* detach requested for one that isn't attached here */
 	NETWORK_ERR_INTERFACE_FULL,        /* this network's own interfaces[] table is full */
 	NETWORK_ERR_INTERFACE_NAME_TOO_LONG, /* "<ifname>.<vlan_id>" wouldn't fit IFNAMSIZ */
-	NETWORK_ERR_IS_MANAGEMENT /* refused: this network currently carries kanxeod's own
+	NETWORK_ERR_IS_MANAGEMENT /* refused: this network currently carries thincd's own
 	                            * bind address -- see network_set_management() */
 };
 
@@ -59,7 +59,7 @@ struct network_def {
 	struct network_attached_interface interfaces[NETWORK_MAX_INTERFACES];
 	int interface_count;
 	int in_use;         /* 0 for free slots */
-	int is_management; /* this network's address is kanxeod's own bind address --
+	int is_management; /* this network's address is thincd's own bind address --
 	                     * see network_set_management(); at most one network has
 	                     * this set at a time */
 };
@@ -169,7 +169,7 @@ int network_address_str_is_valid(const struct network_def *net, const char *addr
 
 /* ADR-0066: a real, read-only view of the box's own kernel IPv4
  * routing table, via rtnl_route_dump_ipv4() -- the only way to ever
- * inspect a running Kanxeo install's actual routing state (ADR-0034,
+ * inspect a running thinC install's actual routing state (ADR-0034,
  * no SSH/general shell). Returns -1 (nothing written to w) only on a
  * genuine rtnetlink transport/parse failure. */
 int network_write_routes_json(struct json_writer *w);
@@ -211,7 +211,7 @@ enum network_error network_attach_interface(const char *name, const char *ifname
 enum network_error network_detach_interface(const char *name, const char *ifname);
 
 /*
- * Designates name as the one network whose own address kanxeod itself
+ * Designates name as the one network whose own address thincd itself
  * binds to -- the API-managed counterpart to what used to be a
  * GRUB-only, invisible apply_static_ip() call (Part 0.5). Requires
  * name to already have an address (has_address, network_create()'s

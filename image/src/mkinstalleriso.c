@@ -1,8 +1,8 @@
 /*
- * Assembles kanxeo-install's own bootable installer environment and
+ * Assembles thinc-install's own bootable installer environment and
  * packages it as a real, distributable UEFI-bootable .iso -- the
  * concrete artifact an operator (or test_installer.c's own QEMU -cdrom
- * verification) boots to install Kanxeo onto a real disk.
+ * verification) boots to install thinC onto a real disk.
  *
  * The installer media boots via GRUB (grub-mkrescue -- the standard
  * tool every major distro uses for exactly this; hand-tuning xorriso's
@@ -16,12 +16,12 @@
  * one-time, install-media-only bootloader role -- distinct from, and
  * not a reopening of, systemd-boot's own deliberate role on the
  * *installed* target disk (ADR-0014's counted A/B mechanism), which
- * kanxeo-install itself still sets up exactly as proven in part 3.
+ * thinc-install itself still sets up exactly as proven in part 3.
  *
  * Dev-machine-only build tooling (like build/mkbootroot), never shipped
  * or run on a target -- reuses test_image_fixture_build()/_add_lib()/
  * _copy_file() (test/test_image_fixture.c) for staging, the same
- * precedent mkbootroot.c already established (unlike kanxeo-install.c
+ * precedent mkbootroot.c already established (unlike thinc-install.c
  * itself, which deliberately never links test/, since it runs on a
  * real target disk as production code).
  */
@@ -41,7 +41,7 @@ extern char **environ;
 /*
  * grub-mkrescue/sbsign/xorriso/mformat/mcopy are no longer a hardcoded
  * /usr/bin path -- ADR-0064 closes the API-First Mandate gap ADR-0063
- * left open (kanxeod itself can now assemble an ISO server-side, via
+ * left open (thincd itself can now assemble an ISO server-side, via
  * POST /v1/system/iso) by pointing these at a real, self-built
  * isotools hostbuild artifact (recipes/package/isotools) instead of
  * whatever happens to be pre-installed on the machine running this
@@ -54,13 +54,13 @@ static char g_grub_mkrescue_bin[600];
 static char g_sbsign_bin[600];
 #define SYSTEMD_BOOT_EFI "/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
 
-/* Secure Boot chain for the *target* disk's ESP (kanxeo-install.c's own
+/* Secure Boot chain for the *target* disk's ESP (thinc-install.c's own
  * populate_esp() writes these three under EFI/BOOT/ -- see ADR-0015).
  * Both are pre-signed by Debian directly; no re-signing needed. */
 #define SHIM_EFI_SRC "/usr/lib/shim/shimx64.efi.signed"
 #define MOKMANAGER_EFI_SRC "/usr/lib/shim/mmx64.efi.signed"
 
-/* The real tools kanxeo-install shells out to, and their full ldd
+/* The real tools thinc-install shells out to, and their full ldd
  * closures (checked directly against this host) -- staged the same way
  * test_image_fixture_add_lib() already stages dnsmasq's own closure
  * (Phase 8), just for a different set of real, unmodified binaries. */
@@ -71,7 +71,7 @@ static const char *const g_lib_closure[] = {
 	"/lib/x86_64-linux-gnu/libext2fs.so.2",    "/lib/x86_64-linux-gnu/libcom_err.so.2",
 	"/lib/x86_64-linux-gnu/libe2p.so.2",
 	/* mokutil's own closure (ldd-checked against this host), for
-	 * enroll_signing_key()'s "mokutil --import" call in kanxeo-install.c. */
+	 * enroll_signing_key()'s "mokutil --import" call in thinc-install.c. */
 	"/lib/x86_64-linux-gnu/libcrypto.so.3",    "/lib/x86_64-linux-gnu/libefivar.so.1",
 	"/lib/x86_64-linux-gnu/libkeyutils.so.1",  "/lib/x86_64-linux-gnu/libcrypt.so.1",
 	"/lib/x86_64-linux-gnu/libdl.so.2",        NULL,
@@ -148,8 +148,8 @@ static int sbsign_to(const char *key, const char *cert, const char *src, const c
 int main(int argc, char **argv)
 {
 	const char *stage_dir;
-	const char *kanxeo_install_bin;
-	const char *kanxeo_recover_bin;
+	const char *thinc_install_bin;
+	const char *thinc_recover_bin;
 	const char *bzimage_path;
 	const char *control_plane_squashfs;
 	const char *signing_key;
@@ -168,23 +168,23 @@ int main(int argc, char **argv)
 
 	if (argc != 12) {
 		fprintf(stderr,
-		        "usage: %s <staging-dir> <kanxeo-install-bin> <kanxeo-recover-bin> "
+		        "usage: %s <staging-dir> <thinc-install-bin> <thinc-recover-bin> "
 		        "<bzImage> <control-plane-squashfs> <signing-key> <signing-cert.crt> "
 		        "<signing-cert.cer> <out.iso> <kernel-args> <isotools-root>\n"
-		        "  kanxeo-recover-bin: the break-glass recovery tool (ADR-0146), staged as\n"
+		        "  thinc-recover-bin: the break-glass recovery tool (ADR-0146), staged as\n"
 		        "  a second GRUB menu entry on the SAME media -- boots straight to a\n"
 		        "  console prompt, no kernel-args needed (it takes none).\n"
-		        "  signing-key/signing-cert.crt/signing-cert.cer: the Kanxeo Secure Boot\n"
-		        "  signing key pair (image/keys/kanxeo-signing.{key,crt,cer} -- .crt is\n"
+		        "  signing-key/signing-cert.crt/signing-cert.cer: the thinC Secure Boot\n"
+		        "  signing key pair (image/keys/thinc-signing.{key,crt,cer} -- .crt is\n"
 		        "  PEM, for sbsign; .cer is DER, for mokutil) -- used to sign systemd-boot\n"
 		        "  and the kernel for the *target* disk's ESP; the installer media's own\n"
 		        "  GRUB boot stays unsigned (see ADR-0015).\n"
-		        "  kernel-args: everything after 'init=/bin/kanxeo-install --' on the\n"
+		        "  kernel-args: everything after 'init=/bin/thinc-install --' on the\n"
 		        "  kernel command line, e.g. for the real, shippable ISO:\n"
 		        "  \"--disk=/dev/CHANGEME --ip=CHANGEME --prefix=24 --gateway=CHANGEME "
 		        "--interface=CHANGEME\"\n"
 		        "  (a deliberately-invalid placeholder -- edit it at the GRUB boot menu\n"
-		        "  with 'e' before booting; kanxeo-install's own stat() check on --disk=\n"
+		        "  with 'e' before booting; thinc-install's own stat() check on --disk=\n"
 		        "  fails safely if it's left unedited)\n"
 		        "  isotools-root: directory holding <root>/bin/{grub-mkrescue,sbsign,\n"
 		        "  xorriso,mcopy,mformat} and <root>/lib/grub/x86_64-efi/ (pkg/recipes/\n"
@@ -195,8 +195,8 @@ int main(int argc, char **argv)
 		return 2;
 	}
 	stage_dir = argv[1];
-	kanxeo_install_bin = argv[2];
-	kanxeo_recover_bin = argv[3];
+	thinc_install_bin = argv[2];
+	thinc_recover_bin = argv[3];
 	bzimage_path = argv[4];
 	control_plane_squashfs = argv[5];
 	signing_key = argv[6];
@@ -232,12 +232,12 @@ int main(int argc, char **argv)
 
 	if (ensure_dir(stage_dir) != 0)
 		return 1;
-	if (test_image_fixture_build(stage_dir, kanxeo_install_bin, "kanxeo-install") != 0)
+	if (test_image_fixture_build(stage_dir, thinc_install_bin, "thinc-install") != 0)
 		return 1;
 	/*
-	 * kanxeo-recover (ADR-0146) is dynamically linked against nothing
+	 * thinc-recover (ADR-0146) is dynamically linked against nothing
 	 * beyond plain libc -- the exact same runtime test_image_fixture_build()
-	 * just staged for kanxeo-install above (ld-linux-x86-64.so.2, libc.so.6
+	 * just staged for thinc-install above (ld-linux-x86-64.so.2, libc.so.6
 	 * under lib64/ and lib/x86_64-linux-gnu/ respectively). A second full
 	 * _build() call would just re-copy those same two files under a second,
 	 * redundant name; a plain file copy into the already-staged bin/ is
@@ -246,8 +246,8 @@ int main(int argc, char **argv)
 	{
 		char recover_dst[600];
 
-		snprintf(recover_dst, sizeof(recover_dst), "%s/bin/kanxeo-recover", stage_dir);
-		if (test_image_fixture_copy_file(kanxeo_recover_bin, recover_dst) != 0)
+		snprintf(recover_dst, sizeof(recover_dst), "%s/bin/thinc-recover", stage_dir);
+		if (test_image_fixture_copy_file(thinc_recover_bin, recover_dst) != 0)
 			return 1;
 	}
 
@@ -278,41 +278,41 @@ int main(int argc, char **argv)
 			return 1;
 	}
 
-	/* Target-disk payload kanxeo-install itself copies onto the ESP/
+	/* Target-disk payload thinc-install itself copies onto the ESP/
 	 * root-A it writes -- the Secure Boot chain (shim, MokManager, our
 	 * own signed systemd-boot) and the control-plane squashfs. The
-	 * kernel lives at /boot/kanxeo-bzImage instead (below) and serves
+	 * kernel lives at /boot/thinc-bzImage instead (below) and serves
 	 * double duty: GRUB's own boot target here, and the same file
-	 * kanxeo-install.c's BZIMAGE_SRC copies onto the target disk -- one
+	 * thinc-install.c's BZIMAGE_SRC copies onto the target disk -- one
 	 * copy, not two.
 	 *
-	 * kanxeo-grubx64.efi is systemd-boot itself, Kanxeo-signed and
+	 * thinc-grubx64.efi is systemd-boot itself, thinC-signed and
 	 * deliberately renamed: shim has a hardcoded second-stage lookup of
 	 * "\\grubx64.efi" in its own directory (confirmed via `strings` on
 	 * the real Debian-signed shim binary) regardless of what's actually
 	 * inside the file -- see ADR-0015. */
 	if (ensure_dir_under(stage_dir, "payload") != 0)
 		return 1;
-	snprintf(dst, sizeof(dst), "%s/payload/kanxeo-shim.efi", stage_dir);
+	snprintf(dst, sizeof(dst), "%s/payload/thinc-shim.efi", stage_dir);
 	if (test_image_fixture_copy_file(SHIM_EFI_SRC, dst) != 0)
 		return 1;
-	snprintf(dst, sizeof(dst), "%s/payload/kanxeo-mm.efi", stage_dir);
+	snprintf(dst, sizeof(dst), "%s/payload/thinc-mm.efi", stage_dir);
 	if (test_image_fixture_copy_file(MOKMANAGER_EFI_SRC, dst) != 0)
 		return 1;
-	snprintf(dst, sizeof(dst), "%s/payload/kanxeo-grubx64.efi", stage_dir);
+	snprintf(dst, sizeof(dst), "%s/payload/thinc-grubx64.efi", stage_dir);
 	if (sbsign_to(signing_key, signing_cert_pem, SYSTEMD_BOOT_EFI, dst) != 0)
 		return 1;
-	snprintf(dst, sizeof(dst), "%s/payload/kanxeo-signing.cer", stage_dir);
+	snprintf(dst, sizeof(dst), "%s/payload/thinc-signing.cer", stage_dir);
 	if (test_image_fixture_copy_file(signing_cert_der, dst) != 0)
 		return 1;
-	snprintf(dst, sizeof(dst), "%s/payload/kanxeo-root.squashfs", stage_dir);
+	snprintf(dst, sizeof(dst), "%s/payload/thinc-root.squashfs", stage_dir);
 	if (test_image_fixture_copy_file(control_plane_squashfs, dst) != 0)
 		return 1;
 
 	/*
 	 * A C runtime for the shared "base" container image, staged onto
-	 * the target's containers partition by kanxeo-install.c itself
-	 * (KANXEO_RUNTIME_DIR_SRC there). `pkg install` (daemon/src/pkg.c)
+	 * the target's containers partition by thinc-install.c itself
+	 * (THINC_RUNTIME_DIR_SRC there). `pkg install` (daemon/src/pkg.c)
 	 * only ever merges a package's own build output into that image --
 	 * never system runtime libraries -- so without this, nothing
 	 * dynamically linked that a package installs can ever execve()
@@ -320,7 +320,7 @@ int main(int argc, char **argv)
 	 * pkg-installed bash failed outright ("No such file or directory")
 	 * because /lib64/ld-linux-x86-64.so.2 didn't exist anywhere in the
 	 * image. ld.so/libc.so.6 use the exact fixed-destination convention
-	 * test_image_fixture_build() already uses for kanxeod's own two
+	 * test_image_fixture_build() already uses for thincd's own two
 	 * (source read from their real /usr/lib/x86_64-linux-gnu location,
 	 * written to the /lib64 and /lib/x86_64-linux-gnu paths a binary's
 	 * own compiled-in interpreter string and glibc's default search
@@ -330,31 +330,31 @@ int main(int argc, char **argv)
 	 * staged this same host-path-preserving way for this installer's
 	 * own environment, in g_lib_closure[] above.
 	 */
-	if (ensure_dir_under(stage_dir, "payload/kanxeo-runtime") != 0)
+	if (ensure_dir_under(stage_dir, "payload/thinc-runtime") != 0)
 		return 1;
-	if (ensure_dir_under(stage_dir, "payload/kanxeo-runtime/lib64") != 0)
+	if (ensure_dir_under(stage_dir, "payload/thinc-runtime/lib64") != 0)
 		return 1;
-	if (ensure_dir_under(stage_dir, "payload/kanxeo-runtime/lib") != 0)
+	if (ensure_dir_under(stage_dir, "payload/thinc-runtime/lib") != 0)
 		return 1;
-	if (ensure_dir_under(stage_dir, "payload/kanxeo-runtime/lib/x86_64-linux-gnu") != 0)
+	if (ensure_dir_under(stage_dir, "payload/thinc-runtime/lib/x86_64-linux-gnu") != 0)
 		return 1;
-	snprintf(dst, sizeof(dst), "%s/payload/kanxeo-runtime/lib64/ld-linux-x86-64.so.2", stage_dir);
+	snprintf(dst, sizeof(dst), "%s/payload/thinc-runtime/lib64/ld-linux-x86-64.so.2", stage_dir);
 	if (test_image_fixture_copy_file("/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", dst) != 0)
 		return 1;
-	snprintf(dst, sizeof(dst), "%s/payload/kanxeo-runtime/lib/x86_64-linux-gnu/libc.so.6",
+	snprintf(dst, sizeof(dst), "%s/payload/thinc-runtime/lib/x86_64-linux-gnu/libc.so.6",
 	         stage_dir);
 	if (test_image_fixture_copy_file("/usr/lib/x86_64-linux-gnu/libc.so.6", dst) != 0)
 		return 1;
 	{
 		char runtime_dir[600];
 
-		snprintf(runtime_dir, sizeof(runtime_dir), "%s/payload/kanxeo-runtime", stage_dir);
+		snprintf(runtime_dir, sizeof(runtime_dir), "%s/payload/thinc-runtime", stage_dir);
 		if (test_image_fixture_add_lib(runtime_dir, "/lib/x86_64-linux-gnu/libtinfo.so.6") != 0)
 			return 1;
 	}
 
-	/* Same PID-1 boot shape kanxeod's own image needs (build/mkbootroot)
-	 * -- kanxeo-install.c's own early_mounts() mounts proc/sysfs here
+	/* Same PID-1 boot shape thincd's own image needs (build/mkbootroot)
+	 * -- thinc-install.c's own early_mounts() mounts proc/sysfs here
 	 * before anything else runs; devtmpfs auto-populates /dev on its
 	 * own once the mountpoint exists (CONFIG_DEVTMPFS_MOUNT). */
 	if (ensure_dir_under(stage_dir, "proc") != 0)
@@ -376,19 +376,19 @@ int main(int argc, char **argv)
 	/* GRUB's own boot target -- the ISO9660-mounted-as-root kernel. Signed
 	 * here (not a plain copy): a valid signature doesn't affect the
 	 * installer's own unsigned/unenforced GRUB boot, and this exact same
-	 * signed file is what kanxeo-install.c's BZIMAGE_SRC later copies
+	 * signed file is what thinc-install.c's BZIMAGE_SRC later copies
 	 * onto the target disk's ESP, where the signature does matter. */
 	if (ensure_dir_under(stage_dir, "boot") != 0)
 		return 1;
 	if (ensure_dir_under(stage_dir, "boot/grub") != 0)
 		return 1;
-	snprintf(dst, sizeof(dst), "%s/boot/kanxeo-bzImage", stage_dir);
+	snprintf(dst, sizeof(dst), "%s/boot/thinc-bzImage", stage_dir);
 	if (sbsign_to(signing_key, signing_cert_pem, bzimage_path, dst) != 0)
 		return 1;
 
 	/*
 	 * Second, distinct boot target on the SAME media (ADR-0146):
-	 * kanxeo-recover never reformats/reinstalls anything, so it needs no
+	 * thinc-recover never reformats/reinstalls anything, so it needs no
 	 * kernel-args of its own -- everything it needs (which system disk to
 	 * touch, what to reset) is either hardcoded (its own header comment
 	 * explains why) or gathered interactively at its own console prompt.
@@ -397,14 +397,14 @@ int main(int argc, char **argv)
 	         "set timeout=10\n"
 	         "set default=0\n"
 	         "\n"
-	         "menuentry \"Kanxeo Install\" {\n"
-	         "    linux /boot/kanxeo-bzImage console=tty0 console=ttyS0 root=/dev/sr0 "
-	         "rootfstype=iso9660 ro init=/bin/kanxeo-install -- %s\n"
+	         "menuentry \"thinC Install\" {\n"
+	         "    linux /boot/thinc-bzImage console=tty0 console=ttyS0 root=/dev/sr0 "
+	         "rootfstype=iso9660 ro init=/bin/thinc-install -- %s\n"
 	         "}\n"
 	         "\n"
-	         "menuentry \"Kanxeo Recovery (reset host-auth admin_groups)\" {\n"
-	         "    linux /boot/kanxeo-bzImage console=tty0 console=ttyS0 root=/dev/sr0 "
-	         "rootfstype=iso9660 ro init=/bin/kanxeo-recover\n"
+	         "menuentry \"thinC Recovery (reset host-auth admin_groups)\" {\n"
+	         "    linux /boot/thinc-bzImage console=tty0 console=ttyS0 root=/dev/sr0 "
+	         "rootfstype=iso9660 ro init=/bin/thinc-recover\n"
 	         "}\n",
 	         kernel_args);
 	snprintf(grub_cfg_path, sizeof(grub_cfg_path), "%s/boot/grub/grub.cfg", stage_dir);
@@ -422,7 +422,7 @@ int main(int argc, char **argv)
 			               (char *)stage_dir,
 			               "--",
 			               "-volid",
-			               "KANXEO",
+			               "THINC",
 			               NULL };
 
 		snprintf(directory_flag, sizeof(directory_flag), "--directory=%s", grub_module_dir);

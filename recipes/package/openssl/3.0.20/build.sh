@@ -24,7 +24,7 @@
 # sha256. Pointed directly at GitHub rather than openssl.org's own
 # "/source/" URL (which this same file used until this line, and
 # which is itself now just a 301 redirect to this exact GitHub URL,
-# confirmed directly): `kanxeod`'s own host-side fetch (PKG_CURL_BIN,
+# confirmed directly): `thincd`'s own host-side fetch (PKG_CURL_BIN,
 # daemon/include/pkg.h -- a fixed /usr/bin/curl on the daemon's own
 # root, separate from this recipe's own build output) failed fetching
 # through that redirect hop on a real installed box, exit 1
@@ -51,7 +51,7 @@ pkg_depends="perl"
 # reading it), which needs /usr/bin/env on PATH -- real on an image
 # that also has coreutils, but not guaranteed on a lean image built
 # only from this recipe set's own pkg_depends chain (confirmed the
-# hard way: kanxeo-hosttools has perl but no coreutils/env, and
+# hard way: thinc-hosttools has perl but no coreutils/env, and
 # execve() on the un-runnable script fell back to bash interpreting
 # Configure's own Perl source as shell, "use: command not found").
 # Calling perl directly needs nothing beyond what pkg_depends="perl"

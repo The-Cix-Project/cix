@@ -1,9 +1,9 @@
 /*
- * Phase 4 end-to-end test: proves the real, shipped kanxeoctl binary
+ * Phase 4 end-to-end test: proves the real, shipped thincctl binary
  * works against a real daemon over real HTTP -- not just that
  * client/src/httpclient.c works (that's already exercised by
  * test_daemon.c). Stages the same shared test image, forks the
- * daemon, then forks+execve's build/kanxeoctl itself for each check,
+ * daemon, then forks+execve's build/thincctl itself for each check,
  * capturing its stdout/stderr and exit code.
  */
 #include "httpclient.h"
@@ -69,8 +69,8 @@ static int run_cli(char *const argv[], char *out, size_t out_size, int *exit_cod
 		dup2(pipefd[1], STDOUT_FILENO);
 		dup2(pipefd[1], STDERR_FILENO);
 		close(pipefd[1]);
-		execve("build/kanxeoctl", argv, environ);
-		perror("execve build/kanxeoctl");
+		execve("build/thincctl", argv, environ);
+		perror("execve build/thincctl");
 		_exit(127);
 	}
 
@@ -138,7 +138,7 @@ int main(void)
 	}
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/kanxeod";
+	dargv[0] = "build/thincd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -150,8 +150,8 @@ int main(void)
 		return 1;
 	}
 	if (daemon_pid == 0) {
-		execve("build/kanxeod", dargv, environ);
-		perror("execve build/kanxeod");
+		execve("build/thincd", dargv, environ);
+		perror("execve build/thincd");
 		_exit(127);
 	}
 
@@ -165,17 +165,17 @@ int main(void)
 
 	/* 1. health */
 	{
-		char *argv[] = { "kanxeoctl", PORT_ARG, "health", NULL };
+		char *argv[] = { "thincctl", PORT_ARG, "health", NULL };
 
 		if (run_cli(argv, out, sizeof(out), &rc) != 0 || rc != 0) {
-			fprintf(stderr, "FAIL: kanxeoctl health, rc=%d out=%s\n", rc, out);
+			fprintf(stderr, "FAIL: thincctl health, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
 	}
 
 	/* 2. run c1, exits quickly with code 5 */
 	{
-		char *argv[] = { "kanxeoctl",  PORT_ARG,
+		char *argv[] = { "thincctl",  PORT_ARG,
 			          "run",       "--name=c1",
 			          "--image=test", "--",
 			          "/bin/daemon_child", "0",
@@ -183,25 +183,25 @@ int main(void)
 
 		if (run_cli(argv, out, sizeof(out), &rc) != 0 || rc != 0 ||
 		    strstr(out, "running") == NULL) {
-			fprintf(stderr, "FAIL: kanxeoctl run c1, rc=%d out=%s\n", rc, out);
+			fprintf(stderr, "FAIL: thincctl run c1, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
 	}
 
 	/* 3. ps lists it */
 	{
-		char *argv[] = { "kanxeoctl", PORT_ARG, "ps", NULL };
+		char *argv[] = { "thincctl", PORT_ARG, "ps", NULL };
 
 		if (run_cli(argv, out, sizeof(out), &rc) != 0 || rc != 0 ||
 		    strstr(out, "c1") == NULL) {
-			fprintf(stderr, "FAIL: kanxeoctl ps, rc=%d out=%s\n", rc, out);
+			fprintf(stderr, "FAIL: thincctl ps, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
 	}
 
 	/* 4. poll inspect c1 until exited, check exit_status */
 	{
-		char *argv[] = { "kanxeoctl", PORT_ARG, "inspect", "c1", NULL };
+		char *argv[] = { "thincctl", PORT_ARG, "inspect", "c1", NULL };
 		int i;
 		int seen = 0;
 
@@ -214,7 +214,7 @@ int main(void)
 			usleep(100000);
 		}
 		if (!seen || strstr(out, "exit_status=5") == NULL) {
-			fprintf(stderr, "FAIL: kanxeoctl inspect c1 never showed exited/exit_status=5, out=%s\n",
+			fprintf(stderr, "FAIL: thincctl inspect c1 never showed exited/exit_status=5, out=%s\n",
 			        out);
 			ok = 0;
 		}
@@ -222,25 +222,25 @@ int main(void)
 
 	/* 5. run c2 (long-running), rm it while running, confirm PID gone */
 	{
-		char *run_argv[] = { "kanxeoctl",  PORT_ARG,
+		char *run_argv[] = { "thincctl",  PORT_ARG,
 			              "run",       "--name=c2",
 			              "--image=test", "--",
 			              "/bin/daemon_child", "30",
 			              "0",         NULL };
-		char *rm_argv[] = { "kanxeoctl", PORT_ARG, "rm", "c2", NULL };
-		char *inspect_argv[] = { "kanxeoctl", PORT_ARG, "inspect", "c2", NULL };
+		char *rm_argv[] = { "thincctl", PORT_ARG, "rm", "c2", NULL };
+		char *inspect_argv[] = { "thincctl", PORT_ARG, "inspect", "c2", NULL };
 		long pid;
 		char proc_path[64];
 		struct stat st;
 
 		if (run_cli(run_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
-			fprintf(stderr, "FAIL: kanxeoctl run c2, rc=%d out=%s\n", rc, out);
+			fprintf(stderr, "FAIL: thincctl run c2, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
 		pid = parse_pid(out);
 
 		if (run_cli(rm_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
-			fprintf(stderr, "FAIL: kanxeoctl rm c2, rc=%d out=%s\n", rc, out);
+			fprintf(stderr, "FAIL: thincctl rm c2, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
 
@@ -251,21 +251,21 @@ int main(void)
 		}
 
 		if (run_cli(inspect_argv, out, sizeof(out), &rc) != 0 || rc == 0) {
-			fprintf(stderr, "FAIL: kanxeoctl inspect c2 after rm should fail, rc=%d\n", rc);
+			fprintf(stderr, "FAIL: thincctl inspect c2 after rm should fail, rc=%d\n", rc);
 			ok = 0;
 		}
 	}
 
 	/* 6. duplicate name -> nonzero exit, error on output */
 	{
-		char *argv[] = { "kanxeoctl",  PORT_ARG,
+		char *argv[] = { "thincctl",  PORT_ARG,
 			          "run",       "--name=c1",
 			          "--image=test", "--",
 			          "/bin/daemon_child", "0",
 			          "1",         NULL };
 
 		if (run_cli(argv, out, sizeof(out), &rc) != 0 || rc == 0 ||
-		    strstr(out, "kanxeoctl:") == NULL) {
+		    strstr(out, "thincctl:") == NULL) {
 			fprintf(stderr, "FAIL: duplicate name should fail with an error, rc=%d out=%s\n",
 			        rc, out);
 			ok = 0;
@@ -274,7 +274,7 @@ int main(void)
 
 	/* 7. unreachable daemon -> nonzero exit, no crash */
 	{
-		char *argv[] = { "kanxeoctl", "--port=1", "health", NULL };
+		char *argv[] = { "thincctl", "--port=1", "health", NULL };
 
 		if (run_cli(argv, out, sizeof(out), &rc) != 0 || rc != 1) {
 			fprintf(stderr, "FAIL: unreachable daemon should exit 1, rc=%d out=%s\n", rc, out);
@@ -284,79 +284,79 @@ int main(void)
 
 	/* 8. network create, then --network= shows a real assigned ip */
 	{
-		char *net_create_argv[] = { "kanxeoctl",      PORT_ARG,          "network",
+		char *net_create_argv[] = { "thincctl",      PORT_ARG,          "network",
 			                     "create",         "--name=clitest",  "--subnet=172.32.0.0",
 			                     "--prefix=24",    NULL };
-		char *run_argv[] = { "kanxeoctl",   PORT_ARG,        "run",
+		char *run_argv[] = { "thincctl",   PORT_ARG,        "run",
 			              "--name=c3",  "--image=test", "--network=clitest",
 			              "--",         "/bin/net_child", NULL };
-		char *rm_argv[] = { "kanxeoctl", PORT_ARG, "rm", "c3", NULL };
-		char *net_rm_argv[] = { "kanxeoctl", PORT_ARG, "network", "rm", "clitest", NULL };
+		char *rm_argv[] = { "thincctl", PORT_ARG, "rm", "c3", NULL };
+		char *net_rm_argv[] = { "thincctl", PORT_ARG, "network", "rm", "clitest", NULL };
 
 		if (run_cli(net_create_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
-			fprintf(stderr, "FAIL: kanxeoctl network create clitest, rc=%d out=%s\n", rc, out);
+			fprintf(stderr, "FAIL: thincctl network create clitest, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
 		if (run_cli(run_argv, out, sizeof(out), &rc) != 0 || rc != 0 ||
 		    strstr(out, "networks=-") != NULL || strstr(out, "networks=clitest:172.32.0.") == NULL) {
-			fprintf(stderr, "FAIL: kanxeoctl run c3 --network=clitest, rc=%d out=%s\n", rc, out);
+			fprintf(stderr, "FAIL: thincctl run c3 --network=clitest, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
 		if (run_cli(rm_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
-			fprintf(stderr, "FAIL: kanxeoctl rm c3, rc=%d out=%s\n", rc, out);
+			fprintf(stderr, "FAIL: thincctl rm c3, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
 		if (run_cli(net_rm_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
-			fprintf(stderr, "FAIL: kanxeoctl network rm clitest, rc=%d out=%s\n", rc, out);
+			fprintf(stderr, "FAIL: thincctl network rm clitest, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
 	}
 
 	/* 9. repeated --network= flags -> a container attached to two
 	 * networks at once, Phase 7 part 2's multi-homing, driven through
-	 * the real kanxeoctl binary */
+	 * the real thincctl binary */
 	{
-		char *net_create_a_argv[] = { "kanxeoctl",       PORT_ARG,           "network",
+		char *net_create_a_argv[] = { "thincctl",       PORT_ARG,           "network",
 			                       "create",          "--name=climulti1", "--subnet=172.36.0.0",
 			                       "--prefix=24",     NULL };
-		char *net_create_b_argv[] = { "kanxeoctl",       PORT_ARG,           "network",
+		char *net_create_b_argv[] = { "thincctl",       PORT_ARG,           "network",
 			                       "create",          "--name=climulti2", "--subnet=172.37.0.0",
 			                       "--prefix=24",     NULL };
-		char *run_argv[] = { "kanxeoctl",         PORT_ARG,
+		char *run_argv[] = { "thincctl",         PORT_ARG,
 			              "run",               "--name=c4",
 			              "--image=test",      "--network=climulti1",
 			              "--network=climulti2", "--",
 			              "/bin/net_child",    "2",
 			              NULL };
-		char *rm_argv[] = { "kanxeoctl", PORT_ARG, "rm", "c4", NULL };
-		char *net_rm_a_argv[] = { "kanxeoctl", PORT_ARG, "network", "rm", "climulti1", NULL };
-		char *net_rm_b_argv[] = { "kanxeoctl", PORT_ARG, "network", "rm", "climulti2", NULL };
+		char *rm_argv[] = { "thincctl", PORT_ARG, "rm", "c4", NULL };
+		char *net_rm_a_argv[] = { "thincctl", PORT_ARG, "network", "rm", "climulti1", NULL };
+		char *net_rm_b_argv[] = { "thincctl", PORT_ARG, "network", "rm", "climulti2", NULL };
 
 		if (run_cli(net_create_a_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
-			fprintf(stderr, "FAIL: kanxeoctl network create climulti1, rc=%d out=%s\n", rc, out);
+			fprintf(stderr, "FAIL: thincctl network create climulti1, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
 		if (run_cli(net_create_b_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
-			fprintf(stderr, "FAIL: kanxeoctl network create climulti2, rc=%d out=%s\n", rc, out);
+			fprintf(stderr, "FAIL: thincctl network create climulti2, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
 		if (run_cli(run_argv, out, sizeof(out), &rc) != 0 || rc != 0 ||
 		    strstr(out, "networks=climulti1:172.36.0.") == NULL ||
 		    strstr(out, "climulti2:172.37.0.") == NULL) {
-			fprintf(stderr, "FAIL: kanxeoctl run c4 with two --network= flags, rc=%d out=%s\n", rc,
+			fprintf(stderr, "FAIL: thincctl run c4 with two --network= flags, rc=%d out=%s\n", rc,
 			        out);
 			ok = 0;
 		}
 		if (run_cli(rm_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
-			fprintf(stderr, "FAIL: kanxeoctl rm c4, rc=%d out=%s\n", rc, out);
+			fprintf(stderr, "FAIL: thincctl rm c4, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
 		if (run_cli(net_rm_a_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
-			fprintf(stderr, "FAIL: kanxeoctl network rm climulti1, rc=%d out=%s\n", rc, out);
+			fprintf(stderr, "FAIL: thincctl network rm climulti1, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
 		if (run_cli(net_rm_b_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
-			fprintf(stderr, "FAIL: kanxeoctl network rm climulti2, rc=%d out=%s\n", rc, out);
+			fprintf(stderr, "FAIL: thincctl network rm climulti2, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
 	}
@@ -364,36 +364,36 @@ int main(void)
 	/* 10. --ip-forward and --route= are accepted and plumbed through
 	 * to the daemon -- the full 3-container proof that packets are
 	 * actually forwarded already lives in test_daemon_net.c; this just
-	 * confirms the real kanxeoctl binary sends these fields correctly */
+	 * confirms the real thincctl binary sends these fields correctly */
 	{
-		char *net_create_argv[] = { "kanxeoctl",      PORT_ARG,          "network",
+		char *net_create_argv[] = { "thincctl",      PORT_ARG,          "network",
 			                     "create",         "--name=clifwd",   "--subnet=172.38.0.0",
 			                     "--prefix=24",    NULL };
-		char *run_argv[] = { "kanxeoctl",     PORT_ARG,
+		char *run_argv[] = { "thincctl",     PORT_ARG,
 			              "run",           "--name=c5",
 			              "--image=test",  "--network=clifwd",
 			              "--ip-forward",  "--route=10.0.0.0/24:172.38.0.1",
 			              "--",            "/bin/net_child",
 			              NULL };
-		char *rm_argv[] = { "kanxeoctl", PORT_ARG, "rm", "c5", NULL };
-		char *net_rm_argv[] = { "kanxeoctl", PORT_ARG, "network", "rm", "clifwd", NULL };
+		char *rm_argv[] = { "thincctl", PORT_ARG, "rm", "c5", NULL };
+		char *net_rm_argv[] = { "thincctl", PORT_ARG, "network", "rm", "clifwd", NULL };
 
 		if (run_cli(net_create_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
-			fprintf(stderr, "FAIL: kanxeoctl network create clifwd, rc=%d out=%s\n", rc, out);
+			fprintf(stderr, "FAIL: thincctl network create clifwd, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
 		if (run_cli(run_argv, out, sizeof(out), &rc) != 0 || rc != 0 ||
 		    strstr(out, "fwd=yes") == NULL) {
-			fprintf(stderr, "FAIL: kanxeoctl run c5 --ip-forward --route=, rc=%d out=%s\n", rc,
+			fprintf(stderr, "FAIL: thincctl run c5 --ip-forward --route=, rc=%d out=%s\n", rc,
 			        out);
 			ok = 0;
 		}
 		if (run_cli(rm_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
-			fprintf(stderr, "FAIL: kanxeoctl rm c5, rc=%d out=%s\n", rc, out);
+			fprintf(stderr, "FAIL: thincctl rm c5, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
 		if (run_cli(net_rm_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
-			fprintf(stderr, "FAIL: kanxeoctl network rm clifwd, rc=%d out=%s\n", rc, out);
+			fprintf(stderr, "FAIL: thincctl network rm clifwd, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
 	}
@@ -405,27 +405,27 @@ int main(void)
 	 * prefix length once (24 chars, not 25) that a REST-only test
 	 * could never have seen. */
 	{
-		char *set0_argv[] = { "kanxeoctl", PORT_ARG, "rolling-config", "set",
+		char *set0_argv[] = { "thincctl", PORT_ARG, "rolling-config", "set",
 			               "--jitter-window-seconds=0", NULL };
-		char *show_argv[] = { "kanxeoctl", PORT_ARG, "rolling-config", "show", NULL };
-		char *set_back_argv[] = { "kanxeoctl", PORT_ARG, "rolling-config", "set",
+		char *show_argv[] = { "thincctl", PORT_ARG, "rolling-config", "show", NULL };
+		char *set_back_argv[] = { "thincctl", PORT_ARG, "rolling-config", "set",
 			                   "--jitter-window-seconds=60", NULL };
 
 		if (run_cli(set0_argv, out, sizeof(out), &rc) != 0 || rc != 0 ||
 		    strstr(out, "jitter_window_seconds=0") == NULL) {
-			fprintf(stderr, "FAIL: kanxeoctl rolling-config set --jitter-window-seconds=0, rc=%d out=%s\n",
+			fprintf(stderr, "FAIL: thincctl rolling-config set --jitter-window-seconds=0, rc=%d out=%s\n",
 			        rc, out);
 			ok = 0;
 		}
 		if (run_cli(show_argv, out, sizeof(out), &rc) != 0 || rc != 0 ||
 		    strstr(out, "jitter_window_seconds=0") == NULL) {
-			fprintf(stderr, "FAIL: kanxeoctl rolling-config show after set 0, rc=%d out=%s\n",
+			fprintf(stderr, "FAIL: thincctl rolling-config show after set 0, rc=%d out=%s\n",
 			        rc, out);
 			ok = 0;
 		}
 		if (run_cli(set_back_argv, out, sizeof(out), &rc) != 0 || rc != 0 ||
 		    strstr(out, "jitter_window_seconds=60") == NULL) {
-			fprintf(stderr, "FAIL: kanxeoctl rolling-config set --jitter-window-seconds=60, rc=%d out=%s\n",
+			fprintf(stderr, "FAIL: thincctl rolling-config set --jitter-window-seconds=60, rc=%d out=%s\n",
 			        rc, out);
 			ok = 0;
 		}

@@ -1,6 +1,6 @@
 #
 # GRUB 2.14 -- grub-mkrescue/grub-mkimage/grub-install and every real
-# x86_64-efi *.mod file, for building Kanxeo's own installer/update
+# x86_64-efi *.mod file, for building thinC's own installer/update
 # ISOs from source (Part 5, bare-metal-readiness plan) instead of
 # relying on whatever grub tools happen to be on the build host.
 #
@@ -12,7 +12,7 @@
 # there is no second, separately-configured "target" build tree needed,
 # contrary to an earlier, unresearched assumption in this project's own
 # bare-metal-readiness plan. --target=x86_64 --with-platform=efi
-# selects the x86_64-efi module set this platform needs (Kanxeo boots
+# selects the x86_64-efi module set this platform needs (thinC boots
 # via systemd-boot/UEFI only, ADR-0031 -- the BIOS/i386-pc pass real
 # distros also build is deliberately skipped entirely, and its own
 # --image-base sed-patch gotcha with it, since that's a BIOS/EfiEmu-

@@ -92,7 +92,7 @@ void ldap_server_write_json_list(struct json_writer *w);
 /*
  * LDAP user/group CRUD (task #726). Design direction, confirmed
  * directly with the user: the SAME model DNS already uses --
- * dns_record_create()/delete()/find() (daemon/include/dns.h). Kanxeo
+ * dns_record_create()/delete()/find() (daemon/include/dns.h). thinC
  * itself is the durable source of truth for every user/group
  * (persisted here, survives a glauth container being deleted or
  * rebuilt); glauth's own config file is a derived, rebuildable
@@ -127,7 +127,7 @@ void ldap_server_write_json_list(struct json_writer *w);
  * datastore field) via a real, vendored, audited bcrypt implementation
  * (daemon/src/vendor/bcrypt.c + blowfish.c, daemon/include/pwhash.h)
  * -- ADR-0144. Originally this field held a bare unsalted SHA256 hex
- * digest instead (passsha256, via kanxeod's own already-linked OpenSSL
+ * digest instead (passsha256, via thincd's own already-linked OpenSSL
  * libcrypto), a deliberate trade-off at the time specifically to avoid
  * hand-rolling bcrypt from scratch (a "No Hacks" violation
  * reimplementing a security-critical primitive with no audit trail).
@@ -402,7 +402,7 @@ int ldap_gid_alloc(void);
 int ldap_generate_secret(char out[LDAP_PROVISION_SECRET_LEN + 1]);
 
 /* Full re-population of every currently-registered, currently-running
- * LDAP server's own config file from Kanxeo's own record store -- the
+ * LDAP server's own config file from thinC's own record store -- the
  * dns_server_sync_all() analog, called after every user/group
  * mutation AND right after a server registers (see handle_ldap_
  * server_create()) so a fresh/replacement glauth instance starts

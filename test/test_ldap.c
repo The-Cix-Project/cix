@@ -106,7 +106,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/kanxeod";
+	dargv[0] = "build/thincd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -117,8 +117,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/kanxeod", dargv, environ);
-		perror("execve build/kanxeod");
+		execve("build/thincd", dargv, environ);
+		perror("execve build/thincd");
 		_exit(127);
 	}
 	return pid;
@@ -379,7 +379,7 @@ int main(void)
 	 * glauth (this project has no way to verify glauth's own fsnotify
 	 * reload from inside this test suite -- confirmed directly against
 	 * glauth's real source instead, see ldap.h's own header comment);
-	 * what's under test here is entirely kanxeod's own code: the
+	 * what's under test here is entirely thincd's own code: the
 	 * marker-based prefix-preserving rewrite in ldap_write_config_
 	 * file(), read back via the real GET .../files endpoint (ADR-0055)
 	 * exactly the way an operator or a future test with real glauth
@@ -451,9 +451,9 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "POST", "/v1/ldap/users",
 		                       "{\"name\":\"j_doe\",\"uidnumber\":5001,\"primarygroup\":6001,"
-		                       "\"mail\":\"j.doe@kanxeo.internal\",\"password\":\"dogood\","
+		                       "\"mail\":\"j.doe@thinc.internal\",\"password\":\"dogood\","
 		                       "\"ssh_public_key\":\"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest "
-		                       "j_doe@kanxeo\"}",
+		                       "j_doe@thinc\"}",
 		                       &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: create user j_doe, status=%d\n", r.status);
@@ -490,14 +490,14 @@ int main(void)
 		           memmem(r.body, r.body_len, "gidnumber = 6001", strlen("gidnumber = 6001")) ==
 		               NULL ||
 		           memmem(r.body, r.body_len, "name = \"j_doe\"", strlen("name = \"j_doe\"")) == NULL ||
-		           memmem(r.body, r.body_len, "mail = \"j.doe@kanxeo.internal\"",
-		                  strlen("mail = \"j.doe@kanxeo.internal\"")) == NULL) {
+		           memmem(r.body, r.body_len, "mail = \"j.doe@thinc.internal\"",
+		                  strlen("mail = \"j.doe@thinc.internal\"")) == NULL) {
 			fprintf(stderr, "FAIL: rendered config missing expected group/user fields\n");
 			ok = 0;
 		} else if (memmem(r.body, r.body_len,
-		                   "sshkeys = [\"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest j_doe@kanxeo\"]",
+		                   "sshkeys = [\"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest j_doe@thinc\"]",
 		                   strlen("sshkeys = [\"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest "
-		                          "j_doe@kanxeo\"]")) == NULL) {
+		                          "j_doe@thinc\"]")) == NULL) {
 			fprintf(stderr,
 			        "FAIL: rendered config missing glauth's real sshkeys = [...] array "
 			        "(ADR-0144 task #838)\n");
@@ -530,7 +530,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
 		                       "{\"uidnumber\":5001,\"primarygroup\":6001,"
-		                       "\"mail\":\"jd@kanxeo.internal\"}",
+		                       "\"mail\":\"jd@thinc.internal\"}",
 		                       &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: update user j_doe, status=%d\n", r.status);
@@ -548,8 +548,8 @@ int main(void)
 		} else {
 			char passbcrypt_after[128];
 
-			if (memmem(r.body, r.body_len, "mail = \"jd@kanxeo.internal\"",
-			           strlen("mail = \"jd@kanxeo.internal\"")) == NULL) {
+			if (memmem(r.body, r.body_len, "mail = \"jd@thinc.internal\"",
+			           strlen("mail = \"jd@thinc.internal\"")) == NULL) {
 				fprintf(stderr, "FAIL: update lost the mail change\n");
 				ok = 0;
 			} else if (extract_toml_string_value(r.body, r.body_len, "passbcrypt", passbcrypt_after,
@@ -579,7 +579,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
 		                       "{\"uidnumber\":5001,\"primarygroup\":6001,"
-		                       "\"mail\":\"jd@kanxeo.internal\",\"secondary_groups\":[6099]}",
+		                       "\"mail\":\"jd@thinc.internal\",\"secondary_groups\":[6099]}",
 		                       &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: update user j_doe with secondary_groups, status=%d\n", r.status);
@@ -632,7 +632,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
 		                       "{\"uidnumber\":5001,\"primarygroup\":6001,"
-		                       "\"mail\":\"jd@kanxeo.internal\"}",
+		                       "\"mail\":\"jd@thinc.internal\"}",
 		                       &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: clear secondary_groups, status=%d\n", r.status);
@@ -655,7 +655,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
 		                       "{\"uidnumber\":5001,\"primarygroup\":6001,"
-		                       "\"mail\":\"jd@kanxeo.internal\",\"can_search\":true}",
+		                       "\"mail\":\"jd@thinc.internal\",\"can_search\":true}",
 		                       &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: update user j_doe with can_search, status=%d\n", r.status);
@@ -690,7 +690,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "PUT", "/v1/ldap/users/j_doe",
 		                       "{\"uidnumber\":5001,\"primarygroup\":6001,"
-		                       "\"mail\":\"jd@kanxeo.internal\"}",
+		                       "\"mail\":\"jd@thinc.internal\"}",
 		                       &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: clear can_search, status=%d\n", r.status);
@@ -765,7 +765,7 @@ int main(void)
 	 * itself, owner set to the container's name, a "search"
 	 * capability granted by default (glauth defaults to deny-all),
 	 * and a freshly generated secret delivered into the container's
-	 * own filesystem at /etc/kanxeo-ldap/bind.secret -- read directly
+	 * own filesystem at /etc/thinc-ldap/bind.secret -- read directly
 	 * via /proc/<pid>/root/, the same privilege pki_issue's own test
 	 * already established (ADR-0013), not just assumed from a 201.
 	 */
@@ -798,7 +798,7 @@ int main(void)
 
 		/* 22. a real provisioned container -- default ldap_user
 		 * (the container's own name), default ldap_uid (allocated),
-		 * default ldap_secret_dir (/etc/kanxeo-ldap) */
+		 * default ldap_secret_dir (/etc/thinc-ldap) */
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"provtest\",\"image\":\"ldaptest\","
@@ -842,7 +842,7 @@ int main(void)
 			char secret[128] = { 0 };
 			size_t n = 0;
 
-			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/kanxeo-ldap/bind.secret",
+			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/thinc-ldap/bind.secret",
 			         provtest_pid);
 			if (stat(proc_path, &st) != 0 || (st.st_mode & 0777) != 0600) {
 				fprintf(stderr, "FAIL: delivered bind.secret missing or not chmod 0600 (%s)\n",

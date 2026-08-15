@@ -84,7 +84,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/kanxeod";
+	dargv[0] = "build/thincd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -95,8 +95,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/kanxeod", dargv, environ);
-		perror("execve build/kanxeod");
+		execve("build/thincd", dargv, environ);
+		perror("execve build/thincd");
 		_exit(127);
 	}
 	return pid;
@@ -516,7 +516,7 @@ int main(void)
 
 	/*
 	 * 4/5. Phase 12 part 7's "net" bus discovery must never list a
-	 * kernel-created software interface (bridges, veths, kanxeo's own
+	 * kernel-created software interface (bridges, veths, thinc's own
 	 * managed networks) -- only real, physically-backed hardware. A
 	 * real veth pair (genuinely kernel-backed, not a mock) proves this
 	 * at the REST layer, not just device.c's own unit-level
@@ -532,8 +532,8 @@ int main(void)
 	 */
 	{
 		int fd = rtnl_open();
-		const char *veth_a = "kanxeo-ddtest-a";
-		const char *veth_b = "kanxeo-ddtest-b";
+		const char *veth_a = "thinc-ddtest-a";
+		const char *veth_b = "thinc-ddtest-b";
 
 		if (fd < 0) {
 			fprintf(stderr, "FAIL: rtnl_open for veth scenario\n");

@@ -12,19 +12,19 @@ NETPLANE_SRCS := netplane/src/rtnetlink.c
 
 .PHONY: all clean
 
-all: $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/test_container_pty $(BUILD)/pty_child $(BUILD)/kanxeod $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/kanxeoctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/net_connect $(BUILD)/test_daemon_net $(BUILD)/test_networks $(BUILD)/test_network_interfaces $(BUILD)/test_images $(BUILD)/test_container_restart $(BUILD)/test_container_files $(BUILD)/tcp_listen_child $(BUILD)/test_dns $(BUILD)/test_ntp $(BUILD)/test_ldap $(BUILD)/test_pki $(BUILD)/test_pkg $(BUILD)/mkbootroot $(BUILD)/test_mkbootroot_firmware $(BUILD)/test_boot $(BUILD)/test_boot_ab $(BUILD)/kanxeo-install $(BUILD)/kanxeo-recover $(BUILD)/test_dual_console $(BUILD)/dual_console_child $(BUILD)/mkinstalleriso $(BUILD)/test_installer $(BUILD)/test_devices $(BUILD)/dev_child $(BUILD)/test_daemon_devices $(BUILD)/test_system_update $(BUILD)/test_boot_update $(BUILD)/test_system_backup $(BUILD)/test_console_shell $(BUILD)/mktoolchainimage $(BUILD)/test_console_pki_bootstrap $(BUILD)/test_console_exec $(BUILD)/test_container_lifecycle $(BUILD)/output_child $(BUILD)/stats_child $(BUILD)/test_container_stats $(BUILD)/test_disk_quota $(BUILD)/test_diskpart $(BUILD)/test_sysctl $(BUILD)/test_kmod $(BUILD)/test_kmod_build $(BUILD)/test_routes $(BUILD)/test_daemon_bind_ip $(BUILD)/test_pkg_build_log $(BUILD)/test_pkg_concurrent_stress $(BUILD)/test_pkg_sync $(BUILD)/test_pkg_cache $(BUILD)/test_image_recipe $(BUILD)/test_container_recipe $(BUILD)/test_rolling_restart $(BUILD)/syslog_recv_child $(BUILD)/test_syslogfwd $(BUILD)/test_hostproc $(BUILD)/test_tls_throttle $(BUILD)/test_https_chain $(BUILD)/test_layout_upgrade $(BUILD)/test_treecopy $(BUILD)/test_storage_placement $(BUILD)/test_backup_config $(BUILD)/test_container_storage_migrate $(BUILD)/test_container_dns_servers $(BUILD)/test_hostauth $(BUILD)/test_device_hotplug
+all: $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_overlay $(BUILD)/overlay_child $(BUILD)/test_container_pty $(BUILD)/pty_child $(BUILD)/thincd $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/thincctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/net_connect $(BUILD)/test_daemon_net $(BUILD)/test_networks $(BUILD)/test_network_interfaces $(BUILD)/test_images $(BUILD)/test_container_restart $(BUILD)/test_container_files $(BUILD)/tcp_listen_child $(BUILD)/test_dns $(BUILD)/test_ntp $(BUILD)/test_ldap $(BUILD)/test_pki $(BUILD)/test_pkg $(BUILD)/mkbootroot $(BUILD)/test_mkbootroot_firmware $(BUILD)/test_boot $(BUILD)/test_boot_ab $(BUILD)/thinc-install $(BUILD)/thinc-recover $(BUILD)/test_dual_console $(BUILD)/dual_console_child $(BUILD)/mkinstalleriso $(BUILD)/test_installer $(BUILD)/test_devices $(BUILD)/dev_child $(BUILD)/test_daemon_devices $(BUILD)/test_system_update $(BUILD)/test_boot_update $(BUILD)/test_system_backup $(BUILD)/test_console_shell $(BUILD)/mktoolchainimage $(BUILD)/test_console_pki_bootstrap $(BUILD)/test_console_exec $(BUILD)/test_container_lifecycle $(BUILD)/output_child $(BUILD)/stats_child $(BUILD)/test_container_stats $(BUILD)/test_disk_quota $(BUILD)/test_diskpart $(BUILD)/test_sysctl $(BUILD)/test_kmod $(BUILD)/test_kmod_build $(BUILD)/test_routes $(BUILD)/test_daemon_bind_ip $(BUILD)/test_pkg_build_log $(BUILD)/test_pkg_concurrent_stress $(BUILD)/test_pkg_sync $(BUILD)/test_pkg_cache $(BUILD)/test_image_recipe $(BUILD)/test_container_recipe $(BUILD)/test_rolling_restart $(BUILD)/syslog_recv_child $(BUILD)/test_syslogfwd $(BUILD)/test_hostproc $(BUILD)/test_tls_throttle $(BUILD)/test_https_chain $(BUILD)/test_layout_upgrade $(BUILD)/test_treecopy $(BUILD)/test_storage_placement $(BUILD)/test_backup_config $(BUILD)/test_container_storage_migrate $(BUILD)/test_container_dns_servers $(BUILD)/test_hostauth $(BUILD)/test_device_hotplug
 
 $(BUILD):
 	mkdir -p $(BUILD)
 
 # Regenerated on every `make` invocation (.PHONY, not a real file dependency)
-# so kanxeod always reports the commit it was actually built from -- a stale
+# so thincd always reports the commit it was actually built from -- a stale
 # version string would be worse than none, and this project has no other
 # build-system layer (Makefile shelling out to git here is the one place
 # that happens; the actual C compilation stays TCC-only per CLAUDE.md).
 .PHONY: $(BUILD)/version.h
 $(BUILD)/version.h: | $(BUILD)
-	@printf '#ifndef KANXEO_VERSION_H\n#define KANXEO_VERSION_H\n#define KANXEO_BUILD_VERSION "%s"\n#define KANXEO_BUILD_TIME "%s"\n#endif\n' \
+	@printf '#ifndef THINC_VERSION_H\n#define THINC_VERSION_H\n#define THINC_BUILD_VERSION "%s"\n#define THINC_BUILD_TIME "%s"\n#endif\n' \
 		"$$(git -C $(CURDIR) describe --tags --always --dirty 2>/dev/null || echo unknown)" \
 		"$$(date -u +%Y-%m-%dT%H:%M:%SZ)" > $@
 
@@ -49,7 +49,7 @@ $(BUILD)/test_container_pty: test/test_container_pty.c test/test_image_fixture.c
 $(BUILD)/pty_child: test/pty_child.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(BUILD)/kanxeod: daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) test/test_image_fixture.c $(BUILD)/version.h | $(BUILD)
+$(BUILD)/thincd: daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) test/test_image_fixture.c $(BUILD)/version.h | $(BUILD)
 	$(CC) $(DAEMON_CFLAGS) daemon/src/main.c $(DAEMON_SRCS) $(LIB_SRCS) test/test_image_fixture.c -lssl -lcrypto -o $@
 
 $(BUILD)/test_daemon: test/test_daemon.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
@@ -58,7 +58,7 @@ $(BUILD)/test_daemon: test/test_daemon.c test/test_image_fixture.c $(CLIENT_SRCS
 $(BUILD)/daemon_child: test/daemon_child.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
-$(BUILD)/kanxeoctl: cli/src/main.c client/src/console.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/thincctl: cli/src/main.c client/src/console.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_cli: test/test_cli.c test/test_image_fixture.c $(CLIENT_SRCS) | $(BUILD)
@@ -250,10 +250,10 @@ $(BUILD)/test_console_pki_bootstrap: test/test_console_pki_bootstrap.c test/test
 $(BUILD)/test_console_pkg_bootstrap: test/test_console_pkg_bootstrap.c test/test_disk_image.c test/test_image_fixture.c | $(BUILD)
 	$(CC) $(CFLAGS) -Itest $^ -o $@
 
-$(BUILD)/kanxeo-install: image/src/kanxeo-install.c image/src/dual_console.c | $(BUILD)
+$(BUILD)/thinc-install: image/src/thinc-install.c image/src/dual_console.c | $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/kanxeo-recover: image/src/kanxeo-recover.c image/src/dual_console.c daemon/src/json.c | $(BUILD)
+$(BUILD)/thinc-recover: image/src/thinc-recover.c image/src/dual_console.c daemon/src/json.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include $^ -o $@
 
 $(BUILD)/test_dual_console: test/test_dual_console.c image/src/dual_console.c | $(BUILD)

@@ -2,7 +2,7 @@
 # iputils -- ping/arping/tracepath, real Linux network diagnostics for
 # the jump box package set. The already-published "iputils" 20250605
 # recipe (meson-based) fails to build against this box's own real
-# kanxeo-builder image -- confirmed directly (build failed exit
+# thinc-builder image -- confirmed directly (build failed exit
 # status 1): meson/ninja are not staged anywhere in this project's
 # toolchain (no recipe for either exists), so meson's own configure
 # step can never run here. Rather than adding meson+ninja+python's own

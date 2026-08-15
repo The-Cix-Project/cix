@@ -451,7 +451,7 @@ int test_image_fixture_stage_toolchain(const char *image_root)
 
 int test_data_dir_create(char *out_path, size_t out_size)
 {
-	char tmpl[] = "/tmp/kanxeo_test_data_XXXXXX";
+	char tmpl[] = "/tmp/thinc_test_data_XXXXXX";
 
 	if (mkdtemp(tmpl) == NULL) {
 		perror("mkdtemp");

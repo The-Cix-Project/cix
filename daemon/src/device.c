@@ -521,7 +521,7 @@ static void enumerate_pci_one(const char *base, const char *address, struct disc
 /* --- net bus: real, physically-backed network interfaces only --
  * every netdev the kernel creates itself (bridges, veths, dummy,
  * loopback, tun/tap, ...) resolves under /sys/devices/virtual/net/,
- * confirmed live -- the reliable way to tell kanxeo's own managed
+ * confirmed live -- the reliable way to tell thinc's own managed
  * bridges/veths (netplane/src/rtnetlink.c) and any other purely
  * software interface apart from something a container could
  * meaningfully take real ownership of. Assignment itself (moving one
@@ -544,7 +544,7 @@ static int enumerate_net_one(const char *ifname, struct discovered_device *e)
 		return -1;
 	resolved[n] = '\0';
 	if (strstr(resolved, "/virtual/net/") != NULL)
-		return -1; /* kanxeo's own bridges/veths, or any other software netdev */
+		return -1; /* thinc's own bridges/veths, or any other software netdev */
 
 	memset(e, 0, sizeof(*e));
 	snprintf(e->bus, sizeof(e->bus), "net");
@@ -571,7 +571,7 @@ static int enumerate_net_one(const char *ifname, struct discovered_device *e)
 	 * check needed.
 	 *
 	 * The same visibility-is-exclusivity idea also covers enslavement
-	 * to a Kanxeo-managed bridge (network_attach_interface(),
+	 * to a thinC-managed bridge (network_attach_interface(),
 	 * daemon/src/network.c): unlike a netns move, an enslaved
 	 * interface stays visible right here under its own name -- but
 	 * the kernel exposes a "master" symlink under its sysfs directory
@@ -742,7 +742,7 @@ static void enumerate_gpu(struct discovered_device *out, int cap, int *count)
 	 * its render node for ROCm compute to work at all; granting it via
 	 * any one gpu:<idx> group exposes KFD's queue-submission path host-
 	 * wide -- a real, known ROCm/KFD architectural property on a multi-
-	 * GPU host, not a Kanxeo-specific gap. See ADR-0029.
+	 * GPU host, not a thinC-specific gap. See ADR-0029.
 	 */
 	if (seen_count > 0) {
 		char attr[PATH_MAX];

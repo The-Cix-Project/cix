@@ -23,7 +23,7 @@ pkg_depends=""
 # running uname -r (a bare `depmod` with no -F/version argument defaults
 # to that instead, which will not match this kernel version at all).
 #
-# ADR-0159 Phase B: an optional KANXEO_KMOD_EXTRA_SYMBOLS environment
+# ADR-0159 Phase B: an optional THINC_KMOD_EXTRA_SYMBOLS environment
 # variable (a space-separated list of bare CONFIG_* names, set only by
 # POST /v1/system/kmod-build's own daemon-side pkg_hostbuild_start()
 # call -- every other caller of this same recipe, e.g. an ordinary
@@ -53,14 +53,14 @@ pkg_build() {
 	# convention), so bash.recipe now provides this one standard path
 	# any real build-toolchain image needs.
 	cp /build/extra/qemu-part1.config .config
-	if [ -n "$KANXEO_KMOD_EXTRA_SYMBOLS" ]; then
+	if [ -n "$THINC_KMOD_EXTRA_SYMBOLS" ]; then
 		: > /build/extra/kmod-extra.config
-		for sym in $KANXEO_KMOD_EXTRA_SYMBOLS; do
+		for sym in $THINC_KMOD_EXTRA_SYMBOLS; do
 			echo "${sym}=m" >> /build/extra/kmod-extra.config
 		done
 	fi
 	make ARCH=x86_64 SHELL=/usr/bin/bash allnoconfig
-	if [ -n "$KANXEO_KMOD_EXTRA_SYMBOLS" ]; then
+	if [ -n "$THINC_KMOD_EXTRA_SYMBOLS" ]; then
 		bash ./scripts/kconfig/merge_config.sh -m .config /build/extra/qemu-part1.config \
 			/build/extra/kmod-extra.config
 	else

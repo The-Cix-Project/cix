@@ -31,7 +31,7 @@
 }
 
 /*
- * Manual override for the header's theme toggle (app.js, "kanxeo-theme"
+ * Manual override for the header's theme toggle (app.js, "thinc-theme"
  * localStorage key) -- an attribute selector on :root outranks the bare
  * :root a plain @media query targets, in both directions, regardless of
  * source order, so these two blocks always win over prefers-color-scheme

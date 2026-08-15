@@ -42,7 +42,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/kanxeod";
+	dargv[0] = "build/thincd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -53,8 +53,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/kanxeod", dargv, environ);
-		perror("execve build/kanxeod");
+		execve("build/thincd", dargv, environ);
+		perror("execve build/thincd");
 		_exit(127);
 	}
 	return pid;
@@ -293,7 +293,7 @@ int main(void)
 
 	/* 8. Error paths. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (kx_client_request(&client, "GET", "/v1/system/sysctl/kanxeo.test.nosuchkey.at.all",
+	if (ok && (kx_client_request(&client, "GET", "/v1/system/sysctl/thinc.test.nosuchkey.at.all",
 	                              NULL, &r) != 0 ||
 	           r.status != 404)) {
 		fprintf(stderr, "FAIL: GET nonexistent key: expected 404, got %d\n", r.status);

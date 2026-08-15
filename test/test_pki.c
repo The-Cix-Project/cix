@@ -69,7 +69,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/kanxeod";
+	dargv[0] = "build/thincd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -80,8 +80,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/kanxeod", dargv, environ);
-		perror("execve build/kanxeod");
+		execve("build/thincd", dargv, environ);
+		perror("execve build/thincd");
 		_exit(127);
 	}
 	return pid;
@@ -248,7 +248,7 @@ int main(void)
 	kx_response_free(&r);
 
 	if (ca_cert_pem[0] != '\0') {
-		char scratch_dir[] = "/tmp/kanxeo_test_pki_XXXXXX";
+		char scratch_dir[] = "/tmp/thinc_test_pki_XXXXXX";
 		char ca_path[128], leaf_path[128];
 
 		if (mkdtemp(scratch_dir) == NULL) {
@@ -438,7 +438,7 @@ int main(void)
 	 * 6b. Phase 9 part 2: automatic per-container cert issuance +
 	 * delivery. A container created with pki_issue:true gets its own
 	 * cert (owner == its own name) delivered into its own filesystem
-	 * at /etc/kanxeo-tls/{tls.crt,tls.key} -- read directly via
+	 * at /etc/thinc-tls/{tls.crt,tls.key} -- read directly via
 	 * /proc/<pid>/root/, the same privilege the daemon itself uses
 	 * (ADR-0013), not just assumed from a 201 response.
 	 */
@@ -471,7 +471,7 @@ int main(void)
 			char proc_path[160];
 			struct stat st;
 
-			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/kanxeo-tls/tls.key",
+			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/thinc-tls/tls.key",
 			         webtls_pid);
 			if (stat(proc_path, &st) != 0 || (st.st_mode & 0777) != 0600) {
 				fprintf(stderr,
@@ -480,7 +480,7 @@ int main(void)
 				ok = 0;
 			}
 
-			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/kanxeo-tls/tls.crt",
+			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/thinc-tls/tls.crt",
 			         webtls_pid);
 			{
 				FILE *f = fopen(proc_path, "r");
@@ -498,7 +498,7 @@ int main(void)
 				}
 
 				if (n > 0 && ca_cert_pem[0] != '\0') {
-					char scratch_dir2[] = "/tmp/kanxeo_test_pki2_XXXXXX";
+					char scratch_dir2[] = "/tmp/thinc_test_pki2_XXXXXX";
 
 					if (mkdtemp(scratch_dir2) == NULL) {
 						fprintf(stderr, "FAIL: mkdtemp (2)\n");
@@ -660,7 +660,7 @@ int main(void)
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "POST", "/v1/pki/intermediate", "{}", &r) != 0 ||
 		    r.status != 201 ||
-		    !str_eq(json_str_field(r.json, "subject"), "CN = Kanxeo Intermediate CA") ||
+		    !str_eq(json_str_field(r.json, "subject"), "CN = thinC Intermediate CA") ||
 		    json_str_field(r.json, "cert_pem") == NULL) {
 			fprintf(stderr, "FAIL: POST /v1/pki/intermediate, status=%d\n", r.status);
 			ok = 0;
@@ -680,7 +680,7 @@ int main(void)
 		kx_response_free(&r);
 
 		if (intermediate_cert_pem[0] != '\0' && ca_cert_pem[0] != '\0') {
-			char scratch_dir[] = "/tmp/kanxeo_test_pki_intermediate_XXXXXX";
+			char scratch_dir[] = "/tmp/thinc_test_pki_intermediate_XXXXXX";
 			char root_path[160], intermediate_path[160], chainleaf_path[160];
 
 			if (mkdtemp(scratch_dir) == NULL) {
@@ -785,7 +785,7 @@ int main(void)
 	{
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "GET", "/v1/system/site", NULL, &r) != 0 ||
-		    r.status != 200 || !str_eq(json_str_field(r.json, "instance_name"), "kanxeo") ||
+		    r.status != 200 || !str_eq(json_str_field(r.json, "instance_name"), "thinc") ||
 		    !str_eq(json_str_field(r.json, "domain_suffix"), "internal")) {
 			fprintf(stderr, "FAIL: GET /v1/system/site defaults, status=%d\n", r.status);
 			ok = 0;
@@ -794,10 +794,10 @@ int main(void)
 
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "PUT", "/v1/system/site",
-		                       "{\"instance_name\":\"kanxeo1\",\"site_name\":\"lab1\","
+		                       "{\"instance_name\":\"thinc1\",\"site_name\":\"lab1\","
 		                       "\"domain_suffix\":\"corp.internal\"}",
 		                       &r) != 0 ||
-		    r.status != 200 || !str_eq(json_str_field(r.json, "instance_name"), "kanxeo1") ||
+		    r.status != 200 || !str_eq(json_str_field(r.json, "instance_name"), "thinc1") ||
 		    !str_eq(json_str_field(r.json, "site_name"), "lab1") ||
 		    !str_eq(json_str_field(r.json, "domain_suffix"), "corp.internal")) {
 			fprintf(stderr, "FAIL: PUT /v1/system/site, status=%d\n", r.status);
@@ -807,7 +807,7 @@ int main(void)
 
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "GET", "/v1/system/site", NULL, &r) != 0 ||
-		    r.status != 200 || !str_eq(json_str_field(r.json, "instance_name"), "kanxeo1") ||
+		    r.status != 200 || !str_eq(json_str_field(r.json, "instance_name"), "thinc1") ||
 		    !str_eq(json_str_field(r.json, "site_name"), "lab1")) {
 			fprintf(stderr, "FAIL: GET /v1/system/site after PUT did not stick, status=%d\n",
 			        r.status);
@@ -839,13 +839,13 @@ int main(void)
 				if (sans != NULL && sans->type == JSON_ARRAY) {
 					for (i = 0; i < sans->u.array.count; i++) {
 						if (str_eq(json_as_string(sans->u.array.items[i]),
-						           "kanxeo1.lab1.corp.internal"))
+						           "thinc1.lab1.corp.internal"))
 							has_fqdn = 1;
 					}
 				}
 				if (!has_fqdn) {
 					fprintf(stderr,
-					        "FAIL: host cert SAN missing kanxeo1.lab1.corp.internal\n");
+					        "FAIL: host cert SAN missing thinc1.lab1.corp.internal\n");
 					ok = 0;
 				}
 				if (!str_eq(json_str_field(r.json, "owner"), "__host")) {
@@ -863,7 +863,7 @@ int main(void)
 			 * new SAN, new serial, not left stale. */
 			memset(&r, 0, sizeof(r));
 			if (kx_client_request(&client, "PUT", "/v1/system/site",
-			                       "{\"instance_name\":\"kanxeo2\",\"site_name\":\"lab1\","
+			                       "{\"instance_name\":\"thinc2\",\"site_name\":\"lab1\","
 			                       "\"domain_suffix\":\"corp.internal\"}",
 			                       &r) != 0 ||
 			    r.status != 200) {
@@ -885,7 +885,7 @@ int main(void)
 				if (sans != NULL && sans->type == JSON_ARRAY) {
 					for (i = 0; i < sans->u.array.count; i++) {
 						if (str_eq(json_as_string(sans->u.array.items[i]),
-						           "kanxeo2.lab1.corp.internal"))
+						           "thinc2.lab1.corp.internal"))
 							has_new_fqdn = 1;
 					}
 				}
@@ -908,7 +908,7 @@ int main(void)
 			 * expects below. */
 			memset(&r, 0, sizeof(r));
 			kx_client_request(&client, "PUT", "/v1/system/site",
-			                   "{\"instance_name\":\"kanxeo1\",\"site_name\":\"lab1\","
+			                   "{\"instance_name\":\"thinc1\",\"site_name\":\"lab1\","
 			                   "\"domain_suffix\":\"corp.internal\"}",
 			                   &r);
 			kx_response_free(&r);
@@ -916,7 +916,7 @@ int main(void)
 
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "PUT", "/v1/system/site",
-		                       "{\"instance_name\":\"kanxeo1\",\"site_name\":\"lab1\","
+		                       "{\"instance_name\":\"thinc1\",\"site_name\":\"lab1\","
 		                       "\"domain_suffix\":\"bad/suffix\"}",
 		                       &r) != 0 ||
 		    r.status != 400) {
@@ -1005,7 +1005,7 @@ int main(void)
 		 * cause. */
 		memset(&r, 0, sizeof(r));
 		kx_client_request(&client, "PUT", "/v1/system/site",
-		                   "{\"instance_name\":\"kanxeo1\",\"site_name\":\"\","
+		                   "{\"instance_name\":\"thinc1\",\"site_name\":\"\","
 		                   "\"domain_suffix\":\"corp.internal\"}",
 		                   &r);
 		kx_response_free(&r);
@@ -1066,7 +1066,7 @@ int main(void)
 			char proc_path[160];
 			FILE *f;
 
-			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/kanxeo-tls/tls.crt",
+			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/thinc-tls/tls.crt",
 			         resetlive_pid);
 			f = fopen(proc_path, "r");
 			if (f != NULL) {
@@ -1149,7 +1149,7 @@ int main(void)
 			 * the NEW root -- its actual signer is gone, not just
 			 * relabeled. */
 			if (old_root_cert_pem[0] != '\0' && old_leaf_cert_pem[0] != '\0') {
-				char scratch_dir[] = "/tmp/kanxeo_test_pki_reset_XXXXXX";
+				char scratch_dir[] = "/tmp/thinc_test_pki_reset_XXXXXX";
 
 				if (mkdtemp(scratch_dir) != NULL) {
 					char new_root_path[160], old_leaf_path[160];
@@ -1203,7 +1203,7 @@ int main(void)
 			char new_delivered_pem[8192] = { 0 };
 			FILE *f;
 
-			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/kanxeo-tls/tls.crt",
+			snprintf(proc_path, sizeof(proc_path), "/proc/%d/root/etc/thinc-tls/tls.crt",
 			         resetlive_pid);
 			f = fopen(proc_path, "r");
 			if (f != NULL) {
@@ -1252,10 +1252,10 @@ int main(void)
 			if (test_image_fixture_read_current_version(image_dir, version, sizeof(version)) != 0)
 				version[0] = '\0';
 			snprintf(bundle_path, sizeof(bundle_path),
-			         "%s/%s/rootfs/etc/ssl/certs/kanxeo-ca-bundle.pem", image_dir, version);
+			         "%s/%s/rootfs/etc/ssl/certs/thinc-ca-bundle.pem", image_dir, version);
 		}
 		if (stat(bundle_path, &st) != 0 || st.st_size == 0) {
-			fprintf(stderr, "FAIL: kanxeo-ca-bundle.pem missing or empty at %s\n", bundle_path);
+			fprintf(stderr, "FAIL: thinc-ca-bundle.pem missing or empty at %s\n", bundle_path);
 			ok = 0;
 		} else {
 			char host_cert_pem[8192] = { 0 };
@@ -1273,7 +1273,7 @@ int main(void)
 				        "FAIL: could not fetch host cert_pem for trust bundle check\n");
 				ok = 0;
 			} else {
-				char scratch_dir[] = "/tmp/kanxeo_test_pki_trust_XXXXXX";
+				char scratch_dir[] = "/tmp/thinc_test_pki_trust_XXXXXX";
 
 				if (mkdtemp(scratch_dir) == NULL) {
 					fprintf(stderr, "FAIL: mkdtemp (trust bundle scratch)\n");

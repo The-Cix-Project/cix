@@ -4,7 +4,7 @@
 # header comment: gitea shells out to a real `git` binary at runtime
 # for its actual repository operations) but equally useful standalone.
 #
-# Read by kanxeod's own non-executing metadata scanner (pkg_name=/
+# Read by thincd's own non-executing metadata scanner (pkg_name=/
 # pkg_version=/pkg_source=/pkg_sha256=/pkg_depends=, daemon/src/pkg.c's
 # parse_recipe()) AND sourced as a real POSIX shell script inside the
 # isolated, network-less build container (". /build/recipe.sh" --
@@ -54,7 +54,7 @@ pkg_build() {
 	make -j"$(nproc)" NO_RUST=1 NO_GETTEXT=1 NO_TCLTK=1
 }
 
-# PKG_DESTDIR is set by kanxeod itself (daemon/src/pkg.c) -- everything
+# PKG_DESTDIR is set by thincd itself (daemon/src/pkg.c) -- everything
 # written under it is what actually gets merged into the target image
 # once this build container exits successfully. Lands the real `git`
 # binary at usr/bin/git plus its own libexec/git-core/* helper binaries

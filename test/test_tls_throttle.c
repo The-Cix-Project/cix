@@ -16,7 +16,7 @@
  * expires on its own after block_seconds; a clean handshake resets an
  * IP's failure count; the enabled=false toggle genuinely
  * disables enforcement; and -- the one real, non-obvious correctness
- * requirement this feature has -- loopback (127.0.0.1, kanxeoctl's own
+ * requirement this feature has -- loopback (127.0.0.1, thincctl's own
  * default --host=) is never throttled, so a hostile source sharing a
  * box with the daemon's own local admin access can never lock it out.
  *
@@ -60,7 +60,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/kanxeod";
+	dargv[0] = "build/thincd";
 	dargv[1] = "--port=7663";
 	dargv[2] = "--bind=0.0.0.0";
 	dargv[3] = data_dir_arg;
@@ -72,8 +72,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/kanxeod", dargv, environ);
-		perror("execve build/kanxeod");
+		execve("build/thincd", dargv, environ);
+		perror("execve build/thincd");
 		_exit(127);
 	}
 	return pid;
@@ -399,7 +399,7 @@ int main(void)
 	 * (which must still be exactly 3, checked in step 7 below). */
 	memset(&r, 0, sizeof(r));
 	if (ok && (kx_client_request(&client, "GET",
-	                              "/v1/system/logs?source=kanxeod&regex=" ATTACKER_IP "&tail=10", NULL, &r) !=
+	                              "/v1/system/logs?source=thincd&regex=" ATTACKER_IP "&tail=10", NULL, &r) !=
 	               0 ||
 	           r.status != 200)) {
 		fprintf(stderr, "FAIL: GET logs regex=" ATTACKER_IP ", status=%d\n", r.status);

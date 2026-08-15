@@ -221,7 +221,7 @@ void registry_mark_exited(struct registry_entry *entry)
 		}
 
 		if (status != 0) {
-			logstore_write("kanxeod", "error", "container %s exited (status=%d): %s",
+			logstore_write("thincd", "error", "container %s exited (status=%d): %s",
 			                entry->name, status, entry->last_exit_reason);
 		}
 	}

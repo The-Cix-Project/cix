@@ -5,7 +5,7 @@
 # listed among GRUB 2.14's own upstream "hard requirements" (confirmed
 # directly against the real GRUB source tree's own INSTALL file), used
 # by GRUB's own build to generate/update its own translated strings.
-# Not needed by any Kanxeo container image at runtime -- staged onto
+# Not needed by any thinC container image at runtime -- staged onto
 # the build/toolchain image only, the same "build-tool, not a runtime
 # dependency" role m4/bison/flex/autoconf/etc. already have here.
 #

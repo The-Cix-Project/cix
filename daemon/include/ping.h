@@ -11,7 +11,7 @@
  * images don't have one, and every network primitive this daemon
  * needs already talks to the kernel directly -- rtnetlink for
  * routes/addresses, this for reachability). Raw ICMP sockets need
- * CAP_NET_RAW, which kanxeod already has as root on a real
+ * CAP_NET_RAW, which thincd already has as root on a real
  * --init-mode host; no new privilege requirement.
  *
  * v1 single-job constraint, matching every other async job in this
@@ -30,7 +30,7 @@ enum ping_error {
 	PING_ERR_BUSY,          /* a ping is already in flight */
 	PING_ERR_SOCKET_FAILED  /* socket()/sendto() failed -- typically
 	                          * EPERM (no CAP_NET_RAW, e.g. a dev/test
-	                          * kanxeod not running as root) or a real
+	                          * thincd not running as root) or a real
 	                          * routing failure on send */
 };
 

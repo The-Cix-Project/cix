@@ -1,7 +1,7 @@
 /*
  * Logging epic Part 2 end-to-end test (ADR-0127): proves the syslog
  * forward-target subsystem (daemon/src/syslogfwd.c) over real HTTP
- * against a real kanxeod subprocess --
+ * against a real thincd subprocess --
  *   - POST/GET/DELETE /v1/syslog/targets (registration bookkeeping)
  *     mirrors test_ntp.c's own coverage of the analogous /v1/ntp/servers
  *     resource: 404 for a nonexistent container, 404 for a real but
@@ -97,7 +97,7 @@ int main(void)
 	}
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/kanxeod";
+	dargv[0] = "build/thincd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -109,8 +109,8 @@ int main(void)
 		return 1;
 	}
 	if (daemon_pid == 0) {
-		execve("build/kanxeod", dargv, environ);
-		perror("execve build/kanxeod");
+		execve("build/thincd", dargv, environ);
+		perror("execve build/thincd");
 		_exit(127);
 	}
 
@@ -314,10 +314,10 @@ int main(void)
 					if (str_contains(msg, "syslog-recv-child-got:")) {
 						/* Real RFC 3164 shape: HOSTNAME is the sending
 						 * container's own name (slsend), TAG is
-						 * "kanxeod", and the forwarded message text
+						 * "thincd", and the forwarded message text
 						 * (output_child's own known stdout line) is
 						 * present verbatim. */
-						if (!str_contains(msg, "slsend") || !str_contains(msg, "kanxeod:") ||
+						if (!str_contains(msg, "slsend") || !str_contains(msg, "thincd:") ||
 						    !str_contains(msg, "capture-test-stdout-line")) {
 							fprintf(stderr,
 							        "FAIL: slrecv captured a datagram but it's malformed: %s\n",

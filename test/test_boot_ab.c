@@ -1,7 +1,7 @@
 /*
  * Phase 11 part 2 demonstrable test: proves the actual A/B rollback
  * mechanism works, not just that it was designed (docs/adr/0014). Slot A
- * boots successfully (kernel, kanxeod, everything) but is started with
+ * boots successfully (kernel, thincd, everything) but is started with
  * --simulate-unhealthy-boot, so it deliberately never performs the
  * confirming loader-entry rename -- the real failure class this
  * mechanism exists for (a boot that comes up but is broken), not a
@@ -30,8 +30,8 @@
 #include <unistd.h>
 
 #define MKBOOTROOT_BIN "build/mkbootroot"
-#define KANXEOD_BIN "build/kanxeod"
-#define KANXEOCTL_BIN "build/kanxeoctl"
+#define THINCD_BIN "build/thincd"
+#define THINCCTL_BIN "build/thincctl"
 #define BZIMAGE_PATH "build/bzImage"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
 #define MDIR_BIN "/usr/bin/mdir"
@@ -44,13 +44,13 @@
 #define SECTOR_SIZE 512
 
 #define BOOT_TIMEOUT_SECONDS 120
-#define SUCCESS_MARKER "kanxeod listening on"
+#define SUCCESS_MARKER "thincd listening on"
 #define PANIC_MARKER "Kernel panic"
 #define SLOT_A_TRIES 3
 #define MAX_ATTEMPTS 5
 
 /* Builds the ESP: systemd-boot, the kernel, a glob default (both slots
- * share the "kanxeo-" name prefix), and two loader entries -- slot A
+ * share the "thinc-" name prefix), and two loader entries -- slot A
  * with a tries-remaining counter and --simulate-unhealthy-boot, slot B
  * with no counter (already the confirmed-good fallback). */
 static int build_esp_image(const char *esp_img, const char *workdir)
@@ -70,17 +70,17 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 		return -1;
 	if (esp_mcopy_in(esp_img, SYSTEMD_BOOT_EFI, "::/EFI/BOOT/BOOTX64.EFI") != 0)
 		return -1;
-	/* Per-slot kernel files (ADR-0032), not one shared /kanxeo-bzImage --
+	/* Per-slot kernel files (ADR-0032), not one shared /thinc-bzImage --
 	 * matches what the real installer now stages (both slots pre-
 	 * staged identically), so each loader entry below can reference
 	 * its own slot's file. */
-	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/kanxeo-bzImage-a") != 0)
+	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/thinc-bzImage-a") != 0)
 		return -1;
-	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/kanxeo-bzImage-b") != 0)
+	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/thinc-bzImage-b") != 0)
 		return -1;
 
 	snprintf(loader_conf_path, sizeof(loader_conf_path), "%s/loader.conf", workdir);
-	if (write_text_file(loader_conf_path, "default kanxeo-*\ntimeout 0\n") != 0)
+	if (write_text_file(loader_conf_path, "default thinc-*\ntimeout 0\n") != 0)
 		return -1;
 	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/loader.conf") != 0)
 		return -1;
@@ -96,27 +96,27 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 	 * the higher version.
 	 */
 	snprintf(entry, sizeof(entry),
-	         "title Kanxeo (A)\n"
-	         "sort-key kanxeo\n"
+	         "title thinC (A)\n"
+	         "sort-key thinc\n"
 	         "version 2\n"
-	         "linux /kanxeo-bzImage-a\n"
-	         "options console=ttyS0 root=/dev/vda2 rw init=/bin/kanxeod -- "
+	         "linux /thinc-bzImage-a\n"
+	         "options console=ttyS0 root=/dev/vda2 rw init=/bin/thincd -- "
 	         "--init-mode --slot=a --simulate-unhealthy-boot\n");
 	if (write_text_file(loader_conf_path, entry) != 0)
 		return -1;
-	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/entries/kanxeo-a-tmp") != 0)
+	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/entries/thinc-a-tmp") != 0)
 		return -1;
 
 	snprintf(entry, sizeof(entry),
-	         "title Kanxeo (B)\n"
-	         "sort-key kanxeo\n"
+	         "title thinC (B)\n"
+	         "sort-key thinc\n"
 	         "version 1\n"
-	         "linux /kanxeo-bzImage-b\n"
-	         "options console=ttyS0 root=/dev/vda3 rw init=/bin/kanxeod -- "
+	         "linux /thinc-bzImage-b\n"
+	         "options console=ttyS0 root=/dev/vda3 rw init=/bin/thincd -- "
 	         "--init-mode --slot=b\n");
 	if (write_text_file(loader_conf_path, entry) != 0)
 		return -1;
-	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/entries/kanxeo-b.conf") != 0)
+	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/entries/thinc-b.conf") != 0)
 		return -1;
 
 	return 0;
@@ -137,7 +137,7 @@ static int list_loader_entries(const char *disk_img, long esp_start_sec, char *o
 
 int main(void)
 {
-	char workdir[] = "/tmp/kanxeo_test_boot_ab_XXXXXX";
+	char workdir[] = "/tmp/thinc_test_boot_ab_XXXXXX";
 	char stage_dir[600];
 	char root_squashfs[600];
 	char disk_img[600];
@@ -168,7 +168,7 @@ int main(void)
 	 * header comment for why. */
 	{
 		char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN, stage_dir,
-			                     (char *)KANXEOD_BIN, (char *)KANXEOCTL_BIN, "web", root_squashfs,
+			                     (char *)THINCD_BIN, (char *)THINCCTL_BIN, "web", root_squashfs,
 			                     "", /* no real GPU firmware needed for a boot test */
 			                     "", /* no kernel modules needed for a boot test */
 			                     "", /* no kmod tools needed for a boot test */
@@ -240,9 +240,9 @@ int main(void)
 	{
 		char counted_name[64];
 
-		snprintf(counted_name, sizeof(counted_name), "::/loader/entries/kanxeo-a+%d.conf",
+		snprintf(counted_name, sizeof(counted_name), "::/loader/entries/thinc-a+%d.conf",
 		         SLOT_A_TRIES);
-		if (esp_mren(esp_img, "::/loader/entries/kanxeo-a-tmp", counted_name) != 0)
+		if (esp_mren(esp_img, "::/loader/entries/thinc-a-tmp", counted_name) != 0)
 			return 1;
 	}
 	if (write_at_offset(disk_img, esp_start_sec * SECTOR_SIZE, esp_img) != 0)

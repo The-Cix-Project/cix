@@ -4,7 +4,7 @@
 # pkg_bootstrap_from_toolchain() import path). mksquashfs/sqfstar/
 # sqfscat come along for free from the same build (one shared object
 # file set) and are staged too, though nothing in this project's own
-# code currently shells out to them -- kanxeod does its own squashfs
+# code currently shells out to them -- thincd does its own squashfs
 # assembly via image/src/mkbootroot.c/mktoolchainimage.c's own
 # execve("/usr/bin/mksquashfs", ...) calls, which is a real, separate
 # staged binary already, not this recipe's concern.

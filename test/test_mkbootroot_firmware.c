@@ -22,11 +22,11 @@
 
 extern char **environ;
 
-#define STAGE_DIR "/tmp/kanxeo_test_mkbootroot_stage"
-#define FW_SRC_DIR "/tmp/kanxeo_test_mkbootroot_fwsrc"
-#define MODULES_SRC_DIR "/tmp/kanxeo_test_mkbootroot_modsrc"
-#define KMOD_BIN_SRC_DIR "/tmp/kanxeo_test_mkbootroot_kmodbinsrc"
-#define OUT_SQUASHFS "/tmp/kanxeo_test_mkbootroot_out.squashfs"
+#define STAGE_DIR "/tmp/thinc_test_mkbootroot_stage"
+#define FW_SRC_DIR "/tmp/thinc_test_mkbootroot_fwsrc"
+#define MODULES_SRC_DIR "/tmp/thinc_test_mkbootroot_modsrc"
+#define KMOD_BIN_SRC_DIR "/tmp/thinc_test_mkbootroot_kmodbinsrc"
+#define OUT_SQUASHFS "/tmp/thinc_test_mkbootroot_out.squashfs"
 #define MKBOOTROOT_BIN "build/mkbootroot"
 
 static int run_mkbootroot2(const char *firmware_dir, const char *modules_dir,
@@ -35,7 +35,7 @@ static int run_mkbootroot2(const char *firmware_dir, const char *modules_dir,
 	pid_t pid;
 	int status;
 	char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN,   (char *)STAGE_DIR,
-		                     (char *)"build/kanxeod",   (char *)"build/kanxeoctl",
+		                     (char *)"build/thincd",   (char *)"build/thincctl",
 		                     (char *)"web",             (char *)OUT_SQUASHFS,
 		                     (char *)firmware_dir,      (char *)modules_dir,
 		                     (char *)kmod_bin_dir,      (char *)"",
@@ -96,7 +96,7 @@ int main(void)
 	/* 1. firmware_dir="" (every real call site's own value) is a
 	 * complete no-op for firmware specifically -- lib/ itself already
 	 * exists regardless (test_image_fixture_build()/_add_lib() already
-	 * stage ld.so/libc.so.6/libtinfo.so.6 there for kanxeod's own
+	 * stage ld.so/libc.so.6/libtinfo.so.6 there for thincd's own
 	 * needs, nothing to do with firmware), so lib/firmware -- only ever
 	 * created by this new staging path -- is the real marker. */
 	if (run_mkbootroot("") != 0) {
@@ -170,7 +170,7 @@ int main(void)
 	 * module tree recursively (nested by kernel/drivers/..., proving
 	 * test_image_fixture_copy_dir_recursive() actually walks it, unlike
 	 * the flat copy_dir_files() firmware_dir above uses) and the kmod
-	 * tool names into usr/bin (merged alongside the kanxeod/kanxeoctl
+	 * tool names into usr/bin (merged alongside the thincd/thincctl
 	 * already staged there, proving the flat copy correctly dereferences
 	 * "modprobe -> kmod"-style symlinks into a real, independently
 	 * readable file rather than skipping them). */

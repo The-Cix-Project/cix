@@ -91,7 +91,7 @@ extern char **environ;
 #define DEFAULT_PORT 80
 #define DEFAULT_BIND "127.0.0.1"
 #define DEFAULT_WEB_ROOT "web"
-#define DEFAULT_BASE_DIR "/var/lib/kanxeo"
+#define DEFAULT_BASE_DIR "/var/lib/thinc"
 /*
  * Runtime-overridable via --data-dir=PATH (default DEFAULT_BASE_DIR,
  * unchanged from every prior release). Every subsystem already takes
@@ -104,7 +104,7 @@ extern char **environ;
  * Exists because this project's own test suite has zero isolation
  * from a live daemon sharing the same default path -- confirmed the
  * hard way (twice, same session): running the test suite against a
- * host that also has a real kanxeod on default paths silently wipes
+ * host that also has a real thincd on default paths silently wipes
  * that daemon's container/network/DNS/PKI state and any image content
  * package installs had built, because every test's own reset_state()
  * resets these exact same files. --data-dir= lets tests point
@@ -173,16 +173,16 @@ static char QUOTAMAP_STATE_PATH[PATH_MAX];
  * Where POST /v1/system/iso (ADR-0064) looks for the Secure Boot
  * signing key pair and writes its own output -- both new with this
  * mechanism, since building a *new* installer ISO server-side is the
- * first time kanxeod itself, rather than a dev machine's own manual
+ * first time thincd itself, rather than a dev machine's own manual
  * mkinstalleriso invocation, has ever needed either. SIGNING_KEYS_DIR
  * is deliberately operator-populated out of band (never fetched,
- * generated, or copied here by kanxeod itself, and never staged onto
+ * generated, or copied here by thincd itself, and never staged onto
  * any container image or target-disk install) -- the same real
  * security posture image/keys/ already has in this repo: a release-
  * signing private key must never propagate onto every deployed box,
  * only the specific build/release instance actually cutting installer
  * media. A box with nothing at SIGNING_KEYS_DIR simply can't serve
- * this endpoint, exactly like `pkg hostbuild kanxeo` can't complete
+ * this endpoint, exactly like `pkg hostbuild thinc` can't complete
  * without a real git token -- a real, environment-specific
  * precondition, not a gap.
  */
@@ -200,7 +200,7 @@ static char PKGBUILD_TOOLCHAIN_FETCH_PATH[PATH_MAX];
 static char SWAP_DIR[PATH_MAX];
 static char SWAP_FILE_PATH[PATH_MAX];
 static char SWAP_STATE_PATH[PATH_MAX];
-/* Consolidated log store (kernel dmesg + kanxeod's own diagnostics +
+/* Consolidated log store (kernel dmesg + thincd's own diagnostics +
  * a per-request audit trail, ADR-0070) -- its own subdirectory,
  * matching every other subsystem's "own directory under the base
  * data dir" convention (PKI_DIR/PKG_DIR/SWAP_DIR above). */
@@ -597,11 +597,11 @@ static void migrate_diskroles_out_of_state_dir(void)
 #define ESP_DIR "/boot"
 #define ESP_LOADER_ENTRIES_DIR ESP_DIR "/loader/entries"
 /*
- * Partitions 2/3 in kanxeo-install's own layout (image/src/kanxeo-
+ * Partitions 2/3 in thinc-install's own layout (image/src/thinc-
  * install.c's auto_partition()), same fixed QEMU virtio-blk layout/
  * posture as ESP_DEVICE above -- a GPT-partition-name-based lookup
  * (find_partition_device() already exists for this purpose, but only
- * in kanxeo-install.c, installer-only code the daemon doesn't link)
+ * in thinc-install.c, installer-only code the daemon doesn't link)
  * can wait for part 4's real hardware, the same deferral ESP_DEVICE's
  * own comment and ADR-0018's Consequences section already state twice
  * for other partitions. root=%s2/%s3 in populate_esp()'s own loader
@@ -610,7 +610,7 @@ static void migrate_diskroles_out_of_state_dir(void)
 #define ROOT_A_DEVICE "/dev/vda2"
 #define ROOT_B_DEVICE "/dev/vda3"
 /*
- * Partition 4 in kanxeo-install's own layout (image/src/kanxeo-install.c)
+ * Partition 4 in thinc-install's own layout (image/src/thinc-install.c)
  * -- absent on parts 1/2's own throwaway 2/3-partition test disks, so
  * mounting it is deliberately non-fatal (boot_init()'s only non-fatal
  * mount): its absence just means "not a real installed system," not a
@@ -736,7 +736,7 @@ static int resolve_backing_device(const char *path, char *out_device, size_t out
  * has no mechanism to surface to an operator anyway. Returns 0 on
  * success, -1 (errno set by quotactl(2) -- ENOTSUP/EOPNOTSUPP if the
  * backing filesystem doesn't have the project-quota feature enabled at
- * all, exactly what a filesystem kanxeo-install.c didn't create via
+ * all, exactly what a filesystem thinc-install.c didn't create via
  * mkfs.ext4 -O quota -E quotatype=prjquota reports) otherwise.
  */
 static int set_disk_quota(const char *base_path, uint32_t projid, long long quota_bytes)
@@ -909,7 +909,7 @@ struct console_exec_session {
  * than the bare `return 0` that, as PID 1, the kernel treats as "init
  * exited" and panics on) or the new /v1/system/{shutdown,reboot}
  * endpoints below. Only ever acted on when running --init-mode (real
- * PID 1) -- see main()'s own post-loop handling; a dev/test kanxeod
+ * PID 1) -- see main()'s own post-loop handling; a dev/test thincd
  * (no --init-mode, e.g. every test/*.c invocation) just exits normally
  * regardless of this value, exactly as it always has.
  */
@@ -1005,7 +1005,7 @@ static void console_session_teardown(struct console_exec_session *sess)
  *
  * g_port joins them for the same reason (Phase 19): spawn_console_shell()
  * and its respawn-timer path need the real listening port to hand
- * kanxeoctl a --port= that actually reaches this daemon, and both are
+ * thincctl a --port= that actually reaches this daemon, and both are
  * called from places that don't otherwise have it in scope.
  */
 static const char *g_slot;
@@ -1018,16 +1018,16 @@ static char g_bind_addr_buf[INET_ADDRSTRLEN];
 static int g_port;
 
 /*
- * Real freshness tracking for the async kanxeo bootroot assembly
- * (spawn_kanxeo_bootroot_assembly()/handle_bootroot_assemble_event(),
- * ADR-0057) -- closes task #737's own gap: `pkg hostbuild kanxeo
- * --deploy` used to treat "kanxeod-root.squashfs exists" as "this
+ * Real freshness tracking for the async thinc bootroot assembly
+ * (spawn_thinc_bootroot_assembly()/handle_bootroot_assemble_event(),
+ * ADR-0057) -- closes task #737's own gap: `pkg hostbuild thinc
+ * --deploy` used to treat "thincd-root.squashfs exists" as "this
  * hostbuild round's own artifact is ready," but that file is a leftover
  * from whichever assembly last succeeded, not necessarily the one this
  * round's own hostbuild triggered -- a stale file from an earlier round
  * would be silently redeployed while the real new assembly was still
  * running. g_bootroot_assembly_started increments once per attempt
- * (right before the fork in spawn_kanxeo_bootroot_assembly());
+ * (right before the fork in spawn_thinc_bootroot_assembly());
  * g_bootroot_assembly_completed is only ever set to that attempt's own
  * generation number on a *real, confirmed success*
  * (handle_bootroot_assemble_event(), WIFEXITED && WEXITSTATUS==0) --
@@ -1043,7 +1043,7 @@ static int g_port;
  * recently-assembled boot image," the same subject that endpoint already
  * owns; keeping it there (rather than folding it into pkg.c's own
  * generic pkg_get_one() JSON) keeps pkg.c fully agnostic to what any
- * hostbuild name *means*, exactly the separation ADR-0057's own "kanxeo"
+ * hostbuild name *means*, exactly the separation ADR-0057's own "thinc"
  * special-case comment in this file already established.
  */
 static long g_bootroot_assembly_started;
@@ -1076,7 +1076,7 @@ static int mount_or_fail(const char *source, const char *target, const char *fst
 }
 
 /*
- * Only reached with --init-mode, i.e. kanxeod running as PID 1 on a bare
+ * Only reached with --init-mode, i.e. thincd running as PID 1 on a bare
  * kernel boot with no initramfs (Phase 11) -- nothing else has mounted
  * /proc, /sys, or cgroup2 yet. devtmpfs is populated by the kernel itself
  * (CONFIG_DEVTMPFS_MOUNT) before init ever runs, so /dev needs no mount
@@ -1084,7 +1084,7 @@ static int mount_or_fail(const char *source, const char *target, const char *fst
  * container's own /proc (src/mountns.c) -- one already-correct flag set,
  * not a second one invented.
  *
- * BASE_DIR is the real kanxeo-containers partition (CONTAINERS_DEVICE) --
+ * BASE_DIR is the real thinc-containers partition (CONTAINERS_DEVICE) --
  * everything a running daemon persists (images/, containers/,
  * networks.json, dns_records.json, pki_certs.json, pkg_installed.json)
  * genuinely survives a real reboot, not just a plain daemon restart
@@ -1099,8 +1099,8 @@ static int mount_or_fail(const char *source, const char *target, const char *fst
  * ADR-0018.
  */
 
-/* Parses the simple key=value net.conf kanxeo-install writes to the
- * config partition (image/src/kanxeo-install.c's populate step) --
+/* Parses the simple key=value net.conf thinc-install writes to the
+ * config partition (image/src/thinc-install.c's populate step) --
  * ip=/prefix=/gateway=/interface=, one per line. interface= (Part 0.5)
  * is the physical NIC to attach to the management network -- an explicit,
  * operator-chosen GRUB field rather than find_nic()'s old "whichever
@@ -1261,7 +1261,7 @@ static void load_configured_modules(void)
  *
  * Two genuinely different concepts here, not to be confused (ADR-0058,
  * ADR-0067): the management network's own address_be -- an address
- * living directly on its bridge, now doing double duty as kanxeod's
+ * living directly on its bridge, now doing double duty as thincd's
  * own bind address -- versus net.conf's own "gateway=" field, the
  * box's *upstream* default route (the next-hop router this box's own
  * outbound traffic egresses through), which keeps its existing,
@@ -1375,7 +1375,7 @@ static int boot_init(void)
 	if (mount_or_fail("cgroup2", "/sys/fs/cgroup", "cgroup2", 0) != 0)
 		return -1;
 	/*
-	 * task #764: kanxeod's own exec_into_container() (daemon/src/exec.c,
+	 * task #764: thincd's own exec_into_container() (daemon/src/exec.c,
 	 * the console/exec feature, ADR pending #426) calls posix_openpt()
 	 * and then open()s the slave device ptsname_r() hands back --
 	 * that slave path only resolves to a real device node once the
@@ -1385,17 +1385,17 @@ static int boot_init(void)
 	 * this gap so easy to miss: only the SECOND step (opening the
 	 * slave) ever fails, with a generic ENOENT that gave no hint it
 	 * was devpts-shaped until task #764's own diagnostic surfacing
-	 * made "No such file or directory" visible at all. kanxeo-install.c's
+	 * made "No such file or directory" visible at all. thinc-install.c's
 	 * own early_mounts() has mounted devpts since ADR-0042/task #406 --
 	 * but that binary only ever runs during one-time disk installation,
-	 * never during kanxeod's own real boot_init() (--init-mode, a bare
+	 * never during thincd's own real boot_init() (--init-mode, a bare
 	 * kernel with no initramfs) on an already-installed box, which is
 	 * exactly why every console/exec attempt against 192.168.15.95
 	 * failed with a bare 500 while the same code path passed cleanly
 	 * in every dev-sandbox/QEMU test harness run (those inherit an
 	 * already-mounted /dev/pts from their own outer environment,
 	 * never exercising this gap). Same mount options as
-	 * kanxeo-install.c's own copy, for the same reason (ptmxmode=0666
+	 * thinc-install.c's own copy, for the same reason (ptmxmode=0666
 	 * -- devpts's own ptmx alias needs to be world-writable for
 	 * posix_openpt() to work as any non-root exec'd process would
 	 * expect, even though everything in this project currently execs
@@ -1449,7 +1449,7 @@ static int boot_init(void)
 	 * doesn't run until well after this mount needs the file to
 	 * already exist. Bind-mounted onto /etc/resolv.conf (a real,
 	 * empty placeholder file already staged in the control-plane
-	 * squashfs, mkbootroot.c) so kanxeod's own curl/openssl/etc.
+	 * squashfs, mkbootroot.c) so thincd's own curl/openssl/etc.
 	 * subprocesses -- and every future host-level tool -- resolve
 	 * against whatever an operator sets via PUT /v1/system/resolv,
 	 * with zero further wiring needed per tool. Best-effort: a
@@ -1502,8 +1502,8 @@ static int boot_init(void)
 
 /*
  * Renames whichever loader entry on the ESP matches this boot's slot
- * (kanxeo-<slot>[+<tries-left>[-<tries-done>]].conf) down to the bare
- * kanxeo-<slot>.conf, stripping systemd-boot's own Automatic Boot
+ * (thinc-<slot>[+<tries-left>[-<tries-done>]].conf) down to the bare
+ * thinc-<slot>.conf, stripping systemd-boot's own Automatic Boot
  * Assessment counter suffix -- a plain rename(2), not a bootctl
  * subprocess call, the same hand-rolled-daemon posture ADR-0007/
  * ADR-0014 already established. Called only once this boot has actually
@@ -1521,7 +1521,7 @@ static int confirm_boot(const char *slot)
 	char newpath[PATH_MAX];
 	int found = 0;
 
-	snprintf(prefix, sizeof(prefix), "kanxeo-%s", slot);
+	snprintf(prefix, sizeof(prefix), "thinc-%s", slot);
 	prefix_len = strlen(prefix);
 
 	d = opendir(ESP_LOADER_ENTRIES_DIR);
@@ -1543,7 +1543,7 @@ static int confirm_boot(const char *slot)
 		return -1;
 	}
 
-	snprintf(newpath, sizeof(newpath), "%s/kanxeo-%s.conf", ESP_LOADER_ENTRIES_DIR, slot);
+	snprintf(newpath, sizeof(newpath), "%s/thinc-%s.conf", ESP_LOADER_ENTRIES_DIR, slot);
 	if (strcmp(oldpath, newpath) == 0)
 		return 0; /* already confirmed (no counter suffix) -- nothing to do */
 	if (rename(oldpath, newpath) != 0) {
@@ -1647,7 +1647,7 @@ static int network_error_to_status(enum network_error err, const char **out_msg)
 		*out_msg = "ifname.vlan_id would not fit in IFNAMSIZ";
 		return 400;
 	case NETWORK_ERR_IS_MANAGEMENT:
-		*out_msg = "refused: this network carries kanxeod's own bind address -- "
+		*out_msg = "refused: this network carries thincd's own bind address -- "
 		           "repoint the management network first (see /v1/system/daemon-config)";
 		return 409;
 	case NETWORK_ERR_CREATE_FAILED:
@@ -1693,9 +1693,9 @@ static void handle_system_boot(int fd)
 	jw_init(&w);
 	jw_obj_open(&w);
 	jw_key(&w, "build_version");
-	jw_str(&w, KANXEO_BUILD_VERSION);
+	jw_str(&w, THINC_BUILD_VERSION);
 	jw_key(&w, "build_time");
-	jw_str(&w, KANXEO_BUILD_TIME);
+	jw_str(&w, THINC_BUILD_TIME);
 	jw_key(&w, "slot");
 	if (g_slot != NULL)
 		jw_str(&w, g_slot);
@@ -1707,12 +1707,12 @@ static void handle_system_boot(int fd)
 	else
 		jw_null(&w);
 	/*
-	 * Real freshness signal for `pkg hostbuild kanxeo --deploy`
+	 * Real freshness signal for `pkg hostbuild thinc --deploy`
 	 * (task #737, ADR-0058-follow-on comment in
 	 * g_bootroot_assembly_started's own doc comment above): a client
 	 * that captured bootroot_assembly_completed_generation *before*
 	 * triggering a new hostbuild round can wait here for it to advance
-	 * past that baseline rather than trusting "kanxeod-root.squashfs
+	 * past that baseline rather than trusting "thincd-root.squashfs
 	 * exists" (which is also true of a stale file left by an earlier,
 	 * unrelated round).
 	 */
@@ -1765,7 +1765,7 @@ static void handle_reboot(int fd)
 
 /*
  * Tries-left counter for a freshly-staged update's own loader entry --
- * matches kanxeo-install.c's own ROOT_A_TRIES value (3), the same
+ * matches thinc-install.c's own ROOT_A_TRIES value (3), the same
  * Automatic Boot Assessment convention applied uniformly to any fresh
  * slot, not just the very first install.
  */
@@ -1773,7 +1773,7 @@ static void handle_reboot(int fd)
 
 /*
  * Writes the whole content of src_path onto dst device_path, raw --
- * mirrors kanxeo-install.c's own copy_file()/write_whole_file_to_
+ * mirrors thinc-install.c's own copy_file()/write_whole_file_to_
  * device() shape (plain open/read/write loop, no byte-offset math,
  * since device_path is a real partition block device here too, not
  * test/test_disk_image.c's flat-file-at-an-offset case). device_path
@@ -1889,7 +1889,7 @@ static int write_file_to_esp(const char *src_path, const char *esp_path)
  * image_path/kernel_path are local paths the operator has already
  * transferred the new files to (e.g. scp) -- no upload/streaming HTTP
  * machinery is added here; see ADR-0031 for why. Independent and both
- * optional (at least one required): a kanxeod security fix needs no
+ * optional (at least one required): a thincd security fix needs no
  * new kernel, and new hardware support needs no new root.
  *
  * Deliberately does NOT reboot -- update and reboot stay two separate,
@@ -1937,8 +1937,8 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		snprintf(out_errmsg, out_errmsg_size, "unrecognized --slot=, expected \"a\" or \"b\"");
 		return 400;
 	}
-	snprintf(kernel_dest, sizeof(kernel_dest), "%s/kanxeo-bzImage-%s", ESP_DIR, inactive_slot);
-	snprintf(active_kernel_path, sizeof(active_kernel_path), "%s/kanxeo-bzImage-%s", ESP_DIR, g_slot);
+	snprintf(kernel_dest, sizeof(kernel_dest), "%s/thinc-bzImage-%s", ESP_DIR, inactive_slot);
+	snprintf(active_kernel_path, sizeof(active_kernel_path), "%s/thinc-bzImage-%s", ESP_DIR, g_slot);
 
 	root = json_parse(body, body_len);
 	if (root == NULL) {
@@ -2041,21 +2041,21 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		return 500;
 	}
 
-	snprintf(entry_path, sizeof(entry_path), "%s/kanxeo-%s+%d.conf", ESP_LOADER_ENTRIES_DIR,
+	snprintf(entry_path, sizeof(entry_path), "%s/thinc-%s+%d.conf", ESP_LOADER_ENTRIES_DIR,
 	         inactive_slot, ROOT_UPDATE_TRIES);
 	/* version is this boot's own current timestamp -- always higher
 	 * than whatever's already on disk, so systemd-boot sorts this
 	 * entry first, with no need to parse the existing entry's own
 	 * version back out first. linux always references this slot's own
-	 * kanxeo-bzImage-<slot> (pre-staged for both slots at install
+	 * thinc-bzImage-<slot> (pre-staged for both slots at install
 	 * time, ADR-0032) -- whether or not kernel_path was given this
 	 * call, that file already exists and is exactly what should boot. */
 	snprintf(entry_conf, sizeof(entry_conf),
-	         "title Kanxeo (%s)\n"
-	         "sort-key kanxeo\n"
+	         "title thinC (%s)\n"
+	         "sort-key thinc\n"
 	         "version %ld\n"
-	         "linux /kanxeo-bzImage-%s\n"
-	         "options console=tty0 console=ttyS0 root=%s rw init=/bin/kanxeod -- --init-mode "
+	         "linux /thinc-bzImage-%s\n"
+	         "options console=tty0 console=ttyS0 root=%s rw init=/bin/thincd -- --init-mode "
 	         "--slot=%s --bind=%s\n",
 	         inactive_slot[0] == 'a' ? "A" : "B", (long)time(NULL), inactive_slot, device,
 	         inactive_slot, g_bind_addr);
@@ -2898,9 +2898,9 @@ static int create_listen_socket(const char *bind_addr, int port)
 }
 
 /*
- * Live listen-socket rebind (Part 0.5) -- kanxeod is real PID 1 under
- * --init-mode (confirmed: image/src/kanxeo-install.c's loader entry
- * uses "init=/bin/kanxeod"), so there is no "restart the daemon" to
+ * Live listen-socket rebind (Part 0.5) -- thincd is real PID 1 under
+ * --init-mode (confirmed: image/src/thinc-install.c's loader entry
+ * uses "init=/bin/thincd"), so there is no "restart the daemon" to
  * pick up a new bind address or port; this closes the old listening
  * socket and opens a new one in-process instead. Already-accept()ed
  * connections (a separate fd from the listening socket) are completely
@@ -2946,7 +2946,7 @@ static int rebind_listener(const char *new_bind_addr, int new_port)
 	g_bind_addr = g_bind_addr_buf;
 	g_port = new_port;
 
-	printf("kanxeod rebound listener to %s:%d\n", new_bind_addr, new_port);
+	printf("thincd rebound listener to %s:%d\n", new_bind_addr, new_port);
 	fflush(stdout);
 	return 0;
 }
@@ -2956,7 +2956,7 @@ static int rebind_listener(const char *new_bind_addr, int new_port)
  * accounting(), swap_init()'s own swapon() retry) -- a test/dev
  * invocation, or a kernel with /dev/kmsg unreadable for any other
  * reason, simply never gets kernel-source log entries; every other
- * source (kanxeod's own diagnostics, the audit trail) is unaffected. */
+ * source (thincd's own diagnostics, the audit trail) is unaffected. */
 static void start_kmsg_watch(void)
 {
 	struct kx_epoll_event ev;
@@ -3093,7 +3093,7 @@ static void reconcile_pending_device_attachments(void)
 			/* Logged once per losing claim, not once per contending
 			 * pair -- a real operator-visible signal without becoming
 			 * noisy for a device with many contenders. */
-			logstore_write("kanxeod", "warning",
+			logstore_write("thincd", "warning",
 			                "container %s: hotplugged device %s matches \"%s\" but another "
 			                "running container also claims it -- granted to neither",
 			                claims[i].e->name, claims[i].resolved_id, claims[i].ref);
@@ -3106,11 +3106,11 @@ static void reconcile_pending_device_attachments(void)
 
 		if (live_attach_one_device(claims[i].e, dd) == 0) {
 			registry_clear_pending_device(claims[i].e, claims[i].ref);
-			logstore_write("kanxeod", "info",
+			logstore_write("thincd", "info",
 			                "container %s: hotplug live-attached device %s (matched \"%s\")",
 			                claims[i].e->name, dd->id, claims[i].ref);
 		} else {
-			logstore_write("kanxeod", "error",
+			logstore_write("thincd", "error",
 			                "container %s: hotplug live-attach of %s (matched \"%s\") failed: %s",
 			                claims[i].e->name, dd->id, claims[i].ref, strerror(errno));
 		}
@@ -3154,13 +3154,13 @@ static void reconcile_live_device_revocations(void)
 
 			snprintf(id_copy, sizeof(id_copy), "%s", e->devices[j].id);
 			if (registry_device_live_detach(e, id_copy, &removed) != 0) {
-				logstore_write("kanxeod", "error",
+				logstore_write("thincd", "error",
 				                "container %s: failed to revoke unplugged device %s: %s",
 				                e->name, id_copy, strerror(errno));
 				continue;
 			}
 			live_unlink_device(e->handle.pid, removed.dev_path);
-			logstore_write("kanxeod", "info",
+			logstore_write("thincd", "info",
 			                "container %s: revoked grant for unplugged device %s", e->name,
 			                id_copy);
 		}
@@ -3242,7 +3242,7 @@ static int start_http_listener(const char *bind_addr, int port)
 		g_listener_conn.fd = -1;
 		return -1;
 	}
-	printf("kanxeod listening on %s:%d\n", bind_addr, port);
+	printf("thincd listening on %s:%d\n", bind_addr, port);
 	fflush(stdout);
 	return 0;
 }
@@ -3289,7 +3289,7 @@ static int start_https_listener(const char *bind_addr, int port)
 		g_https_listener_conn.fd = -1;
 		return -1;
 	}
-	printf("kanxeod listening (https) on %s:%d\n", bind_addr, port);
+	printf("thincd listening (https) on %s:%d\n", bind_addr, port);
 	fflush(stdout);
 	return 0;
 }
@@ -3339,7 +3339,7 @@ static int rebind_https_listener(const char *new_bind_addr, int new_port)
 	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, old_fd, NULL);
 	close(old_fd);
 
-	printf("kanxeod rebound https listener to %s:%d\n", new_bind_addr, new_port);
+	printf("thincd rebound https listener to %s:%d\n", new_bind_addr, new_port);
 	fflush(stdout);
 	return 0;
 }
@@ -3426,7 +3426,7 @@ static void handle_bind_ip_cleanup_timer_event(struct conn *cc)
 	}
 	/* Best-effort, same as before this became a deferred timer: a
 	 * failure here leaves a harmless leftover address on the bridge,
-	 * never persisted or bound to by kanxeod itself. */
+	 * never persisted or bound to by thincd itself. */
 
 	free(cc);
 }
@@ -4686,7 +4686,7 @@ static void handle_kmodconfig_list(int fd)
 }
 
 /*
- * GET/PUT /v1/system/daemon-config (Part 0.5): kanxeod's own listen
+ * GET/PUT /v1/system/daemon-config (Part 0.5): thincd's own listen
  * port and which network is currently its management one -- a
  * dedicated resource, distinct from generic network CRUD, since
  * changing either has a real side effect (a live listen-socket
@@ -4814,7 +4814,7 @@ static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
 		if (!mgmt_target->has_address) {
 			json_free(root);
 			respond_error(fd, 400, "Bad Request",
-			              "network has no address for kanxeod to bind to");
+			              "network has no address for thincd to bind to");
 			return;
 		}
 		{
@@ -5076,7 +5076,7 @@ static void handle_route_list(int fd)
  * gateway is optional (omitted means a direct/on-link route). Scoped
  * to exactly what that primitive supports -- no RTA_OIF/interface
  * binding, no route replace semantics beyond what NLM_F_CREATE
- * already gives it. Not a persisted Kanxeo resource (see
+ * already gives it. Not a persisted thinC resource (see
  * network_write_routes_json()'s own comment) -- nothing here is
  * remembered across a reboot, same as this whole endpoint family. */
 static void handle_route_add(int fd, const char *body, size_t body_len)
@@ -6092,7 +6092,7 @@ static void handle_container_output_event(struct conn *cc)
  * control-plane-only rebuild's own output has never been verbose
  * enough to fill it. Safe as a bare static: only one bootroot
  * assembly can ever be in flight at a time (triggered exclusively by
- * a "kanxeo" hostbuild completing, itself serialized by pkg.c's own
+ * a "thinc" hostbuild completing, itself serialized by pkg.c's own
  * one-job-at-a-time invariant) -- the same reasoning pkg.c's own
  * module-level build state statics already document.
  */
@@ -6188,7 +6188,7 @@ static void handle_bootroot_output_event(struct conn *cc)
 }
 
 /* Same shape as register_pkg_fetch_pidfd(), for the mkbootroot child
- * spawn_kanxeo_bootroot_assembly() below just forked -- tracks only
+ * spawn_thinc_bootroot_assembly() below just forked -- tracks only
  * its exit; its captured stdout/stderr is a separate, directly-
  * registered conn (register_bootroot_output()/g_bootroot_output_rd
  * above, ADR-0087), not this one. */
@@ -6219,18 +6219,18 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
  * ADR-0078: the well-known name of the shared "host tools" image --
  * cp/rm/sha256sum/gzip (coreutils.recipe/gzip.recipe) plus openssl/
  * curl/tar/bzip2/xz/squashfs-tools/e2fsprogs, one real `pkg install
- * --image=kanxeo-hosttools` per recipe -- an operator builds this
- * exactly like "kanxeo-builder"/"dev" (docs/guides/building-kanxeo.md),
- * no special-cased creation path. spawn_kanxeo_bootroot_assembly()
+ * --image=thinc-hosttools` per recipe -- an operator builds this
+ * exactly like "thinc-builder"/"dev" (docs/guides/building-thinc.md),
+ * no special-cased creation path. spawn_thinc_bootroot_assembly()
  * below passes its rootfs to mkbootroot.c's own host_tools_dir
  * argument when present, purely additive: a box that never built this
  * image keeps today's dev-host-sourced behavior (mkbootroot.c's own
  * "" fallback), never a hard failure.
  */
-#define HOST_TOOLS_IMAGE "kanxeo-hosttools"
+#define HOST_TOOLS_IMAGE "thinc-hosttools"
 
 /*
- * ADR-0057: when a hostbuild job named "kanxeo" completes, assembles a
+ * ADR-0057: when a hostbuild job named "thinc" completes, assembles a
  * fresh control-plane squashfs from its own just-harvested artifacts
  * by forking+exec'ing the real, unmodified build/mkbootroot binary --
  * server-side, entirely within the daemon, never CLI-invoked (the
@@ -6238,18 +6238,18 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
  * directly). Mirrors start_fetch_for()'s own "daemon already forks
  * subprocesses for curl" precedent -- this is the same class of
  * capability, not a new one. Uses THIS SAME hostbuild round's own
- * freshly built mkbootroot (kanxeo.recipe now stages one alongside
- * kanxeod/kanxeoctl/web/) rather than assuming some earlier round's
+ * freshly built mkbootroot (thinc.recipe now stages one alongside
+ * thincd/thincctl/web/) rather than assuming some earlier round's
  * copy is still present anywhere -- self-contained, no bootstrap-order
  * dependency. Failure here (missing mkbootroot, fork failure) is
  * logged, never fatal to the daemon -- the hostbuild itself already
  * succeeded and its own artifacts are still there for a later retry.
  */
-static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
+static void spawn_thinc_bootroot_assembly(const char *artifact_dir)
 {
 	char mkbootroot_bin[PATH_MAX];
-	char kanxeod_bin[PATH_MAX];
-	char kanxeoctl_bin[PATH_MAX];
+	char thincd_bin[PATH_MAX];
+	char thincctl_bin[PATH_MAX];
 	char web_dir[PATH_MAX];
 	char out_squashfs[PATH_MAX];
 	char stage_dir[PATH_MAX];
@@ -6261,10 +6261,10 @@ static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
 	int output_pipe[2];
 
 	snprintf(mkbootroot_bin, sizeof(mkbootroot_bin), "%s/mkbootroot", artifact_dir);
-	snprintf(kanxeod_bin, sizeof(kanxeod_bin), "%s/kanxeod", artifact_dir);
-	snprintf(kanxeoctl_bin, sizeof(kanxeoctl_bin), "%s/kanxeoctl", artifact_dir);
+	snprintf(thincd_bin, sizeof(thincd_bin), "%s/thincd", artifact_dir);
+	snprintf(thincctl_bin, sizeof(thincctl_bin), "%s/thincctl", artifact_dir);
 	snprintf(web_dir, sizeof(web_dir), "%s/web", artifact_dir);
-	snprintf(out_squashfs, sizeof(out_squashfs), "%s/kanxeod-root.squashfs", artifact_dir);
+	snprintf(out_squashfs, sizeof(out_squashfs), "%s/thincd-root.squashfs", artifact_dir);
 	snprintf(stage_dir, sizeof(stage_dir), "%s/.bootroot-stage", artifact_dir);
 
 	/*
@@ -6294,15 +6294,15 @@ static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
 
 	argv[0] = mkbootroot_bin;
 	argv[1] = stage_dir;
-	argv[2] = kanxeod_bin;
-	argv[3] = kanxeoctl_bin;
+	argv[2] = thincd_bin;
+	argv[3] = thincctl_bin;
 	argv[4] = web_dir;
 	argv[5] = out_squashfs;
 	argv[6] = ""; /* firmware dir -- a control-plane-only rebuild needs no GPU firmware re-staging */
-	argv[7] = ""; /* modules dir -- a control-plane-only rebuild (kanxeod/kanxeoctl/web only,
+	argv[7] = ""; /* modules dir -- a control-plane-only rebuild (thincd/thincctl/web only,
 	               * ADR-0057) touches no kernel module tree at all */
 	argv[8] = ""; /* kmod bin dir -- same reasoning */
-	argv[9] = host_tools_dir; /* "" if kanxeo-hosttools was never built on this box */
+	argv[9] = host_tools_dir; /* "" if thinc-hosttools was never built on this box */
 	argv[10] = NULL;
 
 	/*
@@ -6318,8 +6318,8 @@ static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
 	 */
 	if (pipe2(output_pipe, O_CLOEXEC) != 0) {
 		perror("pipe2 (bootroot assembly output capture)");
-		logstore_write("kanxeod", "error",
-		                "kanxeo bootroot assembly: output capture pipe failed: %s",
+		logstore_write("thincd", "error",
+		                "thinc bootroot assembly: output capture pipe failed: %s",
 		                strerror(errno));
 		output_pipe[0] = output_pipe[1] = -1;
 	} else if (fcntl(output_pipe[0], F_SETFL, O_NONBLOCK) != 0) {
@@ -6332,7 +6332,7 @@ static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
 	pid = fork();
 	if (pid < 0) {
 		perror("fork (bootroot assembly)");
-		logstore_write("kanxeod", "error", "kanxeo bootroot assembly: fork failed: %s",
+		logstore_write("thincd", "error", "thinc bootroot assembly: fork failed: %s",
 		                strerror(errno));
 		if (output_pipe[0] >= 0) {
 			close(output_pipe[0]);
@@ -6368,7 +6368,7 @@ static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
 	pidfd = sys_pidfd_open(pid, 0);
 	if (pidfd < 0) {
 		perror("pidfd_open (bootroot assembly)");
-		logstore_write("kanxeod", "error", "kanxeo bootroot assembly: pidfd_open failed: %s",
+		logstore_write("thincd", "error", "thinc bootroot assembly: pidfd_open failed: %s",
 		                strerror(errno));
 		if (output_pipe[0] >= 0)
 			close(output_pipe[0]);
@@ -6388,13 +6388,13 @@ static void spawn_kanxeo_bootroot_assembly(const char *artifact_dir)
  * ADR-0063 deliberately left open -- image/src/mkinstalleriso.c was a
  * dev-machine-only tool an operator had to run by hand; this makes ISO
  * assembly a real, REST/CLI-reachable daemon capability, the same
- * fork+exec+pidfd-tracked, non-blocking shape spawn_kanxeo_bootroot_
+ * fork+exec+pidfd-tracked, non-blocking shape spawn_thinc_bootroot_
  * assembly() above already established for mkbootroot. Unlike that
- * mechanism (auto-triggered the moment a "kanxeo" hostbuild completes),
+ * mechanism (auto-triggered the moment a "thinc" hostbuild completes),
  * ISO assembly is explicitly, separately triggered -- it has real
  * inputs of its own (the target's disk/ip/prefix/gateway/interface)
  * a hostbuild completion has no way to supply, and reuses whatever the
- * most recent "kanxeo"/"kernel"/"isotools" hostbuild rounds already
+ * most recent "thinc"/"kernel"/"isotools" hostbuild rounds already
  * harvested rather than forcing a fresh rebuild of any of them.
  *
  * Only one ISO build is ever in flight at a time (the same v1 single-
@@ -6432,7 +6432,7 @@ static void register_iso_assemble_pidfd(pid_t pid, int pidfd)
 }
 
 /*
- * Validates every real precondition (the "kanxeo"/"kernel" hostbuild
+ * Validates every real precondition (the "thinc"/"kernel" hostbuild
  * artifacts, the "isotools" hostbuild artifact, and the operator-
  * populated signing key pair at SIGNING_KEYS_DIR) up front, so a
  * missing one fails the POST itself with a specific, actionable
@@ -6450,8 +6450,8 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
                             size_t err_msg_size)
 {
 	char mkinstalleriso_bin[PATH_MAX];
-	char kanxeo_install_bin[PATH_MAX];
-	char kanxeo_recover_bin[PATH_MAX];
+	char thinc_install_bin[PATH_MAX];
+	char thinc_recover_bin[PATH_MAX];
 	char bzimage_path[PATH_MAX];
 	char squashfs_path[PATH_MAX];
 	char isotools_root[PATH_MAX];
@@ -6467,11 +6467,11 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 		const char *path;
 		const char *what;
 	} required[] = {
-	    {mkinstalleriso_bin, "mkinstalleriso (from a \"kanxeo\" hostbuild)"},
-	    {kanxeo_install_bin, "kanxeo-install (from a \"kanxeo\" hostbuild)"},
-	    {kanxeo_recover_bin, "kanxeo-recover (from a \"kanxeo\" hostbuild, ADR-0146)"},
+	    {mkinstalleriso_bin, "mkinstalleriso (from a \"thinc\" hostbuild)"},
+	    {thinc_install_bin, "thinc-install (from a \"thinc\" hostbuild)"},
+	    {thinc_recover_bin, "thinc-recover (from a \"thinc\" hostbuild, ADR-0146)"},
 	    {bzimage_path, "bzImage (from a \"kernel\" hostbuild)"},
-	    {squashfs_path, "kanxeod-root.squashfs (from a \"kanxeo\" hostbuild)"},
+	    {squashfs_path, "thincd-root.squashfs (from a \"thinc\" hostbuild)"},
 	    {isotools_root, "isotools artifact directory (from an \"isotools\" hostbuild)"},
 	    {signing_key, "signing key (operator-provided at SIGNING_KEYS_DIR)"},
 	    {signing_cert_pem, "signing cert .crt (operator-provided at SIGNING_KEYS_DIR)"},
@@ -6479,19 +6479,19 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	};
 	size_t i;
 
-	snprintf(mkinstalleriso_bin, sizeof(mkinstalleriso_bin), "%s/kanxeo/mkinstalleriso",
+	snprintf(mkinstalleriso_bin, sizeof(mkinstalleriso_bin), "%s/thinc/mkinstalleriso",
 	         ARTIFACTS_DIR);
-	snprintf(kanxeo_install_bin, sizeof(kanxeo_install_bin), "%s/kanxeo/kanxeo-install",
+	snprintf(thinc_install_bin, sizeof(thinc_install_bin), "%s/thinc/thinc-install",
 	         ARTIFACTS_DIR);
-	snprintf(kanxeo_recover_bin, sizeof(kanxeo_recover_bin), "%s/kanxeo/kanxeo-recover",
+	snprintf(thinc_recover_bin, sizeof(thinc_recover_bin), "%s/thinc/thinc-recover",
 	         ARTIFACTS_DIR);
 	snprintf(bzimage_path, sizeof(bzimage_path), "%s/kernel/bzImage", ARTIFACTS_DIR);
-	snprintf(squashfs_path, sizeof(squashfs_path), "%s/kanxeo/kanxeod-root.squashfs",
+	snprintf(squashfs_path, sizeof(squashfs_path), "%s/thinc/thincd-root.squashfs",
 	         ARTIFACTS_DIR);
 	snprintf(isotools_root, sizeof(isotools_root), "%s/isotools", ARTIFACTS_DIR);
-	snprintf(signing_key, sizeof(signing_key), "%s/kanxeo-signing.key", SIGNING_KEYS_DIR);
-	snprintf(signing_cert_pem, sizeof(signing_cert_pem), "%s/kanxeo-signing.crt", SIGNING_KEYS_DIR);
-	snprintf(signing_cert_der, sizeof(signing_cert_der), "%s/kanxeo-signing.cer", SIGNING_KEYS_DIR);
+	snprintf(signing_key, sizeof(signing_key), "%s/thinc-signing.key", SIGNING_KEYS_DIR);
+	snprintf(signing_cert_pem, sizeof(signing_cert_pem), "%s/thinc-signing.crt", SIGNING_KEYS_DIR);
+	snprintf(signing_cert_der, sizeof(signing_cert_der), "%s/thinc-signing.cer", SIGNING_KEYS_DIR);
 
 	for (i = 0; i < sizeof(required) / sizeof(required[0]); i++) {
 		if (access(required[i].path, R_OK) != 0) {
@@ -6509,12 +6509,12 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	         (interface != NULL && interface[0] != '\0') ? interface : "CHANGEME");
 
 	snprintf(stage_dir, sizeof(stage_dir), "%s/.stage", ISO_DIR);
-	snprintf(ISO_OUTPUT_PATH, sizeof(ISO_OUTPUT_PATH), "%s/kanxeo-install.iso", ISO_DIR);
+	snprintf(ISO_OUTPUT_PATH, sizeof(ISO_OUTPUT_PATH), "%s/thinc-install.iso", ISO_DIR);
 
 	argv[0] = mkinstalleriso_bin;
 	argv[1] = stage_dir;
-	argv[2] = kanxeo_install_bin;
-	argv[3] = kanxeo_recover_bin;
+	argv[2] = thinc_install_bin;
+	argv[3] = thinc_recover_bin;
 	argv[4] = bzimage_path;
 	argv[5] = squashfs_path;
 	argv[6] = signing_key;
@@ -6577,7 +6577,7 @@ static void handle_iso_assemble_event(struct conn *cc)
  * POST /v1/pkg/bootstrap's own toolchain_url mode (ADR-0065): closes a
  * real gap ADR-0031's own "the operator transfers it onto the box
  * out-of-band (scp)" assumption turned out to rest on -- a real,
- * freshly-installed Kanxeo box has no SSH server and no general shell
+ * freshly-installed thinC box has no SSH server and no general shell
  * at all (deliberately, ADR-0034), so there was never actually a way
  * to get a multi-hundred-MB toolchain artifact onto one over the
  * network. Reuses the exact host-side curl-fetch primitive pkg.c's own
@@ -8094,7 +8094,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	pki_issue = (jpki_issue != NULL && jpki_issue->type == JSON_BOOL && jpki_issue->u.boolean);
 	snprintf(pki_cert_dir_buf, sizeof(pki_cert_dir_buf), "%s",
 	         json_as_string(jpki_cert_dir) != NULL ? json_as_string(jpki_cert_dir) :
-	                                                  "/etc/kanxeo-tls");
+	                                                  "/etc/thinc-tls");
 	if (jpki_days != NULL)
 		pki_days = (int)json_as_number(jpki_days);
 
@@ -8120,7 +8120,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		ldap_uid = (int)json_as_number(jldap_uid);
 	snprintf(ldap_secret_dir_buf, sizeof(ldap_secret_dir_buf), "%s",
 	         json_as_string(jldap_secret_dir) != NULL ? json_as_string(jldap_secret_dir) :
-	                                                     "/etc/kanxeo-ldap");
+	                                                     "/etc/thinc-ldap");
 
 	jrestart = json_object_get(root, "restart");
 	restart_str = json_as_string(jrestart);
@@ -9017,7 +9017,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		if (output_pipe[0] >= 0)
 			close(output_pipe[0]);
 		snprintf(err_msg, err_msg_size, "failed to create container: %s", strerror(create_errno));
-		logstore_write("kanxeod", "error", "container %s: failed to create: %s", name_copy,
+		logstore_write("thincd", "error", "container %s: failed to create: %s", name_copy,
 		                strerror(create_errno));
 		return 500;
 	}
@@ -11311,7 +11311,7 @@ static void handle_disk_format_post(int fd, const char *disk_name, const char *b
 	 * every pre-existing request body (no fs_type field at all) keeps
 	 * its exact prior behavior. "btrfs" requires a real mkfs.btrfs to
 	 * actually be staged on this box (btrfs-progs.recipe via a real
-	 * kanxeo-hosttools image, ADR-0103's own scope note) -- if it
+	 * thinc-hosttools image, ADR-0103's own scope note) -- if it
 	 * isn't, the job still starts (this daemon has no cheap way to
 	 * probe for the binary's presence without also handling every
 	 * other reason execve() could fail the same way) but fails fast
@@ -12863,7 +12863,7 @@ static void handle_ldap_server_create(int fd, const char *body, size_t body_len)
 	}
 
 	/* Task #726: populate the freshly-registered server's own config
-	 * file from Kanxeo's own record store, the dns_server_sync_all()
+	 * file from thinC's own record store, the dns_server_sync_all()
 	 * analog -- a fresh/replacement glauth instance starts current
 	 * instead of empty. */
 	ldap_record_sync_all();
@@ -13318,7 +13318,7 @@ static void respond_pki_error(int fd, enum pki_error err)
 static void handle_pki_ca_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root = NULL;
-	const char *common_name = "Kanxeo Root CA";
+	const char *common_name = "thinC Root CA";
 	int days = 3650;
 	enum pki_error perr;
 
@@ -13391,7 +13391,7 @@ static void handle_pki_ca_get(int fd)
 static void handle_pki_intermediate_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root = NULL;
-	const char *common_name = "Kanxeo Intermediate CA";
+	const char *common_name = "thinC Intermediate CA";
 	int days = 1825;
 	enum pki_error perr;
 
@@ -13623,7 +13623,7 @@ static void redeliver_pki_certs_after_reset(void)
 		if (!pki_cert_owned_by(names[i], names[i]))
 			continue;
 
-		snprintf(cert_dir_buf, sizeof(cert_dir_buf), "/etc/kanxeo-tls");
+		snprintf(cert_dir_buf, sizeof(cert_dir_buf), "/etc/thinc-tls");
 		def = containerdef_find(names[i]);
 		if (def != NULL) {
 			struct json_value *body_root = json_parse(def->body, def->body_len);
@@ -13655,8 +13655,8 @@ static void handle_pki_reset(int fd, const char *body, size_t body_len)
 	enum pki_error perr;
 	struct json_writer w;
 
-	snprintf(root_cn, sizeof(root_cn), "Kanxeo Root CA - %s", siteconfig_domain_suffix());
-	snprintf(intermediate_cn, sizeof(intermediate_cn), "Kanxeo Intermediate CA - %s",
+	snprintf(root_cn, sizeof(root_cn), "thinC Root CA - %s", siteconfig_domain_suffix());
+	snprintf(intermediate_cn, sizeof(intermediate_cn), "thinC Intermediate CA - %s",
 	         siteconfig_domain_suffix());
 
 	if (body_len > 0) {
@@ -13832,7 +13832,7 @@ static void handle_pkg_bootstrap_get(int fd)
  * itself, host-side, the same real curl primitive every recipe
  * source already uses -- closing the real gap the other two modes
  * both rest on (an operator "transferring it onto the box out-of-
- * band" assumes an SSH server a real, freshly-installed Kanxeo box
+ * band" assumes an SSH server a real, freshly-installed thinC box
  * simply doesn't have, ADR-0034). Async, 202, poll GET /pkg/bootstrap.
  */
 static void handle_pkg_bootstrap(int fd, const char *body, size_t body_len)
@@ -14470,7 +14470,7 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 /*
  * POST /v1/pkg/hostbuild (ADR-0056): the second mode of the same
  * fetch/build pipeline handle_pkg_install() drives above -- builds a
- * standalone host artifact (a kernel bzImage, a fresh kanxeod-root
+ * standalone host artifact (a kernel bzImage, a fresh thincd-root
  * squashfs's own components) instead of installing into a container
  * image's rootfs. Reuses register_pkg_fetch_pidfd()/respond_pkg_error()
  * completely unmodified; the only new plumbing is pkg_hostbuild_start()
@@ -14531,7 +14531,7 @@ static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
 }
 
 /* GET /v1/pkg/hostbuild/{name} -- status/artifact_path polling for a
- * hostbuild job, the exact shape kanxeoctl pkg hostbuild --wait polls. */
+ * hostbuild job, the exact shape thincctl pkg hostbuild --wait polls. */
 static void handle_pkg_hostbuild_get(int fd, const char *name)
 {
 	struct json_writer w;
@@ -14820,7 +14820,7 @@ static void dispatch(int fd, const struct http_request *req)
 {
 	const char *name;
 
-	/* Every kanxeoctl command and every web UI action already goes
+	/* Every thincctl command and every web UI action already goes
 	 * through this exact function (API-First Mandate, no exceptions)
 	 * -- one log call here is a complete audit trail of every real
 	 * action taken via either client, with zero client-side
@@ -16135,7 +16135,7 @@ static void dispatch(int fd, const struct http_request *req)
  * all (packages stage into usr/bin -- confirmed directly against a
  * real running container while building this, see docs/roadmap/ROADMAP.md);
  * "/bin/sh" would fail on every one of them. This is only a default:
- * X-Kanxeo-Exec-Cmd overrides it, and a container whose image has
+ * X-thinC-Exec-Cmd overrides it, and a container whose image has
  * neither this nor an override installed simply fails to exec --
  * a real, expected limitation (see this phase's own ADR), not a bug.
  */
@@ -16245,7 +16245,7 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 		return CONSOLE_FAILED;
 	}
 
-	if (http_find_header(req->headers, req->headers_len, "X-Kanxeo-Exec-Cmd", cmd_override, sizeof(cmd_override)) >= 0 &&
+	if (http_find_header(req->headers, req->headers_len, "X-thinC-Exec-Cmd", cmd_override, sizeof(cmd_override)) >= 0 &&
 	    cmd_override[0] != '\0')
 		cmd = cmd_override;
 	else
@@ -16261,7 +16261,7 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	if (exec_into_container(entry->handle.pid, cmd_argv, &master_fd, &exec_pid) != 0) {
 		/* task #764: exec_into_container()'s own diagnostics
 		 * (daemon/src/exec.c's fprintf(stderr,...) calls) go to
-		 * kanxeod's own stderr -- invisible to a REST client on a
+		 * thincd's own stderr -- invisible to a REST client on a
 		 * real installed box with no host shell access, exactly the
 		 * gap that made a live-only console failure unreachable to
 		 * diagnose during task #760's sweep. errno is preserved by
@@ -16657,7 +16657,7 @@ static void handle_console_pty_event(struct conn *cc)
  * HTTPS port with an untrusted cert floods the console non-stop with
  * multi-line OpenSSL traces for something that isn't an error an
  * operator can or needs to act on. Routed through logstore instead
- * (source "kanxeod", "warning") as a single summary line per failure,
+ * (source "thincd", "warning") as a single summary line per failure,
  * discoverable via the API like everything else, never spamming the
  * console; still drains the whole error queue (ERR_get_error() in a
  * loop) so it can't silently accumulate across repeated failures --
@@ -16683,7 +16683,7 @@ static void log_tls_error(const char *context, const char *peer_ip, int should_l
 	unsigned long e;
 
 	if (first != 0 && should_log)
-		logstore_write("kanxeod", "warning", "%s from %s: %s", context, peer_ip,
+		logstore_write("thincd", "warning", "%s from %s: %s", context, peer_ip,
 		                ERR_reason_error_string(first));
 	while ((e = ERR_get_error()) != 0)
 		; /* drain the rest of the queue silently -- see this function's own comment */
@@ -17247,17 +17247,17 @@ static void handle_container_event(struct conn *cc)
 		try_start_queued_pkg_rebuild();
 
 	/*
-	 * ADR-0057: "kanxeo" is the one hostbuild name this daemon gives
+	 * ADR-0057: "thinc" is the one hostbuild name this daemon gives
 	 * any further meaning to -- everything else pkg.c handles is
 	 * completely generic. Deliberately a plain string match here in
 	 * main.c, not a flag/callback registered in pkg.c itself: pkg.c
 	 * stays fully agnostic to what any package *means*.
 	 */
-	if (hostbuild_done_name[0] != '\0' && strcmp(hostbuild_done_name, "kanxeo") == 0) {
+	if (hostbuild_done_name[0] != '\0' && strcmp(hostbuild_done_name, "thinc") == 0) {
 		char artifact_dir[PATH_MAX];
 
 		snprintf(artifact_dir, sizeof(artifact_dir), "%s/%s", ARTIFACTS_DIR, hostbuild_done_name);
-		spawn_kanxeo_bootroot_assembly(artifact_dir);
+		spawn_thinc_bootroot_assembly(artifact_dir);
 	}
 
 	/*
@@ -17368,10 +17368,10 @@ static void handle_pkg_fetch_event(struct conn *cc)
 }
 
 /*
- * Reaps spawn_kanxeo_bootroot_assembly()'s own mkbootroot child.
+ * Reaps spawn_thinc_bootroot_assembly()'s own mkbootroot child.
  * Nothing further to dispatch on completion -- either
- * <artifact_dir>/kanxeod-root.squashfs now exists (success, ready for
- * `pkg hostbuild kanxeo --deploy` to pick up) or it doesn't (logged
+ * <artifact_dir>/thincd-root.squashfs now exists (success, ready for
+ * `pkg hostbuild thinc --deploy` to pick up) or it doesn't (logged
  * failure, the hostbuild's own artifacts are still there to retry
  * from). No REST response is waiting on this -- the original POST
  * /v1/pkg/hostbuild already returned 202 long before this fires.
@@ -17417,7 +17417,7 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 	/*
 	 * task #737: only a real, confirmed success ever advances the
 	 * completed generation -- at most one assembly is ever in flight
-	 * (only triggered by the "kanxeo" hostbuild's own single-job-
+	 * (only triggered by the "thinc" hostbuild's own single-job-
 	 * constrained completion event), so g_bootroot_assembly_started's
 	 * current value is unambiguously *this* attempt's own generation
 	 * number at the moment it resolves, whichever way it resolves.
@@ -17425,8 +17425,8 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 	g_bootroot_assembly_running = 0;
 	if (reaped == cc->pkg_fetch_pid && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
 		g_bootroot_assembly_completed = g_bootroot_assembly_started;
-		fprintf(stderr, "kanxeo bootroot assembly: succeeded\n");
-		logstore_write("kanxeod", "info", "kanxeo bootroot assembly: succeeded");
+		fprintf(stderr, "thinc bootroot assembly: succeeded\n");
+		logstore_write("thincd", "info", "thinc bootroot assembly: succeeded");
 		/*
 		 * A real diagnostic gap closed here, not just for tonight:
 		 * mkbootroot exiting 0 was previously trusted as the whole
@@ -17442,26 +17442,26 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 		 * keeping visible.
 		 */
 		if (output_len > 0)
-			logstore_write("kanxeod", "info", "kanxeo bootroot assembly: output: %s", output);
+			logstore_write("thincd", "info", "thinc bootroot assembly: output: %s", output);
 	} else if (reaped != cc->pkg_fetch_pid) {
-		fprintf(stderr, "kanxeo bootroot assembly: waitpid failed\n");
-		logstore_write("kanxeod", "error", "kanxeo bootroot assembly: waitpid failed: %s",
+		fprintf(stderr, "thinc bootroot assembly: waitpid failed\n");
+		logstore_write("thincd", "error", "thinc bootroot assembly: waitpid failed: %s",
 		                strerror(errno));
 	} else if (WIFEXITED(status)) {
-		fprintf(stderr, "kanxeo bootroot assembly: failed (exit %d)\n", WEXITSTATUS(status));
-		logstore_write("kanxeod", "error", "kanxeo bootroot assembly: mkbootroot exited %d",
+		fprintf(stderr, "thinc bootroot assembly: failed (exit %d)\n", WEXITSTATUS(status));
+		logstore_write("thincd", "error", "thinc bootroot assembly: mkbootroot exited %d",
 		                WEXITSTATUS(status));
 		if (output_len > 0)
-			logstore_write("kanxeod", "error", "kanxeo bootroot assembly: output: %s", output);
+			logstore_write("thincd", "error", "thinc bootroot assembly: output: %s", output);
 	} else if (WIFSIGNALED(status)) {
-		fprintf(stderr, "kanxeo bootroot assembly: killed by signal %d\n", WTERMSIG(status));
-		logstore_write("kanxeod", "error", "kanxeo bootroot assembly: mkbootroot killed by signal %d",
+		fprintf(stderr, "thinc bootroot assembly: killed by signal %d\n", WTERMSIG(status));
+		logstore_write("thincd", "error", "thinc bootroot assembly: mkbootroot killed by signal %d",
 		                WTERMSIG(status));
 		if (output_len > 0)
-			logstore_write("kanxeod", "error", "kanxeo bootroot assembly: output: %s", output);
+			logstore_write("thincd", "error", "thinc bootroot assembly: output: %s", output);
 	} else {
-		fprintf(stderr, "kanxeo bootroot assembly: failed\n");
-		logstore_write("kanxeod", "error", "kanxeo bootroot assembly: failed");
+		fprintf(stderr, "thinc bootroot assembly: failed\n");
+		logstore_write("thincd", "error", "thinc bootroot assembly: failed");
 	}
 	close(cc->fd);
 	free(cc);
@@ -17501,21 +17501,21 @@ static void register_console_shell_pidfd(pid_t pid, int pidfd, const char *tty_p
 }
 
 /*
- * Forks a console-login child bound to tty_path and execve()s kanxeoctl
- * into it with no command -- kanxeoctl's own isatty(STDIN_FILENO) check
+ * Forks a console-login child bound to tty_path and execve()s thincctl
+ * into it with no command -- thincctl's own isatty(STDIN_FILENO) check
  * (Phase 18) then drops it straight into run_shell(). setsid() detaches
  * any inherited controlling terminal (moot for a PID 1 caller, which
  * never had one) so the following open() of tty_path, being this new
  * session's first tty open without O_NOCTTY, makes it that session's
  * controlling terminal -- standard Linux tty semantics, no explicit
  * TIOCSCTTY needed. That isolation is what keeps a Ctrl-C typed at this
- * console from ever reaching kanxeod itself: it lands on this child's
- * own, separate session/process group only. Talks to kanxeod over real
- * HTTP via g_bind_addr/g_port like any other kanxeoctl invocation --
+ * console from ever reaching thincd itself: it lands on this child's
+ * own, separate session/process group only. Talks to thincd over real
+ * HTTP via g_bind_addr/g_port like any other thincctl invocation --
  * this is still a pure REST client, API-First Mandate intact, just
  * running on the same host it's talking to.
  *
- * A failed open()/execve() (tty genuinely absent, kanxeoctl missing) is
+ * A failed open()/execve() (tty genuinely absent, thincctl missing) is
  * non-fatal: the child just exits, the pidfd event still fires, and
  * handle_console_shell_event() arms a respawn -- the same "keep trying
  * forever" a real getty already has for an unready device.
@@ -17536,7 +17536,7 @@ static void spawn_console_shell(const char *tty_path)
 	}
 	if (pid == 0) {
 		int fd;
-		char *argv[] = { (char *)"kanxeoctl", host_arg, port_arg, NULL };
+		char *argv[] = { (char *)"thincctl", host_arg, port_arg, NULL };
 
 		setsid();
 		fd = open(tty_path, O_RDWR);
@@ -17549,8 +17549,8 @@ static void spawn_console_shell(const char *tty_path)
 		dup2(fd, STDERR_FILENO);
 		if (fd > STDERR_FILENO)
 			close(fd);
-		execve("/bin/kanxeoctl", argv, environ);
-		perror("execve /bin/kanxeoctl");
+		execve("/bin/thincctl", argv, environ);
+		perror("execve /bin/thincctl");
 		_exit(127);
 	}
 
@@ -17566,7 +17566,7 @@ static void spawn_console_shell(const char *tty_path)
  * Arms a one-shot delay before respawning a console shell on tty_path --
  * same timerfd + epoll shape as arm_restart_timer() (container crash-
  * restart backoff), reused here so a console shell that exits instantly
- * on every respawn (kanxeoctl missing, tty genuinely broken) can't spin
+ * on every respawn (thincctl missing, tty genuinely broken) can't spin
  * the reactor in a tight fork loop.
  */
 static void arm_console_respawn_timer(const char *tty_path, int delay_seconds)
@@ -18236,7 +18236,7 @@ int main(int argc, char **argv)
 	/*
 	 * ensure_dir()'s directory scaffolding and each module's own
 	 * state-init above are real writes onto BASE_DIR -- the real
-	 * kanxeo-containers partition as of this change (ADR-0018), not a
+	 * thinc-containers partition as of this change (ADR-0018), not a
 	 * tmpfs. QEMU's default `-drive` cache mode (writeback) only
 	 * guarantees those bytes reach the actual disk image once the
 	 * guest itself issues a flush; without this, they'd sit in the
@@ -18351,7 +18351,7 @@ int main(int argc, char **argv)
 	ldap_record_sync_all();
 
 	/* Console login (Phase 19): a real console needs something to walk
-	 * up to, once boot is fully healthy -- never for a dev/test kanxeod
+	 * up to, once boot is fully healthy -- never for a dev/test thincd
 	 * (no --init-mode), which is already running attached to a real
 	 * developer's own terminal and must never fork a second process to
 	 * fight it over. Both consoles get an independent instance -- either
@@ -18454,18 +18454,18 @@ int main(int argc, char **argv)
 		SSL_CTX_free(g_tls_ctx);
 	}
 	close(g_epfd);
-	printf("kanxeod shutting down\n");
+	printf("thincd shutting down\n");
 	fflush(stdout);
 
 	/* As real PID 1 (--init-mode), a bare `return 0` here is exactly
 	 * "init exited" -- the kernel panics unconditionally regardless of
-	 * how gracefully kanxeod itself shut down first. reboot(2) is the
+	 * how gracefully thincd itself shut down first. reboot(2) is the
 	 * actual, correct way for an init process to end its own life; a
 	 * dev/test invocation (no --init-mode, e.g. every test/*.c fork+
 	 * execve) is never PID 1 and just returns normally, exactly as it
 	 * always has -- reboot(2) is never reachable from there regardless
 	 * of what set g_shutdown_action (SIGTERM/SIGINT default to
-	 * SHUTDOWN_ACTION_POWEROFF; the same tests already send kanxeod
+	 * SHUTDOWN_ACTION_POWEROFF; the same tests already send thincd
 	 * SIGTERM to end sessions today). */
 	if (init_mode) {
 		sync();

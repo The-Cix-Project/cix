@@ -3,7 +3,7 @@
 # dnsmasq install, real DNS/DHCP server (daemon/src/dns.c's own doc
 # comment already assumes exactly this).
 #
-# 1.1.0: switches dnsmasq from pinned to rolling. Kanxeo's own charter
+# 1.1.0: switches dnsmasq from pinned to rolling. thinC's own charter
 # (CLAUDE.md's opening line) calls this "a custom, rolling-release
 # hardware and workload orchestration platform" -- rolling is the
 # default posture, not pinned; 1.0.0's blanket "pinned" was captured

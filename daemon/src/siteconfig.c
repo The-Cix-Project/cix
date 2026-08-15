@@ -13,7 +13,7 @@ static char g_domain_suffix[SITECONFIG_NAME_MAX];
 
 static void apply_defaults(void)
 {
-	snprintf(g_instance_name, sizeof(g_instance_name), "kanxeo");
+	snprintf(g_instance_name, sizeof(g_instance_name), "thinc");
 	g_site_name[0] = '\0';
 	snprintf(g_domain_suffix, sizeof(g_domain_suffix), "internal");
 }

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kanxeo</title>
+<title>thinC</title>
 <link rel="stylesheet" href="/style.css">
 <script>
 /* Applied synchronously, before body paints, so a saved manual theme
@@ -13,7 +13,7 @@
    already chosen" half. */
 (function () {
 	try {
-		var t = localStorage.getItem("kanxeo-theme");
+		var t = localStorage.getItem("thinc-theme");
 		if (t === "light" || t === "dark")
 			document.documentElement.setAttribute("data-theme", t);
 	} catch (e) {
@@ -24,7 +24,7 @@
 </head>
 <body>
 <header>
-	<h1>Kanxeo<span id="header-instance-name" class="header-instance-name" hidden></span></h1>
+	<h1>thinC<span id="header-instance-name" class="header-instance-name" hidden></span></h1>
 	<div class="header-right">
 		<button type="button" id="theme-toggle" class="button-small" title="Cycle theme: auto / light / dark"></button>
 		<span id="health" class="badge badge-unknown">checking&hellip;</span>
@@ -172,7 +172,7 @@
 					<span id="cd-console-status" class="hint">&hellip;</span>
 				</div>
 				<div class="console-output" id="cd-console-output" tabindex="0"></div>
-				<p class="hint">Minimal built-in terminal (no framework, per ADR-0010/ADR-0043) -- handles plain output, colors, and basic input. Full-screen programs (vim, top, less) won't render correctly here; use <code>kanxeoctl console</code> for those.</p>
+				<p class="hint">Minimal built-in terminal (no framework, per ADR-0010/ADR-0043) -- handles plain output, colors, and basic input. Full-screen programs (vim, top, less) won't render correctly here; use <code>thincctl console</code> for those.</p>
 			</div>
 		</section>
 
@@ -236,7 +236,7 @@
 		<section class="view" id="view-routes" hidden>
 			<div class="view-list">
 				<h2>Routes</h2>
-				<p class="hint">The box's own real kernel IPv4 routing table (ADR-0066) -- not a persisted Kanxeo resource; a route added or removed here is gone on the next reboot unless re-applied by whatever set it up in the first place. Add one via the "+ Create" menu above.</p>
+				<p class="hint">The box's own real kernel IPv4 routing table (ADR-0066) -- not a persisted thinC resource; a route added or removed here is gone on the next reboot unless re-applied by whatever set it up in the first place. Add one via the "+ Create" menu above.</p>
 				<table id="routes">
 					<thead>
 						<tr>
@@ -469,7 +469,7 @@
 					</label>
 					<button type="submit">Migrate</button>
 				</form>
-				<p class="hint">Where Kanxeo's own state lives (ADR-0141) -- networks, DNS/LDAP/NTP/syslog
+				<p class="hint">Where thinC's own state lives (ADR-0141) -- networks, DNS/LDAP/NTP/syslog
 					config, PKI, container definitions, site identity, daemon config. Never container
 					workload data, never rebuildable content (images/packages), never logs. The target disk
 					must already carry the state-storage role and be currently mounted. Live, no downtime --
@@ -731,12 +731,12 @@
 		<!-- PKI: Root CA -->
 		<section class="view" id="view-pki-ca" hidden>
 			<h2>PKI: Root CA</h2>
-			<p class="hint">A browser or OS that doesn't already trust this install's own root CA will refuse HTTPS to this dashboard (and to any other kanxeo endpoint) with a certificate warning -- expected, since it's a private, self-signed CA, not a publicly trusted one. Download the certificate below and trust it once on whatever device you connect from; see "Trusting the CA on your own device" in <code>docs/guides/security.md</code> for the full, platform-by-platform steps (Windows/macOS/Linux/Firefox all differ). Short version: import the downloaded <code>.crt</code> into your OS or browser's own trusted-root store, marked to trust it for identifying websites.</p>
+			<p class="hint">A browser or OS that doesn't already trust this install's own root CA will refuse HTTPS to this dashboard (and to any other thinc endpoint) with a certificate warning -- expected, since it's a private, self-signed CA, not a publicly trusted one. Download the certificate below and trust it once on whatever device you connect from; see "Trusting the CA on your own device" in <code>docs/guides/security.md</code> for the full, platform-by-platform steps (Windows/macOS/Linux/Firefox all differ). Short version: import the downloaded <code>.crt</code> into your OS or browser's own trusted-root store, marked to trust it for identifying websites.</p>
 			<div id="pki-ca-status" class="pki-ca-status"></div>
 			<form id="pki-ca-form">
 				<label>
 					Common name
-					<input type="text" id="caf-common-name" placeholder="Kanxeo Root CA">
+					<input type="text" id="caf-common-name" placeholder="thinC Root CA">
 				</label>
 				<label>
 					Days
@@ -751,7 +751,7 @@
 				reissuing every currently-tracked leaf cert under the new chain.
 				<strong>Destructive</strong> -- every previously-issued cert stops
 				verifying against the new root the moment this completes. Leaves
-				empty to default each name to <code>Kanxeo Root/Intermediate CA -
+				empty to default each name to <code>thinC Root/Intermediate CA -
 				&lt;domain_suffix&gt;</code>.
 			</p>
 			<form id="pki-reset-form">
@@ -780,7 +780,7 @@
 			<form id="pki-intermediate-form">
 				<label>
 					Common name
-					<input type="text" id="icaf-common-name" placeholder="Kanxeo Intermediate CA">
+					<input type="text" id="icaf-common-name" placeholder="thinC Intermediate CA">
 				</label>
 				<label>
 					Days
@@ -988,7 +988,7 @@
 			<form id="pac-form">
 				<label class="wide">
 					Base URL
-					<input type="text" id="pac-base-url" placeholder="http://artifacts.example.com/kanxeo">
+					<input type="text" id="pac-base-url" placeholder="http://artifacts.example.com/thinc">
 				</label>
 				<label>
 					Auth token (blank = unchanged)
@@ -1054,7 +1054,7 @@
 			<form id="sys-site-form">
 				<label>
 					Instance name
-					<input type="text" id="sitef-instance-name" placeholder="kanxeo">
+					<input type="text" id="sitef-instance-name" placeholder="thinc">
 				</label>
 				<label>
 					Site name (optional)
@@ -1071,7 +1071,7 @@
 		<section class="view" id="view-daemon-config" hidden>
 			<h2>Daemon</h2>
 			<p class="hint">
-				kanxeod's own listen port, HTTP/HTTPS exposure, and which network
+				thincd's own listen port, HTTP/HTTPS exposure, and which network
 				it's currently bound to (Part 0.5). Changes apply live -- no
 				restart -- and persist across a reboot. Repointing the
 				management network only works to a network that already has its
@@ -1110,7 +1110,7 @@
 				<button type="submit">Save</button>
 			</form>
 			<p class="hint" id="dcf-bind-hint"></p>
-			<p class="hint">Bind IP (ADR-0068) is a second, dedicated address on the management network's own bridge -- kanxeod binds there instead of that network's own address. Leave blank to make no change; check "Clear bind IP" to revert to the network's own address.</p>
+			<p class="hint">Bind IP (ADR-0068) is a second, dedicated address on the management network's own bridge -- thincd binds there instead of that network's own address. Leave blank to make no change; check "Clear bind IP" to revert to the network's own address.</p>
 		</section>
 
 		<section class="view" id="view-host-swap" hidden>
@@ -1198,7 +1198,7 @@
 				</div>
 			</div>
 			<p class="hint" id="hs-stats-load">Load average: &hellip;</p>
-			<p class="hint">Real, host-side usage (ADR-0073/ADR-0130) -- /proc + statvfs() on the daemon's own data directory, no in-container agent, sampled every 2s while this page stays open. History resets whenever this page (re)opens. Disk is the filesystem kanxeod's own data directory lives on, not every mounted filesystem on the box.</p>
+			<p class="hint">Real, host-side usage (ADR-0073/ADR-0130) -- /proc + statvfs() on the daemon's own data directory, no in-container agent, sampled every 2s while this page stays open. History resets whenever this page (re)opens. Disk is the filesystem thincd's own data directory lives on, not every mounted filesystem on the box.</p>
 		</section>
 
 		<section class="view" id="view-processes" hidden>
@@ -1292,7 +1292,7 @@
 		<section class="view" id="view-logs" hidden>
 			<div class="view-list">
 				<h2>Log Store</h2>
-				<p class="hint">A consolidated log (ADR-0070/ADR-0126): real kernel dmesg, kanxeod's own diagnostics, a per-request audit trail, and every container's own stdout/stderr -- all in one place, size-capped with the oldest entries dropped first once the cap is reached. Browse it live in the Log panel at the bottom of every page (source filter includes this browser's own local activity too, kept client-side only) -- this page just configures the store's size cap, not what's logged.</p>
+				<p class="hint">A consolidated log (ADR-0070/ADR-0126): real kernel dmesg, thincd's own diagnostics, a per-request audit trail, and every container's own stdout/stderr -- all in one place, size-capped with the oldest entries dropped first once the cap is reached. Browse it live in the Log panel at the bottom of every page (source filter includes this browser's own local activity too, kept client-side only) -- this page just configures the store's size cap, not what's logged.</p>
 				<h3>Size cap</h3>
 				<form id="logs-config-form">
 					<label>
@@ -1351,7 +1351,7 @@
 			<form id="sys-update-form">
 				<label class="wide">
 					Control-plane image path (optional, local to this daemon's host)
-					<input type="text" id="sys-update-image" placeholder="/path/to/kanxeod-root.squashfs">
+					<input type="text" id="sys-update-image" placeholder="/path/to/thincd-root.squashfs">
 				</label>
 				<label class="wide">
 					Kernel path (optional, local to this daemon's host)
@@ -1371,7 +1371,7 @@
 				<option value="">(all)</option>
 				<option value="web-ui">web-ui</option>
 				<option value="kernel">kernel</option>
-				<option value="kanxeod">kanxeod</option>
+				<option value="thincd">thincd</option>
 				<option value="audit">audit</option>
 				<option value="container">container</option>
 			</select>
@@ -1527,7 +1527,7 @@
 						</label>
 						<label>
 							Cert dir
-							<input type="text" id="f-pki-cert-dir" placeholder="/etc/kanxeo-tls">
+							<input type="text" id="f-pki-cert-dir" placeholder="/etc/thinc-tls">
 						</label>
 						<label>
 							Cert days
@@ -1554,7 +1554,7 @@
 						</label>
 						<label>
 							Secret dir
-							<input type="text" id="f-ldap-secret-dir" placeholder="/etc/kanxeo-ldap">
+							<input type="text" id="f-ldap-secret-dir" placeholder="/etc/thinc-ldap">
 						</label>
 					</fieldset>
 					<button type="submit">Run</button>

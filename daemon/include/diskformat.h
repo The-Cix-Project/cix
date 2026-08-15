@@ -21,7 +21,7 @@
  * non-blocking (ADR-0009), so it's run the same fork+pidfd+epoll async
  * way every other potentially-slow host operation already is
  * (iso_build_start(), pkg.c's own start_fetch_for(), main.c's
- * spawn_kanxeo_bootroot_assembly()).
+ * spawn_thinc_bootroot_assembly()).
  *
  * Unlike every one of those precedents, though, this job is NOT a
  * single execve(): format+mount is two sequential steps (an external
@@ -49,7 +49,7 @@
  * half of the ext4-vs-btrfs gap; ADR-0103/task #678 already closed the
  * *quota enforcement* half). mkfs.btrfs is genuinely optional: unlike
  * mkfs.ext4 (staged into every assembled boot image unconditionally,
- * mkbootroot.c), it's only staged when a real kanxeo-hosttools image
+ * mkbootroot.c), it's only staged when a real thinc-hosttools image
  * built with btrfs-progs.recipe is available -- an install without one
  * simply can't format a disk btrfs (ENOENT at exec time, surfaced as a
  * normal DISKFORMAT_STATE_FAILED, not a crash or a silently-ignored

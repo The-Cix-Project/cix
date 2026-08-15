@@ -5,7 +5,7 @@
 # admin tooling for day-to-day use of the box.
 #
 # 1.1.0, two real changes from 1.0.0:
-#  - Every entry switches from pinned to rolling, matching Kanxeo's
+#  - Every entry switches from pinned to rolling, matching thinC's
 #    own rolling-release charter (CLAUDE.md's opening line) -- 1.0.0's
 #    blanket "pinned" was captured from what happened to be installed
 #    at the time, not a deliberate policy choice, corrected once asked

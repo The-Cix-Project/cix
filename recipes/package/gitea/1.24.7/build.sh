@@ -1,7 +1,7 @@
 #
 # gitea -- a painless, self-hosted Git service (code.gitea.io).
 #
-# Read by kanxeod's own non-executing metadata scanner (pkg_name=/
+# Read by thincd's own non-executing metadata scanner (pkg_name=/
 # pkg_version=/pkg_source=/pkg_sha256=/pkg_depends=, daemon/src/pkg.c's
 # parse_recipe()) AND sourced as a real POSIX shell script inside the
 # isolated, network-less build container (". /build/recipe.sh" --
@@ -74,7 +74,7 @@ pkg_build() {
 
 # gitea has no autotools-style "make install DESTDIR=" target of its own
 # (its whole distribution model is "copy the one binary") -- PKG_DESTDIR
-# is set by kanxeod itself (daemon/src/pkg.c), everything written under
+# is set by thincd itself (daemon/src/pkg.c), everything written under
 # it is what actually gets merged into the target image once this build
 # container exits successfully.
 pkg_install() {

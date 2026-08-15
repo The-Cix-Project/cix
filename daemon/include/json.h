@@ -7,7 +7,7 @@
  * Minimal, generic JSON support -- not a full RFC 8259 implementation.
  * \uXXXX escapes are still a deliberate, narrower-than-spec scope
  * boundary (task #760, fixing a real write/parse asymmetry found via
- * `kanxeoctl ps` silently failing against a real box): the writer
+ * `thincctl ps` silently failing against a real box): the writer
  * emits \u00XX for any control character below 0x20 (needed since
  * capture_output, ADR-0112, can relay raw ANSI escape bytes from a
  * colorized program's real stdout/stderr), and the parser decodes

@@ -3,7 +3,7 @@
  * docs/api/openapi.yaml over real HTTP, not just that its internal
  * functions work. Stages one minimal test image, forks and execve's
  * the built daemon on a test port, then drives it via the shared
- * httpclient.c (the same client library kanxeoctl uses -- see
+ * httpclient.c (the same client library thincctl uses -- see
  * ADR-0005/Phase 4 in docs/roadmap/ROADMAP.md), so there is one implementation
  * of "how to talk to the API," not a test-only copy of it.
  */
@@ -110,7 +110,7 @@ int main(void)
 	}
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/kanxeod";
+	dargv[0] = "build/thincd";
 	dargv[1] = "--port=7621";
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -122,8 +122,8 @@ int main(void)
 		return 1;
 	}
 	if (daemon_pid == 0) {
-		execve("build/kanxeod", dargv, environ);
-		perror("execve build/kanxeod");
+		execve("build/thincd", dargv, environ);
+		perror("execve build/thincd");
 		_exit(127);
 	}
 

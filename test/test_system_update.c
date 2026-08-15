@@ -6,7 +6,7 @@
  * ROOT_A_DEVICE/ROOT_B_DEVICE, write_file_to_esp() onto the mounted
  * ESP -- real paths that only exist under a real QEMU guest with a
  * virtio-blk disk attached, or on real hardware). None of that
- * requires --init-mode or a real device: kanxeod happily accepts
+ * requires --init-mode or a real device: thincd happily accepts
  * --slot=a without --init-mode (boot_init(), which mounts the ESP,
  * only runs when --init-mode is also given), so every 400 case here is
  * reachable from a plain dev daemon on this dev LXC -- both
@@ -63,7 +63,7 @@ static pid_t start_daemon(const char *extra_arg)
 	int argc = 0;
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[argc++] = "build/kanxeod";
+	dargv[argc++] = "build/thincd";
 	dargv[argc++] = PORT_ARG;
 	dargv[argc++] = data_dir_arg;
 	if (extra_arg != NULL)
@@ -76,8 +76,8 @@ static pid_t start_daemon(const char *extra_arg)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/kanxeod", dargv, environ);
-		perror("execve build/kanxeod");
+		execve("build/thincd", dargv, environ);
+		perror("execve build/thincd");
 		_exit(127);
 	}
 	return pid;
@@ -99,7 +99,7 @@ int main(void)
 	struct kx_client client;
 	struct kx_response r;
 	int ok = 1;
-	char not_squashfs_path[] = "/tmp/kanxeo_test_system_update_notsquashfs_XXXXXX";
+	char not_squashfs_path[] = "/tmp/thinc_test_system_update_notsquashfs_XXXXXX";
 	int fd;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
@@ -252,7 +252,7 @@ int main(void)
 		 * "hsqs" fixture is enough here -- only the magic is checked,
 		 * not real squashfs structure. */
 		{
-			char good_image_path[] = "/tmp/kanxeo_test_system_update_goodimage_XXXXXX";
+			char good_image_path[] = "/tmp/thinc_test_system_update_goodimage_XXXXXX";
 			char body[512];
 
 			if (mkstemp(good_image_path) < 0) {

@@ -63,7 +63,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/kanxeod";
+	dargv[0] = "build/thincd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -74,8 +74,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/kanxeod", dargv, environ);
-		perror("execve build/kanxeod");
+		execve("build/thincd", dargv, environ);
+		perror("execve build/thincd");
 		_exit(127);
 	}
 	return pid;
@@ -206,7 +206,7 @@ int main(void)
 	struct kx_client client;
 	int ok = 1;
 	struct kx_response r;
-	char scratch_dir[] = "/tmp/kanxeo_test_images_XXXXXX";
+	char scratch_dir[] = "/tmp/thinc_test_images_XXXXXX";
 	struct stat st;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)

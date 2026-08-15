@@ -2,14 +2,14 @@
  * Phase 20: builds one real, portable, durable build-toolchain artifact
  * -- a single squashfs file containing everything a real package build
  * needs (gcc/make/autoconf/bison/perl/..., and this build host's own
- * Go toolchain if present), meant to be scp'd onto an installed Kanxeo
+ * Go toolchain if present), meant to be scp'd onto an installed thinC
  * host and imported via `pkg bootstrap --toolchain=PATH`
  * (pkg_bootstrap_from_toolchain(), daemon/src/pkg.c).
  *
- * Replaces relying on kanxeod's own live host having a real toolchain
+ * Replaces relying on thincd's own live host having a real toolchain
  * at `pkg bootstrap` time -- true on a rich dev sandbox, guaranteed
  * false on a real minimal install (confirmed live: a fresh install's
- * own /usr has nothing under it beyond kanxeod/kanxeoctl and their bare
+ * own /usr has nothing under it beyond thincd/thincctl and their bare
  * runtime libs). Run manually, occasionally, on a real toolchain-having
  * machine -- the same "explicit one-time action, not part of the fast
  * default `make` loop" posture build/bzImage itself already has.

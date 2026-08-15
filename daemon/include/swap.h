@@ -12,7 +12,7 @@
  * out of RAM. Deliberately one file, not a general swap-device
  * manager: this project has no notion of "spare disk space to turn
  * into a partition" (the install-time partition layout is fixed,
- * image/src/kanxeo-install.c's own auto_partition()), so a plain file
+ * image/src/thinc-install.c's own auto_partition()), so a plain file
  * on the already-mounted containers filesystem is the only shape that
  * can be created "on the fly" without repartitioning a live disk --
  * and on any modern kernel with SSD/NVMe-backed storage, file-backed
@@ -28,7 +28,7 @@
  * real kernel `union swap_header` layout mixes a 1024-byte
  * `bootbits` field with unaligned trailing members; sidestepping any
  * struct layout entirely removes the whole class of bug. This also
- * means kanxeod depends on no external `mkswap` binary at all --
+ * means thincd depends on no external `mkswap` binary at all --
  * consistent with how it already shells out to `curl`/`tar` only for
  * things it can't do more directly, never for something a few
  * documented byte offsets can replace.

@@ -89,7 +89,7 @@ int exec_into_container(pid_t target_pid, char *const cmd_argv[],
 	 * clobber it -- this branch used to force a blanket errno=ESRCH
 	 * regardless of which of the four actually failed or why.
 	 * open_ns_fd() already fprintf(stderr,...)s the real reason, but
-	 * that goes nowhere a REST client can ever see (kanxeod's own
+	 * that goes nowhere a REST client can ever see (thincd's own
 	 * stderr on a real installed box, no host shell access).
 	 * Preserving the real first failure's errno here lets the caller
 	 * (main.c's try_console_upgrade()) put it in the HTTP response

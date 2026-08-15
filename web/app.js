@@ -1,6 +1,6 @@
 /*
- * Kanxeo dashboard: a pure client of docs/api/openapi.yaml, same as
- * kanxeoctl (cli/src/main.c) -- no capability here that isn't already
+ * thinC dashboard: a pure client of docs/api/openapi.yaml, same as
+ * thincctl (cli/src/main.c) -- no capability here that isn't already
  * one of the REST endpoints. Vanilla JS, no framework, no build step
  * (docs/adr/0010). Left resource tree + per-resource detail views,
  * routed via location.hash (#category or #category/name) -- no router
@@ -69,7 +69,7 @@ const logPanelHeader = document.getElementById("log-panel-header");
 const logPanelArrow = document.getElementById("log-panel-arrow");
 const logPanelSource = document.getElementById("log-panel-source");
 
-const LOG_COLLAPSE_KEY = "kanxeo-log-collapsed";
+const LOG_COLLAPSE_KEY = "thinc-log-collapsed";
 
 function setLogCollapsed(collapsed) {
 	logPanel.classList.toggle("collapsed", collapsed);
@@ -100,7 +100,7 @@ try {
 
 /* ---------- theme toggle (light / dark / auto) ---------- */
 
-const THEME_KEY = "kanxeo-theme";
+const THEME_KEY = "thinc-theme";
 const themeToggle = document.getElementById("theme-toggle");
 
 /* "auto" (no stored value, or an unrecognized one) means "follow
@@ -212,16 +212,16 @@ for (const item of createDropdownMenu.querySelectorAll("button[data-modal]")) {
  * ---------- host authentication (ADR-0144) ----------
  *
  * A session token, persisted in localStorage -- this dashboard's own
- * analog of kanxeoctl's ~/.kanxeoctl_token dotfile, so a page reload
+ * analog of thincctl's ~/.thincctl_token dotfile, so a page reload
  * doesn't force a fresh login. GET requests never need it (the
  * daemon's write-gating leaves every GET open, always, regardless of
  * auth state); apiRequest()/apiRequestRaw() below attach it to every
  * request automatically once set -- one place, not every one of this
  * file's many call sites, the same design kx_client_set_token() gives
- * kanxeoctl (client/include/httpclient.h).
+ * thincctl (client/include/httpclient.h).
  */
-let authToken = localStorage.getItem("kanxeo-auth-token") || null;
-let authUsername = localStorage.getItem("kanxeo-auth-username") || null;
+let authToken = localStorage.getItem("thinc-auth-token") || null;
+let authUsername = localStorage.getItem("thinc-auth-username") || null;
 
 const authStatusEl = document.getElementById("auth-status");
 const authActionBtn = document.getElementById("auth-action-btn");
@@ -242,18 +242,18 @@ function setAuth(token, username) {
 	authToken = token;
 	authUsername = username;
 	if (token) {
-		localStorage.setItem("kanxeo-auth-token", token);
-		localStorage.setItem("kanxeo-auth-username", username || "");
+		localStorage.setItem("thinc-auth-token", token);
+		localStorage.setItem("thinc-auth-username", username || "");
 	} else {
-		localStorage.removeItem("kanxeo-auth-token");
-		localStorage.removeItem("kanxeo-auth-username");
+		localStorage.removeItem("thinc-auth-token");
+		localStorage.removeItem("thinc-auth-username");
 	}
 	updateAuthUi();
 }
 
 /* Opens the login modal on a 401 from any request, so "why did my
  * action just fail" has an immediate, actionable answer instead of
- * only a status-bar error -- the same reasoning kanxeoctl's own
+ * only a status-bar error -- the same reasoning thincctl's own
  * "authentication required -- POST /v1/login first" message serves,
  * adapted to a UI that can just show the form directly. Guarded so a
  * burst of 401s from one poll cycle (several concurrent GETs are
@@ -269,7 +269,7 @@ authActionBtn.addEventListener("click", async () => {
 		try {
 			await apiRequest("POST", "/v1/logout");
 		} catch (e) {
-			/* best-effort -- matches kanxeoctl's own idempotent-logout
+			/* best-effort -- matches thincctl's own idempotent-logout
 			 * posture; the local session clears either way */
 		}
 		setAuth(null, null);
@@ -306,7 +306,7 @@ updateAuthUi();
  * ("web-ui" -- every mutating request this dashboard makes, plus every
  * toast below, kept entirely client-side, never sent to the server
  * since it isn't a system component) and the server's own consolidated
- * log store (kernel/kanxeod/audit/container, GET /v1/system/logs,
+ * log store (kernel/thincd/audit/container, GET /v1/system/logs,
  * ADR-0070/ADR-0126) merged in via periodic polling (pollServerLogs(),
  * called from the main poll() loop). logBuffer is the one source of
  * truth both the live-append path and a full filter-change re-render
@@ -423,7 +423,7 @@ function logLine(method, path, statusText, kind) {
 }
 
 /* Merges newly-polled server-side entries into the same buffer/panel,
- * source-tagged by their own real source (kernel/kanxeod/audit/
+ * source-tagged by their own real source (kernel/thincd/audit/
  * container) rather than "web-ui". Deliberately starts from "now"
  * (logsSinceTs set at declaration time below) rather than 0 -- this
  * panel is a live tail from page-load onward, not a full-history
@@ -548,7 +548,7 @@ async function apiRequest(method, path, body) {
 
 /* Raw variant for /v1/system/backup|restore -- the response/request
  * body IS the bundle, written/read byte-for-byte, the same "exact
- * round trip, not re-serialized" guarantee kanxeoctl's own backup/
+ * round trip, not re-serialized" guarantee thincctl's own backup/
  * restore commands already have (cli/src/main.c). */
 async function apiRequestRaw(method, path, rawBody) {
 	const opts = { method: method, headers: {} };
@@ -611,7 +611,7 @@ async function refreshHealth() {
  * this only covers the case where there's nothing for the browser
  * itself to have remembered.
  */
-const LAST_VIEW_KEY = "kanxeo-last-view";
+const LAST_VIEW_KEY = "thinc-last-view";
 
 function saveLastView() {
 	try {
@@ -766,7 +766,7 @@ window.addEventListener("hashchange", () => {
 
 /* ---------- tree ---------- */
 
-const TREE_COLLAPSE_KEY = "kanxeo-tree-collapsed";
+const TREE_COLLAPSE_KEY = "thinc-tree-collapsed";
 
 function loadCollapsedCategories() {
 	try {
@@ -1444,7 +1444,7 @@ function simpleTableRows(bodyEl, columns, colCount, emptyText) {
  * text) but otherwise silently discarded -- there is no 2D cursor-
  * addressable screen model here, so full-screen redraw programs (vim,
  * top, less) render wrong. A stated, accepted boundary (see ADR-0043),
- * not an oversight -- `kanxeoctl console` has no such limitation.
+ * not an oversight -- `thincctl console` has no such limitation.
  */
 const TERM_MAX_LINES = 2000;
 
@@ -3773,7 +3773,7 @@ async function removeDiskRole(diskName) {
  * confirm() dialog is the actual gate here, the same severity class as
  * Kill/Reset-CA-chain elsewhere in this dashboard -- confirm_disk_name
  * is filled in automatically from that same unambiguous context,
- * mirroring kanxeoctl's own "the operator already specified which disk
+ * mirroring thincctl's own "the operator already specified which disk
  * by typing its name once" reasoning (cli/src/main.c's cmd_disks_
  * format()), not asked for a second time as a separate typed field. */
 async function formatDisk(diskName, fsType) {
@@ -4598,7 +4598,7 @@ async function refreshPkiCa() {
 		pkiCaStatus.className = "pki-ca-status bootstrapped";
 		pkiCaStatus.textContent =
 			"Bootstrapped: " + ca.subject + " (serial " + ca.serial + ", expires " + ca.not_after + ") ";
-		pkiCaStatus.appendChild(buildCaDownloadButton("kanxeo-root-ca.crt", ca.cert_pem));
+		pkiCaStatus.appendChild(buildCaDownloadButton("thinc-root-ca.crt", ca.cert_pem));
 		pkiCaForm.hidden = true;
 	} catch (e) {
 		cache.pkiCa = null;
@@ -4625,7 +4625,7 @@ async function refreshPkiIntermediate() {
 			", expires " +
 			intermediate.not_after +
 			") ";
-		status.appendChild(buildCaDownloadButton("kanxeo-intermediate-ca.crt", intermediate.cert_pem));
+		status.appendChild(buildCaDownloadButton("thinc-intermediate-ca.crt", intermediate.cert_pem));
 		form.hidden = true;
 	} catch (e) {
 		cache.pkiIntermediate = null;
@@ -6381,7 +6381,7 @@ async function refreshSiteConfig() {
 
 		badge.textContent = site.instance_name;
 		badge.hidden = false;
-		document.title = "Kanxeo — " + site.instance_name;
+		document.title = "thinC — " + site.instance_name;
 	} catch (e) {
 		/* Best-effort -- the form/header just stay at whatever was last shown. */
 	}
@@ -6680,7 +6680,7 @@ document.getElementById("sys-backup").addEventListener("click", async () => {
 		const a = document.createElement("a");
 
 		a.href = url;
-		a.download = "kanxeo-backup.json";
+		a.download = "thinc-backup.json";
 		a.click();
 		URL.revokeObjectURL(url);
 		clearStatus();

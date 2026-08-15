@@ -4,7 +4,7 @@
  * write and loader-entry logic (do_system_update(), daemon/src/
  * main.c) against a real virtio-blk disk inside a real QEMU guest --
  * the only place ROOT_A_DEVICE/ROOT_B_DEVICE (/dev/vda2, /dev/vda3)
- * actually exist. Reached via kanxeod's own --test-update-image=/
+ * actually exist. Reached via thincd's own --test-update-image=/
  * --test-update-kernel= self-test flags (same --simulate-unhealthy-
  * boot precedent), since host-to-guest HTTP is unavailable for a
  * statically-addressed guest under this project's own test harness
@@ -14,7 +14,7 @@
  * Layout, deliberately a superset of test_boot_ab.c's own minimal one:
  * ESP + root-a + root-b + a fourth "root-c" scratch partition + a
  * fifth "kernel-scratch" partition, all test-harness-only (not part of
- * the real 5-partition installer layout -- see image/src/kanxeo-
+ * the real 5-partition installer layout -- see image/src/thinc-
  * install.c's auto_partition()). root-c holds a second, genuinely
  * different-content squashfs image_path can point at as a raw device
  * path; kernel-scratch holds a second copy of the same real build/
@@ -24,7 +24,7 @@
  * difference to that code between the two). Slot A boots normally,
  * self-updates root AND kernel onto slot B mid-boot (root-c's content
  * -> root-b's device, kernel-scratch's content -> the ESP's own
- * kanxeo-bzImage-b), then a second, fresh QEMU power-on against the
+ * thinc-bzImage-b), then a second, fresh QEMU power-on against the
  * same persistent disk (this project's existing poll-and-check style,
  * not an in-VM reboot) proves the freshly-written slot B actually
  * boots, from its own per-slot kernel file specifically -- the real
@@ -41,8 +41,8 @@
 #include <unistd.h>
 
 #define MKBOOTROOT_BIN "build/mkbootroot"
-#define KANXEOD_BIN "build/kanxeod"
-#define KANXEOCTL_BIN "build/kanxeoctl"
+#define THINCD_BIN "build/thincd"
+#define THINCCTL_BIN "build/thincctl"
 #define BZIMAGE_PATH "build/bzImage"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
 #define MDIR_BIN "/usr/bin/mdir"
@@ -64,7 +64,7 @@
  * information this test needs to check (here: that BOTH root and
  * kernel were reported updated, not just one). */
 #define UPDATE_MARKER "test-update: status=200 slot=b updated=root,kernel"
-#define SUCCESS_MARKER "kanxeod listening on"
+#define SUCCESS_MARKER "thincd listening on"
 #define PANIC_MARKER "Kernel panic"
 #define ROOT_UPDATE_TRIES 3
 
@@ -86,17 +86,17 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 	if (esp_mcopy_in(esp_img, SYSTEMD_BOOT_EFI, "::/EFI/BOOT/BOOTX64.EFI") != 0)
 		return -1;
 	/* Per-slot kernel file (ADR-0032) -- slot A's own, matching what
-	 * the real installer now stages. Slot B's own kanxeo-bzImage-b
+	 * the real installer now stages. Slot B's own thinc-bzImage-b
 	 * does NOT get pre-staged here (unlike the real installer, which
 	 * pre-stages both) -- this test's whole point is proving the
 	 * self-update call creates it fresh, so a pre-existing one would
 	 * mask a real bug (e.g. writing to the wrong file) behind stale
 	 * content that happened to already be correct. */
-	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/kanxeo-bzImage-a") != 0)
+	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/thinc-bzImage-a") != 0)
 		return -1;
 
 	snprintf(loader_conf_path, sizeof(loader_conf_path), "%s/loader.conf", workdir);
-	if (write_text_file(loader_conf_path, "default kanxeo-*\ntimeout 0\n") != 0)
+	if (write_text_file(loader_conf_path, "default thinc-*\ntimeout 0\n") != 0)
 		return -1;
 	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/loader.conf") != 0)
 		return -1;
@@ -109,16 +109,16 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 	 * own image_path/kernel_path would be if pointed at a whole disk
 	 * rather than a regular file. */
 	snprintf(entry, sizeof(entry),
-	         "title Kanxeo (A)\n"
-	         "sort-key kanxeo\n"
+	         "title thinC (A)\n"
+	         "sort-key thinc\n"
 	         "version 1\n"
-	         "linux /kanxeo-bzImage-a\n"
-	         "options console=ttyS0 root=/dev/vda2 rw init=/bin/kanxeod -- "
+	         "linux /thinc-bzImage-a\n"
+	         "options console=ttyS0 root=/dev/vda2 rw init=/bin/thincd -- "
 	         "--init-mode --slot=a --bind=127.0.0.1 --test-update-image=/dev/vda4 "
 	         "--test-update-kernel=/dev/vda5\n");
 	if (write_text_file(loader_conf_path, entry) != 0)
 		return -1;
-	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/entries/kanxeo-a.conf") != 0)
+	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/entries/thinc-a.conf") != 0)
 		return -1;
 
 	return 0;
@@ -136,7 +136,7 @@ static int list_loader_entries(const char *disk_img, long esp_start_sec, char *o
 /* Builds a second web/ directory with the same three real dashboard
  * files plus one extra marker file -- enough to make the resulting
  * squashfs genuinely different bytes from root A's own image (both
- * built from the identical kanxeod binary otherwise), without needing
+ * built from the identical thincd binary otherwise), without needing
  * a second, unrelated binary. */
 static int stage_alt_web_dir(const char *dir)
 {
@@ -198,7 +198,7 @@ static int files_prefix_equal(const char *a_path, const char *b_path, long n)
 
 int main(void)
 {
-	char workdir[] = "/tmp/kanxeo_test_boot_update_XXXXXX";
+	char workdir[] = "/tmp/thinc_test_boot_update_XXXXXX";
 	char stage_dir[600], stage_dir_new[600], web_new_dir[600];
 	char root_squashfs_a[600], root_squashfs_new[600];
 	char disk_img[600];
@@ -246,7 +246,7 @@ int main(void)
 	 * build isn't needed for what this test is actually proving. */
 	{
 		char *argv_a[] = { (char *)MKBOOTROOT_BIN, stage_dir,
-			           (char *)KANXEOD_BIN, (char *)KANXEOCTL_BIN, "web", root_squashfs_a,
+			           (char *)THINCD_BIN, (char *)THINCCTL_BIN, "web", root_squashfs_a,
 			           "", "", "", "", NULL };
 		if (run_subprocess(MKBOOTROOT_BIN, argv_a) != 0)
 			return 1;
@@ -257,7 +257,7 @@ int main(void)
 	}
 	{
 		char *argv_new[] = { (char *)MKBOOTROOT_BIN, stage_dir_new,
-			             (char *)KANXEOD_BIN, (char *)KANXEOCTL_BIN, web_new_dir, root_squashfs_new,
+			             (char *)THINCD_BIN, (char *)THINCCTL_BIN, web_new_dir, root_squashfs_new,
 			             "", "", "", "", NULL };
 		if (run_subprocess(MKBOOTROOT_BIN, argv_new) != 0)
 			return 1;
@@ -392,8 +392,8 @@ int main(void)
 	/* 4. The fresh loader entry now exists on the ESP, with a real
 	 * Automatic Boot Assessment tries-left counter, matching the very
 	 * first install's own convention -- and its own content, read back
-	 * directly, references kanxeo-bzImage-b specifically, not the old
-	 * shared filename or slot A's own kanxeo-bzImage-a. */
+	 * directly, references thinc-bzImage-b specifically, not the old
+	 * shared filename or slot A's own thinc-bzImage-a. */
 	if (list_loader_entries(disk_img, esp_start_sec, entries_listing, sizeof(entries_listing)) !=
 	    0) {
 		fprintf(stderr, "FAIL: could not list loader/entries after attempt 1\n");
@@ -405,7 +405,7 @@ int main(void)
 		 * distinctive "b+3" substring rather than depending on mdir's
 		 * own display casing. */
 		if (strstr(entries_listing, "B+3") == NULL && strstr(entries_listing, "b+3") == NULL) {
-			fprintf(stderr, "FAIL: no fresh kanxeo-b+%d.conf entry found on the ESP\n",
+			fprintf(stderr, "FAIL: no fresh thinc-b+%d.conf entry found on the ESP\n",
 			        ROOT_UPDATE_TRIES);
 			ok = 0;
 		}
@@ -415,7 +415,7 @@ int main(void)
 		char entry_content[4096] = { 0 };
 		FILE *ef;
 
-		snprintf(entry_src, sizeof(entry_src), "::/loader/entries/kanxeo-b+%d.conf",
+		snprintf(entry_src, sizeof(entry_src), "::/loader/entries/thinc-b+%d.conf",
 		         ROOT_UPDATE_TRIES);
 		if (esp_mcopy_out(esp_drive, entry_src, extracted_entry_b) != 0) {
 			fprintf(stderr, "FAIL: could not read back the fresh slot-b loader entry\n");
@@ -428,14 +428,14 @@ int main(void)
 			}
 			if (ef != NULL)
 				fclose(ef);
-			if (strstr(entry_content, "linux /kanxeo-bzImage-b") == NULL) {
+			if (strstr(entry_content, "linux /thinc-bzImage-b") == NULL) {
 				fprintf(stderr,
-				        "FAIL: slot-b loader entry does not reference /kanxeo-bzImage-b, "
+				        "FAIL: slot-b loader entry does not reference /thinc-bzImage-b, "
 				        "content:\n%s\n",
 				        entry_content);
 				ok = 0;
 			} else {
-				printf("slot-b loader entry correctly references /kanxeo-bzImage-b\n");
+				printf("slot-b loader entry correctly references /thinc-bzImage-b\n");
 			}
 		}
 	}
@@ -459,32 +459,32 @@ int main(void)
 	 * "new" kernel, AND slot A's own kernel file was never touched --
 	 * proves the per-slot write landed at the right file, not just
 	 * that some write happened somewhere on the ESP. */
-	if (esp_mcopy_out(esp_drive, "::/kanxeo-bzImage-b", extracted_kernel_b) != 0) {
-		fprintf(stderr, "FAIL: could not read back kanxeo-bzImage-b\n");
+	if (esp_mcopy_out(esp_drive, "::/thinc-bzImage-b", extracted_kernel_b) != 0) {
+		fprintf(stderr, "FAIL: could not read back thinc-bzImage-b\n");
 		ok = 0;
 	} else if (!files_prefix_equal(extracted_kernel_b, BZIMAGE_PATH, bzimage_st.st_size)) {
-		fprintf(stderr, "FAIL: kanxeo-bzImage-b content does not match the update kernel\n");
+		fprintf(stderr, "FAIL: thinc-bzImage-b content does not match the update kernel\n");
 		ok = 0;
 	} else {
-		printf("kanxeo-bzImage-b matches the update kernel byte-for-byte (%ld bytes)\n",
+		printf("thinc-bzImage-b matches the update kernel byte-for-byte (%ld bytes)\n",
 		       (long)bzimage_st.st_size);
 	}
-	if (esp_mcopy_out(esp_drive, "::/kanxeo-bzImage-a", extracted_kernel_a) != 0) {
-		fprintf(stderr, "FAIL: could not read back kanxeo-bzImage-a\n");
+	if (esp_mcopy_out(esp_drive, "::/thinc-bzImage-a", extracted_kernel_a) != 0) {
+		fprintf(stderr, "FAIL: could not read back thinc-bzImage-a\n");
 		ok = 0;
 	} else if (!files_prefix_equal(extracted_kernel_a, BZIMAGE_PATH, bzimage_st.st_size)) {
-		fprintf(stderr, "FAIL: kanxeo-bzImage-a was modified -- slot A's own kernel must "
+		fprintf(stderr, "FAIL: thinc-bzImage-a was modified -- slot A's own kernel must "
 		                "never be touched by a slot-B update\n");
 		ok = 0;
 	} else {
-		printf("kanxeo-bzImage-a confirmed unchanged\n");
+		printf("thinc-bzImage-a confirmed unchanged\n");
 	}
 
 	/* 7. Attempt 2: a fresh power-on against the same persistent disk --
 	 * the real payoff. The freshly-written slot B entry's version
 	 * (a UNIX timestamp) sorts above slot A's own (version 1), so it
 	 * should now boot by default, and it must actually work: a real
-	 * kernel + kanxeod booting from the image this test itself wrote
+	 * kernel + thincd booting from the image this test itself wrote
 	 * moments ago via the daemon's own code, not pre-baked onto the
 	 * disk by the test harness. */
 	if (ok) {
@@ -510,7 +510,7 @@ int main(void)
 			        captured);
 			ok = 0;
 		} else {
-			printf("attempt 2: booted slot B successfully from kanxeo-bzImage-b -- the "
+			printf("attempt 2: booted slot B successfully from thinc-bzImage-b -- the "
 			       "combined root+kernel update actually works\n");
 		}
 	}

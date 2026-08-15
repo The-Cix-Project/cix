@@ -451,7 +451,7 @@ int overlay_upperdir_size(const char *upperdir_path, long long *out_bytes);
  * rich, disjoint numeric exit-code encoding (see the child branch's
  * own comments) -- but the ONLY place that encoding was ever
  * explained in human terms was a perror() to this process's own
- * stdin/stderr, which on a real installed box (kanxeod as PID 1, no
+ * stdin/stderr, which on a real installed box (thincd as PID 1, no
  * attached console, no systemd journal) reaches nobody. On failure of
  * ANY of those steps, before exit()ing with its own numeric code, the
  * child now ALSO writes one "step: strerror(errno)" line to this

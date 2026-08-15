@@ -298,7 +298,7 @@ int main(void)
 	}
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/kanxeod";
+	dargv[0] = "build/thincd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = BIND_ARG;
@@ -311,8 +311,8 @@ int main(void)
 		return 1;
 	}
 	if (daemon_pid == 0) {
-		execve("build/kanxeod", dargv, environ);
-		perror("execve build/kanxeod");
+		execve("build/thincd", dargv, environ);
+		perror("execve build/thincd");
 		_exit(127);
 	}
 
@@ -329,12 +329,12 @@ int main(void)
 	 * 0. ADR-0053: reconcile_instance_dns_record() runs once at daemon
 	 * startup -- with a real, specific --bind= address (TEST_BIND, not
 	 * the default 127.0.0.1 this function deliberately skips), a
-	 * record for the default FQDN ("kanxeo.internal" -- default
+	 * record for the default FQDN ("thinc.internal" -- default
 	 * instance_name/domain_suffix, no site config touched yet) must
 	 * already exist without any PUT ever happening.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/dns/records/kanxeo.internal", NULL, &r) != 0 ||
+	if (kx_client_request(&client, "GET", "/v1/dns/records/thinc.internal", NULL, &r) != 0 ||
 	    r.status != 200 || !str_eq(json_str_field(r.json, "ip"), TEST_BIND)) {
 		fprintf(stderr,
 		        "FAIL: instance DNS record for default FQDN missing at startup, status=%d\n",
@@ -366,7 +366,7 @@ int main(void)
 	kx_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/dns/records/kanxeo.internal", NULL, &r) != 0 ||
+	if (kx_client_request(&client, "GET", "/v1/dns/records/thinc.internal", NULL, &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: old instance DNS record still present after rename, status=%d\n",
 		        r.status);

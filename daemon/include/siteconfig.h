@@ -8,8 +8,8 @@
  * install/site -- raised directly by the user rejecting a hardcoded
  * ".internal" default: "this should be configurable... this has an
  * effect on both DNS and PKI." Three fields: instance_name (this
- * specific host's own label, e.g. "kanxeo1" -- always non-empty,
- * defaults to "kanxeo", the one field this module guarantees always
+ * specific host's own label, e.g. "thinc1" -- always non-empty,
+ * defaults to "thinc", the one field this module guarantees always
  * has *something* to display so the dashboard/backups always have an
  * identity to show), site_name (an operator-chosen group/location
  * label, e.g. "lab1" -- empty is valid, meaning "no site tier," a
@@ -47,7 +47,7 @@ enum siteconfig_error {
 /*
  * Loads state_path (the persisted site config, if any) at startup.
  * Absent file (first-ever boot) is not an error -- defaults apply:
- * instance_name "kanxeo", site_name "" (no site tier), domain_suffix
+ * instance_name "thinc", site_name "" (no site tier), domain_suffix
  * "internal". A persisted file from before instance_name existed
  * (missing the field) is not an error either -- the default applies
  * to that one field exactly as it would on a fresh install. Returns

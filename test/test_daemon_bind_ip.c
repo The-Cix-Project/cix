@@ -1,7 +1,7 @@
 /*
  * ADR-0068 end-to-end test: proves bind_ip is a real, dedicated second
  * address on the management network's own bridge, not just a JSON
- * field -- verified via a full live round-trip against a real kanxeod:
+ * field -- verified via a full live round-trip against a real thincd:
  * repoint management to a fresh network (a real listen-socket rebind
  * to that network's own address), then set bind_ip (another real
  * rebind, this time to a second, distinct address added to the same
@@ -50,7 +50,7 @@ static pid_t start_daemon(void)
 	static char data_dir_arg[PATH_MAX + 11];
 
 	snprintf(data_dir_arg, sizeof(data_dir_arg), "--data-dir=%s", g_data_dir);
-	dargv[0] = "build/kanxeod";
+	dargv[0] = "build/thincd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
 	dargv[3] = NULL;
@@ -61,8 +61,8 @@ static pid_t start_daemon(void)
 		return -1;
 	}
 	if (pid == 0) {
-		execve("build/kanxeod", dargv, environ);
-		perror("execve build/kanxeod");
+		execve("build/thincd", dargv, environ);
+		perror("execve build/thincd");
 		_exit(127);
 	}
 	return pid;
