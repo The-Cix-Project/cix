@@ -11,6 +11,7 @@
 | `thinc-mark.ascii.txt` | Terminal renderings of the concise mark | CLI startup banners, log prefixes, anywhere a graphical asset can't render. |
 | `GUIDELINES.md` | Full brand narrative, color system, typography, voice/tone | Reference for anyone writing copy or building UI under the thinC brand. |
 | `logo-reference-sheet.png` | Original multi-variant design reference | Historical/design reference only — not a file to embed anywhere; the SVGs above are the real, current assets. |
+| `logo-design-reference.png` | "01E EVOLVED" construction sheet -- exact grid/stroke rules, clear-space, and full/shorthand/favicon usage examples for the mark | The authoritative geometry reference if the SVGs above ever need re-deriving. Not a file to embed anywhere. |
 
 ## The rule
 
