@@ -110,6 +110,9 @@
 				<li><a href="#disks">Disks</a></li>
 				<li><button type="button" data-modal="diskrole-form" data-title="Assign disk role">+ Assign Disk Role</button></li>
 				<li><button type="button" data-modal="pkg-bootstrap-form" data-title="Bootstrap build image">Bootstrap Build Image</button></li>
+				<li><a href="#kmod">Kernel Modules</a></li>
+				<li><button type="button" data-modal="kmod-load-form" data-title="Load a kernel module">+ Load Module</button></li>
+				<li><button type="button" data-modal="kmodconfig-set-form" data-title="Configure a kernel module">+ Configure Module</button></li>
 			</ul>
 		</div>
 
@@ -120,6 +123,8 @@
 				<li><a href="#site">Site</a></li>
 				<li><a href="#routes">Routes</a></li>
 				<li><button type="button" data-modal="route-add-form" data-title="Add route">+ Add Route</button></li>
+				<li><a href="#sysctl">Sysctl</a></li>
+				<li><button type="button" data-modal="sysctl-set-form" data-title="Set a sysctl">+ Set Sysctl</button></li>
 				<li><a href="#host-swap">Host Swap</a></li>
 				<li><a href="#rolling-restart">Rolling Restart</a></li>
 				<li><a href="#pkg-build-config">Package Builds</a></li>
@@ -543,6 +548,87 @@
 				<table>
 					<thead><tr><th>ID</th><th>Description</th><th>Driver</th><th>Assignable</th><th>Name</th><th></th></tr></thead>
 					<tbody id="dev-gpu-body"><tr><td colspan="6" class="empty">Loading&hellip;</td></tr></tbody>
+				</table>
+			</div>
+		</section>
+
+		<!-- Kernel Modules (ADR-0159) -->
+		<section class="view" id="view-kmod" hidden>
+			<h2>Kernel Modules</h2>
+			<p class="hint">Real, live <code>/proc/modules</code> state plus the persisted default-options/autoload config each one may have (ADR-0159 Phase A) -- load/unload here takes effect immediately; a kernel rebuild (below) is only needed to add support for a module that isn't already built at all.</p>
+
+			<h3>Loaded modules</h3>
+			<table id="kmod-table">
+				<thead>
+					<tr>
+						<th>Name</th>
+						<th>Size</th>
+						<th>Used by</th>
+						<th>State</th>
+						<th></th>
+					</tr>
+				</thead>
+				<tbody id="kmod-body">
+					<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
+				</tbody>
+			</table>
+
+			<h3>Persisted config</h3>
+			<p class="hint">Default options and boot-time autoload for a specific module -- set one via the Hardware menu's "+ Configure Module" action.</p>
+			<table id="kmodconfig-table">
+				<thead>
+					<tr>
+						<th>Name</th>
+						<th>Default options</th>
+						<th>Autoload</th>
+						<th></th>
+					</tr>
+				</thead>
+				<tbody id="kmodconfig-body">
+					<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
+				</tbody>
+			</table>
+
+			<h3>Build a kernel with extra modules</h3>
+			<p class="hint">An ordinary <code>pkg hostbuild kernel</code> under the hood, gaining extra <code>=m</code> module symbols merged into the same curated kernel config -- needs a reboot onto the new build (Update page) to actually take effect.</p>
+			<form id="kmod-build-form">
+				<label>
+					Build image
+					<input type="text" id="kbf-build-image" placeholder="dev" required>
+				</label>
+				<label>
+					Version (optional)
+					<input type="text" id="kbf-version" placeholder="latest">
+				</label>
+				<label class="wide">
+					Extra CONFIG_ symbols (comma-separated)
+					<input type="text" id="kbf-symbols" placeholder="CONFIG_USB_STORAGE,CONFIG_E1000E">
+				</label>
+				<label class="checkbox">
+					<input type="checkbox" id="kbf-upgrade">
+					Upgrade (overwrite currently-published version)
+				</label>
+				<button type="submit">Start build</button>
+			</form>
+			<p id="kbf-status" class="hint"></p>
+		</section>
+
+		<!-- Sysctl (ADR-0160) -->
+		<section class="view" id="view-sysctl" hidden>
+			<div class="view-list">
+				<h2>Sysctl</h2>
+				<p class="hint">Every persisted (daemon-managed) host-level <code>/proc/sys</code> key (ADR-0160) -- fully open, no allowlist, host-auth write-gating is the only access control. A key set here re-applies on every boot unless set with "no persist". Set one via the Host menu's "+ Set Sysctl" action.</p>
+				<table id="sysctl-table">
+					<thead>
+						<tr>
+							<th>Key</th>
+							<th>Value</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="sysctl-body">
+						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
+					</tbody>
 				</table>
 			</div>
 		</section>
@@ -1691,6 +1777,57 @@
 						<input type="text" id="nf-address" placeholder="(none), or e.g. 172.31.0.1">
 					</label>
 					<button type="submit">Create</button>
+				</form>
+			</div>
+
+			<div id="modal-sysctl-set-form" hidden>
+				<form id="sysctl-set-form">
+					<label>
+						Key
+						<input type="text" id="sf-key" placeholder="net.ipv4.ip_forward" required>
+					</label>
+					<label class="wide">
+						Value(s) (comma-separated for a tuple key)
+						<input type="text" id="sf-value" placeholder="1" required>
+					</label>
+					<label class="checkbox">
+						<input type="checkbox" id="sf-persist" checked>
+						Persist (re-apply on every boot)
+					</label>
+					<button type="submit">Set</button>
+				</form>
+			</div>
+
+			<div id="modal-kmod-load-form" hidden>
+				<form id="kmod-load-form">
+					<label>
+						Module name
+						<input type="text" id="klf-name" placeholder="e1000e" required>
+					</label>
+					<label class="wide">
+						Options (KEY=VALUE, comma-separated -- optional)
+						<input type="text" id="klf-options" placeholder="debug=1">
+					</label>
+					<p class="hint">No options given falls back to this module's own persisted default_options, if any.</p>
+					<button type="submit">Load</button>
+				</form>
+			</div>
+
+			<div id="modal-kmodconfig-set-form" hidden>
+				<form id="kmcf-set-form">
+					<label>
+						Module name
+						<input type="text" id="kmcf-name" placeholder="e1000e" required>
+					</label>
+					<label class="wide">
+						Default options (KEY=VALUE, comma-separated -- optional)
+						<input type="text" id="kmcf-options" placeholder="debug=1">
+					</label>
+					<label class="checkbox">
+						<input type="checkbox" id="kmcf-autoload">
+						Autoload at boot
+					</label>
+					<button type="submit">Save</button>
 				</form>
 			</div>
 

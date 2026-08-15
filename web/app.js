@@ -58,6 +58,9 @@ const cache = {
 	siteConfig: null,
 	daemonConfig: null,
 	swap: null,
+	sysctls: [],
+	kmodModules: [],
+	kmodConfig: [],
 };
 
 const healthBadge = document.getElementById("health");
@@ -821,6 +824,8 @@ const CATEGORY_VIEWS = {
 	routes: "view-routes",
 	images: "view-images",
 	devices: "view-devices",
+	kmod: "view-kmod",
+	sysctl: "view-sysctl",
 	disks: "view-disks",
 	"dns-records": "view-dns-records",
 	"dns-servers": "view-dns-servers",
@@ -895,6 +900,10 @@ function renderCurrentView() {
 			renderNetworkDetail(route.name);
 		else if (route.category === "routes")
 			renderRoutesList();
+		else if (route.category === "sysctl")
+			renderSysctlList();
+		else if (route.category === "kmod")
+			renderKmodList();
 		else if (route.category === "host-stats")
 			startHostStatsPolling();
 		else if (route.category === "processes")
@@ -6695,6 +6704,293 @@ function renderRoutesList() {
 		appendRouteRow(tbody, route);
 }
 
+/* ---------- sysctl (ADR-0160) ---------- */
+
+async function refreshSysctl() {
+	try {
+		const r = await apiRequest("GET", "/v1/system/sysctl");
+
+		cache.sysctls = r.sysctls;
+	} catch (e) {
+		/* Best-effort -- cache.sysctls just stays at whatever was last shown. */
+	}
+}
+
+/* A sysctl's own "value" field is either a bare string or an array
+ * (tuple-shaped keys, e.g. net.ipv4.ip_local_port_range) -- both
+ * already documented shapes the daemon accepts and returns as-is. */
+function formatSysctlValue(value) {
+	return Array.isArray(value) ? value.join(" ") : String(value);
+}
+
+async function removeSysctl(key) {
+	try {
+		await apiRequest("DELETE", "/v1/system/sysctl/" + encodeURIComponent(key));
+		clearStatus();
+		await refreshSysctl();
+		renderCurrentView();
+	} catch (e) {
+		showStatus("Failed to remove sysctl: " + e.message, true);
+	}
+}
+
+function renderSysctlList() {
+	const tbody = document.getElementById("sysctl-body");
+
+	tbody.textContent = "";
+	if (cache.sysctls.length === 0) {
+		tbody.innerHTML = '<tr><td colspan="3" class="empty">No sysctls persisted.</td></tr>';
+		return;
+	}
+	for (const s of cache.sysctls) {
+		const row = document.createElement("tr");
+		const key = document.createElement("td");
+		const value = document.createElement("td");
+		const actionCell = document.createElement("td");
+		const rmButton = document.createElement("button");
+
+		key.textContent = s.key;
+		key.className = "processes-cmdline";
+		value.textContent = formatSysctlValue(s.value);
+		rmButton.textContent = "Remove";
+		rmButton.className = "button-danger";
+		rmButton.addEventListener("click", () => removeSysctl(s.key));
+		actionCell.appendChild(rmButton);
+		row.appendChild(key);
+		row.appendChild(value);
+		row.appendChild(actionCell);
+		tbody.appendChild(row);
+	}
+}
+
+/* Parses the web form's own single "KEY=VALUE,KEY=VALUE" text field
+ * into the {key: value} object shape both /kmod POST (load options)
+ * and /kmod-config PUT (default_options) expect -- the web analog of
+ * thincctl's repeatable --option=KEY=VALUE. Empty input -> {} (no
+ * options), matching "omit means fall back to persisted defaults". */
+function parseKeyValueList(text) {
+	const result = {};
+	const trimmed = text.trim();
+
+	if (trimmed === "")
+		return result;
+	for (const pair of trimmed.split(",")) {
+		const eq = pair.indexOf("=");
+
+		if (eq > 0)
+			result[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
+	}
+	return result;
+}
+
+document.getElementById("sysctl-set-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const key = document.getElementById("sf-key").value.trim();
+	const rawValues = document.getElementById("sf-value").value.split(",").map((v) => v.trim()).filter((v) => v !== "");
+	const persist = document.getElementById("sf-persist").checked;
+
+	if (key === "" || rawValues.length === 0)
+		return;
+	try {
+		const body = { value: rawValues.length === 1 ? rawValues[0] : rawValues };
+
+		if (!persist)
+			body.persist = false;
+		await apiRequest("PUT", "/v1/system/sysctl/" + encodeURIComponent(key), body);
+		clearStatus();
+		document.getElementById("sysctl-set-form").reset();
+		document.getElementById("sf-persist").checked = true;
+		closeModal();
+		await refreshSysctl();
+		renderCurrentView();
+	} catch (e) {
+		showStatus("Failed to set sysctl: " + e.message, true);
+	}
+});
+
+/* ---------- kernel modules (ADR-0159 Phase A) ---------- */
+
+async function refreshKmod() {
+	try {
+		const r = await apiRequest("GET", "/v1/system/kmod");
+
+		cache.kmodModules = r.modules;
+	} catch (e) {
+		/* Best-effort -- cache.kmodModules just stays at whatever was last shown. */
+	}
+}
+
+async function refreshKmodConfig() {
+	try {
+		const r = await apiRequest("GET", "/v1/system/kmod-config");
+
+		cache.kmodConfig = r.kmod_config;
+	} catch (e) {
+		/* Best-effort -- cache.kmodConfig just stays at whatever was last shown. */
+	}
+}
+
+async function unloadKmod(name) {
+	try {
+		await apiRequest("DELETE", "/v1/system/kmod/" + encodeURIComponent(name));
+		clearStatus();
+		await refreshKmod();
+		renderCurrentView();
+	} catch (e) {
+		showStatus("Failed to unload " + name + ": " + e.message, true);
+	}
+}
+
+async function removeKmodConfig(name) {
+	try {
+		await apiRequest("DELETE", "/v1/system/kmod-config/" + encodeURIComponent(name));
+		clearStatus();
+		await refreshKmodConfig();
+		renderCurrentView();
+	} catch (e) {
+		showStatus("Failed to remove kmod config: " + e.message, true);
+	}
+}
+
+function renderKmodList() {
+	const tbody = document.getElementById("kmod-body");
+
+	tbody.textContent = "";
+	if (cache.kmodModules.length === 0) {
+		tbody.innerHTML = '<tr><td colspan="5" class="empty">No modules loaded.</td></tr>';
+	} else {
+		for (const m of cache.kmodModules) {
+			const row = document.createElement("tr");
+			const name = document.createElement("td");
+			const size = document.createElement("td");
+			const usedBy = document.createElement("td");
+			const state = document.createElement("td");
+			const actionCell = document.createElement("td");
+			const unloadButton = document.createElement("button");
+
+			name.textContent = m.name;
+			size.textContent = m.size;
+			usedBy.textContent = m.used_by_count + (m.used_by && m.used_by.length > 0 ? " [" + m.used_by.join(",") + "]" : "");
+			state.textContent = m.state;
+			unloadButton.textContent = "Unload";
+			unloadButton.className = "button-danger";
+			unloadButton.addEventListener("click", () => unloadKmod(m.name));
+			actionCell.appendChild(unloadButton);
+			row.appendChild(name);
+			row.appendChild(size);
+			row.appendChild(usedBy);
+			row.appendChild(state);
+			row.appendChild(actionCell);
+			tbody.appendChild(row);
+		}
+	}
+
+	const configBody = document.getElementById("kmodconfig-body");
+
+	configBody.textContent = "";
+	if (cache.kmodConfig.length === 0) {
+		configBody.innerHTML = '<tr><td colspan="4" class="empty">No kmod config persisted.</td></tr>';
+		return;
+	}
+	for (const c of cache.kmodConfig) {
+		const row = document.createElement("tr");
+		const name = document.createElement("td");
+		const options = document.createElement("td");
+		const autoload = document.createElement("td");
+		const actionCell = document.createElement("td");
+		const rmButton = document.createElement("button");
+
+		name.textContent = c.name;
+		options.textContent = c.default_options && Object.keys(c.default_options).length > 0
+			? Object.entries(c.default_options).map(([k, v]) => k + "=" + v).join(" ")
+			: "(none)";
+		autoload.textContent = c.autoload ? "yes" : "no";
+		rmButton.textContent = "Remove";
+		rmButton.className = "button-danger";
+		rmButton.addEventListener("click", () => removeKmodConfig(c.name));
+		actionCell.appendChild(rmButton);
+		row.appendChild(name);
+		row.appendChild(options);
+		row.appendChild(autoload);
+		row.appendChild(actionCell);
+		configBody.appendChild(row);
+	}
+}
+
+document.getElementById("kmod-load-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const name = document.getElementById("klf-name").value.trim();
+
+	if (name === "")
+		return;
+	try {
+		const options = parseKeyValueList(document.getElementById("klf-options").value);
+
+		await apiRequest("POST", "/v1/system/kmod/" + encodeURIComponent(name), { options: options });
+		clearStatus();
+		document.getElementById("kmod-load-form").reset();
+		closeModal();
+		await refreshKmod();
+		renderCurrentView();
+	} catch (e) {
+		showStatus("Failed to load " + name + ": " + e.message, true);
+	}
+});
+
+document.getElementById("kmcf-set-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const name = document.getElementById("kmcf-name").value.trim();
+
+	if (name === "")
+		return;
+	try {
+		const body = {
+			default_options: parseKeyValueList(document.getElementById("kmcf-options").value),
+			autoload: document.getElementById("kmcf-autoload").checked,
+		};
+
+		await apiRequest("PUT", "/v1/system/kmod-config/" + encodeURIComponent(name), body);
+		clearStatus();
+		document.getElementById("kmcf-set-form").reset();
+		closeModal();
+		await refreshKmodConfig();
+		renderCurrentView();
+	} catch (e) {
+		showStatus("Failed to configure " + name + ": " + e.message, true);
+	}
+});
+
+document.getElementById("kmod-build-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+
+	const buildImage = document.getElementById("kbf-build-image").value.trim();
+	const version = document.getElementById("kbf-version").value.trim();
+	const symbolsText = document.getElementById("kbf-symbols").value.trim();
+	const upgrade = document.getElementById("kbf-upgrade").checked;
+	const statusEl = document.getElementById("kbf-status");
+
+	if (buildImage === "")
+		return;
+	try {
+		const body = { build_image: buildImage };
+
+		if (version !== "")
+			body.version = version;
+		if (symbolsText !== "")
+			body.symbols = symbolsText.split(",").map((s) => s.trim()).filter((s) => s !== "");
+		if (upgrade)
+			body.upgrade = true;
+		await apiRequest("POST", "/v1/system/kmod-build", body);
+		clearStatus();
+		statusEl.textContent = "Build started -- see the log panel below for progress.";
+	} catch (e) {
+		showStatus("Failed to start kernel build: " + e.message, true);
+	}
+});
+
 /* The log browsing table/filter form moved to the always-visible
  * bottom log panel (ADR-0129) -- this page now only shows/edits the
  * server-side store's own size cap. */
@@ -7076,6 +7372,9 @@ async function poll() {
 		await refreshRollingConfig();
 		await refreshPkgBuildConfig();
 		await refreshRoutes();
+		await refreshSysctl();
+		await refreshKmod();
+		await refreshKmodConfig();
 		await refreshSwap();
 		await refreshTlsThrottleConfig();
 		await refreshTlsThrottleStatus();
