@@ -98,6 +98,104 @@ try {
 	/* localStorage unavailable -- default expanded. */
 }
 
+/*
+ * ---------- resizable tree/log panels ----------
+ *
+ * Shared drag-to-resize helper, one instance per handle -- axis "x"
+ * resizes width (the tree, via .layout's own grid-template-columns
+ * first track), axis "y" resizes height (the log panel, via its own
+ * flex-basis). invert accounts for which edge of the resized element
+ * the handle sits on: the tree's handle is on its right edge (drag
+ * right = grow, no inversion needed), the log panel's handle is on
+ * its top edge but the panel itself is anchored to the page's bottom
+ * (drag down = shrink, the delta has to flip). Persists to
+ * localStorage (thinc-tree-width/thinc-log-height) and restores on
+ * load -- same convention as theme/tree-collapse/log-collapse above.
+ */
+function makeResizable(handle, opts) {
+	const { axis, invert, storageKey, min, max, getSize, apply } = opts;
+	let dragging = false;
+	let startPos = 0;
+	let startSize = 0;
+	let lastSize = getSize();
+
+	function clamp(size) {
+		return Math.min(max, Math.max(min, size));
+	}
+
+	function onMove(event) {
+		if (!dragging)
+			return;
+		const pos = axis === "x" ? event.clientX : event.clientY;
+		const delta = pos - startPos;
+
+		lastSize = clamp(startSize + (invert ? -delta : delta));
+		apply(lastSize);
+	}
+
+	function onUp() {
+		if (!dragging)
+			return;
+		dragging = false;
+		handle.classList.remove("dragging");
+		document.body.style.cursor = "";
+		document.body.style.userSelect = "";
+		document.removeEventListener("mousemove", onMove);
+		document.removeEventListener("mouseup", onUp);
+		try {
+			localStorage.setItem(storageKey, String(lastSize));
+		} catch (e) {
+			/* localStorage unavailable -- won't survive a reload. */
+		}
+	}
+
+	handle.addEventListener("mousedown", (event) => {
+		event.preventDefault();
+		dragging = true;
+		startPos = axis === "x" ? event.clientX : event.clientY;
+		startSize = lastSize;
+		handle.classList.add("dragging");
+		document.body.style.cursor = axis === "x" ? "col-resize" : "row-resize";
+		document.body.style.userSelect = "none";
+		document.addEventListener("mousemove", onMove);
+		document.addEventListener("mouseup", onUp);
+	});
+
+	try {
+		const saved = localStorage.getItem(storageKey);
+
+		if (saved !== null) {
+			lastSize = clamp(parseInt(saved, 10));
+			apply(lastSize);
+		}
+	} catch (e) {
+		/* localStorage unavailable -- default size stands. */
+	}
+}
+
+makeResizable(document.getElementById("tree-resize-handle"), {
+	axis: "x",
+	storageKey: "thinc-tree-width",
+	min: 160,
+	max: 480,
+	getSize: () => document.querySelector(".tree-panel").getBoundingClientRect().width,
+	apply: (size) => {
+		document.querySelector(".layout").style.gridTemplateColumns = size + "px 1fr";
+	},
+});
+
+makeResizable(document.getElementById("log-panel-resize-handle"), {
+	axis: "y",
+	invert: true,
+	storageKey: "thinc-log-height",
+	min: 80,
+	max: Math.round(window.innerHeight * 0.7),
+	getSize: () => logPanel.getBoundingClientRect().height,
+	apply: (size) => {
+		logPanel.style.flexBasis = size + "px";
+	},
+});
+
 /* ---------- theme toggle (light / dark / auto) ---------- */
 
 const THEME_KEY = "thinc-theme";

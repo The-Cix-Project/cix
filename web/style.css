@@ -373,11 +373,48 @@ header {
 }
 
 .tree-panel {
+	position: relative;
 	display: flex;
 	flex-direction: column;
 	height: 100%;
 	min-height: 0;
 	border-right: 1px solid var(--border);
+}
+
+/* Drag handles for the resizable tree/log panels (thinc-tree-width/
+ * thinc-log-height in localStorage, same persisted-preference
+ * convention as theme/tree-collapse/log-collapse). A thin, mostly-
+ * invisible hit target that only reveals itself as an accent color on
+ * hover/drag -- the resize affordance shouldn't compete visually with
+ * the border it sits on. */
+.resize-handle {
+	position: absolute;
+	background: transparent;
+	z-index: 10;
+}
+
+.resize-handle:hover,
+.resize-handle.dragging {
+	/* Matches the base button color (style.css's own `button { background:
+	 * #0a84ff }`) -- no separate --accent variable exists in this file. */
+	background: #0a84ff;
+	opacity: 0.5;
+}
+
+.resize-handle-v {
+	top: 0;
+	right: -3px;
+	width: 6px;
+	height: 100%;
+	cursor: col-resize;
+}
+
+.resize-handle-h {
+	top: 0;
+	left: 0;
+	width: 100%;
+	height: 6px;
+	cursor: row-resize;
 }
 
 .tree-instance-label {
@@ -546,6 +583,7 @@ main {
 }
 
 #log-panel {
+	position: relative;
 	flex: 0 0 200px;
 	display: flex;
 	flex-direction: column;
@@ -553,7 +591,9 @@ main {
 	background: var(--panel);
 	/* Defensive backstop alongside #log-output's own min-height: 0
 	   below -- nothing rendered inside this panel can ever visually
-	   spill past its fixed 200px, regardless of content volume. */
+	   spill past its own flex-basis height, regardless of content
+	   volume. The resize handle sits at top:0 (not a negative offset)
+	   specifically so this doesn't clip it. */
 	overflow: hidden;
 }
 
@@ -591,6 +631,10 @@ main {
 
 #log-panel.collapsed {
 	flex: 0 0 auto;
+}
+
+#log-panel.collapsed .resize-handle {
+	display: none;
 }
 
 #log-panel.collapsed .log-panel-header {
