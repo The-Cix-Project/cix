@@ -1939,9 +1939,16 @@ skip_pin_isolation:
 		/* poll GET /v1/pkg/hostbuild/{name} (the dedicated route, not
 		 * the generic /v1/pkg/{name} -- that one has no way to say
 		 * "look under the __hostbuild image" without a name@image
-		 * suffix) until it leaves fetching/building. */
+		 * suffix) until it leaves fetching/building. 100 attempts
+		 * (30s), not the original 30 (9s) -- ADR-0157 Phase 2 made
+		 * this poll window genuinely share the box with a second, real
+		 * concurrent gcc build (hbconcurrent, below), so the old
+		 * single-build-tuned timeout is now marginal under real CPU
+		 * contention, confirmed live (intermittent, non-deterministic
+		 * timeouts here across repeated runs, never a wrong RESULT,
+		 * always just "didn't finish within the old window yet"). */
 		hb_state[0] = '\0';
-		for (i = 0; i < 30; i++) {
+		for (i = 0; i < 100; i++) {
 			const char *state;
 
 			memset(&r, 0, sizeof(r));
