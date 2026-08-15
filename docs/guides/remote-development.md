@@ -1,10 +1,10 @@
 # Developing against a real remote box, with no SSH
 
-How to push local (or even entirely server-compiled) changes onto a real, already-installed Kanxeo host and verify they actually took effect — without SSH, without a general shell, and without reinstalling from an ISO each time. This is the operational counterpart to [`building-kanxeo.md`](building-kanxeo.md) (which covers compiling) and [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md)/[`staying-updated.md`](staying-updated.md) (which cover the update endpoints themselves) — this page is the "how do I actually get a file onto the box in the first place, and prove it landed" walkthrough neither of those needed to be, because a real Kanxeo install genuinely has no other way in.
+How to push local (or even entirely server-compiled) changes onto a real, already-installed thinC host and verify they actually took effect — without SSH, without a general shell, and without reinstalling from an ISO each time. This is the operational counterpart to [`building-thinc.md`](building-thinc.md) (which covers compiling) and [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md)/[`staying-updated.md`](staying-updated.md) (which cover the update endpoints themselves) — this page is the "how do I actually get a file onto the box in the first place, and prove it landed" walkthrough neither of those needed to be, because a real thinC install genuinely has no other way in.
 
 ## Why this needs a trick at all
 
-A real installed Kanxeo host has no SSH server and no general shell (ADR-0034, confirmed directly — `nc -z <box> 22` closed on a fresh install). `POST /system/update`'s `image_path`/`kernel_path` fields, and `kanxeoctl update --image=PATH`, are **paths the daemon reads from its own local disk** — not an upload endpoint. `kanxeoctl`'s `update` subcommand just forwards whatever string you give it straight into the JSON body (`cli/src/main.c`'s `cmd_update()`); it never reads the file itself. So a locally-built artifact needs a real way to land on the *remote* daemon's own filesystem before `system/update` has anything to point at.
+A real installed thinC host has no SSH server and no general shell (ADR-0034, confirmed directly — `nc -z <box> 22` closed on a fresh install). `POST /system/update`'s `image_path`/`kernel_path` fields, and `thincctl update --image=PATH`, are **paths the daemon reads from its own local disk** — not an upload endpoint. `thincctl`'s `update` subcommand just forwards whatever string you give it straight into the JSON body (`cli/src/main.c`'s `cmd_update()`); it never reads the file itself. So a locally-built artifact needs a real way to land on the *remote* daemon's own filesystem before `system/update` has anything to point at.
 
 ## The core trick: reuse the package-fetch pipeline as a generic file-transfer primitive
 
@@ -16,12 +16,12 @@ A real installed Kanxeo host has no SSH server and no general shell (ADR-0034, c
    ```
 2. **Compute its real checksum** and write a scratch recipe:
    ```sh
-   sha256sum kanxeod-root.squashfs
+   sha256sum thincd-root.squashfs
    ```
    ```
    pkg_name="scratch-deploy"
    pkg_version="1"
-   pkg_source="http://<your-lan-ip>:8904/kanxeod-root.squashfs"
+   pkg_source="http://<your-lan-ip>:8904/thincd-root.squashfs"
    pkg_sha256="<the real sha256 above>"
    pkg_depends=""
 
@@ -30,20 +30,20 @@ A real installed Kanxeo host has no SSH server and no general shell (ADR-0034, c
    ```
 3. **Push the recipe and trigger a fetch** (see [`writing-recipes.md`](writing-recipes.md) for the full recipe format):
    ```sh
-   kanxeoctl --host=<box> pkg recipe add --name=scratch-deploy --file=scratch-deploy.recipe
-   kanxeoctl --host=<box> pkg install --name=scratch-deploy
+   thincctl --host=<box> pkg recipe add --name=scratch-deploy --file=scratch-deploy.recipe
+   thincctl --host=<box> pkg install --name=scratch-deploy
    ```
    Poll `GET /pkg/scratch-deploy` until it leaves `fetching`/`building`. `state: "failed"` with `"could not prepare the build container (extract source tarball failed)"` is the **expected, harmless** outcome for a non-tarball artifact — it means the fetch and checksum verification already succeeded, which is all this step is for.
-4. **Read back the real local path**: `<data-dir>/pkg/sources/scratch-deploy-1-0.src` (the default data dir is `/var/lib/kanxeo`).
-5. **Clean up** once you're done: `kanxeoctl --host=<box> pkg recipe rm scratch-deploy` (a package left in `PKG_STATE_FAILED` can't be `DELETE`d via the package endpoint — that's expected, not a bug; the recipe delete is what matters).
+4. **Read back the real local path**: `<data-dir>/pkg/sources/scratch-deploy-1-0.src` (the default data dir is `/var/lib/thinc`).
+5. **Clean up** once you're done: `thincctl --host=<box> pkg recipe rm scratch-deploy` (a package left in `PKG_STATE_FAILED` can't be `DELETE`d via the package endpoint — that's expected, not a bug; the recipe delete is what matters).
 
 ## Writing it to the inactive slot, and a real gap to know about
 
 ```sh
-kanxeoctl --host=<box> update \
-  --image=/var/lib/kanxeo/rebuildable/pkg/sources/scratch-deploy-1-0.src \
-  --kernel=/var/lib/kanxeo/rebuildable/pkg/sources/<kernel-scratch-path>
-kanxeoctl --host=<box> reboot
+thincctl --host=<box> update \
+  --image=/var/lib/thinc/rebuildable/pkg/sources/scratch-deploy-1-0.src \
+  --kernel=/var/lib/thinc/rebuildable/pkg/sources/<kernel-scratch-path>
+thincctl --host=<box> reboot
 ```
 
 **`--image=`/`--kernel=` can be supplied independently -- a one-sided update no longer leaves the other file stale (ADR-0095).** This used to be a real footgun, discovered the hard way: a root-only update once landed in a slot whose kernel predated a since-fixed config, and the very next boot regressed to a bug that had already been fixed elsewhere. `POST /system/update` now auto-fills whichever half is omitted from the *active* slot's own currently-running copy (already booted, already known-good) rather than leaving the inactive slot's own prior, possibly-stale content in place -- so `--kernel=` alone updates only the root, paired with a fresh copy of the kernel that's actually running right now, and vice versa. Supplying both explicitly still works exactly as before and is unaffected; this only changes what happens when one is omitted.
@@ -53,8 +53,8 @@ See [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md#background
 ## Confirming a deploy actually took effect
 
 ```sh
-kanxeoctl --host=<box> health
-kanxeoctl --host=<box> boot
+thincctl --host=<box> health
+thincctl --host=<box> boot
 ```
 
 ```json
@@ -66,10 +66,10 @@ kanxeoctl --host=<box> boot
 
 ## When something goes wrong: read the real diagnostics, not just the exit code
 
-`GET /system/logs?source=kanxeod&tail=N` is the log store (ADR-0070) — every internal `kanxeod` diagnostic, not just the audit trail, reaches it. For a failed `pkg install`/`pkg hostbuild`, this includes the real captured stdout/stderr of the build container itself (not just its exit status) — a build failure's *actual* error text, e.g.:
+`GET /system/logs?source=thincd&tail=N` is the log store (ADR-0070) — every internal `thincd` diagnostic, not just the audit trail, reaches it. For a failed `pkg install`/`pkg hostbuild`, this includes the real captured stdout/stderr of the build container itself (not just its exit status) — a build failure's *actual* error text, e.g.:
 
 ```
-"pkg kanxeo@__hostbuild: build output: /usr/bin/bash: error while loading
+"pkg thinc@__hostbuild: build output: /usr/bin/bash: error while loading
 shared libraries: libtinfo.so.6: cannot open shared object file: No such
 file or directory"
 ```
@@ -78,8 +78,8 @@ This is genuinely load-bearing: an exit status alone is often ambiguous (exit 12
 
 ## The endpoint, not just the mechanism
 
-None of this is Kanxeo-specific tooling beyond the recipe format itself — every step above is a plain REST call any HTTP client can make (`curl`, a script, `kanxeoctl`, or the web dashboard). See [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs) and [`docs/api/README.md`](../api/README.md#host--package-updates) for the full contract, [`docs/api/README.md`](../api/README.md#a-consolidated-log) for the log store's own query parameters, and [`cli-reference.md`](cli-reference.md) for every `kanxeoctl` subcommand used above.
+None of this is thinC-specific tooling beyond the recipe format itself — every step above is a plain REST call any HTTP client can make (`curl`, a script, `thincctl`, or the web dashboard). See [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs) and [`docs/api/README.md`](../api/README.md#host--package-updates) for the full contract, [`docs/api/README.md`](../api/README.md#a-consolidated-log) for the log store's own query parameters, and [`cli-reference.md`](cli-reference.md) for every `thincctl` subcommand used above.
 
 ## Going further: no local build at all
 
-Everything above still assumes you cross-compiled `kanxeod` locally and are pushing the *result*. The [hostbuild mechanism](writing-recipes.md#the-hostbuild-variant) (ADR-0056) removes even that step: `POST /pkg/hostbuild {"name": "kanxeo", "build_image": "<an image with a working toolchain>"}` compiles `kanxeod`/`kanxeoctl`/`web/` **entirely on the remote box itself**, from its own currently-tracked source (`kanxeo.recipe`'s `pkg_source`), harvesting the result to a real host artifact directory — see [`building-kanxeo.md`](building-kanxeo.md#from-a-running-kanxeo-host-self-hosted-rebuild) for the full self-hosted rebuild walkthrough. Combined with the LAN-serve trick above (used here to get the *source snapshot* onto the box instead of a compiled artifact — a scratch recipe whose `pkg_source` is a `tar czf`'d copy of your own working tree, since a real install typically can't reach a real git server either), this closes the loop completely: develop locally, push source, compile server-side, deploy the result, all over plain REST, with no ISO reinstall anywhere in the cycle.
+Everything above still assumes you cross-compiled `thincd` locally and are pushing the *result*. The [hostbuild mechanism](writing-recipes.md#the-hostbuild-variant) (ADR-0056) removes even that step: `POST /pkg/hostbuild {"name": "thinc", "build_image": "<an image with a working toolchain>"}` compiles `thincd`/`thincctl`/`web/` **entirely on the remote box itself**, from its own currently-tracked source (`thinc.recipe`'s `pkg_source`), harvesting the result to a real host artifact directory — see [`building-thinc.md`](building-thinc.md#from-a-running-thinc-host-self-hosted-rebuild) for the full self-hosted rebuild walkthrough. Combined with the LAN-serve trick above (used here to get the *source snapshot* onto the box instead of a compiled artifact — a scratch recipe whose `pkg_source` is a `tar czf`'d copy of your own working tree, since a real install typically can't reach a real git server either), this closes the loop completely: develop locally, push source, compile server-side, deploy the result, all over plain REST, with no ISO reinstall anywhere in the cycle.
