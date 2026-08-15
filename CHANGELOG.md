@@ -2,6 +2,16 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 147 (done): parallel package builds -- design only (ADR-0157, task #841)
+
+A complete, actionable design for task #841 (configurable concurrent package builds, default 10) -- deliberately not implemented in the same session it was designed. `pkg.c`'s "one job at a time" turns out to be woven into at least ten module-level statics, a hardcoded single build-container name, and a single-purpose reactor conn kind -- real, substantial surgery on the single most heavily-used subsystem in the project, not something to rush at the tail end of a long session, per this project's own "Outline -- Execute -- Verify" workflow.
+
+#### Design
+- Build-transient fields (overlay paths, output capture, cache-hit flag) move onto the already-existing per-package `pkg_entry` table rather than a new parallel array.
+- One small new table, sized to the concurrency limit (not the full package table), tracks in-flight dependency chains -- the one piece of state that's genuinely per-request rather than per-package.
+- **A real simplification found while designing**: the shared, cumulative `g_pkgbuild_rootfs` merge-back looked like it would need new locking under real concurrency, but doesn't -- this daemon has no real threads, and every event handler already runs to completion before the next one starts, so two completions can never actually interleave regardless of how many builds are running concurrently off in their own child processes. No new synchronization primitive needed, only correct per-entry state (already covered above).
+- A phased implementation plan (pure-refactor phase first, verifiable against the existing test suite with zero behavior change, before any real concurrency is enabled) for whoever picks this up next.
+
 ### Part 146 (done): live network attach/detach on a running container, closes task #861 (ADR-0156)
 
 The "network" piece of task #861 (`cmd`/files/network updates without a recreate) -- files already shipped as ADR-0153. `cmd` is closed by explanation rather than code: killing a container's init process to change what it runs necessarily destroys its own PID namespace (`pid_namespaces(7)`, a real kernel invariant), so there is no way to swap a container's command without an architecturally-real recreate. Network is different and genuinely tractable -- network namespaces have no such "dies with init" rule.
