@@ -95,8 +95,12 @@ int main(void)
 	long esp_start_sec, esp_size_sec;
 	long root_start_sec, root_size_sec;
 	enum qemu_boot_outcome outcome;
+	/* "thinc.internal> ", not the older bare "thinc> " -- ADR-0164
+	 * changed the shell prompt to the full site FQDN (instance.domain,
+	 * defaulting to thinc.internal with no site tier configured, which
+	 * this test never does) plus a trailing >/# for auth state. */
 	struct qemu_scripted_input console_script[] = {
-		{ "thinc> ", "pki ca bootstrap\n" },
+		{ "thinc.internal> ", "pki ca bootstrap\n" },
 	};
 
 	if (mkdtemp(workdir) == NULL) {

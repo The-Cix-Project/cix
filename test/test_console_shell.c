@@ -107,14 +107,18 @@ int main(void)
 	enum qemu_boot_outcome outcome;
 	/* Deliberately skips "health" on the *first* shell instance -- exits
 	 * it immediately, waits for the respawned instance's own genuinely
-	 * new prompt (match_search_from advances past the first "thinc> "
-	 * match, so this can only match a second, later occurrence -- real
-	 * proof handle_console_shell_event()/arm_console_respawn_timer()
-	 * actually respawned it), then proves that respawned instance is a
-	 * fully working shell by calling health for real. */
+	 * new prompt (match_search_from advances past the first
+	 * "thinc.internal> " match, so this can only match a second, later
+	 * occurrence -- real proof handle_console_shell_event()/
+	 * arm_console_respawn_timer() actually respawned it), then proves
+	 * that respawned instance is a fully working shell by calling
+	 * health for real. "thinc.internal> ", not the older bare
+	 * "thinc> " -- ADR-0164 changed the shell prompt to the full site
+	 * FQDN (defaulting to thinc.internal with no site tier configured,
+	 * which this test never does) plus a trailing >/# for auth state. */
 	struct qemu_scripted_input console_script[] = {
-		{ "thinc> ", "exit\n" },
-		{ "thinc> ", "health\n" },
+		{ "thinc.internal> ", "exit\n" },
+		{ "thinc.internal> ", "health\n" },
 	};
 
 	if (mkdtemp(workdir) == NULL) {
