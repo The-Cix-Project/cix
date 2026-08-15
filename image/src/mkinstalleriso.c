@@ -396,6 +396,18 @@ int main(int argc, char **argv)
 	snprintf(grub_cfg, sizeof(grub_cfg),
 	         "set timeout=10\n"
 	         "set default=0\n"
+	         /* Neither menu entry below ever passes a framebuffer-
+	          * dependent console (both use console=tty0 console=ttyS0,
+	          * plain text) -- "text" here skips GRUB's own graphical-
+	          * mode negotiation for the kernel handoff entirely, instead
+	          * of attempting it and failing. Confirmed live on a real
+	          * Proxmox VM: with no gfxpayload set at all, GRUB tried
+	          * anyway and printed "error: no suitable video mode found,
+	          * Booting in blind mode" on every boot -- harmless (it
+	          * still booted, blind just meant no GRUB splash), but a
+	          * real, fixable rough edge on the install experience, not
+	          * a cosmetic no-op warning to ignore. */
+	         "set gfxpayload=text\n"
 	         "\n"
 	         "menuentry \"thinC Install\" {\n"
 	         "    linux /boot/thinc-bzImage console=tty0 console=ttyS0 root=/dev/sr0 "
