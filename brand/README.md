@@ -4,7 +4,7 @@
 
 | File | What it is | When to use it |
 |---|---|---|
-| `thinc-mark.svg` | The bare mark alone (blue gradient) — a fused C-bracket + K/chevron arrow, reads as "C<" | **Default.** CLI banners, favicons, small UI chrome, anywhere space is tight. Use this unless the full lockup is explicitly requested. |
+| `thinc-mark.svg` | The bare mark alone (flat C Cyan) — a fused C-bracket + chevron, chamfered where they join, reads as "C<" | **Default.** CLI banners, favicons, small UI chrome, anywhere space is tight. Use this unless the full lockup is explicitly requested. |
 | `thinc-mark-mono.svg` | Same mark, `fill="currentColor"` | Single-color contexts (print, a UI theme that sets its own color, anywhere the gradient doesn't fit). |
 | `thinc-mark-os.svg` | Mark + circular "OS" badge, no wordmark | Compact app-icon-style contexts where a bit more identity than the bare mark is useful, but a full wordmark lockup is too much. |
 | `thinc-full.svg` | "thin" wordmark + mark + OS badge + "THIN HOST. C CORE." tagline | The full lockup — only when explicitly asked for (hero/marketing contexts, README header, install/boot splash). |
@@ -18,8 +18,7 @@
 
 ## Colors
 
-- **C Cyan** `#00C8FF` — the mark's base color, the primary accent everywhere.
-- Mark gradient: `#4FE0FF` → `#00C8FF` → `#0090E8` (light-to-deep diagonal, matches the original reference sheet's rendering).
+- **C Cyan** `#00C8FF` — the mark's base color (flat, no gradient), the primary accent everywhere.
 - **Source White** `#F2F5FA` — primary text/labels on dark surfaces.
 
 Full palette (including the proposed UI color system) is in `GUIDELINES.md`.

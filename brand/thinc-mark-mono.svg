@@ -1,20 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="172" height="200" viewBox="0 0 172 200">
-  <title>thinC mark, monochrome</title>
-  <desc>The bare thinC mark in a single flat color (fill="currentColor" -- inherits whatever color it's placed in, for light/dark/single-color contexts where the gradient color mark doesn't fit).</desc>
-  <g fill="currentColor">
-    <path d="M 23,0
-             L 172,0
-             L 172,46
-             L 46,46
-             L 46,154
-             L 172,154
-             L 172,200
-             L 23,200
-             A 23,23 0 0 1 0,177
-             L 0,23
-             A 23,23 0 0 1 23,0
+<svg xmlns="http://www.w3.org/2000/svg" width="232" height="140" viewBox="0 0 232 140">
+  <title>thinC mark (mono)</title>
+  <desc>The bare thinC CK mark in currentColor -- inherits whatever color it's placed in, for light/dark/mono contexts without separate white/black files.</desc>
+  <g id="ck" fill="currentColor">
+    <!-- C: rigid open boundary, chamfered inner lip flowing into the K arrow -->
+    <path d="M 0 18
+             Q 0 0 18 0
+             H 150
+             L 126 24
+             H 30
+             Q 24 24 24 30
+             V 110
+             Q 24 116 30 116
+             H 126
+             L 150 140
+             H 18
+             Q 0 140 0 122
              Z"/>
-    <path d="M 172,8 L 172,38 L 60,100 Z"/>
-    <path d="M 172,162 L 172,192 L 60,100 Z"/>
+    <!-- K upper arm -->
+    <path d="M 130 70 L 196 0 H 232 L 164 70 Z"/>
+    <!-- K lower arm -->
+    <path d="M 130 70 L 164 70 L 232 140 H 196 Z"/>
   </g>
 </svg>

@@ -55,9 +55,9 @@ thinC OS is not a metaphor. It is a thin layer around C.
 
 ## 3. Color system
 
-The palette should feel raw, low-level, and deliberate. No pastels, no gradients on UI surfaces (the logo mark itself is the one deliberate exception), no glossy surfaces.
+The palette should feel raw, low-level, and deliberate. No pastels, no gradients, no glossy surfaces — flat color throughout, including the logo mark itself.
 
-**Status: proposed system for the web dashboard's own theme.** Today, the only colors actually in use are the mark's own gradient (`#4FE0FF` → `#00C8FF` → `#0090E8`) and `#F2F5FA` — the rest of this palette is the target for the dashboard rebrand, not yet reflected anywhere in the running UI.
+**Status: proposed system for the web dashboard's own theme.** Today, the only colors actually in use are the mark's own flat `#00C8FF` and `#F2F5FA` — the rest of this palette is the target for the dashboard rebrand, not yet reflected anywhere in the running UI.
 
 | Name | Hex | Role |
 |---|---|---|
@@ -77,7 +77,7 @@ Rules of use:
 - Namespace Green is for healthy/running state.
 - Fault Red is only for failure. Never decorative.
 - Do not mix cyan and amber for the same object.
-- Flat color on UI surfaces. No gradients, no soft glows, no glassmorphism — the mark's own gradient is the one deliberate exception, reserved for the logo itself.
+- Flat color everywhere, including the logo. No gradients, no soft glows, no glassmorphism.
 
 ## 4. Geometry & experience
 
@@ -129,11 +129,11 @@ In the **logo lockup** specifically, "thinC" is never typed as one literal text 
 
 ## 6. Logo / mark guidance
 
-The mark is a fused, single glyph: a squared C-bracket, open on the right, with a two-armed chevron/arrow nested into its opening — reads as "C<". The bracket and the arrow are drawn so their edges meet exactly with no gap, but the arrow's arms are deliberately narrower than the bracket's own bar thickness, so a thin sliver of negative space still separates them — enough to read as two fused elements, not one undifferentiated blob.
+The mark is a fused, single glyph: a squared C-bracket, open on the right, with a two-armed chevron nested into its opening, vertex pointing back into the bracket — reads as "C<". The bracket's own right-hand lip is chamfered (cut at an angle, not square) exactly where the chevron's arms begin, so the two elements read as one continuous shape flowing into each other, not two adjacent glyphs touching at a corner.
 
-- Base color: the C Cyan gradient (`#4FE0FF` → `#00C8FF` → `#0090E8`, light to deep, top-left to bottom-right).
-- The bracket's outer corners (top-left, bottom-left) are the only rounded geometry in the mark itself — everything else is straight edges and sharp points.
-- The arrow's two arms converge to a single shared point, nested inside the bracket's own opening.
+- Base color: flat C Cyan (`#00C8FF`) — no gradient (see §3: flat color throughout, no exceptions).
+- The bracket's outer corners (top-left, bottom-left) are the only rounded geometry in the mark itself — everything else is straight edges and sharp points, including the chamfered lip and the chevron.
+- The chevron's two arms converge to a single shared point on the side facing the bracket, and flare outward and away on the opposite side — the point never faces away from the bracket.
 
 Clear space: at least the width of the bracket's own bar thickness on all sides.
 

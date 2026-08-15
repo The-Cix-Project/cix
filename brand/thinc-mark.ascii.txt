@@ -5,14 +5,16 @@ Minimal glyph (inline, any context, no Unicode required):
 
     C<
 
-Compact banner (CLI startup banners, ~6 lines, box-drawing + diagonals):
+Compact banner (CLI startup banners, 5 lines -- an open C bracket fused
+with a left-pointing "<" chevron, matching brand/thinc-mark.svg exactly:
+the chevron's vertex sits at mid-height on the side facing the C, arms
+flaring out and away on the right):
 
-    ▄▄▄▄▄▄
-   █▀    ╲
-   █      ╲___
-   █      ╱
-   █▄    ╱
-    ▀▀▀▀▀▀
+    ▄▄▄▄    /
+    █      /
+    █     <
+    █      \
+    ▀▀▀▀    \
 
 Usage: the minimal "C<" glyph is the default for inline/log-prefix use
 (matches the spoken shorthand). The compact banner is for a one-time
