@@ -47,6 +47,8 @@ extern char **environ;
 
 #define TEST_PORT 7663
 #define HTTPS_PORT 8443
+#define STR(x) #x
+#define TOSTR(x) STR(x)
 #define ATTACKER_IP "127.0.0.2"
 
 static char g_data_dir[PATH_MAX];
@@ -362,8 +364,17 @@ int main(void)
 	}
 	kx_response_free(&r);
 
+	/*
+	 * https_port explicit, not left to whatever the daemon's own
+	 * default happens to be right now -- ADR/task #860 already changed
+	 * that default once (8443 -> 443), which silently broke this
+	 * test's own hardcoded HTTPS_PORT client-side probe until this fix;
+	 * owning the port explicitly here means a future default change
+	 * can't do that again.
+	 */
 	memset(&r, 0, sizeof(r));
-	if (ok && (kx_client_request(&client, "PUT", "/v1/system/daemon-config", "{\"https_enabled\":true}", &r) !=
+	if (ok && (kx_client_request(&client, "PUT", "/v1/system/daemon-config",
+	                              "{\"https_enabled\":true,\"https_port\":" TOSTR(HTTPS_PORT) "}", &r) !=
 	               0 ||
 	           r.status != 200)) {
 		fprintf(stderr, "FAIL: PUT https_enabled=true, status=%d\n", r.status);
