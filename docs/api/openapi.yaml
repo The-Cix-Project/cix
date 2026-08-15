@@ -1091,6 +1091,150 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /system/sysctl:
+    get:
+      summary: Every sysctl this daemon currently manages (ADR-0160)
+      description: >
+        Not a full /proc/sys enumeration (thousands of entries, most
+        never touched by this project) -- the daemon's own configured
+        set, i.e. every key a PUT .../sysctl/{key} call has persisted
+        (persist:true, the default). A key not in this list can still
+        be read directly via GET .../sysctl/{key}.
+      operationId: listSystemSysctl
+      responses:
+        "200":
+          description: Persisted sysctl entries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sysctls]
+                properties:
+                  sysctls:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SysctlEntry"
+  /system/sysctl/{key}:
+    get:
+      summary: Live current value of one host-level sysctl (ADR-0160)
+      description: >
+        Reads /proc/sys/<key with dots translated to slashes> directly,
+        live, regardless of whether this key is in this daemon's own
+        persisted set. A value with more than one whitespace-separated
+        token (e.g. net.ipv4.tcp_wmem's real 3-tuple) is reported as a
+        JSON array of strings; a single-token value is a plain string.
+      operationId: getSystemSysctl
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Dotted sysctl key, e.g. net.ipv4.ip_forward.
+      responses:
+        "200":
+          description: Current value
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SysctlEntry"
+        "400":
+          description: Invalid key (e.g. contains '/')
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such /proc/sys node on this kernel
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      summary: Write one host-level sysctl, live (ADR-0160)
+      description: >
+        Fully open passthrough -- no allowlist/denylist, any valid
+        /proc/sys key is exactly as writable as any other. Host-auth
+        write-gating is the only access control, the same posture this
+        platform already applies to disks/networking/PKI/every other
+        host-level endpoint; deliberate, not an oversight, despite the
+        real blast radius some vm.*/kernel.* keys carry (can panic or
+        badly destabilize a running host). Persists by default (this
+        key/value is reapplied on every future boot) -- pass
+        `"persist": false` for a genuinely one-shot change.
+      operationId: putSystemSysctl
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [value]
+              properties:
+                value:
+                  description: A plain string, or an array of strings for a tuple-shaped key (joined with a single space before writing).
+                  oneOf:
+                    - type: string
+                    - type: array
+                      items:
+                        type: string
+                persist:
+                  type: boolean
+                  default: true
+                  description: false for a one-shot change that is not remembered for the next boot.
+      responses:
+        "200":
+          description: Written; the real post-write value read back
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SysctlEntry"
+        "400":
+          description: Invalid key, missing/malformed value, or the kernel itself rejected the write
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Written live but could not be persisted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Stop reapplying a sysctl at boot (ADR-0160)
+      description: >
+        Removes key from this daemon's own persisted set only -- never
+        touches the live /proc/sys value (there is no general, reliable
+        "value before this project touched it" to revert to).
+      operationId: deleteSystemSysctl
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Removed from the persisted set
+        "400":
+          description: Invalid key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: This key has no persisted entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /system/state-storage:
     get:
       summary: Which disk (if any) is the active placement for Kanxeo's own state (ADR-0141 Phase 2)
@@ -6754,6 +6898,19 @@ components:
           type: array
           items:
             type: string
+    SysctlEntry:
+      type: object
+      required: [key, value]
+      properties:
+        key:
+          type: string
+        value:
+          description: A plain string for a single-token value, or an array of strings for a real multi-token (tuple-shaped) sysctl.
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
     PingStatus:
       type: object
       required: [state, host, reachable, rtt_ms, timed_out]

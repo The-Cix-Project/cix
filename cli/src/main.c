@@ -289,6 +289,14 @@ static void print_usage(FILE *out)
 	        "               (~2s max) and exits nonzero if unreachable\n"
 	        "  resolv [show]  -- the host's own outbound DNS resolver config (ADR-0076)\n"
 	        "  resolv set [--nameserver=A.B.C.D ...]  -- replace it; no flags clears it\n"
+	        "  sysctl [show]  -- every persisted (daemon-managed) host-level sysctl (ADR-0160)\n"
+	        "  sysctl get KEY  -- live current value (e.g. net.ipv4.ip_forward), persisted or not\n"
+	        "  sysctl set KEY --value=V [--value=V ...] [--no-persist]  -- live write to\n"
+	        "               /proc/sys; fully open, no allowlist -- host-auth write-gating is the\n"
+	        "               only access control. Repeat --value= for a tuple-shaped key (e.g.\n"
+	        "               net.ipv4.ip_local_port_range); persists by default (reapplied on\n"
+	        "               every boot), --no-persist for a one-shot change\n"
+	        "  sysctl rm KEY  -- stop reapplying at boot; never touches the live value\n"
 	        "  time [show]  -- the host's current date/time (ADR-0110)\n"
 	        "  time set --unixtime=N  -- manually set the host clock (clock_settime())\n"
 	        "  ntp config [show]  -- upstream NTP server address list used to sync the\n"
@@ -1664,6 +1672,208 @@ static int cmd_storage(const struct kx_client *c, int json_mode, int argc, char 
 		return cmd_storage_kind(c, json_mode, "rebuildable", "rebuildable-storage", argc - 1, argv + 1);
 
 	fprintf(stderr, "usage: kanxeoctl storage state|logs|rebuildable [show|migrate|migrate-status]\n");
+	return 2;
+}
+
+/* ADR-0160: kanxeoctl sysctl show|get|set|rm -- host-level /proc/sys,
+ * live, fully open (no allowlist, host-auth write-gating is the only
+ * access control). Distinct from run's own --sysctl= (create-time,
+ * net.*-only, per-container) -- this is a separate host-wide surface,
+ * not an extension of that one. */
+static void fmt_sysctl_value(const struct json_value *v)
+{
+	const struct json_value *jval = json_object_get(v, "value");
+	const char *scalar;
+
+	if (jval == NULL) {
+		printf("(no value)\n");
+		return;
+	}
+	scalar = json_as_string(jval);
+	if (scalar != NULL) {
+		printf("%s\n", scalar);
+		return;
+	}
+	if (jval->type == JSON_ARRAY) {
+		size_t i;
+
+		for (i = 0; i < jval->u.array.count; i++) {
+			if (i > 0)
+				printf(" ");
+			printf("%s", json_as_string(jval->u.array.items[i]));
+		}
+		printf("\n");
+		return;
+	}
+	printf("(unrecognized value shape)\n");
+}
+
+static void fmt_sysctl_one(const struct json_value *v)
+{
+	printf("%s = ", json_str_field(v, "key"));
+	fmt_sysctl_value(v);
+}
+
+static void fmt_sysctl_list(const struct json_value *v)
+{
+	const struct json_value *arr = json_object_get(v, "sysctls");
+	size_t i;
+
+	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		printf("(no sysctls persisted)\n");
+		return;
+	}
+	for (i = 0; i < arr->u.array.count; i++)
+		fmt_sysctl_one(arr->u.array.items[i]);
+}
+
+static int cmd_sysctl_show(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/sysctl", NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_sysctl_list);
+}
+
+static int cmd_sysctl_get(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	char path[192];
+	struct kx_response r;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl sysctl get KEY\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/system/sysctl/%s", argv[0]);
+	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_sysctl_one);
+}
+
+/* kanxeoctl sysctl set KEY --value=V [--value=V ...] [--no-persist]
+ * -- repeatable --value= (matching resolv set's own --nameserver=
+ * repeatable-flag convention) builds a JSON array when given more
+ * than once, a bare JSON string when given exactly once -- either
+ * shape the daemon already accepts. */
+#define CLI_SYSCTL_MAX_VALUES 8
+
+static int cmd_sysctl_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *key;
+	const char *values[CLI_SYSCTL_MAX_VALUES];
+	int value_count = 0;
+	int persist = 1;
+	int i;
+	char path[192];
+	struct json_writer w;
+	struct kx_response r;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl sysctl set KEY --value=V [--value=V ...] [--no-persist]\n");
+		return 2;
+	}
+	key = argv[0];
+	for (i = 1; i < argc; i++) {
+		if (strncmp(argv[i], "--value=", 8) == 0) {
+			if (value_count >= CLI_SYSCTL_MAX_VALUES) {
+				fprintf(stderr, "kanxeoctl: too many --value= flags (max %d)\n",
+				        CLI_SYSCTL_MAX_VALUES);
+				return 2;
+			}
+			values[value_count++] = argv[i] + 8;
+		} else if (strcmp(argv[i], "--no-persist") == 0) {
+			persist = 0;
+		} else {
+			fprintf(stderr, "kanxeoctl: unknown sysctl set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (value_count == 0) {
+		fprintf(stderr, "kanxeoctl: sysctl set requires at least one --value=\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "value");
+	if (value_count == 1) {
+		jw_str(&w, values[0]);
+	} else {
+		jw_arr_open(&w);
+		for (i = 0; i < value_count; i++)
+			jw_str(&w, values[i]);
+		jw_arr_close(&w);
+	}
+	if (!persist) {
+		jw_key(&w, "persist");
+		jw_bool(&w, 0);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	snprintf(path, sizeof(path), "/v1/system/sysctl/%s", key);
+	if (kx_client_request(c, "PUT", path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_sysctl_one);
+}
+
+static int cmd_sysctl_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	char path[192];
+	struct kx_response r;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: kanxeoctl sysctl rm KEY\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/system/sysctl/%s", argv[0]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	if (json_mode) {
+		printf("{\"status\":%d}\n", r.status);
+		kx_response_free(&r);
+		return r.status == 204 ? 0 : 1;
+	}
+	if (r.status == 204)
+		printf("removed from persisted config (live value untouched)\n");
+	else
+		printf("error: status %d\n", r.status);
+	kx_response_free(&r);
+	return r.status == 204 ? 0 : 1;
+}
+
+static int cmd_sysctl(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *sub;
+
+	if (argc < 1)
+		return cmd_sysctl_show(c, json_mode);
+
+	sub = argv[0];
+	if (strcmp(sub, "show") == 0)
+		return cmd_sysctl_show(c, json_mode);
+	if (strcmp(sub, "get") == 0)
+		return cmd_sysctl_get(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "set") == 0)
+		return cmd_sysctl_set(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "rm") == 0)
+		return cmd_sysctl_rm(c, json_mode, argc - 1, argv + 1);
+
+	fprintf(stderr, "usage: kanxeoctl sysctl [show]  -- every persisted (daemon-managed) key\n"
+	                "       kanxeoctl sysctl get KEY  -- live current value, persisted or not\n"
+	                "       kanxeoctl sysctl set KEY --value=V [--value=V ...] [--no-persist]\n"
+	                "       kanxeoctl sysctl rm KEY  -- stop reapplying at boot (live value untouched)\n");
 	return 2;
 }
 
@@ -9096,6 +9306,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_ping(client, json_mode, argc, argv);
 	if (strcmp(cmd, "resolv") == 0)
 		return cmd_resolv(client, json_mode, argc, argv);
+	if (strcmp(cmd, "sysctl") == 0)
+		return cmd_sysctl(client, json_mode, argc, argv);
 	if (strcmp(cmd, "ntp") == 0)
 		return cmd_ntp(client, json_mode, argc, argv);
 	if (strcmp(cmd, "syslog") == 0)

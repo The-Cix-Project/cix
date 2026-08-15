@@ -47,6 +47,10 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/system/ping` | Start a real ICMP echo against an IPv4 address |
 | GET | `/system/resolv` | The host's own outbound DNS resolver config |
 | PUT | `/system/resolv` | Replace it -- takes effect immediately, no reboot |
+| GET | `/system/sysctl` | Every sysctl this daemon currently persists/manages |
+| GET | `/system/sysctl/{key}` | Live current value of one host-level sysctl (persisted or not) |
+| PUT | `/system/sysctl/{key}` | Write one host-level sysctl, live; persists by default |
+| DELETE | `/system/sysctl/{key}` | Stop reapplying at boot; never touches the live value |
 | GET | `/system/rolling-config` | The configured rolling-restart jitter window (`jitter_window_seconds`) |
 | PUT | `/system/rolling-config` | Set the jitter window -- 0 disables jitter, restart happens immediately |
 | GET | `/system/tls-throttle` | Per-source-IP throttling config for repeated failed HTTPS handshakes |
@@ -537,6 +541,24 @@ A real internal `.home.arpa`/`.internal` DNS record (`POST /dns/records`, above)
 This is deliberately generic -- a plain IP list, no notion of "which container is my DNS server." It covers pointing at one of this platform's own DNS containers (resolve its IP once via `GET /containers/{name}`, `PUT` it here) and pointing at a real external resolver, with the exact same mechanism. `GET /v1/system/resolv` reports the current list.
 
 Note this fixes host-level resolution generally, not just for `pkg`'s own fetches -- every current and future tool `kanxeod` shells out to (`git`, `openssl`, anything added later) resolves through the same, single, canonical `/etc/resolv.conf` path.
+
+## Host-level sysctl (ADR-0160)
+
+```
+PUT /v1/system/sysctl/net.ipv4.ip_forward
+{"value": "1"}
+```
+
+Distinct from the existing per-container `--sysctl=` flag (`POST /v1/containers`, create-time only, restricted to `net.*` keys applied inside that container's own netns): this endpoint writes directly against the **host's own** `/proc/sys`, with no key restriction -- anything writable there is writable through this endpoint, matching this project's own "fully open, no allowlist" scope decision. Dots translate to slashes the same way the kernel's own `sysctl` tool does (`net.ipv4.ip_forward` -> `/proc/sys/net/ipv4/ip_forward`); the key may not contain a literal `/` (`400` if it does -- that would escape the translated path).
+
+Some kernel sysctl values are a single token; others (`net.ipv4.ip_local_port_range` being the standard example) are a whitespace-separated tuple. Rather than a curated table of which keys are which shape, this endpoint types generically by content: a `GET` or `PUT` value is a plain JSON string for a single-token value, or a JSON array of strings for a multi-token one -- always symmetric between what a `GET` reports and what a `PUT` accepts.
+
+```
+PUT /v1/system/sysctl/net.ipv4.ip_local_port_range
+{"value": ["32768", "60999"]}
+```
+
+Every successful `PUT` takes effect immediately (a real `write()` against `/proc/sys`) and, by default, is also persisted to be reapplied automatically at every boot, right after configured kernel modules load and before the management network comes up. Pass `"persist": false` to write the live value without adding it to that boot-apply list -- useful for a one-off tuning change that shouldn't survive a reboot. `GET /v1/system/sysctl/{key}` always reports the true current live value, whether or not it's persisted. `DELETE /v1/system/sysctl/{key}` removes a key from the persisted boot-apply list only -- it never touches the live value (`404` if the key wasn't persisted to begin with). `GET /v1/system/sysctl` lists every currently-persisted key and its value; it is not a dump of the full kernel sysctl tree.
 
 ## NTP: host clock sync (ADR-0110)
 

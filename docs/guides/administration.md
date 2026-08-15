@@ -12,6 +12,16 @@ Day-2 operations for an already-installed box: watching it, backing it up, and m
 
 **Optional external syslog forwarding** — if you already run syslog tooling and want this platform's container logs to also reach it, register a running syslog-server container (e.g. `syslog-1` running `sysklogd`) as a forward target: `kanxeoctl syslog target register --container=NAME` (ADR-0127). Every container-sourced log line is then also sent as a real RFC 3164 UDP datagram — alongside, never instead of, the consolidated log store above, which stays the one source of truth this API and the web UI ever read from.
 
+## Host sysctl tuning
+
+```sh
+kanxeoctl sysctl set net.ipv4.ip_forward --value=1
+kanxeoctl sysctl set net.ipv4.ip_local_port_range --value=32768 --value=60999
+kanxeoctl sysctl show
+```
+
+Direct, live tuning of the host's own `/proc/sys` — no key allowlist (fully open, matching this platform's own "no curated sysctl schema" scope decision), and distinct from the per-container `--sysctl=` flag at `run`/`POST /v1/containers` time, which is `net.*`-only and scoped to that container's own netns. Repeat `--value=` for a tuple-shaped key (`ip_local_port_range` above); a single-token key takes one `--value=`. Persists by default for reapply at every boot, right after configured kernel modules load and before the management network comes up — pass `--no-persist` for a one-shot change that shouldn't survive a reboot. `kanxeoctl sysctl rm KEY` drops a key from the boot-apply list only; it never touches the live value. Full detail: [`docs/api/README.md`](../api/README.md#host-level-sysctl-adr-0160).
+
 ## Backup and restore
 
 ```sh

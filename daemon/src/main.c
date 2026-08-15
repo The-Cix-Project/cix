@@ -8,6 +8,7 @@
 #include "diskformat.h"
 #include "diskpart.h"
 #include "diskrole.h"
+#include "sysctlconfig.h"
 #include "storagemigrate.h"
 #include "containerstoragemigrate.h"
 #include "backupconfig.h"
@@ -153,6 +154,7 @@ static char CONTAINER_DEFS_STATE_PATH[PATH_MAX];
 static char ROLLING_CONFIG_PATH[PATH_MAX]; /* ADR-0124 */
 static char SITE_CONFIG_PATH[PATH_MAX];
 static char DEVICEMAP_STATE_PATH[PATH_MAX];
+static char SYSCTLCONFIG_STATE_PATH[PATH_MAX]; /* ADR-0160 */
 static char DISKROLE_STATE_PATH[PATH_MAX];
 /* ADR-0141 Phase 2: which disk (if any) is the active placement for
  * state-storage/rebuildable-storage/log-storage -- g_base_dir-relative,
@@ -264,6 +266,7 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(ROLLING_CONFIG_PATH, sizeof(ROLLING_CONFIG_PATH), "%s/rolling_config.json", STATE_DIR);
 	snprintf(SITE_CONFIG_PATH, sizeof(SITE_CONFIG_PATH), "%s/site_config.json", STATE_DIR);
 	snprintf(DEVICEMAP_STATE_PATH, sizeof(DEVICEMAP_STATE_PATH), "%s/devicemaps.json", STATE_DIR);
+	snprintf(SYSCTLCONFIG_STATE_PATH, sizeof(SYSCTLCONFIG_STATE_PATH), "%s/sysctl_config.json", STATE_DIR);
 	snprintf(DAEMON_CONFIG_PATH, sizeof(DAEMON_CONFIG_PATH), "%s/daemon_config.json", STATE_DIR);
 	snprintf(QUOTAMAP_STATE_PATH, sizeof(QUOTAMAP_STATE_PATH), "%s/quota_projids.json", STATE_DIR);
 	snprintf(SIGNING_KEYS_DIR, sizeof(SIGNING_KEYS_DIR), "%s/keys", STATE_DIR);
@@ -758,6 +761,7 @@ static int set_disk_quota(const char *base_path, uint32_t projid, long long quot
 #define NTP_SERVERS_PREFIX "/v1/ntp/servers/"
 #define SYSLOG_TARGETS_PREFIX "/v1/syslog/targets/"
 #define PROCESSES_PREFIX "/v1/system/processes/"
+#define SYSCTL_PREFIX "/v1/system/sysctl/" /* ADR-0160 */
 #define PKI_CERTS_PREFIX "/v1/pki/certs/"
 #define PKG_PREFIX "/v1/pkg/"
 #define PKG_RECIPES_PREFIX "/v1/pkg/recipes/"
@@ -1174,6 +1178,31 @@ static void load_boot_modules(void)
 		 * function-level comment above for why "no such hardware
 		 * present" isn't a real error here. */
 	}
+}
+
+/*
+ * ADR-0160: applies every persisted GET/PUT /v1/system/sysctl/{key}
+ * entry at boot. Runs after load_boot_modules() (a net.* sysctl could
+ * plausibly depend on a just-loaded NIC driver's own /proc/sys nodes
+ * existing) but before bootstrap_management_network() below -- a
+ * net.* sysctl can affect how that bootstrap itself behaves (e.g.
+ * net.ipv4.ip_forward), so it needs to already be applied by then.
+ * Best-effort per key, matching load_boot_modules()'s own posture: a
+ * key that fails (e.g. a kernel built without the feature it
+ * controls, so its /proc/sys node doesn't exist at all) is logged and
+ * skipped, never a reason to fail boot.
+ */
+static void apply_one_configured_sysctl(const char *key, const char *value, void *ctx)
+{
+	(void)ctx;
+	if (container_net_apply_sysctl(key, value) != 0)
+		fprintf(stderr, "apply_configured_sysctls: %s=%s failed: %s\n", key, value,
+		        strerror(errno));
+}
+
+static void apply_configured_sysctls(void)
+{
+	sysctlconfig_foreach(apply_one_configured_sysctl, NULL);
 }
 
 /*
@@ -3936,6 +3965,212 @@ static void handle_resolv_put(int fd, const char *body, size_t body_len)
 
 	jw_init(&w);
 	resolv_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * ADR-0160: GET/PUT/DELETE /v1/system/sysctl/{key}, GET /v1/system/sysctl
+ * -- host-level /proc/sys REST surface, live, fully open passthrough
+ * (host-auth write-gating is the only access control -- no allowlist,
+ * confirmed with the user, despite the real blast radius some vm./
+ * kernel. keys carry). Key translation (dots -> slashes) reuses
+ * container_net_apply_sysctl() (src/container_net.c) directly for
+ * writes -- the exact same scheme the existing per-container `sysctl`
+ * field already uses, this daemon's own root netns instead of a
+ * container's; that function only ever writes, so a small local read
+ * counterpart mirrors its translation for GET.
+ */
+static int read_proc_sysctl(const char *key, char *out, size_t out_size)
+{
+	char path[16 + SYSCTL_KEY_MAX];
+	char *p;
+	int fd;
+	ssize_t n;
+
+	if (snprintf(path, sizeof(path), "/proc/sys/%s", key) >= (int)sizeof(path))
+		return -1;
+	for (p = path; *p != '\0'; p++) {
+		if (*p == '.')
+			*p = '/';
+	}
+
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return -1;
+	n = read(fd, out, out_size - 1);
+	close(fd);
+	if (n < 0)
+		return -1;
+	out[n] = '\0';
+	/* /proc/sys values are conventionally newline-terminated -- trimmed
+	 * so a single-token value's own JSON string doesn't carry a
+	 * trailing "\n" nothing else in this project's JSON output does. */
+	while (n > 0 && (out[n - 1] == '\n' || out[n - 1] == '\r'))
+		out[--n] = '\0';
+	return 0;
+}
+
+/* Normalizes a PUT body's "value" field -- a plain JSON string, or a
+ * JSON array of strings (joined with a single space, the real
+ * kernel's own separator convention for every known tuple-shaped
+ * sysctl) -- into the one canonical string form both the live write
+ * and (if persisted) sysctlconfig_set() use. */
+static int sysctl_value_from_json(const struct json_value *jval, char *out, size_t out_size)
+{
+	if (jval == NULL)
+		return -1;
+	if (jval->type == JSON_STRING) {
+		const char *s = json_as_string(jval);
+
+		if (s == NULL || strlen(s) >= out_size)
+			return -1;
+		snprintf(out, out_size, "%s", s);
+		return 0;
+	}
+	if (jval->type == JSON_ARRAY) {
+		size_t i;
+		size_t len = 0;
+
+		out[0] = '\0';
+		for (i = 0; i < jval->u.array.count; i++) {
+			const char *tok = json_as_string(jval->u.array.items[i]);
+			size_t tok_len;
+
+			if (tok == NULL)
+				return -1;
+			tok_len = strlen(tok);
+			if (len + (i > 0 ? 1 : 0) + tok_len >= out_size)
+				return -1;
+			if (i > 0)
+				out[len++] = ' ';
+			memcpy(out + len, tok, tok_len);
+			len += tok_len;
+		}
+		out[len] = '\0';
+		return 0;
+	}
+	return -1;
+}
+
+static void handle_sysctl_get(int fd, const char *key)
+{
+	char value[SYSCTL_VALUE_MAX];
+	struct json_writer w;
+
+	if (!sysctl_key_is_valid(key)) {
+		respond_error(fd, 400, "Bad Request", "invalid sysctl key");
+		return;
+	}
+	if (read_proc_sysctl(key, value, sizeof(value)) != 0) {
+		respond_error(fd, 404, "Not Found", "no such sysctl key");
+		return;
+	}
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "key");
+	jw_str(&w, key);
+	jw_key(&w, "value");
+	sysctl_value_write_json(value, &w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_sysctl_put(int fd, const char *key, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	char value[SYSCTL_VALUE_MAX];
+	int persist = 1;
+	const struct json_value *jpersist;
+
+	if (!sysctl_key_is_valid(key)) {
+		respond_error(fd, 400, "Bad Request", "invalid sysctl key");
+		return;
+	}
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	if (sysctl_value_from_json(json_object_get(root, "value"), value, sizeof(value)) != 0) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "value (string or array of strings) is required");
+		return;
+	}
+	jpersist = json_object_get(root, "persist");
+	if (jpersist != NULL && jpersist->type == JSON_BOOL)
+		persist = jpersist->u.boolean;
+	json_free(root);
+
+	if (container_net_apply_sysctl(key, value) != 0) {
+		respond_error(fd, 400, "Bad Request", "the kernel rejected this key/value");
+		return;
+	}
+
+	if (persist) {
+		enum sysctlconfig_error serr = sysctlconfig_set(key, value);
+
+		if (serr != SYSCTLCONFIG_OK) {
+			/* The live write already succeeded -- there is no clean way
+			 * to "unwrite" a sysctl, and the live value is now correct
+			 * regardless of whether it ends up remembered for next
+			 * boot, so this is reported, not rolled back. */
+			respond_error(fd, 500, "Internal Server Error",
+			              "sysctl applied live but could not be persisted");
+			return;
+		}
+	}
+
+	{
+		char out_value[SYSCTL_VALUE_MAX];
+		struct json_writer w;
+
+		if (read_proc_sysctl(key, out_value, sizeof(out_value)) != 0)
+			snprintf(out_value, sizeof(out_value), "%s", value);
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "key");
+		jw_str(&w, key);
+		jw_key(&w, "value");
+		sysctl_value_write_json(out_value, &w);
+		jw_obj_close(&w);
+		respond_json(fd, 200, "OK", &w);
+		jw_free(&w);
+	}
+}
+
+static void handle_sysctl_delete(int fd, const char *key)
+{
+	enum sysctlconfig_error serr;
+
+	if (!sysctl_key_is_valid(key)) {
+		respond_error(fd, 400, "Bad Request", "invalid sysctl key");
+		return;
+	}
+	serr = sysctlconfig_delete(key);
+	if (serr == SYSCTLCONFIG_ERR_NOT_FOUND) {
+		respond_error(fd, 404, "Not Found", "no persisted sysctl entry for this key");
+		return;
+	}
+	if (serr != SYSCTLCONFIG_OK) {
+		respond_error(fd, 500, "Internal Server Error", "could not persist removal");
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+static void handle_sysctl_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "sysctls");
+	sysctlconfig_write_json_list(&w);
+	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
@@ -6714,6 +6949,7 @@ static void finalize_state_storage_migration(void)
 	containerdef_rolling_config_repoint(ROLLING_CONFIG_PATH);
 	siteconfig_repoint(SITE_CONFIG_PATH);
 	devicemap_repoint(DEVICEMAP_STATE_PATH);
+	sysctlconfig_repoint(SYSCTLCONFIG_STATE_PATH);
 	daemon_config_repoint(DAEMON_CONFIG_PATH);
 	quotamap_repoint(QUOTAMAP_STATE_PATH);
 	ntp_repoint(NTP_STATE_PATH, NTP_SERVERS_STATE_PATH);
@@ -13768,6 +14004,27 @@ static void dispatch(int fd, const struct http_request *req)
 			return;
 		}
 	}
+	if (strcmp(req->path, "/v1/system/sysctl") == 0 && strcmp(req->method, "GET") == 0) {
+		handle_sysctl_list(fd);
+		return;
+	}
+	if (strncmp(req->path, SYSCTL_PREFIX, strlen(SYSCTL_PREFIX)) == 0) {
+		name = req->path + strlen(SYSCTL_PREFIX);
+		if (name[0] != '\0') {
+			if (strcmp(req->method, "GET") == 0) {
+				handle_sysctl_get(fd, name);
+				return;
+			}
+			if (strcmp(req->method, "PUT") == 0) {
+				handle_sysctl_put(fd, name, req->body, req->body_len);
+				return;
+			}
+			if (strcmp(req->method, "DELETE") == 0) {
+				handle_sysctl_delete(fd, name);
+				return;
+			}
+		}
+	}
 	if (strcmp(req->path, "/v1/system/state-storage") == 0 && strcmp(req->method, "GET") == 0) {
 		handle_state_storage_get(fd);
 		return;
@@ -16637,6 +16894,12 @@ int main(int argc, char **argv)
 
 	if (network_init(NETWORKS_STATE_PATH) != 0)
 		return 1;
+	/* Must be initialized before apply_configured_sysctls() below can
+	 * read anything out of it (ADR-0160) -- moved up from alongside
+	 * this function's other, later _init() calls specifically for
+	 * this ordering requirement. */
+	if (sysctlconfig_init(SYSCTLCONFIG_STATE_PATH) != 0)
+		return 1;
 	/*
 	 * Root-netns net.ipv4.ip_forward -- distinct from struct
 	 * container_spec's own per-container ip_forward field (which
@@ -16677,6 +16940,18 @@ int main(int argc, char **argv)
 	 * test invocation has no real /usr/bin/modprobe to run at all. */
 	if (init_mode)
 		load_boot_modules();
+	/* ADR-0160: same init_mode gate as its neighbors -- a persisted
+	 * sysctl config is real, ordinary daemon state (safely test-
+	 * isolated the same way every other STATE_DIR-relative file
+	 * already is), but applying it against a real host's own live
+	 * /proc/sys is exactly the class of side effect this project
+	 * reserves for a genuine --init-mode boot, matching
+	 * load_boot_modules()/bootstrap_management_network() below. Must
+	 * run before bootstrap_management_network(): a net.* sysctl (e.g.
+	 * net.ipv4.ip_forward) can affect how that bootstrap itself
+	 * behaves. */
+	if (init_mode)
+		apply_configured_sysctls();
 	/* Only a real --init-mode boot has a GRUB-supplied net.conf to
 	 * bootstrap from (Part 0.5) -- a plain/test invocation has no
 	 * management network and simply keeps whatever --bind= it was given. */

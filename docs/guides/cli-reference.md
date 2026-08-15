@@ -53,6 +53,10 @@ kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `ping HOST` | Real ICMP echo against a literal IPv4 address (ADR-0075) — waits ~2s max, exits nonzero if unreachable |
 | `resolv [show]` | The host's own outbound DNS resolver config (ADR-0076) |
 | `resolv set [--nameserver=A.B.C.D ...]` | Replace it (repeatable flag, up to 3) — takes effect immediately, no reboot; no flags clears it |
+| `sysctl [show]` | Every host-level sysctl currently persisted for reapply at boot (ADR-0160) — not the full kernel sysctl tree |
+| `sysctl get KEY` | The true current live value of one host-level sysctl (persisted or not), e.g. `net.ipv4.ip_forward` |
+| `sysctl set KEY --value=V [--value=V ...] [--no-persist]` | Live write against the host's real `/proc/sys` — no key allowlist, dots translate to slashes. Repeat `--value=` for a tuple-shaped key (e.g. `net.ipv4.ip_local_port_range --value=32768 --value=60999`). Persists for reapply at every boot unless `--no-persist` is given |
+| `sysctl rm KEY` | Remove a key from the persisted boot-apply list only — never touches the live value |
 | `time [show]` | The host's current date/time (ADR-0110) |
 | `time set --unixtime=N` | Manually set the host clock (real `clock_settime()`, immediate, no reboot) |
 | `ntp config [show]` | Upstream NTP server address list used to sync the host clock (ADR-0110) |
