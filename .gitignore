@@ -3,3 +3,4 @@ core
 core.*
 image/keys/*.key
 .claude/
+backups/
