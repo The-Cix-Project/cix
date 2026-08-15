@@ -17439,6 +17439,24 @@ static void handle_pkg_fetch_event(struct conn *cc)
 		pkg_build_container_name(chain_idx, build_container_name, sizeof(build_container_name));
 		rerr = registry_create(build_container_name, "pkgbuild", "", &spec, NULL, 0, 0, NULL, 0,
 		                        NULL, 0, NULL, NULL, 0, &entry);
+		/*
+		 * Saved immediately -- container_create()/registry_create()
+		 * both correctly preserve errno across their own internal
+		 * cleanup, but the close() just below is real syscall
+		 * activity of this function's own that could otherwise
+		 * clobber it before the REGISTRY_ERR_CREATE_FAILED log line
+		 * below ever reads it. This is the one real, queryable place
+		 * this failure was ever diagnosable from: cgroup_create()'s/
+		 * container_create()'s own perror() calls write to this
+		 * daemon's real stderr, which nothing mirrors into the log
+		 * store (confirmed live, the hard way, chasing a real
+		 * ADR-0165 production regression on a box with no shell to
+		 * read raw stderr from at all -- logstore_write() is a
+		 * one-way "also print to stderr for boot visibility" call,
+		 * never the reverse).
+		 */
+		{
+		int rerr_errno = errno;
 
 		/*
 		 * The child (if registry_create() actually forked one)
@@ -17450,12 +17468,26 @@ static void handle_pkg_fetch_event(struct conn *cc)
 		if (stdio_write_fd >= 0)
 			close(stdio_write_fd);
 
+		if (rerr == REGISTRY_ERR_CREATE_FAILED)
+			logstore_write("thincd", "error",
+			                "pkgbuild container spawn (%s): container_create failed: %s",
+			                build_container_name, strerror(rerr_errno));
+		else if (rerr == REGISTRY_ERR_DUPLICATE)
+			logstore_write("thincd", "error",
+			                "pkgbuild container spawn (%s): a registry entry with this name "
+			                "already exists (stale leftover?)",
+			                build_container_name);
+		else if (rerr == REGISTRY_ERR_FULL)
+			logstore_write("thincd", "error",
+			                "pkgbuild container spawn (%s): registry table full", build_container_name);
+
 		if (rerr != REGISTRY_OK) {
 			pkg_build_spawn_failed(chain_idx);
 			try_start_queued_pkg_rebuild();
 		} else {
 			register_container_pidfd(entry);
 			register_pkg_build_output(pkg_build_output_fd(chain_idx), chain_idx);
+		}
 		}
 	} else {
 		try_start_queued_pkg_rebuild();
