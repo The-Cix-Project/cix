@@ -1,0 +1,23 @@
+thinC concise mark — ASCII renderings
+======================================
+
+Minimal glyph (inline, any context, no Unicode required):
+
+    C<
+
+Compact banner (CLI startup banners, ~6 lines, box-drawing + diagonals):
+
+    ▄▄▄▄▄▄
+   █▀    ╲
+   █      ╲___
+   █      ╱
+   █▄    ╱
+    ▀▀▀▀▀▀
+
+Usage: the minimal "C<" glyph is the default for inline/log-prefix use
+(matches the spoken shorthand). The compact banner is for a one-time
+startup banner (e.g. thincd's own boot log, thincctl --version) where
+a few extra lines are affordable. Neither needs color -- render in
+the terminal's own default foreground, matching this project's
+existing plain-text console output conventions (no ANSI color codes
+in log output).

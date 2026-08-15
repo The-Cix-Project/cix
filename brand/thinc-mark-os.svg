@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="340" height="200" viewBox="0 0 340 200">
+  <title>thinC OS mark + badge</title>
+  <desc>The thinC mark plus the circular "OS" badge, no wordmark -- the medium lockup, for contexts like a compact app icon.</desc>
+  <defs>
+    <linearGradient id="thinc-mark-os-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4FE0FF"/>
+      <stop offset="55%" stop-color="#00C8FF"/>
+      <stop offset="100%" stop-color="#0090E8"/>
+    </linearGradient>
+  </defs>
+  <g fill="url(#thinc-mark-os-grad)">
+    <path d="M 23,0
+             L 172,0
+             L 172,46
+             L 46,46
+             L 46,154
+             L 172,154
+             L 172,200
+             L 23,200
+             A 23,23 0 0 1 0,177
+             L 0,23
+             A 23,23 0 0 1 23,0
+             Z"/>
+    <path d="M 172,8 L 172,38 L 60,100 Z"/>
+    <path d="M 172,162 L 172,192 L 60,100 Z"/>
+  </g>
+  <g transform="translate(212,0)">
+    <circle cx="64" cy="100" r="58" fill="none" stroke="#F2F5FA" stroke-width="8"/>
+    <text x="64" y="114"
+          fill="#F2F5FA"
+          text-anchor="middle"
+          font-family="JetBrains Mono, Roboto Mono, Noto Sans Mono, monospace"
+          font-size="38"
+          font-weight="700"
+          letter-spacing="2">OS</text>
+  </g>
+</svg>
