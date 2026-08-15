@@ -2,6 +2,18 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 149 (done): parallel package builds -- Phase 1 implementation (ADR-0157, task #841)
+
+Phase 1 of ADR-0157's own phased plan: the pure-refactor migration of `pkg.c`'s ~240 references to bare module statics (`g_current_job_*`, `g_dep_queue_*`, `g_build_*`) onto `struct pkg_entry` and a new small `struct pkg_chain` table, with the effective concurrency limit still fixed at 1 -- zero user-visible behavior change, fully verified against the existing test suite. Also fixes two unrelated, real, previously-undiscovered test bugs found while verifying this change (confirmed via a clean-baseline comparison to rule out causation): `test_https_chain`/`test_tls_throttle` hardcoded `HTTPS_PORT=8443` for their own client-side probes but never explicitly configured the daemon under test to actually listen there, silently broken since task #860 changed the real default to 443.
+
+#### Changed
+- `pkg.c`'s build-transient fields (overlay paths, argv/envp, output-capture pipe+buffer, cache-hit flag) now live on `struct pkg_entry` instead of bare module statics.
+- A new `struct pkg_chain g_chains[PKG_MAX_CONCURRENT_JOBS]` (`== 1` for Phase 1) replaces `g_current_job_name`/`_image`/`_is_hostbuild`/`_build_image`/`_target_version` and `g_dep_queue`/`_count`/`_pos`/`_is_upgrade`.
+- A real design correction found only by reading every call site (not knowable from ADR-0157's own original Context): `g_current_job_name`/`_image` turn out to also be reused, unrelated to any `pkg_entry`, as `pkg_image_recipe_apply_start()`'s own cross-subsystem busy lock -- ruling out a `pkg_entry*`-based chain design in favor of the plain name/image strings that shipped, which needed zero changes to that other call site.
+
+#### Fixed
+- `test_https_chain.c`/`test_tls_throttle.c` now explicitly request `https_port=8443` in their own daemon-config `PUT` instead of depending on the daemon's own default -- the exact coupling that let the #860 port-default change silently break them undetected.
+
 ### Part 148 (done): partition-level disk management (ADR-0158, task #844)
 
 `disk_enumerate()` now reports partitions as ordinary entries (`is_partition`/`parent_disk`), not just whole disks -- `diskrole.c`/`diskformat.c` needed zero code changes of their own, since both already key every operation purely off `disk_enumerate()`'s own name/dev_path/is_os_disk fields. A new `diskpart.c` adds synchronous, `sfdisk`-scripted primitives (partition-table creation is metadata-only and near-instantaneous, unlike `format`'s async mkfs).

@@ -34,6 +34,20 @@ extern char **environ;
 #define PKG_RM_BIN "/bin/rm"
 #define PKG_UNSQUASHFS_BIN "/usr/bin/unsquashfs"
 
+/* Left with headroom under LOGSTORE_MSG_MAX (4096) once the surrounding
+ * "pkg %s@%s: build output: " prefix and name/image (up to
+ * PKG_NAME_MAX/PKG_IMAGE_NAME_MAX, 64 each) are accounted for --
+ * logstore_write() truncates safely via vsnprintf() regardless, this
+ * just keeps that truncation rare rather than routine. Raised from an
+ * original 300 (paired with LOGSTORE_MSG_MAX's own original 512,
+ * 2026-08-08) alongside switching the capture below from "first N
+ * bytes read" to "last N bytes of the whole output" -- a real build's
+ * own output routinely runs to several KB of "Compiling x"/progress
+ * lines before the actual error, so capturing only the head (as
+ * either original value did) reliably captured everything EXCEPT the
+ * one line that mattered. */
+#define PKG_BUILD_OUTPUT_CAPTURE_MAX 3800
+
 struct pkg_entry {
 	char name[PKG_NAME_MAX];
 	char image[PKG_IMAGE_NAME_MAX];
@@ -45,6 +59,29 @@ struct pkg_entry {
 	int file_count;
 	int files_cap;
 	int in_use;
+
+	/*
+	 * ADR-0157 Phase 1: build-transient fields, meaningful only while
+	 * state is FETCHING or BUILDING -- moved here from bare module
+	 * statics (this is the one specific pkg_entry any given build
+	 * concerns) so a future phase can run more than one build
+	 * concurrently with no second parallel table (see the ADR's own
+	 * Decision section 1). Still only ever one entry actually in this
+	 * state at a time in this phase (PKG_MAX_CONCURRENT_JOBS == 1) --
+	 * a pure storage relocation, no behavior change yet.
+	 */
+	int cache_hit;
+	char build_lowerdir[PATH_MAX], build_upperdir[PATH_MAX];
+	char build_workdir[PATH_MAX], build_merged[PATH_MAX];
+	char build_argv_cmd[512];
+	char *build_argv[4];
+	char *build_envp[4];
+	/* See pkg_fetch_completed()'s own comment for why this is a pipe
+	 * at all (ADR-0087). -1 when this entry has no build output pipe
+	 * currently open. */
+	int build_output_rd;
+	char build_output_captured[PKG_BUILD_OUTPUT_CAPTURE_MAX + 1];
+	int build_output_captured_len;
 };
 
 struct pkg_recipe {
@@ -86,51 +123,83 @@ static char g_pkgbuild_rootfs[PATH_MAX];
  * container-visible. */
 static char g_artifacts_dir[PATH_MAX];
 
-/* v1 serializes installs: at most one job in flight. Empty = idle. */
-static char g_current_job_name[PKG_NAME_MAX];
-/* The target image the in-flight job (name above, plus every
- * dependency it pulls in) merges into -- always normalized (never
- * empty; see normalize_image()), valid exactly when g_current_job_name
- * is non-empty. For a hostbuild job this is always PKG_HOSTBUILD_IMAGE
- * (where the resulting pkg_entry is filed, not where the build
- * container's own lowerdir comes from -- see g_current_job_build_image
- * below). */
-static char g_current_job_image[PKG_IMAGE_NAME_MAX];
-/* True exactly while the in-flight job is a hostbuild (ADR-0056) --
- * set explicitly at the start of every job (pkg_install_start() clears
- * it, pkg_hostbuild_start() sets it), never left stale from a prior
- * job, so it's safe to read any time g_current_job_name is non-empty. */
-static int g_current_job_is_hostbuild;
-/* Only meaningful while g_current_job_is_hostbuild is true: the real
- * image whose rootfs supplies the build container's own lowerdir
- * (e.g. "kanxeo-builder"), as opposed to the always-shared
- * g_pkgbuild_rootfs every ordinary install uses. */
-static char g_current_job_build_image[PKG_IMAGE_NAME_MAX];
-/* ADR-0122: true exactly while the in-flight job's fetch step resolved
- * to a local build-cache hit for the CURRENT queue entry -- set fresh
- * by start_fetch_for() every time (never left stale across queue
- * entries), read by pkg_fetch_completed() to stage the cached tarball
- * into the build container's own upperdir instead of the recipe's
- * real source, and by pkg_build_completed() to skip re-caching content
- * that was itself just extracted FROM the cache. */
-static int g_current_job_cache_hit;
-/* ADR-0107: the caller-requested explicit version pin for the single
- * top-level package this job actually installs/hostbuilds (empty ==
- * no pin, resolve to the highest available version, the pre-existing
- * behavior every caller before this design got). Never applies to any
- * dependency the chain pulls in -- see current_fetch_effective_version(). */
-static char g_current_job_target_version[PKG_VERSION_MAX];
+/*
+ * ADR-0157 Phase 1: everything genuinely per-*request* rather than
+ * per-package -- a dependency chain's own resolved install order and
+ * where its result is headed -- moved onto this struct from bare
+ * module statics (was g_chains[0].name/_image/_is_hostbuild/
+ * _build_image/_target_version, g_chains[0].dep_queue/_count/_pos/_is_upgrade).
+ * Sized to PKG_MAX_CONCURRENT_JOBS (1 for Phase 1 -- a later phase
+ * raises this and adds the config surface, not this struct's shape).
+ *
+ * name/image also double as this daemon's own coarse "one job of any
+ * kind in flight" busy lock -- pkg_image_recipe_apply_start() (a
+ * third, unrelated job kind: a bulk artifact fetch with no pkg_entry
+ * of its own at all) sets these two fields directly as a pure busy
+ * marker, exactly as it already did on the old bare globals, never
+ * touching dep_queue/is_hostbuild/etc. A name+image STRING pair
+ * (never a struct pkg_entry* here) is what makes that sharing still
+ * work correctly after this move -- a pointer couldn't represent "busy
+ * for a reason that isn't any single package."
+ */
+#define PKG_MAX_CONCURRENT_JOBS 1
 
-/* The resolved install order for the current job: dependencies first
- * (post-order), the originally-requested package last. g_dep_queue_pos
- * is the index currently fetching/building; g_dep_queue_is_upgrade is
- * true only when the LAST entry is an explicit upgrade of an already-
- * installed package (dependencies are only ever fresh-installed if
- * missing, never auto-upgraded as a side effect). */
-static char g_dep_queue[PKG_MAX_DEP_CHAIN][PKG_NAME_MAX];
-static int g_dep_queue_count;
-static int g_dep_queue_pos;
-static int g_dep_queue_is_upgrade;
+struct pkg_chain {
+	/* Was g_chains[0].name -- "" means this chain slot is idle. */
+	char name[PKG_NAME_MAX];
+	/* The target image the in-flight job (name above, plus every
+	 * dependency it pulls in) merges into -- always normalized (never
+	 * empty; see normalize_image()), valid exactly when name is
+	 * non-empty. For a hostbuild job this is always
+	 * PKG_HOSTBUILD_IMAGE (where the resulting pkg_entry is filed, not
+	 * where the build container's own lowerdir comes from -- see
+	 * build_image below). */
+	char image[PKG_IMAGE_NAME_MAX];
+	/* True exactly while this chain's job is a hostbuild (ADR-0056) --
+	 * set explicitly at the start of every job (pkg_install_start()
+	 * clears it, pkg_hostbuild_start() sets it), never left stale from
+	 * a prior job, so it's safe to read any time name is non-empty. */
+	int is_hostbuild;
+	/* Only meaningful while is_hostbuild is true: the real image whose
+	 * rootfs supplies the build container's own lowerdir (e.g.
+	 * "kanxeo-builder"), as opposed to the always-shared
+	 * g_pkgbuild_rootfs every ordinary install uses. */
+	char build_image[PKG_IMAGE_NAME_MAX];
+	/* ADR-0107: the caller-requested explicit version pin for the
+	 * single top-level package this job actually installs/hostbuilds
+	 * (empty == no pin, resolve to the highest available version, the
+	 * pre-existing behavior every caller before this design got).
+	 * Never applies to any dependency the chain pulls in -- see
+	 * current_fetch_effective_version(). */
+	char target_version[PKG_VERSION_MAX];
+
+	/* The resolved install order for this job: dependencies first
+	 * (post-order), the originally-requested package last.
+	 * dep_queue_pos is the index currently fetching/building;
+	 * dep_queue_is_upgrade is true only when the LAST entry is an
+	 * explicit upgrade of an already-installed package (dependencies
+	 * are only ever fresh-installed if missing, never auto-upgraded as
+	 * a side effect). */
+	char dep_queue[PKG_MAX_DEP_CHAIN][PKG_NAME_MAX];
+	int dep_queue_count;
+	int dep_queue_pos;
+	int dep_queue_is_upgrade;
+};
+
+static struct pkg_chain g_chains[PKG_MAX_CONCURRENT_JOBS];
+
+/*
+ * ADR-0157 Phase 1: which pkg_entry currently owns the open build-
+ * output capture pipe (ADR-0087) -- deliberately a separate pointer,
+ * not derived from g_chains[0].name/image: pkg_build_output_close()
+ * can run (via pkg_build_spawn_failed()) AFTER the owning chain has
+ * already been cleared back to idle, so looking the entry up by name
+ * at that point would fail. Set the instant a build's own output pipe
+ * is opened (pkg_fetch_completed()), cleared back to NULL once
+ * pkg_build_output_close() actually closes it. NULL means no build
+ * output pipe is currently open (pkg_build_output_fd() returns -1).
+ */
+static struct pkg_entry *g_build_output_entry;
 
 /* ADR-0107: images awaiting a rolling-manifest rebuild, queued by
  * pkg_recipe_add() and drained by pkg_try_start_queued_rebuild() --
@@ -142,61 +211,6 @@ static int g_dep_queue_is_upgrade;
 #define PKG_REBUILD_QUEUE_MAX 32
 static char g_rebuild_queue[PKG_REBUILD_QUEUE_MAX][PKG_IMAGE_NAME_MAX];
 static int g_rebuild_queue_count;
-
-/* Static storage for the pending build's container_spec inputs --
- * valid from pkg_fetch_completed() returning success through the
- * caller's immediately-following registry_create() call. Safe as
- * module-level statics given v1's one-job-at-a-time serialization. */
-static char g_build_lowerdir[PATH_MAX], g_build_upperdir[PATH_MAX];
-static char g_build_workdir[PATH_MAX], g_build_merged[PATH_MAX];
-static char g_build_argv_cmd[512];
-static char *g_build_argv[4];
-static char *g_build_envp[4];
-/*
- * The build container's own stdout/stderr, captured via a pipe (see
- * struct container_spec's capture_output field) since there is no
- * other way to see a recipe's real build-script output: the async
- * pipeline captures no logs of its own, and this project's minimal
- * install has no SSH/console access to read the daemon's own
- * inherited stdout on a real remote box (ADR-0034).
- *
- * g_build_output_rd is registered directly with the daemon's own
- * epoll loop by the caller (main.c, via pkg_build_output_fd()) right
- * after the build container is spawned, and drained incrementally as
- * data arrives (pkg_build_output_readable(), called on EPOLLIN) into
- * g_build_output_captured below -- NOT read in one shot after the
- * container exits. ADR-0087: a plain pipe's kernel buffer is 64KB;
- * any build whose combined stdout+stderr exceeds that would block
- * forever on its next write() if nothing drains the pipe while it's
- * still running, which is exactly what a single post-exit read did
- * before this fix (confirmed live: a real `perl` build reproducibly
- * deadlocked this way). g_build_output_wr is the caller's (main.c's)
- * own copy of the write end, returned via pkg_fetch_completed()'s
- * out-param so it can be closed right after the child inherits its
- * own duplicate. -1 when no build is in flight or the pipe2() call
- * itself failed (capture is a diagnostic nicety, never a reason to
- * fail the build).
- */
-static int g_build_output_rd = -1;
-/* Left with headroom under LOGSTORE_MSG_MAX (4096) once the surrounding
- * "pkg %s@%s: build output: " prefix and name/image (up to
- * PKG_NAME_MAX/PKG_IMAGE_NAME_MAX, 64 each) are accounted for --
- * logstore_write() truncates safely via vsnprintf() regardless, this
- * just keeps that truncation rare rather than routine. Raised from an
- * original 300 (paired with LOGSTORE_MSG_MAX's own original 512,
- * 2026-08-08) alongside switching the capture below from "first N
- * bytes read" to "last N bytes of the whole output" -- a real build's
- * own output routinely runs to several KB of "Compiling x"/progress
- * lines before the actual error, so capturing only the head (as
- * either original value did) reliably captured everything EXCEPT the
- * one line that mattered. */
-#define PKG_BUILD_OUTPUT_CAPTURE_MAX 3800
-/* Sliding-window tail buffer g_build_output_readable() incrementally
- * fills (see its own comment) -- pkg_build_completed() logs straight
- * from this on a build failure, replacing what used to be a single
- * blocking drain-to-EOF loop performed at that point instead. */
-static char g_build_output_captured[PKG_BUILD_OUTPUT_CAPTURE_MAX + 1];
-static int g_build_output_captured_len;
 
 static int pkg_name_is_valid(const char *name)
 {
@@ -1005,8 +1019,7 @@ static int copy_tree_hardlink(const char *src_root, const char *dst_root)
 
 /* PKG_MAX_PACKAGES entries at up to PKG_NAME_MAX+PKG_VERSION_MAX bytes
  * each is a multi-KB working set -- a file-scope static buffer for a
- * single-job-at-a-time result, matching g_build_lowerdir and friends
- * above, not a large per-call stack frame. */
+ * single-job-at-a-time result, not a large per-call stack frame. */
 #define PKG_MANIFEST_STRING_MAX (PKG_MAX_PACKAGES * (PKG_NAME_MAX + PKG_VERSION_MAX + 2))
 static char g_manifest_string_buf[PKG_MANIFEST_STRING_MAX];
 
@@ -1402,11 +1415,8 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
 		return -1;
 
 	memset(g_packages, 0, sizeof(g_packages));
-	g_current_job_name[0] = '\0';
-	g_current_job_is_hostbuild = 0;
-	g_dep_queue_count = 0;
-	g_dep_queue_pos = 0;
-	g_dep_queue_is_upgrade = 0;
+	memset(g_chains, 0, sizeof(g_chains));
+	g_build_output_entry = NULL;
 	image_recipe_init(pkg_dir);
 	container_recipe_init(pkg_dir);
 	return load_state();
@@ -1883,7 +1893,7 @@ static void queue_rolling_rebuilds_for(const char *pkg_name, const char *pkg_ver
 
 int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd)
 {
-	if (g_current_job_name[0] != '\0')
+	if (g_chains[0].name[0] != '\0')
 		return 0;
 
 	while (g_rebuild_queue_count > 0) {
@@ -2096,7 +2106,7 @@ static int resolve_chain(const char *name, const char *version, int force,
 		return -1;
 	}
 
-	existing = pkg_find(name, g_current_job_image);
+	existing = pkg_find(name, g_chains[0].image);
 	if (!force && existing != NULL && existing->state == PKG_STATE_INSTALLED)
 		return 0; /* already satisfied */
 
@@ -2150,13 +2160,13 @@ static int resolve_chain(const char *name, const char *version, int force,
 /*
  * True exactly while the entry currently being fetched/built is the
  * single top-level package the in-flight job actually asked for --
- * g_dep_queue's own post-order construction (resolve_chain()) always
+ * g_chains[0].dep_queue's own post-order construction (resolve_chain()) always
  * places that entry last, and it's the only entry a version pin
- * (g_current_job_target_version) ever applies to (ADR-0107).
+ * (g_chains[0].target_version) ever applies to (ADR-0107).
  */
 static int current_fetch_is_target(void)
 {
-	return g_dep_queue_pos == g_dep_queue_count - 1;
+	return g_chains[0].dep_queue_pos == g_chains[0].dep_queue_count - 1;
 }
 
 /*
@@ -2169,8 +2179,8 @@ static int current_fetch_is_target(void)
  */
 static const char *current_fetch_effective_version(void)
 {
-	if (current_fetch_is_target() && g_current_job_target_version[0] != '\0')
-		return g_current_job_target_version;
+	if (current_fetch_is_target() && g_chains[0].target_version[0] != '\0')
+		return g_chains[0].target_version;
 	return NULL;
 }
 
@@ -2206,6 +2216,7 @@ static enum pkg_error start_fetch_for(const char *name, pid_t *out_pid, int *out
 	struct pkg_entry *e;
 	int i, slot = -1;
 	int is_upgrade;
+	int cache_hit;
 	pid_t pid;
 	int pidfd;
 
@@ -2214,15 +2225,20 @@ static enum pkg_error start_fetch_for(const char *name, pid_t *out_pid, int *out
 	    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
 		return PKG_ERR_INVALID_RECIPE;
 
-	/* ADR-0122: set fresh for every queue entry (never left stale from
-	 * a prior one) -- a hostbuild job's own artifact never belongs in
-	 * the shared package cache (a one-shot host harvest, not something
-	 * merged into any image, see g_current_job_is_hostbuild's own
-	 * doc), so it's never a cache candidate. */
-	g_current_job_cache_hit =
-	    !g_current_job_is_hostbuild && pkg_cache_has(recipe.name, recipe.version);
+	/* ADR-0122: computed fresh for every queue entry (never left stale
+	 * from a prior one) -- a hostbuild job's own artifact never belongs
+	 * in the shared package cache (a one-shot host harvest, not
+	 * something merged into any image, see g_chains[0].is_hostbuild's
+	 * own doc), so it's never a cache candidate. Held in a local here
+	 * (rather than written straight to e->cache_hit) since e isn't
+	 * resolved/settled until just below -- a brand new entry gets a
+	 * fresh memset() that would wipe a too-early write right back out;
+	 * the forked child below reads this same local via its own
+	 * fork()-inherited copy, not e->cache_hit, for the identical
+	 * reason. */
+	cache_hit = !g_chains[0].is_hostbuild && pkg_cache_has(recipe.name, recipe.version);
 
-	e = pkg_find(name, g_current_job_image);
+	e = pkg_find(name, g_chains[0].image);
 	is_upgrade = (e != NULL && e->state == PKG_STATE_INSTALLED);
 
 	if (e == NULL || !is_upgrade) {
@@ -2242,10 +2258,11 @@ static enum pkg_error start_fetch_for(const char *name, pid_t *out_pid, int *out
 		memset(e, 0, sizeof(*e));
 		e->in_use = 1;
 		strncpy(e->name, recipe.name, sizeof(e->name) - 1);
-		strncpy(e->image, g_current_job_image, sizeof(e->image) - 1);
+		strncpy(e->image, g_chains[0].image, sizeof(e->image) - 1);
 	}
 	e->state = PKG_STATE_FETCHING;
 	e->error[0] = '\0';
+	e->cache_hit = cache_hit;
 
 	if (persist_mkdir_p(g_sources_dir) != 0) {
 		e->state = is_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
@@ -2274,7 +2291,7 @@ static enum pkg_error start_fetch_for(const char *name, pid_t *out_pid, int *out
 		fetch_error_sidecar_path(recipe.name, fetch_err_path, sizeof(fetch_err_path));
 		unlink(fetch_err_path);
 
-		if (g_current_job_cache_hit) {
+		if (cache_hit) {
 			/* Local cache already has this exact (name,version) --
 			 * nothing to fetch; pkg_fetch_completed() stages straight
 			 * from the cache. */
@@ -2448,7 +2465,7 @@ static enum pkg_error start_fetch_for(const char *name, pid_t *out_pid, int *out
 		return PKG_ERR_SPAWN_FAILED;
 	}
 
-	strncpy(g_current_job_name, name, sizeof(g_current_job_name) - 1);
+	strncpy(g_chains[0].name, name, sizeof(g_chains[0].name) - 1);
 	*out_pid = pid;
 	*out_pidfd = pidfd;
 	return PKG_OK;
@@ -2470,19 +2487,19 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
 		return PKG_ERR_INVALID_NAME;
 	if (image != NULL && image[0] != '\0' && !pkg_image_is_valid(image))
 		return PKG_ERR_INVALID_NAME;
-	if (g_current_job_name[0] != '\0')
+	if (g_chains[0].name[0] != '\0')
 		return PKG_ERR_BUSY;
 
 	if (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) != 0 ||
 	    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
 		return PKG_ERR_INVALID_RECIPE;
 
-	snprintf(g_current_job_image, sizeof(g_current_job_image), "%s", normalize_image(image));
-	snprintf(g_current_job_target_version, sizeof(g_current_job_target_version), "%s",
+	snprintf(g_chains[0].image, sizeof(g_chains[0].image), "%s", normalize_image(image));
+	snprintf(g_chains[0].target_version, sizeof(g_chains[0].target_version), "%s",
 	         (version != NULL) ? version : "");
-	g_current_job_is_hostbuild = 0;
+	g_chains[0].is_hostbuild = 0;
 
-	e = pkg_find(name, g_current_job_image);
+	e = pkg_find(name, g_chains[0].image);
 	if (e != NULL && e->state == PKG_STATE_INSTALLED &&
 	    (!upgrade || strcmp(e->version, recipe.version) == 0))
 		return PKG_ERR_DUPLICATE;
@@ -2492,20 +2509,20 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
 	 * an explicit upgrade target is queued even though it's already
 	 * installed (resolve_chain()'s default "already installed, skip"
 	 * rule is for pure dependencies, not the package actually asked for). */
-	g_dep_queue_count = 0;
-	if (resolve_chain(name, version, 1, g_dep_queue, &g_dep_queue_count, visiting, &visiting_count,
+	g_chains[0].dep_queue_count = 0;
+	if (resolve_chain(name, version, 1, g_chains[0].dep_queue, &g_chains[0].dep_queue_count, visiting, &visiting_count,
 	                   err, sizeof(err)) != 0)
 		return PKG_ERR_INVALID_RECIPE;
 
-	g_dep_queue_pos = 0;
-	g_dep_queue_is_upgrade = (e != NULL && e->state == PKG_STATE_INSTALLED);
+	g_chains[0].dep_queue_pos = 0;
+	g_chains[0].dep_queue_is_upgrade = (e != NULL && e->state == PKG_STATE_INSTALLED);
 
-	perr = start_fetch_for(g_dep_queue[0], out_pid, out_pidfd);
+	perr = start_fetch_for(g_chains[0].dep_queue[0], out_pid, out_pidfd);
 	if (perr != PKG_OK) {
-		g_dep_queue_count = 0;
+		g_chains[0].dep_queue_count = 0;
 		return perr;
 	}
-	snprintf(out_started_name, out_started_name_size, "%s", g_dep_queue[0]);
+	snprintf(out_started_name, out_started_name_size, "%s", g_chains[0].dep_queue[0]);
 	return PKG_OK;
 }
 
@@ -2522,7 +2539,7 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
 		return PKG_ERR_INVALID_NAME;
 	if (build_image == NULL || build_image[0] == '\0' || !pkg_image_is_valid(build_image))
 		return PKG_ERR_INVALID_NAME;
-	if (g_current_job_name[0] != '\0')
+	if (g_chains[0].name[0] != '\0')
 		return PKG_ERR_BUSY;
 
 	if (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) != 0 ||
@@ -2561,25 +2578,25 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
 	    (!upgrade || strcmp(e->version, recipe.version) == 0))
 		return PKG_ERR_DUPLICATE;
 
-	snprintf(g_current_job_image, sizeof(g_current_job_image), "%s", PKG_HOSTBUILD_IMAGE);
-	snprintf(g_current_job_build_image, sizeof(g_current_job_build_image), "%s", build_image);
-	snprintf(g_current_job_target_version, sizeof(g_current_job_target_version), "%s",
+	snprintf(g_chains[0].image, sizeof(g_chains[0].image), "%s", PKG_HOSTBUILD_IMAGE);
+	snprintf(g_chains[0].build_image, sizeof(g_chains[0].build_image), "%s", build_image);
+	snprintf(g_chains[0].target_version, sizeof(g_chains[0].target_version), "%s",
 	         (version != NULL) ? version : "");
-	g_current_job_is_hostbuild = 1;
+	g_chains[0].is_hostbuild = 1;
 
 	/* A hostbuild job is always a single, standalone entry -- no
 	 * resolve_chain(), pkg_depends is required empty above. */
-	g_dep_queue_count = 0;
-	strncpy(g_dep_queue[0], name, PKG_NAME_MAX - 1);
-	g_dep_queue[0][PKG_NAME_MAX - 1] = '\0';
-	g_dep_queue_count = 1;
-	g_dep_queue_pos = 0;
-	g_dep_queue_is_upgrade = 0;
+	g_chains[0].dep_queue_count = 0;
+	strncpy(g_chains[0].dep_queue[0], name, PKG_NAME_MAX - 1);
+	g_chains[0].dep_queue[0][PKG_NAME_MAX - 1] = '\0';
+	g_chains[0].dep_queue_count = 1;
+	g_chains[0].dep_queue_pos = 0;
+	g_chains[0].dep_queue_is_upgrade = 0;
 
 	perr = start_fetch_for(name, out_pid, out_pidfd);
 	if (perr != PKG_OK) {
-		g_dep_queue_count = 0;
-		g_current_job_is_hostbuild = 0;
+		g_chains[0].dep_queue_count = 0;
+		g_chains[0].is_hostbuild = 0;
 		return perr;
 	}
 	return PKG_OK;
@@ -2587,7 +2604,7 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
 
 int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *out_stdio_write_fd)
 {
-	struct pkg_entry *e = pkg_find(g_current_job_name, g_current_job_image);
+	struct pkg_entry *e = pkg_find(g_chains[0].name, g_chains[0].image);
 	char recipe_path[PATH_MAX];
 	struct pkg_recipe recipe;
 	char sha_out[128];
@@ -2597,11 +2614,11 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 	int i;
 
 	if (e == NULL) {
-		g_current_job_name[0] = '\0';
-		g_dep_queue_count = 0;
+		g_chains[0].name[0] = '\0';
+		g_chains[0].dep_queue_count = 0;
 		return 0;
 	}
-	is_final_upgrade = g_dep_queue_is_upgrade && (g_dep_queue_pos + 1 >= g_dep_queue_count);
+	is_final_upgrade = g_chains[0].dep_queue_is_upgrade && (g_chains[0].dep_queue_pos + 1 >= g_chains[0].dep_queue_count);
 
 	if (exit_status != 0) {
 		char fetch_err_path[PATH_MAX];
@@ -2637,8 +2654,8 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 		else
 			snprintf(e->error, sizeof(e->error), "fetch failed (curl exit status %d)", exit_status);
 		logstore_write("kanxeod", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
-		g_current_job_name[0] = '\0';
-		g_dep_queue_count = 0;
+		g_chains[0].name[0] = '\0';
+		g_chains[0].dep_queue_count = 0;
 		return 0;
 	}
 
@@ -2647,8 +2664,8 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 	    parse_recipe(recipe_path, &recipe) != 0) {
 		e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
 		snprintf(e->error, sizeof(e->error), "recipe became unreadable mid-install");
-		g_current_job_name[0] = '\0';
-		g_dep_queue_count = 0;
+		g_chains[0].name[0] = '\0';
+		g_chains[0].dep_queue_count = 0;
 		return 0;
 	}
 
@@ -2661,7 +2678,7 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 	 * by start_fetch_for() itself; this is the only other way it ever
 	 * becomes true).
 	 */
-	if (!g_current_job_cache_hit) {
+	if (!e->cache_hit) {
 		char artifact_sentinel[PATH_MAX];
 		struct stat st;
 
@@ -2669,7 +2686,7 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 		                        sizeof(artifact_sentinel));
 		if (stat(artifact_sentinel, &st) == 0 && S_ISREG(st.st_mode)) {
 			pkg_cache_save_from_file(e->name, recipe.version, artifact_sentinel);
-			g_current_job_cache_hit = 1;
+			e->cache_hit = 1;
 		}
 	}
 
@@ -2685,7 +2702,7 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 	 * entirely for a cache/artifact hit -- nothing was fetched from
 	 * recipe.source[] at all in that case.
 	 */
-	if (!g_current_job_cache_hit) {
+	if (!e->cache_hit) {
 		for (i = 0; i < recipe.source_count; i++) {
 			char src_path[PATH_MAX];
 
@@ -2695,8 +2712,8 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 			    strcasecmp(sha_out, recipe.sha256[i]) != 0) {
 				e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
 				snprintf(e->error, sizeof(e->error), "checksum mismatch (source %d)", i);
-				g_current_job_name[0] = '\0';
-				g_dep_queue_count = 0;
+				g_chains[0].name[0] = '\0';
+				g_chains[0].dep_queue_count = 0;
 				return 0;
 			}
 		}
@@ -2708,7 +2725,7 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 	 * own current version's rootfs (ADR-0107/0108, built up via
 	 * ordinary `pkg install` beforehand), never the shared toolchain
 	 * sandbox every regular install uses (ADR-0056). */
-	if (g_current_job_is_hostbuild) {
+	if (g_chains[0].is_hostbuild) {
 		char build_image_version[IMAGE_VERSION_MAX];
 
 		/* pkg_hostbuild_start() already validated build_image has a
@@ -2716,23 +2733,23 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 		 * failure here is unreachable in practice; an empty lowerdir
 		 * fails the subsequent overlay mount cleanly instead of
 		 * silently reusing a stale path. */
-		if (image_current_version(g_current_job_build_image, build_image_version,
+		if (image_current_version(g_chains[0].build_image, build_image_version,
 		                           sizeof(build_image_version)) == IMAGE_OK)
-			image_version_rootfs_path(g_current_job_build_image, build_image_version,
-			                           g_build_lowerdir, sizeof(g_build_lowerdir));
+			image_version_rootfs_path(g_chains[0].build_image, build_image_version,
+			                           e->build_lowerdir, sizeof(e->build_lowerdir));
 		else
-			g_build_lowerdir[0] = '\0';
+			e->build_lowerdir[0] = '\0';
 	} else {
-		snprintf(g_build_lowerdir, sizeof(g_build_lowerdir), "%s", g_pkgbuild_rootfs);
+		snprintf(e->build_lowerdir, sizeof(e->build_lowerdir), "%s", g_pkgbuild_rootfs);
 	}
-	snprintf(g_build_upperdir, sizeof(g_build_upperdir), "%s/upper", container_base);
-	snprintf(g_build_workdir, sizeof(g_build_workdir), "%s/work", container_base);
-	snprintf(g_build_merged, sizeof(g_build_merged), "%s/merged", container_base);
+	snprintf(e->build_upperdir, sizeof(e->build_upperdir), "%s/upper", container_base);
+	snprintf(e->build_workdir, sizeof(e->build_workdir), "%s/work", container_base);
+	snprintf(e->build_merged, sizeof(e->build_merged), "%s/merged", container_base);
 
-	snprintf(src_dir, sizeof(src_dir), "%s/build/src", g_build_upperdir);
-	snprintf(dest_dir, sizeof(dest_dir), "%s/build/pkg-dest", g_build_upperdir);
-	snprintf(recipe_dst, sizeof(recipe_dst), "%s/build/recipe.sh", g_build_upperdir);
-	snprintf(extra_dir, sizeof(extra_dir), "%s/build/extra", g_build_upperdir);
+	snprintf(src_dir, sizeof(src_dir), "%s/build/src", e->build_upperdir);
+	snprintf(dest_dir, sizeof(dest_dir), "%s/build/pkg-dest", e->build_upperdir);
+	snprintf(recipe_dst, sizeof(recipe_dst), "%s/build/recipe.sh", e->build_upperdir);
+	snprintf(extra_dir, sizeof(extra_dir), "%s/build/extra", e->build_upperdir);
 
 	{
 		char main_src_path[PATH_MAX];
@@ -2754,7 +2771,7 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 		 * and build/src already have -- benefits every future
 		 * recipe run against a minimal image, not just this one.
 		 */
-		snprintf(tmp_dir, sizeof(tmp_dir), "%s/tmp", g_build_upperdir);
+		snprintf(tmp_dir, sizeof(tmp_dir), "%s/tmp", e->build_upperdir);
 
 		/*
 		 * A sequential if/else-if chain rather than the equivalent
@@ -2782,7 +2799,7 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 			} else if (persist_mkdir_p(tmp_dir) != 0) {
 				prep_step = "create tmp dir";
 				prep_errno = errno;
-			} else if (g_current_job_cache_hit) {
+			} else if (e->cache_hit) {
 				/* ADR-0122: dest_dir is populated straight from the
 				 * local cache -- no source to verify, no recipe.sh to
 				 * source, no real compile needed. The build container
@@ -2807,17 +2824,17 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 				if (prep_errno != 0)
 					logstore_write("kanxeod", "error",
 					                "pkg %s@%s: could not prepare build container (%s): %s",
-					                e->name, g_current_job_image, prep_step,
+					                e->name, g_chains[0].image, prep_step,
 					                strerror(prep_errno));
 				else
 					logstore_write("kanxeod", "error",
 					                "pkg %s@%s: could not prepare build container (%s) -- see run_subprocess detail above",
-					                e->name, g_current_job_image, prep_step);
+					                e->name, g_chains[0].image, prep_step);
 				e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
 				snprintf(e->error, sizeof(e->error),
 				         "could not prepare the build container (%s failed)", prep_step);
-				g_current_job_name[0] = '\0';
-				g_dep_queue_count = 0;
+				g_chains[0].name[0] = '\0';
+				g_chains[0].dep_queue_count = 0;
 				return 0;
 			}
 		}
@@ -2829,15 +2846,15 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 	 * Basename collisions across multiple extra URLs are a stated
 	 * recipe-author responsibility, not auto-resolved here. Skipped for
 	 * a cache hit -- nothing was fetched at all in that case. */
-	if (!g_current_job_cache_hit && recipe.source_count > 1) {
+	if (!e->cache_hit && recipe.source_count > 1) {
 		if (persist_mkdir_p(extra_dir) != 0) {
 			logstore_write("kanxeod", "error",
 			                "pkg %s@%s: could not prepare build container (create extra dir): %s",
-			                e->name, g_current_job_image, strerror(errno));
+			                e->name, g_chains[0].image, strerror(errno));
 			e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
 			snprintf(e->error, sizeof(e->error), "could not prepare the build container (create extra dir failed)");
-			g_current_job_name[0] = '\0';
-			g_dep_queue_count = 0;
+			g_chains[0].name[0] = '\0';
+			g_chains[0].dep_queue_count = 0;
 			return 0;
 		}
 		for (i = 1; i < recipe.source_count; i++) {
@@ -2850,12 +2867,12 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 			if (copy_file_simple(src_path, extra_dst) != 0) {
 				logstore_write("kanxeod", "error",
 				                "pkg %s@%s: could not prepare build container (copy extra source %d): %s",
-				                e->name, g_current_job_image, i, strerror(errno));
+				                e->name, g_chains[0].image, i, strerror(errno));
 				e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
 				snprintf(e->error, sizeof(e->error),
 				         "could not prepare the build container (copy extra source %d failed)", i);
-				g_current_job_name[0] = '\0';
-				g_dep_queue_count = 0;
+				g_chains[0].name[0] = '\0';
+				g_chains[0].dep_queue_count = 0;
 				return 0;
 			}
 		}
@@ -2865,10 +2882,10 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 	 * container's own /build/pkg-dest) was already populated straight
 	 * from the cache above, nothing left for the container itself to
 	 * do. */
-	if (g_current_job_cache_hit)
-		snprintf(g_build_argv_cmd, sizeof(g_build_argv_cmd), ":");
+	if (e->cache_hit)
+		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd), ":");
 	else
-		snprintf(g_build_argv_cmd, sizeof(g_build_argv_cmd),
+		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd),
 		         ". /build/recipe.sh; cd /build/src && pkg_build && pkg_install");
 	/*
 	 * /usr/bin/bash, not /bin/sh -- caught empirically (ADR-0056) the
@@ -2886,29 +2903,37 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 	 * project has ever built (dev, base, router, ...) has it at this
 	 * exact path -- confirmed directly, not assumed.
 	 */
-	g_build_argv[0] = "/usr/bin/bash";
-	g_build_argv[1] = "-c";
-	g_build_argv[2] = g_build_argv_cmd;
-	g_build_argv[3] = NULL;
-	g_build_envp[0] = "PKG_DESTDIR=/build/pkg-dest";
-	g_build_envp[1] = "PATH=/usr/bin:/bin";
-	g_build_envp[2] = "HOME=/build";
-	g_build_envp[3] = NULL;
+	e->build_argv[0] = "/usr/bin/bash";
+	e->build_argv[1] = "-c";
+	e->build_argv[2] = e->build_argv_cmd;
+	e->build_argv[3] = NULL;
+	e->build_envp[0] = "PKG_DESTDIR=/build/pkg-dest";
+	e->build_envp[1] = "PATH=/usr/bin:/bin";
+	e->build_envp[2] = "HOME=/build";
+	e->build_envp[3] = NULL;
 
 	memset(spec_out, 0, sizeof(*spec_out));
 	spec_out->ns.clone_flags =
 	    CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWCGROUP | CLONE_INTO_CGROUP;
 	spec_out->ns.hostname = PKG_BUILD_CONTAINER_NAME;
 	spec_out->cg.name = PKG_BUILD_CONTAINER_NAME;
-	spec_out->ov.lowerdir = g_build_lowerdir;
-	spec_out->ov.upperdir = g_build_upperdir;
-	spec_out->ov.workdir = g_build_workdir;
-	spec_out->ov.merged = g_build_merged;
+	spec_out->ov.lowerdir = e->build_lowerdir;
+	spec_out->ov.upperdir = e->build_upperdir;
+	spec_out->ov.workdir = e->build_workdir;
+	spec_out->ov.merged = e->build_merged;
 	spec_out->mnt.put_old_rel = ".old_root";
-	spec_out->argv = g_build_argv;
-	spec_out->envp = g_build_envp;
+	spec_out->argv = e->build_argv;
+	spec_out->envp = e->build_envp;
 
-	g_build_output_captured_len = 0;
+	e->build_output_captured_len = 0;
+	/* ADR-0157 Phase 1: this entry is now the one owning the open
+	 * build-output pipe, regardless of whether pipe2()/fcntl() below
+	 * actually succeed (both failure branches still explicitly set
+	 * build_output_rd to -1, which every reader already treats as
+	 * "nothing to read") -- see g_build_output_entry's own doc comment
+	 * for why pkg_build_output_close() needs this separate from
+	 * g_chains[0].name/image. */
+	g_build_output_entry = e;
 	{
 		int output_pipe[2];
 
@@ -2927,16 +2952,16 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 				spec_out->capture_output = 1;
 				spec_out->stdout_fd = output_pipe[1];
 				spec_out->stderr_fd = output_pipe[1];
-				g_build_output_rd = output_pipe[0];
+				e->build_output_rd = output_pipe[0];
 				*out_stdio_write_fd = output_pipe[1];
 			} else {
 				close(output_pipe[0]);
 				close(output_pipe[1]);
-				g_build_output_rd = -1;
+				e->build_output_rd = -1;
 				*out_stdio_write_fd = -1;
 			}
 		} else {
-			g_build_output_rd = -1;
+			e->build_output_rd = -1;
 			*out_stdio_write_fd = -1;
 		}
 	}
@@ -2947,19 +2972,19 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 
 void pkg_build_spawn_failed(void)
 {
-	struct pkg_entry *e = pkg_find(g_current_job_name, g_current_job_image);
+	struct pkg_entry *e = pkg_find(g_chains[0].name, g_chains[0].image);
 
 	if (e != NULL) {
-		int is_final_upgrade = g_dep_queue_is_upgrade && (g_dep_queue_pos + 1 >= g_dep_queue_count);
+		int is_final_upgrade = g_chains[0].dep_queue_is_upgrade && (g_chains[0].dep_queue_pos + 1 >= g_chains[0].dep_queue_count);
 
 		e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
 		snprintf(e->error, sizeof(e->error), "could not start the build container");
 	}
-	g_current_job_name[0] = '\0';
-	g_dep_queue_count = 0;
+	g_chains[0].name[0] = '\0';
+	g_chains[0].dep_queue_count = 0;
 	/*
 	 * registry_create() never spawned a container, so no epoll
-	 * registration for g_build_output_rd exists anywhere to drive
+	 * registration for its build_output_rd exists anywhere to drive
 	 * its own EOF-triggered close (see register_pkg_build_output()/
 	 * handle_pkg_build_output_event() in main.c) -- this is the one
 	 * path that has to close it directly.
@@ -2969,23 +2994,23 @@ void pkg_build_spawn_failed(void)
 
 int pkg_build_output_fd(void)
 {
-	return g_build_output_rd;
+	return g_build_output_entry != NULL ? g_build_output_entry->build_output_rd : -1;
 }
 
-static void pkg_build_output_append(const char *data, int len)
+static void pkg_build_output_append(struct pkg_entry *e, const char *data, int len)
 {
 	int take = (len > PKG_BUILD_OUTPUT_CAPTURE_MAX) ? PKG_BUILD_OUTPUT_CAPTURE_MAX : len;
-	int new_total = g_build_output_captured_len + take;
+	int new_total = e->build_output_captured_len + take;
 
 	if (new_total > PKG_BUILD_OUTPUT_CAPTURE_MAX) {
 		int overflow = new_total - PKG_BUILD_OUTPUT_CAPTURE_MAX;
 
-		memmove(g_build_output_captured, g_build_output_captured + overflow,
-		        g_build_output_captured_len - overflow);
-		g_build_output_captured_len -= overflow;
+		memmove(e->build_output_captured, e->build_output_captured + overflow,
+		        e->build_output_captured_len - overflow);
+		e->build_output_captured_len -= overflow;
 	}
-	memcpy(g_build_output_captured + g_build_output_captured_len, data + (len - take), take);
-	g_build_output_captured_len += take;
+	memcpy(e->build_output_captured + e->build_output_captured_len, data + (len - take), take);
+	e->build_output_captured_len += take;
 }
 
 int pkg_build_output_readable(char *new_data, int new_data_cap, int *new_data_len)
@@ -2996,13 +3021,13 @@ int pkg_build_output_readable(char *new_data, int new_data_cap, int *new_data_le
 	if (new_data_len != NULL)
 		*new_data_len = 0;
 
-	if (g_build_output_rd < 0)
+	if (g_build_output_entry == NULL || g_build_output_entry->build_output_rd < 0)
 		return 1;
 
 	for (;;) {
-		n = read(g_build_output_rd, chunk, sizeof(chunk));
+		n = read(g_build_output_entry->build_output_rd, chunk, sizeof(chunk));
 		if (n > 0) {
-			pkg_build_output_append(chunk, (int)n);
+			pkg_build_output_append(g_build_output_entry, chunk, (int)n);
 			if (new_data != NULL && new_data_len != NULL && *new_data_len < new_data_cap) {
 				int room = new_data_cap - *new_data_len;
 				int take = ((int)n > room) ? room : (int)n;
@@ -3028,18 +3053,25 @@ int pkg_build_output_readable(char *new_data, int new_data_cap, int *new_data_le
  */
 int pkg_build_output_snapshot(char *out, int out_cap)
 {
-	int take = (g_build_output_captured_len > out_cap) ? out_cap : g_build_output_captured_len;
+	int take;
 
-	memcpy(out, g_build_output_captured, take);
+	if (g_build_output_entry == NULL)
+		return 0;
+	take = (g_build_output_entry->build_output_captured_len > out_cap)
+	           ? out_cap
+	           : g_build_output_entry->build_output_captured_len;
+
+	memcpy(out, g_build_output_entry->build_output_captured, take);
 	return take;
 }
 
 void pkg_build_output_close(void)
 {
-	if (g_build_output_rd >= 0) {
-		close(g_build_output_rd);
-		g_build_output_rd = -1;
+	if (g_build_output_entry != NULL && g_build_output_entry->build_output_rd >= 0) {
+		close(g_build_output_entry->build_output_rd);
+		g_build_output_entry->build_output_rd = -1;
 	}
+	g_build_output_entry = NULL;
 }
 
 /* image_produce_new_version()'s own mutate() callback for a package
@@ -3084,15 +3116,15 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	if (strcmp(container_name, PKG_BUILD_CONTAINER_NAME) != 0)
 		return 0;
 
-	e = pkg_find(g_current_job_name, g_current_job_image);
+	e = pkg_find(g_chains[0].name, g_chains[0].image);
 	if (e == NULL) {
-		g_current_job_name[0] = '\0';
-		g_dep_queue_count = 0;
+		g_chains[0].name[0] = '\0';
+		g_chains[0].dep_queue_count = 0;
 		return 0;
 	}
 
-	is_final = (g_dep_queue_pos + 1 >= g_dep_queue_count);
-	is_upgrade = is_final && g_dep_queue_is_upgrade;
+	is_final = (g_chains[0].dep_queue_pos + 1 >= g_chains[0].dep_queue_count);
+	is_upgrade = is_final && g_chains[0].dep_queue_is_upgrade;
 
 	if (exit_status != 0) {
 		/*
@@ -3104,7 +3136,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * from bash itself, indistinguishable from container.c's own
 		 * exit-127 fallback by exit status alone).
 		 *
-		 * g_build_output_captured has already been incrementally
+		 * e->build_output_captured has already been incrementally
 		 * filled by pkg_build_output_readable() (see its own comment
 		 * and ADR-0087) as the container ran, via the caller's epoll
 		 * registration -- NOT read here in one shot, which is what
@@ -3128,8 +3160,8 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		int captured_len;
 
 		pkg_build_output_readable(NULL, 0, NULL);
-		captured_len = g_build_output_captured_len;
-		memcpy(captured, g_build_output_captured, captured_len);
+		captured_len = e->build_output_captured_len;
+		memcpy(captured, e->build_output_captured, captured_len);
 		captured[captured_len] = '\0';
 
 		/*
@@ -3162,13 +3194,13 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			const char *step = setup_step_names[exit_status - 110];
 
 			logstore_write("kanxeod", "error", "pkg %s@%s: build container setup failed (%s)",
-			                e->name, g_current_job_image, step);
+			                e->name, g_chains[0].image, step);
 			snprintf(e->error, sizeof(e->error), "build container setup failed (%s)", step);
 		} else if (exit_status >= 130 && exit_status <= 136) {
 			const char *step = overlay_step_names[exit_status - 130];
 
 			logstore_write("kanxeod", "error", "pkg %s@%s: build container setup failed (%s)",
-			                e->name, g_current_job_image, step);
+			                e->name, g_chains[0].image, step);
 			snprintf(e->error, sizeof(e->error), "build container setup failed (%s)", step);
 		} else if (exit_status >= 141 && exit_status <= 255) {
 			/*
@@ -3193,7 +3225,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 
 			logstore_write("kanxeod", "error",
 			                "pkg %s@%s: build container setup/exec failed: %s", e->name,
-			                g_current_job_image, strerror(real_errno));
+			                g_chains[0].image, strerror(real_errno));
 			snprintf(e->error, sizeof(e->error), "build container setup/exec failed: %s",
 			         strerror(real_errno));
 		} else if (exit_status == 127) {
@@ -3217,17 +3249,17 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			                "execve() errno too large to encode, or a real \"command not "
 			                "found\" from inside the recipe's own build script -- check the "
 			                "build output logged separately)",
-			                e->name, g_current_job_image);
+			                e->name, g_chains[0].image);
 			snprintf(e->error, sizeof(e->error), "build failed (exit 127 -- see build output in logs)");
 		} else {
 			snprintf(e->error, sizeof(e->error), "build failed (exit status %d)", exit_status);
 		}
 		if (captured_len > 0)
 			logstore_write("kanxeod", "error", "pkg %s@%s: build output: %s", e->name,
-			                g_current_job_image, captured);
+			                g_chains[0].image, captured);
 		e->state = is_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
-		g_current_job_name[0] = '\0';
-		g_dep_queue_count = 0; /* abort the rest of the chain -- a failed dependency
+		g_chains[0].name[0] = '\0';
+		g_chains[0].dep_queue_count = 0; /* abort the rest of the chain -- a failed dependency
 		                        * means the top-level install can't complete either */
 		return 0;
 	}
@@ -3243,7 +3275,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	 * handle_pkg_build_output_event() fires -- closing it directly
 	 * from here would race that still-live epoll registration.
 	 */
-	g_build_output_captured_len = 0;
+	e->build_output_captured_len = 0;
 
 	snprintf(container_base, sizeof(container_base), "%s/%s", g_containers_dir,
 	         PKG_BUILD_CONTAINER_NAME);
@@ -3277,7 +3309,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	e->state = PKG_STATE_INSTALLED;
 	e->error[0] = '\0';
 
-	if (g_current_job_is_hostbuild) {
+	if (g_chains[0].is_hostbuild) {
 		/* A hostbuild's output is a standalone host artifact (a
 		 * bzImage, a kanxeod-root squashfs's own components), not
 		 * something that belongs inside any container image's
@@ -3291,9 +3323,9 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		if (persist_mkdir_p(artifact_dir) != 0 || merge_tree(dest_dir, artifact_dir, "", NULL) != 0) {
 			e->state = PKG_STATE_FAILED;
 			snprintf(e->error, sizeof(e->error), "failed to harvest the built artifact");
-			g_current_job_name[0] = '\0';
-			g_dep_queue_count = 0;
-			g_current_job_is_hostbuild = 0;
+			g_chains[0].name[0] = '\0';
+			g_chains[0].dep_queue_count = 0;
+			g_chains[0].is_hostbuild = 0;
 			return 0;
 		}
 	} else {
@@ -3302,12 +3334,12 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		ctx.dest_dir = dest_dir;
 		ctx.e = e;
 		ctx.is_upgrade = is_upgrade;
-		if (image_produce_new_version(g_current_job_image, install_mutate, &ctx) != 0) {
+		if (image_produce_new_version(g_chains[0].image, install_mutate, &ctx) != 0) {
 			e->state = PKG_STATE_FAILED;
 			snprintf(e->error, sizeof(e->error),
 			         "failed to merge installed files into the target image");
-			g_current_job_name[0] = '\0';
-			g_dep_queue_count = 0;
+			g_chains[0].name[0] = '\0';
+			g_chains[0].dep_queue_count = 0;
 			return 0;
 		}
 
@@ -3317,7 +3349,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * itself just extracted FROM the cache, so there's nothing new
 		 * to save -- just bump its mtime so LRU eviction correctly
 		 * treats it as recently used, not stale. */
-		if (g_current_job_cache_hit)
+		if (e->cache_hit)
 			pkg_cache_touch(e->name, e->version);
 		else
 			pkg_cache_save(e->name, e->version, dest_dir);
@@ -3355,21 +3387,21 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 
 	save_state();
 
-	if (g_current_job_is_hostbuild)
+	if (g_chains[0].is_hostbuild)
 		snprintf(out_hostbuild_done_name, PKG_NAME_MAX, "%s", e->name);
 
 	if (!is_final) {
 		enum pkg_error perr;
 
-		g_dep_queue_pos++;
-		perr = start_fetch_for(g_dep_queue[g_dep_queue_pos], out_pid, out_pidfd);
+		g_chains[0].dep_queue_pos++;
+		perr = start_fetch_for(g_chains[0].dep_queue[g_chains[0].dep_queue_pos], out_pid, out_pidfd);
 		if (perr == PKG_OK)
 			return 1;
 		/* couldn't start the next dependency -- abort the chain */
 	}
 
-	g_current_job_name[0] = '\0';
-	g_dep_queue_count = 0;
+	g_chains[0].name[0] = '\0';
+	g_chains[0].dep_queue_count = 0;
 	return 0;
 }
 
@@ -3456,8 +3488,8 @@ enum pkg_error pkg_delete(const char *name, const char *image)
 
 	if (e == NULL || (e->state != PKG_STATE_INSTALLED && e->state != PKG_STATE_FAILED))
 		return PKG_ERR_NOT_FOUND;
-	if (strcmp(g_current_job_name, name) == 0 &&
-	    strcmp(g_current_job_image, normalize_image(image)) == 0)
+	if (strcmp(g_chains[0].name, name) == 0 &&
+	    strcmp(g_chains[0].image, normalize_image(image)) == 0)
 		return PKG_ERR_BUSY;
 
 	/*
@@ -4220,7 +4252,7 @@ enum pkg_error pkg_cache_set_max_bytes(long long max_bytes)
 /* Scanned once per eviction pass -- a static, file-scope buffer (not a
  * stack array): PKG_CACHE_SCAN_MAX entries at this per-entry size is
  * real memory a stack frame shouldn't carry, but is trivial as static
- * data, the same tradeoff g_build_output_captured already makes. A
+ * data, the same tradeoff struct pkg_entry's own build_output_captured already makes. A
  * real cache holding more than this many distinct (name,version)
  * artifacts at once is not a case this project has ever seen -- a
  * real, generous bound, not an unbounded scan. */
@@ -5115,7 +5147,7 @@ enum pkg_error pkg_image_recipe_apply_start(const char *image, int *out_async, p
 
 	if (!pkg_image_is_valid(image))
 		return PKG_ERR_INVALID_NAME;
-	if (g_current_job_name[0] != '\0')
+	if (g_chains[0].name[0] != '\0')
 		return PKG_ERR_BUSY;
 
 	image_recipe_path(image, path, sizeof(path));
@@ -5192,8 +5224,8 @@ enum pkg_error pkg_image_recipe_apply_start(const char *image, int *out_async, p
 		return PKG_ERR_SPAWN_FAILED;
 	}
 
-	strncpy(g_current_job_name, image, sizeof(g_current_job_name) - 1);
-	snprintf(g_current_job_image, sizeof(g_current_job_image), "%s", image);
+	strncpy(g_chains[0].name, image, sizeof(g_chains[0].name) - 1);
+	snprintf(g_chains[0].image, sizeof(g_chains[0].image), "%s", image);
 	g_image_apply_last_state = IMAGE_APPLY_RUNNING;
 	snprintf(g_image_apply_last_image, sizeof(g_image_apply_last_image), "%s", image);
 	g_image_apply_last_attempt = time(NULL);
@@ -5212,7 +5244,7 @@ static void image_apply_fail(const char *fmt, ...)
 	vsnprintf(g_image_apply_last_error, sizeof(g_image_apply_last_error), fmt, ap);
 	va_end(ap);
 	g_image_apply_last_state = IMAGE_APPLY_FAILED;
-	g_current_job_name[0] = '\0';
+	g_chains[0].name[0] = '\0';
 	unlink(g_image_apply_tarball_path);
 }
 
@@ -5228,7 +5260,7 @@ void pkg_image_recipe_apply_completed(int exit_status)
 	int i, slot;
 	struct pkg_entry *e;
 
-	snprintf(image, sizeof(image), "%s", g_current_job_name);
+	snprintf(image, sizeof(image), "%s", g_chains[0].name);
 
 	if (exit_status != 0) {
 		image_apply_fail("image artifact fetch failed (curl exit status %d)", exit_status);
@@ -5316,7 +5348,7 @@ void pkg_image_recipe_apply_completed(int exit_status)
 
 	unlink(g_image_apply_tarball_path);
 	g_image_apply_last_state = IMAGE_APPLY_SUCCESS;
-	g_current_job_name[0] = '\0';
+	g_chains[0].name[0] = '\0';
 }
 
 void pkg_image_recipe_apply_write_json_status(struct json_writer *w)
