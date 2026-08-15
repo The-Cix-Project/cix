@@ -12,6 +12,22 @@
  */
 #define DEVICE_ENUM_MAX 256
 
+/* ADR-0161 Phase A: purely descriptive metadata for a composite USB
+ * device's own real interfaces (e.g. a combo HID+storage device) --
+ * the passthrough unit stays the whole device, exactly as before;
+ * this only makes GET /devices show what a device is actually made
+ * of instead of staying opaque. Empty (interface_count == 0) for
+ * every non-USB device, and for a USB device with only the one
+ * implicit interface a single-function device already has. */
+#define USB_MAX_INTERFACES_REPORTED 16
+
+struct usb_interface_info {
+	int number;
+	char class_hex[8];
+	char subclass_hex[8];
+	char protocol_hex[8];
+};
+
 struct discovered_device {
 	char id[96];
 	char bus[8];		/* "usb", "pci", "net", "gpu", or "disk" */
@@ -25,6 +41,8 @@ struct discovered_device {
 	unsigned int major;
 	unsigned int minor;
 	int assignable;		/* driver bound AND a real /dev node found */
+	struct usb_interface_info interfaces[USB_MAX_INTERFACES_REPORTED];
+	int interface_count;
 };
 
 /*

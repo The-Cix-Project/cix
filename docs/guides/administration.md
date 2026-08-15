@@ -33,6 +33,24 @@ kanxeoctl kmod load e1000e
 
 Wraps real `modprobe`/`modinfo` (ADR-0159 Phase A) -- `kmod ls` reads the kernel's own live `/proc/modules`; `kmod show NAME` is real `modinfo` output (description, module parameters, dependencies, in-tree vs. out-of-tree) for a module that's built and available, whether or not it's currently loaded. `kmod load NAME [--option=KEY=VALUE ...]` is real `modprobe`, with real dependency resolution -- omit `--option=` and it falls back to that module's own persisted `kmod-config` default, if one exists. `kmod-config set NAME --autoload` marks a module for automatic reload on every future boot (its own small, REST-managed list -- distinct from this platform's separate, fixed hardware-detection module list, which needs no configuration at all); `kmod-config set NAME --option=KEY=VALUE` sets the persisted default options a bare `kmod load NAME` falls back to. Building an *additional* module not already present in this platform's own curated kernel build -- rather than just loading one that's already there -- goes through the kernel rebuild + A/B cutover path in [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md), not this command.
 
+## Device hotplug
+
+```sh
+kanxeoctl run --name=printer --image=base --optional-device=usb:04b8:0202:12345 -- /usr/bin/print-daemon
+kanxeoctl container device attach printer usb:04b8:0202:12345
+kanxeoctl container device detach printer usb:04b8:0202:12345
+kanxeoctl device ls
+```
+
+Extends the existing device-passthrough model (`run --device=ID`, `devicemap`) rather than replacing it (ADR-0161) -- the passthrough unit stays the *whole device*, never an individual USB interface, even for a composite device (a combo HID+storage device, say): `device ls`/`GET /v1/devices` now reports every real interface such a device exposes (class/subclass/protocol) so it's no longer opaque, but granting it still means granting the entire thing.
+
+**`--optional-device=ID`** is the one real behavior addition here: unlike `--device=ID`, a currently-unresolvable optional reference does not fail container creation -- the container is created without that grant, and the reference itself is remembered. From that point on, two things keep it moving toward being granted without any further operator action needed:
+
+- **Real hotplug reaction** -- this daemon listens for real kernel `NETLINK_KOBJECT_UEVENT` USB add/remove events. When a device matching a running container's own pending reference actually appears, it's live-attached automatically (BPF grant + `/dev` node, no recreate); when a currently-granted device's hardware disappears, its grant is actively revoked the same way, whether it was originally attached at creation or hotplugged in later. If more than one running container's own pending reference would match the same newly-appeared device, it's granted to **neither** (logged, not silently arbitrated) -- resolve the ambiguity by giving the devices distinct devicemap names instead of matching the same raw vendor:product pair.
+- **`kanxeoctl container device attach NAME ID`** -- the same live-attach primitive the hotplug listener itself calls, available to run by hand at any time (matches `container network attach`'s own two-layer shape: a real, callable primitive first, automation is just another caller of it). `container device detach NAME ID` is the reverse -- refuses (409) a device that was granted at container creation, live or not; recreate the container to remove one of those.
+
+Every hotplug-driven grant or revocation is written to the consolidated log (`kanxeoctl logs`) -- see [Monitoring](#monitoring) above.
+
 ## Backup and restore
 
 ```sh

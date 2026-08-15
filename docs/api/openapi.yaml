@@ -6260,6 +6260,119 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /containers/{name}/devices:
+    post:
+      summary: >
+        Attach a device to an already-running container, live, without
+        a recreate (ADR-0161 Phase D).
+      description: >
+        Same shape as one entry of POST /containers' own "devices"
+        array's bare-string form -- id is resolved exactly like a
+        creation-time entry is (a persisted devicemap name first, a
+        raw Device.id fallback; a grouped id like "gpu:0" can still
+        expand into more than one grant in a single call). Deliberately
+        live and ephemeral, the same posture ADR-0153/ADR-0156 already
+        established for files/networks: never persisted into the
+        container's own create-request body.
+
+
+        The underlying BPF_CGROUP_DEVICE program is atomically replaced
+        (empirically verified safe against 2,000,000 concurrent open()
+        attempts spanning the swap, see ADR-0161's own "Phase D
+        verification") -- there is no window where an already-granted
+        device becomes briefly ungranted, or unrestricted. This is the
+        exact same primitive Phase C's own real hotplug listener calls
+        internally when a device matching a running container's
+        pending_devices entry appears -- this endpoint is what makes
+        that available to call by hand too.
+      operationId: attachContainerDevice
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id:
+                  type: string
+      responses:
+        "200":
+          description: The container's own full current state, device(s) included.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Container"
+        "400":
+          description: id is missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such running container, or id resolves to no currently-present, assignable device.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The container already has the maximum number of devices.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Failed to attach the device (a real bpf(2)/mknod(2) failure).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /containers/{name}/devices/{id}:
+    delete:
+      summary: >
+        Detach a live-attached device from an already-running container
+        (ADR-0161 Phase D).
+      description: >
+        Only ever removes a device attached via POST .../devices above
+        (ContainerDeviceAttachment.live == true) -- a device granted the
+        ordinary way, at container creation, has no standalone detach
+        path (409), the same rule DELETE .../networks/{network} already
+        has for networks. The BPF program is re-derived from what
+        remains: a plain re-attach if any devices are still granted, or
+        a real, explicit revoke if this was the last one (leaving the
+        stale, now-superseded program in place would silently keep
+        granting the device just removed).
+      operationId: detachContainerDevice
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The container's own full current state, device removed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Container"
+        "404":
+          description: No such running container, or not attached to this device.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: This device was attached at container creation, not live -- recreate the container to remove it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
 components:
   parameters:
     ContainerName:
@@ -6629,17 +6742,41 @@ components:
         devices:
           type: array
           items:
-            type: string
+            oneOf:
+              - type: string
+              - type: object
+                required: [id]
+                properties:
+                  id:
+                    type: string
+                  optional:
+                    type: boolean
+                    default: false
+                    description: >
+                      ADR-0161 Phase B -- if true, an id that doesn't
+                      currently resolve to a present, assignable device
+                      does NOT fail creation: the container is created
+                      without that grant, and id is remembered (GET's
+                      own "pending_devices" field echoes it) for later
+                      automatic hotplug attachment, or a manual
+                      POST .../devices call. false (the default) keeps
+                      the pre-existing behavior exactly -- an
+                      unresolvable id is a 400, same as the bare-string
+                      form always was.
           maxItems: 16
           description: >
             ids (see GET /devices) of host PCI/USB/GPU devices to grant
-            this container access to -- any id not currently
-            discoverable, or not assignable (no driver bound and/or no
-            owned /dev node found), is a 400. Omit for no device
-            passthrough at all (the same "no /dev beyond the base image"
-            behavior every container had before this field existed). Set
-            once at creation; not modifiable on an already-running
-            container. Enforced by a BPF_CGROUP_DEVICE program (ADR-0017)
+            this container access to -- a bare string is shorthand for
+            {"id": ..., "optional": false}. Any non-optional id not
+            currently discoverable, or not assignable (no driver bound
+            and/or no owned /dev node found), is a 400. Omit for no
+            device passthrough at all (the same "no /dev beyond the base
+            image" behavior every container had before this field
+            existed). Set once at creation; not modifiable on an
+            already-running container this way -- see
+            POST/DELETE /containers/{name}/devices below for the live,
+            no-recreate primitive (ADR-0161 Phase D). Enforced by a
+            BPF_CGROUP_DEVICE program (ADR-0017)
             attached to the container's own cgroup, not just by the /dev
             node's mere presence -- a container granted no devices, or a
             different set, cannot open another container's granted
@@ -7037,7 +7174,19 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ContainerDeviceAttachment"
-          description: Every device this container was granted at creation. Empty if none.
+          description: Every device currently granted to this container (creation-time and live combined). Empty if none.
+        pending_devices:
+          type: array
+          items:
+            type: string
+          description: >
+            ADR-0161 Phase B -- ids/devicemap names from an
+            "optional": true devices[] entry (creation time) that
+            don't currently resolve to a present, assignable device.
+            Matched automatically against real hardware as it appears
+            (Phase C's hotplug listener) or a manual POST
+            .../devices call; removed from this list the moment
+            either one succeeds. Empty if none.
         interfaces:
           type: array
           items:
@@ -7532,7 +7681,7 @@ components:
 
     ContainerDeviceAttachment:
       type: object
-      required: [id, dev_path]
+      required: [id, dev_path, live]
       properties:
         id:
           type: string
@@ -7540,6 +7689,16 @@ components:
         dev_path:
           type: string
           description: Path the device node was mknod()'d at inside this container's own /dev.
+        live:
+          type: boolean
+          description: >
+            ADR-0161 Phase D -- true only for a grant made by a later
+            POST /containers/{name}/devices call (manual or hotplug-
+            driven); false for one made at container creation time.
+            Only a live == true grant can be removed via
+            DELETE /containers/{name}/devices/{id} -- a create-time
+            one is a 409, same restriction DELETE /containers/{name}/
+            networks/{network} already has for networks.
 
     DeviceMapCreateRequest:
       type: object
@@ -7589,7 +7748,7 @@ components:
 
     Device:
       type: object
-      required: [id, bus, vendor_id, product_id, class, description, driver, dev_path, type, major, minor, assignable]
+      required: [id, bus, vendor_id, product_id, class, description, driver, dev_path, type, major, minor, assignable, interfaces]
       properties:
         id:
           type: string
@@ -7662,6 +7821,31 @@ components:
             with assignable=false still appears (so an operator can see
             it exists and why it isn't offered), but referencing its id
             in a container's own devices/interfaces field is a 400.
+        interfaces:
+          type: array
+          description: >
+            ADR-0161 Phase A -- purely descriptive metadata for a
+            composite USB device's own real interfaces (e.g. a combo
+            HID+storage device); empty for every non-USB device and
+            for a USB device with only the one implicit interface a
+            single-function device already has. The passthrough unit
+            stays the whole device regardless -- this never changes
+            what "assignable"/dev_path/major/minor mean or grants.
+          items:
+            type: object
+            required: [number, class, subclass, protocol]
+            properties:
+              number:
+                type: integer
+              class:
+                type: string
+                description: 2 hex digits (bInterfaceClass).
+              subclass:
+                type: string
+                description: 2 hex digits (bInterfaceSubClass).
+              protocol:
+                type: string
+                description: 2 hex digits (bInterfaceProtocol).
 
     Disk:
       type: object

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — every open question resolved directly with the user (see "Resolved open questions" below), including Phase D's own empirical BPF verification; implementation not yet started. Phases A-D ship together as one deliverable, not incrementally, per explicit user decision. The user was explicit that the existing `device.c`/`devicemap.c` model is the right foundation ("our awesome device and device mapping") and should be extended, not replaced — the actual frustration is with standard distro (Debian/Ubuntu/Fedora) `udev`/`usbfs`-style handling, not this project's own code.
+Accepted — every open question resolved directly with the user (see "Resolved open questions" below), including Phase D's own empirical BPF verification. Phases A-D implemented together as one deliverable (task #884), not incrementally, per explicit user decision. The user was explicit that the existing `device.c`/`devicemap.c` model is the right foundation ("our awesome device and device mapping") and should be extended, not replaced — the actual frustration is with standard distro (Debian/Ubuntu/Fedora) `udev`/`usbfs`-style handling, not this project's own code.
 
 ## Context
 

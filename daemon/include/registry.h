@@ -59,6 +59,29 @@ struct registry_network_attachment {
 struct registry_device_attachment {
 	char id[96];
 	char dev_path[64];
+	/*
+	 * ADR-0161 Phase D: the same fields struct device_spec (container.h)
+	 * carries, needed to rebuild a live cgroup's own full BPF device
+	 * list on a later attach/detach without re-resolving every already-
+	 * granted device fresh from sysfs each time (a device could
+	 * theoretically be renumbered between calls; these were correct at
+	 * the moment this grant was actually made, which is what the
+	 * currently-attached BPF program itself already encodes).
+	 */
+	enum device_node_type type;
+	unsigned int major;
+	unsigned int minor;
+	/*
+	 * 0 for a grant made at container creation time; 1 only for one
+	 * made by a later POST .../devices live attach. Mirrors registry_
+	 * network_attachment's own veth_host[0]!='\0' "is this live"
+	 * convention, as an explicit named field here since dev_path is
+	 * never empty for a real grant (unlike veth_host). DELETE
+	 * .../devices/{id} refuses to remove an entry with live == 0 --
+	 * a create-time grant has no standalone detach path, the same rule
+	 * registry_network_detach() already enforces for networks.
+	 */
+	int live;
 };
 
 struct registry_entry {
@@ -124,6 +147,21 @@ struct registry_entry {
 	int ip_forward;    /* mirrors container_spec.ip_forward, for display */
 	struct registry_device_attachment devices[CONTAINER_MAX_DEVICES];
 	int device_count;  /* 0 = no devices granted */
+	/*
+	 * ADR-0161 Phase B: raw id/devicemap-name strings from an
+	 * "optional": true POST /containers devices[] entry that didn't
+	 * resolve to a present device at creation time. Live-run-only
+	 * bookkeeping, same posture as every other purely-live field in
+	 * this struct -- a restart-capable container's own persisted
+	 * create-request body (containerdef.c) already carries these for
+	 * free via replay; an unpersisted (restart_policy: "no") container
+	 * simply loses them across a daemon restart, matching what happens
+	 * to that container's entire registry_entry anyway. Phase C's
+	 * hotplug listener matches a newly-appeared device's own id against
+	 * every running container's pending list.
+	 */
+	char pending_devices[CONTAINER_MAX_DEVICES][96];
+	int pending_device_count; /* 0 = nothing pending */
 	/*
 	 * Real host interface names moved into this container's netns --
 	 * same bare-name shape container_spec.interfaces[] already has, so
@@ -382,6 +420,77 @@ int registry_network_attach(struct registry_entry *e, const struct registry_netw
  */
 int registry_network_detach(struct registry_entry *e, const char *network_name,
                              struct registry_network_attachment *out);
+
+/*
+ * ADR-0161 Phase B: records raw[0..count-1] into e->pending_devices[]
+ * (truncated at CONTAINER_MAX_DEVICES, which create_container_from_
+ * body() already bounds count against via the same array it built
+ * device_specs[] from). Call once, right after a successful
+ * registry_create(), for every "optional": true devices[] entry that
+ * didn't resolve to a present device at creation time. A no-op if
+ * count == 0.
+ */
+void registry_set_pending_devices(struct registry_entry *e, const char pending[][96], int count);
+
+/*
+ * ADR-0161 Phase D: live-grants new_device/new_attachment to e's
+ * already-running cgroup. Rebuilds the full struct device_spec list
+ * from e->devices[] (already-granted, host-resolved fields, not
+ * re-resolved from sysfs) plus new_device, and calls container_dev_
+ * bpf_attach() again against the exact same cgroup_fd this container
+ * was created with -- a plain re-ATTACH on an already-NONE-flag
+ * cgroup atomically replaces the prior program (empirically verified,
+ * see ADR-0161's own "Phase D verification"), so there is no window
+ * where an already-granted device becomes briefly ungranted, or
+ * (the real risk direction) briefly unrestricted. On success, the
+ * now-superseded e->handle.bpf_prog_fd is closed and replaced, and
+ * new_attachment (its own "live" field must be 1) is appended to
+ * e->devices[]. Returns 0 on success; -1 (errno set, e left
+ * completely unmodified) if e->device_count is already at
+ * CONTAINER_MAX_DEVICES, this exact id is already granted, or the
+ * real bpf(2) attach itself fails.
+ */
+int registry_device_live_attach(struct registry_entry *e, const struct device_spec *new_device,
+                                 const struct registry_device_attachment *new_attachment);
+
+/*
+ * ADR-0161 Phase D: the reverse of registry_device_live_attach() --
+ * finds id in e->devices[], removes it, and re-derives the cgroup's
+ * own BPF program from what remains: a plain re-ATTACH if any devices
+ * remain, or a real, explicit container_dev_bpf_detach() if this was
+ * the last one (a live detach down to zero must not silently leave
+ * the just-removed device's own grant in effect -- container_dev_bpf_
+ * attach()'s own device_count == 0 shortcut is correct at container-
+ * creation time, where "nothing attached yet" and "detach a program
+ * that was already there" are the same state, but they are NOT the
+ * same state here). *out is filled with the removed attachment on
+ * success (0). Returns -1 (e untouched) if id isn't currently granted
+ * to e at all, or if the real bpf(2) call itself fails.
+ *
+ * Deliberately carries NO "was this a create-time grant" policy check
+ * of its own -- mirrors registry_network_detach()'s own shape exactly
+ * (that function removes whatever matches by name; DELETE .../networks/
+ * {network}'s own handler is what checks veth_host[0] first and
+ * refuses before ever calling it). The equivalent live == 0 check for
+ * devices lives in handle_container_device_detach() (main.c) for the
+ * same reason: an operator-facing DELETE must refuse a create-time
+ * grant (recreate the container instead), but Phase C's own hotplug-
+ * driven unplug revocation must NOT be bound by that same restriction
+ * -- a device physically going away needs its grant revoked
+ * regardless of how it was originally attached, and reuses this exact
+ * function to do it.
+ */
+int registry_device_live_detach(struct registry_entry *e, const char *id,
+                                 struct registry_device_attachment *out);
+
+/*
+ * ADR-0161 Phase B/C: removes ref from e->pending_devices[] (a no-op
+ * if not present), shifting later entries down and decrementing
+ * pending_device_count. Called once a pending reference has either
+ * been successfully live-attached (Phase C's own reconciliation pass)
+ * or the operator otherwise no longer wants it tracked.
+ */
+void registry_clear_pending_device(struct registry_entry *e, const char *ref);
 
 void registry_write_json_one(const struct registry_entry *entry, struct json_writer *w);
 void registry_write_json_list(struct json_writer *w);

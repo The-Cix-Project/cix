@@ -91,6 +91,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | PUT | `/containers/{name}/files` | Write/overwrite one file inside an already-existing container, live, without a recreate (ADR-0153) |
 | POST | `/containers/{name}/networks` | Attach a network to an already-running container, live, without a recreate (ADR-0156) |
 | DELETE | `/containers/{name}/networks/{network}` | Detach a live-attached network; refuses a create-time attachment (409) |
+| POST | `/containers/{name}/devices` | Attach a device to an already-running container, live, without a recreate (ADR-0161) |
+| DELETE | `/containers/{name}/devices/{id}` | Detach a live-attached device; refuses a create-time attachment (409) |
 | GET | `/containers/{name}/console` | Upgrade to a WebSocket; an interactive shell inside the running container |
 | GET | `/containers/recipes` | List container recipes (metadata only) (ADR-0151) |
 | POST | `/containers/recipes` | Add/replace a container recipe -- content must be a real `POST /containers` body, its own `"name"` matching the recipe's |
@@ -1098,6 +1100,43 @@ POST /v1/containers
 - `devices` is optional: 0–N entries, each a discovered device id from `GET /v1/devices` (`"pci:..."`, `"usb:..."`, `"gpu:N"` for a whole GPU — `gpu:N` is never itself listed by `GET /v1/devices`, only its individual member nodes are — or `"disk:<name>"` for a raw whole disk, ADR-0142), **or** the name of a persistent device mapping (below). Real `/dev` nodes are granted via a `BPF_CGROUP_DEVICE` program on the container's own cgroup (ADR-0017) — nothing else on the host can reach them once bound. A bare `gpu:N` id expands into every node that physical GPU needs in one grant (DRM `cardN`/`renderDN` plus the shared `/dev/kfd` compute node) — see ADR-0028/ADR-0029. A `"disk:<name>"` entry is any non-OS, role-less whole disk `GET /disks` reports — fresh, unlabeled media straight from a USB enclosure or a PCI-passthrough disk with no filesystem/mount concept of its own, handed to the container as a raw block device; a disk already carrying a role (`POST /diskroles`) is never listed here, since it's already owned by this daemon's own storage-placement system.
 - `interfaces` is optional: 0–N real host network interface names (e.g. `"eth1"`) moved directly into the container's own netns (not a veth pair) — fd-anchored teardown, correct even if the container crashes mid-move. See ADR-0022.
 - `GET /v1/containers` echoes the real, expanded grants actually made, not an echo of what was requested.
+
+### Composite USB devices (ADR-0161 Phase A)
+
+The passthrough unit is always the whole device — never an individual USB interface, even for a composite device (a combo HID+storage device, say). `GET /v1/devices` still reports what such a device is actually made of, purely descriptively:
+
+```json
+{"id": "usb:0a12:4007:...", "bus": "usb", "assignable": true,
+ "interfaces": [{"number": 0, "class": "03", "subclass": "00", "protocol": "00"},
+                {"number": 1, "class": "01", "subclass": "01", "protocol": "00"}]}
+```
+
+`class`/`subclass`/`protocol` are the real `bInterfaceClass`/`bInterfaceSubClass`/`bInterfaceProtocol` values (2 hex digits each). Empty for every non-USB device, and for a USB device with only the one implicit interface a single-function device already has.
+
+### A device the container wants but doesn't have yet (ADR-0161 Phase B)
+
+```json
+{"devices": [{"id": "printer-map", "optional": true}]}
+```
+
+Alongside the bare-string shorthand (`{"id": ..., "optional": false}`), a `devices[]` entry can opt into being **optional**: if `id` doesn't currently resolve to a present, assignable device, container creation still succeeds — without that grant — instead of the usual `400`. The reference itself is remembered (`GET /containers/{name}`'s own `pending_devices` field echoes it) for later automatic hotplug attachment or a manual live-attach call (below). `optional` defaults `false`, so every existing bare-string caller's behavior is unchanged.
+
+### Live device attach/detach + real hotplug reaction (ADR-0161 Phases C/D)
+
+```
+POST /v1/containers/{name}/devices
+{"id": "usb:0a12:4007:ABCDEF0123456789"}
+```
+
+Grants one more device to an **already-running** container, live — no recreate. Same request shape as a creation-time `devices[]` bare-string entry (a raw id or a devicemap name, resolved fresh); the underlying `BPF_CGROUP_DEVICE` program is atomically replaced (empirically verified against 2,000,000 concurrent `open()` attempts spanning the swap — see ADR-0161's own "Phase D verification" for the real probe), so there's no window where an already-granted device is briefly ungranted or unrestricted. `404` if `id` doesn't currently resolve to a present, assignable device; `409` if the container is already at the maximum device count. Deliberately live and ephemeral, the same posture `PUT .../files`/`POST .../networks` already established — never persisted into the container's own create-request body.
+
+```
+DELETE /v1/containers/{name}/devices/{id}
+```
+
+The reverse — but **only for a device attached this same live way**. A device granted at container creation gets `409` (recreate the container to remove it), the same rule `DELETE .../networks/{network}` already enforces for networks; `GET /containers/{name}`'s own `devices[]` entries each carry a `"live"` boolean so it's always clear which is which.
+
+This same live-attach/detach primitive is also what the daemon's own hotplug reaction calls internally, automatically: a persistent `NETLINK_KOBJECT_UEVENT` listener reacts to real kernel USB add/remove events. On a real `add`, every running container's own `pending_devices` entries are re-resolved against current hardware — a match live-attaches it, removing the entry from `pending_devices`. **Contention**: if more than one running container's own pending reference would resolve to the exact same newly-appeared device, it's granted to **neither** (logged, not silently arbitrated by scan order) — give the devices distinct devicemap names instead of matching the same raw vendor:product pair if this matters. On a real `remove`, every currently-granted device (creation-time or live, either one) whose underlying hardware can no longer be found has its grant **actively revoked** — never left in place as an inert grant for hardware that's gone. Every hotplug-driven grant/revoke is written to the consolidated log (`GET /system/logs`).
 
 ### Persistent, named device mappings
 

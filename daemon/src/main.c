@@ -57,6 +57,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <linux/netlink.h>
 #include <net/if.h>
 #include <netinet/in.h>
 /* See daemon/src/logstore.c's own include-block comment: TCC can't
@@ -78,6 +79,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <sys/sysmacros.h>
 #include <sys/timerfd.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
@@ -833,6 +835,9 @@ enum conn_kind {
 	                          * output pipe (task #676), a one-way relay of CONN_PKG_BUILD_OUTPUT's
 	                          * existing capture, not an exec/PTY session like CONN_CONSOLE_WS */
 	CONN_KMSG,              /* /dev/kmsg -- feeds real kernel dmesg lines into the consolidated log store */
+	CONN_UEVENT,            /* NETLINK_KOBJECT_UEVENT multicast socket (ADR-0161 Phase C) -- real
+	                          * kernel hotplug add/remove events, modeled on CONN_KMSG's own async
+	                          * registration shape, not rtnetlink.c's synchronous open/request/close one */
 	/*
 	 * A conn already torn down mid-batch (console_session_teardown()
 	 * below) but not yet free()'d -- see g_pending_free's own comment
@@ -910,6 +915,7 @@ enum shutdown_action { SHUTDOWN_ACTION_POWEROFF, SHUTDOWN_ACTION_REBOOT };
 static int g_epfd;
 static struct conn g_listener_conn;
 static struct conn g_kmsg_conn;
+static struct conn g_uevent_conn;
 static struct conn g_https_listener_conn; /* .fd == -1 when HTTPS is disabled */
 static SSL_CTX *g_tls_ctx;                 /* NULL when HTTPS is disabled */
 static const char *g_web_root;
@@ -2968,6 +2974,251 @@ static void handle_kmsg_event(struct conn *cc)
 {
 	(void)cc;
 	logstore_kmsg_readable();
+}
+
+/* Forward declarations -- real definitions live alongside the manual
+ * POST/DELETE /v1/containers/{name}/devices handlers further down
+ * (ADR-0161 Phase D), needed here already since Phase C's hotplug
+ * reconciliation (below) is just another caller of the same live-
+ * attach/detach primitives those handlers use. */
+static int live_mknod_device(pid_t pid, const struct device_spec *dev);
+static int live_unlink_device(pid_t pid, const char *dev_path);
+static int live_attach_one_device(struct registry_entry *e, const struct discovered_device *dd);
+
+/*
+ * ADR-0161 Phase C: a persistent NETLINK_KOBJECT_UEVENT multicast
+ * socket, registered with the daemon's own epoll reactor once at
+ * startup -- modeled on start_kmsg_watch()'s own async-registration
+ * shape (never registered with epoll before), not rtnetlink.c's
+ * synchronous open/request/close one, which this genuinely isn't:
+ * kernel uevents arrive whenever real hardware changes, with no
+ * request/response pairing at all. Best-effort, same posture as
+ * start_kmsg_watch(): a kernel/sandbox with no CAP_NET_ADMIN, or one
+ * that otherwise can't bind this socket, simply never gets hotplug
+ * reactions -- every other capability this daemon has is unaffected.
+ */
+static void start_uevent_watch(void)
+{
+	struct kx_epoll_event ev;
+	int fd;
+	struct sockaddr_nl addr;
+
+	fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_KOBJECT_UEVENT);
+	if (fd < 0)
+		return;
+
+	memset(&addr, 0, sizeof(addr));
+	addr.nl_family = AF_NETLINK;
+	addr.nl_groups = 1; /* kernel events multicast group */
+
+	if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+		close(fd);
+		return;
+	}
+
+	g_uevent_conn.kind = CONN_UEVENT;
+	g_uevent_conn.fd = fd;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = &g_uevent_conn;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+		close(fd);
+		g_uevent_conn.fd = -1;
+	}
+}
+
+/*
+ * ADR-0161 Phase B/C: for every running container's own pending_
+ * devices[] (an "optional": true devices[] reference that didn't
+ * resolve at creation time), re-attempts resolution now that a real
+ * hotplug event just fired. Contention (resolved decision): if more
+ * than one running container's own pending reference resolves to the
+ * SAME device, neither gets it -- logged, not silently arbitrated by
+ * registry scan order. A device this pass successfully grants is
+ * removed from the winning container's own pending list; every other
+ * pending reference (no match, or lost a contention) is left in place
+ * for the next hotplug event to retry.
+ */
+struct pending_device_claim {
+	struct registry_entry *e;
+	char ref[96];
+	char resolved_id[96];
+};
+
+static void reconcile_pending_device_attachments(void)
+{
+	char names[REGISTRY_MAX_CONTAINERS][REGISTRY_NAME_MAX];
+	int ncount = registry_list_names(names, REGISTRY_MAX_CONTAINERS);
+	static struct pending_device_claim claims[REGISTRY_MAX_CONTAINERS * CONTAINER_MAX_DEVICES];
+	int claim_count = 0;
+	int i, j;
+
+	for (i = 0; i < ncount; i++) {
+		struct registry_entry *e = registry_find(names[i]);
+
+		if (e == NULL || !e->running || e->pending_device_count == 0)
+			continue;
+		for (j = 0; j < e->pending_device_count; j++) {
+			const struct discovered_device *matches[1];
+			int n;
+
+			n = devicemap_resolve(e->pending_devices[j], CONTAINERS_DIR, matches, 1);
+			if (n < 0)
+				n = device_find_group(e->pending_devices[j], CONTAINERS_DIR, matches, 1);
+			if (n <= 0 || !matches[0]->assignable)
+				continue;
+			if (claim_count >= (int)(sizeof(claims) / sizeof(claims[0])))
+				continue;
+			claims[claim_count].e = e;
+			snprintf(claims[claim_count].ref, sizeof(claims[claim_count].ref), "%s",
+			         e->pending_devices[j]);
+			snprintf(claims[claim_count].resolved_id, sizeof(claims[claim_count].resolved_id), "%s",
+			         matches[0]->id);
+			claim_count++;
+		}
+	}
+
+	for (i = 0; i < claim_count; i++) {
+		int contenders = 0;
+		const struct discovered_device *dd;
+
+		for (j = 0; j < claim_count; j++) {
+			if (strcmp(claims[i].resolved_id, claims[j].resolved_id) == 0)
+				contenders++;
+		}
+		if (contenders > 1) {
+			/* Logged once per losing claim, not once per contending
+			 * pair -- a real operator-visible signal without becoming
+			 * noisy for a device with many contenders. */
+			logstore_write("kanxeod", "warning",
+			                "container %s: hotplugged device %s matches \"%s\" but another "
+			                "running container also claims it -- granted to neither",
+			                claims[i].e->name, claims[i].resolved_id, claims[i].ref);
+			continue;
+		}
+
+		dd = device_find(claims[i].resolved_id, CONTAINERS_DIR);
+		if (dd == NULL)
+			continue; /* raced with another unplug between resolve and here */
+
+		if (live_attach_one_device(claims[i].e, dd) == 0) {
+			registry_clear_pending_device(claims[i].e, claims[i].ref);
+			logstore_write("kanxeod", "info",
+			                "container %s: hotplug live-attached device %s (matched \"%s\")",
+			                claims[i].e->name, dd->id, claims[i].ref);
+		} else {
+			logstore_write("kanxeod", "error",
+			                "container %s: hotplug live-attach of %s (matched \"%s\") failed: %s",
+			                claims[i].e->name, dd->id, claims[i].ref, strerror(errno));
+		}
+	}
+}
+
+/*
+ * ADR-0161 Phase C: symmetric unplug reaction -- for every running
+ * container's own currently-granted devices[], checks whether the
+ * underlying host device can still be found at all; a device whose
+ * hardware just disappeared has its grant actively revoked (BPF
+ * program updated, /dev node unlinked), never left in place as an
+ * inert grant for hardware that no longer exists. Applies to EVERY
+ * grant regardless of how it was originally made (create-time or
+ * live) -- unlike the operator-facing DELETE endpoint, which refuses
+ * to touch a create-time grant, a physical unplug is not an operator
+ * request and revokes it either way; registry_device_live_detach()
+ * itself carries no such restriction (see its own header comment).
+ */
+static void reconcile_live_device_revocations(void)
+{
+	char names[REGISTRY_MAX_CONTAINERS][REGISTRY_NAME_MAX];
+	int ncount = registry_list_names(names, REGISTRY_MAX_CONTAINERS);
+	int i, j;
+
+	for (i = 0; i < ncount; i++) {
+		struct registry_entry *e = registry_find(names[i]);
+
+		if (e == NULL || !e->running)
+			continue;
+		/* Iterated backward: registry_device_live_detach() shifts
+		 * later entries down by one on every successful removal, so a
+		 * forward scan would skip the entry that just slid into the
+		 * current index. */
+		for (j = e->device_count - 1; j >= 0; j--) {
+			char id_copy[96];
+			struct registry_device_attachment removed;
+
+			if (device_find(e->devices[j].id, CONTAINERS_DIR) != NULL)
+				continue;
+
+			snprintf(id_copy, sizeof(id_copy), "%s", e->devices[j].id);
+			if (registry_device_live_detach(e, id_copy, &removed) != 0) {
+				logstore_write("kanxeod", "error",
+				                "container %s: failed to revoke unplugged device %s: %s",
+				                e->name, id_copy, strerror(errno));
+				continue;
+			}
+			live_unlink_device(e->handle.pid, removed.dev_path);
+			logstore_write("kanxeod", "info",
+			                "container %s: revoked grant for unplugged device %s", e->name,
+			                id_copy);
+		}
+	}
+}
+
+/*
+ * ADR-0161 Phase C: one datagram is one uevent -- a NUL-separated
+ * "KEY=VALUE" list, first line the summary ("add@/devices/.../3-3"),
+ * every line after it a real KEY=VALUE env var (ACTION=, SUBSYSTEM=,
+ * DEVPATH=, ...). Filtered to SUBSYSTEM=usb and a whole-device DEVPATH
+ * only (trailing path component containing no ':' -- the identical
+ * rule device.c's own usb_name_is_device() applies to its sysfs walk,
+ * inlined here rather than exported across modules for one line of
+ * logic) -- an interface-level uevent for the same physical device is
+ * deliberately ignored, matching the whole-device passthrough model.
+ * Deliberately does NOT try to derive the specific device's own
+ * stable id (vendor/product/serial) from the uevent payload itself --
+ * real hardware doesn't populate those fields identically across
+ * every device class, and this daemon already has a robust, fresh way
+ * to discover exactly that (device.c's own sysfs walk). The uevent is
+ * treated purely as a trigger ("something USB just changed, go
+ * recheck"), not as a source of device identity.
+ */
+static void handle_uevent_event(struct conn *cc)
+{
+	char buf[2048];
+	ssize_t n;
+	int is_add = 0, is_remove = 0, is_usb = 0, is_whole_device = 0;
+	size_t off;
+
+	n = recv(cc->fd, buf, sizeof(buf) - 1, 0);
+	if (n <= 0)
+		return;
+	buf[n] = '\0';
+
+	for (off = 0; off < (size_t)n;) {
+		const char *line = buf + off;
+		size_t line_len = strlen(line);
+
+		if (strncmp(line, "ACTION=", 7) == 0) {
+			is_add = strcmp(line + 7, "add") == 0;
+			is_remove = strcmp(line + 7, "remove") == 0;
+		} else if (strncmp(line, "SUBSYSTEM=", 10) == 0) {
+			is_usb = strcmp(line + 10, "usb") == 0;
+		} else if (strncmp(line, "DEVPATH=", 8) == 0) {
+			const char *base = strrchr(line + 8, '/');
+
+			base = (base != NULL) ? base + 1 : line + 8;
+			is_whole_device = strchr(base, ':') == NULL;
+		}
+		off += line_len + 1;
+	}
+
+	if (!is_usb || !is_whole_device || (!is_add && !is_remove))
+		return;
+
+	if (is_add)
+		reconcile_pending_device_attachments();
+	else
+		reconcile_live_device_revocations();
 }
 
 static int start_http_listener(const char *bind_addr, int port)
@@ -7748,6 +7999,12 @@ static int create_container_from_body(const char *body, size_t body_len,
 	struct registry_device_attachment device_attachments[CONTAINER_MAX_DEVICES];
 	struct device_spec device_specs[CONTAINER_MAX_DEVICES];
 	int device_count = 0;
+	/* ADR-0161 Phase B: raw id/devicemap-name references from an
+	 * "optional": true devices[] entry that didn't resolve at creation
+	 * time -- handed to registry_set_pending_devices() once entry is
+	 * known valid, below. */
+	char pending_device_refs[CONTAINER_MAX_DEVICES][96];
+	int pending_device_count = 0;
 	char interface_names[CONTAINER_MAX_INTERFACES][CONTAINER_IFNAME_MAX];
 	int interface_count = 0;
 	char file_paths[CONTAINER_MAX_FILES][CONTAINER_FILE_PATH_MAX];
@@ -8098,13 +8355,42 @@ static int create_container_from_body(const char *body, size_t body_len,
 		 * bound is enforced incrementally below as groups expand.
 		 */
 		for (i = 0; i < jdevices->u.array.count; i++) {
-			const char *id = json_as_string(jdevices->u.array.items[i]);
+			const struct json_value *item = jdevices->u.array.items[i];
+			const char *id;
+			int optional = 0;
 			const struct discovered_device *matches[CONTAINER_MAX_DEVICES];
 			int n, j;
 
+			/*
+			 * ADR-0161 Phase B: a bare string (every pre-existing
+			 * caller's exact shape, zero opt-in required) or
+			 * {"id": "...", "optional": true} -- "id" shorthand,
+			 * "optional" defaults false, so an object entry with
+			 * "optional" omitted behaves identically to the bare-
+			 * string form too.
+			 */
+			if (item->type == JSON_STRING) {
+				id = json_as_string(item);
+			} else if (item->type == JSON_OBJECT) {
+				const struct json_value *joptional = json_object_get(item, "optional");
+
+				id = json_as_string(json_object_get(item, "id"));
+				if (joptional != NULL) {
+					if (joptional->type != JSON_BOOL) {
+						json_free(root);
+						snprintf(err_msg, err_msg_size, "devices[].optional must be a boolean");
+						return 400;
+					}
+					optional = joptional->u.boolean;
+				}
+			} else {
+				id = NULL;
+			}
+
 			if (id == NULL) {
 				json_free(root);
-				snprintf(err_msg, err_msg_size, "devices entries must be strings");
+				snprintf(err_msg, err_msg_size,
+				         "devices entries must be a string, or {\"id\":..., \"optional\":...}");
 				return 400;
 			}
 			/*
@@ -8117,8 +8403,10 @@ static int create_container_from_body(const char *body, size_t body_len,
 			 * name any mapping at all, which is what falls through to
 			 * the existing raw-id path below -- a mapping that DOES
 			 * exist but currently resolves to nothing (its device is
-			 * unplugged) is a real error here, not silently retried as
-			 * a raw id.
+			 * unplugged) is a real error here, UNLESS optional is true
+			 * (ADR-0161 Phase B): the container is then still created,
+			 * without this grant, and id is remembered in pending_
+			 * device_refs[] for Phase C/D's later hotplug matching.
 			 */
 			n = devicemap_resolve(id, CONTAINERS_DIR, matches,
 			                       CONTAINER_MAX_DEVICES - device_count);
@@ -8126,6 +8414,14 @@ static int create_container_from_body(const char *body, size_t body_len,
 				n = device_find_group(id, CONTAINERS_DIR, matches,
 				                       CONTAINER_MAX_DEVICES - device_count);
 			if (n <= 0) {
+				if (optional) {
+					if (pending_device_count < CONTAINER_MAX_DEVICES) {
+						snprintf(pending_device_refs[pending_device_count],
+						         sizeof(pending_device_refs[0]), "%s", id);
+						pending_device_count++;
+					}
+					continue;
+				}
 				json_free(root);
 				snprintf(err_msg, err_msg_size, "unknown, unassignable, or not-currently-present device");
 				return 400;
@@ -8157,6 +8453,11 @@ static int create_container_from_body(const char *body, size_t body_len,
 				snprintf(device_attachments[device_count].dev_path,
 				         sizeof(device_attachments[device_count].dev_path), "%s",
 				         dd->dev_path);
+				device_attachments[device_count].type = dd->type;
+				device_attachments[device_count].major = dd->major;
+				device_attachments[device_count].minor = dd->minor;
+				/* .live stays 0 (memset above) -- a create-time grant,
+				 * never independently detachable (ADR-0161 Phase D). */
 				device_count++;
 			}
 		}
@@ -8702,6 +9003,14 @@ static int create_container_from_body(const char *body, size_t body_len,
 	}
 
 	register_container_pidfd(entry);
+
+	/* ADR-0161 Phase B: live-run-only bookkeeping (see registry.h's own
+	 * comment) -- a restart-capable container's own persisted body
+	 * already carries these refs for free via replay; this call is
+	 * what makes them visible to Phase C's hotplug listener for the
+	 * rest of THIS daemon process's life, restart-capable or not. */
+	if (pending_device_count > 0)
+		registry_set_pending_devices(entry, pending_device_refs, pending_device_count);
 
 	if (output_pipe[0] >= 0) {
 		entry->output_fd = output_pipe[0];
@@ -9567,6 +9876,255 @@ static void handle_container_network_detach(int fd, const char *container_name,
 		fprintf(stderr, "%s: failed to remove live veth %s for network %s\n", container_name,
 		        removed.veth_host, network_name);
 	}
+
+	jw_init(&w);
+	registry_write_json_one(e, &w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * ADR-0161 Phase D: mknod()s dev's own node directly into an already-
+ * running container's private /dev, reaching in via /proc/<pid>/root
+ * -- the identical host-side mechanism ADR-0153's own live file write
+ * (handle_container_file_write() above) already established and
+ * proved correct, reused rather than re-invented for the mknod half
+ * (container_dev_mknod() itself, src/container_dev.c, is CHILD-side
+ * code -- it mknod()s at dev->dev_path directly, correct only when
+ * already inside the target mount namespace post-pivot, which a
+ * live-attach call from this daemon process never is). Real 0666
+ * mode plus an explicit chmod() after mknod(), same reasoning
+ * container_dev_mknod()'s own comment gives (this project's
+ * containers run as full root with no user namespace, so the real
+ * access gate is the BPF program, not these POSIX bits; mknod()'s
+ * own requested mode is subject to this daemon's own umask).
+ */
+static int live_mknod_device(pid_t pid, const struct device_spec *dev)
+{
+	char full_path[PATH_MAX];
+	char target_dir[PATH_MAX];
+	char *slash;
+	mode_t mode;
+
+	if (snprintf(full_path, sizeof(full_path), "/proc/%d/root%s", (int)pid, dev->dev_path) >=
+	    (int)sizeof(full_path)) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+	snprintf(target_dir, sizeof(target_dir), "%s", full_path);
+	slash = strrchr(target_dir, '/');
+	if (slash != NULL && slash != target_dir) {
+		*slash = '\0';
+		if (persist_mkdir_p(target_dir) != 0)
+			return -1;
+	}
+
+	mode = (mode_t)((dev->type == DEVICE_NODE_BLOCK ? S_IFBLK : S_IFCHR) | 0666);
+	if (mknod(full_path, mode, makedev(dev->major, dev->minor)) != 0 && errno != EEXIST)
+		return -1;
+	if (chmod(full_path, mode & 07777) != 0)
+		return -1;
+	return 0;
+}
+
+static int live_unlink_device(pid_t pid, const char *dev_path)
+{
+	char full_path[PATH_MAX];
+
+	if (snprintf(full_path, sizeof(full_path), "/proc/%d/root%s", (int)pid, dev_path) >=
+	    (int)sizeof(full_path)) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+	if (unlink(full_path) != 0 && errno != ENOENT)
+		return -1;
+	return 0;
+}
+
+/*
+ * ADR-0161 Phase D: live-grants one already-resolved device to an
+ * already-running container -- the real work shared by both the
+ * manual POST /v1/containers/{name}/devices handler below and Phase
+ * C's hotplug listener (handle_uevent_add()), so hotplug automation
+ * is just another caller of this same primitive, not a separate code
+ * path (the same two-layer shape ADR-0156 already established for
+ * networks). BPF grant first (registry_device_live_attach(), atomic
+ * replace, empirically verified safe -- see the ADR's own "Phase D
+ * verification"), mknod second; on a live_mknod_device() failure the
+ * BPF grant is rolled back rather than left dangling (permission
+ * granted with no node to open it through is inert but not something
+ * this daemon's own bookkeeping should silently carry forward).
+ * Returns 0 on success, -1 (errno set) otherwise.
+ */
+static int live_attach_one_device(struct registry_entry *e, const struct discovered_device *dd)
+{
+	struct device_spec dev;
+	struct registry_device_attachment att;
+
+	memset(&dev, 0, sizeof(dev));
+	dev.type = dd->type;
+	dev.major = dd->major;
+	dev.minor = dd->minor;
+	snprintf(dev.dev_path, sizeof(dev.dev_path), "%s", dd->dev_path);
+
+	memset(&att, 0, sizeof(att));
+	snprintf(att.id, sizeof(att.id), "%s", dd->id);
+	snprintf(att.dev_path, sizeof(att.dev_path), "%s", dd->dev_path);
+	att.type = dd->type;
+	att.major = dd->major;
+	att.minor = dd->minor;
+	att.live = 1;
+
+	if (registry_device_live_attach(e, &dev, &att) != 0)
+		return -1;
+
+	if (live_mknod_device(e->handle.pid, &dev) != 0) {
+		int saved_errno = errno;
+		struct registry_device_attachment removed;
+
+		registry_device_live_detach(e, dd->id, &removed);
+		errno = saved_errno;
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * POST /v1/containers/{name}/devices (ADR-0161 Phase D): attaches one
+ * more device to an ALREADY-RUNNING container, live -- no recreate.
+ * Deliberately LIVE and EPHEMERAL, the same posture ADR-0153/ADR-0156
+ * already established for files/networks: never touches the
+ * container's own persisted create-request body.
+ *
+ * Body shape matches one entry of POST /containers' own "devices"
+ * array bare-string form -- id is resolved exactly like a creation-
+ * time entry is (devicemap_resolve() first, device_find_group()
+ * fallback), so a grouped id (e.g. "gpu:0") can still expand into
+ * more than one grant in a single call.
+ */
+static void handle_container_device_attach(int fd, const char *container_name, const char *body,
+                                             size_t body_len)
+{
+	struct registry_entry *e;
+	struct json_value *root;
+	const char *id;
+	const struct discovered_device *matches[CONTAINER_MAX_DEVICES];
+	int n, j, attached;
+	struct json_writer w;
+
+	e = registry_find(container_name);
+	if (e == NULL || !e->running) {
+		respond_error(fd, 404, "Not Found", "no such running container");
+		return;
+	}
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	id = json_as_string(json_object_get(root, "id"));
+	if (id == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "id is required");
+		return;
+	}
+
+	n = devicemap_resolve(id, CONTAINERS_DIR, matches, CONTAINER_MAX_DEVICES - e->device_count);
+	if (n < 0)
+		n = device_find_group(id, CONTAINERS_DIR, matches,
+		                       CONTAINER_MAX_DEVICES - e->device_count);
+	if (n <= 0) {
+		json_free(root);
+		respond_error(fd, 404, "Not Found",
+		              "unknown, unassignable, or not-currently-present device");
+		return;
+	}
+	if (e->device_count + n > CONTAINER_MAX_DEVICES) {
+		json_free(root);
+		respond_error(fd, 409, "Conflict", "container already has the maximum number of devices");
+		return;
+	}
+	for (j = 0; j < n; j++) {
+		if (matches[j]->assignable)
+			continue;
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "device is not currently assignable");
+		return;
+	}
+	json_free(root);
+
+	for (attached = 0; attached < n; attached++) {
+		if (live_attach_one_device(e, matches[attached]) != 0)
+			break;
+	}
+	if (attached < n) {
+		/* Partial group failure -- unwind exactly what this call itself
+		 * just granted (never anything the container already had
+		 * before this request), same "leave no half-applied state"
+		 * posture live_attach_one_device() itself already has for a
+		 * single grant's own BPF-vs-mknod half. */
+		int k;
+		struct registry_device_attachment removed;
+
+		for (k = 0; k < attached; k++) {
+			registry_device_live_detach(e, matches[k]->id, &removed);
+			live_unlink_device(e->handle.pid, matches[k]->dev_path);
+		}
+		respond_error(fd, 500, "Internal Server Error", "failed to attach device");
+		return;
+	}
+
+	jw_init(&w);
+	registry_write_json_one(e, &w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * DELETE /v1/containers/{name}/devices/{id} (ADR-0161 Phase D): the
+ * reverse of the above. Refuses (409) a device that was granted at
+ * container creation time (registry_device_live_detach()'s own -2)
+ * -- no standalone detach path for one of those, the same rule
+ * registry_network_detach() already enforces for networks.
+ */
+static void handle_container_device_detach(int fd, const char *container_name, const char *id)
+{
+	struct registry_entry *e;
+	struct registry_device_attachment removed;
+	int i;
+	int is_live = 0;
+	struct json_writer w;
+
+	e = registry_find(container_name);
+	if (e == NULL || !e->running) {
+		respond_error(fd, 404, "Not Found", "no such running container");
+		return;
+	}
+	for (i = 0; i < e->device_count; i++) {
+		if (strcmp(e->devices[i].id, id) == 0) {
+			is_live = e->devices[i].live;
+			break;
+		}
+	}
+	if (i == e->device_count) {
+		respond_error(fd, 404, "Not Found", "not attached to this device");
+		return;
+	}
+	if (!is_live) {
+		respond_error(fd, 409, "Conflict",
+		              "this device was attached at container creation, not live -- recreate the "
+		              "container to remove it");
+		return;
+	}
+
+	if (registry_device_live_detach(e, id, &removed) != 0) {
+		respond_error(fd, 500, "Internal Server Error", "failed to update device grant");
+		return;
+	}
+	if (live_unlink_device(e->handle.pid, removed.dev_path) != 0)
+		fprintf(stderr, "%s: failed to remove live device node %s (id %s)\n", container_name,
+		        removed.dev_path, id);
 
 	jw_init(&w);
 	registry_write_json_one(e, &w);
@@ -14821,6 +15379,30 @@ static void dispatch(int fd, const struct http_request *req)
 						handle_container_network_detach(fd, container_name, slash + 10);
 						return;
 					}
+					/* "/devices" (attach)/"/devices/{id}" (detach)
+					 * (ADR-0161 Phase D) -- same shape as "/networks"
+					 * above, a real device id can itself contain '/'
+					 * (e.g. "usb:1058:2630:port2-1.3"), so this only
+					 * ever splits on the FIRST '/' after the container
+					 * name, never a second one inside id itself. */
+					if (strcmp(slash, "/devices") == 0 && strcmp(req->method, "POST") == 0) {
+						char container_name[REGISTRY_NAME_MAX];
+
+						memcpy(container_name, name, slash - name);
+						container_name[slash - name] = '\0';
+						handle_container_device_attach(fd, container_name, req->body,
+						                                req->body_len);
+						return;
+					}
+					if (strncmp(slash, "/devices/", 9) == 0 && strcmp(req->method, "DELETE") == 0 &&
+					    slash[9] != '\0') {
+						char container_name[REGISTRY_NAME_MAX];
+
+						memcpy(container_name, name, slash - name);
+						container_name[slash - name] = '\0';
+						handle_container_device_detach(fd, container_name, slash + 9);
+						return;
+					}
 				}
 			}
 			if (strcmp(req->method, "GET") == 0) {
@@ -17573,6 +18155,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	start_kmsg_watch(); /* needs g_epfd, only just created above -- best-effort, see its own comment */
+	start_uevent_watch(); /* ADR-0161 Phase C -- same g_epfd/best-effort posture as start_kmsg_watch() */
 	start_ntp_periodic_timer(); /* same g_epfd/best-effort posture, task #751 */
 	start_pkg_sync_periodic_timer(); /* same posture, ADR-0121 -- no-op until an interval is configured */
 	start_backup_periodic_timer(); /* same posture, ADR-0141 Phase 5 -- no-op until enabled+interval configured */
@@ -17708,6 +18291,8 @@ int main(int argc, char **argv)
 				handle_pkg_build_log_ws_event(cc);
 			else if (cc->kind == CONN_KMSG)
 				handle_kmsg_event(cc);
+			else if (cc->kind == CONN_UEVENT)
+				handle_uevent_event(cc);
 			else
 				handle_client_event(cc);
 		}

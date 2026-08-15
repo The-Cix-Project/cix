@@ -112,6 +112,8 @@ See [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.m
 | `container apply-recipe NAME [--secret=KEY=VALUE ...]` | Render `NAME`'s own stored recipe (substituting `{{SECRET:KEY}}` tokens) and create the container -- always synchronous, real `POST /containers` under the hood |
 | `container network attach NAME --network=NETWORK [--ip=A.B.C.D]` | Attach a network to an already-running container, live, without a recreate (ADR-0156) |
 | `container network detach NAME NETWORK` | Detach a live-attached network; refuses (409) a network attached at container creation |
+| `container device attach NAME ID` | Live-grant one more device to an already-running container, no recreate (ADR-0161 Phase D) — `ID` is a real device id or devicemap name, resolved fresh |
+| `container device detach NAME ID` | Detach a live-attached device; refuses (409) a device granted at container creation |
 
 `run`'s full flag set:
 
@@ -124,7 +126,7 @@ run --name=NAME --image=IMAGE
     [--pki-issue] [--pki-cert-dir=PATH] [--pki-days=N]
     [--ldap-provision] [--ldap-user=NAME] [--ldap-group=NAME] [--ldap-uid=N] [--ldap-secret-dir=PATH]
     [--route=DEST/PREFIX:VIA ...]
-    [--device=ID ...] [--interface=IFNAME ...]
+    [--device=ID ...] [--optional-device=ID ...] [--interface=IFNAME ...]
     [--restart=always|on-failure|unless-stopped] [--restart-delay=N]
     [--follow-rolling] [--follow-rolling-jitter-seconds=N]
     [--depends-on=NAME ...]
@@ -134,7 +136,7 @@ run --name=NAME --image=IMAGE
     -- CMD [ARGS...]
 ```
 
-Each flag maps directly to the matching `ContainerCreateRequest` field — see [`docs/api/README.md`](../api/README.md#creating-a-container) for what each one actually means and its validation rules (network membership, route format, restart-policy semantics, readiness checks, and so on); this reference only lists the CLI surface, not the payload contract behind it.
+Each flag maps directly to the matching `ContainerCreateRequest` field — see [`docs/api/README.md`](../api/README.md#creating-a-container) for what each one actually means and its validation rules (network membership, route format, restart-policy semantics, readiness checks, and so on); this reference only lists the CLI surface, not the payload contract behind it. `--optional-device=ID` (ADR-0161 Phase B) is the one exception to "a bad device id fails creation": unlike `--device=ID`, a currently-unresolvable `--optional-device=` still creates the container, without that grant — the reference itself is remembered and matched against real hardware as it appears, see [`administration.md`](administration.md#device-hotplug) for the operator-facing walkthrough.
 
 ## Networks
 
@@ -164,7 +166,7 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 
 | Command | |
 |---|---|
-| `device ls` | Host PCI/USB/GPU devices from sysfs, with each one's `id` (pass to `run --device=`) and whether it's assignable |
+| `device ls` | Host PCI/USB/GPU devices from sysfs, with each one's `id` (pass to `run --device=`), whether it's assignable, and (for a composite USB device) every real interface it exposes (ADR-0161 Phase A) |
 | `devicemap create --name=NAME --kind=exact\|vendor_model --selector=SELECTOR` | A persisted, named device binding, usable in place of a raw id in `run --device=` |
 | `devicemap ls` / `devicemap rm NAME` | List (shows whether each mapping currently resolves to real hardware) / remove |
 | `disks [ls]` | Real host block devices, including their partitions (task #844), flagging which one is the fixed OS disk |

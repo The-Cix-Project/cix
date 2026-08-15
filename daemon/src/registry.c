@@ -5,6 +5,7 @@
 #include "logstore.h"
 
 #include <arpa/inet.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
@@ -331,6 +332,148 @@ int registry_network_detach(struct registry_entry *e, const char *network_name,
 	return -1;
 }
 
+void registry_set_pending_devices(struct registry_entry *e, const char pending[][96], int count)
+{
+	int i;
+
+	e->pending_device_count = 0;
+	for (i = 0; i < count && i < CONTAINER_MAX_DEVICES; i++) {
+		snprintf(e->pending_devices[e->pending_device_count], sizeof(e->pending_devices[0]), "%s",
+		         pending[i]);
+		e->pending_device_count++;
+	}
+}
+
+void registry_clear_pending_device(struct registry_entry *e, const char *ref)
+{
+	int i;
+
+	for (i = 0; i < e->pending_device_count; i++) {
+		if (strcmp(e->pending_devices[i], ref) != 0)
+			continue;
+		for (; i < e->pending_device_count - 1; i++)
+			snprintf(e->pending_devices[i], sizeof(e->pending_devices[0]), "%s",
+			         e->pending_devices[i + 1]);
+		e->pending_device_count--;
+		return;
+	}
+}
+
+/* Rebuilds a plain struct device_spec[] from e->devices[] -- the
+ * shape container_dev_bpf_attach() itself takes, shared by both
+ * registry_device_live_attach()/_detach() below so the two don't
+ * duplicate this translation. */
+static void devices_to_specs(const struct registry_entry *e, struct device_spec *out)
+{
+	int i;
+
+	for (i = 0; i < e->device_count; i++) {
+		out[i].type = e->devices[i].type;
+		out[i].major = e->devices[i].major;
+		out[i].minor = e->devices[i].minor;
+		snprintf(out[i].dev_path, sizeof(out[i].dev_path), "%s", e->devices[i].dev_path);
+	}
+}
+
+int registry_device_live_attach(struct registry_entry *e, const struct device_spec *new_device,
+                                 const struct registry_device_attachment *new_attachment)
+{
+	struct device_spec specs[CONTAINER_MAX_DEVICES];
+	int new_prog_fd;
+	int old_prog_fd;
+	int i;
+
+	if (e->device_count >= CONTAINER_MAX_DEVICES) {
+		errno = ENOSPC;
+		return -1;
+	}
+	for (i = 0; i < e->device_count; i++) {
+		if (strcmp(e->devices[i].id, new_attachment->id) == 0) {
+			errno = EEXIST;
+			return -1;
+		}
+	}
+
+	devices_to_specs(e, specs);
+	specs[e->device_count] = *new_device;
+
+	if (container_dev_bpf_attach(e->handle.cgroup_fd, specs, e->device_count + 1, &new_prog_fd) != 0)
+		return -1;
+
+	old_prog_fd = e->handle.bpf_prog_fd;
+	e->handle.bpf_prog_fd = new_prog_fd;
+	if (old_prog_fd >= 0)
+		close(old_prog_fd);
+
+	e->devices[e->device_count] = *new_attachment;
+	e->device_count++;
+	return 0;
+}
+
+int registry_device_live_detach(struct registry_entry *e, const char *id,
+                                 struct registry_device_attachment *out)
+{
+	struct device_spec specs[CONTAINER_MAX_DEVICES];
+	int idx = -1;
+	int i;
+	int new_prog_fd;
+	int old_prog_fd;
+	int remaining;
+
+	for (i = 0; i < e->device_count; i++) {
+		if (strcmp(e->devices[i].id, id) == 0) {
+			idx = i;
+			break;
+		}
+	}
+	if (idx < 0) {
+		errno = ENOENT;
+		return -1;
+	}
+
+	*out = e->devices[idx];
+
+	/* specs[] built from every OTHER currently-granted device, in
+	 * e->devices[]'s own order minus idx -- the exact list the
+	 * replacement program (or the real BPF_PROG_DETACH below, if
+	 * that list is empty) needs to enforce. */
+	remaining = 0;
+	for (i = 0; i < e->device_count; i++) {
+		if (i == idx)
+			continue;
+		specs[remaining].type = e->devices[i].type;
+		specs[remaining].major = e->devices[i].major;
+		specs[remaining].minor = e->devices[i].minor;
+		snprintf(specs[remaining].dev_path, sizeof(specs[remaining].dev_path), "%s",
+		         e->devices[i].dev_path);
+		remaining++;
+	}
+
+	old_prog_fd = e->handle.bpf_prog_fd;
+	if (remaining > 0) {
+		if (container_dev_bpf_attach(e->handle.cgroup_fd, specs, remaining, &new_prog_fd) != 0)
+			return -1;
+	} else {
+		/* See this function's own header comment: a live detach to
+		 * zero devices needs a real, explicit revoke -- container_dev_
+		 * bpf_attach()'s own "device_count == 0 -> attach nothing"
+		 * shortcut would silently leave the old, now-stale program
+		 * (still granting the device just removed) in effect. */
+		if (old_prog_fd >= 0 && container_dev_bpf_detach(e->handle.cgroup_fd, old_prog_fd) != 0)
+			return -1;
+		new_prog_fd = -1;
+	}
+
+	e->handle.bpf_prog_fd = new_prog_fd;
+	if (old_prog_fd >= 0)
+		close(old_prog_fd);
+
+	for (i = idx; i < e->device_count - 1; i++)
+		e->devices[i] = e->devices[i + 1];
+	e->device_count--;
+	return 0;
+}
+
 void registry_write_json_one(const struct registry_entry *entry, struct json_writer *w)
 {
 	int i;
@@ -393,8 +536,15 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 		jw_str(w, entry->devices[i].id);
 		jw_key(w, "dev_path");
 		jw_str(w, entry->devices[i].dev_path);
+		jw_key(w, "live");
+		jw_bool(w, entry->devices[i].live);
 		jw_obj_close(w);
 	}
+	jw_arr_close(w);
+	jw_key(w, "pending_devices");
+	jw_arr_open(w);
+	for (i = 0; i < entry->pending_device_count; i++)
+		jw_str(w, entry->pending_devices[i]);
 	jw_arr_close(w);
 	jw_key(w, "interfaces");
 	jw_arr_open(w);

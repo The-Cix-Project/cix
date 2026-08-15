@@ -68,7 +68,7 @@ static void print_usage(FILE *out)
 	        "      [--ip-forward] [--dns-register] [--pki-issue] [--pki-cert-dir=PATH]\n"
 	        "      [--pki-days=N] [--ldap-provision] [--ldap-user=NAME] [--ldap-group=NAME]\n"
 	        "      [--ldap-uid=N] [--ldap-secret-dir=PATH]\n"
-	        "      [--route=DEST/PREFIX:VIA ...] [--device=ID ...]\n"
+	        "      [--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--optional-device=ID ...]\n"
 	        "      [--interface=IFNAME ...] [--restart=always|on-failure|unless-stopped]\n"
 	        "      [--restart-delay=N] [--follow-rolling] [--follow-rolling-jitter-seconds=N]\n"
 	        "      [--depends-on=NAME ...] [--dns-server=A.B.C.D ...]\n"
@@ -3287,6 +3287,72 @@ static int cmd_container_network(const struct kx_client *c, int json_mode, int a
 	return 2;
 }
 
+/* ADR-0161 Phase D: `kanxeoctl container device attach|detach` -- the
+ * manual REST primitive POST/DELETE /v1/containers/{name}/devices,
+ * same shape as container network attach/detach above (a real,
+ * callable-by-hand primitive first; Phase C's own hotplug listener is
+ * just another, internal caller of the identical daemon-side
+ * mechanism). */
+static int cmd_container_device_attach(const struct kx_client *c, int json_mode, int argc,
+                                        char **argv)
+{
+	struct kx_response r;
+	char path[300];
+	struct json_writer w;
+
+	if (argc < 2) {
+		fprintf(stderr, "usage: kanxeoctl container device attach NAME ID\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "id");
+	jw_str(&w, argv[1]);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	snprintf(path, sizeof(path), "/v1/containers/%s/devices", argv[0]);
+	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_container_line);
+}
+
+static int cmd_container_device_detach(const struct kx_client *c, int json_mode, int argc,
+                                        char **argv)
+{
+	struct kx_response r;
+	char path[400];
+
+	if (argc < 2) {
+		fprintf(stderr, "usage: kanxeoctl container device detach NAME ID\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/containers/%s/devices/%s", argv[0], argv[1]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_container_line);
+}
+
+static int cmd_container_device(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	if (argc >= 1 && strcmp(argv[0], "attach") == 0)
+		return cmd_container_device_attach(c, json_mode, argc - 1, argv + 1);
+	if (argc >= 1 && strcmp(argv[0], "detach") == 0)
+		return cmd_container_device_detach(c, json_mode, argc - 1, argv + 1);
+	fprintf(stderr, "usage: kanxeoctl container device attach NAME ID  -- a real device id or "
+	                "devicemap name, resolved live\n"
+	                "       kanxeoctl container device detach NAME ID  -- refuses a device "
+	                "granted at container creation (409)\n");
+	return 2;
+}
+
 static int cmd_container(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	if (argc >= 1 && strcmp(argv[0], "recipe") == 0)
@@ -3295,6 +3361,8 @@ static int cmd_container(const struct kx_client *c, int json_mode, int argc, cha
 		return cmd_container_apply_recipe(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "network") == 0)
 		return cmd_container_network(c, json_mode, argc - 1, argv + 1);
+	if (argc >= 1 && strcmp(argv[0], "device") == 0)
+		return cmd_container_device(c, json_mode, argc - 1, argv + 1);
 	if (argc < 1 || strcmp(argv[0], "ls") != 0) {
 		fprintf(stderr, "usage: kanxeoctl container ls  -- every provisioned container and its "
 		                "current state (same as `ps`)\n"
@@ -3303,7 +3371,9 @@ static int cmd_container(const struct kx_client *c, int json_mode, int argc, cha
 		                "       kanxeoctl container apply-recipe NAME [--secret=KEY=VALUE ...]\n"
 		                "       kanxeoctl container network attach NAME --network=NETWORK "
 		                "[--ip=A.B.C.D]\n"
-		                "       kanxeoctl container network detach NAME NETWORK\n");
+		                "       kanxeoctl container network detach NAME NETWORK\n"
+		                "       kanxeoctl container device attach NAME ID\n"
+		                "       kanxeoctl container device detach NAME ID\n");
 		return 2;
 	}
 	return cmd_ps(c, json_mode);
@@ -5353,6 +5423,12 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	int network_count = 0;
 	const char *devices[CLI_MAX_DEVICES];
 	int device_count = 0;
+	/* ADR-0161 Phase B: --optional-device=ID's own separate list --
+	 * kept apart from devices[] above rather than a shared array with
+	 * a per-entry flag, so the existing --device= parsing/JSON-writing
+	 * code above/below needed zero changes at all. */
+	const char *optional_devices[CLI_MAX_DEVICES];
+	int optional_device_count = 0;
 	const char *interfaces[CLI_MAX_INTERFACES];
 	int interface_count = 0;
 	const char *restart = NULL;
@@ -5437,6 +5513,13 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 				return 2;
 			}
 			devices[device_count++] = argv[i] + 9;
+		} else if (strncmp(argv[i], "--optional-device=", 18) == 0) {
+			if (optional_device_count >= CLI_MAX_DEVICES) {
+				fprintf(stderr, "kanxeoctl: too many --optional-device= flags (max %d)\n",
+				        CLI_MAX_DEVICES);
+				return 2;
+			}
+			optional_devices[optional_device_count++] = argv[i] + 18;
 		} else if (strncmp(argv[i], "--interface=", 12) == 0) {
 			if (interface_count >= CLI_MAX_INTERFACES) {
 				fprintf(stderr, "kanxeoctl: too many --interface= flags (max %d)\n",
@@ -5562,7 +5645,8 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		        "[--pki-issue] [--pki-cert-dir=PATH] [--pki-days=N] "
 		        "[--ldap-provision] [--ldap-user=NAME] [--ldap-group=NAME] "
 		        "[--ldap-uid=N] [--ldap-secret-dir=PATH] "
-		        "[--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--interface=IFNAME ...] "
+		        "[--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--optional-device=ID ...] "
+		        "[--interface=IFNAME ...] "
 		        "[--restart=always|on-failure|unless-stopped] [--restart-delay=N] "
 		        "[--follow-rolling] [--follow-rolling-jitter-seconds=N] "
 		        "[--depends-on=NAME ...] "
@@ -5710,11 +5794,19 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		}
 		jw_arr_close(&w);
 	}
-	if (device_count > 0) {
+	if (device_count > 0 || optional_device_count > 0) {
 		jw_key(&w, "devices");
 		jw_arr_open(&w);
 		for (i = 0; i < device_count; i++)
 			jw_str(&w, devices[i]);
+		for (i = 0; i < optional_device_count; i++) {
+			jw_obj_open(&w);
+			jw_key(&w, "id");
+			jw_str(&w, optional_devices[i]);
+			jw_key(&w, "optional");
+			jw_bool(&w, 1);
+			jw_obj_close(&w);
+		}
 		jw_arr_close(&w);
 	}
 	if (interface_count > 0) {

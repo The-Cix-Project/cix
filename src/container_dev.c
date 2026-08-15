@@ -127,6 +127,20 @@ int container_dev_bpf_attach(int cgroup_fd, const struct device_spec *devices, i
 	return 0;
 }
 
+int container_dev_bpf_detach(int cgroup_fd, int prog_fd)
+{
+	struct kx_bpf_prog_attach_attr detach_attr;
+
+	memset(&detach_attr, 0, sizeof(detach_attr));
+	detach_attr.target_fd = (uint32_t)cgroup_fd;
+	detach_attr.attach_bpf_fd = (uint32_t)prog_fd;
+	detach_attr.attach_type = KX_BPF_CGROUP_DEVICE;
+
+	if (sys_bpf(KX_BPF_PROG_DETACH, &detach_attr, sizeof(detach_attr)) != 0)
+		return -1;
+	return 0;
+}
+
 int container_dev_mknod(const struct device_spec *devices, int device_count)
 {
 	int i;

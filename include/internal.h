@@ -182,6 +182,25 @@ int container_dev_bpf_attach(int cgroup_fd, const struct device_spec *devices, i
                               int *out_prog_fd);
 
 /*
+ * ADR-0161 Phase D: the explicit counterpart container_dev_bpf_attach()
+ * itself has never needed until now -- creation-time device_count == 0
+ * deliberately attaches nothing at all (a container with no requested
+ * devices simply inherits whatever its ancestor cgroup's own policy
+ * is), which is correct there but WRONG for a live detach down to zero
+ * devices: the cgroup already has a real program attached (granting
+ * exactly the device just being revoked), and simply not replacing it
+ * would leave that grant silently in effect forever. This performs a
+ * real BPF_PROG_DETACH, reverting the cgroup to "no explicit program"
+ * -- the same end state creation-time's own zero-device case already
+ * has, just reached from the other direction. prog_fd is the daemon's
+ * own currently-held reference to the program being detached (still
+ * closed by the caller afterward, same as any other now-superseded
+ * prog_fd). Returns 0, or -1 (errno set) on failure -- nothing is
+ * closed by this function itself, in or out.
+ */
+int container_dev_bpf_detach(int cgroup_fd, int prog_fd);
+
+/*
  * Child side, called right after mountns_pivot() succeeds -- the
  * first point the container's /dev is genuinely private (its own
  * pivoted mount namespace, no longer the host's or any sibling's).

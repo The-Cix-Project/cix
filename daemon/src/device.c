@@ -119,6 +119,59 @@ static int usb_name_is_device(const char *name)
 	return strchr(name, ':') == NULL;
 }
 
+/*
+ * ADR-0161 Phase A: /sys/bus/usb/devices/ is a flat directory --
+ * "2-1" (the whole device) and "2-1:1.0"/"2-1:1.1"/... (its own real
+ * interfaces) all appear as siblings there, not nested. usb_name_is_
+ * device()'s own top-level walk already skips the interface entries
+ * outright; this reads them back for device_basename specifically (a
+ * second, small opendir() pass over the same already-open sysfs
+ * directory, bounded to the handful of interface entries one real
+ * device actually has -- not a genuinely separate discovery
+ * mechanism, no recursive tree walk anywhere else in the codebase).
+ */
+static void enumerate_usb_interfaces(const char *device_basename, struct discovered_device *e)
+{
+	DIR *d;
+	struct dirent *ent;
+	size_t prefix_len = strlen(device_basename);
+
+	d = opendir(USB_BUS_DIR);
+	if (d == NULL)
+		return;
+
+	while (e->interface_count < USB_MAX_INTERFACES_REPORTED && (ent = readdir(d)) != NULL) {
+		char attr[PATH_MAX];
+		char ifpath[PATH_MAX];
+		char numbuf[8] = "";
+		struct usb_interface_info *info;
+
+		if (strncmp(ent->d_name, device_basename, prefix_len) != 0 ||
+		    ent->d_name[prefix_len] != ':')
+			continue;
+
+		if (snprintf(ifpath, sizeof(ifpath), "%s/%s", USB_BUS_DIR, ent->d_name) >=
+		    (int)sizeof(ifpath))
+			continue;
+
+		info = &e->interfaces[e->interface_count];
+		memset(info, 0, sizeof(*info));
+
+		snprintf(attr, sizeof(attr), "%s/bInterfaceNumber", ifpath);
+		if (read_sysfs_attr(attr, numbuf, sizeof(numbuf)) == 0)
+			info->number = (int)strtol(numbuf, NULL, 16);
+		snprintf(attr, sizeof(attr), "%s/bInterfaceClass", ifpath);
+		read_sysfs_attr(attr, info->class_hex, sizeof(info->class_hex));
+		snprintf(attr, sizeof(attr), "%s/bInterfaceSubClass", ifpath);
+		read_sysfs_attr(attr, info->subclass_hex, sizeof(info->subclass_hex));
+		snprintf(attr, sizeof(attr), "%s/bInterfaceProtocol", ifpath);
+		read_sysfs_attr(attr, info->protocol_hex, sizeof(info->protocol_hex));
+
+		e->interface_count++;
+	}
+	closedir(d);
+}
+
 static int enumerate_usb_one(const char *base, struct discovered_device *e)
 {
 	char attr[PATH_MAX];
@@ -196,6 +249,14 @@ static int enumerate_usb_one(const char *base, struct discovered_device *e)
 	snprintf(e->dev_path, sizeof(e->dev_path), "/dev/bus/usb/%03u/%03u",
 	         (unsigned)strtoul(busnum, NULL, 10), (unsigned)strtoul(devnum, NULL, 10));
 	e->assignable = (e->driver[0] != '\0');
+
+	{
+		const char *device_basename = strrchr(base, '/');
+
+		device_basename = (device_basename != NULL) ? device_basename + 1 : base;
+		enumerate_usb_interfaces(device_basename, e);
+	}
+
 	return 0;
 }
 
@@ -873,6 +934,27 @@ void device_write_json_one(const struct discovered_device *d, struct json_writer
 	jw_int(w, d->minor);
 	jw_key(w, "assignable");
 	jw_bool(w, d->assignable);
+	jw_key(w, "interfaces");
+	jw_arr_open(w);
+	{
+		int i;
+
+		for (i = 0; i < d->interface_count; i++) {
+			const struct usb_interface_info *info = &d->interfaces[i];
+
+			jw_obj_open(w);
+			jw_key(w, "number");
+			jw_int(w, info->number);
+			jw_key(w, "class");
+			jw_str(w, info->class_hex);
+			jw_key(w, "subclass");
+			jw_str(w, info->subclass_hex);
+			jw_key(w, "protocol");
+			jw_str(w, info->protocol_hex);
+			jw_obj_close(w);
+		}
+	}
+	jw_arr_close(w);
 	jw_obj_close(w);
 }
 
