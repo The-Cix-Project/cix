@@ -10136,12 +10136,12 @@ static void shell_prompt_init(const struct kx_client *client)
 static const char *const SHELL_COMMANDS[] = {
 	"backup", "backup-config", "boot",      "console",       "container",     "daemon-config", "device",   "devicemap", "diskrole",
 	"disks",  "dns",       "exit",          "files",    "health",    "help",
-	"host-stats", "hostauth-config", "image", "inspect",       "iso",      "ldap",      "login",     "logout",    "logs",      "migrate-storage", "migrate-storage-status", "network",
+	"host-stats", "hostauth-config", "hostauth-sessions", "image", "inspect",       "iso",      "kmod",      "kmod-build", "kmod-config", "ldap",      "login",     "logout",    "logs",      "migrate-storage", "migrate-storage-status", "network",
 	"ntp",
 	"pause",  "ping",      "pkg",           "pkg-build-config", "pki",      "process",   "ps",        "quit",      "reboot",
 	"resolv",
 	"restore", "rm",       "rolling-config", "routes",        "run",      "shutdown",  "site",
-	"start",  "stats",     "stop",          "storage",  "swap",     "syslog",    "time",      "tls-throttle", "unpause",   "update",
+	"start",  "stats",     "stop",          "storage",  "swap",     "sysctl",   "syslog",    "time",      "tls-throttle", "unpause",   "update",
 	NULL
 };
 
