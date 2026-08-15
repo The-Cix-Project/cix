@@ -19,6 +19,8 @@ static const char *content_type_for(const char *path)
 		return "application/javascript";
 	if (len >= 4 && strcmp(path + len - 4, ".css") == 0)
 		return "text/css";
+	if (len >= 4 && strcmp(path + len - 4, ".svg") == 0)
+		return "image/svg+xml";
 	return "application/octet-stream";
 }
 

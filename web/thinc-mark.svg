@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="172" height="200" viewBox="0 0 172 200">
+  <title>thinC concise mark</title>
+  <desc>The bare thinC mark — a fused C bracket and K/chevron arrow ("C&lt;"). Default logo for CLI, favicons, and small UI; use thinc-full.svg only when the full lockup is explicitly needed.</desc>
+  <defs>
+    <linearGradient id="thinc-mark-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4FE0FF"/>
+      <stop offset="55%" stop-color="#00C8FF"/>
+      <stop offset="100%" stop-color="#0090E8"/>
+    </linearGradient>
+  </defs>
+  <g fill="url(#thinc-mark-grad)">
+    <!-- C bracket: squared, hollow, open right. Bar thickness 46, corner radius 23. Tips at x=172. -->
+    <path d="M 23,0
+             L 172,0
+             L 172,46
+             L 46,46
+             L 46,154
+             L 172,154
+             L 172,200
+             L 23,200
+             A 23,23 0 0 1 0,177
+             L 0,23
+             A 23,23 0 0 1 23,0
+             Z"/>
+    <!-- K upper arm: narrower than the C's own bar (30 vs 46), centered in the tip span, reads as a
+         distinct element nesting against the C rather than fusing into one blob. Back edge flush
+         against the C's own tip line (x=172), tapers to a shared point at (60,100). -->
+    <path d="M 172,8 L 172,38 L 60,100 Z"/>
+    <!-- K lower arm: mirrors -->
+    <path d="M 172,162 L 172,192 L 60,100 Z"/>
+  </g>
+</svg>
