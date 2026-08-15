@@ -1460,6 +1460,71 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /system/kmod-build:
+    post:
+      summary: Build a kernel with extra in-tree modules (ADR-0159 Phase B)
+      description: >
+        An ordinary hostbuild against the "kernel" recipe itself --
+        the exact same mechanism POST /pkg/hostbuild drives (same v1
+        single-job-in-flight slot, same 409/PkgEntry shape via
+        GET /pkg/hostbuild/kernel) -- gaining only an optional list of
+        extra CONFIG_* symbols, merged into the same curated kernel
+        config this platform already builds, each forced to `=m`. The
+        result is a complete new bzImage + full lib/modules/ tree;
+        taking effect needs the existing A/B kernel-update cutover
+        (see docs/guides/kernel-build-and-ab-updates.md), never a
+        live, same-boot addition.
+      operationId: postKmodBuild
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [build_image]
+              properties:
+                build_image:
+                  type: string
+                  description: >
+                    An already-existing image with a working GCC
+                    toolchain and kmod installed -- same requirement
+                    as any other kernel hostbuild.
+                version:
+                  type: string
+                  description: Hostbuilds exactly this published kernel recipe version. Omitted resolves to the highest available.
+                upgrade:
+                  type: boolean
+                  default: false
+                config_symbols:
+                  type: array
+                  items:
+                    type: string
+                  description: Bare CONFIG_* names (e.g. "CONFIG_DUMMY"), each forced to `=m` for this build only.
+      responses:
+        "202":
+          description: Hostbuild started -- poll GET /pkg/hostbuild/kernel for progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgEntry"
+        "400":
+          description: build_image missing, config_symbols malformed (not an array of bare CONFIG_* names), or the recipe/depends checks POST /pkg/hostbuild itself would also reject
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: build_image does not exist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Already installed at this version, or another install/hostbuild is already in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /system/state-storage:
     get:
       summary: Which disk (if any) is the active placement for Kanxeo's own state (ADR-0141 Phase 2)

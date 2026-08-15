@@ -58,6 +58,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/system/kmod-config` | Every module with persisted default options and/or boot autoload |
 | PUT | `/system/kmod-config/{name}` | Set default options and/or autoload; only fields given are touched |
 | DELETE | `/system/kmod-config/{name}` | Clear a module's persisted config; never touches whether it's loaded |
+| POST | `/system/kmod-build` | Rebuild the kernel with extra in-tree `=m` modules; poll via `/pkg/hostbuild/kernel` |
 | GET | `/system/rolling-config` | The configured rolling-restart jitter window (`jitter_window_seconds`) |
 | PUT | `/system/rolling-config` | Set the jitter window -- 0 disables jitter, restart happens immediately |
 | GET | `/system/tls-throttle` | Per-source-IP throttling config for repeated failed HTTPS handshakes |
@@ -596,6 +597,17 @@ PUT /v1/system/kmod-config/e1000e
 ```
 
 Read-modify-write, matching `daemon-config`'s own established `PUT` shape -- either field alone updates just that field (`400` if neither is given). `default_options` is what a bare `POST /v1/system/kmod/{name}` with no body falls back to; `autoload` marks this module for reload on every future boot, applied last of four ordered boot-time steps (`load_boot_modules()` -- ADR-0061's own fixed hardware-detection list -- then `apply_configured_sysctls()`, then the management network, then this one) -- deliberately last, since operator-configured autoload is the least boot-critical of the four. Best-effort per module at boot: a module that fails to load (hardware not present, or never actually got built) is logged and skipped, never a reason to fail boot, matching `load_boot_modules()`'s own established posture. `GET /v1/system/kmod-config` lists every module with a persisted entry; `DELETE /v1/system/kmod-config/{name}` clears both fields (`404` if there wasn't one) -- it never touches whether the module is currently loaded.
+
+## Building an extra kernel module (ADR-0159 Phase B)
+
+```
+POST /v1/system/kmod-build
+{"build_image": "dev", "config_symbols": ["CONFIG_DUMMY"]}
+```
+
+For a driver that isn't already in this platform's own curated `=m` module set, but does live in mainline Linux (the overwhelmingly common case) -- an ordinary hostbuild against the `kernel` recipe itself, the exact same mechanism `POST /pkg/hostbuild` drives (same v1 single-job-in-flight slot, same `409`/`PkgEntry` response shape, progress polled the identical way via `GET /pkg/hostbuild/kernel`), gaining only an optional `config_symbols` list. Each entry (a bare `CONFIG_*` name) is merged into the same curated kernel config this platform already builds from, forced to `=m`, via a second `merge_config.sh` fragment -- strictly additive: an empty or omitted list reproduces the exact existing kernel build unchanged. `build_image` needs a real GCC toolchain and `kmod` installed, same requirement as any other kernel hostbuild (see [`kernel-build-and-ab-updates.md`](../guides/kernel-build-and-ab-updates.md)).
+
+Deliberately **not** a new, separate, persistent kernel-build-tree mechanism -- an initial design draft proposed exactly that (a `KDIR` kept around indefinitely for on-demand module builds), abandoned per direct "keep the mechanics simple, no extra moving parts" feedback in favor of reusing the already-proven whole-kernel rebuild this platform's own `kernel.recipe` already does, which guarantees kernel/module ABI match by construction rather than needing new freshness-tracking bookkeeping. The real, honestly-stated tradeoff: this rebuilds the *whole* kernel (heavier than compiling one driver) and needs a reboot to take effect -- the resulting `bzImage` + `lib/modules/` tree only actually applies via the existing A/B kernel-update cutover, never a live, same-boot addition. Genuinely out-of-tree (third-party, not-in-mainline) module support is deliberately left undesigned until a real, concrete need for it shows up (ADR-0159's own Phase C).
 
 ## NTP: host clock sync (ADR-0110)
 

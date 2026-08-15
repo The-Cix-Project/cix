@@ -64,6 +64,7 @@ kanxeoctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `kmod-config [ls]` | Every module with a persisted default-options and/or autoload entry |
 | `kmod-config set NAME [--option=KEY=VALUE ...] [--autoload \| --no-autoload]` | Read-modify-write — only the fields given are touched |
 | `kmod-config rm NAME` | Clear a module's persisted config entirely — never touches whether it's currently loaded |
+| `kmod-build --build-image=IMAGE [--version=VERSION] [--symbol=CONFIG_FOO ...] [--upgrade] [--wait]` | An ordinary `pkg hostbuild kernel` under the hood, gaining extra `=m` module symbols merged into the same curated kernel config (ADR-0159 Phase B) — needs a reboot onto the new `bzImage` (A/B cutover) to actually take effect |
 | `time [show]` | The host's current date/time (ADR-0110) |
 | `time set --unixtime=N` | Manually set the host clock (real `clock_settime()`, immediate, no reboot) |
 | `ntp config [show]` | Upstream NTP server address list used to sync the host clock (ADR-0110) |

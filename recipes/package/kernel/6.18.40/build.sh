@@ -22,6 +22,16 @@ pkg_depends=""
 # kernel's own `make kernelrelease` output, never the build container's
 # running uname -r (a bare `depmod` with no -F/version argument defaults
 # to that instead, which will not match this kernel version at all).
+#
+# ADR-0159 Phase B: an optional KANXEO_KMOD_EXTRA_SYMBOLS environment
+# variable (a space-separated list of bare CONFIG_* names, set only by
+# POST /v1/system/kmod-build's own daemon-side pkg_hostbuild_start()
+# call -- every other caller of this same recipe, e.g. an ordinary
+# `pkg hostbuild kernel`, never sets it) adds extra modules to the
+# curated qemu-part1.config set for this one build, each forced to `=m`
+# via a second merge_config.sh fragment -- reuses the exact same
+# allnoconfig+merge_config.sh+olddefconfig sequence unmodified when
+# unset, so this is strictly additive, never a second code path.
 pkg_build() {
 	# SHELL=/usr/bin/bash on every invocation: GNU Make ignores an
 	# inherited $SHELL on Unix and always spawns /bin/sh internally for
@@ -43,8 +53,19 @@ pkg_build() {
 	# convention), so bash.recipe now provides this one standard path
 	# any real build-toolchain image needs.
 	cp /build/extra/qemu-part1.config .config
+	if [ -n "$KANXEO_KMOD_EXTRA_SYMBOLS" ]; then
+		: > /build/extra/kmod-extra.config
+		for sym in $KANXEO_KMOD_EXTRA_SYMBOLS; do
+			echo "${sym}=m" >> /build/extra/kmod-extra.config
+		done
+	fi
 	make ARCH=x86_64 SHELL=/usr/bin/bash allnoconfig
-	bash ./scripts/kconfig/merge_config.sh -m .config /build/extra/qemu-part1.config
+	if [ -n "$KANXEO_KMOD_EXTRA_SYMBOLS" ]; then
+		bash ./scripts/kconfig/merge_config.sh -m .config /build/extra/qemu-part1.config \
+			/build/extra/kmod-extra.config
+	else
+		bash ./scripts/kconfig/merge_config.sh -m .config /build/extra/qemu-part1.config
+	fi
 	make ARCH=x86_64 SHELL=/usr/bin/bash olddefconfig
 	# bzImage and modules built in a single make invocation, not two
 	# separate ones: modpost's per-module symbol resolution needs

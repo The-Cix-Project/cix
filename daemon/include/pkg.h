@@ -75,6 +75,10 @@
 #define PKG_CURL_BIN "/usr/bin/curl"
 #define PKG_DEPENDS_MAX 256
 #define PKG_ERROR_MAX 256
+/* ADR-0159 Phase B: a space-joined string of bare CONFIG_* symbol
+ * names, room for a genuinely useful number of extra modules per
+ * kmod-build call without being unbounded. */
+#define PKG_HOSTBUILD_EXTRA_SYMBOLS_MAX 256
 /* Max total packages in one resolved install chain (the target plus
  * every transitive dependency) -- a real cap, not an unbounded queue. */
 #define PKG_MAX_DEP_CHAIN 32
@@ -397,9 +401,20 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
  * NULL or "" resolves to name's highest available recipe version;
  * a non-empty value hostbuilds that exact published version instead
  * (e.g. rebuilding an older kanxeo.recipe release on demand).
+ *
+ * extra_config_symbols (ADR-0159 Phase B): NULL or "" for every caller
+ * except POST /v1/system/kmod-build -- a pre-validated, space-joined
+ * string of bare CONFIG_* symbol names, passed through unmodified as
+ * the build container's own KANXEO_KMOD_EXTRA_SYMBOLS environment
+ * variable. Recipe-agnostic at this layer (pkg.c has no notion of
+ * "the kernel recipe" specifically) -- only kernel.recipe's own
+ * pkg_build() actually reads that variable; any other recipe simply
+ * ignores it. PKG_ERR_INVALID_NAME if it doesn't fit
+ * PKG_HOSTBUILD_EXTRA_SYMBOLS_MAX.
  */
 enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, const char *version,
-                                    int upgrade, pid_t *out_pid, int *out_pidfd);
+                                    int upgrade, const char *extra_config_symbols, pid_t *out_pid,
+                                    int *out_pidfd);
 
 /*
  * Called once the tracked fetch subprocess's pidfd fires (caller has

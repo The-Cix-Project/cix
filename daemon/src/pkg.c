@@ -75,7 +75,12 @@ struct pkg_entry {
 	char build_workdir[PATH_MAX], build_merged[PATH_MAX];
 	char build_argv_cmd[512];
 	char *build_argv[4];
-	char *build_envp[4];
+	char *build_envp[5];
+	/* Backing storage for build_envp's own optional 4th entry (ADR-0159
+	 * Phase B) -- "KANXEO_KMOD_EXTRA_SYMBOLS=<value>", built once
+	 * g_chains[0].hostbuild_extra_config_symbols is known, in
+	 * pkg_fetch_completed(). */
+	char build_envp_extra[PKG_HOSTBUILD_EXTRA_SYMBOLS_MAX + 32];
 	/* See pkg_fetch_completed()'s own comment for why this is a pipe
 	 * at all (ADR-0087). -1 when this entry has no build output pipe
 	 * currently open. */
@@ -184,6 +189,13 @@ struct pkg_chain {
 	int dep_queue_count;
 	int dep_queue_pos;
 	int dep_queue_is_upgrade;
+
+	/* ADR-0159 Phase B: only ever set by pkg_hostbuild_start() (empty
+	 * for every ordinary pkg_install_start() job) -- a pre-validated,
+	 * space-joined string of bare CONFIG_* symbol names, carried across
+	 * to pkg_fetch_completed() where the actual build container's own
+	 * environment is assembled. */
+	char hostbuild_extra_config_symbols[PKG_HOSTBUILD_EXTRA_SYMBOLS_MAX];
 };
 
 static struct pkg_chain g_chains[PKG_MAX_CONCURRENT_JOBS];
@@ -2527,7 +2539,8 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
 }
 
 enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, const char *version,
-                                    int upgrade, pid_t *out_pid, int *out_pidfd)
+                                    int upgrade, const char *extra_config_symbols, pid_t *out_pid,
+                                    int *out_pidfd)
 {
 	struct pkg_recipe recipe;
 	char recipe_path[PATH_MAX];
@@ -2538,6 +2551,9 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
 	if (!pkg_name_is_valid(name))
 		return PKG_ERR_INVALID_NAME;
 	if (build_image == NULL || build_image[0] == '\0' || !pkg_image_is_valid(build_image))
+		return PKG_ERR_INVALID_NAME;
+	if (extra_config_symbols != NULL &&
+	    strlen(extra_config_symbols) >= PKG_HOSTBUILD_EXTRA_SYMBOLS_MAX)
 		return PKG_ERR_INVALID_NAME;
 	if (g_chains[0].name[0] != '\0')
 		return PKG_ERR_BUSY;
@@ -2582,6 +2598,9 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
 	snprintf(g_chains[0].build_image, sizeof(g_chains[0].build_image), "%s", build_image);
 	snprintf(g_chains[0].target_version, sizeof(g_chains[0].target_version), "%s",
 	         (version != NULL) ? version : "");
+	snprintf(g_chains[0].hostbuild_extra_config_symbols,
+	         sizeof(g_chains[0].hostbuild_extra_config_symbols), "%s",
+	         (extra_config_symbols != NULL) ? extra_config_symbols : "");
 	g_chains[0].is_hostbuild = 1;
 
 	/* A hostbuild job is always a single, standalone entry -- no
@@ -2910,7 +2929,19 @@ int pkg_fetch_completed(int exit_status, struct container_spec *spec_out, int *o
 	e->build_envp[0] = "PKG_DESTDIR=/build/pkg-dest";
 	e->build_envp[1] = "PATH=/usr/bin:/bin";
 	e->build_envp[2] = "HOME=/build";
-	e->build_envp[3] = NULL;
+	/* ADR-0159 Phase B: only kernel.recipe's own pkg_build() actually
+	 * reads this -- every other recipe simply never references it.
+	 * Omitted entirely (not just empty) when g_chains[0] carried nothing,
+	 * matching this project's own "no env var an ordinary recipe would
+	 * ever need to guard against seeing" posture. */
+	if (g_chains[0].hostbuild_extra_config_symbols[0] != '\0') {
+		snprintf(e->build_envp_extra, sizeof(e->build_envp_extra),
+		         "KANXEO_KMOD_EXTRA_SYMBOLS=%s", g_chains[0].hostbuild_extra_config_symbols);
+		e->build_envp[3] = e->build_envp_extra;
+		e->build_envp[4] = NULL;
+	} else {
+		e->build_envp[3] = NULL;
+	}
 
 	memset(spec_out, 0, sizeof(*spec_out));
 	spec_out->ns.clone_flags =

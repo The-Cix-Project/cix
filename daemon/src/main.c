@@ -13867,7 +13867,7 @@ static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
 	jupgrade = json_object_get(root, "upgrade");
 	upgrade = (jupgrade != NULL && jupgrade->type == JSON_BOOL && jupgrade->u.boolean);
 
-	perr = pkg_hostbuild_start(name, build_image, version, upgrade, &pid, &pidfd);
+	perr = pkg_hostbuild_start(name, build_image, version, upgrade, NULL, &pid, &pidfd);
 	if (perr != PKG_OK) {
 		json_free(root);
 		respond_pkg_error(fd, perr);
@@ -13904,6 +13904,136 @@ static void handle_pkg_hostbuild_get(int fd, const char *name)
 		return;
 	}
 	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * ADR-0159 Phase B: a bare CONFIG_* symbol name -- the shape every
+ * token of a POST /v1/system/kmod-build config_symbols array must
+ * have. Deliberately strict (real Kconfig symbol charset only) since
+ * this string is later written, unmodified, into a real kernel
+ * .config-format fragment file inside the build container.
+ */
+static int kmod_build_symbol_is_valid(const char *s)
+{
+	size_t i, len;
+
+	if (s == NULL)
+		return 0;
+	len = strlen(s);
+	if (len < 8 || len >= 64 || strncmp(s, "CONFIG_", 7) != 0)
+		return 0;
+	for (i = 7; i < len; i++) {
+		char c = s[i];
+
+		if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'))
+			return 0;
+	}
+	return 1;
+}
+
+/*
+ * POST /v1/system/kmod-build (ADR-0159 Phase B): an ordinary hostbuild
+ * against the "kernel" recipe itself -- the exact existing
+ * pkg_hostbuild_start() mechanism handle_pkg_hostbuild() above already
+ * drives, gaining only an optional extra-symbols parameter. Simpler
+ * than a second recipe or a new persistent kernel-build-tree mechanism
+ * (see ADR-0159's own "keep the mechanics simple" design note): the
+ * result is a complete new bzImage + full lib/modules/ tree, cut over
+ * via the existing A/B kernel-update mechanism, never a live, same-
+ * boot addition. Status/artifact_path polling reuses the existing
+ * GET /v1/pkg/hostbuild/kernel unchanged -- no new GET endpoint.
+ */
+static void handle_kmod_build_post(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *build_image_raw;
+	const char *version_raw;
+	/* Copied out of root before it's freed below -- build_image/version
+	 * are pkg_hostbuild_start()'s own arguments, needed after json_free()
+	 * has already run (config_symbols validation below can fail deep
+	 * into the array and needs to free root at that point too, so root
+	 * can't simply be kept alive until the end). */
+	char build_image[PKG_IMAGE_NAME_MAX];
+	char version[PKG_VERSION_MAX];
+	const struct json_value *jupgrade;
+	const struct json_value *jsymbols;
+	int upgrade;
+	char symbols[PKG_HOSTBUILD_EXTRA_SYMBOLS_MAX];
+	size_t symbols_len = 0;
+	pid_t pid;
+	int pidfd;
+	enum pkg_error perr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	build_image_raw = json_as_string(json_object_get(root, "build_image"));
+	if (build_image_raw == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "build_image is required");
+		return;
+	}
+	snprintf(build_image, sizeof(build_image), "%s", build_image_raw);
+	version_raw = json_as_string(json_object_get(root, "version"));
+	snprintf(version, sizeof(version), "%s", version_raw != NULL ? version_raw : "");
+	jupgrade = json_object_get(root, "upgrade");
+	upgrade = (jupgrade != NULL && jupgrade->type == JSON_BOOL && jupgrade->u.boolean);
+
+	symbols[0] = '\0';
+	jsymbols = json_object_get(root, "config_symbols");
+	if (jsymbols != NULL) {
+		size_t i;
+
+		if (jsymbols->type != JSON_ARRAY) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "config_symbols must be an array of strings");
+			return;
+		}
+		for (i = 0; i < jsymbols->u.array.count; i++) {
+			const char *sym = json_as_string(jsymbols->u.array.items[i]);
+			size_t sym_len;
+
+			if (!kmod_build_symbol_is_valid(sym)) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request",
+				              "every config_symbols entry must be a bare CONFIG_* name");
+				return;
+			}
+			sym_len = strlen(sym);
+			if (symbols_len + (i > 0 ? 1 : 0) + sym_len >= sizeof(symbols)) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request", "config_symbols is too long");
+				return;
+			}
+			if (i > 0)
+				symbols[symbols_len++] = ' ';
+			memcpy(symbols + symbols_len, sym, sym_len);
+			symbols_len += sym_len;
+		}
+		symbols[symbols_len] = '\0';
+	}
+	json_free(root);
+
+	perr = pkg_hostbuild_start("kernel", build_image, version[0] != '\0' ? version : NULL, upgrade,
+	                            symbols[0] != '\0' ? symbols : NULL, &pid, &pidfd);
+	if (perr != PKG_OK) {
+		respond_pkg_error(fd, perr);
+		return;
+	}
+
+	jw_init(&w);
+	if (pkg_get_one("kernel", PKG_HOSTBUILD_IMAGE, &w) != PKG_OK) {
+		jw_free(&w);
+		respond_error(fd, 500, "Internal Server Error",
+		              "hostbuild started but could not be read back");
+		return;
+	}
+	register_pkg_fetch_pidfd(pid, pidfd);
+	respond_json(fd, 202, "Accepted", &w);
 	jw_free(&w);
 }
 
@@ -14319,6 +14449,10 @@ static void dispatch(int fd, const struct http_request *req)
 				return;
 			}
 		}
+	}
+	if (strcmp(req->path, "/v1/system/kmod-build") == 0 && strcmp(req->method, "POST") == 0) {
+		handle_kmod_build_post(fd, req->body, req->body_len);
+		return;
 	}
 	if (strcmp(req->path, "/v1/system/state-storage") == 0 && strcmp(req->method, "GET") == 0) {
 		handle_state_storage_get(fd);

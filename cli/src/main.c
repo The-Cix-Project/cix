@@ -306,6 +306,11 @@ static void print_usage(FILE *out)
 	        "  kmod-config set NAME [--option=KEY=VALUE ...] [--autoload|--no-autoload]  --\n"
 	        "               read-modify-write, only the fields given are touched\n"
 	        "  kmod-config rm NAME  -- clears both fields\n"
+	        "  kmod-build --build-image=IMAGE [--version=VERSION] [--symbol=CONFIG_FOO ...]\n"
+	        "               [--upgrade] [--wait]  -- an ordinary `pkg hostbuild kernel` under\n"
+	        "               the hood, gaining extra =m module symbols merged into the same\n"
+	        "               curated kernel config; needs a reboot onto the new bzImage (see\n"
+	        "               kernel-build-and-ab-updates.md) to actually take effect\n"
 	        "  time [show]  -- the host's current date/time (ADR-0110)\n"
 	        "  time set --unixtime=N  -- manually set the host clock (clock_settime())\n"
 	        "  ntp config [show]  -- upstream NTP server address list used to sync the\n"
@@ -9177,6 +9182,89 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 	}
 }
 
+/* kanxeoctl kmod-build --build-image=IMAGE [--version=VERSION]
+ * [--symbol=CONFIG_FOO ...] [--upgrade] [--wait]  -- ADR-0159 Phase B:
+ * an ordinary `pkg hostbuild kernel` under the hood, reusing
+ * poll_hostbuild()/fmt_pkg_line() completely unmodified (this is the
+ * exact same "kernel" hostbuild entry `pkg hostbuild kernel` itself
+ * produces, GET /v1/pkg/hostbuild/kernel either way). */
+#define CLI_KMOD_BUILD_MAX_SYMBOLS 16
+
+static int cmd_kmod_build(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *build_image = NULL;
+	const char *version = NULL;
+	const char *symbols[CLI_KMOD_BUILD_MAX_SYMBOLS];
+	int symbol_count = 0;
+	int wait = 0, upgrade = 0;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--build-image=", 14) == 0)
+			build_image = argv[i] + 14;
+		else if (strncmp(argv[i], "--version=", 10) == 0)
+			version = argv[i] + 10;
+		else if (strncmp(argv[i], "--symbol=", 9) == 0) {
+			if (symbol_count >= CLI_KMOD_BUILD_MAX_SYMBOLS) {
+				fprintf(stderr, "kanxeoctl: too many --symbol= flags (max %d)\n",
+				        CLI_KMOD_BUILD_MAX_SYMBOLS);
+				return 2;
+			}
+			symbols[symbol_count++] = argv[i] + 9;
+		} else if (strcmp(argv[i], "--upgrade") == 0)
+			upgrade = 1;
+		else if (strcmp(argv[i], "--wait") == 0)
+			wait = 1;
+		else {
+			fprintf(stderr, "kanxeoctl: unknown kmod-build option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (build_image == NULL) {
+		fprintf(stderr, "usage: kanxeoctl kmod-build --build-image=IMAGE [--version=VERSION] "
+		                "[--symbol=CONFIG_FOO ...] [--upgrade] [--wait]\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "build_image");
+	jw_str(&w, build_image);
+	if (version != NULL) {
+		jw_key(&w, "version");
+		jw_str(&w, version);
+	}
+	if (symbol_count > 0) {
+		jw_key(&w, "config_symbols");
+		jw_arr_open(&w);
+		for (i = 0; i < symbol_count; i++)
+			jw_str(&w, symbols[i]);
+		jw_arr_close(&w);
+	}
+	jw_key(&w, "upgrade");
+	jw_bool(&w, upgrade);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/system/kmod-build", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "kanxeoctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	if (r.status < 200 || r.status >= 300)
+		return emit(&r, json_mode, fmt_pkg_line);
+	if (!wait)
+		return emit(&r, json_mode, fmt_pkg_line);
+	kx_response_free(&r);
+
+	if (poll_hostbuild(c, "kernel", &r) != 0)
+		return 1;
+	return emit(&r, json_mode, fmt_pkg_line);
+}
+
 static int cmd_pkg_ls(const struct kx_client *c, int json_mode)
 {
 	struct kx_response r;
@@ -9735,6 +9823,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_kmod(client, json_mode, argc, argv);
 	if (strcmp(cmd, "kmod-config") == 0)
 		return cmd_kmodconfig(client, json_mode, argc, argv);
+	if (strcmp(cmd, "kmod-build") == 0)
+		return cmd_kmod_build(client, json_mode, argc, argv);
 	if (strcmp(cmd, "ntp") == 0)
 		return cmd_ntp(client, json_mode, argc, argv);
 	if (strcmp(cmd, "syslog") == 0)
