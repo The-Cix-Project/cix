@@ -75,8 +75,7 @@ pkg_build() {
 	chmod +x /build/toolwrap/autopoint
 
 	echo "=== DIAG: gettext archive versions available ==="
-	ls /usr/share/gettext/archive.dir.tar/ 2>&1 || echo "no archive.dir.tar dir"
-	ls /usr/share/gettext/ 2>&1
+	tar tJf /usr/share/gettext/archive.dir.tar.xz 2>&1 | head -40
 	echo "=== END DIAG ==="
 
 	PATH="/build/toolwrap:$PATH" ./autogen.sh
