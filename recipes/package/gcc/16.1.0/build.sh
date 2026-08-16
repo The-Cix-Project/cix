@@ -58,35 +58,12 @@ pkg_depends="binutils m4"
 # compiler" goal. This is, by real wall-clock time, the single longest
 # build in this project to date.
 pkg_build() {
-	echo "=== diagnostic: real tar binary identity ==="
-	sha256sum "$(command -v tar)"
-	stat "$(command -v tar)"
-	echo "=== diagnostic: uname -a (real kernel/environment) ==="
-	uname -a
-	echo "=== diagnostic: does a freshly-created, immediately-synced archive still fail? ==="
-	mkdir -p sync_test && cd sync_test
-	mkdir -p srcd && echo aaa > srcd/one.txt && echo bbb > srcd/two.txt
-	bzip2 -dc /build/extra/gmp-6.3.0.tar.bz2 > gmp_sync.tar
-	sync
-	sleep 1
-	tar tvf gmp_sync.tar | wc -l
-	cd .. && rm -rf sync_test
-
 	mkdir -p decomp_test && cd decomp_test
 	bzip2 -dc /build/extra/gmp-6.3.0.tar.bz2 > gmp.tar
-	echo "=== diagnostic: real gmp.tar tvf entry count ==="
+	echo "=== diagnostic: real gmp.tar tvf entry count (bare) ==="
 	tar tvf gmp.tar | wc -l
-	tar tvf gmp.tar | head -8
-	echo "=== diagnostic: extraction with -C dest --strip-components=1 (daemon's own exact shape) ==="
-	mkdir -p dest1
-	tar -C dest1 --strip-components=1 -xf gmp.tar
-	echo "rc=$?"
-	find dest1 | wc -l
-	echo "=== diagnostic: extraction with --blocking-factor=1 ==="
-	mkdir -p dest2
-	tar --blocking-factor=1 -C dest2 -xf gmp.tar
-	echo "rc=$?"
-	find dest2 | wc -l
+	echo "=== diagnostic: real gmp.tar tvf entry count (--read-full-records) ==="
+	tar --read-full-records tvf gmp.tar | wc -l
 	cd .. && rm -rf decomp_test
 
 	tar xf /build/extra/gmp-6.3.0.tar.bz2 && mv gmp-6.3.0 gmp
