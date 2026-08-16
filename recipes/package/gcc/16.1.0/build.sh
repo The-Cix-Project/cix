@@ -271,10 +271,16 @@ MINIEXTRACT
 	    ../configure --prefix=/usr --disable-multilib --disable-bootstrap \
 		--enable-languages=c,c++ --disable-libsanitizer --disable-lto --with-isl=no \
 		--with-system-zlib
+	echo "=== diagnostic: which Makefiles does the find match? ==="
+	find . -path './build-*' -name Makefile
+	echo "=== diagnostic: libiberty build-tools Makefile CC= line before patch ==="
+	grep '^CC ' ./build-x86_64-pc-linux-gnu/libiberty/Makefile
 	find . -path './build-*' -name Makefile -exec sed -i \
 	    -e 's|^CC = .*|CC = /usr/bin/gcc|' \
 	    -e 's|^CXX = .*|CXX = /usr/bin/g++|' \
 	    {} \;
+	echo "=== diagnostic: same line after patch ==="
+	grep '^CC ' ./build-x86_64-pc-linux-gnu/libiberty/Makefile
 	make -j"$(nproc)"
 }
 
