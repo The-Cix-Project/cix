@@ -760,13 +760,23 @@ FLOATDI_C
 	# more details" to stdout/stderr -- the actual compiler invocation
 	# and error text never reach the captured build log otherwise, which
 	# is exactly the kind of blind-guessing trap this project's own
-	# diagnose-before-perror discipline exists to avoid. Dump the tail of
-	# every config.log on disk on final failure so the real error is
-	# actually in the captured log next time, not a repeat of finding
-	# this out the hard way after another full build-length wait.
+	# diagnose-before-perror discipline exists to avoid. Dump only the
+	# single MOST RECENTLY WRITTEN config.log (the one the failing
+	# configure step itself just produced) on final failure -- not every
+	# config.log on disk (a full GCC tree has dozens, one per subproject
+	# configured so far, and dumping all of them was tried first: it
+	# overflowed thincd's own fixed-size captured-build-output buffer
+	# before reaching the actually-relevant one, landing the truncated
+	# tail on some unrelated, already-successful subproject's log
+	# instead). `ls -t` ranks by mtime; the newest is the one that
+	# matters.
 	if ! make -j"$(nproc)"; then
-		find . -name config.log -exec sh -c \
-		    'echo "=== $1 ==="; tail -n 100 "$1"' _ {} \;
+		latest_config_log=$(find . -name config.log -printf '%T@ %p\n' | \
+		    sort -rn | head -1 | cut -d' ' -f2-)
+		if [ -n "$latest_config_log" ]; then
+			echo "=== $latest_config_log ==="
+			tail -n 150 "$latest_config_log"
+		fi
 		exit 1
 	fi
 }
