@@ -118,8 +118,33 @@ pkg_depends="binutils m4"
 # workaround. `gcc -flto` itself already isn't a goal of this recipe
 # set ("get a real working compiler," not a fully feature-complete
 # one) -- the same judgment call `--disable-libsanitizer` above
-# already makes for a different optional GCC feature. This is, by
-# real wall-clock time, the single longest build in this project to
+# already makes for a different optional GCC feature.
+#
+# CC_FOR_BUILD/CXX_FOR_BUILD=/usr/bin/gcc,/usr/bin/g++ (explicit,
+# absolute paths -- Phase 33's own confirmed finding that a bare `gcc`
+# resolved via $PATH computes a wrong relative -iprefix applies here
+# too): GCC's own top-level configure only sets `CC_FOR_BUILD` to a
+# real, separate host compiler when `build != host`; since this
+# project's own triple is always build=host=target (never
+# cross-compiles), its own logic instead sets `CC_FOR_BUILD="$(CC)"`,
+# silently leaking `CC=tcc` into build-time host-tool compilation too.
+# That's wrong here specifically: `genconstants`/`genenums` (gcc's own
+# internal code-generator host tools, built once and run during this
+# build, never shipped) are real C++ (`.cc`) files TCC cannot compile
+# at all, so they correctly use real ambient g++ regardless -- but
+# without this override, `libiberty.a`'s own *build-tools* copy
+# (`build-x86_64-pc-linux-gnu/libiberty/`, a real, separate tree GCC's
+# build system already maintains apart from the target copy) still
+# got compiled with TCC, then linked into those g++-built host tools
+# by real g++'s own `collect2` -- a genuine ABI mismatch, confirmed
+# directly (`undefined reference to '__va_start'`/`'__va_arg'`, TCC's
+# own varargs calling convention, which real gcc's linker has no
+# runtime support for). Real, working, single-stage `--disable-
+# bootstrap` genuinely needs *two* compilers here, not one: TCC for
+# the target compiler this recipe exists to produce, and the ambient
+# host gcc/g++ for everything build-time-only -- this makes that
+# split explicit instead of relying on an accidental default. This is,
+# by real wall-clock time, the single longest build in this project to
 # date.
 pkg_build() {
 	cat > /build/miniextract.c <<'MINIEXTRACT'
@@ -235,7 +260,8 @@ MINIEXTRACT
 
 	mkdir -p build
 	cd build
-	CC=tcc ../configure --prefix=/usr --disable-multilib --disable-bootstrap \
+	CC=tcc CC_FOR_BUILD=/usr/bin/gcc CXX_FOR_BUILD=/usr/bin/g++ \
+	    ../configure --prefix=/usr --disable-multilib --disable-bootstrap \
 		--enable-languages=c,c++ --disable-libsanitizer --disable-lto --with-isl=no \
 		--with-system-zlib
 	make -j"$(nproc)"
