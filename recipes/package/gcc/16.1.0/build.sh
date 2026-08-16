@@ -74,7 +74,25 @@ pkg_depends="binutils m4"
 # regular files and directories (skips symlinks/etc, none of which
 # tar's own source tree needs to build) and is used for exactly one
 # thing -- unpacking tar-1.35.tar.gz -- never for gmp/mpfr/mpc/isl,
-# which use the real, freshly-built tar once it exists.
+# which use the real, freshly-built tar once it exists. Its own
+# mode/mtime handling matters too, not just correctness of content:
+# fopen()'s default creation mode silently dropped +x from
+# tar-1.35/configure (a real "Permission denied" this recipe hit
+# directly) until fixed with a real chmod() using the tar header's own
+# mode field, and "now" as every file's mtime made Makefile.in look
+# stale relative to Makefile.am purely from extraction-order noise,
+# triggering a real autotools regeneration attempt via automake --
+# fixed with a real utime() using the header's own mtime field.
+#
+# Building tar itself from source hits the exact same real, confirmed
+# TCC/gnulib `static inline` conformance gap `m4.recipe` already
+# root-caused and fixed (see that recipe's own comment, and CLAUDE.md's
+# Environment notes) -- tar also links a gnulib convenience archive
+# (`gnu/libgnu.a`) and, depending on which fallback modules this
+# specific build sandbox's own feature detection selects, hits the
+# identical "defined twice" archive collision. Same fix:
+# `-D_GL_EXTERN_INLINE_STDHEADER_BUG=1`, forcing gnulib's own
+# designed-in safe fallback.
 
 # Real, load-bearing build-time dependency: gcc's own assembler/linker
 # calls need a working as/ld present (pkg_depends="binutils ..." above)
@@ -208,8 +226,9 @@ MINIEXTRACT
 		gzip -dc /build/extra/tar-1.35.tar.gz > tar-1.35.tar
 		/build/miniextract tar-1.35.tar
 		cd tar-1.35
-		FORCE_UNSAFE_CONFIGURE=1 CC=tcc ./configure --prefix=/usr
-		make -j"$(nproc)"
+		FORCE_UNSAFE_CONFIGURE=1 CC=tcc CFLAGS="-D_GL_EXTERN_INLINE_STDHEADER_BUG=1" \
+		    ./configure --prefix=/usr
+		make
 	)
 	freshtar=/build/freshtar/tar-1.35/src/tar
 
