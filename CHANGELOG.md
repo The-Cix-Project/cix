@@ -2,6 +2,10 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 169 (done): web dashboard renders real ANSI color codes in the log panel
+
+A container's own colored log output (glauth's zerolog) showed as raw escape bytes in the log panel -- `buildLogEntryDom()` had zero escape handling. New `ansiToDom()` parses SGR color/bold/dim sequences into styled spans; new theme-aware `--ansi-*` CSS palette. The Console tab's own separate terminal emulator was unaffected -- it already had full ANSI support.
+
 ### Part 168 (done): Phase 5 of the Kanxeo -> thinC rebrand migration completes -- all 7 containers running on 192.168.15.95
 
 `thinc-hosttools` had never been rebuilt under its new post-rebrand name, silently blocking the deploy's server-side squashfs assembly (`mksquashfs binary not found`) -- rebuilt (10 packages, strictly serial), deploy succeeded, box now on slot b running the rebranded, resource-limited daemon. `ldap-1`/`ldap-2` (glauth) and `jumpbox1` (openssh+PAM+LDAP) rebuilt and brought back up -- `jumpbox1` had been crash-looping every 30s since the reinstall (`execve(/usr/bin/bash): No such file`), self-healed once its image had the missing packages via `follow_rolling`. Host-auth switched back to live LDAP, verified safe first given ADR-0146's own documented lockout incident. All 7 containers confirmed running.
