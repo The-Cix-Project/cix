@@ -6,6 +6,14 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 Removed every plain nav entry from all 7 dropdowns (the tree already covers navigation) -- Monitoring's menu had zero action items left once its nav-only entries were removed, so the whole trigger was removed too (8 menus -> 7). Removed the down-arrow from toggle labels and the "thin" text from the logo (shrunk 25%). Also fixed a real bug found while investigating a reported stray green line: `#auth-status`'s `hidden` attribute was being silently overridden by `.badge`'s own `display: inline-block` at equal CSS specificity -- same gotcha this file already had fixes for elsewhere.
 
+### Part 174 (done): `binutils` builds under TCC for the first time this session -- real TLS-macro parser gap, fully root-caused
+
+`bfd/bfd.c`'s `static TLS bfd_error_type ...` failed under TCC -- real root cause found via a diagnostic build: `bfd/config.h` carries autoconf's own `/* #undef TLS */` (detected as unavailable), so the bare `TLS` identifier survives into the parser, which correctly rejects it. `bfd/config.h` is generated lazily per subdirectory, not eagerly -- fixed with a bounded retry loop that patches every `config.h` found on disk after each failed `make` attempt.
+
+### Part 175 (done): `jumpbox1` gains real process-inspection tooling -- `psmisc` in, `procps` needs a follow-up session
+
+Neither `procps` nor `psmisc` was installed on `jumpbox` (lost in the post-reinstall rebuild along with bash/coreutils/openssh). `psmisc` installed cleanly first try. `procps` needed seven distinct, genuine TCC/gnulib/upstream fixes in sequence (gettext version-pin mismatch, a real `configure.ac` cache-variable inconsistency, two documented escape-hatch flags, the already-known TCC/regex.h VLA gap, a narrow `__GNUC__` spoof for one cosmetic line) -- all real, all confirmed against actual build output or upstream source, not guessed. An eighth, deeper gap (TCC doesn't diagnose implicit function declarations the way a real gnulib sanity probe requires) is left for a dedicated follow-up session; `procps/4.0.6-2` carries everything found so far.
+
 ### Part 172 (done): web dashboard's log panel collapse fixed -- was hiding entries without actually shrinking the pane
 
 The resize-handle feature's own inline `style.flexBasis` always outranked the `.collapsed` CSS class's height rule -- entries correctly hid, but the panel's outer height stayed pinned to its last-resized size. `setLogCollapsed()` now explicitly manages the inline style on both collapse and expand; `makeResizable()` gained a guard to avoid re-breaking this on page load while collapsed.
