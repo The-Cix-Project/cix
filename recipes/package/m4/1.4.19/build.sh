@@ -21,43 +21,44 @@ pkg_sha256="63aede5c6d33b6d9b13511cd0be2cac046f2e70fd0a07aa9573a04a82783af96"
 # build genuinely needs one, unlike most recipes in this set.
 pkg_depends="binutils"
 
-# NOT YET FIXED -- real diagnostic investigation in progress, deferred
-# (see the project's own established precedent for this judgment call:
-# procps' 8th gap, chrony's stale-toolchain gap). Two symptoms from the
-# real captured build output, `tcc`'s own final link of `src/m4`
-# against `../lib/libm4.a`:
+# NOT YET FIXED -- root cause conclusively identified, no fix found
+# yet, deferred to its own dedicated session (see the project's own
+# established precedent for this judgment call: procps' 8th gap,
+# chrony's stale-toolchain gap; also documented in the root CLAUDE.md's
+# own Environment notes, since this affects any future gnulib-style
+# recipe, not just this one).
 #
-#   1. Dozens of gnulib helper symbols (xnmalloc, c_toupper, mb_copy,
-#      xsum, ...) reported "defined twice" -- ruled OUT as an `ar`
-#      archive-corruption/race (serial `make`, no `-j`, reproduced the
-#      identical failure byte-for-byte; `ar t lib/libm4.a | sort |
-#      uniq -d` on the actual built archive shows zero duplicate
-#      *member* names, so this isn't two copies of the same .o
-#      appended to the archive). The real cause is more likely TCC's
-#      own `inline`/`static inline` handling of gnulib's "one
-#      out-of-line definition, many inline call sites" idiom (each of
-#      several genuinely different, uniquely-named .o files apparently
-#      emitting its own real, external definition of the same helper,
-#      rather than the header-only inline copy every other translation
-#      unit should get) -- not yet confirmed against gnulib's actual
-#      generated `.c`/`.h` pair for one of these symbols.
-#   2. `tcc: error: undefined symbol '__dso_handle'` -- the same
-#      environment-specific TCC/glibc CRT gap `sysklogd.recipe` already
-#      found and fixed there via a small `__attribute__((weak))` stub.
-#      Two attempts to feed it in through Automake's own `LIBS`
-#      mechanism (once at `./configure` time, once as a `make LIBS=...`
-#      command-line override, which GNU Make guarantees wins over any
-#      in-Makefile assignment) both had zero observable effect on this
-#      specific error -- not yet confirmed whether `$(LIBS)` is even
-#      reaching `m4`'s own generated link recipe at all in this
-#      Automake version's output.
+# `tcc`'s own final link of `src/m4` against `../lib/libm4.a` reports
+# dozens of gnulib helper symbols (xnmalloc, c_toupper, mb_copy, xsum,
+# ...) as "defined twice". Confirmed NOT an `ar` archive-corruption/
+# race (serial `make`, no `-j`, reproduces the identical failure
+# byte-for-byte; `ar t lib/libm4.a | sort | uniq -d` on the actual
+# built archive shows zero duplicate *member* names). Root cause
+# confirmed directly via `nm -A lib/*.o | grep ' T xnmalloc$'`: `xnmalloc`
+# is a real, strong, globally-visible `T` symbol independently defined
+# in ~20 different, correctly-and-uniquely-named .o files (basename.o,
+# canonicalize.o, dirname.o, quotearg.o, xalloc-die.o, ...) -- every
+# translation unit that includes gnulib's `xalloc.h` and calls
+# `xnmalloc` is emitting its own full external definition, rather than
+# either inlining the call or resolving to one canonical instantiation
+# the way a real C99 `static inline` should. TCC does not honor
+# `static inline` linkage the way GCC/Clang do here -- a genuine,
+# fundamental compiler conformance gap, not something a recipe-level
+# flag or define can paper over. `tcc: error: undefined symbol
+# '__dso_handle'` (also seen) is very likely a cascading symptom of
+# tcc aborting archive symbol resolution once it hits this conflict,
+# not an independent problem -- confirmed the `-ldso_stub` fix genuinely
+# reaches `m4`'s own link line (`make -n` dry-run), yet the error
+# persisted, which only makes sense if the whole link had already
+# failed before that stub would matter.
 #
 # `pkg_depends="binutils"` and the `dso_stub.c`/`libdso_stub.a`
 # machinery below are kept as real, independently-justified fixes (a
 # known-good `ar`/`ranlib` instead of whatever the base build sandbox
 # bundles; the same weak-stub trick already proven for sysklogd) even
-# though neither has yet resolved the failure on its own -- removing
-# them would just be re-losing already-confirmed-safe groundwork.
+# though neither resolves the failure on its own -- removing them would
+# just be re-losing already-confirmed-safe groundwork for whoever picks
+# this back up.
 pkg_build() {
 	echo 'void *__dso_handle __attribute__((weak)) = (void *)0;' > dso_stub.c
 	tcc -c dso_stub.c -o dso_stub.o
@@ -65,12 +66,6 @@ pkg_build() {
 
 	CC=tcc AR=ar RANLIB=ranlib ./configure --prefix=/usr
 	make LIBS="-L$(pwd) -ldso_stub"
-	make_rc=$?
-
-	echo "=== diagnostic: which lib/*.o files define xnmalloc/c_toupper ==="
-	nm -A lib/*.o 2>/dev/null | grep ' T xnmalloc$\| T c_toupper$'
-
-	[ "$make_rc" -eq 0 ] || exit "$make_rc"
 }
 
 # Confirmed via ldd against a real build: m4 links against nothing but
