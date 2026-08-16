@@ -129,19 +129,32 @@ pkg_build() {
 	# own real, intended escape hatch (its own error message says so),
 	# same posture as --disable-pidwait -- top loses NUMA-node display,
 	# nothing else is affected.
-	CC=tcc ac_cv_prog_cc_c99="none needed" ./configure --prefix=/usr --disable-nls \
+	# "none needed" was wrong in a different way than the empty-string
+	# attempt: procps-ng's own Makefile.am literally substitutes
+	# $ac_cv_prog_cc_c99 straight into CC (confirmed directly from a
+	# verbose (V=1) build's own real compile command: `tcc none needed
+	# -DHAVE_CONFIG_H ...`) -- "none needed" is autoconf's own *display*
+	# text for the "checking ..." line, never meant to be used as a
+	# literal compiler argument, and TCC then tried to compile a source
+	# file literally named "none". The value this variable actually
+	# needs to hold is a real, valid, harmless compiler flag -- exactly
+	# the same -std=gnu99 procps-ng's own GNU-compiler code path already
+	# appends in the working case (see the `if test "x$ac_cv_c_compiler_
+	# gnu" = "xyes"` branch above in configure.ac) -- non-empty (passes
+	# procps' own buggy check) and syntactically harmless either way
+	# (TCC accepts -std= flags without erroring).
+	CC=tcc ac_cv_prog_cc_c99="-std=gnu99" ./configure --prefix=/usr --disable-nls \
 		--disable-pidwait --disable-numa
-	# A fifth, real, but harmless gap: `make all`'s own real ps/top/etc.
-	# binaries (top-level bin_PROGRAMS, not part of SUBDIRS at all --
-	# confirmed directly against the real Makefile.am) already build and
-	# link successfully; only testsuite/ (real unit-test programs, never
-	# part of a real install) fails, on an unrelated tcc "file 'none'
-	# not found" Makefile-substitution quirk not worth chasing for
+	# A separate, real, but harmless gap: `make all`'s own real ps/top/
+	# etc. binaries (top-level bin_PROGRAMS, not part of SUBDIRS at all --
+	# confirmed directly against the real Makefile.am) build and link
+	# fine; only testsuite/ (real unit-test programs, never part of a
+	# real install) fails, on an unrelated issue not worth chasing for
 	# test-only code this project never runs. SUBDIRS= override (a real,
 	# standard automake convention) skips it while still building
 	# everything the top-level Makefile.am's own real SUBDIRS list
 	# (local po-man po testsuite) needs for a real install.
-	make -j"$(nproc)" SUBDIRS="local po-man po" V=1
+	make -j"$(nproc)" SUBDIRS="local po-man po"
 }
 
 # ps/top/free/kill/pgrep/pkill/pidof/pidwait/pmap/pwdx/slabtop/tload/
