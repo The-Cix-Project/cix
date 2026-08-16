@@ -58,18 +58,22 @@ pkg_depends="binutils m4"
 # compiler" goal. This is, by real wall-clock time, the single longest
 # build in this project to date.
 pkg_build() {
-	echo "=== diagnostic: does tar cf itself write all 3 entries? ==="
-	mkdir -p synth_test && cd synth_test
-	mkdir -p src1 && echo aaa > src1/one.txt && echo bbb > src1/two.txt && echo ccc > src1/three.txt
-	tar cf synth.tar src1
-	ls -la synth.tar
-	tar tvf synth.tar
-	echo "=== diagnostic: verbose extraction ==="
-	rm -rf src1
-	tar xvf synth.tar
-	echo "synthetic verbose tar xf rc=$?"
-	find src1 2>&1
-	cd .. && rm -rf synth_test
+	mkdir -p decomp_test && cd decomp_test
+	bzip2 -dc /build/extra/gmp-6.3.0.tar.bz2 > gmp.tar
+	echo "=== diagnostic: real gmp.tar tvf entry count ==="
+	tar tvf gmp.tar | wc -l
+	tar tvf gmp.tar | head -8
+	echo "=== diagnostic: extraction with -C dest --strip-components=1 (daemon's own exact shape) ==="
+	mkdir -p dest1
+	tar -C dest1 --strip-components=1 -xf gmp.tar
+	echo "rc=$?"
+	find dest1 | wc -l
+	echo "=== diagnostic: extraction with --blocking-factor=1 ==="
+	mkdir -p dest2
+	tar --blocking-factor=1 -C dest2 -xf gmp.tar
+	echo "rc=$?"
+	find dest2 | wc -l
+	cd .. && rm -rf decomp_test
 
 	tar xf /build/extra/gmp-6.3.0.tar.bz2 && mv gmp-6.3.0 gmp
 	tar xf /build/extra/mpfr-4.2.2.tar.bz2 && mv mpfr-4.2.2 mpfr
