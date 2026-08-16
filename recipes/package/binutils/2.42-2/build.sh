@@ -71,15 +71,12 @@ pkg_build() {
 	cd build
 	CC=tcc ../configure --prefix=/usr --disable-multilib --disable-gold \
 		--disable-gprofng --enable-deterministic-archives
-	i=0
-	while [ "$i" -lt 10 ]; do
-		if make -j"$(nproc)" MAKEINFO=true; then
-			break
-		fi
-		find . -name config.h -exec sed -i 's/^#define TLS.*/#define TLS/' {} +
-		i=$((i + 1))
-	done
-	make -j"$(nproc)" MAKEINFO=true
+	make -j"$(nproc)" MAKEINFO=true || true
+	echo "=== DIAG: config.h TLS ==="
+	grep -rn -i 'define[[:space:]]*TLS\|__thread' bfd/config.h 2>&1 || echo "no match in bfd/config.h"
+	find . -name config.h | while read -r f; do echo "--- $f ---"; grep -n -i 'TLS\|__thread' "$f" 2>&1; done
+	echo "=== END DIAG ==="
+	false
 }
 
 # Confirmed via ldd against every one of the 16 real tools this build
