@@ -779,12 +779,16 @@ FLOATDI_C
 			# cache-variable/confdefs.h summary, not the actual
 			# failing test -- config.log is chronological, and
 			# that summary is appended after EVERY test, whether
-			# or not it's the one that failed. grep straight for
-			# the real "configure: error" line plus generous
-			# context before it (the actual failing compiler
-			# invocation and its real stdout/stderr, which is
-			# what's actually needed) instead.
-			grep -n -B 30 -A 5 '^configure: error' \
+			# or not it's the one that failed. grep for the real
+			# error line plus generous context before it (the
+			# actual failing compiler invocation and its real
+			# stdout/stderr) instead -- config.log's own format is
+			# `configure:1234: error: ...` (a source line number
+			# embedded between the colons), not a literal
+			# "configure: error" with a plain space, confirmed the
+			# hard way: the first version of this grep used the
+			# space-separated form and matched nothing at all.
+			grep -n -B 30 -A 5 '^configure:[0-9]*: error' \
 			    "$latest_config_log" | tail -n 150
 		fi
 		exit 1
