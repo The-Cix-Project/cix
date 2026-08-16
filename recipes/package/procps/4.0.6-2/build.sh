@@ -86,7 +86,7 @@ pkg_build() {
 		printf '#!/bin/sh\nexec perl /usr/bin/%s "$@"\n' "$tool" > "/build/toolwrap/$tool"
 		chmod +x "/build/toolwrap/$tool"
 	done
-	printf '#!/bin/sh\nmkdir -p po\ncp /usr/share/gettext/po/*.in.in /usr/share/gettext/po/*.template /usr/share/gettext/po/*.sed /usr/share/gettext/po/*.header /usr/share/gettext/po/*.sin /usr/share/gettext/po/Rules-quot po/\n' \
+	printf '#!/bin/sh\nmkdir -p po\ncp /usr/share/gettext/po/*.in.in /usr/share/gettext/po/*.template /usr/share/gettext/po/*.sed /usr/share/gettext/po/*.header /usr/share/gettext/po/*.sin /usr/share/gettext/po/Rules-quot po/\ncp /usr/share/gettext/config.rpath .\n' \
 		> /build/toolwrap/autopoint
 	chmod +x /build/toolwrap/autopoint
 
