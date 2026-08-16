@@ -60,7 +60,15 @@ pkg_depends="binutils m4"
 pkg_build() {
 	echo "=== diagnostic: real staged /build/extra content ==="
 	ls -la /build/extra/ 2>&1
-	file /build/extra/*.tar.* 2>&1
+	echo "=== diagnostic: tar --version ==="
+	tar --version 2>&1
+	echo "=== diagnostic: tar tf (list only, no extraction) ==="
+	tar tf /build/extra/gmp-6.3.0.tar.bz2 2>&1 | head -5
+	echo "tar tf rc=$?"
+	echo "=== diagnostic: tar xf real exit status ==="
+	tar xf /build/extra/gmp-6.3.0.tar.bz2
+	echo "tar xf rc=$?"
+	ls -la gmp-6.3.0 2>&1
 
 	tar xf /build/extra/gmp-6.3.0.tar.bz2 && mv gmp-6.3.0 gmp
 	tar xf /build/extra/mpfr-4.2.2.tar.bz2 && mv mpfr-4.2.2 mpfr
