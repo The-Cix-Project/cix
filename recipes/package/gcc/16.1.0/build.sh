@@ -120,32 +120,39 @@ pkg_depends="binutils m4"
 # one) -- the same judgment call `--disable-libsanitizer` above
 # already makes for a different optional GCC feature.
 #
-# CC_FOR_BUILD/CXX_FOR_BUILD=/usr/bin/gcc,/usr/bin/g++ (explicit,
-# absolute paths -- Phase 33's own confirmed finding that a bare `gcc`
-# resolved via $PATH computes a wrong relative -iprefix applies here
-# too): GCC's own top-level configure only sets `CC_FOR_BUILD` to a
-# real, separate host compiler when `build != host`; since this
+# Real, working, single-stage `--disable-bootstrap` genuinely needs
+# *two* compilers here, not one: TCC for the target compiler this
+# recipe exists to produce, and the ambient host gcc/g++ for anything
+# build-time-only. `genconstants`/`genenums` (gcc's own internal
+# code-generator host tools, built once and run during this build,
+# never shipped) are real C++ (`.cc`) files TCC cannot compile at all,
+# so they correctly use real ambient g++ regardless -- but linking
+# them failed with `undefined reference to '__va_start'`/`'__va_arg'`
+# (TCC's own varargs calling convention, which real gcc's linker has
+# no runtime support for), because `libiberty.a`'s own *build-tools*
+# copy (`build-x86_64-pc-linux-gnu/libiberty/`, a real, separate tree
+# GCC's build system already maintains apart from the target copy)
+# still got compiled with TCC. Passing `CC_FOR_BUILD`/`CXX_FOR_BUILD`
+# to `../configure` (even as real env vars, even with Phase 33's own
+# confirmed absolute-path fix) had **zero effect**, confirmed directly
+# by inspecting the real generated
+# `build-x86_64-pc-linux-gnu/libiberty/Makefile`'s own compile
+# commands -- still `tcc`. Root cause, read directly from GCC's own
+# top-level `configure` source: it only takes the branch that respects
+# an environment `CC_FOR_BUILD` when `build != host`; since this
 # project's own triple is always build=host=target (never
-# cross-compiles), its own logic instead sets `CC_FOR_BUILD="$(CC)"`,
-# silently leaking `CC=tcc` into build-time host-tool compilation too.
-# That's wrong here specifically: `genconstants`/`genenums` (gcc's own
-# internal code-generator host tools, built once and run during this
-# build, never shipped) are real C++ (`.cc`) files TCC cannot compile
-# at all, so they correctly use real ambient g++ regardless -- but
-# without this override, `libiberty.a`'s own *build-tools* copy
-# (`build-x86_64-pc-linux-gnu/libiberty/`, a real, separate tree GCC's
-# build system already maintains apart from the target copy) still
-# got compiled with TCC, then linked into those g++-built host tools
-# by real g++'s own `collect2` -- a genuine ABI mismatch, confirmed
-# directly (`undefined reference to '__va_start'`/`'__va_arg'`, TCC's
-# own varargs calling convention, which real gcc's linker has no
-# runtime support for). Real, working, single-stage `--disable-
-# bootstrap` genuinely needs *two* compilers here, not one: TCC for
-# the target compiler this recipe exists to produce, and the ambient
-# host gcc/g++ for everything build-time-only -- this makes that
-# split explicit instead of relying on an accidental default. This is,
-# by real wall-clock time, the single longest build in this project to
-# date.
+# cross-compiles), it instead takes the unconditional
+# `CC_FOR_BUILD="$(CC)"` branch, baking a literal `$(CC)` *make*
+# variable reference into the generated Makefile regardless of what
+# the environment says. Real fix: a `sed` patch on every generated
+# Makefile under `build-x86_64-pc-linux-gnu/` *after* `../configure`
+# runs (which is when the recursive sub-configures for each of those
+# subdirectories already happened) but *before* `make`, forcing their
+# real, literal `CC =`/`CXX =` lines to the real ambient compiler --
+# the same "generated file needs a real, targeted patch when configure
+# itself won't cooperate" pattern `binutils.recipe`'s own TLS-macro
+# fix already established. This is, by real wall-clock time, the
+# single longest build in this project to date.
 pkg_build() {
 	cat > /build/miniextract.c <<'MINIEXTRACT'
 #include <stdio.h>
@@ -264,6 +271,10 @@ MINIEXTRACT
 	    ../configure --prefix=/usr --disable-multilib --disable-bootstrap \
 		--enable-languages=c,c++ --disable-libsanitizer --disable-lto --with-isl=no \
 		--with-system-zlib
+	find . -path './build-*' -name Makefile -exec sed -i \
+	    -e 's|^CC = .*|CC = /usr/bin/gcc|' \
+	    -e 's|^CXX = .*|CXX = /usr/bin/g++|' \
+	    {} \;
 	make -j"$(nproc)"
 }
 
