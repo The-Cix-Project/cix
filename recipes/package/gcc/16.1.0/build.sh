@@ -58,25 +58,18 @@ pkg_depends="binutils m4"
 # compiler" goal. This is, by real wall-clock time, the single longest
 # build in this project to date.
 pkg_build() {
-	echo "=== diagnostic: minimal synthetic 3-file archive, bare tar xf ==="
+	echo "=== diagnostic: does tar cf itself write all 3 entries? ==="
 	mkdir -p synth_test && cd synth_test
 	mkdir -p src1 && echo aaa > src1/one.txt && echo bbb > src1/two.txt && echo ccc > src1/three.txt
 	tar cf synth.tar src1
+	ls -la synth.tar
+	tar tvf synth.tar
+	echo "=== diagnostic: verbose extraction ==="
 	rm -rf src1
-	tar xf synth.tar
-	echo "synthetic bare tar xf rc=$?"
+	tar xvf synth.tar
+	echo "synthetic verbose tar xf rc=$?"
 	find src1 2>&1
 	cd .. && rm -rf synth_test
-
-	echo "=== diagnostic: minimal synthetic archive, tar -C . -xf (daemon's own flag shape) ==="
-	mkdir -p synth_test2 && cd synth_test2
-	mkdir -p src2 && echo aaa > src2/one.txt && echo bbb > src2/two.txt && echo ccc > src2/three.txt
-	tar cf synth2.tar src2
-	rm -rf src2
-	tar -C . -xf synth2.tar
-	echo "synthetic -C . tar xf rc=$?"
-	find src2 2>&1
-	cd .. && rm -rf synth_test2
 
 	tar xf /build/extra/gmp-6.3.0.tar.bz2 && mv gmp-6.3.0 gmp
 	tar xf /build/extra/mpfr-4.2.2.tar.bz2 && mv mpfr-4.2.2 mpfr
