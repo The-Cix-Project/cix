@@ -29,54 +29,58 @@ pkg_depends=""
 # iputils.recipe's own -DBUILD_MANS=false already used).
 #
 # Re-pinned to -2: `bfd/bfd.c` (`static TLS bfd_error_type bfd_error;`
-# et al) failed under TCC with "';' expected (got \"bfd_error_type\")" --
-# confirmed directly against binutils' own real 2.42 source that `TLS`
-# is never defined anywhere in the tracked tree (bfd.c, bfd-in.h,
-# bfd-in2.h, sysdep.h, ansidecl.h, configure.ac all checked, zero
-# matches). A first attempt at CPPFLAGS="-DTLS=" had no effect at all --
-# confirmed directly by inspecting the real captured build output: the
-# per-file tcc compile line never carries a -DTLS of any kind, so it
-# isn't coming from CPPFLAGS/DEFS at the command-line level. The
-# remaining source is bfd/config.h itself (`-DHAVE_CONFIG_H` is on
-# every compile line) -- a real autoconf-generated file, invisible in
-# git, presumably defining `TLS` to `__thread` because configure's own
-# thread-local-storage probe believes this toolchain supports it. TCC's
-# parser rejects `__thread` in this exact position even though it
-# generally recognizes the keyword elsewhere. This project's own build
-# sandboxes are single-process, so real thread-local storage buys
-# nothing here regardless.
+# et al) failed under TCC with "';' expected (got \"bfd_error_type\")".
+# Two blind guesses (CPPFLAGS="-DTLS=", a single post-configure sed
+# targeting a `#define TLS ...` line) both had zero effect -- a
+# diagnostic-only build (dumping every generated config.h's own TLS-
+# related lines) found the real, exact shape: `bfd/config.h` carries
 #
-# A second attempt (sed on bfd/config.h once, right after the top-level
-# ../configure) also had no effect -- confirmed by directly reading the
-# real captured build log: binutils uses the older, real "Cygnus tree"
-# multi-directory build convention, where the *top-level* configure
-# only wires up Makefile rules that invoke each subdirectory's own
-# ./configure lazily, on demand, as `make` actually descends into that
-# directory -- bfd/config.h genuinely does not exist yet at the point
-# the top-level configure returns. The real, correct fix has to run
-# *during* the build, not before it: a bounded retry loop that lets
-# `make` run until it either succeeds or fails, patches every
-# config.h that exists on disk *so far* (find, not a hardcoded path --
-# other subdirectories, e.g. opcodes/, plausibly hit the identical gap
-# once make reaches them), and retries -- make's own dependency
-# tracking is resumable, so each retry picks up exactly where the
-# previous one left off rather than rebuilding from scratch. 10
-# attempts is a generous, arbitrary ceiling; a real full build only
-# ever needs a small number of new config.h files patched (one per
-# subdirectory actually reached), so a genuinely stuck build fails
-# loudly well before exhausting it, rather than masking a real,
-# different error as an infinite retry would.
+#   /* If the compiler supports a TLS storage class, define it to that here */
+#   /* #undef TLS */
+#
+# -- autoconf's own real, standard "detected as NOT available, left
+# commented out" convention. `TLS` is genuinely undefined, not defined
+# to `__thread` or anything else -- so the preprocessor leaves the bare
+# identifier `TLS` untouched in `static TLS bfd_error_type ...`, which
+# TCC's *parser* (not the preprocessor) then correctly rejects as
+# invalid syntax: a plain undeclared identifier can't appear between
+# `static` and a type name. Real GCC/Clang builds never hit this
+# because their own TLS-storage-class autoconf probe succeeds and
+# defines `TLS` to `__thread`; something about how the probe exercises
+# TCC makes it conclude "no support" without also emitting the
+# empty-string fallback binutils' upstream probably expects a genuinely
+# TLS-incapable compiler to still receive. Confirmed via ldd against
+# this build's own real output was never wrong about what a
+# successful, already-built binutils looks like -- what's new is that
+# this exact TCC/autoconf-probe interaction was apparently never
+# exercised before this session, on this exact bootstrap toolchain.
+#
+# `bfd/config.h` is generated lazily, per subdirectory, as `make`
+# descends into it (binutils' own real, older "Cygnus tree" multi-
+# directory build convention) -- not eagerly by the top-level
+# `../configure`. Fixed with the same bounded retry loop as before,
+# now with the CORRECT sed target (`/* #undef TLS */` -> `#define TLS`,
+# matching the exact comment-out convention above, not a `#define TLS
+# ...` line that was never actually present) applied to every
+# config.h that exists on disk so far after each failed attempt --
+# `find`, not a hardcoded path, since other subdirectories (opcodes/,
+# etc.) plausibly hit the identical gap once make reaches them. make's
+# own dependency tracking is resumable, so each retry picks up exactly
+# where the previous one left off.
 pkg_build() {
 	mkdir -p build
 	cd build
 	CC=tcc ../configure --prefix=/usr --disable-multilib --disable-gold \
 		--disable-gprofng --enable-deterministic-archives
-	make -j"$(nproc)" MAKEINFO=true || true
-	echo "=== DIAG: config.h TLS ==="
-	grep -rn -i 'define[[:space:]]*TLS\|__thread' bfd/config.h 2>&1 || echo "no match in bfd/config.h"
-	find . -name config.h | while read -r f; do echo "--- $f ---"; grep -n -i 'TLS\|__thread' "$f" 2>&1; done
-	echo "=== END DIAG ==="
-	false
+	i=0
+	while [ "$i" -lt 10 ]; do
+		if make -j"$(nproc)" MAKEINFO=true; then
+			break
+		fi
+		find . -name config.h -exec sed -i 's|/\* *#undef TLS *\*/|#define TLS|' {} +
+		i=$((i + 1))
+	done
+	make -j"$(nproc)" MAKEINFO=true
 }
 
 # Confirmed via ldd against every one of the 16 real tools this build
