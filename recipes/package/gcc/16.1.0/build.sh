@@ -225,6 +225,26 @@ pkg_depends="binutils m4"
 # the `*-bt.S` bounds-checking variants are the other candidates
 # already confirmed to exist there) rather than re-diagnosed from
 # scratch -- this is now a proven, reusable pattern, not a one-off.
+#
+# A fourth gap turned out NOT to be a TCC-runtime symbol at all:
+# `undefined reference to 'C_alloca'` (`make-relative-prefix.c`, linked
+# into `gcc-ar`). Root cause lives in `include/libiberty.h`'s own
+# `alloca()` macro selection (`GCC_VERSION >= 2000` picks
+# `__builtin_alloca`, else falls back to a real, portable, public-
+# domain `C_alloca()` implementation GCC itself ships in
+# `libiberty/alloca.c` for exactly this situation) -- TCC never defines
+# `__GNUC__`, so `GCC_VERSION` is always 0 there, and every TCC-compiled
+# translation unit calling `alloca()` through this header needs
+# `C_alloca` to actually exist. Fixed the same way as the two symbols
+# above (find the real, already-present source, compile it, `ar r` it
+# into every `libiberty.a`) but the source this time is GCC's own
+# unmodified `libiberty/alloca.c`, not TCC's -- already sitting in the
+# same extracted source tree `pkg_source` downloads, no separate fetch.
+# Compiled with `tcc` itself (confirmed clean: plain ISO C89 on the
+# non-Cray path), with `HAVE_STDLIB_H`/`HAVE_STRING_H` forced on the
+# command line since its own `#ifdef HAVE_CONFIG_H` guard means it
+# silently skips including `<stdlib.h>`/`<string.h>` when compiled
+# standalone, ahead of libiberty's own generated config.h existing.
 # This is, by real wall-clock time, the single longest build in this
 # project to date.
 pkg_build() {
@@ -446,6 +466,31 @@ p3:
 ALLOCA_S
 	/usr/bin/gcc -c /build/alloca86_64.S -o /build/alloca.o
 
+	# A third, related but distinct gap surfaced past that one: undefined
+	# reference to `C_alloca` (`make-relative-prefix.c`, linked into
+	# `gcc-ar` this time). Not a TCC lib/ runtime-helper gap like the two
+	# above -- this one traces to `include/libiberty.h` itself:
+	#   #if GCC_VERSION >= 2000 && !defined USE_C_ALLOCA
+	#   # define alloca(x) __builtin_alloca(x)
+	#   #else
+	#   # define alloca(x) C_alloca(x)
+	#   #endif
+	# `GCC_VERSION` (from ansidecl.h) is `__GNUC__ * 1000 + __GNUC_MINOR__`,
+	# 0 when `__GNUC__` is undefined -- which TCC never defines. So every
+	# libiberty.a translation unit compiled by TCC that calls alloca()
+	# through this header gets redirected to `C_alloca()`, a real,
+	# portable, public-domain fallback implementation that GCC itself
+	# ships for exactly this situation (`libiberty/alloca.c`) -- already
+	# present, unmodified, in the same extracted source tree `pkg_source`
+	# already downloaded, no separate fetch needed. It compiles clean
+	# under plain tcc (confirmed locally: pure ISO C89, no GCC extensions
+	# on the non-Cray path) given `HAVE_STDLIB_H`/`HAVE_STRING_H` forced on
+	# the command line (its own `#ifdef HAVE_CONFIG_H` guard means it
+	# otherwise silently skips `<stdlib.h>`/`<string.h>` when compiled
+	# standalone, before libiberty's own generated config.h exists).
+	tcc -c -DHAVE_STDLIB_H=1 -DHAVE_STRING_H=1 -I include libiberty/alloca.c \
+	    -o /build/c_alloca.o
+
 	mkdir -p build
 	cd build
 	CC=tcc ../configure --prefix=/usr --disable-multilib --disable-bootstrap \
@@ -459,7 +504,8 @@ ALLOCA_S
 		    -e 's|^CXX = .*|CXX = /usr/bin/g++|' \
 		    {} \;
 		find . -path './build-*' \( -name '*.o' -o -name '*.a' -o -name '*.lo' \) -delete
-		find . -name 'libiberty.a' -exec /usr/bin/ar r {} /build/va_list.o /build/alloca.o \;
+		find . -name 'libiberty.a' -exec /usr/bin/ar r {} \
+		    /build/va_list.o /build/alloca.o /build/c_alloca.o \;
 		if make -j"$(nproc)"; then
 			break
 		fi
