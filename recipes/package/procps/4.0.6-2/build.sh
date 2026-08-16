@@ -143,8 +143,18 @@ pkg_build() {
 	# gnu" = "xyes"` branch above in configure.ac) -- non-empty (passes
 	# procps' own buggy check) and syntactically harmless either way
 	# (TCC accepts -std= flags without erroring).
-	CC=tcc ac_cv_prog_cc_c99="-std=gnu99" ./configure --prefix=/usr --disable-nls \
-		--disable-pidwait --disable-numa
+	# A sixth, real, already-known gap (this project's own established
+	# TCC-vs-glibc-regex.h issue, daemon/src/logstore.c's own include-
+	# block comment documents the identical root cause): src/sysctl.c
+	# includes <regex.h>, whose real regexec() prototype uses a genuine
+	# C99 VLA-in-prototype size expression TCC's parser rejects
+	# ("__nmatch undeclared"). The header's own _REGEX_NELTS macro
+	# already has a #ifndef __STDC_NO_VLA__ branch for exactly a
+	# compiler without VLA support -- defining it via CFLAGS (never
+	# editing procps' own unmodified upstream source) steers the header
+	# onto the branch TCC parses fine.
+	CC=tcc ac_cv_prog_cc_c99="-std=gnu99" CFLAGS="-D__STDC_NO_VLA__=1" \
+		./configure --prefix=/usr --disable-nls --disable-pidwait --disable-numa
 	# A separate, real, but harmless gap: `make all`'s own real ps/top/
 	# etc. binaries (top-level bin_PROGRAMS, not part of SUBDIRS at all --
 	# confirmed directly against the real Makefile.am) build and link
