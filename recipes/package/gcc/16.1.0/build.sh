@@ -132,27 +132,35 @@ pkg_depends="binutils m4"
 # no runtime support for), because `libiberty.a`'s own *build-tools*
 # copy (`build-x86_64-pc-linux-gnu/libiberty/`, a real, separate tree
 # GCC's build system already maintains apart from the target copy)
-# still got compiled with TCC. Passing `CC_FOR_BUILD`/`CXX_FOR_BUILD`
-# to `../configure` (even as real env vars, even with Phase 33's own
-# confirmed absolute-path fix) had **zero effect**, confirmed directly
-# by inspecting the real generated
-# `build-x86_64-pc-linux-gnu/libiberty/Makefile`'s own compile
-# commands -- still `tcc`. Root cause, read directly from GCC's own
-# top-level `configure` source: it only takes the branch that respects
-# an environment `CC_FOR_BUILD` when `build != host`; since this
-# project's own triple is always build=host=target (never
-# cross-compiles), it instead takes the unconditional
-# `CC_FOR_BUILD="$(CC)"` branch, baking a literal `$(CC)` *make*
-# variable reference into the generated Makefile regardless of what
-# the environment says. Real fix: a `sed` patch on every generated
-# Makefile under `build-x86_64-pc-linux-gnu/` *after* `../configure`
-# runs (which is when the recursive sub-configures for each of those
-# subdirectories already happened) but *before* `make`, forcing their
-# real, literal `CC =`/`CXX =` lines to the real ambient compiler --
-# the same "generated file needs a real, targeted patch when configure
-# itself won't cooperate" pattern `binutils.recipe`'s own TLS-macro
-# fix already established. This is, by real wall-clock time, the
-# single longest build in this project to date.
+# still got compiled with TCC.
+#
+# Two real, sequential misdiagnoses on the way to the actual fix, both
+# disproven with direct evidence rather than guessed past: (1)
+# `CC_FOR_BUILD`/`CXX_FOR_BUILD` as environment variables to
+# `../configure` had zero effect -- read directly from GCC's own real
+# `configure` source, it only takes the branch that respects an
+# environment `CC_FOR_BUILD` when `build != host`; since this project
+# never cross-compiles (build=host=target always), it takes the
+# unconditional `CC_FOR_BUILD="$(CC)"` branch instead, baking a
+# literal `$(CC)` *make* variable reference into the generated
+# Makefile regardless of the environment. (2) A one-shot `sed` patch
+# on `build-x86_64-pc-linux-gnu/*/Makefile` run right after
+# `../configure` *also* had zero effect -- confirmed directly (a real
+# `find`/`grep` diagnostic showed the file didn't exist yet at that
+# point at all): this project's own top-level `../configure` only
+# generates the *top-level* Makefile; every subdirectory's own
+# configure (including `build-x86_64-pc-linux-gnu/libiberty`'s) is
+# triggered recursively *by `make` itself*, on demand, mid-build --
+# the standard GNU "toplevel bootstrap" convention gcc/binutils-style
+# super-projects use. Real fix: the same bounded retry loop
+# `binutils.recipe`'s own TLS-macro fix already established for
+# exactly this "needed file doesn't exist until a `make` attempt
+# creates it" shape -- patch, attempt `make`, and if it fails, patch
+# again (now that more subdirectory Makefiles exist) and retry, up to
+# a bound, relying on `make`'s own resumable dependency tracking so
+# already-built pieces (gmp, mpfr, mpc, ...) aren't redone each pass.
+# This is, by real wall-clock time, the single longest build in this
+# project to date.
 pkg_build() {
 	cat > /build/miniextract.c <<'MINIEXTRACT'
 #include <stdio.h>
@@ -267,20 +275,21 @@ MINIEXTRACT
 
 	mkdir -p build
 	cd build
-	CC=tcc CC_FOR_BUILD=/usr/bin/gcc CXX_FOR_BUILD=/usr/bin/g++ \
-	    ../configure --prefix=/usr --disable-multilib --disable-bootstrap \
+	CC=tcc ../configure --prefix=/usr --disable-multilib --disable-bootstrap \
 		--enable-languages=c,c++ --disable-libsanitizer --disable-lto --with-isl=no \
 		--with-system-zlib
-	echo "=== diagnostic: which Makefiles does the find match? ==="
-	find . -path './build-*' -name Makefile
-	echo "=== diagnostic: libiberty build-tools Makefile CC= line before patch ==="
-	grep '^CC ' ./build-x86_64-pc-linux-gnu/libiberty/Makefile
-	find . -path './build-*' -name Makefile -exec sed -i \
-	    -e 's|^CC = .*|CC = /usr/bin/gcc|' \
-	    -e 's|^CXX = .*|CXX = /usr/bin/g++|' \
-	    {} \;
-	echo "=== diagnostic: same line after patch ==="
-	grep '^CC ' ./build-x86_64-pc-linux-gnu/libiberty/Makefile
+
+	i=0
+	while [ "$i" -lt 10 ]; do
+		find . -path './build-*' -name Makefile -exec sed -i \
+		    -e 's|^CC = .*|CC = /usr/bin/gcc|' \
+		    -e 's|^CXX = .*|CXX = /usr/bin/g++|' \
+		    {} \;
+		if make -j"$(nproc)"; then
+			break
+		fi
+		i=$((i + 1))
+	done
 	make -j"$(nproc)"
 }
 
