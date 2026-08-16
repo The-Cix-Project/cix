@@ -73,10 +73,35 @@ const logPanelArrow = document.getElementById("log-panel-arrow");
 const logPanelSource = document.getElementById("log-panel-source");
 
 const LOG_COLLAPSE_KEY = "thinc-log-collapsed";
+const LOG_HEIGHT_KEY = "thinc-log-height";
 
+/* Collapsing/expanding must also manage #log-panel's own inline
+ * flex-basis -- makeResizable() below (log-panel-resize-handle) sets
+ * that directly as a plain element style, which (being inline) always
+ * outranks the .collapsed class's own `flex: 0 0 auto` rule regardless
+ * of stylesheet specificity. Without this, the class toggles and
+ * #log-output correctly hides, but the panel's own outer height stays
+ * pinned to whatever it was last resized to -- confirmed live, exactly
+ * the reported bug ("it no longer collapses..., it just hides the log
+ * entries and the pane stays where it is"). Clearing the inline style
+ * on collapse lets .collapsed's own rule govern; restoring the saved
+ * height on expand brings back the user's own last chosen size instead
+ * of silently forgetting it. */
 function setLogCollapsed(collapsed) {
 	logPanel.classList.toggle("collapsed", collapsed);
 	logPanelArrow.textContent = collapsed ? "▸" : "▾";
+	if (collapsed) {
+		logPanel.style.flexBasis = "";
+	} else {
+		try {
+			const saved = localStorage.getItem(LOG_HEIGHT_KEY);
+
+			if (saved !== null) logPanel.style.flexBasis = saved + "px";
+		} catch (e) {
+			/* localStorage unavailable -- default flex-basis (#log-panel's
+			 * own base 200px rule) stands. */
+		}
+	}
 	try {
 		localStorage.setItem(LOG_COLLAPSE_KEY, collapsed ? "1" : "0");
 	} catch (e) {
@@ -167,9 +192,19 @@ function makeResizable(handle, opts) {
 	try {
 		const saved = localStorage.getItem(storageKey);
 
+		/* skipInitialApplyIf(): for the log panel specifically, skip this
+		 * initial apply() when the panel is currently collapsed --
+		 * setLogCollapsed() (which already ran, earlier in load order)
+		 * deliberately left the inline flex-basis cleared so the
+		 * .collapsed CSS class governs the height; applying a saved
+		 * height here would silently reintroduce the exact bug
+		 * setLogCollapsed()'s own fix closes. lastSize is still updated
+		 * so a later expand (via setLogCollapsed() reading LOG_HEIGHT_KEY
+		 * directly) and any subsequent drag both still use the real
+		 * saved value, not a stale default. */
 		if (saved !== null) {
 			lastSize = clamp(parseInt(saved, 10));
-			apply(lastSize);
+			if (!opts.skipInitialApplyIf || !opts.skipInitialApplyIf()) apply(lastSize);
 		}
 	} catch (e) {
 		/* localStorage unavailable -- default size stands. */
@@ -190,13 +225,14 @@ makeResizable(document.getElementById("tree-resize-handle"), {
 makeResizable(document.getElementById("log-panel-resize-handle"), {
 	axis: "y",
 	invert: true,
-	storageKey: "thinc-log-height",
+	storageKey: LOG_HEIGHT_KEY,
 	min: 80,
 	max: Math.round(window.innerHeight * 0.7),
 	getSize: () => logPanel.getBoundingClientRect().height,
 	apply: (size) => {
 		logPanel.style.flexBasis = size + "px";
 	},
+	skipInitialApplyIf: () => logPanel.classList.contains("collapsed"),
 });
 
 /* ---------- theme toggle (light / dark / auto) ---------- */
