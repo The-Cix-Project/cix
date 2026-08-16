@@ -752,7 +752,23 @@ FLOATDI_C
 		fi
 		i=$((i + 1))
 	done
-	make -j"$(nproc)"
+
+	# From here on, any failure is a genuinely new class of problem (past
+	# all four injected-symbol gaps above), and autoconf-driven configure
+	# failures at this depth (e.g. target libgcc's own configure, run
+	# against the freshly self-built xgcc) only print "See config.log for
+	# more details" to stdout/stderr -- the actual compiler invocation
+	# and error text never reach the captured build log otherwise, which
+	# is exactly the kind of blind-guessing trap this project's own
+	# diagnose-before-perror discipline exists to avoid. Dump the tail of
+	# every config.log on disk on final failure so the real error is
+	# actually in the captured log next time, not a repeat of finding
+	# this out the hard way after another full build-length wait.
+	if ! make -j"$(nproc)"; then
+		find . -name config.log -exec sh -c \
+		    'echo "=== $1 ==="; tail -n 100 "$1"' _ {} \;
+		exit 1
+	fi
 }
 
 # A real, genuinely new class of dependency this recipe set hasn't hit
