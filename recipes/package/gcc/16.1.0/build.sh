@@ -97,8 +97,21 @@ pkg_depends="binutils m4"
 # copy). --disable-libsanitizer skips the AddressSanitizer/etc runtime
 # libraries -- a real, useful feature but a large, slow-to-build
 # addition not needed for this recipe set's own "get a real working
-# compiler" goal. This is, by real wall-clock time, the single longest
-# build in this project to date.
+# compiler" goal. --disable-lto: confirmed via a real captured build
+# failure (`tcc: error: invalid option -- '--print-prog-name'`, then
+# `liblto_plugin.ver: error: unrecognized file type`) that GCC's own
+# `lto-plugin` subdirectory -- a real ELF-platform default, built
+# unconditionally unless disabled -- needs both a `--print-prog-name`
+# driver query and a linker version-script (`.ver`) neither of which
+# TCC supports; confirmed via GCC's own real `configure` source
+# (`enable_lto`/`configdirs` handling) that `--disable-lto` is the
+# correct, documented way to skip that subdirectory entirely, not a
+# workaround. `gcc -flto` itself already isn't a goal of this recipe
+# set ("get a real working compiler," not a fully feature-complete
+# one) -- the same judgment call `--disable-libsanitizer` above
+# already makes for a different optional GCC feature. This is, by
+# real wall-clock time, the single longest build in this project to
+# date.
 pkg_build() {
 	cat > /build/miniextract.c <<'MINIEXTRACT'
 #include <stdio.h>
@@ -216,7 +229,7 @@ MINIEXTRACT
 	mkdir -p build
 	cd build
 	CC=tcc ../configure --prefix=/usr --disable-multilib --disable-bootstrap \
-		--enable-languages=c,c++ --disable-libsanitizer --with-system-zlib
+		--enable-languages=c,c++ --disable-libsanitizer --disable-lto --with-system-zlib
 	make -j"$(nproc)"
 }
 
