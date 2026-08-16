@@ -327,6 +327,16 @@ struct container_handle {
 int cgroup_create(const struct cgroup_limits *lim, int *out_fd);
 
 /*
+ * Records "prefix: strerror(errno)" as container_create_last_error_
+ * step()'s own return value -- called from cgroup.c and container.c
+ * alike (both are parent-side, single-threaded, pre-clone3 failure
+ * points) right when errno is still fresh from the failing call.
+ * Defined in container.c alongside the getter; see that function's
+ * own doc comment for why a plain static buffer is safe here.
+ */
+void container_set_last_error_step(const char *prefix);
+
+/*
  * Best-effort: enables every cgroup v2 controller this project's own
  * container/host-stats code needs (io, cpuset, memory, pids, cpu) at
  * the root's own subtree_control, once, at daemon startup -- see
@@ -474,6 +484,22 @@ int overlay_upperdir_size(const char *upperdir_path, long long *out_bytes);
  * workload's own output through it.
  */
 int container_create(const struct container_spec *spec, struct container_handle *out);
+
+/*
+ * The exact parent-side step container_create()'s own most recent
+ * failed call left behind (e.g. "cgroup_create: write cpu.max") --
+ * always valid immediately after container_create() returns -1,
+ * meaningless otherwise. This project's event loop is single-
+ * threaded, so a plain static buffer is safe here the same way
+ * several other single-threaded daemon globals already are; this is
+ * the parent-side equivalent of the existing diag_pipe mechanism,
+ * which only ever covers the CHILD's own post-fork pre-exec steps.
+ * Added after a real, otherwise-undiagnosable production regression
+ * (ADR-0165, ROADMAP Part 165): the caller only ever had a bare
+ * errno to go on, not which of container_create()'s several distinct
+ * syscalls actually produced it.
+ */
+const char *container_create_last_error_step(void);
 
 /*
  * Race-free wait via the handle's pidfd. On return *exit_status

@@ -25,6 +25,29 @@ static void child_diag(int fd, const char *prefix)
 	dprintf(fd, "%s: %s\n", prefix, strerror(errno));
 }
 
+/*
+ * Parent-side equivalent of child_diag() above, for every failure
+ * point in container_create()/cgroup_create() that runs before
+ * clone3() (or its own post-fork parent-side steps) -- these have no
+ * child process to write a diag_pipe message through, and this
+ * project's single-threaded event loop makes a plain static buffer
+ * safe: only ever written immediately before a synchronous -1 return,
+ * only ever read by the same caller immediately after, never
+ * concurrently. See container_create_last_error_step()'s own doc
+ * comment in container.h for the production regression this closes.
+ */
+static char g_last_error_step[256];
+
+void container_set_last_error_step(const char *prefix)
+{
+	snprintf(g_last_error_step, sizeof(g_last_error_step), "%s: %s", prefix, strerror(errno));
+}
+
+const char *container_create_last_error_step(void)
+{
+	return g_last_error_step;
+}
+
 int container_create(const struct container_spec *spec, struct container_handle *out)
 {
 	int cgroup_fd;
@@ -51,6 +74,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	                              &bpf_prog_fd) != 0) {
 		int saved_errno = errno;
 		perror("container_create: container_dev_bpf_attach");
+		container_set_last_error_step("container_create: container_dev_bpf_attach");
 		close(cgroup_fd);
 		errno = saved_errno;
 		return -1;
@@ -59,6 +83,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	if (want_net && pipe(net_pipe) != 0) {
 		int saved_errno = errno;
 		perror("container_create: pipe(net_pipe)");
+		container_set_last_error_step("container_create: pipe(net_pipe)");
 		if (bpf_prog_fd >= 0)
 			close(bpf_prog_fd);
 		close(cgroup_fd);
@@ -77,6 +102,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	if (pipe2(diag_pipe, O_CLOEXEC) != 0) {
 		int saved_errno = errno;
 		perror("container_create: pipe2(diag_pipe)");
+		container_set_last_error_step("container_create: pipe2(diag_pipe)");
 		if (want_net) {
 			close(net_pipe[0]);
 			close(net_pipe[1]);
@@ -92,6 +118,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	if (ret < 0) {
 		int saved_errno = errno;
 		perror("container_create: ns_clone3");
+		container_set_last_error_step("container_create: ns_clone3");
 		close(diag_pipe[0]);
 		close(diag_pipe[1]);
 		if (want_net) {
@@ -268,6 +295,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			siginfo_t info;
 
 			perror("container_create: container_net_host_setup");
+			container_set_last_error_step("container_create: container_net_host_setup");
 			close(net_pipe[1]);
 			waitid(P_PIDFD, pidfd, &info, WEXITED);
 			close(diag_pipe[0]);
@@ -302,6 +330,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			siginfo_t info;
 
 			perror("container_create: container_net_host_attach_interfaces");
+			container_set_last_error_step("container_create: container_net_host_attach_interfaces");
 			sys_pidfd_send_signal(pidfd, SIGKILL);
 			waitid(P_PIDFD, pidfd, &info, WEXITED);
 			close(diag_pipe[0]);

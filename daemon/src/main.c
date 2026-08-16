@@ -17440,24 +17440,21 @@ static void handle_pkg_fetch_event(struct conn *cc)
 		rerr = registry_create(build_container_name, "pkgbuild", "", &spec, NULL, 0, 0, NULL, 0,
 		                        NULL, 0, NULL, NULL, 0, &entry);
 		/*
-		 * Saved immediately -- container_create()/registry_create()
-		 * both correctly preserve errno across their own internal
-		 * cleanup, but the close() just below is real syscall
-		 * activity of this function's own that could otherwise
-		 * clobber it before the REGISTRY_ERR_CREATE_FAILED log line
-		 * below ever reads it. This is the one real, queryable place
-		 * this failure was ever diagnosable from: cgroup_create()'s/
-		 * container_create()'s own perror() calls write to this
-		 * daemon's real stderr, which nothing mirrors into the log
-		 * store (confirmed live, the hard way, chasing a real
-		 * ADR-0165 production regression on a box with no shell to
-		 * read raw stderr from at all -- logstore_write() is a
-		 * one-way "also print to stderr for boot visibility" call,
-		 * never the reverse).
+		 * This is the one real, queryable place this failure was
+		 * ever diagnosable from: cgroup_create()'s/container_create()'s
+		 * own perror() calls write to this daemon's real stderr,
+		 * which nothing mirrors into the log store (confirmed live,
+		 * the hard way, chasing a real ADR-0165 production regression
+		 * on a box with no shell to read raw stderr from at all --
+		 * logstore_write() is a one-way "also print to stderr for
+		 * boot visibility" call, never the reverse).
+		 * container_create_last_error_step() (read below, in the
+		 * REGISTRY_ERR_CREATE_FAILED branch) stays valid across the
+		 * close() just below -- it's a plain static buffer set by
+		 * container_create()'s own last failure, untouched by
+		 * anything this function does afterward.
 		 */
 		{
-		int rerr_errno = errno;
-
 		/*
 		 * The child (if registry_create() actually forked one)
 		 * already inherited its own copy of the write end via
@@ -17469,9 +17466,8 @@ static void handle_pkg_fetch_event(struct conn *cc)
 			close(stdio_write_fd);
 
 		if (rerr == REGISTRY_ERR_CREATE_FAILED)
-			logstore_write("thincd", "error",
-			                "pkgbuild container spawn (%s): container_create failed: %s",
-			                build_container_name, strerror(rerr_errno));
+			logstore_write("thincd", "error", "pkgbuild container spawn (%s): container_create failed: %s",
+			                build_container_name, container_create_last_error_step());
 		else if (rerr == REGISTRY_ERR_DUPLICATE)
 			logstore_write("thincd", "error",
 			                "pkgbuild container spawn (%s): a registry entry with this name "

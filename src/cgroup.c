@@ -44,15 +44,17 @@ static int write_cgroup_file(const char *dir, const char *file, const char *valu
 }
 
 /*
- * Every failure path below logs via perror() with a distinct, greppable
- * prefix identifying exactly which sub-step failed -- container_create()'s
- * own caller (registry_create()) only ever gets a bare -1/errno back, and
- * this project's real production box (192.168.15.95) has no shell access
- * at all, so a silent -1 here is otherwise completely undiagnosable in the
- * field. perror() output reaches the consolidated log store the same way
- * cgroup_enable_controllers()'s own diagnostics already do (thincd's own
- * stderr is mirrored into it, source=thincd) -- no new plumbing needed,
- * just filling in the missing calls this function never had.
+ * Every failure path below calls both perror() (real stderr, useful only
+ * with direct console/journal access -- this project's real production
+ * box, 192.168.15.95, has neither) and container_set_last_error_step()
+ * (container.c), which is what actually reaches an operator: read via
+ * container_create_last_error_step() by whichever daemon-layer caller
+ * has real log-store access (main.c links logstore.c; this file and
+ * container.c don't and shouldn't). Confirmed the hard way, chasing a
+ * real ADR-0165 production regression: logstore_write() is a one-way
+ * "also print to stderr for boot visibility" call -- nothing mirrors
+ * real stderr back into the queryable log store, so perror() alone
+ * here would silently go nowhere useful once boot has finished.
  */
 int cgroup_create(const struct cgroup_limits *lim, int *out_fd)
 {
@@ -67,6 +69,7 @@ int cgroup_create(const struct cgroup_limits *lim, int *out_fd)
 
 	if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
 		perror("cgroup_create: mkdir");
+		container_set_last_error_step("cgroup_create: mkdir");
 		return -1;
 	}
 
@@ -74,6 +77,7 @@ int cgroup_create(const struct cgroup_limits *lim, int *out_fd)
 		snprintf(value, sizeof(value), "%lld", lim->memory_max);
 		if (write_cgroup_file(dir, "memory.max", value) != 0) {
 			perror("cgroup_create: write memory.max");
+			container_set_last_error_step("cgroup_create: write memory.max");
 			return -1;
 		}
 	}
@@ -82,6 +86,7 @@ int cgroup_create(const struct cgroup_limits *lim, int *out_fd)
 		snprintf(value, sizeof(value), "%lld", lim->pids_max);
 		if (write_cgroup_file(dir, "pids.max", value) != 0) {
 			perror("cgroup_create: write pids.max");
+			container_set_last_error_step("cgroup_create: write pids.max");
 			return -1;
 		}
 	}
@@ -89,6 +94,7 @@ int cgroup_create(const struct cgroup_limits *lim, int *out_fd)
 	if (lim->cpu_max != NULL) {
 		if (write_cgroup_file(dir, "cpu.max", lim->cpu_max) != 0) {
 			perror("cgroup_create: write cpu.max");
+			container_set_last_error_step("cgroup_create: write cpu.max");
 			return -1;
 		}
 	}
@@ -96,6 +102,7 @@ int cgroup_create(const struct cgroup_limits *lim, int *out_fd)
 	if (lim->cpuset_cpus != NULL) {
 		if (write_cgroup_file(dir, "cpuset.cpus", lim->cpuset_cpus) != 0) {
 			perror("cgroup_create: write cpuset.cpus");
+			container_set_last_error_step("cgroup_create: write cpuset.cpus");
 			return -1;
 		}
 	}
@@ -110,6 +117,7 @@ int cgroup_create(const struct cgroup_limits *lim, int *out_fd)
 	fd = open(dir, O_PATH | O_CLOEXEC);
 	if (fd < 0) {
 		perror("cgroup_create: open(O_PATH)");
+		container_set_last_error_step("cgroup_create: open(O_PATH)");
 		return -1;
 	}
 
