@@ -90,8 +90,30 @@ pkg_build() {
 		> /build/toolwrap/autopoint
 	chmod +x /build/toolwrap/autopoint
 
+	# Real second bug, hit only after the autopoint fix above got this
+	# far: "configure: error: Could not find a C99 compatible compiler",
+	# despite the exact same run's own AC_PROG_CC_STDC probe correctly
+	# reporting "checking for tcc option to enable C99 features... none
+	# needed" moments earlier. Root cause, found by reading procps-ng's
+	# own configure.ac directly (not guessed): it calls the deprecated
+	# AC_PROG_CC_STDC (which caches its result as ac_cv_prog_cc_stdc),
+	# then immediately checks a *different*, never-populated variable,
+	# ac_cv_prog_cc_c99 -- `if test "x$ac_cv_prog_cc_c99" = "xno" ||
+	# test "x$ac_cv_prog_cc_c99" = "x"`, true for a genuinely-unset
+	# variable regardless of what the real probe found, and since TCC
+	# isn't GNU-family (`ac_cv_c_compiler_gnu` is "no"), it falls
+	# straight to AC_MSG_ERROR with no real GNU-vs-non-GNU distinction
+	# ever helping here -- a real upstream inconsistency between the
+	# macro actually called and the variable actually checked, not
+	# anything this project's own TCC toolchain got wrong. A first
+	# attempt setting ac_cv_prog_cc_c99 to an EMPTY string made this
+	# strictly worse (confirmed live) -- empty is exactly the failing
+	# condition's own second branch. The real fix: set it to the same
+	# real, valid "none needed" value the correctly-working probe
+	# already computed for the variable procps-ng actually meant to
+	# check.
 	PATH="/build/toolwrap:$PATH" ./autogen.sh
-	CC=tcc ac_cv_prog_cc_c99= gl_cv_prog_cc_c99= ./configure --prefix=/usr --disable-nls
+	CC=tcc ac_cv_prog_cc_c99="none needed" ./configure --prefix=/usr --disable-nls
 	make -j"$(nproc)"
 }
 
