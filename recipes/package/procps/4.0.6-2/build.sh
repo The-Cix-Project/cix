@@ -74,6 +74,11 @@ pkg_build() {
 	printf '#!/bin/sh\nexit 0\n' > /build/toolwrap/autopoint
 	chmod +x /build/toolwrap/autopoint
 
+	echo "=== DIAG: gettext archive versions available ==="
+	ls /usr/share/gettext/archive.dir.tar/ 2>&1 || echo "no archive.dir.tar dir"
+	ls /usr/share/gettext/ 2>&1
+	echo "=== END DIAG ==="
+
 	PATH="/build/toolwrap:$PATH" ./autogen.sh
 	CC=tcc ./configure --prefix=/usr --disable-nls
 	make -j"$(nproc)"
