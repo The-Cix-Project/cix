@@ -36,7 +36,7 @@ pkg_depends=""
 # matches). A first attempt at CPPFLAGS="-DTLS=" had no effect at all --
 # confirmed directly by inspecting the real captured build output: the
 # per-file tcc compile line never carries a -DTLS of any kind, so it
-# isn't coming from CPPFLAGS/DEFS at the command-line level. The only
+# isn't coming from CPPFLAGS/DEFS at the command-line level. The
 # remaining source is bfd/config.h itself (`-DHAVE_CONFIG_H` is on
 # every compile line) -- a real autoconf-generated file, invisible in
 # git, presumably defining `TLS` to `__thread` because configure's own
@@ -44,18 +44,41 @@ pkg_depends=""
 # parser rejects `__thread` in this exact position even though it
 # generally recognizes the keyword elsewhere. This project's own build
 # sandboxes are single-process, so real thread-local storage buys
-# nothing here regardless -- patching the generated config.h directly,
-# right after configure produces it and before make ever reads it,
-# forces the macro to expand to nothing (a plain
-# `static bfd_error_type bfd_error;`), sidestepping the parser issue
-# without touching a single line of real upstream source (bfd.c itself
-# stays byte-identical to the release tarball).
+# nothing here regardless.
+#
+# A second attempt (sed on bfd/config.h once, right after the top-level
+# ../configure) also had no effect -- confirmed by directly reading the
+# real captured build log: binutils uses the older, real "Cygnus tree"
+# multi-directory build convention, where the *top-level* configure
+# only wires up Makefile rules that invoke each subdirectory's own
+# ./configure lazily, on demand, as `make` actually descends into that
+# directory -- bfd/config.h genuinely does not exist yet at the point
+# the top-level configure returns. The real, correct fix has to run
+# *during* the build, not before it: a bounded retry loop that lets
+# `make` run until it either succeeds or fails, patches every
+# config.h that exists on disk *so far* (find, not a hardcoded path --
+# other subdirectories, e.g. opcodes/, plausibly hit the identical gap
+# once make reaches them), and retries -- make's own dependency
+# tracking is resumable, so each retry picks up exactly where the
+# previous one left off rather than rebuilding from scratch. 10
+# attempts is a generous, arbitrary ceiling; a real full build only
+# ever needs a small number of new config.h files patched (one per
+# subdirectory actually reached), so a genuinely stuck build fails
+# loudly well before exhausting it, rather than masking a real,
+# different error as an infinite retry would.
 pkg_build() {
 	mkdir -p build
 	cd build
 	CC=tcc ../configure --prefix=/usr --disable-multilib --disable-gold \
 		--disable-gprofng --enable-deterministic-archives
-	sed -i 's/^#define TLS.*/#define TLS/' bfd/config.h
+	i=0
+	while [ "$i" -lt 10 ]; do
+		if make -j"$(nproc)" MAKEINFO=true; then
+			break
+		fi
+		find . -name config.h -exec sed -i 's/^#define TLS.*/#define TLS/' {} +
+		i=$((i + 1))
+	done
 	make -j"$(nproc)" MAKEINFO=true
 }
 
