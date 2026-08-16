@@ -113,7 +113,16 @@ pkg_build() {
 	# already computed for the variable procps-ng actually meant to
 	# check.
 	PATH="/build/toolwrap:$PATH" ./autogen.sh
-	CC=tcc ac_cv_prog_cc_c99="none needed" ./configure --prefix=/usr --disable-nls
+	# A third, real, unrelated gap hit only after the C99 fix got this
+	# far: "Neither pidfd_open or __NR_pidfd_open found" -- this
+	# project's kernel genuinely has pidfd_open() (thincd's own
+	# container_wait() uses waitid(P_PIDFD, ...) directly), so this is a
+	# build-time header-detection gap, not a real missing kernel
+	# feature. --disable-pidwait is procps-ng's own real, intended
+	# escape hatch for exactly this (its own error message says so) --
+	# drops one minor utility (pidwait), ps/top/free/kill/etc. all stay
+	# fully functional.
+	CC=tcc ac_cv_prog_cc_c99="none needed" ./configure --prefix=/usr --disable-nls --disable-pidwait
 	make -j"$(nproc)"
 }
 
