@@ -2,6 +2,10 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 172 (done): web dashboard's log panel collapse fixed -- was hiding entries without actually shrinking the pane
+
+The resize-handle feature's own inline `style.flexBasis` always outranked the `.collapsed` CSS class's height rule -- entries correctly hid, but the panel's outer height stayed pinned to its last-resized size. `setLogCollapsed()` now explicitly manages the inline style on both collapse and expand; `makeResizable()` gained a guard to avoid re-breaking this on page load while collapsed.
+
 ### Part 171 (done): rolling-release "latest wins automatically" mechanism verified end to end, using the real git-backed pipeline throughout
 
 `zlib/1.3.2-2` (a trivial, deliberate re-pin) committed to git, synced via `pkg sync`, installed with `upgrade: true` onto the `jumpbox` image -- `jumpbox1` (`follow_rolling: true`) automatically recreated onto the new version ~30s later with zero manual intervention, confirmed stable (20+ polls, same new version/pid) and genuinely healthy (real SSH connection succeeded) afterward.
