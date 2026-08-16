@@ -2,6 +2,10 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 170 (done): `pkg-build-config`'s `cpu_max` silently reverted to its default after every daemon restart when explicitly cleared
+
+Found immediately after deploying the previous part: `cpu_max` explicitly cleared to unlimited (the exact mitigation this project relies on pending ADR-0166's kernel fix) reappeared as the default right after a reboot. `save_build_config()` writes `cpu_max` as a genuine JSON `null` when cleared but `memory_max` as a real integer always -- the loader never distinguished "key absent" from "key present and null," so a real clear silently didn't stick. Fixed and verified via a real restart cycle.
+
 ### Part 169 (done): web dashboard renders real ANSI color codes in the log panel
 
 A container's own colored log output (glauth's zerolog) showed as raw escape bytes in the log panel -- `buildLogEntryDom()` had zero escape handling. New `ansiToDom()` parses SGR color/bold/dim sequences into styled spans; new theme-aware `--ansi-*` CSS palette. The Console tab's own separate terminal emulator was unaffected -- it already had full ANSI support.
