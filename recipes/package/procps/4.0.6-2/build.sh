@@ -153,7 +153,22 @@ pkg_build() {
 	# compiler without VLA support -- defining it via CFLAGS (never
 	# editing procps' own unmodified upstream source) steers the header
 	# onto the branch TCC parses fine.
-	CC=tcc ac_cv_prog_cc_c99="-std=gnu99" CFLAGS="-D__STDC_NO_VLA__=1" \
+	# A seventh gap: src/ps/global.c's own real code (not a preprocessor
+	# #if, confirmed by reading the exact line -- a plain diagnostic
+	# fprintf(..., __GNUC__, __GNUC_MINOR__) printing compiler version
+	# info) references __GNUC__/__GNUC_MINOR__ as real C identifiers.
+	# TCC deliberately never predefines these (unlike its own confirmed
+	# predefinition of bare `linux`, __GNUC__ specifically staying
+	# undefined is intentional -- it's what keeps glibc's own headers
+	# off GCC-specific extended-asm/builtin code paths TCC can't
+	# handle). Defining it broadly (e.g. -D__GNUC__=1) risks silently
+	# activating #ifdef __GNUC__ branches elsewhere in glibc's own
+	# headers this build never exercised before -- confirmed by reading
+	# this exact call site that it's cosmetic-only, so only the two
+	# literal identifiers this one fprintf() needs get defined, nothing
+	# broader.
+	CC=tcc ac_cv_prog_cc_c99="-std=gnu99" \
+		CFLAGS="-D__STDC_NO_VLA__=1 -D__GNUC__=0 -D__GNUC_MINOR__=0" \
 		./configure --prefix=/usr --disable-nls --disable-pidwait --disable-numa
 	# A separate, real, but harmless gap: `make all`'s own real ps/top/
 	# etc. binaries (top-level bin_PROGRAMS, not part of SUBDIRS at all --
