@@ -747,6 +747,20 @@ FLOATDI_C
 		find . \( -name 'libiberty.a' -o -name 'libgmp.a' -o -name 'libmpfr.a' \) \
 		    -exec /usr/bin/ar r {} \
 		    /build/va_list.o /build/alloca.o /build/c_alloca.o /build/floatdi.o \;
+		# `make -j` under this loop aborts mid-flight on every one of the
+		# four symbol-gap failures above -- with parallel jobs already
+		# running, that can leave a *different*, unrelated target
+		# half-written, not just the one that actually failed. gcc/as
+		# (the wrapper `make` copies/symlinks in from the discovered
+		# system assembler, regenerated cheaply on demand by gcc's own
+		# Makefile rule) is exactly this kind of victim: once written,
+		# make's timestamp-only tracking never re-checks it, so a
+		# corrupted copy from an earlier aborted pass survives untouched
+		# across every later retry even after the real symbol gap is
+		# fixed. Force it to regenerate fresh each pass -- cheap (a
+		# symlink/copy, not a compile) regardless of whether this
+		# theory turns out to be the actual cause.
+		rm -f ./gcc/as ./gcc/as1
 		if make -j"$(nproc)"; then
 			break
 		fi
@@ -771,6 +785,19 @@ FLOATDI_C
 	# instead). `ls -t` ranks by mtime; the newest is the one that
 	# matters.
 	if ! make -j"$(nproc)"; then
+		# Direct diagnostic for the "cannot execute .../gcc/as: Exec
+		# format error" class of failure -- isolates whether gcc/as
+		# itself is a corrupted wrapper (stale-artifact theory above)
+		# or whether the real system /usr/bin/as it wraps is the
+		# actually broken thing.
+		echo "=== gcc/as diagnostic ==="
+		ls -la ./gcc/as ./gcc/as1 2>&1
+		readlink -f ./gcc/as 2>&1
+		od -A x -t x1z -N 32 ./gcc/as 2>&1
+		echo "--- /usr/bin/as directly ---"
+		ls -la /usr/bin/as 2>&1
+		od -A x -t x1z -N 32 /usr/bin/as 2>&1
+		/usr/bin/as --version 2>&1 | head -3
 		latest_config_log=$(find . -name config.log -printf '%T@ %p\n' | \
 		    sort -rn | head -1 | cut -d' ' -f2-)
 		if [ -n "$latest_config_log" ]; then
