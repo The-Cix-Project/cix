@@ -67,10 +67,8 @@ pkg_build() {
 	make LIBS="-L$(pwd) -ldso_stub"
 	make_rc=$?
 
-	echo "=== diagnostic: lib/libm4.a duplicate member names (expect none) ==="
-	ar t lib/libm4.a | sort | uniq -d
-	echo "=== diagnostic: does src/m4's own link line reference dso_stub? ==="
-	(cd src && make -n LIBS="-L$(pwd)/.. -ldso_stub" m4 2>&1 | grep -o '[^ ]*dso_stub[^ ]*\|-o m4\b')
+	echo "=== diagnostic: which lib/*.o files define xnmalloc/c_toupper ==="
+	nm -A lib/*.o 2>/dev/null | grep ' T xnmalloc$\| T c_toupper$'
 
 	[ "$make_rc" -eq 0 ] || exit "$make_rc"
 }
