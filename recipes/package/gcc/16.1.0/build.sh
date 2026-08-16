@@ -245,6 +245,23 @@ pkg_depends="binutils m4"
 # command line since its own `#ifdef HAVE_CONFIG_H` guard means it
 # silently skips including `<stdlib.h>`/`<string.h>` when compiled
 # standalone, ahead of libiberty's own generated config.h existing.
+#
+# A fifth gap, past all of libiberty: `undefined reference to
+# '__floatundidf'` from `libgmp.a`/`libmpfr.a` (an unsigned-64-bit-to-
+# double conversion helper), linked into `cc1`/`cc1plus` themselves.
+# This in-tree GMP/MPFR build has no CPU-specific assembly tuning
+# selected, so their portable C fallback paths emit a call to this
+# symbol instead of inline conversion code -- exactly the same class of
+# gap as `va_list.c`/`alloca86_64.S` above (a compiler-runtime helper
+# real GCC gets from libgcc and TCC gets from its own
+# `lib/libtcc1.c`), just a different missing family and a different
+# pair of consumer archives. Extracted (not the whole libtcc1.c file,
+# to avoid dragging in unrelated helpers like `__divdi3`/`__moddi3`
+# that could collide with real libgcc's own copies once linked) as the
+# self-contained float<->int64 conversion family plus the handful of
+# typedefs/macros it depends on -- confirmed to compile clean with real
+# gcc and export the whole family. Injected into `libgmp.a`/`libmpfr.a`
+# as well as `libiberty.a` each retry pass, same as the other three.
 # This is, by real wall-clock time, the single longest build in this
 # project to date.
 pkg_build() {
@@ -491,6 +508,229 @@ ALLOCA_S
 	tcc -c -DHAVE_STDLIB_H=1 -DHAVE_STRING_H=1 -I include libiberty/alloca.c \
 	    -o /build/c_alloca.o
 
+	# A fourth gap, past all three libiberty ones: undefined reference to
+	# `__floatundidf` from `libgmp.a`/`libmpfr.a` (unsigned-64-bit-to-
+	# double conversion), linked into `cc1`/`cc1plus` themselves this
+	# time -- not libiberty at all. GMP/MPFR's portable C fallback paths
+	# (no native asm tuning is selected by this generic in-tree build)
+	# emit a call to this symbol instead of inline conversion code,
+	# exactly the kind of compiler-runtime helper real GCC provides via
+	# libgcc and TCC provides via its own `lib/libtcc1.c` -- the same
+	# runtime-helper-injection class of gap as `va_list.c`/
+	# `alloca86_64.S` above, just a different missing family. Extracted
+	# (not the whole file, to avoid dragging in unrelated libtcc1.c
+	# helpers like `__divdi3`/`__moddi3` that could collide with real
+	# libgcc's own copies once linked) as the self-contained
+	# float<->int64 conversion family plus the handful of typedefs/
+	# macros it depends on (`DWunion`, `XFtype`, the `EXP*`/`MANT*`/
+	# `union *_long` machinery) -- confirmed to compile clean and
+	# export the whole family with real gcc.
+	cat > /build/floatdi.c <<'FLOATDI_C'
+#define W_TYPE_SIZE   32
+#define BITS_PER_UNIT 8
+
+typedef int Wtype;
+typedef unsigned int UWtype;
+typedef unsigned int USItype;
+typedef long long DWtype;
+typedef unsigned long long UDWtype;
+
+struct DWstruct {
+    Wtype low, high;
+};
+
+typedef union
+{
+  struct DWstruct s;
+  DWtype ll;
+} DWunion;
+
+typedef long double XFtype;
+
+#define EXCESS		126
+#define SIGNBIT		0x80000000
+#define HIDDEN		(1 << 23)
+#define SIGN(fp)	((fp) & SIGNBIT)
+#define EXP(fp)		(((fp) >> 23) & 0xFF)
+#define MANT(fp)	(((fp) & 0x7FFFFF) | HIDDEN)
+#define PACK(s,e,m)	((s) | ((e) << 23) | (m))
+
+#define EXCESSD		1022
+#define HIDDEND		(1 << 20)
+#define EXPD(fp)	(((fp.l.upper) >> 20) & 0x7FF)
+#define SIGND(fp)	((fp.l.upper) & SIGNBIT)
+#define MANTD(fp)	(((((fp.l.upper) & 0xFFFFF) | HIDDEND) << 10) | \
+				(fp.l.lower >> 22))
+#define HIDDEND_LL	((long long)1 << 52)
+#define MANTD_LL(fp)	((fp.ll & (HIDDEND_LL-1)) | HIDDEND_LL)
+#define PACKD_LL(s,e,m)	(((long long)((s)+((e)<<20))<<32)|(m))
+
+#define EXCESSLD	16382
+#define EXPLD(fp)	(fp.l.upper & 0x7fff)
+#define SIGNLD(fp)	((fp.l.upper) & 0x8000)
+
+union ldouble_long {
+    long double ld;
+    struct {
+        unsigned long long lower;
+        unsigned short upper;
+    } l;
+};
+
+union double_long {
+    double d;
+    struct {
+        unsigned int lower;
+        int upper;
+    } l;
+    long long ll;
+};
+
+union float_long {
+    float f;
+    unsigned int l;
+};
+
+float __floatundisf(unsigned long long a)
+{
+    DWunion uu;
+    XFtype r;
+
+    uu.ll = a;
+    if (uu.s.high >= 0) {
+        return (float)uu.ll;
+    } else {
+        r = (XFtype)uu.ll;
+        r += 18446744073709551616.0;
+        return (float)r;
+    }
+}
+
+double __floatundidf(unsigned long long a)
+{
+    DWunion uu;
+    XFtype r;
+
+    uu.ll = a;
+    if (uu.s.high >= 0) {
+        return (double)uu.ll;
+    } else {
+        r = (XFtype)uu.ll;
+        r += 18446744073709551616.0;
+        return (double)r;
+    }
+}
+
+long double __floatundixf(unsigned long long a)
+{
+    DWunion uu;
+    XFtype r;
+
+    uu.ll = a;
+    if (uu.s.high >= 0) {
+        return (long double)uu.ll;
+    } else {
+        r = (XFtype)uu.ll;
+        r += 18446744073709551616.0;
+        return (long double)r;
+    }
+}
+
+unsigned long long __fixunssfdi (float a1)
+{
+    register union float_long fl1;
+    register int exp;
+    register unsigned long l;
+
+    fl1.f = a1;
+
+    if (fl1.l == 0)
+	return (0);
+
+    exp = EXP (fl1.l) - EXCESS - 24;
+
+    l = MANT(fl1.l);
+    if (exp >= 41)
+	return (unsigned long long)-1;
+    else if (exp >= 0)
+        return (unsigned long long)l << exp;
+    else if (exp >= -23)
+        return l >> -exp;
+    else
+        return 0;
+}
+
+long long __fixsfdi (float a1)
+{
+    long long ret; int s;
+    ret = __fixunssfdi((s = a1 >= 0) ? a1 : -a1);
+    return s ? ret : -ret;
+}
+
+unsigned long long __fixunsdfdi (double a1)
+{
+    register union double_long dl1;
+    register int exp;
+    register unsigned long long l;
+
+    dl1.d = a1;
+
+    if (dl1.ll == 0)
+	return (0);
+
+    exp = EXPD (dl1) - EXCESSD - 53;
+
+    l = MANTD_LL(dl1);
+
+    if (exp >= 12)
+	return (unsigned long long)-1;
+    else if (exp >= 0)
+        return l << exp;
+    else if (exp >= -52)
+        return l >> -exp;
+    else
+        return 0;
+}
+
+long long __fixdfdi (double a1)
+{
+    long long ret; int s;
+    ret = __fixunsdfdi((s = a1 >= 0) ? a1 : -a1);
+    return s ? ret : -ret;
+}
+
+unsigned long long __fixunsxfdi (long double a1)
+{
+    register union ldouble_long dl1;
+    register int exp;
+    register unsigned long long l;
+
+    dl1.ld = a1;
+
+    if (dl1.l.lower == 0 && dl1.l.upper == 0)
+	return (0);
+
+    exp = EXPLD (dl1) - EXCESSLD - 64;
+
+    l = dl1.l.lower;
+
+    if (exp > 0)
+	return (unsigned long long)-1;
+    else if (exp >= -63)
+        return l >> -exp;
+    else
+        return 0;
+}
+
+long long __fixxfdi (long double a1)
+{
+    long long ret; int s;
+    ret = __fixunsxfdi((s = a1 >= 0) ? a1 : -a1);
+    return s ? ret : -ret;
+}
+FLOATDI_C
+	/usr/bin/gcc -c -O2 -fPIC /build/floatdi.c -o /build/floatdi.o
+
 	mkdir -p build
 	cd build
 	CC=tcc ../configure --prefix=/usr --disable-multilib --disable-bootstrap \
@@ -504,8 +744,9 @@ ALLOCA_S
 		    -e 's|^CXX = .*|CXX = /usr/bin/g++|' \
 		    {} \;
 		find . -path './build-*' \( -name '*.o' -o -name '*.a' -o -name '*.lo' \) -delete
-		find . -name 'libiberty.a' -exec /usr/bin/ar r {} \
-		    /build/va_list.o /build/alloca.o /build/c_alloca.o \;
+		find . \( -name 'libiberty.a' -o -name 'libgmp.a' -o -name 'libmpfr.a' \) \
+		    -exec /usr/bin/ar r {} \
+		    /build/va_list.o /build/alloca.o /build/c_alloca.o /build/floatdi.o \;
 		if make -j"$(nproc)"; then
 			break
 		fi
