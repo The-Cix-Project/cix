@@ -58,17 +58,22 @@ pkg_depends="binutils m4"
 # compiler" goal. This is, by real wall-clock time, the single longest
 # build in this project to date.
 pkg_build() {
-	echo "=== diagnostic: real staged /build/extra content ==="
-	ls -la /build/extra/ 2>&1
-	echo "=== diagnostic: tar --version ==="
-	tar --version 2>&1
-	echo "=== diagnostic: tar tf (list only, no extraction) ==="
-	tar tf /build/extra/gmp-6.3.0.tar.bz2 2>&1 | head -5
-	echo "tar tf rc=$?"
-	echo "=== diagnostic: tar xf real exit status ==="
-	tar xf /build/extra/gmp-6.3.0.tar.bz2
-	echo "tar xf rc=$?"
+	echo "=== diagnostic: ldd on the real tar binary ==="
+	command -v tar
+	ldd "$(command -v tar)" 2>&1
+
+	echo "=== diagnostic: tar tf full entry count (no head truncation) ==="
+	tar tf /build/extra/gmp-6.3.0.tar.bz2 2>&1 | wc -l
+
+	echo "=== diagnostic: manual bzip2 -dc | tar xf - (bypass tar's own decompressor) ==="
+	mkdir -p manual_test && cd manual_test
+	bzip2 -dc /build/extra/gmp-6.3.0.tar.bz2 > gmp.tar
+	ls -la gmp.tar
+	tar xf gmp.tar
+	echo "manual tar xf rc=$?"
 	ls -la gmp-6.3.0 2>&1
+	cd ..
+	rm -rf manual_test
 
 	tar xf /build/extra/gmp-6.3.0.tar.bz2 && mv gmp-6.3.0 gmp
 	tar xf /build/extra/mpfr-4.2.2.tar.bz2 && mv mpfr-4.2.2 mpfr
