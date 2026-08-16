@@ -21,34 +21,44 @@ pkg_sha256="63aede5c6d33b6d9b13511cd0be2cac046f2e70fd0a07aa9573a04a82783af96"
 # build genuinely needs one, unlike most recipes in this set.
 pkg_depends="binutils"
 
-# Two real, distinct gaps found the hard way against the actual build
-# sandbox (not reproducible from source inspection alone):
+# NOT YET FIXED -- real diagnostic investigation in progress, deferred
+# (see the project's own established precedent for this judgment call:
+# procps' 8th gap, chrony's stale-toolchain gap). Two symptoms from the
+# real captured build output, `tcc`'s own final link of `src/m4`
+# against `../lib/libm4.a`:
 #
-# 1. `make -j"$(nproc)"` corrupted `lib/libm4.a`: the real captured
-#    build output showed dozens of gnulib helper symbols (xnmalloc,
-#    c_toupper, mb_copy, ...) reported "defined twice" by tcc's own
-#    linker when it finally tried to link src/m4 against that archive
-#    -- the same small block of symbol names repeated verbatim several
-#    times over, the signature of concurrent `ar` invocations racing
-#    non-atomically on the same archive file under parallel make
-#    (Automake's own recursive-make archive rules assume a locking
-#    `ar`; nothing here guarantees that). Serial `make` (no `-j`)
-#    removes the race entirely -- m4 itself is small enough that the
-#    lost parallelism is not a real cost.
-# 2. The final `src/m4` link failed separately with `tcc: error:
-#    undefined symbol '__dso_handle'` -- the same environment-specific
-#    TCC/glibc CRT gap `sysklogd.recipe` already found and fixed (see
-#    its own comment); m4's build goes through ordinary Automake-driven
-#    linking rather than a hand-rolled tcc invocation, so the fix here
-#    is a tiny static archive containing the same weak stub, added to
-#    `LIBS` so Automake's own generated link command picks it up for
-#    every binary it produces -- no Makefile surgery needed.
+#   1. Dozens of gnulib helper symbols (xnmalloc, c_toupper, mb_copy,
+#      xsum, ...) reported "defined twice" -- ruled OUT as an `ar`
+#      archive-corruption/race (serial `make`, no `-j`, reproduced the
+#      identical failure byte-for-byte; `ar t lib/libm4.a | sort |
+#      uniq -d` on the actual built archive shows zero duplicate
+#      *member* names, so this isn't two copies of the same .o
+#      appended to the archive). The real cause is more likely TCC's
+#      own `inline`/`static inline` handling of gnulib's "one
+#      out-of-line definition, many inline call sites" idiom (each of
+#      several genuinely different, uniquely-named .o files apparently
+#      emitting its own real, external definition of the same helper,
+#      rather than the header-only inline copy every other translation
+#      unit should get) -- not yet confirmed against gnulib's actual
+#      generated `.c`/`.h` pair for one of these symbols.
+#   2. `tcc: error: undefined symbol '__dso_handle'` -- the same
+#      environment-specific TCC/glibc CRT gap `sysklogd.recipe` already
+#      found and fixed there via a small `__attribute__((weak))` stub.
+#      Two attempts to feed it in through Automake's own `LIBS`
+#      mechanism (once at `./configure` time, once as a `make LIBS=...`
+#      command-line override, which GNU Make guarantees wins over any
+#      in-Makefile assignment) both had zero observable effect on this
+#      specific error -- not yet confirmed whether `$(LIBS)` is even
+#      reaching `m4`'s own generated link recipe at all in this
+#      Automake version's output.
+#
+# `pkg_depends="binutils"` and the `dso_stub.c`/`libdso_stub.a`
+# machinery below are kept as real, independently-justified fixes (a
+# known-good `ar`/`ranlib` instead of whatever the base build sandbox
+# bundles; the same weak-stub trick already proven for sysklogd) even
+# though neither has yet resolved the failure on its own -- removing
+# them would just be re-losing already-confirmed-safe groundwork.
 pkg_build() {
-	echo "=== diagnostic: which ar/ranlib, versions ==="
-	which ar ranlib
-	ar --version | head -1
-	ranlib --version | head -1
-
 	echo 'void *__dso_handle __attribute__((weak)) = (void *)0;' > dso_stub.c
 	tcc -c dso_stub.c -o dso_stub.o
 	ar rcs libdso_stub.a dso_stub.o
@@ -57,8 +67,10 @@ pkg_build() {
 	make LIBS="-L$(pwd) -ldso_stub"
 	make_rc=$?
 
-	echo "=== diagnostic: lib/libm4.a duplicate member names ==="
+	echo "=== diagnostic: lib/libm4.a duplicate member names (expect none) ==="
 	ar t lib/libm4.a | sort | uniq -d
+	echo "=== diagnostic: does src/m4's own link line reference dso_stub? ==="
+	(cd src && make -n LIBS="-L$(pwd)/.. -ldso_stub" m4 2>&1 | grep -o '[^ ]*dso_stub[^ ]*\|-o m4\b')
 
 	[ "$make_rc" -eq 0 ] || exit "$make_rc"
 }
