@@ -2,6 +2,10 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 171 (done): rolling-release "latest wins automatically" mechanism verified end to end, using the real git-backed pipeline throughout
+
+`zlib/1.3.2-2` (a trivial, deliberate re-pin) committed to git, synced via `pkg sync`, installed with `upgrade: true` onto the `jumpbox` image -- `jumpbox1` (`follow_rolling: true`) automatically recreated onto the new version ~30s later with zero manual intervention, confirmed stable (20+ polls, same new version/pid) and genuinely healthy (real SSH connection succeeded) afterward.
+
 ### Part 170 (done): `pkg-build-config`'s `cpu_max` silently reverted to its default after every daemon restart when explicitly cleared
 
 Found immediately after deploying the previous part: `cpu_max` explicitly cleared to unlimited (the exact mitigation this project relies on pending ADR-0166's kernel fix) reappeared as the default right after a reboot. `save_build_config()` writes `cpu_max` as a genuine JSON `null` when cleared but `memory_max` as a real integer always -- the loader never distinguished "key absent" from "key present and null," so a real clear silently didn't stick. Fixed and verified via a real restart cycle.
