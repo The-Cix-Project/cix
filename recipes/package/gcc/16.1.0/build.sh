@@ -58,6 +58,10 @@ pkg_depends="binutils m4"
 # compiler" goal. This is, by real wall-clock time, the single longest
 # build in this project to date.
 pkg_build() {
+	echo "=== diagnostic: real staged /build/extra content ==="
+	ls -la /build/extra/ 2>&1
+	file /build/extra/*.tar.* 2>&1
+
 	tar xf /build/extra/gmp-6.3.0.tar.bz2 && mv gmp-6.3.0 gmp
 	tar xf /build/extra/mpfr-4.2.2.tar.bz2 && mv mpfr-4.2.2 mpfr
 	tar xf /build/extra/mpc-1.3.1.tar.gz && mv mpc-1.3.1 mpc
