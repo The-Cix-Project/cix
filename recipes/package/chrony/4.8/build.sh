@@ -23,21 +23,6 @@ pkg_name="chrony"
 pkg_version="4.8"
 pkg_source="https://chrony-project.org/releases/chrony-4.8.tar.gz"
 pkg_sha256="33ea8eb2a4daeaa506e8fcafd5d6d89027ed6f2f0609645c6f149b560d301706"
-# libc-dev (recipes/package/libc-dev/2.36/): chrony's own configure
-# hard-requires a real pthread_create() (regardless of --with-user=root
-# -PRIVDROP's single-threaded design -- confirmed live, this is not
-# optional/feature-gated in this chrony version's configure script).
-# glibc >= 2.34 folds pthread_create() into libc.so.6 itself and ships
-# no standalone libpthread.so -- but some tools built with an older
-# assumption still pass -lpthread explicitly (the same real gap
-# gcc.recipe's own scripts/sorttable HOSTCC step already hit, see
-# libc-dev.recipe's own comment). Depending on libc-dev here forces a
-# known-good, already-fixed copy into this build's own sandbox rather
-# than trusting whatever ambient content the shared bootstrap toolchain
-# already has -- the same reasoning m4.recipe's own binutils dependency
-# uses.
-pkg_depends="libc-dev"
-
 # Real, empirically confirmed via a local ./configure + build in this
 # sandbox: chrony's own hand-rolled configure script (not autoconf)
 # builds clean under tcc with zero patches needed. Every optional
@@ -56,13 +41,40 @@ pkg_depends="libc-dev"
 # project's own images actually have (no /var/run, confirmed the hard
 # way for dnsmasq -- see CLAUDE.md's own environment notes) rather
 # than chrony's own real upstream default of /var/run/chrony/chronyd.pid.
+#
+# Real root cause of the "pthread_create() not found" failure this
+# recipe used to hit, found by reading chrony 4.8's own real upstream
+# configure source directly (not guessed): its pthread check runs
+# `$MYCC $MYCFLAGS -pthread -o conftest conftest.c` -- an unconditional,
+# no-opt-out hard requirement (no --disable-async-resolv-style escape
+# hatch exists; on success it also permanently adds -pthread to every
+# further compile via MYCFLAGS). A direct probe confirmed
+# `tcc -pthread foo.c -o foo` fails with `tcc: error: undefined symbol
+# 'main'` -- tcc does not recognize `-pthread` (a GCC-specific driver
+# flag, not a real compiler option) and its arg parser mishandles it in
+# a way that drops the actual source file from the compile entirely,
+# not merely a "flag ignored" no-op. A *bare* `tcc foo.c -o foo`
+# calling pthread_create() (no -pthread at all) links clean -- glibc
+# >= 2.34 folds pthread_create() into libc.so.6 itself, so the flag
+# was never actually needed for correctness here, only for chrony's own
+# GCC-oriented feature-detection convention. Fixed with a thin `tcc`
+# wrapper (same "toolwrap" pattern procps.recipe already established
+# for aclocal/automake/libtoolize) that strips a bare `-pthread` before
+# delegating to the real compiler -- every other flag passes through
+# unchanged.
 pkg_build() {
-	echo "=== diagnostic: does tcc accept the exact -pthread flag chrony's own configure passes? ==="
-	printf '#include <pthread.h>\nint main(void) { pthread_t t; return pthread_create(&t, 0, 0, 0); }\n' > pthread_probe.c
-	tcc -pthread pthread_probe.c -o pthread_probe 2>&1
-	echo "probe rc (-pthread) = $?"
+	mkdir -p /build/toolwrap
+	cat > /build/toolwrap/tcc-nopthread <<'WRAP'
+#!/usr/bin/bash
+args=()
+for a in "$@"; do
+	[ "$a" = "-pthread" ] || args+=("$a")
+done
+exec tcc "${args[@]}"
+WRAP
+	chmod +x /build/toolwrap/tcc-nopthread
 
-	CC=tcc ./configure --prefix=/usr --disable-readline --without-nss \
+	CC=/build/toolwrap/tcc-nopthread ./configure --prefix=/usr --disable-readline --without-nss \
 	            --without-nettle --without-gnutls --without-tomcrypt \
 	            --without-libcap --without-seccomp --disable-nts \
 	            --with-user=root --with-pidfile=/run/chronyd.pid
