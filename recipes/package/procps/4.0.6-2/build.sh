@@ -56,25 +56,38 @@ pkg_depends=""
 # confirmed directly from captured build output -- with "infrastructure
 # files for version 0.14.1 not found; this is autopoint from GNU
 # gettext-tools 0.21": procps-ng's own configure.ac pins a real,
-# decades-old AM_GNU_GETTEXT_VERSION([0.14.1]), and this toolchain's
-# real gettext 0.21 (gettext.recipe) no longer bundles infrastructure
-# archives that far back. Since --disable-nls below means this build
-# never actually needs working i18n/gettext infrastructure at all, the
-# autopoint wrapper is a genuine, targeted no-op here (unlike the other
-# three tools' wrappers above it, which for real reasons -- the
-# ENOEXEC/shebang gap this whole mechanism exists for -- still need to
-# actually run) rather than trying to reconcile two real, independently
-# correct version pins that were simply never meant to line up.
+# decades-old AM_GNU_GETTEXT_VERSION([0.14.1]), and real autopoint,
+# hitting a version it doesn't recognize, falls back to searching
+# gettext's own bundled legacy-snapshot archive
+# (/usr/share/gettext/archive.dir.tar.xz) for an exact "0.14.1" match --
+# not found there either (that archive, confirmed by extracting and
+# inspecting it directly, bundles exactly one snapshot, gettext-0.10.35
+# from 2002, predating the po/Makefile.in.in convention entirely).
+#
+# The real fix: autopoint's *actual* job when no version-pin fallback
+# is needed is simply copying gettext's own current, real template
+# files (Makefile.in.in, Makevars.template, Rules-quot, the *.sed/
+# *.header/*.sin quoting helpers) from its own install tree
+# (/usr/share/gettext/po/, confirmed present and complete via a direct
+# diagnostic listing) into the package's po/ directory -- copying them
+# directly bypasses the version-matching logic (and its legacy-archive
+# fallback) entirely, since --disable-nls below means this build never
+# actually needs the specific gettext-0.14.1-era template *features*,
+# only a real, syntactically valid po/Makefile.in.in for automake's own
+# AM_GNU_GETTEXT([external]) machinery to generate po/Makefile.in from.
+# The autopoint wrapper does this copy directly rather than really
+# invoking autopoint at all -- unlike the other three tools' wrappers
+# above it, which for a real, different reason (the ENOEXEC/shebang gap
+# this whole mechanism exists for) still need to actually run the real
+# tool.
 pkg_build() {
 	mkdir -p /build/toolwrap
 	for tool in aclocal automake libtoolize; do
 		printf '#!/bin/sh\nexec perl /usr/bin/%s "$@"\n' "$tool" > "/build/toolwrap/$tool"
 		chmod +x "/build/toolwrap/$tool"
 	done
-	echo "=== DIAG: /usr/share/gettext/po (real, current template, not the legacy archive) ==="
-	ls -la /usr/share/gettext/po/ 2>&1
-	echo "=== END DIAG ==="
-	printf '#!/bin/sh\nexit 0\n' > /build/toolwrap/autopoint
+	printf '#!/bin/sh\nmkdir -p po\ncp /usr/share/gettext/po/*.in.in /usr/share/gettext/po/*.template /usr/share/gettext/po/*.sed /usr/share/gettext/po/*.header /usr/share/gettext/po/*.sin /usr/share/gettext/po/Rules-quot po/\n' \
+		> /build/toolwrap/autopoint
 	chmod +x /build/toolwrap/autopoint
 
 	PATH="/build/toolwrap:$PATH" ./autogen.sh
