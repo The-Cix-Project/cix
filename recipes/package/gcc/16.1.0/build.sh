@@ -232,10 +232,22 @@ MINIEXTRACT
 	)
 	freshtar=/build/freshtar/tar-1.35/src/tar
 
-	"$freshtar" xf /build/extra/gmp-6.3.0.tar.bz2 && mv gmp-6.3.0 gmp
+	echo "=== diagnostic: freshtar identity ==="
+	ls -la "$freshtar"
+	pwd
+	echo "=== diagnostic: freshtar tvf on the real gmp archive ==="
+	"$freshtar" tvf /build/extra/gmp-6.3.0.tar.bz2 | wc -l
+
+	"$freshtar" xf /build/extra/gmp-6.3.0.tar.bz2
+	echo "gmp extract rc=$?"
+	mv gmp-6.3.0 gmp
+	echo "gmp mv rc=$?"
 	"$freshtar" xf /build/extra/mpfr-4.2.2.tar.bz2 && mv mpfr-4.2.2 mpfr
 	"$freshtar" xf /build/extra/mpc-1.3.1.tar.gz && mv mpc-1.3.1 mpc
 	"$freshtar" xf /build/extra/isl-0.24.tar.bz2 && mv isl-0.24 isl
+	echo "=== diagnostic: real extraction layout ==="
+	ls -la gmp mpfr mpc isl 2>&1
+	ls -la mpfr/src 2>&1
 	rm -rf /build/freshtar
 
 	mkdir -p build
