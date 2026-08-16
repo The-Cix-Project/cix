@@ -63,7 +63,7 @@ pkg_build() {
 	echo "=== diagnostic: real gmp.tar tvf entry count (bare) ==="
 	tar tvf gmp.tar | wc -l
 	echo "=== diagnostic: real gmp.tar tvf entry count (--read-full-records) ==="
-	tar --read-full-records tvf gmp.tar | wc -l
+	tar -tvf gmp.tar --read-full-records | wc -l
 	cd .. && rm -rf decomp_test
 
 	tar xf /build/extra/gmp-6.3.0.tar.bz2 && mv gmp-6.3.0 gmp
