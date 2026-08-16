@@ -65,20 +65,34 @@ pkg_depends="binutils"
 # confirmed cause, not a workaround for a symptom.
 #
 # The `tcc: error: undefined symbol '__dso_handle'` seen alongside the
-# above was a cascading symptom of the same failure, not a separate
-# bug -- it never recurred once the real cause was fixed, so the
-# dso_stub/LIBS machinery below (an independently real, correct fix in
-# its own right, same trick sysklogd.recipe already established) is
-# kept, but is no longer masking anything.
+# above was NOT a cascading symptom of the static-inline bug the way
+# it first looked (verified live against the real box after the fix
+# above landed: the "defined twice" errors were completely gone, only
+# this one remained) -- it's a separate, real, environment-specific
+# gap, the same class `sysklogd.recipe` already documents (this dev
+# sandbox's own host glibc happens to provide `__dso_handle` ambiently,
+# masking the question locally; the real build sandbox on 192.168.15.95
+# does not). The first attempt at the fix here used `libdso_stub.a`
+# (an archive, `-ldso_stub`) -- confirmed via a real `make V=1` capture
+# that it genuinely reached the final link command in the right
+# position, yet `__dso_handle` still came back undefined. A minimal
+# standalone reproduction (tcc main.c -L. -lweak -o test, weak symbol
+# in an archive) linked clean, ruling out "TCC never extracts a
+# weak-only archive member" as the cause -- the real archive-extraction
+# mechanics for this specific case remain unexplained. Switched to
+# passing `dso_stub.o` as a *bare object file path* in `LIBS` instead
+# of an archive -- unlike `-lxxx`, a plain object file on the link
+# line is never conditionally extracted, it's always included, the
+# exact same shape `sysklogd.recipe`'s own hand-rolled `tcc` invocation
+# already uses successfully. Sidesteps the archive question entirely
+# rather than resolving it.
 pkg_build() {
 	echo 'void *__dso_handle __attribute__((weak)) = (void *)0;' > dso_stub.c
 	tcc -c dso_stub.c -o dso_stub.o
-	ar rcs libdso_stub.a dso_stub.o
 
 	CC=tcc AR=ar RANLIB=ranlib CFLAGS="-D_GL_EXTERN_INLINE_STDHEADER_BUG=1" \
-	    ./configure --prefix=/usr LIBS="-L$(pwd) -ldso_stub"
-	echo "=== diagnostic: real m4 link command (V=1) ==="
-	make V=1
+	    ./configure --prefix=/usr LIBS="$(pwd)/dso_stub.o"
+	make
 }
 
 # Confirmed via ldd against a real build: m4 links against nothing but
