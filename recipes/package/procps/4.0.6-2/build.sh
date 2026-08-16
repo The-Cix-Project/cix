@@ -91,7 +91,7 @@ pkg_build() {
 	chmod +x /build/toolwrap/autopoint
 
 	PATH="/build/toolwrap:$PATH" ./autogen.sh
-	CC=tcc ac_cv_prog_cc_c99= ./configure --prefix=/usr --disable-nls
+	CC=tcc ac_cv_prog_cc_c99= gl_cv_prog_cc_c99= ./configure --prefix=/usr --disable-nls
 	make -j"$(nproc)"
 }
 
