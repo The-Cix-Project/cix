@@ -44,12 +44,23 @@ pkg_depends="binutils"
 #    `LIBS` so Automake's own generated link command picks it up for
 #    every binary it produces -- no Makefile surgery needed.
 pkg_build() {
+	echo "=== diagnostic: which ar/ranlib, versions ==="
+	which ar ranlib
+	ar --version | head -1
+	ranlib --version | head -1
+
 	echo 'void *__dso_handle __attribute__((weak)) = (void *)0;' > dso_stub.c
 	tcc -c dso_stub.c -o dso_stub.o
 	ar rcs libdso_stub.a dso_stub.o
 
-	CC=tcc ./configure --prefix=/usr LIBS="-L$(pwd) -ldso_stub"
-	make
+	CC=tcc AR=ar RANLIB=ranlib ./configure --prefix=/usr
+	make LIBS="-L$(pwd) -ldso_stub"
+	make_rc=$?
+
+	echo "=== diagnostic: lib/libm4.a duplicate member names ==="
+	ar t lib/libm4.a | sort | uniq -d
+
+	[ "$make_rc" -eq 0 ] || exit "$make_rc"
 }
 
 # Confirmed via ldd against a real build: m4 links against nothing but
