@@ -122,7 +122,15 @@ pkg_build() {
 	# escape hatch for exactly this (its own error message says so) --
 	# drops one minor utility (pidwait), ps/top/free/kill/etc. all stay
 	# fully functional.
-	CC=tcc ac_cv_prog_cc_c99="none needed" ./configure --prefix=/usr --disable-nls --disable-pidwait
+	# A fourth gap, same shape as pidwait above: NUMA/top support needs
+	# dlopen() (libnuma is dlopen()'d at runtime, not linked), which
+	# this minimal toolchain's libc doesn't expose the way procps-ng's
+	# own AC_SEARCH_LIBS(dlopen) probe expects. --disable-numa is its
+	# own real, intended escape hatch (its own error message says so),
+	# same posture as --disable-pidwait -- top loses NUMA-node display,
+	# nothing else is affected.
+	CC=tcc ac_cv_prog_cc_c99="none needed" ./configure --prefix=/usr --disable-nls \
+		--disable-pidwait --disable-numa
 	make -j"$(nproc)"
 }
 
