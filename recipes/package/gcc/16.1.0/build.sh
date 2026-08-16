@@ -30,9 +30,51 @@
 #
 pkg_name="gcc"
 pkg_version="16.1.0"
-pkg_source="https://ftp.gnu.org/gnu/gcc/gcc-16.1.0/gcc-16.1.0.tar.xz https://gcc.gnu.org/pub/gcc/infrastructure/gmp-6.3.0.tar.bz2 https://gcc.gnu.org/pub/gcc/infrastructure/mpfr-4.2.2.tar.bz2 https://gcc.gnu.org/pub/gcc/infrastructure/mpc-1.3.1.tar.gz https://gcc.gnu.org/pub/gcc/infrastructure/isl-0.24.tar.bz2"
-pkg_sha256="50efb4d94c3397aff3b0d61a5abd748b4dd31d9d3f2ab7be05b171d36a510f79 ac28211a7cfb609bae2e2c8d6058d66c8fe96434f740cf6fe2e47b000d1c20cb 9ad62c7dc910303cd384ff8f1f4767a655124980bb6d8650fe62c815a231bb7b ab642492f5cf882b74aa0cb730cd410a81edcdbec895183ce930e706c1c759b8 fcf78dd9656c10eb8cf9fbd5f59a0b6b01386205fe1934b3b287a0a1898145c0"
+pkg_source="https://ftp.gnu.org/gnu/gcc/gcc-16.1.0/gcc-16.1.0.tar.xz https://gcc.gnu.org/pub/gcc/infrastructure/gmp-6.3.0.tar.bz2 https://gcc.gnu.org/pub/gcc/infrastructure/mpfr-4.2.2.tar.bz2 https://gcc.gnu.org/pub/gcc/infrastructure/mpc-1.3.1.tar.gz https://gcc.gnu.org/pub/gcc/infrastructure/isl-0.24.tar.bz2 https://ftp.gnu.org/gnu/tar/tar-1.35.tar.gz"
+pkg_sha256="50efb4d94c3397aff3b0d61a5abd748b4dd31d9d3f2ab7be05b171d36a510f79 ac28211a7cfb609bae2e2c8d6058d66c8fe96434f740cf6fe2e47b000d1c20cb 9ad62c7dc910303cd384ff8f1f4767a655124980bb6d8650fe62c815a231bb7b ab642492f5cf882b74aa0cb730cd410a81edcdbec895183ce930e706c1c759b8 fcf78dd9656c10eb8cf9fbd5f59a0b6b01386205fe1934b3b287a0a1898145c0 14d55e32063ea9526e057fbf35fcabd53378e769787eff7919c3755b02d2b57e"
 pkg_depends="binutils m4"
+
+# The 6th source (tar-1.35.tar.gz, same real upstream tarball and
+# checksum tar.recipe itself already uses) exists for one real reason,
+# found the hard way: this project's own `tar` package has never
+# actually been installed onto any build-sandbox-feeding image at all
+# (confirmed via GET /v1/pkg -- it's only ever installed onto
+# thinc-hosttools/kanxeo-hosttools, for the daemon's own host-side
+# extract_tarball() use). The `tar` binary visible inside a
+# pkg_build() shell instead comes from the shared bootstrap toolchain
+# sandbox itself (fetched once, long ago, never automatically
+# refreshed) -- and THAT copy has a real, confirmed bug: it silently
+# stops after the very first archive entry on any real multi-file
+# tarball, extraction *and* plain listing both affected, reproduced
+# with a freshly bzip2-decompressed, checksum-verified real GNU
+# release tarball. Root-caused via elimination, not guessed: a
+# from-scratch local build of tar 1.35 (identical source, identical
+# `CC=tcc`, built both as a normal user and as root with this
+# project's own exact recipe flags) extracts the same file correctly
+# every time; a raw open()+read() probe compiled and run inside this
+# exact build sandbox against the same file returns correct,
+# full-sized reads on every call, ruling out the kernel/filesystem/
+# container environment entirely. The one thing left unexplained is
+# *why* the specific binary baked into the bootstrap sandbox is bad
+# (likely built once, long ago, before this session's own ambient-
+# compiler-contamination cleanup) -- not chased further, since the fix
+# is the same either way: never trust that ambient `tar`, build a
+# fresh one from the exact same real source as part of this build.
+#
+# Bootstrapping problem: extracting tar's *own* source tarball with
+# the ambient (broken) `tar` would just reproduce the exact same bug
+# on tar's own source tree. pkg_build() below breaks that circularity
+# with a small, purpose-built, self-contained USTAR extractor (real
+# format, read directly from tar's own src/tar.h -- fixed 512-byte
+# blocks, POSIX header, char-array fields only) compiled from a
+# heredoc with tcc -- verified locally against the real, checksummed
+# gmp-6.3.0.tar.bz2 (bzip2 -dc'd first, gzip works the same way) before
+# ever touching this recipe: extracted all 2343 real entries correctly,
+# byte-for-byte matching a known-good extraction. It only handles
+# regular files and directories (skips symlinks/etc, none of which
+# tar's own source tree needs to build) and is used for exactly one
+# thing -- unpacking tar-1.35.tar.gz -- never for gmp/mpfr/mpc/isl,
+# which use the real, freshly-built tar once it exists.
 
 # Real, load-bearing build-time dependency: gcc's own assembler/linker
 # calls need a working as/ld present (pkg_depends="binutils ..." above)
@@ -58,41 +100,110 @@ pkg_depends="binutils m4"
 # compiler" goal. This is, by real wall-clock time, the single longest
 # build in this project to date.
 pkg_build() {
-	mkdir -p decomp_test && cd decomp_test
-	bzip2 -dc /build/extra/gmp-6.3.0.tar.bz2 > gmp.tar
-	echo "=== diagnostic: raw open()+read() probe, actual byte counts per call ==="
-	cat > readprobe.c <<'PROBE'
+	cat > /build/miniextract.c <<'MINIEXTRACT'
 #include <stdio.h>
-#include <fcntl.h>
-#include <unistd.h>
-int main(int argc, char **argv) {
-	int fd = open(argv[1], O_RDONLY);
-	char buf[10240];
-	long total = 0;
-	int calls = 0;
-	for (;;) {
-		ssize_t n = read(fd, buf, sizeof(buf));
-		calls++;
-		printf("call %d: requested %zu, got %zd (errno-independent)\n", calls, sizeof(buf), n);
-		if (n <= 0) break;
-		total += n;
-		if (calls >= 8) { printf("stopping after 8 calls\n"); break; }
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+
+#define BLK 512
+
+static void mkdirs(const char *path)
+{
+	char buf[4096], *p;
+
+	strncpy(buf, path, sizeof(buf) - 1);
+	buf[sizeof(buf) - 1] = 0;
+	for (p = buf + 1; *p; p++) {
+		if (*p == '/') {
+			*p = 0;
+			mkdir(buf, 0755);
+			*p = '/';
+		}
 	}
-	printf("total bytes read: %ld\n", total);
+}
+
+int main(int argc, char **argv)
+{
+	FILE *f;
+	unsigned char block[BLK];
+
+	if (argc != 2)
+		return 1;
+	f = fopen(argv[1], "rb");
+	if (!f)
+		return 1;
+	while (fread(block, 1, BLK, f) == BLK) {
+		int allzero = 1, i;
+		char name[101], sizeoct[13], prefix[156], fullpath[600];
+		long size;
+		char typeflag;
+
+		for (i = 0; i < BLK; i++)
+			if (block[i]) { allzero = 0; break; }
+		if (allzero)
+			break;
+		memcpy(name, block, 100);
+		name[100] = 0;
+		memcpy(sizeoct, block + 124, 12);
+		sizeoct[12] = 0;
+		size = strtol(sizeoct, NULL, 8);
+		typeflag = block[156];
+		memcpy(prefix, block + 345, 155);
+		prefix[155] = 0;
+		if (prefix[0])
+			snprintf(fullpath, sizeof(fullpath), "%s/%s", prefix, name);
+		else
+			snprintf(fullpath, sizeof(fullpath), "%s", name);
+		mkdirs(fullpath);
+		if (typeflag == '5') {
+			mkdir(fullpath, 0755);
+		} else if (typeflag == '0' || typeflag == 0) {
+			FILE *out = fopen(fullpath, "wb");
+			long remaining = size;
+
+			while (remaining > 0) {
+				size_t towrite;
+
+				if (fread(block, 1, BLK, f) != BLK)
+					return 1;
+				towrite = remaining < BLK ? (size_t)remaining : BLK;
+				if (out)
+					fwrite(block, 1, towrite, out);
+				remaining -= BLK;
+			}
+			if (out)
+				fclose(out);
+		} else {
+			long nblocks = (size + BLK - 1) / BLK, i2;
+
+			for (i2 = 0; i2 < nblocks; i2++)
+				if (fread(block, 1, BLK, f) != BLK)
+					break;
+		}
+	}
+	fclose(f);
 	return 0;
 }
-PROBE
-	tcc readprobe.c -o readprobe
-	./readprobe gmp.tar
-	cd .. && rm -rf decomp_test
+MINIEXTRACT
+	tcc /build/miniextract.c -o /build/miniextract
 
-	tar xf /build/extra/gmp-6.3.0.tar.bz2 && mv gmp-6.3.0 gmp
-	tar xf /build/extra/mpfr-4.2.2.tar.bz2 && mv mpfr-4.2.2 mpfr
-	tar xf /build/extra/mpc-1.3.1.tar.gz && mv mpc-1.3.1 mpc
-	tar xf /build/extra/isl-0.24.tar.bz2 && mv isl-0.24 isl
-	echo "=== diagnostic: real extraction layout ==="
-	ls -la gmp mpfr mpc isl 2>&1
-	ls -la mpfr/src 2>&1
+	(
+		mkdir -p /build/freshtar && cd /build/freshtar
+		gzip -dc /build/extra/tar-1.35.tar.gz > tar-1.35.tar
+		/build/miniextract tar-1.35.tar
+		cd tar-1.35
+		CC=tcc ./configure --prefix=/usr
+		make -j"$(nproc)"
+	)
+	freshtar=/build/freshtar/tar-1.35/src/tar
+
+	"$freshtar" xf /build/extra/gmp-6.3.0.tar.bz2 && mv gmp-6.3.0 gmp
+	"$freshtar" xf /build/extra/mpfr-4.2.2.tar.bz2 && mv mpfr-4.2.2 mpfr
+	"$freshtar" xf /build/extra/mpc-1.3.1.tar.gz && mv mpc-1.3.1 mpc
+	"$freshtar" xf /build/extra/isl-0.24.tar.bz2 && mv isl-0.24 isl
+	rm -rf /build/freshtar
+
 	mkdir -p build
 	cd build
 	CC=tcc ../configure --prefix=/usr --disable-multilib --disable-bootstrap \
