@@ -77,7 +77,8 @@ pkg_build() {
 
 	CC=tcc AR=ar RANLIB=ranlib CFLAGS="-D_GL_EXTERN_INLINE_STDHEADER_BUG=1" \
 	    ./configure --prefix=/usr LIBS="-L$(pwd) -ldso_stub"
-	make
+	echo "=== diagnostic: real m4 link command (V=1) ==="
+	make V=1
 }
 
 # Confirmed via ldd against a real build: m4 links against nothing but
