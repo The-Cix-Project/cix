@@ -74,8 +74,11 @@ pkg_build() {
 	printf '#!/bin/sh\nexit 0\n' > /build/toolwrap/autopoint
 	chmod +x /build/toolwrap/autopoint
 
-	echo "=== DIAG: gettext archive versions available ==="
-	tar tJf /usr/share/gettext/archive.dir.tar.xz 2>&1 | head -40
+	echo "=== DIAG: gettext-0.10.35 internal layout ==="
+	mkdir -p /build/gettext-extract
+	tar xJf /usr/share/gettext/archive.dir.tar.xz -C /build/gettext-extract
+	find /build/gettext-extract/gettext-0.10.35 -name 'Makefile.in.in' 2>&1
+	find /build/gettext-extract/gettext-0.10.35 -name 'config.rpath' 2>&1
 	echo "=== END DIAG ==="
 
 	PATH="/build/toolwrap:$PATH" ./autogen.sh
