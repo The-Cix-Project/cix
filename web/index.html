@@ -760,6 +760,7 @@
 							<th>Name</th>
 							<th>UID</th>
 							<th>Primary group</th>
+							<th>Secondary groups</th>
 							<th>Mail</th>
 							<th>Password</th>
 							<th>Disabled</th>
@@ -768,7 +769,7 @@
 						</tr>
 					</thead>
 					<tbody id="ldap-users-body">
-						<tr><td colspan="8" class="empty">Loading&hellip;</td></tr>
+						<tr><td colspan="9" class="empty">Loading&hellip;</td></tr>
 					</tbody>
 				</table>
 			</div>
@@ -1974,6 +1975,10 @@
 					<label>
 						Primary group (GID number)
 						<input type="number" id="luf-primarygroup" min="1" required>
+					</label>
+					<label>
+						Secondary groups (GID numbers)
+						<input type="text" id="luf-secondary-groups" placeholder="1000,10000">
 					</label>
 					<label>
 						Given name

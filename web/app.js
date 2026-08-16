@@ -4392,6 +4392,7 @@ function editLdapUser(user) {
 	document.getElementById("luf-name").readOnly = true;
 	document.getElementById("luf-uidnumber").value = user.uidnumber;
 	document.getElementById("luf-primarygroup").value = user.primarygroup;
+	document.getElementById("luf-secondary-groups").value = (user.secondary_groups || []).join(",");
 	document.getElementById("luf-givenname").value = user.givenname || "";
 	document.getElementById("luf-sn").value = user.sn || "";
 	document.getElementById("luf-mail").value = user.mail || "";
@@ -4410,7 +4411,7 @@ function renderLdapUsers(users) {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
 
-		cell.colSpan = 8;
+		cell.colSpan = 9;
 		cell.className = "empty";
 		cell.textContent = "No LDAP users";
 		row.appendChild(cell);
@@ -4421,7 +4422,8 @@ function renderLdapUsers(users) {
 	for (const u of users) {
 		const row = document.createElement("tr");
 
-		const cells = [u.name, u.uidnumber, u.primarygroup, u.mail,
+		const cells = [u.name, u.uidnumber, u.primarygroup,
+		               (u.secondary_groups || []).join(", ") || "-", u.mail,
 		               u.has_password ? "set" : "unset", u.disabled ? "yes" : "no",
 		               u.ssh_public_key ? "set" : "unset"];
 		for (const v of cells) {
@@ -6418,9 +6420,23 @@ document.getElementById("ldap-group-form").addEventListener("submit", async (eve
 document.getElementById("ldap-user-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 
+	/* Comma-separated GID numbers, matching thincctl's own
+	 * --secondary-groups= parsing convention exactly -- PUT is a real
+	 * full-field-replacement (same as every other field here), so this
+	 * is always sent, defaulting to an empty array (no secondary
+	 * groups) rather than omitted, the same way every other field on
+	 * this form already behaves whether editing or creating. */
+	const secondaryGroups = document
+		.getElementById("luf-secondary-groups")
+		.value.split(",")
+		.map((s) => s.trim())
+		.filter((s) => s !== "")
+		.map((s) => parseInt(s, 10));
+
 	const body = {
 		name: document.getElementById("luf-name").value.trim(),
 		primarygroup: parseInt(document.getElementById("luf-primarygroup").value, 10),
+		secondary_groups: secondaryGroups,
 		givenname: document.getElementById("luf-givenname").value.trim(),
 		sn: document.getElementById("luf-sn").value.trim(),
 		mail: document.getElementById("luf-mail").value.trim(),
