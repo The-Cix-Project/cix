@@ -4779,12 +4779,31 @@ int pkg_build_config_init(const char *config_path)
 		if (v >= 0)
 			g_build_memory_max = (long long)v;
 	}
+	/*
+	 * Unlike memory_max above (save_build_config() always writes it as
+	 * a real integer, 0 meaning unlimited, never null), cpu_max is
+	 * written as a genuine JSON null when explicitly cleared -- so
+	 * "key present but null" and "key absent entirely" are two
+	 * different, real states here, not one. Confirmed the hard way
+	 * live on 192.168.15.95 (ADR-0166's own investigation): a real
+	 * PUT clearing cpu_max to unlimited silently reverted to
+	 * PKG_BUILD_CPU_MAX_DEFAULT on the very next daemon restart,
+	 * because the old `jcpu->type != JSON_NULL` check treated both
+	 * states identically -- neither branch ever cleared
+	 * g_build_cpu_max back to "" for the genuinely-null case, so the
+	 * line 4758 default (set moments before this whole persisted-
+	 * config block even runs) silently won.
+	 */
 	jcpu = json_object_get(root, "cpu_max");
-	if (jcpu != NULL && jcpu->type != JSON_NULL) {
-		const char *s = json_as_string(jcpu);
+	if (jcpu != NULL) {
+		if (jcpu->type == JSON_NULL) {
+			g_build_cpu_max[0] = '\0';
+		} else {
+			const char *s = json_as_string(jcpu);
 
-		if (s != NULL)
-			snprintf(g_build_cpu_max, sizeof(g_build_cpu_max), "%s", s);
+			if (s != NULL)
+				snprintf(g_build_cpu_max, sizeof(g_build_cpu_max), "%s", s);
+		}
 	}
 	json_free(root);
 	return 0;
