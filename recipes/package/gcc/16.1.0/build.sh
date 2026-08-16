@@ -8,8 +8,8 @@
 #
 # Source is GNU's own canonical ftp.gnu.org release, checksum verified
 # against two independent mirrors (ftp.gnu.org and mirrors.kernel.org)
-# -- byte-identical, same sha256. gmp/mpfr/mpc/isl (gcc's own build-
-# time prerequisites -- gcc cannot configure without a real arbitrary-
+# -- byte-identical, same sha256. gmp/mpfr/mpc (gcc's own build-time
+# prerequisites -- gcc cannot configure without a real arbitrary-
 # precision math library, and this project's isolated, network-less
 # build container cannot let gcc's own contrib/download_prerequisites
 # fetch them live the way a normal build does) are vendored as
@@ -19,19 +19,28 @@
 # tarball) is fetched into /build/src and auto-extracted; every
 # additional source lands as a plain, unextracted file at
 # /build/extra/<basename-of-its-own-URL> -- pkg_build() below extracts
-# each of the four itself and renames them to the bare subdirectory
-# names gcc's own build system auto-detects (gmp/, mpfr/, mpc/, isl/),
-# the same end state contrib/download_prerequisites itself produces,
-# just reached here via a real, checksummed, offline multi-source
-# fetch instead of a live network call during the build. gmp/mpfr/mpc
-# verified against ftp.gnu.org directly (byte-identical); isl has no
-# GNU release, gcc.gnu.org/pub/gcc/infrastructure/ is its own
-# documented canonical distribution point for this exact use.
+# each of the three itself and renames them to the bare subdirectory
+# names gcc's own build system auto-detects (gmp/, mpfr/, mpc/), the
+# same end state contrib/download_prerequisites itself produces, just
+# reached here via a real, checksummed, offline multi-source fetch
+# instead of a live network call during the build. All three verified
+# against ftp.gnu.org directly (byte-identical).
+#
+# isl (Graphite loop-nest optimization's own dependency) is
+# deliberately NOT vendored or built at all -- a real, fatal TCC
+# compile error (`isl_options.c:110: error: unknown type size`, inside
+# isl's own macro-heavy `ISL_ARGS_START`-family argument-parsing
+# machinery) found the hard way, confirmed via GCC's own real
+# configure source that `--with-isl=no` is the documented, graceful
+# way to skip Graphite entirely (`graphite_requested=no`, no error) --
+# the same "get a real working compiler, not every GCC feature"
+# judgment call `--disable-lto`/`--disable-libsanitizer` already make
+# for two other optional pieces.
 #
 pkg_name="gcc"
 pkg_version="16.1.0"
-pkg_source="https://ftp.gnu.org/gnu/gcc/gcc-16.1.0/gcc-16.1.0.tar.xz https://gcc.gnu.org/pub/gcc/infrastructure/gmp-6.3.0.tar.bz2 https://gcc.gnu.org/pub/gcc/infrastructure/mpfr-4.2.2.tar.bz2 https://gcc.gnu.org/pub/gcc/infrastructure/mpc-1.3.1.tar.gz https://gcc.gnu.org/pub/gcc/infrastructure/isl-0.24.tar.bz2"
-pkg_sha256="50efb4d94c3397aff3b0d61a5abd748b4dd31d9d3f2ab7be05b171d36a510f79 ac28211a7cfb609bae2e2c8d6058d66c8fe96434f740cf6fe2e47b000d1c20cb 9ad62c7dc910303cd384ff8f1f4767a655124980bb6d8650fe62c815a231bb7b ab642492f5cf882b74aa0cb730cd410a81edcdbec895183ce930e706c1c759b8 fcf78dd9656c10eb8cf9fbd5f59a0b6b01386205fe1934b3b287a0a1898145c0"
+pkg_source="https://ftp.gnu.org/gnu/gcc/gcc-16.1.0/gcc-16.1.0.tar.xz https://gcc.gnu.org/pub/gcc/infrastructure/gmp-6.3.0.tar.bz2 https://gcc.gnu.org/pub/gcc/infrastructure/mpfr-4.2.2.tar.bz2 https://gcc.gnu.org/pub/gcc/infrastructure/mpc-1.3.1.tar.gz"
+pkg_sha256="50efb4d94c3397aff3b0d61a5abd748b4dd31d9d3f2ab7be05b171d36a510f79 ac28211a7cfb609bae2e2c8d6058d66c8fe96434f740cf6fe2e47b000d1c20cb 9ad62c7dc910303cd384ff8f1f4767a655124980bb6d8650fe62c815a231bb7b ab642492f5cf882b74aa0cb730cd410a81edcdbec895183ce930e706c1c759b8"
 pkg_depends="binutils m4"
 
 # gmp/mpfr/mpc/isl are NOT extracted with the ambient `tar` on this
@@ -79,8 +88,8 @@ pkg_depends="binutils m4"
 # Real, load-bearing build-time dependency: gcc's own assembler/linker
 # calls need a working as/ld present (pkg_depends="binutils ..." above)
 # and its build system invokes m4 during its own configure/build.
-# gmp/mpfr/mpc/isl are extracted into gcc's own source tree at the
-# bare names its configure auto-detects, exactly matching what
+# gmp/mpfr/mpc are extracted into gcc's own source tree at the bare
+# names its configure auto-detects, exactly matching what
 # contrib/download_prerequisites itself would do, just offline.
 # --disable-bootstrap: this is a real, deliberate, single-stage build
 # using the build container's own already-present host gcc 12.2 to
@@ -222,14 +231,13 @@ MINIEXTRACT
 	/build/miniextract /build/mpfr.tar && mv mpfr-4.2.2 mpfr
 	gzip -dc /build/extra/mpc-1.3.1.tar.gz > /build/mpc.tar
 	/build/miniextract /build/mpc.tar && mv mpc-1.3.1 mpc
-	bzip2 -dc /build/extra/isl-0.24.tar.bz2 > /build/isl.tar
-	/build/miniextract /build/isl.tar && mv isl-0.24 isl
-	rm -f /build/gmp.tar /build/mpfr.tar /build/mpc.tar /build/isl.tar /build/miniextract.c /build/miniextract
+	rm -f /build/gmp.tar /build/mpfr.tar /build/mpc.tar /build/miniextract.c /build/miniextract
 
 	mkdir -p build
 	cd build
 	CC=tcc ../configure --prefix=/usr --disable-multilib --disable-bootstrap \
-		--enable-languages=c,c++ --disable-libsanitizer --disable-lto --with-system-zlib
+		--enable-languages=c,c++ --disable-libsanitizer --disable-lto --with-isl=no \
+		--with-system-zlib
 	make -j"$(nproc)"
 }
 
