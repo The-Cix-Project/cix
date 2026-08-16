@@ -27,6 +27,20 @@ enum registry_error {
 	REGISTRY_ERR_CREATE_FAILED
 };
 
+/*
+ * One extra environment variable this container was created with
+ * (POST /v1/containers' own "env" field) -- display-only echo storage,
+ * the same "id not content" precedent file_paths/sysctls above already
+ * have. Recovered by registry_create() splitting spec->envp's own
+ * "KEY=VALUE" strings on their first '=' (see that function's own
+ * comment); env_key_is_safe() at parse time already guarantees no key
+ * contains one, so the split is always unambiguous.
+ */
+struct container_env {
+	char key[CONTAINER_ENV_KEY_MAX];
+	char value[CONTAINER_ENV_VALUE_MAX];
+};
+
 struct registry_network_attachment {
 	char name[NETWORK_NAME_MAX];
 	uint32_t ip_be; /* network byte order */
@@ -205,6 +219,16 @@ struct registry_entry {
 	 */
 	char cmd[CONTAINER_MAX_ARGV][CONTAINER_ARGV_MAX];
 	int cmd_count; /* always >= 1 for an in-use entry */
+	/*
+	 * Extra environment variables this container was created with
+	 * (POST /v1/containers' own "env" field, see struct container_env's
+	 * own doc comment above) -- copied in registry_create() the same
+	 * way cmd[]/cmd_count above already are, by walking spec->envp
+	 * until NULL (no separate explicit parameter needed, same "already
+	 * part of spec" reasoning cmd[] itself already has).
+	 */
+	struct container_env env[CONTAINER_MAX_ENV];
+	int env_count; /* 0 = no extra env vars */
 	/*
 	 * The disk (disk.h's own bare kernel name, e.g. "sdb") this
 	 * container's own upper/work/merged overlay directories live

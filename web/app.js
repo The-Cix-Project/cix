@@ -2660,6 +2660,12 @@ function renderContainerDetail(name) {
 		"No sysctls set"
 	);
 	simpleTableRows(
+		document.querySelector("#cd-env tbody"),
+		Object.entries(c.env || {}).map(([k, v]) => [k, v]),
+		2,
+		"No environment variables set"
+	);
+	simpleTableRows(
 		document.querySelector("#cd-files tbody"),
 		(c.files || []).map((f) => [f]),
 		1,
@@ -6074,6 +6080,7 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 	const readinessPortText = document.getElementById("f-readiness-port").value.trim();
 	const readinessTimeoutText = document.getElementById("f-readiness-timeout").value.trim();
 	const sysctlsText = document.getElementById("f-sysctls").value.trim();
+	const envText = document.getElementById("f-env").value.trim();
 	const pkiIssue = document.getElementById("f-pki-issue").checked;
 	const pkiCertDir = document.getElementById("f-pki-cert-dir").value.trim();
 	const pkiDaysText = document.getElementById("f-pki-days").value.trim();
@@ -6159,6 +6166,15 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 
 			if (eq > 0)
 				body.sysctls[pair.slice(0, eq)] = pair.slice(eq + 1);
+		}
+	}
+	if (envText !== "") {
+		body.env = {};
+		for (const pair of envText.split(";").map((s) => s.trim()).filter((s) => s.length > 0)) {
+			const eq = pair.indexOf("=");
+
+			if (eq > 0)
+				body.env[pair.slice(0, eq)] = pair.slice(eq + 1);
 		}
 	}
 	if (pkiIssue) {

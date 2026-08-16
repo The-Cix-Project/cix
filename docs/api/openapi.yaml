@@ -6983,6 +6983,26 @@ components:
             so allowing arbitrary keys here would be a real host-wide
             write primitive from inside a container, not a per-container
             knob. See ADR-0030.
+        env:
+          type: object
+          additionalProperties:
+            type: string
+          maxProperties: 32
+          description: >
+            Extra environment variables merged into this container's own
+            process environment at execve() time (e.g. {"DEBUG": "1"}) --
+            a container gets *only* these, never a copy of thincd's own
+            environment (no implicit inheritance). Keys must be POSIX-
+            portable environment variable names (letters, digits,
+            underscore, not starting with a digit; 400 otherwise, since
+            an unsafe key would corrupt the "KEY=VALUE" boundary this
+            field is rendered into). Values may be empty. Unlike files
+            above, these are not written to disk anywhere -- purely an
+            execve()-time value, the same "real, not simulated" shape
+            `docker run -e KEY=VALUE` gives a container, not a
+            config-templating mechanism (compare to files' own
+            `{{SECRET:KEY}}` substitution, a build-time text fill-in with
+            no runtime presence at all).
         restart:
           type: string
           enum: [always, on-failure, unless-stopped, no]
@@ -7346,6 +7366,13 @@ components:
             persisted create-request body while genuinely stopped (see
             ADR-0100) -- either way, one real answer to "what is this
             container actually running."
+        env:
+          type: object
+          additionalProperties:
+            type: string
+          description: >
+            The extra environment variables this container was created
+            with (see ContainerCreateRequest.env). Empty if none.
         disk:
           type: string
           nullable: true

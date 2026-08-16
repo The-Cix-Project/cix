@@ -180,6 +180,28 @@ struct container_sysctl {
 };
 
 /*
+ * Opt-in extra environment variables merged into the container's own
+ * envp at execve() time (POST /v1/containers' own "env" field) -- a
+ * generous fixed bound, same reasoning CONTAINER_MAX_SYSCTLS above
+ * already gives. Unlike sysctls there's no dedicated struct/field on
+ * container_spec below: envp (already declared further down, already
+ * used internally by pkg.c's own build-sandbox spec construction) is
+ * this project's existing flat, NULL-terminated "KEY=VALUE" execve()
+ * shape, so daemon/src/main.c's POST /v1/containers parse renders the
+ * "env" JSON object straight into that shape rather than inventing a
+ * second, redundant key/value representation on the spec itself; only
+ * daemon/include/registry.h's echo-back struct needs the key/value
+ * split, and it recovers that directly from spec->envp's own strings
+ * (see registry_create()).
+ */
+#define CONTAINER_MAX_ENV 32
+#define CONTAINER_ENV_KEY_MAX 128
+#define CONTAINER_ENV_VALUE_MAX 384
+/* "KEY=VALUE\0" -- generous enough for both bounds above plus the '='
+ * separator and the terminating NUL, with room to spare. */
+#define CONTAINER_ENV_ENTRY_MAX 512
+
+/*
  * Not part of struct container_spec below -- config-file staging
  * (POST /v1/containers' own "files" field) is a purely daemon-side,
  * pre-clone3() host filesystem write straight into the container's

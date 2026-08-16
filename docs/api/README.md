@@ -1291,7 +1291,7 @@ The one real difference from state/log/rebuildable-storage's own contract: those
 
 `DELETE /v1/diskroles/{name}` and `POST /v1/disks/{name}/format` also now refuse (`409`) against a `container-storage`-role disk that one or more real containers currently have their own storage on — the exact same class of protection the four daemon-wide placements already had, extended to cover a gap that predated this ADR entirely (the original `POST /containers` `disk` field, `ADR-0102`, never had this safety check until migrate-storage gave the whole project a reason to add it). Migrate the container(s) away first via this endpoint.
 
-## Per-container config files + sysctls
+## Per-container config files + sysctls + env
 
 ```
 POST /v1/containers
@@ -1300,14 +1300,16 @@ POST /v1/containers
   "image": "router",
   "cmd": ["/bin/bash", "/usr/local/bin/pbr.sh"],
   "files": [{"path": "/etc/bird.conf", "content": "...", "mode": "0644"}],
-  "sysctls": [{"key": "net.ipv4.conf.all.rp_filter", "value": "0"}]
+  "sysctls": {"net.ipv4.conf.all.rp_filter": "0"},
+  "env": {"DEBUG": "1", "LOG_LEVEL": "info"}
 }
 ```
 
 - `files` is optional: 0–N `{path, content, mode}` entries, staged directly onto the container's own filesystem *before* its process ever `execve()`s — so `cmd` can point straight at a staged script (e.g. `pbr.sh` above). `path` must be absolute with no `.`/`..` component (`400` otherwise); `content` is bounded at 64KiB per file. `GET`/`PUT /containers/{name}/files?path=...` (above) are the read/write counterparts for after the container already exists — `PUT` there is live/ephemeral only, unlike this creation-time `files[]`, which is part of the container's real persisted definition.
-- `sysctls` is optional: 0–N `{key, value}` entries; `key` must start with `net.` (the one sysctl subtree the kernel actually namespaces end to end — `400` for anything else, a real security boundary, not incidental). Applied inside the container's own netns right after `clone3()`, the same mechanism `ip_forward` already uses.
-- Both survive exactly like everything else in `restart: "always"`'s own replay mechanism — no separate persistence work needed. See ADR-0030.
-- `cmd` itself is echoed back on every `GET /containers`/`GET /containers/{name}` response (`ADR-0100`) — previously there was no way to ask a running or stopped container "what is your entrypoint," since the create request's own `argv` only ever pointed into that request's transient parsed body.
+- `sysctls` is optional: an object of up to 32 `"key": "value"` entries; `key` must start with `net.` (the one sysctl subtree the kernel actually namespaces end to end — `400` for anything else, a real security boundary, not incidental). Applied inside the container's own netns right after `clone3()`, the same mechanism `ip_forward` already uses.
+- `env` is optional: an object of up to 32 `"KEY": "VALUE"` entries, merged into the container's own process environment at `execve()` time — a container gets *only* these, never a copy of `thincd`'s own environment. `KEY` must be a POSIX-portable environment variable name (letters, digits, underscore, not starting with a digit; `400` otherwise). This is a real runtime value, not a config-templating mechanism — compare to `files[]`'s own `{{SECRET:KEY}}` substitution (a one-time, build-time text fill-in with no runtime presence at all, see container recipes' `{{SECRET:KEY}}` substitution further below); `env` is the same shape `docker run -e KEY=VALUE` gives a container.
+- All three survive exactly like everything else in `restart: "always"`'s own replay mechanism — no separate persistence work needed. See ADR-0030.
+- `cmd` itself is echoed back on every `GET /containers`/`GET /containers/{name}` response (`ADR-0100`) — previously there was no way to ask a running or stopped container "what is your entrypoint," since the create request's own `argv` only ever pointed into that request's transient parsed body. `env` is echoed back the same way.
 
 ## Container DNS resolution (ADR-0143)
 

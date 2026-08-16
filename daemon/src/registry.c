@@ -115,6 +115,19 @@ enum registry_error registry_create(const char *name, const char *image,
 	for (i = 0; i < CONTAINER_MAX_ARGV && spec->argv[i] != NULL; i++)
 		strncpy(e->cmd[i], spec->argv[i], sizeof(e->cmd[i]) - 1);
 	e->cmd_count = i;
+	memset(e->env, 0, sizeof(e->env));
+	for (i = 0; i < CONTAINER_MAX_ENV && spec->envp[i] != NULL; i++) {
+		const char *entry = spec->envp[i];
+		const char *eq = strchr(entry, '=');
+		size_t key_len = (size_t)(eq - entry);
+
+		if (key_len >= sizeof(e->env[i].key))
+			key_len = sizeof(e->env[i].key) - 1;
+		memcpy(e->env[i].key, entry, key_len);
+		e->env[i].key[key_len] = '\0';
+		strncpy(e->env[i].value, eq + 1, sizeof(e->env[i].value) - 1);
+	}
+	e->env_count = i;
 	memset(e->disk_name, 0, sizeof(e->disk_name));
 	if (disk_name != NULL)
 		strncpy(e->disk_name, disk_name, sizeof(e->disk_name) - 1);
@@ -568,6 +581,13 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 	for (i = 0; i < entry->cmd_count; i++)
 		jw_str(w, entry->cmd[i]);
 	jw_arr_close(w);
+	jw_key(w, "env");
+	jw_obj_open(w);
+	for (i = 0; i < entry->env_count; i++) {
+		jw_key(w, entry->env[i].key);
+		jw_str(w, entry->env[i].value);
+	}
+	jw_obj_close(w);
 	jw_key(w, "disk");
 	if (entry->disk_name[0] != '\0')
 		jw_str(w, entry->disk_name);

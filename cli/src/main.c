@@ -441,6 +441,7 @@ static void fmt_container_line(const struct json_value *v)
 	const struct json_value *readiness = json_object_get(v, "readiness");
 	const struct json_value *files = json_object_get(v, "files");
 	const struct json_value *sysctls = json_object_get(v, "sysctls");
+	const struct json_value *env = json_object_get(v, "env");
 	const struct json_value *cmd = json_object_get(v, "cmd");
 	const struct json_value *memory_max = json_object_get(v, "memory_max");
 	const struct json_value *cpu_max = json_object_get(v, "cpu_max");
@@ -518,7 +519,7 @@ static void fmt_container_line(const struct json_value *v)
 
 	printf("%-20s %-8s pid=%-8ld exit_status=%-6s networks=%-20s fwd=%-4s restart=%-15s "
 	       "delay=%-4s roll=%-4s jitter=%-4s stopped=%-5s readiness=%-10s files=%-3zu sysctls=%-3zu "
-	       "memory_max=%-12s cpu_max=%-14s pids_max=%-5s cmd=%s\n",
+	       "env=%-3zu memory_max=%-12s cpu_max=%-14s pids_max=%-5s cmd=%s\n",
 	       name, status, pid, exit_buf, net_buf[0] != '\0' ? net_buf : "-",
 	       (ip_forward != NULL && ip_forward->type == JSON_BOOL && ip_forward->u.boolean) ? "yes"
 	                                                                                        : "no",
@@ -529,7 +530,8 @@ static void fmt_container_line(const struct json_value *v)
 	       jitter_buf,
 	       (stopped != NULL && stopped->type == JSON_BOOL && stopped->u.boolean) ? "yes" : "no",
 	       readiness_buf, files != NULL && files->type == JSON_ARRAY ? files->u.array.count : 0,
-	       sysctls != NULL && sysctls->type == JSON_OBJECT ? sysctls->u.object.count : 0, mem_buf,
+	       sysctls != NULL && sysctls->type == JSON_OBJECT ? sysctls->u.object.count : 0,
+	       env != NULL && env->type == JSON_OBJECT ? env->u.object.count : 0, mem_buf,
 	       cpu_max != NULL && cpu_max->type == JSON_STRING ? cpu_max->u.string : "-", pids_buf,
 	       cmd_buf[0] != '\0' ? cmd_buf : "-");
 }
@@ -3945,6 +3947,8 @@ static int cmd_console(const struct kx_client *c, int argc, char **argv)
 #define CLI_MAX_FILES 16
 /* Matches daemon's CONTAINER_MAX_SYSCTLS -- see include/container.h. */
 #define CLI_MAX_SYSCTLS 32
+/* Matches daemon's CONTAINER_MAX_ENV -- see include/container.h. */
+#define CLI_MAX_ENV 32
 /* Matches daemon's RESOLV_MAX_NAMESERVERS -- see daemon/include/resolv.h (ADR-0143). */
 #define CLI_MAX_DNS_SERVERS 3
 
@@ -5543,6 +5547,37 @@ static int parse_sysctl_flag(const char *s, struct cli_sysctl *out)
 	return 0;
 }
 
+struct cli_env {
+	char key[128]; /* matches daemon's CONTAINER_ENV_KEY_MAX */
+	char value[384]; /* matches daemon's CONTAINER_ENV_VALUE_MAX */
+};
+
+/* Parses "KEY=VALUE" (e.g. "DEBUG=1") -- whether KEY is a POSIX-safe
+ * environment variable name is the daemon's job to validate, not
+ * duplicated here, same "presentation-syntax split only" precedent
+ * parse_sysctl_flag() above already has. */
+static int parse_env_flag(const char *s, struct cli_env *out)
+{
+	const char *eq = strchr(s, '=');
+	size_t key_len, value_len;
+
+	memset(out, 0, sizeof(*out));
+	if (eq == NULL)
+		return -1;
+	key_len = (size_t)(eq - s);
+	if (key_len == 0 || key_len >= sizeof(out->key))
+		return -1;
+	memcpy(out->key, s, key_len);
+	out->key[key_len] = '\0';
+
+	value_len = strlen(eq + 1);
+	if (value_len >= sizeof(out->value))
+		return -1;
+	strcpy(out->value, eq + 1);
+
+	return 0;
+}
+
 static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
@@ -5589,6 +5624,8 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	int file_owner_count = 0;
 	struct cli_sysctl sysctls[CLI_MAX_SYSCTLS];
 	int sysctl_count = 0;
+	struct cli_env envs[CLI_MAX_ENV];
+	int env_count = 0;
 	long memory_max = -1;
 	long pids_max = -1;
 	const char *cpu_max = NULL;
@@ -5750,6 +5787,17 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 				return 2;
 			}
 			sysctl_count++;
+		} else if (strncmp(argv[i], "--env=", 6) == 0) {
+			if (env_count >= CLI_MAX_ENV) {
+				fprintf(stderr, "thincctl: too many --env= flags (max %d)\n", CLI_MAX_ENV);
+				return 2;
+			}
+			if (parse_env_flag(argv[i] + 6, &envs[env_count]) != 0) {
+				fprintf(stderr, "thincctl: invalid --env= value '%s' (expected KEY=VALUE)\n",
+				        argv[i] + 6);
+				return 2;
+			}
+			env_count++;
 		} else if (strncmp(argv[i], "--dns-server=", 13) == 0) {
 			if (dns_server_count >= CLI_MAX_DNS_SERVERS) {
 				fprintf(stderr, "thincctl: too many --dns-server= flags (max %d)\n",
@@ -5781,6 +5829,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		        "[--readiness-tcp-port=N [--readiness-timeout=N]] "
 		        "[--file=CONTAINER_PATH=LOCAL_PATH[:MODE] ...] "
 		        "[--file-owner=CONTAINER_PATH:UID:GID ...] [--sysctl=KEY=VALUE ...] "
+		        "[--env=KEY=VALUE ...] "
 		        "[--dns-server=A.B.C.D ...] "
 		        "-- CMD [ARGS...]\n");
 		return 2;
@@ -6017,6 +6066,15 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		for (i = 0; i < sysctl_count; i++) {
 			jw_key(&w, sysctls[i].key);
 			jw_str(&w, sysctls[i].value);
+		}
+		jw_obj_close(&w);
+	}
+	if (env_count > 0) {
+		jw_key(&w, "env");
+		jw_obj_open(&w);
+		for (i = 0; i < env_count; i++) {
+			jw_key(&w, envs[i].key);
+			jw_str(&w, envs[i].value);
 		}
 		jw_obj_close(&w);
 	}

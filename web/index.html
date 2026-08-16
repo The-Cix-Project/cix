@@ -220,6 +220,8 @@
 					"no" (a persisted definition to restart from is required).</p>
 				<h3>Sysctls</h3>
 				<table id="cd-sysctls"><tbody></tbody></table>
+				<h3>Environment variables</h3>
+				<table id="cd-env"><tbody></tbody></table>
 				<h3>Files</h3>
 				<table id="cd-files"><tbody></tbody></table>
 			</div>
@@ -1681,6 +1683,11 @@
 							Sysctls
 							<input type="text" id="f-sysctls"
 							       placeholder="(none), or semicolon-separated: net.ipv4.ip_forward=1;net.ipv4.conf.all.rp_filter=0">
+						</label>
+						<label class="wide">
+							Environment variables
+							<input type="text" id="f-env"
+							       placeholder="(none), or semicolon-separated: FOO=bar;DEBUG=1">
 						</label>
 					</fieldset>
 					<fieldset>

@@ -7912,6 +7912,28 @@ static int sysctl_key_is_safe(const char *key)
 }
 
 /*
+ * POST /v1/containers' own "env" field's key validation -- POSIX
+ * portable environment variable name rules (IEEE Std 1003.1-2017
+ * 8.1): letters, digits, underscore, not starting with a digit. Real
+ * enforcement, not cosmetic: a key containing '=' would make
+ * daemon/src/registry.c's own spec->envp "KEY=VALUE" split (see
+ * registry_create()) recover the wrong key/value boundary.
+ */
+static int env_key_is_safe(const char *key)
+{
+	const char *p = key;
+
+	if (*p == '\0' || (*p >= '0' && *p <= '9'))
+		return 0;
+	for (; *p != '\0'; p++) {
+		if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+		      (*p >= '0' && *p <= '9') || *p == '_'))
+			return 0;
+	}
+	return 1;
+}
+
+/*
  * Core of what POST /v1/containers does: parses+validates body,
  * builds a container_spec, calls registry_create(), calls
  * register_container_pidfd() on success (do NOT also call it at any
@@ -8031,7 +8053,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	long long disk_quota_bytes;
 	const struct json_value *jdevices;
 	const struct json_value *jinterfaces;
-	const struct json_value *jfiles, *jsysctls;
+	const struct json_value *jfiles, *jsysctls, *jenv;
 	const struct json_value *jrestart, *jrestart_delay, *jdepends_on, *jreadiness;
 	const struct json_value *jfollow_rolling, *jfollow_rolling_jitter;
 	const char *restart_str;
@@ -8048,7 +8070,9 @@ static int create_container_from_body(const char *body, size_t body_len,
 	enum registry_error rerr;
 	int create_errno;
 	char *argv_buf[CONTAINER_MAX_ARGV];
-	char *empty_envp[1];
+	char env_buf[CONTAINER_MAX_ENV][CONTAINER_ENV_ENTRY_MAX];
+	char *envp_ptrs[CONTAINER_MAX_ENV + 1];
+	int env_count = 0;
 	size_t argc, i;
 	struct registry_network_attachment net_attachments[CONTAINER_MAX_NETWORKS];
 	int net_count = 0;
@@ -8120,6 +8144,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	jinterfaces = json_object_get(root, "interfaces");
 	jfiles = json_object_get(root, "files");
 	jsysctls = json_object_get(root, "sysctls");
+	jenv = json_object_get(root, "env");
 	jdns_servers = json_object_get(root, "dns_servers");
 	jdns_register = json_object_get(root, "dns_register");
 	jpki_issue = json_object_get(root, "pki_issue");
@@ -8668,6 +8693,27 @@ static int create_container_from_body(const char *body, size_t body_len,
 			snprintf(sysctl_specs[i].value, sizeof(sysctl_specs[i].value), "%s", value);
 		}
 	}
+	if (jenv != NULL) {
+		if (jenv->type != JSON_OBJECT || jenv->u.object.count > CONTAINER_MAX_ENV) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "env must be an object of at most 32 entries");
+			return 400;
+		}
+		env_count = (int)jenv->u.object.count;
+		for (i = 0; i < (size_t)env_count; i++) {
+			const char *key = jenv->u.object.keys[i];
+			const char *value = json_as_string(jenv->u.object.values[i]);
+
+			if (value == NULL || strlen(key) >= CONTAINER_ENV_KEY_MAX ||
+			    strlen(value) >= CONTAINER_ENV_VALUE_MAX || !env_key_is_safe(key)) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size, "invalid env entry");
+				return 400;
+			}
+			snprintf(env_buf[i], sizeof(env_buf[i]), "%s=%s", key, value);
+			envp_ptrs[i] = env_buf[i];
+		}
+	}
 
 	argc = jcmd->u.array.count;
 	for (i = 0; i < argc; i++) {
@@ -8681,7 +8727,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		argv_buf[i] = (char *)s;
 	}
 	argv_buf[argc] = NULL;
-	empty_envp[0] = NULL;
+	envp_ptrs[env_count] = NULL;
 
 	/*
 	 * ADR-0107/0108: an image's own rootfs is now one of potentially
@@ -8949,7 +8995,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	for (i = 0; i < (size_t)interface_count; i++)
 		snprintf(spec.interfaces[i], sizeof(spec.interfaces[i]), "%s", interface_names[i]);
 	spec.argv = argv_buf;
-	spec.envp = empty_envp;
+	spec.envp = envp_ptrs;
 
 	/*
 	 * Always-on stdout/stderr capture for an ordinary, operator-created
