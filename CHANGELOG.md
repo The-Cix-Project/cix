@@ -2,6 +2,10 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 173 (done): web dashboard menu-bar cleanup -- tree-duplicated entries, dropdown arrows, logo text removed; a real hidden-attribute CSS bug fixed
+
+Removed every plain nav entry from all 7 dropdowns (the tree already covers navigation) -- Monitoring's menu had zero action items left once its nav-only entries were removed, so the whole trigger was removed too (8 menus -> 7). Removed the down-arrow from toggle labels and the "thin" text from the logo (shrunk 25%). Also fixed a real bug found while investigating a reported stray green line: `#auth-status`'s `hidden` attribute was being silently overridden by `.badge`'s own `display: inline-block` at equal CSS specificity -- same gotcha this file already had fixes for elsewhere.
+
 ### Part 172 (done): web dashboard's log panel collapse fixed -- was hiding entries without actually shrinking the pane
 
 The resize-handle feature's own inline `style.flexBasis` always outranked the `.collapsed` CSS class's height rule -- entries correctly hid, but the panel's outer height stayed pinned to its last-resized size. `setLogCollapsed()` now explicitly manages the inline style on both collapse and expand; `makeResizable()` gained a guard to avoid re-breaking this on page load while collapsed.
