@@ -57,6 +57,13 @@ pkg_depends="libc-dev"
 # way for dnsmasq -- see CLAUDE.md's own environment notes) rather
 # than chrony's own real upstream default of /var/run/chrony/chronyd.pid.
 pkg_build() {
+	echo "=== diagnostic: real tcc compile+link of a trivial pthread_create() test ==="
+	printf '#include <pthread.h>\nint main(void) { pthread_t t; return pthread_create(&t, 0, 0, 0); }\n' > pthread_probe.c
+	tcc pthread_probe.c -o pthread_probe 2>&1
+	echo "probe rc (no -lpthread) = $?"
+	tcc pthread_probe.c -lpthread -o pthread_probe 2>&1
+	echo "probe rc (-lpthread) = $?"
+
 	CC=tcc ./configure --prefix=/usr --disable-readline --without-nss \
 	            --without-nettle --without-gnutls --without-tomcrypt \
 	            --without-libcap --without-seccomp --disable-nts \
