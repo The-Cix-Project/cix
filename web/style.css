@@ -13,6 +13,27 @@
 	--error-bg: #fce8e6;
 	--unknown-bg: #eeeeee;
 	--tree-active-bg: rgba(0, 0, 0, 0.06);
+	/* Standard 16-color ANSI SGR palette (30-37/90-97), for rendering
+	 * a container's own real terminal-colored log output (e.g.
+	 * glauth's zerolog) instead of showing raw escape sequences --
+	 * tuned for readability on a light background, not a literal
+	 * terminal-default palette. */
+	--ansi-black: #3a3a3c;
+	--ansi-red: #c5221f;
+	--ansi-green: #1e8e3e;
+	--ansi-yellow: #9a6700;
+	--ansi-blue: #1a56db;
+	--ansi-magenta: #a3197a;
+	--ansi-cyan: #0f7a8c;
+	--ansi-white: #6e6e73;
+	--ansi-bright-black: #8a8a8e;
+	--ansi-bright-red: #e5483d;
+	--ansi-bright-green: #34a853;
+	--ansi-bright-yellow: #c79300;
+	--ansi-bright-blue: #4285f4;
+	--ansi-bright-magenta: #d24bb0;
+	--ansi-bright-cyan: #14a3bc;
+	--ansi-bright-white: #1c1c1e;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -27,6 +48,22 @@
 		--error-bg: #3a1615;
 		--unknown-bg: #2c2c2e;
 		--tree-active-bg: rgba(255, 255, 255, 0.09);
+		--ansi-black: #6e6e73;
+		--ansi-red: #ff6b60;
+		--ansi-green: #5cd67a;
+		--ansi-yellow: #e0b64f;
+		--ansi-blue: #6ea8ff;
+		--ansi-magenta: #e07ad0;
+		--ansi-cyan: #4fd0e5;
+		--ansi-white: #d0d0d4;
+		--ansi-bright-black: #9a9a9e;
+		--ansi-bright-red: #ff8a80;
+		--ansi-bright-green: #7ef0a0;
+		--ansi-bright-yellow: #f0cc70;
+		--ansi-bright-blue: #8fc0ff;
+		--ansi-bright-magenta: #f0a0e5;
+		--ansi-bright-cyan: #7ee5f5;
+		--ansi-bright-white: #f2f2f2;
 	}
 }
 
@@ -51,6 +88,22 @@
 	--error-bg: #fce8e6;
 	--unknown-bg: #eeeeee;
 	--tree-active-bg: rgba(0, 0, 0, 0.06);
+	--ansi-black: #3a3a3c;
+	--ansi-red: #c5221f;
+	--ansi-green: #1e8e3e;
+	--ansi-yellow: #9a6700;
+	--ansi-blue: #1a56db;
+	--ansi-magenta: #a3197a;
+	--ansi-cyan: #0f7a8c;
+	--ansi-white: #6e6e73;
+	--ansi-bright-black: #8a8a8e;
+	--ansi-bright-red: #e5483d;
+	--ansi-bright-green: #34a853;
+	--ansi-bright-yellow: #c79300;
+	--ansi-bright-blue: #4285f4;
+	--ansi-bright-magenta: #d24bb0;
+	--ansi-bright-cyan: #14a3bc;
+	--ansi-bright-white: #1c1c1e;
 }
 
 :root[data-theme="dark"] {
@@ -64,6 +117,22 @@
 	--error-bg: #3a1615;
 	--unknown-bg: #2c2c2e;
 	--tree-active-bg: rgba(255, 255, 255, 0.09);
+	--ansi-black: #6e6e73;
+	--ansi-red: #ff6b60;
+	--ansi-green: #5cd67a;
+	--ansi-yellow: #e0b64f;
+	--ansi-blue: #6ea8ff;
+	--ansi-magenta: #e07ad0;
+	--ansi-cyan: #4fd0e5;
+	--ansi-white: #d0d0d4;
+	--ansi-bright-black: #9a9a9e;
+	--ansi-bright-red: #ff8a80;
+	--ansi-bright-green: #7ef0a0;
+	--ansi-bright-yellow: #f0cc70;
+	--ansi-bright-blue: #8fc0ff;
+	--ansi-bright-magenta: #f0a0e5;
+	--ansi-bright-cyan: #7ee5f5;
+	--ansi-bright-white: #f2f2f2;
 }
 
 * {
@@ -688,6 +757,66 @@ main {
 .log-entry-source {
 	color: var(--muted);
 	font-weight: 600;
+}
+
+/* ANSI SGR rendering (see ansiToDom() in app.js) -- a container's own
+ * real terminal-colored output (e.g. glauth's zerolog) rendered as
+ * styled spans instead of raw escape sequences. */
+.ansi-bold {
+	font-weight: 600;
+}
+
+.ansi-dim {
+	opacity: 0.7;
+}
+
+.ansi-fg-black {
+	color: var(--ansi-black);
+}
+.ansi-fg-red {
+	color: var(--ansi-red);
+}
+.ansi-fg-green {
+	color: var(--ansi-green);
+}
+.ansi-fg-yellow {
+	color: var(--ansi-yellow);
+}
+.ansi-fg-blue {
+	color: var(--ansi-blue);
+}
+.ansi-fg-magenta {
+	color: var(--ansi-magenta);
+}
+.ansi-fg-cyan {
+	color: var(--ansi-cyan);
+}
+.ansi-fg-white {
+	color: var(--ansi-white);
+}
+.ansi-fg-bright-black {
+	color: var(--ansi-bright-black);
+}
+.ansi-fg-bright-red {
+	color: var(--ansi-bright-red);
+}
+.ansi-fg-bright-green {
+	color: var(--ansi-bright-green);
+}
+.ansi-fg-bright-yellow {
+	color: var(--ansi-bright-yellow);
+}
+.ansi-fg-bright-blue {
+	color: var(--ansi-bright-blue);
+}
+.ansi-fg-bright-magenta {
+	color: var(--ansi-bright-magenta);
+}
+.ansi-fg-bright-cyan {
+	color: var(--ansi-bright-cyan);
+}
+.ansi-fg-bright-white {
+	color: var(--ansi-bright-white);
 }
 
 .view {

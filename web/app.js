@@ -488,6 +488,77 @@ const MAX_LOG_ENTRIES = 300;
 let logBuffer = [];
 let logSourceFilter = "";
 
+const ANSI_FG_CLASSES = {
+	30: "ansi-fg-black",
+	31: "ansi-fg-red",
+	32: "ansi-fg-green",
+	33: "ansi-fg-yellow",
+	34: "ansi-fg-blue",
+	35: "ansi-fg-magenta",
+	36: "ansi-fg-cyan",
+	37: "ansi-fg-white",
+	90: "ansi-fg-bright-black",
+	91: "ansi-fg-bright-red",
+	92: "ansi-fg-bright-green",
+	93: "ansi-fg-bright-yellow",
+	94: "ansi-fg-bright-blue",
+	95: "ansi-fg-bright-magenta",
+	96: "ansi-fg-bright-cyan",
+	97: "ansi-fg-bright-white",
+};
+
+/* Parses SGR ("\x1b[...m") escape sequences into styled spans -- real
+ * container log output (e.g. glauth's own zerolog) arrives pre-
+ * colored; previously rendered as raw, unreadable escape bytes
+ * (reported directly: "make those render on the web ui properly").
+ * Only SGR (color/bold/dim/reset) is handled -- cursor-movement/
+ * clear-screen and every other CSI escape class is matched and
+ * dropped, never meaningful in a scrolling, append-only log panel.
+ * An unrecognized SGR code number is silently ignored rather than
+ * erroring, matching this codebase's own "degrade gracefully,
+ * never invent structure" convention elsewhere (see e.g.
+ * rewrite_basedn()'s own doc comment in daemon/src/ldap.c). */
+function ansiToDom(text) {
+	const fragment = document.createDocumentFragment();
+	const re = /\x1b\[([0-9;]*)m|\x1b\[[0-9;]*[A-Za-z]/g;
+	let lastIndex = 0;
+	let activeClasses = [];
+	let match;
+
+	function flush(upTo) {
+		if (upTo <= lastIndex) return;
+		const chunk = text.slice(lastIndex, upTo);
+
+		if (activeClasses.length === 0) {
+			fragment.appendChild(document.createTextNode(chunk));
+		} else {
+			const span = document.createElement("span");
+
+			span.className = activeClasses.join(" ");
+			span.textContent = chunk;
+			fragment.appendChild(span);
+		}
+	}
+
+	while ((match = re.exec(text)) !== null) {
+		flush(match.index);
+		lastIndex = re.lastIndex;
+		if (match[1] === undefined) continue; // a non-SGR CSI escape (cursor/clear) -- dropped
+		const codes = match[1] === "" ? [0] : match[1].split(";").map(Number);
+
+		for (const code of codes) {
+			if (code === 0) activeClasses = [];
+			else if (code === 1) activeClasses = activeClasses.filter((c) => c !== "ansi-bold").concat("ansi-bold");
+			else if (code === 2) activeClasses = activeClasses.filter((c) => c !== "ansi-dim").concat("ansi-dim");
+			else if (code === 39) activeClasses = activeClasses.filter((c) => !c.startsWith("ansi-fg-"));
+			else if (ANSI_FG_CLASSES[code] !== undefined)
+				activeClasses = activeClasses.filter((c) => !c.startsWith("ansi-fg-")).concat(ANSI_FG_CLASSES[code]);
+		}
+	}
+	flush(text.length);
+	return fragment;
+}
+
 /* A pure builder -- returns the element, does not touch the DOM tree
  * itself. Callers batch their own appendChild()/scrollTop so a poll
  * cycle adding many entries at once costs one reflow, not one per
@@ -514,7 +585,7 @@ function buildLogEntryDom(entry) {
 	sourceSpan.textContent = "[" + entry.source + "] ";
 	el.appendChild(sourceSpan);
 
-	el.appendChild(document.createTextNode(entry.text));
+	el.appendChild(ansiToDom(entry.text));
 	return el;
 }
 
