@@ -774,8 +774,18 @@ FLOATDI_C
 		latest_config_log=$(find . -name config.log -printf '%T@ %p\n' | \
 		    sort -rn | head -1 | cut -d' ' -f2-)
 		if [ -n "$latest_config_log" ]; then
-			echo "=== $latest_config_log ==="
-			tail -n 150 "$latest_config_log"
+			echo "=== $latest_config_log (error context) ==="
+			# A plain tail landed on config.log's own trailing
+			# cache-variable/confdefs.h summary, not the actual
+			# failing test -- config.log is chronological, and
+			# that summary is appended after EVERY test, whether
+			# or not it's the one that failed. grep straight for
+			# the real "configure: error" line plus generous
+			# context before it (the actual failing compiler
+			# invocation and its real stdout/stderr, which is
+			# what's actually needed) instead.
+			grep -n -B 30 -A 5 '^configure: error' \
+			    "$latest_config_log" | tail -n 150
 		fi
 		exit 1
 	fi
