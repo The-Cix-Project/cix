@@ -170,9 +170,43 @@ pkg_depends="binutils m4"
 # `.o`/`.a`/`.lo` already built under `build-x86_64-pc-linux-gnu/`
 # (never the Makefiles themselves, which stay correctly patched) so a
 # genuinely fresh, real-compiler recompile actually happens on the
-# next `make` attempt, not a stale, silently-still-wrong reuse. This
-# is, by real wall-clock time, the single longest build in this
-# project to date.
+# next `make` attempt, not a stale, silently-still-wrong reuse.
+#
+# The `build-x86_64-pc-linux-gnu/*` fix above only covers *build-time*
+# host tools. A real, deeper, distinct version of the identical
+# `__va_start`/`__va_arg` mismatch recurs almost an hour into a real
+# build against `../libiberty/libiberty.a` -- the plain, *target*
+# copy, correctly TCC-compiled (it feeds `cc1`, the actual point of
+# this recipe), linked into `gcov` this time, not a build tool at all.
+# GCC's own C++ frontend and its auxiliary programs (`cc1plus`,
+# `gcov`, ...) have been real C++ (not C) since GCC 4.7 -- TCC has no
+# C++ support whatsoever, so they always need real ambient g++,
+# regardless of build-vs-target. Forcing the *target* libiberty.a
+# itself to compile with real gcc (the same fix used for the
+# build-tools copy) is not an option here -- `cc1` (plain C, correctly
+# TCC-built) needs *that exact same archive* too, and doing so would
+# just move the ABI mismatch onto `cc1` instead of removing it.
+#
+# Real fix: TCC's own `__va_start`/`__va_arg` (`lib/va_list.c` in
+# TCC's own real source, verified against the exact upstream tarball
+# `tcc.recipe` already uses, byte-identical) is a small, portable,
+# genuinely ABI-compliant reimplementation of the real x86_64 SysV
+# `va_list` layout (`gp_offset`/`fp_offset`/`overflow_arg_area`/
+# `reg_save_area` -- the same struct shape real glibc/gcc use), not
+# anything TCC-proprietary. Compiling that exact file with *real* gcc
+# produces a portable `.o` implementing both symbols correctly for
+# either compiler's own linker to resolve. Each retry iteration `ar
+# r`s it directly into every `libiberty.a` found (both the
+# build-tools and target copies, wherever they currently exist) --
+# `ar r` replaces-or-adds, so this is safe to repeat every pass. TCC's
+# own compiled callers keep working exactly as before (their own
+# `libtcc1.a` already resolves these symbols independently, this
+# archive addition changes nothing for them); real g++-linked
+# consumers now find `__va_start`/`__va_arg` right there in the same
+# archive they already link against, with zero Makefile surgery and
+# without touching which compiler builds the rest of libiberty.a at
+# all. This is, by real wall-clock time, the single longest build in
+# this project to date.
 pkg_build() {
 	cat > /build/miniextract.c <<'MINIEXTRACT'
 #include <stdio.h>
@@ -285,6 +319,75 @@ MINIEXTRACT
 	/build/miniextract /build/mpc.tar && mv mpc-1.3.1 mpc
 	rm -f /build/gmp.tar /build/mpfr.tar /build/mpc.tar /build/miniextract.c /build/miniextract
 
+	cat > /build/va_list.c <<'VA_LIST_C'
+/* va_list.c - tinycc support for va_list on X86_64 */
+
+#if defined __x86_64__
+
+/* Avoid include files, they may not be available when cross compiling */
+extern void *memset(void *s, int c, __SIZE_TYPE__ n);
+extern void abort(void);
+
+/* This should be in sync with our include/stdarg.h */
+enum __va_arg_type {
+    __va_gen_reg, __va_float_reg, __va_stack
+};
+
+/* GCC compatible definition of va_list. */
+typedef struct {
+    unsigned int gp_offset;
+    unsigned int fp_offset;
+    union {
+        unsigned int overflow_offset;
+        char *overflow_arg_area;
+    };
+    char *reg_save_area;
+} __va_list_struct;
+
+void __va_start(__va_list_struct *ap, void *fp)
+{
+    memset(ap, 0, sizeof(__va_list_struct));
+    *ap = *(__va_list_struct *)((char *)fp - 16);
+    ap->overflow_arg_area = (char *)fp + ap->overflow_offset;
+    ap->reg_save_area = (char *)fp - 176 - 16;
+}
+
+void *__va_arg(__va_list_struct *ap,
+               enum __va_arg_type arg_type,
+               int size, int align)
+{
+    size = (size + 7) & ~7;
+    align = (align + 7) & ~7;
+    switch (arg_type) {
+    case __va_gen_reg:
+        if (ap->gp_offset + size <= 48) {
+            ap->gp_offset += size;
+            return ap->reg_save_area + ap->gp_offset - size;
+        }
+        goto use_overflow_area;
+
+    case __va_float_reg:
+        if (ap->fp_offset < 128 + 48) {
+            ap->fp_offset += 16;
+            return ap->reg_save_area + ap->fp_offset - 16;
+        }
+        size = 8;
+        goto use_overflow_area;
+
+    case __va_stack:
+    use_overflow_area:
+        ap->overflow_arg_area += size;
+        ap->overflow_arg_area = (char*)((long long)(ap->overflow_arg_area + align - 1) & -align);
+        return ap->overflow_arg_area - size;
+
+    default: /* should never happen */
+        abort();
+    }
+}
+#endif
+VA_LIST_C
+	/usr/bin/gcc -c -O2 -fPIC /build/va_list.c -o /build/va_list.o
+
 	mkdir -p build
 	cd build
 	CC=tcc ../configure --prefix=/usr --disable-multilib --disable-bootstrap \
@@ -298,6 +401,7 @@ MINIEXTRACT
 		    -e 's|^CXX = .*|CXX = /usr/bin/g++|' \
 		    {} \;
 		find . -path './build-*' \( -name '*.o' -o -name '*.a' -o -name '*.lo' \) -delete
+		find . -name 'libiberty.a' -exec /usr/bin/ar r {} /build/va_list.o \;
 		if make -j"$(nproc)"; then
 			break
 		fi
