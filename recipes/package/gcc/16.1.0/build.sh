@@ -58,6 +58,20 @@ pkg_depends="binutils m4"
 # compiler" goal. This is, by real wall-clock time, the single longest
 # build in this project to date.
 pkg_build() {
+	echo "=== diagnostic: real tar binary identity ==="
+	sha256sum "$(command -v tar)"
+	stat "$(command -v tar)"
+	echo "=== diagnostic: uname -a (real kernel/environment) ==="
+	uname -a
+	echo "=== diagnostic: does a freshly-created, immediately-synced archive still fail? ==="
+	mkdir -p sync_test && cd sync_test
+	mkdir -p srcd && echo aaa > srcd/one.txt && echo bbb > srcd/two.txt
+	bzip2 -dc /build/extra/gmp-6.3.0.tar.bz2 > gmp_sync.tar
+	sync
+	sleep 1
+	tar tvf gmp_sync.tar | wc -l
+	cd .. && rm -rf sync_test
+
 	mkdir -p decomp_test && cd decomp_test
 	bzip2 -dc /build/extra/gmp-6.3.0.tar.bz2 > gmp.tar
 	echo "=== diagnostic: real gmp.tar tvf entry count ==="
