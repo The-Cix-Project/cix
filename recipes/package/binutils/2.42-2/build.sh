@@ -33,23 +33,29 @@ pkg_depends=""
 # confirmed directly against binutils' own real 2.42 source that `TLS`
 # is never defined anywhere in the tracked tree (bfd.c, bfd-in.h,
 # bfd-in2.h, sysdep.h, ansidecl.h, configure.ac all checked, zero
-# matches) -- it can only be a Makefile-injected -D from configure's
-# own (untracked, generated) thread-local-storage detection, expanding
-# to `__thread` on a toolchain configure believes supports it. TCC's
+# matches). A first attempt at CPPFLAGS="-DTLS=" had no effect at all --
+# confirmed directly by inspecting the real captured build output: the
+# per-file tcc compile line never carries a -DTLS of any kind, so it
+# isn't coming from CPPFLAGS/DEFS at the command-line level. The only
+# remaining source is bfd/config.h itself (`-DHAVE_CONFIG_H` is on
+# every compile line) -- a real autoconf-generated file, invisible in
+# git, presumably defining `TLS` to `__thread` because configure's own
+# thread-local-storage probe believes this toolchain supports it. TCC's
 # parser rejects `__thread` in this exact position even though it
 # generally recognizes the keyword elsewhere. This project's own build
 # sandboxes are single-process, so real thread-local storage buys
-# nothing here regardless -- CPPFLAGS="-DTLS=" forces the macro to
-# expand to nothing (a plain `static bfd_error_type bfd_error;`),
-# sidestepping the parser issue entirely rather than patching bfd.c
-# itself (unmodified upstream source stays unmodified, same "fix the
-# build, not the third-party package" discipline every other TCC
-# compatibility workaround in this recipe set already follows).
+# nothing here regardless -- patching the generated config.h directly,
+# right after configure produces it and before make ever reads it,
+# forces the macro to expand to nothing (a plain
+# `static bfd_error_type bfd_error;`), sidestepping the parser issue
+# without touching a single line of real upstream source (bfd.c itself
+# stays byte-identical to the release tarball).
 pkg_build() {
 	mkdir -p build
 	cd build
-	CC=tcc CPPFLAGS="-DTLS=" ../configure --prefix=/usr --disable-multilib --disable-gold \
+	CC=tcc ../configure --prefix=/usr --disable-multilib --disable-gold \
 		--disable-gprofng --enable-deterministic-archives
+	sed -i 's/^#define TLS.*/#define TLS/' bfd/config.h
 	make -j"$(nproc)" MAKEINFO=true
 }
 
