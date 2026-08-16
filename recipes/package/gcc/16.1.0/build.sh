@@ -159,7 +159,19 @@ pkg_depends="binutils m4"
 # again (now that more subdirectory Makefiles exist) and retry, up to
 # a bound, relying on `make`'s own resumable dependency tracking so
 # already-built pieces (gmp, mpfr, mpc, ...) aren't redone each pass.
-# This is, by real wall-clock time, the single longest build in this
+# One further real refinement, also confirmed with direct evidence (a
+# retry that patched `CC =` correctly still failed, on a *different*
+# host tool, `undefined reference` unchanged): `make`'s own dependency
+# tracking only looks at file timestamps, not which compiler produced
+# an object file -- an `.o` already built by TCC on an earlier,
+# not-yet-patched pass looks perfectly up to date to `make` and is
+# never recompiled just because the Makefile's `CC =` line changed
+# underneath it. Each retry iteration also deletes every
+# `.o`/`.a`/`.lo` already built under `build-x86_64-pc-linux-gnu/`
+# (never the Makefiles themselves, which stay correctly patched) so a
+# genuinely fresh, real-compiler recompile actually happens on the
+# next `make` attempt, not a stale, silently-still-wrong reuse. This
+# is, by real wall-clock time, the single longest build in this
 # project to date.
 pkg_build() {
 	cat > /build/miniextract.c <<'MINIEXTRACT'
@@ -285,6 +297,7 @@ MINIEXTRACT
 		    -e 's|^CC = .*|CC = /usr/bin/gcc|' \
 		    -e 's|^CXX = .*|CXX = /usr/bin/g++|' \
 		    {} \;
+		find . -path './build-*' \( -name '*.o' -o -name '*.a' -o -name '*.lo' \) -delete
 		if make -j"$(nproc)"; then
 			break
 		fi
