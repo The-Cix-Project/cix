@@ -28,7 +28,7 @@
 	<nav class="menu-bar">
 		<div class="menu-dropdown menu-dropdown-logo">
 			<button type="button" class="menu-dropdown-toggle menu-dropdown-toggle-logo" data-menu="logo">
-				<span class="header-thin">thin</span><img src="/thinc-mark.svg" alt="thinC" class="header-mark">
+				<img src="/thinc-mark.svg" alt="thinC" class="header-mark">
 			</button>
 			<ul class="menu-dropdown-menu" data-menu="logo" hidden>
 				<li><button type="button" id="menu-about" data-modal="about-form" data-title="About thinC">About thinC</button></li>
@@ -41,106 +41,63 @@
 		</div>
 
 		<div class="menu-dropdown">
-			<button type="button" class="menu-dropdown-toggle" data-menu="create">Create&nbsp;&#9662;</button>
+			<button type="button" class="menu-dropdown-toggle" data-menu="create">Create</button>
 			<ul class="menu-dropdown-menu" data-menu="create" hidden>
-				<li><a href="#containers">Containers</a></li>
 				<li><button type="button" data-modal="run-form" data-title="Run a container">+ New Container</button></li>
-				<li><a href="#networks">Networks</a></li>
 				<li><button type="button" data-modal="network-form" data-title="Create network">+ New Network</button></li>
 			</ul>
 		</div>
 
 		<div class="menu-dropdown">
-			<button type="button" class="menu-dropdown-toggle" data-menu="software">Software&nbsp;&#9662;</button>
+			<button type="button" class="menu-dropdown-toggle" data-menu="software">Software</button>
 			<ul class="menu-dropdown-menu" data-menu="software" hidden>
-				<li><a href="#images">Images</a></li>
 				<li><button type="button" data-modal="image-form" data-title="Create image">+ New Image</button></li>
-				<li><a href="#packages">Packages</a></li>
 				<li><button type="button" data-modal="pkg-install-form" data-title="Install a package">+ Install Package</button></li>
-				<li><a href="#recipes">Recipes</a></li>
 				<li><button type="button" data-modal="pkg-recipe-form" data-title="Add or update a recipe">+ New/Update Recipe</button></li>
-				<li><a href="#pkg-repo">Repo &amp; Sync</a></li>
-				<li><a href="#pkg-cache">Cache &amp; Artifacts</a></li>
 			</ul>
 		</div>
 
 		<div class="menu-dropdown">
-			<button type="button" class="menu-dropdown-toggle" data-menu="usergroup">User / Group&nbsp;&#9662;</button>
+			<button type="button" class="menu-dropdown-toggle" data-menu="usergroup">User / Group</button>
 			<ul class="menu-dropdown-menu" data-menu="usergroup" hidden>
-				<li><a href="#ldap-users">Users</a></li>
 				<li><button type="button" data-modal="ldap-user-form" data-title="Create LDAP user">+ New User</button></li>
-				<li><a href="#ldap-groups">Groups</a></li>
 				<li><button type="button" data-modal="ldap-group-form" data-title="Create LDAP group">+ New Group</button></li>
-				<li><a href="#ldap-config">Config</a></li>
 			</ul>
 		</div>
 
 		<div class="menu-dropdown">
-			<button type="button" class="menu-dropdown-toggle" data-menu="netsvc">Network Services&nbsp;&#9662;</button>
+			<button type="button" class="menu-dropdown-toggle" data-menu="netsvc">Network Services</button>
 			<ul class="menu-dropdown-menu" data-menu="netsvc" hidden>
 				<li class="dropdown-group-label">DNS</li>
-				<li><a href="#dns-records">Records</a></li>
 				<li><button type="button" data-modal="dns-record-form" data-title="Create DNS record">+ New Record</button></li>
-				<li><a href="#dns-servers">Servers</a></li>
 				<li><button type="button" data-modal="dns-server-form" data-title="Register DNS server">+ Register Server</button></li>
 				<li class="dropdown-group-label">PKI</li>
-				<li><a href="#pki-ca">Root CA</a></li>
-				<li><a href="#pki-intermediate">Intermediate CA</a></li>
-				<li><a href="#pki-certs">Certificates</a></li>
 				<li><button type="button" data-modal="pki-cert-form" data-title="Issue certificate">+ Issue Certificate</button></li>
 				<li class="dropdown-group-label">LDAP</li>
-				<li><a href="#ldap-servers">Servers</a></li>
 				<li><button type="button" data-modal="ldap-server-form" data-title="Register LDAP server">+ Register Server</button></li>
 				<li class="dropdown-group-label">NTP</li>
-				<li><a href="#ntp-config">Config</a></li>
-				<li><a href="#ntp-servers">Servers</a></li>
 				<li><button type="button" data-modal="ntp-server-form" data-title="Register NTP server">+ Register Server</button></li>
-				<li><a href="#ntp-time">Time &amp; Sync</a></li>
 				<li class="dropdown-group-label">Syslog</li>
-				<li><a href="#syslog-targets">Targets</a></li>
 				<li><button type="button" data-modal="syslog-target-form" data-title="Register syslog forward target">+ Register Target</button></li>
 			</ul>
 		</div>
 
 		<div class="menu-dropdown">
-			<button type="button" class="menu-dropdown-toggle" data-menu="hardware">Hardware&nbsp;&#9662;</button>
+			<button type="button" class="menu-dropdown-toggle" data-menu="hardware">Hardware</button>
 			<ul class="menu-dropdown-menu" data-menu="hardware" hidden>
-				<li><a href="#devices">Devices &amp; Device Mappings</a></li>
 				<li><button type="button" data-modal="devicemap-form" data-title="Name a device">+ Name a Device Mapping</button></li>
-				<li><a href="#disks">Disks</a></li>
 				<li><button type="button" data-modal="diskrole-form" data-title="Assign disk role">+ Assign Disk Role</button></li>
 				<li><button type="button" data-modal="pkg-bootstrap-form" data-title="Bootstrap build image">Bootstrap Build Image</button></li>
-				<li><a href="#kmod">Kernel Modules</a></li>
 				<li><button type="button" data-modal="kmod-load-form" data-title="Load a kernel module">+ Load Module</button></li>
 				<li><button type="button" data-modal="kmodconfig-set-form" data-title="Configure a kernel module">+ Configure Module</button></li>
 			</ul>
 		</div>
 
 		<div class="menu-dropdown">
-			<button type="button" class="menu-dropdown-toggle" data-menu="host">Host&nbsp;&#9662;</button>
+			<button type="button" class="menu-dropdown-toggle" data-menu="host">Host</button>
 			<ul class="menu-dropdown-menu" data-menu="host" hidden>
-				<li><a href="#daemon-config">Daemon</a></li>
-				<li><a href="#site">Site</a></li>
-				<li><a href="#routes">Routes</a></li>
 				<li><button type="button" data-modal="route-add-form" data-title="Add route">+ Add Route</button></li>
-				<li><a href="#sysctl">Sysctl</a></li>
 				<li><button type="button" data-modal="sysctl-set-form" data-title="Set a sysctl">+ Set Sysctl</button></li>
-				<li><a href="#host-swap">Host Swap</a></li>
-				<li><a href="#rolling-restart">Rolling Restart</a></li>
-				<li><a href="#pkg-build-config">Package Builds</a></li>
-				<li><a href="#hostauth-sessions">Sessions</a></li>
-			</ul>
-		</div>
-
-		<div class="menu-dropdown">
-			<button type="button" class="menu-dropdown-toggle" data-menu="monitoring">Monitoring&nbsp;&#9662;</button>
-			<ul class="menu-dropdown-menu" data-menu="monitoring" hidden>
-				<li><a href="#host-stats">Host Stats</a></li>
-				<li><a href="#processes">Processes</a></li>
-				<li><a href="#logs">Log Store</a></li>
-				<li><a href="#tls-throttle">TLS Throttle</a></li>
-				<li><a href="#update">Update</a></li>
-				<li><a href="#backup">Backup</a></li>
 			</ul>
 		</div>
 	</nav>

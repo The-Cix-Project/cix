@@ -215,14 +215,8 @@ header {
 	padding: 0.4rem 0.6rem;
 }
 
-.header-thin {
-	font-weight: 200;
-	font-size: 1.1rem;
-	margin-right: 0.3rem;
-}
-
 .header-mark {
-	height: 1.1rem;
+	height: 0.825rem;
 	width: auto;
 }
 
@@ -1105,6 +1099,18 @@ td.empty {
 	border-radius: 999px;
 	font-size: 0.75rem;
 	font-weight: 600;
+}
+
+/* Same real [hidden]-vs-explicit-display gotcha as .modal-overlay/
+ * .view/.tab-panel elsewhere in this file (see .modal-overlay[hidden]'s
+ * own comment for the full explanation) -- reported directly as a
+ * visible artifact: #auth-status (badge badge-ok, --ok-bg background)
+ * stayed rendered as a small green blob in the header while logged
+ * out, because .badge's own display: inline-block outranks the
+ * browser's default [hidden] rule at equal specificity. Confirmed live:
+ * computed display was "block" despite the hidden attribute being set. */
+.badge[hidden] {
+	display: none;
 }
 
 .badge-ok {
