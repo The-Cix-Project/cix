@@ -60,10 +60,30 @@ pkg_depends="binutils m4"
 pkg_build() {
 	mkdir -p decomp_test && cd decomp_test
 	bzip2 -dc /build/extra/gmp-6.3.0.tar.bz2 > gmp.tar
-	echo "=== diagnostic: real gmp.tar tvf entry count (bare) ==="
-	tar tvf gmp.tar | wc -l
-	echo "=== diagnostic: real gmp.tar tvf entry count (--read-full-records) ==="
-	tar -tvf gmp.tar --read-full-records | wc -l
+	echo "=== diagnostic: raw open()+read() probe, actual byte counts per call ==="
+	cat > readprobe.c <<'PROBE'
+#include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+	int fd = open(argv[1], O_RDONLY);
+	char buf[10240];
+	long total = 0;
+	int calls = 0;
+	for (;;) {
+		ssize_t n = read(fd, buf, sizeof(buf));
+		calls++;
+		printf("call %d: requested %zu, got %zd (errno-independent)\n", calls, sizeof(buf), n);
+		if (n <= 0) break;
+		total += n;
+		if (calls >= 8) { printf("stopping after 8 calls\n"); break; }
+	}
+	printf("total bytes read: %ld\n", total);
+	return 0;
+}
+PROBE
+	tcc readprobe.c -o readprobe
+	./readprobe gmp.tar
 	cd .. && rm -rf decomp_test
 
 	tar xf /build/extra/gmp-6.3.0.tar.bz2 && mv gmp-6.3.0 gmp
