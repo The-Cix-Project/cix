@@ -23,7 +23,20 @@ pkg_name="chrony"
 pkg_version="4.8"
 pkg_source="https://chrony-project.org/releases/chrony-4.8.tar.gz"
 pkg_sha256="33ea8eb2a4daeaa506e8fcafd5d6d89027ed6f2f0609645c6f149b560d301706"
-pkg_depends=""
+# libc-dev (recipes/package/libc-dev/2.36/): chrony's own configure
+# hard-requires a real pthread_create() (regardless of --with-user=root
+# -PRIVDROP's single-threaded design -- confirmed live, this is not
+# optional/feature-gated in this chrony version's configure script).
+# glibc >= 2.34 folds pthread_create() into libc.so.6 itself and ships
+# no standalone libpthread.so -- but some tools built with an older
+# assumption still pass -lpthread explicitly (the same real gap
+# gcc.recipe's own scripts/sorttable HOSTCC step already hit, see
+# libc-dev.recipe's own comment). Depending on libc-dev here forces a
+# known-good, already-fixed copy into this build's own sandbox rather
+# than trusting whatever ambient content the shared bootstrap toolchain
+# already has -- the same reasoning m4.recipe's own binutils dependency
+# uses.
+pkg_depends="libc-dev"
 
 # Real, empirically confirmed via a local ./configure + build in this
 # sandbox: chrony's own hand-rolled configure script (not autoconf)
