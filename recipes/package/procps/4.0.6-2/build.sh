@@ -141,7 +141,7 @@ pkg_build() {
 	# standard automake convention) skips it while still building
 	# everything the top-level Makefile.am's own real SUBDIRS list
 	# (local po-man po testsuite) needs for a real install.
-	make -j"$(nproc)" SUBDIRS="local po-man po"
+	make -j"$(nproc)" SUBDIRS="local po-man po" V=1
 }
 
 # ps/top/free/kill/pgrep/pkill/pidof/pidwait/pmap/pwdx/slabtop/tload/
