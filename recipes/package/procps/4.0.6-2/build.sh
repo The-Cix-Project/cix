@@ -71,15 +71,11 @@ pkg_build() {
 		printf '#!/bin/sh\nexec perl /usr/bin/%s "$@"\n' "$tool" > "/build/toolwrap/$tool"
 		chmod +x "/build/toolwrap/$tool"
 	done
+	echo "=== DIAG: /usr/share/gettext/po (real, current template, not the legacy archive) ==="
+	ls -la /usr/share/gettext/po/ 2>&1
+	echo "=== END DIAG ==="
 	printf '#!/bin/sh\nexit 0\n' > /build/toolwrap/autopoint
 	chmod +x /build/toolwrap/autopoint
-
-	echo "=== DIAG: gettext-0.10.35 internal layout ==="
-	mkdir -p /build/gettext-extract
-	tar xJf /usr/share/gettext/archive.dir.tar.xz -C /build/gettext-extract
-	find /build/gettext-extract/gettext-0.10.35 -name 'Makefile.in.in' 2>&1
-	find /build/gettext-extract/gettext-0.10.35 -name 'config.rpath' 2>&1
-	echo "=== END DIAG ==="
 
 	PATH="/build/toolwrap:$PATH" ./autogen.sh
 	CC=tcc ./configure --prefix=/usr --disable-nls
