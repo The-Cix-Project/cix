@@ -205,8 +205,28 @@ pkg_depends="binutils m4"
 # consumers now find `__va_start`/`__va_arg` right there in the same
 # archive they already link against, with zero Makefile surgery and
 # without touching which compiler builds the rest of libiberty.a at
-# all. This is, by real wall-clock time, the single longest build in
-# this project to date.
+# all.
+#
+# The identical shape recurred once more, roughly fifty real minutes
+# into the build, for a third TCC-runtime-only symbol: `undefined
+# reference to 'alloca'` (`../libiberty/libiberty.a(regex.o)`, still
+# linked into `gcov`) -- `alloca()` grows the *caller's own* stack
+# frame, so it can never be an ordinary C function (its own prologue/
+# epilogue would create and destroy a stack frame of its own instead);
+# TCC's real `lib/alloca86_64.S` implements it as a small, standalone
+# x86_64 SysV assembly routine (verified byte-identical against the
+# same upstream tarball), not a C-callable library function at all.
+# Same fix, same reasoning: assembled with real `gcc` (`.S` files go
+# through the same driver as `.c`, no special handling needed) into a
+# portable `.o`, `ar r`'d into every `libiberty.a` right alongside
+# `va_list.o`. Any future `undefined reference` to a bare, TCC-runtime
+# -only symbol surfacing further into this build should be looked for
+# in TCC's own real `lib/` sources first (`alloca-arm.S`/`bcheck.c`/
+# the `*-bt.S` bounds-checking variants are the other candidates
+# already confirmed to exist there) rather than re-diagnosed from
+# scratch -- this is now a proven, reusable pattern, not a one-off.
+# This is, by real wall-clock time, the single longest build in this
+# project to date.
 pkg_build() {
 	cat > /build/miniextract.c <<'MINIEXTRACT'
 #include <stdio.h>
@@ -388,6 +408,44 @@ void *__va_arg(__va_list_struct *ap,
 VA_LIST_C
 	/usr/bin/gcc -c -O2 -fPIC /build/va_list.c -o /build/va_list.o
 
+	cat > /build/alloca86_64.S <<'ALLOCA_S'
+/* ---------------------------------------------- */
+/* alloca86_64.S */
+
+.globl alloca
+
+alloca:
+    pop     %rdx
+#ifdef _WIN32
+    mov     %rcx,%rax
+#else
+    mov     %rdi,%rax
+#endif
+    add     $15,%rax
+    and     $-16,%rax
+    jz      p3
+
+#ifdef _WIN32
+p1:
+    cmp     $4096,%rax
+    jbe     p2
+    test    %rax,-4096(%rsp)
+    sub     $4096,%rsp
+    sub     $4096,%rax
+    jmp p1
+p2:
+#endif
+
+    sub     %rax,%rsp
+    mov     %rsp,%rax
+p3:
+    push    %rdx
+    ret
+
+/* ---------------------------------------------- */
+ALLOCA_S
+	/usr/bin/gcc -c /build/alloca86_64.S -o /build/alloca.o
+
 	mkdir -p build
 	cd build
 	CC=tcc ../configure --prefix=/usr --disable-multilib --disable-bootstrap \
@@ -401,7 +459,7 @@ VA_LIST_C
 		    -e 's|^CXX = .*|CXX = /usr/bin/g++|' \
 		    {} \;
 		find . -path './build-*' \( -name '*.o' -o -name '*.a' -o -name '*.lo' \) -delete
-		find . -name 'libiberty.a' -exec /usr/bin/ar r {} /build/va_list.o \;
+		find . -name 'libiberty.a' -exec /usr/bin/ar r {} /build/va_list.o /build/alloca.o \;
 		if make -j"$(nproc)"; then
 			break
 		fi
