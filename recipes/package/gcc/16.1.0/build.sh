@@ -201,7 +201,7 @@ MINIEXTRACT
 		gzip -dc /build/extra/tar-1.35.tar.gz > tar-1.35.tar
 		/build/miniextract tar-1.35.tar
 		cd tar-1.35
-		CC=tcc ./configure --prefix=/usr
+		FORCE_UNSAFE_CONFIGURE=1 CC=tcc ./configure --prefix=/usr
 		make -j"$(nproc)"
 	)
 	freshtar=/build/freshtar/tar-1.35/src/tar
