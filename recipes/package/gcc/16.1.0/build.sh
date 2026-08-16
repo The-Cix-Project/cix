@@ -143,8 +143,14 @@ int main(int argc, char **argv)
 			if (block[i]) { allzero = 0; break; }
 		if (allzero)
 			break;
+		char modeoct[9];
+		long mode;
+
 		memcpy(name, block, 100);
 		name[100] = 0;
+		memcpy(modeoct, block + 100, 8);
+		modeoct[8] = 0;
+		mode = strtol(modeoct, NULL, 8) & 07777;
 		memcpy(sizeoct, block + 124, 12);
 		sizeoct[12] = 0;
 		size = strtol(sizeoct, NULL, 8);
@@ -157,7 +163,7 @@ int main(int argc, char **argv)
 			snprintf(fullpath, sizeof(fullpath), "%s", name);
 		mkdirs(fullpath);
 		if (typeflag == '5') {
-			mkdir(fullpath, 0755);
+			mkdir(fullpath, (mode ? (mode_t)mode : 0755));
 		} else if (typeflag == '0' || typeflag == 0) {
 			FILE *out = fopen(fullpath, "wb");
 			long remaining = size;
@@ -172,8 +178,10 @@ int main(int argc, char **argv)
 					fwrite(block, 1, towrite, out);
 				remaining -= BLK;
 			}
-			if (out)
+			if (out) {
 				fclose(out);
+				chmod(fullpath, (mode ? (mode_t)mode : 0644));
+			}
 		} else {
 			long nblocks = (size + BLK - 1) / BLK, i2;
 
