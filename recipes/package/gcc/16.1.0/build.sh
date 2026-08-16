@@ -235,8 +235,30 @@ MINIEXTRACT
 	echo "=== diagnostic: freshtar identity ==="
 	ls -la "$freshtar"
 	pwd
-	echo "=== diagnostic: freshtar tvf on the real gmp archive ==="
+	echo "=== diagnostic: fstat() file-type probe on the plain decompressed tar ==="
+	bzip2 -dc /build/extra/gmp-6.3.0.tar.bz2 > /build/gmp_plain.tar
+	cat > /build/statprobe.c <<'STATPROBE'
+#include <stdio.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+	struct stat st;
+	int fd = open(argv[1], O_RDONLY);
+	fstat(fd, &st);
+	printf("S_ISREG=%d S_ISCHR=%d S_ISFIFO=%d S_ISBLK=%d size=%lld isatty=%d\n",
+	       S_ISREG(st.st_mode), S_ISCHR(st.st_mode), S_ISFIFO(st.st_mode),
+	       S_ISBLK(st.st_mode), (long long)st.st_size, isatty(fd));
+	return 0;
+}
+STATPROBE
+	tcc /build/statprobe.c -o /build/statprobe
+	/build/statprobe /build/gmp_plain.tar
+	echo "=== diagnostic: freshtar tvf on the plain decompressed tar (not the .bz2) ==="
+	"$freshtar" tvf /build/gmp_plain.tar | wc -l
+	echo "=== diagnostic: freshtar tvf on the real gmp archive (.bz2) ==="
 	"$freshtar" tvf /build/extra/gmp-6.3.0.tar.bz2 | wc -l
+	rm -f /build/gmp_plain.tar /build/statprobe.c /build/statprobe
 
 	"$freshtar" xf /build/extra/gmp-6.3.0.tar.bz2
 	echo "gmp extract rc=$?"
