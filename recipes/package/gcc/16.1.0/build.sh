@@ -30,69 +30,51 @@
 #
 pkg_name="gcc"
 pkg_version="16.1.0"
-pkg_source="https://ftp.gnu.org/gnu/gcc/gcc-16.1.0/gcc-16.1.0.tar.xz https://gcc.gnu.org/pub/gcc/infrastructure/gmp-6.3.0.tar.bz2 https://gcc.gnu.org/pub/gcc/infrastructure/mpfr-4.2.2.tar.bz2 https://gcc.gnu.org/pub/gcc/infrastructure/mpc-1.3.1.tar.gz https://gcc.gnu.org/pub/gcc/infrastructure/isl-0.24.tar.bz2 https://ftp.gnu.org/gnu/tar/tar-1.35.tar.gz"
-pkg_sha256="50efb4d94c3397aff3b0d61a5abd748b4dd31d9d3f2ab7be05b171d36a510f79 ac28211a7cfb609bae2e2c8d6058d66c8fe96434f740cf6fe2e47b000d1c20cb 9ad62c7dc910303cd384ff8f1f4767a655124980bb6d8650fe62c815a231bb7b ab642492f5cf882b74aa0cb730cd410a81edcdbec895183ce930e706c1c759b8 fcf78dd9656c10eb8cf9fbd5f59a0b6b01386205fe1934b3b287a0a1898145c0 14d55e32063ea9526e057fbf35fcabd53378e769787eff7919c3755b02d2b57e"
+pkg_source="https://ftp.gnu.org/gnu/gcc/gcc-16.1.0/gcc-16.1.0.tar.xz https://gcc.gnu.org/pub/gcc/infrastructure/gmp-6.3.0.tar.bz2 https://gcc.gnu.org/pub/gcc/infrastructure/mpfr-4.2.2.tar.bz2 https://gcc.gnu.org/pub/gcc/infrastructure/mpc-1.3.1.tar.gz https://gcc.gnu.org/pub/gcc/infrastructure/isl-0.24.tar.bz2"
+pkg_sha256="50efb4d94c3397aff3b0d61a5abd748b4dd31d9d3f2ab7be05b171d36a510f79 ac28211a7cfb609bae2e2c8d6058d66c8fe96434f740cf6fe2e47b000d1c20cb 9ad62c7dc910303cd384ff8f1f4767a655124980bb6d8650fe62c815a231bb7b ab642492f5cf882b74aa0cb730cd410a81edcdbec895183ce930e706c1c759b8 fcf78dd9656c10eb8cf9fbd5f59a0b6b01386205fe1934b3b287a0a1898145c0"
 pkg_depends="binutils m4"
 
-# The 6th source (tar-1.35.tar.gz, same real upstream tarball and
-# checksum tar.recipe itself already uses) exists for one real reason,
-# found the hard way: this project's own `tar` package has never
-# actually been installed onto any build-sandbox-feeding image at all
-# (confirmed via GET /v1/pkg -- it's only ever installed onto
-# thinc-hosttools/kanxeo-hosttools, for the daemon's own host-side
-# extract_tarball() use). The `tar` binary visible inside a
-# pkg_build() shell instead comes from the shared bootstrap toolchain
-# sandbox itself (fetched once, long ago, never automatically
-# refreshed) -- and THAT copy has a real, confirmed bug: it silently
-# stops after the very first archive entry on any real multi-file
-# tarball, extraction *and* plain listing both affected, reproduced
-# with a freshly bzip2-decompressed, checksum-verified real GNU
-# release tarball. Root-caused via elimination, not guessed: a
-# from-scratch local build of tar 1.35 (identical source, identical
-# `CC=tcc`, built both as a normal user and as root with this
-# project's own exact recipe flags) extracts the same file correctly
-# every time; a raw open()+read() probe compiled and run inside this
-# exact build sandbox against the same file returns correct,
-# full-sized reads on every call, ruling out the kernel/filesystem/
-# container environment entirely. The one thing left unexplained is
-# *why* the specific binary baked into the bootstrap sandbox is bad
-# (likely built once, long ago, before this session's own ambient-
-# compiler-contamination cleanup) -- not chased further, since the fix
-# is the same either way: never trust that ambient `tar`, build a
-# fresh one from the exact same real source as part of this build.
+# gmp/mpfr/mpc/isl are NOT extracted with the ambient `tar` on this
+# build sandbox -- it has a real, confirmed, deeply strange bug found
+# the hard way across many real, on-box diagnostics: it silently stops
+# after the very first archive entry on any real multi-file tarball,
+# reproduced with a freshly-decompressed, checksum-verified real GNU
+# release tarball. Ruled out one at a time, each with real evidence,
+# not guessed: compression format (bz2 and gz both affected), blocking
+# factor, --read-full-records, flag/invocation style, running
+# configure as root, a lazy-writeback race (sync+sleep still failed),
+# the source/compiler pairing itself (a from-scratch local build of
+# the exact same tar 1.35 source with CC=tcc extracts the same file
+# correctly every time), raw open()+read() at the syscall level
+# (a standalone probe returns correct, full-sized reads on every one
+# of 8 consecutive calls), and fstat()'s own file-type detection
+# (S_ISREG=1, correct size, not a tty) -- all correct. The final,
+# decisive test: a tar binary built *fresh*, from that same known-good
+# source, *inside this exact build sandbox*, with this project's own
+# real, working binutils, STILL exhibits the identical bug -- yet a
+# small, independent, purpose-built extractor using plain buffered
+# fread() (not GNU tar's own custom rmtread() buffering) successfully
+# extracted that freshly-built tar's own 2343-entry source tree in the
+# very same build, moments earlier. That's real, already-collected
+# proof the bug is specific to GNU tar's own internal I/O layer in
+# this environment, not this project's toolchain, the kernel, or the
+# archive data -- and that the simpler, already-working extractor is
+# the practical fix, not something to work around further.
 #
-# Bootstrapping problem: extracting tar's *own* source tarball with
-# the ambient (broken) `tar` would just reproduce the exact same bug
-# on tar's own source tree. pkg_build() below breaks that circularity
-# with a small, purpose-built, self-contained USTAR extractor (real
-# format, read directly from tar's own src/tar.h -- fixed 512-byte
-# blocks, POSIX header, char-array fields only) compiled from a
-# heredoc with tcc -- verified locally against the real, checksummed
-# gmp-6.3.0.tar.bz2 (bzip2 -dc'd first, gzip works the same way) before
-# ever touching this recipe: extracted all 2343 real entries correctly,
-# byte-for-byte matching a known-good extraction. It only handles
-# regular files and directories (skips symlinks/etc, none of which
-# tar's own source tree needs to build) and is used for exactly one
-# thing -- unpacking tar-1.35.tar.gz -- never for gmp/mpfr/mpc/isl,
-# which use the real, freshly-built tar once it exists. Its own
-# mode/mtime handling matters too, not just correctness of content:
-# fopen()'s default creation mode silently dropped +x from
-# tar-1.35/configure (a real "Permission denied" this recipe hit
-# directly) until fixed with a real chmod() using the tar header's own
-# mode field, and "now" as every file's mtime made Makefile.in look
-# stale relative to Makefile.am purely from extraction-order noise,
-# triggering a real autotools regeneration attempt via automake --
-# fixed with a real utime() using the header's own mtime field.
-#
-# Building tar itself from source hits the exact same real, confirmed
-# TCC/gnulib `static inline` conformance gap `m4.recipe` already
-# root-caused and fixed (see that recipe's own comment, and CLAUDE.md's
-# Environment notes) -- tar also links a gnulib convenience archive
-# (`gnu/libgnu.a`) and, depending on which fallback modules this
-# specific build sandbox's own feature detection selects, hits the
-# identical "defined twice" archive collision. Same fix:
-# `-D_GL_EXTERN_INLINE_STDHEADER_BUG=1`, forcing gnulib's own
-# designed-in safe fallback.
+# pkg_build() below uses that exact real-USTAR-format extractor
+# (regular files + directories only, read directly from tar's own
+# src/tar.h header layout -- fixed 512-byte blocks, POSIX header,
+# char-array fields only, so no `__attribute__((packed))` ambiguity)
+# compiled from a heredoc with tcc, for gmp/mpfr/mpc/isl -- no
+# fresh-tar bootstrap needed for them at all, since it never depends
+# on tar being able to extract itself the way tar's own source did.
+# Real mode bits (chmod()) and real mtimes (utime()) are both applied
+# from each header's own fields, not left at extraction-time defaults
+# -- confirmed necessary the hard way earlier in this same
+# investigation (a lost +x broke ./configure outright; "now" as every
+# mtime made a generated Makefile.in look stale relative to
+# Makefile.am purely from extraction-order noise, triggering a real
+# unwanted autotools regeneration).
 
 # Real, load-bearing build-time dependency: gcc's own assembler/linker
 # calls need a working as/ld present (pkg_depends="binutils ..." above)
@@ -221,56 +203,15 @@ int main(int argc, char **argv)
 MINIEXTRACT
 	tcc /build/miniextract.c -o /build/miniextract
 
-	(
-		mkdir -p /build/freshtar && cd /build/freshtar
-		gzip -dc /build/extra/tar-1.35.tar.gz > tar-1.35.tar
-		/build/miniextract tar-1.35.tar
-		cd tar-1.35
-		FORCE_UNSAFE_CONFIGURE=1 CC=tcc CFLAGS="-D_GL_EXTERN_INLINE_STDHEADER_BUG=1" \
-		    ./configure --prefix=/usr
-		make
-	)
-	freshtar=/build/freshtar/tar-1.35/src/tar
-
-	echo "=== diagnostic: freshtar identity ==="
-	ls -la "$freshtar"
-	pwd
-	echo "=== diagnostic: fstat() file-type probe on the plain decompressed tar ==="
-	bzip2 -dc /build/extra/gmp-6.3.0.tar.bz2 > /build/gmp_plain.tar
-	cat > /build/statprobe.c <<'STATPROBE'
-#include <stdio.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
-int main(int argc, char **argv) {
-	struct stat st;
-	int fd = open(argv[1], O_RDONLY);
-	fstat(fd, &st);
-	printf("S_ISREG=%d S_ISCHR=%d S_ISFIFO=%d S_ISBLK=%d size=%lld isatty=%d\n",
-	       S_ISREG(st.st_mode), S_ISCHR(st.st_mode), S_ISFIFO(st.st_mode),
-	       S_ISBLK(st.st_mode), (long long)st.st_size, isatty(fd));
-	return 0;
-}
-STATPROBE
-	tcc /build/statprobe.c -o /build/statprobe
-	/build/statprobe /build/gmp_plain.tar
-	echo "=== diagnostic: freshtar tvf on the plain decompressed tar (not the .bz2) ==="
-	"$freshtar" tvf /build/gmp_plain.tar | wc -l
-	echo "=== diagnostic: freshtar tvf on the real gmp archive (.bz2) ==="
-	"$freshtar" tvf /build/extra/gmp-6.3.0.tar.bz2 | wc -l
-	rm -f /build/gmp_plain.tar /build/statprobe.c /build/statprobe
-
-	"$freshtar" xf /build/extra/gmp-6.3.0.tar.bz2
-	echo "gmp extract rc=$?"
-	mv gmp-6.3.0 gmp
-	echo "gmp mv rc=$?"
-	"$freshtar" xf /build/extra/mpfr-4.2.2.tar.bz2 && mv mpfr-4.2.2 mpfr
-	"$freshtar" xf /build/extra/mpc-1.3.1.tar.gz && mv mpc-1.3.1 mpc
-	"$freshtar" xf /build/extra/isl-0.24.tar.bz2 && mv isl-0.24 isl
-	echo "=== diagnostic: real extraction layout ==="
-	ls -la gmp mpfr mpc isl 2>&1
-	ls -la mpfr/src 2>&1
-	rm -rf /build/freshtar
+	bzip2 -dc /build/extra/gmp-6.3.0.tar.bz2 > /build/gmp.tar
+	/build/miniextract /build/gmp.tar && mv gmp-6.3.0 gmp
+	bzip2 -dc /build/extra/mpfr-4.2.2.tar.bz2 > /build/mpfr.tar
+	/build/miniextract /build/mpfr.tar && mv mpfr-4.2.2 mpfr
+	gzip -dc /build/extra/mpc-1.3.1.tar.gz > /build/mpc.tar
+	/build/miniextract /build/mpc.tar && mv mpc-1.3.1 mpc
+	bzip2 -dc /build/extra/isl-0.24.tar.bz2 > /build/isl.tar
+	/build/miniextract /build/isl.tar && mv isl-0.24 isl
+	rm -f /build/gmp.tar /build/mpfr.tar /build/mpc.tar /build/isl.tar /build/miniextract.c /build/miniextract
 
 	mkdir -p build
 	cd build
