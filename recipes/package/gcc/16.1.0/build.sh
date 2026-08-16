@@ -105,6 +105,7 @@ pkg_build() {
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <utime.h>
 
 #define BLK 512
 
@@ -143,8 +144,9 @@ int main(int argc, char **argv)
 			if (block[i]) { allzero = 0; break; }
 		if (allzero)
 			break;
-		char modeoct[9];
+		char modeoct[9], mtimeoct[13];
 		long mode;
+		struct utimbuf ut;
 
 		memcpy(name, block, 100);
 		name[100] = 0;
@@ -154,6 +156,9 @@ int main(int argc, char **argv)
 		memcpy(sizeoct, block + 124, 12);
 		sizeoct[12] = 0;
 		size = strtol(sizeoct, NULL, 8);
+		memcpy(mtimeoct, block + 136, 12);
+		mtimeoct[12] = 0;
+		ut.actime = ut.modtime = strtol(mtimeoct, NULL, 8);
 		typeflag = block[156];
 		memcpy(prefix, block + 345, 155);
 		prefix[155] = 0;
@@ -164,6 +169,7 @@ int main(int argc, char **argv)
 		mkdirs(fullpath);
 		if (typeflag == '5') {
 			mkdir(fullpath, (mode ? (mode_t)mode : 0755));
+			utime(fullpath, &ut);
 		} else if (typeflag == '0' || typeflag == 0) {
 			FILE *out = fopen(fullpath, "wb");
 			long remaining = size;
@@ -181,6 +187,7 @@ int main(int argc, char **argv)
 			if (out) {
 				fclose(out);
 				chmod(fullpath, (mode ? (mode_t)mode : 0644));
+				utime(fullpath, &ut);
 			}
 		} else {
 			long nblocks = (size + BLK - 1) / BLK, i2;
