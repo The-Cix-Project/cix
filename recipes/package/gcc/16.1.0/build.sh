@@ -62,6 +62,9 @@ pkg_build() {
 	tar xf /build/extra/mpfr-4.2.2.tar.bz2 && mv mpfr-4.2.2 mpfr
 	tar xf /build/extra/mpc-1.3.1.tar.gz && mv mpc-1.3.1 mpc
 	tar xf /build/extra/isl-0.24.tar.bz2 && mv isl-0.24 isl
+	echo "=== diagnostic: real extraction layout ==="
+	ls -la gmp mpfr mpc isl 2>&1
+	ls -la mpfr/src 2>&1
 	mkdir -p build
 	cd build
 	CC=tcc ../configure --prefix=/usr --disable-multilib --disable-bootstrap \
