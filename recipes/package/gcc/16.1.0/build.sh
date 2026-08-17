@@ -292,6 +292,21 @@ MINIEXTRACT
 		i=$((i + 1))
 	done
 	if [ "$i" -eq 3 ]; then
+		# Unlike gcc/as (fixed by one retry, every time it's been seen),
+		# gcc/ld's own "collect2: fatal error: posix_spawnp: Exec format
+		# error" survived all 3 retries in a row here -- a different,
+		# more persistent failure mode, not the same one-off stale-
+		# artifact shape. Direct evidence instead of a fourth guess:
+		# what gcc/ld actually IS (symlink target, or a real file and
+		# its first bytes) right after the final failed attempt.
+		echo "=== gcc/ld diagnostic ==="
+		ls -la ./gcc/ld ./gcc/ld1 2>&1
+		readlink -f ./gcc/ld 2>&1
+		od -A x -t x1z -N 32 ./gcc/ld 2>&1
+		echo "--- /usr/bin/ld directly ---"
+		ls -la /usr/bin/ld 2>&1
+		od -A x -t x1z -N 32 /usr/bin/ld 2>&1
+		/usr/bin/ld --version 2>&1 | head -3
 		# Autoconf-driven configure failures at any depth only print
 		# "See config.log for more details" to stdout/stderr -- the
 		# actual compiler invocation and error text never reach the
