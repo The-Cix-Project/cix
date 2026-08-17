@@ -859,19 +859,25 @@ FLOATDI_C
 	# matters.
 	if ! make -j"$(nproc)" CC_FOR_TARGET="/usr/bin/gcc -include stdbool.h" \
 	    GCC_FOR_TARGET="/usr/bin/gcc -include stdbool.h"; then
-		# Direct diagnostic for the "cannot execute .../gcc/as: Exec
-		# format error" class of failure -- isolates whether gcc/as
-		# itself is a corrupted wrapper (stale-artifact theory above)
-		# or whether the real system /usr/bin/as it wraps is the
-		# actually broken thing.
-		echo "=== gcc/as diagnostic ==="
-		ls -la ./gcc/as ./gcc/as1 2>&1
-		readlink -f ./gcc/as 2>&1
-		od -A x -t x1z -N 32 ./gcc/as 2>&1
-		echo "--- /usr/bin/as directly ---"
-		ls -la /usr/bin/as 2>&1
-		od -A x -t x1z -N 32 /usr/bin/as 2>&1
-		/usr/bin/as --version 2>&1 | head -3
+		# The gcc/as and target-libgcc-segfault gaps above are both
+		# confirmed fixed (neither symptom has recurred since), so
+		# their own diagnostics are retired here rather than left to
+		# eat into thincd's own fixed-size captured-build-output
+		# buffer on every future unrelated failure.
+		#
+		# Current gap: `__LIBGCC_DWARF_CIE_DATA_ALIGNMENT__ undeclared`
+		# in unwind-dw2.c, GCC itself suggesting `DWARF_CIE_DATA_ALIGNMENT`
+		# (the real, gcc-internal macro this one is meant to proxy) as
+		# a replacement -- meaning the real macro IS in scope somewhere,
+		# but the libgcc-safe `__LIBGCC_`-prefixed proxy version isn't.
+		# That proxy is generated at libgcc-configure time into
+		# libgcc_tm.h (libgcc/mkheader.sh, a pure text substitution from
+		# tm_defines -- confirmed via the real Makefile.in and
+		# mkheader.sh source, not guessed -- so it's compiler-
+		# independent, not something our CC_FOR_TARGET override should
+		# even affect). Dump it directly rather than guess further.
+		echo "=== libgcc_tm.h diagnostic ==="
+		grep -n "LIBGCC" x86_64-pc-linux-gnu/libgcc/libgcc_tm.h 2>&1
 		latest_config_log=$(find . -name config.log -printf '%T@ %p\n' | \
 		    sort -rn | head -1 | cut -d' ' -f2-)
 		if [ -n "$latest_config_log" ]; then
