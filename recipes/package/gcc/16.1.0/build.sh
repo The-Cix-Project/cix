@@ -899,6 +899,18 @@ FLOATDI_C
 		# even affect). Dump it directly rather than guess further.
 		echo "=== libgcc_tm.h diagnostic ==="
 		grep -n "LIBGCC" x86_64-pc-linux-gnu/libgcc/libgcc_tm.h 2>&1
+		# Regenerating libgcc_tm.h/.stamp each retry pass did NOT fix
+		# it -- still just the header guard, confirmed via a second
+		# full build run. That means tm_defines/tm_file are empty in
+		# the MAKEFILE ITSELF (libgcc_tm_defines = @tm_defines@,
+		# libgcc/Makefile.in line 89-90), not merely a stale generated
+		# .h left over from an earlier pass. Dump the actual
+		# substituted values directly to tell whether this is a
+		# configure-time substitution problem (values genuinely never
+		# computed/passed down) versus something else.
+		echo "=== libgcc Makefile tm_defines/tm_file ==="
+		grep -n "^libgcc_tm_defines\|^libgcc_tm_file\|^tm_defines\|^tm_file" \
+		    x86_64-pc-linux-gnu/libgcc/Makefile 2>&1
 		latest_config_log=$(find . -name config.log -printf '%T@ %p\n' | \
 		    sort -rn | head -1 | cut -d' ' -f2-)
 		if [ -n "$latest_config_log" ]; then
