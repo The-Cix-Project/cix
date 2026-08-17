@@ -225,7 +225,7 @@ MINIEXTRACT
 	# build-and-self-verify sequence described above -- an intentional,
 	# named target, not a side effect of some other invocation.
 	#
-	# Deliberately `-j2`, not `-j"$(nproc)"`: a real, un-bounded
+	# Deliberately bounded, not `-j"$(nproc)"`: a real, un-bounded
 	# `-j$(nproc)` bootstrap on the real box (8GB RAM total,
 	# `pkg-build-config`'s own `memory_max` was 0 -- no enforced ceiling
 	# at the time) hung the entire host, not just this build --
@@ -246,7 +246,10 @@ MINIEXTRACT
 	# box happens to have. Bootstrap takes 3x longer than a single-pass
 	# build in exchange for genuine self-hosting verification -- not
 	# worth trading host stability for a faster wall clock on top of
-	# that.
+	# that. Went from `-j2` to `-j1` further down for an unrelated,
+	# separate reason (a real suspected race between two parallel jobs
+	# both regenerating gcc's own as/collect-ld/nm at once) -- see that
+	# comment for the full reasoning.
 	# A known gap recurs here, on a completely fresh single-pass
 	# bootstrap: stage 1's own freshly-built xgcc fails "cannot execute
 	# '.../gcc/as': posix_spawn: Exec format error" configuring its own
@@ -307,13 +310,44 @@ MINIEXTRACT
 	# outputs on demand, by name, without re-running the full configure
 	# test suite -- `./config.status as collect-ld nm` from inside
 	# `build/gcc` does exactly that.
+	#
+	# That fix landed, but the SAME symptom recurred a fourth time
+	# anyway -- and this time the post-failure diagnostic (below) showed
+	# all three files looking completely correct (right size, right
+	# shebang, right content) immediately after the failure, which the
+	# genuinely-corrupted-content theory can't explain. That mismatch --
+	# "looks fine when inspected after the fact, was rejected as
+	# unexecutable at the moment it was actually invoked" -- is the
+	# classic signature of a race, not a content problem: `make`'s own
+	# dependency graph re-triggers `config.status` regeneration of these
+	# same files automatically whenever it notices them older than
+	# config.status itself (standard autoconf/automake behavior, and
+	# exactly what our own `rm -f` just did to their timestamps) -- under
+	# `-j2`, two parallel sub-make jobs can both notice this and both
+	# invoke `config.status` on the same target concurrently, one
+	# process's write landing mid-flight under another process's read.
+	# `-j1` for this specific step removes the possibility of that race
+	# entirely, at the cost of a slower build. A verify-and-wait loop
+	# right after each regeneration is a second, independent guard
+	# against the same symptom regardless of the exact mechanism -- it
+	# doesn't proceed to the real build until the three files actually
+	# run.
 	i=0
 	while [ "$i" -lt 3 ]; do
 		if [ -d gcc ]; then
 			rm -f ./gcc/as ./gcc/collect-ld ./gcc/nm
 			( cd gcc && [ -x config.status ] && ./config.status as collect-ld nm 2>/dev/null )
+			v=0
+			while [ "$v" -lt 10 ]; do
+				if ./gcc/as --version >/dev/null 2>&1 \
+				    && ./gcc/nm --version >/dev/null 2>&1; then
+					break
+				fi
+				v=$((v + 1))
+				sleep 1
+			done
 		fi
-		if make -j2 bootstrap; then
+		if make -j1 bootstrap; then
 			break
 		fi
 		i=$((i + 1))
