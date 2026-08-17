@@ -832,7 +832,28 @@ FLOATDI_C
 		# embedded directly in it -- `-include stdbool.h` forces the
 		# same effect portably, without patching gcc's own unmodified
 		# header.
+		# One more gap surfaced right behind stdbool.h, and the
+		# diagnostic added for it confirmed the real cause directly
+		# rather than guessing: `__LIBGCC_DWARF_CIE_DATA_ALIGNMENT__
+		# undeclared` in unwind-dw2.c, with libgcc_tm.h (dumped on
+		# failure) containing only its own header guard -- no
+		# #defines at all. libgcc_tm.h is generated once by
+		# libgcc/mkheader.sh from tm_defines/tm_file (confirmed via
+		# the real Makefile.in: `libgcc_tm.h: libgcc_tm.stamp; @true`,
+		# and libgcc_tm.stamp's own rule lists no prerequisites at
+		# all) -- meaning once that stamp exists, make considers the
+		# header permanently up to date and never regenerates it,
+		# exactly the same "make's timestamp-only tracking never
+		# revisits an already-written file" class of bug already fixed
+		# once this session for gcc/as. This stamp was almost
+		# certainly first created during an early retry pass, before
+		# tm_defines/tm_file were correctly populated (root cause of
+		# *why* they were empty that first time not fully chased --
+		# the fix is the same either way). Force both away each pass
+		# so a fresh, correctly-populated header gets generated.
 		find x86_64-pc-linux-gnu/libgcc -name '*.o' -delete 2>/dev/null
+		rm -f x86_64-pc-linux-gnu/libgcc/libgcc_tm.h \
+		    x86_64-pc-linux-gnu/libgcc/libgcc_tm.stamp
 		if make -j"$(nproc)" CC_FOR_TARGET="/usr/bin/gcc -include stdbool.h" \
 		    GCC_FOR_TARGET="/usr/bin/gcc -include stdbool.h"; then
 			break
