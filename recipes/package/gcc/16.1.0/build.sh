@@ -865,9 +865,38 @@ FLOATDI_C
 		find x86_64-pc-linux-gnu/libgcc -name '*.o' -delete 2>/dev/null
 		rm -f x86_64-pc-linux-gnu/libgcc/libgcc_tm.h \
 		    x86_64-pc-linux-gnu/libgcc/libgcc_tm.stamp
+		# A sixth gap, past DWARF_CIE_DATA_ALIGNMENT: `bit_AVX10`/
+		# `bit_AMX_FP16`/etc "undeclared" in cpuinfo.h, compiling
+		# libgcc/config/i386/cpuinfo.c's plain `#include "cpuid.h"`.
+		# Not a cc1-builtin gap this time -- confirmed directly (`find
+		# /usr/lib/gcc -name cpuid.h`, then grepping it): ambient gcc
+		# 12 ships its OWN private gcc/config/i386/cpuid.h (a real,
+		# genuine gcc-provided header, `/usr/lib/gcc/x86_64-linux-gnu/
+		# 12/include/cpuid.h`, automatically on its implicit private
+		# search path), and it's simply an OLDER revision missing
+		# these newer CPU feature bits (AVX10/AMX-FP16/APX-F/etc are
+		# all recent ISA extensions) -- the exact same "ambient gcc 12
+		# is too old" version-skew class of problem as the
+		# __LIBGCC_DWARF_CIE_DATA_ALIGNMENT__ gap, just via a
+		# different mechanism (a real conflicting header file this
+		# time, not a cc1-internal builtin). cpuinfo.c's own quoted
+		# `#include "cpuid.h"` has no local file to find in its own
+		# directory, so it falls through to the compiler's search
+		# chain and picks up gcc 12's private (wrong, stale) copy
+		# instead of this exact GCC 16 source tree's own correct,
+		# up-to-date gcc/config/i386/cpuid.h. An explicit `-I` pointed
+		# at the real one always wins (user `-I` paths are searched
+		# before a compiler's own implicit private header
+		# directories) -- computed as an absolute path from the
+		# current build dir (one level up from `build/`, which is
+		# where this whole retry loop already runs from) rather than
+		# a fragile relative one, since it has to resolve correctly
+		# regardless of which libgcc subdirectory a given compile
+		# happens to run from.
+		gcc16_srcdir=$(cd .. && pwd)
 		if make -j"$(nproc)" \
-		    CC_FOR_TARGET="/usr/bin/gcc -include stdbool.h -D__LIBGCC_DWARF_CIE_DATA_ALIGNMENT__=-8" \
-		    GCC_FOR_TARGET="/usr/bin/gcc -include stdbool.h -D__LIBGCC_DWARF_CIE_DATA_ALIGNMENT__=-8"; then
+		    CC_FOR_TARGET="/usr/bin/gcc -include stdbool.h -D__LIBGCC_DWARF_CIE_DATA_ALIGNMENT__=-8 -I${gcc16_srcdir}/gcc/config/i386" \
+		    GCC_FOR_TARGET="/usr/bin/gcc -include stdbool.h -D__LIBGCC_DWARF_CIE_DATA_ALIGNMENT__=-8 -I${gcc16_srcdir}/gcc/config/i386"; then
 			break
 		fi
 		i=$((i + 1))
@@ -890,9 +919,10 @@ FLOATDI_C
 	# tail on some unrelated, already-successful subproject's log
 	# instead). `ls -t` ranks by mtime; the newest is the one that
 	# matters.
+	gcc16_srcdir=$(cd .. && pwd)
 	if ! make -j"$(nproc)" \
-	    CC_FOR_TARGET="/usr/bin/gcc -include stdbool.h -D__LIBGCC_DWARF_CIE_DATA_ALIGNMENT__=-8" \
-	    GCC_FOR_TARGET="/usr/bin/gcc -include stdbool.h -D__LIBGCC_DWARF_CIE_DATA_ALIGNMENT__=-8"; then
+	    CC_FOR_TARGET="/usr/bin/gcc -include stdbool.h -D__LIBGCC_DWARF_CIE_DATA_ALIGNMENT__=-8 -I${gcc16_srcdir}/gcc/config/i386" \
+	    GCC_FOR_TARGET="/usr/bin/gcc -include stdbool.h -D__LIBGCC_DWARF_CIE_DATA_ALIGNMENT__=-8 -I${gcc16_srcdir}/gcc/config/i386"; then
 		# The gcc/as and target-libgcc-segfault gaps above are both
 		# confirmed fixed (neither symptom has recurred since), so
 		# their own diagnostics are retired here rather than left to
