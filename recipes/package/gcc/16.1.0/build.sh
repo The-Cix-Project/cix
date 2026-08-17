@@ -737,6 +737,18 @@ FLOATDI_C
 		--enable-languages=c,c++ --disable-libsanitizer --disable-lto --with-isl=no \
 		--with-system-zlib
 
+	# Both patches below (build-tools CC/CXX + symbol injection, and
+	# target libgcc's own CC) MUST live in the SAME retry loop, applied
+	# together on every pass. They were originally two sequential loops,
+	# and that was a real bug, caught only by reading a full build's own
+	# live-captured log start to finish: the first loop's own `make -j`
+	# calls, once the symbol gaps below are fixed, run far enough to
+	# ALSO reach target libgcc and hit the still-unpatched segfault
+	# described further down -- so `if make; then break; fi` never
+	# succeeds, and the first loop burns all 10 of its own retries
+	# hitting that same unrelated failure before a second, sequential
+	# loop would ever get a chance to apply its own fix. One combined
+	# loop applying every patch on every pass avoids this entirely.
 	i=0
 	while [ "$i" -lt 10 ]; do
 		find . -path './build-*' -name Makefile -exec sed -i \
@@ -761,34 +773,33 @@ FLOATDI_C
 		# symlink/copy, not a compile) regardless of whether this
 		# theory turns out to be the actual cause.
 		rm -f ./gcc/as ./gcc/as1
-		if make -j"$(nproc)"; then
-			break
-		fi
-		i=$((i + 1))
-	done
-
-	# Past the gcc/as fix, the build reaches a genuinely different class
-	# of problem: cc1 itself -- the freshly self-built, TCC-compiled
-	# stage-1 compiler -- segfaults ("internal compiler error:
-	# Segmentation fault") compiling certain real libgcc source files at
-	# -O2 (generic-morestack.c, soft-fp/bitintpow10.c both confirmed;
-	# there may be more). This is not a missing symbol -- it's TCC's own
-	# generated cc1 binary crashing under real optimization load (the
-	# crash is reported "during RTL pass: jump2"), the same general class
-	# of genuine TCC codegen/conformance gap this session has already
-	# confirmed several times (the m4 static-inline bug, the -pthread
-	# mishandling, the missing `linux` macro), just far more expensive to
-	# chase file-by-file here. Since this is a native, non-cross build,
-	# libgcc's resulting object code is ABI-identical regardless of which
-	# working compiler builds it -- so build target libgcc with real gcc
-	# instead of the (partially unreliable) freshly-built xgcc, the same
-	# "some things build better with real gcc, and that's fine" precedent
-	# already established for the host build-tools above. This does NOT
-	# touch which compiler builds cc1/cc1plus/gcc-ar themselves (still
-	# TCC, per the 3-tier policy) -- only target libgcc's own object code,
-	# which is derived runtime support, not thinC-authored logic.
-	i=0
-	while [ "$i" -lt 5 ]; do
+		# Past the gcc/as fix, the build reaches a genuinely different
+		# class of problem: cc1 itself -- the freshly self-built,
+		# TCC-compiled stage-1 compiler -- segfaults ("internal compiler
+		# error: Segmentation fault") compiling certain real libgcc
+		# source files at -O2 (generic-morestack.c and
+		# soft-fp/bitintpow10.c both confirmed; there may be more). This
+		# is not a missing symbol -- it's TCC's own generated cc1 binary
+		# crashing under real optimization load (the crash is reported
+		# "during RTL pass: jump2"), the same general class of genuine
+		# TCC codegen/conformance gap this session has already confirmed
+		# several times (the m4 static-inline bug, the -pthread
+		# mishandling, the missing `linux` macro), just far more
+		# expensive to chase file-by-file here. Since this is a native,
+		# non-cross build, libgcc's resulting object code is
+		# ABI-identical regardless of which working compiler builds it
+		# -- so build target libgcc with real gcc instead of the
+		# (partially unreliable) freshly-built xgcc, the same "some
+		# things build better with real gcc, and that's fine" precedent
+		# already established for the host build-tools above. This does
+		# NOT touch which compiler builds cc1/cc1plus/gcc-ar themselves
+		# (still TCC, per the 3-tier policy) -- only target libgcc's own
+		# object code, which is derived runtime support, not
+		# thinC-authored logic. libgcc's own Makefile doesn't exist
+		# until its own configure step runs (mid-build, triggered by
+		# make itself) -- same "patch it once it exists" shape as the
+		# build-tools patch above, which is exactly why this has to be
+		# in the same loop rather than run once up front.
 		if [ -f x86_64-pc-linux-gnu/libgcc/Makefile ]; then
 			sed -i 's|^CC = .*|CC = /usr/bin/gcc|' \
 			    x86_64-pc-linux-gnu/libgcc/Makefile
