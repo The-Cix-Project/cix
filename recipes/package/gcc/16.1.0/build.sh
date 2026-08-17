@@ -262,9 +262,22 @@ MINIEXTRACT
 	# to which compiler builds gcc -- worth a real root-cause pass if it
 	# keeps recurring, but the same cheap, proven fix (force it to
 	# regenerate, retry) unblocks it either way.
+	#
+	# The identical shape recurred one step further into that same
+	# retry, past gcc/as: `collect2: fatal error: posix_spawnp: Exec
+	# format error` linking libgcc_s.so.1, this time collect2 (gcc's own
+	# linker-invocation driver) failing to spawn something via its own
+	# private COMPILER_PATH search -- the exact search convention this
+	# project's own Environment notes already document for `ld` lookup
+	# specifically (see the "gcc.recipe (Phase 33)" bullet). Broadened
+	# the cleanup to every wrapper gcc's own Makefile regenerates the
+	# same on-demand, timestamp-blind way (`ld`/`ld1`/`nm`/`ranlib`/
+	# `strip`, not just `as`/`as1`) rather than chase each one
+	# individually as it happens to surface -- `rm -f` on files that
+	# don't exist is a harmless no-op either way.
 	i=0
 	while [ "$i" -lt 3 ]; do
-		rm -f ./gcc/as ./gcc/as1
+		rm -f ./gcc/as ./gcc/as1 ./gcc/ld ./gcc/ld1 ./gcc/nm ./gcc/ranlib ./gcc/strip
 		if make -j2 bootstrap; then
 			break
 		fi
