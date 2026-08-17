@@ -298,6 +298,10 @@ header {
 	background: var(--error);
 }
 
+.health-dot-degraded {
+	background: var(--paused);
+}
+
 .health-dot-unknown {
 	background: var(--muted);
 }

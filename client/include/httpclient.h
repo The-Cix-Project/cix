@@ -61,18 +61,27 @@ int kx_client_connect_raw(const struct kx_client *c);
  * transport failure (connect/write/read error, or a malformed status
  * line) returns -1 and *out is untouched. On success returns 0 and
  * fills *out; caller must kx_response_free() it.
+ *
+ * issue #20: internally retries a transport-level failure up to
+ * KX_CLIENT_MAX_ATTEMPTS times with a short fixed backoff before
+ * finally giving up and returning -1 -- a single transient blip (the
+ * daemon mid-restart, one dropped packet) no longer looks identical to
+ * a genuinely down daemon on the very first attempt. Never retries
+ * after a real HTTP response of any status -- an error status is a
+ * real, deterministic answer, returned immediately, not retried.
  */
 int kx_client_request(const struct kx_client *c, const char *method, const char *path,
                        const char *body, struct kx_response *out);
 
 /*
- * Same contract as kx_client_request(), with a real
- * "Authorization: Bearer <token>" header attached -- ADR-0144's own
- * host-auth work (thincctl's own login/logout, and every write
- * command once a session is active, plus this daemon's own test
- * suite). token may be NULL (identical to a plain kx_client_request()
- * call in that case) -- callers that don't yet have a session use
- * this directly rather than needing two near-duplicate call sites.
+ * Same contract as kx_client_request() (including its retry behavior),
+ * with a real "Authorization: Bearer <token>" header attached --
+ * ADR-0144's own host-auth work (thincctl's own login/logout, and
+ * every write command once a session is active, plus this daemon's
+ * own test suite). token may be NULL (identical to a plain
+ * kx_client_request() call in that case) -- callers that don't yet
+ * have a session use this directly rather than needing two
+ * near-duplicate call sites.
  */
 int kx_client_request_with_auth(const struct kx_client *c, const char *method, const char *path,
                                  const char *token, const char *body, struct kx_response *out);

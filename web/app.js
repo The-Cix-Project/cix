@@ -864,6 +864,18 @@ function readFileAsText(file) {
 	});
 }
 
+/*
+ * issue #20: a single missed poll used to flip the dot straight to
+ * "unreachable" -- indistinguishable from a real outage. consecutiveHealthFailures
+ * tracks misses since the last success so a lone transient blip reads as
+ * "degraded" (amber, same token .paused already uses) rather than red;
+ * only 2+ *consecutive* misses earn the harsher "unreachable" state. The
+ * next poll (POLL_INTERVAL_MS, already 2s) is the real retry here -- no
+ * separate backoff timer needed on top of a loop that already re-checks
+ * this often.
+ */
+let consecutiveHealthFailures = 0;
+
 async function refreshHealth() {
 	const start = performance.now();
 
@@ -871,11 +883,18 @@ async function refreshHealth() {
 		await apiRequest("GET", "/v1/health");
 		const ms = Math.round(performance.now() - start);
 
+		consecutiveHealthFailures = 0;
 		healthBadge.className = "health-dot health-dot-ok";
 		healthBadge.title = "Daemon reachable — " + ms + "ms";
 	} catch (e) {
-		healthBadge.className = "health-dot health-dot-error";
-		healthBadge.title = "Daemon unreachable";
+		consecutiveHealthFailures++;
+		if (consecutiveHealthFailures >= 2) {
+			healthBadge.className = "health-dot health-dot-error";
+			healthBadge.title = "Daemon unreachable (" + consecutiveHealthFailures + " consecutive failed checks)";
+		} else {
+			healthBadge.className = "health-dot health-dot-degraded";
+			healthBadge.title = "Daemon check failed once — retrying";
+		}
 	}
 }
 

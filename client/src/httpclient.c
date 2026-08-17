@@ -159,8 +159,8 @@ int kx_client_request(const struct kx_client *c, const char *method, const char 
 	                                    out);
 }
 
-int kx_client_request_with_auth(const struct kx_client *c, const char *method, const char *path,
-                                 const char *token, const char *body, struct kx_response *out)
+static int do_one_request(const struct kx_client *c, const char *method, const char *path,
+                           const char *token, const char *body, struct kx_response *out)
 {
 	int fd;
 	char header[512];
@@ -249,6 +249,40 @@ int kx_client_request_with_auth(const struct kx_client *c, const char *method, c
 
 	free(rb.buf);
 	return 0;
+}
+
+/*
+ * issue #20: do_one_request() above returns -1 for any transport-level
+ * failure (connect/write/read error, or a malformed status line) -- a
+ * momentary blip (the daemon mid-restart, a dropped packet) used to be
+ * indistinguishable from a genuinely down daemon, both surfacing as
+ * "thincctl: could not reach daemon" on the very first failed attempt.
+ * Retries up to KX_CLIENT_MAX_ATTEMPTS times with a short, fixed
+ * backoff between attempts -- only ever on a transport failure, never
+ * after a real HTTP response (even an error status like a 404/500 is a
+ * real, deterministic answer, not a transient connectivity problem, and
+ * is returned immediately on the first attempt). Total added latency in
+ * the worst case (every attempt fails) is small and bounded
+ * (KX_CLIENT_RETRY_DELAY_MS * (KX_CLIENT_MAX_ATTEMPTS - 1)), not an
+ * open-ended hang -- this is deliberately just enough tolerance for a
+ * real transient blip, not a substitute for a genuinely down daemon
+ * eventually still failing.
+ */
+#define KX_CLIENT_MAX_ATTEMPTS 3
+#define KX_CLIENT_RETRY_DELAY_MS 250
+
+int kx_client_request_with_auth(const struct kx_client *c, const char *method, const char *path,
+                                 const char *token, const char *body, struct kx_response *out)
+{
+	int attempt;
+
+	for (attempt = 1; attempt <= KX_CLIENT_MAX_ATTEMPTS; attempt++) {
+		if (do_one_request(c, method, path, token, body, out) == 0)
+			return 0;
+		if (attempt < KX_CLIENT_MAX_ATTEMPTS)
+			usleep(KX_CLIENT_RETRY_DELAY_MS * 1000);
+	}
+	return -1;
 }
 
 void kx_response_free(struct kx_response *r)
