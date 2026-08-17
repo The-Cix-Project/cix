@@ -260,7 +260,7 @@ static void print_usage(FILE *out)
 	        "  disks rm-partition DISK_NAME PARTITION_NAME  -- removes one partition;\n"
 	        "               refused (409) if it still has a role assigned (diskrole rm first)\n"
 	        "  diskrole create --disk=NAME\n"
-	        "               --role=container-storage|backup|state-storage|rebuildable-storage|log-storage\n"
+	        "               --role=container-storage|backup|state-storage|rebuildable-storage|log-storage|swap\n"
 	        "               -- assign a persisted role to a disk (never the OS disk)\n"
 	        "  diskrole ls / diskrole rm NAME  -- list assigned roles (with whether each\n"
 	        "               disk is currently present) / remove one; refused (409) if the\n"
@@ -286,8 +286,12 @@ static void print_usage(FILE *out)
 	        "  storage rebuildable [show|migrate [--disk=NAME]|migrate-status]  -- same shape\n"
 	        "               again, for where images/packages/artifacts (regenerable from\n"
 	        "               recipes/sources, never irreplaceable) live instead\n"
-	        "  swap  -- show whether the host swap file is enabled (ADR-0069)\n"
-	        "  swap enable --size-mb=N  -- create and activate a swap file of this size\n"
+	        "  swap  -- show whether the host swap file is enabled (ADR-0069) and which disk\n"
+	        "               (if any) it's placed on\n"
+	        "  swap enable --size-mb=N [--disk=NAME]  -- create and activate a swap file of\n"
+	        "               this size; --disk= places it on a disk carrying the \"swap\" role\n"
+	        "               (diskrole create --role=swap, issue #28) instead of the default\n"
+	        "               OS-disk location -- omit for the default\n"
 	        "  swap disable  -- deactivate and remove it\n"
 	        "  host-stats  -- host-wide load/CPU/memory/disk/network snapshot (ADR-0073)\n"
 	        "  process ls  -- every real process on the box (a direct /proc scan), each\n"
@@ -566,12 +570,17 @@ static void fmt_swap(const struct json_value *v)
 	              json_object_get(v, "enabled")->u.boolean;
 	long size_mb = (long)json_as_number(json_object_get(v, "size_mb"));
 	const char *path = json_str_field(v, "path");
+	/* issue #28: the configured disk (or its absence -- the default
+	 * OS-disk location) is real, meaningful state even while swap is
+	 * currently disabled -- shown either way, not only when enabled. */
+	const char *disk = json_str_field(v, "disk");
 
 	if (!enabled) {
-		printf("swap: disabled\n");
+		printf("swap: disabled disk=%s\n", disk != NULL ? disk : "(default)");
 		return;
 	}
-	printf("swap: enabled size_mb=%ld path=%s\n", size_mb, path != NULL ? path : "");
+	printf("swap: enabled size_mb=%ld path=%s disk=%s\n", size_mb, path != NULL ? path : "",
+	       disk != NULL ? disk : "(default)");
 }
 
 static void fmt_logs(const struct json_value *v)
@@ -2925,6 +2934,7 @@ static int cmd_swap_status(const struct kx_client *c, int json_mode)
 static int cmd_swap_enable(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *size_mb = NULL;
+	const char *disk = NULL;
 	int i;
 	struct json_writer w;
 	struct kx_response r;
@@ -2932,13 +2942,15 @@ static int cmd_swap_enable(const struct kx_client *c, int json_mode, int argc, c
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--size-mb=", 10) == 0)
 			size_mb = argv[i] + 10;
+		else if (strncmp(argv[i], "--disk=", 7) == 0)
+			disk = argv[i] + 7;
 		else {
 			fprintf(stderr, "thincctl: unknown swap enable option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 	if (size_mb == NULL) {
-		fprintf(stderr, "usage: thincctl swap enable --size-mb=N\n");
+		fprintf(stderr, "usage: thincctl swap enable --size-mb=N [--disk=NAME]\n");
 		return 2;
 	}
 
@@ -2946,6 +2958,13 @@ static int cmd_swap_enable(const struct kx_client *c, int json_mode, int argc, c
 	jw_obj_open(&w);
 	jw_key(&w, "size_mb");
 	jw_int(&w, atol(size_mb));
+	/* issue #28: omitted means the default OS-disk location, same
+	 * "give it to change, leave it out to keep the default" convention
+	 * every other opt-in PUT/POST field in this codebase already uses. */
+	if (disk != NULL) {
+		jw_key(&w, "disk");
+		jw_str(&w, disk);
+	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -3121,7 +3140,7 @@ static int cmd_swap(const struct kx_client *c, int json_mode, int argc, char **a
 
 	fprintf(stderr,
 	        "usage: thincctl swap [status]\n"
-	        "       thincctl swap enable --size-mb=N\n"
+	        "       thincctl swap enable --size-mb=N [--disk=NAME]\n"
 	        "       thincctl swap disable\n");
 	return 2;
 }
@@ -7126,7 +7145,7 @@ static int cmd_diskrole_create(const struct kx_client *c, int json_mode, int arg
 	}
 	if (disk_name == NULL || role == NULL) {
 		fprintf(stderr,
-		        "usage: thincctl diskrole create --disk=NAME --role=container-storage|backup|state-storage|rebuildable-storage|log-storage\n");
+		        "usage: thincctl diskrole create --disk=NAME --role=container-storage|backup|state-storage|rebuildable-storage|log-storage|swap\n");
 		return 2;
 	}
 
@@ -7182,7 +7201,7 @@ static int cmd_diskrole(const struct kx_client *c, int json_mode, int argc, char
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: thincctl diskrole create --disk=NAME --role=container-storage|backup|state-storage|rebuildable-storage|log-storage\n"
+		fprintf(stderr, "usage: thincctl diskrole create --disk=NAME --role=container-storage|backup|state-storage|rebuildable-storage|log-storage|swap\n"
 		                "       thincctl diskrole ls\n"
 		                "       thincctl diskrole rm NAME\n");
 		return 2;

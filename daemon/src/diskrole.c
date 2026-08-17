@@ -42,6 +42,8 @@ static const char *role_str(enum diskrole_kind role)
 		return "rebuildable-storage";
 	case DISKROLE_LOG_STORAGE:
 		return "log-storage";
+	case DISKROLE_SWAP:
+		return "swap";
 	case DISKROLE_BACKUP:
 	default:
 		return "backup";
@@ -60,6 +62,8 @@ static int role_from_str(const char *s, enum diskrole_kind *out)
 		*out = DISKROLE_REBUILDABLE_STORAGE;
 	else if (strcmp(s, "log-storage") == 0)
 		*out = DISKROLE_LOG_STORAGE;
+	else if (strcmp(s, "swap") == 0)
+		*out = DISKROLE_SWAP;
 	else
 		return -1;
 	return 0;

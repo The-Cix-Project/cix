@@ -432,6 +432,60 @@ static int resolve_log_storage_placement(void)
 }
 
 /*
+ * issue #28: same "which disk, if any, is this daemon-wide singleton
+ * currently placed on" lookup the three resolvers above share, but a
+ * deliberately SOFTER failure posture -- ADR-0069's own swap mechanism
+ * has always been "best-effort, never blocks daemon startup if the
+ * file is somehow missing or stale" (swap_init()'s own existing
+ * swapon() reconciliation already behaves this way), and a swap file
+ * is not platform self-definition the way STATE_DIR is, so there is no
+ * reason to newly start refusing to boot over it. Unlike the three
+ * resolvers above, this doesn't mutate a shared global path -- it
+ * fills out_file_path with either the resolved disk's own swapfile
+ * path or the plain default (SWAP_FILE_PATH), always succeeding, for
+ * the caller to hand straight to swap_init().
+ */
+static void resolve_swap_placement(char *out_file_path, size_t out_file_path_size)
+{
+	const char *disk_name = storageplacement_get(STORAGE_KIND_SWAP);
+	struct discovered_disk disks[DISK_ENUM_MAX];
+	int n, i;
+
+	snprintf(out_file_path, out_file_path_size, "%s", SWAP_FILE_PATH);
+	if (disk_name == NULL)
+		return; /* default OS-disk placement -- nothing to resolve */
+
+	n = disk_enumerate(disks, DISK_ENUM_MAX, CONTAINERS_DIR);
+	for (i = 0; i < n; i++) {
+		const char *role;
+
+		if (strcmp(disks[i].name, disk_name) != 0)
+			continue;
+		if (!disks[i].mounted) {
+			fprintf(stderr,
+			        "resolve_swap_placement: swap's configured disk '%s' is present but not "
+			        "currently mounted -- using the default location instead this boot\n",
+			        disk_name);
+			return;
+		}
+		role = diskrole_lookup(disk_name);
+		if (role == NULL || strcmp(role, "swap") != 0) {
+			fprintf(stderr,
+			        "resolve_swap_placement: swap's configured disk '%s' no longer carries the "
+			        "swap role -- using the default location instead this boot\n",
+			        disk_name);
+			return;
+		}
+		snprintf(out_file_path, out_file_path_size, "%s/%s/swapfile", DISKS_MOUNT_DIR, disk_name);
+		return;
+	}
+	fprintf(stderr,
+	        "resolve_swap_placement: swap's configured disk '%s' is not currently present -- "
+	        "using the default location instead this boot\n",
+	        disk_name);
+}
+
+/*
  * ADR-0141 Phase 4: same shape as resolve_state_storage_placement()/
  * resolve_log_storage_placement() above, for REBUILDABLE_DIR --
  * recomputes every REBUILDABLE_DIR-relative path via compute_
@@ -5250,16 +5304,50 @@ static void handle_swap_get(int fd)
 	struct json_writer w;
 
 	jw_init(&w);
-	swap_write_json(&w);
+	swap_write_json(&w, storageplacement_get(STORAGE_KIND_SWAP));
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
+}
+
+/*
+ * issue #28: resolves disk_name to a real, currently-mounted disk
+ * carrying the swap role, writing its swapfile path into out_path.
+ * Same three checks (present, mounted, correct role) do_backup_
+ * snapshot_now() already established for backup's own identically-shaped
+ * "operator-named disk, validated at the point of real use" field --
+ * deliberately not shared as a common helper, matching that this
+ * project has never factored these three checks out for the other
+ * three (state/rebuildable/log) singleton placements either. Returns
+ * NULL (a real, specific reason) on failure, or out_path on success.
+ */
+static const char *resolve_swap_disk_now(const char *disk_name, char *out_path, size_t out_path_size)
+{
+	struct discovered_disk disks[DISK_ENUM_MAX];
+	int n, i;
+
+	n = disk_enumerate(disks, DISK_ENUM_MAX, CONTAINERS_DIR);
+	for (i = 0; i < n; i++) {
+		const char *role;
+
+		if (strcmp(disks[i].name, disk_name) != 0)
+			continue;
+		if (!disks[i].mounted)
+			return NULL;
+		role = diskrole_lookup(disk_name);
+		if (role == NULL || strcmp(role, "swap") != 0)
+			return NULL;
+		snprintf(out_path, out_path_size, "%s/%s/swapfile", DISKS_MOUNT_DIR, disk_name);
+		return out_path;
+	}
+	return NULL;
 }
 
 static void handle_swap_enable(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
-	const struct json_value *jsize;
+	const struct json_value *jsize, *jdisk;
 	int64_t size_mb;
+	const char *disk_name;
 	enum swap_error serr;
 	struct json_writer w;
 
@@ -5275,7 +5363,55 @@ static void handle_swap_enable(int fd, const char *body, size_t body_len)
 		return;
 	}
 	size_mb = (int64_t)json_as_number(jsize);
-	json_free(root);
+	jdisk = json_object_get(root, "disk");
+	disk_name = jdisk != NULL ? json_as_string(jdisk) : NULL;
+	if (jdisk != NULL && disk_name == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "disk must be a string");
+		return;
+	}
+
+	/*
+	 * Checked before touching repoint/placement at all: repointing
+	 * while already enabled would desync g_file_path from the file
+	 * swapon(2) is actually holding open, corrupting swap_write_json()'s
+	 * own "path" field, for a call about to fail with
+	 * SWAP_ERR_ALREADY_ENABLED regardless (swap_enable() below re-checks
+	 * this itself -- this is not a substitute for that, just avoiding a
+	 * side effect ahead of a call already known to fail).
+	 */
+	if (swap_is_enabled()) {
+		json_free(root);
+		respond_swap_error(fd, SWAP_ERR_ALREADY_ENABLED);
+		return;
+	}
+
+	/*
+	 * Every call repoints, whether disk_name is given or not -- an
+	 * omitted disk explicitly means "the default location," not
+	 * "whatever the last call happened to leave it at." disk_name is
+	 * copied out of root before json_free() below, since resolve_swap_
+	 * disk_now()/storageplacement_set() both need it to outlive that.
+	 */
+	if (disk_name != NULL) {
+		char resolved_path[PATH_MAX];
+		char disk_name_copy[DISKROLE_DISK_NAME_MAX];
+
+		snprintf(disk_name_copy, sizeof(disk_name_copy), "%s", disk_name);
+		json_free(root);
+		if (resolve_swap_disk_now(disk_name_copy, resolved_path, sizeof(resolved_path)) == NULL) {
+			respond_error(fd, 400, "Bad Request",
+			              "disk is not currently present, not mounted, or does not carry the "
+			              "swap role (POST /diskroles first)");
+			return;
+		}
+		swap_repoint(resolved_path);
+		storageplacement_set(STORAGE_KIND_SWAP, disk_name_copy);
+	} else {
+		json_free(root);
+		swap_repoint(SWAP_FILE_PATH);
+		storageplacement_set(STORAGE_KIND_SWAP, NULL);
+	}
 
 	serr = swap_enable(size_mb);
 	if (serr != SWAP_OK) {
@@ -5284,7 +5420,7 @@ static void handle_swap_enable(int fd, const char *body, size_t body_len)
 	}
 
 	jw_init(&w);
-	swap_write_json(&w);
+	swap_write_json(&w, storageplacement_get(STORAGE_KIND_SWAP));
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
@@ -11260,11 +11396,13 @@ static int is_active_storage_singleton_placement(const char *disk_name)
 	const char *log_disk = storageplacement_get(STORAGE_KIND_LOG);
 	const char *rebuildable_disk = storageplacement_get(STORAGE_KIND_REBUILDABLE);
 	const char *backup_disk = backupconfig_disk();
+	const char *swap_disk = storageplacement_get(STORAGE_KIND_SWAP);
 
 	return (state_disk != NULL && strcmp(state_disk, disk_name) == 0) ||
 	       (log_disk != NULL && strcmp(log_disk, disk_name) == 0) ||
 	       (rebuildable_disk != NULL && strcmp(rebuildable_disk, disk_name) == 0) ||
-	       (backup_disk != NULL && strcmp(backup_disk, disk_name) == 0);
+	       (backup_disk != NULL && strcmp(backup_disk, disk_name) == 0) ||
+	       (swap_disk != NULL && strcmp(swap_disk, disk_name) == 0);
 }
 
 /*
@@ -18462,8 +18600,16 @@ int main(int argc, char **argv)
 	 * STATE_DIR's own real location. */
 	if (boot_subsystem_init(init_mode, "quotamap", quotamap_init(QUOTAMAP_STATE_PATH)) != 0)
 		return 1;
-	if (boot_subsystem_init(init_mode, "swap", swap_init(SWAP_STATE_PATH, SWAP_FILE_PATH)) != 0)
-		return 1;
+	{
+		/* issue #28: resolve_swap_placement() itself never blocks
+		 * boot -- see its own doc comment. */
+		char resolved_swap_file_path[PATH_MAX];
+
+		resolve_swap_placement(resolved_swap_file_path, sizeof(resolved_swap_file_path));
+		if (boot_subsystem_init(init_mode, "swap",
+		                         swap_init(SWAP_STATE_PATH, resolved_swap_file_path)) != 0)
+			return 1;
+	}
 	if (boot_subsystem_init(init_mode, "logstore", logstore_init(LOG_DIR, LOG_STATE_PATH)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "resolv", resolv_init(RESOLV_CONF_PATH)) != 0)

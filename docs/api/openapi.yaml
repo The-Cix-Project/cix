@@ -1885,6 +1885,20 @@ paths:
                   type: integer
                   minimum: 64
                   maximum: 1048576
+                disk:
+                  type: string
+                  nullable: true
+                  description: >
+                    Issue #28. Places the swap file on a real disk carrying
+                    the "swap" diskrole (POST /diskroles first) instead of
+                    the default OS-disk location -- validated at this exact
+                    call (present, mounted, correct role), the same "real
+                    validation at the point of real use" posture
+                    backup-config's own disk field already established.
+                    Omit for the default location. Every call repoints,
+                    whether given or not -- an omitted disk means the
+                    default explicitly, not "whatever the last call left
+                    it at."
       responses:
         "200":
           description: Swap enabled
@@ -1893,7 +1907,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/SwapStatus"
         "400":
-          description: Invalid JSON body or size_mb out of range
+          description: >
+            Invalid JSON body, size_mb out of range, or disk given but not
+            currently present/mounted/carrying the swap role
           content:
             application/json:
               schema:
@@ -8146,7 +8162,7 @@ components:
           description: A Disk.name from GET /disks (e.g. "sdb") -- not an operator-chosen alias, the real disk's own kernel name.
         role:
           type: string
-          enum: [container-storage, backup, state-storage, rebuildable-storage, log-storage]
+          enum: [container-storage, backup, state-storage, rebuildable-storage, log-storage, swap]
           description: >
             A small, fixed, closed vocabulary -- not free-form, since a
             role is only meaningful insofar as this daemon actually
@@ -8181,7 +8197,7 @@ components:
           type: string
         role:
           type: string
-          enum: [container-storage, backup, state-storage, rebuildable-storage, log-storage]
+          enum: [container-storage, backup, state-storage, rebuildable-storage, log-storage, swap]
 
     DiskFormatRequest:
       type: object
@@ -8983,7 +8999,7 @@ components:
 
     SwapStatus:
       type: object
-      required: [enabled, size_mb, path]
+      required: [enabled, size_mb, path, disk]
       properties:
         enabled:
           type: boolean
@@ -8993,6 +9009,14 @@ components:
         path:
           type: string
           description: The swap file's real path on the host, or "" when not enabled.
+        disk:
+          type: string
+          nullable: true
+          description: >
+            Issue #28. The disk name swap is currently placed on, or null
+            for the default OS-disk location. Reflects the *configured*
+            placement regardless of enabled state -- unlike path, this is
+            still meaningful while swap is disabled.
 
     NtpConfig:
       type: object

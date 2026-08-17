@@ -81,8 +81,8 @@ thincctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `syslog target unregister CONTAINER` | Unregister one (does not touch the container itself) |
 | `routes add --dest=A.B.C.D --prefix=N [--gateway=A.B.C.D]` | Add a real kernel route (ADR-0067 Part 3); or `--default --gateway=A.B.C.D` for the default route |
 | `routes rm --dest=A.B.C.D --prefix=N` | Remove one; or `--default` for the default route |
-| `swap` | Whether the host swap file is enabled (ADR-0069) |
-| `swap enable --size-mb=N` | Create and activate a swap file of this size |
+| `swap` | Whether the host swap file is enabled (ADR-0069) and which disk (if any) it's placed on |
+| `swap enable --size-mb=N [--disk=NAME]` | Create and activate a swap file of this size; `--disk=` places it on a disk carrying the `swap` role (issue #28) instead of the default OS-disk location |
 | `swap disable` | Deactivate and remove it |
 | `logs [--source=kernel\|thincd\|audit\|container] [--level=...] [--container=NAME] [--regex=PATTERN] [--tail=N] [--since=UNIXTS]` | The consolidated log — kernel dmesg, thincd diagnostics, a per-request audit trail, and every container's own stdout/stderr, transparently (ADR-0070, ADR-0126) — `--container=` filters to one container's own lines, `--regex=` is a POSIX extended regex (case-insensitive) matched against the message text |
 | `logs config [--max-bytes=N] [--min-level=LEVEL]` | Show or set the log's total size cap and/or minimum severity floor (`emerg`/`alert`/`crit`/`err`\|`error`/`warning`\|`warn`/`notice`/`info`/`debug`, default `debug`) -- either flag alone is fine, both are independent |
@@ -174,7 +174,7 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | `devicemap create --name=NAME --kind=exact\|vendor_model --selector=SELECTOR` | A persisted, named device binding, usable in place of a raw id in `run --device=` |
 | `devicemap ls` / `devicemap rm NAME` | List (shows whether each mapping currently resolves to real hardware) / remove |
 | `disks [ls]` | Real host block devices, including their partitions (task #844), flagging which one is the fixed OS disk |
-| `diskrole create --disk=NAME --role=container-storage\|backup\|state-storage\|rebuildable-storage\|log-storage` | Assign a persisted role to a disk or partition (never the OS disk) |
+| `diskrole create --disk=NAME --role=container-storage\|backup\|state-storage\|rebuildable-storage\|log-storage\|swap` | Assign a persisted role to a disk or partition (never the OS disk) |
 | `diskrole ls` / `diskrole rm NAME` | List assigned roles (with whether each disk is currently present) / remove one (409 if the disk is the active state-storage placement) |
 | `disks format NAME [--fs-type=ext4\|btrfs]` | Destructive: mkfs (ext4 by default, or btrfs, ADR-0104) + mount an already role-assigned, non-OS disk (409 against the active state-storage placement) |
 | `disks format-status NAME` | State/mount_path/error of the most recent format job for this disk |

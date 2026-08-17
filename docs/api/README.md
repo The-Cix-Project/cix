@@ -108,7 +108,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | DELETE | `/devicemaps/{name}` | Remove a device mapping |
 | GET | `/disks` | List real host block devices, including their partitions, for multi-disk management |
 | GET | `/diskroles` | List persisted disk role assignments |
-| POST | `/diskroles` | Assign a role (container-storage/backup/state-storage/rebuildable-storage/log-storage) to a disk or partition |
+| POST | `/diskroles` | Assign a role (container-storage/backup/state-storage/rebuildable-storage/log-storage/swap) to a disk or partition |
 | DELETE | `/diskroles/{disk_name}` | Remove a disk's role assignment |
 | GET | `/disks/{disk_name}/format` | Status of the most recent (or running) format+mount job for this disk |
 | POST | `/disks/{disk_name}/format` | Destructive: mkfs (ext4 or btrfs) + mount an already role-assigned disk |
@@ -371,7 +371,7 @@ GET /v1/system/swap
 ```
 
 ```json
-{"enabled": false, "size_mb": 0, "path": ""}
+{"enabled": false, "size_mb": 0, "path": "", "disk": null}
 ```
 
 ```
@@ -384,6 +384,15 @@ DELETE /v1/system/swap
 ```
 
 One on-demand swap file, off by default (ADR-0069) — raised after a real Rust/wasm package build ran a freshly-installed box out of RAM. `POST` creates a real, fully-backed (never sparse) file of exactly `size_mb` megabytes, writes a genuine kernel swap-file header into it directly (no dependency on an external `mkswap` binary), and activates it via `swapon(2)`; `409` if swap is already enabled — `DELETE` (swapoff + remove) first to resize. `size_mb` must be in `[64, 1048576]`. Enabled state is persisted and re-applied automatically on every daemon start (including a real reboot) — best-effort, never blocks startup if the file is somehow missing or stale. On modern SSD/NVMe-backed storage, file-backed swap performs identically to a raw partition; a partition was deliberately not pursued here since this project's own install-time partition layout is fixed and repartitioning a live disk on demand is not a risk worth taking for this.
+
+**Disk placement (issue #28)**: `POST /v1/system/swap` accepts an optional `disk` field —
+
+```
+POST /v1/system/swap
+{"size_mb": 8192, "disk": "sdc"}
+```
+
+— placing the swap file on a real disk carrying the `swap` diskrole (`POST /diskroles {"disk": "sdc", "role": "swap"}` first) instead of the default OS-disk location. Validated at the exact moment of this call (present, mounted, currently carrying the `swap` role) — the same "operator names a disk, real validation happens where the real action happens" posture the [backup disk config](#backup) already established, not a separate migration mechanism: there's no existing swap *content* worth preserving across a placement change, unlike state/rebuildable/log storage's own live directories, so this reuses `storageplacement.h`'s pure "which disk" pointer with no `storagemigrate.c`-style move job behind it. Every `POST` repoints, whether `disk` is given or not — omitting it explicitly means the default location, not "whatever the last call left it at." `GET`'s own `disk` field reflects the *configured* placement regardless of whether swap is currently enabled; `path` (like today) is only meaningful while enabled. A disk currently backing active swap placement is protected the same way the other four storage singletons already are — its role can't be removed nor the disk reformatted while it's the active swap placement (`409`).
 
 ## A consolidated log
 
@@ -1175,7 +1184,7 @@ POST /v1/diskroles
 {"disk_name": "sdb", "role": "backup"}
 ```
 
-`role` is `"container-storage"`, `"backup"`, `"state-storage"`, `"rebuildable-storage"`, or `"log-storage"` (ADR-0141) — a small, fixed, closed vocabulary, not an arbitrary operator-chosen string the way a `devicemap` name is, since a role only means something insofar as this daemon actually understands and acts on it. `"swap"` is deliberately not a role: this platform already has a dedicated, working, on-demand host swap *file* mechanism (`POST /system/swap`, ADR-0069) with no disk-level equivalent defined — adding a same-named disk role would either duplicate or need reconciling with it, a real design question with no answer, so it's left out rather than added as a role nothing can act on. `state-storage`/`rebuildable-storage`/`log-storage` are each a daemon-wide *singleton* placement: several disks can carry the same one of these roles as eligible candidates, but only one is ever the currently-active placement, tracked separately (`GET /system/state-storage` etc.), not by this role field alone.
+`role` is `"container-storage"`, `"backup"`, `"state-storage"`, `"rebuildable-storage"`, `"log-storage"`, or `"swap"` (ADR-0141, `swap` added by issue #28) — a small, fixed, closed vocabulary, not an arbitrary operator-chosen string the way a `devicemap` name is, since a role only means something insofar as this daemon actually understands and acts on it. `state-storage`/`rebuildable-storage`/`log-storage`/`swap` are each a daemon-wide *singleton* placement: several disks can carry the same one of these roles as eligible candidates, but only one is ever the currently-active placement, tracked separately (`GET /system/state-storage`, `GET /system/swap`, etc.), not by this role field alone. `swap` reconciles with the existing on-demand host swap *file* mechanism (`POST /system/swap`, ADR-0069) rather than duplicating it — the role names which disk is *allowed* to back an operator-chosen placement; `POST /system/swap`'s own `disk` field is what actually resolves and activates it (see [A host swap file](#a-host-swap-file) above).
 
 Real and creatable even for a `disk_name` that isn't currently present (`present: false` on `GET`, not an error — the same tolerant convention `/devicemaps` already established for hardware that might be temporarily absent). Always rejected (`400`) for the disk currently flagged `is_os_disk` on `GET /disks` — the fixed OS-disk layout is never a role-assignment candidate. `409` if `disk_name` already has a role (`DELETE` it first to reassign, the same no-silent-overwrite convention `/devicemaps` already established).
 

@@ -20,13 +20,19 @@
  * is meaningful only insofar as a later phase (C: mount/format, D:
  * container-storage migration) actually understands and acts on it;
  * an open vocabulary here would just be state nothing could ever
- * interpret. "swap" is deliberately NOT one of the roles: this
- * project already has a real, working, dedicated on-demand host swap
- * FILE mechanism (daemon/src/swap.c, ADR-0069) with its own REST
- * surface -- a disk-level "swap" role would either duplicate that
- * mechanism or need to be reconciled with it, a real design question
- * with no answer yet, so it's left out rather than added as a role
- * nothing can act on (No Stop-Gaps).
+ * interpret.
+ *
+ * "swap" (issue #28, added after being deliberately left out at first
+ * -- see git history for the original reasoning) reconciles cleanly
+ * with the existing on-demand host swap FILE mechanism
+ * (daemon/src/swap.c, ADR-0069): the role names which disk is *allowed*
+ * to back an operator-chosen swap placement, exactly the same
+ * "eligible candidate, not automatically active" meaning
+ * DISKROLE_BACKUP already has -- POST /system/swap's own optional
+ * `disk` field is what actually resolves and activates it, reusing
+ * storageplacement.h's STORAGE_KIND_SWAP as the pure "which disk is
+ * currently active" pointer, the same module state/rebuildable/log
+ * storage already share. No new mechanism, no duplication.
  */
 
 #define DISKROLE_DISK_NAME_MAX 32
@@ -44,6 +50,14 @@ enum diskrole_kind {
 	DISKROLE_STATE_STORAGE,
 	DISKROLE_REBUILDABLE_STORAGE,
 	DISKROLE_LOG_STORAGE,
+	/*
+	 * issue #28: same "daemon-wide singleton, multiple disks can carry
+	 * it as eligible candidates but only one is ever the active
+	 * placement" shape as the four roles above -- see this file's own
+	 * top comment for how it reconciles with ADR-0069's existing swap
+	 * FILE mechanism.
+	 */
+	DISKROLE_SWAP,
 };
 
 enum diskrole_error {

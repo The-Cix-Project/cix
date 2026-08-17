@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define STORAGE_KIND_COUNT 3
+#define STORAGE_KIND_COUNT 4
 
 static char g_state_path[512];
 /* Empty string: no placement set for this kind (default OS-disk). */
@@ -21,6 +21,8 @@ static const char *kind_key(enum storage_kind kind)
 		return "rebuildable";
 	case STORAGE_KIND_LOG:
 		return "log";
+	case STORAGE_KIND_SWAP:
+		return "swap";
 	default:
 		return "state";
 	}
@@ -45,7 +47,7 @@ static int load_state(void)
 		return -1;
 	}
 
-	for (kind = STORAGE_KIND_STATE; kind <= STORAGE_KIND_LOG; kind++) {
+	for (kind = STORAGE_KIND_STATE; kind <= STORAGE_KIND_SWAP; kind++) {
 		const struct json_value *jdisk = json_object_get(root, kind_key(kind));
 		const char *disk;
 
@@ -75,7 +77,7 @@ static enum storageplacement_error save_state(void)
 
 	jw_init(&w);
 	jw_obj_open(&w);
-	for (kind = STORAGE_KIND_STATE; kind <= STORAGE_KIND_LOG; kind++) {
+	for (kind = STORAGE_KIND_STATE; kind <= STORAGE_KIND_SWAP; kind++) {
 		jw_key(&w, kind_key(kind));
 		if (g_disk[kind][0] != '\0')
 			jw_str(&w, g_disk[kind]);
@@ -99,7 +101,7 @@ int storageplacement_init(const char *state_path)
 
 const char *storageplacement_get(enum storage_kind kind)
 {
-	if (kind < STORAGE_KIND_STATE || kind > STORAGE_KIND_LOG)
+	if (kind < STORAGE_KIND_STATE || kind > STORAGE_KIND_SWAP)
 		return NULL;
 	return g_disk[kind][0] != '\0' ? g_disk[kind] : NULL;
 }
@@ -109,7 +111,7 @@ enum storageplacement_error storageplacement_set(enum storage_kind kind, const c
 	char prev[DISKROLE_DISK_NAME_MAX];
 	enum storageplacement_error err;
 
-	if (kind < STORAGE_KIND_STATE || kind > STORAGE_KIND_LOG)
+	if (kind < STORAGE_KIND_STATE || kind > STORAGE_KIND_SWAP)
 		return STORAGEPLACEMENT_ERR_PERSIST_FAILED;
 
 	snprintf(prev, sizeof(prev), "%s", g_disk[kind]);

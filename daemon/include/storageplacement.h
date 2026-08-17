@@ -28,6 +28,17 @@ enum storage_kind {
 	STORAGE_KIND_STATE = 0,
 	STORAGE_KIND_REBUILDABLE,
 	STORAGE_KIND_LOG,
+	/*
+	 * issue #28: unlike the three above, swap has no live directory of
+	 * real, worth-preserving data to migrate -- the swap FILE's own
+	 * content is transient and discardable by definition, so there is
+	 * no storagemigrate.c-style move job for this kind and never will
+	 * be. Reusing this same pure-pointer module anyway rather than a
+	 * fourth parallel "which disk for X" mechanism (One Source of
+	 * Truth) -- daemon/src/swap.c's own POST /system/swap handler
+	 * resolves and repoints directly, no migration step involved.
+	 */
+	STORAGE_KIND_SWAP,
 };
 
 enum storageplacement_error {

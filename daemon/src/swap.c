@@ -127,6 +127,16 @@ int swap_init(const char *state_path, const char *file_path)
 	return 0;
 }
 
+void swap_repoint(const char *new_file_path)
+{
+	snprintf(g_file_path, sizeof(g_file_path), "%s", new_file_path);
+}
+
+int swap_is_enabled(void)
+{
+	return g_enabled;
+}
+
 enum swap_error swap_enable(int64_t size_mb)
 {
 	int64_t size_bytes;
@@ -197,7 +207,7 @@ enum swap_error swap_disable(void)
 	return SWAP_OK;
 }
 
-void swap_write_json(struct json_writer *w)
+void swap_write_json(struct json_writer *w, const char *disk_name)
 {
 	jw_obj_open(w);
 	jw_key(w, "enabled");
@@ -206,5 +216,10 @@ void swap_write_json(struct json_writer *w)
 	jw_int(w, g_size_mb);
 	jw_key(w, "path");
 	jw_str(w, g_enabled ? g_file_path : "");
+	jw_key(w, "disk");
+	if (disk_name != NULL)
+		jw_str(w, disk_name);
+	else
+		jw_null(w);
 	jw_obj_close(w);
 }
