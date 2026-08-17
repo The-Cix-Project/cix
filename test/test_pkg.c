@@ -2009,6 +2009,7 @@ skip_pin_isolation:
 		} else {
 			const struct json_value *ib = json_object_get(r.json, "is_hostbuild");
 			const char *artifact_path = json_str_field(r.json, "artifact_path");
+			const struct json_value *files = json_object_get(r.json, "files");
 
 			if (ib == NULL || ib->type != JSON_BOOL || !ib->u.boolean) {
 				fprintf(stderr, "FAIL: hbtest is_hostbuild not true\n");
@@ -2019,6 +2020,21 @@ skip_pin_isolation:
 				ok = 0;
 			} else {
 				snprintf(hb_artifact_file, sizeof(hb_artifact_file), "%s/hello", artifact_path);
+			}
+			/* issue #6: files used to always be empty for a hostbuild
+			 * entry -- confirm it now reports what was really
+			 * produced, not just that the job finished. */
+			if (files == NULL || files->type != JSON_ARRAY || files->u.array.count == 0) {
+				fprintf(stderr, "FAIL: hbtest files field is empty, expected \"hello\"\n");
+				ok = 0;
+			} else {
+				const char *first = json_as_string(files->u.array.items[0]);
+
+				if (first == NULL || strcmp(first, "hello") != 0) {
+					fprintf(stderr, "FAIL: hbtest files[0] = '%s', expected \"hello\"\n",
+					        first != NULL ? first : "(null)");
+					ok = 0;
+				}
 			}
 		}
 		kx_response_free(&r);

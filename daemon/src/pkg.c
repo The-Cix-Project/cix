@@ -452,10 +452,14 @@ static void unlink_manifest_files(const struct pkg_entry *e, const char *rootfs)
 static int pkg_entry_add_file(struct pkg_entry *e, const char *relpath)
 {
 	/*
-	 * NULL means "plain recursive copy, no manifest" -- merge_tree()'s
-	 * hostbuild caller (ADR-0056) passes e=NULL since a harvested
-	 * artifact has nothing to ever pkg_delete(), so there's no
-	 * manifest to record it in.
+	 * NULL means "plain recursive copy, no manifest" -- e.g. the
+	 * pkgbuild-sandbox-population caller (never a real package's own
+	 * install). merge_tree()'s hostbuild caller (ADR-0056) passes a
+	 * real e instead (issue #6) purely so GET can report what a
+	 * hostbuild actually produced -- unlink_manifest_files() is never
+	 * reached for that entry regardless (see that call site's own
+	 * comment), so this still never becomes a real delete-manifest for
+	 * a hostbuild artifact, just visibility.
 	 */
 	if (e == NULL)
 		return 0;
@@ -3506,13 +3510,20 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * bzImage, a thincd-root squashfs's own components), not
 		 * something that belongs inside any container image's
 		 * rootfs -- harvested to a plain host directory instead of
-		 * merged into an image, and with no manifest (NULL) since
-		 * there is no image install to ever unlink it from
-		 * (ADR-0056). */
+		 * merged into an image (ADR-0056). Passing the real e here
+		 * (issue #6) populates e->files purely for GET-visibility
+		 * ("what did this hostbuild actually produce" -- previously
+		 * always empty, ambiguous with "nothing built" even on a
+		 * genuine success) -- unlink_manifest_files() is never
+		 * reached for a hostbuild entry regardless (both its call
+		 * sites go through install_mutate_ctx, which only the
+		 * ordinary, non-hostbuild branch below ever constructs), so
+		 * there is still no real manifest-delete behavior here, just
+		 * real reporting. */
 		char artifact_dir[PATH_MAX];
 
 		snprintf(artifact_dir, sizeof(artifact_dir), "%s/%s", g_artifacts_dir, e->name);
-		if (persist_mkdir_p(artifact_dir) != 0 || merge_tree(dest_dir, artifact_dir, "", NULL) != 0) {
+		if (persist_mkdir_p(artifact_dir) != 0 || merge_tree(dest_dir, artifact_dir, "", e) != 0) {
 			e->state = PKG_STATE_FAILED;
 			snprintf(e->error, sizeof(e->error), "failed to harvest the built artifact");
 			g_chains[chain_idx].name[0] = '\0';
