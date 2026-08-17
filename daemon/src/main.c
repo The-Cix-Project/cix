@@ -12356,6 +12356,11 @@ static void respond_image_recipe_error(int fd, enum pkg_error err)
 		              "recipe content failed to parse -- image_packages= is required, each "
 		              "entry \"name:pinned|rolling:version\"");
 		break;
+	case PKG_ERR_TARGET_IMAGE_NOT_FOUND:
+		respond_error(fd, 404, "Not Found",
+		              "the recipe parsed fine, but the image it names doesn't exist yet -- "
+		              "create it first (image create --name=...)");
+		break;
 	case PKG_ERR_BUSY:
 		respond_error(fd, 409, "Conflict",
 		              "another package install/hostbuild/image-recipe-apply is already in progress");

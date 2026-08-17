@@ -5574,10 +5574,12 @@ enum pkg_error pkg_image_recipe_apply_start(const char *image, int *out_async, p
 		 * built rootfs still needs an explicit pkg install, exactly
 		 * like any other manifest edit already requires today. */
 		for (i = 0; i < recipe.entry_count; i++) {
-			enum pkg_error ierr =
-			    (enum pkg_error)image_manifest_set(image, recipe.entries[i].package,
-			                                        recipe.entries[i].mode,
-			                                        recipe.entries[i].version);
+			enum image_error ierr =
+			    image_manifest_set(image, recipe.entries[i].package, recipe.entries[i].mode,
+			                        recipe.entries[i].version);
+
+			if (ierr == IMAGE_ERR_NOT_FOUND)
+				return PKG_ERR_TARGET_IMAGE_NOT_FOUND;
 			if (ierr != IMAGE_OK)
 				return PKG_ERR_INVALID_RECIPE;
 		}

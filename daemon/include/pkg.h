@@ -146,7 +146,14 @@ enum pkg_error {
 	PKG_ERR_FULL,
 	PKG_ERR_SPAWN_FAILED,
 	PKG_ERR_PERSIST_FAILED,
-	PKG_ERR_INVALID_TOOLCHAIN /* toolchain_path missing, unreadable, or not a regular file */
+	PKG_ERR_INVALID_TOOLCHAIN, /* toolchain_path missing, unreadable, or not a regular file */
+	PKG_ERR_TARGET_IMAGE_NOT_FOUND /* pkg_image_recipe_apply_start(): the recipe itself parsed
+	                                 * fine, but the image it names doesn't exist yet -- distinct
+	                                 * from PKG_ERR_INVALID_RECIPE (a genuine parse failure) and
+	                                 * from PKG_ERR_NOT_FOUND (the recipe itself missing), which
+	                                 * this used to collapse into, misleadingly reporting a real
+	                                 * "create the image first" situation as if the recipe's own
+	                                 * content were malformed. */
 };
 
 /*
