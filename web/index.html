@@ -181,6 +181,16 @@
 						<canvas id="cd-stats-net" width="420" height="130"></canvas>
 						<p class="hint" id="cd-stats-net-label">&hellip;</p>
 					</div>
+					<div class="stats-card">
+						<h3>CPU pressure</h3>
+						<canvas id="cd-stats-cpu-pressure" width="420" height="130"></canvas>
+						<p class="hint" id="cd-stats-cpu-pressure-label">&hellip;</p>
+					</div>
+					<div class="stats-card">
+						<h3>Memory pressure</h3>
+						<canvas id="cd-stats-mem-pressure" width="420" height="130"></canvas>
+						<p class="hint" id="cd-stats-mem-pressure-label">&hellip;</p>
+					</div>
 				</div>
 				<p class="hint">Real, host-side usage (ADR-0054) -- gathered from this container's own
 					cgroup and host-side network interface, no in-container agent -- sampled every 2s
@@ -1344,6 +1354,16 @@
 					<h3>Network (all interfaces combined)</h3>
 					<canvas id="hs-stats-net" width="420" height="130"></canvas>
 					<p class="hint" id="hs-stats-net-label">&hellip;</p>
+				</div>
+				<div class="stats-card">
+					<h3>CPU pressure</h3>
+					<canvas id="hs-stats-cpu-pressure" width="420" height="130"></canvas>
+					<p class="hint" id="hs-stats-cpu-pressure-label">&hellip;</p>
+				</div>
+				<div class="stats-card">
+					<h3>Memory pressure</h3>
+					<canvas id="hs-stats-mem-pressure" width="420" height="130"></canvas>
+					<p class="hint" id="hs-stats-mem-pressure-label">&hellip;</p>
 				</div>
 			</div>
 			<p class="hint" id="hs-stats-load">Load average: &hellip;</p>

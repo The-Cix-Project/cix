@@ -2168,6 +2168,29 @@ function renderStatsCharts() {
 		rxRates.length > 0
 			? formatBytes(rxRates[rxRates.length - 1]) + "/s ↓  " + formatBytes(txRates[txRates.length - 1]) + "/s ↑"
 			: "…";
+
+	/* PSI avg10 is already a 0-100 rolling percentage straight from the
+	 * kernel (cpu.pressure/memory.pressure "some" line) -- a gauge like
+	 * memory usage, not a counter to diff like cpuPercents above. */
+	const cpuPressureValues = h.map((s) => s.cpuPressure);
+
+	drawChart(document.getElementById("cd-stats-cpu-pressure"), [{ values: cpuPressureValues, color: "#ff9f0a" }], {
+		times: gaugeTimes,
+		maxY: 100,
+		formatY: (v) => v.toFixed(0) + "%",
+	});
+	document.getElementById("cd-stats-cpu-pressure-label").textContent =
+		cpuPressureValues[cpuPressureValues.length - 1].toFixed(1) + "% (some, avg10)";
+
+	const memPressureValues = h.map((s) => s.memPressure);
+
+	drawChart(document.getElementById("cd-stats-mem-pressure"), [{ values: memPressureValues, color: "#ff375f" }], {
+		times: gaugeTimes,
+		maxY: 100,
+		formatY: (v) => v.toFixed(0) + "%",
+	});
+	document.getElementById("cd-stats-mem-pressure-label").textContent =
+		memPressureValues[memPressureValues.length - 1].toFixed(1) + "% (some, avg10)";
 }
 
 async function pollStatsOnce(name) {
@@ -2194,6 +2217,8 @@ async function pollStatsOnce(name) {
 		diskBytes: stats.disk.upper_bytes,
 		netRx: netRx,
 		netTx: netTx,
+		cpuPressure: stats.cpu.pressure.some.avg10,
+		memPressure: stats.memory.pressure.some.avg10,
 	});
 	if (statsHistory.length > STATS_HISTORY_MAX)
 		statsHistory.shift();
@@ -2325,6 +2350,29 @@ function renderHostStatsCharts() {
 	document.getElementById("hs-stats-load").textContent =
 		"Load average: " + last.load1.toFixed(2) + " (1m)  " + last.load5.toFixed(2) + " (5m)  " +
 		last.load15.toFixed(2) + " (15m)";
+
+	/* PSI avg10 is already a 0-100 rolling percentage straight from the
+	 * kernel (cgroup-root cpu.pressure/memory.pressure "some" line) --
+	 * a gauge, not a counter to diff. */
+	const cpuPressureValues = h.map((s) => s.cpuPressure);
+
+	drawChart(document.getElementById("hs-stats-cpu-pressure"), [{ values: cpuPressureValues, color: "#ff9f0a" }], {
+		times: gaugeTimes,
+		maxY: 100,
+		formatY: (v) => v.toFixed(0) + "%",
+	});
+	document.getElementById("hs-stats-cpu-pressure-label").textContent =
+		cpuPressureValues[cpuPressureValues.length - 1].toFixed(1) + "% (some, avg10)";
+
+	const memPressureValues = h.map((s) => s.memPressure);
+
+	drawChart(document.getElementById("hs-stats-mem-pressure"), [{ values: memPressureValues, color: "#ff375f" }], {
+		times: gaugeTimes,
+		maxY: 100,
+		formatY: (v) => v.toFixed(0) + "%",
+	});
+	document.getElementById("hs-stats-mem-pressure-label").textContent =
+		memPressureValues[memPressureValues.length - 1].toFixed(1) + "% (some, avg10)";
 }
 
 async function pollHostStatsOnce() {
@@ -2357,6 +2405,8 @@ async function pollHostStatsOnce() {
 		load1: stats.load.load1,
 		load5: stats.load.load5,
 		load15: stats.load.load15,
+		cpuPressure: stats.cpu.pressure.some.avg10,
+		memPressure: stats.memory.pressure.some.avg10,
 	});
 	if (hostStatsHistory.length > HOST_STATS_HISTORY_MAX)
 		hostStatsHistory.shift();
