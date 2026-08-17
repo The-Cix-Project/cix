@@ -1619,7 +1619,22 @@
 							PIDs max
 							<input type="number" id="f-pids-max" min="0">
 						</label>
+						<label>
+							CPU max (quota period, microseconds)
+							<input type="text" id="f-cpu-max" placeholder="50000 100000 (50% of 1 CPU)">
+						</label>
+						<label>
+							CPU set (cpuset.cpus range-list)
+							<input type="text" id="f-cpuset" placeholder="0-1,3">
+						</label>
+						<label>
+							Disk quota (bytes)
+							<input type="number" id="f-disk-quota" min="1" required>
+						</label>
 					</fieldset>
+					<p class="hint">Disk quota is required -- every container gets a real,
+						kernel-enforced hard limit on its own overlay storage, not an
+						unbounded default (issue #22).</p>
 					<fieldset>
 						<legend>Networking</legend>
 						<label class="wide">

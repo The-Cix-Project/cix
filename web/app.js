@@ -6115,6 +6115,9 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 	const cmdText = document.getElementById("f-cmd").value.trim();
 	const memoryMaxText = document.getElementById("f-memory-max").value.trim();
 	const pidsMaxText = document.getElementById("f-pids-max").value.trim();
+	const cpuMaxText = document.getElementById("f-cpu-max").value.trim();
+	const cpusetText = document.getElementById("f-cpuset").value.trim();
+	const diskQuotaText = document.getElementById("f-disk-quota").value.trim();
 	const network = document.getElementById("f-network").value.trim();
 	const ipForward = document.getElementById("f-ip-forward").checked;
 	const dnsRegister = document.getElementById("f-dns-register").checked;
@@ -6149,6 +6152,12 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 		body.memory_max = parseInt(memoryMaxText, 10);
 	if (pidsMaxText !== "")
 		body.pids_max = parseInt(pidsMaxText, 10);
+	if (cpuMaxText !== "")
+		body.cpu_max = cpuMaxText;
+	if (cpusetText !== "")
+		body.cpuset_cpus = cpusetText;
+	if (diskQuotaText !== "")
+		body.disk_quota_bytes = parseInt(diskQuotaText, 10);
 	if (network !== "") {
 		body.networks = network
 			.split(",")
