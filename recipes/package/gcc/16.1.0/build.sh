@@ -832,30 +832,42 @@ FLOATDI_C
 		# embedded directly in it -- `-include stdbool.h` forces the
 		# same effect portably, without patching gcc's own unmodified
 		# header.
-		# One more gap surfaced right behind stdbool.h, and the
-		# diagnostic added for it confirmed the real cause directly
-		# rather than guessing: `__LIBGCC_DWARF_CIE_DATA_ALIGNMENT__
-		# undeclared` in unwind-dw2.c, with libgcc_tm.h (dumped on
-		# failure) containing only its own header guard -- no
-		# #defines at all. libgcc_tm.h is generated once by
-		# libgcc/mkheader.sh from tm_defines/tm_file (confirmed via
-		# the real Makefile.in: `libgcc_tm.h: libgcc_tm.stamp; @true`,
-		# and libgcc_tm.stamp's own rule lists no prerequisites at
-		# all) -- meaning once that stamp exists, make considers the
-		# header permanently up to date and never regenerates it,
-		# exactly the same "make's timestamp-only tracking never
-		# revisits an already-written file" class of bug already fixed
-		# once this session for gcc/as. This stamp was almost
-		# certainly first created during an early retry pass, before
-		# tm_defines/tm_file were correctly populated (root cause of
-		# *why* they were empty that first time not fully chased --
-		# the fix is the same either way). Force both away each pass
-		# so a fresh, correctly-populated header gets generated.
+		# One more gap surfaced right behind stdbool.h: `__LIBGCC_
+		# DWARF_CIE_DATA_ALIGNMENT__ undeclared` in unwind-dw2.c. Two
+		# theories were chased and both diagnostics are kept below as
+		# real, working examples of "check, don't guess": (1) an empty
+		# libgcc_tm.h (mkheader.sh-generated; its own stamp rule has no
+		# prerequisites, so make never revisits it once written, the
+		# same class of bug already fixed once for gcc/as) turned out
+		# to be a red herring -- confirmed empty is CORRECT for this
+		# target (libgcc_tm.h's own tm_file for x86_64-linux is
+		# genuinely just elf-lib.h + value-unwind.h, neither of which
+		# defines this macro; fetched and read both files directly to
+		# confirm). (2) The real cause, confirmed with a zero-cost
+		# LOCAL test (`echo | gcc -dM -E -fbuilding-libgcc -x c -`,
+		# no waiting on a real build to find out): `__LIBGCC_*` builtins
+		# are emitted by cc1 itself (gcc/c-family/c-cppbuiltin.cc,
+		# gated on -fbuilding-libgcc, not from any header at all) --
+		# ambient /usr/bin/gcc (12.2) correctly emits 46 of the 47
+		# macros GCC 16's own libgcc source expects, but is missing
+		# exactly this one: real, genuine version skew, since this
+		# specific macro was added to GCC's source after 12.2 shipped.
+		# Real ambient gcc is simply too old to fully stand in for a
+		# freshly-built target compiler here. The value itself isn't a
+		# guess: gcc/defaults.h's own documented formula for this
+		# target is DWARF_CIE_DATA_ALIGNMENT = -UNITS_PER_WORD = -8
+		# (STACK_GROWS_DOWNWARD is true on x86_64, confirmed via the
+		# same local test's __LIBGCC_STACK_GROWS_DOWNWARD__), matching
+		# the well-documented x86_64 SysV ABI CIE data-alignment
+		# factor. Supplied directly since there's no portable way to
+		# ask an older gcc to emit a macro its own source doesn't know
+		# about.
 		find x86_64-pc-linux-gnu/libgcc -name '*.o' -delete 2>/dev/null
 		rm -f x86_64-pc-linux-gnu/libgcc/libgcc_tm.h \
 		    x86_64-pc-linux-gnu/libgcc/libgcc_tm.stamp
-		if make -j"$(nproc)" CC_FOR_TARGET="/usr/bin/gcc -include stdbool.h" \
-		    GCC_FOR_TARGET="/usr/bin/gcc -include stdbool.h"; then
+		if make -j"$(nproc)" \
+		    CC_FOR_TARGET="/usr/bin/gcc -include stdbool.h -D__LIBGCC_DWARF_CIE_DATA_ALIGNMENT__=-8" \
+		    GCC_FOR_TARGET="/usr/bin/gcc -include stdbool.h -D__LIBGCC_DWARF_CIE_DATA_ALIGNMENT__=-8"; then
 			break
 		fi
 		i=$((i + 1))
@@ -878,8 +890,9 @@ FLOATDI_C
 	# tail on some unrelated, already-successful subproject's log
 	# instead). `ls -t` ranks by mtime; the newest is the one that
 	# matters.
-	if ! make -j"$(nproc)" CC_FOR_TARGET="/usr/bin/gcc -include stdbool.h" \
-	    GCC_FOR_TARGET="/usr/bin/gcc -include stdbool.h"; then
+	if ! make -j"$(nproc)" \
+	    CC_FOR_TARGET="/usr/bin/gcc -include stdbool.h -D__LIBGCC_DWARF_CIE_DATA_ALIGNMENT__=-8" \
+	    GCC_FOR_TARGET="/usr/bin/gcc -include stdbool.h -D__LIBGCC_DWARF_CIE_DATA_ALIGNMENT__=-8"; then
 		# The gcc/as and target-libgcc-segfault gaps above are both
 		# confirmed fixed (neither symptom has recurred since), so
 		# their own diagnostics are retired here rather than left to
