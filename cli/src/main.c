@@ -8470,11 +8470,17 @@ static void fmt_bootstrap_fetch_status(const struct json_value *v)
 {
 	const char *state = json_str_field(v, "state");
 	const char *error = json_str_field(v, "error");
+	const char *scope = json_str_field(v, "scope");
 
 	printf("state=%s", state != NULL ? state : "?");
 	if (error != NULL)
 		printf(" error=%s", error);
 	printf("\n");
+	/* Issue #17: "none" reads as "no bootstrap ever happened" but only
+	 * means this daemon never handled a toolchain_url POST -- surface
+	 * the daemon's own scope note so that misreading doesn't recur. */
+	if (state != NULL && strcmp(state, "none") == 0 && scope != NULL)
+		printf("(%s)\n", scope);
 }
 
 /* Polls GET /v1/pkg/bootstrap until state leaves "fetching" -- --wait's

@@ -8771,7 +8771,7 @@ components:
 
     PkgBootstrapStatus:
       type: object
-      required: [state, error]
+      required: [state, error, scope]
       properties:
         state:
           type: string
@@ -8785,6 +8785,16 @@ components:
           type: string
           nullable: true
           description: Non-null only when state is "failed" (curl failure, checksum mismatch, or staging failure).
+        scope:
+          type: string
+          description: >
+            Issue #17 -- a fixed, always-present clarifying note that
+            "none" does not mean no bootstrap has ever happened on this
+            daemon, only that this specific async toolchain_url fetch
+            mode has never run; the ordinary no-body/toolchain_path
+            modes (what a plain `pkg install --name=tcc` or a real
+            gcc/dev build actually exercises) are synchronous and never
+            touch this state at all.
 
     IsoStatus:
       type: object

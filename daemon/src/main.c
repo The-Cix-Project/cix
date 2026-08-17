@@ -13916,6 +13916,22 @@ static void write_bootstrap_fetch_status(struct json_writer *w)
 		jw_str(w, g_bootstrap_fetch_error);
 	else
 		jw_null(w);
+	/*
+	 * Issue #17: "none" reads as "no bootstrap ever happened" but
+	 * actually only means "this daemon has never handled a
+	 * toolchain_url POST /pkg/bootstrap" -- the plain/toolchain_path
+	 * modes (the ones a normal `pkg install --name=tcc` or a real
+	 * gcc/dev build actually exercises) are synchronous and never
+	 * touch this state at all. Rather than a deeper fix (tracking
+	 * every bootstrap mode in one unified state, a real behavior
+	 * change with its own risk), this scope note ships instead --
+	 * always present, so `state:"none"` stops reading as a gap or an
+	 * error on a box that has genuinely bootstrapped successfully via
+	 * a different mode.
+	 */
+	jw_key(w, "scope");
+	jw_str(w, "tracks only the async toolchain_url fetch mode of POST /pkg/bootstrap; "
+	           "\"none\" does not mean no bootstrap has ever happened on this daemon");
 	jw_obj_close(w);
 }
 
