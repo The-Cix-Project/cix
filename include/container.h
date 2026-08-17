@@ -232,6 +232,19 @@ struct container_sysctl {
  * hard one, not the only bound. */
 #define CONTAINER_FILE_CONTENT_MAX 65536
 
+/*
+ * A generous fixed bound -- container_caps_drop()'s own default
+ * deny-list has under two dozen entries total (see src/container_caps.c),
+ * and a real workload needing more than a small handful put back is
+ * exactly the "this belongs in the ADR-0166-class full user-namespace
+ * follow-up, not one more opt-in exception" signal (issue #29).
+ */
+#define CONTAINER_MAX_CAP_ADD 8
+/* Longest real capability name (CAP_CHECKPOINT_RESTORE) is 22 bytes
+ * plus NUL; generous headroom above that, same posture
+ * CONTAINER_SYSCTL_KEY_MAX already takes for its own longest real case. */
+#define CONTAINER_CAP_NAME_MAX 32
+
 struct container_spec {
 	struct ns_config ns;
 	struct cgroup_limits cg;
@@ -286,6 +299,19 @@ struct container_spec {
 	 */
 	char interfaces[CONTAINER_MAX_INTERFACES][CONTAINER_IFNAME_MAX];
 	int interface_count;
+	/*
+	 * Opt-in exceptions to container_caps_drop()'s own fixed default
+	 * deny-list (see include/internal.h/src/container_caps.c) -- e.g.
+	 * "CAP_SYS_TIME" for an NTP daemon that genuinely needs to call
+	 * clock_settime(). cap_add_count == 0 (every memset(&spec, 0, ...)
+	 * caller, unchanged behavior) means the fixed default list applies
+	 * with no exceptions. Only a capability that's actually on the
+	 * default deny-list is meaningful here -- one that was never
+	 * dropped in the first place is silently a no-op, not an error
+	 * (see container_caps_drop()'s own comment for why).
+	 */
+	char cap_add[CONTAINER_MAX_CAP_ADD][CONTAINER_CAP_NAME_MAX];
+	int cap_add_count;
 	char *const *argv;
 	char *const *envp;
 	/*
@@ -506,6 +532,17 @@ int overlay_upperdir_size(const char *upperdir_path, long long *out_bytes);
  * workload's own output through it.
  */
 int container_create(const struct container_spec *spec, struct container_handle *out);
+
+/*
+ * True if name is a recognized cap_add exception name (e.g. "CAP_SYS_TIME")
+ * -- the same table container_caps_drop() itself checks against, exposed
+ * here so a caller building a container_spec (daemon/src/main.c's POST
+ * /v1/containers parse) can reject an unrecognized name at REST-validation
+ * time with a real 400, instead of only discovering the typo once the
+ * container fails to start (container_caps_drop() itself still re-checks
+ * this independently -- see its own comment).
+ */
+int container_cap_name_valid(const char *name);
 
 /*
  * The exact parent-side step container_create()'s own most recent

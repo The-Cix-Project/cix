@@ -111,6 +111,10 @@ enum registry_error registry_create(const char *name, const char *image,
 	e->sysctl_count = spec->sysctl_count;
 	for (i = 0; i < spec->sysctl_count; i++)
 		e->sysctls[i] = spec->sysctls[i];
+	memset(e->cap_add, 0, sizeof(e->cap_add));
+	e->cap_add_count = spec->cap_add_count;
+	for (i = 0; i < spec->cap_add_count; i++)
+		strncpy(e->cap_add[i], spec->cap_add[i], sizeof(e->cap_add[i]) - 1);
 	memset(e->cmd, 0, sizeof(e->cmd));
 	for (i = 0; i < CONTAINER_MAX_ARGV && spec->argv[i] != NULL; i++)
 		strncpy(e->cmd[i], spec->argv[i], sizeof(e->cmd[i]) - 1);
@@ -576,6 +580,11 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 		jw_str(w, entry->sysctls[i].value);
 	}
 	jw_obj_close(w);
+	jw_key(w, "cap_add");
+	jw_arr_open(w);
+	for (i = 0; i < entry->cap_add_count; i++)
+		jw_str(w, entry->cap_add[i]);
+	jw_arr_close(w);
 	jw_key(w, "cmd");
 	jw_arr_open(w);
 	for (i = 0; i < entry->cmd_count; i++)

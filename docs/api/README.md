@@ -1311,6 +1311,25 @@ POST /v1/containers
 - All three survive exactly like everything else in `restart: "always"`'s own replay mechanism — no separate persistence work needed. See ADR-0030.
 - `cmd` itself is echoed back on every `GET /containers`/`GET /containers/{name}` response (`ADR-0100`) — previously there was no way to ask a running or stopped container "what is your entrypoint," since the create request's own `argv` only ever pointed into that request's transient parsed body. `env` is echoed back the same way.
 
+## Capability restriction (issue #29)
+
+Every container's process runs as real root with no user namespace — a genuine, tracked gap (issue #29: full user-namespace support is the eventual complete fix, still open, large enough to need its own design pass). Until that lands, `thincd` closes the single most severe consequence of it directly: right before a container's `cmd` is `execve()`'d, its capability bounding set is permanently trimmed to a small default-safe list via `prctl(PR_CAPBSET_DROP, ...)` (see `src/container_caps.c` for the exact list and the reasoning behind each entry). `CAP_SYS_MODULE` is the headline case — kernel modules aren't namespaced, so an untrimmed container could otherwise call `init_module()` directly and compromise the host kernel with no exploit required at all. `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE`, `CAP_SYS_RAWIO`, `CAP_SYS_BOOT`, `CAP_BPF`, and a dozen others narrower still are dropped the same way. `CAP_NET_ADMIN`/`CAP_NET_RAW`/`CAP_SETUID`/`CAP_SETGID` stay by default — confirmed, real, in-use needs on this project's own containers today (e.g. `jumpbox1`'s `sshd`).
+
+```
+POST /v1/containers
+{
+  "name": "ntp-1",
+  "image": "chrony",
+  "cmd": ["/usr/sbin/chronyd", "-d", "-f", "/etc/chrony.conf"],
+  "cap_add": ["CAP_SYS_TIME"]
+}
+```
+
+- `cap_add` is optional: 0–8 capability name strings (e.g. `"CAP_SYS_TIME"`), each an explicit exception to the default deny-list above — chrony's own `clock_settime()` call is the confirmed real case. Only a name that's actually on the default deny-list is meaningful; an unrecognized name is a `400`.
+- Because the drop happens on the bounding set (not just the current process's own effective/permitted sets), it persists through every exec a container's process tree ever makes afterward — a shell script execing a further binary can't reclaim a dropped capability, regardless of how many levels deep.
+- `GET /containers`/`GET /containers/{name}` echo back whatever `cap_add` the container was actually created with (empty means the fixed default list applies with no exceptions).
+- Set once at creation; not modifiable on an already-running container, same as `interfaces`.
+
 ## Container DNS resolution (ADR-0143)
 
 ```

@@ -213,4 +213,26 @@ int container_dev_bpf_detach(int cgroup_fd, int prog_fd);
  */
 int container_dev_mknod(const struct device_spec *devices, int device_count);
 
+/*
+ * Child side, called right before the final execve() in container_create()
+ * -- the last point still running as the pre-exec setup code (mount,
+ * pivot_root, cgroup join all already done, so this needs no privilege
+ * beyond what's already held). Permanently lowers this process's capability
+ * bounding set to a small default-safe list via a real prctl(PR_CAPBSET_DROP,
+ * ...) loop (see src/container_caps.c for the exact list and why), plus
+ * prctl(PR_SET_NO_NEW_PRIVS, 1). No capset() call needed: every container's
+ * cmd runs as real root (ADR-0017's own comment on this) executing plain,
+ * non-file-capability binaries, so the kernel's own documented legacy-root
+ * exec rule (capabilities(7), "Capabilities and execution of programs by
+ * root") already recomputes each subsequent exec's effective/permitted sets
+ * from this now-trimmed bounding set -- which is exactly the coverage
+ * needed: the drop persists through the whole process tree a container ever
+ * spawns (e.g. jumpbox1's bash -> sshd -> a user's own login shell), not
+ * just the immediate cmd. cap_add/cap_add_count name opt-in exceptions
+ * (capability name strings, e.g. "CAP_SYS_TIME") to the fixed default list.
+ * Returns 0, or -1 (errno set, EINVAL for an unrecognized cap_add name) on
+ * failure.
+ */
+int container_caps_drop(const char cap_add[][CONTAINER_CAP_NAME_MAX], int cap_add_count);
+
 #endif /* CONTAINER_INTERNAL_H */

@@ -248,6 +248,11 @@ int container_create(const struct container_spec *spec, struct container_handle 
 				close(spec->stderr_fd);
 		}
 
+		if (container_caps_drop(spec->cap_add, spec->cap_add_count) != 0) {
+			child_diag(diag_pipe[1], "child: container_caps_drop");
+			_exit(120);
+		}
+
 		execve(spec->argv[0], spec->argv, spec->envp);
 		{
 			/*

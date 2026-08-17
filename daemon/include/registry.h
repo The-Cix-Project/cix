@@ -208,6 +208,17 @@ struct registry_entry {
 	struct container_sysctl sysctls[CONTAINER_MAX_SYSCTLS];
 	int sysctl_count; /* 0 = no sysctls applied */
 	/*
+	 * Opt-in exceptions to container_caps_drop()'s own fixed default
+	 * capability deny-list (issue #29) this container was created with --
+	 * mirrors container_spec.cap_add[] directly, same "read from spec
+	 * inside registry_create(), no separate parameter" pattern sysctls[]
+	 * above already uses. 0 = the fixed default deny-list applies with
+	 * no exceptions (every container that predates this field, and any
+	 * new one that doesn't ask for an exception).
+	 */
+	char cap_add[CONTAINER_MAX_CAP_ADD][CONTAINER_CAP_NAME_MAX];
+	int cap_add_count;
+	/*
 	 * The entrypoint argv this container was created with (POST
 	 * /v1/containers' own "cmd" field) -- copied in registry_create()
 	 * the same way interfaces[]/sysctls[] already are (read directly

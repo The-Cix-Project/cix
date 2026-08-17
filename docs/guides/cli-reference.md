@@ -129,6 +129,7 @@ run --name=NAME --image=IMAGE
     [--ldap-provision] [--ldap-user=NAME] [--ldap-group=NAME] [--ldap-uid=N] [--ldap-secret-dir=PATH]
     [--route=DEST/PREFIX:VIA ...]
     [--device=ID ...] [--optional-device=ID ...] [--interface=IFNAME ...]
+    [--cap-add=CAP_NAME ...]
     [--restart=always|on-failure|unless-stopped] [--restart-delay=N]
     [--follow-rolling] [--follow-rolling-jitter-seconds=N]
     [--depends-on=NAME ...]

@@ -6943,6 +6943,25 @@ components:
             is independent of, and can be combined with, networks above.
             Set once at creation; not modifiable on an already-running
             container.
+        cap_add:
+          type: array
+          items:
+            type: string
+          maxItems: 8
+          description: >
+            Opt-in exceptions (e.g. "CAP_SYS_TIME") to the fixed default
+            Linux capability deny-list every container's own process is
+            otherwise permanently restricted to, right before its cmd is
+            execve()'d (issue #29 -- see that issue and
+            src/container_caps.c for the full default list and why: in
+            short, containers run as real root with no user namespace, so
+            an untrimmed capability set -- CAP_SYS_MODULE chief among
+            them -- is a straight line from any container to host-kernel
+            compromise with no exploit needed). Only a capability that's
+            actually on the default deny-list is a meaningful entry here;
+            an unrecognized name, or one that was never dropped in the
+            first place, is a 400. Set once at creation; not modifiable
+            on an already-running container, same as interfaces above.
         files:
           type: array
           items:
@@ -7335,6 +7354,15 @@ components:
           description: >
             Bare kernel names of every real network interface moved into
             this container's own netns at creation. Empty if none.
+        cap_add:
+          type: array
+          items:
+            type: string
+          description: >
+            Capability names (e.g. "CAP_SYS_TIME") this container was
+            granted as exceptions to the default deny-list at creation
+            (see ContainerCreate.cap_add). Empty means the fixed default
+            deny-list applies with no exceptions.
         files:
           type: array
           items:

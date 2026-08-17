@@ -69,7 +69,7 @@ static void print_usage(FILE *out)
 	        "      [--pki-days=N] [--ldap-provision] [--ldap-user=NAME] [--ldap-group=NAME]\n"
 	        "      [--ldap-uid=N] [--ldap-secret-dir=PATH]\n"
 	        "      [--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--optional-device=ID ...]\n"
-	        "      [--interface=IFNAME ...] [--restart=always|on-failure|unless-stopped]\n"
+	        "      [--interface=IFNAME ...] [--cap-add=CAP_NAME ...] [--restart=always|on-failure|unless-stopped]\n"
 	        "      [--restart-delay=N] [--follow-rolling] [--follow-rolling-jitter-seconds=N]\n"
 	        "      [--depends-on=NAME ...] [--dns-server=A.B.C.D ...]\n"
 	        "      [--readiness-tcp-port=N [--readiness-timeout=N]] -- CMD [ARGS...]\n"
@@ -3941,6 +3941,7 @@ static int cmd_console(const struct kx_client *c, int argc, char **argv)
 #define CLI_MAX_DEVICES 16
 /* Matches daemon's CONTAINER_MAX_INTERFACES -- see include/container.h. */
 #define CLI_MAX_INTERFACES 16
+#define CLI_MAX_CAP_ADD 8
 /* Matches daemon's CONTAINERDEF_MAX_DEPENDS -- see daemon/include/containerdef.h. */
 #define CLI_MAX_DEPENDS 16
 /* Matches daemon's CONTAINER_MAX_FILES -- see include/container.h. */
@@ -5594,6 +5595,8 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	int optional_device_count = 0;
 	const char *interfaces[CLI_MAX_INTERFACES];
 	int interface_count = 0;
+	const char *cap_add[CLI_MAX_CAP_ADD];
+	int cap_add_count = 0;
 	const char *restart = NULL;
 	long restart_delay = -1;
 	int follow_rolling = 0;
@@ -5692,6 +5695,13 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 				return 2;
 			}
 			interfaces[interface_count++] = argv[i] + 12;
+		} else if (strncmp(argv[i], "--cap-add=", 10) == 0) {
+			if (cap_add_count >= CLI_MAX_CAP_ADD) {
+				fprintf(stderr, "thincctl: too many --cap-add= flags (max %d)\n",
+				        CLI_MAX_CAP_ADD);
+				return 2;
+			}
+			cap_add[cap_add_count++] = argv[i] + 10;
 		} else if (strncmp(argv[i], "--restart=", 10) == 0) {
 			restart = argv[i] + 10;
 		} else if (strncmp(argv[i], "--restart-delay=", 16) == 0) {
@@ -5991,6 +6001,13 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		jw_arr_open(&w);
 		for (i = 0; i < interface_count; i++)
 			jw_str(&w, interfaces[i]);
+		jw_arr_close(&w);
+	}
+	if (cap_add_count > 0) {
+		jw_key(&w, "cap_add");
+		jw_arr_open(&w);
+		for (i = 0; i < cap_add_count; i++)
+			jw_str(&w, cap_add[i]);
 		jw_arr_close(&w);
 	}
 	if (restart != NULL) {

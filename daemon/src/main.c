@@ -8053,6 +8053,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	long long disk_quota_bytes;
 	const struct json_value *jdevices;
 	const struct json_value *jinterfaces;
+	const struct json_value *jcap_add;
 	const struct json_value *jfiles, *jsysctls, *jenv;
 	const struct json_value *jrestart, *jrestart_delay, *jdepends_on, *jreadiness;
 	const struct json_value *jfollow_rolling, *jfollow_rolling_jitter;
@@ -8094,6 +8095,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 	int pending_device_count = 0;
 	char interface_names[CONTAINER_MAX_INTERFACES][CONTAINER_IFNAME_MAX];
 	int interface_count = 0;
+	char cap_add_names[CONTAINER_MAX_CAP_ADD][CONTAINER_CAP_NAME_MAX];
+	int cap_add_count = 0;
 	char file_paths[CONTAINER_MAX_FILES][CONTAINER_FILE_PATH_MAX];
 	int file_count = 0;
 	struct container_sysctl sysctl_specs[CONTAINER_MAX_SYSCTLS];
@@ -8142,6 +8145,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	jroutes = json_object_get(root, "routes");
 	jdevices = json_object_get(root, "devices");
 	jinterfaces = json_object_get(root, "interfaces");
+	jcap_add = json_object_get(root, "cap_add");
 	jfiles = json_object_get(root, "files");
 	jsysctls = json_object_get(root, "sysctls");
 	jenv = json_object_get(root, "env");
@@ -8583,6 +8587,26 @@ static int create_container_from_body(const char *body, size_t body_len,
 			snprintf(interface_names[i], sizeof(interface_names[i]), "%s", ifname);
 		}
 	}
+	if (jcap_add != NULL) {
+		if (jcap_add->type != JSON_ARRAY || jcap_add->u.array.count > CONTAINER_MAX_CAP_ADD) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "cap_add must be an array of at most 8 entries");
+			return 400;
+		}
+		cap_add_count = (int)jcap_add->u.array.count;
+		for (i = 0; i < (size_t)cap_add_count; i++) {
+			const char *cap_name = json_as_string(jcap_add->u.array.items[i]);
+
+			if (cap_name == NULL || !container_cap_name_valid(cap_name)) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size,
+				         "cap_add entries must be a recognized capability name "
+				         "that's actually on the default deny-list (e.g. \"CAP_SYS_TIME\")");
+				return 400;
+			}
+			snprintf(cap_add_names[i], sizeof(cap_add_names[i]), "%s", cap_name);
+		}
+	}
 	if (jfiles != NULL) {
 		if (jfiles->type != JSON_ARRAY || jfiles->u.array.count > CONTAINER_MAX_FILES) {
 			json_free(root);
@@ -8994,6 +9018,9 @@ static int create_container_from_body(const char *body, size_t body_len,
 	spec.interface_count = interface_count;
 	for (i = 0; i < (size_t)interface_count; i++)
 		snprintf(spec.interfaces[i], sizeof(spec.interfaces[i]), "%s", interface_names[i]);
+	spec.cap_add_count = cap_add_count;
+	for (i = 0; i < (size_t)cap_add_count; i++)
+		snprintf(spec.cap_add[i], sizeof(spec.cap_add[i]), "%s", cap_add_names[i]);
 	spec.argv = argv_buf;
 	spec.envp = envp_ptrs;
 
