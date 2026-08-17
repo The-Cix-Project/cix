@@ -11461,9 +11461,10 @@ static void handle_diskrole_delete(int fd, const char *disk_name)
 	if (is_active_storage_singleton_placement(disk_name)) {
 		respond_error(fd, 409, "Conflict",
 		              "this disk is the active state-storage, log-storage, or rebuildable-storage "
-		              "placement, or the configured backup-config disk -- migrate away first "
-		              "(POST .../migrate to a different disk or disk: null, or PUT "
-		              "/v1/system/backup-config with a different disk/null) before removing its role");
+		              "placement, the configured backup-config disk, or the current swap placement "
+		              "(issue #28) -- migrate away first (POST .../migrate to a different disk or "
+		              "disk: null, PUT /v1/system/backup-config with a different disk/null, or "
+		              "POST /v1/system/swap with a different disk/omitted) before removing its role");
 		return;
 	}
 	if (disk_has_container_in_use(disk_name)) {
@@ -11548,8 +11549,9 @@ static void handle_disk_format_post(int fd, const char *disk_name, const char *b
 	if (is_active_storage_singleton_placement(disk_name)) {
 		json_free(root);
 		respond_error(fd, 409, "Conflict",
-		              "this disk is the active state-storage, log-storage, or rebuildable-storage placement, or the configured backup-config disk -- "
-		              "formatting it would destroy live data; migrate away first");
+		              "this disk is the active state-storage, log-storage, or rebuildable-storage "
+		              "placement, the configured backup-config disk, or the current swap placement "
+		              "(issue #28) -- formatting it would destroy live data; migrate away first");
 		return;
 	}
 	if (disk_has_container_in_use(disk_name)) {
