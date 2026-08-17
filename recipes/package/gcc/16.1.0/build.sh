@@ -776,127 +776,62 @@ FLOATDI_C
 		# Past the gcc/as fix, the build reaches a genuinely different
 		# class of problem: cc1 itself -- the freshly self-built,
 		# TCC-compiled stage-1 compiler -- segfaults ("internal compiler
-		# error: Segmentation fault") compiling certain real libgcc
+		# error: Segmentation fault", reported "during RTL pass: jump2",
+		# an optimizer pass) compiling a small number of real libgcc
 		# source files at -O2 (generic-morestack.c and
-		# soft-fp/bitintpow10.c both confirmed; there may be more). This
-		# is not a missing symbol -- it's TCC's own generated cc1 binary
-		# crashing under real optimization load (the crash is reported
-		# "during RTL pass: jump2"), the same general class of genuine
-		# TCC codegen/conformance gap this session has already confirmed
-		# several times (the m4 static-inline bug, the -pthread
-		# mishandling, the missing `linux` macro), just far more
-		# expensive to chase file-by-file here. Since this is a native,
-		# non-cross build, libgcc's resulting object code is
-		# ABI-identical regardless of which working compiler builds it
-		# -- so build target libgcc with real gcc instead of the
-		# (partially unreliable) freshly-built xgcc, the same "some
-		# things build better with real gcc, and that's fine" precedent
-		# already established for the host build-tools above. This does
-		# NOT touch which compiler builds cc1/cc1plus/gcc-ar themselves
-		# (still TCC, per the 3-tier policy) -- only target libgcc's own
-		# object code, which is derived runtime support, not
-		# thinC-authored logic.
+		# soft-fp/bitintpow10.c confirmed). A genuine TCC codegen bug,
+		# the same general class already confirmed several times this
+		# session (m4's static-inline bug, -pthread mishandling, the
+		# missing `linux` macro).
 		#
-		# A first attempt sed-patched target libgcc's own generated
-		# Makefile's `CC = ` line directly, and it never took effect --
-		# confirmed via a full build run still invoking
-		# /build/src/build/./gcc/cc1 directly, the exact same crash,
-		# after the patch supposedly applied. Root cause (found in GCC's
-		# own Makefile.tpl, not guessed): target-library sub-makes are
-		# invoked recursively with `'CC=$$(CC_FOR_TARGET) ...'` passed
-		# as an explicit COMMAND-LINE variable override each and every
-		# time (Makefile.tpl's own EXTRA_TARGET_FLAGS) -- and a
-		# command-line override always wins over a plain `CC = ...`
-		# assignment inside the recursed-into Makefile itself, no matter
-		# how many times that Makefile gets edited on disk. The correct,
-		# documented lever is CC_FOR_TARGET/GCC_FOR_TARGET
-		# (Makefile.tpl's own comment: "If GCC_FOR_TARGET is not
-		# overriden on the command line...") -- passed as OUR OWN
-		# command-line override to the make invocation below, it
-		# propagates through every recursive sub-make via inherited
-		# MAKEFLAGS automatically, with no per-subdirectory patching
-		# needed at all. Confirmed working via a full build run: the
-		# segfault is gone, /usr/bin/gcc is genuinely being invoked in
-		# place of xgcc.
+		# The first fix attempted was substituting real ambient gcc for
+		# ALL of target libgcc (CC_FOR_TARGET/GCC_FOR_TARGET, the
+		# documented, correct override lever for exactly this -- a
+		# sed-patch of the generated Makefile's own `CC = ` line was
+		# tried even before that and never took effect, since
+		# Makefile.tpl's EXTRA_TARGET_FLAGS passes `CC=$$(CC_FOR_TARGET)`
+		# as a command-line override on every recursive sub-make, which
+		# always beats a plain in-Makefile assignment). That got real
+		# gcc genuinely invoked (confirmed) and immediately hit a chain
+		# of real, individually-fixable version-skew gaps (ambient gcc
+		# is 12.2; this is GCC 16's own libgcc source) -- missing
+		# <stdbool.h> inclusion, a missing __LIBGCC_DWARF_CIE_DATA_
+		# ALIGNMENT__ cc1-builtin macro (gcc 12 predates it -- confirmed
+		# with a zero-cost LOCAL test, `echo | gcc -dM -E
+		# -fbuilding-libgcc -x c -`, comparing against gcc-16.1.0's own
+		# c-cppbuiltin.cc), gcc 12's own private, stale
+		# gcc/config/i386/cpuid.h shadowing GCC 16's newer one via a
+		# quoted #include -- each fixed in turn. But the NEXT gap after
+		# those three was a hard wall, not a fixable one: `cc1: error:
+		# attribute 'target' argument 'usermsr' is unknown` -- GCC 16's
+		# own newer x86 intrinsic headers (x86gprintrin.h chains into
+		# dozens of extension headers: RAO-INT, USER_MSR, AMX-*, AVX10,
+		# APX-F...) use function-attribute strings ambient gcc 12's own
+		# compiled-in attribute table has never heard of. No `-D`/`-I`
+		# can teach an older cc1 binary a newer attribute string; this
+		# would only get worse the deeper into libgcc it went. Reverted
+		# that whole approach (CC_FOR_TARGET/GCC_FOR_TARGET removed
+		# entirely) in favor of the much narrower fix below.
 		#
-		# That run hit one more gap immediately behind it: `error:
-		# unknown type name 'bool'` in gcc's own backend header
-		# config/i386/i386.h, pulled in via tm.h from
-		# generic-morestack.c. The freshly-built xgcc apparently
-		# resolves <stdbool.h> implicitly through its own bundled
-		# `include-fixed` search path (populated by fixincludes during
-		# its own earlier build stage); a bare real-gcc invocation has
-		# no equivalent. CC_FOR_TARGET's value is textually placed first
-		# on the resulting command line (exactly how gcc's own default
-		# value already embeds its `-B` flag), so extra flags can be
-		# embedded directly in it -- `-include stdbool.h` forces the
-		# same effect portably, without patching gcc's own unmodified
-		# header.
-		# One more gap surfaced right behind stdbool.h: `__LIBGCC_
-		# DWARF_CIE_DATA_ALIGNMENT__ undeclared` in unwind-dw2.c. Two
-		# theories were chased and both diagnostics are kept below as
-		# real, working examples of "check, don't guess": (1) an empty
-		# libgcc_tm.h (mkheader.sh-generated; its own stamp rule has no
-		# prerequisites, so make never revisits it once written, the
-		# same class of bug already fixed once for gcc/as) turned out
-		# to be a red herring -- confirmed empty is CORRECT for this
-		# target (libgcc_tm.h's own tm_file for x86_64-linux is
-		# genuinely just elf-lib.h + value-unwind.h, neither of which
-		# defines this macro; fetched and read both files directly to
-		# confirm). (2) The real cause, confirmed with a zero-cost
-		# LOCAL test (`echo | gcc -dM -E -fbuilding-libgcc -x c -`,
-		# no waiting on a real build to find out): `__LIBGCC_*` builtins
-		# are emitted by cc1 itself (gcc/c-family/c-cppbuiltin.cc,
-		# gated on -fbuilding-libgcc, not from any header at all) --
-		# ambient /usr/bin/gcc (12.2) correctly emits 46 of the 47
-		# macros GCC 16's own libgcc source expects, but is missing
-		# exactly this one: real, genuine version skew, since this
-		# specific macro was added to GCC's source after 12.2 shipped.
-		# Real ambient gcc is simply too old to fully stand in for a
-		# freshly-built target compiler here. The value itself isn't a
-		# guess: gcc/defaults.h's own documented formula for this
-		# target is DWARF_CIE_DATA_ALIGNMENT = -UNITS_PER_WORD = -8
-		# (STACK_GROWS_DOWNWARD is true on x86_64, confirmed via the
-		# same local test's __LIBGCC_STACK_GROWS_DOWNWARD__), matching
-		# the well-documented x86_64 SysV ABI CIE data-alignment
-		# factor. Supplied directly since there's no portable way to
-		# ask an older gcc to emit a macro its own source doesn't know
-		# about.
+		# Since it's specifically an OPTIMIZER pass crashing (not a
+		# codegen-correctness bug at any level), and since these two
+		# files are rarely-hot runtime support code (segmented-stack
+		# support, _BitInt decimal power-of-10 tables) where -O0 vs -O2
+		# has no practical consequence, the real fix is libgcc's own
+		# documented per-file override mechanism
+		# (libgcc/Makefile.in's `gcc_compile_bare = $(CC)
+		# $(INTERNAL_CFLAGS) $(CFLAGS-$(<F))` -- a real, intentional
+		# extension point, not a workaround of one) -- lowering
+		# optimization for just the two known-crashing files while
+		# every other file keeps building with the correct,
+		# version-matched, TCC-built xgcc. generic-morestack-thread.c
+		# is included defensively (same file family, compiled
+		# alongside, never individually confirmed either way).
 		find x86_64-pc-linux-gnu/libgcc -name '*.o' -delete 2>/dev/null
-		rm -f x86_64-pc-linux-gnu/libgcc/libgcc_tm.h \
-		    x86_64-pc-linux-gnu/libgcc/libgcc_tm.stamp
-		# A sixth gap, past DWARF_CIE_DATA_ALIGNMENT: `bit_AVX10`/
-		# `bit_AMX_FP16`/etc "undeclared" in cpuinfo.h, compiling
-		# libgcc/config/i386/cpuinfo.c's plain `#include "cpuid.h"`.
-		# Not a cc1-builtin gap this time -- confirmed directly (`find
-		# /usr/lib/gcc -name cpuid.h`, then grepping it): ambient gcc
-		# 12 ships its OWN private gcc/config/i386/cpuid.h (a real,
-		# genuine gcc-provided header, `/usr/lib/gcc/x86_64-linux-gnu/
-		# 12/include/cpuid.h`, automatically on its implicit private
-		# search path), and it's simply an OLDER revision missing
-		# these newer CPU feature bits (AVX10/AMX-FP16/APX-F/etc are
-		# all recent ISA extensions) -- the exact same "ambient gcc 12
-		# is too old" version-skew class of problem as the
-		# __LIBGCC_DWARF_CIE_DATA_ALIGNMENT__ gap, just via a
-		# different mechanism (a real conflicting header file this
-		# time, not a cc1-internal builtin). cpuinfo.c's own quoted
-		# `#include "cpuid.h"` has no local file to find in its own
-		# directory, so it falls through to the compiler's search
-		# chain and picks up gcc 12's private (wrong, stale) copy
-		# instead of this exact GCC 16 source tree's own correct,
-		# up-to-date gcc/config/i386/cpuid.h. An explicit `-I` pointed
-		# at the real one always wins (user `-I` paths are searched
-		# before a compiler's own implicit private header
-		# directories) -- computed as an absolute path from the
-		# current build dir (one level up from `build/`, which is
-		# where this whole retry loop already runs from) rather than
-		# a fragile relative one, since it has to resolve correctly
-		# regardless of which libgcc subdirectory a given compile
-		# happens to run from.
-		gcc16_srcdir=$(cd .. && pwd)
 		if make -j"$(nproc)" \
-		    CC_FOR_TARGET="/usr/bin/gcc -include stdbool.h -D__LIBGCC_DWARF_CIE_DATA_ALIGNMENT__=-8 -I${gcc16_srcdir}/gcc/config/i386" \
-		    GCC_FOR_TARGET="/usr/bin/gcc -include stdbool.h -D__LIBGCC_DWARF_CIE_DATA_ALIGNMENT__=-8 -I${gcc16_srcdir}/gcc/config/i386"; then
+		    CFLAGS-generic-morestack.c=-O0 \
+		    CFLAGS-generic-morestack-thread.c=-O0 \
+		    CFLAGS-bitintpow10.c=-O0; then
 			break
 		fi
 		i=$((i + 1))
@@ -919,41 +854,16 @@ FLOATDI_C
 	# tail on some unrelated, already-successful subproject's log
 	# instead). `ls -t` ranks by mtime; the newest is the one that
 	# matters.
-	gcc16_srcdir=$(cd .. && pwd)
 	if ! make -j"$(nproc)" \
-	    CC_FOR_TARGET="/usr/bin/gcc -include stdbool.h -D__LIBGCC_DWARF_CIE_DATA_ALIGNMENT__=-8 -I${gcc16_srcdir}/gcc/config/i386" \
-	    GCC_FOR_TARGET="/usr/bin/gcc -include stdbool.h -D__LIBGCC_DWARF_CIE_DATA_ALIGNMENT__=-8 -I${gcc16_srcdir}/gcc/config/i386"; then
-		# The gcc/as and target-libgcc-segfault gaps above are both
-		# confirmed fixed (neither symptom has recurred since), so
+	    CFLAGS-generic-morestack.c=-O0 \
+	    CFLAGS-generic-morestack-thread.c=-O0 \
+	    CFLAGS-bitintpow10.c=-O0; then
+		# gcc/as, the cc1 segfault, and the whole CC_FOR_TARGET/
+		# version-skew chain above are all confirmed resolved (none of
+		# those symptoms recurred once the per-file -O0 fix landed), so
 		# their own diagnostics are retired here rather than left to
-		# eat into thincd's own fixed-size captured-build-output
-		# buffer on every future unrelated failure.
-		#
-		# Current gap: `__LIBGCC_DWARF_CIE_DATA_ALIGNMENT__ undeclared`
-		# in unwind-dw2.c, GCC itself suggesting `DWARF_CIE_DATA_ALIGNMENT`
-		# (the real, gcc-internal macro this one is meant to proxy) as
-		# a replacement -- meaning the real macro IS in scope somewhere,
-		# but the libgcc-safe `__LIBGCC_`-prefixed proxy version isn't.
-		# That proxy is generated at libgcc-configure time into
-		# libgcc_tm.h (libgcc/mkheader.sh, a pure text substitution from
-		# tm_defines -- confirmed via the real Makefile.in and
-		# mkheader.sh source, not guessed -- so it's compiler-
-		# independent, not something our CC_FOR_TARGET override should
-		# even affect). Dump it directly rather than guess further.
-		echo "=== libgcc_tm.h diagnostic ==="
-		grep -n "LIBGCC" x86_64-pc-linux-gnu/libgcc/libgcc_tm.h 2>&1
-		# Regenerating libgcc_tm.h/.stamp each retry pass did NOT fix
-		# it -- still just the header guard, confirmed via a second
-		# full build run. That means tm_defines/tm_file are empty in
-		# the MAKEFILE ITSELF (libgcc_tm_defines = @tm_defines@,
-		# libgcc/Makefile.in line 89-90), not merely a stale generated
-		# .h left over from an earlier pass. Dump the actual
-		# substituted values directly to tell whether this is a
-		# configure-time substitution problem (values genuinely never
-		# computed/passed down) versus something else.
-		echo "=== libgcc Makefile tm_defines/tm_file ==="
-		grep -n "^libgcc_tm_defines\|^libgcc_tm_file\|^tm_defines\|^tm_file" \
-		    x86_64-pc-linux-gnu/libgcc/Makefile 2>&1
+		# eat into thincd's own fixed-size captured-build-output buffer
+		# on every future unrelated failure.
 		latest_config_log=$(find . -name config.log -printf '%T@ %p\n' | \
 		    sort -rn | head -1 | cut -d' ' -f2-)
 		if [ -n "$latest_config_log" ]; then
