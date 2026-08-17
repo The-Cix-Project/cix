@@ -5153,18 +5153,44 @@ function renderPackagesList() {
 	}
 }
 
-/* The buildable-definition catalog -- a recipe existing here says
- * nothing about whether it's installed anywhere (see
- * renderPackagesList() for that); the two lists deliberately show
- * different, independent sets (cache.pkgRecipes vs. cache.pkgList),
- * not the same data sliced two ways. */
+/*
+ * issue #19: GET /pkg/recipes returns one entry per (name,version) --
+ * a package with many published versions (thinc has 14) used to render
+ * as that many separate, equally-weighted rows, and worse, the single
+ * "Delete" button on any one of them called DELETE .../recipes/{name}
+ * with no ?version= -- silently wiping *every* stored version, not just
+ * the row clicked. Real data-loss footgun, not just a display nit.
+ *
+ * Collapsed to one row per name (the most recently published version,
+ * by created_at -- simpler and equally correct here than reimplementing
+ * pkg_version_compare()'s dpkg-style comparator in JS, since a real
+ * recipe history is only ever appended to, never backdated) with a
+ * ▸/▾ toggle when more than one version exists. Every row, collapsed
+ * or expanded, now has its own real, version-scoped delete -- the
+ * old implicit "delete removes everything" behavior is gone entirely,
+ * not just hidden; deleting every version now means expanding and
+ * deleting each one explicitly, which is the safe default.
+ */
+const expandedPkgRecipes = new Set();
+
 function renderRecipesList() {
 	const body = document.getElementById("recipes-body");
 	const filter = document.getElementById("recipes-pkg-search").value.trim().toLowerCase();
-	const rows = cache.pkgRecipes.filter((r) => r.name.toLowerCase().includes(filter));
+
+	const groups = new Map();
+
+	for (const r of cache.pkgRecipes) {
+		if (!groups.has(r.name))
+			groups.set(r.name, []);
+		groups.get(r.name).push(r);
+	}
+	for (const versions of groups.values())
+		versions.sort((a, b) => b.created_at - a.created_at);
+
+	const names = [...groups.keys()].filter((n) => n.toLowerCase().includes(filter));
 
 	body.textContent = "";
-	if (rows.length === 0) {
+	if (names.length === 0) {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
 
@@ -5176,15 +5202,21 @@ function renderRecipesList() {
 		return;
 	}
 
-	for (const r of rows) {
+	const addVersionRow = (r, isLatest, toggle) => {
 		const row = document.createElement("tr");
 
 		const nameCell = document.createElement("td");
+		if (toggle) {
+			toggle.className = "recipe-version-toggle";
+			nameCell.appendChild(toggle);
+		}
 		nameCell.appendChild(treeLink("#packages/" + encodeURIComponent(r.name), r.name, ""));
 		row.appendChild(nameCell);
 
 		const versionCell = document.createElement("td");
 		versionCell.textContent = r.version;
+		if (!isLatest)
+			row.className = "recipe-version-row";
 		row.appendChild(versionCell);
 
 		const dependsCell = document.createElement("td");
@@ -5196,11 +5228,35 @@ function renderRecipesList() {
 
 		rmButton.textContent = "Delete";
 		rmButton.className = "button-danger";
-		rmButton.addEventListener("click", () => removePkgRecipe(r.name));
+		rmButton.addEventListener("click", () => removePkgRecipe(r.name, r.version));
 		actionCell.appendChild(rmButton);
 		row.appendChild(actionCell);
 
 		body.appendChild(row);
+	};
+
+	for (const name of names) {
+		const versions = groups.get(name);
+		const latest = versions[0];
+		let toggle = null;
+
+		if (versions.length > 1) {
+			toggle = document.createElement("button");
+			toggle.type = "button";
+			toggle.textContent = (expandedPkgRecipes.has(name) ? "▾ " : "▸ ") + versions.length + " versions";
+			toggle.addEventListener("click", () => {
+				if (expandedPkgRecipes.has(name))
+					expandedPkgRecipes.delete(name);
+				else
+					expandedPkgRecipes.add(name);
+				renderRecipesList();
+			});
+		}
+		addVersionRow(latest, true, toggle);
+		if (versions.length > 1 && expandedPkgRecipes.has(name)) {
+			for (const older of versions.slice(1))
+				addVersionRow(older, false, null);
+		}
 	}
 }
 
@@ -5237,7 +5293,17 @@ async function loadPkgRecipeContent(name) {
 function renderPackageDetail(name) {
 	document.getElementById("pkgd-title").textContent = name;
 
-	const recipe = cache.pkgRecipes.find((r) => r.name === name);
+	/* issue #19: .find() alone returns whatever GET /pkg/recipes
+	 * happened to list first for this name -- not necessarily the
+	 * latest version (confirmed live: squashfs-tools' 5 stored
+	 * versions come back in on-disk readdir() order, not sorted).
+	 * Pick the most recently published one explicitly, same "newest
+	 * created_at wins" rule the collapsed Recipes list now uses. */
+	const allVersions = cache.pkgRecipes.filter((r) => r.name === name);
+	const recipe =
+		allVersions.length === 0
+			? undefined
+			: allVersions.reduce((a, b) => (b.created_at > a.created_at ? b : a));
 	const missingEl = document.getElementById("pkgd-recipe-missing");
 	const presentEl = document.getElementById("pkgd-recipe-present");
 	const editBtn = document.getElementById("pkgd-edit-recipe");
@@ -5252,7 +5318,12 @@ function renderPackageDetail(name) {
 		const fields = document.getElementById("pkgd-recipe-fields");
 
 		fields.textContent = "";
-		fields.appendChild(fieldBlock("Version", recipe.version));
+		fields.appendChild(
+			fieldBlock(
+				"Version",
+				recipe.version + (allVersions.length > 1 ? " (latest of " + allVersions.length + " -- see Software > Recipes to browse/delete a specific older version)" : "")
+			)
+		);
 		fields.appendChild(fieldBlock("Depends", recipe.depends || "-"));
 
 		const contentEl = document.getElementById("pkgd-recipe-content");
@@ -5289,7 +5360,7 @@ function renderPackageDetail(name) {
 		document.getElementById("rf-file").value = "";
 		document.getElementById("rf-content").value = content;
 	};
-	removeBtn.onclick = () => removePkgRecipe(name);
+	removeBtn.onclick = () => removePkgRecipe(name, recipe.version);
 
 	renderPackageDetailInstalled(name);
 }
@@ -5363,14 +5434,21 @@ async function refreshPkgRecipes() {
 		renderPackagesView(parseHash().name);
 }
 
-async function removePkgRecipe(name) {
+/* version is always required from every call site now (issue #19) --
+ * the old version-less call silently deleted every stored version of
+ * name, a real data-loss footgun once the recipe list started showing
+ * one row per version. */
+async function removePkgRecipe(name, version) {
 	try {
-		await apiRequest("DELETE", "/v1/pkg/recipes/" + encodeURIComponent(name));
+		await apiRequest(
+			"DELETE",
+			"/v1/pkg/recipes/" + encodeURIComponent(name) + "?version=" + encodeURIComponent(version)
+		);
 		clearStatus();
 		await refreshPkgRecipes();
 		renderTree();
 	} catch (e) {
-		showStatus("Failed to remove recipe " + name + ": " + e.message, true);
+		showStatus("Failed to remove recipe " + name + " version " + version + ": " + e.message, true);
 	}
 }
 
