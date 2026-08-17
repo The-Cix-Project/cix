@@ -795,17 +795,29 @@ FLOATDI_C
 		# NOT touch which compiler builds cc1/cc1plus/gcc-ar themselves
 		# (still TCC, per the 3-tier policy) -- only target libgcc's own
 		# object code, which is derived runtime support, not
-		# thinC-authored logic. libgcc's own Makefile doesn't exist
-		# until its own configure step runs (mid-build, triggered by
-		# make itself) -- same "patch it once it exists" shape as the
-		# build-tools patch above, which is exactly why this has to be
-		# in the same loop rather than run once up front.
-		if [ -f x86_64-pc-linux-gnu/libgcc/Makefile ]; then
-			sed -i 's|^CC = .*|CC = /usr/bin/gcc|' \
-			    x86_64-pc-linux-gnu/libgcc/Makefile
-			find x86_64-pc-linux-gnu/libgcc -name '*.o' -delete
-		fi
-		if make -j"$(nproc)"; then
+		# thinC-authored logic.
+		#
+		# A first attempt sed-patched target libgcc's own generated
+		# Makefile's `CC = ` line directly, and it never took effect --
+		# confirmed via a full build run still invoking
+		# /build/src/build/./gcc/cc1 directly, the exact same crash,
+		# after the patch supposedly applied. Root cause (found in GCC's
+		# own Makefile.tpl, not guessed): target-library sub-makes are
+		# invoked recursively with `'CC=$$(CC_FOR_TARGET) ...'` passed
+		# as an explicit COMMAND-LINE variable override each and every
+		# time (Makefile.tpl's own EXTRA_TARGET_FLAGS) -- and a
+		# command-line override always wins over a plain `CC = ...`
+		# assignment inside the recursed-into Makefile itself, no matter
+		# how many times that Makefile gets edited on disk. The correct,
+		# documented lever is CC_FOR_TARGET/GCC_FOR_TARGET
+		# (Makefile.tpl's own comment: "If GCC_FOR_TARGET is not
+		# overriden on the command line...") -- passed as OUR OWN
+		# command-line override to the make invocation below, it
+		# propagates through every recursive sub-make via inherited
+		# MAKEFLAGS automatically, with no per-subdirectory patching
+		# needed at all.
+		find x86_64-pc-linux-gnu/libgcc -name '*.o' -delete 2>/dev/null
+		if make -j"$(nproc)" CC_FOR_TARGET=/usr/bin/gcc GCC_FOR_TARGET=/usr/bin/gcc; then
 			break
 		fi
 		i=$((i + 1))
@@ -828,7 +840,7 @@ FLOATDI_C
 	# tail on some unrelated, already-successful subproject's log
 	# instead). `ls -t` ranks by mtime; the newest is the one that
 	# matters.
-	if ! make -j"$(nproc)"; then
+	if ! make -j"$(nproc)" CC_FOR_TARGET=/usr/bin/gcc GCC_FOR_TARGET=/usr/bin/gcc; then
 		# Direct diagnostic for the "cannot execute .../gcc/as: Exec
 		# format error" class of failure -- isolates whether gcc/as
 		# itself is a corrupted wrapper (stale-artifact theory above)
