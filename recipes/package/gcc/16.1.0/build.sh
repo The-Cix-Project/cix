@@ -815,9 +815,26 @@ FLOATDI_C
 		# command-line override to the make invocation below, it
 		# propagates through every recursive sub-make via inherited
 		# MAKEFLAGS automatically, with no per-subdirectory patching
-		# needed at all.
+		# needed at all. Confirmed working via a full build run: the
+		# segfault is gone, /usr/bin/gcc is genuinely being invoked in
+		# place of xgcc.
+		#
+		# That run hit one more gap immediately behind it: `error:
+		# unknown type name 'bool'` in gcc's own backend header
+		# config/i386/i386.h, pulled in via tm.h from
+		# generic-morestack.c. The freshly-built xgcc apparently
+		# resolves <stdbool.h> implicitly through its own bundled
+		# `include-fixed` search path (populated by fixincludes during
+		# its own earlier build stage); a bare real-gcc invocation has
+		# no equivalent. CC_FOR_TARGET's value is textually placed first
+		# on the resulting command line (exactly how gcc's own default
+		# value already embeds its `-B` flag), so extra flags can be
+		# embedded directly in it -- `-include stdbool.h` forces the
+		# same effect portably, without patching gcc's own unmodified
+		# header.
 		find x86_64-pc-linux-gnu/libgcc -name '*.o' -delete 2>/dev/null
-		if make -j"$(nproc)" CC_FOR_TARGET=/usr/bin/gcc GCC_FOR_TARGET=/usr/bin/gcc; then
+		if make -j"$(nproc)" CC_FOR_TARGET="/usr/bin/gcc -include stdbool.h" \
+		    GCC_FOR_TARGET="/usr/bin/gcc -include stdbool.h"; then
 			break
 		fi
 		i=$((i + 1))
@@ -840,7 +857,8 @@ FLOATDI_C
 	# tail on some unrelated, already-successful subproject's log
 	# instead). `ls -t` ranks by mtime; the newest is the one that
 	# matters.
-	if ! make -j"$(nproc)" CC_FOR_TARGET=/usr/bin/gcc GCC_FOR_TARGET=/usr/bin/gcc; then
+	if ! make -j"$(nproc)" CC_FOR_TARGET="/usr/bin/gcc -include stdbool.h" \
+	    GCC_FOR_TARGET="/usr/bin/gcc -include stdbool.h"; then
 		# Direct diagnostic for the "cannot execute .../gcc/as: Exec
 		# format error" class of failure -- isolates whether gcc/as
 		# itself is a corrupted wrapper (stale-artifact theory above)
