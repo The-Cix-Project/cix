@@ -1,0 +1,26 @@
+{
+  "name": "dns-1",
+  "image": "dns",
+  "cmd": [
+    "/usr/sbin/dnsmasq",
+    "-k",
+    "-u",
+    "root",
+    "-p",
+    "53",
+    "-H",
+    "/etc/dnsmasq-hosts",
+    "-R",
+    "-h",
+    "--pid-file=",
+    "--server=192.168.15.200",
+    "--server=192.168.15.100"
+  ],
+  "networks": [
+    {
+      "name": "management",
+      "ip": "192.168.15.101"
+    }
+  ],
+  "restart": "always"
+}

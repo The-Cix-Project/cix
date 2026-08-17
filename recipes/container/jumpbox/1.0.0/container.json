@@ -1,0 +1,60 @@
+{
+  "name": "jumpbox",
+  "image": "jumpbox",
+  "cmd": [
+    "/usr/bin/bash",
+    "/usr/local/bin/jumpbox-start.sh"
+  ],
+  "networks": [
+    {
+      "name": "management",
+      "ip": "192.168.15.109"
+    }
+  ],
+  "restart": "always",
+  "follow_rolling": true,
+  "files": [
+    {
+      "path": "/etc/passwd",
+      "content": "root:x:0:0:root:/root:/usr/bin/bash\nsshd:x:74:74:sshd privsep:/var/empty:/usr/bin/bash\nauthkeys:x:75:75:AuthorizedKeysCommand user:/run:/usr/bin/bash\n"
+    },
+    {
+      "path": "/etc/group",
+      "content": "root:x:0:\nsshd:x:74:\nauthkeys:x:75:\n"
+    },
+    {
+      "path": "/etc/nsswitch.conf",
+      "content": "passwd:         files ldap\ngroup:          files ldap\nshadow:         files ldap\n"
+    },
+    {
+      "path": "/etc/nslcd.conf",
+      "content": "uri ldap://192.168.15.103:3893/ ldap://192.168.15.104:3893/\nbase dc=kanxeo,dc=local\nbinddn cn=svc-nslcd,ou=service-accounts,dc=kanxeo,dc=local\nbindpw {{SECRET:LDAP_BIND_PASSWORD}}\npam_authc_ppolicy no\n",
+      "mode": "0600"
+    },
+    {
+      "path": "/etc/pam.d/sshd",
+      "content": "auth     required     pam_ldap.so\naccount  required     pam_ldap.so\npassword required     pam_ldap.so\nsession  required     pam_mkhomedir.so skel=/etc/skel umask=0077\nsession  required     pam_ldap.so\n"
+    },
+    {
+      "path": "/etc/ldap-authkeys.conf",
+      "content": "LDAP_URI=\"ldap://192.168.15.103:3893/ ldap://192.168.15.104:3893/\"\nBIND_DN=\"cn=svc-nslcd,ou=service-accounts,dc=kanxeo,dc=local\"\nBIND_PW=\"{{SECRET:LDAP_BIND_PASSWORD}}\"\nLDAP_BASE=\"dc=kanxeo,dc=local\"\n",
+      "mode": "0600",
+      "owner": 75,
+      "group": 75
+    },
+    {
+      "path": "/usr/sbin/ldap-authorized-keys",
+      "content": "#!/usr/bin/bash\n# ldap-authorized-keys -- sshd's own AuthorizedKeysCommand script.\n# Invoked as: /usr/bin/bash /usr/sbin/ldap-authorized-keys %u\n# Queries live LDAP (via the svc-nslcd service-account bind, never the\n# connecting user's own credentials) for %u's sshPublicKey attribute\n# and prints each key on its own line for sshd to accept.\nUSERNAME=\"$1\"\n. /etc/ldap-authkeys.conf\n\nwhile IFS= read -r line; do\n\tcase \"$line\" in\n\tsshPublicKey:\\ *)\n\t\techo \"${line#sshPublicKey: }\"\n\t\t;;\n\tesac\ndone < <(/usr/bin/ldapsearch -x -LLL -o ldif-wrap=no -H \"$LDAP_URI\" -D \"$BIND_DN\" -w \"$BIND_PW\" \\\n\t-b \"$LDAP_BASE\" \"(cn=$USERNAME)\" sshPublicKey 2>/dev/null)\n",
+      "mode": "0755"
+    },
+    {
+      "path": "/etc/ssh/sshd_config",
+      "content": "Port 22\nHostKey /etc/ssh/ssh_host_rsa_key\nHostKey /etc/ssh/ssh_host_ed25519_key\nPidFile /run/sshd.pid\n\nUsePAM yes\nPasswordAuthentication yes\nPubkeyAuthentication yes\nPermitRootLogin no\n\nAuthorizedKeysCommand /usr/bin/bash /usr/sbin/ldap-authorized-keys %u\nAuthorizedKeysCommandUser authkeys\n"
+    },
+    {
+      "path": "/usr/local/bin/jumpbox-start.sh",
+      "content": "#!/usr/bin/bash\n# jumpbox1's own startup wrapper -- runs as PID 1 directly (this\n# project's minimal images have no real init), keeps both nslcd and\n# sshd as its own real children (never exec()'d away) so neither ever\n# becomes an orphan needing reparenting.\nset -e\n\nmkdir -p /run/sshd-empty /run/nslcd /etc/ssh /etc/skel\n\n# Real host keys, generated once per container instance -- this\n# project's own images ship no pre-baked ones (a real from-source\n# build, never vendor a private key).\n/usr/bin/ssh-keygen -A\n\n/usr/sbin/nslcd -d &\n\n# sshd's own privsep pre-auth child (where PAM -- and therefore\n# pam_ldap.so's nslcd-socket conversation -- actually runs) chroot()s\n# to --with-privsep-path (/run/sshd-empty), a real, standard OpenSSH\n# security boundary that has nothing to do with LDAP -- so it can\n# never see /run/nslcd/socket at its real path once chrooted. Hard-\n# linking the socket's own inode into the same relative path under\n# /run/sshd-empty (not a copy -- the exact same live, listening socket,\n# just reachable from a second path on the same filesystem) is the\n# standard, documented fix for this exact SSSD/nslcd-under-OpenSSH-\n# privsep interaction, not a workaround for anything actually broken.\nfor i in $(seq 1 30); do\n\t[ -S /run/nslcd/socket ] && break\n\tsleep 0.2\ndone\nmkdir -p /run/sshd-empty/run/nslcd\nln /run/nslcd/socket /run/sshd-empty/run/nslcd/socket\n\n/usr/sbin/sshd -D -e &\nwait -n\n",
+      "mode": "0755"
+    }
+  ]
+}
