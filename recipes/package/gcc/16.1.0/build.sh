@@ -358,7 +358,22 @@ MINIEXTRACT
 		# above) -- diagnose the real file instead.
 		echo "=== gcc/collect-ld diagnostic ==="
 		ls -la ./gcc/collect-ld ./gcc/as ./gcc/nm 2>&1
-		cat ./gcc/collect-ld 2>&1 | head -5
+		# The real, single most direct piece of evidence left to check:
+		# exec-tool.in's own `exec $original ...` depends on $original
+		# (baked into the script itself from ORIGINAL_AS_FOR_TARGET) --
+		# if that's a RELATIVE path rather than absolute, `./gcc/as
+		# --version` (tested from build/, CWD=build/gcc/) could resolve
+		# it correctly while xgcc's own invocation (an absolute -B path,
+		# invoked from a completely different CWD three directories
+		# deep) resolves the identical relative string to something
+		# else entirely -- exactly the kind of CWD-dependent behavior
+		# that would look "fine when tested here, broken when actually
+		# used there".
+		grep -n "^ORIGINAL_AS_FOR_TARGET=\|^original=" ./gcc/as 2>&1
+		echo "--- explicit absolute-path invocation, matching xgcc's own -B form ---"
+		build_dir=$(pwd)
+		"${build_dir}/gcc/as" --version 2>&1 | head -3
+		echo "(exit status: $?)"
 		echo "--- /usr/bin/ld directly ---"
 		ls -la /usr/bin/ld 2>&1
 		od -A x -t x1z -N 32 /usr/bin/ld 2>&1
