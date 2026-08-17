@@ -31,8 +31,17 @@
 # note below), just scope: this recipe's goal is a real, working C/C++
 # compiler, not every optional GCC feature. --disable-lto and
 # --disable-libsanitizer are the same scope call for two other large,
-# optional pieces. All three can be revisited later if actually needed
-# -- nothing here rules them out architecturally.
+# optional pieces. --disable-nls (Native Language Support -- translated
+# diagnostic messages) joins them for a real, confirmed reason: a full
+# bootstrap run got all the way through cc1/cc1plus and the entire C++
+# standard library build, then failed building translated .mo message
+# catalogs (libstdc++-v3/po/) -- `msgfmt` (ambient gettext) hit an
+# unrelated ICU/libstdc++ symbol mismatch already present in this
+# sandbox's own library set, nothing to do with gcc's own code.
+# Skipping NLS entirely is the standard, widely-used GCC option for
+# exactly this class of "translations aren't essential" situation. All
+# four can be revisited later if actually needed -- nothing here rules
+# them out architecturally.
 #
 pkg_name="gcc"
 pkg_version="16.1.0"
@@ -218,7 +227,7 @@ MINIEXTRACT
 	CC=/usr/bin/gcc CXX=/usr/bin/g++ ../configure --prefix=/usr \
 		--enable-bootstrap --disable-multilib --enable-languages=c,c++ \
 		--disable-libsanitizer --disable-lto --with-isl=no \
-		--with-system-zlib
+		--with-system-zlib --disable-nls
 
 	# `make bootstrap` (not bare `make`/`make all`) is GCC's own
 	# documented, explicit entry point for the full 3-stage
