@@ -37,6 +37,15 @@ Ten documents, each with one job — respect these boundaries (One Source of Tru
 
 When a phase lands: update `docs/roadmap/ROADMAP.md` with what was verified, write an ADR if a significant/hard-to-reverse decision was made along the way, add a `CHANGELOG.md` entry, update `docs/architecture/architecture.svg` if the phase changed the system's actual shape (a new module, a new host-level component, a new client surface — not every phase does), update `docs/api/openapi.yaml` + `docs/api/README.md` together if the REST contract changed, and update the relevant `docs/guides/*.md` if an operator-facing workflow changed. Skipping the ADR, changelog entry, diagram update, or guide update "for now" is itself a stop-gap.
 
+## Backlog & Issue Tracking
+
+Every idea, known gap, or piece of future work — anything not being done right now — lives as a real issue in this repo's own Gitea tracker (`git.home.arpa/itdlabs/thinc`, Issues tab), not in a memory file, an informal `#NNN` mention in a commit message or doc, or a `// TODO` left in code. One source of truth for "what's left to do," queryable and linkable, not reconstructed by archaeology across ROADMAP/CHANGELOG/commit history after the fact (which is exactly what was needed before this tracker existed).
+
+- **Labels** (type of work): `bug`, `feature`, `refactor`, `docs`, `needs-verify` (reported open at some point but not re-confirmed against current code — reach for this rather than asserting a stale claim as current fact).
+- **Milestones** (theme, not date or version — this project is rolling-release): group issues by the area of the system they belong to.
+- **Commit linking**: reference the issue number in commit messages (e.g. `#5`) so Gitea auto-links the commit to the issue.
+- When a change closes a gap that has an open issue, close the issue as part of that same change — don't leave it open with the fix already shipped, and don't silently fix something covered by an issue without closing it.
+
 ## Technology Stack
 
 - **Kernel:** Mainline Linux.
