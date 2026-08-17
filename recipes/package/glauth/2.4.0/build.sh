@@ -79,7 +79,79 @@ pkg_depends=""
 # CGO_ENABLED=1 is load-bearing: mattn/go-sqlite3 compiles SQLite's own C
 # amalgamation directly (no external libsqlite3 needed, matching gitea.recipe's
 # own CGO+sqlite precedent) -- this is why the build image needs a working C
-# toolchain staged (tcc/libc-dev, e.g. thinc-builder), not just Go.
+# toolchain staged (tcc/libc-dev AND a real gcc, e.g. thinc-builder), not
+# just Go.
+#
+# --- Bootstrap-compiler declaration (Tier 3 of this project's 3-tier TCC
+# policy -- see gcc.recipe's own comment for the full policy statement).
+# glauth/gitea's own CGO+sqlite build belongs there too, confirmed the
+# hard way across a real, multi-stage investigation for issue #31 (full
+# trail in git log), not assumed or guessed:
+#
+#  1. The SQLite C amalgamation itself (sqlite3-binding.c) compiles clean
+#     under a standalone `tcc -c -std=gnu99 <the real #cgo CFLAGS>`, every
+#     symbol cgo needs comes out as a real defined global -- a genuine
+#     working compile of the actual C code being built, not the blocker.
+#  2. cgo itself unconditionally passes `-Qunused-arguments` (Clang-only)
+#     when compiling runtime/cgo's own bridging code -- fixable with a
+#     thin wrapper stripping the one flag (chrony.recipe's own established
+#     pattern), confirmed via `go build -x` isolating it as the only
+#     problem flag among a dozen candidates tested individually.
+#  3. cgo unconditionally emits GoComplex64/GoComplex128 (C99 `_Complex`)
+#     typedefs into every package's generated _cgo_export.h whenever any
+#     exported Go function exists anywhere in the build graph -- TCC 0.9.27
+#     cannot parse `_Complex` in any spelling (`float _Complex`, `_Complex
+#     float`, nor via <complex.h>'s own `complex` macro, which itself fails
+#     inside glibc's bits/cmathcalls.h) -- also fixable, since nothing in
+#     this build graph ever does complex arithmetic: neutralize the two
+#     dead typedefs to a plain struct before compiling.
+#  4. TCC has zero support for either the C11 __atomic_* or the legacy GCC
+#     __sync_* builtin families (confirmed: both compile only as bare
+#     implicit-declaration external calls, then fail to link) -- Go's own
+#     runtime/cgo/gcc_libinit.c (part of EVERY cgo build, not package-
+#     specific) uses __atomic_load_n/__atomic_store_n for real
+#     synchronization. Still fixable: the only two call sites in the whole
+#     runtime/cgo tree use CONSUME/RELEASE ordering on native-word-sized
+#     operands, and x86-64's own TSO memory model already gives that
+#     ordering for free on an aligned load/store plus a compiler barrier --
+#     a real, provably-correct macro shim, not a hack.
+#  5. THE ACTUAL, UN-WORK-AROUNDABLE WALL: TCC aborts its ENTIRE
+#     compilation unit after the FIRST error anywhere in the translation
+#     unit, rather than continuing to parse and report errors in later,
+#     independent top-level declarations the way GCC/Clang do (confirmed
+#     directly with a minimal 3-function probe: only the first function's
+#     error is ever reported, compilation halts there, the second and
+#     third functions' errors -- which absolutely would occur -- are never
+#     reached at all). cmd/cgo's own type-probing (gcc.go's typeCheck)
+#     depends structurally on this continue-past-errors behavior: it
+#     batches every C symbol's "is this a type?/a constant?/declared at
+#     all?" probe (5 tiny functions each) into ONE combined source file,
+#     compiles it ONCE, and classifies every symbol from the resulting
+#     error list in a single pass -- explicitly documented in cmd/cgo's
+#     own source as "we can infer what we need from only the presence or
+#     absence of an error on a specific line" (plural, all lines, one
+#     pass). TCC stopping at the first error breaks this for every name
+#     after the first in every single probed package -- confirmed
+#     reproducing this exact failure against the Go standard library's own
+#     os/user package (pulled in transitively), not just glauth's or
+#     go-sqlite3's own code, so this is a systemic TCC-vs-cgo
+#     incompatibility, not anything specific to this recipe. (A related,
+#     independently-confirmed TCC #line-diagnostic bug -- prepending the
+#     compiled file's own directory onto a #line-supplied filename in
+#     error messages, breaking cgo's exact-string pseudo-filename matching
+#     -- was also found and could be fixed at the wrapper level by
+#     rewriting stderr; it's #5 above that is the real, unfixable wall.)
+#
+# No wrapper-level trick closes #5 without literally reimplementing cgo's
+# own batch-probe compiler-driver semantics (splitting every probe into
+# its own tcc invocation and synthesizing gcc-shaped combined output) --
+# exactly the kind of brittle, bespoke reimplementation this project's own
+# "No Hacks" maxim rules out. CC is therefore pinned to the real, already-
+# staged ambient gcc EXPLICITLY, by absolute path (never a bare `gcc`/`cc`
+# -- this project's own confirmed gcc-invocation gotcha: a bare-name
+# invocation computes a wrong relative install prefix and breaks cc1
+# lookup) rather than left to accidental ambient pickup, the same
+# deliberate-not-implicit posture already fixed on openssh.recipe.
 # GOFLAGS=-mod=vendor + GOPROXY=off make any accidental network module
 # fetch fail loudly and immediately, same defensive posture gitea.recipe's
 # own build already established, rather than silently depending on Go's
@@ -95,6 +167,8 @@ pkg_build() {
 	export GOPROXY="off"
 	export GOCACHE="/build/gocache"
 	export CGO_ENABLED=1
+	export CC=/usr/bin/gcc
+
 	go build -tags embedsqlite -ldflags "-s -w" -o glauth .
 }
 

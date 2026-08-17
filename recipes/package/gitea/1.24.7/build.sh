@@ -55,10 +55,25 @@ pkg_depends=""
 # never changing behavior across a future Go upgrade. TAGS=sqlite +
 # CGO_ENABLED=1 build gitea against its own bundled, CGO-based sqlite
 # driver (mattn/go-sqlite3 -- compiles sqlite's own C amalgamation
-# directly via the already-staged gcc, no external libsqlite3 needed) --
-# the natural choice for a single-container, no-separate-database-
-# service deployment, matching how gitea's own official Docker image
-# defaults too. `make backend` (not `make build`, which also chains
+# directly, no external libsqlite3 needed) -- the natural choice for a
+# single-container, no-separate-database-service deployment, matching
+# how gitea's own official Docker image defaults too. CC is pinned to the
+# real, already-staged ambient gcc EXPLICITLY, by absolute path -- never
+# a bare `gcc`/`cc` (this project's own confirmed gcc-invocation gotcha:
+# a bare-name invocation computes a wrong relative install prefix and
+# breaks cc1 lookup), and deliberately NOT tcc (issue #31's own
+# investigation, full trail on glauth.recipe's own comment -- TCC
+# categorically cannot build cgo-based packages: it aborts its entire
+# compilation unit after the first error anywhere in the file rather
+# than continuing like GCC/Clang, which breaks cmd/cgo's own batched
+# type-probing mechanism structurally, confirmed reproducing against the
+# Go standard library's own os/user package, not just this package's
+# code -- a genuine Tier-3 TCC exception, not an oversight). This
+# comment used to say "via the already-staged gcc" -- an honest
+# description of what was happening before, but never a deliberate,
+# explicit choice until now, closing the exact risk class already
+# confirmed once on openssh.recipe (a real GCC picked up silently).
+# `make backend` (not `make build`, which also chains
 # `frontend`) deliberately skips gitea's own webpack/npm frontend
 # rebuild entirely -- the pre-built assets already in public/ (part of
 # pkg_source's own tarball, see above) are used as-is; this project's
@@ -69,6 +84,7 @@ pkg_build() {
 	export GOPROXY="off"
 	export GOCACHE="/build/gocache"
 	export CGO_ENABLED=1
+	export CC=/usr/bin/gcc
 	make backend TAGS=sqlite
 }
 
