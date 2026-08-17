@@ -265,7 +265,7 @@ GET /v1/system/daemon-config
 ```
 
 ```json
-{"port": 80, "bind": "192.168.50.10", "bind_ip": null, "management_network": "management", "http_enabled": true, "https_enabled": false, "https_port": 443}
+{"port": 80, "bind": "192.168.50.10", "bind_ip": null, "management_network": "management", "http_enabled": true, "https_enabled": true, "https_port": 443}
 ```
 
 ```
@@ -291,14 +291,14 @@ PUT /v1/system/daemon-config
 
 Repointing `management_network` without also giving a fresh `bind_ip` in the same request implicitly clears any previously-set one — a dedicated `bind_ip` only ever makes sense relative to whichever network is management at the time, so it doesn't silently follow a repoint onto a bridge it was never validated against.
 
-`port`, `http_enabled`, `https_enabled`, and `https_port` are independently settable in the same request or separately:
+`port`, `http_enabled`, `https_enabled`, and `https_port` are independently settable in the same request or separately. Both `http_enabled` and `https_enabled` default to `true` on a fresh install (ADR-0171, ports 80/443) — a genuinely fresh install just has HTTPS silently not come up at boot until a PKI root CA exists (non-fatal, logged), since there's no host certificate yet to serve TLS with:
 
 ```
 PUT /v1/system/daemon-config
 {"https_enabled": true}
 ```
 
-Starts a second, independent listener on `https_port` (default `443`), reusing the already-issued PKI `"host"` leaf certificate (see [PKI](#pki-a-ca-chain-and-issued-leaf-certificates) below) — `500` if no root CA has been bootstrapped yet (`POST /pki/ca`), since there's no certificate to serve TLS with. `http_enabled` and `https_enabled` can each be toggled off, but never both in the same request (`400`) — thincd must always have at least one live listener, since (installed) it runs as real PID 1 with no "restart" to fall back on. Every change here — port, network repoint, HTTP/HTTPS toggle — is live immediately and also persisted, so it survives a real reboot.
+Starts a second, independent listener on `https_port` (default `443`), reusing the already-issued PKI `"host"` leaf certificate (see [PKI](#pki-a-ca-chain-and-issued-leaf-certificates) below) — `500` if no root CA has been bootstrapped yet (`POST /pki/ca`), since there's no certificate to serve TLS with. Sent this way — an explicit `PUT`, as opposed to the one-time boot-time attempt — it's also how to bring HTTPS live *immediately*, with no reboot, right after bootstrapping PKI on a fresh install: the handler checks whether the listener is actually running, not just the persisted flag, so re-sending `{"https_enabled": true}` even though it's already the default still starts it for real once a certificate exists. `http_enabled` and `https_enabled` can each be toggled off, but never both in the same request (`400`) — thincd must always have at least one live listener, since (installed) it runs as real PID 1 with no "restart" to fall back on. Every change here — port, network repoint, HTTP/HTTPS toggle — is live immediately and also persisted, so it survives a real reboot.
 
 Since thincd is PID 1 on an installed system, there is no way to reach it again over the network if it's ever pointed at an address you can't get to — double-check reachability of a new `management_network` (or a firewalled `https_port`) before relying on it as your only way in; physical console access (`docs/guides/installing.md`'s "Console login") is always the fallback.
 

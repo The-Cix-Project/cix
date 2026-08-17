@@ -19,6 +19,13 @@
  * Maxims forbid. daemon_config_set_http_enabled(0)/daemon_config_set_
  * https_enabled(0) each refuse if the other is already disabled --
  * this daemon must always have at least one working listener.
+ *
+ * Both default to enabled on a fresh install (ADR-0171), on ports
+ * 80/443 (DEFAULT_PORT/DEFAULT_HTTPS_PORT) -- matching a real deployed
+ * install's own actual configuration, confirmed directly against
+ * 192.168.15.95. A pre-PKI-bootstrap install just has HTTPS silently
+ * unavailable at boot until a host cert exists to serve TLS with; not
+ * a hazard, see create_tls_ctx()'s own soft-fail in main.c.
  */
 
 enum daemon_config_error {
@@ -69,9 +76,9 @@ int daemon_config_port(void);
  */
 enum daemon_config_error daemon_config_set_port(int port);
 
-/* Whether the plain-HTTP listener should be up. Defaults to 1 (every
- * install starts HTTP-only, matching today's actual behavior) --
- * https_enabled defaults to 0. */
+/* Whether the plain-HTTP listener should be up. Defaults to 1, and
+ * https_enabled (below) now defaults to 1 too (ADR-0171) -- a fresh
+ * install starts with both listeners on, not HTTP-only. */
 int daemon_config_http_enabled(void);
 int daemon_config_https_enabled(void);
 /* The persisted HTTPS port, or 0 if never set (main.c falls back to a

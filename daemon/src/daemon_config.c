@@ -9,8 +9,17 @@
 
 static char g_state_path[512];
 static int g_port;          /* 0: no persisted override */
-static int g_http_enabled;  /* defaults to 1 -- every install starts HTTP-only */
-static int g_https_enabled; /* defaults to 0 */
+static int g_http_enabled;  /* defaults to 1 */
+static int g_https_enabled; /* defaults to 1 too (ADR-0171) -- every fresh install
+                              * starts both listeners on, matching this project's
+                              * own already-correct port defaults (80/443, see
+                              * DEFAULT_PORT/DEFAULT_HTTPS_PORT). A pre-PKI-
+                              * bootstrap install just has HTTPS silently
+                              * unavailable until a host cert exists (see the
+                              * boot-time soft-fail in main.c) -- not a hazard,
+                              * the same non-fatal "wanted but not yet available"
+                              * posture ADR-0163/ADR-0169 already established
+                              * elsewhere in this codebase. */
 static int g_https_port;    /* 0: no persisted override, main.c falls back to DEFAULT_HTTPS_PORT */
 static char g_bind_ip[DAEMON_CONFIG_BIND_IP_MAX]; /* empty: no dedicated bind_ip set (ADR-0068) */
 
@@ -117,7 +126,7 @@ int daemon_config_init(const char *state_path)
 		return -1;
 	g_port = 0;
 	g_http_enabled = 1;
-	g_https_enabled = 0;
+	g_https_enabled = 1;
 	g_https_port = 0;
 	g_bind_ip[0] = '\0';
 	return load_state();

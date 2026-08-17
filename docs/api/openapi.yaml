@@ -760,7 +760,10 @@ paths:
         network.c's own is_management flag live (GET /networks), the
         one source of truth for which network thincd is bound to.
         Always 200s -- defaults (port 80, http_enabled true,
-        https_enabled false, https_port 443) apply until the first PUT.
+        https_enabled true, https_port 443, ADR-0171) apply until the
+        first PUT. A fresh, pre-PKI-bootstrap install just has the
+        HTTPS listener silently not come up at boot (logged, non-fatal)
+        until a host certificate exists.
       operationId: getDaemonConfig
       responses:
         "200":
@@ -8899,11 +8902,11 @@ components:
         http_enabled:
           type: boolean
           default: true
-          description: Whether the plain-HTTP listener is currently up. Every install starts HTTP-only.
+          description: Whether the plain-HTTP listener is currently up. Every install starts with both HTTP and HTTPS enabled (ADR-0171).
         https_enabled:
           type: boolean
-          default: false
-          description: Whether the HTTPS listener is currently up. Reuses the PKI-issued "host" leaf certificate (see POST /pki/ca) -- no separate cert-issuance path.
+          default: true
+          description: Whether the HTTPS listener is currently up. Reuses the PKI-issued "host" leaf certificate (see POST /pki/ca) -- no separate cert-issuance path. Defaults to true (ADR-0171), but a fresh, pre-PKI-bootstrap install just has the listener silently not come up at boot until a host certificate exists.
         https_port:
           type: integer
           default: 443

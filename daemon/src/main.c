@@ -4990,13 +4990,29 @@ static void handle_daemon_config_put(int fd, const char *body, size_t body_len)
 	/* HTTPS transition, same shape. g_bind_addr is already authoritative
 	 * (either unchanged, or just updated by the HTTP branch above --
 	 * both listeners always share the same address, only the port
-	 * differs) by the time this runs. */
+	 * differs) by the time this runs.
+	 *
+	 * A failed start is only a hard error (500) when THIS request
+	 * explicitly asked for https_enabled (have_https_req) -- an
+	 * explicit ask that can't be honored deserves a clear failure.
+	 * https_enabled now defaults to true on a fresh install (ADR-0171),
+	 * so want_https is routinely true on a request that never mentioned
+	 * https at all (e.g. only port/management_network/bind_ip) -- for
+	 * that case, a pre-PKI-bootstrap install with no usable host cert
+	 * yet must not block the actually-requested change; soft-fail (log,
+	 * continue), the same non-fatal posture the boot-time attempt
+	 * already has. */
 	if (want_https) {
 		if (g_https_listener_conn.fd < 0) {
 			if (start_https_listener(g_bind_addr, new_https_port) != 0) {
-				respond_error(fd, 500, "Internal Server Error",
-				              "could not start https listener (no usable host cert yet?)");
-				return;
+				if (have_https_req) {
+					respond_error(fd, 500, "Internal Server Error",
+					              "could not start https listener (no usable host cert yet?)");
+					return;
+				}
+				fprintf(stderr,
+				        "https_enabled (default) but could not start the HTTPS listener -- "
+				        "continuing without it\n");
 			}
 		} else if (rebind_https_listener(g_bind_addr, new_https_port) != 0) {
 			respond_error(fd, 500, "Internal Server Error", "https listener rebind failed");
