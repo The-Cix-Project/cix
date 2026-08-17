@@ -247,7 +247,30 @@ MINIEXTRACT
 	# build in exchange for genuine self-hosting verification -- not
 	# worth trading host stability for a faster wall clock on top of
 	# that.
-	if ! make -j2 bootstrap; then
+	# A known, already-diagnosed gap recurs here, on a completely fresh
+	# single-pass bootstrap this time (not a retry-loop artifact): stage
+	# 1's own freshly-built xgcc fails "cannot execute
+	# '.../gcc/as': posix_spawn: Exec format error" configuring its own
+	# target libgcc. Confirmed earlier this session (see git log on this
+	# file) that gcc/as is a cheap wrapper make copies/symlinks in from
+	# the discovered system assembler, regenerated on demand by gcc's
+	# own Makefile rule -- and that once written, make's timestamp-only
+	# tracking never revisits it, so a corrupted first copy is never
+	# retried. Recurring even on a fresh build (not just after our old
+	# TCC-era retry loop) suggests this is a more general quirk of how
+	# `as` gets resolved in this exact sandbox, not something specific
+	# to which compiler builds gcc -- worth a real root-cause pass if it
+	# keeps recurring, but the same cheap, proven fix (force it to
+	# regenerate, retry) unblocks it either way.
+	i=0
+	while [ "$i" -lt 3 ]; do
+		rm -f ./gcc/as ./gcc/as1
+		if make -j2 bootstrap; then
+			break
+		fi
+		i=$((i + 1))
+	done
+	if [ "$i" -eq 3 ]; then
 		# Autoconf-driven configure failures at any depth only print
 		# "See config.log for more details" to stdout/stderr -- the
 		# actual compiler invocation and error text never reach the
