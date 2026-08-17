@@ -269,15 +269,23 @@ MINIEXTRACT
 	# linker-invocation driver) failing to spawn something via its own
 	# private COMPILER_PATH search -- the exact search convention this
 	# project's own Environment notes already document for `ld` lookup
-	# specifically (see the "gcc.recipe (Phase 33)" bullet). Broadened
-	# the cleanup to every wrapper gcc's own Makefile regenerates the
-	# same on-demand, timestamp-blind way (`ld`/`ld1`/`nm`/`ranlib`/
-	# `strip`, not just `as`/`as1`) rather than chase each one
-	# individually as it happens to surface -- `rm -f` on files that
-	# don't exist is a harmless no-op either way.
+	# specifically (see the "gcc.recipe (Phase 33)" bullet). Adding
+	# `gcc/ld`/`gcc/ld1` to the cleanup fixed that.
+	#
+	# Broadening it further to `nm`/`ranlib`/`strip` too, on the
+	# assumption they're regenerated the identical on-demand,
+	# timestamp-blind way as/ld are, was wrong -- confirmed the hard
+	# way: deleting `gcc/nm` left it simply *missing*
+	# (`/build/src/build/./gcc/nm: No such file or directory`), not
+	# corrupted-then-correctly-regenerated the way as/ld are. Whatever
+	# actually creates `gcc/nm` doesn't re-run just because a later
+	# `make` pass finds it absent, unlike as/ld's own genuine on-demand
+	# rule. Reverted to only the two file names actually confirmed (by
+	# real, repeated evidence) to behave this way -- don't delete a file
+	# without first confirming what actually regenerates it.
 	i=0
 	while [ "$i" -lt 3 ]; do
-		rm -f ./gcc/as ./gcc/as1 ./gcc/ld ./gcc/ld1 ./gcc/nm ./gcc/ranlib ./gcc/strip
+		rm -f ./gcc/as ./gcc/as1 ./gcc/ld ./gcc/ld1
 		if make -j2 bootstrap; then
 			break
 		fi
