@@ -224,7 +224,30 @@ MINIEXTRACT
 	# documented, explicit entry point for the full 3-stage
 	# build-and-self-verify sequence described above -- an intentional,
 	# named target, not a side effect of some other invocation.
-	if ! make -j"$(nproc)" bootstrap; then
+	#
+	# Deliberately `-j2`, not `-j"$(nproc)"`: a real, un-bounded
+	# `-j$(nproc)` bootstrap on the real box (8GB RAM total,
+	# `pkg-build-config`'s own `memory_max` was 0 -- no enforced ceiling
+	# at the time) hung the entire host, not just this build --
+	# `thincd` itself stopped answering even `GET /v1/health` for over
+	# 20 minutes, requiring a hard host reset to recover. No log
+	# evidence survived to prove the exact mechanism (the kernel's own
+	# dmesg ring buffer is wiped by a reboot, and thincd's own log store
+	# shows nothing logged between the last pre-hang entry and the
+	# reset -- it was already too stuck to log anything about this
+	# attempt at all), but real C++ template-heavy compiles routinely
+	# use 1-2GB+ per parallel job, and enough of them at once on an 8GB
+	# box with no memory ceiling is a plausible, unproven-but-consistent
+	# explanation for the whole host thrashing itself unresponsive. Two
+	# independent guards now: `pkg-build-config`'s own `memory_max` is
+	# set to a real 4GB ceiling (a future runaway build gets cgroup
+	# OOM-killed in isolation, not able to take the host down with it),
+	# and this recipe no longer assumes it's safe to use every core this
+	# box happens to have. Bootstrap takes 3x longer than a single-pass
+	# build in exchange for genuine self-hosting verification -- not
+	# worth trading host stability for a faster wall clock on top of
+	# that.
+	if ! make -j2 bootstrap; then
 		# Autoconf-driven configure failures at any depth only print
 		# "See config.log for more details" to stdout/stderr -- the
 		# actual compiler invocation and error text never reach the
