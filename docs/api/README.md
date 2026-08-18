@@ -194,6 +194,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/pkg/update-all` | Start an upgrade for the first installed package whose recipe has drifted |
 | POST | `/pkg/hostbuild` | Start a hostbuild job — build a standalone artifact instead of merging into an image |
 | GET | `/pkg/hostbuild/{name}` | Inspect one hostbuild job's current state |
+| POST | `/pkg/resume` | Continue a `keep_on_failure`-preserved build container in place, without a fetch/extract restart |
 | GET | `/pkg/build/log` | Upgrade to a WebSocket; live-tail a currently-running install/hostbuild job's own stdout/stderr |
 | GET | `/pkg` | List every known package (installed or in-flight) with its state |
 | GET | `/pkg/{name}` | Inspect one package's current state |
@@ -1563,6 +1564,30 @@ From there, the preserved container is a completely ordinary, addressable exited
 - `DELETE /v1/containers/__pkgbuild-0` tears it down once you're done — an ordinary container delete, nothing preservation-specific about cleanup.
 
 Only ever applies to the single package actually being installed/hostbuilt — an incidental dependency that fails mid-chain is never preserved, matching the existing (and much more common) "just a normal failure" case. `thincctl pkg install --name=NAME --keep-on-failure`, `thincctl pkg hostbuild NAME --build-image=IMAGE --keep-on-failure`, and `thincctl kmod-build --build-image=IMAGE --keep-on-failure` are the CLI surface.
+
+### Continuing a kept build in place: `POST /pkg/resume` (ADR-0177, issue #46)
+
+A preserved build container (above) is useful for inspection, but iterating on a recipe fixup by re-running the whole install from scratch still pays for a full fetch, re-extract, and build restart every time — a real, repeated cost on a long build (a multi-hour compiler bootstrap, restarted after every one-line recipe change). `POST /pkg/resume` continues a `failed` entry's own preserved build container in place instead: no fetch subprocess runs, and the already-extracted source tree inside its overlay is left completely untouched — only the recipe staged inside it (optionally a newly-published, fixed version) and the previous attempt's partial install destination are refreshed.
+
+```
+POST /v1/pkg/install
+{"name": "gcc", "keep_on_failure": true}
+
+# ... poll GET /v1/pkg/gcc until state leaves fetching/building ...
+
+GET /v1/pkg/gcc
+{"name": "gcc", "state": "failed", "kept_build_container": "__pkgbuild-0", ...}
+
+# fix gcc.recipe, publish it as a new version (POST /pkg/recipe), then:
+
+POST /v1/pkg/resume
+{"name": "gcc", "version": "12.5.0-5"}
+
+# ... poll GET /v1/pkg/gcc again -- resumes inside __pkgbuild-0's own overlay,
+# picking up from its own already-extracted, already-partially-built source tree ...
+```
+
+`name`/`image` must address an entry currently `failed` with a non-null `kept_build_container` — `404` otherwise (nothing to resume). `version` is optional and independent of the version the failed attempt originally used: omitting it resolves to the highest available recipe version, same as every other version-optional field in this API (ADR-0107). `409` if the original build's own chain slot has since been claimed by a different, unrelated job (a real, if narrow, possibility once a failed attempt's slot goes idle) — retry once that job finishes. A successful resume tears its build container down automatically afterward, exactly like any other clean build exit — `keep_on_failure` on the resume request itself controls only what happens if *this* attempt also fails. `thincctl pkg resume --name=NAME [--image=IMAGE] [--version=VERSION] [--keep-on-failure]` is the CLI surface.
 
 ### Building a fresh installer ISO server-side
 

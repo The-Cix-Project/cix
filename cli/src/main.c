@@ -193,6 +193,11 @@ static void print_usage(FILE *out)
 	        "               [--keep-on-failure]  -- on a build failure, leave the build\n"
 	        "               container registered/mounted for GET .../files inspection\n"
 	        "               instead of tearing it down (ADR-0175)\n"
+	        "  pkg resume --name=NAME [--image=IMAGE] [--version=VERSION]\n"
+	        "               [--keep-on-failure]  -- resumes a kept-on-failure build\n"
+	        "               container in place (its already-extracted source tree\n"
+	        "               kept, only the recipe + install destination refreshed),\n"
+	        "               instead of a full fetch+extract+build restart (ADR-0177)\n"
 	        "  pkg ls\n"
 	        "  pkg rm NAME[@IMAGE]\n"
 	        "  pkg update-all  -- starts an upgrade for the first installed package whose\n"
@@ -9332,6 +9337,81 @@ static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, c
 	return emit(&r, json_mode, fmt_pkg_line);
 }
 
+/*
+ * ADR-0177/issue #46: resumes a build container a prior `--keep-on-
+ * failure` attempt (either pkg install or pkg hostbuild) left preserved
+ * instead of paying for a full fetch+extract+build restart -- the real,
+ * repeated cost this exists to eliminate on a long bootstrap build
+ * (e.g. gcc.recipe). --image addresses an ordinary install's entry the
+ * same way pkg install's own --image does; omit it (or pass the
+ * reserved "__hostbuild" image) to resume a hostbuild entry instead.
+ * The entry must currently be in the "failed" state with a real kept
+ * build container (GET /v1/pkg or /v1/pkg/hostbuild/NAME shows this) --
+ * there is nothing to resume otherwise.
+ */
+static int cmd_pkg_resume(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *name = NULL;
+	const char *image = NULL;
+	const char *version = NULL;
+	int keep_on_failure = 0;
+	int i;
+	struct json_writer w;
+	struct kx_response r;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--name=", 7) == 0)
+			name = argv[i] + 7;
+		else if (strncmp(argv[i], "--image=", 8) == 0)
+			image = argv[i] + 8;
+		else if (strncmp(argv[i], "--version=", 10) == 0)
+			version = argv[i] + 10;
+		else if (strcmp(argv[i], "--keep-on-failure") == 0)
+			keep_on_failure = 1;
+		else {
+			fprintf(stderr, "thincctl: unknown pkg resume option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL) {
+		fprintf(stderr,
+		        "usage: thincctl pkg resume --name=NAME [--image=IMAGE] "
+		        "[--version=VERSION] [--keep-on-failure]\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	if (image != NULL) {
+		jw_key(&w, "image");
+		jw_str(&w, image);
+	}
+	/* ADR-0107: omitted resolves to the highest available version --
+	 * lets a resume pick up a newly-published, fixed recipe version
+	 * without needing to reuse the failed attempt's own exact one. */
+	if (version != NULL) {
+		jw_key(&w, "version");
+		jw_str(&w, version);
+	}
+	if (keep_on_failure) {
+		jw_key(&w, "keep_on_failure");
+		jw_bool(&w, 1);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", "/v1/pkg/resume", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "thincctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+
+	return emit(&r, json_mode, fmt_pkg_line);
+}
+
 /* Polls GET /v1/pkg/hostbuild/name until state leaves "fetching"/
  * "building" (--wait's own loop, and --deploy's own prerequisite --
  * it needs the finished artifact_path, not the 202's own in-flight
@@ -9744,6 +9824,8 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 		                "[--upgrade] [--keep-on-failure]\n"
 		                "       thincctl pkg hostbuild NAME --build-image=IMAGE [--version=VERSION] "
 		                "[--wait] [--deploy] [--upgrade] [--keep-on-failure]\n"
+		                "       thincctl pkg resume --name=NAME [--image=IMAGE] [--version=VERSION] "
+		                "[--keep-on-failure]\n"
 		                "       thincctl pkg build-log\n"
 		                "       thincctl pkg ls\n"
 		                "       thincctl pkg rm NAME[@IMAGE]\n"
@@ -9775,6 +9857,8 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 		return cmd_pkg_install(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "hostbuild") == 0)
 		return cmd_pkg_hostbuild(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "resume") == 0)
+		return cmd_pkg_resume(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "build-log") == 0)
 		return cmd_pkg_build_log(c);
 	if (strcmp(sub, "ls") == 0)

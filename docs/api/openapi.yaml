@@ -5539,6 +5539,57 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /pkg/resume:
+    post:
+      summary: >
+        Resumes a keep_on_failure-preserved build container (ADR-0175) in place under a
+        (optionally different, newly-fixed) recipe version, instead of a full
+        fetch+extract+build restart (ADR-0177, issue #46). No fetch subprocess runs at
+        all -- the already-extracted source tree inside the preserved container's own
+        overlay is left completely untouched; only the recipe.sh staged inside it and
+        the previous attempt's partial install destination are refreshed. name/image
+        must address an entry currently in the "failed" state with a non-null
+        kept_build_container (GET /pkg/{name} or /pkg/hostbuild/{name} shows this) --
+        there is nothing to resume otherwise.
+      operationId: pkgResume
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PkgResumeRequest"
+      responses:
+        "202":
+          description: Resumed -- poll GET /pkg/{name} (or /pkg/hostbuild/{name}) for progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgEntry"
+        "400":
+          description: name missing, or no such recipe / it failed to parse under the requested version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such (name, image) entry, or it is not currently failed with a kept build container to resume
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The original build's own chain slot has since been reclaimed by a different, unrelated job -- retry once it finishes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Refreshing the build container's own recipe/install-destination staging failed, or spawning the resumed container failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /pkg/hostbuild/{name}:
     get:
       summary: Inspect one hostbuild job's current state -- a thin wrapper over the same lookup GET /pkg/{name} uses, scoped to the reserved "__hostbuild" image
@@ -9665,6 +9716,42 @@ components:
             dependency that fails mid-chain. The preserved container's name is
             reported back as this entry's kept_build_container; clean it up
             afterward with an ordinary DELETE /containers/{name}, no new mechanism.
+
+    PkgResumeRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: >
+            The failed entry to resume. Must currently have a non-null
+            kept_build_container (ADR-0175) -- there is nothing to resume otherwise.
+        image:
+          type: string
+          default: base
+          description: >
+            Same addressing as PkgInstallRequest's own image field. Omitted (or the
+            reserved "__hostbuild" image) resumes a hostbuild entry instead.
+        version:
+          type: string
+          description: >
+            Resumes under this published recipe version instead of the one the failed
+            attempt originally used (ADR-0107) -- the primary use case: publish a fix,
+            then resume under it without needing to reuse the failed attempt's own
+            exact version string. Omitted resolves to the highest available version.
+        extra_config_symbols:
+          type: string
+          description: >
+            ADR-0159 Phase B -- same meaning as the internal kmod-build mechanism's own
+            field. Only relevant when resuming a kernel/module hostbuild; every other
+            recipe ignores it.
+        keep_on_failure:
+          type: boolean
+          default: false
+          description: >
+            Same ADR-0175 meaning as PkgInstallRequest's own field, applied to this
+            resumed attempt's own outcome -- independent of whether the original,
+            now-being-resumed attempt asked for it.
 
     PkgEntry:
       type: object

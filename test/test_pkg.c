@@ -2364,6 +2364,168 @@ skip_hostbuild:
 	}
 skip_keep_on_failure:
 
+	/* 19. resume (ADR-0177/issue #46): a build container preserved via
+	 * keep_on_failure can be resumed in place under a fixed recipe
+	 * version, WITHOUT re-extracting its source tree -- proven by
+	 * having the first (deliberately failing) build leave a marker
+	 * file in /build/src that only a genuine reuse (never touched by
+	 * reset_build_container_dir()/extract_tarball(), which a fresh
+	 * restart would run) would still have; the resumed recipe's own
+	 * pkg_build() fails loudly if that marker is missing. */
+	{
+		char rs_recipe_dir[PATH_MAX];
+		char rs_recipe_path[PATH_MAX];
+		char kept_name[64];
+		char rs_container_path[300];
+		FILE *f;
+
+		snprintf(rs_recipe_dir, sizeof(rs_recipe_dir), "%s/recipes/resumeme", g_pkg_state_dir);
+		mkdir(rs_recipe_dir, 0755);
+		snprintf(rs_recipe_dir, sizeof(rs_recipe_dir), "%s/recipes/resumeme/1.0", g_pkg_state_dir);
+		mkdir(rs_recipe_dir, 0755);
+		snprintf(rs_recipe_path, sizeof(rs_recipe_path), "%s/recipes/resumeme/1.0/build.sh",
+		         g_pkg_state_dir);
+		f = fopen(rs_recipe_path, "w");
+		if (f == NULL) {
+			fprintf(stderr, "FAIL: could not write resumeme 1.0 recipe\n");
+			ok = 0;
+			goto skip_resume;
+		}
+		fprintf(f, "pkg_name=resumeme\npkg_version=1.0\npkg_source=file://%s\n"
+		           "pkg_sha256=%s\npkg_depends=\"\"\n\n"
+		           "pkg_build() {\n\ttouch /build/src/.resumed_marker\n\texit 1\n}\n\n"
+		           "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n}\n",
+		        tarball_path, sha256);
+		fclose(f);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/install",
+		                       "{\"name\":\"resumeme\",\"keep_on_failure\":true}", &r) != 0 ||
+		    r.status != 202) {
+			fprintf(stderr, "FAIL: POST install resumeme (v1.0) status=%d\n", r.status);
+			ok = 0;
+			goto skip_resume;
+		}
+		kx_response_free(&r);
+
+		if (poll_pkg_state(&client, "resumeme", state, sizeof(state), 60) != 0 ||
+		    strcmp(state, "failed") != 0) {
+			fprintf(stderr, "FAIL: resumeme (v1.0) ended in state '%s'\n", state);
+			ok = 0;
+			goto skip_resume;
+		}
+
+		memset(&r, 0, sizeof(r));
+		kept_name[0] = '\0';
+		if (kx_client_request(&client, "GET", "/v1/pkg/resumeme", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET pkg/resumeme (v1.0) status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const char *kbc = json_str_field(r.json, "kept_build_container");
+
+			if (kbc == NULL || strncmp(kbc, "__pkgbuild-", 11) != 0) {
+				fprintf(stderr, "FAIL: resumeme (v1.0) kept_build_container='%s'\n",
+				        kbc != NULL ? kbc : "(null)");
+				ok = 0;
+			} else {
+				snprintf(kept_name, sizeof(kept_name), "%s", kbc);
+			}
+		}
+		kx_response_free(&r);
+
+		if (kept_name[0] == '\0')
+			goto skip_resume;
+
+		/* the marker really is there -- proof the container's own
+		 * overlay genuinely has real build state, not just an empty
+		 * preserved shell. */
+		snprintf(rs_container_path, sizeof(rs_container_path),
+		         "/v1/containers/%s/files?path=%%2Fbuild%%2Fsrc%%2F.resumed_marker", kept_name);
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", rs_container_path, NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET %s (marker before resume) status=%d\n", rs_container_path,
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* publish a "fixed" 1.1 -- its own pkg_build() checks the
+		 * marker survived (i.e. this really is a resume, not a
+		 * disguised fresh restart) and, if so, succeeds. */
+		snprintf(rs_recipe_dir, sizeof(rs_recipe_dir), "%s/recipes/resumeme/1.1", g_pkg_state_dir);
+		mkdir(rs_recipe_dir, 0755);
+		snprintf(rs_recipe_path, sizeof(rs_recipe_path), "%s/recipes/resumeme/1.1/build.sh",
+		         g_pkg_state_dir);
+		f = fopen(rs_recipe_path, "w");
+		if (f == NULL) {
+			fprintf(stderr, "FAIL: could not write resumeme 1.1 recipe\n");
+			ok = 0;
+			goto skip_resume;
+		}
+		fprintf(f, "pkg_name=resumeme\npkg_version=1.1\npkg_source=file://%s\n"
+		           "pkg_sha256=%s\npkg_depends=\"\"\n\n"
+		           "pkg_build() {\n\t[ -f /build/src/.resumed_marker ] || exit 1\n}\n\n"
+		           "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n}\n",
+		        tarball_path, sha256);
+		fclose(f);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/resume", "{\"name\":\"resumeme\"}", &r) !=
+		        0 ||
+		    r.status != 202) {
+			fprintf(stderr, "FAIL: POST resume resumeme status=%d body=%s\n", r.status,
+			        r.body != NULL ? r.body : "(null)");
+			ok = 0;
+			goto skip_resume;
+		}
+		kx_response_free(&r);
+
+		if (poll_pkg_state(&client, "resumeme", state, sizeof(state), 60) != 0 ||
+		    strcmp(state, "installed") != 0) {
+			fprintf(stderr, "FAIL: resumeme (resumed) ended in state '%s'\n", state);
+			ok = 0;
+			goto skip_resume;
+		}
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pkg/resumeme", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET pkg/resumeme (resumed) status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const char *ver = json_str_field(r.json, "version");
+			const struct json_value *jkbc = json_object_get(r.json, "kept_build_container");
+
+			if (ver == NULL || strcmp(ver, "1.1") != 0) {
+				fprintf(stderr, "FAIL: resumeme (resumed) version='%s', expected 1.1\n",
+				        ver != NULL ? ver : "(null)");
+				ok = 0;
+			}
+			if (jkbc == NULL || jkbc->type != JSON_NULL) {
+				fprintf(stderr, "FAIL: resumeme (resumed) kept_build_container not cleared\n");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		/* the exact same registry slot/container name was reused, not a
+		 * fresh one -- and a genuinely successful build (resumed or
+		 * not) always gets torn down automatically afterward, same as
+		 * any other pkgbuild container's clean exit. */
+		snprintf(rs_container_path, sizeof(rs_container_path), "/v1/containers/%s", kept_name);
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", rs_container_path, NULL, &r) != 0 ||
+		    r.status != 404) {
+			fprintf(stderr, "FAIL: GET %s (resumed container after success) expected 404, got %d\n",
+			        rs_container_path, r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+	}
+skip_resume:
+
 	/* cleanup */
 	run_cmd("rm -rf '%s'", scratch_dir);
 

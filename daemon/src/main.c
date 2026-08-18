@@ -14976,6 +14976,132 @@ static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
 	jw_free(&w);
 }
 
+/*
+ * POST /v1/pkg/resume (ADR-0177/issue #46): resumes a build container a
+ * prior keep_on_failure attempt (ADR-0175/issue #35) left preserved,
+ * skipping the fetch+extract+build-from-scratch restart entirely --
+ * the real, repeated cost this exists to eliminate. Unlike handle_pkg_
+ * install()/handle_pkg_hostbuild() above, pkg_resume_build() has no
+ * fetch subprocess at all -- it's synchronous and returns a ready-to-
+ * run container_spec directly, so this handler drives registry_create()
+ * itself, right here, the exact same sequence handle_pkg_fetch_event()
+ * runs after a successful pkg_fetch_completed() (down to the same
+ * REGISTRY_ERR_* logging), with one extra registry_remove() first
+ * since build_container_name here is a reuse of the kept container's
+ * own name, not a fresh one.
+ */
+static void handle_pkg_resume(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *name_ptr;
+	const char *image_ptr;
+	const char *version;
+	const char *extra_config_symbols;
+	const struct json_value *jkeep;
+	int keep_on_failure;
+	struct container_spec spec;
+	int stdio_write_fd;
+	int chain_idx;
+	enum pkg_error perr;
+	char name[PKG_NAME_MAX];
+	/* Own copies, not root's own string storage -- pkg_get_one() below
+	 * needs name/image again after json_free(root) already ran (this
+	 * function's own JSON body is freed right after pkg_resume_build()
+	 * returns, well before the container is even spawned, matching
+	 * every other pkg handler's own ordering; a bare pointer into
+	 * root's storage would dangle by the time pkg_get_one() ran). */
+	char image[PKG_IMAGE_NAME_MAX];
+	char build_container_name[PKG_NAME_MAX];
+	struct registry_entry *entry;
+	enum registry_error rerr;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	name_ptr = json_as_string(json_object_get(root, "name"));
+	if (name_ptr == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "name missing");
+		return;
+	}
+	snprintf(name, sizeof(name), "%s", name_ptr);
+	image_ptr = json_as_string(json_object_get(root, "image"));
+	image[0] = '\0';
+	if (image_ptr != NULL)
+		snprintf(image, sizeof(image), "%s", image_ptr);
+	/* ADR-0107: omitted (NULL) resolves to name's highest available
+	 * recipe version -- letting a resume pick up a newly-published,
+	 * fixed recipe version without needing to reuse the failed
+	 * attempt's own exact version string. */
+	version = json_as_string(json_object_get(root, "version"));
+	extra_config_symbols = json_as_string(json_object_get(root, "extra_config_symbols"));
+	jkeep = json_object_get(root, "keep_on_failure");
+	keep_on_failure = (jkeep != NULL && jkeep->type == JSON_BOOL && jkeep->u.boolean);
+
+	perr = pkg_resume_build(name, image_ptr, version, extra_config_symbols, keep_on_failure, &spec,
+	                         &chain_idx, &stdio_write_fd);
+	if (perr != PKG_OK) {
+		json_free(root);
+		respond_pkg_error(fd, perr);
+		return;
+	}
+	json_free(root);
+
+	pkg_build_container_name(chain_idx, build_container_name, sizeof(build_container_name));
+	/*
+	 * Frees the registry slot only -- disk (the overlay upper/work dirs
+	 * this resume just reused unchanged) is completely untouched,
+	 * confirmed directly in registry.c. Not running (the original
+	 * build already exited, which is exactly why it had a
+	 * kept_build_container to resume in the first place), so this is a
+	 * plain table removal, no SIGKILL/reap wait.
+	 */
+	registry_remove(build_container_name);
+
+	rerr = registry_create(build_container_name, "pkgbuild", "", &spec, NULL, 0, 0, NULL, 0, NULL,
+	                        0, NULL, NULL, 0, &entry);
+	/* See handle_pkg_fetch_event()'s own identical close -- the child
+	 * (if registry_create() actually forked one) already inherited its
+	 * own copy via clone3. */
+	if (stdio_write_fd >= 0)
+		close(stdio_write_fd);
+
+	if (rerr == REGISTRY_ERR_CREATE_FAILED)
+		logstore_write("thincd", "error", "pkgbuild resume (%s): container_create failed: %s",
+		                build_container_name, container_create_last_error_step());
+	else if (rerr == REGISTRY_ERR_DUPLICATE)
+		logstore_write("thincd", "error",
+		                "pkgbuild resume (%s): a registry entry with this name already exists "
+		                "(stale leftover?)",
+		                build_container_name);
+	else if (rerr == REGISTRY_ERR_FULL)
+		logstore_write("thincd", "error", "pkgbuild resume (%s): registry table full",
+		                build_container_name);
+
+	if (rerr != REGISTRY_OK) {
+		pkg_build_spawn_failed(chain_idx);
+		try_start_queued_pkg_rebuild();
+		respond_error(fd, 500, "Internal Server Error", "resume failed to spawn build container");
+		return;
+	}
+	register_container_pidfd(entry);
+	register_pkg_build_output(pkg_build_output_fd(chain_idx), chain_idx);
+
+	jw_init(&w);
+	if (pkg_get_one(name, image, &w) != PKG_OK) {
+		/* shouldn't happen -- pkg_resume_build() just re-validated this
+		 * exact entry above. */
+		jw_free(&w);
+		respond_error(fd, 500, "Internal Server Error", "resumed but could not be read back");
+		return;
+	}
+	respond_json(fd, 202, "Accepted", &w);
+	jw_free(&w);
+}
+
 /* GET /v1/pkg/hostbuild/{name} -- status/artifact_path polling for a
  * hostbuild job, the exact shape thincctl pkg hostbuild --wait polls. */
 static void handle_pkg_hostbuild_get(int fd, const char *name)
@@ -16543,6 +16669,12 @@ static void dispatch(int fd, const struct http_request *req)
 	if (strcmp(req->path, "/v1/pkg/hostbuild") == 0) {
 		if (strcmp(req->method, "POST") == 0) {
 			handle_pkg_hostbuild(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/pkg/resume") == 0) {
+		if (strcmp(req->method, "POST") == 0) {
+			handle_pkg_resume(fd, req->body, req->body_len);
 			return;
 		}
 	}

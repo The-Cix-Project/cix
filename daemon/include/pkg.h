@@ -497,6 +497,49 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
                                     int *out_chain_idx);
 
 /*
+ * ADR-0177/issue #46: resumes a build container a prior FAILED attempt
+ * left preserved (keep_on_failure above) instead of paying for a full
+ * fetch+extract+build restart from scratch -- the real, repeated cost
+ * this exists to eliminate (see the ADR's own motivating case: a multi-
+ * hour gcc bootstrap, restarted from zero after every single one-line
+ * recipe fixup). No fetch subprocess is involved at all (unlike pkg_
+ * install_start()/pkg_hostbuild_start() above) -- this call is
+ * synchronous and, on PKG_OK, immediately fills *spec_out exactly like
+ * pkg_fetch_completed() does, ready for the caller to registry_create()
+ * the (reused-name) build container right away.
+ *
+ * (name, image) must resolve to a real entry currently PKG_STATE_FAILED
+ * with a non-empty kept_build_container (PKG_ERR_NOT_FOUND otherwise --
+ * nothing to resume; GET the entry first to check). version: same
+ * ADR-0107 meaning as every other entry point here -- NULL/"" resolves
+ * to the highest available recipe version, letting a caller resume
+ * under a newly-published, fixed recipe version without that fix ever
+ * needing to reuse the failed attempt's own exact version string.
+ * extra_config_symbols: same ADR-0159 Phase B meaning/validation as
+ * pkg_hostbuild_start()'s own parameter (NULL/"" for every caller except
+ * a kmod-build resume). keep_on_failure: same ADR-0175 meaning, applies
+ * to this resumed attempt's own outcome, independent of whether the
+ * original attempt asked for it.
+ *
+ * PKG_ERR_BUSY if the original chain slot (parsed back out of
+ * kept_build_container itself via pkg_build_container_chain_index() --
+ * never a freshly allocated one, see this function's own definition for
+ * why) has since been reclaimed by a different, unrelated job.
+ *
+ * Deliberately does not touch the registry -- pkg.c has no dependency
+ * on registry.h and this preserves that; the caller is responsible for
+ * a registry_remove() on the exact same container name (derivable via
+ * pkg_build_container_name(*out_chain_idx, ...)) before its own
+ * registry_create() call, mirroring handle_pkg_fetch_event()'s existing
+ * sequence with one extra registry_remove() first since this name is a
+ * reuse, not a fresh one.
+ */
+enum pkg_error pkg_resume_build(const char *name, const char *image, const char *version,
+                                 const char *extra_config_symbols, int keep_on_failure,
+                                 struct container_spec *spec_out, int *out_chain_idx,
+                                 int *out_stdio_write_fd);
+
+/*
  * Called once the tracked fetch subprocess's pidfd fires (caller has
  * already waitpid()'d it and passes the raw exit status). On a clean
  * exit, verifies the download against the recipe's pkg_sha256 (via

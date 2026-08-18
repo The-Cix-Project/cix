@@ -2823,6 +2823,87 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
 	return PKG_OK;
 }
 
+/*
+ * ADR-0177/issue #46: the common tail every real spawn of a build
+ * container shares -- populate spec_out from e's own build_* fields
+ * (already fully computed by whichever caller reached this point,
+ * fresh via pkg_fetch_completed() below or reused via
+ * pkg_resume_build()), stand up the output-capture pipe, mark the
+ * entry BUILDING. Extracted so pkg_resume_build() doesn't duplicate
+ * this exact, security/correctness-sensitive sequence (CLONE_* flags,
+ * memory/cpu ceilings, the O_CLOEXEC/O_NONBLOCK pipe dance) a second
+ * time -- one source of truth for "how a build container's own spec
+ * gets built and its output pipe wired up," regardless of how its
+ * build_* fields were populated. Always returns 1 (never fails) --
+ * matches pkg_fetch_completed()'s own prior inline behavior exactly,
+ * a pipe2()/fcntl() failure degrades to "no captured output," it was
+ * never a fatal condition for the build itself.
+ */
+static int start_build_container_spec(int chain_idx, struct pkg_entry *e,
+                                       struct container_spec *spec_out, int *out_stdio_write_fd)
+{
+	memset(spec_out, 0, sizeof(*spec_out));
+	spec_out->ns.clone_flags =
+	    CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWCGROUP | CLONE_INTO_CGROUP;
+	spec_out->ns.hostname = e->build_container_name;
+	spec_out->cg.name = e->build_container_name;
+	/* ADR-0165: a real resource ceiling on every pkgbuild sandbox, not
+	 * just a job-count limit -- found missing the hard way. */
+	spec_out->cg.memory_max = pkg_build_get_memory_max();
+	spec_out->cg.cpu_max = pkg_build_get_cpu_max();
+	spec_out->ov.lowerdir = e->build_lowerdir;
+	spec_out->ov.upperdir = e->build_upperdir;
+	spec_out->ov.workdir = e->build_workdir;
+	spec_out->ov.merged = e->build_merged;
+	spec_out->mnt.put_old_rel = ".old_root";
+	spec_out->argv = e->build_argv;
+	spec_out->envp = e->build_envp;
+
+	e->build_output_captured_len = 0;
+	/* ADR-0157 Phase 1: this entry is now the one owning the open
+	 * build-output pipe, regardless of whether pipe2()/fcntl() below
+	 * actually succeed (both failure branches still explicitly set
+	 * build_output_rd to -1, which every reader already treats as
+	 * "nothing to read") -- see g_build_output_entry's own doc comment
+	 * for why pkg_build_output_close() needs this separate from
+	 * g_chains[chain_idx].name/image. */
+	g_build_output_entries[chain_idx] = e;
+	{
+		int output_pipe[2];
+
+		/*
+		 * O_CLOEXEC on both ends (dup2() in src/container.c's
+		 * pre-exec setup clears it on the child's own fd 1/2
+		 * copies before any execve() happens, so the child is
+		 * unaffected); O_NONBLOCK only on the read end, set
+		 * separately below -- the write end must stay blocking,
+		 * since it becomes the build script's own stdout/stderr
+		 * and an EAGAIN there would be a real, unhandled error for
+		 * most programs.
+		 */
+		if (pipe2(output_pipe, O_CLOEXEC) == 0) {
+			if (fcntl(output_pipe[0], F_SETFL, O_NONBLOCK) == 0) {
+				spec_out->capture_output = 1;
+				spec_out->stdout_fd = output_pipe[1];
+				spec_out->stderr_fd = output_pipe[1];
+				e->build_output_rd = output_pipe[0];
+				*out_stdio_write_fd = output_pipe[1];
+			} else {
+				close(output_pipe[0]);
+				close(output_pipe[1]);
+				e->build_output_rd = -1;
+				*out_stdio_write_fd = -1;
+			}
+		} else {
+			e->build_output_rd = -1;
+			*out_stdio_write_fd = -1;
+		}
+	}
+
+	e->state = PKG_STATE_BUILDING;
+	return 1;
+}
+
 int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *spec_out,
                          int *out_stdio_write_fd)
 {
@@ -3147,66 +3228,155 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 		e->build_envp[3] = NULL;
 	}
 
-	memset(spec_out, 0, sizeof(*spec_out));
-	spec_out->ns.clone_flags =
-	    CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWCGROUP | CLONE_INTO_CGROUP;
-	spec_out->ns.hostname = e->build_container_name;
-	spec_out->cg.name = e->build_container_name;
-	/* ADR-0165: a real resource ceiling on every pkgbuild sandbox, not
-	 * just a job-count limit -- found missing the hard way. */
-	spec_out->cg.memory_max = pkg_build_get_memory_max();
-	spec_out->cg.cpu_max = pkg_build_get_cpu_max();
-	spec_out->ov.lowerdir = e->build_lowerdir;
-	spec_out->ov.upperdir = e->build_upperdir;
-	spec_out->ov.workdir = e->build_workdir;
-	spec_out->ov.merged = e->build_merged;
-	spec_out->mnt.put_old_rel = ".old_root";
-	spec_out->argv = e->build_argv;
-	spec_out->envp = e->build_envp;
+	return start_build_container_spec(chain_idx, e, spec_out, out_stdio_write_fd);
+}
 
-	e->build_output_captured_len = 0;
-	/* ADR-0157 Phase 1: this entry is now the one owning the open
-	 * build-output pipe, regardless of whether pipe2()/fcntl() below
-	 * actually succeed (both failure branches still explicitly set
-	 * build_output_rd to -1, which every reader already treats as
-	 * "nothing to read") -- see g_build_output_entry's own doc comment
-	 * for why pkg_build_output_close() needs this separate from
-	 * g_chains[chain_idx].name/image. */
-	g_build_output_entries[chain_idx] = e;
+/*
+ * ADR-0177/issue #46: resumes a build container pkg_build_completed()
+ * preserved after a failure (ADR-0175's keep_on_failure) instead of
+ * paying for a full fetch+extract+build restart -- the real, repeated
+ * cost this exists to eliminate (a multi-hour gcc.recipe bootstrap
+ * attempt, restarted from zero after every single fixup, is what
+ * motivated filing this). Reuses the kept container's own lowerdir/
+ * upperdir/workdir/merged paths completely unchanged (still sitting in
+ * e->build_lowerdir/build_upperdir/build_workdir/build_merged exactly
+ * as pkg_fetch_completed() last computed them -- registry_remove()
+ * never touches disk, confirmed directly in registry.c, so nothing
+ * here was ever at risk of being wiped); only the recipe.sh staged
+ * inside the existing upperdir is replaced with whatever recipe
+ * version the caller requests now, and only the previous attempt's own
+ * partial install destination (build/pkg-dest) is reset -- build/src
+ * (the already-extracted, already-partially-built source tree) is
+ * deliberately left completely alone, since re-extracting it from
+ * scratch is exactly the cost this feature exists to avoid.
+ *
+ * Requires (name, image) to resolve to a real PKG_STATE_FAILED entry
+ * with a non-empty kept_build_container (PKG_ERR_NOT_FOUND otherwise --
+ * nothing to resume). The chain slot reused is whichever index the
+ * kept container's own name encodes (pkg_build_container_chain_index()),
+ * NEVER a freshly chain_alloc()'d one -- pkg_build_completed() looks up
+ * g_chains[chain_idx] by the exit event's own chain_idx, so reusing any
+ * other slot would silently corrupt an unrelated chain's bookkeeping.
+ * PKG_ERR_BUSY if that specific slot has since been reclaimed by a
+ * different job (chain_alloc() scans from 0, and this slot went idle
+ * the moment the original build failed -- see pkg_build_completed()'s
+ * own "g_chains[chain_idx].name[0] = '\0';" -- so a same-slot reuse by
+ * an unrelated job in between is a real, if narrow, possibility, not
+ * just theoretical); the caller can retry once whatever currently holds
+ * it finishes, same as any other busy condition.
+ *
+ * Deliberately does NOT touch the registry itself (registry_remove()/
+ * registry_create()) -- pkg.c has never linked against registry.h
+ * (main.c alone owns every registry_create() call following a
+ * pkg_fetch_completed() success, see handle_pkg_fetch_event()), and
+ * this keeps that same layering intact rather than adding a new
+ * dependency edge just for resume. The caller (main.c's own new REST
+ * handler) is responsible for calling registry_remove() on the exact
+ * same container name (derived via pkg_build_container_name(chain_idx,
+ * ...), guaranteed identical to the original since chain_idx was parsed
+ * back out of that same name above) before its own registry_create()
+ * call using spec_out -- mirroring handle_pkg_fetch_event()'s existing
+ * sequence exactly, with one extra registry_remove() first since this
+ * name is a reuse, not a fresh one.
+ */
+enum pkg_error pkg_resume_build(const char *name, const char *image, const char *version,
+                                 const char *extra_config_symbols, int keep_on_failure,
+                                 struct container_spec *spec_out, int *out_chain_idx,
+                                 int *out_stdio_write_fd)
+{
+	struct pkg_recipe recipe;
+	char recipe_path[PATH_MAX];
+	struct pkg_entry *e;
+	char dest_dir[PATH_MAX], recipe_dst[PATH_MAX];
+	int chain_idx;
+
+	if (!pkg_name_is_valid(name))
+		return PKG_ERR_INVALID_NAME;
+	if (extra_config_symbols != NULL &&
+	    strlen(extra_config_symbols) >= PKG_HOSTBUILD_EXTRA_SYMBOLS_MAX)
+		return PKG_ERR_INVALID_NAME;
+
+	e = pkg_find(name, image);
+	if (e == NULL || e->state != PKG_STATE_FAILED || e->kept_build_container[0] == '\0')
+		return PKG_ERR_NOT_FOUND;
+
+	chain_idx = pkg_build_container_chain_index(e->kept_build_container);
+	/* Unreachable in practice -- kept_build_container is only ever
+	 * written by this module's own pkg_build_container_name() output
+	 * (pkg_build_completed()), which this same parser always accepts. */
+	if (chain_idx < 0)
+		return PKG_ERR_NOT_FOUND;
+	if (g_image_apply_busy || g_chains[chain_idx].name[0] != '\0')
+		return PKG_ERR_BUSY;
+
+	if (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) != 0 ||
+	    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
+		return PKG_ERR_INVALID_RECIPE;
+
+	snprintf(recipe_dst, sizeof(recipe_dst), "%s/build/recipe.sh", e->build_upperdir);
+	snprintf(dest_dir, sizeof(dest_dir), "%s/build/pkg-dest", e->build_upperdir);
+
+	if (copy_file_simple(recipe_path, recipe_dst) != 0)
+		return PKG_ERR_PERSIST_FAILED;
 	{
-		int output_pipe[2];
+		char *rmargv[] = { (char *)PKG_RM_BIN, "-rf", dest_dir, NULL };
 
-		/*
-		 * O_CLOEXEC on both ends (dup2() in src/container.c's
-		 * pre-exec setup clears it on the child's own fd 1/2
-		 * copies before any execve() happens, so the child is
-		 * unaffected); O_NONBLOCK only on the read end, set
-		 * separately below -- the write end must stay blocking,
-		 * since it becomes the build script's own stdout/stderr
-		 * and an EAGAIN there would be a real, unhandled error for
-		 * most programs.
-		 */
-		if (pipe2(output_pipe, O_CLOEXEC) == 0) {
-			if (fcntl(output_pipe[0], F_SETFL, O_NONBLOCK) == 0) {
-				spec_out->capture_output = 1;
-				spec_out->stdout_fd = output_pipe[1];
-				spec_out->stderr_fd = output_pipe[1];
-				e->build_output_rd = output_pipe[0];
-				*out_stdio_write_fd = output_pipe[1];
-			} else {
-				close(output_pipe[0]);
-				close(output_pipe[1]);
-				e->build_output_rd = -1;
-				*out_stdio_write_fd = -1;
-			}
-		} else {
-			e->build_output_rd = -1;
-			*out_stdio_write_fd = -1;
-		}
+		if (run_subprocess(PKG_RM_BIN, rmargv) != 0)
+			return PKG_ERR_PERSIST_FAILED;
+	}
+	if (persist_mkdir_p(dest_dir) != 0)
+		return PKG_ERR_PERSIST_FAILED;
+
+	e->kept_build_container[0] = '\0';
+
+	snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd), "%s",
+	         ". /build/recipe.sh; cd /build/src && pkg_build && pkg_install");
+	e->build_argv[0] = "/usr/bin/bash";
+	e->build_argv[1] = "-c";
+	e->build_argv[2] = e->build_argv_cmd;
+	e->build_argv[3] = NULL;
+	e->build_envp[0] = "PKG_DESTDIR=/build/pkg-dest";
+	e->build_envp[1] = "PATH=/usr/bin:/bin";
+	e->build_envp[2] = "HOME=/build";
+	/* See pkg_fetch_completed()'s own identical block -- omitted
+	 * entirely (not just empty) when no extra symbols are given. */
+	if (extra_config_symbols != NULL && extra_config_symbols[0] != '\0') {
+		snprintf(e->build_envp_extra, sizeof(e->build_envp_extra),
+		         "THINC_KMOD_EXTRA_SYMBOLS=%s", extra_config_symbols);
+		e->build_envp[3] = e->build_envp_extra;
+		e->build_envp[4] = NULL;
+	} else {
+		e->build_envp[3] = NULL;
 	}
 
-	e->state = PKG_STATE_BUILDING;
-	return 1;
+	g_chains[chain_idx].is_hostbuild = (strcmp(e->image, PKG_HOSTBUILD_IMAGE) == 0);
+	g_chains[chain_idx].build_image[0] = '\0'; /* only meaningful while is_hostbuild; unused
+	                                              * again here -- build_lowerdir is already
+	                                              * final from the original attempt. */
+	snprintf(g_chains[chain_idx].target_version, sizeof(g_chains[chain_idx].target_version), "%s",
+	         (version != NULL) ? version : "");
+	snprintf(g_chains[chain_idx].hostbuild_extra_config_symbols,
+	         sizeof(g_chains[chain_idx].hostbuild_extra_config_symbols), "%s",
+	         (extra_config_symbols != NULL) ? extra_config_symbols : "");
+	g_chains[chain_idx].keep_on_failure = keep_on_failure;
+	strncpy(g_chains[chain_idx].dep_queue[0], name, PKG_NAME_MAX - 1);
+	g_chains[chain_idx].dep_queue[0][PKG_NAME_MAX - 1] = '\0';
+	g_chains[chain_idx].dep_queue_count = 1;
+	g_chains[chain_idx].dep_queue_pos = 0;
+	g_chains[chain_idx].dep_queue_is_upgrade = 0;
+	snprintf(g_chains[chain_idx].image, sizeof(g_chains[chain_idx].image), "%s", e->image);
+	/* Set last -- this is what marks the slot busy (chain_alloc()/
+	 * pkg_any_job_busy() both key off name[0]), so nothing above can
+	 * partially populate a slot another job's chain_alloc() might
+	 * concurrently claim (this daemon is single-threaded/event-loop
+	 * driven, but keeping the same ordering discipline every other
+	 * *_start() function already follows costs nothing and avoids a
+	 * silent trap for a future refactor). */
+	snprintf(g_chains[chain_idx].name, sizeof(g_chains[chain_idx].name), "%s", name);
+
+	*out_chain_idx = chain_idx;
+	start_build_container_spec(chain_idx, e, spec_out, out_stdio_write_fd);
+	return PKG_OK;
 }
 
 void pkg_build_spawn_failed(int chain_idx)
