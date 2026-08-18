@@ -389,9 +389,29 @@ enum pkg_error pkg_recipe_delete(const char *name, const char *version);
  * -- the caller must thread it through register_pkg_fetch_pidfd() so
  * the corresponding fetch-exit event routes back to the right chain
  * (see that function's own doc comment, daemon/src/main.c).
+ *
+ * keep_on_failure (ADR-0175/issue #35): 0 for every pre-existing
+ * caller's unchanged behavior. When true, a build-container failure
+ * (any nonzero exit_status reaching pkg_build_completed()) leaves the
+ * exited build container registered and its overlay mounted instead
+ * of tearing it down -- readable afterward via the already-existing
+ * GET /v1/containers/{name}/files?path=... (ADR-0055, which already
+ * supports an exited-but-registered container's upperdir) for pulling
+ * out whatever the failed build actually produced (a core dump, a
+ * partially-built object tree, a crashing binary) for real,
+ * off-daemon debugging. The container's own name is reported back as
+ * this entry's kept_build_container (write_pkg_json()) once failed.
+ * Never applies to a *successful* build (nothing to preserve) or to a
+ * dependency mid-chain (only the chain's own final job -- the one the
+ * caller actually asked to install/hostbuild -- honors this flag; an
+ * unrelated prerequisite failing is a normal, uninteresting failure).
+ * Cleanup is the existing, ordinary container-delete path: DELETE
+ * /v1/containers/{name} (or POST .../stop) on the preserved name
+ * removes it exactly like any other exited container, no new
+ * mechanism needed (see pkg_build_completed()'s own comment).
  */
 enum pkg_error pkg_install_start(const char *name, const char *image, const char *version,
-                                  int upgrade, char *out_started_name,
+                                  int upgrade, int keep_on_failure, char *out_started_name,
                                   size_t out_started_name_size, pid_t *out_pid, int *out_pidfd,
                                   int *out_chain_idx);
 
@@ -452,10 +472,19 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
  *
  * out_chain_idx (ADR-0157 Phase 2): same contract as pkg_install_
  * start()'s own out_chain_idx -- only meaningful on PKG_OK.
+ *
+ * keep_on_failure (ADR-0175/issue #35): same contract as
+ * pkg_install_start()'s own keep_on_failure -- see its doc comment.
+ * The primary motivating use case for this flag existing at all: a
+ * hostbuild is exactly the shape a kernel/toolchain-bootstrap failure
+ * (e.g. issue #32's own gcc stage2 segfault) takes, and this is the
+ * only way to get the crashing binary/object files off the box for
+ * real inspection afterward.
  */
 enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, const char *version,
-                                    int upgrade, const char *extra_config_symbols, pid_t *out_pid,
-                                    int *out_pidfd, int *out_chain_idx);
+                                    int upgrade, const char *extra_config_symbols,
+                                    int keep_on_failure, pid_t *out_pid, int *out_pidfd,
+                                    int *out_chain_idx);
 
 /*
  * Called once the tracked fetch subprocess's pidfd fires (caller has
@@ -537,9 +566,28 @@ void pkg_build_spawn_failed(int chain_idx);
  * belonged to (a dependency chain always advances within its own
  * chain slot, never migrates), for the caller to thread into
  * register_pkg_fetch_pidfd() for the newly-started next fetch.
+ *
+ * out_kept (ADR-0175/issue #35): set to 1 exactly when this
+ * completion was a failure (exit_status != 0) of the chain's own
+ * final job with keep_on_failure requested (pkg_install_start()'s/
+ * pkg_hostbuild_start()'s own parameter) -- 0 in every other case
+ * (success, a mid-chain dependency failure, or keep_on_failure not
+ * requested). The caller (main.c's handle_container_event()) must
+ * skip its own registry_remove() of container_name when this is 1,
+ * leaving the exited build container's registry entry and overlay
+ * mount in place instead of tearing them down. No special "kept"
+ * registry state is needed for this: the container is left as an
+ * entirely ordinary exited, registered container, so an operator can
+ * remove it later through the completely ordinary DELETE
+ * /v1/containers/{name} path (a plain registry_remove(), no call back
+ * into this function at all -- pkg.c's own chain state for this job
+ * is already fully settled by the time *out_kept was set) exactly
+ * like any other exited container. ADR-0055's GET .../files endpoint
+ * already reads an exited-but-registered container's upperdir, which
+ * is the actual point of preserving it at all.
  */
 int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_pid, int *out_pidfd,
-                         int *out_chain_idx, char *out_hostbuild_done_name);
+                         int *out_chain_idx, char *out_hostbuild_done_name, int *out_kept);
 
 /*
  * ADR-0157 Phase 2: computes this chain's own real, distinct build

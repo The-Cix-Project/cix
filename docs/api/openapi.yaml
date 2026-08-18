@@ -1539,6 +1539,15 @@ paths:
                   items:
                     type: string
                   description: Bare CONFIG_* names (e.g. "CONFIG_DUMMY"), each forced to `=m` for this build only.
+                keep_on_failure:
+                  type: boolean
+                  default: false
+                  description: >
+                    ADR-0175 (issue #35) -- mirrors POST /pkg/hostbuild's own
+                    field exactly. The primary motivating use case for this
+                    whole mechanism: a real kernel/toolchain bootstrap crash
+                    (e.g. issue #32) preserved for offline debugging instead
+                    of the build container being torn down on failure.
       responses:
         "202":
           description: Hostbuild started -- poll GET /pkg/hostbuild/kernel for progress
@@ -5488,6 +5497,16 @@ paths:
                     still 409 if the version is unchanged, since nothing would
                     actually be different (mirrors /pkg/install's own upgrade
                     field exactly).
+                keep_on_failure:
+                  type: boolean
+                  default: false
+                  description: >
+                    ADR-0175 (issue #35) -- mirrors /pkg/install's own field
+                    exactly. A hostbuild failure (a kernel/toolchain bootstrap
+                    crash, the primary motivating use case) is exactly the
+                    shape this exists to help debug: the build container's
+                    crashing binary/object tree is preserved for real
+                    inspection instead of being torn down immediately.
       responses:
         "202":
           description: Hostbuild started -- poll GET /pkg/hostbuild/{name} for progress
@@ -9620,6 +9639,20 @@ components:
             otherwise proceeds -- the old version's files are removed and the new
             version's are installed once the rebuild succeeds. Only ever applies to name
             itself, never to a dependency pulled in transitively.
+        keep_on_failure:
+          type: boolean
+          default: false
+          description: >
+            ADR-0175 (issue #35). If the build container fails (any nonzero exit),
+            it is normally torn down immediately like any other exited container.
+            Setting this to true leaves it registered and its overlay mounted
+            instead -- readable afterward via GET /containers/{name}/files?path=...
+            (ADR-0055), for pulling a crashing binary, a core dump, or a partial
+            build tree off the box for real debugging. Only ever applies to the
+            single package actually being installed/hostbuilt, never to a
+            dependency that fails mid-chain. The preserved container's name is
+            reported back as this entry's kept_build_container; clean it up
+            afterward with an ordinary DELETE /containers/{name}, no new mechanism.
 
     PkgEntry:
       type: object
@@ -9645,6 +9678,16 @@ components:
           type: string
           nullable: true
           description: Populated only when state is "failed".
+        kept_build_container:
+          type: string
+          nullable: true
+          description: >
+            ADR-0175 (issue #35). Non-null exactly when the most recent build
+            attempt failed with keep_on_failure requested and its build container
+            was deliberately left registered/mounted instead of torn down -- the
+            exact name to pass to GET /containers/{name}/files?path=... or
+            DELETE /containers/{name} afterward. null otherwise, including for
+            every successful install.
         available_version:
           type: string
           nullable: true

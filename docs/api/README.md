@@ -625,6 +625,8 @@ For a driver that isn't already in this platform's own curated `=m` module set, 
 
 Deliberately **not** a new, separate, persistent kernel-build-tree mechanism -- an initial design draft proposed exactly that (a `KDIR` kept around indefinitely for on-demand module builds), abandoned per direct "keep the mechanics simple, no extra moving parts" feedback in favor of reusing the already-proven whole-kernel rebuild this platform's own `kernel.recipe` already does, which guarantees kernel/module ABI match by construction rather than needing new freshness-tracking bookkeeping. The real, honestly-stated tradeoff: this rebuilds the *whole* kernel (heavier than compiling one driver) and needs a reboot to take effect -- the resulting `bzImage` + `lib/modules/` tree only actually applies via the existing A/B kernel-update cutover, never a live, same-boot addition. Genuinely out-of-tree (third-party, not-in-mainline) module support is deliberately left undesigned until a real, concrete need for it shows up (ADR-0159's own Phase C).
 
+A kernel build is exactly the shape of failure the `keep_on_failure` mechanism (ADR-0175, see [Debugging a failed build](#debugging-a-failed-build-keep_on_failure-adr-0175-issue-35) above) exists for -- pass `"keep_on_failure": true` here too (`thincctl kmod-build ... --keep-on-failure`) to preserve a crashing host-build container for real inspection instead of losing it the instant the build fails.
+
 ## NTP: host clock sync (ADR-0110)
 
 Two related but genuinely independent mechanisms:
@@ -1540,6 +1542,27 @@ POST /v1/pkg/hostbuild
 ```
 
 `build_image` is always explicit (no default), and an optional `"version"` field pins the hostbuild to a specific published recipe version exactly like `/pkg/install`'s own (omitted resolves to the highest available) — the already-existing image whose rootfs supplies the build container's own toolchain (must already have whatever the recipe's `pkg_build()` needs actually installed, via ordinary `pkg install` first; a hostbuild recipe cannot itself declare `pkg_depends`, since dependency resolution has no meaning for a one-shot harvest). `202`, polled via `GET /pkg/hostbuild/{name}` (a thin wrapper over the same `GET /pkg/{name}` lookup, scoped to a reserved internal image name) exactly like an ordinary install. Once `state: "installed"`, the artifact lives on the host at a fixed, well-known path per recipe (`kernel.recipe` → a `bzImage`; `thinc.recipe` → `thincd`/`thincctl`/`web/`/`thinc-install`/`mkinstalleriso` plus a server-side-assembled `thincd-root.squashfs`; `isotools.recipe` → a self-contained `grub-mkrescue`/`sbsign`/`sbverify`/`xorriso`/`mformat`/`mcopy` toolchain) — never merged into any container image's rootfs. `PkgEntry`'s own `files[]` stays empty for a hostbuild entry always, by design (nothing to `pkg_delete()` for a plain host artifact) — `artifact_path`'s own directory listing is the real answer to what a hostbuild produced. A hostbuild already in `state: "installed"` is a bare 409 on a repeat call unless `"upgrade": true` is given and the recipe's own `pkg_version=` has actually moved on (ADR-0094, mirrors `/pkg/install`'s own `upgrade` field exactly). `thincctl pkg hostbuild <name> --build-image=<image> [--wait] [--deploy] [--upgrade]` is the CLI surface; `--deploy` reads the finished artifact and calls the existing, unmodified `/system/update` for you.
+
+### Debugging a failed build: `keep_on_failure` (ADR-0175, issue #35)
+
+A build container that fails is normally torn down immediately, like any other exited container — there's nothing left to inspect afterward. Set `"keep_on_failure": true` on `POST /pkg/install`, `POST /pkg/hostbuild`, or `POST /system/kmod-build` to change that: on a build failure (any nonzero exit from the recipe's `pkg_build()`/`pkg_install()`), the exited build container is left registered and its overlay mounted instead of being removed. The preserved container's own name comes back as `PkgEntry`'s new `kept_build_container` field:
+
+```
+POST /v1/pkg/install
+{"name": "gcc", "keep_on_failure": true}
+
+# ... poll GET /v1/pkg/gcc until state leaves fetching/building ...
+
+GET /v1/pkg/gcc
+{"name": "gcc", "state": "failed", "kept_build_container": "__pkgbuild-0", ...}
+```
+
+From there, the preserved container is a completely ordinary, addressable exited container — no new mechanism, reusing two endpoints that already exist:
+
+- `GET /v1/containers/__pkgbuild-0/files?path=/build/src/...` (ADR-0055) reads a crashing binary, a core dump, or any partially-built object tree straight out of the failed build's own overlay upperdir (or lowerdir, for anything untouched from the base toolchain sandbox) for real, offline debugging — the same endpoint already used for reading any exited container's files.
+- `DELETE /v1/containers/__pkgbuild-0` tears it down once you're done — an ordinary container delete, nothing preservation-specific about cleanup.
+
+Only ever applies to the single package actually being installed/hostbuilt — an incidental dependency that fails mid-chain is never preserved, matching the existing (and much more common) "just a normal failure" case. `thincctl pkg install --name=NAME --keep-on-failure`, `thincctl pkg hostbuild NAME --build-image=IMAGE --keep-on-failure`, and `thincctl kmod-build --build-image=IMAGE --keep-on-failure` are the CLI surface.
 
 ### Building a fresh installer ISO server-side
 

@@ -2197,6 +2197,173 @@ skip_hostbuild:
 		ok = 0;
 	}
 
+	/* 18. keep_on_failure (ADR-0175/issue #35): a real build-container
+	 * failure (not a fetch/checksum failure like badsum in step 7 --
+	 * this needs a genuine build container to actually spawn) with
+	 * keep_on_failure=true must leave the exited build container
+	 * registered and its overlay readable instead of tearing it down;
+	 * the same failure WITHOUT the flag must still tear down
+	 * immediately, exactly like every pre-existing caller's behavior. */
+	{
+		char kf_recipe_dir[PATH_MAX];
+		char kf_recipe_path[PATH_MAX];
+		char kept_name[64];
+		char kf_container_path[300];
+		FILE *f;
+
+		snprintf(kf_recipe_dir, sizeof(kf_recipe_dir), "%s/recipes/keepfail", g_pkg_state_dir);
+		mkdir(kf_recipe_dir, 0755);
+		snprintf(kf_recipe_dir, sizeof(kf_recipe_dir), "%s/recipes/keepfail/1.0", g_pkg_state_dir);
+		mkdir(kf_recipe_dir, 0755);
+		snprintf(kf_recipe_path, sizeof(kf_recipe_path), "%s/recipes/keepfail/1.0/build.sh",
+		         g_pkg_state_dir);
+		f = fopen(kf_recipe_path, "w");
+		if (f == NULL) {
+			fprintf(stderr, "FAIL: could not write keepfail.recipe\n");
+			ok = 0;
+			goto skip_keep_on_failure;
+		}
+		/* A real, valid source/checksum -- fetch succeeds and a real
+		 * build container spawns, extracting hello.c into /build/src/
+		 * before pkg_build() deliberately fails, distinguishing this
+		 * from badsum's own fetch-stage-only failure (step 7). */
+		fprintf(f, "pkg_name=keepfail\npkg_version=1.0\npkg_source=file://%s\n"
+		           "pkg_sha256=%s\npkg_depends=\"\"\n\n"
+		           "pkg_build() {\n\texit 1\n}\n\n"
+		           "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n}\n",
+		        tarball_path, sha256);
+		fclose(f);
+
+		/* 18a. WITHOUT keep_on_failure: unchanged pre-existing
+		 * behavior -- the failed build container is gone immediately,
+		 * kept_build_container stays null. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"keepfail\"}", &r) !=
+		        0 ||
+		    r.status != 202) {
+			fprintf(stderr, "FAIL: POST install keepfail (no keep_on_failure) status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		if (poll_pkg_state(&client, "keepfail", state, sizeof(state), 60) != 0 ||
+		    strcmp(state, "failed") != 0) {
+			fprintf(stderr, "FAIL: keepfail (no keep_on_failure) ended in state '%s'\n", state);
+			ok = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pkg/keepfail", NULL, &r) != 0 || r.status != 200) {
+			fprintf(stderr, "FAIL: GET pkg/keepfail (no keep_on_failure) status=%d\n", r.status);
+			ok = 0;
+		} else if (json_object_get(r.json, "kept_build_container")->type != JSON_NULL) {
+			fprintf(stderr,
+			        "FAIL: keepfail (no keep_on_failure) has a non-null kept_build_container\n");
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* 18b. WITH keep_on_failure: the build container survives,
+		 * readable, until an explicit DELETE. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/install",
+		                       "{\"name\":\"keepfail\",\"upgrade\":true,\"keep_on_failure\":true}",
+		                       &r) != 0 ||
+		    r.status != 202) {
+			fprintf(stderr, "FAIL: POST install keepfail (keep_on_failure) status=%d\n", r.status);
+			ok = 0;
+			goto skip_keep_on_failure;
+		}
+		kx_response_free(&r);
+
+		if (poll_pkg_state(&client, "keepfail", state, sizeof(state), 60) != 0 ||
+		    strcmp(state, "failed") != 0) {
+			fprintf(stderr, "FAIL: keepfail (keep_on_failure) ended in state '%s'\n", state);
+			ok = 0;
+			goto skip_keep_on_failure;
+		}
+
+		memset(&r, 0, sizeof(r));
+		kept_name[0] = '\0';
+		if (kx_client_request(&client, "GET", "/v1/pkg/keepfail", NULL, &r) != 0 || r.status != 200) {
+			fprintf(stderr, "FAIL: GET pkg/keepfail (keep_on_failure) status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const char *kbc = json_str_field(r.json, "kept_build_container");
+
+			if (kbc == NULL || strncmp(kbc, "__pkgbuild-", 11) != 0) {
+				fprintf(stderr,
+				        "FAIL: keepfail (keep_on_failure) kept_build_container='%s', "
+				        "expected __pkgbuild-N\n",
+				        kbc != NULL ? kbc : "(null)");
+				ok = 0;
+			} else {
+				snprintf(kept_name, sizeof(kept_name), "%s", kbc);
+			}
+			/* the same preservation note must also be human-readable
+			 * in the ordinary error field (belt and suspenders --
+			 * kept_build_container is the machine-readable field an
+			 * automated caller should actually parse). */
+			if (strstr(json_str_field(r.json, "error"), "preserved for debugging") == NULL) {
+				fprintf(stderr, "FAIL: keepfail (keep_on_failure) error text missing preservation note: %s\n",
+				        json_str_field(r.json, "error") ? json_str_field(r.json, "error") : "(null)");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		if (kept_name[0] == '\0')
+			goto skip_keep_on_failure;
+
+		/* the preserved container is a completely ordinary, addressable
+		 * exited container -- GET still finds it... */
+		snprintf(kf_container_path, sizeof(kf_container_path), "/v1/containers/%s", kept_name);
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", kf_container_path, NULL, &r) != 0 || r.status != 200) {
+			fprintf(stderr, "FAIL: GET %s (preserved build container) status=%d\n",
+			        kf_container_path, r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* ...and ADR-0055's GET .../files reads real content back out
+		 * of it -- proof the overlay genuinely survived, not just the
+		 * registry entry (the actual point of this whole mechanism:
+		 * pulling a failed build's own output/state back out for real
+		 * debugging). */
+		snprintf(kf_container_path, sizeof(kf_container_path),
+		         "/v1/containers/%s/files?path=%%2Fbuild%%2Fsrc%%2Fhello.c", kept_name);
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", kf_container_path, NULL, &r) != 0 || r.status != 200 ||
+		    r.body == NULL || r.body_len == 0) {
+			fprintf(stderr, "FAIL: GET %s status=%d body_len=%zu\n", kf_container_path, r.status,
+			        r.body_len);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* explicit cleanup -- the completely ordinary DELETE path,
+		 * no new mechanism. */
+		snprintf(kf_container_path, sizeof(kf_container_path), "/v1/containers/%s", kept_name);
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "DELETE", kf_container_path, NULL, &r) != 0 || r.status != 204) {
+			fprintf(stderr, "FAIL: DELETE %s (preserved build container) status=%d\n",
+			        kf_container_path, r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", kf_container_path, NULL, &r) != 0 || r.status != 404) {
+			fprintf(stderr, "FAIL: GET %s after DELETE expected 404, got %d\n", kf_container_path,
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+	}
+skip_keep_on_failure:
+
 	/* cleanup */
 	run_cmd("rm -rf '%s'", scratch_dir);
 

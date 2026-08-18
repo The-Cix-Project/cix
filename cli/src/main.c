@@ -190,6 +190,9 @@ static void print_usage(FILE *out)
 	        "               omitted version resolves to the highest available\n"
 	        "  pkg recipe rm NAME [--version=VERSION]  -- omitted removes every version\n"
 	        "  pkg install --name=NAME [--image=IMAGE] [--version=VERSION] [--upgrade]\n"
+	        "               [--keep-on-failure]  -- on a build failure, leave the build\n"
+	        "               container registered/mounted for GET .../files inspection\n"
+	        "               instead of tearing it down (ADR-0175)\n"
 	        "  pkg ls\n"
 	        "  pkg rm NAME[@IMAGE]\n"
 	        "  pkg update-all  -- starts an upgrade for the first installed package whose\n"
@@ -326,10 +329,13 @@ static void print_usage(FILE *out)
 	        "               read-modify-write, only the fields given are touched\n"
 	        "  kmod-config rm NAME  -- clears both fields\n"
 	        "  kmod-build --build-image=IMAGE [--version=VERSION] [--symbol=CONFIG_FOO ...]\n"
-	        "               [--upgrade] [--wait]  -- an ordinary `pkg hostbuild kernel` under\n"
-	        "               the hood, gaining extra =m module symbols merged into the same\n"
-	        "               curated kernel config; needs a reboot onto the new bzImage (see\n"
-	        "               kernel-build-and-ab-updates.md) to actually take effect\n"
+	        "               [--upgrade] [--wait] [--keep-on-failure]  -- an ordinary\n"
+	        "               `pkg hostbuild kernel` under the hood, gaining extra =m module\n"
+	        "               symbols merged into the same curated kernel config; needs a\n"
+	        "               reboot onto the new bzImage (see kernel-build-and-ab-updates.md)\n"
+	        "               to actually take effect. --keep-on-failure (ADR-0175) leaves a\n"
+	        "               failed build container registered/mounted for real debugging\n"
+	        "               instead of tearing it down\n"
 	        "  time [show]  -- the host's current date/time (ADR-0110)\n"
 	        "  time set --unixtime=N  -- manually set the host clock (clock_settime())\n"
 	        "  ntp config [show]  -- upstream NTP server address list used to sync the\n"
@@ -9261,6 +9267,7 @@ static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, c
 	const char *image = NULL;
 	const char *version = NULL;
 	int upgrade = 0;
+	int keep_on_failure = 0;
 	int i;
 	struct json_writer w;
 	struct kx_response r;
@@ -9274,6 +9281,8 @@ static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, c
 			version = argv[i] + 10;
 		else if (strcmp(argv[i], "--upgrade") == 0)
 			upgrade = 1;
+		else if (strcmp(argv[i], "--keep-on-failure") == 0)
+			keep_on_failure = 1;
 		else {
 			fprintf(stderr, "thincctl: unknown pkg install option '%s'\n", argv[i]);
 			return 2;
@@ -9282,7 +9291,7 @@ static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, c
 	if (name == NULL) {
 		fprintf(stderr,
 		        "usage: thincctl pkg install --name=NAME [--image=IMAGE] "
-		        "[--version=VERSION] [--upgrade]\n");
+		        "[--version=VERSION] [--upgrade] [--keep-on-failure]\n");
 		return 2;
 	}
 
@@ -9301,6 +9310,13 @@ static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, c
 	}
 	if (upgrade) {
 		jw_key(&w, "upgrade");
+		jw_bool(&w, 1);
+	}
+	/* ADR-0175/issue #35: a failed build's own container is left
+	 * registered/mounted for inspection instead of torn down -- see
+	 * GET .../files and DELETE .../containers/{kept_build_container}. */
+	if (keep_on_failure) {
+		jw_key(&w, "keep_on_failure");
 		jw_bool(&w, 1);
 	}
 	jw_obj_close(&w);
@@ -9404,7 +9420,7 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 	const char *name = NULL;
 	const char *build_image = NULL;
 	const char *version = NULL;
-	int wait = 0, deploy = 0, upgrade = 0;
+	int wait = 0, deploy = 0, upgrade = 0, keep_on_failure = 0;
 	int i;
 	struct json_writer w;
 	struct kx_response r;
@@ -9421,6 +9437,8 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 			deploy = 1; /* implies --wait -- a not-yet-finished artifact has no path to deploy */
 		else if (strcmp(argv[i], "--upgrade") == 0)
 			upgrade = 1;
+		else if (strcmp(argv[i], "--keep-on-failure") == 0)
+			keep_on_failure = 1;
 		else if (name == NULL)
 			name = argv[i];
 		else {
@@ -9431,7 +9449,7 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 	if (name == NULL || build_image == NULL) {
 		fprintf(stderr,
 		        "usage: thincctl pkg hostbuild NAME --build-image=IMAGE [--version=VERSION] "
-		        "[--wait] [--deploy] [--upgrade]\n");
+		        "[--wait] [--deploy] [--upgrade] [--keep-on-failure]\n");
 		return 2;
 	}
 	if (deploy)
@@ -9466,6 +9484,11 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 	}
 	jw_key(&w, "upgrade");
 	jw_bool(&w, upgrade);
+	/* ADR-0175/issue #35: see cmd_pkg_install()'s own identical field. */
+	if (keep_on_failure) {
+		jw_key(&w, "keep_on_failure");
+		jw_bool(&w, 1);
+	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -9564,7 +9587,7 @@ static int cmd_kmod_build(const struct kx_client *c, int json_mode, int argc, ch
 	const char *version = NULL;
 	const char *symbols[CLI_KMOD_BUILD_MAX_SYMBOLS];
 	int symbol_count = 0;
-	int wait = 0, upgrade = 0;
+	int wait = 0, upgrade = 0, keep_on_failure = 0;
 	int i;
 	struct json_writer w;
 	struct kx_response r;
@@ -9585,6 +9608,8 @@ static int cmd_kmod_build(const struct kx_client *c, int json_mode, int argc, ch
 			upgrade = 1;
 		else if (strcmp(argv[i], "--wait") == 0)
 			wait = 1;
+		else if (strcmp(argv[i], "--keep-on-failure") == 0)
+			keep_on_failure = 1;
 		else {
 			fprintf(stderr, "thincctl: unknown kmod-build option '%s'\n", argv[i]);
 			return 2;
@@ -9592,7 +9617,7 @@ static int cmd_kmod_build(const struct kx_client *c, int json_mode, int argc, ch
 	}
 	if (build_image == NULL) {
 		fprintf(stderr, "usage: thincctl kmod-build --build-image=IMAGE [--version=VERSION] "
-		                "[--symbol=CONFIG_FOO ...] [--upgrade] [--wait]\n");
+		                "[--symbol=CONFIG_FOO ...] [--upgrade] [--wait] [--keep-on-failure]\n");
 		return 2;
 	}
 
@@ -9613,6 +9638,13 @@ static int cmd_kmod_build(const struct kx_client *c, int json_mode, int argc, ch
 	}
 	jw_key(&w, "upgrade");
 	jw_bool(&w, upgrade);
+	/* ADR-0175/issue #35: the primary motivating use case for this flag
+	 * -- pulling a real crash artifact out of a failed kernel/module
+	 * host build for offline debugging (e.g. issue #32). */
+	if (keep_on_failure) {
+		jw_key(&w, "keep_on_failure");
+		jw_bool(&w, 1);
+	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -9709,9 +9741,9 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 		                "       thincctl pkg recipe show NAME [--version=VERSION]\n"
 		                "       thincctl pkg recipe rm NAME [--version=VERSION]\n"
 		                "       thincctl pkg install --name=NAME [--image=IMAGE] [--version=VERSION] "
-		                "[--upgrade]\n"
+		                "[--upgrade] [--keep-on-failure]\n"
 		                "       thincctl pkg hostbuild NAME --build-image=IMAGE [--version=VERSION] "
-		                "[--wait] [--deploy] [--upgrade]\n"
+		                "[--wait] [--deploy] [--upgrade] [--keep-on-failure]\n"
 		                "       thincctl pkg build-log\n"
 		                "       thincctl pkg ls\n"
 		                "       thincctl pkg rm NAME[@IMAGE]\n"

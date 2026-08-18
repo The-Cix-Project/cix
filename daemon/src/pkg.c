@@ -97,6 +97,16 @@ struct pkg_entry {
 	int build_output_rd;
 	char build_output_captured[PKG_BUILD_OUTPUT_CAPTURE_MAX + 1];
 	int build_output_captured_len;
+	/* ADR-0175/issue #35: non-empty exactly when the most recent build
+	 * attempt failed with keep_on_failure requested and its build
+	 * container was deliberately left registered/mounted instead of
+	 * torn down (see pkg_build_completed()) -- the exact name to pass
+	 * to GET /v1/containers/{name}/files?path=... or DELETE
+	 * /v1/containers/{name} afterward. Cleared at the start of every
+	 * fresh fetch attempt (see the "e->error[0] = '\0';" reset in
+	 * start_fetch_for()) so a stale name never survives past the next
+	 * attempt on this same entry. */
+	char kept_build_container[PKG_NAME_MAX];
 };
 
 struct pkg_recipe {
@@ -203,6 +213,11 @@ struct pkg_chain {
 	 * to pkg_fetch_completed() where the actual build container's own
 	 * environment is assembled. */
 	char hostbuild_extra_config_symbols[PKG_HOSTBUILD_EXTRA_SYMBOLS_MAX];
+	/* ADR-0175/issue #35: this chain's own copy of pkg_install_start()'s/
+	 * pkg_hostbuild_start()'s keep_on_failure argument -- read by
+	 * pkg_build_completed() at the moment a failure is decided, before
+	 * this chain slot is cleared for reuse. */
+	int keep_on_failure;
 };
 
 static struct pkg_chain g_chains[PKG_MAX_CONCURRENT_JOBS];
@@ -1380,6 +1395,14 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 		jw_str(w, e->error);
 	else
 		jw_null(w);
+	/* ADR-0175/issue #35: the exited, still-registered build
+	 * container's name, exactly when keep_on_failure preserved one for
+	 * this entry's most recent failed attempt -- null otherwise. */
+	jw_key(w, "kept_build_container");
+	if (e->kept_build_container[0] != '\0')
+		jw_str(w, e->kept_build_container);
+	else
+		jw_null(w);
 	jw_key(w, "available_version");
 	if (has_available)
 		jw_str(w, available_version);
@@ -2095,7 +2118,10 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_
 				    (entries[i].mode == IMAGE_PKG_PINNED) ? entries[i].version : NULL;
 				char started_name[PKG_NAME_MAX];
 
-				if (pkg_install_start(entries[i].package, image, want_version, e != NULL,
+				/* Manifest-driven, automatic install -- like
+				 * handle_pkg_update_all()'s own rebuild, never worth
+				 * preserving a build container for (ADR-0175). */
+				if (pkg_install_start(entries[i].package, image, want_version, e != NULL, 0,
 				                       started_name, sizeof(started_name), out_pid,
 				                       out_pidfd, out_chain_idx) == PKG_OK) {
 					started = 1;
@@ -2419,6 +2445,12 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	}
 	e->state = PKG_STATE_FETCHING;
 	e->error[0] = '\0';
+	e->kept_build_container[0] = '\0'; /* ADR-0175: a fresh attempt starting means any
+	                                     * previously-preserved failed build container's
+	                                     * name is no longer this entry's current story --
+	                                     * the memset() above already clears it for the
+	                                     * fresh-slot case, this covers the upgrade-reuse
+	                                     * case (e != NULL, not memset()'d) too. */
 	e->cache_hit = cache_hit;
 
 	if (persist_mkdir_p(g_sources_dir) != 0) {
@@ -2629,7 +2661,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 }
 
 enum pkg_error pkg_install_start(const char *name, const char *image, const char *version,
-                                  int upgrade, char *out_started_name,
+                                  int upgrade, int keep_on_failure, char *out_started_name,
                                   size_t out_started_name_size, pid_t *out_pid, int *out_pidfd,
                                   int *out_chain_idx)
 {
@@ -2658,6 +2690,7 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
 	snprintf(g_chains[chain_idx].target_version, sizeof(g_chains[chain_idx].target_version), "%s",
 	         (version != NULL) ? version : "");
 	g_chains[chain_idx].is_hostbuild = 0;
+	g_chains[chain_idx].keep_on_failure = keep_on_failure;
 
 	e = pkg_find(name, g_chains[chain_idx].image);
 	if (e != NULL && e->state == PKG_STATE_INSTALLED &&
@@ -2689,8 +2722,9 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
 }
 
 enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, const char *version,
-                                    int upgrade, const char *extra_config_symbols, pid_t *out_pid,
-                                    int *out_pidfd, int *out_chain_idx)
+                                    int upgrade, const char *extra_config_symbols,
+                                    int keep_on_failure, pid_t *out_pid, int *out_pidfd,
+                                    int *out_chain_idx)
 {
 	struct pkg_recipe recipe;
 	char recipe_path[PATH_MAX];
@@ -2754,6 +2788,7 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *build_image, co
 	         sizeof(g_chains[chain_idx].hostbuild_extra_config_symbols), "%s",
 	         (extra_config_symbols != NULL) ? extra_config_symbols : "");
 	g_chains[chain_idx].is_hostbuild = 1;
+	g_chains[chain_idx].keep_on_failure = keep_on_failure;
 
 	/* A hostbuild job is always a single, standalone entry -- no
 	 * resolve_chain(), pkg_depends is required empty above. */
@@ -3298,7 +3333,8 @@ static int install_mutate(const char *staging_rootfs, void *ctx_v)
 }
 
 int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_pid,
-                         int *out_pidfd, int *out_chain_idx, char *out_hostbuild_done_name)
+                         int *out_pidfd, int *out_chain_idx, char *out_hostbuild_done_name,
+                         int *out_kept)
 {
 	struct pkg_entry *e;
 	char container_base[PATH_MAX];
@@ -3307,6 +3343,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	int chain_idx;
 
 	out_hostbuild_done_name[0] = '\0';
+	*out_kept = 0;
 
 	chain_idx = pkg_build_container_chain_index(container_name);
 	if (chain_idx < 0)
@@ -3454,6 +3491,33 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			logstore_write("thincd", "error", "pkg %s@%s: build output: %s", e->name,
 			                g_chains[chain_idx].image, captured);
 		e->state = is_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
+
+		/*
+		 * ADR-0175/issue #35: only the chain's own final job (the
+		 * package actually requested, not an incidental dependency
+		 * pulled in along the way -- is_final) ever gets preserved,
+		 * and only when the caller actually asked for it
+		 * (keep_on_failure). e->build_container_name was set back in
+		 * pkg_fetch_completed() when this build container was first
+		 * spawned and is still valid here -- copied into
+		 * kept_build_container (a distinct field, not reused in
+		 * place) so a later, unrelated retry on this same pkg_entry
+		 * can freely overwrite build_container_name without silently
+		 * invalidating what's reported here. The container itself is
+		 * left fully alone -- the caller (main.c's
+		 * handle_container_event()) is the one that actually skips
+		 * registry_remove() based on *out_kept.
+		 */
+		if (is_final && g_chains[chain_idx].keep_on_failure) {
+			*out_kept = 1;
+			snprintf(e->kept_build_container, sizeof(e->kept_build_container), "%s",
+			         e->build_container_name);
+			snprintf(e->error + strlen(e->error), sizeof(e->error) - strlen(e->error),
+			         " (build container preserved for debugging: %s -- see GET .../files or "
+			         "DELETE .../containers/%s to clean up)",
+			         e->kept_build_container, e->kept_build_container);
+		}
+
 		g_chains[chain_idx].name[0] = '\0';
 		g_chains[chain_idx].dep_queue_count = 0; /* abort the rest of the chain -- a failed dependency
 		                        * means the top-level install can't complete either */

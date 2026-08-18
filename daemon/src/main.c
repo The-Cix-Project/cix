@@ -10979,9 +10979,15 @@ static void handle_stop(int fd, const char *name)
 			int pkg_pidfd;
 			int pkg_chain_idx;
 			char hostbuild_done_name[PKG_NAME_MAX];
+			/* An explicit operator stop always tears the container
+			 * down (registry_remove() above already ran) regardless
+			 * of keep_on_failure -- that flag is only ever about an
+			 * unprompted build failure, never a deliberately-killed
+			 * one. Discarded here for exactly that reason. */
+			int kept_ignored;
 
 			if (pkg_build_completed(name, e->exit_status, &pkg_pid, &pkg_pidfd,
-			                         &pkg_chain_idx, hostbuild_done_name))
+			                         &pkg_chain_idx, hostbuild_done_name, &kept_ignored))
 				register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
 			else
 				try_start_queued_pkg_rebuild();
@@ -14840,7 +14846,9 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 	const char *image;
 	const char *version;
 	const struct json_value *jupgrade;
+	const struct json_value *jkeep;
 	int upgrade;
+	int keep_on_failure;
 	char started_name[PKG_NAME_MAX];
 	pid_t pid;
 	int pidfd;
@@ -14865,9 +14873,14 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 	version = json_as_string(json_object_get(root, "version"));
 	jupgrade = json_object_get(root, "upgrade");
 	upgrade = (jupgrade != NULL && jupgrade->type == JSON_BOOL && jupgrade->u.boolean);
+	/* ADR-0175/issue #35: omitted (or false) matches every pre-existing
+	 * caller's behavior exactly -- a failed build container is torn
+	 * down like always. */
+	jkeep = json_object_get(root, "keep_on_failure");
+	keep_on_failure = (jkeep != NULL && jkeep->type == JSON_BOOL && jkeep->u.boolean);
 
-	perr = pkg_install_start(name, image, version, upgrade, started_name, sizeof(started_name),
-	                          &pid, &pidfd, &chain_idx);
+	perr = pkg_install_start(name, image, version, upgrade, keep_on_failure, started_name,
+	                          sizeof(started_name), &pid, &pidfd, &chain_idx);
 	if (perr != PKG_OK) {
 		json_free(root);
 		respond_pkg_error(fd, perr);
@@ -14910,7 +14923,9 @@ static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
 	const char *build_image;
 	const char *version;
 	const struct json_value *jupgrade;
+	const struct json_value *jkeep;
 	int upgrade;
+	int keep_on_failure;
 	pid_t pid;
 	int pidfd;
 	int chain_idx;
@@ -14934,8 +14949,12 @@ static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
 	version = json_as_string(json_object_get(root, "version"));
 	jupgrade = json_object_get(root, "upgrade");
 	upgrade = (jupgrade != NULL && jupgrade->type == JSON_BOOL && jupgrade->u.boolean);
+	/* ADR-0175/issue #35: see handle_pkg_install()'s own identical field. */
+	jkeep = json_object_get(root, "keep_on_failure");
+	keep_on_failure = (jkeep != NULL && jkeep->type == JSON_BOOL && jkeep->u.boolean);
 
-	perr = pkg_hostbuild_start(name, build_image, version, upgrade, NULL, &pid, &pidfd, &chain_idx);
+	perr = pkg_hostbuild_start(name, build_image, version, upgrade, NULL, keep_on_failure, &pid,
+	                            &pidfd, &chain_idx);
 	if (perr != PKG_OK) {
 		json_free(root);
 		respond_pkg_error(fd, perr);
@@ -15026,7 +15045,9 @@ static void handle_kmod_build_post(int fd, const char *body, size_t body_len)
 	char version[PKG_VERSION_MAX];
 	const struct json_value *jupgrade;
 	const struct json_value *jsymbols;
+	const struct json_value *jkeep;
 	int upgrade;
+	int keep_on_failure;
 	char symbols[PKG_HOSTBUILD_EXTRA_SYMBOLS_MAX];
 	size_t symbols_len = 0;
 	pid_t pid;
@@ -15051,6 +15072,11 @@ static void handle_kmod_build_post(int fd, const char *body, size_t body_len)
 	snprintf(version, sizeof(version), "%s", version_raw != NULL ? version_raw : "");
 	jupgrade = json_object_get(root, "upgrade");
 	upgrade = (jupgrade != NULL && jupgrade->type == JSON_BOOL && jupgrade->u.boolean);
+	/* ADR-0175/issue #35: this endpoint (a hostbuild against the
+	 * "kernel" recipe specifically) is the primary motivating use case
+	 * for this flag -- see pkg_install_start()'s own doc comment. */
+	jkeep = json_object_get(root, "keep_on_failure");
+	keep_on_failure = (jkeep != NULL && jkeep->type == JSON_BOOL && jkeep->u.boolean);
 
 	symbols[0] = '\0';
 	jsymbols = json_object_get(root, "config_symbols");
@@ -15088,7 +15114,8 @@ static void handle_kmod_build_post(int fd, const char *body, size_t body_len)
 	json_free(root);
 
 	perr = pkg_hostbuild_start("kernel", build_image, version[0] != '\0' ? version : NULL, upgrade,
-	                            symbols[0] != '\0' ? symbols : NULL, &pid, &pidfd, &chain_idx);
+	                            symbols[0] != '\0' ? symbols : NULL, keep_on_failure, &pid, &pidfd,
+	                            &chain_idx);
 	if (perr != PKG_OK) {
 		respond_pkg_error(fd, perr);
 		return;
@@ -15141,7 +15168,10 @@ static void handle_pkg_update_all(int fd)
 		return;
 	}
 
-	perr = pkg_install_start(name, image, NULL, 1, started_name, sizeof(started_name), &pid,
+	/* An automatic, system-triggered rebuild -- never worth preserving a
+	 * build container for (ADR-0175/issue #35 is opt-in, operator-
+	 * driven debugging only). */
+	perr = pkg_install_start(name, image, NULL, 1, 0, started_name, sizeof(started_name), &pid,
 	                          &pidfd, &chain_idx);
 	if (perr != PKG_OK) {
 		respond_pkg_error(fd, perr);
@@ -17655,6 +17685,7 @@ static void handle_container_event(struct conn *cc)
 	int pkg_chain_idx;
 	int chained;
 	char hostbuild_done_name[PKG_NAME_MAX];
+	int kept_build_container;
 
 	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	registry_mark_exited(entry);
@@ -17676,10 +17707,19 @@ static void handle_container_event(struct conn *cc)
 	 * A return of 1 means a dependency chain is advancing into another
 	 * fetch -- register its pidfd exactly like a fresh top-level
 	 * install already does.
+	 *
+	 * ADR-0175/issue #35: pkg_build_completed() sets kept_build_container
+	 * to 1 exactly when this was a keep_on_failure-requested failure of
+	 * the chain's own final job -- registry_remove() below is skipped
+	 * in that one case, deliberately leaving the exited build
+	 * container's registry entry and overlay mount in place for later
+	 * inspection (GET .../files) or manual cleanup (DELETE/stop, same
+	 * as any other exited container) instead of the normal, immediate
+	 * teardown every other pkgbuild exit still gets.
 	 */
 	chained = pkg_build_completed(entry->name, entry->exit_status, &pkg_pid, &pkg_pidfd,
-	                               &pkg_chain_idx, hostbuild_done_name);
-	if (pkg_build_container_chain_index(entry->name) >= 0)
+	                               &pkg_chain_idx, hostbuild_done_name, &kept_build_container);
+	if (pkg_build_container_chain_index(entry->name) >= 0 && !kept_build_container)
 		registry_remove(entry->name);
 	if (chained)
 		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);

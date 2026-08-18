@@ -66,7 +66,7 @@ thincctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `kmod-config [ls]` | Every module with a persisted default-options and/or autoload entry |
 | `kmod-config set NAME [--option=KEY=VALUE ...] [--autoload \| --no-autoload]` | Read-modify-write — only the fields given are touched |
 | `kmod-config rm NAME` | Clear a module's persisted config entirely — never touches whether it's currently loaded |
-| `kmod-build --build-image=IMAGE [--version=VERSION] [--symbol=CONFIG_FOO ...] [--upgrade] [--wait]` | An ordinary `pkg hostbuild kernel` under the hood, gaining extra `=m` module symbols merged into the same curated kernel config (ADR-0159 Phase B) — needs a reboot onto the new `bzImage` (A/B cutover) to actually take effect |
+| `kmod-build --build-image=IMAGE [--version=VERSION] [--symbol=CONFIG_FOO ...] [--upgrade] [--wait] [--keep-on-failure]` | An ordinary `pkg hostbuild kernel` under the hood, gaining extra `=m` module symbols merged into the same curated kernel config (ADR-0159 Phase B) — needs a reboot onto the new `bzImage` (A/B cutover) to actually take effect. `--keep-on-failure` (ADR-0175) preserves a crashing kernel/toolchain build container for real debugging instead of losing it on failure |
 | `time [show]` | The host's current date/time (ADR-0110) |
 | `time set --unixtime=N` | Manually set the host clock (real `clock_settime()`, immediate, no reboot) |
 | `ntp config [show]` | Upstream NTP server address list used to sync the host clock (ADR-0110) |
@@ -237,11 +237,11 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | `pkg cache-status` | Current cache occupancy (max/current bytes, entry count) |
 | `pkg cache-clear` | Remove every cached artifact — an explicit operator reset |
 | `pkg artifact-config show` \| `set [--url=URL] [--token=TOKEN\|--clear-token]` | The configured plain-HTTP precompiled-artifact server — separate from `repo-config` above, never a git forge |
-| `pkg install --name=NAME [--image=IMAGE] [--version=VERSION] [--upgrade]` | Start installing (or upgrading) a package; omitted version resolves to the highest available |
+| `pkg install --name=NAME [--image=IMAGE] [--version=VERSION] [--upgrade] [--keep-on-failure]` | Start installing (or upgrading) a package; omitted version resolves to the highest available. `--keep-on-failure` (ADR-0175) preserves a failed build's own container instead of tearing it down — see [Debugging a failed build](../api/README.md#debugging-a-failed-build-keep_on_failure-adr-0175-issue-35) |
 | `pkg ls` | List every known package (installed or in-flight) |
 | `pkg rm NAME[@IMAGE]` | Uninstall |
 | `pkg update-all` | Start an upgrade for the first installed package whose recipe has drifted; call again to drain the backlog |
-| `pkg hostbuild NAME --build-image=IMAGE [--version=VERSION] [--wait] [--deploy] [--upgrade]` | Build a standalone host artifact (kernel, or thinC's own control plane) instead of merging into an image — see [`docs/guides/writing-recipes.md#the-hostbuild-variant`](writing-recipes.md#the-hostbuild-variant). `--upgrade` re-runs a build already `state: "installed"` if the recipe's own version has moved on (otherwise a bare 409) |
+| `pkg hostbuild NAME --build-image=IMAGE [--version=VERSION] [--wait] [--deploy] [--upgrade] [--keep-on-failure]` | Build a standalone host artifact (kernel, or thinC's own control plane) instead of merging into an image — see [`docs/guides/writing-recipes.md#the-hostbuild-variant`](writing-recipes.md#the-hostbuild-variant). `--upgrade` re-runs a build already `state: "installed"` if the recipe's own version has moved on (otherwise a bare 409). `--keep-on-failure` (ADR-0175) preserves a failed build container for real debugging |
 | `pkg build-log` | Live-tail the currently in-flight install/hostbuild's own stdout/stderr (task #676, ADR-0101) — a one-way stream, not an interactive session; prints each chunk as it arrives and exits once the build finishes. 404 if nothing is currently building |
 
 See [`docs/guides/writing-recipes.md`](writing-recipes.md) for the recipe format itself, and [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) / [`docs/guides/building-thinc.md`](building-thinc.md) for the two real operator runbooks built on `pkg hostbuild`.
