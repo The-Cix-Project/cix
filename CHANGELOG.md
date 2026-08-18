@@ -2,6 +2,12 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
+### Part 197 (done): web dashboard full-width status bar, connectivity dot moved there (issue #45)
+
+User-requested. The connectivity health dot moved out of the header's `.header-right` into a new, genuinely full-width status bar -- a sibling of `header`/`.layout` in `body`'s own flex column, not nested inside `<main>` the way the existing `#log-panel` is, so it spans under the left tree panel too, not just the main content column. Right-aligned, room for more status content to join later. `refreshHealth()`'s own update logic needed no change at all -- `#health`'s id is unchanged, only its DOM location moved.
+
+Verified live: local scratch `thincd` + headless-Chromium screenshot confirmed the dot renders correctly at the bottom-right of a genuinely full-width bar, header no longer shows it.
+
 ### Part 196 (done): package recipe Versions tab + `pkg_changelog=` field, drop inline "N versions" expand (ADR-0176, issue #44)
 
 User-requested: replace the Recipes list's inline ▸/▾ "N versions" expand-in-place toggle (issue #19) with a real "Versions" tab on the package detail page, matching the pattern the Image detail page's own Versions tab already established -- explicitly preferred over a modal popup "for consistency." Along with it, a new optional `pkg_changelog=` recipe field (a third field alongside `pkg_depends=`/`pkg_artifact_sha256=`, same single-line parsing, same optional-with-no-backfill adoption) -- asked directly which of three real options (no changelog, a computed diff summary, or a real new field) the user wanted; chose the new field.

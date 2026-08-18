@@ -406,6 +406,25 @@ header {
 	min-height: 0;
 }
 
+/* issue #45: a genuine full-width status bar, spanning the whole page
+ * (a sibling of header/.layout in body's own flex column, not nested
+ * inside <main> the way #log-panel is -- so it sits below the tree
+ * panel too, not just the main content column). flex: 0 0 auto keeps
+ * it a fixed-height row that .layout's own flex: 1 1 auto naturally
+ * yields space to, the same relationship header already has with
+ * .layout. Right-aligned by design (issue #45's own ask) -- more
+ * status content can join the health dot here later without changing
+ * this alignment. */
+.status-bar {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 0.9rem;
+	padding: 0.4rem 1rem;
+	border-top: 1px solid var(--border);
+	flex: 0 0 auto;
+}
+
 @media (max-width: 720px) {
 	html, body {
 		overflow: auto;
