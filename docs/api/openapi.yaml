@@ -5061,7 +5061,7 @@ paths:
                   type: string
                 content:
                   type: string
-                  description: The full text of a build.sh file (pkg_name=/pkg_version=/pkg_source=/pkg_sha256=/pkg_depends=)
+                  description: The full text of a build.sh file (pkg_name=/pkg_version=/pkg_source=/pkg_sha256=/pkg_depends=/pkg_changelog=)
       responses:
         "204":
           description: Recipe version published
@@ -9356,6 +9356,18 @@ components:
             hostbuild recipe (POST /pkg/hostbuild) must leave this empty
             -- dependency resolution has no meaning for a one-shot
             artifact harvest.
+        changelog:
+          type: string
+          nullable: true
+          description: >
+            ADR-0176 (issue #44). Optional pkg_changelog= from the recipe -- a
+            short, single-line, free-text summary of what changed in this
+            specific published version. null for any recipe that doesn't set
+            it (every recipe published before this field existed, and any
+            recipe author who simply hasn't added one). Deliberately
+            single-line by construction (the daemon reads up to the closing
+            quote or a newline, whichever comes first) -- not a place for a
+            real multi-paragraph release note.
         created_at:
           type: integer
           description: >

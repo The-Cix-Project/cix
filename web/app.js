@@ -5177,15 +5177,22 @@ function renderPackagesList() {
  * Collapsed to one row per name (the most recently published version,
  * by created_at -- simpler and equally correct here than reimplementing
  * pkg_version_compare()'s dpkg-style comparator in JS, since a real
- * recipe history is only ever appended to, never backdated) with a
- * ▸/▾ toggle when more than one version exists. Every row, collapsed
- * or expanded, now has its own real, version-scoped delete -- the
- * old implicit "delete removes everything" behavior is gone entirely,
- * not just hidden; deleting every version now means expanding and
- * deleting each one explicitly, which is the safe default.
+ * recipe history is only ever appended to, never backdated). Its own
+ * Delete button stays real and version-scoped (removePkgRecipe(r.name,
+ * r.version), never a bare name-only delete) -- the old implicit
+ * "delete removes everything" behavior is gone entirely, not just
+ * hidden.
+ *
+ * issue #44 (2026-08-18): the former inline ▸/▾ "N versions" expand
+ * toggle is gone -- older versions now live in the package's own detail
+ * page, a real "Versions" tab (renderPackageDetailVersions()) alongside
+ * a real per-version changelog, rather than a second copy of this same
+ * table growing new rows in place. One browsing surface per concern:
+ * this list is "what's the latest of everything," the detail page's
+ * Versions tab is "every version of this one thing" -- not two
+ * different UI patterns doing the same job depending on how you got
+ * there.
  */
-const expandedPkgRecipes = new Set();
-
 function renderRecipesList() {
 	const body = document.getElementById("recipes-body");
 	const filter = document.getElementById("recipes-pkg-search").value.trim().toLowerCase();
@@ -5215,25 +5222,20 @@ function renderRecipesList() {
 		return;
 	}
 
-	const addVersionRow = (r, isLatest, toggle) => {
+	for (const name of names) {
+		const latest = groups.get(name)[0];
 		const row = document.createElement("tr");
 
 		const nameCell = document.createElement("td");
-		if (toggle) {
-			toggle.className = "recipe-version-toggle";
-			nameCell.appendChild(toggle);
-		}
-		nameCell.appendChild(treeLink("#packages/" + encodeURIComponent(r.name), r.name, ""));
+		nameCell.appendChild(treeLink("#packages/" + encodeURIComponent(name), name, ""));
 		row.appendChild(nameCell);
 
 		const versionCell = document.createElement("td");
-		versionCell.textContent = r.version;
-		if (!isLatest)
-			row.className = "recipe-version-row";
+		versionCell.textContent = latest.version;
 		row.appendChild(versionCell);
 
 		const dependsCell = document.createElement("td");
-		dependsCell.textContent = r.depends || "-";
+		dependsCell.textContent = latest.depends || "-";
 		row.appendChild(dependsCell);
 
 		const actionCell = document.createElement("td");
@@ -5241,35 +5243,11 @@ function renderRecipesList() {
 
 		rmButton.textContent = "Delete";
 		rmButton.className = "button-danger";
-		rmButton.addEventListener("click", () => removePkgRecipe(r.name, r.version));
+		rmButton.addEventListener("click", () => removePkgRecipe(latest.name, latest.version));
 		actionCell.appendChild(rmButton);
 		row.appendChild(actionCell);
 
 		body.appendChild(row);
-	};
-
-	for (const name of names) {
-		const versions = groups.get(name);
-		const latest = versions[0];
-		let toggle = null;
-
-		if (versions.length > 1) {
-			toggle = document.createElement("button");
-			toggle.type = "button";
-			toggle.textContent = (expandedPkgRecipes.has(name) ? "▾ " : "▸ ") + versions.length + " versions";
-			toggle.addEventListener("click", () => {
-				if (expandedPkgRecipes.has(name))
-					expandedPkgRecipes.delete(name);
-				else
-					expandedPkgRecipes.add(name);
-				renderRecipesList();
-			});
-		}
-		addVersionRow(latest, true, toggle);
-		if (versions.length > 1 && expandedPkgRecipes.has(name)) {
-			for (const older of versions.slice(1))
-				addVersionRow(older, false, null);
-		}
 	}
 }
 
@@ -5334,10 +5312,12 @@ function renderPackageDetail(name) {
 		fields.appendChild(
 			fieldBlock(
 				"Version",
-				recipe.version + (allVersions.length > 1 ? " (latest of " + allVersions.length + " -- see Software > Recipes to browse/delete a specific older version)" : "")
+				recipe.version + (allVersions.length > 1 ? " (latest of " + allVersions.length + " -- see the Versions tab)" : "")
 			)
 		);
 		fields.appendChild(fieldBlock("Depends", recipe.depends || "-"));
+		if (recipe.changelog)
+			fields.appendChild(fieldBlock("Changelog", recipe.changelog));
 
 		const contentEl = document.getElementById("pkgd-recipe-content");
 
@@ -5375,7 +5355,60 @@ function renderPackageDetail(name) {
 	};
 	removeBtn.onclick = () => removePkgRecipe(name, recipe.version);
 
+	renderPackageDetailVersions(name, allVersions);
 	renderPackageDetailInstalled(name);
+}
+
+/* issue #44: every published version for this one name, newest first --
+ * already fully present in cache.pkgRecipes (no separate fetch needed,
+ * unlike renderImageDetailVersions()'s own GET /images/{name}, since
+ * pkg recipe list-view metadata already carries everything a row here
+ * needs). Delete here is real, per-version (removePkgRecipe(name,
+ * v.version)) -- unlike an image's own immutable version history, a
+ * package recipe version genuinely can be deleted on its own. */
+function renderPackageDetailVersions(name, allVersions) {
+	const body = document.querySelector("#pkgd-versions tbody");
+	const versions = [...allVersions].sort((a, b) => b.created_at - a.created_at);
+
+	body.textContent = "";
+	if (versions.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 4;
+		cell.className = "empty";
+		cell.textContent = "No recipe on file for this name";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+
+	for (const v of versions) {
+		const row = document.createElement("tr");
+
+		const versionCell = document.createElement("td");
+		versionCell.textContent = v.version;
+		row.appendChild(versionCell);
+
+		const changelogCell = document.createElement("td");
+		changelogCell.textContent = v.changelog || "-";
+		row.appendChild(changelogCell);
+
+		const createdCell = document.createElement("td");
+		createdCell.textContent = v.created_at ? new Date(v.created_at * 1000).toLocaleString() : "-";
+		row.appendChild(createdCell);
+
+		const actionCell = document.createElement("td");
+		const rmButton = document.createElement("button");
+
+		rmButton.textContent = "Delete";
+		rmButton.className = "button-danger";
+		rmButton.addEventListener("click", () => removePkgRecipe(v.name, v.version));
+		actionCell.appendChild(rmButton);
+		row.appendChild(actionCell);
+
+		body.appendChild(row);
+	}
 }
 
 function renderPackageDetailInstalled(name) {

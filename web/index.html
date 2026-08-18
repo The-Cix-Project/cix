@@ -1153,6 +1153,7 @@
 			</div>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="recipe" id="pkgd-tab-recipe">Recipe</button>
+				<button type="button" class="tab-button" data-tab="versions" id="pkgd-tab-versions">Versions</button>
 				<button type="button" class="tab-button" data-tab="installed" id="pkgd-tab-installed">Installed</button>
 			</div>
 			<div class="tab-panel" id="pkgd-panel-recipe" data-tab="recipe">
@@ -1168,6 +1169,21 @@
 					<button type="button" id="pkgd-edit-recipe">Edit&hellip;</button>
 					<button type="button" id="pkgd-remove-recipe" class="button-danger">Remove recipe</button>
 				</div>
+			</div>
+			<div class="tab-panel" id="pkgd-panel-versions" data-tab="versions" hidden>
+				<p class="hint">Every published recipe version for this name (ADR-0107), newest first --
+					the currently-shown Recipe tab always tracks whichever row here is latest.</p>
+				<table id="pkgd-versions">
+					<thead>
+						<tr>
+							<th>Version</th>
+							<th>Changelog</th>
+							<th>Created</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody></tbody>
+				</table>
 			</div>
 			<div class="tab-panel" id="pkgd-panel-installed" data-tab="installed" hidden>
 				<table id="pkgd-installed">

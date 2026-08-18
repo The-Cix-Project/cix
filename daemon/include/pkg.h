@@ -74,6 +74,16 @@
  * uses, one real path, not two copies of the literal string. */
 #define PKG_CURL_BIN "/usr/bin/curl"
 #define PKG_DEPENDS_MAX 256
+/* ADR-0176: optional pkg_changelog= -- one short, single-line, free-text
+ * summary of what changed in this specific published version (a commit
+ * subject line, not a multi-paragraph release note -- extract_line_value()
+ * only reads up to the closing quote or a newline, whichever comes
+ * first, so a real multi-line changelog isn't representable here by
+ * construction, matching the "short" scope this was explicitly asked
+ * for). Empty for every recipe published before this field existed --
+ * never backfilled, no retroactive edit of ~80 existing recipes for a
+ * field that's optional by design. */
+#define PKG_CHANGELOG_MAX 512
 #define PKG_ERROR_MAX 256
 /* ADR-0159 Phase B: a space-joined string of bare CONFIG_* symbol
  * names, room for a genuinely useful number of extra modules per

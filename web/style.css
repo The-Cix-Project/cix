@@ -997,21 +997,6 @@ button:hover {
 	font-size: 0.8rem;
 }
 
-/* issue #19: recipe-version drill-down (Software > Recipes, Packages tab) */
-.recipe-version-toggle {
-	background: none;
-	border: none;
-	color: var(--text);
-	cursor: pointer;
-	font-size: 0.8rem;
-	padding: 0 0.4rem 0 0;
-}
-
-.recipe-version-row td {
-	color: var(--muted);
-	font-size: 0.9em;
-}
-
 table {
 	width: 100%;
 	border-collapse: collapse;

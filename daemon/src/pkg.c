@@ -129,6 +129,8 @@ struct pkg_recipe {
 	 * before ever treating it as real -- the plain HTTP artifact server
 	 * (pkg_artifact_*, below) is never itself a trust boundary. */
 	char artifact_sha256[PKG_SHA256_MAX];
+	/* ADR-0176: optional, empty for any recipe that doesn't set it. */
+	char changelog[PKG_CHANGELOG_MAX];
 };
 
 static struct pkg_entry g_packages[PKG_MAX_PACKAGES];
@@ -582,10 +584,12 @@ static int parse_recipe(const char *path, struct pkg_recipe *out)
 		rc = -1;
 	if (extract_line_value(buf, "pkg_sha256=", raw_sha256, sizeof(raw_sha256)) != 0)
 		rc = -1;
-	/* depends and artifact_sha256 are both optional -- fine if absent */
+	/* depends, artifact_sha256, and changelog are all optional -- fine
+	 * if absent */
 	extract_line_value(buf, "pkg_depends=", out->depends, sizeof(out->depends));
 	extract_line_value(buf, "pkg_artifact_sha256=", out->artifact_sha256,
 	                    sizeof(out->artifact_sha256));
+	extract_line_value(buf, "pkg_changelog=", out->changelog, sizeof(out->changelog));
 	free(buf);
 
 	if (rc == 0) {
@@ -1970,6 +1974,11 @@ void pkg_write_json_recipes(struct json_writer *w)
 				jw_str(w, r.version);
 				jw_key(w, "depends");
 				jw_str(w, r.depends);
+				jw_key(w, "changelog");
+				if (r.changelog[0] != '\0')
+					jw_str(w, r.changelog);
+				else
+					jw_null(w);
 				jw_key(w, "created_at");
 				jw_int(w, recipe_created_at(path));
 				jw_obj_close(w);
@@ -2004,6 +2013,11 @@ enum pkg_error pkg_recipe_get(const char *name, const char *version, struct json
 	jw_str(w, r.version);
 	jw_key(w, "depends");
 	jw_str(w, r.depends);
+	jw_key(w, "changelog");
+	if (r.changelog[0] != '\0')
+		jw_str(w, r.changelog);
+	else
+		jw_null(w);
 	jw_key(w, "created_at");
 	jw_int(w, recipe_created_at(recipe_path));
 	jw_key(w, "content");
