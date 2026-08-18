@@ -28,11 +28,66 @@ pkg_depends=""
 # (not a bare CC= environment guess -- Configure's own interactive-
 # default-skipping logic under -des doesn't reliably honor environment
 # overrides the way autotools' ./configure does) -- added as part of
-# task #845's audit of every recipe missing an explicit tcc pin; not
-# yet rebuild-verified in this sandbox (no bootstrapped local toolchain
-# available at audit time), flagged honestly rather than assumed.
+# task #845's audit of every recipe missing an explicit tcc pin.
+#
+# Real, first-ever TCC rebuild verification of this recipe (issue #25's
+# own hostapd work needed a working perl -> openssl chain and hit this
+# live) found one genuine, precisely-isolated gap: perl.h's own
+# PERL_DIAG_STR_(x) macro expands to a PARENTHESIZED string-literal
+# concatenation, `("" x "")`, used in dquote.c (and elsewhere) as a
+# `char[]` array initializer. GCC/Clang accept a parenthesized string-
+# literal expression there; TCC's stricter array-initializer parser
+# does not ("character array initializer must be a literal, optionally
+# enclosed in braces") -- confirmed via two minimal, isolated probes:
+# `char x[] = ("" "s" "");` fails, `char x[] = "" "s" "";` (identical,
+# parens removed) succeeds. The parens are not semantically load-
+# bearing here (a string-literal-concatenation is already a single,
+# complete primary expression in every context this macro is actually
+# used, function-argument or array-initializer) -- stripping them is
+# correct, not a hack. Applied as a targeted sed against the extracted
+# source rather than a maintained patch file, matching this project's
+# own established convention for a single-line third-party compat fix
+# (see m4/1.4.19's own gnulib _GL_EXTERN_INLINE_STDHEADER_BUG fix,
+# squashfs-tools' -Dlinux=1 fix -- same class of narrow, well-justified
+# TCC gap, not upstream perl being wrong).
+#
+# A second, separate gap found immediately after the first: perl's own
+# hints/linux.sh sets ccdlflags to a dynamic-symbol-export flag spelled
+# `-E`/`-Wl,-E` (the traditional ld shorthand for --export-dynamic),
+# which TCC's own linker frontend doesn't recognize at all ("tcc: error:
+# unsupported linker option '-E'"). This one is genuinely load-bearing,
+# not a spurious flag to strip -- confirmed the hard way: stripping it
+# outright let the link succeed, but then every dynamically-loaded XS
+# module failed at runtime ("Cwd.so: undefined symbol:
+# Perl_croak_nocontext"), since the main perl binary's own symbols
+# were never exported for its own .so modules to resolve against. TCC
+# does support the underlying capability, just under its own spelling
+# (`tcc --help`: "-rdynamic export all global symbols to dynamic
+# linker") -- fixed with a thin cc wrapper translating -E/-Wl,-E to
+# -rdynamic (matching chrony.recipe's own toolwrap pattern) rather than
+# a bare -Dcc=tcc. Verified end-to-end, not just "link succeeded":
+# `./perl -Ilib -e 'use Cwd; print Cwd::getcwd()'` and `use POSIX;
+# POSIX::floor(3.7)` both load their real, dynamically-linked .so and
+# run correctly.
 pkg_build() {
-	./Configure -des -Dcc=tcc -Dprefix=/usr -Dusethreads
+	sed -i 's/#define PERL_DIAG_STR_(x)[[:space:]]*("" x "")/#define PERL_DIAG_STR_(x) "" x ""/' perl.h
+	grep -q '#define PERL_DIAG_STR_(x) "" x ""' perl.h || exit 1
+
+	mkdir -p /build/toolwrap
+	cat > /build/toolwrap/tcc-perl <<'WRAP'
+#!/usr/bin/bash
+args=()
+for a in "$@"; do
+	case "$a" in
+		-E|-Wl,-E) args+=("-rdynamic") ;;
+		*) args+=("$a") ;;
+	esac
+done
+exec tcc "${args[@]}"
+WRAP
+	chmod +x /build/toolwrap/tcc-perl
+
+	./Configure -des -Dcc=/build/toolwrap/tcc-perl -Dprefix=/usr -Dusethreads
 	make -j"$(nproc)"
 }
 
