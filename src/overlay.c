@@ -232,7 +232,29 @@ int overlay_create(const struct overlay_spec *ov)
 		return OVERLAY_ERR_MKDIR_MERGED;
 	}
 
-	if (snprintf(opts, sizeof(opts), "lowerdir=%s,upperdir=%s,workdir=%s",
+	/*
+	 * redirect_dir=on (issue #34): without it, creating a new entry
+	 * under a directory that exists only in lowerdir (any fresh-every-
+	 * start mount point mountns_pivot() creates under a real image's
+	 * own lowerdir /dev, e.g. /dev/pts -- lowerdir is never mutated,
+	 * so its own /dev never has one) needs overlayfs's own internal
+	 * copy-up-then-rename-into-place to bring the parent up to
+	 * upperdir first, and without redirect support that rename fails
+	 * outright with EXDEV -- confirmed live, precisely, via
+	 * mountns_pivot()'s own per-step diagnostics (mkdir(/dev/pts):
+	 * Invalid cross-device link) after ruling out every other
+	 * candidate (image content, an unrelated leftover mount, disk
+	 * placement). CONFIG_OVERLAY_FS_REDIRECT_DIR only controls this
+	 * kernel's own DEFAULT when no mount option is given (confirmed
+	 * directly against fs/overlayfs/Kconfig's own text: "still
+	 * possible to turn off redirects... with the 'redirect_dir=off'
+	 * mount option" implies the reverse -- turning ON via mount
+	 * option -- works regardless of the compile-time default) -- an
+	 * explicit mount option here is the correct, permanent fix
+	 * regardless of whatever this kernel's own default happens to be,
+	 * not something to leave to chance.
+	 */
+	if (snprintf(opts, sizeof(opts), "lowerdir=%s,upperdir=%s,workdir=%s,redirect_dir=on",
 	             ov->lowerdir, ov->upperdir, ov->workdir) >= (int)sizeof(opts)) {
 		errno = ENAMETOOLONG;
 		return OVERLAY_ERR_OPTS_TOO_LONG;
