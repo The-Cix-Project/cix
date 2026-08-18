@@ -178,6 +178,7 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | `diskrole ls` / `diskrole rm NAME` | List assigned roles (with whether each disk is currently present) / remove one (409 if the disk is the active state-storage placement) |
 | `disks format NAME [--fs-type=ext4\|btrfs]` | Destructive: mkfs (ext4 by default, or btrfs, ADR-0104) + mount an already role-assigned, non-OS disk (409 against the active state-storage placement) |
 | `disks format-status NAME` | State/mount_path/error of the most recent format job for this disk |
+| `disks unmount NAME` | Real, synchronous `umount2(2)` of an already-mounted, non-OS disk (issue #34) — data untouched, only its attachment to the running system is removed; 409 against the same active-placement/container-storage-in-use checks `format` has |
 | `disks partition-table NAME` | Destructive: writes a fresh, empty GPT partition table to a non-OS whole disk with no role or partitions of its own in use |
 | `disks add-partition NAME --name=PART_NAME [--size-mib=N]` | Appends one new partition to a disk's existing table; omit `--size-mib` for "rest of the disk" |
 | `disks rm-partition DISK_NAME PARTITION_NAME` | Removes one partition (409 if it still has a role assigned) |

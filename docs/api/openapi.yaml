@@ -2866,6 +2866,79 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /disks/{disk_name}/unmount:
+    post:
+      summary: Detaches an already-mounted, non-OS disk from the running system, without touching its content
+      description: >
+        Found live (issue #34): a disk with its role already removed
+        (DELETE /diskroles/{name}) had no way to actually be let go of
+        -- it stayed mounted forever, and a real, currently-mounted-
+        but-role-less disk was found to correlate with a genuine
+        mountns_pivot() EXDEV failure in every subsequent container
+        creation. A real, synchronous umount2(2) against whatever GET
+        /disks currently reports as this disk's own mount_path --
+        unlike POST .../format, this never touches the filesystem's own
+        on-disk content, only its attachment to the running system; a
+        later POST .../format (destructive) or a manual mount(2) are
+        the only ways back. Deliberately does NOT require an assigned
+        role the way POST .../format does (the opposite precondition
+        direction) -- unmounting a disk an operator has already removed
+        the role from is precisely the case this exists to cover. Same
+        double-confirmation shape as POST .../format: the request
+        body's `confirm_disk_name` must match disk_name in the URL
+        exactly.
+      operationId: unmountDisk
+      parameters:
+        - name: disk_name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm_disk_name]
+              properties:
+                confirm_disk_name:
+                  type: string
+      responses:
+        "200":
+          description: Unmounted -- the disk's own current state (GET /disks shape)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Disk"
+        "400":
+          description: >
+            confirm_disk_name missing/mismatched, invalid disk name,
+            disk not found, disk is the OS disk, or disk is not
+            currently mounted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            This disk is the active placement for state-storage, log-
+            storage, rebuildable-storage, or swap, or the currently
+            configured backup-config disk (ADR-0141), or one or more
+            containers currently have their own storage on this disk
+            (ADR-0102/ADR-0142) -- unmounting it would break whatever
+            currently relies on it; migrate away first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: umount2(2) itself failed -- something on this disk may still be busy/in use
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /disks/{disk_name}/partition-table:
     post:
       summary: Destructively writes a fresh, empty GPT partition table to a whole disk (task #844)

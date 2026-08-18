@@ -71,6 +71,8 @@ enum diskformat_error {
 	DISKFORMAT_ERR_BUSY,
 	DISKFORMAT_ERR_MKDIR_FAILED,
 	DISKFORMAT_ERR_SPAWN_FAILED,
+	DISKFORMAT_ERR_NOT_MOUNTED, /* diskformat_unmount() only: disk_enumerate() already reports it unmounted */
+	DISKFORMAT_ERR_UMOUNT_FAILED, /* diskformat_unmount() only: the real umount2(2) call itself failed */
 };
 
 enum diskformat_state {
@@ -150,5 +152,39 @@ void diskformat_write_status_json(struct json_writer *w, const char *want_disk_n
  * a caller needs to act on.
  */
 void diskformat_remount_present_role_disks(const char *os_containers_dir, const char *mount_base_dir);
+
+/*
+ * The reverse of the mount half of diskformat_start() -- a real,
+ * synchronous umount2(2) against whatever disk_enumerate() currently
+ * reports as this disk's own mount_path (real, current ground truth
+ * from /proc/mounts, disk.h's own field), run inline (no fork/pidfd,
+ * matching diskpart.c's own "quick admin op runs inline" precedent,
+ * ADR-0158) since umount2(2) itself is fast, unlike mkfs. Never touches
+ * the filesystem's own on-disk content -- the data stays exactly as it
+ * is, just no longer attached to the running system; a later
+ * diskformat_start() (mkfs, destructive) or a manual real mount(2) are
+ * the only ways back.
+ *
+ * Deliberately does NOT require a role the way diskformat_start() does
+ * (the opposite precondition direction): unmounting a disk an operator
+ * has already removed the role from -- exactly the state a disk is left
+ * in after `diskrole rm` without a matching mechanism to actually let
+ * go of it, a real gap found live (issue #34's own investigation
+ * correlated a still-mounted, role-less scratch disk with a real
+ * mountns_pivot() EXDEV failure during container creation) -- is
+ * precisely the case this exists to cover. Still refuses the disk that
+ * is the OS disk (DISKFORMAT_ERR_IS_OS_DISK) and one that
+ * disk_enumerate() doesn't currently report as mounted at all
+ * (DISKFORMAT_ERR_NOT_MOUNTED) -- main.c's own handler additionally
+ * checks is_active_storage_singleton_placement()/
+ * disk_has_container_in_use() before ever calling this, the same two
+ * checks handle_disk_format_post() already has, since a disk actively
+ * backing live state/rebuildable/log/backup/swap placement or a
+ * container's own storage must never be pulled out from under it --
+ * this function has no knowledge of either check itself (that
+ * knowledge lives in main.c, next to the other placement lookups), it
+ * only enforces the two invariants named above.
+ */
+enum diskformat_error diskformat_unmount(const char *disk_name, const char *os_containers_dir);
 
 #endif /* DISKFORMAT_H */

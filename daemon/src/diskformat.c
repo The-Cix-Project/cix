@@ -290,3 +290,21 @@ void diskformat_remount_present_role_disks(const char *os_containers_dir, const 
 		}
 	}
 }
+
+enum diskformat_error diskformat_unmount(const char *disk_name, const char *os_containers_dir)
+{
+	struct discovered_disk d;
+
+	if (!simple_name_is_valid(disk_name, DISKROLE_DISK_NAME_MAX))
+		return DISKFORMAT_ERR_INVALID_DISK_NAME;
+	if (!find_disk(disk_name, os_containers_dir, &d))
+		return DISKFORMAT_ERR_NOT_FOUND;
+	if (d.is_os_disk)
+		return DISKFORMAT_ERR_IS_OS_DISK;
+	if (!d.mounted)
+		return DISKFORMAT_ERR_NOT_MOUNTED;
+
+	if (umount2(d.mount_path, 0) != 0)
+		return DISKFORMAT_ERR_UMOUNT_FAILED;
+	return DISKFORMAT_OK;
+}

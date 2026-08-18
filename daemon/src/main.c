@@ -11520,7 +11520,7 @@ static void respond_diskformat_error(int fd, enum diskformat_error err)
 		break;
 	case DISKFORMAT_ERR_IS_OS_DISK:
 		respond_error(fd, 400, "Bad Request",
-		              "this disk holds the fixed OS layout -- it can never be formatted");
+		              "this disk holds the fixed OS layout -- it can never be formatted or unmounted");
 		break;
 	case DISKFORMAT_ERR_NO_ROLE:
 		respond_error(fd, 400, "Bad Request",
@@ -11531,6 +11531,13 @@ static void respond_diskformat_error(int fd, enum diskformat_error err)
 		break;
 	case DISKFORMAT_ERR_MKDIR_FAILED:
 		respond_error(fd, 500, "Internal Server Error", "could not create mount point");
+		break;
+	case DISKFORMAT_ERR_NOT_MOUNTED:
+		respond_error(fd, 400, "Bad Request", "this disk is not currently mounted");
+		break;
+	case DISKFORMAT_ERR_UMOUNT_FAILED:
+		respond_error(fd, 500, "Internal Server Error",
+		              "umount2(2) failed -- something on this disk may still be busy/in use");
 		break;
 	case DISKFORMAT_ERR_SPAWN_FAILED:
 	default:
@@ -11617,6 +11624,85 @@ static void handle_disk_format_post(int fd, const char *disk_name, const char *b
 		jw_init(&w);
 		diskformat_write_status_json(&w, disk_name);
 		respond_json(fd, 202, "Accepted", &w);
+		jw_free(&w);
+	}
+}
+
+/*
+ * Found live, issue #34: a disk an operator has already `diskrole rm`'d
+ * stays mounted forever -- there was no way to actually let go of it,
+ * and a real, currently-mounted-but-role-less disk turned out to
+ * correlate with a genuine mountns_pivot() EXDEV failure in every
+ * subsequent container creation. Synchronous (diskformat_unmount()'s
+ * own doc comment), not async like format -- a real umount2(2) is fast.
+ * Same double-confirmation shape as handle_disk_format_post() (this is
+ * a real, if less destructive, action -- data on the disk survives, but
+ * anything still relying on it being mounted stops working the instant
+ * this succeeds) and the identical two data-safety checks that handler
+ * already has: refuses a disk that's the active placement for any
+ * storage singleton/backup-config/swap, or that a live container has
+ * its own storage on, exactly the same reasoning -- unmounting out from
+ * under either would silently break something already relying on it.
+ */
+static void handle_disk_unmount_post(int fd, const char *disk_name, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *confirm;
+	enum diskformat_error derr;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	confirm = json_as_string(json_object_get(root, "confirm_disk_name"));
+	if (confirm == NULL || strcmp(confirm, disk_name) != 0) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "confirm_disk_name must be given and must match the disk name in the URL");
+		return;
+	}
+	json_free(root);
+
+	if (is_active_storage_singleton_placement(disk_name)) {
+		respond_error(fd, 409, "Conflict",
+		              "this disk is the active state-storage, log-storage, or rebuildable-storage "
+		              "placement, the configured backup-config disk, or the current swap placement -- "
+		              "unmounting it would break whatever currently relies on it; migrate away first");
+		return;
+	}
+	if (disk_has_container_in_use(disk_name)) {
+		respond_error(fd, 409, "Conflict",
+		              "one or more containers currently have their own storage on this disk -- "
+		              "unmounting it would break them; migrate them away first "
+		              "(POST /containers/{name}/migrate-storage)");
+		return;
+	}
+
+	derr = diskformat_unmount(disk_name, CONTAINERS_DIR);
+	if (derr != DISKFORMAT_OK) {
+		respond_diskformat_error(fd, derr);
+		return;
+	}
+
+	{
+		struct discovered_disk disks[DISK_ENUM_MAX];
+		struct discovered_disk d;
+		int n = disk_enumerate(disks, DISK_ENUM_MAX, CONTAINERS_DIR);
+		int i;
+		struct json_writer w;
+
+		memset(&d, 0, sizeof(d));
+		snprintf(d.name, sizeof(d.name), "%s", disk_name);
+		for (i = 0; i < n; i++) {
+			if (strcmp(disks[i].name, disk_name) == 0) {
+				d = disks[i];
+				break;
+			}
+		}
+		jw_init(&w);
+		disk_write_json_one(&d, &w);
+		respond_json(fd, 200, "OK", &w);
 		jw_free(&w);
 	}
 }
@@ -15881,6 +15967,15 @@ static void dispatch(int fd, const struct http_request *req)
 				handle_disk_format_get(fd, disk_name);
 				return;
 			}
+		}
+		if (nlen > 8 && strcmp(name + nlen - 8, "/unmount") == 0 &&
+		    nlen - 8 < DISKROLE_DISK_NAME_MAX && strcmp(req->method, "POST") == 0) {
+			char disk_name[DISKROLE_DISK_NAME_MAX];
+
+			memcpy(disk_name, name, nlen - 8);
+			disk_name[nlen - 8] = '\0';
+			handle_disk_unmount_post(fd, disk_name, req->body, req->body_len);
+			return;
 		}
 		{
 			/*

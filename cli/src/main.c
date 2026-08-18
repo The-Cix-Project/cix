@@ -272,6 +272,11 @@ static void print_usage(FILE *out)
 	        "               disk is the active state-storage placement\n"
 	        "  disks format-status NAME  -- state/mount_path/error of the most recent\n"
 	        "               format job for this disk\n"
+	        "  disks unmount NAME  -- a real, synchronous umount2(2) of an already-mounted,\n"
+	        "               non-OS disk (issue #34); data on the disk is untouched, only its\n"
+	        "               attachment to the running system is removed; refused (409) if\n"
+	        "               it's the active placement for a storage singleton/backup-config/\n"
+	        "               swap, or a live container has its own storage on it\n"
 	        "  storage state [show]  -- which disk (if any) is the active placement for\n"
 	        "               thinC's own state (ADR-0141); default (null) is the OS disk\n"
 	        "  storage state migrate [--disk=NAME]  -- move thinC's own state to a disk\n"
@@ -1420,6 +1425,46 @@ static int cmd_disks_format_status(const struct kx_client *c, int json_mode, int
 }
 
 /*
+ * Found live, issue #34: a disk with its role already removed had no
+ * way to actually be let go of -- it just stayed mounted forever, and a
+ * real, currently-mounted-but-role-less disk turned out to correlate
+ * with a genuine mountns_pivot() EXDEV failure in every subsequent
+ * container creation. Synchronous (a real umount2(2) is fast, unlike
+ * mkfs) -- same double-confirmation shape as "disks format": disk_name
+ * sent as the request body's own confirm_disk_name, no further
+ * interactive prompt, the request body confirmation IS the safety gate.
+ */
+static int cmd_disks_unmount(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *disk_name;
+	char path[256];
+	struct json_writer w;
+	struct kx_response r;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: thincctl disks unmount NAME\n");
+		return 2;
+	}
+	disk_name = argv[0];
+	snprintf(path, sizeof(path), "/v1/disks/%s/unmount", disk_name);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "confirm_disk_name");
+	jw_str(&w, disk_name);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "thincctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_disk_line);
+}
+
+/*
  * Partition-level disk management (ROADMAP.md task #844). Same
  * double-confirmation posture as "disks format" for the destructive
  * partition-table-create -- adding or removing one partition is not
@@ -1560,6 +1605,8 @@ static int cmd_disks(const struct kx_client *c, int json_mode, int argc, char **
 		return cmd_disks_format(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "format-status") == 0)
 		return cmd_disks_format_status(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "unmount") == 0)
+		return cmd_disks_unmount(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "partition-table") == 0)
 		return cmd_disks_partition_table(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "add-partition") == 0)
@@ -1570,6 +1617,7 @@ static int cmd_disks(const struct kx_client *c, int json_mode, int argc, char **
 	fprintf(stderr, "usage: thincctl disks [ls]\n"
 	                "       thincctl disks format NAME [--fs-type=ext4|btrfs]\n"
 	                "       thincctl disks format-status NAME\n"
+	                "       thincctl disks unmount NAME\n"
 	                "       thincctl disks partition-table NAME\n"
 	                "       thincctl disks add-partition NAME --name=PART_NAME [--size-mib=N]\n"
 	                "       thincctl disks rm-partition DISK_NAME PARTITION_NAME\n");

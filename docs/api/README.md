@@ -1210,6 +1210,19 @@ GET /v1/disks/sdb/format
 
 `state` is `"none"` (no job has ever run for this disk — including when a job ran/is running for a *different* disk, so a status check never shows another disk's unrelated job), `"running"`, `"ready"`, or `"failed"` (`error` distinguishes `mkfs.<fs_type>` failing outright from it succeeding but the subsequent `mount(2)` failing). Only one format job may run daemon-wide at a time (`409` otherwise) — the same v1 single-job constraint every other async job here already has. Mounted at a fixed path under this platform's own data directory by default; a `container-storage`-role disk can also be selected explicitly per container via `POST /containers`' own `disk` field (ADR-0102, Phase D, already built).
 
+### Unmount (issue #34)
+
+```
+POST /v1/disks/sdb/unmount
+{"confirm_disk_name": "sdb"}
+```
+
+Found live: a disk with its role already removed (`DELETE /diskroles/{name}`) had no way to actually be let go of — it just stayed mounted forever, and a real, currently-mounted-but-role-less disk was found to correlate with a genuine `mountns_pivot()` `EXDEV` ("Invalid cross-device link") failure in every subsequent container creation on the box where it was found. A real, synchronous `umount2(2)` against whatever `GET /disks` currently reports as this disk's own `mount_path` — synchronous, not async like format, since a plain `umount2(2)` is fast. Unlike `POST .../format`, this never touches the filesystem's own on-disk content, only its attachment to the running system; a later `POST .../format` (destructive) or a real `mount(2)` are the only ways back. Deliberately does **not** require an assigned role the way format does — the opposite precondition direction, since unmounting a role-less disk is exactly the case this exists to cover. Same double-confirmation shape as format, and the identical two data-safety checks: `409` if this disk is the active placement for state-storage, log-storage, rebuildable-storage, or swap, or the currently configured backup-config disk, or a `container-storage`-role disk one or more containers currently have their own storage on — unmounting any of those out from under whatever relies on it would break it the instant this succeeds, migrate away first. `400` if the disk is the OS disk, doesn't exist, or isn't currently mounted at all. Response is the disk's own current state (`GET /disks` shape):
+
+```
+{"name": "sdb", "mounted": false, "mount_path": "", ...}
+```
+
 ### Partition-level disk management (task #844, ADR-0158)
 
 ```
