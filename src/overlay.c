@@ -120,6 +120,49 @@ static int overlay_create_btrfs_upperdir(const char *upperdir, long long quota_b
 }
 
 /*
+ * Real ext4 project-quota tagging (Part 4, ADR-0062; extended to cover
+ * workdir too, issue #34): FS_IOC_FSSETXATTR with fsx_projid set and
+ * FS_XFLAG_PROJINHERIT on -- the modern, XFS-originated project-quota
+ * API ext4 also implements, distinct from the older, deprecated
+ * single-flags-word FS_IOC_SETFLAGS/FS_PROJINHERIT_FL pair. PROJINHERIT
+ * is not optional on upperdir: without it, only upperdir itself would
+ * carry the project id, and every file a container later creates
+ * *inside* it (the overlay's whole reason to exist) would carry no
+ * project id at all, silently exempting all real container disk usage
+ * from the very quota this call exists to enforce. Deliberately fails
+ * loud (unlike, say, cgroup_enable_controllers()'s own best-effort
+ * posture): a quota that was requested but silently not applied is a
+ * correctness bug wearing a false promise, not a missing optional
+ * capability. `what` names which one ("upperdir"/"workdir") for the
+ * diag message -- the two call sites below are otherwise identical.
+ */
+static int tag_dir_project_id(const char *dir, unsigned int project_id, const char *what)
+{
+	int fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	struct kx_fsxattr fsx;
+
+	if (fd < 0) {
+		fprintf(stderr, "overlay_create: open(%s) for project-quota tagging: %s\n", what,
+		        strerror(errno));
+		return OVERLAY_ERR_QUOTA;
+	}
+	if (ioctl(fd, KX_FS_IOC_FSGETXATTR, &fsx) != 0) {
+		fprintf(stderr, "overlay_create: FS_IOC_FSGETXATTR(%s): %s\n", what, strerror(errno));
+		close(fd);
+		return OVERLAY_ERR_QUOTA;
+	}
+	fsx.fsx_projid = project_id;
+	fsx.fsx_xflags |= KX_FS_XFLAG_PROJINHERIT;
+	if (ioctl(fd, KX_FS_IOC_FSSETXATTR, &fsx) != 0) {
+		fprintf(stderr, "overlay_create: FS_IOC_FSSETXATTR(%s): %s\n", what, strerror(errno));
+		close(fd);
+		return OVERLAY_ERR_QUOTA;
+	}
+	close(fd);
+	return 0;
+}
+
+/*
  * Distinct negative return codes per failure branch (OVERLAY_ERR_*,
  * container.h), not a bare -1 -- overlay_create()'s own single caller
  * (src/container.c, the clone3'd child) already maps its own ~10
@@ -179,45 +222,11 @@ int overlay_create(const struct overlay_spec *ov)
 				return OVERLAY_ERR_MKDIR_UPPERDIR;
 			}
 
-			/*
-			 * Real ext4 project-quota tagging (Part 4, ADR-0062):
-			 * FS_IOC_FSSETXATTR with fsx_projid set and
-			 * FS_XFLAG_PROJINHERIT on -- the modern, XFS-originated
-			 * project-quota API ext4 also implements, distinct from
-			 * the older, deprecated single-flags-word FS_IOC_SETFLAGS/
-			 * FS_PROJINHERIT_FL pair. PROJINHERIT is not optional:
-			 * without it, only upperdir itself would carry the
-			 * project id, and every file a container later creates
-			 * *inside* it (the overlay's whole reason to exist)
-			 * would carry no project id at all, silently exempting
-			 * all real container disk usage from the very quota this
-			 * call exists to enforce. Deliberately fails loud (unlike,
-			 * say, cgroup_enable_controllers()'s own best-effort
-			 * posture): a quota that was requested but silently not
-			 * applied is a correctness bug wearing a false promise,
-			 * not a missing optional capability.
-			 */
 			if (ov->project_id != 0) {
-				int fd = open(ov->upperdir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-				struct kx_fsxattr fsx;
+				int rc = tag_dir_project_id(ov->upperdir, ov->project_id, "upperdir");
 
-				if (fd < 0) {
-					perror("overlay_create: open(upperdir) for project-quota tagging");
-					return OVERLAY_ERR_QUOTA;
-				}
-				if (ioctl(fd, KX_FS_IOC_FSGETXATTR, &fsx) != 0) {
-					perror("overlay_create: FS_IOC_FSGETXATTR");
-					close(fd);
-					return OVERLAY_ERR_QUOTA;
-				}
-				fsx.fsx_projid = ov->project_id;
-				fsx.fsx_xflags |= KX_FS_XFLAG_PROJINHERIT;
-				if (ioctl(fd, KX_FS_IOC_FSSETXATTR, &fsx) != 0) {
-					perror("overlay_create: FS_IOC_FSSETXATTR");
-					close(fd);
-					return OVERLAY_ERR_QUOTA;
-				}
-				close(fd);
+				if (rc != 0)
+					return rc;
 			}
 		}
 	}
@@ -225,6 +234,36 @@ int overlay_create(const struct overlay_spec *ov)
 	if (mkdir(ov->workdir, 0700) != 0 && errno != EEXIST) {
 		perror("overlay_create: mkdir(workdir)");
 		return OVERLAY_ERR_MKDIR_WORKDIR;
+	}
+
+	/*
+	 * Issue #34's own real root cause: workdir must carry the identical
+	 * project id upperdir just got tagged with, not just upperdir alone.
+	 * Overlayfs's own kernel implementation copies a new object up from
+	 * lowerdir by first creating it IN workdir, then renaming it into
+	 * its final place in upperdir -- untagged workdir renaming into a
+	 * PROJINHERIT-tagged upperdir is exactly the kind of rename ext4's
+	 * own project-quota implementation refuses outright, with EXDEV,
+	 * since it would silently change the moved object's project id
+	 * without real quota-accounting bookkeeping for that move. Every
+	 * fresh-every-start mount point mountns_pivot() creates under a
+	 * lowerdir-only parent directory (confirmed live: mkdir(/dev/pts),
+	 * since a real image's own /dev never gets copied up during
+	 * ordinary use) needs this exact copy-up-then-rename dance, so this
+	 * bug reliably hit any container created with a real disk quota --
+	 * which, since ADR/Part 183, every container the intended CLI/web
+	 * flow creates now has by default. Confirmed precisely, not
+	 * guessed: mountns_pivot()'s own new per-step diagnostics (a
+	 * separate, earlier fix) pinpointed mkdir(/dev/pts) as the exact
+	 * failing call, and a live A/B test (identical container, only
+	 * disk_quota_bytes present or absent) reproduced/cleared the exact
+	 * same failure on demand.
+	 */
+	if (ov->project_id != 0) {
+		int rc = tag_dir_project_id(ov->workdir, ov->project_id, "workdir");
+
+		if (rc != 0)
+			return rc;
 	}
 
 	if (mkdir(ov->merged, 0755) != 0 && errno != EEXIST) {
