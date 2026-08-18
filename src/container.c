@@ -26,6 +26,51 @@ static void child_diag(int fd, const char *prefix)
 }
 
 /*
+ * mountns_pivot()'s own distinct step, for the exact same reason
+ * overlay_step_names[] (container_decode_exit_status(), below) exists
+ * -- ~15 real syscalls behind one function, a flat "child: mountns_pivot"
+ * diag message left genuinely no way to tell which one actually failed
+ * on a shell-less production box (issue #34's own investigation).
+ * Reads errno in the same dprintf() call that resolves the step name,
+ * matching child_diag()'s own contract -- no snprintf/other call
+ * in between that could touch it first.
+ */
+static void child_diag_mountns_pivot(int fd, int mountns_pivot_ret)
+{
+	static const struct {
+		int code;
+		const char *step;
+	} steps[] = {
+		{ MOUNTNS_PIVOT_ERR_MKDIR_PUT_OLD, "mkdir(put_old)" },
+		{ MOUNTNS_PIVOT_ERR_CHDIR_NEW_ROOT, "chdir(new_root)" },
+		{ MOUNTNS_PIVOT_ERR_PIVOT_ROOT, "pivot_root" },
+		{ MOUNTNS_PIVOT_ERR_CHDIR_ROOT, "chdir(/)" },
+		{ MOUNTNS_PIVOT_ERR_UMOUNT_PUT_OLD, "umount2(put_old)" },
+		{ MOUNTNS_PIVOT_ERR_MKDIR_PROC, "mkdir(/proc)" },
+		{ MOUNTNS_PIVOT_ERR_MOUNT_PROC, "mount(proc)" },
+		{ MOUNTNS_PIVOT_ERR_UMOUNT_SYS, "umount2(/sys)" },
+		{ MOUNTNS_PIVOT_ERR_MKDIR_SYS, "mkdir(/sys)" },
+		{ MOUNTNS_PIVOT_ERR_MOUNT_SYS, "mount(sysfs)" },
+		{ MOUNTNS_PIVOT_ERR_MKDIR_RUN, "mkdir(/run)" },
+		{ MOUNTNS_PIVOT_ERR_MOUNT_RUN, "mount(tmpfs /run)" },
+		{ MOUNTNS_PIVOT_ERR_MKDIR_DEV, "mkdir(/dev)" },
+		{ MOUNTNS_PIVOT_ERR_MKDIR_DEV_PTS, "mkdir(/dev/pts)" },
+		{ MOUNTNS_PIVOT_ERR_MOUNT_DEV_PTS, "mount(devpts)" },
+		{ MOUNTNS_PIVOT_ERR_PATH_TOO_LONG, "path too long" },
+	};
+	const char *step = "unknown step";
+	size_t i;
+
+	for (i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
+		if (steps[i].code == mountns_pivot_ret) {
+			step = steps[i].step;
+			break;
+		}
+	}
+	dprintf(fd, "child: mountns_pivot: %s: %s\n", step, strerror(errno));
+}
+
+/*
  * Parent-side equivalent of child_diag() above, for every failure
  * point in container_create()/cgroup_create() that runs before
  * clone3() (or its own post-fork parent-side steps) -- these have no
@@ -189,9 +234,13 @@ int container_create(const struct container_spec *spec, struct container_handle 
 				_exit(129 - overlay_ret);
 			}
 		}
-		if (mountns_pivot(spec->ov.merged, &spec->mnt) != 0) {
-			child_diag(diag_pipe[1], "child: mountns_pivot");
-			_exit(112);
+		{
+			int mountns_pivot_ret = mountns_pivot(spec->ov.merged, &spec->mnt);
+
+			if (mountns_pivot_ret != 0) {
+				child_diag_mountns_pivot(diag_pipe[1], mountns_pivot_ret);
+				_exit(112);
+			}
 		}
 		if (container_dev_mknod(spec->devices, spec->device_count) != 0) {
 			child_diag(diag_pipe[1], "child: container_dev_mknod");

@@ -30,37 +30,37 @@ int mountns_pivot(const char *new_root, const struct mount_spec *mnt)
 	if (snprintf(put_old_path, sizeof(put_old_path), "%s/%s",
 	             new_root, mnt->put_old_rel) >= (int)sizeof(put_old_path)) {
 		errno = ENAMETOOLONG;
-		return -1;
+		return MOUNTNS_PIVOT_ERR_PATH_TOO_LONG;
 	}
 
 	if (mkdir(put_old_path, 0700) != 0 && errno != EEXIST) {
 		perror("mountns_pivot: mkdir(put_old_path)");
-		return -1;
+		return MOUNTNS_PIVOT_ERR_MKDIR_PUT_OLD;
 	}
 
 	if (chdir(new_root) != 0) {
 		perror("mountns_pivot: chdir(new_root)");
-		return -1;
+		return MOUNTNS_PIVOT_ERR_CHDIR_NEW_ROOT;
 	}
 
 	if (sys_pivot_root(".", mnt->put_old_rel) != 0) {
 		perror("mountns_pivot: pivot_root");
-		return -1;
+		return MOUNTNS_PIVOT_ERR_PIVOT_ROOT;
 	}
 
 	if (chdir("/") != 0) {
 		perror("mountns_pivot: chdir(/)");
-		return -1;
+		return MOUNTNS_PIVOT_ERR_CHDIR_ROOT;
 	}
 
 	if (umount2(mnt->put_old_rel, MNT_DETACH) != 0) {
 		perror("mountns_pivot: umount2(put_old, MNT_DETACH)");
-		return -1;
+		return MOUNTNS_PIVOT_ERR_UMOUNT_PUT_OLD;
 	}
 
 	if (mkdir("/proc", 0555) != 0 && errno != EEXIST) {
 		perror("mountns_pivot: mkdir(/proc)");
-		return -1;
+		return MOUNTNS_PIVOT_ERR_MKDIR_PROC;
 	}
 
 	/*
@@ -74,7 +74,7 @@ int mountns_pivot(const char *new_root, const struct mount_spec *mnt)
 	 */
 	if (mount("proc", "/proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) != 0) {
 		perror("mountns_pivot: mount(proc)");
-		return -1;
+		return MOUNTNS_PIVOT_ERR_MOUNT_PROC;
 	}
 
 	/*
@@ -91,15 +91,15 @@ int mountns_pivot(const char *new_root, const struct mount_spec *mnt)
 	umount2("/sys/devices/virtual/net", MNT_DETACH);
 	if (umount2("/sys", MNT_DETACH) != 0 && errno != EINVAL && errno != ENOENT) {
 		perror("mountns_pivot: umount2(/sys)");
-		return -1;
+		return MOUNTNS_PIVOT_ERR_UMOUNT_SYS;
 	}
 	if (mkdir("/sys", 0555) != 0 && errno != EEXIST) {
 		perror("mountns_pivot: mkdir(/sys)");
-		return -1;
+		return MOUNTNS_PIVOT_ERR_MKDIR_SYS;
 	}
 	if (mount("sysfs", "/sys", "sysfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) != 0) {
 		perror("mountns_pivot: mount(sysfs)");
-		return -1;
+		return MOUNTNS_PIVOT_ERR_MOUNT_SYS;
 	}
 
 	/*
@@ -119,11 +119,11 @@ int mountns_pivot(const char *new_root, const struct mount_spec *mnt)
 	 */
 	if (mkdir("/run", 0755) != 0 && errno != EEXIST) {
 		perror("mountns_pivot: mkdir(/run)");
-		return -1;
+		return MOUNTNS_PIVOT_ERR_MKDIR_RUN;
 	}
 	if (mount("tmpfs", "/run", "tmpfs", MS_NOSUID | MS_NODEV, "mode=0755") != 0) {
 		perror("mountns_pivot: mount(tmpfs /run)");
-		return -1;
+		return MOUNTNS_PIVOT_ERR_MOUNT_RUN;
 	}
 
 	/*
@@ -156,16 +156,16 @@ int mountns_pivot(const char *new_root, const struct mount_spec *mnt)
 	 * guaranteed-present treatment first. */
 	if (mkdir("/dev", 0755) != 0 && errno != EEXIST) {
 		perror("mountns_pivot: mkdir(/dev)");
-		return -1;
+		return MOUNTNS_PIVOT_ERR_MKDIR_DEV;
 	}
 	if (mkdir("/dev/pts", 0755) != 0 && errno != EEXIST) {
 		perror("mountns_pivot: mkdir(/dev/pts)");
-		return -1;
+		return MOUNTNS_PIVOT_ERR_MKDIR_DEV_PTS;
 	}
 	if (mount("devpts", "/dev/pts", "devpts", MS_NOSUID | MS_NOEXEC,
 	          "mode=0620,ptmxmode=0666") != 0) {
 		perror("mountns_pivot: mount(devpts)");
-		return -1;
+		return MOUNTNS_PIVOT_ERR_MOUNT_DEV_PTS;
 	}
 
 	return 0;

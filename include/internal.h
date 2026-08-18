@@ -21,11 +21,45 @@ long ns_clone3(unsigned long flags, int cgroup_fd, int *pidfd_out);
 int mountns_make_private(void);
 
 /*
+ * mountns_pivot()'s own distinct failure codes -- every current caller
+ * only ever checks `!= 0`, so these are additive, not a behavior
+ * change; matches container.h's own overlay_error precedent exactly
+ * (same reasoning: a single flat -1 across ~15 real syscalls left a
+ * genuine, previously-unverifiable-on-a-shell-less-box question of
+ * which one actually failed -- confirmed the hard way chasing issue
+ * #34's own mountns_pivot() EXDEV on 192.168.15.95, where the errno
+ * alone (already surfaced) wasn't enough to know which of pivot_root()
+ * itself, one of the umount2() calls, or one of the four fresh-mount
+ * calls (proc/sysfs/run/devpts) was the real source).
+ */
+enum mountns_pivot_error {
+	MOUNTNS_PIVOT_ERR_MKDIR_PUT_OLD = -1,
+	MOUNTNS_PIVOT_ERR_CHDIR_NEW_ROOT = -2,
+	MOUNTNS_PIVOT_ERR_PIVOT_ROOT = -3,
+	MOUNTNS_PIVOT_ERR_CHDIR_ROOT = -4,
+	MOUNTNS_PIVOT_ERR_UMOUNT_PUT_OLD = -5,
+	MOUNTNS_PIVOT_ERR_MKDIR_PROC = -6,
+	MOUNTNS_PIVOT_ERR_MOUNT_PROC = -7,
+	MOUNTNS_PIVOT_ERR_UMOUNT_SYS = -8,
+	MOUNTNS_PIVOT_ERR_MKDIR_SYS = -9,
+	MOUNTNS_PIVOT_ERR_MOUNT_SYS = -10,
+	MOUNTNS_PIVOT_ERR_MKDIR_RUN = -11,
+	MOUNTNS_PIVOT_ERR_MOUNT_RUN = -12,
+	MOUNTNS_PIVOT_ERR_MKDIR_DEV = -13,
+	MOUNTNS_PIVOT_ERR_MKDIR_DEV_PTS = -14,
+	MOUNTNS_PIVOT_ERR_MOUNT_DEV_PTS = -15,
+	MOUNTNS_PIVOT_ERR_PATH_TOO_LONG = -16,
+};
+
+/*
  * Called from inside the child, after mountns_make_private() and
  * overlay_create(). new_root must already be a populated mount point
  * (overlay_create() guarantees this for ov->merged). Pivot_roots into
  * new_root, detaches the old root at mnt->put_old_rel, and mounts a
- * fresh /proc and /sys.
+ * fresh /proc and /sys. On failure, returns a negative enum
+ * mountns_pivot_error value identifying which step failed (see
+ * above) -- every current caller treats any nonzero return as
+ * failure, so this refines rather than changes existing behavior.
  */
 int mountns_pivot(const char *new_root, const struct mount_spec *mnt);
 
