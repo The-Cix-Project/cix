@@ -1366,31 +1366,44 @@ function renderTree() {
 			})),
 		},
 		{
-			/* Aliases to its own first child's hash ("images", same as
+			/* Aliases to its own first child's hash ("recipes", same as
 			 * Catalog's own address, same as Catalog's own first child
-			 * "Images"'s address) -- same convention every group here
-			 * uses, see System's own comment below for why this matters. */
+			 * "Recipes"'s address) -- same convention every group here
+			 * uses, see System's own comment below for why this matters.
+			 *
+			 * Two groups, split along a real axis (issue #41): Catalog is
+			 * the declared source of truth and how it's distributed
+			 * (Recipes -- already has Package/Image/Container tabs with
+			 * inline apply/install actions per row -- plus how that
+			 * catalog gets synced and where its build cache lives);
+			 * Build & Deploy is live state -- what's actually installed/
+			 * running right now, and where new installs/builds are
+			 * triggered and tracked. Recipes used to sit alongside
+			 * Images/Packages under one "Catalog" label despite being a
+			 * fundamentally different kind of thing (declared vs. live),
+			 * and the old "Build Pipeline" label was a misnomer -- it was
+			 * always sync/cache, never building. */
 			label: "Software",
-			hash: "images",
-			icon: "images",
+			hash: "recipes",
+			icon: "recipes",
 			children: [
 				{
 					label: "Catalog",
+					hash: "recipes",
+					icon: "recipes",
+					children: [
+						{ label: "Recipes", hash: "recipes", icon: "recipes" },
+						{ label: "Repo & Sync", hash: "pkg-repo", icon: "recipes" },
+						{ label: "Cache & Artifacts", hash: "pkg-cache", icon: "recipes" },
+					],
+				},
+				{
+					label: "Build & Deploy",
 					hash: "images",
 					icon: "images",
 					children: [
 						{ label: "Images", hash: "images", icon: "images" },
 						{ label: "Packages", hash: "packages", icon: "packages" },
-						{ label: "Recipes", hash: "recipes", icon: "recipes" },
-					],
-				},
-				{
-					label: "Build Pipeline",
-					hash: "pkg-repo",
-					icon: "recipes",
-					children: [
-						{ label: "Repo & Sync", hash: "pkg-repo", icon: "recipes" },
-						{ label: "Cache & Artifacts", hash: "pkg-cache", icon: "recipes" },
 					],
 				},
 			],
