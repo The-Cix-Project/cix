@@ -1,0 +1,47 @@
+# 0179 — Full user namespaces by default, subordinate ID ranges keyed to identity (issue #29)
+
+## Status
+
+Proposed
+
+## Context
+
+Issue #29 (raised 2026-08-17, still open): thinC's containers run as real host UID 0 with no `CLONE_NEWUSER` at all. ADR-0168 closed the single sharpest consequence of that (an untrimmed capability set, `CAP_SYS_MODULE` chief among them) but explicitly deferred the underlying gap: "Root UID inside a container is still real host UID 0 after this change... Full user-namespace support... remains open as issue #29's own original scope."
+
+Discussed directly with the user 2026-08-19 (during the gcc/issue #32 bootstrap effort, as part of a wider "what else is already in the kernel we're not using" pass). The user's own explicit requirements, stated directly: used **by default**, not opt-in; **100% API-driven**; **100% transparent to the end user** (no manual UID range picking, no new required fields); **integrated with this platform's existing user/group management and LDAP**; and **resilient to LDAP being unreachable or not configured at all**.
+
+Three real, upstream precedents inform this design, checked directly rather than invented from scratch:
+- Docker/Podman's `userns-remap`: one fixed UID/GID sub-range (typically 65536 wide) remapping a container's own `0..65535` onto an unprivileged host range.
+- Podman's *rootless* mode specifically: each real Linux user gets their own sub-range from `/etc/subuid`/`/etc/subgid`, keyed to their own login identity — the direct model for "keyed to identity" rather than one shared range for everything.
+- FreeIPA's Subordinate IDs feature: stores sub-range assignments as real LDAP attributes (`ipaSubordinateId` auxiliary objectclass) on the owning user's own directory entry — the direct model for "integrated with LDAP," **but not directly applicable here**, checked and ruled out below.
+
+**Why FreeIPA's own LDAP-schema approach doesn't transfer**: this platform's LDAP layer is `glauth` (`recipes/container/ldap-*`, `daemon/src/ldap.c`), not a general-purpose directory server with extensible schema. glauth is a TOML-config-driven LDAP *emulation* — `daemon/src/ldap.c`'s own `write_glauth_config()` renders thincd's own managed `struct ldap_user`/`struct ldap_group` records directly into glauth's fixed, real Go struct schema (`v2/pkg/config/config.go`'s own `User`/`Group` types, confirmed directly against glauth's real source per that file's own comments). There is no facility to attach an arbitrary new LDAP attribute the way a real directory server would — extending it would mean patching glauth's own upstream source (a real, available option, this project already builds glauth from source as a Tier-3-adjacent recipe — but not needed here, see Decision).
+
+**Why "resilient to LDAP being down" is mostly already solved, not a new problem**: checked directly in `daemon/src/hostauth.c`'s own `hostauth_login()` — it tries a live LDAP bind first (`try_ldap_login()`), but falls back to `ldap_user_check_password()` whenever no configured server actually answers. That fallback checks the password against thincd's **own locally-persisted** `struct ldap_user` record (the same managed record `daemon/src/ldap.c` renders into glauth's config in the first place) — meaning thincd already maintains its own authoritative, always-available copy of every managed user's identity, independent of whether a live LDAP bind is currently possible. Critically, that same `struct ldap_user` record **already has a real `uidnumber` field** (confirmed: `daemon/src/ldap.c` lines 239-240, 348, 671-672) — a stable per-user integer that already exists, is already persisted locally, and is already resilient to LDAP being unreachable, entirely independent of this ADR.
+
+## Decision
+
+**Subordinate ID ranges are keyed to `uidnumber` on thinC's own already-existing, already-resilient `struct ldap_user` record — not to a new LDAP attribute, and not to a live LDAP bind.** No glauth schema change, no new LDAP concept, no new resilience engineering: this ADR is additive on top of identity infrastructure that already exists and is already proven to degrade gracefully.
+
+**Allocator**: a new, small module (`daemon/src/subid.c`) owns one flat, atomically-rewritten persisted table (same convention as ADR-0012's network persistence) mapping `uidnumber → {sub_uid_base, sub_gid_base}`, one fixed range width (65536, the same convention Docker/Podman/systemd all already use — no reason to invent a different number). Allocation is first-come: the first container creation for a given `uidnumber` gets the next free range from a monotonically increasing counter; every later container for that same identity reuses the same range. This table is the **sole source of truth**, present and fully functional with zero LDAP configuration at all.
+
+**Identity resolution at container-creation time** (fully automatic, zero new API fields — matches "100% transparent"): the caller's identity is already resolved by host-auth for every authenticated write today (`struct hostauth_session`). `POST /v1/containers` resolves that session's own `uidnumber` (falling straight through the same already-resilient path above) and looks up-or-allocates its subordinate range, used directly as the `CLONE_NEWUSER` `uid_map`/`gid_map` base. The container's own owner is always the authenticated caller — never a new, explicit "owner" field to get wrong or leave stale.
+
+**When host-auth is disabled entirely** (a real, existing operator choice, not hypothetical): there is no authenticated-caller concept to key anything to at all. Every container falls back to one fixed, reserved sub-range (range 0) — real user-namespace isolation from the host is preserved, cross-operator segregation is simply moot in a deployment with no operator concept to segregate.
+
+**"Servers... combine groups, servers, groups, users"**: resolved directly with the user — this does **not** mean inventing a new "register a physical host" concept (multi-host coordination is explicitly not scoped yet, per `MISSION.md`'s own charter: "no phase has scoped it... no single-host decision should be made in a way that forecloses it later"). It means: don't build a parallel, redundant registration mechanism — the existing `ldap server register --container=NAME` pattern (which container instance is *providing* the LDAP service) stays exactly as-is and is orthogonal to this ADR; this design doesn't need or touch it.
+
+**By default, not opt-in**: every new container creation gains a real `uid_map`/`gid_map`, unconditionally, once this ships — no new create-time flag to remember to pass. Matches ADR-0168's own precedent for a security-posture-changing default: applies only on a container's *next* creation, an already-running container is unaffected until recreated (no silent, live re-mapping of a running process's own namespace, which isn't a real kernel capability anyway).
+
+**Shared, read-only image lowerdir**: cannot be `chown`'d to any one operator's own range (it's shared across every container on that image, across every operator). Real id-mapped mounts (`mount_setattr(MOUNT_ATTR_IDMAP)`, the modern kernel mechanism, not a chown pass) are the intended mechanism — genuinely needs empirical verification on this project's own overlayfs+ext4 stack before being trusted (this exact combination has already produced two real, non-obvious kernel surprises this project has had to root-cause the hard way — ADR-0174's workdir quota-tagging gap, and today's own page-cache/writeback investigation — "confirm directly, don't assume" applies here at least as much as anywhere else in this codebase).
+
+**Composability with what's already shipped**: ADR-0168's capability bounding-set drop and ADR-0017's `BPF_CGROUP_DEVICE` gate both stay fully in effect, unchanged — user namespaces are a new, additional layer, not a replacement for either. ADR-0168's own Context already anticipated this: "a process can hold 'full capabilities' relative to its own non-init user namespace too."
+
+## Consequences
+
+- New `daemon/src/subid.c`: the sub-range allocator + its own persisted table, keyed to `struct ldap_user.uidnumber`.
+- `src/cgroup.c`/`src/container.c`/`include/container.h`: `container_spec` gains real `uid_map`/`gid_map` fields; `CLONE_NEWUSER` added to the namespace flags `container_create()` already requests; real `uid_map`/`gid_map`/`setgroups` writes via raw syscalls (`/proc/<pid>/{uid,gid}_map`, no glibc wrapper needed, matching this project's own `pivot_root`/`clone3` precedent) — real, correct write ordering (`setgroups deny` before `gid_map` write, the well-documented kernel requirement) needed, not assumed.
+- `daemon/src/main.c`: container creation resolves the caller's own `uidnumber` from the existing host-auth session, calls into the new allocator — zero new REST fields, matching "100% API-driven and transparent."
+- Real id-mapped-mount verification (or a documented, honest fallback to a real chown pass if idmapped mounts don't hold up on this exact stack) needed before this ships — genuinely open, not resolved by this ADR alone.
+- Not yet implemented — this ADR is the design; issue #29 tracks the actual build, phased like everything else in this project (matching Zen — this is not a single micro-step).
+- No change to any already-shipped ADR's own guarantees: ADR-0168 and ADR-0017 remain exactly as documented, composed with, not superseded by, this one.
