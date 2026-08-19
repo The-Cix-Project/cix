@@ -10,8 +10,8 @@
 #
 pkg_name="probe-gcc-headers"
 pkg_version="1"
-pkg_source=""
-pkg_sha256=""
+pkg_source="https://ftp.gnu.org/gnu/sed/sed-4.9.tar.gz"
+pkg_sha256="d1478a18f033a73ac16822901f6533d30b6be561bcbce46ffd7abce93602282e"
 pkg_depends=""
 
 pkg_build() {
