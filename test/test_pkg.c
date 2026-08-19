@@ -1169,11 +1169,72 @@ int main(void)
 			{
 				struct stat st;
 
-				if (stat(base_path("/usr/bin/multisrcbad"), &st) == 0) {
+	if (stat(base_path("/usr/bin/multisrcbad"), &st) == 0) {
 					fprintf(stderr,
 					        "FAIL: multisrcbad binary present despite a checksum mismatch on "
 					        "one of its extra sources\n");
 					ok = 0;
+				}
+			}
+		}
+
+		/* 15b. an extra source URL carrying a query string (a real,
+		 * live-found bug, not a hypothetical -- a git-raw-file
+		 * pkg_source needs a `?ref=<commit>` suffix, e.g.
+		 * kernel.recipe's own qemu-part1.config fetch, and
+		 * url_basename()'s original plain strrchr('/') left that
+		 * query string attached to the staged /build/extra/<name>
+		 * filename, so any recipe's own pkg_build()/pkg_install()
+		 * reference to the plain filename it expected failed with a
+		 * bare "No such file or directory" -- confirmed live on
+		 * 192.168.15.95 the first time this exact mechanism was ever
+		 * actually exercised). Reuses extra1's own already-staged
+		 * fixture file and real sha256 from test 15 above, just
+		 * addressed via a URL with "?ref=deadbeef" appended -- curl's
+		 * own file:// handling ignores/strips a query string exactly
+		 * like a real HTTP(S) fetch would, confirmed directly, so this
+		 * exercises the real bug without needing a live HTTP server. */
+		{
+			char extra1_url_with_query[600];
+
+			snprintf(extra1_url_with_query, sizeof(extra1_url_with_query), "%s?ref=deadbeef",
+			         extra1_path);
+			if (write_multisrc_recipe("multisrcquery", "1.0", ms_tarball, ms_tarball_sha,
+			                           extra1_url_with_query, extra1_sha, extra2_path,
+			                           extra2_sha) != 0) {
+				fprintf(stderr, "FAIL: could not write multisrcquery recipe\n");
+				ok = 0;
+			} else {
+				memset(&r, 0, sizeof(r));
+				if (kx_client_request(&client, "POST", "/v1/pkg/install",
+				                       "{\"name\":\"multisrcquery\"}", &r) != 0 ||
+				    r.status != 202) {
+					fprintf(stderr, "FAIL: POST install multisrcquery, status=%d\n", r.status);
+					ok = 0;
+				}
+				kx_response_free(&r);
+
+				if (poll_pkg_state(&client, "multisrcquery", state, sizeof(state), 30) != 0 ||
+				    strcmp(state, "installed") != 0) {
+					fprintf(stderr,
+					        "FAIL: multisrcquery ended in state '%s', expected installed "
+					        "(query-string basename bug)\n",
+					        state);
+					ok = 0;
+				} else {
+					char content[64] = { 0 };
+					FILE *cf = fopen(base_path("/usr/share/multisrc/extra1.txt"), "r");
+
+					if (cf == NULL || fgets(content, sizeof(content), cf) == NULL ||
+					    strcmp(content, "extra-content-one\n") != 0) {
+						fprintf(stderr,
+						        "FAIL: multisrcquery's extra1.txt missing or wrong content, "
+						        "got: %s\n",
+						        content);
+						ok = 0;
+					}
+					if (cf != NULL)
+						fclose(cf);
 				}
 			}
 		}

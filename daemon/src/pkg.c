@@ -951,11 +951,35 @@ static int extract_tarball(const char *tarball_path, const char *dest_dir)
 /* Last '/'-separated segment of a source URL -- where an extra
  * (non-index-0) source lands under /build/extra/ (ADR-0036). Pointer
  * into url itself, never allocates. */
-static const char *url_basename(const char *url)
+/*
+ * The basename of a URL's path component, with any trailing query
+ * string (a literal '?' onward) stripped -- a git-raw-file pkg_source
+ * entry needs a `?ref=<commit>` query parameter (Gitea's own raw-file
+ * API convention, used by kernel.recipe/thinc.recipe's own multi-
+ * source config-file fetches) for reproducibility, and this function's
+ * own prior naive strrchr('/')-only basename left that query string
+ * attached to the staged /build/extra/<basename> filename, silently
+ * breaking every recipe's own pkg_build() reference to the plain
+ * filename it expected -- confirmed live: kernel.recipe's own
+ * qemu-part1.config staged as
+ * "qemu-part1.config?ref=<40 hex chars>" instead of plain
+ * "qemu-part1.config", so its own `cp /build/extra/qemu-part1.config
+ * .config` line failed with a bare "No such file or directory" the
+ * first time this exact mechanism was ever actually exercised
+ * (kernel.recipe 6.18.40-2's own predecessor, committed but never
+ * actually built until now, per that recipe's own re-pin history).
+ */
+static void url_basename(const char *url, char *out, size_t out_size)
 {
 	const char *slash = strrchr(url, '/');
+	const char *name = slash != NULL ? slash + 1 : url;
+	const char *query = strchr(name, '?');
+	size_t len = query != NULL ? (size_t)(query - name) : strlen(name);
 
-	return slash != NULL ? slash + 1 : url;
+	if (len >= out_size)
+		len = out_size - 1;
+	memcpy(out, name, len);
+	out[len] = '\0';
 }
 
 /*
@@ -3162,12 +3186,12 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 			return 0;
 		}
 		for (i = 1; i < recipe.source_count; i++) {
-			char src_path[PATH_MAX], extra_dst[PATH_MAX];
+			char src_path[PATH_MAX], extra_dst[PATH_MAX], extra_basename[PATH_MAX];
 
 			snprintf(src_path, sizeof(src_path), "%s/%s-%s-%d.src", g_sources_dir, e->name,
 			         recipe.version, i);
-			snprintf(extra_dst, sizeof(extra_dst), "%s/%s", extra_dir,
-			         url_basename(recipe.source[i]));
+			url_basename(recipe.source[i], extra_basename, sizeof(extra_basename));
+			snprintf(extra_dst, sizeof(extra_dst), "%s/%s", extra_dir, extra_basename);
 			if (copy_file_simple(src_path, extra_dst) != 0) {
 				logstore_write("thincd", "error",
 				                "pkg %s@%s: could not prepare build container (copy extra source %d): %s",
