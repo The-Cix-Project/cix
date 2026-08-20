@@ -1,12 +1,12 @@
 pkg_name="kernel"
 pkg_version="6.18.40-11"
-pkg_source="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.40.tar.xz https://osakka:REPLACE_WITH_REAL_TOKEN@git.home.arpa/api/v1/repos/itdlabs/thinc/raw/image/kernel/qemu-part1.config?ref=473858954a927611fed6ccccc6ec346d4aec821d"
+pkg_source="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.40.tar.xz https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/thinc/raw/image/kernel/qemu-part1.config?ref=473858954a927611fed6ccccc6ec346d4aec821d"
 pkg_sha256="3712fc1ec839e4daac981176c8518912e8f452650aaedfe4381da4419613a431 71bb10a4615edbfd4f1d2d65e6d8c4d78ab215280f3a26707519f31783ee1f22"
 pkg_depends=""
 
 # Re-pinned to -11: -10 itself hit the SAME per-version sync-cache gap
 # a second, subtler way -- its very first sync (while its committed
-# content still carried the safe REPLACE_WITH_REAL_TOKEN placeholder)
+# content still carried the safe {{REPO_TOKEN}} placeholder)
 # was enough to permanently cache that placeholder for "kernel@
 # 6.18.40-10" specifically; every later live-token substitution PUT to
 # Gitea's HEAD for that same path, however many, was silently ignored
@@ -15,7 +15,7 @@ pkg_depends=""
 # string even after two separate live-substitution rounds and two
 # "state=success" syncs in between) -- both of -10's own hostbuild
 # attempts were therefore doomed from the start, authenticating with
-# the literal string "REPLACE_WITH_REAL_TOKEN" as a credential, hence
+# the literal string "{{REPO_TOKEN}}" as a credential, hence
 # the real HTTP 401s. -9's own recipe content (dropped the invalid
 # pkg_depends="elfutils", which pkg_hostbuild_start() rejects outright
 # since a hostbuild's dependencies must already be baked into
