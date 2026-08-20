@@ -1,8 +1,8 @@
 pkg_name="kernel"
 pkg_version="6.18.40-9"
-pkg_source="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.40.tar.xz https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/thinc/raw/image/kernel/qemu-part1.config?ref=473858954a927611fed6ccccc6ec346d4aec821d"
+pkg_source="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.40.tar.xz https://osakka:REPLACE_WITH_REAL_TOKEN@git.home.arpa/api/v1/repos/itdlabs/thinc/raw/image/kernel/qemu-part1.config?ref=473858954a927611fed6ccccc6ec346d4aec821d"
 pkg_sha256="3712fc1ec839e4daac981176c8518912e8f452650aaedfe4381da4419613a431 71bb10a4615edbfd4f1d2d65e6d8c4d78ab215280f3a26707519f31783ee1f22"
-pkg_depends="elfutils"
+pkg_depends=""
 
 # Re-pinned to -9: -8's own fix (wholesale-replace gcc's
 # include-fixed/limits.h with a bare passthrough) got the kernel's own
@@ -38,11 +38,19 @@ pkg_depends="elfutils"
 # itself is left completely untouched, so its own correct ISO limit
 # macros keep working AND glibc's real header becomes reachable again.
 # Applied here as this recipe's own scoped, build-container-local
-# workaround (this build's own upperdir), same posture as -8. Also now
-# depends on elfutils (real, installed dependency: kernel.recipe's own
-# earlier failure this same session was tools/objtool's `cannot find
-# -lelf`, ADR-0056) -- elfutils 0.192-6 builds+installs libelf only,
-# the one piece objtool actually links against.
+# workaround (this build's own upperdir), same posture as -8.
+#
+# tools/objtool's own earlier `cannot find -lelf` failure this same
+# session (ADR-0056) is addressed by elfutils 0.192-6 (libelf only),
+# but NOT via pkg_depends here -- pkg_hostbuild_start() (daemon/src/
+# pkg.c) explicitly rejects any hostbuild recipe with a non-empty
+# pkg_depends (dependency *resolution* targets "merge into an image",
+# meaningless for a one-shot artifact harvest); every prerequisite
+# must already be baked into --build-image's own rootfs via an
+# ordinary `pkg install` first, confirmed the hard way when this
+# recipe's own first version of this comment still had
+# pkg_depends="elfutils" set and hostbuild rejected it outright with
+# "no such recipe, or it failed to parse" (PKG_ERR_INVALID_RECIPE).
 #
 # gcc.recipe's own permanent fix (issue #55, updated with this fuller
 # syslimits.h root cause) still needs its mkheaders/fixincludes step
