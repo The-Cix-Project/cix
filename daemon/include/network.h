@@ -62,6 +62,20 @@ struct network_def {
 	int is_management; /* this network's address is thincd's own bind address --
 	                     * see network_set_management(); at most one network has
 	                     * this set at a time */
+	/*
+	 * Issue #70: the host-part window auto-allocation draws from
+	 * (network_alloc_ip()). 0 = unset (the full [1, host_max] default,
+	 * unchanged). An explicitly-requested IP is NOT constrained by
+	 * this -- only auto-allocation is, so an operator can still pin a
+	 * container anywhere in-subnet. Exists because a LAN-bridged
+	 * network shares real external hosts (a router at .1, a switch, a
+	 * NAS...) that the allocator must not blindly hand out; a
+	 * management network additionally gets a safe default floor of
+	 * host-part 2 even when this is unset, skipping the near-universal
+	 * .1 gateway convention (see network_alloc_ip()).
+	 */
+	int alloc_start_host; /* first usable host-part; 0 = unset */
+	int alloc_end_host;   /* last usable host-part;  0 = unset */
 };
 
 /*
@@ -114,7 +128,8 @@ void network_repoint(const char *new_state_path);
  * points at the stored entry on NETWORK_OK.
  */
 enum network_error network_create(const char *name, const char *subnet_str, int prefix_len,
-                                   const char *address_str, struct network_def **out);
+                                   const char *address_str, const char *alloc_start_str,
+                                   const char *alloc_end_str, struct network_def **out);
 
 /*
  * Removes name. Returns NETWORK_ERR_IN_USE (not deleted) if any

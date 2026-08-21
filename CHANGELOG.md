@@ -2,7 +2,9 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
-### Part 203 (in progress): pre-bare-metal quality sprint -- limits fully visible + strict (#48/#49/#68/#69 done), LDAP centralization and user namespaces next
+### Part 203 (in progress): pre-bare-metal quality sprint
+
+**#70 done**: per-network auto-IP allocation window (`alloc_start`/`alloc_end`, dotted IPs; `thincctl network create --alloc-start/--alloc-end`) plus a safe default -- a management network (bridged onto a real LAN) now skips host-part `.1` in auto-allocation even with no window set, since `.1` is by convention the real gateway. Caught live during the ADR-0180 canary test, when the allocator handed a container `192.168.15.1`. Explicit container IPs are unconstrained by the window (auto-allocation only). Persisted, serialized, migration-safe (absent = full-range default), and regression-tested (a container on a windowed network lands on the window's first host-part, not `.1`). -- limits fully visible + strict (#48/#49/#68/#69 done), LDAP centralization and user namespaces next
 
 Wave 1 of the user-directed sprint ("hammer through the low-hanging features; LDAP, user namespaces, and all the limits sorted before the bare-metal box arrives"):
 

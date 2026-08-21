@@ -540,6 +540,50 @@ int main(void)
 	kx_client_request(&client, "DELETE", "/v1/networks/gwmigrate37", NULL, &r);
 	kx_response_free(&r);
 
+	/* issue #70: a per-network auto-allocation window -- a container
+	 * with no explicit ip gets an address inside [alloc_start,
+	 * alloc_end], never .1/.2. An EXPLICIT ip outside the window is
+	 * still honored (the window constrains auto-alloc only). */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/networks",
+	                       "{\"name\":\"allocwin\",\"subnet\":\"172.29.0.0\",\"prefix_len\":24,"
+	                       "\"alloc_start\":\"172.29.0.100\",\"alloc_end\":\"172.29.0.109\"}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: create network with alloc window, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"awc1\",\"image\":\"networkstest\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+	                       "\"networks\":[\"allocwin\"]}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: create container on allocwin, status=%d\n", r.status);
+		ok = 0;
+	} else {
+		const struct json_value *nets = json_object_get(r.json, "networks");
+		const char *ip = (nets != NULL && nets->type == JSON_ARRAY && nets->u.array.count > 0)
+		                     ? json_as_string(json_object_get(nets->u.array.items[0], "ip"))
+		                     : NULL;
+		/* first free host-part in the window is .100 */
+		if (ip == NULL || strcmp(ip, "172.29.0.100") != 0) {
+			fprintf(stderr, "FAIL: auto-alloc ignored the window, got ip=%s\n",
+			        ip != NULL ? ip : "(null)");
+			ok = 0;
+		}
+	}
+	kx_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	kx_client_request(&client, "DELETE", "/v1/containers/awc1", NULL, &r);
+	kx_response_free(&r);
+	wait_container_gone(&client, "awc1");
+	memset(&r, 0, sizeof(r));
+	kx_client_request(&client, "DELETE", "/v1/networks/allocwin", NULL, &r);
+	kx_response_free(&r);
+
 	/* cleanup */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "DELETE", "/v1/networks/persisted", NULL, &r) != 0 ||

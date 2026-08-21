@@ -6228,6 +6228,7 @@ static int cmd_network_create(const struct kx_client *c, int json_mode, int argc
 	const char *name = NULL;
 	const char *subnet = NULL;
 	const char *address = NULL;
+	const char *alloc_start = NULL, *alloc_end = NULL;
 	long prefix_len = -1;
 	int i;
 	struct json_writer w;
@@ -6242,6 +6243,10 @@ static int cmd_network_create(const struct kx_client *c, int json_mode, int argc
 			prefix_len = atol(argv[i] + 9);
 		else if (strncmp(argv[i], "--address=", 10) == 0)
 			address = argv[i] + 10;
+		else if (strncmp(argv[i], "--alloc-start=", 14) == 0)
+			alloc_start = argv[i] + 14;
+		else if (strncmp(argv[i], "--alloc-end=", 12) == 0)
+			alloc_end = argv[i] + 12;
 		else {
 			fprintf(stderr, "thincctl: unknown network create option '%s'\n", argv[i]);
 			return 2;
@@ -6269,6 +6274,14 @@ static int cmd_network_create(const struct kx_client *c, int json_mode, int argc
 	if (address != NULL) {
 		jw_key(&w, "address");
 		jw_str(&w, address);
+	}
+	if (alloc_start != NULL) {
+		jw_key(&w, "alloc_start");
+		jw_str(&w, alloc_start);
+	}
+	if (alloc_end != NULL) {
+		jw_key(&w, "alloc_end");
+		jw_str(&w, alloc_end);
 	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
