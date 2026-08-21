@@ -2686,6 +2686,19 @@ paths:
         typo'd field name (e.g. "cpuset" for "cpuset_cpus")
         completely undetectable. The same strictness applies to
         container-recipe add (validated at publish time) and apply.
+
+
+        ldap_login (boolean, issue #66): when true, the daemon stages
+        /etc/nsswitch.conf and /etc/nslcd.conf into the container,
+        rendered from GET/PUT /ldap/config's own client settings -- so a
+        container that authenticates against this platform's LDAP
+        carries none of those values itself. The URI is the configured
+        client_uri, or (when unset) auto-derived from the live IPs of
+        containers registered via `ldap server register`. Refused (400)
+        unless base_dn is set and an effective URI is resolvable. The
+        container still provides its own PAM/service config and startup
+        (which must run nslcd); a container needing a custom nslcd.conf
+        uses {{LDAP:*}} recipe tokens instead and leaves this unset.
       operationId: createContainer
       requestBody:
         required: true

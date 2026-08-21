@@ -8212,7 +8212,7 @@ static const char *container_body_unknown_key(const struct json_value *root)
 		"pki_days", "disk", "ldap_provision", "ldap_user", "ldap_group", "ldap_uid",
 		"ldap_secret_dir", "restart", "restart_delay_seconds", "follow_rolling",
 		"follow_rolling_jitter_seconds", "depends_on", "readiness", "memory_max",
-		"cpu_max", "pids_max", "cpuset_cpus", "disk_quota_bytes",
+		"cpu_max", "pids_max", "cpuset_cpus", "disk_quota_bytes", "ldap_login",
 	};
 	size_t i, k;
 
@@ -8231,6 +8231,93 @@ static const char *container_body_unknown_key(const struct json_value *root)
 			return root->u.object.keys[i];
 	}
 	return NULL;
+}
+
+/*
+ * Issue #66: stage one file directly into a container's upperdir, the
+ * same open(O_CREAT|O_TRUNC)/write/optional-fchown sequence
+ * create_container_from_body()'s own files[] loop already uses --
+ * factored out so the ldap_login synthetic files below share exactly
+ * that path (and its own already-audited safety: file_path_is_safe()
+ * is enforced by the caller for user files; these synthetic paths are
+ * fixed literals). Returns 0, or -1 with errno set. Records nothing in
+ * file_paths[] itself -- the caller owns that array's indexing.
+ */
+static int stage_container_file(const char *upperdir, const char *path, const char *content,
+                                 mode_t mode, uid_t owner, gid_t group)
+{
+	char target[PATH_MAX];
+	char target_dir[PATH_MAX];
+	char *slash;
+	size_t content_len = strlen(content);
+	int fd;
+
+	if (snprintf(target, sizeof(target), "%s%s", upperdir, path) >= (int)sizeof(target)) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+	snprintf(target_dir, sizeof(target_dir), "%s", target);
+	slash = strrchr(target_dir, '/');
+	if (slash != NULL)
+		*slash = '\0';
+	if (persist_mkdir_p(target_dir) != 0)
+		return -1;
+	fd = open(target, O_CREAT | O_TRUNC | O_WRONLY, mode);
+	if (fd < 0)
+		return -1;
+	if (content_len > 0 && write(fd, content, content_len) != (ssize_t)content_len) {
+		close(fd);
+		return -1;
+	}
+	if ((owner != (uid_t)-1 || group != (gid_t)-1) && fchown(fd, owner, group) != 0) {
+		close(fd);
+		return -1;
+	}
+	close(fd);
+	return 0;
+}
+
+/*
+ * Issue #66 (auto-derivation): the effective LDAP client URI list for
+ * ldap_login -- the explicitly-configured client_uri if set, else one
+ * built from the IPs of the containers an operator has already
+ * registered as LDAP servers (ldap server register), so registering
+ * the servers is the only step needed. Writes into out (returns 1) or
+ * returns 0 if neither source yields anything. A registered server
+ * whose container isn't currently running (no resolvable primary IP)
+ * is skipped -- a best-effort list of the live ones, same posture DNS
+ * server delivery already takes.
+ */
+static int ldap_effective_client_uri(char *out, size_t out_size)
+{
+	const struct ldap_config *lc = ldap_config_get();
+	char names[LDAP_SERVER_MAX][LDAP_SERVER_NAME_MAX];
+	int count, i;
+	size_t off = 0;
+
+	if (lc->client_uri[0] != '\0') {
+		snprintf(out, out_size, "%s", lc->client_uri);
+		return 1;
+	}
+	count = ldap_server_list_containers(names, LDAP_SERVER_MAX);
+	out[0] = '\0';
+	for (i = 0; i < count; i++) {
+		struct registry_entry *se = registry_find(names[i]);
+		struct in_addr a;
+		char ipbuf[INET_ADDRSTRLEN];
+		int written;
+
+		if (se == NULL || se->net_count == 0 || se->nets[0].ip_be == 0)
+			continue;
+		a.s_addr = se->nets[0].ip_be;
+		if (inet_ntop(AF_INET, &a, ipbuf, sizeof(ipbuf)) == NULL)
+			continue;
+		written = snprintf(out + off, out_size - off, "%sldap://%s:%d/",
+		                    off > 0 ? " " : "", ipbuf, HOSTAUTH_LDAP_DEFAULT_PORT);
+		if (written > 0 && (size_t)written < out_size - off)
+			off += (size_t)written;
+	}
+	return off > 0;
 }
 
 static int create_container_from_body(const char *body, size_t body_len,
@@ -8278,6 +8365,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	int ip_forward = 0;
 	const struct json_value *jcapture_output;
 	int capture_output = 0;
+	int ldap_login = 0; /* issue #66 */
 	int output_pipe[2] = { -1, -1 };
 	int stdio_write_fd = -1;
 	struct route_spec route_specs[CONTAINER_MAX_ROUTES];
@@ -8349,6 +8437,11 @@ static int create_container_from_body(const char *body, size_t body_len,
 	jenv = json_object_get(root, "env");
 	jdns_servers = json_object_get(root, "dns_servers");
 	jdns_register = json_object_get(root, "dns_register");
+	{
+		const struct json_value *jll = json_object_get(root, "ldap_login");
+
+		ldap_login = (jll != NULL && jll->type == JSON_BOOL && jll->u.boolean);
+	}
 	jpki_issue = json_object_get(root, "pki_issue");
 	jpki_cert_dir = json_object_get(root, "pki_cert_dir");
 	jpki_days = json_object_get(root, "pki_days");
@@ -8866,6 +8959,42 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 	}
 	/*
+	 * Issue #66: ldap_login stages the two identity-resolution files
+	 * that would otherwise hand-carry the daemon's own LDAP client
+	 * config -- /etc/nsswitch.conf (passwd/group/shadow: files ldap)
+	 * and /etc/nslcd.conf (uri/base/binddn/bindpw from
+	 * ldap_config_get()). The container still owns its own service
+	 * wiring (PAM, sshd, the startup script that actually runs nslcd)
+	 * and its own baseline /etc/passwd -- this flag is only about the
+	 * client config values that are properly the daemon's, not the
+	 * container's, to know. A container needing a *custom* nslcd.conf
+	 * uses the {{LDAP:*}} recipe tokens instead and leaves this unset;
+	 * both paths coexist. Refused with a clear error when the daemon
+	 * has no client URI/base configured (there would be nothing useful
+	 * to render), and budget-checked against CONTAINER_MAX_FILES up
+	 * front so a create can't half-stage and then 500.
+	 */
+	if (ldap_login) {
+		const struct ldap_config *lc = ldap_config_get();
+		int user_files = (jfiles != NULL) ? (int)jfiles->u.array.count : 0;
+		char probe_uri[600];
+
+		if (lc->base_dn[0] == '\0' || !ldap_effective_client_uri(probe_uri, sizeof(probe_uri))) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size,
+			         "ldap_login requires base_dn (PUT /ldap/config) and either client_uri "
+			         "or at least one running registered LDAP server");
+			return 400;
+		}
+		if (user_files + 2 > CONTAINER_MAX_FILES) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size,
+			         "ldap_login needs 2 file slots; too many files[] entries already");
+			return 400;
+		}
+	}
+
+	/*
 	 * ADR-0143: optional real /etc/resolv.conf staged into the
 	 * container's own upperdir, same shape files[] already uses --
 	 * deliberately explicit (no auto-wiring to any registered internal
@@ -9101,6 +9230,44 @@ static int create_container_from_body(const char *body, size_t body_len,
 			snprintf(file_paths[i], sizeof(file_paths[i]), "%s", path);
 		}
 		file_count = (int)jfiles->u.array.count;
+	}
+	if (ldap_login) {
+		/* Rendered from the daemon's own LDAP client config (validated
+		 * present above). nslcd.conf holds the bind credential -> 0600.
+		 * nsswitch.conf is the standard "files then ldap" resolution
+		 * order. `pam_authc_ppolicy no` matches this project's own
+		 * glauth deployment (jump's own working recipe), which doesn't
+		 * implement the ppolicy control nslcd probes for by default. */
+		const struct ldap_config *lc = ldap_config_get();
+		char nslcd[1024];
+		char effective_uri[600];
+
+		ldap_effective_client_uri(effective_uri, sizeof(effective_uri));
+
+		if (stage_container_file(upperdir, "/etc/nsswitch.conf",
+		                          "passwd:         files ldap\n"
+		                          "group:          files ldap\n"
+		                          "shadow:         files ldap\n",
+		                          0644, (uid_t)-1, (gid_t)-1) != 0) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "failed to stage ldap_login nsswitch.conf");
+			return 500;
+		}
+		snprintf(file_paths[file_count], sizeof(file_paths[file_count]), "%s",
+		         "/etc/nsswitch.conf");
+		file_count++;
+
+		snprintf(nslcd, sizeof(nslcd),
+		         "uri %s\nbase %s\nbinddn %s\nbindpw %s\npam_authc_ppolicy no\n",
+		         effective_uri, lc->base_dn, lc->bind_dn, lc->bind_password);
+		if (stage_container_file(upperdir, "/etc/nslcd.conf", nslcd, 0600, (uid_t)-1,
+		                          (gid_t)-1) != 0) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "failed to stage ldap_login nslcd.conf");
+			return 500;
+		}
+		snprintf(file_paths[file_count], sizeof(file_paths[file_count]), "%s", "/etc/nslcd.conf");
+		file_count++;
 	}
 	if (dns_server_count > 0) {
 		char content[RESOLV_MAX_NAMESERVERS * (RESOLV_IP_STRLEN + 16)];

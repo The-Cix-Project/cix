@@ -81,6 +81,12 @@ enum ldap_server_error ldap_server_unregister(const char *container_name);
  * use. */
 const struct ldap_server_binding *ldap_server_find(const char *container_name);
 
+/* ADR/issue #66: copies up to max registered LDAP-server container
+ * names into out[] (any order), returns the count -- lets main.c
+ * derive a client URI list from the servers an operator already
+ * registered, when no explicit client_uri is set. */
+int ldap_server_list_containers(char out[][LDAP_SERVER_NAME_MAX], int max);
+
 /* Called when a container is removed, so a stale binding never
  * lingers referencing a name that no longer exists -- same call site
  * shape as dns_server_forget(). */

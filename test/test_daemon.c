@@ -318,6 +318,58 @@ int main(void)
 	kx_client_request(&client, "DELETE", "/v1/containers/c49", NULL, &r);
 	kx_response_free(&r);
 
+	/* 6.6. issue #66: ldap_login refused with no client config, then
+	 * accepted once configured -- and it stages the two identity files
+	 * rendered from that config (nslcd.conf carries the bind values,
+	 * proving they came from the daemon, not the recipe). */
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"cll\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+	                       "\"ldap_login\":true}",
+	                       &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: ldap_login with no client config should 400, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+	if (kx_client_request(&client, "PUT", "/v1/ldap/config",
+	                       "{\"client_uri\":\"ldap://10.7.7.7:3893/\","
+	                       "\"base_dn\":\"dc=t,dc=local\","
+	                       "\"bind_dn\":\"cn=svc,dc=t,dc=local\","
+	                       "\"bind_password\":\"llpw\"}", &r) != 0 || r.status != 200) {
+		fprintf(stderr, "FAIL: PUT ldap client config for ldap_login, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"cll\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+	                       "\"ldap_login\":true}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: ldap_login create once configured, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+	if (kx_client_request(&client, "GET", "/v1/containers/cll/files?path=/etc/nslcd.conf", NULL,
+	                       &r) != 0 ||
+	    r.status != 200 || r.body == NULL ||
+	    strstr(r.body, "uri ldap://10.7.7.7:3893/") == NULL ||
+	    strstr(r.body, "bindpw llpw") == NULL) {
+		fprintf(stderr, "FAIL: ldap_login nslcd.conf not rendered from daemon config (status=%d)\n",
+		        r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+	if (kx_client_request(&client, "GET", "/v1/containers/cll/files?path=/etc/nsswitch.conf", NULL,
+	                       &r) != 0 ||
+	    r.status != 200 || r.body == NULL || strstr(r.body, "files ldap") == NULL) {
+		fprintf(stderr, "FAIL: ldap_login nsswitch.conf not staged (status=%d)\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	kx_client_request(&client, "DELETE", "/v1/containers/cll", NULL, &r);
+	kx_response_free(&r);
+
 	/* 7. duplicate name -> 409 */
 	if (kx_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"c1\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"1\"]}",
