@@ -376,6 +376,21 @@ int container_create(const struct container_spec *spec, struct container_handle 
 				_exit(129 - overlay_ret);
 			}
 		}
+		/*
+		 * ADR-0179 phase 2b: pivot_root() rejects a MNT_LOCKED new root
+		 * with EINVAL, and every mount inherited into a userns-owned mount
+		 * namespace is locked (a kernel security measure). The parent-
+		 * mounted overlay this child inherited is therefore locked. A fresh
+		 * bind mount of merged onto itself, created here in the child's own
+		 * namespace, is NOT locked -- pivot_root() then targets that
+		 * unlocked mount instead. Non-userns keeps mounting merged itself
+		 * (already unlocked), so it needs none of this.
+		 */
+		if (spec->userns_enabled &&
+		    mount(spec->ov.merged, spec->ov.merged, NULL, MS_BIND, NULL) != 0) {
+			child_diag(diag_pipe[1], "child: bind merged (userns unlock)");
+			_exit(122);
+		}
 		{
 			int mountns_pivot_ret = mountns_pivot(spec->ov.merged, &spec->mnt);
 
@@ -660,6 +675,7 @@ void container_decode_exit_status(int exit_status, char *buf, size_t bufsize)
 		{ 119, "prctl(PR_SET_PDEATHSIG) failed" },
 		{ 120, "container_caps_drop failed" },
 		{ 121, "userns map sync failed (parent never released the child)" },
+		{ 122, "userns overlay bind-unlock failed (pre-pivot_root)" },
 		{ 127, "exec failed (errno out of encodable range)" },
 		{ 130, "overlay: lowerdir stat failed" },
 		{ 131, "overlay: upperdir mkdir failed" },
