@@ -146,23 +146,27 @@ static long fetch_pid(const struct kx_client *c, const char *name)
 
 /*
  * True if name is genuinely live right now -- not merely persisted.
- * Since ADR-0045, GET 200 alone no longer implies that (a stopped-but-
- * defined container is also 200, status "stopped"); every call site in
- * this file uses this function to mean "live," so that case reads as
- * not-existing here, matching every call site's actual intent from
- * before ADR-0045 (this test predates it).
+ * GET 200 alone no longer implies that: since ADR-0045 a stopped-but-
+ * defined container is 200 with status "stopped", and since ADR-0181's
+ * persist-all a container that exited on its own is retained (not
+ * deleted) as 200 with status "exited". Both are persisted-not-live, so
+ * both read as not-existing here -- every call site in this file uses
+ * this function to mean "live", matching its intent from before either
+ * ADR (this test predates both).
  */
 static int container_exists(const struct kx_client *c, const char *name)
 {
 	char path[128];
 	struct kx_response r;
+	const char *status;
 	int result;
 
 	snprintf(path, sizeof(path), "/v1/containers/%s", name);
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(c, "GET", path, NULL, &r) != 0)
 		return -1;
-	result = r.status == 200 && !str_eq(json_str_field(r.json, "status"), "stopped");
+	status = json_str_field(r.json, "status");
+	result = r.status == 200 && !str_eq(status, "stopped") && !str_eq(status, "exited");
 	kx_response_free(&r);
 	return result;
 }
@@ -183,8 +187,12 @@ static int stop_container(const struct kx_client *c, const char *name)
 	return status;
 }
 
-/* Polls until name is gone (GET 404), or max_attempts*100ms elapses.
- * Returns the time it was first observed gone, or 0 on timeout. */
+/* Polls until name is no longer live -- container_exists() counts a 404,
+ * a kept-but-"stopped" container, and a self-exited "exited" container
+ * (ADR-0181 persist-all) all as gone, which is exactly what every "did
+ * NOT restart" check here wants. Times out after max_attempts*100ms.
+ * Returns the time it was first observed
+ * gone, or 0 on timeout. */
 static time_t wait_for_gone(const struct kx_client *c, const char *name, int max_attempts)
 {
 	int attempts;
@@ -342,6 +350,7 @@ int main(void)
 	/* on-failure: a clean (exit 0) exit must NOT restart. */
 	{
 		time_t gone_at;
+		long pid1;
 
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "POST", "/v1/containers",
@@ -355,6 +364,14 @@ int main(void)
 		}
 		kx_response_free(&r);
 
+		/* The running pid, captured before the clean exit. ADR-0181's
+		 * persist-all keeps the exited container around (status "exited",
+		 * this same pid retained), so "did it restart?" can no longer be
+		 * "did any pid >= 0 appear" (-1 sentinel) -- the retained dead pid
+		 * would false-positive. It's "did a DIFFERENT pid appear", exactly
+		 * as the onfailcrash restart case below already tests. */
+		pid1 = fetch_pid(&client, "onfailclean");
+
 		gone_at = wait_for_gone(&client, "onfailclean", 40);
 		if (gone_at == 0) {
 			fprintf(stderr, "FAIL: onfailclean never exited\n");
@@ -362,11 +379,36 @@ int main(void)
 		}
 		/* No restart timer is ever armed for this case -- if it were
 		 * about to come back, the default 2s delay would have already
-		 * elapsed well within this window. */
-		if (wait_for_new_pid(&client, "onfailclean", -1, 40) != 0) {
+		 * elapsed well within this window. A different pid never appears;
+		 * the container stays "exited" until the DELETE below. */
+		if (wait_for_new_pid(&client, "onfailclean", pid1, 40) != 0) {
 			fprintf(stderr,
 			        "FAIL: onfailclean (restart:on-failure, clean exit) came back -- "
 			        "should stay down for the rest of this daemon's uptime\n");
+			ok = 0;
+		}
+
+		/* ADR-0181: the retained "exited" container is startable again by
+		 * hand -- POST .../start must actually bring it back with a NEW,
+		 * live pid, not silently 200 the stale exited entry. This is the
+		 * "persist until delete, start again" model the whole ADR exists
+		 * for. It sleeps 1s again before its next clean exit, so there is
+		 * a real live window to observe. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers/onfailclean/start", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: start of exited onfailclean, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+		/* wait_for_new_pid() returns nonzero once a pid different from
+		 * pid1 appears -- i.e. the container genuinely restarted, not a
+		 * silent 200 on the stale exited entry. 0 (timeout) is the
+		 * failure here. */
+		if (wait_for_new_pid(&client, "onfailclean", pid1, 40) == 0) {
+			fprintf(stderr,
+			        "FAIL: start of exited onfailclean did not bring it back live "
+			        "with a new pid -- silent no-op on the retained exited entry?\n");
 			ok = 0;
 		}
 

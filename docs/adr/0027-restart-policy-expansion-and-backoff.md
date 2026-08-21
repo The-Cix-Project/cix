@@ -2,7 +2,12 @@
 
 ## Status
 
-Accepted
+Accepted — except the single decision that a `restart:"no"` container has no
+persisted definition (that "absence of a def IS `no`"), which is **superseded by
+ADR-0181** (every container is now persisted; `restart` governs only
+auto-restart, not existence). All other decisions here — `on-failure`/
+`unless-stopped` semantics, the `stopped` flag and its two-site consultation
+split, per-container base delay, and automatic backoff — remain in force.
 
 ## Context
 

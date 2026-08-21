@@ -326,21 +326,22 @@ static void write_stopped_def_json_one(struct container_def *d, struct json_writ
 	json_free(root);
 }
 
-void containerdef_write_json_stopped_list(struct json_writer *w)
+void containerdef_write_json_inactive_list(struct json_writer *w,
+                                           int (*is_live)(const char *name))
 {
 	int i;
 
 	for (i = 0; i < CONTAINERDEF_MAX; i++) {
-		if (g_defs[i].in_use && g_defs[i].stopped)
+		if (g_defs[i].in_use && !is_live(g_defs[i].name))
 			write_stopped_def_json_one(&g_defs[i], w);
 	}
 }
 
-int containerdef_write_json_stopped_one(const char *name, struct json_writer *w)
+int containerdef_write_json_inactive_one(const char *name, struct json_writer *w)
 {
 	struct container_def *d = containerdef_find(name);
 
-	if (d == NULL || !d->stopped)
+	if (d == NULL)
 		return 0;
 	write_stopped_def_json_one(d, w);
 	return 1;

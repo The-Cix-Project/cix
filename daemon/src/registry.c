@@ -744,6 +744,17 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 	jw_obj_close(w);
 }
 
+/*
+ * Liveness predicate handed to containerdef_write_json_inactive_list()
+ * so it can tell a running definition (already emitted above from the
+ * live registry) apart from a kept-but-not-running one, without
+ * containerdef.c needing to know the registry exists.
+ */
+static int registry_name_is_live(const char *name)
+{
+	return registry_find(name) != NULL;
+}
+
 void registry_write_json_list(struct json_writer *w)
 {
 	int i;
@@ -754,14 +765,19 @@ void registry_write_json_list(struct json_writer *w)
 			registry_write_json_one(&g_entries[i], w);
 	}
 	/*
-	 * Stopped-but-defined containers (ADR-0045) have no live entry
-	 * above at all -- without this, POST .../stop makes a name simply
-	 * vanish from this list with no way to find it again short of
-	 * already knowing to POST .../start blind. containerdef.c already
-	 * supplies restart/depends_on/readiness for every live entry above
-	 * (see registry_write_json_one()); this is the same dependency, one
-	 * direction further.
+	 * Inactive-but-defined containers (ADR-0045, extended by ADR-0181's
+	 * persist-all) have no live entry above at all -- without this,
+	 * stopping a container (or just a daemon restart, now that every
+	 * container is persisted) makes a name simply vanish from this list
+	 * with no way to find it again short of already knowing to POST
+	 * .../start blind. containerdef.c already supplies
+	 * restart/depends_on/readiness for every live entry above (see
+	 * registry_write_json_one()); this is the same dependency, one
+	 * direction further. We inject registry_name_is_live() so the "is
+	 * this def actually running?" test is decided here, where the
+	 * registry is visible -- containerdef.c stays free of any
+	 * back-dependency on this module.
 	 */
-	containerdef_write_json_stopped_list(w);
+	containerdef_write_json_inactive_list(w, registry_name_is_live);
 	jw_arr_close(w);
 }
