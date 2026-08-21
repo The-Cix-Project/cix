@@ -334,29 +334,46 @@ static int idmap_bind(const char *path, int idmap_fd)
 
 /*
  * ADR-0179 phase 2c: build an id-mapped overlay via the fd-based mount API
- * (fsopen/fsconfig/fsmount). Only the SHARED lower layer is id-mapped -- with
- * the inverse idmap userns it presents the host-uid-0 rootfs as owned by the
- * container's mapped root, killing the EOVERFLOW, while the on-disk image
- * stays host-0 and usable by non-userns containers too (no chown of the shared
- * tree). The per-container upperdir/workdir are left NON-id-mapped and passed
- * as plain strings: id-mapping them made overlay's own work/ creation fail and
- * fall back to a read-only mount (kernel fs/overlayfs/super.c). It isn't
- * needed anyway -- overlay performs every upperdir/workdir write with the
- * privileged mounter's (thincd, host-0) credentials, and a container-created
- * file lands owned by the caller's host uid (base), which the container's own
- * userns maps straight back to container uid 0 -- consistent with the mapped
- * lower. Overlay captures the id-mapped lower fd's f_path.mnt (ovl_parse_layer
- * -> fs_value_is_file), so the mapping rides along. Returns the overlay mount
- * fd (the child move_mounts it), or -1 with a step set.
+ * (fsopen/fsconfig/fsmount), with ALL layers id-mapped by the inverse idmap
+ * userns so ownership is consistent end to end: the shared host-uid-0 rootfs
+ * (lower) and any copy-up into the per-container upper both present as the
+ * container's mapped root, killing the EOVERFLOW without chowning the shared
+ * image. The lower layer is its own id-mapped mount. upperdir and workdir are
+ * opened THROUGH a single id-mapped mount of their shared base dir, because
+ * overlay requires upper and work on the same vfsmount (ovl_get_workdir).
+ * Overlay captures each layer fd's own f_path.mnt (kernel fs/overlayfs/params.c
+ * ovl_parse_layer -> fs_value_is_file), so the id-mapping rides along, and
+ * clone_private_mount preserves it. Returns the overlay mount fd (the child
+ * move_mounts it), or -1 with a step set.
  */
 static int build_idmapped_overlay_fd(const struct overlay_spec *ov, int idmap_fd)
 {
-	int lower_fd = -1, fs_fd = -1, mnt_fd = -1;
+	int lower_fd = -1, base_fd = -1, upper_fd = -1, work_fd = -1, fs_fd = -1, mnt_fd = -1;
 	const char *step = "idmap_bind(lowerdir)";
+	const char *upper_name, *work_name;
 	int saved;
+
+	/* upperdir/workdir are "<base>/upper" and "<base>/work" -- open the last
+	 * component through the id-mapped base mount so they share its vfsmount. */
+	upper_name = strrchr(ov->upperdir, '/');
+	work_name = strrchr(ov->workdir, '/');
+	upper_name = upper_name ? upper_name + 1 : ov->upperdir;
+	work_name = work_name ? work_name + 1 : ov->workdir;
 
 	lower_fd = idmap_bind(ov->lowerdir, idmap_fd);
 	if (lower_fd < 0)
+		goto out;
+	step = "idmap_bind(base)";
+	base_fd = idmap_bind(ov->base, idmap_fd);
+	if (base_fd < 0)
+		goto out;
+	step = "openat(upper)";
+	upper_fd = openat(base_fd, upper_name, O_PATH | O_DIRECTORY | O_CLOEXEC);
+	if (upper_fd < 0)
+		goto out;
+	step = "openat(work)";
+	work_fd = openat(base_fd, work_name, O_PATH | O_DIRECTORY | O_CLOEXEC);
+	if (work_fd < 0)
 		goto out;
 	step = "fsopen(overlay)";
 	fs_fd = (int)kx_fsopen("overlay", 0);
@@ -366,10 +383,10 @@ static int build_idmapped_overlay_fd(const struct overlay_spec *ov, int idmap_fd
 	if (kx_fsconfig(fs_fd, KX_FSCONFIG_SET_FD, "lowerdir+", NULL, lower_fd) != 0)
 		goto out;
 	step = "fsconfig(upperdir)";
-	if (kx_fsconfig(fs_fd, KX_FSCONFIG_SET_STRING, "upperdir", ov->upperdir, 0) != 0)
+	if (kx_fsconfig(fs_fd, KX_FSCONFIG_SET_FD, "upperdir", NULL, upper_fd) != 0)
 		goto out;
 	step = "fsconfig(workdir)";
-	if (kx_fsconfig(fs_fd, KX_FSCONFIG_SET_STRING, "workdir", ov->workdir, 0) != 0)
+	if (kx_fsconfig(fs_fd, KX_FSCONFIG_SET_FD, "workdir", NULL, work_fd) != 0)
 		goto out;
 	step = "fsconfig(create)";
 	if (kx_fsconfig(fs_fd, KX_FSCONFIG_CMD_CREATE, NULL, NULL, 0) != 0)
@@ -388,6 +405,12 @@ out:
 	}
 	if (lower_fd >= 0)
 		close(lower_fd);
+	if (base_fd >= 0)
+		close(base_fd);
+	if (upper_fd >= 0)
+		close(upper_fd);
+	if (work_fd >= 0)
+		close(work_fd);
 	if (fs_fd >= 0)
 		close(fs_fd);
 	errno = saved;
