@@ -107,6 +107,19 @@ static struct ldap_server_binding *binding_find(const char *container_name)
 	return NULL;
 }
 
+int ldap_server_list_containers(char out[][LDAP_SERVER_NAME_MAX], int max)
+{
+	int i, n = 0;
+
+	for (i = 0; i < LDAP_SERVER_MAX && n < max; i++) {
+		if (g_bindings[i].container_name[0] != '\0') {
+			snprintf(out[n], LDAP_SERVER_NAME_MAX, "%s", g_bindings[i].container_name);
+			n++;
+		}
+	}
+	return n;
+}
+
 const struct ldap_server_binding *ldap_server_find(const char *container_name)
 {
 	return binding_find(container_name);
