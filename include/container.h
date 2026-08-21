@@ -65,6 +65,15 @@ struct overlay_spec {
 	const char *lowerdir;
 	const char *upperdir;
 	const char *workdir;
+	/*
+	 * The parent directory that holds upperdir/workdir/merged (ADR-0179
+	 * phase 2c). The userns id-mapped-overlay path id-maps this one
+	 * directory as a single mount so upperdir and workdir land on the
+	 * same mount -- overlay's copy-up renames between them across
+	 * different mounts would otherwise fail EXDEV. NULL for the classic
+	 * (non-userns) mount path, which never reads it.
+	 */
+	const char *base;
 	const char *merged;
 	/*
 	 * Real ext4 project-quota id (Part 4, bare-metal-readiness plan,
@@ -507,6 +516,13 @@ enum overlay_error {
  * refines rather than changes existing behavior.
  */
 int overlay_create(const struct overlay_spec *ov);
+
+/*
+ * overlay_create() minus the final mount(2) (ADR-0179 phase 2c): creates and
+ * quota-tags upperdir/workdir and the merged mountpoint. The userns path uses
+ * this then builds an id-mapped overlay via the fd-based mount API instead.
+ */
+int overlay_prepare_dirs(const struct overlay_spec *ov);
 
 /*
  * Real space consumed by a container's own overlay upperdir (its

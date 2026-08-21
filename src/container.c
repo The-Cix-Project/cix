@@ -182,6 +182,33 @@ static long kx_mount_setattr(int dfd, const char *path, unsigned int flags,
 	return syscall(__NR_mount_setattr, dfd, path, flags, a, size);
 }
 
+#ifndef __NR_fsopen
+#define __NR_fsopen 430
+#endif
+#ifndef __NR_fsconfig
+#define __NR_fsconfig 431
+#endif
+#ifndef __NR_fsmount
+#define __NR_fsmount 432
+#endif
+#define KX_FSCONFIG_SET_FD 5
+#define KX_FSCONFIG_CMD_CREATE 6
+
+static long kx_fsopen(const char *fsname, unsigned int flags)
+{
+	return syscall(__NR_fsopen, fsname, flags);
+}
+
+static long kx_fsconfig(int fd, unsigned int cmd, const char *key, const void *value, int aux)
+{
+	return syscall(__NR_fsconfig, fd, cmd, key, value, aux);
+}
+
+static long kx_fsmount(int fd, unsigned int flags, unsigned int attr_flags)
+{
+	return syscall(__NR_fsmount, fd, flags, attr_flags);
+}
+
 /*
  * ADR-0179 phase 2c: build the user namespace that carries the id-mapped
  * mount's translation. It is NOT the container's own userns -- it is the
@@ -278,6 +305,106 @@ static int create_idmap_userns_fd(long long base, long long len)
 	return fd; /* -1 on open failure */
 }
 
+/*
+ * open_tree(OPEN_TREE_CLONE) a path into a detached mount, then id-map it with
+ * mount_setattr(MOUNT_ATTR_IDMAP). ext4-backed subtrees (this project's overlay
+ * layers) support id-mapping; the overlay *merged* mount does not, which is the
+ * whole reason we id-map the layers here rather than the result. Returns a
+ * detached, id-mapped mount fd, or -1 (errno set).
+ */
+static int idmap_bind(const char *path, int idmap_fd)
+{
+	struct kx_mount_attr a;
+	int fd = (int)kx_open_tree(-1, path, KX_OPEN_TREE_CLONE);
+
+	if (fd < 0)
+		return -1;
+	memset(&a, 0, sizeof(a));
+	a.attr_set = KX_MOUNT_ATTR_IDMAP;
+	a.userns_fd = (unsigned long long)idmap_fd;
+	if (kx_mount_setattr(fd, "", AT_EMPTY_PATH, &a, sizeof(a)) != 0) {
+		int saved = errno;
+		close(fd);
+		errno = saved;
+		return -1;
+	}
+	return fd;
+}
+
+/*
+ * ADR-0179 phase 2c: build an id-mapped overlay via the fd-based mount API
+ * (fsopen/fsconfig/fsmount). The lower layer and the base dir (which holds
+ * upperdir+workdir) are each id-mapped with the inverse idmap userns, so the
+ * container's mapped root genuinely owns its rootfs (no EOVERFLOW). upperdir
+ * and workdir are opened THROUGH the single id-mapped base mount so they share
+ * one vfsmount -- overlay's copy-up renames between them must not cross mounts.
+ * Overlay captures each layer fd's own f_path.mnt (kernel fs/overlayfs/params.c
+ * ovl_parse_layer -> fs_value_is_file), so the id-mapping rides along. Returns
+ * the overlay mount fd (the child move_mounts it), or -1 with a step set.
+ */
+static int build_idmapped_overlay_fd(const struct overlay_spec *ov, int idmap_fd)
+{
+	int lower_fd = -1, base_fd = -1, upper_fd = -1, work_fd = -1, fs_fd = -1, mnt_fd = -1;
+	const char *step = "idmap_bind(lowerdir)";
+	int saved;
+
+	lower_fd = idmap_bind(ov->lowerdir, idmap_fd);
+	if (lower_fd < 0)
+		goto out;
+	step = "idmap_bind(base)";
+	base_fd = idmap_bind(ov->base, idmap_fd);
+	if (base_fd < 0)
+		goto out;
+	step = "openat(upper)";
+	upper_fd = openat(base_fd, "upper", O_PATH | O_DIRECTORY | O_CLOEXEC);
+	if (upper_fd < 0)
+		goto out;
+	step = "openat(work)";
+	work_fd = openat(base_fd, "work", O_PATH | O_DIRECTORY | O_CLOEXEC);
+	if (work_fd < 0)
+		goto out;
+	step = "fsopen(overlay)";
+	fs_fd = (int)kx_fsopen("overlay", 0);
+	if (fs_fd < 0)
+		goto out;
+	step = "fsconfig(lowerdir+)";
+	if (kx_fsconfig(fs_fd, KX_FSCONFIG_SET_FD, "lowerdir+", NULL, lower_fd) != 0)
+		goto out;
+	step = "fsconfig(upperdir)";
+	if (kx_fsconfig(fs_fd, KX_FSCONFIG_SET_FD, "upperdir", NULL, upper_fd) != 0)
+		goto out;
+	step = "fsconfig(workdir)";
+	if (kx_fsconfig(fs_fd, KX_FSCONFIG_SET_FD, "workdir", NULL, work_fd) != 0)
+		goto out;
+	step = "fsconfig(create)";
+	if (kx_fsconfig(fs_fd, KX_FSCONFIG_CMD_CREATE, NULL, NULL, 0) != 0)
+		goto out;
+	step = "fsmount(overlay)";
+	mnt_fd = (int)kx_fsmount(fs_fd, 0, 0);
+
+out:
+	saved = errno;
+	if (mnt_fd < 0) {
+		char buf[80];
+
+		snprintf(buf, sizeof(buf), "build_idmapped_overlay_fd: %s", step);
+		errno = saved;
+		container_set_last_error_step(buf);
+	}
+	if (lower_fd >= 0)
+		close(lower_fd);
+	if (base_fd >= 0)
+		close(base_fd);
+	if (upper_fd >= 0)
+		close(upper_fd);
+	if (work_fd >= 0)
+		close(work_fd);
+	if (fs_fd >= 0)
+		close(fs_fd);
+	errno = saved;
+	return mnt_fd;
+}
+
 int container_create(const struct container_spec *spec, struct container_handle *out)
 {
 	int cgroup_fd;
@@ -372,55 +499,39 @@ int container_create(const struct container_spec *spec, struct container_handle 
 
 	/*
 	 * ADR-0179 phase 2c: build the userns container's overlay HERE, in the
-	 * parent (init userns, full privilege), and hand it to the child as a
-	 * detached, id-mapped mount fd. The child, as the namespace's mapped
-	 * root, can neither mount the overlay itself (phase 2a EACCES) nor
-	 * usefully inherit a plain parent mount -- that both locks pivot_root
-	 * (phase 2b) and leaves the rootfs owned by unmapped host uid 0 (phase
-	 * 2b EOVERFLOW). This path solves all three: the parent mounts it;
-	 * open_tree(OPEN_TREE_CLONE) makes a detached copy the child later
-	 * move_mounts fresh into its own namespace (unlocked -> pivot_root
-	 * accepts it); mount_setattr(MOUNT_ATTR_IDMAP) with the inverse idmap
-	 * userns presents host-uid-0 rootfs files as the container's mapped
-	 * root, so it owns and can write its rootfs. The plain attached copy is
-	 * dropped once the detached clone exists; the child inherits the fd.
+	 * parent (init userns, full privilege), as a detached, id-mapped mount
+	 * the child later move_mounts into its own namespace and pivots into.
+	 * The child, as the namespace's mapped root, can neither mount the
+	 * overlay itself (phase 2a EACCES) nor usefully inherit a plain parent
+	 * mount -- that both locks pivot_root (phase 2b) and leaves the rootfs
+	 * owned by unmapped host uid 0 (phase 2b EOVERFLOW). Id-mapping the
+	 * *layers* (build_idmapped_overlay_fd; the merged overlay mount itself
+	 * cannot be id-mapped -- phase 2c EINVAL) presents host-uid-0 rootfs
+	 * files as the container's mapped root, so it owns and can write its
+	 * rootfs. The child inherits the returned fd (not O_CLOEXEC).
 	 */
 	if (spec->userns_enabled) {
-		int overlay_ret = overlay_create(&spec->ov);
+		int overlay_ret = overlay_prepare_dirs(&spec->ov);
 		int idmap_fd = -1;
 		int saved_errno = errno;
-		const char *fail_step = "container_create: overlay_create (parent, userns)";
+		const char *fail_step = "container_create: overlay_prepare_dirs (userns)";
 
 		if (overlay_ret == 0) {
 			idmap_fd = create_idmap_userns_fd(spec->userns_uid_base, spec->userns_len);
 			if (idmap_fd < 0) {
 				saved_errno = errno;
-				fail_step = "container_create: create_idmap_userns_fd";
+				fail_step = NULL; /* create_idmap_userns_fd set the step */
 				overlay_ret = -1;
 			} else {
-				overlay_mnt_fd = (int)kx_open_tree(-1, spec->ov.merged,
-				                                   KX_OPEN_TREE_CLONE);
+				overlay_mnt_fd = build_idmapped_overlay_fd(&spec->ov, idmap_fd);
 				if (overlay_mnt_fd < 0) {
 					saved_errno = errno;
-					fail_step = "container_create: open_tree(overlay)";
+					fail_step = NULL; /* build_idmapped_overlay_fd set the step */
 					overlay_ret = -1;
-				} else {
-					struct kx_mount_attr a;
-
-					memset(&a, 0, sizeof(a));
-					a.attr_set = KX_MOUNT_ATTR_IDMAP;
-					a.userns_fd = (unsigned long long)idmap_fd;
-					if (kx_mount_setattr(overlay_mnt_fd, "", AT_EMPTY_PATH, &a,
-					                     sizeof(a)) != 0) {
-						saved_errno = errno;
-						fail_step = "container_create: mount_setattr(IDMAP)";
-						overlay_ret = -1;
-					}
 				}
-			}
-			umount2(spec->ov.merged, MNT_DETACH); /* drop the plain attached copy */
-			if (idmap_fd >= 0)
 				close(idmap_fd);
+				idmap_fd = -1;
+			}
 		} else {
 			saved_errno = errno;
 		}
@@ -430,7 +541,8 @@ int container_create(const struct container_spec *spec, struct container_handle 
 				overlay_mnt_fd = -1;
 			}
 			errno = saved_errno;
-			container_set_last_error_step(fail_step);
+			if (fail_step != NULL)
+				container_set_last_error_step(fail_step);
 			close(diag_pipe[0]);
 			close(diag_pipe[1]);
 			if (want_net) {
