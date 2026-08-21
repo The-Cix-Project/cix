@@ -83,8 +83,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/containers` | Create and start a container |
 | GET | `/containers/{name}` | Inspect one container |
 | DELETE | `/containers/{name}` | Stop (if running), remove it, and forget any persisted definition |
-| POST | `/containers/{name}/start` | Bring a stopped-but-still-defined container back to life |
-| POST | `/containers/{name}/stop` | Kill it now, keep its persisted definition (for `restart: "unless-stopped"`) |
+| POST | `/containers/{name}/start` | Bring a stopped or exited container back to life |
+| POST | `/containers/{name}/stop` | Kill it now, always keep its persisted definition (only `DELETE` removes a container) |
 | POST | `/containers/{name}/pause` | Freeze a running container via the cgroup v2 freezer |
 | POST | `/containers/{name}/unpause` | Thaw a paused container |
 | GET | `/containers/{name}/stats` | Real, host-side CPU/memory/disk/network usage, a point-in-time snapshot |
@@ -465,9 +465,9 @@ Response (`201`):
 
 `exit_reason` (ADR-0080) is a human-readable why once `exit_status` is non-null — either the container's own real diagnostic text (e.g. `"child: execve(/usr/bin/foo): No such file or directory"`) or, when that text isn't available, a fixed category string (e.g. `"clean exit"`, `"overlay: mount(2) itself failed"`). `GET .../{name}` and `GET /v1/containers` both include it the same way; a failure that also reaches `500` at creation time (before any process exists) is instead surfaced directly in that response's own error message and in `GET /system/logs`.
 
-## Persisted, auto-restarting containers
+## Persisted containers and the `restart` policy
 
-By default a container is purely in-memory: it dies when its own process exits, and nothing about it survives a daemon restart. Add a `restart` policy other than the default `"no"` to make it durable:
+Every container is persisted at create time — its exact request is written to `/var/lib/thinc/state/container_defs.json` (ADR-0141) — so it survives a daemon restart and is never destroyed by anything except `DELETE` (ADR-0181: *stop is stop, delete is delete*). The `restart` policy governs only whether, and when, it comes **back up on its own**, not whether it exists. A container with the default `restart: "no"` is fully persisted and kept; it just never auto-restarts:
 
 ```
 POST /v1/containers
@@ -479,13 +479,13 @@ POST /v1/containers
 }
 ```
 
-This persists the exact request (`/var/lib/thinc/state/container_defs.json`, ADR-0141) in addition to creating it live right now. From then on it's replayed automatically at every future daemon boot, and again after any unprompted exit — each restart after a real, exponentially-backed-off delay (`restart_delay_seconds`, 1–300, default 2 — doubling per consecutive failure, capped at 30s, reset to the base value once the container has stayed up at least 30s before exiting again — never instant, so a genuinely crash-looping container doesn't hammer the host).
+For a policy other than `"no"`, the persisted request is replayed automatically at every future daemon boot, and again after any unprompted exit — each restart after a real, exponentially-backed-off delay (`restart_delay_seconds`, 1–300, default 2 — doubling per consecutive failure, capped at 30s, reset to the base value once the container has stayed up at least 30s before exiting again — never instant, so a genuinely crash-looping container doesn't hammer the host).
 
 `restart` has four values:
-- `"always"` — restarts regardless of exit code, including a clean `0` exit.
-- `"on-failure"` — restarts only after a nonzero-exit/signal-killed exit, not a clean `0` exit; this only governs the crash-restart timer, boot-time autostart always attempts it regardless of how it last exited (that fact isn't persisted).
-- `"unless-stopped"` — behaves like `"always"`, except a prior `POST .../stop` is remembered across a daemon restart (it won't auto-start again until re-`POST`ed); the one policy where `stop` changes daemon-restart behavior.
-- `"no"` (default) — today's original behavior, purely in-memory.
+- `"always"` — auto-restarts regardless of exit code, including a clean `0` exit.
+- `"on-failure"` — auto-restarts only after a nonzero-exit/signal-killed exit, not a clean `0` exit; this only governs the crash-restart timer, boot-time autostart always attempts it regardless of how it last exited (that fact isn't persisted).
+- `"unless-stopped"` — behaves like `"always"`, except a prior `POST .../stop` is remembered across a daemon restart (it won't auto-start again until explicitly started); the one policy where `stop` changes daemon-restart behavior.
+- `"no"` (default) — **never** auto-restarted: not on its own exit, not at daemon boot, not by a rolling update. Still fully persisted and kept — after it exits it is retained (status `"exited"`, real exit code preserved, like Docker's `ps -a`), and a stop keeps it too (status `"stopped"`); bring it back with `POST .../start`, remove it with `DELETE`. (Before ADR-0181 `"no"` was ephemeral and a stop silently destroyed it — that surprise is fixed.)
 
 `depends_on` controls the order persisted containers start in at boot:
 
@@ -499,13 +499,13 @@ This persists the exact request (`/var/lib/thinc/state/container_defs.json`, ADR
 
 ## Container lifecycle: start, stop, pause, unpause
 
-`POST /v1/containers/{name}/stop` kills it now but keeps its persisted definition (and its on-disk state) — the container comes back on the next daemon restart for `"always"`/`"on-failure"` (a fresh chance every boot), but stays down for `"unless-stopped"` until explicitly re-`POST`ed. `DELETE /v1/containers/{name}` always means gone for good regardless of policy — it removes the persisted definition too, in the same call, and it won't come back on a pending crash-restart or any future boot. It also unmounts and recursively removes the container's own on-disk overlay directories (`upper`/`work`/`merged`, ADR-0106) — best-effort, a cleanup failure is logged but never turns the delete itself into an error, since the registry/definition state is the one source of truth for whether a container exists.
+`POST /v1/containers/{name}/stop` kills it now but keeps its persisted definition (and its on-disk state) — it reappears as status `"stopped"`, never vanishing, for **every** policy including `"no"` (ADR-0181: *stop is stop*). On the next daemon restart an `"always"`/`"on-failure"` container comes back (a fresh chance every boot), `"unless-stopped"` stays down until explicitly started, and `"no"` stays down always. `DELETE /v1/containers/{name}` is the only thing that removes a container — gone for good regardless of policy, it removes the persisted definition too, in the same call, and it won't come back on a pending crash-restart or any future boot. It also unmounts and recursively removes the container's own on-disk overlay directories (`upper`/`work`/`merged`, ADR-0106) — best-effort, a cleanup failure is logged but never turns the delete itself into an error, since the registry/definition state is the one source of truth for whether a container exists.
 
 Every configured limit now reads back in `GET /containers/{name}` — `memory_max`/`cpu_max`/`pids_max`/`cpuset_cpus` live from the real cgroup, `disk_quota_bytes` from the creation request (#49) — and unknown fields in a create or recipe body are a `400` naming the offender instead of being silently dropped (#68); `thincctl ps` shows `cpuset=`/`disk_quota=`/`caps=` columns and the dashboard consolidates the resource envelope on the container's Hardware tab (#48/#69).
 
 For a **running** container, both are asynchronous (ADR-0180, issue #67 — a synchronous kill-and-wait once froze the whole single-threaded daemon on a child stuck in uninterruptible D-state): the response means every durable effect is already applied (definition/ownership changes for delete, the stopped flag for stop) and the `SIGKILL` sent; reaping, registry release, and (for delete) the disk cleanup complete when the kernel confirms the exit, typically within one loop turn. Until then the container reports status `"deleting"`/`"stopping"`, a same-name create `409`s, and anything the unreaped process still holds isn't released yet — concretely, `DELETE` on a network it was attached to can transiently `409` ("still in use"). Chain on the settled state, not on the response: poll the container's own `GET` to `404` (delete) or status `"stopped"` (stop) first.
 
-`POST /v1/containers/{name}/start` is the counterpart: brings a stopped-but-still-defined container back to life without a daemon restart, replaying its persisted definition through the same creation path a daemon restart's own autostart already uses — one source of truth for "how a definition becomes a live container." Idempotent — already-running is a plain `200`, not an error. `404` if no persisted definition exists for this name at all (this endpoint only ever replays an existing definition; `POST /containers` creates a new one). Unlike boot-time autostart, this endpoint ignores `restart: "unless-stopped"` gating entirely — an explicit, manual start always means start it.
+`POST /v1/containers/{name}/start` is the counterpart: brings a container that isn't currently running back to life without a daemon restart, replaying its persisted definition through the same creation path a daemon restart's own autostart already uses — one source of truth for "how a definition becomes a live container." It handles both non-running states persist-all produces: a `"stopped"` container (no live entry) and an `"exited"` one (ran and exited on its own, retained with its exit code — the stale exited record is cleared first, so a start always genuinely restarts it rather than no-opping). Idempotent — an already-**live** (running/paused) container is a plain `200`, not an error. `404` if no persisted definition exists for this name at all (this endpoint only ever replays an existing definition; `POST /containers` creates a new one). Unlike boot-time autostart, this endpoint ignores `restart: "unless-stopped"` gating entirely — an explicit, manual start always means start it.
 
 `POST /v1/containers/{name}/pause` and `.../unpause` freeze/thaw a running container via the cgroup v2 freezer (`cgroup.freeze`) — every task in it is stopped at the kernel level, uninterceptable and unignorable, unlike `SIGSTOP` which a process can catch or handle. Both require an already-live container (`404` otherwise — pausing a stopped-but-defined or nonexistent container makes no sense); unlike `.../stop`'s idempotent double-call tolerance, pausing an already-paused container (or unpausing an already-running one) is a `409`, not a silent `200` — the caller should already know this from its last `GET`. A paused container's own on-disk state (cgroup leaf, upperdir, everything) is otherwise completely untouched — no stop/delete/recreate is involved, it's purely a freeze/thaw of already-running tasks.
 

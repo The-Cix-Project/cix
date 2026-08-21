@@ -5809,11 +5809,12 @@ static void handle_get_one(int fd, const char *name)
 	struct json_writer w;
 
 	if (e == NULL) {
-		/* Not live -- might still be a stopped-but-defined container
-		 * (ADR-0045), same fallback GET /v1/containers' own list
-		 * already makes via containerdef_write_json_stopped_list(). */
+		/* Not live -- might still be a kept-but-not-running container
+		 * (ADR-0045, extended by ADR-0181's persist-all), same fallback
+		 * GET /v1/containers' own list already makes via
+		 * containerdef_write_json_inactive_list(). */
 		jw_init(&w);
-		if (containerdef_write_json_stopped_one(name, &w)) {
+		if (containerdef_write_json_inactive_one(name, &w)) {
 			respond_json(fd, 200, "OK", &w);
 			jw_free(&w);
 			return;
@@ -8577,11 +8578,13 @@ static int create_container_from_body(const char *body, size_t body_len,
 
 	/*
 	 * Part 5 (ADR-0124): same "ignored, not an error" precedent
-	 * restart_delay_seconds already established just above for
-	 * restart:"no" -- meaningless without a persisted definition to
-	 * follow, so it's simply never passed to containerdef_add() by
-	 * handle_create()'s own restart_policy != "no" gate, rather than
-	 * rejected here.
+	 * restart_delay_seconds already established just above. Since ADR-0181
+	 * every container -- restart:"no" included -- has a persisted
+	 * definition, so follow_rolling IS stored for it; it is simply never
+	 * acted on, because apply_rolling_container_restarts() deliberately
+	 * skips restart:"no" defs ("never auto-restart" includes "never
+	 * auto-recreated by a rolling update"). Parsed-and-stored-but-inert,
+	 * not rejected.
 	 */
 	jfollow_rolling = json_object_get(root, "follow_rolling");
 	*out_follow_rolling =
@@ -8592,8 +8595,9 @@ static int create_container_from_body(const char *body, size_t body_len,
 	 * daemon-wide rolling-restart jitter window -- same "ignored, not
 	 * an error" precedent as follow_rolling itself just above when
 	 * this container never actually follows rolling updates, or when
-	 * restart is "no" (handle_create()'s own gate never persists it in
-	 * either case). Range-validated the same 0-CONTAINERDEF_JITTER_MAX_
+	 * restart is "no" (ADR-0181: persisted like any other, but its
+	 * rolling-follow is inert -- see the follow_rolling note above).
+	 * Range-validated the same 0-CONTAINERDEF_JITTER_MAX_
 	 * SECONDS bound PUT /v1/system/rolling-config already enforces for
 	 * the daemon-wide default, so a container-level override can never
 	 * exceed what the daemon itself would ever accept.
@@ -9849,7 +9853,15 @@ static void handle_create(int fd, const char *body, size_t body_len)
 		return;
 	}
 
-	if (strcmp(restart_policy, "no") != 0) {
+	/*
+	 * ADR-0181 (issue #73), superseding ADR-0027: persist EVERY container's
+	 * definition, regardless of restart policy. `restart` now governs only
+	 * auto-restart (on exit/boot/rolling); it no longer decides whether the
+	 * container exists after it stops. So `stop` always keeps the container
+	 * (startable), and only `delete` removes it -- stop is stop, delete is
+	 * delete. `restart:"no"` means "persisted, never auto-restarted."
+	 */
+	{
 		/*
 		 * ADR-0107/0108: splice "image_version" onto the raw request
 		 * body before persisting it -- containerdef_add() stores this
@@ -9897,8 +9909,8 @@ static void handle_create(int fd, const char *body, size_t body_len)
 		                      restart_policy, restart_delay_seconds, follow_rolling,
 		                      has_follow_rolling_jitter, follow_rolling_jitter_seconds) != 0) {
 			fprintf(stderr,
-			        "%s: restart:\"%s\" requested but persisting its definition failed -- "
-			        "it will not survive a daemon restart\n",
+			        "%s: persisting its definition failed -- it will not survive a daemon "
+			        "restart and `start` after a stop will not find it (restart:\"%s\")\n",
 			        entry->name, restart_policy);
 		}
 		free(persisted_body);
@@ -10323,12 +10335,29 @@ static void handle_start(int fd, const char *name)
 	struct json_writer w;
 
 	entry = registry_find(name);
-	if (entry != NULL) {
+	if (entry != NULL && entry->running) {
+		/* Genuinely live (or paused, which is still running=1) --
+		 * start is idempotent, so this is a plain 200, not an error. */
 		jw_init(&w);
 		registry_write_json_one(entry, &w);
 		respond_json(fd, 200, "OK", &w);
 		jw_free(&w);
 		return;
+	}
+	if (entry != NULL) {
+		/*
+		 * ADR-0181 (#73): a NOT-running entry here is a container that
+		 * exited on its own and was deliberately retained as its own
+		 * "exited" record (real exit code preserved). Starting it must
+		 * actually bring it back, not silently 200 the stale exited
+		 * entry -- so drop that record first, then replay the persisted
+		 * definition below exactly as a stopped-but-defined container's
+		 * own start already does. registry_remove() is safe on a
+		 * non-running entry (its kill/reap branch is skipped, no signal
+		 * sent to a possibly-reused pid) and frees the name/slot before
+		 * create_container_from_body() re-creates it.
+		 */
+		registry_remove(name);
 	}
 
 	def = containerdef_find(name);
@@ -11437,11 +11466,17 @@ static void handle_container_stats(int fd, const char *name)
  * Reuses registry_remove() verbatim (already does SIGKILL + a
  * synchronous reap) -- no new kill/reap primitive, no asymmetry with
  * DELETE's own semantics. Applies uniformly regardless of restart
- * policy (kills any live container; containerdef_set_stopped() is a
- * harmless no-op for "no"/absent definitions) -- what stopped actually
- * *means* going forward is entirely up to the two sites that consult
- * it (containerdef_autostart_all(), handle_restart_timer_event()), not
- * this handler. Idempotent: calling twice is both 200.
+ * policy (kills any live container). Since ADR-0181 every container has
+ * a persisted definition, so a stop always leaves one behind -- the
+ * container reappears as "stopped", never vanishing, which is the whole
+ * point of that ADR ("stop is stop, delete is delete"). containerdef_
+ * set_stopped() records the intent on that def (still a harmless no-op
+ * for a genuinely def-less internal container like "__pkgbuild"); for a
+ * restart:"no" def it sets the flag but changes no behavior, since "no"
+ * is already never autostarted or crash-restarted. What stopped means
+ * going forward is up to the two sites that consult it (containerdef_
+ * autostart_all(), handle_restart_timer_event()), not this handler.
+ * Idempotent: calling twice is both 200.
  *
  * A stop targeting PKG_BUILD_CONTAINER_NAME ("__pkgbuild") is a real,
  * previously-undiscovered special case: this path kills and reaps the
@@ -18376,6 +18411,15 @@ static void apply_rolling_container_restarts(void)
 		if (def == NULL || !def->follow_rolling)
 			continue;
 
+		/*
+		 * ADR-0181 (#73): restart:"no" means "never auto-restart",
+		 * which includes never being auto-recreated by a rolling
+		 * update. Such a container follows rolling only when started
+		 * by hand against the new version.
+		 */
+		if (strcmp(def->restart_policy, "no") == 0)
+			continue;
+
 		root = json_parse(def->body, def->body_len);
 		if (root == NULL)
 			continue;
@@ -18538,18 +18582,27 @@ static void handle_container_event(struct conn *cc)
 	 */
 	def = containerdef_find(name_copy);
 	if (def != NULL) {
-		int should_restart = !(strcmp(def->restart_policy, "on-failure") == 0 && exit_status == 0);
-
-		/* registry_remove() is safe here even though entry->running is
-		 * already 0 (its own kill/reap branch is skipped, so no signal
-		 * is sent to a possibly-already-reused pid) -- frees the
-		 * name/slot before a delayed restart re-creates it. */
-		registry_remove(name_copy);
+		/*
+		 * ADR-0181 (#73): restart:"no" containers are now persisted too,
+		 * so this exit path is reached for them -- they must NOT auto-
+		 * restart. They simply become an exited-but-kept definition,
+		 * startable by hand. "on-failure" still skips a clean (0) exit.
+		 */
+		int should_restart = strcmp(def->restart_policy, "no") != 0 &&
+		                     !(strcmp(def->restart_policy, "on-failure") == 0 && exit_status == 0);
 
 		if (should_restart) {
 			time_t uptime = time(NULL) - started_at;
 			int delay = def->restart_delay_seconds;
 			int i;
+
+			/* registry_remove() is safe here even though entry->running
+			 * is already 0 (its own kill/reap branch is skipped, so no
+			 * signal is sent to a possibly-already-reused pid) -- frees
+			 * the name/slot before the delayed restart re-creates it.
+			 * Done ONLY on the restart path: on the no-restart path
+			 * (ADR-0181, below) the entry is deliberately KEPT. */
+			registry_remove(name_copy);
 
 			if (uptime >= CONTAINER_RESTART_STABILITY_SECONDS)
 				def->consecutive_failures = 0;
@@ -18568,11 +18621,22 @@ static void handle_container_event(struct conn *cc)
 
 			arm_restart_timer(name_copy, delay);
 		}
-		/* else: on-failure, clean 0 exit -- left down for the rest of
-		 * this daemon's uptime. The persisted definition is untouched
-		 * and will be attempted again, unconditionally, at the next
-		 * daemon boot (containerdef_autostart_all() has no notion of
-		 * "how did it last exit"). */
+		/*
+		 * else (restart:"no", or on-failure with a clean 0 exit): the
+		 * container is NOT restarted, and -- ADR-0181 (#73) -- its live
+		 * registry entry is deliberately LEFT in place as its own
+		 * "exited" record (registry_mark_exited() already ran at the top
+		 * of this handler, so status is "exited" with exit_status
+		 * preserved, and the pidfd is already torn down). This is what
+		 * makes an exited-on-its-own container both observable (real exit
+		 * code, not a bare "stopped") AND name-reserving (a create of the
+		 * same name still 409s, matching Docker's exited-container
+		 * semantics). The persisted definition survives a daemon restart
+		 * independently; there it reappears as a "stopped" def (exit_status
+		 * isn't persisted -- ADR-0027's stated boundary) and, for
+		 * restart:"no", is not re-attempted at boot (ADR-0181,
+		 * containerdef_autostart_all()).
+		 */
 	}
 }
 
@@ -19124,6 +19188,16 @@ static void containerdef_autostart_all(void)
 
 		if (def == NULL)
 			continue; /* can't happen -- resolve_order() only ever names known defs */
+
+		if (strcmp(def->restart_policy, "no") == 0) {
+			/*
+			 * ADR-0181 (#73): restart:"no" is now a persisted policy
+			 * meaning "never auto-restart", boot included. It stays a
+			 * kept-but-down definition, brought up only by an explicit
+			 * `container start`.
+			 */
+			continue;
+		}
 
 		if (def->stopped && strcmp(def->restart_policy, "unless-stopped") == 0) {
 			fprintf(stderr, "%s: unless-stopped, explicitly stopped -- not autostarting\n",

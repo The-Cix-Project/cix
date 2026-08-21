@@ -5856,12 +5856,14 @@ paths:
     delete:
       summary: >
         Stop (if running) and remove a container, permanently, including
-        its own on-disk state. If it was created with a "restart" policy,
-        this also permanently removes that persisted definition in the
-        same call -- it will not come back on the next crash-restart
+        its own on-disk state. Since ADR-0181 every container has a
+        persisted definition, so this always removes one in the same call
+        -- the container will not come back on the next crash-restart
         (none is pending; this path never triggers one) or on a future
-        daemon restart, regardless of policy. See POST /containers/{name}/stop
-        for stopping without losing the definition or the disk state.
+        daemon restart, regardless of policy. DELETE is the ONLY way to
+        remove a container; a stop or an exit never does. See
+        POST /containers/{name}/stop for stopping without losing the
+        definition or the disk state.
         Works even if this container currently isn't live (e.g. a
         persisted definition that has never once managed to autostart,
         due to a depends_on cycle or an unknown dependency) -- 404 only
@@ -5903,20 +5905,26 @@ paths:
   /containers/{name}/start:
     post:
       summary: >
-        Bring a stopped-but-still-defined container back to life,
-        without a daemon restart (see ADR-0045).
+        Bring a stopped or exited container back to life, without a
+        daemon restart (see ADR-0045, ADR-0181).
       description: >
         The counterpart to POST .../stop: replays that name's persisted
         definition (the same body POST /containers originally received)
         through the same creation path a daemon restart's own autostart
         already uses -- one source of truth for "how a definition
-        becomes a live container." Idempotent -- already-live is a
-        plain 200, not an error. 404 if no persisted definition exists
-        for this name at all (this endpoint only ever replays an
-        existing definition; POST /containers creates a new one).
-        Ignores restart-policy "unless-stopped" gating entirely, unlike
-        boot-time autostart -- an explicit, manual start always means
-        start it.
+        becomes a live container." Works over both states a
+        not-currently-running container can be in since ADR-0181's
+        persist-all: a "stopped" one (no live entry) and an "exited" one
+        (a container that ran and exited on its own, retained with its
+        real exit code) -- for the latter the stale exited record is
+        cleared first, so a start always actually restarts it rather than
+        no-opping. Idempotent -- an already-LIVE (running/paused)
+        container is a plain 200, not an error. 404 if no persisted
+        definition exists for this name at all (this endpoint only ever
+        replays an existing definition; POST /containers creates a new
+        one). Ignores restart-policy "unless-stopped" gating entirely,
+        unlike boot-time autostart -- an explicit, manual start always
+        means start it.
       operationId: startContainer
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -6180,14 +6188,17 @@ paths:
         DNS record, or its PKI cert ownership -- only a "stopped" flag
         is set. For "restart":"unless-stopped", that flag
         survives a daemon restart -- the container will not auto-start
-        again until re-POSTed to /containers. For "always"/"on-failure",
+        again until explicitly started. For "always"/"on-failure",
         this only prevents restart for the remainder of this daemon's
         current uptime; the next daemon restart attempts to start it
         again unconditionally, same as before this endpoint existed.
-        Idempotent -- calling it twice is 200 both times. A no-op
-        regarding persisted state if this name was created with
-        "restart":"no" (or has no persisted definition at all) -- the
-        live container is still killed if one is running.
+        Idempotent -- calling it twice is 200 both times. Since ADR-0181
+        every container is persisted, so a stop ALWAYS keeps it -- for
+        "restart":"no" too, which now reappears as status "stopped" and
+        is brought back by POST .../start, never silently destroyed the
+        way it was before that ADR. (The only genuinely def-less case is
+        an internal container like "__pkgbuild"; there the stopped flag
+        is a harmless no-op and only the live process is killed.)
 
 
         For a RUNNING container the kill completes asynchronously
@@ -7246,34 +7257,41 @@ components:
           enum: [always, on-failure, unless-stopped, no]
           default: "no"
           description: >
-            Any value other than "no" persists this container's exact
-            create request (survives a daemon restart) and replays it
-            automatically -- once now (if creation succeeds), again at
-            every future daemon startup, and again after an unprompted
-            exit, each restart after a real, exponentially-backed-off
-            delay (see restart_delay_seconds -- not instant, avoids
-            hammering the host if it keeps failing).
+            Governs AUTO-RESTART only -- not whether the container
+            exists. Since ADR-0181 EVERY container's exact create request
+            is persisted at create time (survives a daemon restart),
+            regardless of policy; `restart` decides only whether, and
+            when, it comes back up on its own. A container is removed ONLY
+            by DELETE, never by a stop or an exit -- "stop is stop, delete
+            is delete". Each auto-restart happens after a real,
+            exponentially-backed-off delay (see restart_delay_seconds --
+            not instant, avoids hammering the host if it keeps failing).
 
-            "always": restarts regardless of exit code, including a
-            clean 0 exit -- unaffected by a prior POST .../stop once the
-            daemon itself restarts.
+            "always": auto-restarts regardless of exit code, including a
+            clean 0 exit -- and is re-attempted at every daemon startup,
+            unaffected by a prior POST .../stop once the daemon itself
+            restarts.
 
-            "on-failure": restarts only after a nonzero-exit-code (or
-            signal-killed) exit, not a clean 0 exit -- but only for the
-            crash-restart timer; boot-time autostart always attempts it
-            regardless of how it last exited, since that fact is never
+            "on-failure": auto-restarts only after a nonzero-exit-code
+            (or signal-killed) exit, not a clean 0 exit -- but only for
+            the crash-restart timer; boot-time autostart always attempts
+            it regardless of how it last exited, since that fact is never
             persisted (a stated v1 boundary, see ADR-0027).
 
             "unless-stopped": behaves like "always", except a prior POST
             .../stop is remembered across a daemon restart -- it will
-            not auto-start again until explicitly re-POSTed. This is the
+            not auto-start again until explicitly started. This is the
             one policy where a stop actually changes daemon-restart
             behavior; for "always"/"on-failure" a daemon restart is
             always a fresh chance.
 
-            "no" (the default): today's original behavior, unchanged --
-            purely in-memory, gone the moment the daemon restarts or
-            this container exits, no persistence at all.
+            "no" (the default): NEVER auto-restarted -- not on its own
+            exit, not at daemon boot, not by a rolling update. It is
+            still fully persisted and kept: after it exits it is retained
+            (status "exited", real exit code preserved -- like Docker's
+            `ps -a`), and a stop keeps it too (status "stopped"). Bring
+            it back with POST .../start. Before ADR-0181 "no" was
+            ephemeral (a stop silently destroyed it); that is fixed.
 
             DELETE /containers/{name} removes the persisted definition
             too, permanently, regardless of policy -- see that

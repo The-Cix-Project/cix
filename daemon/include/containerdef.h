@@ -58,9 +58,12 @@ struct container_def {
 	int readiness_tcp_port;
 	int readiness_timeout_seconds;
 	/*
-	 * "always" | "on-failure" | "unless-stopped" -- an in-use def is
-	 * never "no": absence of a def already means "no", unchanged since
-	 * Phase 13 part 1 (see ADR-0027).
+	 * "no" | "always" | "on-failure" | "unless-stopped". ADR-0181 (#73,
+	 * superseding ADR-0027): every container is now persisted, so a def CAN
+	 * be "no" -- it just means "never auto-restart" (not on exit, boot, or
+	 * rolling), kept and startable by hand. Previously "no" meant "no def at
+	 * all" (ephemeral), which made `stop` silently destroy the default
+	 * container.
 	 */
 	char restart_policy[16];
 	/* Base crash-restart delay, seconds, 1-300 -- see CONTAINER_RESTART_
@@ -86,14 +89,17 @@ struct container_def {
 	/*
 	 * Part 5 (ADR-0124): opt-in, set only by an explicit "follow_rolling":
 	 * true on the original POST body (mirrors restart_policy/depends_on's
-	 * own "parsed once by the caller, cached here" shape). Meaningless
-	 * without a persisted definition to replay, so it's silently ignored
-	 * (never reaches containerdef_add() at all) on a restart_policy:"no"
-	 * request -- the same "ignored, not an error" precedent
-	 * restart_delay_seconds already established for that combination.
-	 * When set, apply_rolling_container_restarts() (daemon/src/main.c)
-	 * keeps this container's own pinned image_version chasing its
-	 * image's current_version whenever that changes.
+	 * own "parsed once by the caller, cached here" shape). Since ADR-0181
+	 * every container is persisted, so this is stored even for a
+	 * restart_policy:"no" def -- but it is inert there, because
+	 * apply_rolling_container_restarts() skips restart:"no" defs entirely
+	 * ("never auto-restart" includes "never auto-recreated by a rolling
+	 * update"). Stored-but-inert, not rejected -- the same "ignored, not
+	 * an error" precedent restart_delay_seconds established.
+	 * When set (and the policy auto-restarts), apply_rolling_container_
+	 * restarts() (daemon/src/main.c) keeps this container's own pinned
+	 * image_version chasing its image's current_version whenever that
+	 * changes.
 	 */
 	int follow_rolling;
 	/*
@@ -103,10 +109,10 @@ struct container_def {
 	 * original POST body -- the same has_readiness shape this struct
 	 * already uses for an optional int (has_follow_rolling_jitter == 0
 	 * means "use the daemon default," the other field is then
-	 * meaningless). Like follow_rolling itself, meaningless without a
-	 * persisted definition to replay and without follow_rolling also
-	 * being set; not independently rejected for either combination
-	 * here, the same "ignored, not an error" precedent
+	 * meaningless). Like follow_rolling itself, inert without follow_rolling
+	 * also being set and on a restart:"no" def (ADR-0181: persisted, but
+	 * rolling-follow is skipped for it); not independently rejected for
+	 * either combination here, the same "ignored, not an error" precedent
 	 * restart_delay_seconds/follow_rolling already established.
 	 */
 	int has_follow_rolling_jitter;
@@ -140,10 +146,12 @@ void containerdef_repoint(const char *new_state_path);
  * second source of truth: only this function ever writes a
  * definition, and it always receives these from the same request
  * parse). has_readiness == 0 means no readiness check (the other two
- * readiness parameters are then ignored). restart_policy must be
- * "always", "on-failure", or "unless-stopped" (never "no" -- a "no"
- * request never reaches this function, see handle_create()).
- * Overwrites any existing definition for the same name, explicitly
+ * readiness parameters are then ignored). restart_policy may be any of
+ * "no", "always", "on-failure", or "unless-stopped" -- ADR-0181 persists
+ * every container, "no" included (it then means "kept but never
+ * auto-restarted"); a "no" definition simply isn't autostarted at boot,
+ * crash-restarted, or rolling-followed (see handle_create()/
+ * containerdef_autostart_all()). Overwrites any existing definition for the same name, explicitly
  * clearing its stopped/consecutive_failures state (a fresh create/
  * redefine is definitionally not stopped and not backed off).
  * has_follow_rolling_jitter == 0 means "use the daemon-wide jitter
@@ -187,37 +195,40 @@ int containerdef_resolve_order(char out_order[][REGISTRY_NAME_MAX]);
 
 /*
  * Writes one synthesized, Container-shaped JSON object (ADR-0045) for
- * every definition currently in the manually-stopped state (stopped
- * == 1) -- letting GET /v1/containers show a stopped-but-defined
- * container instead of it simply vanishing from the list once
- * POST .../stop removes its live registry entry. Not wrapped in its
+ * every persisted definition that has NO live registry entry -- i.e.
+ * every kept-but-not-running container -- letting GET /v1/containers
+ * show it (status "stopped") instead of it simply vanishing from the
+ * list. ADR-0181 (persist-all): this is no longer only the explicitly-
+ * stopped (stopped == 1) defs. A restart:"no" container that exited on
+ * its own, an on-failure container that exited cleanly, or ANY def
+ * loaded at boot and not autostarted is inactive-but-kept too, with
+ * stopped == 0 -- so the "stopped flag as liveness proxy" this used to
+ * rely on no longer holds. Liveness is now decided by the caller-
+ * supplied is_live() predicate (registry_find() != NULL), keeping this
+ * module free of a back-dependency on the registry. Not wrapped in its
  * own array -- the caller (registry_write_json_list(), which already
  * depends on this module for restart/depends_on/readiness on live
  * entries too) writes these as extra items inside its own single
- * array, one list, no second endpoint. Safe to rely on stopped == 1
- * alone (no separate liveness cross-check needed) because it is now a
- * true invariant: the only path that sets it, POST .../stop, always
- * removes the registry entry in the same call, and every path that
- * revives a definition (POST .../start, containerdef_autostart_all())
- * clears it again on success -- see those functions' own comments.
- * image is recovered by parsing the persisted body's own "image"
- * field (read-only JSON parse, same as every other consumer of a
- * stored body already does -- never sourced/executed). Every field a
- * live entry would have but a stopped one genuinely doesn't (pid,
- * networks, devices, ...) is written as null/empty rather than
- * guessed.
+ * array, one list, no second endpoint. image is recovered by parsing
+ * the persisted body's own "image" field (read-only JSON parse, same
+ * as every other consumer of a stored body already does -- never
+ * sourced/executed). Every field a live entry would have but an
+ * inactive one genuinely doesn't (pid, networks, devices, ...) is
+ * written as null/empty rather than guessed.
  */
-void containerdef_write_json_stopped_list(struct json_writer *w);
+void containerdef_write_json_inactive_list(struct json_writer *w,
+                                           int (*is_live)(const char *name));
 
 /*
- * Single-name counterpart to containerdef_write_json_stopped_list(),
+ * Single-name counterpart to containerdef_write_json_inactive_list(),
  * for GET /v1/containers/{name} (handle_get_one() in main.c) to fall
- * back to when registry_find() misses -- same synthesized shape, same
- * stopped == 1 invariant. Returns 1 and writes into w if name has a
- * stopped definition, 0 (writes nothing) otherwise -- the caller is
- * then free to fall through to its own 404.
+ * back to when registry_find() misses -- same synthesized shape. The
+ * caller has already confirmed there is no live entry for name, so this
+ * writes the definition regardless of its stopped flag: returns 1 and
+ * writes into w if a definition named name exists, 0 (writes nothing)
+ * otherwise -- the caller is then free to fall through to its own 404.
  */
-int containerdef_write_json_stopped_one(const char *name, struct json_writer *w);
+int containerdef_write_json_inactive_one(const char *name, struct json_writer *w);
 
 /*
  * Part 5 (ADR-0124): rewrites just the "image_version" value already
