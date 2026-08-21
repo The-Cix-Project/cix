@@ -22,10 +22,25 @@ $(BUILD):
 # version string would be worse than none, and this project has no other
 # build-system layer (Makefile shelling out to git here is the one place
 # that happens; the actual C compilation stays TCC-only per CLAUDE.md).
+#
+# THINC_VERSION (optional make variable): an on-box hostbuild compiles from
+# a Gitea archive tarball with no .git directory at all, so `git describe`
+# there can only ever fail -- every self-hosted build used to report
+# "unknown" (user-reported: `thincctl boot` on a freshly-deployed box gave
+# no way to tell WHICH build was running beyond its timestamp). The recipe
+# already knows the exact tag it fetched (its own pkg_version), so it
+# passes it explicitly (`make THINC_VERSION=v1.XX.0 ...`, thinc.recipe);
+# git describe stays the dev-tree default, "unknown" the last resort.
+ifeq ($(strip $(THINC_VERSION)),)
+VERSION_CMD = git -C $(CURDIR) describe --tags --always --dirty 2>/dev/null || echo unknown
+else
+VERSION_CMD = echo '$(THINC_VERSION)'
+endif
+
 .PHONY: $(BUILD)/version.h
 $(BUILD)/version.h: | $(BUILD)
 	@printf '#ifndef THINC_VERSION_H\n#define THINC_VERSION_H\n#define THINC_BUILD_VERSION "%s"\n#define THINC_BUILD_TIME "%s"\n#endif\n' \
-		"$$(git -C $(CURDIR) describe --tags --always --dirty 2>/dev/null || echo unknown)" \
+		"$$($(VERSION_CMD))" \
 		"$$(date -u +%Y-%m-%dT%H:%M:%SZ)" > $@
 
 $(BUILD)/test_toolchain: test/test_toolchain.c | $(BUILD)
