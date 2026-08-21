@@ -5270,14 +5270,19 @@ function renderPackagesView(name) {
  * once per name, and cached here so a poll-driven re-render of the
  * same detail page never re-fetches it every 2s (the same guard
  * openConsole() already uses for its own per-container WebSocket). */
-let pkgRecipeContentCache = { name: null, content: null };
+/* version: the daemon's own ADR-0107 resolution for this name (what an
+ * omitted ?version= actually resolves to -- dpkg-style HIGHEST version,
+ * not newest-published). Cached from the same name-only GET that fetches
+ * the content, so the dashboard never grows its own parallel version
+ * comparator: one source of truth, the daemon's. */
+let pkgRecipeContentCache = { name: null, content: null, version: null };
 
 async function loadPkgRecipeContent(name) {
 	if (pkgRecipeContentCache.name === name)
 		return pkgRecipeContentCache.content;
 	const data = await apiRequest("GET", "/v1/pkg/recipes/" + encodeURIComponent(name));
 
-	pkgRecipeContentCache = { name: name, content: data.content };
+	pkgRecipeContentCache = { name: name, content: data.content, version: data.version };
 	return pkgRecipeContentCache.content;
 }
 
@@ -5288,13 +5293,24 @@ function renderPackageDetail(name) {
 	 * happened to list first for this name -- not necessarily the
 	 * latest version (confirmed live: squashfs-tools' 5 stored
 	 * versions come back in on-disk readdir() order, not sorted).
-	 * Pick the most recently published one explicitly, same "newest
-	 * created_at wins" rule the collapsed Recipes list now uses. */
+	 *
+	 * Which row IS "latest" here is the daemon's call, not this file's:
+	 * once the name-only recipe GET has resolved (pkgRecipeContentCache
+	 * .version, ADR-0107's dpkg-style highest -- the same version whose
+	 * content the Recipe tab actually displays), prefer that exact row.
+	 * The old newest-created_at rule stays only as the pre-load
+	 * fallback -- it diverges from the daemon's real resolution
+	 * whenever versions are published out of numeric order (confirmed
+	 * live with gcc: 6.4.0-5 published after 16.2.0-5, daemon resolves
+	 * 16.2.0-5, newest-created_at says 6.4.0-5 -- the old rule showed
+	 * one version's number over another version's content). */
 	const allVersions = cache.pkgRecipes.filter((r) => r.name === name);
+	const resolvedVersion = pkgRecipeContentCache.name === name ? pkgRecipeContentCache.version : null;
 	const recipe =
 		allVersions.length === 0
 			? undefined
-			: allVersions.reduce((a, b) => (b.created_at > a.created_at ? b : a));
+			: allVersions.find((r) => r.version === resolvedVersion) ||
+			  allVersions.reduce((a, b) => (b.created_at > a.created_at ? b : a));
 	const missingEl = document.getElementById("pkgd-recipe-missing");
 	const presentEl = document.getElementById("pkgd-recipe-present");
 	const editBtn = document.getElementById("pkgd-edit-recipe");
@@ -5312,7 +5328,10 @@ function renderPackageDetail(name) {
 		fields.appendChild(
 			fieldBlock(
 				"Version",
-				recipe.version + (allVersions.length > 1 ? " (latest of " + allVersions.length + " -- see the Versions tab)" : "")
+				recipe.version +
+					(pkgRecipeContentCache.name === name && recipe.version === pkgRecipeContentCache.version
+						? " (rolling candidate" + (allVersions.length > 1 ? " -- latest of " + allVersions.length + ", see the Versions tab" : "") + ")"
+						: allVersions.length > 1 ? " (latest of " + allVersions.length + " -- see the Versions tab)" : "")
 			)
 		);
 		fields.appendChild(fieldBlock("Depends", recipe.depends || "-"));
@@ -5326,9 +5345,15 @@ function renderPackageDetail(name) {
 		} else {
 			contentEl.textContent = "Loading…";
 			loadPkgRecipeContent(name)
-				.then((content) => {
+				.then(() => {
+					/* Full re-render, not just the content text: the load
+					 * also learned the daemon's resolved version, which
+					 * drives the fields block, the Versions tab's rolling-
+					 * candidate badge, and which row "latest" means. No
+					 * loop -- the cache now matches, so the re-render's own
+					 * load call short-circuits. */
 					if (parseHash().category === "packages" && parseHash().name === name)
-						document.getElementById("pkgd-recipe-content").textContent = content;
+						renderPackageDetail(name);
 				})
 				.catch((e) => showStatus("Failed to load recipe content for " + name + ": " + e.message, true));
 		}
@@ -5383,21 +5408,23 @@ function renderPackageDetailVersions(name, allVersions) {
 		return;
 	}
 
-	versions.forEach((v, i) => {
+	versions.forEach((v) => {
 		const row = document.createElement("tr");
 
 		const versionCell = document.createElement("td");
 		versionCell.textContent = v.version;
-		/* i === 0: same "sort by created_at, newest wins" shortcut this
-		 * function's own versions.sort() above already relies on
-		 * (equally correct here as a real dpkg-style version
-		 * comparator, per this project's own append-only recipe
-		 * history) -- the newest-published row is exactly what an
-		 * omitted ?version= (a plain `pkg install`/hostbuild, or a
-		 * follow_rolling image's own auto-rebuild) resolves to per
-		 * ADR-0107, so it doubles as the real rolling-candidate
-		 * indicator, not a separate computation. */
-		if (i === 0) {
+		/* The badge marks the DAEMON's own ADR-0107 resolution (cached
+		 * from the name-only recipe GET), never a client-side guess.
+		 * The first version of this badge marked the newest-published
+		 * row (i === 0 after the created_at sort) on the assumption
+		 * that versions are only ever published in increasing order --
+		 * broken in practice the very session it shipped (gcc: 6.4.0-5
+		 * published after 16.2.0-5; the daemon resolves 16.2.0-5, the
+		 * old badge sat on 6.4.0-5 -- caught by the user asking what
+		 * the selection criteria actually was). Until the resolution
+		 * has loaded, no badge at all -- honest blank over a guess;
+		 * the post-load re-render fills it in. */
+		if (pkgRecipeContentCache.name === name && v.version === pkgRecipeContentCache.version) {
 			const badge = document.createElement("strong");
 
 			badge.textContent = " (rolling candidate)";
