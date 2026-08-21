@@ -415,6 +415,36 @@ int main(void)
 	}
 	kx_response_free(&r);
 
+	/*
+	 * DELETE of a container is asynchronous (ADR-0180): the 204 records
+	 * intent and sends the SIGKILL, but the registry entry -- which is
+	 * exactly what registry_image_in_use() scans -- is only released once
+	 * the reactor reaps the process. Settle-poll to a real 404 before
+	 * asserting the image is deletable, or the image DELETE below races
+	 * the teardown and legitimately 409s ("still in use"). Bounded tight:
+	 * >5s to tear down a SIGKILLed child would be a real regression.
+	 */
+	{
+		int i, gone = 0;
+
+		for (i = 0; i < 50; i++) {
+			struct kx_response gr;
+
+			memset(&gr, 0, sizeof(gr));
+			if (kx_client_request(&client, "GET", "/v1/containers/imgtest-c1", NULL, &gr) == 0 &&
+			    gr.status == 404)
+				gone = 1;
+			kx_response_free(&gr);
+			if (gone)
+				break;
+			usleep(100 * 1000);
+		}
+		if (!gone) {
+			fprintf(stderr, "FAIL: imgtest-c1 never fully torn down after DELETE\n");
+			ok = 0;
+		}
+	}
+
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "DELETE", "/v1/images/imgtest_ctr", NULL, &r) != 0 ||
 	    r.status != 204) {

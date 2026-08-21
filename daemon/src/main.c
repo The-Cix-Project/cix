@@ -11622,10 +11622,13 @@ static void respond_container_storagemigrate_error(int fd, enum containerstorage
  * POST /v1/containers/{name}/migrate-storage (ADR-0142 Section 4): the
  * exact same {"disk": "name"|null} contract every other storage-
  * placement migration endpoint already has, narrowed to one
- * container's own overlay directory. Requires a persisted definition
- * (restart_policy != "no") to exist -- the cutover this triggers
- * always ends with a real stop-then-replay, so a container with
- * nothing to replay from can never safely reach that point. disk_name
+ * container's own overlay directory. Requires a persisted definition to
+ * exist -- the cutover this triggers always ends with a real stop-then-
+ * replay, so a container with nothing to replay from can never safely
+ * reach that point. Since ADR-0181 (issue #73) every container IS
+ * persisted, restart:"no" included, so that check is now defence in
+ * depth for a genuinely def-less internal container rather than the
+ * routine restart-policy gate it originally was. disk_name
  * is validated via resolve_container_disk_root() -- the exact same
  * check POST /v1/containers itself already applies to a "disk" field
  * at creation time, reused rather than re-implemented (One Source of
