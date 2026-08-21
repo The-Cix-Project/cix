@@ -182,35 +182,6 @@ static long kx_mount_setattr(int dfd, const char *path, unsigned int flags,
 	return syscall(__NR_mount_setattr, dfd, path, flags, a, size);
 }
 
-#ifndef __NR_fsopen
-#define __NR_fsopen 430
-#endif
-#ifndef __NR_fsconfig
-#define __NR_fsconfig 431
-#endif
-#ifndef __NR_fsmount
-#define __NR_fsmount 432
-#endif
-#define KX_FSCONFIG_SET_FLAG 0
-#define KX_FSCONFIG_SET_STRING 1
-#define KX_FSCONFIG_SET_FD 5
-#define KX_FSCONFIG_CMD_CREATE 6
-
-static long kx_fsopen(const char *fsname, unsigned int flags)
-{
-	return syscall(__NR_fsopen, fsname, flags);
-}
-
-static long kx_fsconfig(int fd, unsigned int cmd, const char *key, const void *value, int aux)
-{
-	return syscall(__NR_fsconfig, fd, cmd, key, value, aux);
-}
-
-static long kx_fsmount(int fd, unsigned int flags, unsigned int attr_flags)
-{
-	return syscall(__NR_fsmount, fd, flags, attr_flags);
-}
-
 /*
  * ADR-0179 phase 2c: build the user namespace that carries the id-mapped
  * mount's translation. It is NOT the container's own userns -- it is the
@@ -309,10 +280,9 @@ static int create_idmap_userns_fd(long long base, long long len)
 
 /*
  * open_tree(OPEN_TREE_CLONE) a path into a detached mount, then id-map it with
- * mount_setattr(MOUNT_ATTR_IDMAP). ext4-backed subtrees (this project's overlay
- * layers) support id-mapping; the overlay *merged* mount does not, which is the
- * whole reason we id-map the layers here rather than the result. Returns a
- * detached, id-mapped mount fd, or -1 (errno set).
+ * mount_setattr(MOUNT_ATTR_IDMAP). ext4-backed subtrees (this project's
+ * per-container userns rootfs) support id-mapping. Returns a detached,
+ * id-mapped mount fd, or -1 (errno set).
  */
 static int idmap_bind(const char *path, int idmap_fd)
 {
@@ -333,75 +303,6 @@ static int idmap_bind(const char *path, int idmap_fd)
 	return fd;
 }
 
-/*
- * ADR-0179 phase 2c: build an id-mapped overlay via the fd-based mount API
- * (fsopen/fsconfig/fsmount), with ALL layers id-mapped by the inverse idmap
- * userns so ownership is consistent end to end: the shared host-uid-0 rootfs
- * (lower) and any copy-up into the per-container upper both present as the
- * container's mapped root, killing the EOVERFLOW without chowning the shared
- * image. The lower layer is its own id-mapped mount. upperdir and workdir are
- * opened THROUGH a single id-mapped mount of their shared base dir, because
- * overlay requires upper and work on the same vfsmount (ovl_get_workdir).
- * Overlay captures each layer fd's own f_path.mnt (kernel fs/overlayfs/params.c
- * ovl_parse_layer -> fs_value_is_file), so the id-mapping rides along, and
- * clone_private_mount preserves it. Returns the overlay mount fd (the child
- * move_mounts it), or -1 with a step set.
- */
-/*
- * ADR-0179 phase 2c: mount the id-mapped overlay -- called from the CHILD,
- * after the userns handshake, so the mounter IS the namespace's mapped root
- * (host <base>) which OWNS the per-container upperdir/workdir (the parent
- * chowned them to <base> before clone3). This is the standard rootless
- * pattern: mounting the overlay from a host-0 process outside the userns made
- * overlay's own work/ creation fail EACCES ("mounting read-only", seen via
- * /v1/system/kmsg). Only the SHARED lower is id-mapped (lower_fd, built by the
- * privileged parent and inherited here) -- it presents the host-uid-0 rootfs
- * as owned by the mapped root without chowning the shared image; upperdir and
- * workdir are the child's own base-owned dirs, passed as plain strings.
- * userxattr is required because overlay is mounted in a non-initial userns and
- * so can't set the trusted.overlay.* xattrs -- user.overlay.* (owner-settable)
- * is used instead. Returns the overlay mount fd (move_mounted by the caller),
- * or -1 (child exits on failure).
- */
-static int child_mount_idmapped_overlay(const struct overlay_spec *ov, int lower_fd)
-{
-	int fs_fd, mnt_fd = -1, saved;
-	const char *step;
-
-	fs_fd = (int)kx_fsopen("overlay", 0);
-	if (fs_fd < 0)
-		return -1;
-	step = "fsconfig(lowerdir+)";
-	if (kx_fsconfig(fs_fd, KX_FSCONFIG_SET_FD, "lowerdir+", NULL, lower_fd) != 0)
-		goto out;
-	step = "fsconfig(upperdir)";
-	if (kx_fsconfig(fs_fd, KX_FSCONFIG_SET_STRING, "upperdir", ov->upperdir, 0) != 0)
-		goto out;
-	step = "fsconfig(workdir)";
-	if (kx_fsconfig(fs_fd, KX_FSCONFIG_SET_STRING, "workdir", ov->workdir, 0) != 0)
-		goto out;
-	step = "fsconfig(userxattr)";
-	if (kx_fsconfig(fs_fd, KX_FSCONFIG_SET_FLAG, "userxattr", NULL, 0) != 0)
-		goto out;
-	step = "fsconfig(create)";
-	if (kx_fsconfig(fs_fd, KX_FSCONFIG_CMD_CREATE, NULL, NULL, 0) != 0)
-		goto out;
-	step = "fsmount(overlay)";
-	mnt_fd = (int)kx_fsmount(fs_fd, 0, 0);
-out:
-	saved = errno;
-	if (mnt_fd < 0) {
-		char buf[80];
-
-		snprintf(buf, sizeof(buf), "child: idmapped overlay %s", step);
-		errno = saved;
-		container_set_last_error_step(buf);
-	}
-	close(fs_fd);
-	errno = saved;
-	return mnt_fd;
-}
-
 int container_create(const struct container_spec *spec, struct container_handle *out)
 {
 	int cgroup_fd;
@@ -411,7 +312,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	int net_pipe[2] = { -1, -1 };
 	int diag_pipe[2] = { -1, -1 };
 	int userns_pipe[2] = { -1, -1 };
-	int overlay_lower_fd = -1; /* phase 2c: id-mapped shared-lower mount, child fsmounts the overlay */
+	int overlay_lower_fd = -1; /* phase 2c: id-mapped per-container userns rootfs mount */
 	int want_net = (spec->net_count > 0);
 	int i;
 
@@ -495,51 +396,39 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	}
 
 	/*
-	 * ADR-0179 phase 2c: prepare the userns container's overlay for a mount
-	 * performed FROM INSIDE the userns by the child (the mapped root), the
-	 * standard rootless pattern. Mounting the overlay from a host-0 process
-	 * outside the userns made overlay's own work/ creation fail EACCES
-	 * ("mounting read-only", seen live via /v1/system/kmsg). Here the parent
-	 * only does the privileged/setup parts: (a) create the layer dirs;
-	 * (b) chown the per-container upperdir/workdir to <base> so the mapped
-	 * root will own them; (c) id-map the SHARED lower into a detached mount
-	 * (a privileged op the child can't do) whose fd the child inherits and
-	 * hands to fsconfig. The child then fsmounts the overlay -- see
-	 * child_mount_idmapped_overlay().
+	 * ADR-0179 phase 2c option (a): a userns container uses its OWN
+	 * per-container rootfs (a CoW copy of the image, prepared host-side by
+	 * the daemon -- spec->ov.userns_rootfs), NOT an overlay. Kernel-native
+	 * id-mapped overlay proved unachievable from this architecture: overlay's
+	 * own whiteout/tmpfile ops need privilege over the layer fs's init-owned
+	 * s_user_ns, which the mapped-root child lacks (confirmed live via
+	 * /v1/system/kmsg). A plain ext4 mount has no such ops. The parent
+	 * id-maps that rootfs into a detached mount (the privileged step the
+	 * child can't do) -- presenting its host-uid-0 files as the container's
+	 * mapped root -- and the child move_mounts + pivots straight into it.
 	 */
 	if (spec->userns_enabled) {
-		int overlay_ret = overlay_prepare_dirs(&spec->ov);
 		int idmap_fd = -1;
-		int saved_errno = errno;
-		const char *fail_step = "container_create: overlay_prepare_dirs (userns)";
+		int saved_errno = 0;
+		const char *fail_step = NULL;
+		int prep_ret = 0;
 
-		if (overlay_ret == 0 &&
-		    (chown(spec->ov.upperdir, (uid_t)spec->userns_uid_base,
-		           (gid_t)spec->userns_gid_base) != 0 ||
-		     chown(spec->ov.workdir, (uid_t)spec->userns_uid_base,
-		           (gid_t)spec->userns_gid_base) != 0)) {
+		idmap_fd = create_idmap_userns_fd(spec->userns_uid_base, spec->userns_len);
+		if (idmap_fd < 0) {
 			saved_errno = errno;
-			fail_step = "container_create: chown upper/work to base (userns)";
-			overlay_ret = -1;
-		}
-		if (overlay_ret == 0) {
-			idmap_fd = create_idmap_userns_fd(spec->userns_uid_base, spec->userns_len);
-			if (idmap_fd < 0) {
+			fail_step = NULL; /* create_idmap_userns_fd set the step */
+			prep_ret = -1;
+		} else {
+			overlay_lower_fd = idmap_bind(spec->ov.userns_rootfs, idmap_fd);
+			if (overlay_lower_fd < 0) {
 				saved_errno = errno;
-				fail_step = NULL; /* create_idmap_userns_fd set the step */
-				overlay_ret = -1;
-			} else {
-				overlay_lower_fd = idmap_bind(spec->ov.lowerdir, idmap_fd);
-				if (overlay_lower_fd < 0) {
-					saved_errno = errno;
-					fail_step = "container_create: idmap_bind(lowerdir)";
-					overlay_ret = -1;
-				}
-				close(idmap_fd);
-				idmap_fd = -1;
+				fail_step = "container_create: idmap_bind(userns_rootfs)";
+				prep_ret = -1;
 			}
+			close(idmap_fd);
+			idmap_fd = -1;
 		}
-		if (overlay_ret != 0) {
+		if (prep_ret != 0) {
 			if (overlay_lower_fd >= 0) {
 				close(overlay_lower_fd);
 				overlay_lower_fd = -1;
@@ -672,28 +561,22 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			}
 		}
 		/*
-		 * ADR-0179 phase 2c: mount the id-mapped overlay HERE, inside the
-		 * userns, now that this child IS the mapped root that owns
-		 * upperdir/workdir (the parent chowned them to <base> and passed the
-		 * id-mapped shared-lower fd, inherited across clone3). Mounting from
-		 * inside the userns is what makes overlay's own work/ creation
-		 * succeed; a mount the child makes itself is also not MNT_LOCKED, so
-		 * pivot_root accepts it. Non-userns mounted merged in overlay_create
-		 * above and needs none of this.
+		 * ADR-0179 phase 2c option (a): attach the parent's detached,
+		 * id-mapped per-container rootfs into THIS child's own mount
+		 * namespace with move_mount() and pivot into it. A mount the child
+		 * attaches itself is not MNT_LOCKED (so pivot_root accepts it), and
+		 * it's a plain ext4 mount carrying the parent's id-mapping -- the
+		 * container's mapped root owns and can write its whole rootfs, with
+		 * no overlay (and so none of overlay's userns-blocked setup ops).
+		 * Non-userns mounted merged in overlay_create above and needs none
+		 * of this.
 		 */
 		if (spec->userns_enabled) {
-			int mnt_fd = child_mount_idmapped_overlay(&spec->ov, overlay_lower_fd);
-
-			if (mnt_fd < 0) {
-				dprintf(diag_pipe[1], "%s\n", container_create_last_error_step());
+			if (kx_move_mount(overlay_lower_fd, "", -1, spec->ov.merged,
+			                  KX_MOVE_MOUNT_F_EMPTY_PATH) != 0) {
+				child_diag(diag_pipe[1], "child: move_mount userns rootfs");
 				_exit(122);
 			}
-			if (kx_move_mount(mnt_fd, "", -1, spec->ov.merged,
-			                  KX_MOVE_MOUNT_F_EMPTY_PATH) != 0) {
-				child_diag(diag_pipe[1], "child: move_mount idmapped overlay");
-				_exit(123);
-			}
-			close(mnt_fd);
 			close(overlay_lower_fd);
 		}
 		{
@@ -975,8 +858,7 @@ void container_decode_exit_status(int exit_status, char *buf, size_t bufsize)
 		{ 119, "prctl(PR_SET_PDEATHSIG) failed" },
 		{ 120, "container_caps_drop failed" },
 		{ 121, "userns map sync failed (parent never released the child)" },
-		{ 122, "userns id-mapped overlay fsmount failed (from inside the userns)" },
-		{ 123, "userns id-mapped overlay move_mount failed (pre-pivot_root)" },
+		{ 122, "userns per-container rootfs move_mount failed (pre-pivot_root)" },
 		{ 127, "exec failed (errno out of encodable range)" },
 		{ 130, "overlay: lowerdir stat failed" },
 		{ 131, "overlay: upperdir mkdir failed" },

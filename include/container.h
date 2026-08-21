@@ -65,6 +65,16 @@ struct overlay_spec {
 	const char *lowerdir;
 	const char *upperdir;
 	const char *workdir;
+	/*
+	 * ADR-0179 phase 2c option (a): for a userns container this is its own
+	 * per-container rootfs -- a CoW copy of the image (`cp --reflink=auto`),
+	 * host-uid-0 on disk. container_create() id-maps it (idmap_bind) and the
+	 * child move_mounts + pivots straight into it: a plain ext4 mount, not an
+	 * overlay, so none of overlay's own whiteout/tmpfile ops (which need
+	 * privilege over the layer fs's init-owned s_user_ns -- unachievable from
+	 * inside the userns) ever run. NULL for non-userns (classic overlay path).
+	 */
+	const char *userns_rootfs;
 	const char *merged;
 	/*
 	 * Real ext4 project-quota id (Part 4, bare-metal-readiness plan,
