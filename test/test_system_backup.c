@@ -140,6 +140,24 @@ static time_t wait_for_present(const struct kx_client *c, const char *name, int 
 	return 0;
 }
 
+/* Counterpart to wait_for_present: poll until name is fully gone (GET
+ * 404). DELETE of a RUNNING container is asynchronous (ADR-0180) -- the
+ * 204 only records intent + sends SIGKILL; the registry slot is released
+ * a moment later when the reactor reaps the process, so a bare check
+ * right after DELETE can still see the container as "deleting" (200).
+ * Bounded tight: >5s to tear down a SIGKILLed child is a real regression. */
+static time_t wait_for_absent(const struct kx_client *c, const char *name, int max_attempts)
+{
+	int attempts;
+
+	for (attempts = 0; attempts < max_attempts; attempts++) {
+		if (container_exists(c, name) == 0)
+			return time(NULL);
+		usleep(100000);
+	}
+	return 0;
+}
+
 int main(void)
 {
 	pid_t daemon_pid;
@@ -426,7 +444,10 @@ int main(void)
 	}
 	kx_response_free(&r);
 
-	if (container_exists(&client, "keeper") != 0) {
+	/* DELETE of the running keeper is asynchronous (ADR-0180) -- wait for
+	 * its slot to actually be released (404) rather than racing the still-
+	 * in-flight "deleting" teardown. */
+	if (wait_for_absent(&client, "keeper", 50) == 0) {
 		fprintf(stderr, "FAIL: keeper should be gone after DELETE\n");
 		ok = 0;
 	}
