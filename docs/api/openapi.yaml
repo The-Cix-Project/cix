@@ -9829,6 +9829,19 @@ components:
           type: string
           nullable: true
           description: Populated only when state is "failed".
+        last_output_seconds_ago:
+          type: integer
+          nullable: true
+          description: >
+            Seconds since the in-flight build last produced a byte of
+            output (issue #58) -- the first-class hang-vs-slow signal
+            (a "building" row with this climbing into the hundreds is
+            stuck; one that resets keeps compiling). null unless state
+            is "building" and at least one byte has arrived. Also
+            settled at daemon startup: a persisted row loaded in
+            fetching/building state is reconciled to failed
+            ("interrupted by a daemon restart", issue #56), since the
+            job it describes no longer exists.
         kept_build_container:
           type: string
           nullable: true

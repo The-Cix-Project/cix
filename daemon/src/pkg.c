@@ -97,6 +97,13 @@ struct pkg_entry {
 	int build_output_rd;
 	char build_output_captured[PKG_BUILD_OUTPUT_CAPTURE_MAX + 1];
 	int build_output_captured_len;
+	/* Issue #58: wall-clock time of the last byte drained from this
+	 * entry's build-output pipe -- the daemon already owns that pipe,
+	 * so "is the build actually producing output?" is answerable
+	 * first-class instead of by load-average guesswork (which caused
+	 * one real mistaken kill of a healthy 71-minute build, and one
+	 * real wedge going unnoticed). 0 until the first byte. */
+	time_t last_output_at;
 	/* ADR-0175/issue #35: non-empty exactly when the most recent build
 	 * attempt failed with keep_on_failure requested and its build
 	 * container was deliberately left registered/mounted instead of
@@ -1423,6 +1430,13 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 		jw_str(w, e->error);
 	else
 		jw_null(w);
+	/* Issue #58: the first-class hang-vs-slow signal -- null unless a
+	 * build is in flight and has produced at least one byte. */
+	jw_key(w, "last_output_seconds_ago");
+	if (e->state == PKG_STATE_BUILDING && e->last_output_at > 0)
+		jw_int(w, (long long)(time(NULL) - e->last_output_at));
+	else
+		jw_null(w);
 	/* ADR-0175/issue #35: the exited, still-registered build
 	 * container's name, exactly when keep_on_failure preserved one for
 	 * this entry's most recent failed attempt -- null otherwise. */
@@ -1561,6 +1575,26 @@ static int load_state(void)
 			fprintf(stderr, "%s: duplicate name at index %zu\n", g_installed_state_path, i);
 			rc = -1;
 			break;
+		}
+		/*
+		 * Issue #56: a daemon death mid-job (hard reset, kill -9)
+		 * used to strand the row in fetching/building forever -- the
+		 * in-memory chain slot it referenced no longer exists after a
+		 * restart, so `pkg build-log` 400/404'd and the row's own
+		 * state never resolved without hand-editing. A freshly-loaded
+		 * state file describing an in-flight job is by definition
+		 * describing a job that no longer exists: settle it to failed
+		 * with an honest reason, at the one place every restart passes
+		 * through.
+		 */
+		if (g_packages[count].state == PKG_STATE_FETCHING ||
+		    g_packages[count].state == PKG_STATE_BUILDING) {
+			const char *phase =
+			    g_packages[count].state == PKG_STATE_FETCHING ? "fetch" : "build";
+
+			g_packages[count].state = PKG_STATE_FAILED;
+			snprintf(g_packages[count].error, sizeof(g_packages[count].error),
+			         "interrupted by a daemon restart mid-%s", phase);
 		}
 		count++;
 	}
@@ -2884,6 +2918,7 @@ static int start_build_container_spec(int chain_idx, struct pkg_entry *e,
 	spec_out->envp = e->build_envp;
 
 	e->build_output_captured_len = 0;
+	e->last_output_at = 0;
 	/* ADR-0157 Phase 1: this entry is now the one owning the open
 	 * build-output pipe, regardless of whether pipe2()/fcntl() below
 	 * actually succeed (both failure branches still explicitly set
@@ -3446,6 +3481,7 @@ static void pkg_build_output_append(struct pkg_entry *e, const char *data, int l
 	}
 	memcpy(e->build_output_captured + e->build_output_captured_len, data + (len - take), take);
 	e->build_output_captured_len += take;
+	e->last_output_at = time(NULL);
 }
 
 int pkg_build_output_readable(int chain_idx, char *new_data, int new_data_cap, int *new_data_len)
@@ -3744,6 +3780,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	 * from here would race that still-live epoll registration.
 	 */
 	e->build_output_captured_len = 0;
+	e->last_output_at = 0;
 
 	snprintf(container_base, sizeof(container_base), "%s/%s", g_containers_dir,
 	         e->build_container_name);
