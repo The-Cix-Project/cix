@@ -5,11 +5,13 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/prctl.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -137,6 +139,105 @@ static int write_userns_maps(pid_t pid, long long base, long long len)
 	return 0;
 }
 
+/*
+ * ADR-0179 (issue #29) phase 2c: the new mount API (open_tree/move_mount/
+ * mount_setattr) has no glibc wrappers -- raw syscalls, x86_64 numbers,
+ * same posture as this file's other rawsyscalls. struct kx_mount_attr is
+ * the uapi struct mount_attr (four naturally-aligned u64s, no packing).
+ */
+#ifndef __NR_open_tree
+#define __NR_open_tree 428
+#endif
+#ifndef __NR_move_mount
+#define __NR_move_mount 429
+#endif
+#ifndef __NR_mount_setattr
+#define __NR_mount_setattr 442
+#endif
+#define KX_OPEN_TREE_CLONE 1
+#define KX_MOVE_MOUNT_F_EMPTY_PATH 0x00000004
+#define KX_MOUNT_ATTR_IDMAP 0x00100000
+
+struct kx_mount_attr {
+	unsigned long long attr_set;
+	unsigned long long attr_clr;
+	unsigned long long propagation;
+	unsigned long long userns_fd;
+};
+
+static long kx_open_tree(int dfd, const char *path, unsigned int flags)
+{
+	return syscall(__NR_open_tree, dfd, path, flags);
+}
+
+static long kx_move_mount(int from_dfd, const char *from, int to_dfd, const char *to,
+                          unsigned int flags)
+{
+	return syscall(__NR_move_mount, from_dfd, from, to_dfd, to, flags);
+}
+
+static long kx_mount_setattr(int dfd, const char *path, unsigned int flags,
+                             struct kx_mount_attr *a, size_t size)
+{
+	return syscall(__NR_mount_setattr, dfd, path, flags, a, size);
+}
+
+/*
+ * ADR-0179 phase 2c: build the user namespace that carries the id-mapped
+ * mount's translation. It is NOT the container's own userns -- it is the
+ * INVERSE mapping: uid_map "<base> 0 <len>" (filesystem ids [0,len) are
+ * presented as [base, base+len)). So a rootfs file owned by host uid 0 on
+ * disk is presented as host uid <base>, which the container's own userns
+ * ("0 <base> <len>") then resolves to container uid 0 -- the mapped root
+ * genuinely owns its rootfs, killing the EOVERFLOW that unmapped host-0
+ * ownership caused (phase 2b finding). A short-lived helper process holds
+ * the namespace only long enough for us to open a handle to it; the open
+ * fd keeps the userns object alive after the helper is reaped.
+ */
+static int create_idmap_userns_fd(long long base, long long len)
+{
+	int pipefd[2];
+	pid_t helper;
+	char path[64], map[64];
+	int fd, status;
+
+	if (pipe(pipefd) != 0)
+		return -1;
+	helper = fork();
+	if (helper < 0) {
+		close(pipefd[0]);
+		close(pipefd[1]);
+		return -1;
+	}
+	if (helper == 0) {
+		char c;
+
+		close(pipefd[1]);
+		if (unshare(CLONE_NEWUSER) != 0)
+			_exit(1);
+		if (read(pipefd[0], &c, 1) != 1)
+			_exit(2);
+		_exit(0);
+	}
+	close(pipefd[0]);
+
+	snprintf(map, sizeof(map), "%lld 0 %lld", base, len);
+	if (write_proc_line(helper, "setgroups", "deny") != 0 ||
+	    write_proc_line(helper, "gid_map", map) != 0 ||
+	    write_proc_line(helper, "uid_map", map) != 0) {
+		close(pipefd[1]); /* release the helper (EOF) */
+		waitpid(helper, &status, 0);
+		return -1;
+	}
+
+	snprintf(path, sizeof(path), "/proc/%d/ns/user", (int)helper);
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+
+	close(pipefd[1]); /* release the helper; our open fd keeps the userns alive */
+	waitpid(helper, &status, 0);
+	return fd; /* -1 on open failure */
+}
+
 int container_create(const struct container_spec *spec, struct container_handle *out)
 {
 	int cgroup_fd;
@@ -146,6 +247,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	int net_pipe[2] = { -1, -1 };
 	int diag_pipe[2] = { -1, -1 };
 	int userns_pipe[2] = { -1, -1 };
+	int overlay_mnt_fd = -1; /* phase 2c: detached id-mapped overlay mount */
 	int want_net = (spec->net_count > 0);
 	int i;
 
@@ -229,30 +331,56 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	}
 
 	/*
-	 * ADR-0179 phase 2b: for a userns container the overlay is mounted
-	 * HERE, by the parent (init user namespace, full privilege), rather
-	 * than by the child below. The child, running as the namespace's
-	 * mapped root, provably cannot mount it (EACCES on the host-uid-0-owned
-	 * upperdir/workdir -- confirmed live on real hardware, phase 2a). The
-	 * child's CLONE_NEWNS copy inherits this mount, so it only pivots into
-	 * it. Marked MS_PRIVATE so the parent's own MNT_DETACH cleanup (after
-	 * clone3, below) can't propagate into the child's inherited copy.
-	 * Because thincd (host uid 0) is the overlay's mounter, the kernel's
-	 * mounter-credential model performs every upperdir/workdir operation
-	 * as root -- so the mapped-uid container reads and writes normally,
-	 * needing neither an id-mapped mount nor a chowned upperdir.
+	 * ADR-0179 phase 2c: build the userns container's overlay HERE, in the
+	 * parent (init userns, full privilege), and hand it to the child as a
+	 * detached, id-mapped mount fd. The child, as the namespace's mapped
+	 * root, can neither mount the overlay itself (phase 2a EACCES) nor
+	 * usefully inherit a plain parent mount -- that both locks pivot_root
+	 * (phase 2b) and leaves the rootfs owned by unmapped host uid 0 (phase
+	 * 2b EOVERFLOW). This path solves all three: the parent mounts it;
+	 * open_tree(OPEN_TREE_CLONE) makes a detached copy the child later
+	 * move_mounts fresh into its own namespace (unlocked -> pivot_root
+	 * accepts it); mount_setattr(MOUNT_ATTR_IDMAP) with the inverse idmap
+	 * userns presents host-uid-0 rootfs files as the container's mapped
+	 * root, so it owns and can write its rootfs. The plain attached copy is
+	 * dropped once the detached clone exists; the child inherits the fd.
 	 */
 	if (spec->userns_enabled) {
 		int overlay_ret = overlay_create(&spec->ov);
-		int saved_errno;
+		int idmap_fd = -1;
+		int saved_errno = errno;
 
-		if (overlay_ret == 0 && mount(NULL, spec->ov.merged, NULL, MS_PRIVATE, NULL) != 0) {
-			overlay_ret = -1; /* mounted, but couldn't privatize -- treat as failure */
-			umount2(spec->ov.merged, MNT_DETACH);
+		if (overlay_ret == 0) {
+			idmap_fd = create_idmap_userns_fd(spec->userns_uid_base, spec->userns_len);
+			overlay_mnt_fd = (int)kx_open_tree(-1, spec->ov.merged, KX_OPEN_TREE_CLONE);
+			if (idmap_fd >= 0 && overlay_mnt_fd >= 0) {
+				struct kx_mount_attr a;
+
+				memset(&a, 0, sizeof(a));
+				a.attr_set = KX_MOUNT_ATTR_IDMAP;
+				a.userns_fd = (unsigned long long)idmap_fd;
+				if (kx_mount_setattr(overlay_mnt_fd, "", AT_EMPTY_PATH, &a,
+				                     sizeof(a)) != 0) {
+					saved_errno = errno;
+					overlay_ret = -1;
+				}
+			} else {
+				saved_errno = errno;
+				overlay_ret = -1;
+			}
+			umount2(spec->ov.merged, MNT_DETACH); /* drop the plain attached copy */
+			if (idmap_fd >= 0)
+				close(idmap_fd);
+		} else {
+			saved_errno = errno;
 		}
 		if (overlay_ret != 0) {
-			saved_errno = errno;
-			container_set_last_error_step("container_create: overlay_create (parent, userns)");
+			if (overlay_mnt_fd >= 0) {
+				close(overlay_mnt_fd);
+				overlay_mnt_fd = -1;
+			}
+			errno = saved_errno;
+			container_set_last_error_step("container_create: userns id-mapped overlay setup");
 			close(diag_pipe[0]);
 			close(diag_pipe[1]);
 			if (want_net) {
@@ -283,7 +411,8 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		if (spec->userns_enabled) {
 			close(userns_pipe[0]);
 			close(userns_pipe[1]);
-			umount2(spec->ov.merged, MNT_DETACH);
+			if (overlay_mnt_fd >= 0)
+				close(overlay_mnt_fd); /* the detached idmapped overlay is freed with its last fd */
 		}
 		if (bpf_prog_fd >= 0)
 			close(bpf_prog_fd);
@@ -377,19 +506,22 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			}
 		}
 		/*
-		 * ADR-0179 phase 2b: pivot_root() rejects a MNT_LOCKED new root
-		 * with EINVAL, and every mount inherited into a userns-owned mount
-		 * namespace is locked (a kernel security measure). The parent-
-		 * mounted overlay this child inherited is therefore locked. A fresh
-		 * bind mount of merged onto itself, created here in the child's own
-		 * namespace, is NOT locked -- pivot_root() then targets that
-		 * unlocked mount instead. Non-userns keeps mounting merged itself
-		 * (already unlocked), so it needs none of this.
+		 * ADR-0179 phase 2c: attach the parent's detached, id-mapped
+		 * overlay mount into THIS child's own mount namespace with
+		 * move_mount(). A mount the child attaches itself is not
+		 * MNT_LOCKED (so pivot_root accepts it, unlike a userns-inherited
+		 * mount -- phase 2b), and move_mount preserves the id-mapping the
+		 * parent set (unlike a plain bind, which would strip it). Non-userns
+		 * mounted merged itself in overlay_create above and needs none of
+		 * this.
 		 */
-		if (spec->userns_enabled &&
-		    mount(spec->ov.merged, spec->ov.merged, NULL, MS_BIND, NULL) != 0) {
-			child_diag(diag_pipe[1], "child: bind merged (userns unlock)");
-			_exit(122);
+		if (spec->userns_enabled) {
+			if (kx_move_mount(overlay_mnt_fd, "", -1, spec->ov.merged,
+			                  KX_MOVE_MOUNT_F_EMPTY_PATH) != 0) {
+				child_diag(diag_pipe[1], "child: move_mount idmapped overlay");
+				_exit(122);
+			}
+			close(overlay_mnt_fd);
 		}
 		{
 			int mountns_pivot_ret = mountns_pivot(spec->ov.merged, &spec->mnt);
@@ -493,6 +625,13 @@ int container_create(const struct container_spec *spec, struct container_handle 
 
 	/* Parent. */
 	close(diag_pipe[1]);
+	/*
+	 * Phase 2c: the child inherited its own copy of the detached id-mapped
+	 * overlay fd at clone3; drop the parent's copy. The detached mount
+	 * stays alive on the child's copy until it move_mounts it in.
+	 */
+	if (spec->userns_enabled && overlay_mnt_fd >= 0)
+		close(overlay_mnt_fd);
 
 	/*
 	 * ADR-0179 phase 2: write the child's uid/gid maps, then release it.
@@ -524,7 +663,6 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			}
 			sys_pidfd_send_signal(pidfd, SIGKILL);
 			waitid(P_PIDFD, pidfd, &info, WEXITED);
-			umount2(spec->ov.merged, MNT_DETACH);
 			close(diag_pipe[0]);
 			close(pidfd);
 			if (bpf_prog_fd >= 0)
@@ -533,17 +671,6 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			errno = saved_errno;
 			return -1;
 		}
-		/*
-		 * The child now holds its own inherited copy of the overlay
-		 * mount (its CLONE_NEWNS snapshot) and has been released to pivot
-		 * into it -- drop thincd's own transient copy. MNT_DETACH is safe
-		 * and non-propagating: the child's copy is a separate mount object
-		 * over the same (refcounted) superblock, and merged was marked
-		 * MS_PRIVATE before clone3. Any later parent-side failure below
-		 * just kills the child, whose mount namespace (and its overlay
-		 * copy) is then torn down by the kernel on exit.
-		 */
-		umount2(spec->ov.merged, MNT_DETACH);
 	}
 
 	if (want_net) {
@@ -675,7 +802,7 @@ void container_decode_exit_status(int exit_status, char *buf, size_t bufsize)
 		{ 119, "prctl(PR_SET_PDEATHSIG) failed" },
 		{ 120, "container_caps_drop failed" },
 		{ 121, "userns map sync failed (parent never released the child)" },
-		{ 122, "userns overlay bind-unlock failed (pre-pivot_root)" },
+		{ 122, "userns id-mapped overlay move_mount failed (pre-pivot_root)" },
 		{ 127, "exec failed (errno out of encodable range)" },
 		{ 130, "overlay: lowerdir stat failed" },
 		{ 131, "overlay: upperdir mkdir failed" },
