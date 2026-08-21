@@ -258,6 +258,8 @@ static void write_stopped_def_json_one(struct container_def *d, struct json_writ
 	jw_null(w);
 	jw_key(w, "exit_status");
 	jw_null(w);
+	jw_key(w, "term_signal"); /* schema parity with a live entry (issue #78) */
+	jw_null(w);
 	jw_key(w, "networks");
 	jw_arr_open(w);
 	jw_arr_close(w);

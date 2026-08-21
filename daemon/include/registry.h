@@ -130,7 +130,16 @@ struct registry_entry {
 	char image_version[65];
 	struct container_handle handle;
 	int running;       /* 1 while the container's process is alive */
-	int exit_status;   /* valid once running == 0 */
+	int exit_status;   /* valid once running == 0; raw waitid() si_status */
+	/*
+	 * Companion to exit_status (issue #78): 0 if the container exited
+	 * normally (exit_status is a real exit code), else the signal number
+	 * it was killed by (exit_status is then that same signal number, not
+	 * an exit code). A deliberate stop/delete SIGKILLs the container, so
+	 * this is 9 for every stopped/deleted-while-running container. Valid
+	 * once running == 0; not persisted, same as exit_status.
+	 */
+	int term_signal;
 	/*
 	 * Human-readable "why," valid once running == 0 alongside
 	 * exit_status above -- either the child's own real diagnostic text

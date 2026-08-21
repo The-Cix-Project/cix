@@ -597,10 +597,19 @@ int container_cap_name_valid(const char *name);
 const char *container_create_last_error_step(void);
 
 /*
- * Race-free wait via the handle's pidfd. On return *exit_status
- * holds the child's exit status as reported by waitid().
+ * Race-free wait via the handle's pidfd. On return *exit_status holds
+ * the child's raw status as reported by waitid()'s si_status, and
+ * *term_signal disambiguates what that number means (issue #78): 0 if
+ * the child exited normally (so *exit_status is a real exit code), or
+ * the signal number if it was killed by a signal (so *exit_status is
+ * that same signal number, NOT an exit code). Callers that only care
+ * whether the exit was clean can keep testing *exit_status == 0 (a
+ * signal-kill always yields a nonzero *exit_status); callers that
+ * report or decode the status must consult *term_signal so a SIGKILL
+ * (signal 9, how stop/delete terminate a container) is never shown as
+ * "exit code 9". Pass NULL for term_signal to ignore it.
  */
-int container_wait(const struct container_handle *h, int *exit_status);
+int container_wait(const struct container_handle *h, int *exit_status, int *term_signal);
 
 /*
  * Reads whatever diagnostic text (if any) h->diag_fd's write end
@@ -625,6 +634,11 @@ ssize_t container_read_diag(struct container_handle *h, char *buf, size_t bufsiz
  * container_create()'s own comment documents) into a short, fixed
  * category string ("clean exit", "mountns_make_private failed",
  * "overlay: lowerdir stat failed", "exec: file not found", etc.).
+ * term_signal is container_wait()'s companion output (issue #78): when
+ * nonzero the child was killed by that signal, so exit_status is a
+ * signal number, not an exit code, and the string reads "killed by
+ * signal N (NAME)" instead of "exited with status N" -- this is what a
+ * deliberate stop/delete (SIGKILL) produces. Pass 0 for a normal exit.
  * Deliberately just the CATEGORY, not the real errno text (that part
  * comes from container_read_diag() above when available, and this
  * function's own output is the fallback for the rarer case -- a
@@ -632,6 +646,6 @@ ssize_t container_read_diag(struct container_handle *h, char *buf, size_t bufsiz
  * a genuinely exhausted diag pipe -- where it isn't). Always fills
  * buf with something non-empty; never fails.
  */
-void container_decode_exit_status(int exit_status, char *buf, size_t bufsize);
+void container_decode_exit_status(int exit_status, int term_signal, char *buf, size_t bufsize);
 
 #endif /* CONTAINER_H */

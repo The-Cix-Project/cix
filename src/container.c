@@ -672,7 +672,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	return 0;
 }
 
-int container_wait(const struct container_handle *h, int *exit_status)
+int container_wait(const struct container_handle *h, int *exit_status, int *term_signal)
 {
 	siginfo_t info;
 
@@ -680,6 +680,20 @@ int container_wait(const struct container_handle *h, int *exit_status)
 		return -1;
 
 	*exit_status = info.si_status;
+	if (term_signal != NULL) {
+		/*
+		 * si_status is dual-purpose: an exit code when the child
+		 * exited normally (CLD_EXITED), the signal number when it was
+		 * killed (CLD_KILLED / CLD_DUMPED). Surface which one it is so
+		 * a caller never has to guess whether "9" means exit code 9 or
+		 * SIGKILL (issue #78). exit_status still carries the raw
+		 * si_status either way, so the "== 0 means clean" test every
+		 * restart/pkg path relies on is unchanged.
+		 */
+		*term_signal = (info.si_code == CLD_KILLED || info.si_code == CLD_DUMPED)
+		                   ? info.si_status
+		                   : 0;
+	}
 	return 0;
 }
 
@@ -715,7 +729,25 @@ ssize_t container_read_diag(struct container_handle *h, char *buf, size_t bufsiz
 	return total;
 }
 
-void container_decode_exit_status(int exit_status, char *buf, size_t bufsize)
+/*
+ * Short uppercase name for the handful of signals a container actually
+ * dies from in practice -- SIGKILL (stop/delete), SIGTERM, and the
+ * common crash signals. Not exhaustive: an unlisted signal just prints
+ * as its bare number, which is still unambiguous next to term_signal.
+ */
+static const char *container_signal_name(int sig)
+{
+	switch (sig) {
+	case 2:  return "SIGINT";
+	case 6:  return "SIGABRT";
+	case 9:  return "SIGKILL";
+	case 11: return "SIGSEGV";
+	case 15: return "SIGTERM";
+	default: return NULL;
+	}
+}
+
+void container_decode_exit_status(int exit_status, int term_signal, char *buf, size_t bufsize)
 {
 	static const struct {
 		int code;
@@ -745,6 +777,15 @@ void container_decode_exit_status(int exit_status, char *buf, size_t bufsize)
 	};
 	size_t i;
 
+	if (term_signal != 0) {
+		const char *name = container_signal_name(term_signal);
+
+		if (name != NULL)
+			snprintf(buf, bufsize, "killed by signal %d (%s)", term_signal, name);
+		else
+			snprintf(buf, bufsize, "killed by signal %d", term_signal);
+		return;
+	}
 	if (exit_status == 0) {
 		snprintf(buf, bufsize, "clean exit");
 		return;

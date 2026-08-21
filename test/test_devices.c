@@ -150,7 +150,7 @@ static int run_and_check(struct container_spec *spec, const char *label, int *ok
 		*ok = 0;
 		return -1;
 	}
-	if (container_wait(&h, &exit_status) != 0) {
+	if (container_wait(&h, &exit_status, NULL) != 0) {
 		perror(label);
 		*ok = 0;
 	} else if (exit_status != 0) {

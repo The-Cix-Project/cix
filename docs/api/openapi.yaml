@@ -7524,7 +7524,22 @@ components:
         exit_status:
           type: integer
           nullable: true
-          description: Exit status once status is exited; null while running.
+          description: >
+            Raw waitid() status once the container has exited; null while
+            running. Ambiguous on its own -- consult term_signal to know
+            whether it is a real exit code or a signal number (issue #78).
+        term_signal:
+          type: integer
+          nullable: true
+          description: >
+            Companion to exit_status (issue #78): 0 means the container
+            exited normally, so exit_status is a genuine exit code;
+            nonzero is the signal that killed it, in which case
+            exit_status is that same signal number, NOT an exit code. A
+            deliberate stop or delete SIGKILLs the container, so this is
+            9 for any container stopped/deleted while running -- letting
+            a client tell that apart from a real `exit 9`. null while
+            running.
         exit_reason:
           type: string
           nullable: true

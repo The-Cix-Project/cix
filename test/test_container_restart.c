@@ -417,6 +417,62 @@ int main(void)
 		kx_response_free(&r);
 	}
 
+	/*
+	 * issue #78: a container that dies by a SIGNAL (not a plain exit)
+	 * must report term_signal set to that signal number and an
+	 * exit_reason naming it -- so a signal death is never mistaken for
+	 * a real exit code of the same number. daemon_child faults with a
+	 * NULL deref (SIGSEGV, signal 11 -- see its own header for why not
+	 * SIGKILL: a container's PID 1 can only signal-kill itself via a
+	 * synchronous fault); restart:"no" retains it as "exited"
+	 * (ADR-0181), giving a stable window to read the fields back. The
+	 * SIGKILL-from-stop/delete path (term_signal 9) is verified live on
+	 * a real box, not here. A normal exit, by contrast, reports
+	 * term_signal 0 (every other scenario in this file exercises that).
+	 */
+	{
+		int i;
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"sigdeath\",\"image\":\"restarttest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"-1\"]}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST sigdeath, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		for (i = 0; i < 60; i++) {
+			kx_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "GET", "/v1/containers/sigdeath", NULL, &r) == 0 &&
+			    r.status == 200 && str_eq(json_str_field(r.json, "status"), "exited"))
+				break;
+			usleep(100000);
+		}
+		if (r.status != 200 || !str_eq(json_str_field(r.json, "status"), "exited")) {
+			fprintf(stderr, "FAIL: sigdeath never reached exited\n");
+			ok = 0;
+		} else if (json_num_field(r.json, "term_signal") != 11) {
+			fprintf(stderr, "FAIL: sigdeath term_signal expected 11 (SIGSEGV), got %ld\n",
+			        json_num_field(r.json, "term_signal"));
+			ok = 0;
+		} else if (strstr(json_str_field(r.json, "exit_reason") ? json_str_field(r.json, "exit_reason") : "",
+		                  "signal 11") == NULL) {
+			fprintf(stderr, "FAIL: sigdeath exit_reason should name signal 11, got \"%s\"\n",
+			        json_str_field(r.json, "exit_reason"));
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "DELETE", "/v1/containers/sigdeath", NULL, &r);
+		kx_response_free(&r);
+	}
+
 	/* on-failure: a crash (nonzero exit) exit DOES restart, same
 	 * measured-gap style as the plain "always" crasher above -- proves
 	 * the delay/backoff wiring applies to on-failure too. */
