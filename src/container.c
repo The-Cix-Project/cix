@@ -93,6 +93,49 @@ const char *container_create_last_error_step(void)
 	return g_last_error_step;
 }
 
+/*
+ * ADR-0179 (issue #29) phase 2: the PARENT writes a freshly-cloned
+ * CLONE_NEWUSER child's uid/gid maps, then releases it. The child blocks
+ * on userns_pipe before touching anything -- until these maps land it has
+ * no valid mapped identity, so any privileged op (the overlay mount
+ * included) would run with the wrong credentials. Ordering is the
+ * documented kernel requirement: "deny" to setgroups (a task may only
+ * gain, never re-drop, group membership across a map) BEFORE gid_map,
+ * then uid_map. Each map is the single line "0 <base> <len>": the
+ * container's own 0..len-1 onto host [base, base+len). Raw /proc writes,
+ * no glibc wrapper needed -- same posture as this file's other raw
+ * syscalls.
+ */
+static int write_proc_line(pid_t pid, const char *which, const char *val)
+{
+	char path[64];
+	int fd;
+	ssize_t n;
+	size_t len = strlen(val);
+
+	snprintf(path, sizeof(path), "/proc/%d/%s", (int)pid, which);
+	fd = open(path, O_WRONLY);
+	if (fd < 0)
+		return -1;
+	n = write(fd, val, len);
+	close(fd);
+	return (n == (ssize_t)len) ? 0 : -1;
+}
+
+static int write_userns_maps(pid_t pid, long long base, long long len)
+{
+	char map[64];
+
+	if (write_proc_line(pid, "setgroups", "deny") != 0)
+		return -1;
+	snprintf(map, sizeof(map), "0 %lld %lld", base, len);
+	if (write_proc_line(pid, "gid_map", map) != 0)
+		return -1;
+	if (write_proc_line(pid, "uid_map", map) != 0)
+		return -1;
+	return 0;
+}
+
 int container_create(const struct container_spec *spec, struct container_handle *out)
 {
 	int cgroup_fd;
@@ -101,6 +144,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	long ret;
 	int net_pipe[2] = { -1, -1 };
 	int diag_pipe[2] = { -1, -1 };
+	int userns_pipe[2] = { -1, -1 };
 	int want_net = (spec->net_count > 0);
 	int i;
 
@@ -159,11 +203,17 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		return -1;
 	}
 
-	ret = ns_clone3(spec->ns.clone_flags, cgroup_fd, &pidfd);
-	if (ret < 0) {
+	/*
+	 * ADR-0179 phase 2: the userns sync pipe. Plain blocking pipe (same
+	 * posture as net_pipe) -- the child blocks reading it right after
+	 * clone3(), the parent writes the maps then releases it. Only created
+	 * when userns is actually requested, so every non-userns create is
+	 * byte-for-byte unchanged.
+	 */
+	if (spec->userns_enabled && pipe(userns_pipe) != 0) {
 		int saved_errno = errno;
-		perror("container_create: ns_clone3");
-		container_set_last_error_step("container_create: ns_clone3");
+		perror("container_create: pipe(userns_pipe)");
+		container_set_last_error_step("container_create: pipe(userns_pipe)");
 		close(diag_pipe[0]);
 		close(diag_pipe[1]);
 		if (want_net) {
@@ -177,11 +227,53 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		return -1;
 	}
 
+	ret = ns_clone3(spec->ns.clone_flags, cgroup_fd, &pidfd);
+	if (ret < 0) {
+		int saved_errno = errno;
+		perror("container_create: ns_clone3");
+		container_set_last_error_step("container_create: ns_clone3");
+		close(diag_pipe[0]);
+		close(diag_pipe[1]);
+		if (want_net) {
+			close(net_pipe[0]);
+			close(net_pipe[1]);
+		}
+		if (spec->userns_enabled) {
+			close(userns_pipe[0]);
+			close(userns_pipe[1]);
+		}
+		if (bpf_prog_fd >= 0)
+			close(bpf_prog_fd);
+		close(cgroup_fd);
+		errno = saved_errno;
+		return -1;
+	}
+
 	if (ret == 0) {
 		/* Child: from here on we live inside the new namespaces. */
 		close(diag_pipe[0]);
 		if (want_net)
 			close(net_pipe[1]);
+
+		/*
+		 * ADR-0179 phase 2: with CLONE_NEWUSER in the clone flags,
+		 * block until the parent has written our uid/gid maps. Until
+		 * then this process holds no valid mapped identity, and every
+		 * privileged step below (the overlay mount included) would run
+		 * with the wrong credentials. Closing our own write end first
+		 * makes a parent that dies before writing surface as a clean
+		 * EOF here (read returns 0) rather than an indefinite hang.
+		 */
+		if (spec->userns_enabled) {
+			char c;
+
+			close(userns_pipe[1]);
+			if (read(userns_pipe[0], &c, 1) != 1) {
+				child_diag(diag_pipe[1], "child: userns map sync");
+				_exit(121);
+			}
+			close(userns_pipe[0]);
+		}
 
 		/*
 		 * Each pre-exec setup step gets its own exit code (110-119)
@@ -336,6 +428,47 @@ int container_create(const struct container_spec *spec, struct container_handle 
 
 	/* Parent. */
 	close(diag_pipe[1]);
+
+	/*
+	 * ADR-0179 phase 2: write the child's uid/gid maps, then release it.
+	 * This must happen before the child can reach any privileged step, so
+	 * it comes first in the parent -- ahead of the veth handshake below,
+	 * which the child only reaches long after the userns barrier. On any
+	 * failure, closing the write end EOFs the child's blocked read (clean
+	 * _exit(121)); we then also SIGKILL+reap to abort creation, matching
+	 * the interface-attach failure path's own posture.
+	 */
+	if (spec->userns_enabled) {
+		int userns_ok, saved_errno;
+
+		close(userns_pipe[0]);
+		userns_ok = (write_userns_maps((pid_t)ret, spec->userns_uid_base,
+		                               spec->userns_len) == 0) &&
+		            (write(userns_pipe[1], "x", 1) == 1);
+		saved_errno = errno;
+		close(userns_pipe[1]);
+		if (!userns_ok) {
+			siginfo_t info;
+
+			errno = saved_errno;
+			perror("container_create: userns map/release");
+			container_set_last_error_step("container_create: userns map/release");
+			if (want_net) {
+				close(net_pipe[0]);
+				close(net_pipe[1]);
+			}
+			sys_pidfd_send_signal(pidfd, SIGKILL);
+			waitid(P_PIDFD, pidfd, &info, WEXITED);
+			close(diag_pipe[0]);
+			close(pidfd);
+			if (bpf_prog_fd >= 0)
+				close(bpf_prog_fd);
+			close(cgroup_fd);
+			errno = saved_errno;
+			return -1;
+		}
+	}
+
 	if (want_net) {
 		close(net_pipe[0]);
 		if (container_net_host_setup(spec->nets, spec->net_count, (pid_t)ret, net_pipe[1]) != 0) {
@@ -463,6 +596,8 @@ void container_decode_exit_status(int exit_status, char *buf, size_t bufsize)
 		{ 117, "container_net_enable_ip_forward failed" },
 		{ 118, "container_net_apply_sysctl failed" },
 		{ 119, "prctl(PR_SET_PDEATHSIG) failed" },
+		{ 120, "container_caps_drop failed" },
+		{ 121, "userns map sync failed (parent never released the child)" },
 		{ 127, "exec failed (errno out of encodable range)" },
 		{ 130, "overlay: lowerdir stat failed" },
 		{ 131, "overlay: upperdir mkdir failed" },

@@ -8213,6 +8213,7 @@ static const char *container_body_unknown_key(const struct json_value *root)
 		"ldap_secret_dir", "restart", "restart_delay_seconds", "follow_rolling",
 		"follow_rolling_jitter_seconds", "depends_on", "readiness", "memory_max",
 		"cpu_max", "pids_max", "cpuset_cpus", "disk_quota_bytes", "ldap_login",
+		"userns",
 	};
 	size_t i, k;
 
@@ -8365,6 +8366,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 	int ip_forward = 0;
 	const struct json_value *jcapture_output;
 	int capture_output = 0;
+	const struct json_value *juserns; /* ADR-0179 #29 phase 2 opt-in */
+	int userns = 0;
 	int ldap_login = 0; /* issue #66 */
 	int output_pipe[2] = { -1, -1 };
 	int stdio_write_fd = -1;
@@ -8428,6 +8431,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	jnetworks = json_object_get(root, "networks");
 	jip_forward = json_object_get(root, "ip_forward");
 	jcapture_output = json_object_get(root, "capture_output");
+	juserns = json_object_get(root, "userns");
 	jroutes = json_object_get(root, "routes");
 	jdevices = json_object_get(root, "devices");
 	jinterfaces = json_object_get(root, "interfaces");
@@ -8452,6 +8456,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	ip_forward = (jip_forward != NULL && jip_forward->type == JSON_BOOL && jip_forward->u.boolean);
 	capture_output = (jcapture_output != NULL && jcapture_output->type == JSON_BOOL &&
 	                   jcapture_output->u.boolean);
+	userns = (juserns != NULL && juserns->type == JSON_BOOL && juserns->u.boolean);
 	dns_register = (jdns_register != NULL && jdns_register->type == JSON_BOOL &&
 	                jdns_register->u.boolean);
 	pki_issue = (jpki_issue != NULL && jpki_issue->type == JSON_BOOL && jpki_issue->u.boolean);
@@ -9306,6 +9311,30 @@ static int create_container_from_body(const char *body, size_t body_len,
 	memset(&spec, 0, sizeof(spec));
 	spec.ns.clone_flags = CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWNET |
 	                       CLONE_NEWCGROUP | CLONE_INTO_CGROUP;
+	/*
+	 * ADR-0179 (issue #29) phase 2 opt-in: "userns":true gives this
+	 * container its own user namespace, its root mapped onto a dedicated
+	 * host subordinate-ID range. Keyed on the container name for now (the
+	 * ADR's own host-auth-off fallback key) -- preferring the caller's
+	 * resolved uidnumber is a later refinement; both share the same
+	 * allocator. Opt-in during verification specifically so the platform's
+	 * existing running containers are untouched until this path is proven
+	 * on real hardware, after which the ADR flips it to default-on.
+	 */
+	if (userns) {
+		long long base;
+
+		if (subid_lookup_or_assign(name, &base) != 0) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "failed to allocate a userns subordinate-ID range");
+			return 500;
+		}
+		spec.ns.clone_flags |= CLONE_NEWUSER;
+		spec.userns_enabled = 1;
+		spec.userns_uid_base = base;
+		spec.userns_gid_base = base;
+		spec.userns_len = SUBID_RANGE_LEN;
+	}
 	spec.ns.hostname = name;
 	spec.cg.name = name;
 	jmem = json_object_get(root, "memory_max");
