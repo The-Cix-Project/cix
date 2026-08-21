@@ -9388,6 +9388,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	spec.ov.upperdir = upperdir;
 	spec.ov.workdir = workdir;
 	spec.ov.merged = merged;
+	spec.ov.base = container_base; /* ADR-0179 phase 2c: single mount for upper+work */
 	spec.mnt.put_old_rel = ".old_root";
 	spec.net_count = net_count;
 	for (i = 0; i < (size_t)net_count; i++) {

@@ -173,10 +173,17 @@ static int tag_dir_project_id(const char *dir, unsigned int project_id, const ch
  * "overlay_create" bucket. Every existing caller already only ever
  * checked `!= 0`, so this is a pure refinement, not a behavior change.
  */
-int overlay_create(const struct overlay_spec *ov)
+/*
+ * Everything overlay_create() does EXCEPT the final mount(2): stat lowerdir,
+ * create+quota-tag upperdir (btrfs subvolume or ext4 dir), create+quota-tag
+ * workdir, create the merged mountpoint. Split out (ADR-0179 phase 2c) so the
+ * userns path can prepare the same dirs and then build an *id-mapped* overlay
+ * via the fd-based mount API instead of the classic mount() overlay_create
+ * still does. Returns 0 or a negative OVERLAY_ERR_* (errno set).
+ */
+int overlay_prepare_dirs(const struct overlay_spec *ov)
 {
 	struct stat st;
-	char opts[3 * PATH_MAX + 64];
 
 	/*
 	 * lowerdir is the shared image tree and must already exist and be
@@ -270,6 +277,17 @@ int overlay_create(const struct overlay_spec *ov)
 		perror("overlay_create: mkdir(merged)");
 		return OVERLAY_ERR_MKDIR_MERGED;
 	}
+
+	return 0;
+}
+
+int overlay_create(const struct overlay_spec *ov)
+{
+	char opts[3 * PATH_MAX + 64];
+	int prep = overlay_prepare_dirs(ov);
+
+	if (prep != 0)
+		return prep;
 
 	/*
 	 * redirect_dir=on was tried here first for issue #34 (a real,
