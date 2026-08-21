@@ -222,16 +222,29 @@ static int create_idmap_userns_fd(long long base, long long len)
 	close(pipefd[0]);
 
 	snprintf(map, sizeof(map), "%lld 0 %lld", base, len);
-	if (write_proc_line(helper, "setgroups", "deny") != 0 ||
-	    write_proc_line(helper, "gid_map", map) != 0 ||
-	    write_proc_line(helper, "uid_map", map) != 0) {
-		close(pipefd[1]); /* release the helper (EOF) */
+	if (write_proc_line(helper, "setgroups", "deny") != 0) {
+		container_set_last_error_step("create_idmap_userns_fd: setgroups");
+		close(pipefd[1]);
+		waitpid(helper, &status, 0);
+		return -1;
+	}
+	if (write_proc_line(helper, "gid_map", map) != 0) {
+		container_set_last_error_step("create_idmap_userns_fd: gid_map");
+		close(pipefd[1]);
+		waitpid(helper, &status, 0);
+		return -1;
+	}
+	if (write_proc_line(helper, "uid_map", map) != 0) {
+		container_set_last_error_step("create_idmap_userns_fd: uid_map");
+		close(pipefd[1]);
 		waitpid(helper, &status, 0);
 		return -1;
 	}
 
 	snprintf(path, sizeof(path), "/proc/%d/ns/user", (int)helper);
 	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		container_set_last_error_step("create_idmap_userns_fd: open ns/user");
 
 	close(pipefd[1]); /* release the helper; our open fd keeps the userns alive */
 	waitpid(helper, &status, 0);
