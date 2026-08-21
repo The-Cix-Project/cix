@@ -140,10 +140,11 @@ static int write_userns_maps(pid_t pid, long long base, long long len)
 }
 
 /*
- * ADR-0179 (issue #29) phase 2c: the new mount API (open_tree/move_mount/
- * mount_setattr) has no glibc wrappers -- raw syscalls, x86_64 numbers,
- * same posture as this file's other rawsyscalls. struct kx_mount_attr is
- * the uapi struct mount_attr (four naturally-aligned u64s, no packing).
+ * ADR-0179 (issue #29) phase 2c: the new mount API (open_tree/move_mount) has
+ * no glibc wrappers -- raw syscalls, x86_64 numbers, same posture as this
+ * file's other raw syscalls. Used to hand a userns container's own
+ * per-container rootfs from the parent (open_tree -> a detached, unlocked
+ * mount) to the child (move_mount into its own namespace, then pivot_root).
  */
 #ifndef __NR_open_tree
 #define __NR_open_tree 428
@@ -151,19 +152,8 @@ static int write_userns_maps(pid_t pid, long long base, long long len)
 #ifndef __NR_move_mount
 #define __NR_move_mount 429
 #endif
-#ifndef __NR_mount_setattr
-#define __NR_mount_setattr 442
-#endif
 #define KX_OPEN_TREE_CLONE 1
 #define KX_MOVE_MOUNT_F_EMPTY_PATH 0x00000004
-#define KX_MOUNT_ATTR_IDMAP 0x00100000
-
-struct kx_mount_attr {
-	unsigned long long attr_set;
-	unsigned long long attr_clr;
-	unsigned long long propagation;
-	unsigned long long userns_fd;
-};
 
 static long kx_open_tree(int dfd, const char *path, unsigned int flags)
 {
@@ -174,133 +164,6 @@ static long kx_move_mount(int from_dfd, const char *from, int to_dfd, const char
                           unsigned int flags)
 {
 	return syscall(__NR_move_mount, from_dfd, from, to_dfd, to, flags);
-}
-
-static long kx_mount_setattr(int dfd, const char *path, unsigned int flags,
-                             struct kx_mount_attr *a, size_t size)
-{
-	return syscall(__NR_mount_setattr, dfd, path, flags, a, size);
-}
-
-/*
- * ADR-0179 phase 2c: build the user namespace that carries the id-mapped
- * mount's translation. It is NOT the container's own userns -- it is the
- * INVERSE mapping: uid_map "<base> 0 <len>" (filesystem ids [0,len) are
- * presented as [base, base+len)). So a rootfs file owned by host uid 0 on
- * disk is presented as host uid <base>, which the container's own userns
- * ("0 <base> <len>") then resolves to container uid 0 -- the mapped root
- * genuinely owns its rootfs, killing the EOVERFLOW that unmapped host-0
- * ownership caused (phase 2b finding). A short-lived helper process holds
- * the namespace only long enough for us to open a handle to it; the open
- * fd keeps the userns object alive after the helper is reaped.
- */
-static int create_idmap_userns_fd(long long base, long long len)
-{
-	int pipefd[2];   /* go: parent -> child (release) */
-	int readyfd[2];  /* ready: child -> parent (unshare done) */
-	pid_t helper;
-	char path[64], map[64], c;
-	int fd, status;
-
-	if (pipe(pipefd) != 0)
-		return -1;
-	if (pipe(readyfd) != 0) {
-		close(pipefd[0]);
-		close(pipefd[1]);
-		return -1;
-	}
-	helper = fork();
-	if (helper < 0) {
-		close(pipefd[0]);
-		close(pipefd[1]);
-		close(readyfd[0]);
-		close(readyfd[1]);
-		return -1;
-	}
-	if (helper == 0) {
-		char rc;
-
-		close(pipefd[1]);
-		close(readyfd[0]);
-		if (unshare(CLONE_NEWUSER) != 0)
-			_exit(1);
-		/*
-		 * Signal the parent only AFTER unshare has landed -- otherwise
-		 * the parent can race ahead and write our uid_map while we're
-		 * still in the init userns, which fails EPERM (confirmed live).
-		 */
-		if (write(readyfd[1], "r", 1) != 1)
-			_exit(3);
-		if (read(pipefd[0], &rc, 1) != 1)
-			_exit(2);
-		_exit(0);
-	}
-	close(pipefd[0]);
-	close(readyfd[1]);
-
-	/* Wait for the child to confirm it is in its new user namespace. */
-	if (read(readyfd[0], &c, 1) != 1) {
-		container_set_last_error_step("create_idmap_userns_fd: unshare(CLONE_NEWUSER)");
-		close(readyfd[0]);
-		close(pipefd[1]);
-		waitpid(helper, &status, 0);
-		return -1;
-	}
-	close(readyfd[0]);
-
-	snprintf(map, sizeof(map), "%lld 0 %lld", base, len);
-	if (write_proc_line(helper, "setgroups", "deny") != 0) {
-		container_set_last_error_step("create_idmap_userns_fd: setgroups");
-		close(pipefd[1]);
-		waitpid(helper, &status, 0);
-		return -1;
-	}
-	if (write_proc_line(helper, "gid_map", map) != 0) {
-		container_set_last_error_step("create_idmap_userns_fd: gid_map");
-		close(pipefd[1]);
-		waitpid(helper, &status, 0);
-		return -1;
-	}
-	if (write_proc_line(helper, "uid_map", map) != 0) {
-		container_set_last_error_step("create_idmap_userns_fd: uid_map");
-		close(pipefd[1]);
-		waitpid(helper, &status, 0);
-		return -1;
-	}
-
-	snprintf(path, sizeof(path), "/proc/%d/ns/user", (int)helper);
-	fd = open(path, O_RDONLY | O_CLOEXEC);
-	if (fd < 0)
-		container_set_last_error_step("create_idmap_userns_fd: open ns/user");
-
-	close(pipefd[1]); /* release the helper; our open fd keeps the userns alive */
-	waitpid(helper, &status, 0);
-	return fd; /* -1 on open failure */
-}
-
-/*
- * open_tree(OPEN_TREE_CLONE) a path into a detached mount, then id-map it with
- * mount_setattr(MOUNT_ATTR_IDMAP). ext4-backed subtrees (this project's
- * per-container userns rootfs) support id-mapping. Returns a detached,
- * id-mapped mount fd, or -1 (errno set).
- */
-static int idmap_bind(const char *path, int idmap_fd)
-{
-	struct kx_mount_attr a;
-	int fd = (int)kx_open_tree(-1, path, KX_OPEN_TREE_CLONE);
-
-	if (fd < 0)
-		return -1;
-	memset(&a, 0, sizeof(a));
-	a.attr_set = KX_MOUNT_ATTR_IDMAP;
-	a.userns_fd = (unsigned long long)idmap_fd;
-	if (kx_mount_setattr(fd, "", AT_EMPTY_PATH, &a, sizeof(a)) != 0) {
-		int saved = errno;
-		close(fd);
-		errno = saved;
-		return -1;
-	}
-	return fd;
 }
 
 int container_create(const struct container_spec *spec, struct container_handle *out)
@@ -459,7 +322,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			close(userns_pipe[0]);
 			close(userns_pipe[1]);
 			if (overlay_lower_fd >= 0)
-				close(overlay_lower_fd); /* the id-mapped lower mount is freed with its last fd */
+				close(overlay_lower_fd); /* the detached rootfs mount is freed with its last fd */
 		}
 		if (bpf_prog_fd >= 0)
 			close(bpf_prog_fd);
@@ -519,11 +382,10 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			_exit(110);
 		}
 		/*
-		 * ADR-0179 phase 2b: a userns container's overlay was already
-		 * mounted by the parent (above) and is inherited through this
-		 * child's CLONE_NEWNS copy of the mount tree -- the child only
-		 * pivots into it, never mounts it (the mapped root can't). So the
-		 * child-side overlay_create runs for the non-userns case only.
+		 * A userns container has no overlay -- it uses its own
+		 * per-container rootfs, which the parent open_tree'd and the child
+		 * move_mounts + pivots into just below. So the classic child-side
+		 * overlay_create runs for the non-userns case only.
 		 */
 		if (!spec->userns_enabled) {
 			int overlay_ret = overlay_create(&spec->ov);
@@ -694,9 +556,9 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	/* Parent. */
 	close(diag_pipe[1]);
 	/*
-	 * Phase 2c: the child inherited its own copy of the id-mapped shared-
-	 * lower fd at clone3; drop the parent's copy. The detached mount stays
-	 * alive on the child's copy until it fsmounts the overlay over it.
+	 * Phase 2c: the child inherited its own copy of the detached rootfs fd
+	 * at clone3; drop the parent's copy. The detached mount stays alive on
+	 * the child's copy until it move_mounts it into its own namespace.
 	 */
 	if (spec->userns_enabled && overlay_lower_fd >= 0)
 		close(overlay_lower_fd);
