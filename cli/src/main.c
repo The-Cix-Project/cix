@@ -59,12 +59,9 @@ static void print_usage(FILE *out)
 	        "               snapshot attempt (manual or automatic)\n"
 	        "  backup-config snapshot-now  -- write the same bundle GET /system/backup\n"
 	        "               produces to the configured disk right now, regardless of schedule\n"
-	        "  ps\n"
-	        "  container ls  -- same as `ps` (every provisioned container and its current state);\n"
-	        "               a noun-based synonym matching dns/ldap/ntp/syslog/network/etc.'s own\n"
-	        "               <noun> <verb> shape\n"
-	        "  run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N] [--cpu-max=\"Q P\"]\n"
-	        "      [--cpuset=0-1,3] [--disk-quota=BYTES] [--network=NAME[:IP] ...]\n"
+	        "  container ls  -- every provisioned container and its current state\n"
+	        "  container run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N]\n"
+	        "      [--cpu-max=\"Q P\"] [--cpuset=0-1,3] [--disk-quota=BYTES] [--network=NAME[:IP] ...]\n"
 	        "      [--ip-forward] [--dns-register] [--pki-issue] [--pki-cert-dir=PATH]\n"
 	        "      [--pki-days=N] [--ldap-provision] [--ldap-user=NAME] [--ldap-group=NAME]\n"
 	        "      [--ldap-uid=N] [--ldap-secret-dir=PATH]\n"
@@ -73,26 +70,19 @@ static void print_usage(FILE *out)
 	        "      [--restart-delay=N] [--follow-rolling] [--follow-rolling-jitter-seconds=N]\n"
 	        "      [--depends-on=NAME ...] [--dns-server=A.B.C.D ...]\n"
 	        "      [--readiness-tcp-port=N [--readiness-timeout=N]] -- CMD [ARGS...]\n"
-	        "  inspect NAME\n"
-	        "  stop NAME  -- kill it now, keep its persisted definition (unlike rm)\n"
-	        "  start NAME  -- bring a stopped-but-defined container back, no daemon restart needed\n"
-	        "  pause NAME  -- freeze via the cgroup v2 freezer (real kernel freeze, not SIGSTOP)\n"
-	        "  unpause NAME\n"
-	        "  stats NAME  -- real, host-side CPU/memory/disk/network usage, gathered from\n"
-	        "               cgroups + the host's own veth (no in-container agent)\n"
-	        "  migrate-storage NAME [--disk=NAME]  -- move this container's own overlay\n"
-	        "               storage to a disk already carrying the container-storage role and\n"
-	        "               currently mounted (ADR-0142); omit --disk= to migrate back to the\n"
-	        "               default OS-disk placement; requires restart_policy != \"no\" (there\n"
-	        "               must be a persisted definition to restart from); briefly stops and\n"
-	        "               automatically restarts the container for the final cutover -- poll\n"
-	        "               migrate-storage-status\n"
-	        "  migrate-storage-status NAME  -- state/disk/error of the most recent (or\n"
-	        "               running) container-storage migration\n"
-	        "  console NAME [--cmd=PATH]  -- interactive shell inside a running container\n"
-	        "               (like `docker exec -it`), over the daemon's own WebSocket\n"
-	        "               upgrade; --cmd= overrides the default /usr/bin/bash\n"
-	        "  rm NAME\n"
+	        "  container inspect NAME\n"
+	        "  container start NAME  -- bring a stopped container back up\n"
+	        "  container stop NAME   -- stop it but keep it (start it again later); rm deletes\n"
+	        "  container pause NAME / container unpause NAME  -- cgroup v2 freezer (real freeze)\n"
+	        "  container stats NAME  -- real, host-side CPU/memory/disk/network usage\n"
+	        "  container migrate-storage NAME [--disk=NAME]  -- move this container's storage to a\n"
+	        "               disk carrying the container-storage role (ADR-0142); omit --disk= for\n"
+	        "               the default OS-disk placement; briefly restarts for the cutover -- poll\n"
+	        "               container migrate-storage-status NAME\n"
+	        "  container console NAME [--cmd=PATH]  -- interactive shell inside a running container,\n"
+	        "               over the daemon's own WebSocket; --cmd= overrides /usr/bin/bash\n"
+	        "  container files NAME --path=PATH  -- read a file from the container's rootfs\n"
+	        "  container rm NAME  -- delete the container and its storage\n"
 	        "  network create --name=NAME --subnet=A.B.C.D --prefix=N [--address=A.B.C.D]\n"
 	        "               -- no --address= means pure L2, no host-owned address (the\n"
 	        "               default); pass it only when the host itself should have an\n"
@@ -3483,6 +3473,21 @@ static int cmd_container_device(const struct kx_client *c, int json_mode, int ar
 	return 2;
 }
 
+/* Forward declarations: cmd_container() dispatches to these container verbs,
+ * which are defined below it (issue #74 -- all container ops under `container`). */
+static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **argv);
+static int cmd_inspect(const struct kx_client *c, int json_mode, int argc, char **argv);
+static int cmd_start(const struct kx_client *c, int json_mode, int argc, char **argv);
+static int cmd_stop(const struct kx_client *c, int json_mode, int argc, char **argv);
+static int cmd_pause(const struct kx_client *c, int json_mode, int argc, char **argv);
+static int cmd_unpause(const struct kx_client *c, int json_mode, int argc, char **argv);
+static int cmd_rm(const struct kx_client *c, int json_mode, int argc, char **argv);
+static int cmd_container_stats(const struct kx_client *c, int json_mode, int argc, char **argv);
+static int cmd_console(const struct kx_client *c, int argc, char **argv);
+static int cmd_files(const struct kx_client *c, int argc, char **argv);
+static int cmd_migrate_storage(const struct kx_client *c, int json_mode, int argc, char **argv);
+static int cmd_migrate_storage_status(const struct kx_client *c, int json_mode, int argc, char **argv);
+
 static int cmd_container(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	if (argc >= 1 && strcmp(argv[0], "recipe") == 0)
@@ -3493,20 +3498,49 @@ static int cmd_container(const struct kx_client *c, int json_mode, int argc, cha
 		return cmd_container_network(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "device") == 0)
 		return cmd_container_device(c, json_mode, argc - 1, argv + 1);
-	if (argc < 1 || strcmp(argv[0], "ls") != 0) {
-		fprintf(stderr, "usage: thincctl container ls  -- every provisioned container and its "
-		                "current state (same as `ps`)\n"
-		                "       thincctl container recipe add --name=NAME --file=PATH\n"
-		                "       thincctl container recipe show|rm NAME / container recipe ls\n"
-		                "       thincctl container apply-recipe NAME [--secret=KEY=VALUE ...]\n"
-		                "       thincctl container network attach NAME --network=NETWORK "
-		                "[--ip=A.B.C.D]\n"
-		                "       thincctl container network detach NAME NETWORK\n"
-		                "       thincctl container device attach NAME ID\n"
-		                "       thincctl container device detach NAME ID\n");
-		return 2;
-	}
-	return cmd_ps(c, json_mode);
+	/*
+	 * All container operations live under this one `container` namespace,
+	 * consistent with every other resource (network/image/dns/ldap/pki/pkg/
+	 * device). There are no top-level container verbs -- see docs/guides/
+	 * cli-reference.md and issue #74.
+	 */
+	if (argc >= 1 && strcmp(argv[0], "ls") == 0)
+		return cmd_ps(c, json_mode);
+	if (argc >= 1 && strcmp(argv[0], "run") == 0)
+		return cmd_run(c, json_mode, argc - 1, argv + 1);
+	if (argc >= 1 && strcmp(argv[0], "inspect") == 0)
+		return cmd_inspect(c, json_mode, argc - 1, argv + 1);
+	if (argc >= 1 && strcmp(argv[0], "start") == 0)
+		return cmd_start(c, json_mode, argc - 1, argv + 1);
+	if (argc >= 1 && strcmp(argv[0], "stop") == 0)
+		return cmd_stop(c, json_mode, argc - 1, argv + 1);
+	if (argc >= 1 && strcmp(argv[0], "pause") == 0)
+		return cmd_pause(c, json_mode, argc - 1, argv + 1);
+	if (argc >= 1 && strcmp(argv[0], "unpause") == 0)
+		return cmd_unpause(c, json_mode, argc - 1, argv + 1);
+	if (argc >= 1 && strcmp(argv[0], "rm") == 0)
+		return cmd_rm(c, json_mode, argc - 1, argv + 1);
+	if (argc >= 1 && strcmp(argv[0], "stats") == 0)
+		return cmd_container_stats(c, json_mode, argc - 1, argv + 1);
+	if (argc >= 1 && strcmp(argv[0], "console") == 0)
+		return cmd_console(c, argc - 1, argv + 1);
+	if (argc >= 1 && strcmp(argv[0], "files") == 0)
+		return cmd_files(c, argc - 1, argv + 1);
+	if (argc >= 1 && strcmp(argv[0], "migrate-storage") == 0)
+		return cmd_migrate_storage(c, json_mode, argc - 1, argv + 1);
+	if (argc >= 1 && strcmp(argv[0], "migrate-storage-status") == 0)
+		return cmd_migrate_storage_status(c, json_mode, argc - 1, argv + 1);
+	fprintf(stderr,
+	        "usage: thincctl container ls | run ... | start NAME | stop NAME | pause NAME |\n"
+	        "         unpause NAME | rm NAME | inspect NAME | stats NAME | console NAME [--cmd=PATH] |\n"
+	        "         files NAME --path=PATH | migrate-storage NAME --disk=ID | migrate-storage-status NAME\n"
+	        "       thincctl container recipe add --name=NAME --file=PATH\n"
+	        "       thincctl container recipe show|rm NAME / container recipe ls\n"
+	        "       thincctl container apply-recipe NAME [--secret=KEY=VALUE ...]\n"
+	        "       thincctl container network attach NAME --network=NETWORK [--ip=A.B.C.D]\n"
+	        "       thincctl container network detach NAME NETWORK\n"
+	        "       thincctl container device attach NAME ID / device detach NAME ID\n");
+	return 2;
 }
 
 static int cmd_inspect(const struct kx_client *c, int json_mode, int argc, char **argv)
@@ -10410,34 +10444,15 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_syslog(client, json_mode, argc, argv);
 	if (strcmp(cmd, "time") == 0)
 		return cmd_time(client, json_mode, argc, argv);
-	if (strcmp(cmd, "ps") == 0)
-		return cmd_ps(client, json_mode);
+	/*
+	 * All container operations are under the `container` namespace (issue
+	 * #74) -- ls/run/start/stop/pause/unpause/rm/inspect/stats/console/
+	 * files/migrate-storage[-status], plus recipe/apply-recipe/network/
+	 * device. No top-level container verbs, consistent with every other
+	 * resource noun below.
+	 */
 	if (strcmp(cmd, "container") == 0)
 		return cmd_container(client, json_mode, argc, argv);
-	if (strcmp(cmd, "run") == 0)
-		return cmd_run(client, json_mode, argc, argv);
-	if (strcmp(cmd, "inspect") == 0)
-		return cmd_inspect(client, json_mode, argc, argv);
-	if (strcmp(cmd, "stop") == 0)
-		return cmd_stop(client, json_mode, argc, argv);
-	if (strcmp(cmd, "start") == 0)
-		return cmd_start(client, json_mode, argc, argv);
-	if (strcmp(cmd, "pause") == 0)
-		return cmd_pause(client, json_mode, argc, argv);
-	if (strcmp(cmd, "unpause") == 0)
-		return cmd_unpause(client, json_mode, argc, argv);
-	if (strcmp(cmd, "stats") == 0)
-		return cmd_container_stats(client, json_mode, argc, argv);
-	if (strcmp(cmd, "migrate-storage") == 0)
-		return cmd_migrate_storage(client, json_mode, argc, argv);
-	if (strcmp(cmd, "migrate-storage-status") == 0)
-		return cmd_migrate_storage_status(client, json_mode, argc, argv);
-	if (strcmp(cmd, "console") == 0)
-		return cmd_console(client, argc, argv);
-	if (strcmp(cmd, "files") == 0)
-		return cmd_files(client, argc, argv);
-	if (strcmp(cmd, "rm") == 0)
-		return cmd_rm(client, json_mode, argc, argv);
 	if (strcmp(cmd, "network") == 0)
 		return cmd_network(client, json_mode, argc, argv);
 	if (strcmp(cmd, "image") == 0)
