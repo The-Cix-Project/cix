@@ -1,5 +1,6 @@
 #include "pkg.h"
 #include "image.h"
+#include "ldap.h"
 #include "linux_compat.h"
 #include "logstore.h"
 #include "namecheck.h"
@@ -5707,37 +5708,71 @@ static char *container_recipe_substitute_secrets(const char *content,
 
 	jw_init(&w);
 	while (*p != '\0') {
-		const char *tok = strstr(p, "{{SECRET:");
+		/* Issue #66: two token families share one scan -- the original
+		 * {{SECRET:KEY}} (values from the apply request) and
+		 * {{LDAP:FIELD}} (values from the daemon's own LDAP client
+		 * config, ldap_config_get() -- URI / BASE_DN / BIND_DN /
+		 * BIND_PASSWORD), so recipes needing LDAP login carry no
+		 * copied values and no per-apply secret at all. Same
+		 * unmatched-token-left-verbatim posture for both. */
+		const char *stok = strstr(p, "{{SECRET:");
+		const char *ltok = strstr(p, "{{LDAP:");
+		const char *tok;
+		int is_ldap;
+		size_t prefix_len;
 		const char *key_end;
 		char key[128];
 		size_t key_len;
 		const struct json_value *jval;
 		const char *val;
 
-		if (tok == NULL) {
+		if (stok == NULL && ltok == NULL) {
 			jw_raw_text(&w, p, strlen(p));
 			break;
 		}
+		if (stok != NULL && (ltok == NULL || stok < ltok)) {
+			tok = stok;
+			is_ldap = 0;
+			prefix_len = 9;
+		} else {
+			tok = ltok;
+			is_ldap = 1;
+			prefix_len = 7;
+		}
 		jw_raw_text(&w, p, (size_t)(tok - p));
 
-		key_end = strstr(tok + 9, "}}");
+		key_end = strstr(tok + prefix_len, "}}");
 		if (key_end == NULL) {
 			/* No closing "}}" anywhere -- not a real token, copy the
 			 * rest verbatim rather than loop forever. */
 			jw_raw_text(&w, tok, strlen(tok));
 			break;
 		}
-		key_len = (size_t)(key_end - (tok + 9));
+		key_len = (size_t)(key_end - (tok + prefix_len));
 		if (key_len == 0 || key_len >= sizeof(key)) {
 			jw_raw_text(&w, tok, (size_t)(key_end + 2 - tok));
 			p = key_end + 2;
 			continue;
 		}
-		memcpy(key, tok + 9, key_len);
+		memcpy(key, tok + prefix_len, key_len);
 		key[key_len] = '\0';
 
-		jval = secrets != NULL ? json_object_get(secrets, key) : NULL;
-		val = json_as_string(jval);
+		if (is_ldap) {
+			const struct ldap_config *lc = ldap_config_get();
+
+			val = NULL;
+			if (strcmp(key, "URI") == 0 && lc->client_uri[0] != '\0')
+				val = lc->client_uri;
+			else if (strcmp(key, "BASE_DN") == 0 && lc->base_dn[0] != '\0')
+				val = lc->base_dn;
+			else if (strcmp(key, "BIND_DN") == 0 && lc->bind_dn[0] != '\0')
+				val = lc->bind_dn;
+			else if (strcmp(key, "BIND_PASSWORD") == 0 && lc->bind_password[0] != '\0')
+				val = lc->bind_password;
+		} else {
+			jval = secrets != NULL ? json_object_get(secrets, key) : NULL;
+			val = json_as_string(jval);
+		}
 		if (val != NULL)
 			jw_raw_escaped_content(&w, val);
 		else

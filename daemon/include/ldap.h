@@ -355,6 +355,29 @@ void ldap_user_forget_owner(const char *container_name);
 struct ldap_config {
 	int start_uid;
 	int start_gid;
+	/*
+	 * Issue #66: the LDAP *client* login settings every container that
+	 * authenticates against this platform's LDAP needs -- stored once
+	 * here instead of hand-copied (URI list, base DN, bind DN, and a
+	 * real bind credential) into every such container's recipe. A
+	 * container recipe references them as {{LDAP:URI}} /
+	 * {{LDAP:BASE_DN}} / {{LDAP:BIND_DN}} / {{LDAP:BIND_PASSWORD}}
+	 * tokens, resolved at recipe render time (container_recipe_
+	 * render()) exactly like {{SECRET:KEY}} -- so recipes carry no
+	 * values at all and an LDAP server move is one config PUT, not a
+	 * recipe hunt. bind_password is stored in this module's root-only
+	 * state file (the same posture PKI private keys already have) and
+	 * NEVER serialized back out -- GET reports only bind_password_set.
+	 * client_uri is the full, explicit URI list (e.g. "ldap://a:3893/
+	 * ldap://b:3893/") rather than something derived from the
+	 * registered-server bindings, which store no address/port --
+	 * auto-derivation is a tracked refinement on #66, not silently
+	 * half-done here. Empty strings mean unset.
+	 */
+	char client_uri[512];
+	char base_dn[256];
+	char bind_dn[256];
+	char bind_password[256];
 };
 
 /* Loads persisted start_uid/start_gid (if any) at startup, alongside
@@ -372,6 +395,14 @@ const struct ldap_config *ldap_config_get(void);
  * Persists immediately; takes effect on the very next ldap_uid_alloc()/
  * ldap_gid_alloc() call. */
 enum ldap_record_error ldap_config_set(int start_uid, int start_gid);
+
+/*
+ * Issue #66: update the client-login fields (any NULL argument leaves
+ * that field unchanged; an empty string clears it). Persists alongside
+ * start_uid/start_gid in the same state file.
+ */
+enum ldap_record_error ldap_config_set_client(const char *client_uri, const char *base_dn,
+                                               const char *bind_dn, const char *bind_password);
 
 void ldap_config_write_json(struct json_writer *w);
 

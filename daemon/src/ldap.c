@@ -477,6 +477,20 @@ int ldap_config_init(const char *state_path)
 		g_config.start_uid = (int)json_as_number(jstart_uid);
 	if (jstart_gid != NULL)
 		g_config.start_gid = (int)json_as_number(jstart_gid);
+	/* Issue #66: client-login fields (absent in older state files --
+	 * empty/unset then, no migration needed). */
+	{
+		const char *v;
+
+		if ((v = json_as_string(json_object_get(root, "client_uri"))) != NULL)
+			snprintf(g_config.client_uri, sizeof(g_config.client_uri), "%s", v);
+		if ((v = json_as_string(json_object_get(root, "base_dn"))) != NULL)
+			snprintf(g_config.base_dn, sizeof(g_config.base_dn), "%s", v);
+		if ((v = json_as_string(json_object_get(root, "bind_dn"))) != NULL)
+			snprintf(g_config.bind_dn, sizeof(g_config.bind_dn), "%s", v);
+		if ((v = json_as_string(json_object_get(root, "bind_password"))) != NULL)
+			snprintf(g_config.bind_password, sizeof(g_config.bind_password), "%s", v);
+	}
 	json_free(root);
 	return 0;
 }
@@ -486,29 +500,72 @@ const struct ldap_config *ldap_config_get(void)
 	return &g_config;
 }
 
-enum ldap_record_error ldap_config_set(int start_uid, int start_gid)
+/* Serializes the WHOLE config (allocation floors + issue #66's client
+ * fields, bind_password included -- this file is the module's own
+ * root-only state, the one place the credential legitimately lives)
+ * and writes it atomically. Both setters below funnel through here so
+ * neither can ever clobber the other's fields. */
+static enum ldap_record_error ldap_config_persist(void)
 {
 	struct json_writer w;
 	int rc;
 
-	if (start_uid <= 0 || start_gid <= 0)
-		return LDAP_RECORD_ERR_INVALID_FIELD;
-
 	jw_init(&w);
 	jw_obj_open(&w);
 	jw_key(&w, "start_uid");
-	jw_int(&w, start_uid);
+	jw_int(&w, g_config.start_uid);
 	jw_key(&w, "start_gid");
-	jw_int(&w, start_gid);
+	jw_int(&w, g_config.start_gid);
+	jw_key(&w, "client_uri");
+	jw_str(&w, g_config.client_uri);
+	jw_key(&w, "base_dn");
+	jw_str(&w, g_config.base_dn);
+	jw_key(&w, "bind_dn");
+	jw_str(&w, g_config.bind_dn);
+	jw_key(&w, "bind_password");
+	jw_str(&w, g_config.bind_password);
 	jw_obj_close(&w);
 	rc = persist_atomic_write(g_config_state_path, w.buf, w.len);
 	jw_free(&w);
-	if (rc != 0)
-		return LDAP_RECORD_ERR_PERSIST_FAILED;
+	return rc == 0 ? LDAP_RECORD_OK : LDAP_RECORD_ERR_PERSIST_FAILED;
+}
+
+enum ldap_record_error ldap_config_set(int start_uid, int start_gid)
+{
+	int old_uid = g_config.start_uid, old_gid = g_config.start_gid;
+	enum ldap_record_error rc;
+
+	if (start_uid <= 0 || start_gid <= 0)
+		return LDAP_RECORD_ERR_INVALID_FIELD;
 
 	g_config.start_uid = start_uid;
 	g_config.start_gid = start_gid;
-	return LDAP_RECORD_OK;
+	rc = ldap_config_persist();
+	if (rc != LDAP_RECORD_OK) {
+		g_config.start_uid = old_uid;
+		g_config.start_gid = old_gid;
+	}
+	return rc;
+}
+
+enum ldap_record_error ldap_config_set_client(const char *client_uri, const char *base_dn,
+                                               const char *bind_dn, const char *bind_password)
+{
+	struct ldap_config saved = g_config;
+	enum ldap_record_error rc;
+
+	if (client_uri != NULL)
+		snprintf(g_config.client_uri, sizeof(g_config.client_uri), "%s", client_uri);
+	if (base_dn != NULL)
+		snprintf(g_config.base_dn, sizeof(g_config.base_dn), "%s", base_dn);
+	if (bind_dn != NULL)
+		snprintf(g_config.bind_dn, sizeof(g_config.bind_dn), "%s", bind_dn);
+	if (bind_password != NULL)
+		snprintf(g_config.bind_password, sizeof(g_config.bind_password), "%s", bind_password);
+	rc = ldap_config_persist();
+	if (rc != LDAP_RECORD_OK)
+		g_config = saved;
+	return rc;
 }
 
 void ldap_config_write_json(struct json_writer *w)
@@ -518,6 +575,25 @@ void ldap_config_write_json(struct json_writer *w)
 	jw_int(w, g_config.start_uid);
 	jw_key(w, "start_gid");
 	jw_int(w, g_config.start_gid);
+	/* Issue #66: client-login fields. The bind credential is NEVER
+	 * echoed -- only whether one is set (the PKI-private-key posture). */
+	jw_key(w, "client_uri");
+	if (g_config.client_uri[0] != '\0')
+		jw_str(w, g_config.client_uri);
+	else
+		jw_null(w);
+	jw_key(w, "base_dn");
+	if (g_config.base_dn[0] != '\0')
+		jw_str(w, g_config.base_dn);
+	else
+		jw_null(w);
+	jw_key(w, "bind_dn");
+	if (g_config.bind_dn[0] != '\0')
+		jw_str(w, g_config.bind_dn);
+	else
+		jw_null(w);
+	jw_key(w, "bind_password_set");
+	jw_bool(w, g_config.bind_password[0] != '\0');
 	jw_obj_close(w);
 }
 

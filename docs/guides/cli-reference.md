@@ -111,7 +111,7 @@ See [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.m
 | `container recipe show NAME` | Print a recipe's own raw, unsubstituted content |
 | `container recipe rm NAME` | Remove a stored container recipe |
 | `container recipe ls` | List container recipes (metadata only) |
-| `container apply-recipe NAME [--secret=KEY=VALUE ...]` | Render `NAME`'s own stored recipe (substituting `{{SECRET:KEY}}` tokens) and create the container -- always synchronous, real `POST /containers` under the hood |
+| `container apply-recipe NAME [--secret=KEY=VALUE ...]` | Render `NAME`'s own stored recipe (substituting `{{SECRET:KEY}}` tokens, plus `{{LDAP:*}}` tokens from `ldap config`'s stored client settings) and create the container -- always synchronous, real `POST /containers` under the hood |
 | `container network attach NAME --network=NETWORK [--ip=A.B.C.D]` | Attach a network to an already-running container, live, without a recreate (ADR-0156) |
 | `container network detach NAME NETWORK` | Detach a live-attached network; refuses (409) a network attached at container creation |
 | `container device attach NAME ID` | Live-grant one more device to an already-running container, no recreate (ADR-0161 Phase D) — `ID` is a real device id or devicemap name, resolved fresh |
