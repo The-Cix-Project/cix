@@ -126,6 +126,24 @@ all-layers-idmap; the per-container reflink/copy of the rootfs (owned by base)
 remains the "last resort" if it stays intractable. userns stays opt-in; no
 working userns container yet.
 
+**kmsg endpoint added, and it closed the diagnosis (2026-08-21).** A new
+`GET /v1/system/kmsg` (tails `/dev/kmsg`) gave the exact reason the all-layers
+id-mapped overlay mounts read-only: `overlayfs: failed to create directory
+/work/work (errno: 13 EACCES); mounting read-only`. Root cause: **thincd mounts
+the overlay from *outside* the user namespace (as host uid 0), but on the
+id-mapped upper/work it is a non-owner, so overlay's own `work/` creation --
+performed as thincd -- is denied.** Confirmed it is not a mode issue (`chmod
+0777` on upper/work did not help). Every rootless idmapped-overlay setup mounts
+the overlay from *inside* the userns, where the mapped root owns upper/work.
+**Resolution for the next pass: mount the overlay from inside the userns.** The
+parent id-maps only the shared lower (detached fd, inherited by the child) and
+chowns the per-container upper/work to `base`; the child -- after the userns
+handshake, now the mapped root owning upper/work -- does `fsopen`/`fsconfig`
+(id-mapped lower fd + plain upper/work + `userxattr`)/`fsmount`, then
+move_mounts and pivots. All the building blocks (idmap userns, `idmap_bind`,
+the new-mount-API wrappers, the userns handshake) already exist; this moves the
+overlay build from the parent into the child and adds the chown + `userxattr`.
+
 ## Context
 
 Issue #29 (raised 2026-08-17, still open): thinC's containers run as real host UID 0 with no `CLONE_NEWUSER` at all. ADR-0168 closed the single sharpest consequence of that (an untrimmed capability set, `CAP_SYS_MODULE` chief among them) but explicitly deferred the underlying gap: "Root UID inside a container is still real host UID 0 after this change... Full user-namespace support... remains open as issue #29's own original scope."
