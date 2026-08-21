@@ -10896,7 +10896,11 @@ static void handle_container_device_detach(int fd, const char *container_name, c
  * registry_entry.handle.pid is never safe to trust once running==0 --
  * pids get reused -- so /proc/<pid>/root only applies while running==1):
  *   running   -> /proc/<pid>/root<path>  (kernel resolves through the
- *                container's own mount namespace/root, no setns())
+ *                container's own mount namespace/root, no setns()) --
+ *                and, if that misses, the on-disk layers below too:
+ *                running == 1 only means this daemon hasn't PROCESSED
+ *                the exit yet, so /proc/<pid> can already be gone for a
+ *                container that died the instant it started.
  *   !running  -> <CONTAINERS_DIR>/<name>/upper<path> first (the COW
  *                upper layer the container itself wrote to -- still a
  *                real host directory even after every process in the
@@ -11144,10 +11148,26 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 		return;
 	}
 
+	file_fd = -1;
 	if (e->running) {
 		snprintf(full_path, sizeof(full_path), "/proc/%d/root%s", (int)e->handle.pid, rel_path);
 		file_fd = open(full_path, O_RDONLY);
-	} else {
+	}
+	/*
+	 * Fall through to the on-disk layers whenever the /proc path didn't
+	 * produce the file -- not only when running == 0. running == 1 means
+	 * "this daemon has not yet PROCESSED the exit", not "the process is
+	 * definitely alive": a container whose own exec fails (or which exits
+	 * the instant it starts) is genuinely dead while its pidfd event is
+	 * still sitting unread in epoll, and /proc/<pid> is already gone by
+	 * then. Without this fallback such a read 404s purely on event timing
+	 * -- observed deterministically via a recipe-applied container running
+	 * a cmd its image doesn't actually contain, where the staged file was
+	 * sitting in the upper layer the whole time. Reading the layers is
+	 * always safe here: they are this container's OWN directories, keyed
+	 * by name, never a reused pid.
+	 */
+	if (file_fd < 0) {
 		char container_root[PATH_MAX];
 
 		container_root_for(e->disk_name, container_root, sizeof(container_root));
@@ -11308,13 +11328,33 @@ static void handle_container_file_write(int fd, const char *name, const char *re
 	group = jgroup != NULL ? (gid_t)json_as_number(jgroup) : (gid_t)-1;
 	content_len = strlen(content);
 
-	if (e->running) {
-		snprintf(full_path, sizeof(full_path), "/proc/%d/root%s", (int)e->handle.pid, rel_path);
-	} else {
-		char container_root[PATH_MAX];
+	/*
+	 * Same running-but-already-dead case the GET path above documents:
+	 * running == 1 only means this daemon hasn't processed the exit yet.
+	 * A container that died the instant it started is a zombie whose
+	 * /proc/<pid>/root is already a dangling link, so writing through it
+	 * fails; its own upper layer is the correct target then. Probing
+	 * /proc/<pid>/root is safe and unambiguous -- the daemon still holds
+	 * the pidfd, so the pid cannot have been recycled by an unrelated
+	 * process.
+	 */
+	{
+		int use_proc = 0;
 
-		container_root_for(e->disk_name, container_root, sizeof(container_root));
-		snprintf(full_path, sizeof(full_path), "%s/%s/upper%s", container_root, name, rel_path);
+		if (e->running) {
+			char proc_root[64];
+
+			snprintf(proc_root, sizeof(proc_root), "/proc/%d/root", (int)e->handle.pid);
+			use_proc = (access(proc_root, F_OK) == 0);
+		}
+		if (use_proc) {
+			snprintf(full_path, sizeof(full_path), "/proc/%d/root%s", (int)e->handle.pid, rel_path);
+		} else {
+			char container_root[PATH_MAX];
+
+			container_root_for(e->disk_name, container_root, sizeof(container_root));
+			snprintf(full_path, sizeof(full_path), "%s/%s/upper%s", container_root, name, rel_path);
+		}
 	}
 	json_free(root);
 
