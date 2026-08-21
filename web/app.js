@@ -4215,8 +4215,10 @@ async function formatDisk(diskName, fsType) {
 let dnsRecordEditName = null;
 
 function editDnsRecord(rec) {
-	dnsRecordEditName = rec.name;
+	/* Set AFTER openModal() -- it calls closeModal(), which resets this
+	 * to null (otherwise the submit handler POSTs instead of PUTs). */
 	openModal("dns-record-form", "Edit DNS record");
+	dnsRecordEditName = rec.name;
 	document.getElementById("df-name").value = rec.name;
 	document.getElementById("df-name").readOnly = true;
 	document.getElementById("df-ip").value = rec.ip;
@@ -4412,8 +4414,10 @@ async function removeLdapServer(container) {
 let ldapGroupEditName = null;
 
 function editLdapGroup(group) {
-	ldapGroupEditName = group.name;
+	/* Set AFTER openModal() -- it calls closeModal(), which resets this
+	 * to null (otherwise the submit handler POSTs instead of PUTs). */
 	openModal("ldap-group-form", "Edit LDAP group");
+	ldapGroupEditName = group.name;
 	document.getElementById("lgf-name").value = group.name;
 	document.getElementById("lgf-name").readOnly = true;
 	document.getElementById("lgf-gidnumber").value = group.gidnumber;
@@ -4490,8 +4494,12 @@ async function removeLdapGroup(name) {
 let ldapUserEditName = null;
 
 function editLdapUser(user) {
-	ldapUserEditName = user.name;
+	/* openModal() calls closeModal(), which resets ldapUserEditName to
+	 * null -- so this MUST be set AFTER openModal(), or the submit
+	 * handler sees null and POSTs (create) instead of PUT (update),
+	 * 409-ing on the existing name. */
 	openModal("ldap-user-form", "Edit LDAP user");
+	ldapUserEditName = user.name;
 	document.getElementById("luf-name").value = user.name;
 	document.getElementById("luf-name").readOnly = true;
 	document.getElementById("luf-uidnumber").value = user.uidnumber;

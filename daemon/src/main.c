@@ -9349,9 +9349,20 @@ static int create_container_from_body(const char *body, size_t body_len,
 		 * order. `pam_authc_ppolicy no` matches this project's own
 		 * glauth deployment (jump's own working recipe), which doesn't
 		 * implement the ppolicy control nslcd probes for by default. */
-		const struct ldap_config *lc = ldap_config_get();
+		const struct ldap_config *lc;
 		char nslcd[1024];
 		char effective_uri[600];
+
+		/*
+		 * Issue #80: make sure the nslcd service/bind account this
+		 * container is about to be handed actually exists, before we
+		 * render its bind_dn/bind_password. Idempotent -- a no-op once
+		 * provisioned, or if the operator configured a custom bind. This
+		 * is the right moment: a client container is being created, so
+		 * the registered glauth servers are up to receive the account.
+		 */
+		ldap_ensure_service_bind_account();
+		lc = ldap_config_get();
 
 		ldap_effective_client_uri(effective_uri, sizeof(effective_uri));
 
