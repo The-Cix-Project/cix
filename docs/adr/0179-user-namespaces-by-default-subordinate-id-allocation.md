@@ -144,6 +144,31 @@ move_mounts and pivots. All the building blocks (idmap userns, `idmap_bind`,
 the new-mount-API wrappers, the userns handshake) already exist; this moves the
 overlay build from the parent into the child and adds the chown + `userxattr`.
 
+**Mount-from-inside implemented (commit 49438ec), and it reached the
+FUNDAMENTAL wall (2026-08-21, confirmed against 6.18 source).** The child now
+correctly mounts the overlay from inside the userns -- owning the chowned
+upper/work, with the id-mapped shared-lower fd -- and gets all the way to
+`fsconfig(CMD_CREATE)`, which fails `EACCES` (kmsg: `overlayfs: upper fs does
+not support tmpfile`). Root cause: `ovl_make_workdir`'s setup ops -- the
+`O_TMPFILE` probe, the whiteout `mknod`/`RENAME_WHITEOUT` probe, the overlay
+xattr -- must be performed with privilege over the **layer filesystem's**
+`s_user_ns`, which is **init** (thinC's upper/work live on the host's ext4,
+mounted by thincd in the initial userns). The mapped-root child is privileged
+only in its OWN userns, so these ops are denied. This is exactly why rootless
+overlay requires the upper on a filesystem mounted *inside* the userns (or
+fuse-overlayfs) -- and thinC's **persistent** upper is on host ext4. So
+kernel-native id-mapped-overlay with a persistent host upper + shared host-0
+lower is not achievable from this architecture on 6.18. **The remaining options
+are an architecture tradeoff (user's call), not a bug:** (a) **per-container
+rootfs** -- reflink/copy the image per userns container, chown to `base`, mount
+directly: persistent and works, but loses the shared lower (this ADR's "last
+resort"); (b) **tmpfs upper inside the userns** -- keep the shared id-mapped
+lower, child mounts a per-container tmpfs as upper so overlay's ops run in the
+child's own userns: works with the shared image, but the upper is
+non-persistent (writes lost on restart); (c) keep userns opt-in/experimental
+and revisit (a future fuse-overlayfs recipe, or a kernel that relaxes this).
+The mount-from-inside code is correct and is the foundation for (b).
+
 ## Context
 
 Issue #29 (raised 2026-08-17, still open): thinC's containers run as real host UID 0 with no `CLONE_NEWUSER` at all. ADR-0168 closed the single sharpest consequence of that (an untrimmed capability set, `CAP_SYS_MODULE` chief among them) but explicitly deferred the underlying gap: "Root UID inside a container is still real host UID 0 after this change... Full user-namespace support... remains open as issue #29's own original scope."
