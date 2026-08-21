@@ -1375,7 +1375,7 @@ static int bootstrap_management_network(void)
 	if (net == NULL) {
 		net = network_find(MGMT_NETWORK_NAME);
 		if (net == NULL) {
-			nerr = network_create(MGMT_NETWORK_NAME, subnet_str, prefix, ip, &net);
+			nerr = network_create(MGMT_NETWORK_NAME, subnet_str, prefix, ip, NULL, NULL, &net);
 			if (nerr != NETWORK_OK) {
 				fprintf(stderr, "bootstrap_management_network: network_create failed (%d)\n",
 				        (int)nerr);
@@ -12549,7 +12549,14 @@ static void handle_network_create(int fd, const char *body, size_t body_len)
 	}
 	prefix_len = (int)json_as_number(jprefix);
 
-	nerr = network_create(name, subnet, prefix_len, address, &net);
+	/* Issue #70: optional auto-allocation window (dotted IPs, in-subnet);
+	 * omitted = full default range. */
+	{
+		const char *alloc_start = json_as_string(json_object_get(root, "alloc_start"));
+		const char *alloc_end = json_as_string(json_object_get(root, "alloc_end"));
+
+		nerr = network_create(name, subnet, prefix_len, address, alloc_start, alloc_end, &net);
+	}
 	json_free(root);
 
 	if (nerr != NETWORK_OK) {

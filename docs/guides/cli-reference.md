@@ -146,7 +146,7 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 
 | Command | |
 |---|---|
-| `network create --name=NAME --subnet=A.B.C.D --prefix=N [--address=A.B.C.D]` | Create a network — no `--address=` means pure L2, no host-owned address (the default) |
+| `network create --name=NAME --subnet=A.B.C.D --prefix=N [--address=A.B.C.D] [--alloc-start=IP --alloc-end=IP]` | Create a network — no `--address=` means pure L2 (the default); `--alloc-start/--alloc-end` bound the auto-IP window (issue #70; a management network skips `.1` by default regardless) |
 | `network ls` / `network rm NAME` | List / remove |
 | `network attach-interface NAME --interface=IFNAME [--vlan=N]` | Enslave a real host interface to this network's bridge; `--vlan=` creates an 802.1q sub-interface instead |
 | `network detach-interface NAME --interface=IFNAME` | Detach |

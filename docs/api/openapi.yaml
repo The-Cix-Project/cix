@@ -3355,6 +3355,15 @@ paths:
                       $ref: "#/components/schemas/Network"
     post:
       summary: Create a network (a real bridge, created immediately and persisted across daemon restarts)
+      description: >
+        Optional alloc_start/alloc_end (dotted IPs, in-subnet, issue
+        #70) bound the window auto-allocation draws from -- omitted
+        means the full usable range. Only auto-allocation is
+        constrained; an explicitly-requested container IP may still be
+        anywhere in-subnet. A management network additionally skips
+        host-part 1 by default even with no window set, since a
+        LAN-bridged network's .1 is by convention the real gateway --
+        the allocator must never hand it to a container.
       operationId: createNetwork
       requestBody:
         required: true

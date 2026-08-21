@@ -142,6 +142,15 @@ static int parse_persisted_entry(const struct json_value *item, struct network_d
 	 * means not-management, no legacy-default reasoning needed here
 	 * the way has_address's own absence-handling above requires. */
 	slot->is_management = (jis_mgmt != NULL && jis_mgmt->type == JSON_BOOL && jis_mgmt->u.boolean);
+	/* Issue #70: absent on any entry predating this field -> 0 (unset,
+	 * the full-range default), no legacy reasoning needed. */
+	{
+		const struct json_value *jas = json_object_get(item, "alloc_start_host");
+		const struct json_value *jae = json_object_get(item, "alloc_end_host");
+
+		slot->alloc_start_host = (jas != NULL && jas->type == JSON_NUMBER) ? (int)json_as_number(jas) : 0;
+		slot->alloc_end_host = (jae != NULL && jae->type == JSON_NUMBER) ? (int)json_as_number(jae) : 0;
+	}
 
 	if (jinterfaces != NULL) {
 		size_t j;
@@ -368,8 +377,34 @@ int network_address_str_is_valid(const struct network_def *net, const char *addr
 	return address_str_is_valid(address_str, net->base_be, net->prefix_len, out_address_be);
 }
 
+/*
+ * Issue #70: parse one optional dotted-IP allocation bound into a
+ * host-part offset, validating it is inside this subnet. Returns 0 and
+ * writes *out_host (>=1); -1 if the string is set but not a valid
+ * in-subnet address. A NULL/empty string leaves *out_host at 0 (unset).
+ */
+static int parse_alloc_bound(const char *s_str, uint32_t base_be, int prefix_len, int *out_host)
+{
+	struct in_addr a;
+	uint32_t host;
+
+	*out_host = 0;
+	if (s_str == NULL || s_str[0] == '\0')
+		return 0;
+	if (inet_pton(AF_INET, s_str, &a) != 1)
+		return -1;
+	if ((ntohl(a.s_addr) & mask_for_prefix(prefix_len)) != ntohl(base_be))
+		return -1;
+	host = ntohl(a.s_addr) - ntohl(base_be);
+	if (host < 1 || (int)host > host_max_for_prefix(prefix_len))
+		return -1;
+	*out_host = (int)host;
+	return 0;
+}
+
 enum network_error network_create(const char *name, const char *subnet_str, int prefix_len,
-                                   const char *address_str, struct network_def **out)
+                                   const char *address_str, const char *alloc_start_str,
+                                   const char *alloc_end_str, struct network_def **out)
 {
 	struct in_addr addr;
 	uint32_t address_be = 0;
@@ -413,6 +448,17 @@ enum network_error network_create(const char *name, const char *subnet_str, int 
 	strncpy(e->name, name, sizeof(e->name) - 1);
 	e->base_be = addr.s_addr;
 	e->prefix_len = prefix_len;
+	{
+		int as = 0, ae = 0;
+
+		if (parse_alloc_bound(alloc_start_str, addr.s_addr, prefix_len, &as) != 0 ||
+		    parse_alloc_bound(alloc_end_str, addr.s_addr, prefix_len, &ae) != 0 ||
+		    (as != 0 && ae != 0 && ae < as)) {
+			return NETWORK_ERR_INVALID_ADDRESS;
+		}
+		e->alloc_start_host = as;
+		e->alloc_end_host = ae;
+	}
 	e->has_address = has_address;
 	e->address_be = address_be;
 
@@ -683,8 +729,21 @@ int network_alloc_ip(const char *name, uint32_t *out_ip_be)
 	 * has one, and then at whatever address the operator chose, not
 	 * always .1. */
 	exclude_be = net->has_address ? net->address_be : 0;
-	return registry_alloc_ip(net->base_be, 1, host_max_for_prefix(net->prefix_len), exclude_be,
-	                          out_ip_be);
+	{
+		int lo = net->alloc_start_host > 0 ? net->alloc_start_host : 1;
+		int hi = net->alloc_end_host > 0 ? net->alloc_end_host
+		                                 : host_max_for_prefix(net->prefix_len);
+
+		/* Issue #70 safe default: a management network is bridged onto a
+		 * real LAN whose gateway is, by overwhelming convention, .1 --
+		 * never auto-hand-out host-part 1 there unless the operator has
+		 * explicitly widened the range back down to it. An internal,
+		 * thinc-owned network has no external gateway, so its floor
+		 * stays 1. */
+		if (net->is_management && net->alloc_start_host == 0 && lo < 2)
+			lo = 2;
+		return registry_alloc_ip(net->base_be, lo, hi, exclude_be, out_ip_be);
+	}
 }
 
 enum network_error network_ip_available(const char *name, uint32_t ip_be)
@@ -736,6 +795,16 @@ void network_write_json_one(const struct network_def *net, struct json_writer *w
 	jw_bool(w, net->has_address);
 	jw_key(w, "is_management");
 	jw_bool(w, net->is_management);
+	jw_key(w, "alloc_start_host");
+	if (net->alloc_start_host > 0)
+		jw_int(w, net->alloc_start_host);
+	else
+		jw_null(w);
+	jw_key(w, "alloc_end_host");
+	if (net->alloc_end_host > 0)
+		jw_int(w, net->alloc_end_host);
+	else
+		jw_null(w);
 	jw_key(w, "address");
 	if (net->has_address) {
 		char address_str[INET_ADDRSTRLEN];
