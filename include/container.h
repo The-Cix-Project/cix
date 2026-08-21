@@ -65,14 +65,6 @@ struct overlay_spec {
 	const char *lowerdir;
 	const char *upperdir;
 	const char *workdir;
-	/*
-	 * Parent dir holding upperdir+workdir (ADR-0179 phase 2c). The userns
-	 * id-mapped path id-maps this ONE directory as a single mount and opens
-	 * upperdir/workdir through it, so they share a vfsmount -- overlay
-	 * requires upper and work on the same mount (ovl_get_workdir). NULL on
-	 * the classic non-userns path, which never reads it.
-	 */
-	const char *base;
 	const char *merged;
 	/*
 	 * Real ext4 project-quota id (Part 4, bare-metal-readiness plan,
