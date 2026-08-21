@@ -107,9 +107,24 @@ detached-clone + `open_tree`/`move_mount` flow, and a race-fixed
 <len>"` (the fork/`unshare` race -- parent writing the map before the child
 left the init userns, intermittent `EPERM` -- is fixed with a ready-handshake).
 Substituting the layer-idmap for the merged-mount `mount_setattr` is the
-remaining work, landing as its own focused iteration (verification is captive
-to a per-attempt deploy+reboot on the shell-less .95 VM). userns stays opt-in
-until it lands; a `"userns":true` create currently fails `EINVAL` at this step.
+remaining work. It was then built (`fsopen`/`fsconfig`/`fsmount`, id-mapped
+layers) and the overlay now **mounts and is writable** -- but two subtle walls
+remain, and closing them efficiently is blocked by not being able to read
+`dmesg` on the shell-less box: **(a)** id-mapping only the shared lower (upper/
+work left plain) mounts writable but `mkdir(/dev/pts)` fails `EACCES` -- copy-up
+of an existing host-0 lower dir into the non-id-mapped upper preserves host-0,
+which the container userns can't map, so upper must be id-mapped consistently;
+**(b)** id-mapping upper+work too (through one id-mapped base mount, since
+`ovl_get_workdir` requires upper and work on the same vfsmount) mounts
+**read-only** via `ovl_make_workdir` failing to create `work/` -- the exact
+kernel `pr_warn` reason is unreadable without kernel-log visibility. Confirmed
+from 6.18 source: layer fds carry their idmap (`ovl_parse_layer`), and
+`clone_private_mount` accepts an id-mapped subdir mount and preserves the
+mapping. **Next unblock: expose the kernel log (`/dev/kmsg`) via a thincd
+endpoint** so the overlay read-only reason is visible, then finish
+all-layers-idmap; the per-container reflink/copy of the rootfs (owned by base)
+remains the "last resort" if it stays intractable. userns stays opt-in; no
+working userns container yet.
 
 ## Context
 
