@@ -117,6 +117,35 @@ static long fetch_pid(const struct kx_client *c, const char *name)
 	return pid;
 }
 
+/* ADR-0180: stop/delete of a live container are asynchronous -- the
+ * response records intent; the registry entry settles ("stopped" /
+ * gone) when the reactor reaps the SIGKILLed child, typically within
+ * one loop turn. Tests poll to the settled state, bounded tightly:
+ * a SIGKILLed sleeping child taking >5s to settle is a regression. */
+static int wait_status(struct kx_client *client, const char *path, const char *want, int want_http)
+{
+	struct kx_response r;
+	int i;
+
+	for (i = 0; i < 50; i++) {
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(client, "GET", path, NULL, &r) == 0) {
+			if (want_http == 404 && r.status == 404) {
+				kx_response_free(&r);
+				return 1;
+			}
+			if (r.status == want_http && want != NULL &&
+			    str_eq(json_str_field(r.json, "status"), want)) {
+				kx_response_free(&r);
+				return 1;
+			}
+		}
+		kx_response_free(&r);
+		usleep(100 * 1000);
+	}
+	return 0;
+}
+
 /* Reads /sys/fs/cgroup/<name>/<file> verbatim (trailing newline
  * stripped) -- the real, kernel-authoritative value cgroup_create()
  * wrote via struct cgroup_limits, not just what POST echoed back
@@ -238,12 +267,15 @@ int main(void)
 		}
 		kx_response_free(&r);
 
+		if (!wait_status(&client, "/v1/containers/lc1", "stopped", 200)) {
+			fprintf(stderr, "FAIL: lc1 never settled to 200/stopped after async stop\n");
+			ok = 0;
+		}
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "GET", "/v1/containers/lc1", NULL, &r) != 0 ||
-		    r.status != 200 || !str_eq(json_str_field(r.json, "status"), "stopped") ||
-		    !json_bool_field(r.json, "stopped")) {
-			fprintf(stderr, "FAIL: GET lc1 after stop should be 200/stopped, got status=%d body=%s\n",
-			        r.status, r.status == 200 ? json_str_field(r.json, "status") : "?");
+		    r.status != 200 || !json_bool_field(r.json, "stopped")) {
+			fprintf(stderr, "FAIL: settled lc1 should report stopped:true, got status=%d\n",
+			        r.status);
 			ok = 0;
 		}
 		kx_response_free(&r);
@@ -362,6 +394,10 @@ int main(void)
 			ok = 0;
 		}
 		kx_response_free(&r);
+		if (!wait_status(&client, "/v1/containers/lc1", "stopped", 200)) {
+			fprintf(stderr, "FAIL: lc1 never settled to stopped (pre-pause-404-check)\n");
+			ok = 0;
+		}
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "POST", "/v1/containers/lc1/pause", NULL, &r) != 0 ||
 		    r.status != 404) {
@@ -405,13 +441,32 @@ int main(void)
 			ok = 0;
 		}
 
-		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/containers/lc1", NULL, &r) != 0 ||
-		    r.status != 404) {
-			fprintf(stderr, "FAIL: lc1 should be fully gone after DELETE, got %d\n", r.status);
-			ok = 0;
+		/* ADR-0180: DELETE of a live container is asynchronous now --
+		 * the 204 means the intent is durably recorded and the SIGKILL
+		 * sent; the registry entry (briefly visible as status
+		 * "deleting") is released by the reactor when the process is
+		 * actually reaped, typically within one loop turn. Poll,
+		 * bounded: anything beyond a few seconds for a SIGKILLed
+		 * sleeping child is a real regression, not slack. */
+		{
+			int i, gone = 0;
+
+			for (i = 0; i < 50; i++) {
+				memset(&r, 0, sizeof(r));
+				if (kx_client_request(&client, "GET", "/v1/containers/lc1", NULL, &r) == 0 &&
+				    r.status == 404) {
+					gone = 1;
+					kx_response_free(&r);
+					break;
+				}
+				kx_response_free(&r);
+				usleep(100 * 1000);
+			}
+			if (!gone) {
+				fprintf(stderr, "FAIL: lc1 still present 5s after async DELETE\n");
+				ok = 0;
+			}
 		}
-		kx_response_free(&r);
 	}
 
 	/* 7. Autostart stale-flag fix: an "always" container that was

@@ -83,6 +83,7 @@ enum registry_error registry_create(const char *name, const char *image,
 	e->exit_status = 0;
 	e->last_exit_reason[0] = '\0';
 	e->paused = 0;
+	e->teardown_kind = REGISTRY_TEARDOWN_NONE;
 	e->started_at = time(NULL);
 	e->in_use = 1;
 	e->reactor_conn = NULL;
@@ -288,13 +289,15 @@ int registry_remove(const char *name)
 		 * A frozen cgroup blocks signal delivery to every task in it --
 		 * SIGKILL sent to a still-frozen container would queue but never
 		 * actually terminate the process, leaving a hung, unkillable
-		 * entry. Thaw first, unconditionally ignoring a failure here
-		 * (best-effort -- if the cgroup is already gone/unfreezable, the
-		 * SIGKILL below is still attempted exactly as before this fix
-		 * existed).
+		 * entry. Thaw first, UNCONDITIONALLY (ADR-0180 hardening: the
+		 * old `if (e->paused)` guard trusted a flag that can in
+		 * principle go stale, and a stale flag here means this exact
+		 * wait blocks the whole daemon forever -- thawing an already-
+		 * thawed cgroup is a harmless no-op write). Failure is still
+		 * ignored (cgroup already gone/unfreezable -- the SIGKILL below
+		 * is attempted exactly as before).
 		 */
-		if (e->paused)
-			registry_set_paused(e, 0);
+		registry_set_paused(e, 0);
 		sys_pidfd_send_signal(e->handle.pidfd, SIGKILL);
 		registry_mark_exited(e);
 	}
@@ -315,6 +318,15 @@ int registry_remove(const char *name)
 	close(e->handle.cgroup_fd);
 	e->in_use = 0;
 	return 0;
+}
+
+/* ADR-0180 -- see registry.h's own declaration comment for the full
+ * lifecycle contract this participates in. */
+void registry_begin_kill(struct registry_entry *e, int teardown_kind)
+{
+	registry_set_paused(e, 0);
+	sys_pidfd_send_signal(e->handle.pidfd, SIGKILL);
+	e->teardown_kind = teardown_kind;
 }
 
 int registry_network_attach(struct registry_entry *e, const struct registry_network_attachment *net)
@@ -503,7 +515,17 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 	jw_key(w, "image_version");
 	jw_str(w, entry->image_version);
 	jw_key(w, "status");
-	jw_str(w, !entry->running ? "exited" : (entry->paused ? "paused" : "running"));
+	/* ADR-0180: a running entry mid-async-teardown reports the
+	 * teardown itself ("deleting"/"stopping"), not a misleading
+	 * "running" -- the SIGKILL is already sent, the entry is gone the
+	 * moment the kernel finishes; this transient state is also the
+	 * operator-visible explanation for why a same-name create 409s
+	 * during the window. */
+	jw_str(w, !entry->running ? "exited"
+	           : entry->teardown_kind == REGISTRY_TEARDOWN_DELETE ? "deleting"
+	           : entry->teardown_kind == REGISTRY_TEARDOWN_STOP   ? "stopping"
+	           : entry->paused                                     ? "paused"
+	                                                               : "running");
 	jw_key(w, "paused");
 	jw_bool(w, entry->running && entry->paused);
 	jw_key(w, "pid");

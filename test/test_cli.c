@@ -106,6 +106,23 @@ static long parse_pid(const char *out)
 	return atol(p + 4);
 }
 
+/* ADR-0180: rm of a running container is asynchronous -- settle-poll
+ * (via inspect exiting nonzero once the name 404s) before deleting a
+ * network the container was attached to, or the network rm can
+ * transiently 409 off the not-yet-reaped attachment. */
+static void wait_rm_settled(const char *name)
+{
+	char *inspect_argv[] = { "thincctl", PORT_ARG, "inspect", (char *)name, NULL };
+	char out[4096];
+	int rc, i;
+
+	for (i = 0; i < 50; i++) {
+		if (run_cli(inspect_argv, out, sizeof(out), &rc) == 0 && rc != 0)
+			return;
+		usleep(100 * 1000);
+	}
+}
+
 int main(void)
 {
 	pid_t daemon_pid;
@@ -244,15 +261,25 @@ int main(void)
 			ok = 0;
 		}
 
-		snprintf(proc_path, sizeof(proc_path), "/proc/%ld", pid);
-		if (pid > 0 && stat(proc_path, &st) == 0) {
-			fprintf(stderr, "FAIL: c2's process %ld still exists after rm\n", pid);
-			ok = 0;
-		}
+		/* ADR-0180: rm of a running container is asynchronous --
+		 * settle-poll until the process is reaped and the name 404s
+		 * (bounded tight; >5s for a SIGKILLed child is a regression). */
+		{
+			int i, torn_down = 0;
 
-		if (run_cli(inspect_argv, out, sizeof(out), &rc) != 0 || rc == 0) {
-			fprintf(stderr, "FAIL: thincctl inspect c2 after rm should fail, rc=%d\n", rc);
-			ok = 0;
+			snprintf(proc_path, sizeof(proc_path), "/proc/%ld", pid);
+			for (i = 0; i < 50; i++) {
+				if ((pid <= 0 || stat(proc_path, &st) != 0) &&
+				    (run_cli(inspect_argv, out, sizeof(out), &rc) == 0 && rc != 0)) {
+					torn_down = 1;
+					break;
+				}
+				usleep(100 * 1000);
+			}
+			if (!torn_down) {
+				fprintf(stderr, "FAIL: c2 (pid %ld) never fully torn down after rm\n", pid);
+				ok = 0;
+			}
 		}
 	}
 
@@ -306,6 +333,7 @@ int main(void)
 			fprintf(stderr, "FAIL: thincctl rm c3, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
+		wait_rm_settled("c3");
 		if (run_cli(net_rm_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
 			fprintf(stderr, "FAIL: thincctl network rm clitest, rc=%d out=%s\n", rc, out);
 			ok = 0;
@@ -351,6 +379,7 @@ int main(void)
 			fprintf(stderr, "FAIL: thincctl rm c4, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
+		wait_rm_settled("c4");
 		if (run_cli(net_rm_a_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
 			fprintf(stderr, "FAIL: thincctl network rm climulti1, rc=%d out=%s\n", rc, out);
 			ok = 0;
@@ -392,6 +421,7 @@ int main(void)
 			fprintf(stderr, "FAIL: thincctl rm c5, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
+		wait_rm_settled("c5");
 		if (run_cli(net_rm_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
 			fprintf(stderr, "FAIL: thincctl network rm clifwd, rc=%d out=%s\n", rc, out);
 			ok = 0;
