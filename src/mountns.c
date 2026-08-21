@@ -53,10 +53,19 @@ int mountns_pivot(const char *new_root, const struct mount_spec *mnt)
 		return MOUNTNS_PIVOT_ERR_CHDIR_ROOT;
 	}
 
-	if (umount2(mnt->put_old_rel, MNT_DETACH) != 0) {
-		perror("mountns_pivot: umount2(put_old, MNT_DETACH)");
-		return MOUNTNS_PIVOT_ERR_UMOUNT_PUT_OLD;
-	}
+	/*
+	 * put_old (the old root, carrying the inherited, fully-visible /proc
+	 * and /sys) is deliberately NOT detached yet -- it is detached at the
+	 * very end, after the fresh proc/sysfs mounts below. ADR-0179 phase
+	 * 2b: an unprivileged user namespace may only mount proc/sysfs when a
+	 * fully-visible instance of the same filesystem already exists in the
+	 * mount namespace (the kernel's mount_too_revealing() check); detaching
+	 * the inherited one first made mount(proc) fail EPERM in a userns
+	 * (confirmed live). The non-userns path is unaffected by the reorder --
+	 * it holds CAP_SYS_ADMIN in the initial userns and bypasses the check
+	 * either way, and the end state (old root detached, fresh mounts in
+	 * place) is identical.
+	 */
 
 	if (mkdir("/proc", 0555) != 0 && errno != EEXIST) {
 		perror("mountns_pivot: mkdir(/proc)");
@@ -166,6 +175,18 @@ int mountns_pivot(const char *new_root, const struct mount_spec *mnt)
 	          "mode=0620,ptmxmode=0666") != 0) {
 		perror("mountns_pivot: mount(devpts)");
 		return MOUNTNS_PIVOT_ERR_MOUNT_DEV_PTS;
+	}
+
+	/*
+	 * Now that the fresh proc/sysfs are mounted (satisfying the userns
+	 * visibility check while the inherited ones were still present), detach
+	 * the old root. MNT_DETACH lazily removes the whole put_old subtree as
+	 * a unit, which is permitted even for the locked mounts a userns child
+	 * inherited (the lock forbids separating them, not detaching the group).
+	 */
+	if (umount2(mnt->put_old_rel, MNT_DETACH) != 0) {
+		perror("mountns_pivot: umount2(put_old, MNT_DETACH)");
+		return MOUNTNS_PIVOT_ERR_UMOUNT_PUT_OLD;
 	}
 
 	return 0;
