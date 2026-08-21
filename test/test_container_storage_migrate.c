@@ -161,9 +161,17 @@ int main(void)
 	}
 	kx_response_free(&r);
 
-	/* 3. A restart_policy:"no" container has nothing to replay from --
-	 * migrate-storage is rejected with a real 400, not silently
-	 * accepted and left half-done. */
+	/*
+	 * 3. ADR-0181 (issue #73) changed what a restart:"no" container means
+	 * here. This scenario used to assert a 400 ("nothing to replay from"),
+	 * because a "no" container had no persisted definition at all. Now
+	 * EVERY container is persisted, so that branch is unreachable and a
+	 * "no" container is genuinely migratable -- the honest thing to assert
+	 * is the behavior that remains real: asking to migrate it to the
+	 * placement it is ALREADY on is a 409, exactly as it is for any other
+	 * restart policy. (The daemon's own no-definition 400 branch is kept
+	 * as defence in depth for a genuinely def-less internal container.)
+	 */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"noreplay\",\"image\":\"migtest\","
@@ -178,9 +186,9 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "POST", "/v1/containers/noreplay/migrate-storage", "{\"disk\":null}",
 	                       &r) != 0 ||
-	    r.status != 400) {
+	    r.status != 409) {
 		fprintf(stderr,
-		        "FAIL: POST migrate-storage for a restart:\"no\" container expected 400, got %d\n",
+		        "FAIL: POST migrate-storage to the placement it's already on expected 409, got %d\n",
 		        r.status);
 		ok = 0;
 	}
