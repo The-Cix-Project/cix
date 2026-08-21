@@ -5383,11 +5383,26 @@ function renderPackageDetailVersions(name, allVersions) {
 		return;
 	}
 
-	for (const v of versions) {
+	versions.forEach((v, i) => {
 		const row = document.createElement("tr");
 
 		const versionCell = document.createElement("td");
 		versionCell.textContent = v.version;
+		/* i === 0: same "sort by created_at, newest wins" shortcut this
+		 * function's own versions.sort() above already relies on
+		 * (equally correct here as a real dpkg-style version
+		 * comparator, per this project's own append-only recipe
+		 * history) -- the newest-published row is exactly what an
+		 * omitted ?version= (a plain `pkg install`/hostbuild, or a
+		 * follow_rolling image's own auto-rebuild) resolves to per
+		 * ADR-0107, so it doubles as the real rolling-candidate
+		 * indicator, not a separate computation. */
+		if (i === 0) {
+			const badge = document.createElement("strong");
+
+			badge.textContent = " (rolling candidate)";
+			versionCell.appendChild(badge);
+		}
 		row.appendChild(versionCell);
 
 		const changelogCell = document.createElement("td");
@@ -5399,6 +5414,12 @@ function renderPackageDetailVersions(name, allVersions) {
 		row.appendChild(createdCell);
 
 		const actionCell = document.createElement("td");
+		const viewButton = document.createElement("button");
+
+		viewButton.textContent = "View…";
+		viewButton.addEventListener("click", () => viewPkgRecipeVersion(v.name, v.version));
+		actionCell.appendChild(viewButton);
+
 		const rmButton = document.createElement("button");
 
 		rmButton.textContent = "Delete";
@@ -5408,7 +5429,38 @@ function renderPackageDetailVersions(name, allVersions) {
 		row.appendChild(actionCell);
 
 		body.appendChild(row);
+	});
+}
+
+/* issue reported directly by the user: a specific historical version's
+ * own recipe content had no way to be viewed at all -- the Recipe tab
+ * only ever shows the latest (loadPkgRecipeContent(name), no
+ * ?version=). Reuses the existing edit-recipe modal as a viewer rather
+ * than adding a second, read-only-only modal: opened pre-filled with
+ * THIS version's real content (a real, version-scoped GET, not the
+ * name-only latest one pkgRecipeContentCache holds), title says which
+ * version is showing. Submitting it still works exactly like editing
+ * the latest does -- publishes a new version via POST /pkg/recipes --
+ * which doubles as a real, working "restore an old version" path (edit
+ * nothing, just Save) for free, not a separate feature to build. */
+async function viewPkgRecipeVersion(name, version) {
+	let content;
+
+	try {
+		content = (
+			await apiRequest(
+				"GET",
+				"/v1/pkg/recipes/" + encodeURIComponent(name) + "?version=" + encodeURIComponent(version)
+			)
+		).content;
+	} catch (e) {
+		showStatus("Failed to load recipe content for " + name + "@" + version + ": " + e.message, true);
+		return;
 	}
+	openModal("pkg-recipe-form", name + "@" + version);
+	document.getElementById("rf-name").value = name;
+	document.getElementById("rf-file").value = "";
+	document.getElementById("rf-content").value = content;
 }
 
 function renderPackageDetailInstalled(name) {
