@@ -8187,6 +8187,49 @@ static void container_root_for(const char *disk_name, char *out, size_t out_size
 	snprintf(out, out_size, "%s", CONTAINERS_DIR);
 }
 
+/*
+ * Issue #68: the strict-input half of the limits-visibility fix (#49 is
+ * the read-back half). The create parser reads exactly the keys below
+ * and always simply ignored everything else -- so a typo'd field name
+ * ("cpuset" for "cpuset_cpus", the live-confirmed case) produced a
+ * container silently missing its requested limits, with (pre-#49) no
+ * way to even see the absence. HTTP-facing entry points (create, and
+ * container-recipe add/apply) reject unknown keys with a 400 naming
+ * the offender; the daemon-internal replay paths (autostart, rolling
+ * restart, storage migration -- all replaying bodies this daemon
+ * itself persisted) deliberately stay lenient so an upgrade can never
+ * strand an existing definition.
+ */
+static const char *container_body_unknown_key(const struct json_value *root)
+{
+	static const char *const known[] = {
+		"name", "image", "image_version", "cmd", "networks", "ip_forward",
+		"capture_output", "routes", "devices", "interfaces", "cap_add", "files",
+		"sysctls", "env", "dns_servers", "dns_register", "pki_issue", "pki_cert_dir",
+		"pki_days", "disk", "ldap_provision", "ldap_user", "ldap_group", "ldap_uid",
+		"ldap_secret_dir", "restart", "restart_delay_seconds", "follow_rolling",
+		"follow_rolling_jitter_seconds", "depends_on", "readiness", "memory_max",
+		"cpu_max", "pids_max", "cpuset_cpus", "disk_quota_bytes",
+	};
+	size_t i, k;
+
+	if (root == NULL || root->type != JSON_OBJECT)
+		return NULL;
+	for (i = 0; i < root->u.object.count; i++) {
+		int found = 0;
+
+		for (k = 0; k < sizeof(known) / sizeof(known[0]); k++) {
+			if (strcmp(root->u.object.keys[i], known[k]) == 0) {
+				found = 1;
+				break;
+			}
+		}
+		if (!found)
+			return root->u.object.keys[i];
+	}
+	return NULL;
+}
+
 static int create_container_from_body(const char *body, size_t body_len,
                                        struct registry_entry **out_entry,
                                        char out_restart_policy[16], int *out_restart_delay_seconds,
@@ -9218,6 +9261,11 @@ static int create_container_from_body(const char *body, size_t body_len,
 	                        ip_forward,
 	                        device_attachments, device_count, file_paths, file_count, disk_name,
 	                        dns_server_ips, dns_server_count, &entry);
+	/* Issue #49: mirror the requested quota for read-back (see
+	 * registry.h's own field comment for why this one isn't read live
+	 * from the kernel like the cgroup limits are). */
+	if (rerr == REGISTRY_OK && entry != NULL)
+		entry->disk_quota_bytes = disk_quota_bytes;
 	/*
 	 * Captured immediately, before json_free() below -- container_create()
 	 * (via registry_create()) always preserves errno across every one of
@@ -9467,6 +9515,25 @@ static void handle_create(int fd, const char *body, size_t body_len)
 	char err_msg[256];
 	int status;
 	struct json_writer w;
+
+	/* Issue #68: HTTP creates are strict about unknown keys -- see
+	 * container_body_unknown_key()'s own comment. Parsed once extra
+	 * here (create_container_from_body() re-parses); negligible cost
+	 * against a container creation, and keeps the shared parser's
+	 * replay callers lenient without a signature change across its
+	 * five call sites. */
+	{
+		struct json_value *root = json_parse(body, body_len);
+		const char *bad = container_body_unknown_key(root);
+
+		if (bad != NULL) {
+			snprintf(err_msg, sizeof(err_msg), "unknown field: %s", bad);
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", err_msg);
+			return;
+		}
+		json_free(root);
+	}
 
 	status = create_container_from_body(body, body_len, &entry, restart_policy,
 	                                     &restart_delay_seconds, depends_on, &depends_on_count,
@@ -12890,6 +12957,26 @@ static void handle_container_recipe_add(int fd, const char *body, size_t body_le
 		json_free(root);
 		respond_error(fd, 400, "Bad Request", "name and content both required");
 		return;
+	}
+
+	/* Issue #68: reject unknown keys at ADD time, not first apply --
+	 * the recipe's content is itself a create body, so a typo'd limit
+	 * field would otherwise sit latent in the catalog until it
+	 * silently dropped on some future apply. */
+	{
+		struct json_value *content_root = json_parse(content, strlen(content));
+		const char *bad = container_body_unknown_key(content_root);
+
+		if (bad != NULL) {
+			char msg[128];
+
+			snprintf(msg, sizeof(msg), "unknown field in recipe content: %s", bad);
+			json_free(content_root);
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", msg);
+			return;
+		}
+		json_free(content_root);
 	}
 
 	perr = container_recipe_add(name, content);

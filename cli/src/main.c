@@ -466,12 +466,18 @@ static void fmt_container_line(const struct json_value *v)
 	const struct json_value *memory_max = json_object_get(v, "memory_max");
 	const struct json_value *cpu_max = json_object_get(v, "cpu_max");
 	const struct json_value *pids_max = json_object_get(v, "pids_max");
+	/* Issues #48/#49: cpuset/quota/caps used to be completely invisible
+	 * client-side even once the daemon learned to report them. */
+	const struct json_value *cpuset = json_object_get(v, "cpuset_cpus");
+	const struct json_value *disk_quota = json_object_get(v, "disk_quota_bytes");
+	const struct json_value *cap_add = json_object_get(v, "cap_add");
 	char exit_buf[16];
 	char net_buf[256];
 	char readiness_buf[32];
 	char delay_buf[16];
 	char jitter_buf[16];
 	char cmd_buf[256];
+	char quota_buf[24];
 	char mem_buf[24];
 	char pids_buf[16];
 	size_t off = 0;
@@ -537,9 +543,15 @@ static void fmt_container_line(const struct json_value *v)
 	else
 		snprintf(pids_buf, sizeof(pids_buf), "-");
 
+	if (disk_quota != NULL && disk_quota->type == JSON_NUMBER)
+		snprintf(quota_buf, sizeof(quota_buf), "%lld", (long long)json_as_number(disk_quota));
+	else
+		snprintf(quota_buf, sizeof(quota_buf), "-");
+
 	printf("%-20s %-8s pid=%-8ld exit_status=%-6s networks=%-20s fwd=%-4s restart=%-15s "
 	       "delay=%-4s roll=%-4s jitter=%-4s stopped=%-5s readiness=%-10s files=%-3zu sysctls=%-3zu "
-	       "env=%-3zu memory_max=%-12s cpu_max=%-14s pids_max=%-5s cmd=%s\n",
+	       "env=%-3zu memory_max=%-12s cpu_max=%-14s pids_max=%-5s cpuset=%-8s disk_quota=%-12s "
+	       "caps=%-3zu cmd=%s\n",
 	       name, status, pid, exit_buf, net_buf[0] != '\0' ? net_buf : "-",
 	       (ip_forward != NULL && ip_forward->type == JSON_BOOL && ip_forward->u.boolean) ? "yes"
 	                                                                                        : "no",
@@ -553,6 +565,8 @@ static void fmt_container_line(const struct json_value *v)
 	       sysctls != NULL && sysctls->type == JSON_OBJECT ? sysctls->u.object.count : 0,
 	       env != NULL && env->type == JSON_OBJECT ? env->u.object.count : 0, mem_buf,
 	       cpu_max != NULL && cpu_max->type == JSON_STRING ? cpu_max->u.string : "-", pids_buf,
+	       cpuset != NULL && cpuset->type == JSON_STRING ? cpuset->u.string : "-", quota_buf,
+	       cap_add != NULL && cap_add->type == JSON_ARRAY ? cap_add->u.array.count : 0,
 	       cmd_buf[0] != '\0' ? cmd_buf : "-");
 }
 

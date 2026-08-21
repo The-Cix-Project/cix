@@ -53,6 +53,11 @@ static const char *json_str_field(const struct json_value *obj, const char *key)
 	return json_as_string(json_object_get(obj, key));
 }
 
+static long long json_num_field(const struct json_value *obj, const char *key)
+{
+	return (long long)json_as_number(json_object_get(obj, key));
+}
+
 static int str_eq(const char *a, const char *b)
 {
 	return a != NULL && b != NULL && strcmp(a, b) == 0;
@@ -268,6 +273,49 @@ int main(void)
 		fprintf(stderr, "FAIL: GET /v1/containers/c2 after delete, status=%d\n", r.status);
 		ok = 0;
 	}
+	kx_response_free(&r);
+
+	/* 6.5. issue #68: unknown top-level fields are a 400 naming the
+	 * offender, never silently dropped (a typo'd "cpuset" once cost a
+	 * live container half its requested limits with zero signal); and
+	 * issue #49: cpuset_cpus/disk_quota_bytes now read back in GET
+	 * (cpuset live from the real cgroup file; quota from the
+	 * creation-time mirror). */
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"c49\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+	                       "\"cpuset\":\"0\"}",
+	                       &r) != 0 ||
+	    r.status != 400 || r.json == NULL ||
+	    json_str_field(r.json, "error") == NULL ||
+	    strstr(json_str_field(r.json, "error"), "cpuset") == NULL) {
+		fprintf(stderr, "FAIL: unknown field should 400 naming it, got status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+	/* disk_quota_bytes deliberately not exercised here: this test
+	 * env's filesystem has no prjquota support, so requesting one
+	 * correctly 500s -- the quota mirror's read-back shares the same
+	 * serializer path asserted below and is verified against a real
+	 * quota-capable install instead. */
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"c49\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+	                       "\"cpuset_cpus\":\"0\"}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST c49 with cpuset, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+	if (kx_client_request(&client, "GET", "/v1/containers/c49", NULL, &r) != 0 || r.status != 200 ||
+	    !str_eq(json_str_field(r.json, "cpuset_cpus"), "0") ||
+	    json_object_get(r.json, "disk_quota_bytes") == NULL) {
+		fprintf(stderr, "FAIL: c49 cpuset_cpus not read back / quota key missing (status=%d)\n",
+		        r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	kx_client_request(&client, "DELETE", "/v1/containers/c49", NULL, &r);
 	kx_response_free(&r);
 
 	/* 7. duplicate name -> 409 */

@@ -170,6 +170,17 @@ struct registry_entry {
 	 */
 	int teardown_kind;
 	/*
+	 * Issue #49: the disk quota requested at creation (bytes; 0 = none)
+	 * -- mirrored here because unlike the cgroup limits (all read back
+	 * live from the real cgroup files at serialization time) a project
+	 * quota has no per-container kernel file to consult through a kept
+	 * fd; the quotactl() readback needs the backing device + projid
+	 * plumbing that deliberately lives in main.c. The mirror can't
+	 * drift: nothing changes a container's quota after creation, and a
+	 * daemon-restart replay re-applies the same persisted body.
+	 */
+	long long disk_quota_bytes;
+	/*
 	 * Wall-clock time this entry's process was started -- used by
 	 * handle_container_event() (daemon/src/main.c) to decide whether an
 	 * exiting restart:"always"/"on-failure"/"unless-stopped" container

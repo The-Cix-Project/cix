@@ -2679,6 +2679,13 @@ paths:
                       $ref: "#/components/schemas/Container"
     post:
       summary: Create and start a container
+      description: >
+        Unknown top-level fields in the body are a 400 naming the
+        offending key (issue #68) -- they used to be silently ignored,
+        which combined with the then-write-only limits (#49) made a
+        typo'd field name (e.g. "cpuset" for "cpuset_cpus")
+        completely undetectable. The same strictness applies to
+        container-recipe add (validated at publish time) and apply.
       operationId: createContainer
       requestBody:
         required: true
@@ -7691,6 +7698,23 @@ components:
           description: >
             The pids.max cgroup limit, read live the same way as
             memory_max above. null means unlimited.
+        cpuset_cpus:
+          type: string
+          nullable: true
+          description: >
+            The cpuset.cpus range-list, read live from the real cgroup
+            like the three limits above (issue #49 -- this and
+            disk_quota_bytes used to be completely write-only). null
+            means no CPU-affinity restriction configured.
+        disk_quota_bytes:
+          type: integer
+          nullable: true
+          description: >
+            The overlay-upperdir disk quota requested at creation
+            (issue #49). Mirrored from the creation request rather than
+            read live -- a project quota has no per-container kernel
+            file to consult, and nothing changes a container's quota
+            after creation. null means no quota.
 
     HostauthConfig:
       type: object

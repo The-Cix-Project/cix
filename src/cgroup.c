@@ -350,6 +350,30 @@ int cgroup_read_cpu_max(int cgroup_fd, char *out, size_t out_size)
 }
 
 /*
+ * Issue #49: the read-back counterpart for cpuset.cpus, same shape as
+ * cgroup_read_cpu_max() above. An empty result is the kernel's own
+ * "no restriction configured" state (cpuset.cpus starts empty and
+ * inherits the parent's effective set) -- callers treat "" as unset,
+ * exactly like "max ..." means unset for cpu.max.
+ */
+int cgroup_read_cpuset(int cgroup_fd, char *out, size_t out_size)
+{
+	char buf[256];
+	size_t len;
+
+	out[0] = '\0';
+	if (read_whole_file_at(cgroup_fd, "cpuset.cpus", buf, sizeof(buf)) < 0)
+		return -1;
+
+	len = strlen(buf);
+	if (len > 0 && buf[len - 1] == '\n')
+		buf[len - 1] = '\0';
+
+	snprintf(out, out_size, "%s", buf);
+	return 0;
+}
+
+/*
  * Sums rbytes/wbytes/rios/wios across every device line in io.stat via
  * cgroup_fd. A container with no tracked block I/O yet has a genuinely
  * empty io.stat (or the io controller might not be enabled at all, see
