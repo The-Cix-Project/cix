@@ -349,24 +349,34 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		int overlay_ret = overlay_create(&spec->ov);
 		int idmap_fd = -1;
 		int saved_errno = errno;
+		const char *fail_step = "container_create: overlay_create (parent, userns)";
 
 		if (overlay_ret == 0) {
 			idmap_fd = create_idmap_userns_fd(spec->userns_uid_base, spec->userns_len);
-			overlay_mnt_fd = (int)kx_open_tree(-1, spec->ov.merged, KX_OPEN_TREE_CLONE);
-			if (idmap_fd >= 0 && overlay_mnt_fd >= 0) {
-				struct kx_mount_attr a;
-
-				memset(&a, 0, sizeof(a));
-				a.attr_set = KX_MOUNT_ATTR_IDMAP;
-				a.userns_fd = (unsigned long long)idmap_fd;
-				if (kx_mount_setattr(overlay_mnt_fd, "", AT_EMPTY_PATH, &a,
-				                     sizeof(a)) != 0) {
-					saved_errno = errno;
-					overlay_ret = -1;
-				}
-			} else {
+			if (idmap_fd < 0) {
 				saved_errno = errno;
+				fail_step = "container_create: create_idmap_userns_fd";
 				overlay_ret = -1;
+			} else {
+				overlay_mnt_fd = (int)kx_open_tree(-1, spec->ov.merged,
+				                                   KX_OPEN_TREE_CLONE);
+				if (overlay_mnt_fd < 0) {
+					saved_errno = errno;
+					fail_step = "container_create: open_tree(overlay)";
+					overlay_ret = -1;
+				} else {
+					struct kx_mount_attr a;
+
+					memset(&a, 0, sizeof(a));
+					a.attr_set = KX_MOUNT_ATTR_IDMAP;
+					a.userns_fd = (unsigned long long)idmap_fd;
+					if (kx_mount_setattr(overlay_mnt_fd, "", AT_EMPTY_PATH, &a,
+					                     sizeof(a)) != 0) {
+						saved_errno = errno;
+						fail_step = "container_create: mount_setattr(IDMAP)";
+						overlay_ret = -1;
+					}
+				}
 			}
 			umount2(spec->ov.merged, MNT_DETACH); /* drop the plain attached copy */
 			if (idmap_fd >= 0)
@@ -380,7 +390,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 				overlay_mnt_fd = -1;
 			}
 			errno = saved_errno;
-			container_set_last_error_step("container_create: userns id-mapped overlay setup");
+			container_set_last_error_step(fail_step);
 			close(diag_pipe[0]);
 			close(diag_pipe[1]);
 			if (want_net) {

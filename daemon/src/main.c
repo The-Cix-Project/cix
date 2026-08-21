@@ -9531,9 +9531,10 @@ static int create_container_from_body(const char *body, size_t body_len,
 	if (rerr == REGISTRY_ERR_CREATE_FAILED) {
 		if (output_pipe[0] >= 0)
 			close(output_pipe[0]);
-		snprintf(err_msg, err_msg_size, "failed to create container: %s", strerror(create_errno));
-		logstore_write("thincd", "error", "container %s: failed to create: %s", name_copy,
-		                strerror(create_errno));
+		snprintf(err_msg, err_msg_size, "failed to create container: %s (%s)",
+		         strerror(create_errno), container_create_last_error_step());
+		logstore_write("thincd", "error", "container %s: failed to create: %s (%s)", name_copy,
+		                strerror(create_errno), container_create_last_error_step());
 		return 500;
 	}
 
