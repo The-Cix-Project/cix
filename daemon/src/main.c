@@ -57,6 +57,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ftw.h>
 #include <limits.h>
 #include <linux/netlink.h>
 #include <net/if.h>
@@ -8269,6 +8270,35 @@ static int run_cmd(const char *const argv[])
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
+/*
+ * ADR-0179 phase 2c option (a): recursively chown a userns container's own
+ * rootfs copy to its subordinate base id, so its mapped root (host <base>)
+ * genuinely OWNS every file -- id-mapped mounts proved too subtle to make the
+ * child a writable owner, whereas plain ownership is unambiguous: the
+ * container's userns maps <base> straight back to uid 0. Done once at first
+ * create (a copy the container then keeps). nftw + lchown, no external binary;
+ * single-threaded event loop makes the static target ids safe.
+ */
+static uid_t g_chown_uid;
+static gid_t g_chown_gid;
+
+static int chown_tree_cb(const char *path, const struct stat *sb, int typeflag, struct FTW *ftw)
+{
+	(void)sb;
+	(void)typeflag;
+	(void)ftw;
+	if (lchown(path, g_chown_uid, g_chown_gid) != 0)
+		return -1;
+	return 0;
+}
+
+static int chown_tree(const char *path, uid_t uid, gid_t gid)
+{
+	g_chown_uid = uid;
+	g_chown_gid = gid;
+	return nftw(path, chown_tree_cb, 20, FTW_PHYS);
+}
+
 static int stage_container_file(const char *upperdir, const char *path, const char *content,
                                  mode_t mode, uid_t owner, gid_t group)
 {
@@ -9222,11 +9252,22 @@ static int create_container_from_body(const char *body, size_t body_len,
 		if (stat(userns_rootfs, &rst) != 0) {
 			const char *cp_argv[] = { "/usr/bin/cp", "--reflink=auto", "-a",
 			                          lowerdir, userns_rootfs, NULL };
+			long long base = 0;
 
 			if (run_cmd(cp_argv) != 0) {
 				json_free(root);
 				snprintf(err_msg, err_msg_size,
 				         "failed to copy image rootfs for userns container");
+				return 500;
+			}
+			/* chown the whole copy to the container's subordinate base id so
+			 * its mapped root owns it (subid_lookup_or_assign is idempotent --
+			 * the spec block below re-derives the same base). */
+			if (subid_lookup_or_assign(name, &base) != 0 ||
+			    chown_tree(userns_rootfs, (uid_t)base, (gid_t)base) != 0) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size,
+				         "failed to chown userns rootfs to its subordinate id");
 				return 500;
 			}
 		}

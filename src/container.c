@@ -397,36 +397,28 @@ int container_create(const struct container_spec *spec, struct container_handle 
 
 	/*
 	 * ADR-0179 phase 2c option (a): a userns container uses its OWN
-	 * per-container rootfs (a CoW copy of the image, prepared host-side by
-	 * the daemon -- spec->ov.userns_rootfs), NOT an overlay. Kernel-native
-	 * id-mapped overlay proved unachievable from this architecture: overlay's
-	 * own whiteout/tmpfile ops need privilege over the layer fs's init-owned
+	 * per-container rootfs (a copy of the image, prepared host-side by the
+	 * daemon and chown'd to the container's subordinate <base> id --
+	 * spec->ov.userns_rootfs), NOT an overlay. Kernel-native id-mapped
+	 * overlay proved unachievable from this architecture: overlay's own
+	 * whiteout/tmpfile ops need privilege over the layer fs's init-owned
 	 * s_user_ns, which the mapped-root child lacks (confirmed live via
-	 * /v1/system/kmsg). A plain ext4 mount has no such ops. The parent
-	 * id-maps that rootfs into a detached mount (the privileged step the
-	 * child can't do) -- presenting its host-uid-0 files as the container's
-	 * mapped root -- and the child move_mounts + pivots straight into it.
+	 * /v1/system/kmsg). And id-mapped mounts made the child a non-writable
+	 * owner in practice; plain <base> ownership is unambiguous -- the
+	 * container's own userns maps <base> straight back to uid 0. So the
+	 * parent just open_tree()s the rootfs into a detached (unlocked) mount;
+	 * the child move_mounts + pivots straight into it, owning it directly.
 	 */
 	if (spec->userns_enabled) {
-		int idmap_fd = -1;
 		int saved_errno = 0;
 		const char *fail_step = NULL;
 		int prep_ret = 0;
 
-		idmap_fd = create_idmap_userns_fd(spec->userns_uid_base, spec->userns_len);
-		if (idmap_fd < 0) {
+		overlay_lower_fd = (int)kx_open_tree(-1, spec->ov.userns_rootfs, KX_OPEN_TREE_CLONE);
+		if (overlay_lower_fd < 0) {
 			saved_errno = errno;
-			fail_step = NULL; /* create_idmap_userns_fd set the step */
+			fail_step = "container_create: open_tree(userns_rootfs)";
 			prep_ret = -1;
-		} else {
-			overlay_lower_fd = idmap_bind(spec->ov.userns_rootfs, idmap_fd);
-			if (overlay_lower_fd < 0) {
-				saved_errno = errno;
-				fail_step = "container_create: idmap_bind(userns_rootfs)";
-				prep_ret = -1;
-			}
-			close(idmap_fd);
-			idmap_fd = -1;
 		}
 		if (prep_ret != 0) {
 			if (overlay_lower_fd >= 0) {
@@ -640,6 +632,26 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			if (spec->stderr_fd != STDOUT_FILENO && spec->stderr_fd != STDERR_FILENO &&
 			    spec->stderr_fd != spec->stdout_fd)
 				close(spec->stderr_fd);
+		}
+
+		/*
+		 * ADR-0179 phase 2c: drop into the namespace's mapped root before
+		 * exec. Every privileged setup step above ran as real host root
+		 * (host uid 0 -- the child inherits thincd's uid, which is unmapped
+		 * in this new userns), which is why it could mount/mknod/pivot. Now
+		 * that setup is done, become userns uid/gid 0 -- i.e. host <base> --
+		 * so the workload runs genuinely unprivileged on the host, the whole
+		 * point of the user namespace. The first process in a new userns
+		 * holds full caps there regardless of its unmapped host uid, and
+		 * setuid TO uid 0 keeps them, so container_caps_drop below still
+		 * governs the final set. Done before caps_drop so CAP_SETUID/SETGID
+		 * are still present to perform it. (setgroups() is denied in this
+		 * userns -- see write_userns_maps -- so supplementary groups are left
+		 * as-is; harmless.)
+		 */
+		if (spec->userns_enabled && (setgid(0) != 0 || setuid(0) != 0)) {
+			child_diag(diag_pipe[1], "child: userns setgid/setuid(0)");
+			_exit(124);
 		}
 
 		if (container_caps_drop(spec->cap_add, spec->cap_add_count) != 0) {
@@ -859,6 +871,7 @@ void container_decode_exit_status(int exit_status, char *buf, size_t bufsize)
 		{ 120, "container_caps_drop failed" },
 		{ 121, "userns map sync failed (parent never released the child)" },
 		{ 122, "userns per-container rootfs move_mount failed (pre-pivot_root)" },
+		{ 124, "userns setgid/setuid(0) to the mapped root failed (pre-exec)" },
 		{ 127, "exec failed (errno out of encodable range)" },
 		{ 130, "overlay: lowerdir stat failed" },
 		{ 131, "overlay: upperdir mkdir failed" },
