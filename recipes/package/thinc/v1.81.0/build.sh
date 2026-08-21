@@ -87,7 +87,7 @@
 # curl (this daemon's own fetch mechanism, host-side, before any build
 # container starts) supports HTTP basic auth embedded directly in the
 # URL, which gitea accepts with a scoped access token as the password
-# field -- no daemon/pkg.c code change needed. b91e1222f1d6ce879fef195bf83ad1a600d1c95c
+# field -- no daemon/pkg.c code change needed. REPLACE_WITH_REAL_TOKEN
 # below is a deliberate placeholder, never a real committed secret
 # (same posture this project's own installer signing key already
 # establishes, image/keys/thinc-signing.key -- gitignored, must exist
@@ -99,7 +99,7 @@
 #
 pkg_name="thinc"
 pkg_version="v1.81.0"
-pkg_source="https://osakka:b91e1222f1d6ce879fef195bf83ad1a600d1c95c@git.home.arpa/api/v1/repos/itdlabs/thinc/archive/v1.81.0.tar.gz"
+pkg_source="https://osakka:REPLACE_WITH_REAL_TOKEN@git.home.arpa/api/v1/repos/itdlabs/thinc/archive/v1.81.0.tar.gz"
 pkg_sha256="4824706dcd4cebc08af6c48667aeb6266bfc1a2788dda7d52f4d305143147ec8"
 pkg_depends=""
 
