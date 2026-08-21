@@ -1,4 +1,5 @@
 #include "ldap.h"
+#include "subid.h"
 #include "hostauth.h"
 #include "persist.h"
 #include "registry.h"
@@ -597,6 +598,18 @@ void ldap_config_write_json(struct json_writer *w)
 	jw_obj_close(w);
 }
 
+int ldap_user_uidnumber_in_range(long long lo, long long hi)
+{
+	int i;
+
+	for (i = 0; i < LDAP_USER_MAX; i++) {
+		if (g_users[i].name[0] != '\0' && (long long)g_users[i].uidnumber >= lo &&
+		    (long long)g_users[i].uidnumber <= hi)
+			return 1;
+	}
+	return 0;
+}
+
 struct ldap_group *ldap_group_find(const char *name)
 {
 	int i;
@@ -1178,6 +1191,15 @@ static enum ldap_record_error validate_user_fields(int uidnumber, int primarygro
 	int i;
 
 	if (uidnumber <= 0)
+		return LDAP_RECORD_ERR_INVALID_FIELD;
+	/* ADR-0179: symmetric half of the subid allocator's own collision
+	 * check -- a managed user's uidnumber must never land inside an
+	 * already-committed subordinate range (which would let a
+	 * user-namespaced container's mapped identity collide with this
+	 * real user's own host-side file ownership). Floor 100000 makes
+	 * this practically unreachable for conventional uidnumbers; this
+	 * is the belt-and-suspenders guarantee, not the sole defense. */
+	if (subid_overlaps_uidnumber((long long)uidnumber))
 		return LDAP_RECORD_ERR_INVALID_FIELD;
 	if (ldap_group_find_by_gid(primarygroup) == NULL)
 		return LDAP_RECORD_ERR_GROUP_NOT_FOUND;

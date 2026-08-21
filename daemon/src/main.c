@@ -25,6 +25,7 @@
 #include "syslogfwd.h"
 #include "dns.h"
 #include "ldap.h"
+#include "subid.h"
 #include "exec.h"
 #include "http.h"
 #include "image.h"
@@ -140,6 +141,7 @@ static char LDAP_SERVERS_STATE_PATH[PATH_MAX];
 static char LDAP_USERS_STATE_PATH[PATH_MAX];
 static char LDAP_GROUPS_STATE_PATH[PATH_MAX];
 static char LDAP_CONFIG_STATE_PATH[PATH_MAX];
+static char SUBID_STATE_PATH[PATH_MAX]; /* ADR-0179 */
 static char PKI_DIR[PATH_MAX];
 static char PKI_CERTS_STATE_PATH[PATH_MAX];
 static char PKI_CERTS_DIR[PATH_MAX];
@@ -265,6 +267,7 @@ static void compute_state_dir_relative_paths(void)
 	         STATE_DIR);
 	snprintf(LDAP_CONFIG_STATE_PATH, sizeof(LDAP_CONFIG_STATE_PATH), "%s/ldap_config.json",
 	         STATE_DIR);
+	snprintf(SUBID_STATE_PATH, sizeof(SUBID_STATE_PATH), "%s/subid.json", STATE_DIR);
 	snprintf(PKI_DIR, sizeof(PKI_DIR), "%s/pki", STATE_DIR);
 	snprintf(PKI_CERTS_STATE_PATH, sizeof(PKI_CERTS_STATE_PATH), "%s/pki_certs.json", PKI_DIR);
 	snprintf(PKI_CERTS_DIR, sizeof(PKI_CERTS_DIR), "%s/certs", PKI_DIR);
@@ -19071,6 +19074,8 @@ int main(int argc, char **argv)
 	if (boot_subsystem_init(init_mode, "ldap", ldap_init(LDAP_SERVERS_STATE_PATH)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "ldap_record", ldap_record_init(LDAP_USERS_STATE_PATH, LDAP_GROUPS_STATE_PATH)) != 0)
+		return 1;
+	if (boot_subsystem_init(init_mode, "subid", subid_init(SUBID_STATE_PATH)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "ldap_config", ldap_config_init(LDAP_CONFIG_STATE_PATH)) != 0)
 		return 1;

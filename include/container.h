@@ -251,6 +251,24 @@ struct container_spec {
 	struct overlay_spec ov;
 	struct mount_spec mnt;
 	/*
+	 * ADR-0179 (issue #29): user-namespace mapping. userns_enabled
+	 * requests CLONE_NEWUSER with the container's own 0..userns_len-1
+	 * mapped onto host [userns_uid_base, +len) / [userns_gid_base,
+	 * +len). The maps are written by the PARENT into
+	 * /proc/<child>/{setgroups,gid_map,uid_map} (deny-then-gid-then-
+	 * uid, the documented kernel ordering) while the child blocks on
+	 * the userns sync pipe before touching anything -- and the merged
+	 * overlay is re-presented through a real id-mapped mount
+	 * (mount_setattr(MOUNT_ATTR_IDMAP)) created BEFORE clone3(), so
+	 * the child's own mount-namespace copy already carries the mapped
+	 * ownership view (shared, read-only lowerdirs are never chown'd --
+	 * see the ADR's own retraction of that idea).
+	 */
+	int userns_enabled;
+	long long userns_uid_base;
+	long long userns_gid_base;
+	long long userns_len;
+	/*
 	 * Opt-in network attachment: net_count == 0 means no networking --
 	 * the container gets exactly what every container has gotten since
 	 * Phase 1, an isolated netns with only "lo". nets[0] is "primary"

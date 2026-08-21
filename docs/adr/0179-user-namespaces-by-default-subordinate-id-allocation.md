@@ -2,7 +2,21 @@
 
 ## Status
 
-Proposed
+Accepted; phased. **Phase 1 (the subordinate-ID allocator) is built and
+tested** (`daemon/src/subid.c`, `test/test_subid.c`, wired into boot init
+and into `ldap.c`'s own user-create/update validation as the symmetric
+collision check). **Phase 2 (the actual `CLONE_NEWUSER` + id-mapped-mount
+flip) is deliberately NOT yet enabled** -- `container_spec` carries the
+`userns_*` fields but nothing sets `userns_enabled` yet. Reason, restated
+from this ADR's own Consequences: the id-mapped-mount path
+(`mount_setattr(MOUNT_ATTR_IDMAP)`) over this project's specific
+overlayfs+ext4 stack genuinely needs empirical verification before a
+security-posture-changing default is flipped, and the dev sandbox is a
+privileged nested LXC with documented namespace constraints (root
+`CLAUDE.md`) where that verification cannot be trusted. Phase 2 lands on
+the incoming bare-metal box, where it can be verified for real -- exactly
+the "confirm directly, don't assume" discipline this ADR's own text
+already commits to for this mechanism. Issue #29 stays open for Phase 2.
 
 ## Context
 
