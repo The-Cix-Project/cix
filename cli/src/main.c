@@ -985,8 +985,17 @@ static void fmt_ldap_config_line(const struct json_value *v)
 {
 	long start_uid = (long)json_as_number(json_object_get(v, "start_uid"));
 	long start_gid = (long)json_as_number(json_object_get(v, "start_gid"));
+	const char *client_uri = json_as_string(json_object_get(v, "client_uri"));
+	const char *base_dn = json_as_string(json_object_get(v, "base_dn"));
+	const char *bind_dn = json_as_string(json_object_get(v, "bind_dn"));
+	const struct json_value *pwset = json_object_get(v, "bind_password_set");
 
 	printf("start_uid=%ld start_gid=%ld\n", start_uid, start_gid);
+	printf("client_uri=%s\n", client_uri != NULL ? client_uri : "(unset)");
+	printf("base_dn=%s\n", base_dn != NULL ? base_dn : "(unset)");
+	printf("bind_dn=%s\n", bind_dn != NULL ? bind_dn : "(unset)");
+	printf("bind_password=%s\n",
+	       (pwset != NULL && pwset->type == JSON_BOOL && pwset->u.boolean) ? "(set)" : "(unset)");
 }
 
 static void fmt_ldap_group_line(const struct json_value *v)
@@ -8109,6 +8118,12 @@ static int cmd_ldap_config_show(const struct kx_client *c, int json_mode)
 static int cmd_ldap_config_set(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	long start_uid = -1, start_gid = -1;
+	/* Issue #66: the client-login fields containers reference via
+	 * {{LDAP:URI}}/{{LDAP:BASE_DN}}/{{LDAP:BIND_DN}}/
+	 * {{LDAP:BIND_PASSWORD}} recipe tokens -- each individually
+	 * optional here (absent = unchanged, "" = clear), same contract
+	 * as the PUT itself. */
+	const char *client_uri = NULL, *base_dn = NULL, *bind_dn = NULL, *bind_password = NULL;
 	int i;
 	struct json_writer w;
 	struct kx_response r;
@@ -8118,23 +8133,56 @@ static int cmd_ldap_config_set(const struct kx_client *c, int json_mode, int arg
 			start_uid = strtol(argv[i] + 12, NULL, 10);
 		else if (strncmp(argv[i], "--start-gid=", 12) == 0)
 			start_gid = strtol(argv[i] + 12, NULL, 10);
+		else if (strncmp(argv[i], "--client-uri=", 13) == 0)
+			client_uri = argv[i] + 13;
+		else if (strncmp(argv[i], "--base-dn=", 10) == 0)
+			base_dn = argv[i] + 10;
+		else if (strncmp(argv[i], "--bind-dn=", 10) == 0)
+			bind_dn = argv[i] + 10;
+		else if (strncmp(argv[i], "--bind-password=", 16) == 0)
+			bind_password = argv[i] + 16;
 		else {
 			fprintf(stderr, "thincctl: unknown ldap config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
-	if (start_uid < 0 || start_gid < 0) {
-		fprintf(stderr, "usage: thincctl ldap config set --start-uid=N --start-gid=N\n");
+	if (start_uid < 0 && start_gid < 0 && client_uri == NULL && base_dn == NULL &&
+	    bind_dn == NULL && bind_password == NULL) {
+		fprintf(stderr,
+		        "usage: thincctl ldap config set [--start-uid=N --start-gid=N] "
+		        "[--client-uri=URIS] [--base-dn=DN] [--bind-dn=DN] [--bind-password=PW]\n");
+		return 2;
+	}
+	if ((start_uid < 0) != (start_gid < 0)) {
+		fprintf(stderr, "thincctl: --start-uid and --start-gid must be given together\n");
 		return 2;
 	}
 
 	jw_init(&w);
 	jw_obj_open(&w);
-	jw_key(&w, "start_uid");
-	jw_int(&w, start_uid);
-	jw_key(&w, "start_gid");
-	jw_int(&w, start_gid);
+	if (start_uid >= 0) {
+		jw_key(&w, "start_uid");
+		jw_int(&w, start_uid);
+		jw_key(&w, "start_gid");
+		jw_int(&w, start_gid);
+	}
+	if (client_uri != NULL) {
+		jw_key(&w, "client_uri");
+		jw_str(&w, client_uri);
+	}
+	if (base_dn != NULL) {
+		jw_key(&w, "base_dn");
+		jw_str(&w, base_dn);
+	}
+	if (bind_dn != NULL) {
+		jw_key(&w, "bind_dn");
+		jw_str(&w, bind_dn);
+	}
+	if (bind_password != NULL) {
+		jw_key(&w, "bind_password");
+		jw_str(&w, bind_password);
+	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 

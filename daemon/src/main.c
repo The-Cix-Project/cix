@@ -13479,15 +13479,42 @@ static void handle_ldap_config_put(int fd, const char *body, size_t body_len)
 		return;
 	}
 
-	start_uid = (int)json_as_number(json_object_get(root, "start_uid"));
-	start_gid = (int)json_as_number(json_object_get(root, "start_gid"));
-	json_free(root);
+	/* Issue #66: two independent groups of fields, each optional as a
+	 * group -- the allocation floors (both-or-neither, unchanged
+	 * semantics) and the client-login fields (each individually
+	 * optional; absent = unchanged, "" = clear). A body touching only
+	 * one group leaves the other exactly as it was. */
+	{
+		const struct json_value *juid = json_object_get(root, "start_uid");
+		const struct json_value *jgid = json_object_get(root, "start_gid");
+		const char *client_uri = json_as_string(json_object_get(root, "client_uri"));
+		const char *base_dn = json_as_string(json_object_get(root, "base_dn"));
+		const char *bind_dn = json_as_string(json_object_get(root, "bind_dn"));
+		const char *bind_password = json_as_string(json_object_get(root, "bind_password"));
 
-	rerr = ldap_config_set(start_uid, start_gid);
-	if (rerr != LDAP_RECORD_OK) {
-		respond_error(fd, 400, "Bad Request", "start_uid/start_gid must both be > 0");
-		return;
+		if (juid != NULL || jgid != NULL) {
+			start_uid = (int)json_as_number(juid);
+			start_gid = (int)json_as_number(jgid);
+			rerr = ldap_config_set(start_uid, start_gid);
+			if (rerr != LDAP_RECORD_OK) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request",
+				              "start_uid/start_gid must both be > 0");
+				return;
+			}
+		}
+		if (client_uri != NULL || base_dn != NULL || bind_dn != NULL ||
+		    bind_password != NULL) {
+			rerr = ldap_config_set_client(client_uri, base_dn, bind_dn, bind_password);
+			if (rerr != LDAP_RECORD_OK) {
+				json_free(root);
+				respond_error(fd, 500, "Internal Server Error",
+				              "failed to persist LDAP config");
+				return;
+			}
+		}
 	}
+	json_free(root);
 
 	jw_init(&w);
 	ldap_config_write_json(&w);

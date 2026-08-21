@@ -236,6 +236,74 @@ int main(void)
 	      "an unmatched token is left exactly as-is, not swallowed or blanked");
 	kx_response_free(&r);
 
+	/* --- scenario 6.5 (issue #66): {{LDAP:FIELD}} tokens resolve from
+	 * the daemon's own LDAP client config -- no per-apply secret, no
+	 * copied values in the recipe. Also proves the two token families
+	 * coexist in one file and the bind credential flows only into the
+	 * rendered container, never out of GET /ldap/config. --- */
+	CHECK(kx_client_request(&client, "DELETE", "/v1/containers/crtest", NULL, &r) == 0,
+	      "rm crtest to free the name for the LDAP-token scenario");
+	kx_response_free(&r);
+	{
+		int i;
+
+		/* ADR-0180: settle the async delete before reusing the name. */
+		for (i = 0; i < 50; i++) {
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "GET", "/v1/containers/crtest", NULL, &r) == 0 &&
+			    r.status == 404) {
+				kx_response_free(&r);
+				break;
+			}
+			kx_response_free(&r);
+			usleep(100 * 1000);
+		}
+	}
+	memset(&r, 0, sizeof(r));
+	CHECK(kx_client_request(&client, "PUT", "/v1/ldap/config",
+	                         "{\"client_uri\":\"ldap://10.9.9.9:3893/\","
+	                         "\"base_dn\":\"dc=crt,dc=local\","
+	                         "\"bind_dn\":\"cn=svc,dc=crt,dc=local\","
+	                         "\"bind_password\":\"tokpw\"}", &r) == 0 &&
+	          r.status == 200,
+	      "PUT ldap client config for token substitution");
+	kx_response_free(&r);
+	{
+		static const char ldap_recipe_body[] =
+		    "{\"name\":\"crtest\",\"content\":\"{"
+		    "\\\"name\\\":\\\"crtest\\\",\\\"image\\\":\\\"base\\\","
+		    "\\\"cmd\\\":[\\\"/bin/true\\\"],"
+		    "\\\"files\\\":[{\\\"path\\\":\\\"/etc/nslcd.conf\\\","
+		    "\\\"content\\\":\\\"uri {{LDAP:URI}}\\\\nbase {{LDAP:BASE_DN}}\\\\n"
+		    "binddn {{LDAP:BIND_DN}}\\\\nbindpw {{LDAP:BIND_PASSWORD}}\\\\n\\\"}]}\"}";
+
+		memset(&r, 0, sizeof(r));
+		CHECK(kx_client_request(&client, "POST", "/v1/containers/recipes", ldap_recipe_body,
+		                         &r) == 0 &&
+		          (r.status == 204 || r.status == 201),
+		      "add recipe carrying {{LDAP:*}} tokens");
+		kx_response_free(&r);
+	}
+	memset(&r, 0, sizeof(r));
+	CHECK(kx_client_request(&client, "POST", "/v1/containers/recipes/crtest/apply", "{}", &r) ==
+	              0 &&
+	          r.status == 201,
+	      "apply the LDAP-token recipe with NO secrets at all (201)");
+	if (r.status != 201)
+		fprintf(stderr, "  apply said: status=%d body=%s\n", r.status,
+		        r.body != NULL ? r.body : "(null)");
+	kx_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	CHECK(kx_client_request(&client, "GET", "/v1/containers/crtest/files?path=/etc/nslcd.conf",
+	                         NULL, &r) == 0 &&
+	          r.status == 200,
+	      "GET the rendered nslcd.conf back out of the real container");
+	CHECK(r.body != NULL && strstr(r.body, "uri ldap://10.9.9.9:3893/") != NULL &&
+	          strstr(r.body, "base dc=crt,dc=local") != NULL &&
+	          strstr(r.body, "bindpw tokpw") != NULL,
+	      "all four {{LDAP:*}} tokens substituted from daemon config");
+	kx_response_free(&r);
+
 	/* --- scenario 7: apply on a name with no stored recipe is 404 --- */
 	memset(&r, 0, sizeof(r));
 	CHECK(kx_client_request(&client, "POST", "/v1/containers/recipes/noexist/apply", "{}", &r) ==

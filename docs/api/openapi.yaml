@@ -8813,7 +8813,36 @@ components:
     LdapConfig:
       type: object
       required: [start_uid, start_gid]
+      description: >
+        Also carries the LDAP *client* login settings (issue #66) that
+        containers reference via {{LDAP:URI}} / {{LDAP:BASE_DN}} /
+        {{LDAP:BIND_DN}} / {{LDAP:BIND_PASSWORD}} tokens in a container
+        recipe's own content -- resolved at recipe render time exactly
+        like {{SECRET:KEY}}, so recipes carry no copied values and no
+        per-apply secret; an LDAP server move is one PUT here. On PUT,
+        each client field is individually optional (absent = unchanged,
+        "" = clear), and start_uid/start_gid stay both-or-neither. The
+        bind credential is write-only: stored in the daemon's root-only
+        state (the PKI-private-key posture), never echoed --
+        bind_password_set reports only whether one exists.
       properties:
+        client_uri:
+          type: string
+          nullable: true
+          description: >
+            The full client URI list, verbatim (e.g. "ldap://a:3893/
+            ldap://b:3893/"). Explicit rather than derived from the
+            registered-server bindings (which store no address/port) --
+            auto-derivation is tracked on #66.
+        base_dn:
+          type: string
+          nullable: true
+        bind_dn:
+          type: string
+          nullable: true
+        bind_password_set:
+          type: boolean
+          description: Read-only. PUT accepts a write-only bind_password string instead.
         start_uid:
           type: integer
           minimum: 1

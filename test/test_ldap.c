@@ -948,6 +948,29 @@ int main(void)
 		}
 		kx_response_free(&r);
 
+		/* 29.5. issue #66: client-login fields -- individually optional
+		 * (this PUT must not disturb the floors just set), credential
+		 * write-only (bind_password_set reported, the value never
+		 * echoed), and the floors' own PUT must not disturb these. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/ldap/config",
+		                       "{\"client_uri\":\"ldap://10.0.0.1:3893/\","
+		                       "\"base_dn\":\"dc=t,dc=local\","
+		                       "\"bind_dn\":\"cn=svc,dc=t,dc=local\","
+		                       "\"bind_password\":\"s3cret\"}",
+		                       &r) != 0 ||
+		    r.status != 200 ||
+		    !str_eq(json_str_field(r.json, "client_uri"), "ldap://10.0.0.1:3893/") ||
+		    !str_eq(json_str_field(r.json, "base_dn"), "dc=t,dc=local") ||
+		    !str_eq(json_str_field(r.json, "bind_dn"), "cn=svc,dc=t,dc=local") ||
+		    json_object_get(r.json, "bind_password") != NULL ||
+		    json_object_get(r.json, "bind_password_set") == NULL ||
+		    (long)json_as_number(json_object_get(r.json, "start_uid")) != 50000) {
+			fprintf(stderr, "FAIL: PUT ldap client config (status=%d)\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
 		/* 30. a second auto-allocated group/user now starts from 50000,
 		 * not colliding with autogid1/autouid1's own 10000 */
 		memset(&r, 0, sizeof(r));

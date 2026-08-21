@@ -101,7 +101,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/containers/recipes` | Add/replace a container recipe -- content must be a real `POST /containers` body, its own `"name"` matching the recipe's |
 | GET | `/containers/recipes/{name}` | One container recipe's full detail, including its raw, unsubstituted text |
 | DELETE | `/containers/recipes/{name}` | Remove a container recipe |
-| POST | `/containers/recipes/{name}/apply` | Render `{name}`'s own stored recipe (substituting any `{{SECRET:KEY}}` tokens from the request's own `secrets` object) and create the container from it (201) |
+| POST | `/containers/recipes/{name}/apply` | Render `{name}`'s own stored recipe (substituting any `{{SECRET:KEY}}` tokens from the request's own `secrets` object, and `{{LDAP:URI}}`/`{{LDAP:BASE_DN}}`/`{{LDAP:BIND_DN}}`/`{{LDAP:BIND_PASSWORD}}` tokens from `GET/PUT /ldap/config`'s own stored client settings, issue #66 — no per-apply secret, no copied values) and create the container from it (201) |
 | GET | `/devices` | List host PCI/USB/net/GPU/disk devices discoverable via sysfs, available for passthrough |
 | GET | `/devicemaps` | List persistent, operator-named device mappings |
 | POST | `/devicemaps` | Create a persistent device mapping (name -> selector) |
