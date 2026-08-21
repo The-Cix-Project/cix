@@ -8244,6 +8244,31 @@ static const char *container_body_unknown_key(const struct json_value *root)
  * fixed literals). Returns 0, or -1 with errno set. Records nothing in
  * file_paths[] itself -- the caller owns that array's indexing.
  */
+/*
+ * ADR-0179 phase 2c option (a): a userns container gets its OWN rootfs, a
+ * copy of the image tree made here with `cp --reflink=auto -a` -- CoW (near
+ * free) on a reflink-capable backing (btrfs/xfs), a real copy elsewhere. Its
+ * own tree is what makes the container's rootfs directly writable+persistent
+ * under an id-mapped mount, without the overlay-in-userns wall (ADR-0179).
+ * Minimal fork/exec (no shell): argv is a fixed-arity vector, so no quoting/
+ * injection surface. Returns 0 on a clean exit, -1 otherwise.
+ */
+static int run_cmd(const char *const argv[])
+{
+	pid_t p = fork();
+	int status;
+
+	if (p < 0)
+		return -1;
+	if (p == 0) {
+		execv(argv[0], (char *const *)argv);
+		_exit(127);
+	}
+	if (waitpid(p, &status, 0) < 0)
+		return -1;
+	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
+}
+
 static int stage_container_file(const char *upperdir, const char *path, const char *content,
                                  mode_t mode, uid_t owner, gid_t group)
 {
@@ -8351,6 +8376,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 	char resolved_image_version[IMAGE_VERSION_MAX];
 	char container_base[PATH_MAX];
 	char upperdir[PATH_MAX], workdir[PATH_MAX], merged[PATH_MAX];
+	char userns_rootfs[PATH_MAX]; /* ADR-0179 phase 2c option (a) */
+	const char *stage_dir;        /* where container files are staged: upper, or the userns rootfs */
 	struct stat st;
 	struct container_spec spec;
 	struct registry_entry *entry;
@@ -9176,6 +9203,40 @@ static int create_container_from_body(const char *body, size_t body_len,
 	snprintf(upperdir, sizeof(upperdir), "%s/upper", container_base);
 	snprintf(workdir, sizeof(workdir), "%s/work", container_base);
 	snprintf(merged, sizeof(merged), "%s/merged", container_base);
+	userns_rootfs[0] = '\0';
+	stage_dir = upperdir;
+
+	/*
+	 * ADR-0179 phase 2c option (a): a userns container does not use an
+	 * overlay -- it gets its own per-container rootfs (a CoW copy of the
+	 * image), which container_create() id-maps and pivots into directly.
+	 * Create that copy here (host-side), the merged mountpoint the child
+	 * pivots onto, and stage the container's own files straight into the
+	 * rootfs instead of an overlay upperdir. The copy is made only on first
+	 * create (reused on restart, so writes persist).
+	 */
+	if (userns) {
+		struct stat rst;
+
+		snprintf(userns_rootfs, sizeof(userns_rootfs), "%s/rootfs", container_base);
+		if (stat(userns_rootfs, &rst) != 0) {
+			const char *cp_argv[] = { "/usr/bin/cp", "--reflink=auto", "-a",
+			                          lowerdir, userns_rootfs, NULL };
+
+			if (run_cmd(cp_argv) != 0) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size,
+				         "failed to copy image rootfs for userns container");
+				return 500;
+			}
+		}
+		if (persist_mkdir_p(merged) != 0) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "failed to create userns pivot mountpoint");
+			return 500;
+		}
+		stage_dir = userns_rootfs;
+	}
 
 	/*
 	 * Written directly into the container's own upperdir, entirely on
@@ -9206,7 +9267,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 			char *slash;
 			int fd;
 
-			if (snprintf(target, sizeof(target), "%s%s", upperdir, path) >=
+			if (snprintf(target, sizeof(target), "%s%s", stage_dir, path) >=
 			    (int)sizeof(target)) {
 				json_free(root);
 				snprintf(err_msg, err_msg_size, "files path too long");
@@ -9249,7 +9310,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 
 		ldap_effective_client_uri(effective_uri, sizeof(effective_uri));
 
-		if (stage_container_file(upperdir, "/etc/nsswitch.conf",
+		if (stage_container_file(stage_dir, "/etc/nsswitch.conf",
 		                          "passwd:         files ldap\n"
 		                          "group:          files ldap\n"
 		                          "shadow:         files ldap\n",
@@ -9265,7 +9326,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		snprintf(nslcd, sizeof(nslcd),
 		         "uri %s\nbase %s\nbinddn %s\nbindpw %s\npam_authc_ppolicy no\n",
 		         effective_uri, lc->base_dn, lc->bind_dn, lc->bind_password);
-		if (stage_container_file(upperdir, "/etc/nslcd.conf", nslcd, 0600, (uid_t)-1,
+		if (stage_container_file(stage_dir, "/etc/nslcd.conf", nslcd, 0600, (uid_t)-1,
 		                          (gid_t)-1) != 0) {
 			json_free(root);
 			snprintf(err_msg, err_msg_size, "failed to stage ldap_login nslcd.conf");
@@ -9286,12 +9347,12 @@ static int create_container_from_body(const char *body, size_t body_len,
 			content_len += (size_t)snprintf(content + content_len, sizeof(content) - content_len,
 			                                 "nameserver %s\n", dns_server_ips[i]);
 
-		if (snprintf(target, sizeof(target), "%s/etc/resolv.conf", upperdir) >= (int)sizeof(target)) {
+		if (snprintf(target, sizeof(target), "%s/etc/resolv.conf", stage_dir) >= (int)sizeof(target)) {
 			json_free(root);
 			snprintf(err_msg, err_msg_size, "dns_servers path too long");
 			return 500;
 		}
-		snprintf(target_dir, sizeof(target_dir), "%s/etc", upperdir);
+		snprintf(target_dir, sizeof(target_dir), "%s/etc", stage_dir);
 		if (persist_mkdir_p(target_dir) != 0) {
 			json_free(root);
 			snprintf(err_msg, err_msg_size, "failed to stage dns_servers");
@@ -9388,6 +9449,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	spec.ov.upperdir = upperdir;
 	spec.ov.workdir = workdir;
 	spec.ov.merged = merged;
+	spec.ov.userns_rootfs = userns ? userns_rootfs : NULL;
 	spec.mnt.put_old_rel = ".old_root";
 	spec.net_count = net_count;
 	for (i = 0; i < (size_t)net_count; i++) {
