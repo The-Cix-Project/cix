@@ -112,7 +112,7 @@ static long parse_pid(const char *out)
  * transiently 409 off the not-yet-reaped attachment. */
 static void wait_rm_settled(const char *name)
 {
-	char *inspect_argv[] = { "thincctl", PORT_ARG, "inspect", (char *)name, NULL };
+	char *inspect_argv[] = { "thincctl", PORT_ARG, "container", "inspect", (char *)name, NULL };
 	char out[4096];
 	int rc, i;
 
@@ -193,7 +193,7 @@ int main(void)
 	/* 2. run c1, exits quickly with code 5 */
 	{
 		char *argv[] = { "thincctl",  PORT_ARG,
-			          "run",       "--name=c1",
+			          "container", "run", "--name=c1",
 			          "--image=test", "--",
 			          "/bin/daemon_child", "0",
 			          "5",         NULL };
@@ -205,20 +205,20 @@ int main(void)
 		}
 	}
 
-	/* 3. ps lists it */
+	/* 3. container ls lists it */
 	{
-		char *argv[] = { "thincctl", PORT_ARG, "ps", NULL };
+		char *argv[] = { "thincctl", PORT_ARG, "container", "ls", NULL };
 
 		if (run_cli(argv, out, sizeof(out), &rc) != 0 || rc != 0 ||
 		    strstr(out, "c1") == NULL) {
-			fprintf(stderr, "FAIL: thincctl ps, rc=%d out=%s\n", rc, out);
+			fprintf(stderr, "FAIL: thincctl container ls, rc=%d out=%s\n", rc, out);
 			ok = 0;
 		}
 	}
 
 	/* 4. poll inspect c1 until exited, check exit_status */
 	{
-		char *argv[] = { "thincctl", PORT_ARG, "inspect", "c1", NULL };
+		char *argv[] = { "thincctl", PORT_ARG, "container", "inspect", "c1", NULL };
 		int i;
 		int seen = 0;
 
@@ -240,12 +240,12 @@ int main(void)
 	/* 5. run c2 (long-running), rm it while running, confirm PID gone */
 	{
 		char *run_argv[] = { "thincctl",  PORT_ARG,
-			              "run",       "--name=c2",
+			              "container", "run", "--name=c2",
 			              "--image=test", "--",
 			              "/bin/daemon_child", "30",
 			              "0",         NULL };
-		char *rm_argv[] = { "thincctl", PORT_ARG, "rm", "c2", NULL };
-		char *inspect_argv[] = { "thincctl", PORT_ARG, "inspect", "c2", NULL };
+		char *rm_argv[] = { "thincctl", PORT_ARG, "container", "rm", "c2", NULL };
+		char *inspect_argv[] = { "thincctl", PORT_ARG, "container", "inspect", "c2", NULL };
 		long pid;
 		char proc_path[64];
 		struct stat st;
@@ -286,7 +286,7 @@ int main(void)
 	/* 6. duplicate name -> nonzero exit, error on output */
 	{
 		char *argv[] = { "thincctl",  PORT_ARG,
-			          "run",       "--name=c1",
+			          "container", "run", "--name=c1",
 			          "--image=test", "--",
 			          "/bin/daemon_child", "0",
 			          "1",         NULL };
@@ -314,10 +314,10 @@ int main(void)
 		char *net_create_argv[] = { "thincctl",      PORT_ARG,          "network",
 			                     "create",         "--name=clitest",  "--subnet=172.32.0.0",
 			                     "--prefix=24",    NULL };
-		char *run_argv[] = { "thincctl",   PORT_ARG,        "run",
-			              "--name=c3",  "--image=test", "--network=clitest",
-			              "--",         "/bin/net_child", NULL };
-		char *rm_argv[] = { "thincctl", PORT_ARG, "rm", "c3", NULL };
+		char *run_argv[] = { "thincctl", PORT_ARG, "container", "run",
+			              "--name=c3", "--image=test", "--network=clitest",
+			              "--", "/bin/net_child", NULL };
+		char *rm_argv[] = { "thincctl", PORT_ARG, "container", "rm", "c3", NULL };
 		char *net_rm_argv[] = { "thincctl", PORT_ARG, "network", "rm", "clitest", NULL };
 
 		if (run_cli(net_create_argv, out, sizeof(out), &rc) != 0 || rc != 0) {
@@ -351,12 +351,12 @@ int main(void)
 			                       "create",          "--name=climulti2", "--subnet=172.37.0.0",
 			                       "--prefix=24",     NULL };
 		char *run_argv[] = { "thincctl",         PORT_ARG,
-			              "run",               "--name=c4",
+			              "container", "run", "--name=c4",
 			              "--image=test",      "--network=climulti1",
 			              "--network=climulti2", "--",
 			              "/bin/net_child",    "2",
 			              NULL };
-		char *rm_argv[] = { "thincctl", PORT_ARG, "rm", "c4", NULL };
+		char *rm_argv[] = { "thincctl", PORT_ARG, "container", "rm", "c4", NULL };
 		char *net_rm_a_argv[] = { "thincctl", PORT_ARG, "network", "rm", "climulti1", NULL };
 		char *net_rm_b_argv[] = { "thincctl", PORT_ARG, "network", "rm", "climulti2", NULL };
 
@@ -399,12 +399,12 @@ int main(void)
 			                     "create",         "--name=clifwd",   "--subnet=172.38.0.0",
 			                     "--prefix=24",    NULL };
 		char *run_argv[] = { "thincctl",     PORT_ARG,
-			              "run",           "--name=c5",
+			              "container", "run", "--name=c5",
 			              "--image=test",  "--network=clifwd",
 			              "--ip-forward",  "--route=10.0.0.0/24:172.38.0.1",
 			              "--",            "/bin/net_child",
 			              NULL };
-		char *rm_argv[] = { "thincctl", PORT_ARG, "rm", "c5", NULL };
+		char *rm_argv[] = { "thincctl", PORT_ARG, "container", "rm", "c5", NULL };
 		char *net_rm_argv[] = { "thincctl", PORT_ARG, "network", "rm", "clifwd", NULL };
 
 		if (run_cli(net_create_argv, out, sizeof(out), &rc) != 0 || rc != 0) {

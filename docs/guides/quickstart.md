@@ -46,8 +46,8 @@ Full detail: [`docs/api/README.md`](../api/README.md#creating-a-network).
 ## 4. Run a container
 
 ```sh
-build/thincctl run --name=hello --image=base --network=lan1 -- /usr/bin/bash -c "echo hello from inside thinC"
-build/thincctl inspect hello
+build/thincctl container run --name=hello --image=base --network=lan1 -- /usr/bin/bash -c "echo hello from inside thinC"
+build/thincctl container inspect hello
 ```
 
 Full detail: [`docs/api/README.md`](../api/README.md#creating-a-container).
@@ -56,7 +56,7 @@ Full detail: [`docs/api/README.md`](../api/README.md#creating-a-container).
 
 ```sh
 build/thincctl ps
-build/thincctl console hello   # a real interactive shell inside it, if it's still running
+build/thincctl container console hello   # a real interactive shell inside it, if it's still running
 ```
 
 Or open `http://127.0.0.1/` in a browser for the same thing visually — see [`web-dashboard.md`](web-dashboard.md).

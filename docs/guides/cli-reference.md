@@ -12,7 +12,7 @@ thincctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 - `--json` — print the raw API response instead of the default formatted text. Every subcommand supports it except `console` (an interactive terminal session, not a per-call response) and `files get`/`files put` (`get`'s own raw file bytes are the CLI's one non-JSON response body, and `put`'s own success response is a real `204 No Content` with nothing to render as JSON) — `--json` is silently ignored on all three.
 - Running `thincctl` with no command at all, from a real terminal (`isatty(stdin)`), drops into an **interactive shell**: one line, one command, reusing the same connection — useful for a session of several related calls without re-establishing a TCP connection each time (`thincctl --json` plus a piped/redirected stdin skips the shell and falls through to the usual usage-error path instead, so scripting is unaffected). The prompt is the connected daemon's own full site identity (`GET /system/site`, `instance.site.domain` or `instance.domain` with no site tier set, e.g. `lab.uk.home.arpa> `), not a fixed string — useful the moment more than one thinC install is reachable (ADR-0132). The trailing character follows real shell/network-device convention: `>` normally, `#` once `login` succeeds (`GET /whoami`, ADR-0164) -- refreshed immediately after every `login`/`logout` command, not just at shell startup.
 - **Exit codes**: `0` success, `1` the API call itself failed (a non-2xx response, or a transport-level failure reaching the daemon), `2` a usage error (bad flags, unknown subcommand) — checked before any network call is made.
-- **Authentication (ADR-0144)**: once a daemon has write-gating active (see [`docs/api/README.md`'s own "Host authentication" section](../api/README.md#host-authentication-adr-0144)), every mutating command needs a session — run `login` once and every subsequent `thincctl` invocation on this machine authenticates automatically via the persisted token, until `logout` or the session's own idle timeout expires it. `GET`-only commands (`health`, `ps`, every `... ls`/`... show`) never need one.
+- **Authentication (ADR-0144)**: once a daemon has write-gating active (see [`docs/api/README.md`'s own "Host authentication" section](../api/README.md#host-authentication-adr-0144)), every mutating command needs a session — run `login` once and every subsequent `thincctl` invocation on this machine authenticates automatically via the persisted token, until `logout` or the session's own idle timeout expires it. `GET`-only commands (`health`, `container ls`, every `... ls`/`... show`) never need one.
 
 ## System
 
@@ -39,7 +39,7 @@ thincctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `hostauth-config set [--admin-group=NAME ...] [--idle-timeout-seconds=N] [--ldap-enable \| --ldap-disable] [--ldap-server=HOST ...] [--ldap-port=N] [--ldap-base-dn=NAME]` | Read-modify-write (the underlying `PUT` is full-replacement, but this command fetches the current config first so only the flags given actually change) -- write-gating activates the instant a real user is a member of one of `admin_groups` |
 | `hostauth-sessions ls` | Every active session (username, expires-in) -- never a raw token, before or after issuance (ADR-0152) |
 | `hostauth-sessions revoke USERNAME` | Log that user out everywhere -- revokes every active session for it at once |
-| `rolling-config show` | The configured rolling-restart jitter window (`jitter_window_seconds`) used by `run --follow-rolling` (ADR-0124) |
+| `rolling-config show` | The configured rolling-restart jitter window (`jitter_window_seconds`) used by `container run --follow-rolling` (ADR-0124) |
 | `rolling-config set --jitter-window-seconds=N` | Set the jitter window — `0` disables jitter (restart happens immediately on every rolling reconcile) |
 | `pkg-build-config show` | The configured pkg install/hostbuild concurrency ceiling (`max_concurrent_jobs`, default 10, ADR-0157) |
 | `pkg-build-config set --max-concurrent-jobs=N` | Set it — 1-10; lowering it doesn't disrupt jobs already in flight, only future ones |
@@ -91,22 +91,23 @@ See [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.m
 
 ## Containers
 
+Every container operation is a subcommand of `container` — one noun-based namespace matching `dns`/`ldap`/`ntp`/etc.'s own `<noun> <verb>` shape (ADR-0132, issue #74). There are no bare top-level container verbs (no plain `ps`/`run`/`rm`/…).
+
 | Command | |
 |---|---|
-| `ps` | List all containers |
-| `container ls` | Same as `ps` — a noun-based synonym matching `dns`/`ldap`/`ntp`/etc.'s own `<noun> <verb>` shape (ADR-0132) |
-| `run --name=NAME --image=IMAGE [flags...] -- CMD [ARGS...]` | Create and start a container — see below for the full flag list |
-| `inspect NAME` | Show one container |
-| `stop NAME` | Kill it now, keep its persisted definition (unlike `rm`) |
-| `start NAME` | Bring a stopped-but-defined container back, no daemon restart needed |
-| `pause NAME` / `unpause NAME` | Freeze/thaw via the real cgroup v2 freezer, not `SIGSTOP` |
-| `stats NAME` | Real, host-side CPU/memory/disk/network usage, including this container's own cpu/memory/io pressure-stall (PSI) figures (ADR-0074), one point-in-time snapshot |
-| `migrate-storage NAME [--disk=NAME]` | Move a container's own overlay storage to a disk carrying the `container-storage` role (or `--disk=` omitted for the default OS-disk placement) — briefly stops and automatically restarts the container for the final cutover; requires `restart` other than `"no"` (ADR-0142) |
-| `migrate-storage-status NAME` | State/disk/error of the most recent (or running) container-storage migration |
-| `console NAME [--cmd=PATH]` | Interactive shell inside a running container (`docker exec -it`-style); `--cmd=` overrides the default `/usr/bin/bash` |
-| `files get NAME --path=/some/path [--output=PATH]` | Read one file's raw bytes back out of a container's rootfs; stdout if `--output=` omitted |
-| `files put NAME --path=/some/path --file=LOCAL_PATH [--mode=0644]` | Write/overwrite one file inside an already-existing container, live and ephemeral, without a recreate (ADR-0153) |
-| `rm NAME` | Stop (if running), remove, and forget any persisted definition |
+| `container ls` | List all containers (running, stopped, and exited) |
+| `container run --name=NAME --image=IMAGE [flags...] -- CMD [ARGS...]` | Create and start a container — see below for the full flag list |
+| `container inspect NAME` | Show one container |
+| `container stop NAME` | Kill it now, keep its persisted definition — it reappears as `stopped` (only `container rm` removes it; ADR-0181) |
+| `container start NAME` | Bring a stopped or exited container back, no daemon restart needed |
+| `container pause NAME` / `container unpause NAME` | Freeze/thaw via the real cgroup v2 freezer, not `SIGSTOP` |
+| `container stats NAME` | Real, host-side CPU/memory/disk/network usage, including this container's own cpu/memory/io pressure-stall (PSI) figures (ADR-0074), one point-in-time snapshot |
+| `container migrate-storage NAME [--disk=NAME]` | Move a container's own overlay storage to a disk carrying the `container-storage` role (or `--disk=` omitted for the default OS-disk placement) — briefly stops and automatically restarts the container for the final cutover; requires `restart` other than `"no"` (ADR-0142) |
+| `container migrate-storage-status NAME` | State/disk/error of the most recent (or running) container-storage migration |
+| `container console NAME [--cmd=PATH]` | Interactive shell inside a running container (`docker exec -it`-style); `--cmd=` overrides the default `/usr/bin/bash` |
+| `container files get NAME --path=/some/path [--output=PATH]` | Read one file's raw bytes back out of a container's rootfs; stdout if `--output=` omitted |
+| `container files put NAME --path=/some/path --file=LOCAL_PATH [--mode=0644]` | Write/overwrite one file inside an already-existing container, live and ephemeral, without a recreate (ADR-0153) |
+| `container rm NAME` | Stop (if running), remove, and forget the persisted definition — the only way to make a container truly gone (ADR-0181) |
 | `container recipe add --name=NAME --file=PATH` | Publish a container recipe (ADR-0151) -- content must already be a full `POST /containers` body, its own `"name"` matching NAME |
 | `container recipe show NAME` | Print a recipe's own raw, unsubstituted content |
 | `container recipe rm NAME` | Remove a stored container recipe |
@@ -117,10 +118,10 @@ See [`docs/guides/kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.m
 | `container device attach NAME ID` | Live-grant one more device to an already-running container, no recreate (ADR-0161 Phase D) — `ID` is a real device id or devicemap name, resolved fresh |
 | `container device detach NAME ID` | Detach a live-attached device; refuses (409) a device granted at container creation |
 
-`run`'s full flag set:
+`container run`'s full flag set:
 
 ```
-run --name=NAME --image=IMAGE
+container run --name=NAME --image=IMAGE
     [--memory-max=BYTES] [--pids-max=N] [--cpu-max="QUOTA PERIOD"] [--cpuset=0-1,3]
     [--disk-quota=BYTES] [--disk=NAME]
     [--network=NAME[:IP] ...] [--ip-forward]

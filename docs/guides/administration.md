@@ -4,7 +4,7 @@ Day-2 operations for an already-installed box: watching it, backing it up, and m
 
 ## Monitoring
 
-**Host-wide resource usage** — `thincctl host-stats` (`GET /system/stats`, ADR-0073/ADR-0074): load average, CPU/memory/disk usage, per-interface network counters, and cgroup v2 pressure-stall (PSI) figures for CPU/memory/disk. Raw cumulative counters, no server-side history — call it again for a fresh point-in-time snapshot, or watch it live on the web dashboard's System > Monitoring > Host Stats page (four graphs, no charting library, polls only while that page is open). A single container's own usage is the equivalent `thincctl stats NAME` (`GET /containers/{name}/stats`).
+**Host-wide resource usage** — `thincctl host-stats` (`GET /system/stats`, ADR-0073/ADR-0074): load average, CPU/memory/disk usage, per-interface network counters, and cgroup v2 pressure-stall (PSI) figures for CPU/memory/disk. Raw cumulative counters, no server-side history — call it again for a fresh point-in-time snapshot, or watch it live on the web dashboard's System > Monitoring > Host Stats page (four graphs, no charting library, polls only while that page is open). A single container's own usage is the equivalent `thincctl container stats NAME` (`GET /containers/{name}/stats`).
 
 **Every real process on the box** — `thincctl process ls` (`GET /system/processes`, ADR-0131): a direct `/proc` scan, each process correlated to a container if any (by walking its real host ppid chain against every running container's own root pid). `thincctl process kill PID` sends a real, immediate `SIGKILL` — refuses pid 1 and this daemon's own pid outright, since either would crash or reboot the whole host on a real installed system. Killing a pid that happens to belong to a running container is exactly equivalent to that container crashing on its own; the container's own restart policy still applies. The web dashboard's System > Monitoring > Processes page is fetch-on-demand (a Refresh button, not folded into the poll loop) since a real process table churns too fast for a 2s auto-refresh to be anything but noisy.
 
@@ -36,7 +36,7 @@ Wraps real `modprobe`/`modinfo` (ADR-0159 Phase A) -- `kmod ls` reads the kernel
 ## Device hotplug
 
 ```sh
-thincctl run --name=printer --image=base --optional-device=usb:04b8:0202:12345 -- /usr/bin/print-daemon
+thincctl container run --name=printer --image=base --optional-device=usb:04b8:0202:12345 -- /usr/bin/print-daemon
 thincctl container device attach printer usb:04b8:0202:12345
 thincctl container device detach printer usb:04b8:0202:12345
 thincctl device ls
@@ -101,7 +101,7 @@ A disk is used in exactly one of two mutually-exclusive modes: role assigned dir
 **No — not on its own, by deliberate design (ADR-0107/0108).** Every install/upgrade/uninstall against an image produces a new, immutable, content-addressed rootfs version; nothing is ever mutated in place. A container pins the specific image version it was created against (`registry.json`'s own `image_version`) and keeps running against that exact rootfs forever, even after the image moves on to a newer version — its overlay lowerdir points at a different on-disk directory than the one the new version lives in, so there's no live content for it to pick up. This is the answer to a real, previously-surprising symptom: a package installed onto an image doesn't show up in an already-running container started from that image, only in one created (or recreated) afterward.
 
 Two ways to actually get a running container onto new content, neither automatic unless you ask for it:
-- **Recreate it** — `thincctl rm NAME` + `thincctl run ...` again (or re-`POST`/re-apply a [container recipe](../adr/0151-container-recipes.md)) re-resolves the image's current version at that moment.
+- **Recreate it** — `thincctl container rm NAME` + `thincctl container run ...` again (or re-`POST`/re-apply a [container recipe](../adr/0151-container-recipes.md)) re-resolves the image's current version at that moment.
 - **`follow_rolling: true`** at creation time (`run --follow-rolling`, [ADR-0124](../adr/0124-pkg-redesign-part5-rolling-containers-and-restart-jitter.md)) — the daemon detects the pinned image's `current_version` advancing (a rolling auto-rebuild or a manual `pkg install`) and live-restarts the container onto the new pin on its own, spread out with jitter (`--follow-rolling-jitter-seconds=`, or the daemon-wide default via `thincctl rolling-config`) so many containers following the same image don't all restart at once.
 
 For patching a single file into an already-running container without a full recreate — a live config tweak, not a package install — see [`PUT /containers/{name}/files`](../api/README.md#writing-a-file-into-an-existing-container-live-without-a-recreate) ([ADR-0153](../adr/0153-container-file-live-update.md)); it's live and ephemeral, not a substitute for either option above.
