@@ -571,6 +571,38 @@ static int tokenize_into(char *raw, char *dest, size_t elem_size, int max_entrie
 	return n;
 }
 
+/* Issue #60: the daemon's stored repo auth token (or "" if none) --
+ * defined further down alongside g_repo_auth_token; forward-declared
+ * here because parse_recipe() above the definition uses it. */
+static const char *pkg_repo_token(void);
+
+/*
+ * Issue #60: replace every occurrence of needle with repl inside buf
+ * (a NUL-terminated string in a fixed cap-byte array), in place. A
+ * replacement that would overflow cap is skipped (buf left as far as
+ * it got, still NUL-terminated) rather than truncating mid-token --
+ * safe by construction here, where the only caller substitutes a
+ * <=256-byte token into a 512-byte URL buffer. No allocation.
+ */
+static void str_replace_all(char *buf, size_t cap, const char *needle, const char *repl)
+{
+	size_t needle_len = strlen(needle);
+	size_t repl_len = strlen(repl);
+	char *p;
+
+	if (needle_len == 0)
+		return;
+	while ((p = strstr(buf, needle)) != NULL) {
+		size_t cur_len = strlen(buf);
+		size_t tail_len = strlen(p + needle_len);
+
+		if (cur_len - needle_len + repl_len >= cap)
+			return;
+		memmove(p + repl_len, p + needle_len, tail_len + 1);
+		memcpy(p, repl, repl_len);
+	}
+}
+
 static int parse_recipe(const char *path, struct pkg_recipe *out)
 {
 	char *buf;
@@ -610,6 +642,32 @@ static int parse_recipe(const char *path, struct pkg_recipe *out)
 		 * short against whichever list is shorter. */
 		if (out->source_count <= 0 || sha256_count <= 0 || out->source_count != sha256_count)
 			rc = -1;
+	}
+
+	/*
+	 * Issue #60: substitute the {{REPO_TOKEN}} placeholder in each
+	 * source URL with the daemon's own stored repo auth token
+	 * (pkg repo-config --token=). This is what lets a recipe that
+	 * self-fetches from the private Gitea be committed in its final,
+	 * working form -- no more the temp-real-token-substitute-then-
+	 * revert dance the kernel/thinc recipes needed on every re-pin
+	 * (documented at length in remote-development.md). The token is
+	 * never persisted into any recipe or the catalog, and the
+	 * substituted URL only ever exists in this transient parsed struct,
+	 * handed straight to the fetch child -- redacted from logs the same
+	 * way the whole source string already is not echoed on success.
+	 * A recipe with no {{REPO_TOKEN}} token, or an empty stored token,
+	 * is left byte-for-byte unchanged.
+	 */
+	{
+		const char *tok = pkg_repo_token();
+		int i;
+
+		if (tok != NULL && tok[0] != '\0') {
+			for (i = 0; i < out->source_count; i++)
+				str_replace_all(out->source[i], sizeof(out->source[i]),
+				                "{{REPO_TOKEN}}", tok);
+		}
 	}
 
 	if (rc != 0 || !pkg_name_is_valid(out->name))
@@ -4077,6 +4135,11 @@ static char g_repo_url[PKGREPO_URL_MAX];
 static char g_repo_kind[PKGREPO_KIND_MAX] = "gitea";
 static char g_repo_ref[PKGREPO_REF_MAX] = "master";
 static char g_repo_auth_token[PKGREPO_TOKEN_MAX];
+
+static const char *pkg_repo_token(void)
+{
+	return g_repo_auth_token;
+}
 static int g_repo_sync_interval_seconds;
 
 static pid_t g_sync_pid = -1;
