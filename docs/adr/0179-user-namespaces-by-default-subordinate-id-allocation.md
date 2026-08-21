@@ -7,16 +7,40 @@ tested** (`daemon/src/subid.c`, `test/test_subid.c`, wired into boot init
 and into `ldap.c`'s own user-create/update validation as the symmetric
 collision check). **Phase 2 (the actual `CLONE_NEWUSER` + id-mapped-mount
 flip) is deliberately NOT yet enabled** -- `container_spec` carries the
-`userns_*` fields but nothing sets `userns_enabled` yet. Reason, restated
-from this ADR's own Consequences: the id-mapped-mount path
-(`mount_setattr(MOUNT_ATTR_IDMAP)`) over this project's specific
-overlayfs+ext4 stack genuinely needs empirical verification before a
-security-posture-changing default is flipped, and the dev sandbox is a
-privileged nested LXC with documented namespace constraints (root
-`CLAUDE.md`) where that verification cannot be trusted. Phase 2 lands on
-the incoming bare-metal box, where it can be verified for real -- exactly
-the "confirm directly, don't assume" discipline this ADR's own text
-already commits to for this mechanism. Issue #29 stays open for Phase 2.
+`userns_*` fields but nothing sets `userns_enabled` yet.
+
+The real, concrete prerequisite (corrected 2026-08-21 after a direct check
+prompted by the user -- an earlier version of this Status wrongly framed
+Phase 2 as "gated on the incoming bare-metal box"): **the deployed kernel
+was not built with `CONFIG_USER_NS=y`**. `image/kernel/qemu-part1.config`
+compiles in `NAMESPACES`/`PID_NS`/`NET_NS`/`UTS_NS` but never requested
+`USER_NS`, so `CLONE_NEWUSER` returns `EINVAL` on the current 6.18.40
+kernel regardless of where it runs. Phase 2 therefore blocks on a kernel
+rebuild that adds `CONFIG_USER_NS=y` (the same deliberate kernel-rebuild
+path used to close issue #1 for `CFS_BANDWIDTH`/`BLK_CGROUP`), then a
+redeploy to the real target.
+
+Once that kernel is deployed, verification does **not** need bare metal.
+The two constraints were conflated before: the *dev/build sandbox* (where
+this project's shell tooling runs) is a privileged nested LXC with
+documented namespace constraints (root `CLAUDE.md`), and cannot faithfully
+exercise id-mapped mounts -- confirmed directly here 2026-08-21 with a
+standalone probe: even writing `0 0 1` (the single-line self-map the
+kernel's own userns rules *always* permit) to a child's `/proc/<pid>/uid_map`
+returns `EPERM`, i.e. the write is blocked above the kernel's userns logic
+by this privileged LXC's own LSM profile, so the id-mapped-mount sequence
+cannot even begin here regardless of map contents -- but the real
+deployment target (192.168.15.95)
+is a Proxmox **VM** that owns its own guest kernel, which is a fully
+faithful environment for `mount_setattr(MOUNT_ATTR_IDMAP)` over
+overlayfs+ext4 (pure kernel-VFS behaviour, independent of virtio-vs-physical
+block devices). Bare metal is only required for the orthogonal
+hardware-passthrough work, which #29 does not touch. The id-mapped-mount
+path over this project's specific overlayfs+ext4 stack still genuinely
+needs empirical verification before a security-posture-changing default is
+flipped -- exactly the "confirm directly, don't assume" discipline this
+ADR's own text already commits to -- but that verification runs on the .95
+VM. Issue #29 stays open for Phase 2.
 
 ## Context
 
