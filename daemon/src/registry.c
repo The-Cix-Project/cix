@@ -84,6 +84,7 @@ enum registry_error registry_create(const char *name, const char *image,
 	e->last_exit_reason[0] = '\0';
 	e->paused = 0;
 	e->teardown_kind = REGISTRY_TEARDOWN_NONE;
+	e->disk_quota_bytes = 0;
 	e->started_at = time(NULL);
 	e->in_use = 1;
 	e->reactor_conn = NULL;
@@ -718,6 +719,27 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 			jw_null(w);
 		else
 			jw_int(w, pids_max);
+
+		/* Issue #49: cpuset read back live like the three above ("" =
+		 * the kernel's own no-restriction state -> null); disk quota
+		 * from the creation-time mirror (see registry.h). These two
+		 * used to be completely write-only -- combined with unknown-
+		 * field dropping (#68) a typo'd limit was undetectable. */
+		{
+			char cpuset[256];
+
+			jw_key(w, "cpuset_cpus");
+			if (cgroup_read_cpuset(entry->handle.cgroup_fd, cpuset, sizeof(cpuset)) == 0 &&
+			    cpuset[0] != '\0')
+				jw_str(w, cpuset);
+			else
+				jw_null(w);
+			jw_key(w, "disk_quota_bytes");
+			if (entry->disk_quota_bytes > 0)
+				jw_int(w, entry->disk_quota_bytes);
+			else
+				jw_null(w);
+		}
 	}
 	jw_obj_close(w);
 }

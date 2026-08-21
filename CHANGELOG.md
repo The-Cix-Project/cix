@@ -2,7 +2,16 @@
 
 All notable changes to this project are recorded here. Format is loosely [Keep a Changelog](https://keepachangelog.com/)-style, adapted for a rolling-release OS built phase by phase rather than a semantically-versioned library: entries are grouped by roadmap phase (see `docs/roadmap/ROADMAP.md`), newest first, with no `[Unreleased]`/version-numbered sections — every entry here is already committed. Most units of work get their own `git tag` (`git tag --sort=v:refname` is the ground truth for the full, current list — not restated here, since a hand-maintained copy of it is exactly what went stale before); an untagged entry is no less real, it simply shipped as part of a later tag. This file is updated as part of every meaningful change, not as an afterthought — see `CLAUDE.md`'s Documentation Map.
 
-### Part 202 (done): async container teardown (ADR-0180) -- a delete/stop can never freeze the daemon again (issue #67)
+### Part 203 (in progress): pre-bare-metal quality sprint -- limits fully visible + strict (#48/#49/#68/#69 done), LDAP centralization and user namespaces next
+
+Wave 1 of the user-directed sprint ("hammer through the low-hanging features; LDAP, user namespaces, and all the limits sorted before the bare-metal box arrives"):
+
+- **#49 done**: `cpuset_cpus` (live from the real cgroup, like memory/cpu/pids already were) and `disk_quota_bytes` (mirrored from the creation request -- a project quota has no per-container kernel file to read back through a kept fd) now appear in every container GET. The write-only gap that made the jump container's own quota unverifiable is closed.
+- **#68 done**: unknown top-level fields in a container create or recipe body are a 400 naming the offender -- at recipe ADD time too, so a typo'd limit can no longer sit latent in the catalog until an apply silently drops it. Daemon-internal replay paths (autostart/rolling/migration) stay deliberately lenient so an upgrade can never strand an existing definition.
+- **#48/#69 done**: `thincctl ps` grows `cpuset=`/`disk_quota=`/`caps=` columns; the dashboard's container Hardware tab now carries the full resource envelope (memory/CPU/pids/cpuset/quota/capabilities) alongside devices/interfaces/networks, instead of scattering it on the overview.
+- Regression coverage in test_daemon (unknown-field 400 + cpuset read-back; quota read-back excluded there deliberately -- the test env's fs has no prjquota -- and verified against the real box instead).
+
+### Part 202 (done):### Part 202 (done): async container teardown (ADR-0180) -- a delete/stop can never freeze the daemon again (issue #67)
 
 Root-caused and fixed the control-plane-wide wedge the user hit independently and this project hit twice in one day (both needed hard host resets): `DELETE`/`stop` of a running container ran `registry_remove()`'s synchronous SIGKILL + `waitid()` inside the single epoll loop -- unbounded when a child sticks in uninterruptible D-state (SIGKILL only *pends* there). The evidence had narrowed it precisely: the wedged delete mutated nothing (container row/DNS record/cert all survived the reset), and stop-then-delete-while-exited worked flawlessly -- the wait was the whole story. `registry_remove()`'s own comment had even deferred the async design as "not warranted for a v1 skeleton."
 

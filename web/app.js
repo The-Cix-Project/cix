@@ -2641,18 +2641,34 @@ function renderContainerDetail(name) {
 	);
 	fields.appendChild(fieldBlock("Command", (c.cmd || []).join(" ") || "-"));
 
-	/* Resource limits -- read live from the real cgroup by the daemon
-	 * (ADR-0165), not just whatever was requested at creation. Until
-	 * now these were write-only: settable via POST /containers but
-	 * never shown back anywhere, so there was no way to tell what a
-	 * running container (a pkgbuild sandbox included) actually had. */
-	fields.appendChild(
-		fieldBlock("Memory limit", c.memory_max === null || c.memory_max === undefined ? "unlimited" : formatBytes(c.memory_max))
-	);
-	fields.appendChild(fieldBlock("CPU limit", formatCpuMax(c.cpu_max) === "-" ? "unlimited" : formatCpuMax(c.cpu_max)));
-	fields.appendChild(
-		fieldBlock("Process limit", c.pids_max === null || c.pids_max === undefined ? "unlimited" : String(c.pids_max))
-	);
+	/* Resource limits -- moved onto the Hardware tab (issue #69,
+	 * user-requested): the full resource envelope lives with the rest
+	 * of the hardware-shaped facts (devices/interfaces/networks), not
+	 * scattered on the overview. Read live from the real cgroup by the
+	 * daemon (ADR-0165); cpuset/disk-quota read-back landed with issue
+	 * #49 (they were write-only before -- combined with silent
+	 * unknown-field dropping, #68, a typo'd limit was undetectable). */
+	{
+		const hw = document.getElementById("cd-hardware-resources");
+
+		hw.textContent = "";
+		hw.appendChild(
+			fieldBlock("Memory limit", c.memory_max === null || c.memory_max === undefined ? "unlimited" : formatBytes(c.memory_max))
+		);
+		hw.appendChild(fieldBlock("CPU limit", formatCpuMax(c.cpu_max) === "-" ? "unlimited" : formatCpuMax(c.cpu_max)));
+		hw.appendChild(
+			fieldBlock("Process limit", c.pids_max === null || c.pids_max === undefined ? "unlimited" : String(c.pids_max))
+		);
+		hw.appendChild(
+			fieldBlock("CPU pinning", c.cpuset_cpus === null || c.cpuset_cpus === undefined ? "unrestricted" : "cpus " + c.cpuset_cpus)
+		);
+		hw.appendChild(
+			fieldBlock("Disk quota", c.disk_quota_bytes === null || c.disk_quota_bytes === undefined ? "unlimited" : formatBytes(c.disk_quota_bytes))
+		);
+		hw.appendChild(
+			fieldBlock("Extra capabilities", (c.cap_add && c.cap_add.length > 0) ? c.cap_add.join(", ") : "none")
+		);
+	}
 
 	/* Hardware -- devices/interfaces/network attachments granted at creation.
 	 * Links back to Devices when the granted id has a real "exact" name
