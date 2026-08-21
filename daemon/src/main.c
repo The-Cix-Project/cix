@@ -9388,6 +9388,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	spec.ov.upperdir = upperdir;
 	spec.ov.workdir = workdir;
 	spec.ov.merged = merged;
+	spec.ov.base = container_base; /* ADR-0179 phase 2c: single mount for upper+work */
 	spec.mnt.put_old_rel = ".old_root";
 	spec.net_count = net_count;
 	for (i = 0; i < (size_t)net_count; i++) {
@@ -10765,6 +10766,92 @@ static void handle_container_device_detach(int fd, const char *container_name, c
  * http_write_response(), same primitive/pattern staticfile.c's own
  * static_serve() already uses for the web dashboard's static assets.
  */
+/* GET /v1/system/kmsg?tail=N -- tail of the kernel ring buffer (/dev/kmsg).
+ * The only kernel-log window a shell-less installed host has: dmesg-class
+ * diagnostics (mount failures, driver probes, OOM) over the REST API, the same
+ * spirit as /v1/system/logs but for the KERNEL's own messages, not thincd's.
+ * Single-threaded event loop, so a static ring buffer is safe. ADR-0179 phase
+ * 2c needed this to read overlayfs's own "mounting read-only" pr_warn on the
+ * shell-less .95 box. */
+static void handle_kmsg(int fd, const struct http_request *req)
+{
+	static struct {
+		long long ts;
+		int prio;
+		char text[256];
+	} ring[512];
+	struct json_writer w;
+	char rbuf[8192], tail_str[16];
+	int kfd, count = 0, head = 0, tail = 200, emit, start, i;
+	ssize_t n;
+
+	if (url_query_param(req->path, "tail", tail_str, sizeof(tail_str)) == 0) {
+		tail = atoi(tail_str);
+		if (tail < 1)
+			tail = 1;
+		if (tail > 512)
+			tail = 512;
+	}
+
+	kfd = open("/dev/kmsg", O_RDONLY | O_NONBLOCK);
+	if (kfd < 0) {
+		respond_error(fd, 500, "Internal Server Error", "cannot open /dev/kmsg");
+		return;
+	}
+	for (;;) {
+		char *semi, *msgtext, *nl;
+		int prio = 0;
+		long long seq = 0, ts = 0;
+
+		n = read(kfd, rbuf, sizeof(rbuf) - 1);
+		if (n < 0) {
+			if (errno == EPIPE) /* ring overwritten mid-read; skip ahead */
+				continue;
+			break; /* EAGAIN = drained, or a real error */
+		}
+		if (n == 0)
+			break;
+		rbuf[n] = '\0';
+		/* Record header is "prio,seq,ts_usec,flags;message[\n continuation]". */
+		sscanf(rbuf, "%d,%lld,%lld", &prio, &seq, &ts);
+		semi = strchr(rbuf, ';');
+		msgtext = (semi != NULL) ? semi + 1 : rbuf;
+		nl = strchr(msgtext, '\n');
+		if (nl != NULL)
+			*nl = '\0';
+		ring[head].ts = ts;
+		ring[head].prio = prio;
+		snprintf(ring[head].text, sizeof(ring[head].text), "%s", msgtext);
+		head = (head + 1) % 512;
+		if (count < 512)
+			count++;
+	}
+	close(kfd);
+
+	emit = (count < tail) ? count : tail;
+	start = (head - emit + 512) % 512;
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "entries");
+	jw_arr_open(&w);
+	for (i = 0; i < emit; i++) {
+		int idx = (start + i) % 512;
+
+		jw_obj_open(&w);
+		jw_key(&w, "ts_usec");
+		jw_int(&w, ring[idx].ts);
+		jw_key(&w, "priority");
+		jw_int(&w, ring[idx].prio);
+		jw_key(&w, "message");
+		jw_str(&w, ring[idx].text);
+		jw_obj_close(&w);
+	}
+	jw_arr_close(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_logs_get(int fd, const struct http_request *req)
 {
 	char source[LOGSTORE_SOURCE_MAX];
@@ -16265,6 +16352,13 @@ static void dispatch(int fd, const struct http_request *req)
 		    strncmp(req->path, "/v1/system/logs", qlen) == 0) {
 			if (strcmp(req->method, "GET") == 0) {
 				handle_logs_get(fd, req);
+				return;
+			}
+		}
+		if (qlen == strlen("/v1/system/kmsg") &&
+		    strncmp(req->path, "/v1/system/kmsg", qlen) == 0) {
+			if (strcmp(req->method, "GET") == 0) {
+				handle_kmsg(fd, req);
 				return;
 			}
 		}
