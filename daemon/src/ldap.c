@@ -511,6 +511,22 @@ int ldap_config_init(const char *state_path)
 
 const struct ldap_config *ldap_config_get(void)
 {
+	/*
+	 * base_dn is NOT independently authoritative (issue #80). The one
+	 * canonical base DN is hostauth-config's ldap_base_dn
+	 * (hostauth_ldap_base_dn(), ADR-0148) -- the same value glauth's own
+	 * backend baseDN is kept in sync with on every write. Overlay it here
+	 * so every reader (the nslcd/nsswitch ldap_login auto-staging, the
+	 * {{LDAP:BASE_DN}} recipe token, GET /v1/ldap/config) sees that one
+	 * true value and can never drift from what the registered servers
+	 * actually serve -- exactly the drift that broke jump login. Empty
+	 * (never configured) leaves whatever was stored untouched, matching
+	 * ADR-0148's own "don't blank out a working value" posture.
+	 */
+	const char *canonical = hostauth_ldap_base_dn();
+
+	if (canonical[0] != '\0')
+		snprintf(g_config.base_dn, sizeof(g_config.base_dn), "%s", canonical);
 	return &g_config;
 }
 
@@ -584,6 +600,14 @@ enum ldap_record_error ldap_config_set_client(const char *client_uri, const char
 
 void ldap_config_write_json(struct json_writer *w)
 {
+	/*
+	 * Sync g_config.base_dn to the canonical hostauth value before
+	 * reading it below (issue #80) -- so the reported base_dn matches
+	 * what the nslcd auto-staging and {{LDAP:BASE_DN}} token actually
+	 * use, never a stale stored copy. ldap_config_get() does the overlay.
+	 */
+	ldap_config_get();
+
 	jw_obj_open(w);
 	jw_key(w, "start_uid");
 	jw_int(w, g_config.start_uid);
@@ -1581,5 +1605,89 @@ int ldap_generate_secret(char out[LDAP_PROVISION_SECRET_LEN + 1])
 	for (i = 0; i < sizeof(raw); i++)
 		snprintf(out + i * 2, 3, "%02x", raw[i]);
 	return 0;
+}
+
+#define LDAP_SERVICE_BIND_USER  "svc-nslcd"
+#define LDAP_SERVICE_BIND_GROUP "svc-accounts"
+
+void ldap_ensure_service_bind_account(void)
+{
+	const char *base = hostauth_ldap_base_dn();
+	struct ldap_user *u;
+	struct ldap_group *g;
+	char secret[LDAP_PROVISION_SECRET_LEN + 1];
+	char dn[sizeof(g_config.bind_dn)];
+
+	/* LDAP not configured yet (no canonical base DN) -- nothing to bind
+	 * against, so nothing to provision. Self-heals on the next call once
+	 * hostauth-config's ldap_base_dn is set. */
+	if (base[0] == '\0')
+		return;
+
+	/*
+	 * Respect a deliberately operator-chosen bind account: only ever
+	 * manage the well-known svc-nslcd identity. If bind_dn is set and
+	 * names something else, the operator wired a custom bind -- leave it
+	 * completely alone.
+	 */
+	if (g_config.bind_dn[0] != '\0' &&
+	    strncmp(g_config.bind_dn, "cn=" LDAP_SERVICE_BIND_USER ",",
+	            strlen("cn=" LDAP_SERVICE_BIND_USER ",")) != 0)
+		return;
+
+	u = ldap_user_find(LDAP_SERVICE_BIND_USER);
+	if (u != NULL && g_config.bind_password[0] != '\0') {
+		/*
+		 * Already provisioned and we hold a working password -- just keep
+		 * bind_dn aligned with the account's real group + the canonical
+		 * base (which could have moved), without disturbing the password.
+		 */
+		g = ldap_group_find_by_gid(u->primarygroup);
+		if (g != NULL) {
+			snprintf(dn, sizeof(dn), "cn=%s,ou=%s,%s", LDAP_SERVICE_BIND_USER, g->name, base);
+			if (strcmp(dn, g_config.bind_dn) != 0) {
+				snprintf(g_config.bind_dn, sizeof(g_config.bind_dn), "%s", dn);
+				ldap_config_persist();
+			}
+		}
+		return;
+	}
+
+	/*
+	 * (Re)provision: either the account doesn't exist, or it does but we
+	 * hold no usable password for it (empty bind_password -- e.g. a fresh
+	 * state file, or an account created by hand). Ensure a group, then
+	 * create-or-reset the account with a fresh random secret + can_search,
+	 * and record its real DN + that secret as the client bind identity.
+	 * ldap_user_create()/ldap_group_create() push to every running glauth
+	 * server themselves (ldap_record_sync_all()); a server not up yet
+	 * self-heals on its next register.
+	 */
+	g = ldap_group_find(LDAP_SERVICE_BIND_GROUP);
+	if (g == NULL && ldap_group_create(LDAP_SERVICE_BIND_GROUP, ldap_gid_alloc(), &g) != LDAP_RECORD_OK)
+		return;
+	if (g == NULL || ldap_generate_secret(secret) != 0)
+		return;
+
+	if (u == NULL) {
+		if (ldap_user_create(LDAP_SERVICE_BIND_USER, ldap_uid_alloc(), g->gidnumber, NULL, 0,
+		                     "Service", "nslcd", NULL, "/usr/bin/nologin", "/nonexistent",
+		                     secret, 0, NULL, 1, NULL, &u) != LDAP_RECORD_OK || u == NULL)
+			return;
+	} else {
+		if (ldap_user_update(LDAP_SERVICE_BIND_USER, NULL, u->uidnumber, u->primarygroup,
+		                     u->secondary_groups, u->secondary_group_count, u->givenname, u->sn,
+		                     u->mail, u->loginshell, u->homedirectory, secret, u->disabled,
+		                     u->ssh_public_key, 1, &u) != LDAP_RECORD_OK || u == NULL)
+			return;
+		g = ldap_group_find_by_gid(u->primarygroup);
+		if (g == NULL)
+			return;
+	}
+
+	snprintf(g_config.bind_dn, sizeof(g_config.bind_dn), "cn=%s,ou=%s,%s",
+	         LDAP_SERVICE_BIND_USER, g->name, base);
+	snprintf(g_config.bind_password, sizeof(g_config.bind_password), "%s", secret);
+	ldap_config_persist();
 }
 

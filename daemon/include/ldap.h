@@ -452,4 +452,22 @@ int ldap_generate_secret(char out[LDAP_PROVISION_SECRET_LEN + 1]);
  */
 void ldap_record_sync_all(void);
 
+/*
+ * Auto-provisions (issue #80) the well-known service/bind account
+ * ("svc-nslcd") that LDAP *client* containers authenticate their
+ * directory searches with -- so its DN and password are never typed by
+ * hand into /v1/ldap/config (the drift that left jump login pointing at
+ * an account glauth never held). Idempotent and cheap: a no-op once the
+ * account exists with a password on file, and a no-op if the operator
+ * has deliberately configured a different (non-svc-nslcd) bind_dn.
+ * Otherwise it ensures a service group + account (a fresh random secret,
+ * can_search granted) and records the account's real DN + secret as the
+ * client bind_dn/bind_password. base_dn always comes from the canonical
+ * hostauth-config value (see ldap_config_get()). A no-op until LDAP is
+ * configured (a base DN exists). Call at each point a client LDAP config
+ * is about to be handed out (the ldap_login staging path) -- by then the
+ * registered glauth servers are up, so the create pushes to them live.
+ */
+void ldap_ensure_service_bind_account(void);
+
 #endif /* LDAP_SERVER_H */
