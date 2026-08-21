@@ -257,6 +257,11 @@ void ldap_group_write_json_one(const struct ldap_group *g, struct json_writer *w
 void ldap_group_write_json_list(struct json_writer *w);
 
 struct ldap_user *ldap_user_find(const char *name);
+
+/* ADR-0179: 1 if any managed user's uidnumber falls in [lo, hi] --
+ * the allocator's active collision check before committing a
+ * subordinate range. */
+int ldap_user_uidnumber_in_range(long long lo, long long hi);
 /* password == NULL: leave passbcrypt unset (create) or unchanged
  * (update). password == "" is treated the same as NULL -- an empty
  * credential is never written. owner_container: task #727's own
