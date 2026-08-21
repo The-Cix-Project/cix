@@ -13,6 +13,7 @@
   ],
   "restart": "always",
   "follow_rolling": true,
+  "ldap_login": true,
   "files": [
     {
       "path": "/etc/passwd",
@@ -23,21 +24,12 @@
       "content": "root:x:0:\nsshd:x:74:\nauthkeys:x:75:\n"
     },
     {
-      "path": "/etc/nsswitch.conf",
-      "content": "passwd:         files ldap\ngroup:          files ldap\nshadow:         files ldap\n"
-    },
-    {
-      "path": "/etc/nslcd.conf",
-      "content": "uri ldap://192.168.15.103:3893/ ldap://192.168.15.104:3893/\nbase dc=kanxeo,dc=local\nbinddn cn=svc-nslcd,ou=service-accounts,dc=kanxeo,dc=local\nbindpw {{SECRET:LDAP_BIND_PASSWORD}}\npam_authc_ppolicy no\n",
-      "mode": "0600"
-    },
-    {
       "path": "/etc/pam.d/sshd",
       "content": "auth     required     pam_ldap.so\naccount  required     pam_ldap.so\npassword required     pam_ldap.so\nsession  required     pam_mkhomedir.so skel=/etc/skel umask=0077\nsession  required     pam_ldap.so\n"
     },
     {
       "path": "/etc/ldap-authkeys.conf",
-      "content": "LDAP_URI=\"ldap://192.168.15.103:3893/ ldap://192.168.15.104:3893/\"\nBIND_DN=\"cn=svc-nslcd,ou=service-accounts,dc=kanxeo,dc=local\"\nBIND_PW=\"{{SECRET:LDAP_BIND_PASSWORD}}\"\nLDAP_BASE=\"dc=kanxeo,dc=local\"\n",
+      "content": "LDAP_URI=\"{{LDAP:URI}}\"\nBIND_DN=\"{{LDAP:BIND_DN}}\"\nBIND_PW=\"{{LDAP:BIND_PASSWORD}}\"\nLDAP_BASE=\"{{LDAP:BASE_DN}}\"\n",
       "mode": "0600",
       "owner": 75,
       "group": 75
