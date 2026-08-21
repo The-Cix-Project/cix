@@ -11,7 +11,6 @@
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/prctl.h>
-#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -530,19 +529,6 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		const char *fail_step = "container_create: overlay_prepare_dirs (userns)";
 
 		if (overlay_ret == 0) {
-			/*
-			 * thincd (host uid 0) is the overlay's mounter, but on the
-			 * id-mapped upper/work it is presented as a non-owner (those
-			 * host-0 dirs present as owned by <base>), so overlay's own
-			 * work/ creation and copy-up -- performed as thincd -- get
-			 * EACCES ("failed to create directory /work/work ... mounting
-			 * read-only", seen live via /v1/system/kmsg). Make these two
-			 * per-container host dirs mode-permissive so the privileged
-			 * mounter can populate them; they are private (under this
-			 * container's own dir), never shared or exposed.
-			 */
-			chmod(spec->ov.upperdir, 0777);
-			chmod(spec->ov.workdir, 0777);
 			idmap_fd = create_idmap_userns_fd(spec->userns_uid_base, spec->userns_len);
 			if (idmap_fd < 0) {
 				saved_errno = errno;
