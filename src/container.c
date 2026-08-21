@@ -8,6 +8,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mount.h>
 #include <sys/prctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -227,6 +228,47 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		return -1;
 	}
 
+	/*
+	 * ADR-0179 phase 2b: for a userns container the overlay is mounted
+	 * HERE, by the parent (init user namespace, full privilege), rather
+	 * than by the child below. The child, running as the namespace's
+	 * mapped root, provably cannot mount it (EACCES on the host-uid-0-owned
+	 * upperdir/workdir -- confirmed live on real hardware, phase 2a). The
+	 * child's CLONE_NEWNS copy inherits this mount, so it only pivots into
+	 * it. Marked MS_PRIVATE so the parent's own MNT_DETACH cleanup (after
+	 * clone3, below) can't propagate into the child's inherited copy.
+	 * Because thincd (host uid 0) is the overlay's mounter, the kernel's
+	 * mounter-credential model performs every upperdir/workdir operation
+	 * as root -- so the mapped-uid container reads and writes normally,
+	 * needing neither an id-mapped mount nor a chowned upperdir.
+	 */
+	if (spec->userns_enabled) {
+		int overlay_ret = overlay_create(&spec->ov);
+		int saved_errno;
+
+		if (overlay_ret == 0 && mount(NULL, spec->ov.merged, NULL, MS_PRIVATE, NULL) != 0) {
+			overlay_ret = -1; /* mounted, but couldn't privatize -- treat as failure */
+			umount2(spec->ov.merged, MNT_DETACH);
+		}
+		if (overlay_ret != 0) {
+			saved_errno = errno;
+			container_set_last_error_step("container_create: overlay_create (parent, userns)");
+			close(diag_pipe[0]);
+			close(diag_pipe[1]);
+			if (want_net) {
+				close(net_pipe[0]);
+				close(net_pipe[1]);
+			}
+			close(userns_pipe[0]);
+			close(userns_pipe[1]);
+			if (bpf_prog_fd >= 0)
+				close(bpf_prog_fd);
+			close(cgroup_fd);
+			errno = saved_errno;
+			return -1;
+		}
+	}
+
 	ret = ns_clone3(spec->ns.clone_flags, cgroup_fd, &pidfd);
 	if (ret < 0) {
 		int saved_errno = errno;
@@ -241,6 +283,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		if (spec->userns_enabled) {
 			close(userns_pipe[0]);
 			close(userns_pipe[1]);
+			umount2(spec->ov.merged, MNT_DETACH);
 		}
 		if (bpf_prog_fd >= 0)
 			close(bpf_prog_fd);
@@ -299,7 +342,14 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			child_diag(diag_pipe[1], "child: mountns_make_private");
 			_exit(110);
 		}
-		{
+		/*
+		 * ADR-0179 phase 2b: a userns container's overlay was already
+		 * mounted by the parent (above) and is inherited through this
+		 * child's CLONE_NEWNS copy of the mount tree -- the child only
+		 * pivots into it, never mounts it (the mapped root can't). So the
+		 * child-side overlay_create runs for the non-userns case only.
+		 */
+		if (!spec->userns_enabled) {
 			int overlay_ret = overlay_create(&spec->ov);
 
 			/*
@@ -459,6 +509,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			}
 			sys_pidfd_send_signal(pidfd, SIGKILL);
 			waitid(P_PIDFD, pidfd, &info, WEXITED);
+			umount2(spec->ov.merged, MNT_DETACH);
 			close(diag_pipe[0]);
 			close(pidfd);
 			if (bpf_prog_fd >= 0)
@@ -467,6 +518,17 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			errno = saved_errno;
 			return -1;
 		}
+		/*
+		 * The child now holds its own inherited copy of the overlay
+		 * mount (its CLONE_NEWNS snapshot) and has been released to pivot
+		 * into it -- drop thincd's own transient copy. MNT_DETACH is safe
+		 * and non-propagating: the child's copy is a separate mount object
+		 * over the same (refcounted) superblock, and merged was marked
+		 * MS_PRIVATE before clone3. Any later parent-side failure below
+		 * just kills the child, whose mount namespace (and its overlay
+		 * copy) is then torn down by the kernel on exit.
+		 */
+		umount2(spec->ov.merged, MNT_DETACH);
 	}
 
 	if (want_net) {
