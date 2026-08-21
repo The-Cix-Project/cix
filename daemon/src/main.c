@@ -9563,6 +9563,61 @@ static void handle_delete(int fd, const char *name)
 		return;
 	}
 
+	/*
+	 * ADR-0180 (issue #67): a RUNNING container is never killed-and-
+	 * waited-for synchronously here anymore -- that wait
+	 * (registry_remove()'s own waitid()) is unbounded in principle (a
+	 * task stuck in uninterruptible D-state only ever *pends* SIGKILL),
+	 * and because this daemon is one epoll loop, it froze the entire
+	 * control plane twice in real production before this existed.
+	 * Instead: every piece of durable intent is written NOW (service-
+	 * ownership forgets + containerdef removal below -- so no daemon
+	 * restart in the window can resurrect the container), the SIGKILL
+	 * is sent without waiting (registry_begin_kill()), and the entry's
+	 * own already-registered pidfd epoll watch -- the exact machinery
+	 * that detects ordinary crashes -- completes the teardown
+	 * (registry slot release + disk cleanup) from
+	 * handle_container_event() when the process actually dies. Until
+	 * then the entry reports status "deleting", and a same-name create
+	 * 409s off the still-in-use registry slot, exactly as it would
+	 * against any live container.
+	 */
+	if (e != NULL && e->running && e->teardown_kind == REGISTRY_TEARDOWN_NONE) {
+		dns_server_forget(name);
+		dns_record_forget_owner(name);
+		ldap_server_forget(name);
+		ldap_user_forget_owner(name);
+		pki_cert_forget_owner(name);
+		ntp_server_forget(name);
+		syslogfwd_target_forget(name);
+		containerdef_remove(name);
+		registry_begin_kill(e, REGISTRY_TEARDOWN_DELETE);
+		http_set_blocking(fd);
+		http_write_response(fd, 204, "No Content", "application/json", "", 0);
+		return;
+	}
+	/* A repeat DELETE while a prior one's teardown is still mid-flight:
+	 * idempotent -- the intent is already fully recorded. A DELETE
+	 * landing while a STOP's teardown is in flight upgrades the intent
+	 * in place (records delete's own durable half now; the one pending
+	 * pidfd event completes whichever kind it finds recorded). */
+	if (e != NULL && e->running && e->teardown_kind != REGISTRY_TEARDOWN_NONE) {
+		if (e->teardown_kind == REGISTRY_TEARDOWN_STOP) {
+			dns_server_forget(name);
+			dns_record_forget_owner(name);
+			ldap_server_forget(name);
+			ldap_user_forget_owner(name);
+			pki_cert_forget_owner(name);
+			ntp_server_forget(name);
+			syslogfwd_target_forget(name);
+			containerdef_remove(name);
+			e->teardown_kind = REGISTRY_TEARDOWN_DELETE;
+		}
+		http_set_blocking(fd);
+		http_write_response(fd, 204, "No Content", "application/json", "", 0);
+		return;
+	}
+
 	disk_name[0] = '\0';
 
 	if (e != NULL) {
@@ -10966,7 +11021,42 @@ static void handle_stop(int fd, const char *name)
 		return;
 	}
 
+	/*
+	 * ADR-0180 (issue #67): same asynchronous-teardown conversion as
+	 * DELETE's own running branch (see handle_delete()'s comment for
+	 * the full reasoning -- this handler shared the identical
+	 * unbounded registry_remove() wait). The durable half of stop's
+	 * intent (the stopped flag, which is what keeps a restart:"always"
+	 * definition down across daemon restarts) is written NOW; the
+	 * registry slot release -- and, for a pkgbuild container, the
+	 * pkg_build_completed() bookkeeping that needs the real exit
+	 * status -- completes from handle_container_event() when the
+	 * process actually dies. Idempotent for a stop already in flight;
+	 * a stop during a DELETE teardown changes nothing (delete's intent
+	 * strictly supersedes).
+	 */
+	if (e != NULL && e->running) {
+		containerdef_set_stopped(name, 1);
+		if (e->teardown_kind == REGISTRY_TEARDOWN_NONE)
+			registry_begin_kill(e, REGISTRY_TEARDOWN_STOP);
+
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "name");
+		jw_str(&w, name);
+		jw_key(&w, "status");
+		jw_str(&w, "stopping");
+		jw_obj_close(&w);
+		respond_json(fd, 200, "OK", &w);
+		jw_free(&w);
+		return;
+	}
+
 	if (e != NULL) {
+		/* Exited-but-still-registered (a crashed entry, or a
+		 * keep_on_failure-preserved build container): the original
+		 * synchronous flow -- registry_remove()'s kill/wait branch is
+		 * skipped for a non-running entry, so nothing here can block. */
 		if (e->reactor_conn != NULL) {
 			cc = e->reactor_conn;
 			kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
@@ -17809,7 +17899,9 @@ static void handle_container_event(struct conn *cc)
 {
 	struct registry_entry *entry = cc->entry;
 	char name_copy[REGISTRY_NAME_MAX];
+	char disk_copy[DISKROLE_DISK_NAME_MAX];
 	int exit_status;
+	int teardown_kind;
 	time_t started_at;
 	struct container_def *def;
 	pid_t pkg_pid;
@@ -17826,10 +17918,14 @@ static void handle_container_event(struct conn *cc)
 
 	/* Copied before any registry_remove() below might reuse this
 	 * slot -- entry->name/exit_status/started_at are only guaranteed
-	 * valid until then. */
+	 * valid until then. teardown_kind/disk_name join them (ADR-0180):
+	 * the async-teardown completion further down runs after the
+	 * pkgbuild block's own possible registry_remove(). */
 	snprintf(name_copy, sizeof(name_copy), "%s", entry->name);
 	exit_status = entry->exit_status;
 	started_at = entry->started_at;
+	teardown_kind = entry->teardown_kind;
+	snprintf(disk_copy, sizeof(disk_copy), "%s", entry->disk_name);
 
 	/*
 	 * Unconditional, exactly like dns_record_forget_owner()/
@@ -17870,6 +17966,47 @@ static void handle_container_event(struct conn *cc)
 
 		snprintf(artifact_dir, sizeof(artifact_dir), "%s/%s", ARTIFACTS_DIR, hostbuild_done_name);
 		spawn_thinc_bootroot_assembly(artifact_dir);
+	}
+
+	/*
+	 * ADR-0180 (issue #67): this exit was an operator-initiated
+	 * DELETE/stop's own SIGKILL finally landing -- run that teardown's
+	 * completion instead of the crash-restart logic below. The durable
+	 * half (containerdef removal / stopped flag, service-ownership
+	 * forgets) already happened synchronously in the handler that sent
+	 * the kill; what remains is exactly what needed the process to be
+	 * really dead first: releasing the registry slot (safe now --
+	 * registry_remove()'s kill/wait branch is skipped for a
+	 * non-running entry) and, for delete, the disk cleanup (same
+	 * umount-before-rmtree ordering handle_delete()'s own synchronous
+	 * exited-container branch documents). registry_find() first: a
+	 * pkgbuild container's own pkg_build_completed() block above may
+	 * have already removed the entry. For a deleted container the
+	 * unconditional remove here also deliberately overrides
+	 * keep_on_failure preservation -- an explicit DELETE always means
+	 * gone, same as stop's own long-standing "operator intent beats
+	 * the keep flag" rule.
+	 */
+	if (teardown_kind == REGISTRY_TEARDOWN_DELETE || teardown_kind == REGISTRY_TEARDOWN_STOP) {
+		if (registry_find(name_copy) != NULL)
+			registry_remove(name_copy);
+		if (teardown_kind == REGISTRY_TEARDOWN_DELETE) {
+			char container_root[PATH_MAX];
+			char container_base[PATH_MAX];
+			char merged[PATH_MAX];
+
+			container_root_for(disk_copy, container_root, sizeof(container_root));
+			snprintf(container_base, sizeof(container_base), "%s/%s", container_root,
+			         name_copy);
+			snprintf(merged, sizeof(merged), "%s/merged", container_base);
+			if (umount2(merged, MNT_DETACH) != 0 && errno != EINVAL && errno != ENOENT)
+				fprintf(stderr, "DELETE %s (async completion): umount2(%s) failed: %s\n",
+				        name_copy, merged, strerror(errno));
+			if (persist_remove_tree(container_base) != 0)
+				fprintf(stderr, "DELETE %s (async completion): failed to remove %s: %s\n",
+				        name_copy, container_base, strerror(errno));
+		}
+		return;
 	}
 
 	/*

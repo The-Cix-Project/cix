@@ -86,6 +86,28 @@ static int stop_daemon(pid_t pid)
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
+/* ADR-0180: container delete is asynchronous -- the not-yet-reaped
+ * entry still holds its network attachment for a moment, so a network
+ * delete straight after a container delete can transiently 409.
+ * Settle-poll the container to 404 first (bounded tight). */
+static void wait_container_gone(const struct kx_client *c, const char *name)
+{
+	char path[128];
+	struct kx_response r;
+	int i;
+
+	snprintf(path, sizeof(path), "/v1/containers/%s", name);
+	for (i = 0; i < 50; i++) {
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 404) {
+			kx_response_free(&r);
+			return;
+		}
+		kx_response_free(&r);
+		usleep(100 * 1000);
+	}
+}
+
 int main(void)
 {
 	pid_t daemon_pid;
@@ -268,6 +290,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	kx_client_request(&client, "DELETE", "/v1/containers/c1", NULL, &r);
 	kx_response_free(&r);
+	wait_container_gone(&client, "c1");
 
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "DELETE", "/v1/networks/neta", NULL, &r) != 0 ||
@@ -373,6 +396,7 @@ int main(void)
 	memset(&r, 0, sizeof(r));
 	kx_client_request(&client, "DELETE", "/v1/containers/c2", NULL, &r);
 	kx_response_free(&r);
+	wait_container_gone(&client, "c2");
 
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "DELETE", "/v1/networks/netip", NULL, &r) != 0 ||

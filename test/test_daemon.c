@@ -208,10 +208,33 @@ int main(void)
 		}
 		kx_response_free(&r);
 
-		snprintf(proc_path, sizeof(proc_path), "/proc/%ld", c2_pid);
-		if (stat(proc_path, &st) == 0) {
-			fprintf(stderr, "FAIL: c2's process %ld still exists after DELETE\n", c2_pid);
-			ok = 0;
+		/* ADR-0180: DELETE of a running container is asynchronous --
+		 * 204 records the intent + sends the SIGKILL; the process
+		 * reap, registry release, and disk cleanup complete from the
+		 * reactor. Settle-poll (bounded tight: a SIGKILLed child
+		 * taking >5s to fully tear down is a real regression). */
+		{
+			int i, reaped = 0;
+
+			snprintf(proc_path, sizeof(proc_path), "/proc/%ld", c2_pid);
+			for (i = 0; i < 50; i++) {
+				struct kx_response gr;
+
+				memset(&gr, 0, sizeof(gr));
+				if (kx_client_request(&client, "GET", "/v1/containers/c2", NULL, &gr) == 0 &&
+				    gr.status == 404 && stat(proc_path, &st) != 0) {
+					reaped = 1;
+					kx_response_free(&gr);
+					break;
+				}
+				kx_response_free(&gr);
+				usleep(100 * 1000);
+			}
+			if (!reaped) {
+				fprintf(stderr, "FAIL: c2 (pid %ld) never fully torn down after async DELETE\n",
+				        c2_pid);
+				ok = 0;
+			}
 		}
 
 		/*

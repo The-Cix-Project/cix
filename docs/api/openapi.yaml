@@ -5842,6 +5842,22 @@ paths:
         effort: a cleanup failure is logged but never turns this into an
         error response, since the registry/definition state, not the
         disk, is the one source of truth for whether a container exists.
+
+
+        For a RUNNING container, teardown is asynchronous (ADR-0180,
+        issue #67 -- a synchronous kill-and-wait once froze the entire
+        single-threaded daemon on a child stuck in uninterruptible
+        D-state): the 204 means every durable effect is already applied
+        (definition removed, DNS/LDAP/PKI/NTP/syslog ownership released)
+        and the SIGKILL sent; the process reap, registry-slot release,
+        and disk cleanup complete moments later when the kernel confirms
+        the exit. Until then the container reports status "deleting", a
+        same-name create 409s, repeat DELETEs are idempotent 204s, and
+        anything the still-unreaped process holds is not yet released --
+        the concrete case: deleting a network this container was
+        attached to can transiently 409 ("still in use"). Clients that
+        chain on full teardown should poll this container's own GET to
+        404 first.
       operationId: deleteContainer
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -6143,6 +6159,18 @@ paths:
         regarding persisted state if this name was created with
         "restart":"no" (or has no persisted definition at all) -- the
         live container is still killed if one is running.
+
+
+        For a RUNNING container the kill completes asynchronously
+        (ADR-0180 -- same conversion, same reasoning as DELETE's own
+        running case): the 200 (body status "stopping") means the
+        stopped flag is durably set and the SIGKILL sent; the entry
+        reports status "stopping" until the reactor reaps the process
+        and settles it to the definition's own "stopped" view. A stop
+        arriving during an in-flight DELETE teardown changes nothing
+        (delete strictly supersedes). Clients that chain on the process
+        being fully gone (e.g. before deleting a network it was
+        attached to) should poll to status "stopped" first.
       operationId: stopContainer
       parameters:
         - $ref: "#/components/parameters/ContainerName"

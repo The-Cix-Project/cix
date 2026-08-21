@@ -868,9 +868,24 @@ int main(void)
 		fprintf(stderr, "FAIL: POST stopunless/stop a second time expected 200 (idempotent)\n");
 		ok = 0;
 	}
-	if (container_exists(&client, "stopalways") != 0 || container_exists(&client, "stopunless") != 0) {
-		fprintf(stderr, "FAIL: stopalways/stopunless still exist right after being stopped\n");
-		ok = 0;
+	/* ADR-0180: stop is asynchronous now -- the transient "stopping"
+	 * registry entry settles to the definition's own "stopped" view
+	 * when the reactor reaps the SIGKILLed child. Poll briefly. */
+	{
+		int i, settled = 0;
+
+		for (i = 0; i < 50; i++) {
+			if (container_exists(&client, "stopalways") == 0 &&
+			    container_exists(&client, "stopunless") == 0) {
+				settled = 1;
+				break;
+			}
+			usleep(100 * 1000);
+		}
+		if (!settled) {
+			fprintf(stderr, "FAIL: stopalways/stopunless never settled to stopped\n");
+			ok = 0;
+		}
 	}
 
 	/* Now the real proof: restart the daemon process itself (not just

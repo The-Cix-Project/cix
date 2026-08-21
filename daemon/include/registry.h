@@ -11,6 +11,14 @@
 
 #define REGISTRY_MAX_CONTAINERS 256
 #define REGISTRY_NAME_MAX 64
+
+/*
+ * ADR-0180: asynchronous teardown intents -- see struct
+ * registry_entry's own teardown_kind comment for the lifecycle.
+ */
+#define REGISTRY_TEARDOWN_NONE 0
+#define REGISTRY_TEARDOWN_STOP 1
+#define REGISTRY_TEARDOWN_DELETE 2
 /* Same cap pkg.c's own PKG_BUILD_OUTPUT_CAPTURE_MAX uses for build-output
  * capture -- generous enough for a real startup failure's own diagnostic
  * text, bounded so one misbehaving container can't grow this indefinitely. */
@@ -146,6 +154,21 @@ struct registry_entry {
 	 * every other purely-live piece of registry_entry state.
 	 */
 	int paused;
+	/*
+	 * ADR-0180: which asynchronous teardown, if any, this entry is
+	 * mid-flight in (REGISTRY_TEARDOWN_*). Set by registry_begin_kill()
+	 * the moment an operator's DELETE/stop SIGKILLs a running
+	 * container; read back by main.c's handle_container_event() when
+	 * the pidfd actually fires, to run that teardown's own completion
+	 * (disk cleanup, registry slot release) instead of the crash-
+	 * restart logic. NONE for every ordinary running/exited entry.
+	 * Purely live state, never persisted -- the durable half of a
+	 * teardown's intent (containerdef removal for delete, the stopped
+	 * flag for stop) is written synchronously in the handler itself
+	 * before the kill, so a daemon restart mid-teardown can never
+	 * resurrect the container either way.
+	 */
+	int teardown_kind;
 	/*
 	 * Wall-clock time this entry's process was started -- used by
 	 * handle_container_event() (daemon/src/main.c) to decide whether an
@@ -428,14 +451,40 @@ void registry_mark_exited(struct registry_entry *entry);
 
 /*
  * Removes name from the table. If still running, sends SIGKILL via
- * the pidfd and reaps it before removing -- this blocks briefly
- * (microseconds in practice; SIGKILL is unblockable) waiting for the
- * kernel to finish tearing the process down. A fully async kill+reap
- * would need a pending-removal state machine; not warranted for a v1
- * skeleton. Closing the pidfd also drops it from any epoll set.
+ * the pidfd and reaps it before removing -- this blocks waiting for
+ * the kernel to finish tearing the process down: microseconds in
+ * practice, but NOT bounded in principle ("SIGKILL is unblockable" is
+ * about signal masks, not about a task stuck in uninterruptible
+ * D-state, where the kill only pends). The original comment here
+ * deferred a fully-async kill+reap as "not warranted for a v1
+ * skeleton" -- ADR-0180 makes exactly that call in the other
+ * direction after two real production wedges (issue #67): a
+ * delete/stop of a running container froze the entire single-threaded
+ * daemon on this wait. Operator-facing delete/stop no longer come
+ * through this running-kill branch at all (registry_begin_kill()
+ * below + main.c's handle_container_event() completion); the branch
+ * remains only for the internal storage-migration finalize path,
+ * whose all-or-nothing job semantics genuinely want a synchronous
+ * stop (tracked for async conversion on issue #67).
  * Returns 0, or -1 if no such container.
  */
 int registry_remove(const char *name);
+
+/*
+ * ADR-0180: begin an asynchronous teardown of a RUNNING entry --
+ * unconditionally thaws the cgroup first (a frozen cgroup blocks
+ * SIGKILL delivery forever, and e->paused can in principle go stale;
+ * thawing an unfrozen cgroup is a harmless no-op write), sends
+ * SIGKILL via the pidfd, records teardown_kind, and returns
+ * immediately -- never waits, never touches the reactor registration
+ * (the entry's own pidfd epoll watch is precisely what will fire when
+ * the process actually dies, at which point handle_container_event()
+ * runs this teardown's completion). Caller is responsible for having
+ * already written the teardown's durable intent (containerdef
+ * removal / stopped flag) BEFORE calling, so no daemon restart in the
+ * window can resurrect the container.
+ */
+void registry_begin_kill(struct registry_entry *e, int teardown_kind);
 
 /*
  * ADR-0156/task #861: appends one live network attachment to e->nets[]
