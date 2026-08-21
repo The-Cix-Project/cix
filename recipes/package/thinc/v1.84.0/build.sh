@@ -52,7 +52,7 @@
 # Re-pinned again to v1.84.0 (quality sprint wave, cont.): {{REPO_TOKEN}}
 # pkg_source substitution (#60 -- self-fetching recipes committable in
 # final form, no more live-token dance; NOTE this recipe still uses the
-# ceb04c8dc71df0f51319207bc105fec7b446ec43 placeholder because the DEPLOYING daemon
+# REPLACE_WITH_REAL_TOKEN placeholder because the DEPLOYING daemon
 # (v1.83.0) predates #60 -- v1.85.0 onward can use {{REPO_TOKEN}}) and
 # per-network auto-IP allocation window + management .1-skip (#70).
 #
@@ -112,7 +112,7 @@
 # curl (this daemon's own fetch mechanism, host-side, before any build
 # container starts) supports HTTP basic auth embedded directly in the
 # URL, which gitea accepts with a scoped access token as the password
-# field -- no daemon/pkg.c code change needed. ceb04c8dc71df0f51319207bc105fec7b446ec43
+# field -- no daemon/pkg.c code change needed. REPLACE_WITH_REAL_TOKEN
 # below is a deliberate placeholder, never a real committed secret
 # (same posture this project's own installer signing key already
 # establishes, image/keys/thinc-signing.key -- gitignored, must exist
@@ -124,7 +124,7 @@
 #
 pkg_name="thinc"
 pkg_version="v1.84.0"
-pkg_source="https://osakka:ceb04c8dc71df0f51319207bc105fec7b446ec43@git.home.arpa/api/v1/repos/itdlabs/thinc/archive/v1.84.0.tar.gz"
+pkg_source="https://osakka:REPLACE_WITH_REAL_TOKEN@git.home.arpa/api/v1/repos/itdlabs/thinc/archive/v1.84.0.tar.gz"
 pkg_sha256="0a1a78c8d910583ebe139f0b5b2deac6ec70484d2cf528e6e982eb81af0138ab"
 pkg_depends=""
 
