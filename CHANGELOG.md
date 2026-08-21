@@ -4,6 +4,8 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ### Part 203 (in progress): pre-bare-metal quality sprint
 
+**#60 done**: `{{REPO_TOKEN}}` in a `pkg_source` URL is substituted at fetch time with the daemon's own stored repo auth token (`pkg repo-config set --token=`). A recipe that self-fetches from the private Gitea is now committable in its final, working form -- eliminating the live-token-substitute-before-first-sync-then-revert-and-delete dance every kernel/thinc re-pin needed (done ~10 times this sprint alone; documented at length in remote-development.md, now rewritten around the placeholder). Token never touches the catalog or logs; no-regression verified across the full pkg suite.
+
 **#70 done**: per-network auto-IP allocation window (`alloc_start`/`alloc_end`, dotted IPs; `thincctl network create --alloc-start/--alloc-end`) plus a safe default -- a management network (bridged onto a real LAN) now skips host-part `.1` in auto-allocation even with no window set, since `.1` is by convention the real gateway. Caught live during the ADR-0180 canary test, when the allocator handed a container `192.168.15.1`. Explicit container IPs are unconstrained by the window (auto-allocation only). Persisted, serialized, migration-safe (absent = full-range default), and regression-tested (a container on a windowed network lands on the window's first host-part, not `.1`). -- limits fully visible + strict (#48/#49/#68/#69 done), LDAP centralization and user namespaces next
 
 Wave 1 of the user-directed sprint ("hammer through the low-hanging features; LDAP, user namespaces, and all the limits sorted before the bare-metal box arrives"):
