@@ -95,6 +95,22 @@ never default-on, until it lands. The subordinate-ID allocator, the
 `CLONE_NEWUSER`+map handshake, and the parent-side overlay mount are all
 committed and verified; only the id-mapped presentation remains.
 
+**Phase 2c live-found constraint (2026-08-21): `mount_setattr(MOUNT_ATTR_IDMAP)`
+on the *merged* overlay mount returns `EINVAL` on the 6.18 kernel.** Overlayfs
+does not support id-mapping the merged mount directly -- only its *layers* can
+be id-mapped. So the working approach is id-mapped **lower/upper layers**
+(idmapped bind mounts of the layers fed to overlay via the fd-based mount API,
+`fsopen`/`fsconfig`), not a single `mount_setattr` on the merged mount. The
+first-cut 2c plumbing is committed and correct as far as it goes -- the
+detached-clone + `open_tree`/`move_mount` flow, and a race-fixed
+`create_idmap_userns_fd` that builds the inverse idmap userns `"<base> 0
+<len>"` (the fork/`unshare` race -- parent writing the map before the child
+left the init userns, intermittent `EPERM` -- is fixed with a ready-handshake).
+Substituting the layer-idmap for the merged-mount `mount_setattr` is the
+remaining work, landing as its own focused iteration (verification is captive
+to a per-attempt deploy+reboot on the shell-less .95 VM). userns stays opt-in
+until it lands; a `"userns":true` create currently fails `EINVAL` at this step.
+
 ## Context
 
 Issue #29 (raised 2026-08-17, still open): thinC's containers run as real host UID 0 with no `CLONE_NEWUSER` at all. ADR-0168 closed the single sharpest consequence of that (an untrimmed capability set, `CAP_SYS_MODULE` chief among them) but explicitly deferred the underlying gap: "Root UID inside a container is still real host UID 0 after this change... Full user-namespace support... remains open as issue #29's own original scope."

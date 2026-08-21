@@ -196,30 +196,57 @@ static long kx_mount_setattr(int dfd, const char *path, unsigned int flags,
  */
 static int create_idmap_userns_fd(long long base, long long len)
 {
-	int pipefd[2];
+	int pipefd[2];   /* go: parent -> child (release) */
+	int readyfd[2];  /* ready: child -> parent (unshare done) */
 	pid_t helper;
-	char path[64], map[64];
+	char path[64], map[64], c;
 	int fd, status;
 
 	if (pipe(pipefd) != 0)
 		return -1;
-	helper = fork();
-	if (helper < 0) {
+	if (pipe(readyfd) != 0) {
 		close(pipefd[0]);
 		close(pipefd[1]);
 		return -1;
 	}
+	helper = fork();
+	if (helper < 0) {
+		close(pipefd[0]);
+		close(pipefd[1]);
+		close(readyfd[0]);
+		close(readyfd[1]);
+		return -1;
+	}
 	if (helper == 0) {
-		char c;
+		char rc;
 
 		close(pipefd[1]);
+		close(readyfd[0]);
 		if (unshare(CLONE_NEWUSER) != 0)
 			_exit(1);
-		if (read(pipefd[0], &c, 1) != 1)
+		/*
+		 * Signal the parent only AFTER unshare has landed -- otherwise
+		 * the parent can race ahead and write our uid_map while we're
+		 * still in the init userns, which fails EPERM (confirmed live).
+		 */
+		if (write(readyfd[1], "r", 1) != 1)
+			_exit(3);
+		if (read(pipefd[0], &rc, 1) != 1)
 			_exit(2);
 		_exit(0);
 	}
 	close(pipefd[0]);
+	close(readyfd[1]);
+
+	/* Wait for the child to confirm it is in its new user namespace. */
+	if (read(readyfd[0], &c, 1) != 1) {
+		container_set_last_error_step("create_idmap_userns_fd: unshare(CLONE_NEWUSER)");
+		close(readyfd[0]);
+		close(pipefd[1]);
+		waitpid(helper, &status, 0);
+		return -1;
+	}
+	close(readyfd[0]);
 
 	snprintf(map, sizeof(map), "%lld 0 %lld", base, len);
 	if (write_proc_line(helper, "setgroups", "deny") != 0) {
