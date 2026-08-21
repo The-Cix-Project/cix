@@ -65,15 +65,6 @@ struct overlay_spec {
 	const char *lowerdir;
 	const char *upperdir;
 	const char *workdir;
-	/*
-	 * The parent directory that holds upperdir/workdir/merged (ADR-0179
-	 * phase 2c). The userns id-mapped-overlay path id-maps this one
-	 * directory as a single mount so upperdir and workdir land on the
-	 * same mount -- overlay's copy-up renames between them across
-	 * different mounts would otherwise fail EXDEV. NULL for the classic
-	 * (non-userns) mount path, which never reads it.
-	 */
-	const char *base;
 	const char *merged;
 	/*
 	 * Real ext4 project-quota id (Part 4, bare-metal-readiness plan,
