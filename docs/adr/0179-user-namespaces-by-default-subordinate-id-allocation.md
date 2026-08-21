@@ -61,9 +61,39 @@ overlay parent-side (init userns, full privilege) before `clone3` and
 re-presents it to the child** -- which is what this ADR's own Consequences
 already specified ("the merged overlay is re-presented through a real
 id-mapped mount created BEFORE clone3()"); the live failure is what turns
-that from a design assertion into a verified requirement. Phase 2a's
-`CLONE_NEWUSER`+handshake code is committed and correct; Phase 2b (the
-parent-side overlay mount + id-mapped presentation) is the remaining work.
+that from a design assertion into a verified requirement.
+
+**Phase 2b done + verified live on .95 2026-08-21 — a userns container now
+runs with a correctly mapped root.** `container_create()` mounts the overlay
+parent-side (init userns) before `clone3`; the child inherits it and pivots
+in. Getting there took three successive live findings, each an
+unprivileged-userns kernel interaction the non-userns path never hits:
+(1) the overlay must be mounted parent-side (the phase-2a `EACCES`);
+(2) `pivot_root` refuses a `MNT_LOCKED` new root, and mounts inherited into
+a userns-owned mount ns are locked — fixed by a fresh self-bind-mount of
+`merged` in the child (unlocked); (3) an unprivileged userns may only mount
+proc/sysfs when a fully-visible instance already exists — fixed by detaching
+the old root *after* the fresh proc/sys mounts, not before. Result confirmed
+directly: `/proc/1/uid_map` inside the container reads `0 100000 65536` — the
+container's root is genuinely mapped to an unprivileged host uid, not host 0.
+
+**Phase 2c (id-mapped mounts) is the remaining work, and it is required for
+a *usable* container, not just a running one.** Without it the container is
+effectively read-only: every writable target (the overlay rootfs, and even
+the fresh tmpfs `/run`) is owned by host uid 0, which is *outside* the
+container's mapped range [100000,165536) and therefore unmapped in its
+userns — so the container gets `EOVERFLOW` ("Value too large for defined
+data type") the moment it touches such a file (confirmed live: a container's
+own `bash` failed exactly this way writing `/run`). A world-readable binary
+still execs (that path never has to represent the unmapped owner), which is
+why the container runs at all. Id-mapped mounts (`mount_setattr(MOUNT_ATTR_IDMAP)`,
+this ADR's stated primary mechanism) re-present the overlay/tmpfs inodes with
+kuids shifted into the container's mapped range, eliminating the `EOVERFLOW`
+and giving the mapped root real ownership of its rootfs. This is tracked
+under issue #29 (which stays open); userns stays opt-in (`"userns":true`),
+never default-on, until it lands. The subordinate-ID allocator, the
+`CLONE_NEWUSER`+map handshake, and the parent-side overlay mount are all
+committed and verified; only the id-mapped presentation remains.
 
 ## Context
 
