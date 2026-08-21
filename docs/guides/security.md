@@ -29,7 +29,7 @@ thincctl pki cert create --name=svc.internal --sans=svc.internal,svc --days=365
 **Automatic issuance straight into a container**, instead of issuing separately and figuring out delivery:
 
 ```sh
-thincctl run --name=web --image=myapp --pki-issue --pki-cert-dir=/etc/thinc-tls --pki-days=365 -- /usr/bin/some-binary
+thincctl container run --name=web --image=myapp --pki-issue --pki-cert-dir=/etc/thinc-tls --pki-days=365 -- /usr/bin/some-binary
 ```
 
 Issues a cert named after the container and writes `tls.crt`/`tls.key` (mode `0600`) directly into its filesystem at creation time — one-time delivery, no live resync, since a cert doesn't change after a container starts (a chain rotation, below, explicitly redelivers). Deleting the container automatically removes its cert too. Requires the CA to already be bootstrapped.
@@ -118,7 +118,7 @@ Two more real, non-obvious gotchas confirmed live re-provisioning this from scra
 A container can provision its own LDAP bind account at creation time, separate from the human accounts above:
 
 ```sh
-thincctl run --name=svc1 --image=myapp --ldap-provision --ldap-group=svcaccts -- /usr/bin/some-binary
+thincctl container run --name=svc1 --image=myapp --ldap-provision --ldap-group=svcaccts -- /usr/bin/some-binary
 ```
 
 Delivers a freshly-generated `bind.secret` (never persisted in plaintext anywhere in thinC's own state — only its hash survives) into `/etc/thinc-ldap/` inside the container by default. `--ldap-group=` must already exist; `--ldap-user=` defaults to the container's own name. The account is removed automatically when the container is.
