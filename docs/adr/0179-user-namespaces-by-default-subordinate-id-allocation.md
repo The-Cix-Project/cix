@@ -42,6 +42,29 @@ flipped -- exactly the "confirm directly, don't assume" discipline this
 ADR's own text already commits to -- but that verification runs on the .95
 VM. Issue #29 stays open for Phase 2.
 
+**Phase 2a verified live on .95 2026-08-21, and it settled the open design
+question empirically.** With the `USER_NS` kernel deployed, `container.c`
+gained `CLONE_NEWUSER` + the parent-side `setgroups`/`gid_map`/`uid_map`
+handshake (a blocking sync pipe: child waits, parent writes the maps then
+releases it), gated behind an opt-in `"userns":true` create field so the
+platform's running containers stayed untouched. A `"userns":true` container
+was created and got as far as `overlay_create` -- proving `CLONE_NEWUSER`
+and the map handshake both work on the real VM (a failed map write would
+have `_exit(121)`; this reached the overlay step) -- then **failed with
+`EACCES` mounting the overlay *inside* the new user namespace** (`exit 153`
+= `140 + EACCES`, `"child: overlay_create: Permission denied"`). This is
+the direct, live confirmation of exactly the risk this ADR flagged: the
+child, running as the namespace's mapped root (host uid `userns_uid_base`,
+e.g. 100000), cannot write the host-uid-0-owned upperdir/workdir, so an
+overlay mount *by the child* is not viable. **Phase 2b therefore mounts the
+overlay parent-side (init userns, full privilege) before `clone3` and
+re-presents it to the child** -- which is what this ADR's own Consequences
+already specified ("the merged overlay is re-presented through a real
+id-mapped mount created BEFORE clone3()"); the live failure is what turns
+that from a design assertion into a verified requirement. Phase 2a's
+`CLONE_NEWUSER`+handshake code is committed and correct; Phase 2b (the
+parent-side overlay mount + id-mapped presentation) is the remaining work.
+
 ## Context
 
 Issue #29 (raised 2026-08-17, still open): thinC's containers run as real host UID 0 with no `CLONE_NEWUSER` at all. ADR-0168 closed the single sharpest consequence of that (an untrimmed capability set, `CAP_SYS_MODULE` chief among them) but explicitly deferred the underlying gap: "Root UID inside a container is still real host UID 0 after this change... Full user-namespace support... remains open as issue #29's own original scope."
