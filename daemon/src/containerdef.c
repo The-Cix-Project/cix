@@ -411,11 +411,19 @@ static int parse_persisted_entry(const struct json_value *item, struct container
 	if (jrestart_policy != NULL) {
 		const char *rp = json_as_string(jrestart_policy);
 
-		if (rp == NULL || (strcmp(rp, "always") != 0 && strcmp(rp, "on-failure") != 0 &&
-		                    strcmp(rp, "unless-stopped") != 0)) {
-			/* A value we ourselves wrote must be one of these three --
+		if (rp == NULL || (strcmp(rp, "no") != 0 && strcmp(rp, "always") != 0 &&
+		                    strcmp(rp, "on-failure") != 0 && strcmp(rp, "unless-stopped") != 0)) {
+			/* A value we ourselves wrote must be one of these four --
 			 * a present-but-invalid value is real corruption, same
-			 * posture as every other field here. */
+			 * posture as every other field here. "no" became a real,
+			 * persisted policy with ADR-0181 (issue #73: every container
+			 * is persisted; restart governs auto-restart only). Before
+			 * that it could never appear here, because a "no" container
+			 * had no definition at all -- so this reader rejected it as
+			 * corruption. Missing this one spot when the writer changed
+			 * meant a daemon that had created any default container
+			 * refused to load its own state file on the next boot
+			 * ("invalid entry at index 0") and never came back up. */
 			free(slot->body);
 			return -1;
 		}

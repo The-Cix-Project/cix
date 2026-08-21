@@ -986,6 +986,29 @@ int main(void)
 		}
 	}
 
+	/*
+	 * ADR-0181 regression guard: a plain restart:"no" container must be
+	 * persisted (it is, since ADR-0181) AND its persisted definition must
+	 * survive a reload. Both halves matter: the writer started emitting
+	 * restart_policy "no" while parse_persisted_entry() still rejected
+	 * that value as corruption, so the daemon refused to load its own
+	 * state file ("invalid entry at index 0") and never came back up
+	 * after ANY restart once a default container existed -- a total
+	 * boot failure that no test covered, because before ADR-0181 a "no"
+	 * container had no definition to reload. Created immediately before
+	 * the restart below so it's in the file the next boot must parse.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"plainno\",\"image\":\"restarttest\","
+	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST plainno (restart:\"no\"), status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
 	/* Now the real proof: restart the daemon process itself (not just
 	 * reload in-memory state) and confirm every expectation above. */
 	if (stop_daemon(daemon_pid) != 0) {
@@ -1033,6 +1056,34 @@ int main(void)
 		fprintf(stderr, "FAIL: deleteme came back after being DELETEd -- persistence "
 		                "removal didn't work\n");
 		ok = 0;
+	}
+
+	/*
+	 * ADR-0181 regression guard, second half: the restart:"no" container
+	 * created just before this restart must still be KNOWN (its
+	 * definition parsed cleanly off disk -- the daemon booting at all
+	 * already proves the file wasn't rejected) but NOT running, since
+	 * "no" is never auto-restarted at boot. GET must therefore be a 200
+	 * reporting status "stopped", not a 404 and not a live container.
+	 */
+	{
+		struct kx_response pr;
+
+		memset(&pr, 0, sizeof(pr));
+		if (kx_client_request(&client, "GET", "/v1/containers/plainno", NULL, &pr) != 0 ||
+		    pr.status != 200) {
+			fprintf(stderr,
+			        "FAIL: plainno (restart:\"no\") not known after a daemon restart "
+			        "(status=%d) -- its persisted definition didn't survive the reload\n",
+			        pr.status);
+			ok = 0;
+		} else if (!str_eq(json_str_field(pr.json, "status"), "stopped")) {
+			fprintf(stderr,
+			        "FAIL: plainno should be \"stopped\" after restart (never autostarted), got \"%s\"\n",
+			        json_str_field(pr.json, "status"));
+			ok = 0;
+		}
+		kx_response_free(&pr);
 	}
 
 	{
