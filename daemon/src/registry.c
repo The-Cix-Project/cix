@@ -81,6 +81,7 @@ enum registry_error registry_create(const char *name, const char *image,
 		strncpy(e->image_version, image_version, sizeof(e->image_version) - 1);
 	e->running = 1;
 	e->exit_status = 0;
+	e->term_signal = 0;
 	e->last_exit_reason[0] = '\0';
 	e->paused = 0;
 	e->teardown_kind = REGISTRY_TEARDOWN_NONE;
@@ -213,14 +214,15 @@ int registry_ip_available(uint32_t candidate_be)
 
 void registry_mark_exited(struct registry_entry *entry)
 {
-	int status;
+	int status, sig;
 
-	if (container_wait(&entry->handle, &status) == 0) {
+	if (container_wait(&entry->handle, &status, &sig) == 0) {
 		char diag[256];
 		ssize_t diag_len;
 
 		entry->running = 0;
 		entry->exit_status = status;
+		entry->term_signal = sig;
 
 		/*
 		 * Prefer the child's own real diagnostic text (the ONLY thing
@@ -235,13 +237,29 @@ void registry_mark_exited(struct registry_entry *entry)
 		if (diag_len > 0) {
 			snprintf(entry->last_exit_reason, sizeof(entry->last_exit_reason), "%s", diag);
 		} else {
-			container_decode_exit_status(status, entry->last_exit_reason,
+			container_decode_exit_status(status, sig, entry->last_exit_reason,
 			                              sizeof(entry->last_exit_reason));
 		}
 
-		if (status != 0) {
-			logstore_write("thincd", "error", "container %s exited (status=%d): %s",
-			                entry->name, status, entry->last_exit_reason);
+		/*
+		 * Severity tracks INTENT, not just the exit code (issue #79).
+		 * A deliberate stop/delete SIGKILLs the container -- a nonzero
+		 * (signal-9) exit that is not an error and must not read like
+		 * one in a log an operator scans for real problems; the
+		 * matching [audit] POST .../stop|DELETE line already records
+		 * the action, so this is an info-level confirmation, not a
+		 * second alarm. Only a genuinely unprompted abnormal exit
+		 * (teardown_kind still NONE) stays at error level.
+		 */
+		if (entry->teardown_kind == REGISTRY_TEARDOWN_STOP) {
+			logstore_write("thincd", "info", "container %s stopped (%s)",
+			                entry->name, entry->last_exit_reason);
+		} else if (entry->teardown_kind == REGISTRY_TEARDOWN_DELETE) {
+			logstore_write("thincd", "info", "container %s removed (%s)",
+			                entry->name, entry->last_exit_reason);
+		} else if (status != 0) {
+			logstore_write("thincd", "error", "container %s exited abnormally: %s",
+			                entry->name, entry->last_exit_reason);
 		}
 	}
 }
@@ -536,6 +554,18 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 		jw_null(w);
 	else
 		jw_int(w, entry->exit_status);
+	/*
+	 * issue #78: 0 means "exited normally, exit_status is a real code";
+	 * nonzero means "killed by this signal, exit_status is that signal
+	 * number, not a code" -- lets a client tell a SIGKILL (9, from
+	 * stop/delete) apart from a genuine `exit 9`. null while running,
+	 * same as exit_status.
+	 */
+	jw_key(w, "term_signal");
+	if (entry->running)
+		jw_null(w);
+	else
+		jw_int(w, entry->term_signal);
 	jw_key(w, "exit_reason");
 	if (entry->running)
 		jw_null(w);

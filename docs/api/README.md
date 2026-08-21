@@ -454,6 +454,7 @@ Response (`201`):
   "status": "running",
   "pid": 12345,
   "exit_status": null,
+  "term_signal": null,
   "exit_reason": null,
   "networks": [
     {"name": "internal", "ip": "172.31.0.2"},
@@ -463,7 +464,9 @@ Response (`201`):
 }
 ```
 
-`exit_reason` (ADR-0080) is a human-readable why once `exit_status` is non-null — either the container's own real diagnostic text (e.g. `"child: execve(/usr/bin/foo): No such file or directory"`) or, when that text isn't available, a fixed category string (e.g. `"clean exit"`, `"overlay: mount(2) itself failed"`). `GET .../{name}` and `GET /v1/containers` both include it the same way; a failure that also reaches `500` at creation time (before any process exists) is instead surfaced directly in that response's own error message and in `GET /system/logs`.
+`exit_status` is the raw `waitid()` status and is ambiguous on its own — **`term_signal`** disambiguates it (issue #78): `0` means the container exited normally and `exit_status` is a real exit code; a nonzero `term_signal` is the signal that killed it, and `exit_status` is then that same signal number, *not* an exit code. Because a deliberate `stop`/`delete` `SIGKILL`s the container, `term_signal` is `9` for any container stopped or deleted while running — the reliable way to tell that apart from a genuine `exit 9`. Both are `null` while running.
+
+`exit_reason` (ADR-0080) is a human-readable why once `exit_status` is non-null — either the container's own real diagnostic text (e.g. `"child: execve(/usr/bin/foo): No such file or directory"`), a signal string (e.g. `"killed by signal 9 (SIGKILL)"`) when `term_signal` is set, or, when neither is available, a fixed category string (e.g. `"clean exit"`, `"overlay: mount(2) itself failed"`). `GET .../{name}` and `GET /v1/containers` both include it the same way; a failure that also reaches `500` at creation time (before any process exists) is instead surfaced directly in that response's own error message and in `GET /system/logs`.
 
 ## Persisted containers and the `restart` policy
 

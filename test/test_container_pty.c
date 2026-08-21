@@ -180,7 +180,7 @@ int main(void)
 		perror("container_create");
 		return 1;
 	}
-	if (container_wait(&handle, &exit_status) != 0) {
+	if (container_wait(&handle, &exit_status, NULL) != 0) {
 		perror("container_wait");
 		return 1;
 	}

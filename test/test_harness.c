@@ -152,7 +152,7 @@ int main(void)
 	if (read_cgroup_procs_count(spec.cg.name, handle.pid) != 0)
 		ok = 0;
 
-	if (container_wait(&handle, &exit_status) != 0) {
+	if (container_wait(&handle, &exit_status, NULL) != 0) {
 		perror("container_wait");
 		return 1;
 	}

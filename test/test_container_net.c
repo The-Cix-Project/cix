@@ -373,14 +373,14 @@ int main(void)
 		connect_and_echo(net1.container_ip_be, &ok);
 		connect_and_echo(net2.container_ip_be, &ok);
 
-		if (container_wait(&h1, &exit1) != 0) {
+		if (container_wait(&h1, &exit1, NULL) != 0) {
 			perror("container_wait c1");
 			ok = 0;
 		} else if (exit1 != 0) {
 			fprintf(stderr, "FAIL: c1 exit status %d, expected 0\n", exit1);
 			ok = 0;
 		}
-		if (container_wait(&h2, &exit2) != 0) {
+		if (container_wait(&h2, &exit2, NULL) != 0) {
 			perror("container_wait c2");
 			ok = 0;
 		} else if (exit2 != 0) {
@@ -447,7 +447,7 @@ int main(void)
 		connect_and_echo(nets3[0].container_ip_be, &ok);
 		connect_and_echo(nets3[1].container_ip_be, &ok);
 
-		if (container_wait(&h3, &exit3) != 0) {
+		if (container_wait(&h3, &exit3, NULL) != 0) {
 			perror("container_wait c3");
 			ok = 0;
 		} else if (exit3 != 0) {
@@ -540,7 +540,7 @@ int main(void)
 		/* H's own exit status is the real proof: net_connect only
 		 * exits 0 if its round trip through R's kernel routing table
 		 * actually succeeded. */
-		if (container_wait(&hH, &exitH) != 0) {
+		if (container_wait(&hH, &exitH, NULL) != 0) {
 			perror("container_wait h (router scenario)");
 			ok = 0;
 		} else if (exitH != 0) {
@@ -551,7 +551,7 @@ int main(void)
 			ok = 0;
 		}
 
-		if (container_wait(&hT, &exitT) != 0) {
+		if (container_wait(&hT, &exitT, NULL) != 0) {
 			perror("container_wait t (router scenario)");
 			ok = 0;
 		} else if (exitT != 0) {
@@ -559,7 +559,7 @@ int main(void)
 			ok = 0;
 		}
 
-		if (container_wait(&hR, &exitR) != 0) {
+		if (container_wait(&hR, &exitR, NULL) != 0) {
 			perror("container_wait r (router scenario)");
 			ok = 0;
 		} else if (exitR != 0) {
@@ -649,7 +649,7 @@ int main(void)
 			ok = 0;
 		}
 
-		if (container_wait(&h4, &exit4) != 0) {
+		if (container_wait(&h4, &exit4, NULL) != 0) {
 			perror("container_wait ifpt");
 			ok = 0;
 		} else if (exit4 != 0) {
@@ -776,11 +776,11 @@ int main(void)
 			ok = 0;
 		}
 
-		if (container_wait(&h5a, &exit5) != 0)
+		if (container_wait(&h5a, &exit5, NULL) != 0)
 			perror("container_wait g1");
-		if (container_wait(&h5b, &exit5) != 0)
+		if (container_wait(&h5b, &exit5, NULL) != 0)
 			perror("container_wait g2");
-		if (container_wait(&h5c, &exit5) != 0)
+		if (container_wait(&h5c, &exit5, NULL) != 0)
 			perror("container_wait g3");
 		close(h5a.pidfd);
 		close(h5a.cgroup_fd);
