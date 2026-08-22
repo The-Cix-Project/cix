@@ -1309,8 +1309,6 @@ function buildTreeNode(item, parentUl, parentId, depth, parentPath) {
 			  );
 
 	row.appendChild(anchor);
-	if (item.actions)
-		row.addEventListener("contextmenu", (event) => openTreeContextMenu(event, item.actions()));
 	li.appendChild(row);
 	nodeToggle[nodeId] = hasChildren ? toggle : null;
 	nodeAnchor[nodeId] = anchor;
@@ -1381,6 +1379,28 @@ function deviceHoldingVolume(v) {
  * a partition appears under that partition rather than under the disk
  * as a whole.
  */
+/*
+ * Volumes whose holding device cannot be derived -- its disk is not
+ * mounted, or the path does not sit under any mount point this daemon
+ * reports. They hang directly under Disks rather than under a device.
+ *
+ * This is the safety net for dropping the flat Volumes list: a volume
+ * that the derivation cannot place would otherwise appear nowhere at
+ * all, and a volume you cannot see is one you cannot delete or reason
+ * about. Not duplication -- a volume is in exactly one place either
+ * way, this is just where it goes when the better answer is unknown.
+ */
+function orphanVolumes() {
+	return (cache.volumes || [])
+		.filter((v) => deviceHoldingVolume(v) === null)
+		.map((v) => ({
+			label: v.name,
+			hash: "volumes/" + encodeURIComponent(v.name),
+			icon: "disks",
+			iconColor: "tree-icon-idle",
+		}));
+}
+
 function diskTreeChildren(diskName) {
 	const children = [];
 
@@ -1390,10 +1410,9 @@ function diskTreeChildren(diskName) {
 		if (holder !== null && holder.name === diskName)
 			children.push({
 				label: v.name,
-				hash: "volumes",
+				hash: "volumes/" + encodeURIComponent(v.name),
 				icon: "disks",
 				iconColor: "tree-icon-ok",
-				actions: () => volumeTreeActions(v),
 			});
 	}
 	for (const p of partitionsOf(diskName)) {
@@ -1402,7 +1421,6 @@ function diskTreeChildren(diskName) {
 			hash: "disks/" + encodeURIComponent(p.name),
 			icon: "disks",
 			iconColor: p.mounted ? "tree-icon-ok" : "tree-icon-idle",
-			actions: () => diskTreeActions(p),
 			children: (cache.volumes || [])
 				.filter((v) => {
 					const holder = deviceHoldingVolume(v);
@@ -1411,169 +1429,13 @@ function diskTreeChildren(diskName) {
 				})
 				.map((v) => ({
 					label: v.name,
-					hash: "volumes",
+					hash: "volumes/" + encodeURIComponent(v.name),
 					icon: "disks",
 					iconColor: "tree-icon-ok",
-					actions: () => volumeTreeActions(v),
 				})),
 		});
 	}
 	return children;
-}
-
-/* ---- Tree context menu (right-click) ---- */
-
-/*
- * Right-click on a tree row for the actions that apply to whatever it
- * is. Deliberately a SHORTCUT, never the only route: every action here
- * also exists on the relevant page, because an action reachable only by
- * right-click is one most people will never find. The menu is built
- * from an `actions` array on the tree item, so a node type that has no
- * actions simply gets the browser's own menu.
- */
-let treeContextMenuEl = null;
-
-function closeTreeContextMenu() {
-	if (treeContextMenuEl !== null) {
-		treeContextMenuEl.remove();
-		treeContextMenuEl = null;
-	}
-}
-
-document.addEventListener("click", closeTreeContextMenu);
-document.addEventListener("keydown", (event) => {
-	if (event.key === "Escape")
-		closeTreeContextMenu();
-});
-window.addEventListener("blur", closeTreeContextMenu);
-
-function openTreeContextMenu(event, actions) {
-	closeTreeContextMenu();
-	event.preventDefault();
-
-	const menu = document.createElement("ul");
-
-	menu.className = "tree-context-menu";
-	for (const action of actions) {
-		const li = document.createElement("li");
-
-		if (action.separator) {
-			li.className = "separator";
-			menu.appendChild(li);
-			continue;
-		}
-		const btn = document.createElement("button");
-
-		btn.type = "button";
-		if (action.danger)
-			btn.className = "danger";
-		btn.textContent = action.label;
-		btn.disabled = action.disabled === true;
-		if (action.title)
-			btn.title = action.title;
-		btn.addEventListener("click", (e) => {
-			e.stopPropagation();
-			closeTreeContextMenu();
-			action.run();
-		});
-		li.appendChild(btn);
-		menu.appendChild(li);
-	}
-	document.body.appendChild(menu);
-
-	/* Keep it on screen when the row is near the bottom or right edge --
-	 * measured after insertion, since the height depends on the action
-	 * count. */
-	const rect = menu.getBoundingClientRect();
-	const x = Math.min(event.clientX, window.innerWidth - rect.width - 8);
-	const y = Math.min(event.clientY, window.innerHeight - rect.height - 8);
-
-	menu.style.left = Math.max(4, x) + "px";
-	menu.style.top = Math.max(4, y) + "px";
-	treeContextMenuEl = menu;
-}
-
-/*
- * The actions for one disk or partition, matching what its page offers.
- * The OS disk gets an explanation instead of a menu of things that would
- * all be refused.
- */
-function diskTreeActions(d) {
-	const role = diskRoleFor(d.name);
-	const actions = [];
-
-	actions.push({ label: "Open", run: () => (location.hash = "#disks/" + encodeURIComponent(d.name)) });
-	if (d.is_os_disk) {
-		actions.push({ separator: true });
-		actions.push({
-			label: "OS disk — never modified",
-			disabled: true,
-			title: "This disk holds the fixed ESP/root-a/root-b/config/containers layout.",
-			run: () => {},
-		});
-		return actions;
-	}
-	actions.push({ separator: true });
-	if (!role) {
-		actions.push({
-			label: "Assign role…",
-			run: () => {
-				populateDiskRoleSelect();
-				document.getElementById("drf-disk-name").value = d.name;
-				document.getElementById("drf-role").value = "container-storage";
-				openModal("diskrole-form", "Assign disk role");
-			},
-		});
-	} else {
-		actions.push({ label: "Remove role (" + role.role + ")", run: () => removeDiskRole(d.name) });
-		actions.push({ label: "Format as ext4…", danger: true, run: () => formatDisk(d.name, "ext4") });
-		actions.push({ label: "Format as btrfs…", danger: true, run: () => formatDisk(d.name, "btrfs") });
-	}
-	if (d.mounted)
-		actions.push({ label: "Unmount", run: () => unmountDisk(d.name) });
-	if (d.is_partition) {
-		actions.push({ separator: true });
-		actions.push({
-			label: "Delete partition",
-			danger: true,
-			disabled: d.mounted,
-			title: d.mounted ? "Unmount it first." : "",
-			run: () => deletePartition(d.parent_disk, d.name),
-		});
-	} else {
-		actions.push({ separator: true });
-		actions.push({
-			label: "Add partition…",
-			run: () => (location.hash = "#disks/" + encodeURIComponent(d.name)),
-		});
-	}
-	return actions;
-}
-
-function volumeTreeActions(v) {
-	return [
-		{ label: "Open volumes", run: () => (location.hash = "#volumes") },
-		{ separator: true },
-		{
-			label: "Delete volume",
-			danger: true,
-			title: "Destroys its data; refused while any container definition references it.",
-			run: async () => {
-				if (!confirm('Delete volume "' + v.name + '"? This permanently destroys its data.'))
-					return;
-				try {
-					await apiRequest("DELETE", "/v1/volumes/" + encodeURIComponent(v.name));
-					clearStatus();
-					await refreshVolumeCache();
-					renderTree();
-					if (parseHash().category === "volumes")
-						await refreshVolumes();
-				} catch (e) {
-					showStatus("Failed to delete volume: " + e.message, true);
-				}
-			},
-		},
-	];
 }
 
 function renderTree() {
@@ -1619,48 +1481,31 @@ function renderTree() {
 		},
 		{
 			/*
-			 * Storage as a first-class top-level concern rather than
-			 * three scattered leaves under Host. Disks are dynamic, each
-			 * carrying its own partitions, and a volume hangs under
-			 * whichever device actually holds it -- so the tree shows
-			 * real placement instead of a flat list that implies none.
-			 * Aliases to its own first child's hash, the same convention
-			 * every other group here uses.
+			 * Disks are top-level, and the tree mirrors the real shape
+			 * of the box: every disk is a node, every partition hangs
+			 * under the disk it belongs to, and every volume hangs
+			 * under the device actually holding it.
+			 *
+			 * Volumes appear here and nowhere else. An earlier version
+			 * also kept a flat Volumes list, which meant the same
+			 * volume in two places -- the exact duplication this
+			 * project refuses everywhere else, and no more acceptable
+			 * in a tree than in a config file.
 			 */
-			label: "Storage",
+			label: "Disks",
 			hash: "disks",
 			icon: "disks",
-			children: [
-				{
-					label: "Disks",
-					hash: "disks",
-					icon: "disks",
-					children: wholeDisks().map((d) => ({
-						label: d.name,
-						hash: "disks/" + encodeURIComponent(d.name),
-						icon: "disks",
-						iconColor: d.is_os_disk
-							? "tree-icon-idle"
-							: d.mounted || d.has_mounted_partition
-							  ? "tree-icon-ok"
-							  : "tree-icon-idle",
-						actions: () => diskTreeActions(d),
-						children: diskTreeChildren(d.name),
-					})),
-				},
-				{
-					label: "Volumes",
-					hash: "volumes",
-					icon: "disks",
-					children: (cache.volumes || []).map((v) => ({
-						label: v.name,
-						hash: "volumes",
-						icon: "disks",
-						actions: () => volumeTreeActions(v),
-					})),
-				},
-				{ label: "Placement", hash: "storage-placement", icon: "disks" },
-			],
+			children: orphanVolumes().concat(wholeDisks().map((d) => ({
+				label: d.name,
+				hash: "disks/" + encodeURIComponent(d.name),
+				icon: "disks",
+				iconColor: d.is_os_disk
+					? "tree-icon-idle"
+					: d.mounted || d.has_mounted_partition
+					  ? "tree-icon-ok"
+					  : "tree-icon-idle",
+				children: diskTreeChildren(d.name),
+			}))),
 		},
 		{
 			/* Aliases to its own first child's hash ("recipes", same as
@@ -1778,6 +1623,7 @@ function renderTree() {
 						{ label: "Daemon", hash: "daemon-config", icon: "system" },
 						{ label: "Site", hash: "site", icon: "dns" },
 						{ label: "Devices", hash: "devices", icon: "devices" },
+						{ label: "Storage Placement", hash: "storage-placement", icon: "disks" },
 						{ label: "Routes", hash: "routes", icon: "networks" },
 						{ label: "Host Swap", hash: "host-swap", icon: "system" },
 						{ label: "Rolling Restart", hash: "rolling-restart", icon: "system" },
@@ -4589,21 +4435,96 @@ function diskRow(d) {
 	return row;
 }
 
-/* ---- One disk's own page (issue #91) ---- */
+/* ---- One block device's page: a whole disk or a partition ---- */
 
 let currentDiskDetailName = null;
 
 /*
- * A disk's page carries everything that acts on that disk: its
- * partitions, and the option to use the whole device directly with no
- * partition table at all. The second one is deliberately its own tab
- * rather than a footnote under partitions -- a single-purpose data disk
- * usually wants exactly that, and burying it behind a partition table
- * would push people into partitioning they do not need.
+ * Deliberately one page for both kinds. A partition is a block device
+ * with its own role, filesystem, mount and usage -- which is exactly
+ * why ADR-0158 could reuse diskrole/diskformat for partitions with no
+ * changes -- so giving it a lesser page than a disk would be an
+ * inconsistency in the UI that does not exist in the system. The
+ * Partitions tab is the one thing only a whole disk has, because only a
+ * whole disk has a partition table.
  */
-/* Shows one of the disk page's tabs, driving the same active/hidden
- * state a click would. Used when a route lands on a partition, which
- * belongs on the Partitions tab rather than the Overview. */
+function renderDiskDetail(name) {
+	const d = cache.disks.find((x) => x.name === name);
+	const title = document.getElementById("dd-title");
+	const subtitle = document.getElementById("dd-subtitle");
+	const fields = document.getElementById("dd-fields");
+
+	currentDiskDetailName = name;
+	if (!d) {
+		title.textContent = name + " (not found)";
+		subtitle.textContent = "";
+		fields.textContent = "";
+		return;
+	}
+
+	const role = diskRoleFor(d.name);
+	const parts = d.is_partition ? [] : partitionsOf(d.name);
+
+	title.textContent = d.name;
+	subtitle.textContent = d.is_partition
+		? "Partition of " + d.parent_disk + (d.is_os_disk ? " — part of the fixed OS layout" : "")
+		: (d.model || "Block device") + (d.is_os_disk ? " — the OS disk" : "");
+
+	/* Only a whole disk has a partition table, so a partition simply
+	 * does not get that tab rather than getting an empty one. */
+	document.getElementById("dd-tab-partitions").hidden = d.is_partition;
+	if (d.is_partition)
+		selectDiskTabIfActive("dd-partitions", "dd-overview");
+
+	renderDiskUsage(d);
+
+	fields.textContent = "";
+	fields.appendChild(fieldBlock("Device", d.dev_path));
+	fields.appendChild(fieldBlock("Size", formatBytes(d.size_bytes)));
+	fields.appendChild(fieldBlock("Kind", d.is_partition ? "partition of " + d.parent_disk : "whole disk"));
+	fields.appendChild(fieldBlock("Role", role ? role.role : "none"));
+	fields.appendChild(
+		fieldBlock("Filesystem", d.fs_type || (parts.length > 0 ? "(partitioned)" : "unformatted"))
+	);
+	fields.appendChild(
+		fieldBlock("Mounted at", d.mounted ? d.mount_path : d.has_mounted_partition ? "(a partition of it is)" : "not mounted")
+	);
+	if (!d.is_partition)
+		fields.appendChild(fieldBlock("Partitions", parts.length === 0 ? "none" : String(parts.length)));
+	fields.appendChild(fieldBlock("Removable", d.removable ? "yes" : "no"));
+	fields.appendChild(fieldBlock("OS disk", d.is_os_disk ? "yes — never modified" : "no"));
+	fields.appendChild(
+		fieldBlock("I/O", "reads " + d.reads_completed + " / writes " + d.writes_completed + " / busy " + d.io_time_ms + "ms")
+	);
+	{
+		/* Which volumes live on this device -- the same derivation the
+		 * tree uses, shown here so the page answers it too. */
+		const vols = (cache.volumes || []).filter((v) => {
+			const holder = deviceHoldingVolume(v);
+
+			return holder !== null && holder.name === d.name;
+		});
+
+		fields.appendChild(fieldBlock("Volumes on it", vols.length === 0 ? "none" : vols.map((v) => v.name).join(", ")));
+	}
+
+	renderDiskRoleTab(d, role);
+	if (!d.is_partition) {
+		renderDiskPartitions(d, parts);
+		refreshDiskFreeSpace(d);
+	}
+}
+
+/* Switches away from a tab that has just been hidden, so a partition
+ * never lands on the Partitions tab it does not have. */
+function selectDiskTabIfActive(hiddenTab, fallbackTab) {
+	const view = document.getElementById("view-disk-detail");
+	const active = view.querySelector(".tab-bar .tab-button.active");
+
+	if (active && active.dataset.tab === hiddenTab)
+		selectDiskTab(fallbackTab);
+}
+
 function selectDiskTab(tabName) {
 	const view = document.getElementById("view-disk-detail");
 
@@ -4613,80 +4534,182 @@ function selectDiskTab(tabName) {
 		panel.hidden = panel.dataset.tab !== tabName;
 }
 
-function renderDiskDetail(name) {
-	const title = document.getElementById("dd-title");
-	const fields = document.getElementById("dd-fields");
-	let d = cache.disks.find((x) => x.name === name && !x.is_partition);
+/*
+ * A real usage gauge, not a pair of numbers. Only meaningful while the
+ * device is mounted -- statvfs(2) needs a live mount -- so an unmounted
+ * device says why it has no figure rather than showing an empty bar
+ * that reads as "0% used".
+ */
+function renderDiskUsage(d) {
+	const host = document.getElementById("dd-usage");
 
-	/* A partition is addressable in its own right (the tree links each
-	 * one directly), but it has no page of its own -- it belongs to a
-	 * disk, so it opens that disk with the Partitions tab already
-	 * showing rather than dropping you on the Overview to go find it. */
-	if (!d) {
-		const part = cache.disks.find((x) => x.name === name && x.is_partition);
+	host.textContent = "";
+	if (!d.mounted || d.used_bytes + d.free_bytes === 0) {
+		const p = document.createElement("p");
 
-		if (part && part.parent_disk) {
-			d = cache.disks.find((x) => x.name === part.parent_disk && !x.is_partition);
-			if (d) {
-				name = d.name;
-				selectDiskTab("dd-partitions");
-			}
-		}
-	}
-
-	currentDiskDetailName = name;
-	if (!d) {
-		title.textContent = name + " (not found)";
-		fields.textContent = "";
+		p.className = "hint";
+		p.textContent = d.mounted
+			? "Mounted, but the filesystem reported no capacity."
+			: "Usage is only known while the device is mounted.";
+		host.appendChild(p);
 		return;
 	}
-	title.textContent = d.name + (d.model ? " — " + d.model : "");
+	const total = d.used_bytes + d.free_bytes;
+	const pct = Math.round((d.used_bytes / total) * 100);
+	const wrap = document.createElement("div");
+	const bar = document.createElement("div");
+	const fill = document.createElement("div");
+	const label = document.createElement("p");
 
-	const role = diskRoleFor(d.name);
-	const parts = partitionsOf(d.name);
-
-	fields.textContent = "";
-	fields.appendChild(fieldBlock("Device", d.dev_path));
-	fields.appendChild(fieldBlock("Size", formatBytes(d.size_bytes)));
-	fields.appendChild(fieldBlock("Removable", d.removable ? "yes" : "no"));
-	fields.appendChild(fieldBlock("OS disk", d.is_os_disk ? "yes — never repartitioned or formatted" : "no"));
-	fields.appendChild(fieldBlock("Role", role ? role.role : "none"));
-	fields.appendChild(fieldBlock("Filesystem", d.fs_type || (parts.length > 0 ? "(partitioned)" : "none")));
-	fields.appendChild(
-		fieldBlock("Mounted", d.mounted ? d.mount_path : d.has_mounted_partition ? "a partition of it is" : "no")
-	);
-	if (d.mounted)
-		fields.appendChild(fieldBlock("Usage", formatBytes(d.used_bytes) + " used / " + formatBytes(d.free_bytes) + " free"));
-	fields.appendChild(fieldBlock("Partitions", parts.length === 0 ? "none" : String(parts.length)));
-	fields.appendChild(
-		fieldBlock("I/O", "reads " + d.reads_completed + " / writes " + d.writes_completed + " / busy " + d.io_time_ms + "ms")
-	);
-
-	renderDiskPartitions(d, parts);
-	renderDiskWholeActions(d, role, parts);
-	refreshDiskFreeSpace(d);
+	wrap.className = "usage-gauge";
+	bar.className = "usage-gauge-track";
+	fill.className = "usage-gauge-fill" + (pct >= 90 ? " usage-gauge-critical" : pct >= 75 ? " usage-gauge-warn" : "");
+	fill.style.width = pct + "%";
+	bar.appendChild(fill);
+	label.className = "hint";
+	label.textContent =
+		formatBytes(d.used_bytes) + " used of " + formatBytes(total) + " (" + pct + "%) — " + formatBytes(d.free_bytes) + " free";
+	wrap.appendChild(bar);
+	wrap.appendChild(label);
+	host.appendChild(wrap);
 }
 
+/*
+ * Role and format, for whichever device this page is showing. This is
+ * the tab that answers "what is this for, and how do I change it" --
+ * previously scattered between a list row and a whole-disk tab that a
+ * partition never had.
+ */
+function renderDiskRoleTab(d, role) {
+	const note = document.getElementById("dd-role-note");
+	const current = document.getElementById("dd-role-current");
+	const actions = document.getElementById("dd-role-actions");
+	const formatStatus = cache.diskFormatStatus[d.name];
+
+	current.textContent = "";
+	actions.textContent = "";
+
+	if (d.is_os_disk) {
+		note.textContent =
+			"This is part of the fixed OS layout (ESP, the two root slots, config, containers). It is never given a role, formatted or unmounted from here.";
+		return;
+	}
+	if (!d.is_partition && partitionsOf(d.name).length > 0) {
+		note.textContent =
+			"This disk is partitioned, so its space belongs to its partitions — give those roles and formats on their own pages. To use the whole device directly, delete every partition first.";
+		return;
+	}
+	note.textContent = role
+		? "Assigning a role is non-destructive and reversible. Formatting wipes every byte on this device."
+		: "A role says what this device is for. It has to be assigned before the device can be formatted or mounted, and assigning one changes nothing on disk.";
+
+	const summary = document.createElement("div");
+
+	summary.className = "detail-grid";
+	summary.appendChild(fieldBlock("Role", role ? role.role : "none"));
+	summary.appendChild(fieldBlock("Filesystem", d.fs_type || "unformatted"));
+	summary.appendChild(fieldBlock("Mounted at", d.mounted ? d.mount_path : "not mounted"));
+	if (formatStatus && formatStatus.state !== "none")
+		summary.appendChild(
+			fieldBlock("Last format", formatStatus.state === "failed" ? "failed: " + formatStatus.error : formatStatus.state)
+		);
+	current.appendChild(summary);
+
+	if (formatStatus && formatStatus.state === "running") {
+		const p = document.createElement("p");
+
+		p.className = "hint";
+		p.textContent = "Formatting…";
+		actions.appendChild(p);
+		return;
+	}
+
+	if (!role) {
+		const assignBtn = document.createElement("button");
+
+		assignBtn.type = "button";
+		assignBtn.textContent = "Assign a role…";
+		assignBtn.addEventListener("click", () => openAssignRole(d.name));
+		actions.appendChild(assignBtn);
+		return;
+	}
+
+	const removeBtn = document.createElement("button");
+
+	removeBtn.type = "button";
+	removeBtn.textContent = "Remove role";
+	removeBtn.addEventListener("click", () => removeDiskRole(d.name));
+	actions.appendChild(removeBtn);
+
+	const fsSelect = document.createElement("select");
+
+	for (const fs of ["ext4", "btrfs"]) {
+		const opt = document.createElement("option");
+
+		opt.value = fs;
+		opt.textContent = fs;
+		fsSelect.appendChild(opt);
+	}
+	const formatBtn = document.createElement("button");
+
+	formatBtn.type = "button";
+	formatBtn.className = "button-danger";
+	formatBtn.textContent = "Format…";
+	formatBtn.addEventListener("click", () => formatDisk(d.name, fsSelect.value));
+	actions.appendChild(fsSelect);
+	actions.appendChild(formatBtn);
+
+	if (d.mounted) {
+		const unmountBtn = document.createElement("button");
+
+		unmountBtn.type = "button";
+		unmountBtn.textContent = "Unmount";
+		unmountBtn.addEventListener("click", () => unmountDisk(d.name));
+		actions.appendChild(unmountBtn);
+	}
+	if (d.is_partition) {
+		const delBtn = document.createElement("button");
+
+		delBtn.type = "button";
+		delBtn.className = "button-danger";
+		delBtn.textContent = "Delete this partition";
+		delBtn.disabled = d.mounted;
+		delBtn.title = d.mounted ? "Unmount it first." : "";
+		delBtn.addEventListener("click", () => deletePartition(d.parent_disk, d.name));
+		actions.appendChild(delBtn);
+	}
+}
+
+function openAssignRole(name) {
+	populateDiskRoleSelect();
+	document.getElementById("drf-disk-name").value = name;
+	document.getElementById("drf-role").value = "container-storage";
+	openModal("diskrole-form", "Assign disk role");
+}
+
+/*
+ * The partitions on this disk, as a read-only overview -- every action
+ * on a partition lives on that partition's own page, which is the whole
+ * point of a partition having one. Clicking a row goes there.
+ */
 function renderDiskPartitions(d, parts) {
 	const body = document.getElementById("dd-partitions-body");
 	const note = document.getElementById("dd-part-note");
 	const actions = document.getElementById("dd-part-actions");
 
-	/* The OS disk is not a candidate for anything destructive, and the
-	 * page says so rather than offering buttons that would be refused. */
 	actions.hidden = d.is_os_disk;
 	note.textContent = d.is_os_disk
-		? "This is the OS disk. Its layout is fixed and is never repartitioned from here."
+		? "This is the OS disk. Its layout is fixed and is never repartitioned."
 		: d.has_mounted_partition
 		  ? "Something on this disk is mounted, so the partition table cannot be rewritten and a mounted partition cannot be deleted. Unmount it first."
-		  : "";
+		  : "Click a partition to give it a role, format it, or delete it.";
 
 	body.textContent = "";
 	if (parts.length === 0) {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
 
-		cell.colSpan = 7;
+		cell.colSpan = 6;
 		cell.className = "empty";
 		cell.textContent = d.is_os_disk ? "No partitions reported" : "No partitions — this disk is unpartitioned";
 		row.appendChild(cell);
@@ -4696,142 +4719,59 @@ function renderDiskPartitions(d, parts) {
 	for (const p of parts) {
 		const row = document.createElement("tr");
 		const role = diskRoleFor(p.name);
+		const nameCell = document.createElement("td");
 
+		nameCell.appendChild(treeLink("#disks/" + encodeURIComponent(p.name), p.name, ""));
+		row.appendChild(nameCell);
 		for (const text of [
-			p.name,
 			formatBytes(p.size_bytes),
 			role ? role.role : "-",
 			p.fs_type || "unformatted",
 			p.mounted ? p.mount_path : "-",
-			p.mounted ? formatBytes(p.used_bytes) + " used / " + formatBytes(p.free_bytes) + " free" : "-",
+			p.mounted && p.used_bytes + p.free_bytes > 0
+				? Math.round((p.used_bytes / (p.used_bytes + p.free_bytes)) * 100) + "% used"
+				: "-",
 		]) {
 			const td = document.createElement("td");
 
 			td.textContent = text;
 			row.appendChild(td);
 		}
-		row.appendChild(diskActionCell(p, role, true));
 		body.appendChild(row);
 	}
 }
 
-/*
- * The action set for one disk or partition: assign/remove a role,
- * format, unmount, and (partitions only) delete. Shared by the
- * partitions table and the whole-disk tab because they are genuinely the
- * same actions on the same kind of thing -- a partition is just a
- * smaller block device, which is the whole reason ADR-0158 could reuse
- * diskrole/diskformat unchanged.
- */
-function diskActionCell(d, role, isPartition) {
-	const cell = document.createElement("td");
-	const formatStatus = cache.diskFormatStatus[d.name];
-
-	if (d.is_os_disk)
-		return cell;
-
-	if (formatStatus && formatStatus.state === "running") {
-		cell.appendChild(document.createTextNode("(formatting…)"));
-		return cell;
+async function deletePartition(diskName, partitionName) {
+	if (!confirm('Delete partition "' + partitionName + '"? Everything on it is destroyed and this cannot be undone.'))
+		return;
+	try {
+		await apiRequest(
+			"DELETE",
+			"/v1/disks/" + encodeURIComponent(diskName) + "/partitions/" + encodeURIComponent(partitionName)
+		);
+		clearStatus();
+		await refreshDisks();
+		/* The deleted partition's own page no longer exists, so go back
+		 * to the disk that held it rather than rendering "not found". */
+		location.hash = "#disks/" + encodeURIComponent(diskName);
+		renderTree();
+	} catch (e) {
+		showStatus("Failed to delete partition: " + e.message, true);
 	}
-	if (!role) {
-		const assignBtn = document.createElement("button");
-
-		assignBtn.type = "button";
-		assignBtn.className = "button-small";
-		assignBtn.textContent = "Assign role…";
-		assignBtn.addEventListener("click", () => {
-			populateDiskRoleSelect();
-			document.getElementById("drf-disk-name").value = d.name;
-			document.getElementById("drf-role").value = "container-storage";
-			openModal("diskrole-form", "Assign disk role");
-		});
-		cell.appendChild(assignBtn);
-	} else {
-		const removeRoleBtn = document.createElement("button");
-
-		removeRoleBtn.type = "button";
-		removeRoleBtn.className = "button-small";
-		removeRoleBtn.textContent = "Remove role";
-		removeRoleBtn.addEventListener("click", () => removeDiskRole(d.name));
-		cell.appendChild(removeRoleBtn);
-
-		const fsSelect = document.createElement("select");
-
-		for (const fs of ["ext4", "btrfs"]) {
-			const opt = document.createElement("option");
-
-			opt.value = fs;
-			opt.textContent = fs;
-			fsSelect.appendChild(opt);
-		}
-		const formatBtn = document.createElement("button");
-
-		formatBtn.type = "button";
-		formatBtn.className = "button-danger button-small";
-		formatBtn.textContent = "Format…";
-		formatBtn.addEventListener("click", () => formatDisk(d.name, fsSelect.value));
-		cell.appendChild(fsSelect);
-		cell.appendChild(formatBtn);
-	}
-	if (d.mounted) {
-		const unmountBtn = document.createElement("button");
-
-		unmountBtn.type = "button";
-		unmountBtn.className = "button-small";
-		unmountBtn.textContent = "Unmount";
-		unmountBtn.addEventListener("click", () => unmountDisk(d.name));
-		cell.appendChild(unmountBtn);
-	}
-    if (isPartition) {
-		const delBtn = document.createElement("button");
-
-		delBtn.type = "button";
-		delBtn.className = "button-danger button-small";
-		delBtn.textContent = "Delete";
-		delBtn.addEventListener("click", () => deletePartition(d.parent_disk, d.name));
-		cell.appendChild(delBtn);
-	}
-	return cell;
 }
 
-function renderDiskWholeActions(d, role, parts) {
-	const host = document.getElementById("dd-whole-actions");
-
-	host.textContent = "";
-	if (d.is_os_disk) {
-		const p = document.createElement("p");
-
-		p.className = "hint";
-		p.textContent = "This is the OS disk. It is never given a role or formatted.";
-		host.appendChild(p);
-		return;
+async function unmountDisk(name) {
+	try {
+		await apiRequest("POST", "/v1/disks/" + encodeURIComponent(name) + "/unmount", {
+			confirm_disk_name: name,
+		});
+		clearStatus();
+		await refreshDisks();
+		if (currentDiskDetailName !== null)
+			renderDiskDetail(currentDiskDetailName);
+	} catch (e) {
+		showStatus("Failed to unmount: " + e.message, true);
 	}
-	if (parts.length > 0) {
-		const p = document.createElement("p");
-
-		p.className = "hint";
-		p.textContent =
-			"This disk is partitioned, so its space belongs to its partitions — give those roles and " +
-			"formats on the Partitions tab instead. To use the whole device directly, delete every " +
-			"partition first.";
-		host.appendChild(p);
-		return;
-	}
-	const table = document.createElement("table");
-	const tbody = document.createElement("tbody");
-	const row = document.createElement("tr");
-
-	for (const text of [d.name, role ? role.role : "no role", d.fs_type || "unformatted"]) {
-		const td = document.createElement("td");
-
-		td.textContent = text;
-		row.appendChild(td);
-	}
-	row.appendChild(diskActionCell(d, role, false));
-	tbody.appendChild(row);
-	table.appendChild(tbody);
-	host.appendChild(table);
 }
 
 /*
@@ -4840,8 +4780,8 @@ function renderDiskWholeActions(d, role, parts) {
  * looks equivalent and is not -- it misses alignment, the GPT's own
  * reserved areas, and any gap an earlier delete left behind.
  *
- * Fetched on demand when a disk page renders, never in the poll loop:
- * the endpoint forks sfdisk.
+ * Fetched when a disk page renders, never in the poll loop: the
+ * endpoint forks sfdisk.
  */
 let diskFreeSpace = {};
 
@@ -4860,9 +4800,6 @@ async function refreshDiskFreeSpace(d) {
 			sizeInput.max = "";
 			return;
 		}
-		/* The largest single gap is the real bound on one new
-		 * partition; total free can be spread across gaps no single
-		 * request can use, so both are shown when they differ. */
 		const largestMib = Math.floor(fs.largest_free_bytes / (1024 * 1024));
 
 		sizeInput.max = String(largestMib);
@@ -4886,41 +4823,6 @@ async function refreshDiskFreeSpace(d) {
 	}
 }
 
-async function deletePartition(diskName, partitionName) {
-	if (
-		!confirm(
-			'Delete partition "' + partitionName + '"? Everything on it is destroyed and this cannot be undone.'
-		)
-	)
-		return;
-	try {
-		await apiRequest(
-			"DELETE",
-			"/v1/disks/" + encodeURIComponent(diskName) + "/partitions/" + encodeURIComponent(partitionName)
-		);
-		clearStatus();
-		await refreshDisks();
-		renderDiskDetail(diskName);
-		renderTree();
-	} catch (e) {
-		showStatus("Failed to delete partition: " + e.message, true);
-	}
-}
-
-async function unmountDisk(name) {
-	try {
-		await apiRequest("POST", "/v1/disks/" + encodeURIComponent(name) + "/unmount", {
-			confirm_disk_name: name,
-		});
-		clearStatus();
-		await refreshDisks();
-		if (currentDiskDetailName !== null)
-			renderDiskDetail(currentDiskDetailName);
-	} catch (e) {
-		showStatus("Failed to unmount: " + e.message, true);
-	}
-}
-
 document.getElementById("dd-write-table").addEventListener("click", async () => {
 	const name = currentDiskDetailName;
 
@@ -4941,6 +4843,7 @@ document.getElementById("dd-write-table").addEventListener("click", async () => 
 		clearStatus();
 		await refreshDisks();
 		renderDiskDetail(name);
+		renderTree();
 	} catch (e) {
 		showStatus("Failed to write partition table: " + e.message, true);
 	}
@@ -4968,10 +4871,7 @@ document.getElementById("dd-add-partition-form").addEventListener("submit", asyn
 		const largestMib = Math.floor(fs.largest_free_bytes / (1024 * 1024));
 
 		if (body.size_mib > largestMib) {
-			showStatus(
-				"That is larger than the biggest free gap on this disk (" + largestMib + " MiB).",
-				true
-			);
+			showStatus("That is larger than the biggest free gap on this disk (" + largestMib + " MiB).", true);
 			return;
 		}
 	}
@@ -8395,6 +8295,24 @@ async function refreshKmsg() {
 /* Just the fetch, for the poll loop and the tree -- refreshVolumes()
  * also renders the Volumes page, which is wasted work when that page
  * is not the one being viewed. */
+/* Shared by the tree's right-click menu and the Volumes page, so the
+ * confirmation and the refresh behave identically wherever a volume is
+ * deleted from. */
+async function deleteVolumeByName(name) {
+	if (!confirm('Delete volume "' + name + '"? This permanently destroys its data.'))
+		return;
+	try {
+		await apiRequest("DELETE", "/v1/volumes/" + encodeURIComponent(name));
+		clearStatus();
+		await refreshVolumeCache();
+		renderTree();
+		if (parseHash().category === "volumes")
+			await refreshVolumes();
+	} catch (e) {
+		showStatus("Failed to delete volume: " + e.message, true);
+	}
+}
+
 async function refreshVolumeCache() {
 	try {
 		const data = await apiRequest("GET", "/v1/volumes");
@@ -9041,6 +8959,36 @@ function contextMenuItemsFor(category, name) {
 		items.push({ label: "Remove", danger: true, action: () => removeContainer(name) });
 		return items;
 	}
+	/*
+	 * A disk or partition offers exactly what its own page's Role &
+	 * Format tab offers, and nothing that would be refused: the OS disk
+	 * gets no menu at all rather than a list of disabled entries, an
+	 * unroled device can only be given a role, and delete is absent on
+	 * a mounted partition because it would 409.
+	 */
+	if (category === "disks") {
+		const d = cache.disks.find((x) => x.name === name);
+
+		if (!d || d.is_os_disk)
+			return null;
+		const role = diskRoleFor(name);
+		const items = [];
+
+		if (!role) {
+			items.push({ label: "Assign a role…", danger: false, action: () => openAssignRole(name) });
+		} else {
+			items.push({ label: "Remove role", danger: false, action: () => removeDiskRole(name) });
+			items.push({ label: "Format as ext4", danger: true, action: () => formatDisk(name, "ext4") });
+			items.push({ label: "Format as btrfs", danger: true, action: () => formatDisk(name, "btrfs") });
+		}
+		if (d.mounted)
+			items.push({ label: "Unmount", danger: false, action: () => unmountDisk(name) });
+		if (d.is_partition && !d.mounted)
+			items.push({ label: "Delete partition", danger: true, action: () => deletePartition(d.parent_disk, name) });
+		return items;
+	}
+	if (category === "volumes")
+		return [{ label: "Delete volume", danger: true, action: () => deleteVolumeByName(name) }];
 	if (category === "networks")
 		return [{ label: "Remove", danger: true, action: () => removeNetwork(name) }];
 	if (category === "images")
