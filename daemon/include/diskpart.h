@@ -69,6 +69,14 @@ enum diskpart_error {
 	DISKPART_ERR_INVALID_PART_NAME,
 	DISKPART_ERR_INVALID_SIZE,
 	DISKPART_ERR_SFDISK_FAILED,
+	/*
+	 * sfdisk is not installed on this host -- execve() never ran it.
+	 * Kept separate from SFDISK_FAILED because they need different
+	 * actions from an operator and the two used to be indistinguishable
+	 * from the API, which is how a missing binary went unnoticed for a
+	 * whole release.
+	 */
+	DISKPART_ERR_SFDISK_MISSING,
 };
 
 /*

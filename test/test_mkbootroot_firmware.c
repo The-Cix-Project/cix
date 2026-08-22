@@ -213,6 +213,51 @@ int main(void)
 		ok = 0;
 	}
 
+	/*
+	 * Every binary the daemon has a compiled-in absolute path for must
+	 * actually be in the control-plane image, or the feature that shells
+	 * out to it cannot work on an installed host at all.
+	 *
+	 * sfdisk is why this check exists. It was missing from the moment
+	 * partition management shipped (ADR-0158), so the very first real
+	 * POST /disks/{name}/partition-table on 192.168.15.95 could only
+	 * ever fail: the code was correct, the binary was not there. Nothing
+	 * caught it because this build sandbox has a rich /usr where
+	 * everything resolves, and thinc-install.c drives the same sfdisk
+	 * from the ISO, where it is also present. Only the installed host is
+	 * missing it, and only at runtime.
+	 *
+	 * Kept in sync by hand with the *_BIN defines across daemon/include
+	 * and daemon/src (grep for '_BIN "'). modprobe/modinfo are
+	 * deliberately absent: they come from the operator's own
+	 * kmod_bin_dir argument rather than this fixed table, and are
+	 * asserted directly above.
+	 */
+	{
+		static const char *const shelled_bins[] = {
+			"usr/bin/openssl",    /* PKI_OPENSSL_BIN, WS_OPENSSL_BIN */
+			"usr/bin/curl",       /* PKG_CURL_BIN */
+			"usr/bin/tar",        /* PKG_TAR_BIN */
+			"usr/bin/unsquashfs", /* PKG_UNSQUASHFS_BIN */
+			"bin/rm",             /* PKG_RM_BIN -- /bin, not /usr/bin */
+			"usr/sbin/mkfs.ext4", /* DISKFORMAT_MKFS_EXT4_BIN */
+			"usr/sbin/sfdisk",    /* DISKPART_SFDISK_BIN */
+		};
+		size_t bi;
+
+		for (bi = 0; bi < sizeof(shelled_bins) / sizeof(shelled_bins[0]); bi++) {
+			snprintf(path, sizeof(path), "%s/%s", STAGE_DIR, shelled_bins[bi]);
+			if (!file_exists(path)) {
+				fprintf(stderr,
+				        "FAIL: %s not staged -- the daemon shells out to it by absolute "
+				        "path, so the feature using it cannot work on a real installed "
+				        "host\n",
+				        shelled_bins[bi]);
+				ok = 0;
+			}
+		}
+	}
+
 	system("rm -rf " STAGE_DIR " " FW_SRC_DIR " " MODULES_SRC_DIR " " KMOD_BIN_SRC_DIR " "
 	       OUT_SQUASHFS);
 
