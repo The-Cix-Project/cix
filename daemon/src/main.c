@@ -13025,6 +13025,153 @@ static void handle_logs_config_put(int fd, const char *body, size_t body_len)
 	jw_free(&w);
 }
 
+/*
+ * Issue #61: list a directory inside a container.
+ *
+ * A path resolving to a directory was a 400 with no alternative, so
+ * post-mortem navigation was blind path-guessing -- finding gcc's
+ * include-fixed tree during the Part 201 investigation took several
+ * probe recipes that one listing call would have replaced.
+ *
+ * A RUNNING container is listed through /proc/<pid>/root, which is the
+ * kernel's own merged overlay view: correct by construction, whiteouts
+ * and all.
+ *
+ * An EXITED one has no such view, so its two layers are merged here --
+ * upper first, then lower for anything upper did not have. That needs
+ * whiteouts handled properly rather than ignored: overlayfs marks a
+ * deleted file with a character device of rdev 0 in the upper layer, so
+ * listing naively would show a file the container had deleted, which is
+ * a listing that lies. Those entries are skipped AND suppress the
+ * lower-layer name behind them, which is what deletion means.
+ *
+ * Opaque directories (a directory replaced wholesale, marked with the
+ * trusted.overlay.opaque xattr) are NOT handled -- reading xattrs adds
+ * a dependency for a case this daemon never creates, and the failure
+ * mode is showing a stale name rather than hiding a real one.
+ */
+static int dirent_is_whiteout(const char *dir, const char *name)
+{
+	char path[PATH_MAX];
+	struct stat st;
+
+	snprintf(path, sizeof(path), "%s/%s", dir, name);
+	if (lstat(path, &st) != 0)
+		return 0;
+	return S_ISCHR(st.st_mode) && st.st_rdev == 0;
+}
+
+static void handle_container_dir_list(int fd, const char *name, const char *rel_path)
+{
+	struct registry_entry *e = registry_find(name);
+	char dirs[2][PATH_MAX];
+	int dir_count = 0;
+	char seen[512][256];
+	int seen_count = 0;
+	struct json_writer w;
+	struct stat st;
+	int i;
+	int any = 0;
+
+	if (e == NULL) {
+		respond_error(fd, 404, "Not Found", "no such container");
+		return;
+	}
+	if (e->running) {
+		snprintf(dirs[0], sizeof(dirs[0]), "/proc/%d/root%s", (int)e->handle.pid, rel_path);
+		if (stat(dirs[0], &st) == 0 && S_ISDIR(st.st_mode))
+			dir_count = 1;
+	}
+	if (dir_count == 0) {
+		char container_root[PATH_MAX];
+
+		container_root_for(e->disk_name, container_root, sizeof(container_root));
+		snprintf(dirs[0], sizeof(dirs[0]), "%s/%s/upper%s", container_root, name, rel_path);
+		if (stat(dirs[0], &st) == 0 && S_ISDIR(st.st_mode))
+			dir_count = 1;
+		if (e->lowerdir[0] != '\0') {
+			snprintf(dirs[dir_count], sizeof(dirs[dir_count]), "%s%s", e->lowerdir, rel_path);
+			if (stat(dirs[dir_count], &st) == 0 && S_ISDIR(st.st_mode))
+				dir_count++;
+		}
+	}
+	if (dir_count == 0) {
+		respond_error(fd, 404, "Not Found", "no such directory");
+		return;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "path");
+	jw_str(&w, rel_path);
+	jw_key(&w, "entries");
+	jw_arr_open(&w);
+	for (i = 0; i < dir_count; i++) {
+		DIR *d = opendir(dirs[i]);
+		struct dirent *de;
+
+		if (d == NULL)
+			continue;
+		any = 1;
+		while ((de = readdir(d)) != NULL && seen_count < 512) {
+			char entry_path[PATH_MAX];
+			struct stat est;
+			int dup = 0;
+			int k;
+
+			if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+				continue;
+			for (k = 0; k < seen_count; k++) {
+				if (strcmp(seen[k], de->d_name) == 0) {
+					dup = 1;
+					break;
+				}
+			}
+			if (dup)
+				continue;
+			/* Record the name before deciding whether to emit it: a
+			 * whiteout must also hide the lower layer's copy, which is
+			 * the whole point of it. */
+			snprintf(seen[seen_count], sizeof(seen[seen_count]), "%s", de->d_name);
+			seen_count++;
+			if (dirent_is_whiteout(dirs[i], de->d_name))
+				continue;
+
+			snprintf(entry_path, sizeof(entry_path), "%s/%s", dirs[i], de->d_name);
+			jw_obj_open(&w);
+			jw_key(&w, "name");
+			jw_str(&w, de->d_name);
+			jw_key(&w, "type");
+			if (lstat(entry_path, &est) == 0)
+				jw_str(&w, S_ISDIR(est.st_mode)    ? "dir"
+				           : S_ISLNK(est.st_mode)  ? "symlink"
+				           : S_ISREG(est.st_mode)  ? "file"
+				                                   : "other");
+			else
+				jw_str(&w, "unknown");
+			jw_key(&w, "size");
+			jw_int(&w, (lstat(entry_path, &est) == 0 && S_ISREG(est.st_mode))
+			               ? (long long)est.st_size
+			               : 0);
+			jw_obj_close(&w);
+		}
+		closedir(d);
+	}
+	jw_arr_close(&w);
+	jw_key(&w, "truncated");
+	/* Said rather than implied: a directory with more entries than the
+	 * cap would otherwise look complete and short. */
+	jw_bool(&w, seen_count >= 512);
+	jw_obj_close(&w);
+	if (!any) {
+		jw_free(&w);
+		respond_error(fd, 404, "Not Found", "no such directory");
+		return;
+	}
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_container_file_read(int fd, const char *name, const char *rel_path)
 {
 	struct registry_entry *e = registry_find(name);
@@ -19002,8 +19149,20 @@ static void dispatch(int fd, const struct http_request *req)
 						respond_error(fd, 400, "Bad Request", "missing path query parameter");
 						return;
 					}
-					if (strcmp(req->method, "GET") == 0)
-						handle_container_file_read(fd, container_name, rel_path);
+					if (strcmp(req->method, "GET") == 0) {
+						char list_flag[8];
+
+						/* ?list=1 asks for a directory listing instead of
+						 * file content -- a separate mode rather than
+						 * "GET a directory implicitly lists it", so a
+						 * client that meant to read a file and hit a
+						 * directory still gets told so. */
+						if (url_query_param(req->path, "list", list_flag, sizeof(list_flag)) == 0 &&
+						    list_flag[0] != '\0' && strcmp(list_flag, "0") != 0)
+							handle_container_dir_list(fd, container_name, rel_path);
+						else
+							handle_container_file_read(fd, container_name, rel_path);
+					}
 					else
 						handle_container_file_write(fd, container_name, rel_path, req->body,
 						                             req->body_len);

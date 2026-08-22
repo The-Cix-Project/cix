@@ -748,7 +748,19 @@
 		</section>
 
 		<!-- DNS Records -->
+				<!--
+		     DNS as ONE destination with tabs, matching Software. Its pages
+		     are facets of one service, and separate tree leaves meant
+		     navigating to find out which one a thing was on. Every old
+		     address still resolves, to its tab.
+		-->
 		<section class="view" id="view-dns-records" hidden>
+			<h2>DNS</h2>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="dns-records">Records</button>
+				<button type="button" class="tab-button" data-tab="dns-servers">Servers</button>
+			</div>
+			<div class="tab-panel" data-tab="dns-records">
 			<div class="view-list">
 				<h2>DNS Records</h2>
 				<table id="dns-records">
@@ -765,10 +777,8 @@
 					</tbody>
 				</table>
 			</div>
-		</section>
-
-		<!-- DNS Servers -->
-		<section class="view" id="view-dns-servers" hidden>
+		</div>
+			<div class="tab-panel" data-tab="dns-servers" hidden>
 			<div class="view-list">
 				<h2>DNS Servers</h2>
 				<table id="dns-servers">
@@ -784,10 +794,30 @@
 					</tbody>
 				</table>
 			</div>
+		</div>
 		</section>
 
+
+
+		<!-- DNS Servers -->
+		
+
 		<!-- LDAP Servers -->
+				<!--
+		     LDAP as ONE destination with tabs, matching Software. Its pages
+		     are facets of one service, and separate tree leaves meant
+		     navigating to find out which one a thing was on. Every old
+		     address still resolves, to its tab.
+		-->
 		<section class="view" id="view-ldap-servers" hidden>
+			<h2>LDAP</h2>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="ldap-servers">Servers</button>
+				<button type="button" class="tab-button" data-tab="ldap-groups">Groups</button>
+				<button type="button" class="tab-button" data-tab="ldap-users">Users</button>
+				<button type="button" class="tab-button" data-tab="ldap-config">Config</button>
+			</div>
+			<div class="tab-panel" data-tab="ldap-servers">
 			<div class="view-list">
 				<h2>LDAP Servers</h2>
 				<table id="ldap-servers">
@@ -803,10 +833,8 @@
 					</tbody>
 				</table>
 			</div>
-		</section>
-
-		<!-- LDAP Groups -->
-		<section class="view" id="view-ldap-groups" hidden>
+		</div>
+			<div class="tab-panel" data-tab="ldap-groups" hidden>
 			<div class="view-list">
 				<h2>LDAP Groups</h2>
 				<table id="ldap-groups">
@@ -822,10 +850,8 @@
 					</tbody>
 				</table>
 			</div>
-		</section>
-
-		<!-- LDAP Users -->
-		<section class="view" id="view-ldap-users" hidden>
+		</div>
+			<div class="tab-panel" data-tab="ldap-users" hidden>
 			<div class="view-list">
 				<h2>LDAP Users</h2>
 				<table id="ldap-users">
@@ -847,10 +873,8 @@
 					</tbody>
 				</table>
 			</div>
-		</section>
-
-		<!-- LDAP Config: start_uid/start_gid auto-allocation floor (task #748) -->
-		<section class="view" id="view-ldap-config" hidden>
+		</div>
+			<div class="tab-panel" data-tab="ldap-config" hidden>
 			<h2>LDAP Config</h2>
 			<p class="hint">
 				The floor <code>start_uid</code>/<code>start_gid</code> auto-allocation
@@ -869,10 +893,35 @@
 				</label>
 				<button type="submit">Save</button>
 			</form>
+		</div>
 		</section>
 
+
+
+		<!-- LDAP Groups -->
+		
+
+		<!-- LDAP Users -->
+		
+
+		<!-- LDAP Config: start_uid/start_gid auto-allocation floor (task #748) -->
+		
+
 		<!-- NTP Config: upstream server address list (task #751) -->
+				<!--
+		     NTP as ONE destination with tabs, matching Software. Its pages
+		     are facets of one service, and separate tree leaves meant
+		     navigating to find out which one a thing was on. Every old
+		     address still resolves, to its tab.
+		-->
 		<section class="view" id="view-ntp-config" hidden>
+			<h2>NTP</h2>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="ntp-config">Config</button>
+				<button type="button" class="tab-button" data-tab="ntp-servers">Servers</button>
+				<button type="button" class="tab-button" data-tab="ntp-time">Time & Sync</button>
+			</div>
+			<div class="tab-panel" data-tab="ntp-config">
 			<h2>NTP Config</h2>
 			<p class="hint">
 				Upstream NTP server addresses the host's own clock syncs against,
@@ -889,10 +938,8 @@
 				</label>
 				<button type="submit">Save</button>
 			</form>
-		</section>
-
-		<!-- NTP Servers: registered container time sources (task #753) -->
-		<section class="view" id="view-ntp-servers" hidden>
+		</div>
+			<div class="tab-panel" data-tab="ntp-servers" hidden>
 			<div class="view-list">
 				<h2>NTP Servers</h2>
 				<table id="ntp-servers">
@@ -907,14 +954,8 @@
 					</tbody>
 				</table>
 			</div>
-		</section>
-
-		<!-- NTP Status: most recent sync attempt outcome (task #751) -->
-		<!-- NTP: Time & Sync -- merges what used to be two separate thin
-		     pages (Status, Time) into the one question an operator
-		     actually has: what time does this box think it is, and can
-		     it be trusted. -->
-		<section class="view" id="view-ntp-time" hidden>
+		</div>
+			<div class="tab-panel" data-tab="ntp-time" hidden>
 			<h2>NTP: Time &amp; Sync</h2>
 			<p class="hint">
 				The outcome of the most recent sync attempt since the daemon last
@@ -938,10 +979,36 @@
 				</label>
 				<button type="submit">Set</button>
 			</form>
+		</div>
 		</section>
 
+
+
+		<!-- NTP Servers: registered container time sources (task #753) -->
+		
+
+		<!-- NTP Status: most recent sync attempt outcome (task #751) -->
+		<!-- NTP: Time & Sync -- merges what used to be two separate thin
+		     pages (Status, Time) into the one question an operator
+		     actually has: what time does this box think it is, and can
+		     it be trusted. -->
+		
+
 		<!-- PKI: Root CA -->
+				<!--
+		     PKI as ONE destination with tabs, matching Software. Its pages
+		     are facets of one service, and separate tree leaves meant
+		     navigating to find out which one a thing was on. Every old
+		     address still resolves, to its tab.
+		-->
 		<section class="view" id="view-pki-ca" hidden>
+			<h2>PKI</h2>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="pki-ca">Root CA</button>
+				<button type="button" class="tab-button" data-tab="pki-intermediate">Intermediate CA</button>
+				<button type="button" class="tab-button" data-tab="pki-certs">Certificates</button>
+			</div>
+			<div class="tab-panel" data-tab="pki-ca">
 			<h2>PKI: Root CA</h2>
 			<p class="hint">A browser or OS that doesn't already trust this install's own root CA will refuse HTTPS to this dashboard (and to any other thinc endpoint) with a certificate warning -- expected, since it's a private, self-signed CA, not a publicly trusted one. Download the certificate below and trust it once on whatever device you connect from; see "Trusting the CA on your own device" in <code>docs/guides/security.md</code> for the full, platform-by-platform steps (Windows/macOS/Linux/Firefox all differ). Short version: import the downloaded <code>.crt</code> into your OS or browser's own trusted-root store, marked to trust it for identifying websites.</p>
 			<div id="pki-ca-status" class="pki-ca-status"></div>
@@ -978,10 +1045,8 @@
 				<button type="submit" class="button-danger">Reset CA chain</button>
 			</form>
 			<div id="pki-reset-result" class="pki-ca-status" hidden></div>
-		</section>
-
-		<!-- PKI: Intermediate CA -->
-		<section class="view" id="view-pki-intermediate" hidden>
+		</div>
+			<div class="tab-panel" data-tab="pki-intermediate" hidden>
 			<h2>PKI: Intermediate CA</h2>
 			<p class="hint">
 				Optional second CA tier -- once bootstrapped, every future certificate
@@ -1000,10 +1065,8 @@
 				</label>
 				<button type="submit">Bootstrap intermediate</button>
 			</form>
-		</section>
-
-		<!-- PKI: Certificates -->
-		<section class="view" id="view-pki-certs" hidden>
+		</div>
+			<div class="tab-panel" data-tab="pki-certs" hidden>
 			<div class="view-list">
 				<h2>PKI: Certificates</h2>
 				<table id="pki-certs">
@@ -1022,7 +1085,16 @@
 					</tbody>
 				</table>
 			</div>
+		</div>
 		</section>
+
+
+
+		<!-- PKI: Intermediate CA -->
+		
+
+		<!-- PKI: Certificates -->
+		
 
 		<!-- Packages -->
 		
