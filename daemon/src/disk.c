@@ -318,6 +318,86 @@ void disk_probe_fs_type(const char *dev_path, char *out, size_t out_size)
 }
 
 /*
+ * The GPT name of one partition, read from the parent disk's own
+ * partition table (issue: OS partitions reported no role at all).
+ *
+ * This is the name whoever created the partition actually gave it --
+ * thinc-install.c writes "thinc-esp", "thinc-root-a", "thinc-root-b",
+ * "thinc-config", "thinc-containers", and POST /disks/{d}/partitions
+ * writes whatever the caller asked for. Until now that name was
+ * write-only: the API accepted it, the installer set it, and nothing
+ * could ever read it back, so the fixed OS layout showed up as five
+ * indistinguishable partitions with no role -- which reads as "unused"
+ * for the five most load-bearing devices on the box.
+ *
+ * Read from the disk directly rather than via /dev/disk/by-partlabel
+ * (which needs udev and device nodes) or by forking sfdisk (which would
+ * be a subprocess per partition per poll). The format is fixed and
+ * small: the GPT header sits at LBA 1 with "EFI PART" at its start, and
+ * carries the entry array's LBA, entry count and entry size; each entry
+ * holds a 72-byte UTF-16LE name at offset 56.
+ *
+ * Only the ASCII range is decoded, which every name this platform
+ * produces is; a non-ASCII code unit is rendered '?' rather than
+ * silently truncating the name to nothing.
+ */
+static void read_gpt_partition_name(const char *parent_dev_path, unsigned int partno, char *out,
+                                    size_t out_size)
+{
+	unsigned char header[512];
+	unsigned char entry[512];
+	unsigned long long entry_lba;
+	unsigned int entry_count, entry_size;
+	unsigned long long offset;
+	size_t i, n = 0;
+	int fd;
+
+	if (out_size == 0)
+		return;
+	out[0] = '\0';
+	if (partno == 0)
+		return;
+
+	fd = open(parent_dev_path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return;
+	if (pread(fd, header, sizeof(header), 512) != (ssize_t)sizeof(header) ||
+	    memcmp(header, "EFI PART", 8) != 0) {
+		close(fd); /* no GPT -- an MBR disk or no table at all */
+		return;
+	}
+	entry_lba = (unsigned long long)header[72] | ((unsigned long long)header[73] << 8) |
+	            ((unsigned long long)header[74] << 16) | ((unsigned long long)header[75] << 24) |
+	            ((unsigned long long)header[76] << 32) | ((unsigned long long)header[77] << 40) |
+	            ((unsigned long long)header[78] << 48) | ((unsigned long long)header[79] << 56);
+	entry_count = (unsigned int)header[80] | ((unsigned int)header[81] << 8) |
+	              ((unsigned int)header[82] << 16) | ((unsigned int)header[83] << 24);
+	entry_size = (unsigned int)header[84] | ((unsigned int)header[85] << 8) |
+	             ((unsigned int)header[86] << 16) | ((unsigned int)header[87] << 24);
+	if (partno > entry_count || entry_size < 128 || entry_size > sizeof(entry)) {
+		close(fd);
+		return;
+	}
+	offset = entry_lba * 512ULL + (unsigned long long)(partno - 1) * entry_size;
+	if (pread(fd, entry, entry_size, (off_t)offset) != (ssize_t)entry_size) {
+		close(fd);
+		return;
+	}
+	close(fd);
+
+	/* Name: 36 UTF-16LE code units at offset 56, NUL-terminated. */
+	for (i = 0; i < 36 && n + 1 < out_size; i++) {
+		unsigned int lo = entry[56 + i * 2];
+		unsigned int hi = entry[57 + i * 2];
+
+		if (lo == 0 && hi == 0)
+			break;
+		out[n++] = (hi == 0 && lo >= 0x20 && lo < 0x7f) ? (char)lo : '?';
+	}
+	out[n] = '\0';
+}
+
+/*
  * Fills in the fields common to both a whole disk and a partition entry
  * (name/dev_path/size_bytes/io_stats) -- everything disk_enumerate()'s
  * two passes below share. model/removable/is_os_disk are set by the
@@ -334,6 +414,59 @@ static void fill_common(struct discovered_disk *e, const char *d_name, const cha
 	 * device's own real logical block size. */
 	e->size_bytes = strtoull(size_str, NULL, 10) * 512ULL;
 	fill_io_stats(e);
+}
+
+/*
+ * Orders the enumerated set so it reads the way a person expects.
+ *
+ * readdir() returns whatever order the filesystem feels like, which is
+ * why the OS disk's partitions came back as vda4, vda2, vda5, vda3,
+ * vda1 -- arbitrary, unstable between boots, and read as a bug because
+ * it looks like one.
+ *
+ * Whole disks sort by name, with a natural numeric comparison so dm-2
+ * comes before dm-10 rather than after it. Partitions sort by
+ * START SECTOR within their parent, which is their real order on the
+ * disk -- the physically meaningful one, and the order that makes
+ * "the free space after this partition" obvious when reading a list.
+ */
+static int name_compare_natural(const char *a, const char *b)
+{
+	while (*a != '\0' && *b != '\0') {
+		if (*a >= '0' && *a <= '9' && *b >= '0' && *b <= '9') {
+			unsigned long long na = strtoull(a, (char **)&a, 10);
+			unsigned long long nb = strtoull(b, (char **)&b, 10);
+
+			if (na != nb)
+				return na < nb ? -1 : 1;
+			continue;
+		}
+		if (*a != *b)
+			return (unsigned char)*a < (unsigned char)*b ? -1 : 1;
+		a++;
+		b++;
+	}
+	if (*a == *b)
+		return 0;
+	return *a == '\0' ? -1 : 1;
+}
+
+static int disk_order_compare(const void *va, const void *vb)
+{
+	const struct discovered_disk *a = va;
+	const struct discovered_disk *b = vb;
+	int c;
+
+	/* Group each partition with its parent, and put the parent first. */
+	c = name_compare_natural(a->is_partition ? a->parent_disk : a->name,
+	                         b->is_partition ? b->parent_disk : b->name);
+	if (c != 0)
+		return c;
+	if (a->is_partition != b->is_partition)
+		return a->is_partition ? 1 : -1;
+	if (a->is_partition && a->start_sector != b->start_sector)
+		return a->start_sector < b->start_sector ? -1 : 1;
+	return name_compare_natural(a->name, b->name);
 }
 
 int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containers_dir)
@@ -442,6 +575,20 @@ int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containe
 			if (read_sysfs_attr(attr_path, start_str, sizeof(start_str)) == 0)
 				e->start_sector = strtoull(start_str, NULL, 10);
 		}
+		{
+			/* The partition number is this device's own name minus its
+			 * parent's, the same split disk_name_from_partition() makes
+			 * in reverse (and the same "p" separator an nvme-style
+			 * parent uses). */
+			const char *suffix = ent->d_name + strlen(parent_name);
+			char parent_dev[PATH_MAX];
+
+			if (suffix[0] == 'p' && suffix[1] >= '0' && suffix[1] <= '9')
+				suffix++;
+			snprintf(parent_dev, sizeof(parent_dev), "/dev/%s", parent_name);
+			read_gpt_partition_name(parent_dev, (unsigned int)strtoul(suffix, NULL, 10), e->part_label,
+			                        sizeof(e->part_label));
+		}
 
 		disk_name_from_partition(ent->d_name, parent_name, sizeof(parent_name));
 		snprintf(e->parent_disk, sizeof(e->parent_disk), "%s", parent_name);
@@ -457,6 +604,7 @@ int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containe
 	closedir(d);
 
 	fill_mount_status(out, count);
+	qsort(out, (size_t)count, sizeof(out[0]), disk_order_compare);
 	return count;
 }
 
@@ -493,6 +641,18 @@ void disk_write_json_one(const struct discovered_disk *d, struct json_writer *w)
 	 */
 	jw_key(w, "fs_type");
 	jw_str(w, d->fs_type);
+	/* Partitions only: the name in the partition table, which is what
+	 * whoever created it actually called it -- the fixed OS layout's
+	 * own thinc-esp/thinc-root-a/... names, or whatever POST
+	 * .../partitions was given. Write-only until now. */
+	jw_key(w, "part_label");
+	jw_str(w, d->part_label);
+	/* Partitions only: where it starts on its parent, in 512-byte
+	 * sectors. Reported because it is what tells a client whether a
+	 * free extent is adjacent to this partition and can therefore grow
+	 * it (issue #94) -- free space elsewhere on the disk cannot. */
+	jw_key(w, "start_sector");
+	jw_int(w, (long long)d->start_sector);
 	jw_key(w, "role");
 	{
 		const char *role = diskrole_lookup(d->name);
