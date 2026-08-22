@@ -2052,7 +2052,13 @@
 					</label>
 					<label>
 						Login shell
-						<input type="text" id="luf-loginshell" placeholder="/bin/bash">
+						<!-- /usr/bin/bash, never /bin/bash: this project's minimal images
+						     have no /bin at all, and sshd refuses a login whose configured
+						     shell doesn't exist -- surfacing only as a misleading
+						     "Permission denied" (sshd deliberately runs the auth with a
+						     bogus credential for an account it considers invalid, so the
+						     LDAP bind is what appears to fail). See docs/api/README.md. -->
+						<input type="text" id="luf-loginshell" placeholder="/usr/bin/bash">
 					</label>
 					<label class="wide">
 						Home directory
