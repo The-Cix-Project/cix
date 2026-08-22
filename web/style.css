@@ -220,13 +220,12 @@ header {
 
 /* Sized to the tree column, from the same variable the grid uses --
  * including mid-drag, since makeResizable() sets that variable rather
- * than the grid directly. align-self overrides .menu-bar's own
- * align-items: center, which would otherwise shrink this back to its
- * content height and break the border line. */
+ * than the grid directly. No divider between this cell and the topics:
+ * the bar reads better as one continuous strip, and the alignment does
+ * its own work without a line drawn through it. */
 .menu-dropdown-logo {
 	flex: 0 0 var(--tree-width, 240px);
 	align-self: stretch;
-	border-right: 1px solid var(--border);
 }
 
 .menu-dropdown-toggle-logo {
@@ -253,31 +252,14 @@ header {
 	padding-left: 0.65rem;
 }
 
-/* Sub-group headings inside the Services and System menus, one per
- * child of that branch in the tree. Not buttons: they name a group,
- * they are not a place to go. Styled as .tree-instance-label is, since
- * both do the same job. */
-.menu-group-label {
-	padding: 0.5rem 1rem 0.25rem;
-	font-size: 0.7rem;
-	font-weight: 600;
-	letter-spacing: 0.04em;
-	text-transform: uppercase;
-	color: var(--muted);
-	cursor: default;
-}
-
-.menu-group-label:not(:first-child) {
-	border-top: 1px solid var(--border);
-	margin-top: 0.3rem;
-}
 
 .header-mark {
 	height: 0.825rem;
 	width: auto;
 }
 
-.menu-dropdown-menu {
+.menu-dropdown-menu,
+.menu-submenu-menu {
 	position: absolute;
 	left: 0;
 	top: calc(100% + 0.3rem);
@@ -289,17 +271,18 @@ header {
 	border-radius: 6px;
 	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
 	min-width: 200px;
-	max-height: 80vh;
-	overflow-y: auto;
 	z-index: 1000;
 }
 
-.menu-dropdown-menu li {
+.menu-dropdown-menu li,
+.menu-submenu-menu li {
 	display: block;
 }
 
 .menu-dropdown-menu a,
-.menu-dropdown-menu button {
+.menu-dropdown-menu button,
+.menu-submenu-menu a,
+.menu-submenu-menu button {
 	display: block;
 	width: 100%;
 	text-align: left;
@@ -314,9 +297,58 @@ header {
 }
 
 .menu-dropdown-menu a:hover,
-.menu-dropdown-menu button:hover {
+.menu-dropdown-menu button:hover,
+.menu-submenu-menu a:hover,
+.menu-submenu-menu button:hover {
 	background: var(--tree-active-bg);
 	filter: none;
+}
+
+/* Second level: the branches inside Services and System are real
+ * submenus that open on hover, one per child of that branch in the
+ * tree. -0.3rem cancels the panel's own top padding so a submenu's
+ * first item lines up with the parent item that opened it.
+ *
+ * The scroll cap that used to sit on the shared panel rule now lives
+ * here instead, and that is load-bearing rather than tidying: a
+ * parent menu with overflow-y is a clip container, so a submenu
+ * positioned outside its box has real layout (correct measurements,
+ * hidden=false) and is never painted -- which is exactly what
+ * happened, and looks like a positioning bug rather than a clipping
+ * one. Only a submenu can be long enough to need the cap anyway; no
+ * top-level menu here holds more than five items. */
+.menu-submenu {
+	position: relative;
+}
+
+.menu-submenu-menu {
+	top: -0.3rem;
+	left: 100%;
+	max-height: 80vh;
+	overflow-y: auto;
+}
+
+/* Flipped to the parent's left when it would otherwise run off the
+ * right edge of the window -- set from JS, which is the only place
+ * that can measure it. */
+.menu-submenu-menu-left {
+	left: auto;
+	right: 100%;
+}
+
+/* The chevron is the only thing distinguishing "opens a level" from
+ * "does something", so it is part of the button rather than decoration
+ * on the row. */
+.menu-dropdown-menu button.menu-submenu-toggle {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1.5rem;
+}
+
+.menu-submenu-toggle::after {
+	content: "\25B8";
+	color: var(--muted);
 }
 
 .menu-dropdown-menu button.menu-item-danger {
@@ -508,7 +540,6 @@ header {
 	 * there is no column edge left to align the logo cell to. */
 	.menu-dropdown-logo {
 		flex: 0 0 auto;
-		border-right: none;
 	}
 	.menu-bar-topics {
 		padding-left: 0;

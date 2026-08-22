@@ -29,15 +29,23 @@ The header's five topics are the tree's five top-level names, in the tree's own 
 
 The two surfaces answer different questions ([ADR-0184](../adr/0184-dashboard-navigation-one-vocabulary.md)) -- **the tree is where you go to look at something, the menu bar is where you go to make one** -- and the rule tying them together is that whatever branch a thing lives under is the menu that creates it. A new volume is created from **Disks**, because that is where volumes appear in the tree (under the device actually holding them). An LDAP user is created from **Services**, under an `LDAP` heading matching that branch's own leaf.
 
-The two menus with more than one branch under them carry sub-headings, one per child of that branch in the tree, in the same order:
+The two menus covering a branch that has children of its own — Services and System — hold **submenus that open on hover**, one per child of that branch, in that branch's order. So the System menu is three things you point at (Software, Host, Devices) rather than eleven items under three headings:
 
-| Menu | Groups | Creates |
+| Menu | Submenu | Creates |
 |---|---|---|
 | Containers | -- | New Container |
 | Networks | -- | New Network |
 | Disks | -- | New Volume, Assign Disk Role |
-| Services | PKI / DNS / LDAP / NTP / Syslog | Issue Certificate; New Record, Register Server; New User, New Group, Register Server; Register Server; Register Target |
-| System | Software / Host / Devices | New Image, Install Package, New/Update Recipe, Bootstrap Build Image; Add Route, Set Sysctl; Name a Device Mapping, Load Module, Configure Module |
+| Services | PKI | Issue Certificate |
+| | DNS | New Record, Register Server |
+| | LDAP | New User, New Group, Register Server |
+| | NTP | Register Server |
+| | Syslog | Register Target |
+| System | Software | New Image, Install Package, New/Update Recipe, Bootstrap Build Image |
+| | Host | Add Route, Set Sysctl |
+| | Devices | Name a Device Mapping, Load Module, Configure Module |
+
+A submenu opens on hover, on click (so it works by touch and by keyboard), and closes when the pointer leaves the item it belongs to; opening one closes its siblings. One that would run off the right edge of the window flips to the left of its parent instead.
 
 This replaced a menu bar whose topics were `Create`, `Software`, `User / Group`, `Network Services`, `Hardware` and `Host` -- two of which ("Hardware", "User / Group") were not a word anywhere in the tree, so the same subject had two different names depending on which half of the screen you were looking at. One set of names for one system.
 
@@ -68,13 +76,10 @@ System
   Software         (tabs: Recipes / Reconcile / Images / Packages / Repo & Sync / Cache & Artifacts / Package Builds / Update)
   Host             (tabs: Daemon / Site / Routes / Sessions / Swap / Rolling Restart / Storage Placement / TLS Throttle / Backup / Volume Backups / Factory Reset)
   Devices
-  Monitoring
-    Host Stats
-    Processes
-    Log Store
-    Kernel Log
-    Server Health
+  Monitoring       (tabs: Host Stats / Processes / Log Store / Kernel Log / Server Health)
 ```
+
+Every folder in this tree is gone: the deepest thing left is one leaf per real resource. Monitoring was the last five-leaf group, and it collapsed for the same reason the others did — each of its pages is a facet of one question ("what is this box doing"), and a folder of five single-purpose pages meant navigating to find out which one a thing was on.
 
 Reorganized (ADR-0138) from an earlier, flatter shape where a single 10-leaf "Server" group held everything that wasn't PKI/DNS/LDAP/NTP -- split at the time by what each page actually is, so that none of them stood out as a dumping ground the way the original single group did. That split has since gone further in the same direction: Host is now one tabbed leaf rather than a folder, and Maintenance is gone entirely -- its three pages each had a real home elsewhere.
 
@@ -90,6 +95,8 @@ The **Reconcile** tab is the one that earns the consolidation: it puts what is d
 **Host** is one leaf as well, and it is where everything you *configure about the box* ended up: identity, listeners, routes, sessions, swap, the rolling-restart window, storage placement, TLS throttling, backups, and Factory Reset. **Devices** stays outside it, because a physical hardware inventory is something you look at rather than configure — Routes is not in that category despite an earlier version of this page grouping the two, since the routing table is edited from its own page. **Update** and **Package Builds** live under Software, where anything about the software on this box belongs. Maintenance is gone as a grouping: it held three unrelated pages that each have a real home.
 
 Host carries eleven tabs, which is a lot for one bar — the alternative was a folder of eleven single-form pages, and one destination you scan beats a tree you navigate.
+
+**Every tab on a collapsed page is an address.** Clicking one changes the URL to the address that tab replaced (`#routes`, `#processes`, `#ldap-users`), so tabs are bookmarkable and the browser's back button walks them. That is also what makes them render: a tab's own data is fetched by the same route handler its old page used, and before this, clicking a tab only revealed its panel — Host > Routes sat on "Loading…" indefinitely, because nothing had asked for routes. Tabs that are *not* addresses (a container's Summary/Hardware/Options/Console) are unaffected.
 
 Each service is one leaf too, for the same reason: Root CA and Certificates are facets of PKI, not separate destinations, and three tree levels meant navigating to find out which page a thing was on. Every old address (`#pki-certs`, `#ldap-users`, `#ntp-time`, ...) still resolves and opens its own tab, so nothing that was bookmarked breaks.
 
