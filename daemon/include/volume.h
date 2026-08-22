@@ -85,6 +85,25 @@ struct volume {
 	 */
 	int backup_enabled;
 	int backup_retain;
+	/*
+	 * Take the snapshot even while a container mounting this volume is
+	 * running, accepting a crash-consistent copy.
+	 *
+	 * This exists because the guard alone made the feature useless for
+	 * exactly the volumes that most need it. A service container is
+	 * normally `restart: always` and simply never stops -- the jump
+	 * box being the case that prompted all of this -- so "refuse while
+	 * running" means "never back this up", quietly, forever.
+	 *
+	 * Off by default, and it is a real trade rather than a formality:
+	 * the copy sees whatever was on disk at the moment it ran, so a
+	 * file being written mid-copy is captured half-written. For a home
+	 * directory or a config tree that is nearly always fine and is what
+	 * an ordinary filesystem backup has always given you. For a
+	 * database it is not -- that wants its own dump, taken by something
+	 * that understands its format.
+	 */
+	int backup_while_running;
 	/* When the scheduled sweep last took one, so it can tell what is
 	 * due without re-reading the snapshot store for every volume. */
 	time_t backup_last_at;
@@ -157,7 +176,8 @@ enum volume_error volume_migrate(const char *name, const char *disk_name);
  * volume that has never had one set falls back to the default when it
  * is read.
  */
-enum volume_error volume_set_backup_policy(const char *name, int enabled, int retain);
+enum volume_error volume_set_backup_policy(const char *name, int enabled, int retain,
+                                          int while_running);
 
 /* Records that a scheduled snapshot was taken, so the sweep knows what
  * is due. Persisted, so a restart does not re-snapshot everything. */

@@ -116,6 +116,12 @@ int volume_init(const char *state_path)
 			    (br != NULL && br->type == JSON_NUMBER) ? (int)json_as_number(br) : 0;
 			g_volumes[count].backup_last_at =
 			    (bl != NULL && bl->type == JSON_NUMBER) ? (time_t)json_as_number(bl) : 0;
+			{
+				const struct json_value *wr = json_object_get(item, "backup_while_running");
+
+				g_volumes[count].backup_while_running =
+				    (wr != NULL && wr->type == JSON_BOOL && wr->u.boolean);
+			}
 		}
 		g_volumes[count].in_use = 1;
 		count++;
@@ -260,6 +266,8 @@ void volume_write_json_one(const struct volume *v, struct json_writer *w)
 	jw_int(w, v->backup_retain > 0 ? v->backup_retain : VOLUMEBACKUP_DEFAULT_RETAIN);
 	jw_key(w, "backup_last_at");
 	jw_int(w, (long long)v->backup_last_at);
+	jw_key(w, "backup_while_running");
+	jw_bool(w, v->backup_while_running);
 	/* Reported so an operator can see where the data really landed --
 	 * a disk that is currently unmounted silently falls back to the
 	 * default location, and that should never be invisible. */
@@ -368,13 +376,15 @@ enum volume_error volume_migrate(const char *name, const char *disk_name)
 	return VOLUME_OK;
 }
 
-enum volume_error volume_set_backup_policy(const char *name, int enabled, int retain)
+enum volume_error volume_set_backup_policy(const char *name, int enabled, int retain,
+                                          int while_running)
 {
 	struct volume *v = volume_find(name);
 
 	if (v == NULL)
 		return VOLUME_ERR_NOT_FOUND;
 	v->backup_enabled = enabled ? 1 : 0;
+	v->backup_while_running = while_running ? 1 : 0;
 	if (retain > 0)
 		v->backup_retain = retain;
 	if (save_state() != 0)

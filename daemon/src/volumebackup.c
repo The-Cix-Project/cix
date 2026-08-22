@@ -282,11 +282,17 @@ enum volumebackup_error volumebackup_take(const char *volume_name,
 	if (v == NULL)
 		return VOLUMEBACKUP_ERR_NOT_FOUND;
 	/*
-	 * A live writer means the copy captures a half-written state. That
-	 * is worse than no snapshot, because it looks exactly like a good
-	 * one until someone restores it.
+	 * A live writer means the copy captures whatever was on disk at
+	 * that moment, so a file being written mid-copy is caught
+	 * half-written. Refused by default for that reason -- but only by
+	 * default: a service container is normally `restart: always` and
+	 * never stops, so an unconditional refusal would mean "never back
+	 * this up", quietly, for exactly the volumes that most need it.
+	 * allow_while_running is the operator saying their data tolerates
+	 * a crash-consistent copy, which for a home or config tree it
+	 * generally does.
 	 */
-	if (is_running != NULL && is_running(volume_name)) {
+	if (!v->backup_while_running && is_running != NULL && is_running(volume_name)) {
 		record_attempt(volume_name, 0, "a container mounting this volume is running");
 		return VOLUMEBACKUP_ERR_IN_USE_RUNNING;
 	}
@@ -395,12 +401,17 @@ int volumebackup_sweep(time_t now, int (*is_running)(const char *volume_name))
 		if (list[i].backup_last_at != 0 && difftime(now, list[i].backup_last_at) < due_after)
 			continue;
 		/*
-		 * A volume whose container is running is simply skipped, not
-		 * failed: it is a normal, expected state for a workload that
-		 * stays up, and turning every sweep into a logged failure for
-		 * it would drown the real ones. The skip is visible in the
-		 * per-volume status.
+		 * A volume whose container is running and has not opted into
+		 * crash-consistent copies is skipped BEFORE take() is called,
+		 * so no failed attempt is recorded. It is a normal, expected
+		 * state for a workload that stays up; recording a failure
+		 * every interval would fill the status with something the
+		 * operator already knows and drown the real failures in it.
+		 * The state is visible either way -- the volume's own policy
+		 * says whether it can be backed up while running.
 		 */
+		if (!list[i].backup_while_running && is_running != NULL && is_running(list[i].name))
+			continue;
 		if (volumebackup_take(list[i].name, is_running) == VOLUMEBACKUP_OK)
 			taken++;
 	}
