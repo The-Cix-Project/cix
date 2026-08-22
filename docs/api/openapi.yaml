@@ -963,6 +963,98 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SystemStats"
+  /system/server-health:
+    get:
+      summary: Health of every registered LDAP/DNS/NTP/syslog server (issue #81)
+      description: >
+        thinC lets an operator register redundant backend servers for four
+        subsystems. This reports, for each of them, whether it is actually
+        serving right now -- probed on an interval by the daemon rather than
+        assumed from the fact that it is registered.
+
+        `state` is `healthy`, `unhealthy` or `unknown` (registered but not yet
+        probed). `in_service` is the question consumers actually care about:
+        false only when the server is drained or confirmed unhealthy, so a
+        never-yet-probed server still counts as in service and enabling health
+        tracking can never black-hole a working deployment.
+
+        `probe` says how the verdict was reached, and is reported precisely so
+        a "healthy" is never read as more than it is: `tcp:PORT` is a real
+        service check (the server accepted a connection); `process` means only
+        that the providing container is running, used for the UDP services
+        (NTP, syslog) where a TCP connect would be a meaningless check dressed
+        up as a real one.
+
+        Servers that are not in service are dropped from the client
+        configuration thinC generates -- concretely, an unhealthy LDAP server
+        stops being handed to `ldap_login` containers. If health filtering
+        would leave NOTHING, the unfiltered list is used instead: handing a
+        client a possibly-down server beats handing it none at all.
+      operationId: getServerHealth
+      responses:
+        "200":
+          description: One entry per registered server, across all four kinds
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  servers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ServerHealth"
+
+  /system/server-health/{kind}/{container}:
+    put:
+      summary: Drain or undrain one registered server (issue #81)
+      description: >
+        The operator override, deliberately separate from what the probe says:
+        draining is an intent ("I am doing maintenance on this one"), so unlike
+        the observed health state it IS persisted across a daemon restart. A
+        drained server reports `in_service: false` and is withheld from
+        generated client configuration regardless of how healthy it looks.
+      operationId: setServerHealthDrain
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [ldap, dns, ntp, syslog]
+        - name: container
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [drained]
+              properties:
+                drained:
+                  type: boolean
+      responses:
+        "200":
+          description: Updated -- returns the full server list, same shape as GET
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  servers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ServerHealth"
+        "400":
+          description: drained (boolean) missing or not a boolean
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /system/processes:
     get:
       summary: Every real process on the box, correlated to a container if any (ADR-0131)
@@ -6831,6 +6923,50 @@ components:
         type: string
 
   schemas:
+    ServerHealth:
+      type: object
+      properties:
+        kind:
+          type: string
+          enum: [ldap, dns, ntp, syslog]
+        container:
+          type: string
+          description: The container providing this service.
+        state:
+          type: string
+          enum: [healthy, unhealthy, unknown]
+          description: >
+            unknown = registered but not probed yet. A healthy server needs one
+            successful probe; an unhealthy one needs several consecutive
+            failures (a single dropped probe never pulls a working server out
+            of service), while recovery is immediate on the first success.
+        in_service:
+          type: boolean
+          description: >
+            false only when drained or confirmed unhealthy. This is what client
+            configuration generation consults.
+        drained:
+          type: boolean
+          description: Operator override -- deliberately out of service. Persisted.
+        probe:
+          type: string
+          nullable: true
+          description: >
+            How the verdict was reached -- "tcp:PORT" (a real service check) or
+            "process" (only that the container is running, used for the UDP
+            services). null before the first probe.
+        last_check_at:
+          type: integer
+          nullable: true
+        last_ok_at:
+          type: integer
+          nullable: true
+        consecutive_failures:
+          type: integer
+        last_error:
+          type: string
+          nullable: true
+
     ContainerCreateRequest:
       type: object
       required: [name, image, cmd]

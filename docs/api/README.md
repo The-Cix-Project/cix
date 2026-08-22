@@ -42,6 +42,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/system/logs/config` | The consolidated log store's size cap |
 | PUT | `/system/logs/config` | Set the log store's size cap |
 | GET | `/system/stats` | Host-wide load/CPU/memory/disk/network snapshot |
+| GET | `/system/server-health` | Health of every registered LDAP/DNS/NTP/syslog server (issue #81) |
+| PUT | `/system/server-health/{kind}/{container}` | Drain or undrain one -- the operator override, persisted |
 | GET | `/system/processes` | Every real process on the box, correlated to a container if any |
 | DELETE | `/system/processes/{pid}` | Kill a process -- real, immediate SIGKILL |
 | GET | `/system/ping` | Poll the current/last ICMP ping job |
@@ -499,6 +501,31 @@ For a policy other than `"no"`, the persisted request is replayed automatically 
 `dns1` (itself persisted) is guaranteed to have been *started* before `router1` — and, if `dns1` sets its own `readiness` (`{"tcp_port": N, "timeout_seconds": N}`, requires `networks` to be non-empty), genuinely TCP-ready, not just process-started. Readiness is a plain, blocking `connect()` retried until it succeeds or `timeout_seconds` elapses, consulted in exactly one place — daemon-boot autostart, right before a dependent starts — best-effort: if it never succeeds, a warning is logged and boot proceeds anyway, never blocking or failing it. It is never consulted for a live `POST` or for crash-restart. A `depends_on` naming an unknown or non-persisted container, or forming a cycle, is skipped at boot (logged, not fatal to anything else starting).
 
 `GET`/inspect responses always report the current `restart`/`restart_delay_seconds`/`stopped`/`depends_on`/`readiness` state, read live from the persisted definition rather than a stale echo of what creation was originally given.
+
+## Registered-server health (issue #81)
+
+thinC lets you register redundant backend servers for four subsystems &mdash; LDAP, DNS, NTP, syslog. Until this existed it only tracked *that* a server was registered, never whether it was actually serving: [#80](https://git.home.arpa/itdlabs/thinc/issues/80) was a registered LDAP pair that answered on the wire but could not resolve anything under the configured base DN, and every login failed with nothing anywhere reporting a server as bad.
+
+`GET /v1/system/server-health` reports every registered server across all four kinds:
+
+```json
+{"servers": [
+  {"kind": "ldap", "container": "ldap-1", "state": "healthy", "in_service": true,
+   "drained": false, "probe": "tcp:3893", "last_check_at": 1787400000,
+   "last_ok_at": 1787400000, "consecutive_failures": 0, "last_error": null}
+]}
+```
+
+- **`state`** &mdash; `healthy` / `unhealthy` / `unknown` (registered, not yet probed). One good probe makes a server healthy immediately; it takes several *consecutive* failures to declare it unhealthy, so a single dropped probe never pulls a working server out of service, while recovery is never delayed.
+- **`in_service`** &mdash; the question consumers actually ask. False only when drained or confirmed unhealthy; a never-yet-probed server counts as in service, so switching health tracking on can never black-hole a working deployment during the first sweep.
+- **`probe`** &mdash; how the verdict was reached, reported so `healthy` is never read as more than it is. `tcp:PORT` is a real service check (the server accepted a connection). `process` means only that the providing container is running &mdash; used for the UDP services (NTP, syslog), where a TCP connect would be a meaningless check dressed up as a real one.
+
+**Servers that are not in service are withheld from generated client configuration.** Concretely: an unhealthy or drained LDAP server stops being handed to `ldap_login` containers. One deliberate safety rule &mdash; if filtering would leave *nothing*, the unfiltered list is used instead, because handing a client a possibly-down server beats handing it none at all.
+
+`PUT /v1/system/server-health/{kind}/{container}` with `{"drained": true|false}` is the operator override for maintenance. Draining is an *intent*, so unlike the observed health state it is persisted across a daemon restart; health itself is re-established by the next probe.
+
+Probing runs on the daemon's own event loop as a **non-blocking** connect &mdash; a blocking probe against an unreachable server would stall the entire control plane, the exact failure [ADR-0180](../adr/0180-async-container-teardown.md) exists to prevent. `thincctl server-health [ls] | drain KIND NAME | undrain KIND NAME` and the dashboard's **System > Monitoring > Server Health** page are the CLI and web surfaces.
+
 
 ## Container lifecycle: start, stop, pause, unpause
 

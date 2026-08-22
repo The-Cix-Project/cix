@@ -93,4 +93,7 @@ void syslogfwd_target_write_json_list(struct json_writer *w);
  */
 void syslogfwd_send(const char *container, const char *level, const char *msg);
 
+/* Issue #81: uniform enumerator for the shared server-health prober. */
+int syslogfwd_target_list_containers(char out[][SYSLOG_TARGET_NAME_MAX], int max);
+
 #endif /* SYSLOGFWD_H */

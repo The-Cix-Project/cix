@@ -178,4 +178,7 @@ enum ntp_error ntp_time_set(int64_t unix_seconds);
 
 void ntp_write_json_time(struct json_writer *w);
 
+/* Issue #81: uniform enumerator for the shared server-health prober. */
+int ntp_server_list_containers(char out[][NTP_SERVER_NAME_MAX], int max);
+
 #endif /* NTP_H */

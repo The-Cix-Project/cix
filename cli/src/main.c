@@ -299,6 +299,9 @@ static void print_usage(FILE *out)
 	        "  swap disable  -- deactivate and remove it\n"
 	        "  host-stats  -- host-wide load/CPU/memory/disk/network snapshot (ADR-0073)\n"
 	        "  kmsg [--tail=N]  -- the kernel ring buffer (/dev/kmsg), dmesg over REST --\n"
+	        "  server-health [ls] | drain KIND NAME | undrain KIND NAME  -- health of every\n"
+	        "               registered LDAP/DNS/NTP/syslog server; drain takes one out of\n"
+	        "               service deliberately (issue #81)\n"
 	        "               the only kernel-log window a shell-less installed host has\n"
 	        "  process ls  -- every real process on the box (a direct /proc scan), each\n"
 	        "               correlated to a container by its own real host ppid chain, if any\n"
@@ -3876,6 +3879,81 @@ static int cmd_kmsg(const struct kx_client *c, int json_mode, int argc, char **a
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_kmsg);
+}
+
+/*
+ * Issue #81: registered-server health. One command for all four kinds
+ * (ldap/dns/ntp/syslog) because it is one mechanism -- see
+ * daemon/include/serverhealth.h.
+ */
+static void fmt_server_health(const struct json_value *v)
+{
+	const struct json_value *servers = json_object_get(v, "servers");
+	size_t i;
+
+	if (servers == NULL || servers->type != JSON_ARRAY || servers->u.array.count == 0) {
+		printf("no registered servers are being health-tracked yet\n");
+		return;
+	}
+	for (i = 0; i < servers->u.array.count; i++) {
+		const struct json_value *e = servers->u.array.items[i];
+		const char *kind = json_as_string(json_object_get(e, "kind"));
+		const char *container = json_as_string(json_object_get(e, "container"));
+		const char *state = json_as_string(json_object_get(e, "state"));
+		const char *probe = json_as_string(json_object_get(e, "probe"));
+		const char *err = json_as_string(json_object_get(e, "last_error"));
+		const struct json_value *drained = json_object_get(e, "drained");
+		const struct json_value *in_service = json_object_get(e, "in_service");
+		const struct json_value *fails = json_object_get(e, "consecutive_failures");
+
+		printf("%-8s %-20s %-10s in_service=%-4s drained=%-4s probe=%-10s fails=%-3ld%s%s\n",
+		       kind != NULL ? kind : "?", container != NULL ? container : "?",
+		       state != NULL ? state : "?",
+		       (in_service != NULL && in_service->type == JSON_BOOL && in_service->u.boolean)
+		           ? "yes" : "no",
+		       (drained != NULL && drained->type == JSON_BOOL && drained->u.boolean) ? "yes" : "no",
+		       probe != NULL ? probe : "-",
+		       fails != NULL ? (long)json_as_number(fails) : 0,
+		       err != NULL ? "  " : "", err != NULL ? err : "");
+	}
+}
+
+static int cmd_server_health(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+
+	if (argc == 0 || strcmp(argv[0], "ls") == 0) {
+		if (kx_client_request(c, "GET", "/v1/system/server-health", NULL, &r) != 0) {
+			fprintf(stderr, "thincctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_server_health);
+	}
+	if ((strcmp(argv[0], "drain") == 0 || strcmp(argv[0], "undrain") == 0) && argc == 3) {
+		char path[256];
+		struct json_writer w;
+		int rc;
+
+		snprintf(path, sizeof(path), "/v1/system/server-health/%s/%s", argv[1], argv[2]);
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "drained");
+		jw_bool(&w, strcmp(argv[0], "drain") == 0);
+		jw_obj_close(&w);
+		w.buf[w.len] = '\0';
+		rc = kx_client_request(c, "PUT", path, w.buf, &r);
+		jw_free(&w);
+		if (rc != 0) {
+			fprintf(stderr, "thincctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_server_health);
+	}
+	fprintf(stderr, "usage: thincctl server-health [ls]\n"
+	                "       thincctl server-health drain KIND CONTAINER\n"
+	                "       thincctl server-health undrain KIND CONTAINER\n"
+	                "       (KIND is one of: ldap dns ntp syslog)\n");
+	return 2;
 }
 
 static int cmd_host_stats(const struct kx_client *c, int json_mode)
@@ -10529,6 +10607,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_swap(client, json_mode, argc, argv);
 	if (strcmp(cmd, "host-stats") == 0)
 		return cmd_host_stats(client, json_mode);
+	if (strcmp(cmd, "server-health") == 0)
+		return cmd_server_health(client, json_mode, argc, argv);
 	if (strcmp(cmd, "kmsg") == 0)
 		return cmd_kmsg(client, json_mode, argc, argv);
 	if (strcmp(cmd, "process") == 0)

@@ -26,6 +26,7 @@
 #include "dns.h"
 #include "ldap.h"
 #include "subid.h"
+#include "serverhealth.h"
 #include "exec.h"
 #include "http.h"
 #include "image.h"
@@ -143,6 +144,7 @@ static char LDAP_USERS_STATE_PATH[PATH_MAX];
 static char LDAP_GROUPS_STATE_PATH[PATH_MAX];
 static char LDAP_CONFIG_STATE_PATH[PATH_MAX];
 static char SUBID_STATE_PATH[PATH_MAX]; /* ADR-0179 */
+static char SERVERHEALTH_STATE_PATH[PATH_MAX]; /* issue #81 -- drain flags only */
 static char PKI_DIR[PATH_MAX];
 static char PKI_CERTS_STATE_PATH[PATH_MAX];
 static char PKI_CERTS_DIR[PATH_MAX];
@@ -269,6 +271,8 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(LDAP_CONFIG_STATE_PATH, sizeof(LDAP_CONFIG_STATE_PATH), "%s/ldap_config.json",
 	         STATE_DIR);
 	snprintf(SUBID_STATE_PATH, sizeof(SUBID_STATE_PATH), "%s/subid.json", STATE_DIR);
+	snprintf(SERVERHEALTH_STATE_PATH, sizeof(SERVERHEALTH_STATE_PATH), "%s/server_health.json",
+	         STATE_DIR);
 	snprintf(PKI_DIR, sizeof(PKI_DIR), "%s/pki", STATE_DIR);
 	snprintf(PKI_CERTS_STATE_PATH, sizeof(PKI_CERTS_STATE_PATH), "%s/pki_certs.json", PKI_DIR);
 	snprintf(PKI_CERTS_DIR, sizeof(PKI_CERTS_DIR), "%s/certs", PKI_DIR);
@@ -877,6 +881,14 @@ enum conn_kind {
 	CONN_NTP_PERIODIC_TIMER, /* permanent, re-arms itself -- fires ntp_sync_start() periodically (task #751) */
 	CONN_NTP_SYNC,           /* one in-flight SNTP sync attempt's own UDP socket */
 	CONN_NTP_SYNC_TIMER,     /* same job's per-candidate timeout -- see ntp_job_teardown() */
+	/*
+	 * Issue #81 server health. The probe is a NON-BLOCKING connect()
+	 * driven by this same reactor -- a blocking probe would stall the
+	 * whole control plane on an unreachable server, which is exactly the
+	 * failure ADR-0180 exists to prevent.
+	 */
+	CONN_SERVERHEALTH_TIMER, /* permanent, re-arms itself -- fires one probe sweep per interval */
+	CONN_SERVERHEALTH_PROBE, /* one in-flight TCP probe's own socket */
 	CONN_RESTART_TIMER,
 	CONN_ROLLING_RESTART_TIMER, /* jittered live-restart onto a newer rolling image
 	                              * version (ADR-0124/Part 5) -- distinct from
@@ -936,6 +948,13 @@ struct conn {
 	enum storage_kind storage_migrate_kind; /* CONN_STORAGE_MIGRATE only */
 	char container_storage_migrate_name[REGISTRY_NAME_MAX]; /* CONN_CONTAINER_STORAGE_MIGRATE only */
 	char restart_name[REGISTRY_NAME_MAX];   /* CONN_RESTART_TIMER only */
+	/* CONN_SERVERHEALTH_PROBE only -- which registered server this
+	 * in-flight probe is for, so its result can be attributed when the
+	 * socket becomes writable (or the sweep times it out). */
+	char probe_kind[SERVERHEALTH_KIND_MAX];
+	char probe_container[REGISTRY_NAME_MAX];
+	char probe_desc[SERVERHEALTH_PROBE_MAX];
+	time_t probe_started_at;
 	char cleanup_ifname[NETWORK_NAME_MAX];  /* CONN_BIND_IP_CLEANUP only */
 	uint32_t cleanup_addr_be;               /* CONN_BIND_IP_CLEANUP only */
 	int cleanup_prefix_len;                 /* CONN_BIND_IP_CLEANUP only */
@@ -3838,6 +3857,302 @@ static void handle_ntp_periodic_timer_event(struct conn *cc)
  * kmsg_watch() above -- a timerfd_create() failure here just means no
  * automatic sync ever happens; GET/PUT /v1/system/ntp and /v1/ntp/
  * servers remain fully usable regardless. */
+/* ---- Issue #81: registered-server health probing ---- */
+
+/*
+ * How often a full probe sweep runs. 30s is a deliberate middle ground:
+ * fast enough that a dead directory server is noticed long before an
+ * operator finishes reading a failed login, slow enough that four
+ * subsystems' worth of probes never become their own load.
+ */
+#define SERVERHEALTH_SWEEP_SECONDS 30
+/*
+ * A probe that has neither connected nor been refused within this long
+ * counts as failed. Kept well under the sweep interval so a sweep can
+ * never overlap the previous one's stragglers.
+ */
+#define SERVERHEALTH_PROBE_TIMEOUT_SECONDS 5
+
+static struct conn g_serverhealth_timer_conn;
+
+/*
+ * The one place that says what "probing" means for each kind. Adding a
+ * fifth registered-server subsystem means adding a row here, nothing
+ * else -- the record, the state machine and the whole REST/CLI/web
+ * surface are already shared.
+ *
+ * port == 0 means this kind has no TCP service to connect to (NTP and
+ * syslog are UDP, and a TCP connect against them would be a meaningless
+ * check dressed up as a real one). Those fall back to container
+ * liveness, and the record's own `probe` field reports "process" so an
+ * operator can see exactly how much the verdict is worth.
+ */
+struct serverhealth_kind_spec {
+	const char *kind;
+	int port;
+	int (*list)(char out[][REGISTRY_NAME_MAX], int max);
+};
+
+static int serverhealth_list_ldap(char out[][REGISTRY_NAME_MAX], int max)
+{
+	return ldap_server_list_containers(out, max);
+}
+static int serverhealth_list_dns(char out[][REGISTRY_NAME_MAX], int max)
+{
+	return dns_server_list_containers(out, max);
+}
+static int serverhealth_list_ntp(char out[][REGISTRY_NAME_MAX], int max)
+{
+	return ntp_server_list_containers(out, max);
+}
+static int serverhealth_list_syslog(char out[][REGISTRY_NAME_MAX], int max)
+{
+	return syslogfwd_target_list_containers(out, max);
+}
+
+static const struct serverhealth_kind_spec g_serverhealth_kinds[] = {
+	{ "ldap", HOSTAUTH_LDAP_DEFAULT_PORT, serverhealth_list_ldap },
+	{ "dns", 53, serverhealth_list_dns },
+	{ "ntp", 0, serverhealth_list_ntp },
+	{ "syslog", 0, serverhealth_list_syslog },
+};
+
+/*
+ * In-flight probes, so a sweep can time out stragglers rather than
+ * leaving them to the kernel's own multi-minute TCP timeout (which would
+ * let sweeps pile up on an unreachable server). Bounded by the same cap
+ * as the health table itself -- there can never be more probes in flight
+ * than there are registered servers.
+ */
+static struct conn *g_serverhealth_inflight[SERVERHEALTH_MAX];
+
+static void serverhealth_inflight_add(struct conn *cc)
+{
+	int i;
+
+	for (i = 0; i < SERVERHEALTH_MAX; i++) {
+		if (g_serverhealth_inflight[i] == NULL) {
+			g_serverhealth_inflight[i] = cc;
+			return;
+		}
+	}
+}
+
+static void serverhealth_inflight_remove(struct conn *cc)
+{
+	int i;
+
+	for (i = 0; i < SERVERHEALTH_MAX; i++) {
+		if (g_serverhealth_inflight[i] == cc)
+			g_serverhealth_inflight[i] = NULL;
+	}
+}
+
+static void serverhealth_probe_teardown(struct conn *cc)
+{
+	serverhealth_inflight_remove(cc);
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	close(cc->fd);
+	free(cc);
+}
+
+/* Fails every probe that has been outstanding too long -- called at the
+ * start of each sweep, so a hung server is recorded as failing rather
+ * than silently accumulating sockets. */
+static void serverhealth_reap_stale_probes(void)
+{
+	time_t now = time(NULL);
+	int i;
+
+	for (i = 0; i < SERVERHEALTH_MAX; i++) {
+		struct conn *cc = g_serverhealth_inflight[i];
+
+		if (cc == NULL)
+			continue;
+		if (now - cc->probe_started_at < SERVERHEALTH_PROBE_TIMEOUT_SECONDS)
+			continue;
+		serverhealth_record_result(cc->probe_kind, cc->probe_container, cc->probe_desc, 0,
+		                            "probe timed out -- no response");
+		serverhealth_probe_teardown(cc);
+	}
+}
+
+/*
+ * Resolves a registered server container's own management IP -- the same
+ * "look up the registry entry fresh, never cache" resolution
+ * ldap_effective_client_uri() already does. Returns 0 if the container
+ * isn't running or has no address yet, which is itself a real answer:
+ * a server that isn't up cannot be serving.
+ */
+static int serverhealth_resolve_ip(const char *container, char *out, size_t out_size)
+{
+	struct registry_entry *e = registry_find(container);
+	struct in_addr a;
+
+	if (e == NULL || !e->running || e->net_count == 0 || e->nets[0].ip_be == 0)
+		return 0;
+	a.s_addr = e->nets[0].ip_be;
+	return inet_ntop(AF_INET, &a, out, (socklen_t)out_size) != NULL;
+}
+
+/*
+ * Starts one non-blocking TCP probe. The connect() is expected to return
+ * EINPROGRESS; the verdict is taken later, when the reactor reports the
+ * socket writable (see handle_serverhealth_probe_event()). Nothing here
+ * ever blocks.
+ */
+static void serverhealth_start_tcp_probe(const char *kind, const char *container, const char *ip,
+                                          int port)
+{
+	struct sockaddr_in sa;
+	struct conn *cc;
+	struct kx_epoll_event ev;
+	char desc[SERVERHEALTH_PROBE_MAX];
+	int fd;
+
+	snprintf(desc, sizeof(desc), "tcp:%d", port);
+	fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+	if (fd < 0) {
+		serverhealth_record_result(kind, container, desc, 0, "socket() failed");
+		return;
+	}
+	memset(&sa, 0, sizeof(sa));
+	sa.sin_family = AF_INET;
+	sa.sin_port = htons((uint16_t)port);
+	if (inet_pton(AF_INET, ip, &sa.sin_addr) != 1) {
+		close(fd);
+		serverhealth_record_result(kind, container, desc, 0, "bad server address");
+		return;
+	}
+	if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0 && errno != EINPROGRESS) {
+		char err[SERVERHEALTH_ERROR_MAX];
+
+		snprintf(err, sizeof(err), "connect: %s", strerror(errno));
+		close(fd);
+		serverhealth_record_result(kind, container, desc, 0, err);
+		return;
+	}
+	cc = malloc(sizeof(*cc));
+	if (cc == NULL) {
+		close(fd);
+		return;
+	}
+	memset(cc, 0, sizeof(*cc));
+	cc->kind = CONN_SERVERHEALTH_PROBE;
+	cc->fd = fd;
+	snprintf(cc->probe_kind, sizeof(cc->probe_kind), "%s", kind);
+	snprintf(cc->probe_container, sizeof(cc->probe_container), "%s", container);
+	snprintf(cc->probe_desc, sizeof(cc->probe_desc), "%s", desc);
+	cc->probe_started_at = time(NULL);
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLOUT;
+	ev.data.ptr = cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+		close(fd);
+		free(cc);
+		serverhealth_record_result(kind, container, desc, 0, "epoll registration failed");
+		return;
+	}
+	serverhealth_inflight_add(cc);
+}
+
+/* One sweep: every registered server of every kind, probed once. */
+static void serverhealth_sweep(void)
+{
+	size_t k;
+
+	serverhealth_reap_stale_probes();
+
+	for (k = 0; k < sizeof(g_serverhealth_kinds) / sizeof(g_serverhealth_kinds[0]); k++) {
+		const struct serverhealth_kind_spec *spec = &g_serverhealth_kinds[k];
+		char names[SERVERHEALTH_MAX][REGISTRY_NAME_MAX];
+		int count = spec->list(names, SERVERHEALTH_MAX);
+		int i;
+
+		for (i = 0; i < count; i++) {
+			char ip[INET_ADDRSTRLEN];
+
+			if (!serverhealth_resolve_ip(names[i], ip, sizeof(ip))) {
+				serverhealth_record_result(spec->kind, names[i],
+				                            spec->port > 0 ? "tcp" : "process", 0,
+				                            "container is not running, or has no address");
+				continue;
+			}
+			if (spec->port == 0) {
+				/* UDP service: the honest check available without
+				 * speaking its protocol is that its container is
+				 * genuinely up, and the record says exactly that. */
+				serverhealth_record_result(spec->kind, names[i], "process", 1, NULL);
+				continue;
+			}
+			serverhealth_start_tcp_probe(spec->kind, names[i], ip, spec->port);
+		}
+	}
+}
+
+static void arm_serverhealth_timer(void)
+{
+	struct itimerspec its;
+
+	if (g_serverhealth_timer_conn.fd < 0)
+		return;
+	memset(&its, 0, sizeof(its));
+	its.it_value.tv_sec = SERVERHEALTH_SWEEP_SECONDS;
+	if (timerfd_settime(g_serverhealth_timer_conn.fd, 0, &its, NULL) != 0)
+		perror("timerfd_settime (server health sweep re-arm)");
+}
+
+/* Best-effort, same posture as every other periodic timer here: failing
+ * to create it means no automatic probing, never a failed startup. */
+static void start_serverhealth_timer(void)
+{
+	struct kx_epoll_event ev;
+	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+
+	g_serverhealth_timer_conn.fd = -1;
+	if (fd < 0) {
+		perror("timerfd_create (server health)");
+		return;
+	}
+	g_serverhealth_timer_conn.kind = CONN_SERVERHEALTH_TIMER;
+	g_serverhealth_timer_conn.fd = fd;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = &g_serverhealth_timer_conn;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+		close(fd);
+		g_serverhealth_timer_conn.fd = -1;
+		return;
+	}
+	arm_serverhealth_timer();
+}
+
+/*
+ * The probe socket became writable: SO_ERROR carries the real verdict.
+ * 0 means the server accepted a connection -- a genuine service check,
+ * not a guess. ECONNREFUSED and friends mean it is listening on nothing,
+ * which is exactly the "registered but not serving" state this whole
+ * mechanism exists to surface.
+ */
+static void handle_serverhealth_probe_event(struct conn *cc)
+{
+	int soerr = 0;
+	socklen_t len = sizeof(soerr);
+
+	if (getsockopt(cc->fd, SOL_SOCKET, SO_ERROR, &soerr, &len) != 0)
+		soerr = errno;
+	if (soerr == 0) {
+		serverhealth_record_result(cc->probe_kind, cc->probe_container, cc->probe_desc, 1, NULL);
+	} else {
+		char err[SERVERHEALTH_ERROR_MAX];
+
+		snprintf(err, sizeof(err), "connect: %s", strerror(soerr));
+		serverhealth_record_result(cc->probe_kind, cc->probe_container, cc->probe_desc, 0, err);
+	}
+	serverhealth_probe_teardown(cc);
+}
+
 static void start_ntp_periodic_timer(void)
 {
 	struct kx_epoll_event ev;
@@ -5749,6 +6064,64 @@ static void handle_system_stats(int fd)
 /* GET/DELETE /v1/system/processes (logging/web-UI epic Part 6,
  * ADR-0131): a real, direct /proc scan of every process on the box,
  * correlated to a container by hostproc.c's own ppid-chain walk. */
+/*
+ * GET /v1/system/server-health (issue #81) -- every registered server of
+ * every kind, with its live health, whether it is in service, and how it
+ * was probed.
+ */
+static void handle_serverhealth_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "servers");
+	serverhealth_write_json_list(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * PUT /v1/system/server-health/{kind}/{container} -- the operator drain
+ * override: {"drained": true|false}. Deliberately separate from the
+ * probe's own verdict: draining is an intent ("I am doing maintenance
+ * on this one"), which is why it is the one part of a health record that
+ * is persisted across a daemon restart.
+ */
+static void handle_serverhealth_set(int fd, const char *kind, const char *container,
+                                     const char *body, size_t body_len)
+{
+	struct json_value *root = json_parse(body, body_len);
+	const struct json_value *jdrained;
+	struct json_writer w;
+
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	jdrained = json_object_get(root, "drained");
+	if (jdrained == NULL || jdrained->type != JSON_BOOL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "drained (boolean) is required");
+		return;
+	}
+	if (serverhealth_set_drained(kind, container, jdrained->u.boolean) != 0) {
+		json_free(root);
+		respond_error(fd, 500, "Internal Server Error", "could not record the drain state");
+		return;
+	}
+	json_free(root);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "servers");
+	serverhealth_write_json_list(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_hostproc_list(int fd)
 {
 	struct json_writer w;
@@ -7670,6 +8043,7 @@ static void finalize_state_storage_migration(void)
 	ldap_repoint(LDAP_SERVERS_STATE_PATH);
 	ldap_record_repoint(LDAP_USERS_STATE_PATH, LDAP_GROUPS_STATE_PATH);
 	ldap_config_repoint(LDAP_CONFIG_STATE_PATH);
+	serverhealth_repoint(SERVERHEALTH_STATE_PATH);
 	pki_repoint(PKI_DIR, PKI_CERTS_STATE_PATH);
 	containerdef_repoint(CONTAINER_DEFS_STATE_PATH);
 	containerdef_rolling_config_repoint(ROLLING_CONFIG_PATH);
@@ -8345,11 +8719,27 @@ static int stage_container_file(const char *upperdir, const char *path, const ch
  * is skipped -- a best-effort list of the live ones, same posture DNS
  * server delivery already takes.
  */
+/*
+ * The LDAP URI list handed to client containers. Built from the live IPs
+ * of registered LDAP servers when no explicit client_uri is configured.
+ *
+ * Issue #81: servers that are drained or confirmed unhealthy are dropped
+ * -- the direct fix for #80's shape, where a registered-but-not-serving
+ * pair silently broke every login. Two deliberate safety rules keep that
+ * filtering from ever becoming its own outage:
+ *   - a never-yet-probed server counts as in service, so turning health
+ *     tracking on can't black-hole a working deployment during the very
+ *     first sweep;
+ *   - if filtering would leave NOTHING, the unfiltered list is used
+ *     instead. Handing a client a server that might be down is strictly
+ *     better than handing it nothing at all -- the client retries, and
+ *     an empty URI list would turn a partial outage into a total one.
+ */
 static int ldap_effective_client_uri(char *out, size_t out_size)
 {
 	const struct ldap_config *lc = ldap_config_get();
 	char names[LDAP_SERVER_MAX][LDAP_SERVER_NAME_MAX];
-	int count, i;
+	int count, i, pass;
 	size_t off = 0;
 
 	if (lc->client_uri[0] != '\0') {
@@ -8357,22 +8747,29 @@ static int ldap_effective_client_uri(char *out, size_t out_size)
 		return 1;
 	}
 	count = ldap_server_list_containers(names, LDAP_SERVER_MAX);
-	out[0] = '\0';
-	for (i = 0; i < count; i++) {
-		struct registry_entry *se = registry_find(names[i]);
-		struct in_addr a;
-		char ipbuf[INET_ADDRSTRLEN];
-		int written;
 
-		if (se == NULL || se->net_count == 0 || se->nets[0].ip_be == 0)
-			continue;
-		a.s_addr = se->nets[0].ip_be;
-		if (inet_ntop(AF_INET, &a, ipbuf, sizeof(ipbuf)) == NULL)
-			continue;
-		written = snprintf(out + off, out_size - off, "%sldap://%s:%d/",
-		                    off > 0 ? " " : "", ipbuf, HOSTAUTH_LDAP_DEFAULT_PORT);
-		if (written > 0 && (size_t)written < out_size - off)
-			off += (size_t)written;
+	/* pass 0: in-service servers only. pass 1 (only if that produced an
+	 * empty list): every reachable server, health ignored. */
+	for (pass = 0; pass < 2 && off == 0; pass++) {
+		out[0] = '\0';
+		for (i = 0; i < count; i++) {
+			struct registry_entry *se = registry_find(names[i]);
+			struct in_addr a;
+			char ipbuf[INET_ADDRSTRLEN];
+			int written;
+
+			if (se == NULL || se->net_count == 0 || se->nets[0].ip_be == 0)
+				continue;
+			if (pass == 0 && !serverhealth_in_service("ldap", names[i]))
+				continue;
+			a.s_addr = se->nets[0].ip_be;
+			if (inet_ntop(AF_INET, &a, ipbuf, sizeof(ipbuf)) == NULL)
+				continue;
+			written = snprintf(out + off, out_size - off, "%sldap://%s:%d/",
+			                    off > 0 ? " " : "", ipbuf, HOSTAUTH_LDAP_DEFAULT_PORT);
+			if (written > 0 && (size_t)written < out_size - off)
+				off += (size_t)written;
+		}
 	}
 	return off > 0;
 }
@@ -9983,6 +10380,7 @@ static void handle_delete(int fd, const char *name)
 		pki_cert_forget_owner(name);
 		ntp_server_forget(name);
 		syslogfwd_target_forget(name);
+		serverhealth_forget(name); /* issue #81 -- no health record for a gone container */
 		containerdef_remove(name);
 		registry_begin_kill(e, REGISTRY_TEARDOWN_DELETE);
 		http_set_blocking(fd);
@@ -10003,6 +10401,7 @@ static void handle_delete(int fd, const char *name)
 			pki_cert_forget_owner(name);
 			ntp_server_forget(name);
 			syslogfwd_target_forget(name);
+			serverhealth_forget(name); /* issue #81 */
 			containerdef_remove(name);
 			e->teardown_kind = REGISTRY_TEARDOWN_DELETE;
 		}
@@ -10143,6 +10542,7 @@ static void handle_delete(int fd, const char *name)
 	pki_cert_forget_owner(name);
 	ntp_server_forget(name);
 	syslogfwd_target_forget(name);
+	serverhealth_forget(name); /* issue #81 */
 
 	/*
 	 * Unconditional, a no-op if this name never had a restart:"always"
@@ -16279,6 +16679,29 @@ static void dispatch(int fd, const struct http_request *req)
 			return;
 		}
 	}
+	if (strcmp(req->path, "/v1/system/server-health") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_serverhealth_list(fd);
+			return;
+		}
+	}
+	if (strncmp(req->path, "/v1/system/server-health/", 25) == 0) {
+		/* .../{kind}/{container} -- split on the one separating slash. */
+		const char *rest = req->path + 25;
+		const char *slash = strchr(rest, '/');
+
+		if (slash != NULL && slash[1] != '\0' && strcmp(req->method, "PUT") == 0) {
+			char kindbuf[SERVERHEALTH_KIND_MAX];
+			size_t klen = (size_t)(slash - rest);
+
+			if (klen > 0 && klen < sizeof(kindbuf)) {
+				memcpy(kindbuf, rest, klen);
+				kindbuf[klen] = '\0';
+				handle_serverhealth_set(fd, kindbuf, slash + 1, req->body, req->body_len);
+				return;
+			}
+		}
+	}
 	if (strcmp(req->path, "/v1/system/processes") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_hostproc_list(fd);
@@ -19607,6 +20030,9 @@ int main(int argc, char **argv)
 		return 1;
 	if (boot_subsystem_init(init_mode, "subid", subid_init(SUBID_STATE_PATH)) != 0)
 		return 1;
+	if (boot_subsystem_init(init_mode, "serverhealth",
+	                         serverhealth_init(SERVERHEALTH_STATE_PATH)) != 0)
+		return 1;
 	if (boot_subsystem_init(init_mode, "ldap_config", ldap_config_init(LDAP_CONFIG_STATE_PATH)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "pki", pki_init(PKI_DIR, PKI_CERTS_STATE_PATH)) != 0)
@@ -19773,6 +20199,7 @@ int main(int argc, char **argv)
 	start_uevent_watch(); /* ADR-0161 Phase C -- same g_epfd/best-effort posture as start_kmsg_watch() */
 	start_ntp_periodic_timer(); /* same g_epfd/best-effort posture, task #751 */
 	start_pkg_sync_periodic_timer(); /* same posture, ADR-0121 -- no-op until an interval is configured */
+	start_serverhealth_timer(); /* issue #81 -- probes every registered server on an interval */
 	start_backup_periodic_timer(); /* same posture, ADR-0141 Phase 5 -- no-op until enabled+interval configured */
 	fflush(stdout);
 
@@ -19870,6 +20297,18 @@ int main(int argc, char **argv)
 				handle_pkg_sync_periodic_timer_event(cc);
 			else if (cc->kind == CONN_BACKUP_PERIODIC_TIMER)
 				handle_backup_periodic_timer_event(cc);
+			else if (cc->kind == CONN_SERVERHEALTH_TIMER) {
+				uint64_t ticks;
+
+				/* Drain the timerfd, sweep, re-arm -- the same
+				 * self-re-arming shape every other periodic timer
+				 * here uses (issue #81). */
+				if (read(cc->fd, &ticks, sizeof(ticks)) != (ssize_t)sizeof(ticks))
+					; /* a short read just means no tick to act on */
+				serverhealth_sweep();
+				arm_serverhealth_timer();
+			} else if (cc->kind == CONN_SERVERHEALTH_PROBE)
+				handle_serverhealth_probe_event(cc);
 			else if (cc->kind == CONN_IMAGE_RECIPE_FETCH)
 				handle_image_recipe_fetch_event(cc);
 			else if (cc->kind == CONN_DISK_FORMAT)

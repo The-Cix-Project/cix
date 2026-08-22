@@ -151,6 +151,18 @@ void syslogfwd_target_forget(const char *container_name)
 	}
 }
 
+/* Issue #81: uniform enumerator, see dns_server_list_containers(). */
+int syslogfwd_target_list_containers(char out[][SYSLOG_TARGET_NAME_MAX], int max)
+{
+	int i, n = 0;
+
+	for (i = 0; i < SYSLOG_TARGET_MAX && n < max; i++) {
+		if (g_targets[i][0] != '\0')
+			snprintf(out[n++], SYSLOG_TARGET_NAME_MAX, "%s", g_targets[i]);
+	}
+	return n;
+}
+
 void syslogfwd_target_write_json_list(struct json_writer *w)
 {
 	int i;
