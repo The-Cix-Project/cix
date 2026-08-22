@@ -13164,9 +13164,18 @@ static void respond_diskpart_error(int fd, enum diskpart_error err)
 	case DISKPART_ERR_INVALID_SIZE:
 		respond_error(fd, 400, "Bad Request", "invalid size_mib");
 		break;
+	case DISKPART_ERR_SFDISK_MISSING:
+		respond_error(fd, 500, "Internal Server Error",
+		              "sfdisk is not installed on this host -- partitioning needs "
+		              "/usr/sbin/sfdisk, which this control-plane image does not carry. "
+		              "Update to an image built after this was fixed.");
+		break;
 	case DISKPART_ERR_SFDISK_FAILED:
 	default:
-		respond_error(fd, 500, "Internal Server Error", "sfdisk failed");
+		respond_error(fd, 500, "Internal Server Error",
+		              "sfdisk ran and rejected the request -- the disk may already have the "
+		              "partition table or layout being asked for, or there is not enough free "
+		              "space left on it for the requested size");
 		break;
 	}
 }

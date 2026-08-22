@@ -361,6 +361,21 @@ int main(int argc, char **argv)
 			 * "mkfs.ext4" name).
 			 */
 			{ "/usr/sbin/mkfs.ext4", "usr/sbin/mkfs.ext4" },
+			/*
+			 * sfdisk -- DISKPART_SFDISK_BIN, daemon/src/diskpart.c
+			 * (partition-level disk management, ADR-0158). This was
+			 * missing from the moment that feature shipped, which is
+			 * exactly why it was never verified on real hardware: the
+			 * code was correct, the binary simply was not there, so the
+			 * very first real POST /disks/{name}/partition-table on an
+			 * installed host could only ever fail. Easy to miss because
+			 * thinc-install.c drives the same sfdisk at install time and
+			 * works fine -- the installer runs from the ISO, which has a
+			 * full environment; the daemon on the installed host does
+			 * not. Same "this build sandbox's own rich /usr made the gap
+			 * invisible" pattern ADR-0023 names for libtinfo.
+			 */
+			{ "/usr/sbin/sfdisk", "usr/sbin/sfdisk" },
 		};
 		static const char *const shelled_bin_libs[] = {
 			/* openssl */
@@ -432,6 +447,14 @@ int main(int argc, char **argv)
 			"/lib/x86_64-linux-gnu/libblkid.so.1",
 			"/lib/x86_64-linux-gnu/libuuid.so.1",
 			"/lib/x86_64-linux-gnu/libe2p.so.2",
+			/* sfdisk -- libtinfo.so.6/libuuid.so.1/libblkid.so.1 are
+			 * already staged above (curl/mke2fs), so only these three
+			 * are new. libreadline is pulled in by libfdisk's own
+			 * interactive-prompt support, which nothing here uses, but
+			 * the dynamic linker resolves it at load time regardless. */
+			"/lib/x86_64-linux-gnu/libfdisk.so.1",
+			"/lib/x86_64-linux-gnu/libsmartcols.so.1",
+			"/lib/x86_64-linux-gnu/libreadline.so.8",
 		};
 		size_t i;
 
