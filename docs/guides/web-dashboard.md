@@ -27,7 +27,7 @@ The header's five topics are the tree's five top-level names, in the tree's own 
 [thinC]   Containers   Networks   Disks   Services   System
 ```
 
-The two surfaces answer different questions -- **the tree is where you go to look at something, the menu bar is where you go to make one** -- and the rule tying them together is that whatever branch a thing lives under is the menu that creates it. A new volume is created from **Disks**, because that is where volumes appear in the tree (under the device actually holding them). An LDAP user is created from **Services**, under an `LDAP` heading matching that branch's own leaf.
+The two surfaces answer different questions ([ADR-0184](../adr/0184-dashboard-navigation-one-vocabulary.md)) -- **the tree is where you go to look at something, the menu bar is where you go to make one** -- and the rule tying them together is that whatever branch a thing lives under is the menu that creates it. A new volume is created from **Disks**, because that is where volumes appear in the tree (under the device actually holding them). An LDAP user is created from **Services**, under an `LDAP` heading matching that branch's own leaf.
 
 The two menus with more than one branch under them carry sub-headings, one per child of that branch in the tree, in the same order:
 
