@@ -1041,6 +1041,7 @@
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="cat-recipes">Recipes</button>
 				<button type="button" class="tab-button" data-tab="cat-repo">Repo &amp; Sync</button>
+				<button type="button" class="tab-button" data-tab="cat-reconcile">Reconcile</button>
 				<button type="button" class="tab-button" data-tab="cat-images">Images</button>
 				<button type="button" class="tab-button" data-tab="cat-packages">Packages</button>
 				<button type="button" class="tab-button" data-tab="cat-cache">Cache &amp; Artifacts</button>
@@ -1167,6 +1168,21 @@
 			<div id="pkg-sync-status-box" class="pki-ca-status"></div>
 			<button type="button" id="pkg-sync-now">Sync now</button>
 		</div>
+			<div class="tab-panel" data-tab="cat-reconcile" hidden>
+				<div class="view-list">
+					<h2>Declared vs installed</h2>
+					<p class="hint">What has a recipe, against what is actually here. The row that matters is
+						<strong>installed with no recipe</strong>: it cannot be rebuilt from source control,
+						which on a platform whose premise is "reproducible from source" is exactly the state
+						worth seeing. Either capture a recipe for it, or it is debris. The reverse &mdash; a
+						recipe nobody has applied &mdash; is harmless but worth knowing.</p>
+					<p class="hint" id="sw-summary"></p>
+					<table id="sw-table">
+						<thead><tr><th>Name</th><th>Kind</th><th>Recipe</th><th>Installed</th></tr></thead>
+						<tbody id="sw-body"></tbody>
+					</table>
+				</div>
+			</div>
 			<div class="tab-panel" data-tab="cat-images" hidden>
 			<div class="view-list">
 				<h2>Images</h2>

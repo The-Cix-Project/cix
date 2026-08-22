@@ -505,6 +505,65 @@ int main(void)
 	      "GET removed recipe is 404");
 	kx_response_free(&r);
 
+	/*
+	 * Issue #97: the declared-vs-installed reconciliation. What matters
+	 * is that it tells the three states apart -- "installed with no
+	 * recipe" especially, since that one is invisible everywhere else
+	 * and means the thing cannot be rebuilt from source control. Found
+	 * live: 11 images on the real box, 8 recipes, and two of the three
+	 * orphans were debris nobody had noticed.
+	 *
+	 * Both states are created here rather than assumed from whatever
+	 * else this test happens to have left lying around.
+	 */
+	{
+		int saw_orphan = 0, saw_unapplied = 0;
+		size_t k;
+
+		/* An image with no recipe. */
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "POST", "/v1/images", "{\"name\":\"recon-orphan\"}", &r);
+		kx_response_free(&r);
+
+		/* A recipe nobody has applied. */
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "POST", "/v1/images/recipes",
+		                   "{\"name\":\"recon-unapplied\",\"content\":\"image_name=\\\"recon-unapplied\\\""
+		                   "\\nimage_packages=\\\"tcc:rolling:0.9.27\\\"\\n\"}",
+		                   &r);
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		CHECK(kx_client_request(&client, "GET", "/v1/software", NULL, &r) == 0 && r.status == 200,
+		      "GET /v1/software reconciles declared against installed");
+		{
+			const struct json_value *list = json_object_get(r.json, "software");
+
+			if (list != NULL && list->type == JSON_ARRAY) {
+				for (k = 0; k < list->u.array.count; k++) {
+					const struct json_value *e = list->u.array.items[k];
+					const char *nm = json_as_string(json_object_get(e, "name"));
+					const struct json_value *de = json_object_get(e, "declared");
+					const struct json_value *in = json_object_get(e, "installed");
+					int d = de != NULL && de->type == JSON_BOOL && de->u.boolean;
+					int i2 = in != NULL && in->type == JSON_BOOL && in->u.boolean;
+
+					if (nm == NULL)
+						continue;
+					if (strcmp(nm, "recon-orphan") == 0 && !d && i2)
+						saw_orphan = 1;
+					if (strcmp(nm, "recon-unapplied") == 0 && d && !i2)
+						saw_unapplied = 1;
+				}
+			}
+		}
+		kx_response_free(&r);
+		CHECK(saw_orphan, "an image with no recipe is reported as installed-but-not-declared -- the "
+		                  "state that means it cannot be rebuilt from source control");
+		CHECK(saw_unapplied, "a recipe nobody has applied is reported as declared-but-not-installed");
+	}
+
+
 	stop_http_server(http_pid);
 	CHECK(stop_daemon(daemon_pid) == 0, "daemon shut down cleanly");
 	run_cmd("rm -rf '%s'", scratch_dir);

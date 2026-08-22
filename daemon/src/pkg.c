@@ -6226,3 +6226,94 @@ void pkg_image_recipe_apply_write_json_status(struct json_writer *w)
 		jw_null(w);
 	jw_obj_close(w);
 }
+
+/*
+ * Name-only enumerations, for reconciling what is DECLARED against what
+ * is actually INSTALLED (issue #97).
+ *
+ * The write_json_list() functions above already walk exactly these
+ * directories, but they emit JSON rather than returning names, and the
+ * reconciliation needs the names to compare. Kept next to the writers
+ * so the two can never disagree about what counts as a recipe.
+ */
+static int recipe_dir_names(const char *dir, char names[][PKG_IMAGE_NAME_MAX], int max)
+{
+	DIR *d = opendir(dir);
+	struct dirent *de;
+	int count = 0;
+
+	if (d == NULL)
+		return 0;
+	while ((de = readdir(d)) != NULL && count < max) {
+		size_t nlen = strlen(de->d_name);
+		size_t copy_len;
+
+		if (de->d_name[0] == '.' || nlen <= 7 || strcmp(de->d_name + nlen - 7, ".recipe") != 0)
+			continue;
+		copy_len = nlen - 7;
+		if (copy_len >= PKG_IMAGE_NAME_MAX)
+			copy_len = PKG_IMAGE_NAME_MAX - 1;
+		memcpy(names[count], de->d_name, copy_len);
+		names[count][copy_len] = '\0';
+		count++;
+	}
+	closedir(d);
+	return count;
+}
+
+int image_recipe_list_names(char names[][PKG_IMAGE_NAME_MAX], int max)
+{
+	return recipe_dir_names(g_image_recipes_dir, names, max);
+}
+
+int container_recipe_list_names(char names[][PKG_IMAGE_NAME_MAX], int max)
+{
+	return recipe_dir_names(g_container_recipes_dir, names, max);
+}
+
+/*
+ * Package recipes are stored per-name-per-version (ADR-0107), so the
+ * directory walk is one level shallower than the version dirs: each
+ * entry under the recipes root IS a package name.
+ */
+int pkg_recipe_list_names(char names[][PKG_IMAGE_NAME_MAX], int max)
+{
+	DIR *d = opendir(g_recipes_dir);
+	struct dirent *de;
+	int count = 0;
+
+	if (d == NULL)
+		return 0;
+	while ((de = readdir(d)) != NULL && count < max) {
+		if (de->d_name[0] == '.')
+			continue;
+		snprintf(names[count], PKG_IMAGE_NAME_MAX, "%s", de->d_name);
+		count++;
+	}
+	closedir(d);
+	return count;
+}
+
+/*
+ * Installed package names, de-duplicated: the same package installed
+ * into three images is one piece of software, not three.
+ */
+int pkg_installed_list_names(char names[][PKG_IMAGE_NAME_MAX], int max)
+{
+	int count = 0;
+	int i, k;
+
+	for (i = 0; i < PKG_MAX_PACKAGES && count < max; i++) {
+		if (!g_packages[i].in_use || g_packages[i].state != PKG_STATE_INSTALLED)
+			continue;
+		for (k = 0; k < count; k++) {
+			if (strcmp(names[k], g_packages[i].name) == 0)
+				break;
+		}
+		if (k < count)
+			continue;
+		snprintf(names[count], PKG_IMAGE_NAME_MAX, "%s", g_packages[i].name);
+		count++;
+	}
+	return count;
+}

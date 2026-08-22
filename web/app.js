@@ -1109,6 +1109,7 @@ function renderCurrentView() {
 			);
 			renderImages(cache.images);
 			renderPackagesView(null);
+			refreshSoftwareReconcile();
 			renderRecipesList();
 			renderImageRecipesTable();
 			renderContainerRecipesTable();
@@ -8459,6 +8460,72 @@ async function deleteVolumeByName(name) {
 	} catch (e) {
 		showStatus("Failed to delete volume: " + e.message, true);
 	}
+}
+
+/*
+ * Issue #97: declared against installed. Computed by the daemon, not
+ * joined here -- two clients each implementing this join across four
+ * endpoints is how they drift from each other.
+ */
+async function refreshSoftwareReconcile() {
+	const body = document.getElementById("sw-body");
+	const summary = document.getElementById("sw-summary");
+	let list;
+
+	try {
+		const data = await apiRequest("GET", "/v1/software");
+
+		list = data.software || [];
+	} catch (e) {
+		summary.textContent = "Could not read: " + e.message;
+		return;
+	}
+	body.textContent = "";
+	let drift = 0;
+
+	for (const item of list) {
+		const row = document.createElement("tr");
+		const recipeCell = document.createElement("td");
+		const instCell = document.createElement("td");
+
+		for (const text of [item.name, item.kind]) {
+			const td = document.createElement("td");
+
+			td.textContent = text;
+			row.appendChild(td);
+		}
+		if (item.declared) {
+			recipeCell.textContent = "yes";
+		} else {
+			/* The one state that is a problem rather than information:
+			 * flagged, not just left blank. */
+			const badge = document.createElement("span");
+
+			badge.className = "badge badge-error";
+			badge.textContent = "none";
+			badge.title = "Cannot be rebuilt from source control";
+			recipeCell.appendChild(badge);
+			drift++;
+		}
+		instCell.textContent = item.installed ? "yes" : "no";
+		row.appendChild(recipeCell);
+		row.appendChild(instCell);
+		body.appendChild(row);
+	}
+	if (list.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 4;
+		cell.className = "empty";
+		cell.textContent = "Nothing to reconcile";
+		row.appendChild(cell);
+		body.appendChild(row);
+	}
+	summary.textContent =
+		drift === 0
+			? "Everything installed has a recipe."
+			: drift + " item(s) installed with no recipe — either capture one, or they are debris.";
 }
 
 /* ---- Issue #96: volume content snapshots ---- */
