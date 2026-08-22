@@ -213,6 +213,29 @@ int main(void)
 	check(wait_exited(&client, "cwrite", out, sizeof(out)) == 0, "writer container exited");
 	check(strstr(out, "WROTE") != NULL, "writer actually wrote into the mounted volume");
 
+	/* 4b. the volume must be visible on the read-back. A field the API
+	 * accepts and then never echoes is unverifiable from the outside --
+	 * exactly the write-only gap Part 163 had to close for the resource
+	 * limits, and the reason this assertion exists at all. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET", "/v1/containers/cwrite", NULL, &r) == 0 &&
+	    r.status == 200) {
+		const struct json_value *jv = json_object_get(r.json, "volumes");
+		const char *vn = NULL;
+		const char *vp = NULL;
+
+		if (jv != NULL && jv->type == JSON_ARRAY && jv->u.array.count == 1) {
+			vn = json_as_string(json_object_get(jv->u.array.items[0], "name"));
+			vp = json_as_string(json_object_get(jv->u.array.items[0], "path"));
+		}
+		check(vn != NULL && strcmp(vn, "vol1") == 0 && vp != NULL &&
+		          strcmp(vp, "/vol") == 0,
+		      "GET /containers/{name} echoes the volume back (name and path)");
+	} else {
+		check(0, "GET /containers/{name} echoes the volume back (name and path)");
+	}
+	kx_response_free(&r);
+
 	/* 5. THE POINT: delete the container entirely, then read the data
 	 * back from a DIFFERENT container mounting the same volume. */
 	memset(&r, 0, sizeof(r));

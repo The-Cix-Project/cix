@@ -236,6 +236,50 @@ int containerdef_resolve_order(char out_order[][REGISTRY_NAME_MAX])
 	return count;
 }
 
+/*
+ * Issue #88: echo a definition's own declared volumes back out.
+ *
+ * Sourced from the persisted request body rather than mirrored onto
+ * either struct, for the same reason "image" already is: the body IS
+ * the definition, and a second copy of a field is a second thing that
+ * can disagree with it. Shared by both readers -- registry.c for a live
+ * container and write_stopped_def_json_one() below for a stopped one --
+ * so the two can never drift into rendering the same field differently.
+ *
+ * `root` is the caller's already-parsed body (NULL is fine, and simply
+ * writes an empty array) so neither caller pays for a second parse of a
+ * body it has already parsed.
+ */
+void containerdef_write_json_volumes(const struct json_value *root, struct json_writer *w)
+{
+	const struct json_value *jvols;
+	int i;
+
+	jw_key(w, "volumes");
+	jw_arr_open(w);
+	jvols = root != NULL ? json_object_get(root, "volumes") : NULL;
+	if (jvols != NULL && jvols->type == JSON_ARRAY) {
+		for (i = 0; i < jvols->u.array.count; i++) {
+			const struct json_value *item = jvols->u.array.items[i];
+			const char *name = json_as_string(json_object_get(item, "name"));
+			const char *path = json_as_string(json_object_get(item, "path"));
+			const struct json_value *jro = json_object_get(item, "read_only");
+
+			if (name == NULL || path == NULL)
+				continue;
+			jw_obj_open(w);
+			jw_key(w, "name");
+			jw_str(w, name);
+			jw_key(w, "path");
+			jw_str(w, path);
+			jw_key(w, "read_only");
+			jw_bool(w, jro != NULL && jro->type == JSON_BOOL && jro->u.boolean);
+			jw_obj_close(w);
+		}
+	}
+	jw_arr_close(w);
+}
+
 static void write_stopped_def_json_one(struct container_def *d, struct json_writer *w)
 {
 	struct json_value *root;
@@ -294,6 +338,7 @@ static void write_stopped_def_json_one(struct container_def *d, struct json_writ
 		}
 	}
 	jw_arr_close(w);
+	containerdef_write_json_volumes(root, w);
 	jw_key(w, "restart");
 	jw_str(w, d->restart_policy);
 	jw_key(w, "restart_delay_seconds");
