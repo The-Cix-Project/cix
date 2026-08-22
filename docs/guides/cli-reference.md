@@ -164,6 +164,7 @@ Storage whose lifetime is independent of any container using it — deleting a c
 |---|---|
 | `volume create --name=NAME [--disk=DISK]` | Create a volume; `--disk=` places it by the same disk-role naming a container's own `--disk=` uses, omitted means default OS-disk placement |
 | `volume ls` / `volume show NAME` | List / inspect one (disk, resolved host path, creation time) |
+| `volume migrate NAME [--disk=DISK]` | Move its data to another disk or partition; omit `--disk` to move it back to the default OS-disk placement. Refused while a container mounting it is running |
 | `volume rm NAME` | **Deletes the volume's data**, permanently — refused while any container *definition* references it (the error names which one) |
 
 Attach or detach one on a container that already exists:

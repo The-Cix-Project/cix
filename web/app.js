@@ -970,8 +970,6 @@ const CATEGORY_VIEWS = {
 	"pki-certs": "view-pki-certs",
 	packages: "view-packages",
 	recipes: "view-recipes",
-	"pkg-repo": "view-pkg-repo",
-	"pkg-cache": "view-pkg-cache",
 	site: "view-site",
 	"daemon-config": "view-daemon-config",
 	"host-swap": "view-host-swap",
@@ -986,6 +984,11 @@ const CATEGORY_VIEWS = {
 	kmsg: "view-kmsg",
 	"server-health": "view-server-health",
 	volumes: "view-volumes",
+	/* Repo & Sync and Cache & Artifacts became tabs on the Catalogue
+	 * page. Their old addresses still resolve to it (with the right tab
+	 * showing) rather than 404-ing a bookmark someone already has. */
+	"pkg-repo": "view-recipes",
+	"pkg-cache": "view-recipes",
 	"storage-placement": "view-storage-placement",
 	backup: "view-backup",
 	update: "view-update",
@@ -994,10 +997,25 @@ const CATEGORY_VIEWS = {
 const DETAIL_VIEWS = {
 	containers: "view-container-detail",
 	disks: "view-disk-detail",
+	volumes: "view-volume-detail",
 	networks: "view-network-detail",
 	images: "view-image-detail",
 	packages: "view-package-detail",
 };
+
+/* Shows one of the Catalogue page's tabs. Used when a route lands on
+ * an address that used to be its own page (#pkg-repo, #pkg-cache). */
+function selectCatalogueTab(tabName) {
+	const view = document.getElementById("view-recipes");
+	const bar = view.querySelector(".tab-bar");
+
+	if (bar === null)
+		return;
+	for (const btn of bar.querySelectorAll(".tab-button"))
+		btn.classList.toggle("active", btn.dataset.tab === tabName);
+	for (const panel of view.querySelectorAll(":scope > .tab-panel"))
+		panel.hidden = panel.dataset.tab !== tabName;
+}
 
 function renderCurrentView() {
 	const route = parseHash();
@@ -1054,6 +1072,8 @@ function renderCurrentView() {
 			refreshKmsg();
 		else if (route.category === "server-health")
 			refreshServerHealth();
+		else if (route.category === "volumes" && route.name !== null)
+			renderVolumeDetail(route.name);
 		else if (route.category === "volumes")
 			refreshVolumes();
 		else if (route.category === "images" && route.name !== null)
@@ -1066,7 +1086,15 @@ function renderCurrentView() {
 			renderAllStoragePlacements();
 		else if (route.category === "packages")
 			renderPackagesView(route.name);
-		else if (route.category === "recipes") {
+		else if (route.category === "recipes" || route.category === "pkg-repo" ||
+		         route.category === "pkg-cache") {
+			selectCatalogueTab(
+				route.category === "pkg-repo"
+					? "cat-repo"
+					: route.category === "pkg-cache"
+					  ? "cat-cache"
+					  : "cat-recipes"
+			);
 			renderRecipesList();
 			renderImageRecipesTable();
 			renderContainerRecipesTable();
@@ -1508,49 +1536,6 @@ function renderTree() {
 			}))),
 		},
 		{
-			/* Aliases to its own first child's hash ("recipes", same as
-			 * Catalog's own address, same as Catalog's own first child
-			 * "Recipes"'s address) -- same convention every group here
-			 * uses, see System's own comment below for why this matters.
-			 *
-			 * Two groups, split along a real axis (issue #41): Catalog is
-			 * the declared source of truth and how it's distributed
-			 * (Recipes -- already has Package/Image/Container tabs with
-			 * inline apply/install actions per row -- plus how that
-			 * catalog gets synced and where its build cache lives);
-			 * Build & Deploy is live state -- what's actually installed/
-			 * running right now, and where new installs/builds are
-			 * triggered and tracked. Recipes used to sit alongside
-			 * Images/Packages under one "Catalog" label despite being a
-			 * fundamentally different kind of thing (declared vs. live),
-			 * and the old "Build Pipeline" label was a misnomer -- it was
-			 * always sync/cache, never building. */
-			label: "Software",
-			hash: "recipes",
-			icon: "recipes",
-			children: [
-				{
-					label: "Catalog",
-					hash: "recipes",
-					icon: "recipes",
-					children: [
-						{ label: "Recipes", hash: "recipes", icon: "recipes" },
-						{ label: "Repo & Sync", hash: "pkg-repo", icon: "recipes" },
-						{ label: "Cache & Artifacts", hash: "pkg-cache", icon: "recipes" },
-					],
-				},
-				{
-					label: "Build & Deploy",
-					hash: "images",
-					icon: "images",
-					children: [
-						{ label: "Images", hash: "images", icon: "images" },
-						{ label: "Packages", hash: "packages", icon: "packages" },
-					],
-				},
-			],
-		},
-		{
 			/* Aliases to its own FIRST child's hash ("pki-ca", same as
 			 * PKI's own address, same as PKI's own first child "Root CA"'s
 			 * address) -- matching the exact convention every other group
@@ -1566,9 +1551,31 @@ function renderTree() {
 			 * itself was merely an ancestor of whatever page was actually
 			 * showing, which looked exactly as random as it was. */
 			label: "System",
-			hash: "pki-ca",
+			hash: "recipes",
 			icon: "system",
 			children: [
+				{
+					/*
+					 * Software is part of the system, not a peer of it.
+					 * Catalogue is one destination rather than three
+					 * leaves -- Recipes, Repo & Sync and Cache &
+					 * Artifacts are one subject (what is declared, and
+					 * how it gets here), so splitting them across the
+					 * tree made you navigate to find out which of three
+					 * pages a thing was on. Part 195 split Catalog from
+					 * "Build & Deploy" at the time; that grouping did
+					 * not earn its keep -- with Catalogue collapsed it
+					 * was a folder holding exactly two leaves.
+					 */
+					label: "Software",
+					hash: "recipes",
+					icon: "recipes",
+					children: [
+						{ label: "Catalogue", hash: "recipes", icon: "recipes" },
+						{ label: "Images", hash: "images", icon: "images" },
+						{ label: "Packages", hash: "packages", icon: "packages" },
+					],
+				},
 				{
 					label: "PKI",
 					hash: "pki-ca",
@@ -2734,7 +2741,11 @@ for (const tabButton of document.querySelectorAll(".tab-bar .tab-button")) {
 
 		for (const btn of tabBar.querySelectorAll(".tab-button"))
 			btn.classList.toggle("active", btn === tabButton);
-		for (const panel of tabBar.parentElement.querySelectorAll(".tab-panel"))
+		/* Only this bar's OWN panels. querySelectorAll would also match
+		 * panels belonging to a nested tab bar further down, so an outer
+		 * tab click would hide the inner page's content -- which is
+		 * exactly what happens once one tabbed page contains another. */
+		for (const panel of tabBar.parentElement.querySelectorAll(":scope > .tab-panel"))
 			panel.hidden = panel.dataset.tab !== tabName;
 		if (tabName === "console")
 			document.getElementById("cd-console-output").focus();
@@ -8394,6 +8405,108 @@ async function deleteVolumeByName(name) {
 	}
 }
 
+/* ---- One volume's page ---- */
+
+let currentVolumeDetailName = null;
+
+/*
+ * Where a volume's data lives, who mounts it, and how to move it.
+ * Volumes were placed at create time and could never move afterwards,
+ * which for storage that deliberately outlives its containers is the
+ * wrong lifetime to fix at one moment.
+ */
+async function renderVolumeDetail(name) {
+	const title = document.getElementById("vd-title");
+	const fields = document.getElementById("vd-fields");
+	const note = document.getElementById("vd-migrate-note");
+	const select = document.getElementById("vd-target-disk");
+
+	currentVolumeDetailName = name;
+	await refreshVolumeCache();
+
+	const v = (cache.volumes || []).find((x) => x.name === name);
+
+	if (!v) {
+		title.textContent = name + " (not found)";
+		fields.textContent = "";
+		return;
+	}
+	title.textContent = v.name;
+
+	const holder = deviceHoldingVolume(v);
+	const users = (cache.containers || []).filter((c) =>
+		(c.volumes || []).some((m) => m.name === v.name)
+	);
+	const running = users.filter((c) => c.status === "running" || c.status === "paused");
+
+	fields.textContent = "";
+	fields.appendChild(fieldBlock("Placement", v.disk || "default OS-disk placement"));
+	fields.appendChild(fieldBlock("Held on", holder ? holder.name : "unknown"));
+	fields.appendChild(fieldBlock("Host path", v.host_path || "-"));
+	fields.appendChild(
+		fieldBlock(
+			"Mounted by",
+			users.length === 0
+				? "not currently mounted"
+				: users.map((c) => c.name + " at " + (c.volumes.find((m) => m.name === v.name) || {}).path).join(", ")
+		)
+	);
+	fields.appendChild(
+		fieldBlock("Created", v.created_at ? new Date(v.created_at * 1000).toLocaleString() : "-")
+	);
+
+	/* Only devices that could actually hold it: mounted, and not the
+	 * one it is already on. Offering anything else would be offering a
+	 * choice the daemon is going to refuse. */
+	select.textContent = "";
+	const def = document.createElement("option");
+
+	def.value = "";
+	def.textContent = "(default OS-disk placement)";
+	select.appendChild(def);
+	for (const d of cache.disks) {
+		if (!d.mounted || d.is_os_disk)
+			continue;
+		const opt = document.createElement("option");
+
+		opt.value = d.name;
+		opt.textContent = d.name + " (" + d.mount_path + ")";
+		select.appendChild(opt);
+	}
+	select.value = v.disk || "";
+
+	note.textContent =
+		running.length > 0
+			? "Cannot move it right now: " + running.map((c) => c.name).join(", ") + " is running and has it mounted. Stop it first."
+			: select.options.length === 1
+			  ? "No other mounted disk is available to move it to. Give a disk or partition a role and format it first."
+			  : "";
+	document.querySelector("#vd-migrate-form button").disabled = running.length > 0;
+}
+
+document.getElementById("vd-migrate-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+	const name = currentVolumeDetailName;
+
+	if (name === null)
+		return;
+	const target = document.getElementById("vd-target-disk").value;
+
+	if (!confirm('Move volume "' + name + '" to ' + (target || "the default OS-disk placement") + "?"))
+		return;
+	try {
+		await apiRequest("POST", "/v1/volumes/" + encodeURIComponent(name) + "/migrate", {
+			disk: target,
+		});
+		clearStatus();
+		await refreshDisks();
+		await renderVolumeDetail(name);
+		renderTree();
+	} catch (e) {
+		showStatus("Failed to migrate volume: " + e.message, true);
+	}
+});
+
 async function refreshVolumeCache() {
 	try {
 		const data = await apiRequest("GET", "/v1/volumes");
@@ -8455,8 +8568,13 @@ async function refreshVolumes() {
 
 		const users = mountedBy[v.name] || [];
 
+		{
+			const td = document.createElement("td");
+
+			td.appendChild(treeLink("#volumes/" + encodeURIComponent(v.name), v.name, ""));
+			row.appendChild(td);
+		}
 		for (const text of [
-			v.name,
 			/* "unused" is deliberately not an error state -- a volume
 			 * outliving every container that used it is the whole
 			 * point, and is exactly when its data is most at risk of

@@ -4300,10 +4300,44 @@ static int cmd_volume(const struct kx_client *c, int json_mode, int argc, char *
 		}
 		return emit(&r, json_mode, NULL);
 	}
+	if (strcmp(argv[0], "migrate") == 0) {
+		const char *disk = "";
+		struct json_writer w;
+		struct kx_response r;
+		char path[256];
+		int i;
+
+		if (argc < 2) {
+			fprintf(stderr, "usage: thincctl volume migrate NAME [--disk=DISK]\n"
+			                "  Omit --disk to move it back to the default OS-disk placement.\n");
+			return 2;
+		}
+		for (i = 2; i < argc; i++) {
+			if (strncmp(argv[i], "--disk=", 7) == 0)
+				disk = argv[i] + 7;
+		}
+		snprintf(path, sizeof(path), "/v1/volumes/%s/migrate", argv[1]);
+
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "disk");
+		jw_str(&w, disk);
+		jw_obj_close(&w);
+		w.buf[w.len] = '\0';
+
+		if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+			jw_free(&w);
+			fprintf(stderr, "thincctl: could not reach daemon\n");
+			return 1;
+		}
+		jw_free(&w);
+		return emit(&r, json_mode, fmt_volume_one);
+	}
 	fprintf(stderr, "usage: thincctl volume ls\n"
 	                "       thincctl volume create --name=NAME [--disk=DISK]\n"
 	                "       thincctl volume show NAME\n"
 	                "       thincctl volume rm NAME\n"
+	                "       thincctl volume migrate NAME [--disk=DISK]\n"
 	                "  A volume outlives the containers using it: deleting a container never\n"
 	                "  removes its volumes, and `volume rm` refuses while any container\n"
 	                "  definition still references one.\n");

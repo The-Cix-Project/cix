@@ -372,6 +372,32 @@ int main(void)
 	kx_client_request(&client, "DELETE", "/v1/volumes/vol2", NULL, &r);
 	kx_response_free(&r);
 
+	/* 5c. migration (user-reported gap: a volume was placed at create
+	 * time and could never move).
+	 *
+	 * The assertion that matters is that the DATA moves, not that the
+	 * placement field changes -- a migrate that repoints without
+	 * copying would pass any check on the response alone and lose
+	 * everything. So: write, migrate, read back through a container. */
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "POST", "/v1/volumes/vol1/migrate", "{\"disk\":\"\"}", &r) == 0 &&
+	          r.status == 409,
+	      "migrating a volume to where it already is is refused (409)");
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "POST", "/v1/volumes/vol1/migrate",
+	                         "{\"disk\":\"nosuchdisk\"}", &r) == 0 &&
+	          r.status == 404,
+	      "migrating onto an unknown disk is refused (404)");
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "POST", "/v1/volumes/nosuchvol/migrate", "{}", &r) == 0 &&
+	          r.status == 404,
+	      "migrating an unknown volume is refused (404)");
+	kx_response_free(&r);
+
 	/* 6. deleting a volume is refused while a container definition still
 	 * references it -- silently removing data a stopped container will
 	 * expect on its next start would be a data-loss bug. */

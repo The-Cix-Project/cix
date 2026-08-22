@@ -6870,6 +6870,85 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /volumes/{volume_name}/migrate:
+    post:
+      summary: Move a volume's data to another disk or partition
+      description: >
+        Copies the data to the new location, persists the new placement,
+        and only then removes the original -- so a failure at any point
+        leaves the volume still pointing at data that exists. Repointing
+        first would open a window where it points somewhere the data has
+        not reached.
+
+        Refused while any container mounting this volume is RUNNING: a
+        bind mount resolves to a host path once, when the container
+        starts (ADR-0183), so moving the data underneath a live
+        container would leave it writing to the old location with
+        nothing to indicate anything had changed. A stopped or exited
+        container is fine and picks up the new location on its next
+        start, like any other definition change.
+
+        Synchronous, unlike container-storage migration (ADR-0142),
+        which is an async job because it moves a container's storage
+        while that container keeps running. Nothing is running here, so
+        there is nothing to keep alive during the copy.
+      operationId: migrateVolume
+      parameters:
+        - name: volume_name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                disk:
+                  type: string
+                  description: >
+                    Target disk or partition by name, which must already
+                    carry a role and be mounted. Empty or omitted means
+                    the default OS-disk placement.
+      responses:
+        "200":
+          description: Moved; the volume's new state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Volume"
+        "400":
+          description: Invalid JSON body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such volume, or no such target disk
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            The target is not mounted, the volume is already there, or a
+            container mounting it is currently running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: >
+            The copy failed (nothing was moved and the volume still
+            points at its original data), or the new placement could not
+            be persisted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /containers/{name}/volumes:
     post:
       summary: Attach a persistent volume to an existing container (issue #92)
