@@ -79,6 +79,13 @@ enum registry_error registry_create(const char *name, const char *image,
 	memset(e->image_version, 0, sizeof(e->image_version));
 	if (image_version != NULL)
 		strncpy(e->image_version, image_version, sizeof(e->image_version) - 1);
+	/* Issue #61: remember the lowerdir actually used, rather than leaving
+	 * readers to reconstruct it from image/image_version -- a
+	 * reconstruction that silently produces nothing at all for a build
+	 * container (synthetic image name, no version). */
+	memset(e->lowerdir, 0, sizeof(e->lowerdir));
+	if (spec->ov.lowerdir != NULL)
+		strncpy(e->lowerdir, spec->ov.lowerdir, sizeof(e->lowerdir) - 1);
 	e->running = 1;
 	e->exit_status = 0;
 	e->term_signal = 0;
