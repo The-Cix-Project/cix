@@ -133,6 +133,13 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/volumes` | List every persistent volume (issue #88, ADR-0183) |
 | POST | `/volumes` | Create a volume -- named storage whose lifetime is independent of any container |
 | GET | `/volumes/{name}` | Inspect one volume |
+| GET | `/system/volume-backup-config` | The shared schedule for volume content snapshots (issue #96) |
+| PUT | `/system/volume-backup-config` | Set it — target disk, on/off, interval |
+| GET | `/volumes/{name}/backups` | A volume's backup policy, its snapshots, and the last attempt |
+| PUT | `/volumes/{name}/backups` | Opt a volume in (or out) and set its retention |
+| POST | `/volumes/{name}/backup` | Take one snapshot now |
+| POST | `/volumes/{name}/restore` | **Replace** the volume's contents with a snapshot |
+| DELETE | `/volumes/{name}/backups/{snapshot}` | Delete one snapshot |
 | POST | `/volumes/{name}/migrate` | Move a volume's data to another disk or partition |
 | DELETE | `/volumes/{name}` | Delete a volume **and all of its data** -- refused (409) while any container definition references it |
 | GET | `/networks` | List all networks this daemon knows about |
@@ -1440,6 +1447,26 @@ Both edit the container's persisted definition and take effect on its **next sta
 Detaching never deletes the volume or its data — only this container's reference to it. One thing worth knowing: the mount point the attach created stays behind in the container's overlay upper layer, so writes to that path still succeed after a detach; they simply land in the overlay and are lost on the next recreate, like any other unvolumed path.
 
 A volume must already exist (`404` otherwise, never an implicit create), a container cannot mount the same volume twice or two volumes at one path (`409`), and the per-container maximum is 8.
+
+### Backing up what a volume holds
+
+The platform bundle above carries configuration only, and that boundary stands — but it left volumes with no recovery story at all. A volume exists *precisely* because its contents should outlive the container that wrote them, and "whatever you arranged yourself outside thinC" was the only answer available, with no way to arrange anything inside it either, since a volume is a host directory no container can reach.
+
+```
+PUT /v1/system/volume-backup-config   {"disk":"sdb","enabled":true,"interval_hours":24}
+PUT /v1/volumes/jump-home/backups     {"enabled":true,"retain":7}
+POST /v1/volumes/jump-home/backup
+POST /v1/volumes/jump-home/restore    {"snapshot":"20260822T030000Z","confirm_volume_name":"jump-home"}
+```
+
+- **Opt-in per volume.** Nothing is copied unless asked for — a volume holding a scratch build tree should not be snapshotted just for existing, and copying workload data is something to request rather than assume.
+- **The policy belongs to the volume, not the container.** A volume is the thing with data; a container merely mounts one, and two containers can mount the same volume. Hanging the policy on the container would mean two policies over one set of bytes, and would still exclude the container's own overlay, which is ephemeral by design. A container's detail page *shows* the backups of the volumes it mounts, derived — the same way it already shows which volumes those are.
+- **One shared interval, per-volume retention.** How much history is worth keeping depends on what the volume holds; when the sweep runs does not, and N independent timers is N ways for a schedule to be quietly wrong. The sweep rides the same periodic tick the configuration snapshots already use.
+- **Refused while a container mounting the volume is running**, for both backup and restore. Copying a tree out from under a live writer captures a half-written state — worse than no snapshot, because it looks exactly like a good one until someone restores it. In the scheduled sweep a running container means the volume is *skipped*, not failed: that is a normal state for a workload that stays up, and logging it as an error every interval would drown the real ones.
+- **Restore replaces, it does not merge.** Merging would leave files the snapshot never contained, producing a third state that is neither what was there nor what was backed up — a restore yielding something nobody has ever seen is worse than a refusal. It needs `confirm_volume_name` to match.
+- **Retention is applied after a successful snapshot, never before.** Deleting the oldest to make room for one that then fails would lose history for nothing. A copy that fails part-way is removed rather than left behind to be restored later as though whole.
+- Snapshots go to a disk carrying the `backup` role — the same role the configuration snapshots use, so there is one answer to "where do backups go" rather than two.
+
 
 ## Capability restriction (issue #29)
 

@@ -28,6 +28,7 @@
 #include "subid.h"
 #include "serverhealth.h"
 #include "volume.h"
+#include "volumebackup.h"
 #include "exec.h"
 #include "http.h"
 #include "image.h"
@@ -149,6 +150,7 @@ static char SUBID_STATE_PATH[PATH_MAX]; /* ADR-0179 */
 static char SERVERHEALTH_STATE_PATH[PATH_MAX]; /* issue #81 -- drain flags only */
 static char VOLUMES_STATE_PATH[PATH_MAX];      /* issue #88 */
 static char VOLUMES_DIR[PATH_MAX];             /* issue #88 -- where volume data lives */
+static char VOLUME_BACKUP_CONFIG_PATH[PATH_MAX]; /* issue #96 -- the volume-snapshot schedule */
 static char PKI_DIR[PATH_MAX];
 static char PKI_CERTS_STATE_PATH[PATH_MAX];
 static char PKI_CERTS_DIR[PATH_MAX];
@@ -303,6 +305,8 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(SYSLOGFWD_STATE_PATH, sizeof(SYSLOGFWD_STATE_PATH), "%s/syslog_targets.json", STATE_DIR);
 	snprintf(CONNTHROTTLE_CONFIG_PATH, sizeof(CONNTHROTTLE_CONFIG_PATH), "%s/tls_throttle.json", STATE_DIR);
 	snprintf(BACKUP_CONFIG_PATH, sizeof(BACKUP_CONFIG_PATH), "%s/backup_config.json", STATE_DIR);
+	snprintf(VOLUME_BACKUP_CONFIG_PATH, sizeof(VOLUME_BACKUP_CONFIG_PATH),
+	         "%s/volume_backup_config.json", STATE_DIR);
 	snprintf(HOSTAUTH_CONFIG_PATH, sizeof(HOSTAUTH_CONFIG_PATH), "%s/hostauth_config.json", STATE_DIR);
 }
 
@@ -6357,6 +6361,30 @@ static int volume_referenced_by_container(const char *volume_name, char *out_con
 }
 
 /*
+ * Issue #96: does any container mounting this volume have a live
+ * process right now.
+ *
+ * Injected into volumebackup.c rather than looked up there, so that
+ * module needs no knowledge of the registry or of container
+ * definitions -- the same shape containerdef.c already gets its own
+ * liveness predicate through.
+ *
+ * registry_find() alone is NOT the test: since ADR-0181 the registry
+ * also holds exited containers, so a container that ran once and
+ * stopped would block every snapshot forever.
+ */
+static int volume_has_running_container(const char *volume_name)
+{
+	char user[REGISTRY_NAME_MAX];
+	struct registry_entry *e;
+
+	if (!volume_referenced_by_container(volume_name, user, sizeof(user)))
+		return 0;
+	e = registry_find(user);
+	return e != NULL && e->running;
+}
+
+/*
  * POST /v1/volumes/{name}/migrate -- move a volume's data to another
  * disk or partition, then repoint it.
  *
@@ -6417,6 +6445,207 @@ static void handle_volume_migrate(int fd, const char *name, const char *body, si
 		return;
 	}
 	handle_volume_get(fd, name);
+}
+
+/* ---- Issue #96: volume content snapshots ---- */
+
+static void respond_volumebackup_error(int fd, enum volumebackup_error e)
+{
+	switch (e) {
+	case VOLUMEBACKUP_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such volume");
+		break;
+	case VOLUMEBACKUP_ERR_NO_SUCH_SNAPSHOT:
+		respond_error(fd, 404, "Not Found", "no such snapshot");
+		break;
+	case VOLUMEBACKUP_ERR_NO_DISK:
+		respond_error(fd, 409, "Conflict",
+		              "no backup disk configured -- set one via PUT /v1/system/volume-backup-config "
+		              "(it must be a disk or partition carrying the 'backup' role)");
+		break;
+	case VOLUMEBACKUP_ERR_DISK_NOT_READY:
+		respond_error(fd, 409, "Conflict",
+		              "the configured backup disk is not mounted -- format and mount it first");
+		break;
+	case VOLUMEBACKUP_ERR_IN_USE_RUNNING:
+		respond_error(fd, 409, "Conflict",
+		              "a container mounting this volume is running -- copying its data now would "
+		              "capture a half-written state, which looks exactly like a good snapshot "
+		              "until someone restores it. Stop the container first");
+		break;
+	case VOLUMEBACKUP_ERR_COPY_FAILED:
+		respond_error(fd, 500, "Internal Server Error", "copying the volume's data failed");
+		break;
+	case VOLUMEBACKUP_ERR_INVALID:
+		respond_error(fd, 400, "Bad Request", "invalid request");
+		break;
+	default:
+		respond_error(fd, 500, "Internal Server Error", "could not persist the backup config");
+		break;
+	}
+}
+
+static void handle_volume_backup_config_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	volumebackup_write_config_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_volume_backup_config_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = json_parse(body, body_len);
+	const struct json_value *jen, *jiv;
+	const char *disk;
+	enum volumebackup_error verr;
+
+	if (root == NULL || root->type != JSON_OBJECT) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	disk = json_as_string(json_object_get(root, "disk"));
+	jen = json_object_get(root, "enabled");
+	jiv = json_object_get(root, "interval_hours");
+	verr = volumebackup_set(disk != NULL ? disk : "",
+	                        jen != NULL && jen->type == JSON_BOOL && jen->u.boolean,
+	                        (jiv != NULL && jiv->type == JSON_NUMBER) ? (int)json_as_number(jiv)
+	                                                                  : volumebackup_interval_hours());
+	json_free(root);
+	if (verr != VOLUMEBACKUP_OK) {
+		respond_volumebackup_error(fd, verr);
+		return;
+	}
+	handle_volume_backup_config_get(fd);
+}
+
+/* The volume's own policy plus its snapshots and last attempt, in one
+ * response -- they are always wanted together and splitting them across
+ * three calls would be three round trips to render one panel. */
+static void handle_volume_backups_get(int fd, const char *name)
+{
+	struct volume *v = volume_find(name);
+	struct json_writer w;
+
+	if (v == NULL) {
+		respond_error(fd, 404, "Not Found", "no such volume");
+		return;
+	}
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "volume");
+	jw_str(&w, name);
+	jw_key(&w, "enabled");
+	jw_bool(&w, v->backup_enabled);
+	jw_key(&w, "retain");
+	jw_int(&w, v->backup_retain > 0 ? v->backup_retain : VOLUMEBACKUP_DEFAULT_RETAIN);
+	jw_key(&w, "last_backup_at");
+	jw_int(&w, (long long)v->backup_last_at);
+	jw_key(&w, "snapshots");
+	volumebackup_write_list_json(&w, name);
+	jw_key(&w, "status");
+	volumebackup_write_status_json(&w, name);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_volume_backup_policy_put(int fd, const char *name, const char *body,
+                                             size_t body_len)
+{
+	struct json_value *root = json_parse(body, body_len);
+	const struct json_value *jen, *jre;
+	int retain = 0;
+	enum volume_error verr;
+
+	if (root == NULL || root->type != JSON_OBJECT) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	jen = json_object_get(root, "enabled");
+	jre = json_object_get(root, "retain");
+	if (jre != NULL) {
+		if (jre->type != JSON_NUMBER || json_as_number(jre) < 1 ||
+		    json_as_number(jre) > VOLUMEBACKUP_MAX_RETAIN) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "retain must be between 1 and 365");
+			return;
+		}
+		retain = (int)json_as_number(jre);
+	}
+	verr = volume_set_backup_policy(name, jen != NULL && jen->type == JSON_BOOL && jen->u.boolean,
+	                                retain);
+	json_free(root);
+	if (verr != VOLUME_OK) {
+		respond_volume_error(fd, verr);
+		return;
+	}
+	handle_volume_backups_get(fd, name);
+}
+
+static void handle_volume_backup_now(int fd, const char *name)
+{
+	enum volumebackup_error verr = volumebackup_take(name, volume_has_running_container);
+
+	if (verr != VOLUMEBACKUP_OK) {
+		respond_volumebackup_error(fd, verr);
+		return;
+	}
+	handle_volume_backups_get(fd, name);
+}
+
+/*
+ * Restoring replaces the volume's contents outright. Guarded like every
+ * other destructive operation in this API: the caller has to name the
+ * volume back, so it can never be something a stray click did.
+ */
+static void handle_volume_restore(int fd, const char *name, const char *body, size_t body_len)
+{
+	struct json_value *root = json_parse(body, body_len);
+	const char *stamp, *confirm;
+	enum volumebackup_error verr;
+
+	if (root == NULL || root->type != JSON_OBJECT) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	stamp = json_as_string(json_object_get(root, "snapshot"));
+	confirm = json_as_string(json_object_get(root, "confirm_volume_name"));
+	if (confirm == NULL || strcmp(confirm, name) != 0) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "confirm_volume_name must be given and must match the volume in the URL -- "
+		              "restoring replaces everything currently in this volume");
+		return;
+	}
+	if (stamp == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "snapshot is required");
+		return;
+	}
+	verr = volumebackup_restore(name, stamp, volume_has_running_container);
+	json_free(root);
+	if (verr != VOLUMEBACKUP_OK) {
+		respond_volumebackup_error(fd, verr);
+		return;
+	}
+	handle_volume_backups_get(fd, name);
+}
+
+static void handle_volume_backup_delete(int fd, const char *name, const char *stamp)
+{
+	enum volumebackup_error verr = volumebackup_delete_snapshot(name, stamp);
+
+	if (verr != VOLUMEBACKUP_OK) {
+		respond_volumebackup_error(fd, verr);
+		return;
+	}
+	handle_volume_backups_get(fd, name);
 }
 
 static void handle_volume_delete(int fd, const char *name)
@@ -8424,6 +8653,7 @@ static void finalize_state_storage_migration(void)
 	serverhealth_repoint(SERVERHEALTH_STATE_PATH);
 	volume_set_dir(VOLUMES_DIR);
 	volume_repoint(VOLUMES_STATE_PATH);
+	volumebackup_repoint(VOLUME_BACKUP_CONFIG_PATH);
 	pki_repoint(PKI_DIR, PKI_CERTS_STATE_PATH);
 	containerdef_repoint(CONTAINER_DEFS_STATE_PATH);
 	containerdef_rolling_config_repoint(ROLLING_CONFIG_PATH);
@@ -17523,6 +17753,47 @@ static void dispatch(int fd, const struct http_request *req)
 		const char *vname = req->path + 12;
 
 		if (vname[0] != '\0') {
+			/*
+			 * Sub-resources are matched BEFORE the plain volume GET and
+			 * DELETE below. A volume name can never contain '/', so a
+			 * path with one is unambiguously a sub-resource -- and
+			 * checking the bare handlers first made GET .../backups
+			 * look up a volume literally named "bk/backups" and 404.
+			 */
+			const char *slash = strchr(vname, '/');
+
+			if (slash != NULL && (size_t)(slash - vname) < VOLUME_NAME_MAX) {
+				char volume_name[VOLUME_NAME_MAX];
+
+				memcpy(volume_name, vname, slash - vname);
+				volume_name[slash - vname] = '\0';
+
+				if (strcmp(slash, "/migrate") == 0 && strcmp(req->method, "POST") == 0) {
+					handle_volume_migrate(fd, volume_name, req->body, req->body_len);
+					return;
+				}
+				if (strcmp(slash, "/backups") == 0 && strcmp(req->method, "GET") == 0) {
+					handle_volume_backups_get(fd, volume_name);
+					return;
+				}
+				if (strcmp(slash, "/backups") == 0 && strcmp(req->method, "PUT") == 0) {
+					handle_volume_backup_policy_put(fd, volume_name, req->body, req->body_len);
+					return;
+				}
+				if (strcmp(slash, "/backup") == 0 && strcmp(req->method, "POST") == 0) {
+					handle_volume_backup_now(fd, volume_name);
+					return;
+				}
+				if (strcmp(slash, "/restore") == 0 && strcmp(req->method, "POST") == 0) {
+					handle_volume_restore(fd, volume_name, req->body, req->body_len);
+					return;
+				}
+				if (strncmp(slash, "/backups/", 9) == 0 && strcmp(req->method, "DELETE") == 0 &&
+				    slash[9] != '\0') {
+					handle_volume_backup_delete(fd, volume_name, slash + 9);
+					return;
+				}
+			}
 			if (strcmp(req->method, "GET") == 0) {
 				handle_volume_get(fd, vname);
 				return;
@@ -17531,22 +17802,16 @@ static void dispatch(int fd, const struct http_request *req)
 				handle_volume_delete(fd, vname);
 				return;
 			}
-			{
-				/* .../{name}/migrate -- volume names are '/'-free, so
-				 * the first '/' unambiguously starts the sub-resource. */
-				const char *slash = strchr(vname, '/');
-
-				if (slash != NULL && strcmp(slash, "/migrate") == 0 &&
-				    strcmp(req->method, "POST") == 0 &&
-				    (size_t)(slash - vname) < VOLUME_NAME_MAX) {
-					char volume_name[VOLUME_NAME_MAX];
-
-					memcpy(volume_name, vname, slash - vname);
-					volume_name[slash - vname] = '\0';
-					handle_volume_migrate(fd, volume_name, req->body, req->body_len);
-					return;
-				}
-			}
+		}
+	}
+	if (strcmp(req->path, "/v1/system/volume-backup-config") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_volume_backup_config_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_volume_backup_config_put(fd, req->body, req->body_len);
+			return;
 		}
 	}
 	if (strcmp(req->path, "/v1/system/server-health") == 0) {
@@ -21000,6 +21265,9 @@ int main(int argc, char **argv)
 		return 1;
 	if (boot_subsystem_init(init_mode, "connthrottle_config", connthrottle_config_init(CONNTHROTTLE_CONFIG_PATH)) != 0)
 		return 1;
+	if (boot_subsystem_init(init_mode, "volumebackup",
+	                         volumebackup_init(VOLUME_BACKUP_CONFIG_PATH)) != 0)
+		return -1;
 	if (boot_subsystem_init(init_mode, "backupconfig", backupconfig_init(BACKUP_CONFIG_PATH)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "hostauth", hostauth_init(HOSTAUTH_CONFIG_PATH)) != 0)
@@ -21228,8 +21496,18 @@ int main(int argc, char **argv)
 				handle_pkg_sync_fetch_event(cc);
 			else if (cc->kind == CONN_PKG_SYNC_PERIODIC_TIMER)
 				handle_pkg_sync_periodic_timer_event(cc);
-			else if (cc->kind == CONN_BACKUP_PERIODIC_TIMER)
+			else if (cc->kind == CONN_BACKUP_PERIODIC_TIMER) {
+				/*
+				 * Issue #96: the volume sweep rides this same tick
+				 * rather than arming a second timer. Both are "copy
+				 * something to the backup disk on a schedule", the
+				 * intervals are independently configured and each is
+				 * checked against its own last-run time, and one timer
+				 * is one thing to reason about when backups do not run.
+				 */
+				volumebackup_sweep(time(NULL), volume_has_running_container);
 				handle_backup_periodic_timer_event(cc);
+			}
 			else if (cc->kind == CONN_SERVERHEALTH_TIMER) {
 				uint64_t ticks;
 

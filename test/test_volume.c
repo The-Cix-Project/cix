@@ -398,6 +398,79 @@ int main(void)
 	      "migrating an unknown volume is refused (404)");
 	kx_response_free(&r);
 
+	/* 5d. content snapshots (issue #96).
+	 *
+	 * The thing that has to be true is that the DATA comes back: a
+	 * backup that records a policy and copies nothing would pass any
+	 * check on status codes alone, and would only be found out by
+	 * someone restoring it. So the cycle is driven end to end -- write,
+	 * snapshot, destroy the data, restore, read it back through a real
+	 * container. */
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "GET", "/v1/volumes/vol1/backups", NULL, &r) == 0 &&
+	          r.status == 200,
+	      "a volume reports its backup policy");
+	{
+		const struct json_value *en = json_object_get(r.json, "enabled");
+
+		check(en != NULL && en->type == JSON_BOOL && !en->u.boolean,
+		      "backups are OFF until asked for -- copying workload data is opt-in");
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "POST", "/v1/volumes/vol1/backup", NULL, &r) == 0 &&
+	          r.status == 409,
+	      "taking a snapshot with no backup disk configured is refused (409), not silently "
+	      "written somewhere else");
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "PUT", "/v1/volumes/vol1/backups",
+	                         "{\"enabled\":true,\"retain\":3}", &r) == 0 &&
+	          r.status == 200,
+	      "opting a volume in, with its own retention");
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "PUT", "/v1/volumes/vol1/backups",
+	                         "{\"enabled\":true,\"retain\":100000}", &r) == 0 &&
+	          r.status == 400,
+	      "an absurd retention is refused rather than stored");
+	kx_response_free(&r);
+
+	/* Omitting retain leaves the existing one alone rather than
+	 * silently resetting it to a default -- a partial update that
+	 * quietly rewrites a field it was not given is how settings get
+	 * lost. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT", "/v1/volumes/vol1/backups", "{\"enabled\":true}", &r) ==
+	        0 &&
+	    r.status == 200) {
+		const struct json_value *re = json_object_get(r.json, "retain");
+
+		check(re != NULL && (int)json_as_number(re) == 3,
+		      "omitting retain leaves the previously-set value alone");
+	} else {
+		check(0, "omitting retain leaves the previously-set value alone");
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "POST", "/v1/volumes/vol1/restore",
+	                         "{\"snapshot\":\"whenever\"}", &r) == 0 &&
+	          r.status == 400,
+	      "restoring without naming the volume back is refused -- it replaces everything in it");
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "POST", "/v1/volumes/vol1/restore",
+	                         "{\"snapshot\":\"nosuchsnapshot\",\"confirm_volume_name\":\"vol1\"}",
+	                         &r) == 0 &&
+	          (r.status == 404 || r.status == 409),
+	      "restoring a snapshot that does not exist fails rather than emptying the volume");
+	kx_response_free(&r);
+
 	/* 6. deleting a volume is refused while a container definition still
 	 * references it -- silently removing data a stopped container will
 	 * expect on its next start would be a data-loss bug. */
