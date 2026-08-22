@@ -10,6 +10,50 @@
 #define SYS_clone3 435
 #endif
 
+/*
+ * open_tree(2)/move_mount(2) -- the new mount API (Linux 5.2+), used to
+ * bind a host directory into a RUNNING container's mount namespace
+ * (issue #92 part 2).
+ *
+ * The obvious approach fails in a way worth recording: a forked helper
+ * that setns()es into the container's mount namespace and then bind
+ * mounts from /proc/self/fd/<n> does not work, because the container's
+ * /proc belongs to the container's PID namespace and the helper is not
+ * in it -- /proc/self simply does not resolve there. open_tree() sidesteps
+ * the whole problem: it detaches a mount tree into an fd BEFORE entering
+ * the namespace, and move_mount() attaches that fd afterwards, so no
+ * path in the host namespace ever has to be nameable from inside the
+ * container's.
+ *
+ * No glibc wrappers exist for either, same as pivot_root/clone3 below.
+ */
+#ifndef SYS_open_tree
+#define SYS_open_tree 428
+#endif
+#ifndef SYS_move_mount
+#define SYS_move_mount 429
+#endif
+#ifndef OPEN_TREE_CLONE
+#define OPEN_TREE_CLONE 1
+#endif
+#ifndef MOVE_MOUNT_F_EMPTY_PATH
+#define MOVE_MOUNT_F_EMPTY_PATH 0x00000004
+#endif
+#ifndef AT_RECURSIVE
+#define AT_RECURSIVE 0x8000
+#endif
+
+static inline int kx_open_tree(int dfd, const char *path, unsigned int flags)
+{
+	return (int)syscall(SYS_open_tree, dfd, path, flags);
+}
+
+static inline int kx_move_mount(int from_dfd, const char *from_path, int to_dfd,
+                                const char *to_path, unsigned int flags)
+{
+	return (int)syscall(SYS_move_mount, from_dfd, from_path, to_dfd, to_path, flags);
+}
+
 #ifndef SYS_pivot_root
 #define SYS_pivot_root 155
 #endif

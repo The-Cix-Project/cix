@@ -11780,7 +11780,8 @@ static void handle_unpause(int fd, const char *name)
  * disagree with the definition that a restart actually replays.
  */
 static void respond_container_volumes(int fd, int status, const char *status_text,
-                                       const char *name, const struct json_value *body_root)
+                                       const char *name, const struct json_value *body_root,
+                                       const char *applies)
 {
 	struct json_writer w;
 
@@ -11790,9 +11791,11 @@ static void respond_container_volumes(int fd, int status, const char *status_tex
 	jw_str(&w, name);
 	containerdef_write_json_volumes(body_root, &w);
 	jw_key(&w, "applies");
-	/* Said explicitly rather than left for the caller to discover: the
-	 * running container is unchanged by this call. */
-	jw_str(&w, "on next start");
+	/* Said explicitly rather than left for the caller to discover.
+	 * "now" means the mount is already live in the running container;
+	 * "on next start" means the definition is updated and the container
+	 * will pick it up when it next starts. */
+	jw_str(&w, applies);
 	jw_obj_close(&w);
 	respond_json(fd, status, status_text, &w);
 	jw_free(&w);
@@ -11847,6 +11850,9 @@ static void handle_container_volume_attach(int fd, const char *container_name, c
 	size_t count = 0;
 	const char *vname;
 	const char *vpath;
+	char vname_copy[VOLUME_NAME_MAX];
+	char vpath_copy[VOLUME_MOUNT_PATH_MAX];
+	int ro_copy = 0;
 	size_t i;
 
 	if (def == NULL) {
@@ -11919,6 +11925,15 @@ static void handle_container_volume_attach(int fd, const char *container_name, c
 	}
 	existing[count++] = req;
 
+	/* Copied before the parsed body is freed: the live-attach step
+	 * below still needs them, and they point into `req`. */
+	{
+		const struct json_value *jro2 = json_object_get(req, "read_only");
+
+		snprintf(vname_copy, sizeof(vname_copy), "%s", vname);
+		snprintf(vpath_copy, sizeof(vpath_copy), "%s", vpath);
+		ro_copy = (jro2 != NULL && jro2->type == JSON_BOOL && jro2->u.boolean);
+	}
 	if (container_def_replace_volumes(def, root, existing, count) != 0) {
 		json_free(root);
 		json_free(req);
@@ -11928,12 +11943,40 @@ static void handle_container_volume_attach(int fd, const char *container_name, c
 	json_free(root);
 	json_free(req);
 
-	/* Re-read what was actually stored rather than echoing what was
-	 * asked for -- the whole point of the call is the persisted state. */
-	def = containerdef_find(container_name);
-	root = def != NULL ? json_parse(def->body, def->body_len) : NULL;
-	respond_container_volumes(fd, 200, "OK", container_name, root);
-	json_free(root);
+	/*
+	 * Issue #92 part 2: if the container is running, apply it NOW as
+	 * well, rather than only on its next start.
+	 *
+	 * Deliberately after the definition is persisted, not instead of
+	 * it. A live-only attach would vanish on the next restart with
+	 * nothing to say so, which is the sharp edge ADR-0156's own
+	 * live/ephemeral network attach explicitly accepts and documents;
+	 * here the durable record is the source of truth and the live mount
+	 * is it taking effect early.
+	 *
+	 * A failure to mount live is reported but does NOT undo the
+	 * definition: the volume genuinely is part of this container now,
+	 * and it will be there on the next start. Rolling back a correct
+	 * definition because one optional step failed would be the worse
+	 * outcome.
+	 */
+	{
+		struct registry_entry *e = registry_find(container_name);
+		char hostpath[PATH_MAX];
+		struct volume *vol = volume_find(vname_copy);
+		int live = 0;
+
+		if (e != NULL && e->running && !e->paused && vol != NULL &&
+		    volume_host_path(vol, hostpath, sizeof(hostpath)) == 0)
+			live = mountns_bind_into(e->handle.pid, hostpath, vpath_copy, ro_copy) == 0;
+
+		def = containerdef_find(container_name);
+		root = def != NULL ? json_parse(def->body, def->body_len) : NULL;
+		respond_container_volumes(fd, 200, "OK", container_name, root,
+		                           e != NULL && e->running ? (live ? "now" : "on next start")
+		                                                   : "on next start");
+		json_free(root);
+	}
 }
 
 static void handle_container_volume_detach(int fd, const char *container_name,
@@ -11985,7 +12028,7 @@ static void handle_container_volume_detach(int fd, const char *container_name,
 
 	def = containerdef_find(container_name);
 	root = def != NULL ? json_parse(def->body, def->body_len) : NULL;
-	respond_container_volumes(fd, 200, "OK", container_name, root);
+	respond_container_volumes(fd, 200, "OK", container_name, root, "on next start");
 	json_free(root);
 }
 

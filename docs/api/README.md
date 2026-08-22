@@ -1445,7 +1445,11 @@ POST /v1/containers/jump/volumes
 DELETE /v1/containers/jump/volumes/jump-home
 ```
 
-Both edit the container's persisted definition and take effect on its **next start** — the response says `"applies": "on next start"` rather than leaving you to find out. That is deliberately the opposite of `POST /containers/{name}/networks`, which is live and ephemeral: a bind mount has to land inside the container's own mount namespace, which only exists between `clone3()` and `pivot_root`, so attaching to a *running* container needs a primitive to enter another process's namespace from outside that this daemon does not have. Rather than pretend, the durable half ships and the live half stays open on issue #92.
+Both edit the container's persisted definition, and an attach to a **running** container also takes effect immediately — the response's `applies` field says `now` or `on next start` rather than leaving you to infer it.
+
+That is deliberately the opposite emphasis to `POST /containers/{name}/networks`, which is live and *ephemeral*: that one vanishes on the next restart. Here the definition is the source of truth and the live mount is it taking effect early, so nothing silently disappears later. A live mount that fails does not undo the definition — the volume genuinely is part of the container now and will be there next start, so rolling back a correct definition because one optional step failed would be worse; the response says `on next start` instead of claiming success.
+
+The live path needed a primitive this daemon was described as lacking, and did not: `container_net.c` has used a short-lived forked helper that `setns()`es into a container's *net* namespace all along, and this is the same dance for the mount namespace. The helper is thrown away because `setns()` is whole-process — the daemon entering a container's mount namespace itself would leave every path it later resolves resolving inside that container.
 
 Detaching never deletes the volume or its data — only this container's reference to it. One thing worth knowing: the mount point the attach created stays behind in the container's overlay upper layer, so writes to that path still succeed after a detach; they simply land in the overlay and are lost on the next recreate, like any other unvolumed path.
 

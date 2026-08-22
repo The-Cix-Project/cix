@@ -1,10 +1,14 @@
 /*
  * Exec target for test_volume.c (issue #88). argv[1] "write" writes a
- * known marker into the mounted volume; anything else reads it back.
+ * known marker into the mounted volume, "sleep" stays alive so a test
+ * can act on a RUNNING container (issue #92 part 2's live attach needs
+ * something to attach TO); anything else reads the marker back.
  * Deliberately tiny and dependency-free -- it runs inside a minimal
  * container image whose only staged runtime is glibc.
  */
 #include <stdio.h>
+#include <string.h>
+#include <unistd.h>
 
 #define MARKER_PATH "/vol/marker.txt"
 #define MARKER "PERSISTED\n"
@@ -13,6 +17,13 @@ int main(int argc, char **argv)
 {
 	FILE *f;
 
+	if (argc > 1 && strcmp(argv[1], "sleep") == 0) {
+		/* Long enough for a test to attach a volume and inspect the
+		 * result, short enough that a leaked container cannot outlive
+		 * the suite by much. */
+		sleep(120);
+		return 0;
+	}
 	if (argc > 1) {
 		f = fopen(MARKER_PATH, "w");
 		if (f == NULL) {

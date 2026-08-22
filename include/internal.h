@@ -64,6 +64,19 @@ enum mountns_pivot_error {
 int mountns_pivot(const char *new_root, const struct mount_spec *mnt);
 
 /*
+ * Issue #92 part 2: bind-mount host_dir at container_path inside an
+ * already-running container's mount namespace, via a short-lived forked
+ * helper that setns()es in -- the same dance container_net.c has always
+ * used for the net namespace, and for the same reason: setns() is
+ * whole-process, so the daemon doing it itself would leave every path it
+ * later resolves resolving inside that container.
+ *
+ * Returns 0, or -1 (diagnosed on stderr).
+ */
+int mountns_bind_into(pid_t child_pid, const char *host_dir, const char *container_path,
+                      int read_only);
+
+/*
  * Parent side, called after ns_clone3() returns the child's pid, only
  * if spec->net_count > 0. For each of the net_count attachments in
  * nets[], creates a veth pair (named from the child's real pid and

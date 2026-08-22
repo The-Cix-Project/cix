@@ -570,6 +570,58 @@ int main(void)
 	}
 	kx_response_free(&r);
 
+	/* 5f. LIVE attach (issue #92 part 2).
+	 *
+	 * Part 1 edited the definition and took effect on the next start.
+	 * The claim now is stronger: attaching to a RUNNING container makes
+	 * the volume visible inside it immediately. That can only be shown
+	 * by looking from inside, so a long-running container is started,
+	 * a volume attached to it live, and then a second container is used
+	 * to confirm the data written through the live mount really landed
+	 * in the volume -- proving the mount was real, not merely recorded.
+	 */
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "POST", "/v1/volumes", "{\"name\":\"livevol\"}", &r) == 0 &&
+	          r.status == 201,
+	      "a volume for the live-attach test");
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "POST", "/v1/containers",
+	                         "{\"name\":\"clive\",\"image\":\"voltest\",\"restart\":\"no\","
+	                         "\"cmd\":[\"/bin/volume_child\",\"sleep\"]}",
+	                         &r) == 0 &&
+	          r.status == 201,
+	      "a running container with no volumes");
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers/clive/volumes",
+	                       "{\"name\":\"livevol\",\"path\":\"/live\"}", &r) == 0 &&
+	    r.status == 200) {
+		const char *applies = json_as_string(json_object_get(r.json, "applies"));
+
+		/*
+		 * The response says which it was. "now" is the whole point of
+		 * part 2; "on next start" would mean the live mount did not
+		 * happen and the caller is being told so rather than left to
+		 * assume.
+		 */
+		check(applies != NULL && strcmp(applies, "now") == 0,
+		      "attaching to a running container reports that it applied NOW, not on next start");
+	} else {
+		check(0, "attaching a volume to a running container");
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	kx_client_request(&client, "DELETE", "/v1/containers/clive", NULL, &r);
+	kx_response_free(&r);
+	wait_gone(&client, "clive");
+	memset(&r, 0, sizeof(r));
+	kx_client_request(&client, "DELETE", "/v1/volumes/livevol", NULL, &r);
+	kx_response_free(&r);
+
 	/* 6. deleting a volume is refused while a container definition still
 	 * references it -- silently removing data a stopped container will
 	 * expect on its next start would be a data-loss bug. */

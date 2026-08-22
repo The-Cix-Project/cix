@@ -7363,15 +7363,23 @@ paths:
     post:
       summary: Attach a persistent volume to an existing container (issue #92)
       description: >
-        Edits the container's persisted definition and takes effect on
-        its NEXT start -- deliberately the opposite of POST
-        .../networks, which is live and ephemeral. A bind mount has to
-        land inside the container's own mount namespace, which only
-        exists between clone3() and pivot_root (ADR-0183), so attaching
-        to an already-running container needs a primitive to enter
-        another namespace from outside that this daemon does not have.
-        The response says so in its `applies` field rather than leaving
-        the caller to discover it.
+        Edits the container's persisted definition, and -- if the
+        container is running -- applies the mount immediately as well.
+        The `applies` field says which happened: "now" or "on next
+        start".
+
+        Deliberately durable first, live second, which is the opposite
+        emphasis to POST .../networks (ADR-0156), where the attach is
+        live and ephemeral and vanishes on the next restart. Here the
+        definition is the source of truth and the live mount is it
+        taking effect early, so nothing silently disappears later.
+
+        A live mount that fails does NOT undo the definition: the volume
+        genuinely is part of this container now and will be there on its
+        next start, so rolling back a correct definition because one
+        optional step failed would be the worse outcome. The response
+        reports "on next start" in that case rather than claiming
+        success.
       operationId: attachContainerVolume
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -8533,10 +8541,13 @@ components:
             $ref: "#/components/schemas/ContainerVolumeMount"
         applies:
           type: string
+          enum: [now, "on next start"]
           description: >
-            Always "on next start" -- stated explicitly because the
-            running container is genuinely unchanged by these calls, and
-            a client that assumed otherwise would be wrong.
+            Whether the change is already live in the running container,
+            or is recorded and waiting for its next start. Stated
+            explicitly rather than left to be inferred from the
+            container's state, because a client that guessed wrong would
+            either miss a mount it has or expect one it does not.
 
     VolumeBackupConfig:
       type: object

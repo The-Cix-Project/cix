@@ -174,25 +174,12 @@ static int write_userns_maps(pid_t pid, long long base, long long len)
  * per-container rootfs from the parent (open_tree -> a detached, unlocked
  * mount) to the child (move_mount into its own namespace, then pivot_root).
  */
-#ifndef __NR_open_tree
-#define __NR_open_tree 428
-#endif
-#ifndef __NR_move_mount
-#define __NR_move_mount 429
-#endif
-#define KX_OPEN_TREE_CLONE 1
-#define KX_MOVE_MOUNT_F_EMPTY_PATH 0x00000004
-
-static long kx_open_tree(int dfd, const char *path, unsigned int flags)
-{
-	return syscall(__NR_open_tree, dfd, path, flags);
-}
-
-static long kx_move_mount(int from_dfd, const char *from, int to_dfd, const char *to,
-                          unsigned int flags)
-{
-	return syscall(__NR_move_mount, from_dfd, from, to_dfd, to, flags);
-}
+/*
+ * open_tree()/move_mount() moved to include/linux_compat.h (issue #92
+ * part 2) -- a second caller needed them, and this file's own private
+ * copies would have become one of two definitions of the same
+ * syscalls, which is exactly what the shared header exists to prevent.
+ */
 
 int container_create(const struct container_spec *spec, struct container_handle *out)
 {
@@ -305,7 +292,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		const char *fail_step = NULL;
 		int prep_ret = 0;
 
-		overlay_lower_fd = (int)kx_open_tree(-1, spec->ov.userns_rootfs, KX_OPEN_TREE_CLONE);
+		overlay_lower_fd = (int)kx_open_tree(-1, spec->ov.userns_rootfs, OPEN_TREE_CLONE);
 		if (overlay_lower_fd < 0) {
 			saved_errno = errno;
 			fail_step = "container_create: open_tree(userns_rootfs)";
@@ -455,7 +442,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		 */
 		if (spec->userns_enabled) {
 			if (kx_move_mount(overlay_lower_fd, "", -1, spec->ov.merged,
-			                  KX_MOVE_MOUNT_F_EMPTY_PATH) != 0) {
+			                  MOVE_MOUNT_F_EMPTY_PATH) != 0) {
 				child_diag(diag_pipe[1], "child: move_mount userns rootfs");
 				_exit(122);
 			}
