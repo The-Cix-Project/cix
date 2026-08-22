@@ -6383,6 +6383,37 @@ static void read_loadavg(double *l1, double *l5, double *l15)
 	fclose(f);
 }
 
+/*
+ * Host uptime, straight from /proc/uptime's own first field (seconds
+ * since boot, as a float). Best-effort like read_loadavg(): an
+ * unreadable /proc/uptime reports 0 rather than failing the whole
+ * stats response, and 0 is distinguishable from any real answer
+ * because a booted box has always been up for something.
+ */
+static long long read_host_uptime_seconds(void)
+{
+	FILE *f;
+	double up = 0.0;
+
+	f = fopen("/proc/uptime", "r");
+	if (f == NULL)
+		return 0;
+	if (fscanf(f, "%lf", &up) != 1)
+		up = 0.0;
+	fclose(f);
+	return (long long)up;
+}
+
+/*
+ * When this daemon process itself started, stamped once at startup.
+ * Deliberately separate from host uptime: they differ after a daemon
+ * restart that was not a reboot (a `system/update` confirm, a crash
+ * and respawn), and "the box has been up for days but the control
+ * plane restarted four minutes ago" is exactly the thing an operator
+ * needs to be able to see.
+ */
+static time_t g_daemon_started_at;
+
 /* /proc/stat's own first "cpu" line: user/nice/system/idle/iowait/irq/
  * softirq/steal jiffies, in that fixed kernel-documented order. Raw
  * cumulative counters since boot -- callers compute their own deltas,
@@ -6531,6 +6562,13 @@ static void handle_system_stats(int fd)
 	jw_init(&w);
 	jw_obj_open(&w);
 
+	jw_key(&w, "uptime");
+	jw_obj_open(&w);
+	jw_key(&w, "host_seconds");
+	jw_int(&w, read_host_uptime_seconds());
+	jw_key(&w, "daemon_seconds");
+	jw_int(&w, (long long)(time(NULL) - g_daemon_started_at));
+	jw_obj_close(&w);
 	jw_key(&w, "load");
 	jw_obj_open(&w);
 	jw_key(&w, "load1");
@@ -22016,6 +22054,10 @@ int main(int argc, char **argv)
 	int listen_fd;
 	struct kx_epoll_event ev;
 	struct sigaction sa;
+
+	/* Stamped before anything else so a slow startup (image scan, state
+	 * replay) counts as uptime rather than being invisible. */
+	g_daemon_started_at = time(NULL);
 
 	for (i = 1; i < argc; i++) {
 		if (strncmp(argv[i], "--port=", 7) == 0) {
