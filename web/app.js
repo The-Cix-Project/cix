@@ -7569,12 +7569,27 @@ async function refreshServerHealth() {
 
 	body.textContent = "";
 	let servers = [];
+	let warnings = [];
 	try {
 		const data = await apiRequest("GET", "/v1/system/server-health");
 		servers = data.servers || [];
+		warnings = data.warnings || [];
 	} catch (e) {
 		showStatus("Failed to read server health: " + e.message, true);
 		return;
+	}
+	/* Issue #83: a warning here means thinC is managing state with nowhere
+	   to deliver it -- a silent, total failure of that subsystem, not a
+	   degradation. Shown above the table because it is more urgent than
+	   any individual server's state. */
+	const warnBox = document.getElementById("server-health-warnings");
+	warnBox.textContent = "";
+	warnBox.hidden = warnings.length === 0;
+	for (const wmsg of warnings) {
+		const p = document.createElement("p");
+		p.className = "warning";
+		p.textContent = wmsg;
+		warnBox.appendChild(p);
 	}
 	if (servers.length === 0) {
 		const row = document.createElement("tr");

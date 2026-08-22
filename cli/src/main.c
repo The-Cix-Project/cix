@@ -3889,7 +3889,23 @@ static int cmd_kmsg(const struct kx_client *c, int json_mode, int argc, char **a
 static void fmt_server_health(const struct json_value *v)
 {
 	const struct json_value *servers = json_object_get(v, "servers");
+	const struct json_value *warnings = json_object_get(v, "warnings");
 	size_t i;
+
+	/* Issue #83: printed FIRST and unmissably -- a warning here means
+	 * thinC is managing state it has nowhere to deliver, which is a
+	 * silent, total failure of that subsystem (records that resolve
+	 * nothing), not a degradation. */
+	if (warnings != NULL && warnings->type == JSON_ARRAY) {
+		for (i = 0; i < warnings->u.array.count; i++) {
+			const char *msg = json_as_string(warnings->u.array.items[i]);
+
+			if (msg != NULL)
+				printf("WARNING: %s\n", msg);
+		}
+		if (warnings->u.array.count > 0)
+			printf("\n");
+	}
 
 	if (servers == NULL || servers->type != JSON_ARRAY || servers->u.array.count == 0) {
 		printf("no registered servers are being health-tracked yet\n");

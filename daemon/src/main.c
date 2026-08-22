@@ -80,6 +80,7 @@
 #include <sys/quota.h>
 #include <sys/reboot.h>
 #include <sys/socket.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/sysmacros.h>
@@ -4105,6 +4106,44 @@ static void arm_serverhealth_timer(void)
 
 /* Best-effort, same posture as every other periodic timer here: failing
  * to create it means no automatic probing, never a failed startup. */
+/*
+ * Issue #86: keep thincd schedulable and un-killable under overload.
+ * Best-effort by design -- see the call site's own comment. Reports what
+ * it could not do rather than failing silently, so a real install where
+ * one of these is unexpectedly denied is visible in the log.
+ */
+static void protect_control_plane(void)
+{
+	int fd;
+
+	/*
+	 * Strongly negative nice: ordinary workloads (containers, package
+	 * builds) then cannot push the daemon off the run queue no matter how
+	 * much CPU they collectively demand. -20 rather than something milder
+	 * because there is nothing on the box whose latency matters more than
+	 * the one interface an operator has.
+	 */
+	errno = 0;
+	if (setpriority(PRIO_PROCESS, 0, -20) != 0 && errno != 0)
+		fprintf(stderr, "control plane: could not raise scheduling priority: %s\n",
+		        strerror(errno));
+
+	/*
+	 * And never be the OOM killer's choice. -1000 is the strongest
+	 * available "do not kill this" hint; if the daemon is the thing that
+	 * dies under memory pressure, the operator loses the box rather than
+	 * a workload.
+	 */
+	fd = open("/proc/self/oom_score_adj", O_WRONLY);
+	if (fd < 0) {
+		fprintf(stderr, "control plane: could not open oom_score_adj: %s\n", strerror(errno));
+		return;
+	}
+	if (write(fd, "-1000", 5) != 5)
+		fprintf(stderr, "control plane: could not set oom_score_adj: %s\n", strerror(errno));
+	close(fd);
+}
+
 static void start_serverhealth_timer(void)
 {
 	struct kx_epoll_event ev;
@@ -6069,6 +6108,51 @@ static void handle_system_stats(int fd)
  * every kind, with its live health, whether it is in service, and how it
  * was probed.
  */
+/*
+ * Issue #83: health can only ever describe servers thinC KNOWS about, so
+ * an unregistered one is invisible to it by construction -- which is
+ * exactly how a real box ran for its whole life with DNS records that
+ * resolved nothing, because dns-1/dns-2 were never registered and
+ * dns_record_sync_all() only ever writes into registered servers.
+ *
+ * The precisely detectable version of that failure is "thinC is managing
+ * state it has nowhere to deliver": records/accounts exist, zero servers
+ * are registered to receive them. Reported as real warnings alongside the
+ * health list. Deliberately only for the two subsystems that actually
+ * PUSH managed state to their servers -- NTP and syslog have no
+ * equivalent stranded state, so inventing a check for them would be
+ * noise dressed up as diagnostics.
+ */
+static void serverhealth_write_warnings(struct json_writer *w)
+{
+	char names[SERVERHEALTH_MAX][REGISTRY_NAME_MAX];
+	char msg[256];
+	int records, servers;
+
+	jw_arr_open(w);
+
+	records = dns_record_count();
+	servers = dns_server_list_containers(names, SERVERHEALTH_MAX);
+	if (records > 0 && servers == 0) {
+		snprintf(msg, sizeof(msg),
+		         "%d DNS record(s) are managed but no DNS server is registered -- they are "
+		         "not being served by anything. Register the container running your resolver "
+		         "(POST /v1/dns/servers).",
+		         records);
+		jw_str(w, msg);
+	}
+
+	servers = ldap_server_list_containers(names, SERVERHEALTH_MAX);
+	if (servers == 0 && (ldap_user_count() > 0 || ldap_group_count() > 0)) {
+		snprintf(msg, sizeof(msg),
+		         "LDAP users/groups are managed but no LDAP server is registered -- they are "
+		         "not being served by anything. Register the container running your directory "
+		         "(POST /v1/ldap/servers).");
+		jw_str(w, msg);
+	}
+	jw_arr_close(w);
+}
+
 static void handle_serverhealth_list(int fd)
 {
 	struct json_writer w;
@@ -6077,6 +6161,8 @@ static void handle_serverhealth_list(int fd)
 	jw_obj_open(&w);
 	jw_key(&w, "servers");
 	serverhealth_write_json_list(&w);
+	jw_key(&w, "warnings");
+	serverhealth_write_warnings(&w);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -20124,6 +20210,24 @@ int main(int argc, char **argv)
 	 * Never a fatal startup condition.
 	 */
 	cgroup_enable_controllers();
+
+	/*
+	 * Issue #86: make the control plane hard to starve.
+	 *
+	 * On a real install thincd IS the machine's only management channel:
+	 * no SSH, no general shell (ADR-0034). Losing it does not degrade the
+	 * box, it removes every way in short of the hypervisor -- which is
+	 * exactly what happened when four concurrent package builds
+	 * oversubscribed a 2-CPU host (issue #85) and the daemon stopped
+	 * answering HTTP while the kernel itself stayed perfectly healthy
+	 * (ping 0% loss throughout).
+	 *
+	 * Two cheap, standard protections, both best-effort: a real install
+	 * runs this as PID 1 with full privilege, while a dev/test run under
+	 * an ordinary user simply won't be permitted to raise its own
+	 * priority, and must not fail to start over it.
+	 */
+	protect_control_plane();
 
 	registry_init();
 

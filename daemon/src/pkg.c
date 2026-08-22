@@ -83,6 +83,10 @@ struct pkg_entry {
 	 * does). */
 	char build_container_name[PKG_NAME_MAX];
 	char build_lowerdir[PATH_MAX], build_upperdir[PATH_MAX];
+	/* Issue #85: "<parent>/<container>" -- the cgroup path this build's
+	 * own leaf lives at, under the shared budget parent. Stored on the
+	 * entry because spec_out->cg.name must stay valid until clone3(). */
+	char build_cgroup_path[PATH_MAX];
 	char build_workdir[PATH_MAX], build_merged[PATH_MAX];
 	char build_argv_cmd[512];
 	char *build_argv[4];
@@ -153,6 +157,27 @@ static char g_containers_dir[PATH_MAX];
  * per install call. */
 static char g_images_dir[PATH_MAX];
 static char g_pkgbuild_rootfs[PATH_MAX];
+
+/*
+ * Issue #85: the one parent cgroup every build container lives under. Its
+ * limits are the real, aggregate build budget -- see build_spec_init()'s
+ * own comment for why a per-container limit was not one.
+ */
+#define PKG_BUILD_CGROUP_PARENT "thinc-pkgbuild"
+
+static void pkg_build_ensure_parent_cgroup(void)
+{
+	struct cgroup_limits lim;
+
+	memset(&lim, 0, sizeof(lim));
+	lim.name = PKG_BUILD_CGROUP_PARENT;
+	lim.memory_max = pkg_build_get_memory_max();
+	lim.cpu_max = pkg_build_get_cpu_max();
+	/* Re-applied on every build so a runtime change to the configured
+	 * budget takes effect rather than leaving a stale ceiling behind. */
+	cgroup_create_parent(&lim);
+}
+
 /* Where a hostbuild job's own harvested output lands (ADR-0056) --
  * <g_artifacts_dir>/<name>/..., a plain host directory, never
  * container-visible. */
@@ -2963,11 +2988,26 @@ static int start_build_container_spec(int chain_idx, struct pkg_entry *e,
 	spec_out->ns.clone_flags =
 	    CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWCGROUP | CLONE_INTO_CGROUP;
 	spec_out->ns.hostname = e->build_container_name;
-	spec_out->cg.name = e->build_container_name;
-	/* ADR-0165: a real resource ceiling on every pkgbuild sandbox, not
-	 * just a job-count limit -- found missing the hard way. */
-	spec_out->cg.memory_max = pkg_build_get_memory_max();
-	spec_out->cg.cpu_max = pkg_build_get_cpu_max();
+	/*
+	 * Issue #85: every build container lives under ONE parent cgroup that
+	 * carries the configured budget, and the children carry no ceiling of
+	 * their own.
+	 *
+	 * ADR-0165 originally applied memory_max/cpu_max to each build
+	 * container individually. That reads like a budget but is not one:
+	 * with max_concurrent_jobs (default 10) the real ceiling was
+	 * limit x concurrency. On a real 2-CPU box, four concurrent builds at
+	 * a 1.5-CPU each ceiling demanded 6 CPUs, starved thincd off the run
+	 * queue, and -- because a shell-less host has no way in except the
+	 * daemon's own REST API -- took the machine out of reach until it was
+	 * reset. Putting the limit on the shared parent makes the configured
+	 * number mean what it says at any concurrency; the kernel then shares
+	 * that budget between however many builds are actually running.
+	 */
+	pkg_build_ensure_parent_cgroup();
+	snprintf(e->build_cgroup_path, sizeof(e->build_cgroup_path), "%s/%s",
+	         PKG_BUILD_CGROUP_PARENT, e->build_container_name);
+	spec_out->cg.name = e->build_cgroup_path;
 	spec_out->ov.lowerdir = e->build_lowerdir;
 	spec_out->ov.upperdir = e->build_upperdir;
 	spec_out->ov.workdir = e->build_workdir;

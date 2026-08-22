@@ -1417,3 +1417,17 @@ td.empty {
 	white-space: pre;
 	tab-size: 4;
 }
+
+/* Issue #83: a server-health warning -- thinC managing state it has nowhere
+   to deliver. Deliberately louder than a hint: this is a silent total
+   failure of a subsystem, not a degradation. */
+.warning {
+	margin: 0 0 0.5rem 0;
+	padding: 0.6rem 0.8rem;
+	background: var(--panel);
+	border: 1px solid var(--error);
+	border-left: 4px solid var(--error);
+	border-radius: 4px;
+	color: var(--text);
+	font-size: 0.9rem;
+}

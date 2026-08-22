@@ -170,6 +170,74 @@ int cgroup_create(const struct cgroup_limits *lim, int *out_fd)
  * for that one resource, never blocked from being created at all over
  * a controller this daemon couldn't delegate.
  */
+/*
+ * Issue #85: creates (or updates) a PARENT cgroup that a group of
+ * containers will live under, carrying the AGGREGATE limit for all of
+ * them, and delegates the controllers its children need.
+ *
+ * This exists because a per-container limit is not a budget. thinC's own
+ * package builder applied its configured cpu_max/memory_max to each
+ * build container individually while allowing up to max_concurrent_jobs
+ * of them, so the real ceiling was (limit x concurrency) -- on a real
+ * 2-CPU box that starved thincd itself off the run queue and, since a
+ * shell-less host has no other way in, took the whole machine out of
+ * reach until it was reset. A parent cgroup makes the configured number
+ * mean what it says: N children can never collectively exceed it,
+ * whatever N is.
+ *
+ * Children are created by passing "<parent>/<child>" as a cgroup_limits
+ * name -- cgroup_create()'s own single mkdir() then only has to create
+ * the leaf, exactly as it always did.
+ */
+int cgroup_create_parent(const struct cgroup_limits *lim)
+{
+	char dir[PATH_MAX];
+	char value[32];
+
+	if (snprintf(dir, sizeof(dir), "%s/%s", CGROUP_ROOT, lim->name) >= (int)sizeof(dir)) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+	if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+		perror("cgroup_create_parent: mkdir");
+		return -1;
+	}
+	/*
+	 * Re-applied on every call, not just at creation: the aggregate
+	 * budget is operator-configurable at runtime, and a parent that was
+	 * created under an older value must pick up the new one rather than
+	 * silently keeping the stale ceiling.
+	 */
+	if (lim->memory_max > 0) {
+		snprintf(value, sizeof(value), "%lld", lim->memory_max);
+		if (write_cgroup_file(dir, "memory.max", value) != 0)
+			perror("cgroup_create_parent: write memory.max");
+	}
+	if (lim->pids_max > 0) {
+		snprintf(value, sizeof(value), "%lld", lim->pids_max);
+		if (write_cgroup_file(dir, "pids.max", value) != 0)
+			perror("cgroup_create_parent: write pids.max");
+	}
+	if (lim->cpu_max != NULL) {
+		if (write_cgroup_file(dir, "cpu.max", lim->cpu_max) != 0)
+			perror("cgroup_create_parent: write cpu.max");
+	}
+	/*
+	 * A cgroup v2 parent must explicitly delegate controllers to its
+	 * subtree, or its children cannot set their own limits at all.
+	 * Best-effort per controller: a kernel without one of these simply
+	 * doesn't get that child-level knob, which is not a reason to fail
+	 * the whole build subsystem.
+	 */
+	if (write_cgroup_file(dir, "cgroup.subtree_control", "+cpu +memory +pids") != 0) {
+		/* Retry without cpuset/io-style extras already excluded above --
+		 * report once, then continue: children still run, just without
+		 * their own per-child ceilings under this parent. */
+		perror("cgroup_create_parent: write cgroup.subtree_control");
+	}
+	return 0;
+}
+
 void cgroup_enable_controllers(void)
 {
 	static const char *const wanted[] = { "io", "cpuset", "memory", "pids", "cpu" };

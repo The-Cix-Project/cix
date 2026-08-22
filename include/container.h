@@ -424,6 +424,17 @@ void container_set_last_error_step(const char *prefix);
  * cpu_max/cpuset_cpus to ever actually take effect rather than fail
  * container creation outright.
  */
+/*
+ * Issue #85: creates/updates a parent cgroup carrying the AGGREGATE limit
+ * for a group of containers, and delegates controllers to its subtree.
+ * Children are then created by passing "<parent>/<child>" as a
+ * cgroup_limits name. A per-container limit is not a budget: applying one
+ * to each of N concurrent containers permits N times the intended
+ * ceiling, which on a real box starved thincd itself off the run queue.
+ * Returns 0 on success, -1 (errno set) if the parent can't be created.
+ */
+int cgroup_create_parent(const struct cgroup_limits *lim);
+
 void cgroup_enable_controllers(void);
 
 /*
