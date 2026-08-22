@@ -2,10 +2,15 @@
 #include "linux_compat.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
+#include <sched.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 int mountns_make_private(void)
@@ -189,5 +194,102 @@ int mountns_pivot(const char *new_root, const struct mount_spec *mnt)
 		return MOUNTNS_PIVOT_ERR_UMOUNT_PUT_OLD;
 	}
 
+	return 0;
+}
+
+/*
+ * Issue #92 part 2: bind-mount a host directory into an ALREADY-RUNNING
+ * container's mount namespace.
+ *
+ * Until now a volume could only be attached at creation, because the
+ * bind mount has to land inside the container's own mount namespace and
+ * that namespace only exists between clone3() and pivot_root(). The
+ * primitive to reach an existing one was described as missing; it was
+ * not. container_net.c has done exactly this for the NET namespace all
+ * along -- a short-lived forked helper that setns()es in and does the
+ * part only reachable from inside. This is the same dance for the mount
+ * namespace.
+ *
+ * A forked helper is not a style choice: setns() is whole-process, so
+ * the daemon entering a container's mount namespace itself would leave
+ * every subsequent path it resolves -- its state directory, its log
+ * store, every other container's overlay -- resolving inside that
+ * container. The helper exists to be thrown away.
+ *
+ * The source directory is opened BEFORE setns(), for the same reason
+ * container_net.c opens root_fd first: once inside the container's
+ * mount namespace the host path may not resolve at all. The already-open
+ * fd is then named through /proc/self/fd, which refers to the helper
+ * itself and stays valid across the namespace change.
+ *
+ * Returns 0, or -1 with the helper's own failure reported through its
+ * exit status.
+ */
+int mountns_bind_into(pid_t child_pid, const char *host_dir, const char *container_path,
+                      int read_only)
+{
+	char ns_path[64];
+	int mntns_fd;
+	int src_fd;
+	pid_t helper;
+	int status;
+
+	/*
+	 * Detach a clone of the source tree into an fd BEFORE entering the
+	 * container's namespace. This is the whole reason open_tree() is
+	 * used rather than a plain bind: after setns() the host path is not
+	 * nameable from inside, and the obvious workaround -- naming the
+	 * already-open fd through /proc/self/fd -- does not work either,
+	 * because the container's /proc belongs to its own PID namespace
+	 * and the helper is not in it, so /proc/self does not resolve.
+	 */
+	src_fd = kx_open_tree(AT_FDCWD, host_dir, OPEN_TREE_CLONE | AT_RECURSIVE);
+	if (src_fd < 0) {
+		fprintf(stderr, "mountns_bind_into: open_tree(%s): %s\n", host_dir, strerror(errno));
+		return -1;
+	}
+	snprintf(ns_path, sizeof(ns_path), "/proc/%d/ns/mnt", (int)child_pid);
+	mntns_fd = open(ns_path, O_RDONLY | O_CLOEXEC);
+	if (mntns_fd < 0) {
+		fprintf(stderr, "mountns_bind_into: open(%s): %s\n", ns_path, strerror(errno));
+		close(src_fd);
+		return -1;
+	}
+
+	helper = fork();
+	if (helper < 0) {
+		close(src_fd);
+		close(mntns_fd);
+		return -1;
+	}
+	if (helper == 0) {
+		if (setns(mntns_fd, CLONE_NEWNS) != 0)
+			_exit(2);
+		/* The mount point may not exist in the image at all -- a volume
+		 * mounted at a /data the rootfs never had is normal, and the
+		 * create-time path already creates it. */
+		if (mkdir(container_path, 0755) != 0 && errno != EEXIST)
+			_exit(3);
+		if (kx_move_mount(src_fd, "", AT_FDCWD, container_path, MOVE_MOUNT_F_EMPTY_PATH) != 0)
+			_exit(4);
+		if (read_only) {
+			/*
+			 * A read-only bind needs the second, remount call -- the
+			 * flag is ignored on the initial attach. Fatal rather than
+			 * best-effort: a read-only mount that is silently writable
+			 * is a guarantee that is not one.
+			 */
+			if (mount(NULL, container_path, NULL, MS_BIND | MS_REMOUNT | MS_RDONLY, NULL) != 0)
+				_exit(5);
+		}
+		_exit(0);
+	}
+	close(src_fd);
+	close(mntns_fd);
+	if (waitpid(helper, &status, 0) != helper || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		fprintf(stderr, "mountns_bind_into: helper failed (status %d) binding %s -> %s\n",
+		        WIFEXITED(status) ? WEXITSTATUS(status) : -1, host_dir, container_path);
+		return -1;
+	}
 	return 0;
 }

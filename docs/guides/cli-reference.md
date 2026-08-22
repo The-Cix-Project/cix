@@ -185,7 +185,7 @@ Attach or detach one on a container that already exists:
 | `container volume attach NAME --volume=VOLUME --path=/mount/point [--read-only]` | Adds it to the container's definition |
 | `container volume detach NAME VOLUME` | Removes it from the definition; the volume and its data are untouched |
 
-Both take effect on the container's **next start**, not immediately — the command prints that back. Unlike `container network attach`, which is live, a bind mount can only be made while the container's mount namespace is being created.
+An attach to a **running** container takes effect immediately as well as being recorded; otherwise it applies on the container's next start. The command prints which. Unlike `container network attach`, which is live *and ephemeral*, the definition here is the source of truth — the live mount is it taking effect early, not instead.
 
 A volume is never *owned* by a container: containers reference volumes by name, never the reverse, so several containers may mount the same volume and a volume outlives every one of them. `volume ls`'s own listing plus `container inspect NAME` (which echoes a container's `volumes` back by name) are the two ends of that mapping.
 
