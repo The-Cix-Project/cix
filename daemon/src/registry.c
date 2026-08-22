@@ -676,6 +676,19 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 		 * long as the process itself is alive/recently-exited anyway.
 		 */
 		struct container_def *def = containerdef_find(entry->name);
+		/*
+		 * Issue #88: volumes come from the persisted body too, for the
+		 * same reason -- a registry_entry carries resolved host paths,
+		 * never the volume NAMES a caller actually asked for, and it is
+		 * the names that make the read-back useful. Parsed here and
+		 * freed below rather than mirrored onto the entry.
+		 */
+		struct json_value *body_root = NULL;
+
+		if (def != NULL && def->body != NULL)
+			body_root = json_parse(def->body, def->body_len);
+		containerdef_write_json_volumes(body_root, w);
+		json_free(body_root);
 
 		jw_key(w, "restart");
 		jw_str(w, def != NULL ? def->restart_policy : "no");

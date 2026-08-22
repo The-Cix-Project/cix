@@ -7946,6 +7946,17 @@ components:
             granted as exceptions to the default deny-list at creation
             (see ContainerCreate.cap_add). Empty means the fixed default
             deny-list applies with no exceptions.
+        volumes:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContainerVolumeMount"
+          description: >
+            The persistent volumes this container mounts (issue #88,
+            ADR-0183), by the volume NAME originally requested rather
+            than the resolved host path -- the name is what makes the
+            read-back useful. Echoed for both a running and a stopped
+            container, sourced from the persisted definition so the two
+            can never render it differently. Empty means none.
         files:
           type: array
           items:

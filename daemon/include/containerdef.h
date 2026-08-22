@@ -176,6 +176,15 @@ int containerdef_remove(const char *name);
 int containerdef_set_stopped(const char *name, int stopped);
 
 struct container_def *containerdef_find(const char *name);
+/*
+ * Issue #88: writes a "volumes" array onto w, read straight out of an
+ * already-parsed persisted request body (NULL writes an empty array).
+ * Shared by registry.c's live-container writer and this module's own
+ * stopped-container writer so the field can never render two ways.
+ */
+void containerdef_write_json_volumes(const struct json_value *root, struct json_writer *w);
+
+
 
 /*
  * Resolves every currently-defined container into dependency order (a
