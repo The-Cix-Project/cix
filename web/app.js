@@ -220,8 +220,13 @@ makeResizable(document.getElementById("tree-resize-handle"), {
 	min: 160,
 	max: 480,
 	getSize: () => document.querySelector(".tree-panel").getBoundingClientRect().width,
+	/* Publishes the width as a custom property rather than setting
+	 * .layout's grid-template-columns directly: the header's logo cell
+	 * is sized from the same variable, so the menu bar's first topic
+	 * button stays exactly above the content pane's left edge at any
+	 * tree width, including mid-drag. */
 	apply: (size) => {
-		document.querySelector(".layout").style.gridTemplateColumns = size + "px 1fr";
+		document.documentElement.style.setProperty("--tree-width", size + "px");
 	},
 });
 
@@ -1439,10 +1444,7 @@ function buildTreeNode(item, parentUl, parentId, depth, parentPath) {
 		li.appendChild(ul);
 		nodeUl[nodeId] = ul;
 
-		toggle.addEventListener("click", (event) => {
-			event.preventDefault();
-			const nowCollapsed = !ul.hidden;
-
+		const setCollapsed = (nowCollapsed) => {
 			ul.hidden = nowCollapsed;
 			toggle.textContent = nowCollapsed ? "▸" : "▾";
 			if (nowCollapsed)
@@ -1450,6 +1452,33 @@ function buildTreeNode(item, parentUl, parentId, depth, parentPath) {
 			else
 				collapsedCategories.delete(path);
 			saveCollapsedCategories();
+		};
+
+		toggle.addEventListener("click", (event) => {
+			event.preventDefault();
+			setCollapsed(!ul.hidden);
+		});
+
+		/* Double-clicking the row itself opens/closes it too, not just
+		 * the little chevron. The chevron is a ~14px target and it is
+		 * the only way to expand a group without also navigating to it,
+		 * which is a lot of precision to demand for the most common
+		 * thing anyone does to a tree. Bound to the label rather than
+		 * the whole row so the chevron keeps its own single-click
+		 * meaning intact: two clicks on the chevron already toggle
+		 * twice, and a dblclick handler sitting over the top of that
+		 * would make the outcome depend on where in the row you
+		 * happened to land.
+		 *
+		 * The first click of the double still navigates -- deliberately.
+		 * The label IS a link, and swallowing its click to wait and see
+		 * whether a second one arrives would put a delay on every
+		 * single-click navigation in the tree to serve the rarer
+		 * gesture. Navigating to a group you just expanded is what
+		 * clicking it does anyway. */
+		anchor.addEventListener("dblclick", (event) => {
+			event.preventDefault();
+			setCollapsed(!ul.hidden);
 		});
 	}
 	parentUl.appendChild(li);
@@ -4028,7 +4057,7 @@ async function refreshDisks() {
 	cache.disks = data.disks;
 	if (parseHash().category === "disks")
 		renderDisks();
-	/* Keeps the "+ Create > Disk Role" modal's own disk select current
+	/* Keeps the "Disks > Assign Disk Role" modal's own disk select current
 	 * even when opened from the header dropdown rather than a specific
 	 * disk row's own "Assign role…" shortcut (which sets a value
 	 * afterward, same populate-then-select order populateContainerForm

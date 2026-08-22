@@ -153,11 +153,20 @@ body {
 	flex-direction: column;
 }
 
+/* Vertical padding lives on the children rather than here, and there
+ * is no left padding at all, so the logo cell can be exactly as wide
+ * and exactly as tall as the header: its right border then continues
+ * straight into the tree panel's own right border as one unbroken
+ * line, and the menu bar's first topic sits directly above the content
+ * pane. align-items: stretch is what lets that cell reach the bottom
+ * border -- centered, it would float in the middle and the line would
+ * break. */
 header {
 	display: flex;
-	align-items: center;
+	align-items: stretch;
 	justify-content: space-between;
-	padding: 1rem 1.5rem;
+	padding: 0 1.5rem 0 0;
+	min-height: 3.9rem;
 	border-bottom: 1px solid var(--border);
 	flex: 0 0 auto;
 }
@@ -209,10 +218,58 @@ header {
 	filter: none;
 }
 
+/* Sized to the tree column, from the same variable the grid uses --
+ * including mid-drag, since makeResizable() sets that variable rather
+ * than the grid directly. align-self overrides .menu-bar's own
+ * align-items: center, which would otherwise shrink this back to its
+ * content height and break the border line. */
+.menu-dropdown-logo {
+	flex: 0 0 var(--tree-width, 240px);
+	align-self: stretch;
+	border-right: 1px solid var(--border);
+}
+
 .menu-dropdown-toggle-logo {
 	display: flex;
 	align-items: center;
-	padding: 0.4rem 0.6rem;
+	justify-content: flex-start;
+	width: 100%;
+	height: 100%;
+	border-radius: 0;
+	padding: 0 1rem;
+}
+
+/* This inset, plus .menu-bar's own 0.15rem gap and the toggle's own
+ * 0.7rem of padding, puts the first topic's text exactly 1.5rem past
+ * the column boundary -- the same inset #content-scroll gives the page
+ * directly below it. Measured, not estimated: 0.65 + 0.15 + 0.7. */
+.menu-bar-topics {
+	display: flex;
+	align-items: center;
+	gap: 0.15rem;
+	flex: 1 1 auto;
+	min-width: 0;
+	flex-wrap: wrap;
+	padding-left: 0.65rem;
+}
+
+/* Sub-group headings inside the Services and System menus, one per
+ * child of that branch in the tree. Not buttons: they name a group,
+ * they are not a place to go. Styled as .tree-instance-label is, since
+ * both do the same job. */
+.menu-group-label {
+	padding: 0.5rem 1rem 0.25rem;
+	font-size: 0.7rem;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--muted);
+	cursor: default;
+}
+
+.menu-group-label:not(:first-child) {
+	border-top: 1px solid var(--border);
+	margin-top: 0.3rem;
 }
 
 .header-mark {
@@ -401,7 +458,7 @@ header {
 
 .layout {
 	display: grid;
-	grid-template-columns: 240px 1fr;
+	grid-template-columns: var(--tree-width, 240px) 1fr;
 	flex: 1 1 auto;
 	min-height: 0;
 }
@@ -446,6 +503,19 @@ header {
 	.menu-bar {
 		flex-basis: 100%;
 		order: 2;
+	}
+	/* The tree is a full-width band at this size, not a column, so
+	 * there is no column edge left to align the logo cell to. */
+	.menu-dropdown-logo {
+		flex: 0 0 auto;
+		border-right: none;
+	}
+	.menu-bar-topics {
+		padding-left: 0;
+	}
+	header {
+		padding: 0.5rem 1rem;
+		align-items: center;
 	}
 }
 
@@ -549,7 +619,11 @@ header {
 	cursor: default;
 }
 
+/* user-select: none because double-clicking a row toggles it open or
+ * closed (buildTreeNode()), and the browser's own default for a double
+ * click is to select the word under it. */
 .tree-category {
+	user-select: none;
 	flex: 1 1 auto;
 	display: flex;
 	align-items: center;
@@ -573,6 +647,7 @@ header {
 }
 
 .tree-item {
+	user-select: none;
 	flex: 1 1 auto;
 	display: flex;
 	align-items: center;
