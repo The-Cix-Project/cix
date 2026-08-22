@@ -6228,6 +6228,27 @@ static void respond_volume_error(int fd, enum volume_error e)
 	case VOLUME_ERR_IO:
 		respond_error(fd, 500, "Internal Server Error", "could not create the volume directory");
 		return;
+	case VOLUME_ERR_TARGET_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such disk or partition to migrate onto");
+		return;
+	case VOLUME_ERR_TARGET_NOT_READY:
+		respond_error(fd, 409, "Conflict",
+		              "that disk is not mounted -- give it a role and format it first");
+		return;
+	case VOLUME_ERR_SAME_PLACE:
+		respond_error(fd, 409, "Conflict", "this volume is already there");
+		return;
+	case VOLUME_ERR_IN_USE_RUNNING:
+		respond_error(fd, 409, "Conflict",
+		              "a container mounting this volume is running -- a bind mount resolves to a "
+		              "host path when the container starts, so moving the data underneath it "
+		              "would leave it writing to the old location. Stop the container first");
+		return;
+	case VOLUME_ERR_COPY_FAILED:
+		respond_error(fd, 500, "Internal Server Error",
+		              "could not copy the volume's data to the new location -- nothing was moved "
+		              "and the volume still points at its original data");
+		return;
 	default:
 		respond_error(fd, 500, "Internal Server Error", "could not persist the volume");
 		return;
@@ -6333,6 +6354,69 @@ static int volume_referenced_by_container(const char *volume_name, char *out_con
 		json_free(root);
 	}
 	return 0;
+}
+
+/*
+ * POST /v1/volumes/{name}/migrate -- move a volume's data to another
+ * disk or partition, then repoint it.
+ *
+ * Refused while any container mounting this volume is RUNNING. A bind
+ * mount resolves to a host path once, when the container starts
+ * (ADR-0183), so moving the data underneath a live container would
+ * leave it writing to the old location with nothing to indicate
+ * anything had changed -- a silent split-brain rather than an error. A
+ * stopped container is fine: it picks up the new location on its next
+ * start, like any other definition change.
+ */
+static void handle_volume_migrate(int fd, const char *name, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *target;
+	char user[REGISTRY_NAME_MAX];
+	enum volume_error verr;
+
+	if (volume_find(name) == NULL) {
+		respond_error(fd, 404, "Not Found", "no such volume");
+		return;
+	}
+	root = json_parse(body, body_len);
+	if (root == NULL || root->type != JSON_OBJECT) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	target = json_as_string(json_object_get(root, "disk"));
+	if (target == NULL)
+		target = ""; /* omitted means the default OS-disk placement */
+
+	/*
+	 * Only a genuinely RUNNING container blocks this. registry_find()
+	 * alone is not the test -- since ADR-0181 the registry also holds
+	 * exited containers, so using it would refuse a migrate because
+	 * something that ran once and stopped still has an entry. An exited
+	 * or stopped container picks up the new location on its next start,
+	 * exactly like any other definition change; only a live process has
+	 * a bind mount already resolved to the old path.
+	 */
+	{
+		struct registry_entry *e = NULL;
+
+		if (volume_referenced_by_container(name, user, sizeof(user)))
+			e = registry_find(user);
+		if (e != NULL && e->running) {
+			json_free(root);
+			respond_volume_error(fd, VOLUME_ERR_IN_USE_RUNNING);
+			return;
+		}
+	}
+
+	verr = volume_migrate(name, target);
+	json_free(root);
+	if (verr != VOLUME_OK) {
+		respond_volume_error(fd, verr);
+		return;
+	}
+	handle_volume_get(fd, name);
 }
 
 static void handle_volume_delete(int fd, const char *name)
@@ -17446,6 +17530,22 @@ static void dispatch(int fd, const struct http_request *req)
 			if (strcmp(req->method, "DELETE") == 0) {
 				handle_volume_delete(fd, vname);
 				return;
+			}
+			{
+				/* .../{name}/migrate -- volume names are '/'-free, so
+				 * the first '/' unambiguously starts the sub-resource. */
+				const char *slash = strchr(vname, '/');
+
+				if (slash != NULL && strcmp(slash, "/migrate") == 0 &&
+				    strcmp(req->method, "POST") == 0 &&
+				    (size_t)(slash - vname) < VOLUME_NAME_MAX) {
+					char volume_name[VOLUME_NAME_MAX];
+
+					memcpy(volume_name, vname, slash - vname);
+					volume_name[slash - vname] = '\0';
+					handle_volume_migrate(fd, volume_name, req->body, req->body_len);
+					return;
+				}
 			}
 		}
 	}

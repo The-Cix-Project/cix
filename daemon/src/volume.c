@@ -1,6 +1,7 @@
 #include "volume.h"
 #include "disk.h"
 #include "persist.h"
+#include "treecopy.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -255,4 +256,89 @@ void volume_write_json_list(struct json_writer *w)
 			volume_write_json_one(&g_volumes[i], w);
 	}
 	jw_arr_close(w);
+}
+
+/*
+ * Moves a volume's data, then repoints it.
+ *
+ * The order is the whole safety property: copy, persist the new
+ * placement, and only then remove the old copy. A failure at any step
+ * leaves the volume pointing at data that exists -- whereas repointing
+ * first would open a window where it points at a location the data has
+ * not reached yet.
+ *
+ * Deliberately synchronous, unlike container-storage migration
+ * (ADR-0142), which is an async job with a poll endpoint. That one moves
+ * a container's whole overlay while the container keeps running, so it
+ * has to be. This refuses to run while anything using the volume is
+ * running at all, so there is nothing to keep alive during the copy and
+ * an async job would be machinery with no purpose. If volumes large
+ * enough to need one show up, that is a real reason to revisit it --
+ * "it might be big" is not.
+ */
+enum volume_error volume_migrate(const char *name, const char *disk_name)
+{
+	struct volume *v = volume_find(name);
+	struct discovered_disk disks[DISK_ENUM_MAX];
+	char old_path[PATH_MAX];
+	char new_path[PATH_MAX];
+	char old_disk[VOLUME_DISK_NAME_MAX];
+	int count, i, found = 0;
+
+	if (v == NULL)
+		return VOLUME_ERR_NOT_FOUND;
+	if (disk_name == NULL)
+		disk_name = "";
+
+	if (strcmp(v->disk, disk_name) == 0)
+		return VOLUME_ERR_SAME_PLACE;
+
+	/* An explicit target has to be a real, currently-mounted device --
+	 * the same precondition volume_host_path() already applies when it
+	 * resolves a placement, checked here so the refusal is explicit
+	 * rather than a silent fall back to the default location. */
+	if (disk_name[0] != '\0') {
+		count = disk_enumerate(disks, DISK_ENUM_MAX, g_volumes_dir);
+		for (i = 0; i < count; i++) {
+			if (strcmp(disks[i].name, disk_name) != 0)
+				continue;
+			found = 1;
+			if (!disks[i].mounted)
+				return VOLUME_ERR_TARGET_NOT_READY;
+			break;
+		}
+		if (!found)
+			return VOLUME_ERR_TARGET_NOT_FOUND;
+	}
+
+	if (volume_host_path(v, old_path, sizeof(old_path)) != 0)
+		return VOLUME_ERR_IO;
+
+	snprintf(old_disk, sizeof(old_disk), "%s", v->disk);
+	snprintf(v->disk, sizeof(v->disk), "%s", disk_name);
+	if (volume_host_path(v, new_path, sizeof(new_path)) != 0) {
+		snprintf(v->disk, sizeof(v->disk), "%s", old_disk);
+		return VOLUME_ERR_IO;
+	}
+
+	/* Copy with the placement already flipped so new_path resolves,
+	 * but nothing persisted yet -- an in-memory field is trivially
+	 * restored, a written one is not. */
+	if (persist_mkdir_p(new_path) != 0 || treecopy_recursive(old_path, new_path) != 0) {
+		snprintf(v->disk, sizeof(v->disk), "%s", old_disk);
+		return VOLUME_ERR_COPY_FAILED;
+	}
+	if (save_state() != 0) {
+		snprintf(v->disk, sizeof(v->disk), "%s", old_disk);
+		return VOLUME_ERR_PERSIST_FAILED;
+	}
+
+	/*
+	 * Only now is the old copy removable. If this fails the volume is
+	 * still correct and complete at its new location -- the cost is
+	 * disk space left behind, which is a far better failure than data
+	 * that is gone.
+	 */
+	persist_remove_tree(old_path);
+	return VOLUME_OK;
 }

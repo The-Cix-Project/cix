@@ -1060,7 +1060,23 @@
 			</div>
 		</section>
 
+		<!--
+		     The catalogue: what is declared, and how it gets here. Three tabs
+		     rather than three tree leaves -- they are one subject (the recipe
+		     set and its distribution), and splitting them across the tree made
+		     you navigate to find out which of three pages a thing was on.
+		     The Recipes tab has its own inner tabs for the three recipe kinds;
+		     the tab handler only touches its own bar's panels, so the nesting
+		     works.
+		-->
 		<section class="view" id="view-recipes" hidden>
+			<h2>Catalogue</h2>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="cat-recipes">Recipes</button>
+				<button type="button" class="tab-button" data-tab="cat-repo">Repo &amp; Sync</button>
+				<button type="button" class="tab-button" data-tab="cat-cache">Cache &amp; Artifacts</button>
+			</div>
+			<div class="tab-panel" data-tab="cat-recipes">
 			<div class="view-list">
 				<h2>Recipes</h2>
 				<p class="hint">Three git-syncable recipe kinds (ADR-0040/ADR-0123/ADR-0151), one catalog:
@@ -1137,10 +1153,8 @@
 					</table>
 				</div>
 			</div>
-		</section>
-
-		<!-- Packages: Repo & Sync (ADR-0121) -->
-		<section class="view" id="view-pkg-repo" hidden>
+		</div>
+			<div class="tab-panel" data-tab="cat-repo" hidden>
 			<h2>Package Repo &amp; Sync</h2>
 			<p class="hint">
 				The configured git-forge source recipes sync from (ADR-0121) -- gitea/github/gitlab,
@@ -1183,10 +1197,8 @@
 			<h3>Sync status</h3>
 			<div id="pkg-sync-status-box" class="pki-ca-status"></div>
 			<button type="button" id="pkg-sync-now">Sync now</button>
-		</section>
-
-		<!-- Packages: Cache & Artifacts (ADR-0122) -->
-		<section class="view" id="view-pkg-cache" hidden>
+		</div>
+			<div class="tab-panel" data-tab="cat-cache" hidden>
 			<h2>Package Cache &amp; Artifacts</h2>
 			<p class="hint">
 				Tier 1: a local build-artifact cache (LRU-evicted, keyed by name+version) that skips a
@@ -1224,6 +1236,7 @@
 				</label>
 				<button type="submit">Save</button>
 			</form>
+		</div>
 		</section>
 
 		<section class="view" id="view-package-detail" hidden>
@@ -1571,6 +1584,28 @@
 		<!-- Issue #81: health of every registered LDAP/DNS/NTP/syslog server.
 		     One page for all four kinds because it is one mechanism. -->
 		<!-- Issue #88: storage that outlives the containers using it. -->
+		<!-- One volume: where its data lives, who mounts it, and moving it. -->
+		<section class="view" id="view-volume-detail" hidden>
+			<h2 id="vd-title"></h2>
+			<div class="detail-grid" id="vd-fields"></div>
+			<h3>Move it</h3>
+			<p class="hint" id="vd-migrate-note"></p>
+			<form id="vd-migrate-form">
+				<label>
+					Migrate to
+					<select id="vd-target-disk">
+						<option value="">(default OS-disk placement)</option>
+					</select>
+				</label>
+				<button type="submit">Migrate</button>
+			</form>
+			<p class="hint">The data is copied to the new location and the volume repointed only
+				once the copy succeeds, so a failure at any point leaves the volume still pointing at
+				data that exists. Refused while a container mounting it is running &mdash; a bind mount
+				resolves to a host path when the container starts, so moving the data underneath a live
+				container would leave it writing to the old location with nothing to show for it.</p>
+		</section>
+
 		<section class="view" id="view-volumes" hidden>
 			<div class="view-list">
 				<h2>Volumes</h2>

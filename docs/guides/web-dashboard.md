@@ -31,15 +31,11 @@ Disks
     <one leaf per partition on it>
       <volumes held on that partition>
     <volumes held on the disk itself>
-Software
-  Catalog
+System
+  Software
+    Catalogue      (tabs: Recipes / Repo & Sync / Cache & Artifacts)
     Images
     Packages
-    Recipes
-  Build Pipeline
-    Repo & Sync
-    Cache & Artifacts
-System
   PKI
     Root CA
     Intermediate CA
@@ -123,6 +119,7 @@ Four tabs, Proxmox-style: **Summary** (the default tab when you open a container
   - **Partitions** -- whole disks only, since only a whole disk has a table. A read-only overview of the partitions, each linking to its own page where its actions live, plus add-a-partition (with the free-space figure from #95 and client-side validation) and write-a-fresh-GPT-table, both `confirm()`-guarded. When something on the disk is mounted the page says so and explains that the table cannot be rewritten and a mounted partition cannot be deleted -- `has_mounted_partition` surfaced as the reason rather than a bare 409. Resizing is **grow-only** and lives on the partition's own page: the button appears only for an unmounted ext4 or unformatted partition, since growing btrfs needs it mounted and this operation needs it unmounted. The prompt names the free space *immediately after* that partition, which is the only space that can extend it.
 
 - **System > Host > Storage Placement** -- which disk holds each platform-level concern, in one place instead of three: state-storage, log-storage and rebuildable-storage (ADR-0141), each with its current location, a target select populated from disks already carrying the matching role, and a live Migrate with inline status. Backup-config and swap placement are **linked, not repeated** -- they live on Maintenance > Backup and Host > Host Swap respectively, and duplicating their controls here would mean one setting with two places to change it.
+- **Volume detail** (`#volumes/{name}`) -- where a volume's data lives (its placement, the device actually holding it, and the resolved host path), which containers mount it and at which path, and a **Migrate** form to move it to another disk or partition. A volume's placement used to be fixed at create time, which for storage that deliberately outlives its containers is the wrong thing to decide once. The target list offers only mounted, non-OS devices, since anything else would be a choice the daemon is going to refuse, and the Migrate button is disabled with an explanation while a container mounting it is running.
 - **Volumes** (`#volumes`) -- persistent volumes (issue #88, ADR-0183): storage whose lifetime is independent of any container, so it survives the container being deleted and recreated. Filed beside Disks rather than under Monitoring -- it is storage management, and it shares Disks' own role mechanism for placement. Created via the header's `Create > New Volume` modal like every other creatable resource (ADR-0138). Each row shows a **Mounted by** column -- which containers currently mount this volume and at which path -- because that reverse mapping is the thing the ownership model is easy to be unsure about: containers reference volumes, never the other way round, so a volume genuinely does not know who uses it and the column is cross-referenced client-side against the container list (the same approach the network detail page uses for "containers on this network"). "not currently mounted" is deliberately not styled as an error: a volume outliving every container that used it is the whole point, and is exactly when its data is most at risk of being deleted by someone assuming it is dead weight. Per-row Delete is a `confirm()`-guarded danger action, refused outright (409, naming the container) while any container definition still references it.
 - **System > Host > Host Swap** -- whether a swap file is currently enabled (ADR-0069), with a size field + Enable button and a Disable button -- useful for memory-heavy package builds on a box with limited RAM.
 - **System > Host > Rolling Restart** -- the daemon-wide `jitter_window_seconds` (ADR-0124) used to spread out `follow_rolling` container restarts after a rolling image rebuild -- 0 disables jitter (restart happens immediately).

@@ -48,7 +48,17 @@ enum volume_error {
 	VOLUME_ERR_NOT_FOUND,
 	VOLUME_ERR_IN_USE,
 	VOLUME_ERR_PERSIST_FAILED,
-	VOLUME_ERR_IO
+	VOLUME_ERR_IO,
+	/*
+	 * Migration's own refusals. Each is a different thing to tell an
+	 * operator, so each is its own value rather than one generic
+	 * "cannot migrate".
+	 */
+	VOLUME_ERR_TARGET_NOT_FOUND,
+	VOLUME_ERR_TARGET_NOT_READY,
+	VOLUME_ERR_SAME_PLACE,
+	VOLUME_ERR_IN_USE_RUNNING,
+	VOLUME_ERR_COPY_FAILED
 };
 
 struct volume {
@@ -106,5 +116,21 @@ int volume_host_path(const struct volume *v, char *out, size_t out_size);
 
 void volume_write_json_one(const struct volume *v, struct json_writer *w);
 void volume_write_json_list(struct json_writer *w);
+
+/*
+ * Moves a volume's data to disk_name ("" for the default OS-disk
+ * placement), then repoints it.
+ *
+ * Copy first, repoint second, and only remove the original once the
+ * repoint has been persisted -- so a failure at any point leaves the
+ * volume still pointing at data that exists. The reverse order would
+ * have a window where the volume points somewhere the data is not.
+ *
+ * Refused while any container that mounts this volume is running: a
+ * bind mount resolves to a host path at container start, so moving the
+ * data underneath a running container would leave it writing to the old
+ * location with no indication anything had changed.
+ */
+enum volume_error volume_migrate(const char *name, const char *disk_name);
 
 #endif /* VOLUME_H */
