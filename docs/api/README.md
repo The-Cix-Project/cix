@@ -133,6 +133,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/volumes` | List every persistent volume (issue #88, ADR-0183) |
 | POST | `/volumes` | Create a volume -- named storage whose lifetime is independent of any container |
 | GET | `/volumes/{name}` | Inspect one volume |
+| GET | `/software` | What is declared (has a recipe) against what is actually installed (issue #97) |
 | GET | `/system/volume-backup-config` | The shared schedule for volume content snapshots (issue #96) |
 | PUT | `/system/volume-backup-config` | Set it — target disk, on/off, interval |
 | GET | `/volumes/{name}/backups` | A volume's backup policy, its snapshots, and the last attempt |
@@ -1471,6 +1472,27 @@ POST /v1/volumes/jump-home/restore    {"snapshot":"20260822T030000Z","confirm_vo
 - **Restore replaces, it does not merge.** Merging would leave files the snapshot never contained, producing a third state that is neither what was there nor what was backed up — a restore yielding something nobody has ever seen is worse than a refusal. It needs `confirm_volume_name` to match.
 - **Retention is applied after a successful snapshot, never before.** Deleting the oldest to make room for one that then fails would lose history for nothing. A copy that fails part-way is removed rather than left behind to be restored later as though whole.
 - Snapshots go to a disk carrying the `backup` role — the same role the configuration snapshots use, so there is one answer to "where do backups go" rather than two.
+
+
+## What is declared, against what is actually here
+
+```
+GET /v1/software
+-> {"software":[{"name":"jumpbox","kind":"image","declared":true,"installed":true},
+                {"name":"glauth-cctc-test","kind":"image","declared":false,"installed":true}]}
+```
+
+Three states, each meaning something different:
+
+- **declared + installed** — normal.
+- **installed, not declared** — the one that matters. It has no recipe, so it **cannot be rebuilt from source control**, which on a platform whose premise is "compiled from source, reproducibly" is exactly what should be visible. Either capture a recipe for it, or it is debris.
+- **declared, not installed** — a recipe nobody has applied. Harmless, but worth knowing.
+
+This is reconciled by the daemon rather than left to each client, because the join spans four endpoints (images, image recipes, packages, package recipes) and two clients each implementing it is how they drift from one another — the same reasoning that folded the disk `role`/`part_label` join server-side for [#90](#partition-level-disk-management).
+
+It reports; it does not act. Capturing a recipe from an existing image is a real operation with real choices in it, and deleting an image is destructive — seeing the three states is the piece worth having first.
+
+The gap was not hypothetical: on a live box 11 images existed and 8 had recipes, and two of the three without one were leftovers from earlier investigations that nobody had noticed, because nothing anywhere put the two sets side by side.
 
 
 ## Capability restriction (issue #29)

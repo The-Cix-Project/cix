@@ -156,6 +156,13 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | `network attach-interface NAME --interface=IFNAME [--vlan=N]` | Enslave a real host interface to this network's bridge; `--vlan=` creates an 802.1q sub-interface instead |
 | `network detach-interface NAME --interface=IFNAME` | Detach |
 
+
+## Software
+
+| Command | |
+|---|---|
+| `software` | What is declared (has a recipe) against what is actually installed. Flags anything installed with **no recipe** — it cannot be rebuilt from source control, so either capture one or it is debris |
+
 ## Volumes
 
 Storage whose lifetime is independent of any container using it — deleting a container never removes its volumes. That is what makes it the right home for a jump host's `/home`, a database's data directory, or anything else worth keeping across the recreates that `follow_rolling` and recipe edits perform routinely. See [ADR-0183](../adr/0183-persistent-volumes.md) for the reasoning and [`docs/api/README.md`](../api/README.md#persistent-volumes-issue-88-adr-0183) for the payload contract.

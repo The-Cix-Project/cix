@@ -6870,6 +6870,59 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /software:
+    get:
+      summary: What is declared against what is actually installed (issue #97)
+      description: >
+        Reconciles the recipe set against the live set, for images,
+        packages and containers alike. Computed here rather than left to
+        each client: joining "what recipes exist" against "what is
+        installed" spans four endpoints, and two clients each
+        implementing it is how they drift from one another -- the same
+        reasoning that folded the disk role/label join server-side.
+
+        The state that matters is `installed: true, declared: false`.
+        Something installed with no recipe cannot be rebuilt from source
+        control, which on a platform whose premise is "reproducible from
+        source" is exactly what an operator needs to see; found live on
+        a real box where 11 images existed, 8 had recipes, and two of
+        the three orphans turned out to be debris nobody had noticed.
+
+        Acting on the drift is deliberately not part of this: capturing
+        a recipe from an existing image is a real operation with real
+        choices in it, and deleting one is destructive. This reports.
+      operationId: listSoftware
+      responses:
+        "200":
+          description: Every known piece of software and its two states
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [software]
+                properties:
+                  software:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, kind, declared, installed]
+                      properties:
+                        name:
+                          type: string
+                        kind:
+                          type: string
+                          enum: [image, package, container]
+                        declared:
+                          type: boolean
+                          description: A recipe for it exists.
+                        installed:
+                          type: boolean
+                          description: >
+                            It actually exists on this host -- an image
+                            that is present, a package installed into at
+                            least one image, or a persisted container
+                            definition.
+
   /system/volume-backup-config:
     get:
       summary: The shared schedule for volume content snapshots (issue #96)

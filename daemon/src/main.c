@@ -14826,6 +14826,126 @@ static void respond_image_recipe_error(int fd, enum pkg_error err)
 	}
 }
 
+/*
+ * GET /v1/software (issue #97) -- what is DECLARED against what is
+ * actually INSTALLED, reconciled here rather than in every client.
+ *
+ * The gap this closes is real and was found on a live box: 11 images
+ * existed, 8 had recipes. Two of the three without one were debris
+ * nobody had noticed, because nothing anywhere put the declared set
+ * next to the installed set. An image with no recipe cannot be rebuilt
+ * from source control, which on a platform whose premise is
+ * "reproducible from source" is exactly the state worth surfacing.
+ *
+ * Three states, each meaning something different and each actionable:
+ *
+ *   declared + installed    normal
+ *   installed, not declared drift -- capture a recipe, or it is debris
+ *   declared, not installed a recipe nobody has applied
+ *
+ * Computed server-side deliberately. Two clients would otherwise each
+ * implement this join across four endpoints and drift from each other,
+ * the way disk role and partition label did before #90 folded that join
+ * in. The API-First Mandate makes the endpoint the thing that exists;
+ * the dashboard and CLI both render it.
+ */
+static void software_write_kind(struct json_writer *w, const char *kind,
+                                 char declared[][PKG_IMAGE_NAME_MAX], int declared_count,
+                                 char installed[][PKG_IMAGE_NAME_MAX], int installed_count)
+{
+	int i, k;
+
+	for (i = 0; i < installed_count; i++) {
+		int is_declared = 0;
+
+		for (k = 0; k < declared_count; k++) {
+			if (strcmp(installed[i], declared[k]) == 0) {
+				is_declared = 1;
+				break;
+			}
+		}
+		jw_obj_open(w);
+		jw_key(w, "name");
+		jw_str(w, installed[i]);
+		jw_key(w, "kind");
+		jw_str(w, kind);
+		jw_key(w, "declared");
+		jw_bool(w, is_declared);
+		jw_key(w, "installed");
+		jw_bool(w, 1);
+		jw_obj_close(w);
+	}
+	/* Declared but not installed -- the other half of the picture, and
+	 * the reason this is a reconciliation rather than a flag on the
+	 * image list. */
+	for (k = 0; k < declared_count; k++) {
+		int is_installed = 0;
+
+		for (i = 0; i < installed_count; i++) {
+			if (strcmp(installed[i], declared[k]) == 0) {
+				is_installed = 1;
+				break;
+			}
+		}
+		if (is_installed)
+			continue;
+		jw_obj_open(w);
+		jw_key(w, "name");
+		jw_str(w, declared[k]);
+		jw_key(w, "kind");
+		jw_str(w, kind);
+		jw_key(w, "declared");
+		jw_bool(w, 1);
+		jw_key(w, "installed");
+		jw_bool(w, 0);
+		jw_obj_close(w);
+	}
+}
+
+static void handle_software_list(int fd)
+{
+	static char declared[PKG_MAX_PACKAGES][PKG_IMAGE_NAME_MAX];
+	static char installed[PKG_MAX_PACKAGES][PKG_IMAGE_NAME_MAX];
+	struct json_writer w;
+	int dn, in_;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "software");
+	jw_arr_open(&w);
+
+	dn = image_recipe_list_names(declared, PKG_MAX_PACKAGES);
+	in_ = image_list_names(installed, PKG_MAX_PACKAGES);
+	software_write_kind(&w, "image", declared, dn, installed, in_);
+
+	dn = pkg_recipe_list_names(declared, PKG_MAX_PACKAGES);
+	in_ = pkg_installed_list_names(installed, PKG_MAX_PACKAGES);
+	software_write_kind(&w, "package", declared, dn, installed, in_);
+
+	{
+		/*
+		 * A container's "installed" is a persisted definition. Every
+		 * container is persisted since ADR-0181, so this is simply
+		 * every container that exists, running or not.
+		 */
+		char order[CONTAINERDEF_MAX][REGISTRY_NAME_MAX];
+		int n = containerdef_resolve_order(order);
+		int i;
+
+		for (i = 0; i < n && i < PKG_MAX_PACKAGES; i++)
+			snprintf(installed[i], PKG_IMAGE_NAME_MAX, "%s", order[i]);
+		if (n > PKG_MAX_PACKAGES)
+			n = PKG_MAX_PACKAGES;
+		dn = container_recipe_list_names(declared, PKG_MAX_PACKAGES);
+		software_write_kind(&w, "container", declared, dn, installed, n);
+	}
+
+	jw_arr_close(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_image_recipe_list(int fd)
 {
 	struct json_writer w;
@@ -17906,6 +18026,10 @@ static void dispatch(int fd, const struct http_request *req)
 				return;
 			}
 		}
+	}
+	if (strcmp(req->path, "/v1/software") == 0 && strcmp(req->method, "GET") == 0) {
+		handle_software_list(fd);
+		return;
 	}
 	if (strcmp(req->path, "/v1/system/volume-backup-config") == 0) {
 		if (strcmp(req->method, "GET") == 0) {

@@ -4278,6 +4278,55 @@ static void fmt_volume_backups(const struct json_value *v)
 		printf("  %s\n", json_as_string(json_object_get(snaps->u.array.items[i], "stamp")));
 }
 
+/*
+ * Issue #97: what is declared against what is actually installed. The
+ * state worth seeing is "installed, no recipe" -- it cannot be rebuilt
+ * from source control, and nothing else surfaces it.
+ */
+static void fmt_software(const struct json_value *v)
+{
+	const struct json_value *list = json_object_get(v, "software");
+	int i, drift = 0;
+
+	if (list == NULL || list->type != JSON_ARRAY || list->u.array.count == 0) {
+		printf("no software\n");
+		return;
+	}
+	printf("%-28s %-10s %s\n", "NAME", "KIND", "STATE");
+	for (i = 0; i < list->u.array.count; i++) {
+		const struct json_value *e = list->u.array.items[i];
+		const struct json_value *de = json_object_get(e, "declared");
+		const struct json_value *in = json_object_get(e, "installed");
+		int d = de != NULL && de->type == JSON_BOOL && de->u.boolean;
+		int inst = in != NULL && in->type == JSON_BOOL && in->u.boolean;
+		const char *state;
+
+		if (d && inst)
+			state = "ok";
+		else if (inst) {
+			state = "NO RECIPE -- cannot be rebuilt from source";
+			drift++;
+		} else
+			state = "declared, not installed";
+		printf("%-28s %-10s %s\n", json_as_string(json_object_get(e, "name")),
+		       json_as_string(json_object_get(e, "kind")), state);
+	}
+	if (drift > 0)
+		printf("\n%d item(s) installed with no recipe -- either capture one, or they are debris.\n",
+		       drift);
+}
+
+static int cmd_software(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/software", NULL, &r) != 0) {
+		fprintf(stderr, "thincctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_software);
+}
+
 static int cmd_volume_backups(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	char path[300];
@@ -11247,6 +11296,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_host_stats(client, json_mode);
 	if (strcmp(cmd, "server-health") == 0)
 		return cmd_server_health(client, json_mode, argc, argv);
+	if (strcmp(cmd, "software") == 0)
+		return cmd_software(client, json_mode);
 	if (strcmp(cmd, "volume") == 0)
 		return cmd_volume(client, json_mode, argc, argv);
 	if (strcmp(cmd, "kmsg") == 0)

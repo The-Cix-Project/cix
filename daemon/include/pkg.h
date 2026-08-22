@@ -1072,6 +1072,23 @@ enum pkg_error container_recipe_rm(const char *name);
 void container_recipe_write_json_list(struct json_writer *w);
 
 /*
+ * Name-only enumerations for the declared-vs-installed reconciliation
+ * (issue #97). Each returns how many names it wrote.
+ *
+ * They exist because a client cannot compute this reliably: joining
+ * "what recipes exist" against "what is installed" across four
+ * endpoints is a join two clients would each implement and then drift
+ * on, the way disk role and partition label did before #90 folded that
+ * join server-side.
+ */
+int image_recipe_list_names(char names[][PKG_IMAGE_NAME_MAX], int max);
+int container_recipe_list_names(char names[][PKG_IMAGE_NAME_MAX], int max);
+int pkg_recipe_list_names(char names[][PKG_IMAGE_NAME_MAX], int max);
+/* Installed package names, de-duplicated -- the same package in three
+ * images is one piece of software, not three. */
+int pkg_installed_list_names(char names[][PKG_IMAGE_NAME_MAX], int max);
+
+/*
  * Substitutes every {{SECRET:KEY}} token in the named recipe's own
  * content from secrets (an already-parsed JSON object, NULL for none)
  * and returns the result -- caller frees. NULL + *out_err set on any
