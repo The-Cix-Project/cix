@@ -463,39 +463,54 @@ int main(void)
 	      "restoring without naming the volume back is refused -- it replaces everything in it");
 	kx_response_free(&r);
 
-	/* allow_while_running: without it, a volume mounted by an
+	/* An unknown mode reads as the safe one rather than being accepted
+	 * as something this daemon does not implement. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT", "/v1/volumes/vol1/backups",
+	                       "{\"enabled\":true,\"while_running\":\"whatever\"}", &r) == 0 &&
+	    r.status == 200) {
+		const char *aw = json_as_string(json_object_get(r.json, "while_running"));
+
+		check(aw != NULL && strcmp(aw, "refuse") == 0,
+		      "an unrecognised while_running mode falls back to refusing, not to copying");
+	} else {
+		check(0, "an unrecognised while_running mode falls back to refusing, not to copying");
+	}
+	kx_response_free(&r);
+
+	/* while_running: without a non-default mode, a volume mounted by an
 	 * always-on service could never be backed up at all -- the guard
 	 * would refuse forever. Off unless asked for, and it survives a
 	 * later policy update that does not mention it. */
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "GET", "/v1/volumes/vol1/backups", NULL, &r) == 0 &&
 	    r.status == 200) {
-		const struct json_value *aw = json_object_get(r.json, "allow_while_running");
+		const char *aw = json_as_string(json_object_get(r.json, "while_running"));
 
-		check(aw != NULL && aw->type == JSON_BOOL && !aw->u.boolean,
-		      "crash-consistent copies are off unless asked for");
+		check(aw != NULL && strcmp(aw, "refuse") == 0,
+		      "a running container blocks the backup unless the volume says otherwise");
 	} else {
-		check(0, "crash-consistent copies are off unless asked for");
+		check(0, "a running container blocks the backup unless the volume says otherwise");
 	}
 	kx_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
 	check(kx_client_request(&client, "PUT", "/v1/volumes/vol1/backups",
-	                         "{\"enabled\":true,\"allow_while_running\":true}", &r) == 0 &&
+	                         "{\"enabled\":true,\"while_running\":\"pause\"}", &r) == 0 &&
 	          r.status == 200,
-	      "opting into crash-consistent copies");
+	      "choosing to pause containers for the copy");
 	kx_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
 	if (kx_client_request(&client, "PUT", "/v1/volumes/vol1/backups",
 	                       "{\"enabled\":true,\"retain\":5}", &r) == 0 &&
 	    r.status == 200) {
-		const struct json_value *aw = json_object_get(r.json, "allow_while_running");
+		const char *aw = json_as_string(json_object_get(r.json, "while_running"));
 
-		check(aw != NULL && aw->type == JSON_BOOL && aw->u.boolean,
-		      "a policy update that does not mention allow_while_running leaves it set");
+		check(aw != NULL && strcmp(aw, "pause") == 0,
+		      "a policy update that does not mention while_running leaves it alone");
 	} else {
-		check(0, "a policy update that does not mention allow_while_running leaves it set");
+		check(0, "a policy update that does not mention while_running leaves it alone");
 	}
 	kx_response_free(&r);
 

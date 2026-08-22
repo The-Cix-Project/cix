@@ -6967,30 +6967,44 @@ paths:
                   type: integer
                   minimum: 1
                   maximum: 365
-                allow_while_running:
-                  type: boolean
+                while_running:
+                  type: string
+                  enum: [refuse, pause, allow]
                   description: >
-                    Take the snapshot even while a container mounting
-                    this volume is running, accepting a
-                    CRASH-CONSISTENT copy: it sees whatever was on disk
-                    at that moment, so a file being written mid-copy is
-                    captured half-written.
-
-                    This matters more than it sounds. A service
+                    What to do when a container mounting this volume is
+                    running at snapshot time. This decides whether the
+                    volume is ever actually backed up: a service
                     container is normally restart:always and never
-                    stops, so without this the volume is simply never
-                    backed up -- quietly, forever, for exactly the
-                    volumes that most need it. For a home or config
-                    tree a crash-consistent copy is normally fine and
-                    is what an ordinary filesystem backup has always
-                    given you; for a database it is not, and that wants
-                    its own dump from something that understands its
-                    format.
+                    stops, so the default means such a volume is never
+                    snapshotted -- quietly, forever, for exactly the
+                    volumes that most need it.
+
+                    `refuse` (default) -- skip it. Safe and useless for
+                    an always-on workload.
+
+                    `pause` -- freeze every running container that
+                    mounts this volume for the duration of the copy,
+                    then thaw them. The freeze is the kernel cgroup
+                    freezer (ADR-0045), not SIGSTOP, so a process
+                    cannot ignore or handle it: nothing writes while
+                    the copy runs and the snapshot is genuinely
+                    consistent rather than crash-consistent. ALL
+                    mounting containers are paused, not just one -- any
+                    of them could write. The cost is real downtime for
+                    however long the copy takes.
+
+                    `allow` -- copy live, accepting a CRASH-CONSISTENT
+                    snapshot: it sees whatever was on disk at that
+                    moment, so a file being written mid-copy is caught
+                    half-written. Fine for a home or config tree and
+                    what an ordinary filesystem backup has always given
+                    you; wrong for a database, which wants its own dump
+                    from something that understands its format.
 
                     Omitting the field leaves the current setting
                     alone. Restore is always refused while a container
-                    is running regardless -- this only affects taking
-                    snapshots.
+                    is running, whatever this is set to -- it replaces
+                    data rather than reading it.
       responses:
         "200":
           description: Saved; the volume's backup state
@@ -8422,9 +8436,14 @@ components:
           type: boolean
         retain:
           type: integer
-        allow_while_running:
-          type: boolean
-          description: Whether snapshots may be taken while a container mounting this volume is running.
+        while_running:
+          type: string
+          enum: [refuse, pause, allow]
+          description: >
+            What happens when a container mounting this volume is
+            running at snapshot time -- skip it, pause every mounting
+            container for the copy, or copy live and accept a
+            crash-consistent snapshot.
         last_backup_at:
           type: integer
           description: Unix time of the last scheduled snapshot, 0 if never.

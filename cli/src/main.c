@@ -4253,12 +4253,15 @@ static void fmt_volume_backups(const struct json_value *v)
 	                             : "disabled (opt in with: volume backups NAME --enable)");
 	printf("retain:   %.0f\n", json_as_number(json_object_get(v, "retain")));
 	{
-		const struct json_value *aw = json_object_get(v, "allow_while_running");
+		const char *wr = json_as_string(json_object_get(v, "while_running"));
 
-		printf("while running: %s\n",
-		       (aw != NULL && aw->type == JSON_BOOL && aw->u.boolean)
-		           ? "yes (crash-consistent)"
-		           : "no -- an always-on container means this is never backed up");
+		if (wr == NULL)
+			wr = "refuse";
+		printf("while running: %s%s\n", wr,
+		       strcmp(wr, "refuse") == 0
+		           ? "  -- an always-on container means this is never backed up"
+		           : strcmp(wr, "pause") == 0 ? "  (containers frozen for the copy)"
+		                                      : "  (crash-consistent)");
 	}
 	if (status != NULL) {
 		const char *err = json_as_string(json_object_get(status, "last_error"));
@@ -4282,15 +4285,18 @@ static int cmd_volume_backups(const struct kx_client *c, int json_mode, int argc
 	struct json_writer w;
 	int enable = -1;
 	long retain = 0;
-	int while_running = -1;
+	const char *while_running = NULL;
 	int i;
 
 	if (argc < 2) {
 		fprintf(stderr,
 		        "usage: thincctl volume backups NAME [--enable|--disable] [--retain=N]\n"
-		        "                                    [--while-running|--stopped-only]\n"
-		        "  --while-running accepts a crash-consistent copy. Without it a volume\n"
-		        "  mounted by an always-on container is never actually backed up.\n");
+		        "                                    [--while-running=refuse|pause|allow]\n"
+		        "  What to do when a container using the volume is running:\n"
+		        "    refuse  (default) skip it -- and an always-on container means never\n"
+		        "    pause   freeze every container using it for the copy, then thaw:\n"
+		        "            a genuinely consistent snapshot, at the cost of real downtime\n"
+		        "    allow   copy it live and accept a crash-consistent snapshot\n");
 		return 2;
 	}
 	for (i = 2; i < argc; i++) {
@@ -4300,14 +4306,12 @@ static int cmd_volume_backups(const struct kx_client *c, int json_mode, int argc
 			enable = 0;
 		else if (strncmp(argv[i], "--retain=", 9) == 0)
 			retain = atol(argv[i] + 9);
-		else if (strcmp(argv[i], "--while-running") == 0)
-			while_running = 1;
-		else if (strcmp(argv[i], "--stopped-only") == 0)
-			while_running = 0;
+		else if (strncmp(argv[i], "--while-running=", 16) == 0)
+			while_running = argv[i] + 16;
 	}
 	snprintf(path, sizeof(path), "/v1/volumes/%s/backups", argv[1]);
 
-	if (enable < 0 && retain == 0 && while_running < 0) {
+	if (enable < 0 && retain == 0 && while_running == NULL) {
 		if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
@@ -4322,9 +4326,9 @@ static int cmd_volume_backups(const struct kx_client *c, int json_mode, int argc
 		jw_key(&w, "retain");
 		jw_int(&w, retain);
 	}
-	if (while_running >= 0) {
-		jw_key(&w, "allow_while_running");
-		jw_bool(&w, while_running);
+	if (while_running != NULL) {
+		jw_key(&w, "while_running");
+		jw_str(&w, while_running);
 	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';

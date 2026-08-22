@@ -6325,6 +6325,37 @@ static void handle_volume_create(int fd, const char *body, size_t body_len)
  * the volume will come back and expect its data, and silently deleting
  * it underneath would be a data-loss bug that only surfaces later.
  */
+/*
+ * Does this container's definition mount that volume. Split out of
+ * volume_referenced_by_container() below, which answers "is anything
+ * using it" and stops at the first match -- pausing needs every one.
+ */
+static int container_mounts_volume(const char *container_name, const char *volume_name)
+{
+	struct container_def *def = containerdef_find(container_name);
+	struct json_value *root;
+	const struct json_value *jvols;
+	size_t k;
+	int found = 0;
+
+	if (def == NULL || def->body == NULL)
+		return 0;
+	root = json_parse(def->body, def->body_len);
+	if (root == NULL)
+		return 0;
+	jvols = json_object_get(root, "volumes");
+	if (jvols != NULL && jvols->type == JSON_ARRAY) {
+		for (k = 0; k < jvols->u.array.count && !found; k++) {
+			const char *n = json_as_string(json_object_get(jvols->u.array.items[k], "name"));
+
+			if (n != NULL && strcmp(n, volume_name) == 0)
+				found = 1;
+		}
+	}
+	json_free(root);
+	return found;
+}
+
 static int volume_referenced_by_container(const char *volume_name, char *out_container,
                                            size_t out_size)
 {
@@ -6448,6 +6479,63 @@ static void handle_volume_migrate(int fd, const char *name, const char *body, si
 }
 
 /* ---- Issue #96: volume content snapshots ---- */
+/*
+ * Issue #96: freeze (or thaw) every running container mounting this
+ * volume. Returns how many were acted on, or -1 if any failed.
+ *
+ * ALL of them, not just one. Any container with the volume mounted
+ * could be writing to it, so freezing a subset would leave the copy
+ * exposed to the rest -- and a snapshot that is only mostly quiesced is
+ * a crash-consistent one wearing a consistent one's label.
+ *
+ * The freeze is the cgroup freezer (ADR-0045), not SIGSTOP: a process
+ * can neither ignore nor handle it, which is what makes the resulting
+ * snapshot genuinely consistent rather than merely likely to be.
+ *
+ * On a partial failure the ones already frozen are thawed again before
+ * returning, so a failure to quiesce never leaves containers stopped.
+ */
+static int volume_set_containers_paused(const char *volume_name, int freeze)
+{
+	char order[CONTAINERDEF_MAX][REGISTRY_NAME_MAX];
+	int count = containerdef_resolve_order(order);
+	int i, acted = 0, failed = 0;
+
+	for (i = 0; i < count; i++) {
+		struct registry_entry *e;
+
+		if (!container_mounts_volume(order[i], volume_name))
+			continue;
+		e = registry_find(order[i]);
+		if (e == NULL || !e->running)
+			continue;
+		if (freeze && e->paused)
+			continue; /* already frozen by someone else -- leave it alone */
+		if (registry_set_paused(e, freeze) != 0) {
+			failed = 1;
+			break;
+		}
+		acted++;
+	}
+	if (failed && freeze) {
+		/* Undo what this call managed before giving up. */
+		for (i = 0; i < count; i++) {
+			struct registry_entry *e = registry_find(order[i]);
+
+			if (e != NULL && e->running && e->paused && container_mounts_volume(order[i], volume_name))
+				registry_set_paused(e, 0);
+		}
+		return -1;
+	}
+	return acted;
+}
+
+static const struct volumebackup_hooks g_volumebackup_hooks = {
+	volume_has_running_container,
+	volume_set_containers_paused,
+};
+
+
 
 static void respond_volumebackup_error(int fd, enum volumebackup_error e)
 {
@@ -6545,8 +6633,8 @@ static void handle_volume_backups_get(int fd, const char *name)
 	/* Whether this volume can be snapshotted while a container using it
 	 * is running -- without it, an always-on service's volume is never
 	 * backed up at all, which is the state most worth surfacing. */
-	jw_key(&w, "allow_while_running");
-	jw_bool(&w, v->backup_while_running);
+	jw_key(&w, "while_running");
+	jw_str(&w, volume_running_mode_name(v->backup_while_running));
 	jw_key(&w, "last_backup_at");
 	jw_int(&w, (long long)v->backup_last_at);
 	jw_key(&w, "snapshots");
@@ -6583,13 +6671,16 @@ static void handle_volume_backup_policy_put(int fd, const char *name, const char
 		retain = (int)json_as_number(jre);
 	}
 	{
-		const struct json_value *jwr = json_object_get(root, "allow_while_running");
+		const char *jwr = json_as_string(json_object_get(root, "while_running"));
 		struct volume *cur = volume_find(name);
 
+		/* Omitted leaves the current mode alone -- a partial update
+		 * that silently rewrites a field it was not given is how
+		 * settings get lost. */
 		verr = volume_set_backup_policy(
 		    name, jen != NULL && jen->type == JSON_BOOL && jen->u.boolean, retain,
-		    jwr != NULL ? (jwr->type == JSON_BOOL && jwr->u.boolean)
-		                : (cur != NULL ? cur->backup_while_running : 0));
+		    jwr != NULL ? volume_running_mode_parse(jwr)
+		                : (cur != NULL ? cur->backup_while_running : VOLUME_RUNNING_REFUSE));
 	}
 	json_free(root);
 	if (verr != VOLUME_OK) {
@@ -6601,7 +6692,7 @@ static void handle_volume_backup_policy_put(int fd, const char *name, const char
 
 static void handle_volume_backup_now(int fd, const char *name)
 {
-	enum volumebackup_error verr = volumebackup_take(name, volume_has_running_container);
+	enum volumebackup_error verr = volumebackup_take(name, &g_volumebackup_hooks);
 
 	if (verr != VOLUMEBACKUP_OK) {
 		respond_volumebackup_error(fd, verr);
@@ -6640,7 +6731,7 @@ static void handle_volume_restore(int fd, const char *name, const char *body, si
 		respond_error(fd, 400, "Bad Request", "snapshot is required");
 		return;
 	}
-	verr = volumebackup_restore(name, stamp, volume_has_running_container);
+	verr = volumebackup_restore(name, stamp, &g_volumebackup_hooks);
 	json_free(root);
 	if (verr != VOLUMEBACKUP_OK) {
 		respond_volumebackup_error(fd, verr);
@@ -21517,7 +21608,7 @@ int main(int argc, char **argv)
 				 * checked against its own last-run time, and one timer
 				 * is one thing to reason about when backups do not run.
 				 */
-				volumebackup_sweep(time(NULL), volume_has_running_container);
+				volumebackup_sweep(time(NULL), &g_volumebackup_hooks);
 				handle_backup_periodic_timer_event(cc);
 			}
 			else if (cc->kind == CONN_SERVERHEALTH_TIMER) {
