@@ -174,6 +174,7 @@ Storage whose lifetime is independent of any container using it — deleting a c
 | `volume backups NAME [--enable\|--disable] [--retain=N] [--while-running=refuse\|pause\|allow]` | Show or set a volume's backup policy. Opt-in. `--while-running` decides what happens when a container is using it: `refuse` skips (and an always-on container means never), `pause` freezes every container using it for the copy then resumes them (a genuinely consistent snapshot, at the cost of real downtime), `allow` copies live and accepts a crash-consistent snapshot |
 | `volume backup NAME` | Take one snapshot now |
 | `volume restore NAME SNAPSHOT` | **Replace** the volume's contents with that snapshot |
+| `volume quota NAME BYTES` | Set a real, kernel-enforced size limit (0 removes it). Without one a volume can grow until its disk is full |
 | `volume migrate NAME [--disk=DISK]` | Move its data to another disk or partition; omit `--disk` to move it back to the default OS-disk placement. Refused while a container mounting it is running |
 | `volume rm NAME` | **Deletes the volume's data**, permanently — refused while any container *definition* references it (the error names which one) |
 

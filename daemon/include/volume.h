@@ -113,6 +113,23 @@ struct volume {
 	 * stating rather than hiding.
 	 */
 	enum volume_running_mode backup_while_running;
+	/*
+	 * Issue #93: a real, kernel-enforced hard limit on this volume's
+	 * own size, in bytes. 0 means unlimited.
+	 *
+	 * Container overlays have had one since ADR-0062; a volume had
+	 * none, which made it an unbounded way to fill whatever disk it
+	 * sits on -- and sharper since scheduled backups started copying
+	 * volumes onto a backup disk, where an unbounded source becomes an
+	 * unbounded destination too.
+	 *
+	 * The mechanism is the one already proven for overlays, not a
+	 * second one: an ext4 project quota (or a btrfs qgroup) applied to
+	 * the volume's own directory, so a write past the limit fails with
+	 * EDQUOT at the filesystem level rather than being noticed later by
+	 * something watching.
+	 */
+	long long quota_bytes;
 	/* When the scheduled sweep last took one, so it can tell what is
 	 * due without re-reading the snapshot store for every volume. */
 	time_t backup_last_at;
@@ -196,5 +213,13 @@ const char *volume_running_mode_name(enum volume_running_mode m);
 /* Records that a scheduled snapshot was taken, so the sweep knows what
  * is due. Persisted, so a restart does not re-snapshot everything. */
 void volume_note_backup_taken(const char *name, time_t when);
+
+/*
+ * Issue #93: set a volume's size limit. 0 removes it. The limit is
+ * applied to the real directory by the caller (the daemon owns the
+ * quota syscalls); this records the intent so it survives a restart
+ * and can be re-applied after a migrate.
+ */
+enum volume_error volume_set_quota(const char *name, long long quota_bytes);
 
 #endif /* VOLUME_H */

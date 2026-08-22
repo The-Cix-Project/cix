@@ -6416,6 +6416,62 @@ static int volume_has_running_container(const char *volume_name)
 }
 
 /*
+ * Issue #93: apply a volume's size limit to its real directory.
+ *
+ * Two operations, the same pair a container overlay already uses: tag
+ * the directory with a project id so everything inside it counts, and
+ * set that project's byte limit via quotactl(2). Reusing the overlay's
+ * own tagging call rather than repeating the ioctls here -- a second
+ * implementation of something that must stay identical, on a path where
+ * getting it subtly wrong yields a quota that reports as applied and is
+ * not.
+ *
+ * btrfs is refused rather than silently unenforced. There the limit
+ * lives on a qgroup attached to a subvolume, and a volume directory is
+ * not a subvolume -- making it one is a real change to how volumes are
+ * created, not another call. Accepting the request and quietly not
+ * enforcing it would be exactly the "false promise" overlay.c's own
+ * comment warns about.
+ *
+ * quota_bytes of 0 clears the limit.
+ */
+static int volume_apply_quota(const char *volume_name, const char *dir, long long quota_bytes,
+                              char *err, size_t err_size)
+{
+	uint32_t projid;
+
+	if (overlay_backing_is_btrfs(dir)) {
+		snprintf(err, err_size,
+		         "this volume is on a btrfs filesystem, where a size limit needs the volume to be "
+		         "its own subvolume -- not supported yet, and refused rather than accepted and "
+		         "not enforced");
+		return -1;
+	}
+	/* A distinct project id per volume, from the same allocator
+	 * containers use -- ids are never reused, so a deleted volume's id
+	 * can never silently start limiting a new one. */
+	if (quotamap_get_or_assign(volume_name, &projid) != 0) {
+		snprintf(err, err_size, "could not assign a quota project id");
+		return -1;
+	}
+	if (set_disk_quota(dir, projid, quota_bytes) != 0) {
+		snprintf(err, err_size,
+		         "could not set the limit (%s) -- the filesystem holding this volume may not have "
+		         "project quotas enabled",
+		         strerror(errno));
+		return -1;
+	}
+	/* Tagging after the limit is set, matching the container path's own
+	 * ordering: the limit is already in force by the moment any file
+	 * can carry this project id. */
+	if (quota_bytes > 0 && overlay_tag_project_id(dir, projid, "volume") != 0) {
+		snprintf(err, err_size, "could not tag the volume directory with its quota project id");
+		return -1;
+	}
+	return 0;
+}
+
+/*
  * POST /v1/volumes/{name}/migrate -- move a volume's data to another
  * disk or partition, then repoint it.
  *
@@ -6471,6 +6527,75 @@ static void handle_volume_migrate(int fd, const char *name, const char *body, si
 
 	verr = volume_migrate(name, target);
 	json_free(root);
+	if (verr != VOLUME_OK) {
+		respond_volume_error(fd, verr);
+		return;
+	}
+	{
+		/*
+		 * Issue #93: a project-quota tag lives on the directory, so a
+		 * volume that moved to another filesystem arrives untagged and
+		 * unlimited. Re-applied here, or the migrate would silently
+		 * drop a limit the operator still believes is in force -- which
+		 * is worse than never having set one.
+		 */
+		struct volume *moved = volume_find(name);
+		char path[PATH_MAX];
+		char qerr[256];
+
+		if (moved != NULL && moved->quota_bytes > 0 &&
+		    volume_host_path(moved, path, sizeof(path)) == 0 &&
+		    volume_apply_quota(name, path, moved->quota_bytes, qerr, sizeof(qerr)) != 0) {
+			logstore_write("volume", "error",
+			               "volume %s moved, but its size limit could not be re-applied at the new "
+			               "location: %s",
+			               name, qerr);
+		}
+	}
+	handle_volume_get(fd, name);
+}
+
+/*
+ * PUT /v1/volumes/{name}/quota -- set or clear a volume's size limit.
+ */
+static void handle_volume_quota_put(int fd, const char *name, const char *body, size_t body_len)
+{
+	struct volume *v = volume_find(name);
+	struct json_value *root;
+	const struct json_value *jq;
+	long long bytes;
+	char path[PATH_MAX];
+	char err[256];
+	enum volume_error verr;
+
+	if (v == NULL) {
+		respond_error(fd, 404, "Not Found", "no such volume");
+		return;
+	}
+	root = json_parse(body, body_len);
+	if (root == NULL || root->type != JSON_OBJECT) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	jq = json_object_get(root, "quota_bytes");
+	if (jq == NULL || jq->type != JSON_NUMBER || json_as_number(jq) < 0) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "quota_bytes must be a non-negative number (0 clears it)");
+		return;
+	}
+	bytes = (long long)json_as_number(jq);
+	json_free(root);
+
+	if (volume_host_path(v, path, sizeof(path)) != 0) {
+		respond_error(fd, 500, "Internal Server Error", "could not resolve the volume's own path");
+		return;
+	}
+	if (volume_apply_quota(name, path, bytes, err, sizeof(err)) != 0) {
+		respond_error(fd, 409, "Conflict", err);
+		return;
+	}
+	verr = volume_set_quota(name, bytes);
 	if (verr != VOLUME_OK) {
 		respond_volume_error(fd, verr);
 		return;
@@ -17993,6 +18118,10 @@ static void dispatch(int fd, const struct http_request *req)
 
 				if (strcmp(slash, "/migrate") == 0 && strcmp(req->method, "POST") == 0) {
 					handle_volume_migrate(fd, volume_name, req->body, req->body_len);
+					return;
+				}
+				if (strcmp(slash, "/quota") == 0 && strcmp(req->method, "PUT") == 0) {
+					handle_volume_quota_put(fd, volume_name, req->body, req->body_len);
 					return;
 				}
 				if (strcmp(slash, "/backups") == 0 && strcmp(req->method, "GET") == 0) {
