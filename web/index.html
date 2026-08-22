@@ -606,6 +606,99 @@
 		<section class="view" id="view-disks" hidden>
 			<div class="view-list">
 				<h2>Disks</h2>
+				<p class="hint">Real host block devices, discovered live from sysfs every poll. Partitions are
+					not listed here &mdash; they belong to a disk, so they live on that disk's own page: click
+					a disk to manage its partition table, or to give the whole disk a role and format it
+					directly with no partitions at all. The OS disk (this platform's own fixed
+					ESP/root-a/root-b/config/containers layout) offers no destructive action anywhere.</p>
+				<table id="disks">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Model</th>
+							<th>Size</th>
+							<th>OS Disk</th>
+							<th>Role</th>
+							<th>Filesystem</th>
+							<th>Mounted</th>
+							<th>Usage</th>
+							<th>I/O</th>
+						</tr>
+					</thead>
+					<tbody id="disks-body">
+						<tr><td colspan="9" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</section>
+
+		<!-- One disk: its partitions, and using the whole disk directly. -->
+		<section class="view" id="view-disk-detail" hidden>
+			<h2 id="dd-title"></h2>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="dd-overview">Overview</button>
+				<button type="button" class="tab-button" data-tab="dd-partitions">Partitions</button>
+				<button type="button" class="tab-button" data-tab="dd-whole">Whole disk</button>
+			</div>
+			<div class="tab-panel" data-tab="dd-overview">
+				<div class="detail-grid" id="dd-fields"></div>
+			</div>
+			<div class="tab-panel" data-tab="dd-partitions" hidden>
+				<p class="hint" id="dd-part-note"></p>
+				<table id="dd-partitions">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Size</th>
+							<th>Role</th>
+							<th>Filesystem</th>
+							<th>Mounted</th>
+							<th>Usage</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="dd-partitions-body"></tbody>
+				</table>
+				<div id="dd-part-actions">
+					<h3>Add a partition</h3>
+					<form id="dd-add-partition-form">
+						<label>
+							Name
+							<input type="text" id="dd-part-name" placeholder="data1" required>
+						</label>
+						<label>
+							Size (MiB)
+							<input type="number" id="dd-part-size" min="1" placeholder="(rest of disk)">
+						</label>
+						<button type="submit">Add partition</button>
+					</form>
+					<p class="hint">Leave the size blank to consume all remaining space. Partitions can be
+						created and deleted; there is deliberately no resize &mdash; the underlying tool is
+						driven in append and delete modes only, and moving or growing a partition in place is
+						a data-bearing operation that would need its own design rather than a button.</p>
+					<h3>Partition table</h3>
+					<p class="hint">Writing a fresh table wipes every partition on this disk and everything on
+						them. Refused while anything on the disk is mounted.</p>
+					<button type="button" id="dd-write-table" class="danger">Write a fresh empty GPT table</button>
+				</div>
+			</div>
+			<div class="tab-panel" data-tab="dd-whole" hidden>
+				<p class="hint">A disk does not have to be partitioned to be used. Giving the whole device a
+					role and formatting it is a first-class option, and is what most single-purpose data
+					disks want. Assigning a role is non-destructive and reversible; formatting wipes every
+					byte.</p>
+				<div id="dd-whole-actions"></div>
+			</div>
+		</section>
+
+		<!-- Which disk holds each platform-level concern. -->
+		<section class="view" id="view-storage-placement" hidden>
+			<div class="view-list">
+				<h2>Storage Placement</h2>
+				<p class="hint">Which disk holds each platform-level concern. Each target must already carry
+					the matching role and be mounted &mdash; assign roles on a disk's own page. All three
+					migrations below are live, with no downtime, and run in independent job slots.</p>
+
 				<h3>State storage placement</h3>
 				<p class="hint" id="ss-current">State storage: unknown</p>
 				<p class="hint" id="ss-migrate-status" hidden></p>
@@ -618,11 +711,9 @@
 					</label>
 					<button type="submit">Migrate</button>
 				</form>
-				<p class="hint">Where thinC's own state lives (ADR-0141) -- networks, DNS/LDAP/NTP/syslog
-					config, PKI, container definitions, site identity, daemon config. Never container
-					workload data, never rebuildable content (images/packages), never logs. The target disk
-					must already carry the state-storage role and be currently mounted. Live, no downtime --
-					the daemon keeps operating against the current location until the copy finishes.</p>
+				<p class="hint">thinC's own state (ADR-0141) &mdash; networks, DNS/LDAP/NTP/syslog config, PKI,
+					container definitions, site identity, daemon config. Never container workload data, never
+					rebuildable content, never logs.</p>
 
 				<h3>Log storage placement</h3>
 				<p class="hint" id="ls-current">Log storage: unknown</p>
@@ -636,10 +727,8 @@
 					</label>
 					<button type="submit">Migrate</button>
 				</form>
-				<p class="hint">Where the consolidated log store lives (ADR-0141) -- kernel dmesg, this
-					daemon's own diagnostics, the per-request audit trail, every container's stdout/stderr.
-					An independent job slot from state storage above -- both can migrate at the same time.
-					The target disk must already carry the log-storage role and be currently mounted.</p>
+				<p class="hint">The consolidated log store (ADR-0141) &mdash; kernel dmesg, this daemon's own
+					diagnostics, the per-request audit trail, every container's stdout/stderr.</p>
 
 				<h3>Rebuildable storage placement</h3>
 				<p class="hint" id="rs-current">Rebuildable storage: unknown</p>
@@ -653,35 +742,15 @@
 					</label>
 					<button type="submit">Migrate</button>
 				</form>
-				<p class="hint">Where images, installed packages, build artifacts, and staged ISOs live
-					(ADR-0141) -- regenerable from recipes/sources, never irreplaceable, unlike state or
-					logs. Its own independent job slot. The target disk must already carry the
-					rebuildable-storage role and be currently mounted.</p>
-				<p class="hint">Real host block devices, discovered live from sysfs every poll -- whole disks
-					only, never partitions. The OS disk (this platform's own fixed ESP/root-a/root-b/config/
-					containers layout) is never a candidate for a role or format. Assigning a role
-					("+ Create > Disk Role" above, or "Assign role&hellip;" on a specific disk below) is a
-					separate, non-destructive step from formatting -- format wipes every byte of existing
-					content and is deliberately its own explicit action per role-assigned disk.</p>
-				<table id="disks">
-					<thead>
-						<tr>
-							<th>Name</th>
-							<th>Model</th>
-							<th>Size</th>
-							<th>OS Disk</th>
-							<th>Mounted</th>
-							<th>Usage</th>
-							<th>I/O</th>
-							<th>Role</th>
-							<th>Format</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="disks-body">
-						<tr><td colspan="10" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
+				<p class="hint">Images, installed packages, build artifacts and staged ISOs (ADR-0141) &mdash;
+					regenerable from recipes and sources, unlike state or logs.</p>
+
+				<h3>Backup and swap</h3>
+				<p class="hint">Two more placements live on their own pages, and are linked rather than
+					repeated here &mdash; one control in two places is one that drifts.
+					<a href="#backup">Maintenance &gt; Backup</a> chooses the disk automatic snapshots are
+					written to; <a href="#swap">Host &gt; Host Swap</a> chooses the disk the swap file lives
+					on (ADR-0169).</p>
 			</div>
 		</section>
 

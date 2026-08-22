@@ -983,12 +983,14 @@ const CATEGORY_VIEWS = {
 	kmsg: "view-kmsg",
 	"server-health": "view-server-health",
 	volumes: "view-volumes",
+	"storage-placement": "view-storage-placement",
 	backup: "view-backup",
 	update: "view-update",
 };
 
 const DETAIL_VIEWS = {
 	containers: "view-container-detail",
+	disks: "view-disk-detail",
 	networks: "view-network-detail",
 	images: "view-image-detail",
 	packages: "view-package-detail",
@@ -1027,6 +1029,8 @@ function renderCurrentView() {
 			stopHostStatsPolling();
 		if (route.category === "networks" && route.name !== null)
 			renderNetworkDetail(route.name);
+		else if (route.category === "disks" && route.name !== null)
+			renderDiskDetail(route.name);
 		else if (route.category === "routes")
 			renderRoutesList();
 		else if (route.category === "sysctl")
@@ -1053,10 +1057,10 @@ function renderCurrentView() {
 			renderImageDetail(route.name);
 		else if (route.category === "devices")
 			renderDevices();
-		else if (route.category === "disks") {
+		else if (route.category === "disks")
 			renderDisks();
+		else if (route.category === "storage-placement")
 			renderAllStoragePlacements();
-		}
 		else if (route.category === "packages")
 			renderPackagesView(route.name);
 		else if (route.category === "recipes") {
@@ -1492,6 +1496,7 @@ function renderTree() {
 						{ label: "Devices", hash: "devices", icon: "devices" },
 						{ label: "Disks", hash: "disks", icon: "disks" },
 						{ label: "Volumes", hash: "volumes", icon: "disks" },
+						{ label: "Storage Placement", hash: "storage-placement", icon: "disks" },
 						{ label: "Routes", hash: "routes", icon: "networks" },
 						{ label: "Host Swap", hash: "host-swap", icon: "system" },
 						{ label: "Rolling Restart", hash: "rolling-restart", icon: "system" },
@@ -4057,23 +4062,120 @@ document.getElementById("cd-storage-migrate-form").addEventListener("submit", as
 	}
 });
 
+/*
+ * Whole disks only. Partitions used to be listed here as peers of the
+ * disks they belong to, which is what made vda, vda1..vda5, sda and sr0
+ * read as one flat set of eight equivalent things. A partition now
+ * appears on its parent disk's own page, where it can actually be acted
+ * on.
+ */
+function wholeDisks() {
+	return cache.disks.filter((d) => !d.is_partition);
+}
+
+function partitionsOf(diskName) {
+	return cache.disks.filter((d) => d.is_partition && d.parent_disk === diskName);
+}
+
 function renderDisks() {
 	const body = document.getElementById("disks-body");
+	const disks = wholeDisks();
 
 	body.textContent = "";
-	if (cache.disks.length === 0) {
+	if (disks.length === 0) {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
 
-		cell.colSpan = 10;
+		cell.colSpan = 9;
 		cell.className = "empty";
 		cell.textContent = "No disks found";
 		row.appendChild(cell);
 		body.appendChild(row);
 		return;
 	}
-	for (const d of cache.disks)
-		body.appendChild(diskRow(d));
+	for (const d of disks)
+		body.appendChild(diskListRow(d));
+}
+
+/* One row in the disks list: identity and state only. Every action
+ * lives on the disk's own page, so a destructive button is never one
+ * stray click away in a list. */
+function diskListRow(d) {
+	const row = document.createElement("tr");
+	const role = diskRoleFor(d.name);
+	const parts = partitionsOf(d.name);
+	const nameCell = document.createElement("td");
+	const link = document.createElement("a");
+
+	link.href = "#disks/" + encodeURIComponent(d.name);
+	link.textContent = d.name;
+	nameCell.appendChild(link);
+	if (parts.length > 0) {
+		const note = document.createElement("span");
+
+		note.className = "hint";
+		note.textContent = " (" + parts.length + " partition" + (parts.length === 1 ? "" : "s") + ")";
+		nameCell.appendChild(note);
+	}
+	row.appendChild(nameCell);
+
+	for (const text of [d.model || "-", formatBytes(d.size_bytes)]) {
+		const td = document.createElement("td");
+
+		td.textContent = text;
+		row.appendChild(td);
+	}
+
+	const osCell = document.createElement("td");
+
+	if (d.is_os_disk) {
+		const badge = document.createElement("span");
+
+		badge.className = "badge badge-paused";
+		badge.textContent = "OS disk";
+		osCell.appendChild(badge);
+	} else {
+		osCell.textContent = "-";
+	}
+	row.appendChild(osCell);
+
+	const roleCell = document.createElement("td");
+
+	roleCell.textContent = role ? role.role : "-";
+	row.appendChild(roleCell);
+
+	/* Issue #90: read from the device's own superblock, so it is
+	 * answered for an unroled disk too. Empty means genuinely no
+	 * recognised filesystem, which is different from unknown. */
+	const fsCell = document.createElement("td");
+
+	fsCell.textContent = d.fs_type || (d.has_mounted_partition ? "(partitioned)" : "none");
+	row.appendChild(fsCell);
+
+	const mountedCell = document.createElement("td");
+
+	if (d.mounted)
+		mountedCell.textContent = d.mount_path;
+	else if (d.has_mounted_partition)
+		mountedCell.textContent = "partition mounted";
+	else
+		mountedCell.textContent = "-";
+	row.appendChild(mountedCell);
+
+	/* ADR-0142: real statvfs(2) usage, only meaningful while mounted. */
+	const usageCell = document.createElement("td");
+
+	usageCell.textContent = d.mounted
+		? formatBytes(d.used_bytes) + " used / " + formatBytes(d.free_bytes) + " free"
+		: "-";
+	row.appendChild(usageCell);
+
+	const ioCell = document.createElement("td");
+
+	ioCell.textContent = "r=" + d.reads_completed + " w=" + d.writes_completed;
+	row.appendChild(ioCell);
+
+	return row;
 }
 
 function diskRow(d) {
@@ -4205,6 +4307,304 @@ function diskRow(d) {
 
 	return row;
 }
+
+/* ---- One disk's own page (issue #91) ---- */
+
+let currentDiskDetailName = null;
+
+/*
+ * A disk's page carries everything that acts on that disk: its
+ * partitions, and the option to use the whole device directly with no
+ * partition table at all. The second one is deliberately its own tab
+ * rather than a footnote under partitions -- a single-purpose data disk
+ * usually wants exactly that, and burying it behind a partition table
+ * would push people into partitioning they do not need.
+ */
+function renderDiskDetail(name) {
+	const d = cache.disks.find((x) => x.name === name && !x.is_partition);
+	const title = document.getElementById("dd-title");
+	const fields = document.getElementById("dd-fields");
+
+	currentDiskDetailName = name;
+	if (!d) {
+		title.textContent = name + " (not found)";
+		fields.textContent = "";
+		return;
+	}
+	title.textContent = d.name + (d.model ? " — " + d.model : "");
+
+	const role = diskRoleFor(d.name);
+	const parts = partitionsOf(d.name);
+
+	fields.textContent = "";
+	fields.appendChild(fieldBlock("Device", d.dev_path));
+	fields.appendChild(fieldBlock("Size", formatBytes(d.size_bytes)));
+	fields.appendChild(fieldBlock("Removable", d.removable ? "yes" : "no"));
+	fields.appendChild(fieldBlock("OS disk", d.is_os_disk ? "yes — never repartitioned or formatted" : "no"));
+	fields.appendChild(fieldBlock("Role", role ? role.role : "none"));
+	fields.appendChild(fieldBlock("Filesystem", d.fs_type || (parts.length > 0 ? "(partitioned)" : "none")));
+	fields.appendChild(
+		fieldBlock("Mounted", d.mounted ? d.mount_path : d.has_mounted_partition ? "a partition of it is" : "no")
+	);
+	if (d.mounted)
+		fields.appendChild(fieldBlock("Usage", formatBytes(d.used_bytes) + " used / " + formatBytes(d.free_bytes) + " free"));
+	fields.appendChild(fieldBlock("Partitions", parts.length === 0 ? "none" : String(parts.length)));
+	fields.appendChild(
+		fieldBlock("I/O", "reads " + d.reads_completed + " / writes " + d.writes_completed + " / busy " + d.io_time_ms + "ms")
+	);
+
+	renderDiskPartitions(d, parts);
+	renderDiskWholeActions(d, role, parts);
+}
+
+function renderDiskPartitions(d, parts) {
+	const body = document.getElementById("dd-partitions-body");
+	const note = document.getElementById("dd-part-note");
+	const actions = document.getElementById("dd-part-actions");
+
+	/* The OS disk is not a candidate for anything destructive, and the
+	 * page says so rather than offering buttons that would be refused. */
+	actions.hidden = d.is_os_disk;
+	note.textContent = d.is_os_disk
+		? "This is the OS disk. Its layout is fixed and is never repartitioned from here."
+		: d.has_mounted_partition
+		  ? "Something on this disk is mounted, so the partition table cannot be rewritten and a mounted partition cannot be deleted. Unmount it first."
+		  : "";
+
+	body.textContent = "";
+	if (parts.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 7;
+		cell.className = "empty";
+		cell.textContent = d.is_os_disk ? "No partitions reported" : "No partitions — this disk is unpartitioned";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+	for (const p of parts) {
+		const row = document.createElement("tr");
+		const role = diskRoleFor(p.name);
+
+		for (const text of [
+			p.name,
+			formatBytes(p.size_bytes),
+			role ? role.role : "-",
+			p.fs_type || "unformatted",
+			p.mounted ? p.mount_path : "-",
+			p.mounted ? formatBytes(p.used_bytes) + " used / " + formatBytes(p.free_bytes) + " free" : "-",
+		]) {
+			const td = document.createElement("td");
+
+			td.textContent = text;
+			row.appendChild(td);
+		}
+		row.appendChild(diskActionCell(p, role, true));
+		body.appendChild(row);
+	}
+}
+
+/*
+ * The action set for one disk or partition: assign/remove a role,
+ * format, unmount, and (partitions only) delete. Shared by the
+ * partitions table and the whole-disk tab because they are genuinely the
+ * same actions on the same kind of thing -- a partition is just a
+ * smaller block device, which is the whole reason ADR-0158 could reuse
+ * diskrole/diskformat unchanged.
+ */
+function diskActionCell(d, role, isPartition) {
+	const cell = document.createElement("td");
+	const formatStatus = cache.diskFormatStatus[d.name];
+
+	if (d.is_os_disk)
+		return cell;
+
+	if (formatStatus && formatStatus.state === "running") {
+		cell.appendChild(document.createTextNode("(formatting…)"));
+		return cell;
+	}
+	if (!role) {
+		const assignBtn = document.createElement("button");
+
+		assignBtn.type = "button";
+		assignBtn.className = "button-small";
+		assignBtn.textContent = "Assign role…";
+		assignBtn.addEventListener("click", () => {
+			populateDiskRoleSelect();
+			document.getElementById("drf-disk-name").value = d.name;
+			document.getElementById("drf-role").value = "container-storage";
+			openModal("diskrole-form", "Assign disk role");
+		});
+		cell.appendChild(assignBtn);
+	} else {
+		const removeRoleBtn = document.createElement("button");
+
+		removeRoleBtn.type = "button";
+		removeRoleBtn.className = "button-small";
+		removeRoleBtn.textContent = "Remove role";
+		removeRoleBtn.addEventListener("click", () => removeDiskRole(d.name));
+		cell.appendChild(removeRoleBtn);
+
+		const fsSelect = document.createElement("select");
+
+		for (const fs of ["ext4", "btrfs"]) {
+			const opt = document.createElement("option");
+
+			opt.value = fs;
+			opt.textContent = fs;
+			fsSelect.appendChild(opt);
+		}
+		const formatBtn = document.createElement("button");
+
+		formatBtn.type = "button";
+		formatBtn.className = "button-danger button-small";
+		formatBtn.textContent = "Format…";
+		formatBtn.addEventListener("click", () => formatDisk(d.name, fsSelect.value));
+		cell.appendChild(fsSelect);
+		cell.appendChild(formatBtn);
+	}
+	if (d.mounted) {
+		const unmountBtn = document.createElement("button");
+
+		unmountBtn.type = "button";
+		unmountBtn.className = "button-small";
+		unmountBtn.textContent = "Unmount";
+		unmountBtn.addEventListener("click", () => unmountDisk(d.name));
+		cell.appendChild(unmountBtn);
+	}
+    if (isPartition) {
+		const delBtn = document.createElement("button");
+
+		delBtn.type = "button";
+		delBtn.className = "button-danger button-small";
+		delBtn.textContent = "Delete";
+		delBtn.addEventListener("click", () => deletePartition(d.parent_disk, d.name));
+		cell.appendChild(delBtn);
+	}
+	return cell;
+}
+
+function renderDiskWholeActions(d, role, parts) {
+	const host = document.getElementById("dd-whole-actions");
+
+	host.textContent = "";
+	if (d.is_os_disk) {
+		const p = document.createElement("p");
+
+		p.className = "hint";
+		p.textContent = "This is the OS disk. It is never given a role or formatted.";
+		host.appendChild(p);
+		return;
+	}
+	if (parts.length > 0) {
+		const p = document.createElement("p");
+
+		p.className = "hint";
+		p.textContent =
+			"This disk is partitioned, so its space belongs to its partitions — give those roles and " +
+			"formats on the Partitions tab instead. To use the whole device directly, delete every " +
+			"partition first.";
+		host.appendChild(p);
+		return;
+	}
+	const table = document.createElement("table");
+	const tbody = document.createElement("tbody");
+	const row = document.createElement("tr");
+
+	for (const text of [d.name, role ? role.role : "no role", d.fs_type || "unformatted"]) {
+		const td = document.createElement("td");
+
+		td.textContent = text;
+		row.appendChild(td);
+	}
+	row.appendChild(diskActionCell(d, role, false));
+	tbody.appendChild(row);
+	table.appendChild(tbody);
+	host.appendChild(table);
+}
+
+async function deletePartition(diskName, partitionName) {
+	if (
+		!confirm(
+			'Delete partition "' + partitionName + '"? Everything on it is destroyed and this cannot be undone.'
+		)
+	)
+		return;
+	try {
+		await apiRequest(
+			"DELETE",
+			"/v1/disks/" + encodeURIComponent(diskName) + "/partitions/" + encodeURIComponent(partitionName)
+		);
+		clearStatus();
+		await refreshDisks();
+		renderDiskDetail(diskName);
+	} catch (e) {
+		showStatus("Failed to delete partition: " + e.message, true);
+	}
+}
+
+async function unmountDisk(name) {
+	try {
+		await apiRequest("POST", "/v1/disks/" + encodeURIComponent(name) + "/unmount", {
+			confirm_disk_name: name,
+		});
+		clearStatus();
+		await refreshDisks();
+		if (currentDiskDetailName !== null)
+			renderDiskDetail(currentDiskDetailName);
+	} catch (e) {
+		showStatus("Failed to unmount: " + e.message, true);
+	}
+}
+
+document.getElementById("dd-write-table").addEventListener("click", async () => {
+	const name = currentDiskDetailName;
+
+	if (name === null)
+		return;
+	if (
+		!confirm(
+			'Write a fresh empty GPT table to "' +
+				name +
+				'"? Every partition on this disk and everything on them is destroyed. This cannot be undone.'
+		)
+	)
+		return;
+	try {
+		await apiRequest("POST", "/v1/disks/" + encodeURIComponent(name) + "/partition-table", {
+			confirm_disk_name: name,
+		});
+		clearStatus();
+		await refreshDisks();
+		renderDiskDetail(name);
+	} catch (e) {
+		showStatus("Failed to write partition table: " + e.message, true);
+	}
+});
+
+document.getElementById("dd-add-partition-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+	const name = currentDiskDetailName;
+
+	if (name === null)
+		return;
+	const partName = document.getElementById("dd-part-name").value.trim();
+	const sizeText = document.getElementById("dd-part-size").value.trim();
+	const body = { name: partName };
+
+	if (sizeText !== "")
+		body.size_mib = parseInt(sizeText, 10);
+	try {
+		await apiRequest("POST", "/v1/disks/" + encodeURIComponent(name) + "/partitions", body);
+		clearStatus();
+		document.getElementById("dd-add-partition-form").reset();
+		await refreshDisks();
+		renderDiskDetail(name);
+	} catch (e) {
+		showStatus("Failed to add partition: " + e.message, true);
+	}
+});
 
 function populateDiskRoleSelect() {
 	const select = document.getElementById("drf-disk-name");
