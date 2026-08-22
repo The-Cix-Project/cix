@@ -107,4 +107,12 @@ void jw_num(struct json_writer *w, double v);
 void jw_bool(struct json_writer *w, int b);
 void jw_null(struct json_writer *w);
 
+/*
+ * Writes an already-parsed tree back out as JSON -- for editing one
+ * field of a stored body while preserving every other field exactly.
+ * See json.c for the one lossy case (non-integral numbers, which no
+ * body in this API has).
+ */
+void jw_value(struct json_writer *w, const struct json_value *v);
+
 #endif /* JSON_H */

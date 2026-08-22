@@ -663,3 +663,63 @@ void jw_null(struct json_writer *w)
 	jw_value_prefix(w);
 	jw_raw_str(w, "null");
 }
+
+/*
+ * Writes an already-parsed value back out as JSON.
+ *
+ * The writer was build-only until now: everything it produced was
+ * composed field by field from live state, so nothing ever needed to
+ * round-trip a parsed tree. Editing one field of a stored request body
+ * does (issue #92 -- attaching a volume to an existing container
+ * rewrites that container's persisted body and must preserve every
+ * other field of it exactly). The alternative was splicing the new
+ * field into the stored text by hand, which is the kind of thing that
+ * works until a value contains a brace.
+ *
+ * Numbers are the one lossy spot: the parser stores every number as a
+ * double, so an integer is written back via jw_int() when it is exactly
+ * integral (which every integer field in this API's bodies is) and via
+ * jw_num()'s two decimal places otherwise. Nothing in a container
+ * request body is a non-integral number, so this is exact in practice;
+ * it is called out because it would not be for arbitrary JSON.
+ */
+void jw_value(struct json_writer *w, const struct json_value *v)
+{
+	size_t i;
+
+	if (v == NULL) {
+		jw_null(w);
+		return;
+	}
+	switch (v->type) {
+	case JSON_NULL:
+		jw_null(w);
+		break;
+	case JSON_BOOL:
+		jw_bool(w, v->u.boolean);
+		break;
+	case JSON_NUMBER:
+		if (v->u.number == (double)(long long)v->u.number)
+			jw_int(w, (long long)v->u.number);
+		else
+			jw_num(w, v->u.number);
+		break;
+	case JSON_STRING:
+		jw_str(w, v->u.string);
+		break;
+	case JSON_ARRAY:
+		jw_arr_open(w);
+		for (i = 0; i < v->u.array.count; i++)
+			jw_value(w, v->u.array.items[i]);
+		jw_arr_close(w);
+		break;
+	case JSON_OBJECT:
+		jw_obj_open(w);
+		for (i = 0; i < v->u.object.count; i++) {
+			jw_key(w, v->u.object.keys[i]);
+			jw_value(w, v->u.object.values[i]);
+		}
+		jw_obj_close(w);
+		break;
+	}
+}

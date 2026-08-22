@@ -3426,6 +3426,124 @@ static int cmd_container_network(const struct kx_client *c, int json_mode, int a
 	return 2;
 }
 
+/*
+ * Issue #92: `thincctl container volume attach|detach` -- edits the
+ * container's persisted definition, applying on its next start. Same
+ * command shape as `container network attach|detach` above, deliberately
+ * different semantics: that one is live and ephemeral, this one is
+ * durable and deferred (see handle_container_volume_attach()'s own
+ * comment for why a live volume attach needs a primitive this daemon
+ * does not have yet).
+ */
+static void fmt_container_volumes(const struct json_value *v)
+{
+	const struct json_value *vols = json_object_get(v, "volumes");
+	const char *applies = json_as_string(json_object_get(v, "applies"));
+	int i;
+
+	if (vols == NULL || vols->type != JSON_ARRAY || vols->u.array.count == 0) {
+		printf("no volumes\n");
+	} else {
+		for (i = 0; i < vols->u.array.count; i++) {
+			const struct json_value *e = vols->u.array.items[i];
+			const struct json_value *ro = json_object_get(e, "read_only");
+
+			printf("%-20s %-28s %s\n", json_as_string(json_object_get(e, "name")),
+			       json_as_string(json_object_get(e, "path")),
+			       (ro != NULL && ro->type == JSON_BOOL && ro->u.boolean) ? "read-only"
+			                                                              : "read-write");
+		}
+	}
+	if (applies != NULL)
+		printf("(applies %s -- the running container is unchanged)\n", applies);
+}
+
+static int cmd_container_volume_attach(const struct kx_client *c, int json_mode, int argc,
+                                        char **argv)
+{
+	const char *name = NULL;
+	const char *volume = NULL;
+	const char *path_in = NULL;
+	int read_only = 0;
+	struct json_writer w;
+	char path[300];
+	struct kx_response r;
+	int i;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--volume=", 9) == 0)
+			volume = argv[i] + 9;
+		else if (strncmp(argv[i], "--path=", 7) == 0)
+			path_in = argv[i] + 7;
+		else if (strcmp(argv[i], "--read-only") == 0)
+			read_only = 1;
+		else if (name == NULL)
+			name = argv[i];
+		else {
+			fprintf(stderr, "thincctl: unknown container volume attach option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL || volume == NULL || path_in == NULL) {
+		fprintf(stderr, "usage: thincctl container volume attach NAME --volume=VOLUME "
+		                "--path=/mount/point [--read-only]\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, volume);
+	jw_key(&w, "path");
+	jw_str(&w, path_in);
+	if (read_only) {
+		jw_key(&w, "read_only");
+		jw_bool(&w, 1);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	snprintf(path, sizeof(path), "/v1/containers/%s/volumes", name);
+	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "thincctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_container_volumes);
+}
+
+static int cmd_container_volume_detach(const struct kx_client *c, int json_mode, int argc,
+                                        char **argv)
+{
+	struct kx_response r;
+	char path[300];
+
+	if (argc < 2) {
+		fprintf(stderr, "usage: thincctl container volume detach NAME VOLUME\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/containers/%s/volumes/%s", argv[0], argv[1]);
+	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		fprintf(stderr, "thincctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_container_volumes);
+}
+
+static int cmd_container_volume(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	if (argc >= 1 && strcmp(argv[0], "attach") == 0)
+		return cmd_container_volume_attach(c, json_mode, argc - 1, argv + 1);
+	if (argc >= 1 && strcmp(argv[0], "detach") == 0)
+		return cmd_container_volume_detach(c, json_mode, argc - 1, argv + 1);
+	fprintf(stderr, "usage: thincctl container volume attach NAME --volume=VOLUME "
+	                "--path=/mount/point [--read-only]\n"
+	                "       thincctl container volume detach NAME VOLUME\n"
+	                "  Both edit the container's definition and take effect on its next start.\n");
+	return 2;
+}
+
 /* ADR-0161 Phase D: `thincctl container device attach|detach` -- the
  * manual REST primitive POST/DELETE /v1/containers/{name}/devices,
  * same shape as container network attach/detach above (a real,
@@ -3513,6 +3631,8 @@ static int cmd_container(const struct kx_client *c, int json_mode, int argc, cha
 		return cmd_container_recipe(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "apply-recipe") == 0)
 		return cmd_container_apply_recipe(c, json_mode, argc - 1, argv + 1);
+	if (argc >= 1 && strcmp(argv[0], "volume") == 0)
+		return cmd_container_volume(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "network") == 0)
 		return cmd_container_network(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "device") == 0)

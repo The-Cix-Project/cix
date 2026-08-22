@@ -126,6 +126,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/system/rebuildable-storage` | Which disk (if any) is the active placement for images/packages/artifacts |
 | GET | `/system/rebuildable-storage/migrate` | Status of the most recent (or running) rebuildable-storage migration |
 | POST | `/system/rebuildable-storage/migrate` | Move images/packages/artifacts to a new disk, or back to the default |
+| POST | `/containers/{name}/volumes` | Attach a volume to an existing container -- edits the definition, applies on next start (issue #92) |
+| DELETE | `/containers/{name}/volumes/{volume}` | Detach it again; never touches the volume or its data |
 | GET | `/volumes` | List every persistent volume (issue #88, ADR-0183) |
 | POST | `/volumes` | Create a volume -- named storage whose lifetime is independent of any container |
 | GET | `/volumes/{name}` | Inspect one volume |
@@ -1403,6 +1405,21 @@ That `/home` now survives the container being deleted and recreated — which fo
 - `DELETE /volumes/{name}` is the only thing that ever removes a volume's data, and is refused `409` while **any container definition** references it — not merely while one is running. A stopped container will come back and expect its data; the error names the container holding it.
 
 Not covered, deliberately (each its own decision rather than a silent default): per-volume quotas — container overlays have `disk_quota_bytes`, a volume is currently an unbounded way to fill a disk; concurrent sharing between containers — nothing prevents it, but no locking or coordination is offered; and inclusion in the backup bundle — volumes are workload data, and [ADR-0033](../adr/0033-platform-state-backup-restore.md)'s config-only boundary stands.
+
+### Attaching a volume to a container that already exists
+
+```
+POST /v1/containers/jump/volumes
+{"name": "jump-home", "path": "/home"}
+
+DELETE /v1/containers/jump/volumes/jump-home
+```
+
+Both edit the container's persisted definition and take effect on its **next start** — the response says `"applies": "on next start"` rather than leaving you to find out. That is deliberately the opposite of `POST /containers/{name}/networks`, which is live and ephemeral: a bind mount has to land inside the container's own mount namespace, which only exists between `clone3()` and `pivot_root`, so attaching to a *running* container needs a primitive to enter another process's namespace from outside that this daemon does not have. Rather than pretend, the durable half ships and the live half stays open on issue #92.
+
+Detaching never deletes the volume or its data — only this container's reference to it. One thing worth knowing: the mount point the attach created stays behind in the container's overlay upper layer, so writes to that path still succeed after a detach; they simply land in the overlay and are lost on the next recreate, like any other unvolumed path.
+
+A volume must already exist (`404` otherwise, never an implicit create), a container cannot mount the same volume twice or two volumes at one path (`409`), and the per-container maximum is 8.
 
 ## Capability restriction (issue #29)
 

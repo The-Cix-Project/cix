@@ -164,6 +164,21 @@ int containerdef_add(const char *name, const char *body, size_t body_len,
                       const char *restart_policy, int restart_delay_seconds, int follow_rolling,
                       int has_follow_rolling_jitter, int follow_rolling_jitter_seconds);
 
+/*
+ * Replaces name's persisted request body and nothing else.
+ *
+ * Deliberately NOT containerdef_add(): that one is the create/redefine
+ * path and clears `stopped` and `consecutive_failures` as part of its
+ * contract, which is right for a fresh definition and wrong for an edit
+ * -- attaching a volume to a stopped container would silently un-stop
+ * it. Nothing in the cached index (depends_on/readiness/restart policy/
+ * follow_rolling) is derived from the fields this is used to edit, so
+ * none of it is re-parsed.
+ *
+ * Returns -1 if no definition exists for name, or on a persist failure.
+ */
+int containerdef_set_body(const char *name, const char *body, size_t body_len);
+
 /* Removes name's definition, if any. A no-op (returns 0) if none exists. */
 int containerdef_remove(const char *name);
 
