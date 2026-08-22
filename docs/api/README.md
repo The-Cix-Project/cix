@@ -1503,6 +1503,8 @@ It reports; it does not act. Capturing a recipe from an existing image is a real
 The gap was not hypothetical: on a live box 11 images existed and 8 had recipes, and two of the three without one were leftovers from earlier investigations that nobody had noticed, because nothing anywhere put the two sets side by side.
 
 
+`GET /containers/{name}/files?list=1` lists a directory instead of reading a file. A **running** container is listed through `/proc/<pid>/root`, which is the kernel's own merged overlay view and correct by construction. An **exited** one has no such view, so its upper and lower layers are merged here — with whiteouts handled, because overlayfs marks a deleted file as a character device with `rdev 0` and a naive listing would show files the container had deleted, which is a listing that lies. Opaque directories are not handled, and that is stated rather than assumed away: the failure mode is showing a stale name, not hiding a real one.
+
 ## Running a command in a container without a terminal
 
 ```

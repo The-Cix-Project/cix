@@ -956,17 +956,17 @@ const CATEGORY_VIEWS = {
 	sysctl: "view-sysctl",
 	disks: "view-disks",
 	"dns-records": "view-dns-records",
-	"dns-servers": "view-dns-servers",
+	"dns-servers": "view-dns-records",
 	"ldap-servers": "view-ldap-servers",
-	"ldap-groups": "view-ldap-groups",
-	"ldap-users": "view-ldap-users",
-	"ldap-config": "view-ldap-config",
+	"ldap-groups": "view-ldap-servers",
+	"ldap-users": "view-ldap-servers",
+	"ldap-config": "view-ldap-servers",
 	"ntp-config": "view-ntp-config",
-	"ntp-servers": "view-ntp-servers",
-	"ntp-time": "view-ntp-time",
+	"ntp-servers": "view-ntp-config",
+	"ntp-time": "view-ntp-config",
 	"pki-ca": "view-pki-ca",
-	"pki-intermediate": "view-pki-intermediate",
-	"pki-certs": "view-pki-certs",
+	"pki-intermediate": "view-pki-ca",
+	"pki-certs": "view-pki-ca",
 	recipes: "view-recipes",
 	site: "view-site",
 	"daemon-config": "view-daemon-config",
@@ -1021,6 +1021,49 @@ function selectCatalogueTab(tabName) {
 	for (const panel of view.querySelectorAll(":scope > .tab-panel"))
 		panel.hidden = panel.dataset.tab !== tabName;
 }
+
+/*
+ * PKI, DNS, LDAP and NTP are each one page with tabs now, so their old
+ * per-page addresses select a tab instead of a view. Each tab is named
+ * after the address it replaced, which makes this a lookup rather than
+ * a table that has to be kept in step.
+ *
+ * On arrival only -- renderCurrentView() also runs every poll, and
+ * forcing the tab there would snap the page back roughly every two
+ * seconds, which is exactly the bug the Catalogue had.
+ */
+function selectServiceTab(viewId, tabName) {
+	const view = document.getElementById(viewId);
+	const bar = view !== null ? view.querySelector(".tab-bar") : null;
+
+	if (bar === null)
+		return;
+	for (const btn of bar.querySelectorAll(".tab-button"))
+		btn.classList.toggle("active", btn.dataset.tab === tabName);
+	for (const panel of view.querySelectorAll(":scope > .tab-panel"))
+		panel.hidden = panel.dataset.tab !== tabName;
+}
+
+const SERVICE_TAB_VIEWS = {
+	"pki-ca": "view-pki-ca",
+	"pki-intermediate": "view-pki-ca",
+	"pki-certs": "view-pki-ca",
+	"dns-records": "view-dns-records",
+	"dns-servers": "view-dns-records",
+	"ldap-servers": "view-ldap-servers",
+	"ldap-groups": "view-ldap-servers",
+	"ldap-users": "view-ldap-servers",
+	"ldap-config": "view-ldap-servers",
+	"ntp-config": "view-ntp-config",
+	"ntp-servers": "view-ntp-config",
+	"ntp-time": "view-ntp-config",
+};
+
+/* The category last rendered, so a re-render triggered by the poll loop
+ * can be told apart from real navigation. Anything that a user can
+ * change after arriving -- which tab is showing -- must only be set on
+ * the latter. */
+let lastRenderedRoute = null;
 
 function renderCurrentView() {
 	const route = parseHash();
@@ -1096,17 +1139,26 @@ function renderCurrentView() {
 		else if (route.category === "recipes" || route.category === "pkg-repo" ||
 		         route.category === "pkg-cache" || route.category === "images" ||
 		         route.category === "packages") {
-			selectCatalogueTab(
-				route.category === "pkg-repo"
-					? "cat-repo"
-					: route.category === "pkg-cache"
-					  ? "cat-cache"
-					  : route.category === "images"
-					    ? "cat-images"
-					    : route.category === "packages"
-					      ? "cat-packages"
-					      : "cat-recipes"
-			);
+			/*
+			 * Only when the route actually CHANGED. renderCurrentView()
+			 * also runs on every poll, so forcing the tab here
+			 * unconditionally snapped the page back to Recipes roughly
+			 * every two seconds -- clicking any other Catalogue tab
+			 * appeared to bounce. An address selects a tab on arrival;
+			 * after that the tab bar owns it.
+			 */
+			if (lastRenderedRoute !== route.category)
+				selectCatalogueTab(
+					route.category === "pkg-repo"
+						? "cat-repo"
+						: route.category === "pkg-cache"
+						  ? "cat-cache"
+						  : route.category === "images"
+						    ? "cat-images"
+						    : route.category === "packages"
+						      ? "cat-packages"
+						      : "cat-recipes"
+				);
 			renderImages(cache.images);
 			renderPackagesView(null);
 			refreshSoftwareReconcile();
@@ -1120,6 +1172,9 @@ function renderCurrentView() {
 			refreshHostauthSessions();
 	}
 
+	if (lastRenderedRoute !== route.category && SERVICE_TAB_VIEWS[route.category] !== undefined)
+		selectServiceTab(SERVICE_TAB_VIEWS[route.category], route.category);
+	lastRenderedRoute = route.category;
 	renderTreeActive();
 }
 
@@ -1553,62 +1608,26 @@ function renderTree() {
 		{
 			/*
 			 * The services this platform runs, or registers servers
-			 * for. Grouped rather than left as four peers of
-			 * Host/Monitoring/Maintenance, which are about the box
-			 * itself -- a different kind of thing.
+			 * for. Top-level, beside Containers/Networks/Disks: those
+			 * are the things you work with, and a DNS or LDAP service
+			 * is one of them. What is left under System is then
+			 * genuinely the box and its housekeeping.
 			 *
-			 * Not a new idea: the header menu bar has grouped exactly
-			 * these five as "Network Services" all along, so the tree
-			 * was the half that disagreed. Syslog moves here from
-			 * Monitoring for the same reason -- registering which
-			 * container receives log lines is a service registration,
-			 * the same shape as the DNS/LDAP/NTP ones, not an
-			 * observation about the box.
+			 * One leaf per service, each a tabbed page -- the same
+			 * shape Software has. The pages under a service are facets
+			 * of it, not separate destinations, and three tree levels
+			 * meant navigating to find out which one a thing was on.
+			 * The header menu bar has grouped exactly these five as
+			 * "Network Services" all along.
 			 */
 			label: "Services",
 			hash: "pki-ca",
 			icon: "system",
 			children: [
-			{
-				label: "PKI",
-				hash: "pki-ca",
-				icon: "pki",
-				children: [
-					{ label: "Root CA", hash: "pki-ca", icon: "pki" },
-					{ label: "Intermediate CA", hash: "pki-intermediate", icon: "pki" },
-					{ label: "Certificates", hash: "pki-certs", icon: "pki" },
-				],
-			},
-			{
-				label: "DNS",
-				hash: "dns-records",
-				icon: "dns",
-				children: [
-					{ label: "Records", hash: "dns-records", icon: "dns" },
-					{ label: "Servers", hash: "dns-servers", icon: "dns" },
-				],
-			},
-			{
-				label: "LDAP",
-				hash: "ldap-servers",
-				icon: "dns",
-				children: [
-					{ label: "Servers", hash: "ldap-servers", icon: "dns" },
-					{ label: "Groups", hash: "ldap-groups", icon: "dns" },
-					{ label: "Users", hash: "ldap-users", icon: "dns" },
-					{ label: "Config", hash: "ldap-config", icon: "dns" },
-				],
-			},
-			{
-				label: "NTP",
-				hash: "ntp-config",
-				icon: "dns",
-				children: [
-					{ label: "Config", hash: "ntp-config", icon: "dns" },
-					{ label: "Servers", hash: "ntp-servers", icon: "dns" },
-					{ label: "Time & Sync", hash: "ntp-time", icon: "dns" },
-				],
-			},
+				{ label: "PKI", hash: "pki-ca", icon: "pki" },
+				{ label: "DNS", hash: "dns-records", icon: "dns" },
+				{ label: "LDAP", hash: "ldap-servers", icon: "dns" },
+				{ label: "NTP", hash: "ntp-config", icon: "dns" },
 				{ label: "Syslog", hash: "syslog-targets", icon: "system" },
 			],
 		},
@@ -8583,7 +8602,7 @@ document.getElementById("vbc-form").addEventListener("submit", async (event) => 
  * snapshots and last-attempt together -- they are always wanted at once
  * and three calls to draw one panel would be three round trips.
  */
-async function renderVolumeBackups(volumeName) {
+async function renderVolumeBackups(volumeName, fresh) {
     const note = document.getElementById("vd-backup-note");
 	const body = document.getElementById("vd-snapshots-body");
 	let data;
@@ -8594,9 +8613,14 @@ async function renderVolumeBackups(volumeName) {
 		note.textContent = "Could not read backups: " + e.message;
 		return;
 	}
-	document.getElementById("vd-backup-enabled").checked = !!data.enabled;
-	document.getElementById("vd-backup-retain").value = data.retain;
-	document.getElementById("vd-backup-while-running").value = data.while_running || "refuse";
+	/* Same reasoning as the quota input: these are controls the
+	 * operator edits, so they are filled on arrival and then left
+	 * alone rather than rewritten under them on every poll. */
+	if (fresh) {
+		document.getElementById("vd-backup-enabled").checked = !!data.enabled;
+		document.getElementById("vd-backup-retain").value = data.retain;
+		document.getElementById("vd-backup-while-running").value = data.while_running || "refuse";
+	}
 
 	const failed = data.status && data.status.last_error;
 
@@ -8661,7 +8685,7 @@ async function renderVolumeBackups(volumeName) {
 					"/v1/volumes/" + encodeURIComponent(volumeName) + "/backups/" + encodeURIComponent(snap.stamp)
 				);
 				clearStatus();
-				await renderVolumeBackups(volumeName);
+				await renderVolumeBackups(volumeName, 1);
 			} catch (e) {
 				showStatus("Failed to delete snapshot: " + e.message, true);
 			}
@@ -8699,7 +8723,7 @@ async function restoreVolumeSnapshot(volumeName, stamp) {
 			confirm_volume_name: volumeName,
 		});
 		clearStatus();
-		await renderVolumeBackups(volumeName);
+		await renderVolumeBackups(volumeName, 1);
 	} catch (e) {
 		showStatus("Failed to restore: " + e.message, true);
 	}
@@ -8718,7 +8742,7 @@ document.getElementById("vd-backup-form").addEventListener("submit", async (even
 			while_running: document.getElementById("vd-backup-while-running").value,
 		});
 		clearStatus();
-		await renderVolumeBackups(name);
+		await renderVolumeBackups(name, 1);
 	} catch (e) {
 		showStatus("Failed to save the backup policy: " + e.message, true);
 	}
@@ -8732,7 +8756,7 @@ document.getElementById("vd-backup-now").addEventListener("click", async () => {
 	try {
 		await apiRequest("POST", "/v1/volumes/" + encodeURIComponent(name) + "/backup", {});
 		clearStatus();
-		await renderVolumeBackups(name);
+		await renderVolumeBackups(name, 1);
 	} catch (e) {
 		showStatus("Failed to back up: " + e.message, true);
 	}
@@ -8753,6 +8777,10 @@ async function renderVolumeDetail(name) {
 	const fields = document.getElementById("vd-fields");
 	const note = document.getElementById("vd-migrate-note");
 	const select = document.getElementById("vd-target-disk");
+
+	/* True only for the first render after arriving here -- see the
+	 * quota input below for why that distinction matters. */
+	const volumeDetailFresh = currentVolumeDetailName !== name;
 
 	currentVolumeDetailName = name;
 	await refreshVolumeCache();
@@ -8812,14 +8840,22 @@ async function renderVolumeDetail(name) {
 		const q = document.getElementById("vd-quota");
 		const qnote = document.getElementById("vd-quota-note");
 
-		q.value = v.quota_bytes > 0 ? Math.round(v.quota_bytes / (1024 * 1024 * 1024)) : 0;
+		/*
+		 * Only refill the input when this page was just navigated to.
+		 * renderVolumeDetail() also runs on every poll, so writing to it
+		 * unconditionally would overwrite whatever the operator was
+		 * halfway through typing, roughly every two seconds. The note
+		 * below it is display-only and always refreshed.
+		 */
+		if (volumeDetailFresh)
+			q.value = v.quota_bytes > 0 ? Math.round(v.quota_bytes / (1024 * 1024 * 1024)) : 0;
 		qnote.textContent =
 			v.quota_bytes > 0
 				? "Limited to " + formatBytes(v.quota_bytes) + "."
 				: "No limit — this volume can grow until its disk is full.";
 	}
 
-	renderVolumeBackups(v.name);
+	renderVolumeBackups(v.name, volumeDetailFresh);
 
 	note.textContent =
 		running.length > 0
