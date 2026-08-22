@@ -1561,6 +1561,58 @@ static void fmt_disk_free_space(const struct json_value *v)
 	}
 }
 
+/*
+ * Issue #94: grow a partition, and the filesystem inside it. Grow only
+ * -- shrinking needs the filesystem shrunk first, and cutting the table
+ * entry before that destroys the tail of a live filesystem.
+ */
+static int cmd_disks_grow_partition(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	const char *disk_name = NULL;
+	const char *part_name = NULL;
+	long size_mib = 0;
+	char path[300];
+	struct json_writer w;
+	struct kx_response r;
+	int i;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--size-mib=", 11) == 0)
+			size_mib = atol(argv[i] + 11);
+		else if (disk_name == NULL)
+			disk_name = argv[i];
+		else if (part_name == NULL)
+			part_name = argv[i];
+		else {
+			fprintf(stderr, "thincctl: unknown grow-partition option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (disk_name == NULL || part_name == NULL) {
+		fprintf(stderr, "usage: thincctl disks grow-partition DISK_NAME PARTITION_NAME "
+		                "[--size-mib=N]\n"
+		                "  Omit --size-mib to take all free space immediately after it.\n"
+		                "  The partition must be unmounted, and ext4 or unformatted.\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/disks/%s/partitions/%s/resize", disk_name, part_name);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "size_mib");
+	jw_int(&w, size_mib);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "thincctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_disk_or_partitions);
+}
+
 static int cmd_disks_free_space(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	char path[256];
@@ -1706,6 +1758,8 @@ static int cmd_disks(const struct kx_client *c, int json_mode, int argc, char **
 		return cmd_disks_partition_table(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "add-partition") == 0)
 		return cmd_disks_add_partition(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "grow-partition") == 0)
+		return cmd_disks_grow_partition(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "rm-partition") == 0)
 		return cmd_disks_rm_partition(c, json_mode, argc - 1, argv + 1);
 
@@ -1716,6 +1770,7 @@ static int cmd_disks(const struct kx_client *c, int json_mode, int argc, char **
 	                "       thincctl disks free-space NAME\n"
 	                "       thincctl disks partition-table NAME\n"
 	                "       thincctl disks add-partition NAME --name=PART_NAME [--size-mib=N]\n"
+	                "       thincctl disks grow-partition DISK_NAME PARTITION_NAME [--size-mib=N]\n"
 	                "       thincctl disks rm-partition DISK_NAME PARTITION_NAME\n");
 	return 2;
 }

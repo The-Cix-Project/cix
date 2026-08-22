@@ -98,6 +98,15 @@ struct discovered_disk {
 	 */
 	char fs_type[16];
 	/*
+	 * Partitions only: where this partition starts on its parent disk,
+	 * in 512-byte sectors (sysfs reports it in those units regardless
+	 * of the device's real sector size, same as "size"). Zero for a
+	 * whole disk. Used to decide whether free space is contiguous with
+	 * a partition and can therefore extend it -- free space somewhere
+	 * else on the disk cannot.
+	 */
+	unsigned long long start_sector;
+	/*
 	 * ADR-0142: real, live I/O counters straight from the kernel's own
 	 * per-block-device accounting (/sys/block/<name>/stat -- see
 	 * Documentation/admin-guide/iostats.rst upstream), fields 1/5/3/7/10

@@ -376,6 +376,18 @@ int main(int argc, char **argv)
 			 * invisible" pattern ADR-0023 names for libtinfo.
 			 */
 			{ "/usr/sbin/sfdisk", "usr/sbin/sfdisk" },
+			/*
+			 * resize2fs + e2fsck -- DISKPART_RESIZE2FS_BIN and
+			 * DISKPART_E2FSCK_BIN, daemon/src/diskpart.c (issue #94).
+			 * Growing a partition is two operations, not one: the table
+			 * entry grows, and then the filesystem inside it has to be
+			 * grown to match, or the extra space is simply invisible.
+			 * resize2fs requires a clean filesystem, which is what
+			 * e2fsck is for. Both need only libraries mkfs.ext4 above
+			 * already pulls in.
+			 */
+			{ "/usr/sbin/resize2fs", "usr/sbin/resize2fs" },
+			{ "/usr/sbin/e2fsck", "usr/sbin/e2fsck" },
 		};
 		static const char *const shelled_bin_libs[] = {
 			/* openssl */

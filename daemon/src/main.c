@@ -13391,6 +13391,34 @@ static void respond_diskpart_error(int fd, enum diskpart_error err)
 	case DISKPART_ERR_INVALID_SIZE:
 		respond_error(fd, 400, "Bad Request", "invalid size_mib");
 		break;
+	case DISKPART_ERR_SHRINK_REFUSED:
+		respond_error(fd, 400, "Bad Request",
+		              "a partition can only be grown, never shrunk -- shrinking requires the "
+		              "filesystem inside it to be shrunk first, and cutting the table entry "
+		              "before that destroys the tail of a live filesystem");
+		break;
+	case DISKPART_ERR_NO_ROOM_AFTER:
+		respond_error(fd, 409, "Conflict",
+		              "there is not enough free space immediately after this partition -- free "
+		              "space elsewhere on the disk cannot extend it (see GET "
+		              "/v1/disks/{name}/free-space)");
+		break;
+	case DISKPART_ERR_FS_UNSUPPORTED:
+		respond_error(fd, 400, "Bad Request",
+		              "only an ext4 or unformatted partition can be grown -- growing a btrfs "
+		              "filesystem needs it mounted, and this operation needs it unmounted");
+		break;
+	case DISKPART_ERR_FS_UNCLEAN:
+		respond_error(fd, 409, "Conflict",
+		              "the filesystem needs a check that cannot be made automatically; the "
+		              "partition table was NOT changed. Check it by hand before retrying");
+		break;
+	case DISKPART_ERR_RESIZE_FS_FAILED:
+		respond_error(fd, 500, "Internal Server Error",
+		              "the partition grew but the filesystem inside it could not be grown to "
+		              "match -- the extra space is real but not yet usable; run resize2fs "
+		              "against it by hand");
+		break;
 	case DISKPART_ERR_SFDISK_MISSING:
 		respond_error(fd, 500, "Internal Server Error",
 		              "sfdisk is not installed on this host -- partitioning needs "
@@ -13576,6 +13604,67 @@ static void handle_disk_partitions_post(int fd, const char *disk_name, const cha
 		jw_arr_close(&w);
 		jw_obj_close(&w);
 		respond_json(fd, 201, "Created", &w);
+		jw_free(&w);
+	}
+}
+
+/*
+ * POST /v1/disks/{disk}/partitions/{partition}/resize (issue #94).
+ *
+ * Grow only, and both halves of the job: the table entry, then the
+ * filesystem inside it. Growing only the entry would leave the extra
+ * space invisible to everything using the filesystem, which reads as
+ * the resize having silently done nothing.
+ */
+static void handle_disk_partition_resize(int fd, const char *disk_name, const char *partition_name,
+                                          const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const struct json_value *jsize;
+	unsigned long long size_mib = 0;
+	enum diskpart_error derr;
+
+	root = json_parse(body, body_len);
+	if (root == NULL || root->type != JSON_OBJECT) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	jsize = json_object_get(root, "size_mib");
+	if (jsize != NULL) {
+		if (jsize->type != JSON_NUMBER || jsize->u.number < 0) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "size_mib must be a non-negative number");
+			return;
+		}
+		size_mib = (unsigned long long)jsize->u.number;
+	}
+	json_free(root);
+
+	derr = diskpart_resize(disk_name, partition_name, CONTAINERS_DIR, size_mib);
+	if (derr != DISKPART_OK) {
+		respond_diskpart_error(fd, derr);
+		return;
+	}
+	{
+		struct discovered_disk disks[DISK_ENUM_MAX];
+		int n = disk_enumerate(disks, DISK_ENUM_MAX, CONTAINERS_DIR);
+		int i;
+		struct json_writer w;
+
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "disk_name");
+		jw_str(&w, disk_name);
+		jw_key(&w, "partitions");
+		jw_arr_open(&w);
+		for (i = 0; i < n; i++) {
+			if (disks[i].is_partition && strcmp(disks[i].parent_disk, disk_name) == 0)
+				disk_write_json_one(&disks[i], &w);
+		}
+		jw_arr_close(&w);
+		jw_obj_close(&w);
+		respond_json(fd, 200, "OK", &w);
 		jw_free(&w);
 	}
 }
@@ -17987,6 +18076,22 @@ static void dispatch(int fd, const struct http_request *req)
 				if (strcmp(slash, "/partitions") == 0 && strcmp(req->method, "POST") == 0) {
 					handle_disk_partitions_post(fd, disk_name, req->body, req->body_len);
 					return;
+				}
+				if (strncmp(slash, "/partitions/", 12) == 0 &&
+				    strcmp(req->method, "POST") == 0) {
+					const char *rest = slash + 12;
+					const char *tail = strstr(rest, "/resize");
+
+					if (tail != NULL && tail[7] == '\0' && tail != rest &&
+					    (size_t)(tail - rest) < DISKROLE_DISK_NAME_MAX) {
+						char part_name[DISKROLE_DISK_NAME_MAX];
+
+						memcpy(part_name, rest, tail - rest);
+						part_name[tail - rest] = '\0';
+						handle_disk_partition_resize(fd, disk_name, part_name, req->body,
+						                              req->body_len);
+						return;
+					}
 				}
 				if (strncmp(slash, "/partitions/", 12) == 0 &&
 				    strcmp(req->method, "DELETE") == 0 && slash[12] != '\0' &&

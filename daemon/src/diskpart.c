@@ -425,3 +425,181 @@ enum diskpart_error diskpart_free_space(const char *disk_name, const char *os_co
 
 	return diskpart_free_space_from_path(d.dev_path, out);
 }
+
+/*
+ * Runs a filesystem tool (e2fsck/resize2fs) on a device, discarding its
+ * output. Same fork/execve/waitpid shape as run_sfdisk_argv() above but
+ * against a different binary, so the exit-status mapping is shared and
+ * a missing tool is still distinguishable from a tool that ran and
+ * refused -- the distinction issue #9 had to learn the hard way.
+ */
+static int run_tool_argv(const char *bin, char *const argv[])
+{
+	pid_t pid;
+	int status;
+
+	pid = fork();
+	if (pid < 0)
+		return -1;
+	if (pid == 0) {
+		int devnull = open("/dev/null", O_WRONLY);
+
+		if (devnull >= 0) {
+			dup2(devnull, STDOUT_FILENO);
+			dup2(devnull, STDERR_FILENO);
+			close(devnull);
+		}
+		execve(bin, argv, environ);
+		_exit(127);
+	}
+	if (waitpid(pid, &status, 0) != pid)
+		return -1;
+	if (!WIFEXITED(status))
+		return -1;
+	if (WEXITSTATUS(status) == 127)
+		return -2;
+	return WEXITSTATUS(status);
+}
+
+/*
+ * Grows one partition, and the filesystem inside it.
+ *
+ * GROW ONLY, deliberately. Shrinking is not the mirror image of
+ * growing: the filesystem has to shrink FIRST, and if the table entry
+ * is cut before the filesystem is, the tail of a live filesystem is
+ * simply gone. Refusing is not a limitation to apologise for -- it is
+ * the difference between an operation that cannot lose data and one
+ * that can, and "make it bigger" is what people actually want anyway.
+ *
+ * The two halves are both required. Growing the table entry alone
+ * leaves the extra space invisible to everything using the filesystem,
+ * which looks like the resize silently did nothing.
+ *
+ * The filesystem is grown only for ext4 (or skipped entirely for an
+ * unformatted partition, where there is nothing to grow). btrfs is
+ * refused rather than half-supported: `btrfs filesystem resize` needs
+ * the filesystem MOUNTED, and this operation requires it unmounted, so
+ * it is a genuinely different flow rather than another binary to call.
+ */
+enum diskpart_error diskpart_resize(const char *disk_name, const char *partition_name,
+                                     const char *os_containers_dir, unsigned long long size_mib)
+{
+	struct discovered_disk parent, part;
+	struct diskpart_free_space fs;
+	unsigned long long current_bytes, want_bytes, room_bytes = 0;
+	unsigned long long part_end_sector;
+	char script[64];
+	char partno_str[16];
+	char *argv[6];
+	const char *partno;
+	int i, rc;
+
+	if (!simple_name_is_valid(disk_name, DISKROLE_DISK_NAME_MAX))
+		return DISKPART_ERR_INVALID_DISK_NAME;
+	if (!simple_name_is_valid(partition_name, sizeof(part.name)))
+		return DISKPART_ERR_INVALID_PART_NAME;
+	if (!find_disk(partition_name, os_containers_dir, &part))
+		return DISKPART_ERR_NOT_FOUND;
+	if (!part.is_partition)
+		return DISKPART_ERR_NOT_A_PARTITION;
+	if (strcmp(part.parent_disk, disk_name) != 0)
+		return DISKPART_ERR_WRONG_PARENT;
+	if (part.is_os_disk)
+		return DISKPART_ERR_IS_OS_DISK;
+	/*
+	 * Unmounted only. resize2fs can grow a mounted ext4 online, but
+	 * sfdisk rewriting the table underneath a live filesystem is a
+	 * different risk entirely, and the two have to happen in order.
+	 */
+	if (part.mounted)
+		return DISKPART_ERR_MOUNTED;
+	if (!find_disk(disk_name, os_containers_dir, &parent))
+		return DISKPART_ERR_NOT_FOUND;
+
+	/* Only filesystems this can actually finish the job for. */
+	if (part.fs_type[0] != '\0' && strcmp(part.fs_type, "ext4") != 0)
+		return DISKPART_ERR_FS_UNSUPPORTED;
+
+	/*
+	 * How much room is genuinely available: free space is only usable
+	 * if it starts exactly where this partition ends. Free space
+	 * elsewhere on the disk cannot extend this partition, and reporting
+	 * a total would promise room that does not apply here.
+	 */
+	if (diskpart_free_space_from_path(parent.dev_path, &fs) != DISKPART_OK)
+		return DISKPART_ERR_SFDISK_FAILED;
+	current_bytes = part.size_bytes;
+	part_end_sector = 0;
+	if (fs.sector_bytes > 0)
+		part_end_sector = part.start_sector + (current_bytes / fs.sector_bytes);
+	for (i = 0; i < fs.extent_count; i++) {
+		if (fs.extents[i].start_sector == part_end_sector) {
+			room_bytes = fs.extents[i].sectors * fs.sector_bytes;
+			break;
+		}
+	}
+
+	want_bytes = size_mib * 1024ULL * 1024ULL;
+	if (size_mib == 0)
+		want_bytes = current_bytes + room_bytes; /* "everything after it" */
+	if (want_bytes <= current_bytes)
+		return DISKPART_ERR_SHRINK_REFUSED;
+	if (want_bytes > current_bytes + room_bytes)
+		return DISKPART_ERR_NO_ROOM_AFTER;
+
+	/* Step 1: the table entry. */
+	partno = partition_name + strlen(disk_name);
+	if (partno[0] == 'p' && partno[1] >= '0' && partno[1] <= '9')
+		partno++;
+	if (partno[0] < '0' || partno[0] > '9')
+		return DISKPART_ERR_WRONG_PARENT;
+	snprintf(partno_str, sizeof(partno_str), "%s", partno);
+	snprintf(script, sizeof(script), "size=%lluMiB\n", want_bytes / (1024ULL * 1024ULL));
+
+	argv[0] = (char *)DISKPART_SFDISK_BIN;
+	argv[1] = "-N";
+	argv[2] = partno_str;
+	argv[3] = "--force";
+	argv[4] = parent.dev_path;
+	argv[5] = NULL;
+	rc = run_sfdisk_stdin(argv, script);
+	if (rc == -2)
+		return DISKPART_ERR_SFDISK_MISSING;
+	if (rc != 0)
+		return DISKPART_ERR_SFDISK_FAILED;
+
+	/* Step 2: the filesystem, if there is one. An unformatted
+	 * partition is finished -- there is nothing inside it to grow. */
+	if (part.fs_type[0] == '\0')
+		return DISKPART_OK;
+
+	/*
+	 * resize2fs requires a clean filesystem. -p ("preen") makes only
+	 * the automatic, unambiguous repairs and refuses anything needing
+	 * a human, which is exactly the line worth drawing for something
+	 * running unattended: exit >= 4 means it found something it will
+	 * not decide on alone, and that is reported rather than pressed
+	 * through.
+	 */
+	argv[0] = (char *)DISKPART_E2FSCK_BIN;
+	argv[1] = "-f";
+	argv[2] = "-p";
+	argv[3] = part.dev_path;
+	argv[4] = NULL;
+	rc = run_tool_argv(DISKPART_E2FSCK_BIN, argv);
+	if (rc == -2)
+		return DISKPART_ERR_SFDISK_MISSING;
+	if (rc < 0 || rc >= 4)
+		return DISKPART_ERR_FS_UNCLEAN;
+
+	argv[0] = (char *)DISKPART_RESIZE2FS_BIN;
+	argv[1] = part.dev_path;
+	argv[2] = NULL;
+	rc = run_tool_argv(DISKPART_RESIZE2FS_BIN, argv);
+	if (rc == -2)
+		return DISKPART_ERR_SFDISK_MISSING;
+	if (rc != 0)
+		return DISKPART_ERR_RESIZE_FS_FAILED;
+
+	return DISKPART_OK;
+}

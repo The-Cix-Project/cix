@@ -242,6 +242,8 @@ int main(void)
 			"bin/rm",             /* PKG_RM_BIN -- /bin, not /usr/bin */
 			"usr/sbin/mkfs.ext4", /* DISKFORMAT_MKFS_EXT4_BIN */
 			"usr/sbin/sfdisk",    /* DISKPART_SFDISK_BIN */
+			"usr/sbin/resize2fs", /* DISKPART_RESIZE2FS_BIN */
+			"usr/sbin/e2fsck",    /* DISKPART_E2FSCK_BIN */
 		};
 		size_t bi;
 

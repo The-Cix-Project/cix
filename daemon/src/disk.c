@@ -428,6 +428,20 @@ int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containe
 		e = &out[count];
 		fill_common(e, ent->d_name, size_str);
 		e->is_partition = 1;
+		/*
+		 * Where this partition begins on its parent disk, in 512-byte
+		 * sectors, straight from sysfs. Needed to tell whether a free
+		 * extent is CONTIGUOUS with this partition (issue #94): free
+		 * space elsewhere on the disk cannot grow it, so the total is
+		 * the wrong number to reason with.
+		 */
+		{
+			char start_str[64];
+
+			snprintf(attr_path, sizeof(attr_path), "%s/start", base);
+			if (read_sysfs_attr(attr_path, start_str, sizeof(start_str)) == 0)
+				e->start_sector = strtoull(start_str, NULL, 10);
+		}
 
 		disk_name_from_partition(ent->d_name, parent_name, sizeof(parent_name));
 		snprintf(e->parent_disk, sizeof(e->parent_disk), "%s", parent_name);
