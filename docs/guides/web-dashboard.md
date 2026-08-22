@@ -38,22 +38,16 @@ Services
   NTP              (tabs: Config / Servers / Time & Sync)
   Syslog
 System
-  Software         (tabs: Recipes / Reconcile / Images / Packages / Repo & Sync / Cache & Artifacts)
-  Host
-    Daemon
-    Site
-    Devices
-    Storage Placement
-    Routes
-    Host Swap
-    Rolling Restart
+  Software         (tabs: Recipes / Reconcile / Images / Packages / Repo & Sync / Cache & Artifacts / Package Builds)
+  Host             (tabs: Daemon / Site / Sessions / Swap / Rolling Restart / Storage Placement)
+  Devices
+  Routes
   Monitoring
     Host Stats
     Processes
     Log Store
     Kernel Log
     Server Health
-    Syslog Targets
   Maintenance
     TLS Throttle
     Update
@@ -71,6 +65,8 @@ Container leaves are colored by live status (running/paused/stopped -- tinted ic
 Top level is the things you work with -- **Containers, Networks, Disks, Services** -- and then **System**, which is the box itself and its housekeeping. Services being a peer of the others rather than a folder inside System is the point: a DNS or LDAP service is something you manage, not a system setting. It also matches the header menu bar, which has grouped exactly these five (DNS, PKI, LDAP, NTP, Syslog) as "Network Services" all along -- the tree was the half that disagreed.
 
 The **Reconcile** tab is the one that earns the consolidation: it puts what is declared next to what is actually installed, and flags anything installed with no recipe -- that cannot be rebuilt from source control, so it is either missing a recipe or it is debris. On the real box this immediately surfaced two leftover images from earlier investigations that nobody had noticed, because nothing anywhere had put the two sets side by side. It reports rather than acts: capturing a recipe from an existing image is a real operation with real choices in it, and deleting one is destructive.
+
+**Host** is one leaf as well, holding what is genuinely about the box: who it is, what it listens on, who is logged in, its swap, its rolling-restart window, and where its own concerns are stored. **Devices** and **Routes** deliberately sit beside it rather than inside it -- a physical hardware inventory and the kernel routing table are things you *look at*, not settings about the daemon. **Package Builds** moved into Software, where build configuration belongs.
 
 Each service is one leaf too, for the same reason: Root CA and Certificates are facets of PKI, not separate destinations, and three tree levels meant navigating to find out which page a thing was on. Every old address (`#pki-certs`, `#ldap-users`, `#ntp-time`, ...) still resolves and opens its own tab, so nothing that was bookmarked breaks.
 

@@ -968,12 +968,12 @@ const CATEGORY_VIEWS = {
 	"pki-intermediate": "view-pki-ca",
 	"pki-certs": "view-pki-ca",
 	recipes: "view-recipes",
-	site: "view-site",
+	"site": "view-daemon-config",
 	"daemon-config": "view-daemon-config",
-	"host-swap": "view-host-swap",
-	"rolling-restart": "view-rolling-restart",
-	"pkg-build-config": "view-pkg-build-config",
-	"hostauth-sessions": "view-hostauth-sessions",
+	"host-swap": "view-daemon-config",
+	"rolling-restart": "view-daemon-config",
+	"pkg-build-config": "view-recipes",
+	"hostauth-sessions": "view-daemon-config",
 	"host-stats": "view-host-stats",
 	processes: "view-processes",
 	"syslog-targets": "view-syslog-targets",
@@ -994,7 +994,7 @@ const CATEGORY_VIEWS = {
 	packages: "view-recipes",
 	"pkg-repo": "view-recipes",
 	"pkg-cache": "view-recipes",
-	"storage-placement": "view-storage-placement",
+	"storage-placement": "view-daemon-config",
 	backup: "view-backup",
 	update: "view-update",
 };
@@ -1045,6 +1045,12 @@ function selectServiceTab(viewId, tabName) {
 }
 
 const SERVICE_TAB_VIEWS = {
+	"daemon-config": "view-daemon-config",
+	site: "view-daemon-config",
+	"hostauth-sessions": "view-daemon-config",
+	"host-swap": "view-daemon-config",
+	"rolling-restart": "view-daemon-config",
+	"storage-placement": "view-daemon-config",
 	"pki-ca": "view-pki-ca",
 	"pki-intermediate": "view-pki-ca",
 	"pki-certs": "view-pki-ca",
@@ -1138,7 +1144,7 @@ function renderCurrentView() {
 			renderPackagesView(route.name);
 		else if (route.category === "recipes" || route.category === "pkg-repo" ||
 		         route.category === "pkg-cache" || route.category === "images" ||
-		         route.category === "packages") {
+		         route.category === "packages" || route.category === "pkg-build-config") {
 			/*
 			 * Only when the route actually CHANGED. renderCurrentView()
 			 * also runs on every poll, so forcing the tab here
@@ -1157,7 +1163,9 @@ function renderCurrentView() {
 						    ? "cat-images"
 						    : route.category === "packages"
 						      ? "cat-packages"
-						      : "cat-recipes"
+						      : route.category === "pkg-build-config"
+						        ? "pkg-build-config"
+						        : "cat-recipes"
 				);
 			renderImages(cache.images);
 			renderPackagesView(null);
@@ -1668,27 +1676,25 @@ function renderTree() {
 					icon: "recipes",
 				},
 				{
-					/* Core host identity/hardware/network config -- this
-					 * install's own instance identity (Site), listener
-					 * config, physical device inventory, and the kernel
-					 * routing table, plus the two smaller settings
-					 * (Host Swap, Rolling Restart) that used to be bundled
-					 * onto the Daemon page with no navigation of their own. */
+					/*
+					 * The box itself: who it is, what it listens on, who
+					 * is logged in, and where its own concerns live. One
+					 * tabbed destination -- these were nine leaves, most
+					 * of them a single form.
+					 *
+					 * Devices and Routes are NOT here: a physical
+					 * hardware inventory and the kernel routing table are
+					 * things you look at, not settings about the daemon,
+					 * so they sit beside Host rather than inside it.
+					 * Package Builds moved to Software, where build
+					 * configuration belongs.
+					 */
 					label: "Host",
 					hash: "daemon-config",
 					icon: "system",
-					children: [
-						{ label: "Daemon", hash: "daemon-config", icon: "system" },
-						{ label: "Site", hash: "site", icon: "dns" },
-						{ label: "Devices", hash: "devices", icon: "devices" },
-						{ label: "Storage Placement", hash: "storage-placement", icon: "disks" },
-						{ label: "Routes", hash: "routes", icon: "networks" },
-						{ label: "Host Swap", hash: "host-swap", icon: "system" },
-						{ label: "Rolling Restart", hash: "rolling-restart", icon: "system" },
-						{ label: "Package Builds", hash: "pkg-build-config", icon: "system" },
-						{ label: "Sessions", hash: "hostauth-sessions", icon: "system" },
-					],
 				},
+				{ label: "Devices", hash: "devices", icon: "devices" },
+				{ label: "Routes", hash: "routes", icon: "networks" },
 				{
 					/* Everything about observing/recording what the box is
 					 * doing -- live resource graphs, the process table, and
