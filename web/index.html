@@ -632,16 +632,30 @@
 			</div>
 		</section>
 
-		<!-- One disk: its partitions, and using the whole disk directly. -->
+		<!--
+		     One block device -- a whole disk or a partition. Deliberately one
+		     page shape for both: a partition IS a block device, with its own
+		     role, filesystem, mount and usage, which is exactly why ADR-0158
+		     could reuse diskrole/diskformat for it unchanged. The Partitions
+		     tab is the only part a partition does not get, because only a
+		     whole disk has a partition table.
+		-->
 		<section class="view" id="view-disk-detail" hidden>
 			<h2 id="dd-title"></h2>
+			<p class="hint" id="dd-subtitle"></p>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="dd-overview">Overview</button>
-				<button type="button" class="tab-button" data-tab="dd-partitions">Partitions</button>
-				<button type="button" class="tab-button" data-tab="dd-whole">Whole disk</button>
+				<button type="button" class="tab-button" data-tab="dd-role" id="dd-tab-role">Role &amp; Format</button>
+				<button type="button" class="tab-button" data-tab="dd-partitions" id="dd-tab-partitions">Partitions</button>
 			</div>
 			<div class="tab-panel" data-tab="dd-overview">
+				<div id="dd-usage"></div>
 				<div class="detail-grid" id="dd-fields"></div>
+			</div>
+			<div class="tab-panel" data-tab="dd-role" hidden>
+				<p class="hint" id="dd-role-note"></p>
+				<div id="dd-role-current"></div>
+				<div id="dd-role-actions"></div>
 			</div>
 			<div class="tab-panel" data-tab="dd-partitions" hidden>
 				<p class="hint" id="dd-part-note"></p>
@@ -654,7 +668,6 @@
 							<th>Filesystem</th>
 							<th>Mounted</th>
 							<th>Usage</th>
-							<th></th>
 						</tr>
 					</thead>
 					<tbody id="dd-partitions-body"></tbody>
@@ -673,22 +686,13 @@
 						</label>
 						<button type="submit">Add partition</button>
 					</form>
-					<p class="hint">Leave the size blank to consume all remaining space. Partitions can be
-						created and deleted; there is deliberately no resize &mdash; the underlying tool is
-						driven in append and delete modes only, and moving or growing a partition in place is
-						a data-bearing operation that would need its own design rather than a button.</p>
 					<h3>Partition table</h3>
-					<p class="hint">Writing a fresh table wipes every partition on this disk and everything on
-						them. Refused while anything on the disk is mounted.</p>
+					<p class="hint">Writing a fresh table wipes every partition on this disk and everything
+						on them. Refused while anything on the disk is mounted. Partitions can be created and
+						deleted; there is deliberately no resize &mdash; growing or moving one in place is a
+						data-bearing operation that needs its own design rather than a button.</p>
 					<button type="button" id="dd-write-table" class="danger">Write a fresh empty GPT table</button>
 				</div>
-			</div>
-			<div class="tab-panel" data-tab="dd-whole" hidden>
-				<p class="hint">A disk does not have to be partitioned to be used. Giving the whole device a
-					role and formatting it is a first-class option, and is what most single-purpose data
-					disks want. Assigning a role is non-destructive and reversible; formatting wipes every
-					byte.</p>
-				<div id="dd-whole-actions"></div>
 			</div>
 		</section>
 

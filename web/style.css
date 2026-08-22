@@ -1433,57 +1433,32 @@ td.empty {
 }
 
 /*
- * Tree context menu (right-click on a disk, partition or volume). A
- * shortcut to actions that all also exist on their own pages -- see
- * openTreeContextMenu() for why that matters.
+ * Disk usage gauge. A bar rather than two numbers, because "how full is
+ * this" is the question people actually scan for; the exact figures sit
+ * under it. Warn/critical tints reuse the existing state tokens rather
+ * than introducing a second colour vocabulary.
  */
-.tree-context-menu {
-	position: fixed;
-	z-index: 200;
-	margin: 0;
-	padding: 0.25rem 0;
-	list-style: none;
-	min-width: 12rem;
-	background: var(--panel);
-	border: 1px solid var(--border);
-	border-radius: 6px;
-	box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
-	font-size: 0.85rem;
+.usage-gauge {
+	margin: 0 0 1rem 0;
 }
 
-.tree-context-menu li {
-	margin: 0;
-	padding: 0;
+.usage-gauge-track {
+	height: 0.75rem;
+	border-radius: 4px;
+	background: var(--unknown-bg);
+	overflow: hidden;
 }
 
-.tree-context-menu li.separator {
-	height: 1px;
-	margin: 0.25rem 0;
-	background: var(--border);
+.usage-gauge-fill {
+	height: 100%;
+	background: var(--ok);
+	transition: width 0.2s ease;
 }
 
-.tree-context-menu button {
-	display: block;
-	width: 100%;
-	padding: 0.3rem 0.75rem;
-	border: 0;
-	border-radius: 0;
-	background: none;
-	color: var(--text);
-	text-align: left;
-	font: inherit;
-	cursor: pointer;
+.usage-gauge-fill.usage-gauge-warn {
+	background: var(--paused);
 }
 
-.tree-context-menu button:hover:not(:disabled) {
-	background: var(--tree-active-bg);
-}
-
-.tree-context-menu button:disabled {
-	color: var(--muted);
-	cursor: default;
-}
-
-.tree-context-menu button.danger {
-	color: var(--error);
+.usage-gauge-fill.usage-gauge-critical {
+	background: var(--error);
 }
