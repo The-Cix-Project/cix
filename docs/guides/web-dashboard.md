@@ -38,21 +38,15 @@ Services
   NTP              (tabs: Config / Servers / Time & Sync)
   Syslog
 System
-  Software         (tabs: Recipes / Reconcile / Images / Packages / Repo & Sync / Cache & Artifacts / Package Builds)
-  Host             (tabs: Daemon / Site / Sessions / Swap / Rolling Restart / Storage Placement)
+  Software         (tabs: Recipes / Reconcile / Images / Packages / Repo & Sync / Cache & Artifacts / Package Builds / Update)
+  Host             (tabs: Daemon / Site / Routes / Sessions / Swap / Rolling Restart / Storage Placement / TLS Throttle / Backup / Volume Backups / Factory Reset)
   Devices
-  Routes
   Monitoring
     Host Stats
     Processes
     Log Store
     Kernel Log
     Server Health
-  Maintenance
-    TLS Throttle
-    Update
-    Backup
-    Volume Backups
 ```
 
 Reorganized (ADR-0138) from an earlier, flatter shape where a single 10-leaf "Server" group held everything that wasn't PKI/DNS/LDAP/NTP -- now split by what each page actually is: **Host** (core identity/hardware/network config), **Monitoring** (live visibility into what the box is doing), **Maintenance** (protecting and evolving the running system over time), none of them standing out as a dumping ground the way the original single group did. **Software** picked up the same two-tier shape (Catalog vs. Build Pipeline) for the same reason.
@@ -66,7 +60,9 @@ Top level is the things you work with -- **Containers, Networks, Disks, Services
 
 The **Reconcile** tab is the one that earns the consolidation: it puts what is declared next to what is actually installed, and flags anything installed with no recipe -- that cannot be rebuilt from source control, so it is either missing a recipe or it is debris. On the real box this immediately surfaced two leftover images from earlier investigations that nobody had noticed, because nothing anywhere had put the two sets side by side. It reports rather than acts: capturing a recipe from an existing image is a real operation with real choices in it, and deleting one is destructive.
 
-**Host** is one leaf as well, holding what is genuinely about the box: who it is, what it listens on, who is logged in, its swap, its rolling-restart window, and where its own concerns are stored. **Devices** and **Routes** deliberately sit beside it rather than inside it -- a physical hardware inventory and the kernel routing table are things you *look at*, not settings about the daemon. **Package Builds** moved into Software, where build configuration belongs.
+**Host** is one leaf as well, and it is where everything you *configure about the box* ended up: identity, listeners, routes, sessions, swap, the rolling-restart window, storage placement, TLS throttling, backups, and Factory Reset. **Devices** stays outside it, because a physical hardware inventory is something you look at rather than configure — Routes is not in that category despite an earlier version of this page grouping the two, since the routing table is edited from its own page. **Update** and **Package Builds** live under Software, where anything about the software on this box belongs. Maintenance is gone as a grouping: it held three unrelated pages that each have a real home.
+
+Host carries eleven tabs, which is a lot for one bar — the alternative was a folder of eleven single-form pages, and one destination you scan beats a tree you navigate.
 
 Each service is one leaf too, for the same reason: Root CA and Certificates are facets of PKI, not separate destinations, and three tree levels meant navigating to find out which page a thing was on. Every old address (`#pki-certs`, `#ldap-users`, `#ntp-time`, ...) still resolves and opens its own tab, so nothing that was bookmarked breaks.
 

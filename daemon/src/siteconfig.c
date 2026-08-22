@@ -134,6 +134,17 @@ void siteconfig_write_json(struct json_writer *w)
 	jw_obj_close(w);
 }
 
+/*
+ * This install's own name. Exposed (issue #63) because the factory
+ * reset requires it typed back as confirmation -- a boolean can be sent
+ * by a client that misunderstood the call; a name can only be sent by
+ * something that looked it up first.
+ */
+const char *siteconfig_instance_name(void)
+{
+	return g_instance_name;
+}
+
 const char *siteconfig_domain_suffix(void)
 {
 	return g_domain_suffix;

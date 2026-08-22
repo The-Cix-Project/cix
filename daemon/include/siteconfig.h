@@ -84,6 +84,10 @@ void siteconfig_write_json(struct json_writer *w);
  * server-side name-qualification helper -- without going through the
  * JSON-writer shape siteconfig_write_json() targets.
  */
+/* This install's own name -- what POST /system/factory-reset requires
+ * typed back before it will do anything (issue #63). */
+const char *siteconfig_instance_name(void);
+
 const char *siteconfig_domain_suffix(void);
 
 /*

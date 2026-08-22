@@ -17,6 +17,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/system/hostauth/sessions` | Every active session (username, expires-in) -- never a raw token, before or after issuance (ADR-0152) |
 | DELETE | `/system/hostauth/sessions/{username}` | Revoke every active session for that user -- "log out everywhere" |
 | GET | `/system/boot` | Build version/time, A/B slot, kernel version (`uname`) |
+| POST | `/system/factory-reset` | Return the box to its just-installed state and reboot — destroys everything including volumes (issue #63) |
 | POST | `/system/shutdown` | Stop `thincd`; powers off the host too when running as real PID 1 |
 | POST | `/system/reboot` | Stop `thincd`; restarts the host too when running as real PID 1 |
 | POST | `/system/update` | Write a fresh control-plane squashfs and/or a fresh kernel onto this daemon's own inactive A/B slot |
@@ -1519,6 +1520,23 @@ This enters the running container's own namespaces and runs `argv` directly. **N
 It is **asynchronous with a poll endpoint** rather than a blocking call, because holding the daemon's event loop for the length of someone's command is precisely the wedge [ADR-0180](../adr/0180-async-container-teardown.md) exists to prevent; every other slow operation here has the same shape, and `thincctl exec NAME -- cmd...` polls for you so it still feels synchronous.
 
 A command that outruns `timeout_seconds` is SIGKILLed rather than left running invisibly, and reported as `timeout` rather than `done` so it is never mistaken for a command that finished. Output is capped, and `truncated` says so — silently dropping the tail of a diagnostic is how someone concludes the wrong thing from it.
+
+
+## Factory reset
+
+```
+POST /v1/system/factory-reset   {"confirm": "<this install's instance name>"}
+```
+
+The most destructive endpoint here. It destroys every container and its storage, every image and all its versions, every network/route/DNS/PKI/LDAP/NTP/syslog registration, all package state, recipes, build cache and artifacts, the log store, and **every volume along with all data in it**. Volumes are the one category that is genuinely irreplaceable workload data rather than regenerable platform state — and a just-installed box has none, so a reset that kept them would not be a reset.
+
+It keeps the installed OS itself (both root slots, the kernel, the ESP, the install-time config), so the box returns to how `thinc-install` left it rather than to nothing. Disks that carried a role are **forgotten, not reformatted** — the filesystems on them are untouched.
+
+`confirm` is this install's own instance name, not a boolean. A boolean can be sent by a client that misunderstood the call; a name can only be sent by something that looked it up first.
+
+**The mechanism is a sentinel plus a reboot, and both halves of that are correctness rather than taste.** The daemon holds this state in memory and rewrites its files on any change, so deleting them underneath a running daemon is a race it usually loses — the next container event or health probe writes the file straight back and the reset silently half-happens. And it is crash-safe: once armed the reset happens, on this boot or the next. A reset that got as far as telling the operator "yes" and then evaporated because the reboot did not complete is the worst possible outcome for an operation whose entire purpose is being certain of the starting state.
+
+The wipe runs at startup **before any subsystem reads its state**. That placement is the whole correctness of it: put later in the sequence — which is where it was first written — the earlier subsystems have already loaded the old world into memory and will write every bit of it back on the next change. The files vanish, the API still answers with everything that was supposed to be gone, and the reset looks like it worked.
 
 
 ## Capability restriction (issue #29)
