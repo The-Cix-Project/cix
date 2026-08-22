@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/mount.h>
+#include <sys/stat.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
@@ -23,6 +24,33 @@
  * just need to call this immediately after the failing call, exactly
  * like the perror() it replaces.
  */
+/*
+ * Issue #88: mkdir -p for a volume's mount point inside the container's
+ * future root. Needed because a volume may legitimately be mounted at a
+ * path the image itself has no concept of (e.g. /home on a minimal
+ * rootfs), so requiring the image to pre-create it would make volumes
+ * usable only where the image already anticipated them. Child-side and
+ * pre-pivot, so it must not depend on anything outside this file.
+ */
+static int volume_mkdir_p(char *path)
+{
+	char *p;
+
+	for (p = path + 1; *p != '\0'; p++) {
+		if (*p != '/')
+			continue;
+		*p = '\0';
+		if (mkdir(path, 0755) != 0 && errno != EEXIST) {
+			*p = '/';
+			return -1;
+		}
+		*p = '/';
+	}
+	if (mkdir(path, 0755) != 0 && errno != EEXIST)
+		return -1;
+	return 0;
+}
+
 static void child_diag(int fd, const char *prefix)
 {
 	dprintf(fd, "%s: %s\n", prefix, strerror(errno));
@@ -432,6 +460,54 @@ int container_create(const struct container_spec *spec, struct container_handle 
 				_exit(122);
 			}
 			close(overlay_lower_fd);
+		}
+		/*
+		 * Issue #88: bind persistent volumes into the container's
+		 * future root BEFORE pivot_root, while `merged` is still
+		 * addressable by its host path. Done here, in the child, so the
+		 * mounts land in this container's OWN mount namespace and are
+		 * torn down with it -- the host never accumulates them.
+		 *
+		 * A failure is deliberately fatal rather than skipped: a
+		 * container that silently started WITHOUT its persistent
+		 * storage would write to the overlay upper layer instead, look
+		 * completely healthy, and lose that data on its next recreate --
+		 * exactly the failure volumes exist to prevent, made harder to
+		 * notice.
+		 */
+		{
+			int vi;
+
+			for (vi = 0; vi < spec->volume_count; vi++) {
+				const struct container_volume *vol = &spec->volumes[vi];
+				char target[PATH_MAX];
+
+				if (snprintf(target, sizeof(target), "%s%s", spec->ov.merged,
+				             vol->mount_path) >= (int)sizeof(target)) {
+					errno = ENAMETOOLONG;
+					child_diag(diag_pipe[1], "child: volume target path");
+					_exit(125);
+				}
+				/* The mount point must exist inside the container. Creating
+				 * it here (rather than requiring the image to ship it) is
+				 * what lets a volume be mounted at a path the image has no
+				 * concept of, e.g. /home on a minimal rootfs. */
+				if (volume_mkdir_p(target) != 0) {
+					child_diag(diag_pipe[1], "child: volume mkdir");
+					_exit(125);
+				}
+				if (mount(vol->host_path, target, NULL, MS_BIND | MS_REC, NULL) != 0) {
+					child_diag(diag_pipe[1], "child: volume bind mount");
+					_exit(125);
+				}
+				if (vol->read_only &&
+				    mount(NULL, target, NULL, MS_BIND | MS_REMOUNT | MS_RDONLY, NULL) != 0) {
+					/* A read-only volume that silently came up writable
+					 * would be a false guarantee, so this fails too. */
+					child_diag(diag_pipe[1], "child: volume remount ro");
+					_exit(125);
+				}
+			}
 		}
 		{
 			int mountns_pivot_ret = mountns_pivot(spec->ov.merged, &spec->mnt);

@@ -3428,6 +3428,126 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /volumes:
+    get:
+      summary: List all persistent volumes (issue #88, ADR-0183)
+      operationId: listVolumes
+      responses:
+        "200":
+          description: Volume list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [volumes]
+                properties:
+                  volumes:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Volume"
+    post:
+      summary: Create a persistent volume
+      description: >
+        A volume is a named directory whose lifetime is independent of
+        any container using it -- deleting a container never deletes its
+        volumes (ADR-0183). Placement reuses the same disk-role
+        mechanism container overlays already use, rather than being a
+        second storage story.
+      operationId: createVolume
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VolumeCreateRequest"
+      responses:
+        "201":
+          description: Volume created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Volume"
+        "400":
+          description: Missing or invalid name (a volume name becomes a real directory name, so path-escaping characters can never be accepted)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A volume with this name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Could not create the volume directory, or could not persist the volume
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "507":
+          description: The volume table is full
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /volumes/{volume_name}:
+    get:
+      summary: Inspect one volume
+      operationId: getVolume
+      parameters:
+        - name: volume_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Volume detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Volume"
+        "404":
+          description: No such volume
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Delete a volume and all of its data
+      description: >
+        Destructive and not undoable -- this is the only way a volume's
+        data is ever removed, which is exactly why it is separate from
+        container deletion. Refused while ANY container definition
+        references the volume, not merely while one is running: a
+        stopped container will come back and expect its data, so
+        removing it underneath would be a data-loss bug that only
+        surfaces later. The error names the container holding it.
+      operationId: deleteVolume
+      parameters:
+        - name: volume_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Volume and its data deleted
+        "404":
+          description: No such volume
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Still referenced by a container definition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /networks:
     get:
       summary: List all networks known to this daemon
@@ -7500,6 +7620,22 @@ components:
         readiness:
           $ref: "#/components/schemas/Readiness"
 
+        volumes:
+          type: array
+          maxItems: 8
+          items:
+            $ref: "#/components/schemas/ContainerVolumeMount"
+          description: >
+            Persistent volumes to bind-mount into this container
+            (issue #88, ADR-0183). Unlike everything else the container
+            writes -- which lives in its overlay upper layer and is
+            removed by DELETE (ADR-0106) -- a volume's data outlives the
+            container entirely, so it is what a home directory, a
+            database or anything else worth keeping across a recreate
+            belongs on. Naming a volume that does not exist is a hard
+            400, never an implicit create: a typo silently producing a
+            fresh empty volume is exactly how data appears to vanish.
+
     SystemBackupBundle:
       type: object
       description: >
@@ -7602,6 +7738,65 @@ components:
           minimum: 1
           maximum: 300
           default: 30
+
+    ContainerVolumeMount:
+      type: object
+      required: [name, path]
+      properties:
+        name:
+          type: string
+          description: Name of an existing volume (see POST /volumes). Must already exist -- 400 otherwise.
+        path:
+          type: string
+          description: >
+            Absolute path inside the container to mount it at. Created
+            if the image does not already have it, so a volume can be
+            mounted somewhere a minimal rootfs has no concept of (a
+            /home that does not exist yet, say). No ".." components.
+        read_only:
+          type: boolean
+          default: false
+          description: >
+            Mount the volume read-only. If the read-only remount fails
+            the container fails to start rather than coming up
+            writable -- a guarantee that silently is not one would be
+            worse than no guarantee at all.
+
+    Volume:
+      type: object
+      required: [name, created_at]
+      properties:
+        name:
+          type: string
+          pattern: "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
+          description: >
+            Unique volume name, used verbatim as the on-disk directory
+            name, hence the character restriction.
+        disk:
+          type: string
+          description: >
+            Which disk-role this volume's data sits on, by the same
+            naming a container's own "disk" field uses -- deliberately
+            the same mechanism, so there is one answer to "where does
+            container data live" rather than two. Empty means the
+            default OS-disk placement.
+        host_path:
+          type: string
+          description: The resolved host directory backing this volume, for operator visibility.
+        created_at:
+          type: string
+          format: date-time
+
+    VolumeCreateRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          pattern: "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
+        disk:
+          type: string
+          description: Optional disk-role name; omitted means default OS-disk placement.
 
     NetworkAttachmentRequest:
       type: object

@@ -156,6 +156,18 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | `network attach-interface NAME --interface=IFNAME [--vlan=N]` | Enslave a real host interface to this network's bridge; `--vlan=` creates an 802.1q sub-interface instead |
 | `network detach-interface NAME --interface=IFNAME` | Detach |
 
+## Volumes
+
+Storage whose lifetime is independent of any container using it — deleting a container never removes its volumes. That is what makes it the right home for a jump host's `/home`, a database's data directory, or anything else worth keeping across the recreates that `follow_rolling` and recipe edits perform routinely. See [ADR-0183](../adr/0183-persistent-volumes.md) for the reasoning and [`docs/api/README.md`](../api/README.md#persistent-volumes-issue-88-adr-0183) for the payload contract.
+
+| Command | |
+|---|---|
+| `volume create --name=NAME [--disk=DISK]` | Create a volume; `--disk=` places it by the same disk-role naming a container's own `--disk=` uses, omitted means default OS-disk placement |
+| `volume ls` / `volume show NAME` | List / inspect one (disk, resolved host path, creation time) |
+| `volume rm NAME` | **Deletes the volume's data**, permanently — refused while any container *definition* references it (the error names which one) |
+
+Attach one at container creation with `--volume=NAME:/path[:ro]`. The volume must already exist: an unknown name fails creation rather than quietly making a fresh empty one. A volume that can't be mounted — or a `:ro` one that can't be remounted read-only — fails the container's start instead of coming up without the storage, or with a guarantee that isn't real.
+
 ## Images
 
 | Command | |

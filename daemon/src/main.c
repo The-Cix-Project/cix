@@ -27,6 +27,7 @@
 #include "ldap.h"
 #include "subid.h"
 #include "serverhealth.h"
+#include "volume.h"
 #include "exec.h"
 #include "http.h"
 #include "image.h"
@@ -146,6 +147,8 @@ static char LDAP_GROUPS_STATE_PATH[PATH_MAX];
 static char LDAP_CONFIG_STATE_PATH[PATH_MAX];
 static char SUBID_STATE_PATH[PATH_MAX]; /* ADR-0179 */
 static char SERVERHEALTH_STATE_PATH[PATH_MAX]; /* issue #81 -- drain flags only */
+static char VOLUMES_STATE_PATH[PATH_MAX];      /* issue #88 */
+static char VOLUMES_DIR[PATH_MAX];             /* issue #88 -- where volume data lives */
 static char PKI_DIR[PATH_MAX];
 static char PKI_CERTS_STATE_PATH[PATH_MAX];
 static char PKI_CERTS_DIR[PATH_MAX];
@@ -274,6 +277,14 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(SUBID_STATE_PATH, sizeof(SUBID_STATE_PATH), "%s/subid.json", STATE_DIR);
 	snprintf(SERVERHEALTH_STATE_PATH, sizeof(SERVERHEALTH_STATE_PATH), "%s/server_health.json",
 	         STATE_DIR);
+	snprintf(VOLUMES_STATE_PATH, sizeof(VOLUMES_STATE_PATH), "%s/volumes.json", STATE_DIR);
+	/*
+	 * Issue #88: volume data is a direct child of the base dir, alongside
+	 * CONTAINERS_DIR rather than inside it -- a volume deliberately
+	 * outlives every container, so nesting it under container storage
+	 * would be exactly the wrong lifetime association.
+	 */
+	snprintf(VOLUMES_DIR, sizeof(VOLUMES_DIR), "%s/volumes", g_base_dir);
 	snprintf(PKI_DIR, sizeof(PKI_DIR), "%s/pki", STATE_DIR);
 	snprintf(PKI_CERTS_STATE_PATH, sizeof(PKI_CERTS_STATE_PATH), "%s/pki_certs.json", PKI_DIR);
 	snprintf(PKI_CERTS_DIR, sizeof(PKI_CERTS_DIR), "%s/certs", PKI_DIR);
@@ -6153,6 +6164,166 @@ static void serverhealth_write_warnings(struct json_writer *w)
 	jw_arr_close(w);
 }
 
+/* ---- Issue #88: persistent volumes ---- */
+
+static void respond_volume_error(int fd, enum volume_error e)
+{
+	switch (e) {
+	case VOLUME_ERR_INVALID_NAME:
+		respond_error(fd, 400, "Bad Request",
+		              "invalid volume name -- letters, digits, '_' and '-' only, not starting "
+		              "with '.' or '-'");
+		return;
+	case VOLUME_ERR_DUPLICATE:
+		respond_error(fd, 409, "Conflict", "a volume with this name already exists");
+		return;
+	case VOLUME_ERR_FULL:
+		respond_error(fd, 507, "Insufficient Storage", "volume table is full");
+		return;
+	case VOLUME_ERR_NOT_FOUND:
+		respond_error(fd, 404, "Not Found", "no such volume");
+		return;
+	case VOLUME_ERR_IN_USE:
+		respond_error(fd, 409, "Conflict",
+		              "this volume is still referenced by a container definition -- delete or "
+		              "edit that container first");
+		return;
+	case VOLUME_ERR_IO:
+		respond_error(fd, 500, "Internal Server Error", "could not create the volume directory");
+		return;
+	default:
+		respond_error(fd, 500, "Internal Server Error", "could not persist the volume");
+		return;
+	}
+}
+
+static void handle_volume_list(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "volumes");
+	volume_write_json_list(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_volume_get(int fd, const char *name)
+{
+	struct volume *v = volume_find(name);
+	struct json_writer w;
+
+	if (v == NULL) {
+		respond_error(fd, 404, "Not Found", "no such volume");
+		return;
+	}
+	jw_init(&w);
+	volume_write_json_one(v, &w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_volume_create(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = json_parse(body, body_len);
+	const char *name, *disk;
+	struct volume *v = NULL;
+	enum volume_error verr;
+	struct json_writer w;
+
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	name = json_as_string(json_object_get(root, "name"));
+	disk = json_as_string(json_object_get(root, "disk"));
+	if (name == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "name is required");
+		return;
+	}
+	verr = volume_create(name, disk, &v);
+	json_free(root);
+	if (verr != VOLUME_OK) {
+		respond_volume_error(fd, verr);
+		return;
+	}
+	jw_init(&w);
+	volume_write_json_one(v, &w);
+	respond_json(fd, 201, "Created", &w);
+	jw_free(&w);
+}
+
+/*
+ * Issue #88: a volume outlives containers by design, so deleting one is
+ * refused while any container DEFINITION still names it -- not merely
+ * while one is running. A stopped container whose definition references
+ * the volume will come back and expect its data, and silently deleting
+ * it underneath would be a data-loss bug that only surfaces later.
+ */
+static int volume_referenced_by_container(const char *volume_name, char *out_container,
+                                           size_t out_size)
+{
+	char order[CONTAINERDEF_MAX][REGISTRY_NAME_MAX];
+	int count = containerdef_resolve_order(order);
+	int i;
+
+	for (i = 0; i < count; i++) {
+		struct container_def *def = containerdef_find(order[i]);
+		struct json_value *root;
+		const struct json_value *jvols;
+		size_t k;
+
+		if (def == NULL)
+			continue;
+		root = json_parse(def->body, def->body_len);
+		if (root == NULL)
+			continue;
+		jvols = json_object_get(root, "volumes");
+		if (jvols != NULL && jvols->type == JSON_ARRAY) {
+			for (k = 0; k < jvols->u.array.count; k++) {
+				const char *n = json_as_string(json_object_get(jvols->u.array.items[k], "name"));
+
+				if (n != NULL && strcmp(n, volume_name) == 0) {
+					snprintf(out_container, out_size, "%s", order[i]);
+					json_free(root);
+					return 1;
+				}
+			}
+		}
+		json_free(root);
+	}
+	return 0;
+}
+
+static void handle_volume_delete(int fd, const char *name)
+{
+	char user[REGISTRY_NAME_MAX];
+	enum volume_error verr;
+
+	if (volume_find(name) == NULL) {
+		respond_error(fd, 404, "Not Found", "no such volume");
+		return;
+	}
+	if (volume_referenced_by_container(name, user, sizeof(user))) {
+		char msg[256];
+
+		snprintf(msg, sizeof(msg),
+		         "still referenced by container '%s' -- delete or edit that container first", user);
+		respond_error(fd, 409, "Conflict", msg);
+		return;
+	}
+	verr = volume_delete(name);
+	if (verr != VOLUME_OK) {
+		respond_volume_error(fd, verr);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
 static void handle_serverhealth_list(int fd)
 {
 	struct json_writer w;
@@ -8130,6 +8301,8 @@ static void finalize_state_storage_migration(void)
 	ldap_record_repoint(LDAP_USERS_STATE_PATH, LDAP_GROUPS_STATE_PATH);
 	ldap_config_repoint(LDAP_CONFIG_STATE_PATH);
 	serverhealth_repoint(SERVERHEALTH_STATE_PATH);
+	volume_set_dir(VOLUMES_DIR);
+	volume_repoint(VOLUMES_STATE_PATH);
 	pki_repoint(PKI_DIR, PKI_CERTS_STATE_PATH);
 	containerdef_repoint(CONTAINER_DEFS_STATE_PATH);
 	containerdef_rolling_config_repoint(ROLLING_CONFIG_PATH);
@@ -8676,6 +8849,8 @@ static const char *container_body_unknown_key(const struct json_value *root)
 		"follow_rolling_jitter_seconds", "depends_on", "readiness", "memory_max",
 		"cpu_max", "pids_max", "cpuset_cpus", "disk_quota_bytes", "ldap_login",
 		"userns",
+		/* Issue #88: persistent volumes. */
+		"volumes",
 	};
 	size_t i, k;
 
@@ -9911,6 +10086,69 @@ static int create_container_from_body(const char *body, size_t body_len,
 	memset(&spec, 0, sizeof(spec));
 	spec.ns.clone_flags = CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWNET |
 	                       CLONE_NEWCGROUP | CLONE_INTO_CGROUP;
+	/*
+	 * Issue #88: persistent volumes. Resolved here, at create time, from
+	 * names to real host paths -- the container runtime is handed paths,
+	 * never names, so it never needs to know the volume registry exists.
+	 * A named volume that does not exist is a hard 400 rather than an
+	 * implicit create: a typo silently producing a brand-new empty
+	 * volume is precisely how someone loses data and then concludes
+	 * persistence "didn't work".
+	 *
+	 * Placed deliberately AFTER spec's own memset below -- populating
+	 * it any earlier is silently undone, which is exactly what happened
+	 * on the first attempt (the container came up with no /home at all
+	 * and no error, because volume_count had been zeroed back to 0).
+	 */
+	{
+		const struct json_value *jvolumes = json_object_get(root, "volumes");
+
+		if (jvolumes != NULL && jvolumes->type == JSON_ARRAY) {
+			size_t vi;
+
+			if (jvolumes->u.array.count > CONTAINER_MAX_VOLUMES) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size, "too many volumes (max %d)",
+				         CONTAINER_MAX_VOLUMES);
+				return 400;
+			}
+			for (vi = 0; vi < jvolumes->u.array.count; vi++) {
+				const struct json_value *item = jvolumes->u.array.items[vi];
+				const char *vname = json_as_string(json_object_get(item, "name"));
+				const char *vpath = json_as_string(json_object_get(item, "path"));
+				const struct json_value *jro = json_object_get(item, "read_only");
+				struct volume *vol;
+				char hostpath[PATH_MAX];
+
+				if (vname == NULL || vpath == NULL || vpath[0] != '/' ||
+				    !file_path_is_safe(vpath)) {
+					json_free(root);
+					snprintf(err_msg, err_msg_size,
+					         "each volume needs a name and an absolute path with no '..'");
+					return 400;
+				}
+				vol = volume_find(vname);
+				if (vol == NULL) {
+					json_free(root);
+					snprintf(err_msg, err_msg_size, "no such volume: %s", vname);
+					return 400;
+				}
+				if (volume_host_path(vol, hostpath, sizeof(hostpath)) != 0) {
+					json_free(root);
+					snprintf(err_msg, err_msg_size, "could not resolve volume %s", vname);
+					return 500;
+				}
+				snprintf(spec.volumes[spec.volume_count].host_path,
+				         sizeof(spec.volumes[spec.volume_count].host_path), "%s", hostpath);
+				snprintf(spec.volumes[spec.volume_count].mount_path,
+				         sizeof(spec.volumes[spec.volume_count].mount_path), "%s", vpath);
+				spec.volumes[spec.volume_count].read_only =
+				    (jro != NULL && jro->type == JSON_BOOL && jro->u.boolean);
+				spec.volume_count++;
+			}
+		}
+	}
+
 	/*
 	 * ADR-0179 (issue #29) phase 2 opt-in: "userns":true gives this
 	 * container its own user namespace, its root mapped onto a dedicated
@@ -16765,6 +17003,31 @@ static void dispatch(int fd, const struct http_request *req)
 			return;
 		}
 	}
+	/* Issue #88: persistent volumes. */
+	if (strcmp(req->path, "/v1/volumes") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_volume_list(fd);
+			return;
+		}
+		if (strcmp(req->method, "POST") == 0) {
+			handle_volume_create(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strncmp(req->path, "/v1/volumes/", 12) == 0) {
+		const char *vname = req->path + 12;
+
+		if (vname[0] != '\0') {
+			if (strcmp(req->method, "GET") == 0) {
+				handle_volume_get(fd, vname);
+				return;
+			}
+			if (strcmp(req->method, "DELETE") == 0) {
+				handle_volume_delete(fd, vname);
+				return;
+			}
+		}
+	}
 	if (strcmp(req->path, "/v1/system/server-health") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_serverhealth_list(fd);
@@ -20118,6 +20381,9 @@ int main(int argc, char **argv)
 		return 1;
 	if (boot_subsystem_init(init_mode, "serverhealth",
 	                         serverhealth_init(SERVERHEALTH_STATE_PATH)) != 0)
+		return 1;
+	volume_set_dir(VOLUMES_DIR);
+	if (boot_subsystem_init(init_mode, "volume", volume_init(VOLUMES_STATE_PATH)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "ldap_config", ldap_config_init(LDAP_CONFIG_STATE_PATH)) != 0)
 		return 1;
