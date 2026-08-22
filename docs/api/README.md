@@ -1720,9 +1720,10 @@ PUT /v1/system/site
 GET /v1/system/backup
 ```
 
-Bundles platform *configuration* state — container definitions, networks, DNS records, package install state and recipes, and site config — as one response. **Read this carefully before relying on it for disaster recovery:**
+Bundles platform *configuration* state — container definitions, networks, DNS records, package install state and recipes, the volume registry, and site config — as one response. **Read this carefully before relying on it for disaster recovery:**
 
 - **Does NOT include workload data.** Each container's own persistent data (a git host's repos, a resolver's zone files, a metrics database) is that container's own concern, backed up with its own native tooling. This endpoint has no way to reach into another container's filesystem and never tries to.
+- **Includes the volume registry, but not volume contents.** Which volumes exist and where they are placed is configuration and is in the bundle — it has to be, because container definitions reference volumes by name and an unknown name is a hard `400` ([ADR-0183](../adr/0183-persistent-volumes.md)), so a bundle without it restores onto a box where every container with a volume fails to start. What a volume *holds* is workload data and falls under the previous bullet: a restore recreates the volumes empty, and refilling them is yours to do, the same as image content below.
 - **Does NOT include image rootfs content.** Since everything is compiled from source, an image's content is reproducible by re-running `pkg install` for whatever `pkg_installed` records — this bundle is the "shopping list" (what should be installed, where), not the built bytes. Getting all the way back to a fully-populated system after a restore means re-running those installs, not something this endpoint does for you automatically.
 - **Never touches PKI, at all.** The CA private key (and every issued leaf certificate's own key) is never returned over the API anywhere in this system, by existing, deliberate design (see [PKI](#pki-a-ca-chain-and-issued-leaf-certificates) above) — that rule isn't bent or partially relaxed here. Back up `/var/lib/thinc/state/pki/` (ADR-0141) separately, directly on the host, outside the API entirely.
 
