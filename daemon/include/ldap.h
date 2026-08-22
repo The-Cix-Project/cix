@@ -416,6 +416,9 @@ enum ldap_record_error ldap_config_set_client(const char *client_uri, const char
                                                const char *bind_dn, const char *bind_password);
 
 void ldap_config_write_json(struct json_writer *w);
+/* Same, but leaves the object open for the caller to append to and
+ * close -- see the definition's own comment (issue #84). */
+void ldap_config_write_json_open(struct json_writer *w);
 
 /* Returns the lowest unused uidnumber >= ldap_config_get()->start_uid
  * (a service-account range, distinct from the human-numbered 5000s an

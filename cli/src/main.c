@@ -1001,6 +1001,13 @@ static void fmt_ldap_config_line(const struct json_value *v)
 
 	printf("start_uid=%ld start_gid=%ld\n", start_uid, start_gid);
 	printf("client_uri=%s\n", client_uri != NULL ? client_uri : "(unset)");
+	/* Issue #84: what clients are actually handed, after derivation from
+	 * registered servers and after dropping any that are drained or
+	 * unhealthy -- a different question from the line above it. */
+	printf("effective_client_uri=%s\n",
+	       json_as_string(json_object_get(v, "effective_client_uri")) != NULL
+	           ? json_as_string(json_object_get(v, "effective_client_uri"))
+	           : "(none)");
 	printf("base_dn=%s\n", base_dn != NULL ? base_dn : "(unset)");
 	printf("bind_dn=%s\n", bind_dn != NULL ? bind_dn : "(unset)");
 	printf("bind_password=%s\n",

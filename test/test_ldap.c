@@ -14,6 +14,7 @@
  */
 #include "httpclient.h"
 #include "json.h"
+#include "hostauth.h" /* HOSTAUTH_LDAP_DEFAULT_PORT -- issue #84 filtering test */
 #include "test_image_fixture.h"
 
 #include <limits.h>
@@ -1316,6 +1317,190 @@ int main(void)
 		kx_response_free(&r);
 
 		kx_client_request(&client, "DELETE", "/v1/ldap/groups/basedntrigger", NULL, &r);
+		kx_response_free(&r);
+	}
+
+	/*
+	 * Issue #84: health filtering must also apply to an EXPLICIT
+	 * client_uri. It never did -- ldap_effective_client_uri() returned
+	 * the configured string verbatim before any filtering ran, so
+	 * everything issue #81 built was inert on any box with client_uri
+	 * set, which included the real one. Drained or unhealthy servers
+	 * were still handed to every client.
+	 *
+	 * Driven through GET /ldap/config's own effective_client_uri, which
+	 * exists for exactly this reason: what clients are actually handed
+	 * is a different question from what is configured, and until now
+	 * nothing anywhere reported the first one.
+	 */
+	{
+		char ip[64] = "";
+		char body[512];
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/networks",
+		                       "{\"name\":\"ldapfilt\",\"subnet\":\"10.77.0.0\",\"prefix_len\":24}",
+		                       &r) != 0 ||
+		    (r.status != 201 && r.status != 409)) {
+			fprintf(stderr, "FAIL: create ldapfilt network, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"ldapfsrv\",\"image\":\"ldaptest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+		                       "\"networks\":[{\"name\":\"ldapfilt\"}]}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST ldapfsrv, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *nets = json_object_get(r.json, "networks");
+			const char *found = nets != NULL && nets->type == JSON_ARRAY && nets->u.array.count > 0
+			                        ? json_str_field(nets->u.array.items[0], "ip")
+			                        : NULL;
+
+			if (found != NULL)
+				snprintf(ip, sizeof(ip), "%s", found);
+		}
+		kx_response_free(&r);
+
+		if (ip[0] == '\0') {
+			fprintf(stderr, "FAIL: ldapfsrv has no IP to filter on\n");
+			ok = 0;
+		} else {
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "POST", "/v1/ldap/servers",
+			                       "{\"container\":\"ldapfsrv\","
+			                       "\"config_path\":\"/etc/glauth/glauth.cfg\"}",
+			                       &r) != 0 ||
+			    r.status != 201) {
+				fprintf(stderr, "FAIL: register ldapfsrv, status=%d\n", r.status);
+				ok = 0;
+			}
+			kx_response_free(&r);
+
+			/* Two URIs: one that IS this registered server, one that
+			 * maps to nothing thinC manages. */
+			snprintf(body, sizeof(body),
+			         "{\"client_uri\":\"ldap://%s:%d/ ldap://198.51.100.7:%d/\"}", ip,
+			         HOSTAUTH_LDAP_DEFAULT_PORT, HOSTAUTH_LDAP_DEFAULT_PORT);
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "PUT", "/v1/ldap/config", body, &r) != 0 ||
+			    r.status != 200) {
+				fprintf(stderr, "FAIL: PUT client_uri for filtering, status=%d\n", r.status);
+				ok = 0;
+			}
+			kx_response_free(&r);
+
+			/* Healthy (never probed counts as in service): both kept. */
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "GET", "/v1/ldap/config", NULL, &r) != 0 ||
+			    r.status != 200) {
+				fprintf(stderr, "FAIL: GET ldap config, status=%d\n", r.status);
+				ok = 0;
+			} else {
+				const char *eff = json_str_field(r.json, "effective_client_uri");
+
+				if (eff == NULL || strstr(eff, ip) == NULL ||
+				    strstr(eff, "198.51.100.7") == NULL) {
+					fprintf(stderr, "FAIL: healthy effective_client_uri=%s\n",
+					        eff != NULL ? eff : "(null)");
+					ok = 0;
+				}
+			}
+			kx_response_free(&r);
+
+			/* Drained: that URI must go, the unmanaged one must stay. */
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "PUT", "/v1/system/server-health/ldap/ldapfsrv",
+			                       "{\"drained\":true}", &r) != 0 ||
+			    r.status != 200) {
+				fprintf(stderr, "FAIL: drain ldapfsrv, status=%d\n", r.status);
+				ok = 0;
+			}
+			kx_response_free(&r);
+
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "GET", "/v1/ldap/config", NULL, &r) != 0 ||
+			    r.status != 200) {
+				fprintf(stderr, "FAIL: GET ldap config after drain, status=%d\n", r.status);
+				ok = 0;
+			} else {
+				const char *eff = json_str_field(r.json, "effective_client_uri");
+
+				if (eff == NULL || strstr(eff, ip) != NULL ||
+				    strstr(eff, "198.51.100.7") == NULL) {
+					fprintf(stderr,
+					        "FAIL: drained server not filtered from explicit client_uri "
+					        "(effective=%s, drained ip=%s)\n",
+					        eff != NULL ? eff : "(null)", ip);
+					ok = 0;
+				}
+			}
+			kx_response_free(&r);
+
+			/* Filtering to nothing must fall back to the configured
+			 * list rather than hand a client an empty one -- a partial
+			 * outage must never be turned into a total one. */
+			snprintf(body, sizeof(body), "{\"client_uri\":\"ldap://%s:%d/\"}", ip,
+			         HOSTAUTH_LDAP_DEFAULT_PORT);
+			memset(&r, 0, sizeof(r));
+			kx_client_request(&client, "PUT", "/v1/ldap/config", body, &r);
+			kx_response_free(&r);
+
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "GET", "/v1/ldap/config", NULL, &r) != 0 ||
+			    r.status != 200) {
+				fprintf(stderr, "FAIL: GET ldap config for empty-fallback, status=%d\n",
+				        r.status);
+				ok = 0;
+			} else {
+				const char *eff = json_str_field(r.json, "effective_client_uri");
+
+				if (eff == NULL || strstr(eff, ip) == NULL) {
+					fprintf(stderr, "FAIL: all-filtered did not fall back (effective=%s)\n",
+					        eff != NULL ? eff : "(null)");
+					ok = 0;
+				}
+			}
+			kx_response_free(&r);
+		}
+
+		/* Both removed, network included: a leaked bridge outlives the
+		 * daemon and makes the NEXT run fail at network creation with a
+		 * 500 that looks nothing like its real cause. */
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "DELETE", "/v1/containers/ldapfsrv", NULL, &r);
+		kx_response_free(&r);
+		/* ADR-0180: container teardown is asynchronous, so the network
+		 * still has an attachment for a moment after DELETE returns
+		 * 204 and removing it immediately fails. Poll until the
+		 * container is really gone, then remove the network. */
+		{
+			int i;
+
+			for (i = 0; i < 50; i++) {
+				memset(&r, 0, sizeof(r));
+				if (kx_client_request(&client, "GET", "/v1/containers/ldapfsrv", NULL, &r) == 0 &&
+				    r.status == 404) {
+					kx_response_free(&r);
+					break;
+				}
+				kx_response_free(&r);
+				usleep(100000);
+			}
+		}
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "DELETE", "/v1/networks/ldapfilt", NULL, &r) != 0 ||
+		    (r.status != 204 && r.status != 404)) {
+			fprintf(stderr, "FAIL: could not remove ldapfilt network (status=%d) -- a leaked "
+			                "bridge breaks the NEXT run at network creation\n",
+			        r.status);
+			ok = 0;
+		}
 		kx_response_free(&r);
 	}
 

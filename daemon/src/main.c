@@ -10065,6 +10065,111 @@ static int stage_container_file(const char *upperdir, const char *path, const ch
 }
 
 /*
+ * Issue #84: which registered LDAP server, if any, a single URI from an
+ * explicitly-configured client_uri list refers to.
+ *
+ * Health is keyed by container name; client_uri is free-form URIs, so
+ * the two only meet by resolving each registered server's live IP and
+ * comparing. Returns the matching registered container name, or NULL
+ * for a URI that maps to nothing thinC manages -- which is a real,
+ * legitimate case (an operator may point at a directory this platform
+ * knows nothing about) and must be left strictly alone rather than
+ * filtered on evidence that does not exist.
+ *
+ * A port is only allowed to match when it is the port health actually
+ * probes. Same IP on a different port is a different service, and
+ * dropping it on the strength of a probe that never touched it would be
+ * a guess dressed up as a health decision.
+ */
+static const char *ldap_uri_registered_server(const char *uri, char names[][LDAP_SERVER_NAME_MAX],
+                                               int count)
+{
+	const char *authority, *p;
+	char host[128];
+	size_t hlen;
+	int port = HOSTAUTH_LDAP_DEFAULT_PORT;
+	int i;
+
+	authority = strstr(uri, "://");
+	authority = authority != NULL ? authority + 3 : uri;
+	if (*authority == '[') /* IPv6 literal -- nothing here is IPv6, so never ours */
+		return NULL;
+	for (p = authority; *p != '\0' && *p != '/'; p++)
+		;
+	hlen = (size_t)(p - authority);
+	if (hlen == 0 || hlen >= sizeof(host))
+		return NULL;
+	memcpy(host, authority, hlen);
+	host[hlen] = '\0';
+	{
+		char *colon = strrchr(host, ':');
+
+		if (colon != NULL) {
+			*colon = '\0';
+			port = atoi(colon + 1);
+		}
+	}
+	if (port != HOSTAUTH_LDAP_DEFAULT_PORT)
+		return NULL;
+
+	for (i = 0; i < count; i++) {
+		struct registry_entry *se = registry_find(names[i]);
+		struct in_addr a;
+		char ipbuf[INET_ADDRSTRLEN];
+
+		if (se == NULL || se->net_count == 0 || se->nets[0].ip_be == 0)
+			continue;
+		a.s_addr = se->nets[0].ip_be;
+		if (inet_ntop(AF_INET, &a, ipbuf, sizeof(ipbuf)) == NULL)
+			continue;
+		if (strcmp(ipbuf, host) == 0)
+			return names[i];
+	}
+	return NULL;
+}
+
+/*
+ * Issue #84: the same health filtering the derived list gets, applied to
+ * an explicitly-configured client_uri. Everything #81 built was inert on
+ * any box with client_uri set -- which included the real one -- because
+ * the explicit list short-circuited before any filtering ran.
+ *
+ * Three rules, and the two conservative ones matter more than the
+ * filtering itself: a URI that maps to no registered server is kept
+ * untouched (it may be a directory thinC does not manage), and if
+ * filtering would leave nothing, the original list stands. Handing a
+ * client a server that might be down beats handing it none -- the
+ * client retries; an empty list turns a partial outage into a total one.
+ */
+static void ldap_filter_configured_client_uri(const char *configured, char *out, size_t out_size)
+{
+	char names[LDAP_SERVER_MAX][LDAP_SERVER_NAME_MAX];
+	char work[sizeof(((struct ldap_config *)0)->client_uri)];
+	char *tok, *save;
+	size_t off = 0;
+	int count;
+
+	snprintf(out, out_size, "%s", configured);
+	count = ldap_server_list_containers(names, LDAP_SERVER_MAX);
+	if (count == 0)
+		return;
+
+	snprintf(work, sizeof(work), "%s", configured);
+	for (tok = strtok_r(work, " \t", &save); tok != NULL; tok = strtok_r(NULL, " \t", &save)) {
+		const char *server = ldap_uri_registered_server(tok, names, count);
+		int written;
+
+		if (server != NULL && !serverhealth_in_service("ldap", server))
+			continue;
+		written = snprintf(out + off, out_size - off, "%s%s", off > 0 ? " " : "", tok);
+		if (written > 0 && (size_t)written < out_size - off)
+			off += (size_t)written;
+	}
+	if (off == 0)
+		snprintf(out, out_size, "%s", configured);
+}
+
+/*
  * Issue #66 (auto-derivation): the effective LDAP client URI list for
  * ldap_login -- the explicitly-configured client_uri if set, else one
  * built from the IPs of the containers an operator has already
@@ -10099,7 +10204,9 @@ static int ldap_effective_client_uri(char *out, size_t out_size)
 	size_t off = 0;
 
 	if (lc->client_uri[0] != '\0') {
-		snprintf(out, out_size, "%s", lc->client_uri);
+		/* Issue #84: filtered, not passed through -- an explicit list
+		 * used to skip every health rule below it. */
+		ldap_filter_configured_client_uri(lc->client_uri, out, out_size);
 		return 1;
 	}
 	count = ldap_server_list_containers(names, LDAP_SERVER_MAX);
@@ -16459,9 +16566,30 @@ static void handle_ldap_server_delete(int fd, const char *name)
 static void handle_ldap_config_get(int fd)
 {
 	struct json_writer w;
+	char effective[600];
 
 	jw_init(&w);
-	ldap_config_write_json(&w);
+	/*
+	 * ldap_config_write_json() opens the object and writes the stored
+	 * fields; effective_client_uri is appended into that same object
+	 * before it closes, because it is not stored anywhere -- it is what
+	 * ldap_login containers are actually handed right now, after
+	 * derivation from registered servers and after health filtering
+	 * (issues #66, #81, #84).
+	 *
+	 * Worth surfacing precisely because #84 was invisible for as long
+	 * as it existed: with an explicit client_uri configured, health
+	 * filtering was silently inert, and nothing anywhere reported what
+	 * a client would really receive. Configuration and effect are two
+	 * different questions and now have two different fields.
+	 */
+	ldap_config_write_json_open(&w);
+	jw_key(&w, "effective_client_uri");
+	if (ldap_effective_client_uri(effective, sizeof(effective)))
+		jw_str(&w, effective);
+	else
+		jw_null(&w);
+	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }

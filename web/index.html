@@ -1212,6 +1212,17 @@
 				</label>
 				<button type="submit">Save</button>
 			</form>
+
+			<h3>Client delivery</h3>
+			<p class="hint">
+				What <code>ldap_login</code> containers are actually handed right now
+				(issue #84) -- derived from registered servers when no explicit
+				<code>client_uri</code> is set, and with drained or unhealthy servers
+				dropped either way. A URI pointing at a directory thinC does not manage
+				is never dropped, and if filtering would leave nothing the full list
+				stands: a client with a possibly-down server beats a client with none.
+			</p>
+			<div class="detail-grid" id="ldap-client-delivery"></div>
 		</div>
 		</section>
 
