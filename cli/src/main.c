@@ -4230,9 +4230,16 @@ static void fmt_volume_one(const struct json_value *v)
 	const char *name = json_as_string(json_object_get(v, "name"));
 	const char *disk = json_as_string(json_object_get(v, "disk"));
 	const char *path = json_as_string(json_object_get(v, "host_path"));
+	double quota = json_as_number(json_object_get(v, "quota_bytes"));
 
 	printf("%-20s disk=%-12s path=%s\n", name != NULL ? name : "?",
 	       disk != NULL ? disk : "(default)", path != NULL ? path : "?");
+	/* Said explicitly rather than omitted when absent: "no limit" is a
+	 * real state worth seeing on a volume, not a blank. */
+	if (quota > 0)
+		printf("%-20s limit=%.0f bytes (%.1f GiB)\n", "", quota, quota / (1024 * 1024 * 1024));
+	else
+		printf("%-20s limit=none -- can grow until the disk is full\n", "");
 }
 
 /*
@@ -4325,6 +4332,37 @@ static int cmd_software(const struct kx_client *c, int json_mode)
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_software);
+}
+
+static int cmd_volume_quota(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	char path[300];
+	struct kx_response r;
+	struct json_writer w;
+	long long bytes;
+
+	if (argc < 3) {
+		fprintf(stderr, "usage: thincctl volume quota NAME BYTES\n"
+		                "  0 removes the limit. A volume with no limit is an unbounded way to\n"
+		                "  fill the disk it sits on.\n");
+		return 2;
+	}
+	bytes = atoll(argv[2]);
+	snprintf(path, sizeof(path), "/v1/volumes/%s/quota", argv[1]);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "quota_bytes");
+	jw_int(&w, bytes);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	if (kx_client_request(c, "PUT", path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "thincctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_volume_one);
 }
 
 static int cmd_volume_backups(const struct kx_client *c, int json_mode, int argc, char **argv)
@@ -4502,6 +4540,8 @@ static int cmd_volume(const struct kx_client *c, int json_mode, int argc, char *
 		}
 		return emit(&r, json_mode, NULL);
 	}
+	if (strcmp(argv[0], "quota") == 0)
+		return cmd_volume_quota(c, json_mode, argc, argv);
 	if (strcmp(argv[0], "backups") == 0)
 		return cmd_volume_backups(c, json_mode, argc, argv);
 	if (strcmp(argv[0], "backup") == 0)
@@ -4546,6 +4586,7 @@ static int cmd_volume(const struct kx_client *c, int json_mode, int argc, char *
 	                "       thincctl volume show NAME\n"
 	                "       thincctl volume rm NAME\n"
 	                "       thincctl volume migrate NAME [--disk=DISK]\n"
+	                "       thincctl volume quota NAME BYTES   (0 removes the limit)\n"
 	                "       thincctl volume backups NAME [--enable|--disable] [--retain=N]\n"
 	                "       thincctl volume backup NAME\n"
 	                "       thincctl volume restore NAME SNAPSHOT\n"

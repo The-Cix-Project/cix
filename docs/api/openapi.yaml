@@ -6964,6 +6964,78 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /volumes/{volume_name}/quota:
+    put:
+      summary: Set or clear a volume's size limit (issue #93)
+      description: >
+        A real, kernel-enforced hard limit -- an ext4 project quota on
+        the volume's own directory, the same mechanism a container
+        overlay has had since ADR-0062. A write past it fails with
+        EDQUOT at the filesystem level rather than being noticed
+        afterwards by something watching.
+
+        Without one a volume can grow until its disk is full, which also
+        makes it an unbounded thing to copy when scheduled backups run
+        -- an unbounded source is an unbounded destination.
+
+        On a btrfs-backed volume this is REFUSED rather than accepted
+        and left unenforced: there the limit lives on a qgroup attached
+        to a subvolume, and a volume directory is not one. Making it one
+        is a change to how volumes are created, not another call, and
+        accepting a limit that is not in force is worse than refusing --
+        the operator would believe it exists.
+
+        Re-applied automatically after a migrate: a project-quota tag
+        lives on the directory, so a volume that moved to another
+        filesystem would otherwise arrive untagged and unlimited.
+      operationId: setVolumeQuota
+      parameters:
+        - name: volume_name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quota_bytes]
+              properties:
+                quota_bytes:
+                  type: integer
+                  minimum: 0
+                  description: The limit in bytes. 0 removes it.
+      responses:
+        "200":
+          description: Applied; the volume's new state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Volume"
+        "400":
+          description: Invalid body, or a negative size
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such volume
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            The limit could not be enforced -- a btrfs-backed volume, or
+            a filesystem without project quotas enabled. Refused rather
+            than recorded and ignored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /volumes/{volume_name}/backups:
     get:
       summary: A volume's backup policy, snapshots and last attempt (issue #96)
@@ -8547,6 +8619,11 @@ components:
         host_path:
           type: string
           description: The resolved host directory backing this volume, for operator visibility.
+        quota_bytes:
+          type: integer
+          description: >
+            A kernel-enforced hard limit on this volume's size, or 0 for
+            none. Without one a volume can grow until its disk is full.
         created_at:
           type: string
           format: date-time

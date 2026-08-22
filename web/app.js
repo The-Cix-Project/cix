@@ -8808,6 +8808,17 @@ async function renderVolumeDetail(name) {
 	}
 	select.value = v.disk || "";
 
+	{
+		const q = document.getElementById("vd-quota");
+		const qnote = document.getElementById("vd-quota-note");
+
+		q.value = v.quota_bytes > 0 ? Math.round(v.quota_bytes / (1024 * 1024 * 1024)) : 0;
+		qnote.textContent =
+			v.quota_bytes > 0
+				? "Limited to " + formatBytes(v.quota_bytes) + "."
+				: "No limit — this volume can grow until its disk is full.";
+	}
+
 	renderVolumeBackups(v.name);
 
 	note.textContent =
@@ -8818,6 +8829,29 @@ async function renderVolumeDetail(name) {
 			  : "";
 	document.querySelector("#vd-migrate-form button").disabled = running.length > 0;
 }
+
+document.getElementById("vd-quota-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+	const name = currentVolumeDetailName;
+
+	if (name === null)
+		return;
+	const gib = parseInt(document.getElementById("vd-quota").value, 10);
+
+	if (isNaN(gib) || gib < 0) {
+		showStatus("That is not a valid size.", true);
+		return;
+	}
+	try {
+		await apiRequest("PUT", "/v1/volumes/" + encodeURIComponent(name) + "/quota", {
+			quota_bytes: gib * 1024 * 1024 * 1024,
+		});
+		clearStatus();
+		await renderVolumeDetail(name);
+	} catch (e) {
+		showStatus("Failed to set the limit: " + e.message, true);
+	}
+});
 
 document.getElementById("vd-migrate-form").addEventListener("submit", async (event) => {
 	event.preventDefault();

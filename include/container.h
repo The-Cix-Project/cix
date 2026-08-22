@@ -119,6 +119,25 @@ struct overlay_spec {
 int overlay_backing_is_btrfs(const char *path);
 
 /*
+ * Tags a directory with an ext4 project id, with PROJINHERIT set so
+ * everything created inside it inherits the tag -- without which only
+ * the directory itself would count against the quota and every file in
+ * it would be silently exempt from the limit the tag exists to enforce.
+ *
+ * Exported (issue #93) because a volume needs exactly this and nothing
+ * else overlay_create() does. Duplicating the two ioctls daemon-side
+ * would have been a second implementation of a thing that has to stay
+ * identical, on a code path where getting it subtly wrong means a quota
+ * that reports as applied and is not.
+ *
+ * `what` names the directory in the diagnostic. Returns 0, or
+ * OVERLAY_ERR_QUOTA -- and deliberately fails loud: a quota requested
+ * but silently not applied is a correctness bug wearing a false
+ * promise, not a missing optional capability.
+ */
+int overlay_tag_project_id(const char *dir, unsigned int project_id, const char *what);
+
+/*
  * A considered, generous fixed bound with no natural daemon-side
  * ceiling to mirror (devices are host hardware, not a daemon-created
  * resource the way CONTAINER_MAX_NETWORKS mirrors NETWORK_MAX) --

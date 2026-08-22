@@ -522,6 +522,54 @@ int main(void)
 	      "restoring a snapshot that does not exist fails rather than emptying the volume");
 	kx_response_free(&r);
 
+	/* 5e. size limits (issue #93). A volume had none, which made it an
+	 * unbounded way to fill whatever disk it sits on -- sharper now
+	 * that scheduled backups copy volumes onto a backup disk, where an
+	 * unbounded source is an unbounded destination.
+	 *
+	 * The sandbox's /tmp has no project-quota support, so applying a
+	 * real limit legitimately fails here; what IS verifiable is that
+	 * the refusal is explicit rather than an accepted-and-unenforced
+	 * limit, which is the failure mode that matters. */
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "PUT", "/v1/volumes/vol1/quota", "{\"quota_bytes\":-1}", &r) ==
+	              0 &&
+	          r.status == 400,
+	      "a negative size limit is refused");
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "PUT", "/v1/volumes/nosuchvol/quota", "{\"quota_bytes\":0}",
+	                         &r) == 0 &&
+	          r.status == 404,
+	      "setting a limit on an unknown volume is refused");
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "PUT", "/v1/volumes/vol1/quota",
+	                       "{\"quota_bytes\":1073741824}", &r) == 0) {
+		/*
+		 * Either it applied (a real quota-capable filesystem) or it was
+		 * refused with a reason. What must never happen is a 200 with
+		 * no limit actually recorded -- an accepted limit that is not
+		 * in force is worse than a refusal, because the operator
+		 * believes it exists.
+		 */
+		if (r.status == 200) {
+			const struct json_value *q = json_object_get(r.json, "quota_bytes");
+
+			check(q != NULL && (long long)json_as_number(q) == 1073741824LL,
+			      "an accepted size limit is actually recorded");
+		} else {
+			check(r.status == 409,
+			      "a size limit that cannot be enforced is refused with a reason, never accepted "
+			      "and quietly ignored");
+		}
+	} else {
+		check(0, "setting a size limit reaches the daemon");
+	}
+	kx_response_free(&r);
+
 	/* 6. deleting a volume is refused while a container definition still
 	 * references it -- silently removing data a stopped container will
 	 * expect on its next start would be a data-loss bug. */

@@ -1640,6 +1640,22 @@
 		<section class="view" id="view-volume-detail" hidden>
 			<h2 id="vd-title"></h2>
 			<div class="detail-grid" id="vd-fields"></div>
+			<h3>Size limit</h3>
+			<p class="hint" id="vd-quota-note"></p>
+			<form id="vd-quota-form">
+				<label>
+					Limit (GiB, 0 for none)
+					<input type="number" id="vd-quota" min="0" step="1" style="width:7rem">
+				</label>
+				<button type="submit">Apply</button>
+			</form>
+			<p class="hint">A real, kernel-enforced hard limit &mdash; a write past it fails at the
+				filesystem level rather than being noticed afterwards. Without one a volume can grow until
+				the disk it sits on is full, which also makes it an unbounded thing to copy when scheduled
+				backups run. On a btrfs-backed volume this is refused rather than accepted and left
+				unenforced: there the limit needs the volume to be its own subvolume, which is a change to
+				how volumes are created rather than another call.</p>
+
 			<h3>Backups</h3>
 			<p class="hint" id="vd-backup-note"></p>
 			<form id="vd-backup-form">

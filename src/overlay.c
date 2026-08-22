@@ -136,7 +136,7 @@ static int overlay_create_btrfs_upperdir(const char *upperdir, long long quota_b
  * capability. `what` names which one ("upperdir"/"workdir") for the
  * diag message -- the two call sites below are otherwise identical.
  */
-static int tag_dir_project_id(const char *dir, unsigned int project_id, const char *what)
+int overlay_tag_project_id(const char *dir, unsigned int project_id, const char *what)
 {
 	int fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 	struct kx_fsxattr fsx;
@@ -230,7 +230,7 @@ int overlay_prepare_dirs(const struct overlay_spec *ov)
 			}
 
 			if (ov->project_id != 0) {
-				int rc = tag_dir_project_id(ov->upperdir, ov->project_id, "upperdir");
+				int rc = overlay_tag_project_id(ov->upperdir, ov->project_id, "upperdir");
 
 				if (rc != 0)
 					return rc;
@@ -267,7 +267,7 @@ int overlay_prepare_dirs(const struct overlay_spec *ov)
 	 * same failure on demand.
 	 */
 	if (ov->project_id != 0) {
-		int rc = tag_dir_project_id(ov->workdir, ov->project_id, "workdir");
+		int rc = overlay_tag_project_id(ov->workdir, ov->project_id, "workdir");
 
 		if (rc != 0)
 			return rc;
@@ -294,7 +294,7 @@ int overlay_create(const struct overlay_spec *ov)
 	 * documented overlayfs behavior that looked like a plausible match
 	 * for the mkdir(/dev/pts) EXDEV mountns_pivot()'s own per-step
 	 * diagnostics had just pinpointed) but proved both unnecessary
-	 * (tag_dir_project_id() on workdir, added right after this comment
+	 * (overlay_tag_project_id() on workdir, added right after this comment
 	 * was written, is what actually fixed the EXDEV) and actively
 	 * harmful on this project's own from-scratch 6.18.40 kernel build,
 	 * which was never compiled with CONFIG_OVERLAY_FS_REDIRECT_DIR=y:

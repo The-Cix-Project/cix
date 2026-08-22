@@ -118,8 +118,11 @@ int volume_init(const char *state_path)
 			    (bl != NULL && bl->type == JSON_NUMBER) ? (time_t)json_as_number(bl) : 0;
 			{
 				const char *wr = json_as_string(json_object_get(item, "backup_while_running"));
+				const struct json_value *q = json_object_get(item, "quota_bytes");
 
 				g_volumes[count].backup_while_running = volume_running_mode_parse(wr);
+				g_volumes[count].quota_bytes =
+				    (q != NULL && q->type == JSON_NUMBER) ? (long long)json_as_number(q) : 0;
 			}
 		}
 		g_volumes[count].in_use = 1;
@@ -267,6 +270,8 @@ void volume_write_json_one(const struct volume *v, struct json_writer *w)
 	jw_int(w, (long long)v->backup_last_at);
 	jw_key(w, "backup_while_running");
 	jw_str(w, volume_running_mode_name(v->backup_while_running));
+	jw_key(w, "quota_bytes");
+	jw_int(w, v->quota_bytes);
 	/* Reported so an operator can see where the data really landed --
 	 * a disk that is currently unmounted silently falls back to the
 	 * default location, and that should never be invisible. */
@@ -424,4 +429,18 @@ void volume_note_backup_taken(const char *name, time_t when)
 	/* Persisted deliberately: without it a daemon restart would make
 	 * every opted-in volume look overdue and re-snapshot the lot. */
 	save_state();
+}
+
+enum volume_error volume_set_quota(const char *name, long long quota_bytes)
+{
+	struct volume *v = volume_find(name);
+
+	if (v == NULL)
+		return VOLUME_ERR_NOT_FOUND;
+	if (quota_bytes < 0)
+		return VOLUME_ERR_INVALID_NAME;
+	v->quota_bytes = quota_bytes;
+	if (save_state() != 0)
+		return VOLUME_ERR_PERSIST_FAILED;
+	return VOLUME_OK;
 }
