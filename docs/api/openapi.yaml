@@ -8715,6 +8715,17 @@ components:
             though the real mount persists.
         mount_path:
           type: string
+        has_mounted_partition:
+          type: boolean
+          description: >
+            Whole disks only (always false for a partition): some
+            partition ON this disk is mounted, even though the disk
+            device itself is not. Separate from `mounted`, which is
+            strictly whether THIS device is mounted -- conflating the two
+            was a real bug that let a mounted partition be deleted out
+            from under its live filesystem. This flag is why a
+            repartition gets refused with 409 while a partition is in
+            use.
           description: The real current mountpoint when mounted is true; empty string otherwise.
         reads_completed:
           type: integer

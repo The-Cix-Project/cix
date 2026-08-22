@@ -139,7 +139,11 @@ static enum diskpart_error check_whole_disk_writable(const char *disk_name,
 		return DISKPART_ERR_IS_OS_DISK;
 	if (diskrole_lookup(disk_name) != NULL)
 		return DISKPART_ERR_HAS_ROLE;
-	if (out->mounted)
+	/* Anything mounted on this disk -- the whole-disk device itself, or
+	 * any partition on it -- makes rewriting or growing its partition
+	 * table unsafe. The second half used to be carried by `mounted`
+	 * itself and was silently lost when that became per-device. */
+	if (out->mounted || out->has_mounted_partition)
 		return DISKPART_ERR_MOUNTED;
 	return DISKPART_OK;
 }

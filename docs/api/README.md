@@ -1292,6 +1292,8 @@ Removes one partition — every other partition on the disk is untouched. `404` 
 
 A disk is used in exactly one of two mutually-exclusive modes: role assigned directly to the whole disk (the original model), or partitioned with roles assigned to the individual partitions instead — `diskrole.c`/`diskformat.c` needed no code changes of their own for this, since both already operate purely on whatever `GET /disks` reports, partition or whole disk alike.
 
+`mounted` on a partition means that partition itself is mounted, and `mount_path` is its own mountpoint. A whole disk carries a separate `has_mounted_partition` for "something on this disk is in use" — that is what makes `POST .../partition-table` and `POST .../partitions` return `409`, and it is reported so an operator with no shell can see why. The two were one field until partitions became addressable, at which point a genuinely mounted partition started reporting `mounted: false` while its parent reported the partition's mountpoint as its own. That mattered because `DELETE .../partitions/{name}` reads exactly this flag to refuse deleting a partition that is in use — confirmed on real hardware: the delete returned `204` and removed a partition whose ext4 was live and mounted.
+
 ## Multi-disk storage placement (ADR-0141)
 
 ```

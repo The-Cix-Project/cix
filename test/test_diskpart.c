@@ -36,6 +36,7 @@
  *      expected or vice versa, wrong parent, a role already assigned)
  *      -- exercised as real HTTP requests against the real daemon.
  */
+#include "disk.h"
 #include "httpclient.h"
 #include "json.h"
 #include "test_image_fixture.h"
@@ -117,6 +118,97 @@ static const char *jstr(const struct json_value *obj, const char *key)
 	const char *s = json_as_string(json_object_get(obj, key));
 
 	return s != NULL ? s : "";
+}
+
+/*
+ * The mount attribution itself (issue #9). This is not incidental
+ * bookkeeping: diskpart_delete() reads `mounted` to decide whether a
+ * partition may be removed, so getting it wrong means deleting a
+ * partition out from under a live filesystem -- which is exactly what
+ * happened on real hardware before this was fixed. The old code mapped
+ * every mounted device to its PARENT whole disk, which was right while
+ * only whole disks were enumerated and wrong the moment ADR-0158 added
+ * partitions.
+ *
+ * Driven off a synthetic /proc/mounts because the real one cannot be
+ * arranged to order inside a test, and this sandbox has no loop devices
+ * to mount anything on.
+ */
+static int test_mount_attribution(void)
+{
+	static const char *const mounts =
+	    "/dev/sda1 /var/lib/thinc/disks/sda1 ext4 rw,relatime 0 0\n"
+	    "/dev/sdb /mnt/whole ext4 rw,relatime 0 0\n"
+	    "proc /proc proc rw 0 0\n";
+	struct discovered_disk d[4];
+	char path[] = "/tmp/thinc_test_mounts_XXXXXX";
+	int fd;
+	int ok = 1;
+	int i;
+
+	memset(d, 0, sizeof(d));
+	snprintf(d[0].name, sizeof(d[0].name), "sda");  /* parent, not itself mounted */
+	snprintf(d[1].name, sizeof(d[1].name), "sda1"); /* the genuinely mounted partition */
+	snprintf(d[2].name, sizeof(d[2].name), "sda2"); /* sibling, untouched */
+	snprintf(d[3].name, sizeof(d[3].name), "sdb");  /* whole disk mounted directly */
+
+	fd = mkstemp(path);
+	if (fd < 0) {
+		fprintf(stderr, "FAIL: mkstemp for synthetic mounts file\n");
+		return 0;
+	}
+	if (write(fd, mounts, strlen(mounts)) != (ssize_t)strlen(mounts)) {
+		fprintf(stderr, "FAIL: writing synthetic mounts file\n");
+		close(fd);
+		unlink(path);
+		return 0;
+	}
+	close(fd);
+
+	disk_fill_mount_status_from(path, d, 4);
+	unlink(path);
+
+	/* The mounted partition reports ITSELF mounted, at its own path.
+	 * This is the assertion that fails against the old behaviour, and
+	 * the one the delete guard depends on. */
+	if (!d[1].mounted || strcmp(d[1].mount_path, "/var/lib/thinc/disks/sda1") != 0) {
+		fprintf(stderr,
+		        "FAIL: mounted partition sda1 reports mounted=%d path=\"%s\" -- the delete "
+		        "guard reads this, so a live filesystem can be destroyed\n",
+		        d[1].mounted, d[1].mount_path);
+		ok = 0;
+	}
+	/* Its parent is NOT itself mounted, but does carry the separate
+	 * flag the repartition guard needs. */
+	if (d[0].mounted || d[0].mount_path[0] != '\0') {
+		fprintf(stderr, "FAIL: sda reports mounted=%d path=\"%s\" -- the disk device itself "
+		                "is not mounted, its partition is\n",
+		        d[0].mounted, d[0].mount_path);
+		ok = 0;
+	}
+	if (!d[0].has_mounted_partition) {
+		fprintf(stderr, "FAIL: sda has_mounted_partition=0 -- repartitioning it would be "
+		                "allowed while sda1 is live\n");
+		ok = 0;
+	}
+	/* An unmounted sibling stays clean. */
+	if (d[2].mounted || d[2].has_mounted_partition) {
+		fprintf(stderr, "FAIL: unmounted sibling sda2 marked mounted=%d has_part=%d\n",
+		        d[2].mounted, d[2].has_mounted_partition);
+		ok = 0;
+	}
+	/* A whole disk mounted directly still works, and never claims a
+	 * mounted partition it does not have. */
+	if (!d[3].mounted || strcmp(d[3].mount_path, "/mnt/whole") != 0 ||
+	    d[3].has_mounted_partition) {
+		fprintf(stderr, "FAIL: directly-mounted whole disk sdb: mounted=%d path=\"%s\" "
+		                "has_part=%d\n",
+		        d[3].mounted, d[3].mount_path, d[3].has_mounted_partition);
+		ok = 0;
+	}
+	for (i = 0; i < 4; i++)
+		(void)i;
+	return ok;
 }
 
 int main(void)
@@ -458,6 +550,9 @@ int main(void)
 		kx_client_request(&client, "DELETE", path, NULL, &r);
 		kx_response_free(&r);
 	}
+
+	if (!test_mount_attribution())
+		ok = 0;
 
 	if (ok)
 		printf("DISKPART RESULT: PASS\n");
