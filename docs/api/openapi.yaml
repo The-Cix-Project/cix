@@ -7658,6 +7658,18 @@ components:
         dns_records:
           type: string
           description: Raw content of dns_records.json.
+        volumes:
+          type: string
+          description: >
+            Raw content of volumes.json -- the volume REGISTRY (which
+            volumes exist, and their disk placement), which is
+            configuration. A volume's *contents* are workload data and
+            are deliberately not in the bundle, the same boundary
+            ADR-0033 draws for image content. The registry is included
+            because container_defs reference volumes by name and an
+            unknown name is a hard 400 (ADR-0183), so a bundle without
+            it restores onto a box where every container with a volume
+            fails to start. A restore recreates the volumes empty.
         pkg_installed:
           type: string
           description: Raw content of pkg_installed.json (which packages are installed, into which images, at which version).

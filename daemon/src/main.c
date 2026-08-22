@@ -2281,6 +2281,28 @@ static void do_system_backup(struct json_writer *w)
 		jw_str(w, "");
 	}
 
+	/*
+	 * Issue #88: the volume REGISTRY -- which volumes exist and where
+	 * they are placed. That is configuration, so it belongs here; a
+	 * volume's contents are workload data and deliberately stay out,
+	 * the same boundary ADR-0033 draws for image content.
+	 *
+	 * This is not optional polish. container_defs reference volumes by
+	 * name, and a container naming an unknown volume is a hard 400 by
+	 * design (ADR-0183) -- so a bundle carrying the defs but not the
+	 * registry restores onto a box where every container with a volume
+	 * fails to start, which is a broken restore rather than a partial
+	 * one. Restoring recreates the volumes empty; refilling them is the
+	 * operator's own concern, exactly as it is for image content.
+	 */
+	jw_key(w, "volumes");
+	if (persist_read_file(VOLUMES_STATE_PATH, &buf, &len) == 0 && buf != NULL) {
+		jw_str(w, buf);
+		free(buf);
+	} else {
+		jw_str(w, "");
+	}
+
 	jw_key(w, "site_config");
 	if (persist_read_file(SITE_CONFIG_PATH, &buf, &len) == 0 && buf != NULL) {
 		jw_str(w, buf);
@@ -2478,7 +2500,7 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 {
 	struct json_value *root;
 	const struct json_value *jcontainer_defs, *jnetworks, *jdns_records, *jpkg_installed;
-	const struct json_value *jpkg_recipes, *jsite_config;
+	const struct json_value *jpkg_recipes, *jsite_config, *jvolumes;
 	size_t i;
 	int have_any = 0;
 
@@ -2494,6 +2516,7 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 	jpkg_installed = json_object_get(root, "pkg_installed");
 	jpkg_recipes = json_object_get(root, "pkg_recipes");
 	jsite_config = json_object_get(root, "site_config");
+	jvolumes = json_object_get(root, "volumes"); /* issue #88 */
 
 	/* Each present field must be a string whose own content is valid
 	 * JSON -- checked for every field before any file is touched. */
@@ -2567,12 +2590,20 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 			return 400;
 		}
 	}
+	if (jvolumes != NULL) {
+		have_any = 1;
+		if (!json_string_field_is_valid(jvolumes)) {
+			json_free(root);
+			snprintf(out_errmsg, out_errmsg_size, "volumes is not valid JSON");
+			return 400;
+		}
+	}
 
 	if (!have_any) {
 		json_free(root);
 		snprintf(out_errmsg, out_errmsg_size,
 		         "at least one of container_defs/networks/dns_records/pkg_installed/pkg_recipes/"
-		         "site_config required");
+		         "site_config/volumes required");
 		return 400;
 	}
 
@@ -2605,6 +2636,12 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 	    restore_write_field(SITE_CONFIG_PATH, json_as_string(jsite_config)) != 0) {
 		json_free(root);
 		snprintf(out_errmsg, out_errmsg_size, "failed to write site_config.json");
+		return 500;
+	}
+	if (jvolumes != NULL &&
+	    restore_write_field(VOLUMES_STATE_PATH, json_as_string(jvolumes)) != 0) {
+		json_free(root);
+		snprintf(out_errmsg, out_errmsg_size, "failed to write volumes.json");
 		return 500;
 	}
 	if (jpkg_recipes != NULL) {

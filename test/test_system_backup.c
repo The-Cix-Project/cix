@@ -289,6 +289,19 @@ int main(void)
 		free(rw.buf);
 	}
 
+	/* 1e. A volume, so the bundle can be checked to carry the volume
+	 * REGISTRY (issue #88). Not cosmetic: container_defs reference
+	 * volumes by name and an unknown name is a hard 400 by design, so a
+	 * bundle without the registry restores onto a box where every
+	 * container with a volume fails to start. */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/volumes", "{\"name\":\"backupvol\"}", &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: POST /v1/volumes backupvol, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
 	/* 2. GET /system/backup: confirm the bundle's own container_defs
 	 * field, re-parsed, actually mentions "keeper", and that
 	 * site_config actually carries the instance_name just set. */
@@ -318,6 +331,16 @@ int main(void)
 		if (site == NULL || strstr(site, "backuptest-instance") == NULL) {
 			fprintf(stderr, "FAIL: backup site_config missing \"backuptest-instance\"\n");
 			ok = 0;
+		}
+		{
+			const char *vols = json_str_field(r.json, "volumes");
+
+			if (vols == NULL || strstr(vols, "backupvol") == NULL) {
+				fprintf(stderr, "FAIL: backup volumes missing \"backupvol\" -- a restore of "
+				                "this bundle would leave every container with a volume "
+				                "unable to start\n");
+				ok = 0;
+			}
 		}
 		if (recipes == NULL || recipes->type != JSON_OBJECT) {
 			fprintf(stderr, "FAIL: backup pkg_recipes missing or not an object\n");

@@ -2748,6 +2748,43 @@ function renderContainerDetail(name) {
 		"Not attached to any network"
 	);
 
+	/* Volumes (issue #88). Deliberately shows the volume NAME as a link
+	 * rather than the resolved host path: the name is the thing an
+	 * operator acts on, and the link matters because a volume is not
+	 * owned by this container -- it can outlive it and be mounted
+	 * elsewhere, which the Volumes page is where you actually see. */
+	{
+		const volBody = document.querySelector("#cd-volumes tbody");
+		const vols = c.volumes || [];
+
+		volBody.textContent = "";
+		if (vols.length === 0) {
+			const row = document.createElement("tr");
+			const cell = document.createElement("td");
+
+			cell.colSpan = 3;
+			cell.className = "empty";
+			cell.textContent = "No volumes -- everything this container writes is lost when it is deleted";
+			row.appendChild(cell);
+			volBody.appendChild(row);
+		} else {
+			for (const v of vols) {
+				const row = document.createElement("tr");
+				const nameCell = document.createElement("td");
+				const pathCell = document.createElement("td");
+				const modeCell = document.createElement("td");
+
+				nameCell.appendChild(treeLink("#volumes", v.name, ""));
+				pathCell.textContent = v.path;
+				modeCell.textContent = v.read_only ? "read-only" : "read-write";
+				row.appendChild(nameCell);
+				row.appendChild(pathCell);
+				row.appendChild(modeCell);
+				volBody.appendChild(row);
+			}
+		}
+	}
+
 	/* Options -- lifecycle/behavior configuration. */
 	const optionsFields = document.getElementById("cd-options-fields");
 
@@ -7579,18 +7616,38 @@ async function refreshVolumes() {
 
 	body.textContent = "";
 	let vols = [];
+	let containers = [];
 	try {
 		const data = await apiRequest("GET", "/v1/volumes");
 		vols = data.volumes || [];
+		/*
+		 * The reverse mapping -- which containers mount each volume --
+		 * is what actually explains the ownership model, and there is
+		 * no dedicated field for it because a volume genuinely does not
+		 * know: containers reference volumes, never the other way
+		 * round. Cross-referenced client-side against the container
+		 * list, the same approach the network detail page already uses
+		 * for "containers on this network" (ADR-0138).
+		 */
+		const cdata = await apiRequest("GET", "/v1/containers");
+		containers = cdata.containers || [];
 	} catch (e) {
 		showStatus("Failed to read volumes: " + e.message, true);
 		return;
+	}
+	const mountedBy = {};
+	for (const c of containers) {
+		for (const v of c.volumes || []) {
+			if (!mountedBy[v.name])
+				mountedBy[v.name] = [];
+			mountedBy[v.name].push(c.name + " at " + v.path + (v.read_only ? " (ro)" : ""));
+		}
 	}
 	if (vols.length === 0) {
 		const row = document.createElement("tr");
 		const cell = document.createElement("td");
 
-		cell.colSpan = 5;
+		cell.colSpan = 6;
 		cell.className = "empty";
 		cell.textContent = "No volumes";
 		row.appendChild(cell);
@@ -7601,7 +7658,19 @@ async function refreshVolumes() {
 		const row = document.createElement("tr");
 		const created = v.created_at ? new Date(v.created_at * 1000).toLocaleString() : "-";
 
-		for (const text of [v.name, v.disk || "(default)", v.host_path || "-", created]) {
+		const users = mountedBy[v.name] || [];
+
+		for (const text of [
+			v.name,
+			/* "unused" is deliberately not an error state -- a volume
+			 * outliving every container that used it is the whole
+			 * point, and is exactly when its data is most at risk of
+			 * being deleted by someone who assumes it is dead weight. */
+			users.length > 0 ? users.join(", ") : "not currently mounted",
+			v.disk || "(default)",
+			v.host_path || "-",
+			created,
+		]) {
 			const td = document.createElement("td");
 			td.textContent = text;
 			row.appendChild(td);
@@ -7640,6 +7709,7 @@ document.getElementById("volume-form").addEventListener("submit", async (event) 
 		await apiRequest("POST", "/v1/volumes", body);
 		clearStatus();
 		document.getElementById("volume-form").reset();
+		closeModal();
 		await refreshVolumes();
 	} catch (e) {
 		showStatus("Failed to create volume: " + e.message, true);
