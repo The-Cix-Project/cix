@@ -49,12 +49,12 @@
     },
     {
       "path": "/etc/profile",
-      "content": "# /etc/profile -- system-wide shell setup for every login on this box.\n#\n# Staged from the container recipe, deliberately: a container's home\n# directories live in its overlay upper layer, which DELETE removes\n# (ADR-0106), so anything written to ~ is lost the next time this\n# container is recreated. Shell setup that should always be here belongs\n# in the recipe, which is re-staged on every create.\n\numask 022\nexport PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nexport LANG=C.UTF-8\nexport EDITOR=vim\nexport PAGER=less\n\n# A real prompt. Red user@host when root, cyan otherwise, then the cwd --\n# the point being that you can always see who and where you are on a box\n# whose whole purpose is reaching other machines.\nif [ \"$(id -u)\" -eq 0 ]; then\n\tPS1='\\[\\033[1;31m\\]\\u@\\h\\[\\033[0m\\]:\\[\\033[1;34m\\]\\w\\[\\033[0m\\]# '\nelse\n\tPS1='\\[\\033[1;36m\\]\\u@\\h\\[\\033[0m\\]:\\[\\033[1;34m\\]\\w\\[\\033[0m\\]$ '\nfi\nexport PS1\n\nalias ll='ls -alF'\nalias la='ls -A'\nalias l='ls -CF'\n\n# History worth having on a jump host: generous, de-duplicated, appended\n# rather than overwritten so concurrent sessions don't clobber each other.\nexport HISTSIZE=10000\nexport HISTFILESIZE=20000\nexport HISTCONTROL=ignoredups:erasedups\nshopt -s histappend 2>/dev/null || true\nshopt -s checkwinsize 2>/dev/null || true\n\n# Per-user customisation still works -- just remember it lives in the\n# container's writable layer and does NOT survive a recreate.\nif [ -r \"$HOME/.bashrc\" ]; then\n\t. \"$HOME/.bashrc\"\nfi\n",
+      "content": "# /etc/profile -- system-wide shell setup for every login on this box.\n#\n# Staged from the container recipe, deliberately: this is setup that\n# should be here for every account, including one created after the\n# fact -- so it belongs in the recipe, which is re-staged on every\n# create, rather than in any one user's home. Per-user files live in\n# ~, which is a persistent volume on this box (ADR-0183).\n\numask 022\nexport PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nexport LANG=C.UTF-8\nexport EDITOR=vim\nexport PAGER=less\n\n# A real prompt. Red user@host when root, cyan otherwise, then the cwd --\n# the point being that you can always see who and where you are on a box\n# whose whole purpose is reaching other machines.\nif [ \"$(id -u)\" -eq 0 ]; then\n\tPS1='\\[\\033[1;31m\\]\\u@\\h\\[\\033[0m\\]:\\[\\033[1;34m\\]\\w\\[\\033[0m\\]# '\nelse\n\tPS1='\\[\\033[1;36m\\]\\u@\\h\\[\\033[0m\\]:\\[\\033[1;34m\\]\\w\\[\\033[0m\\]$ '\nfi\nexport PS1\n\nalias ll='ls -alF'\nalias la='ls -A'\nalias l='ls -CF'\n\n# History worth having on a jump host: generous, de-duplicated, appended\n# rather than overwritten so concurrent sessions don't clobber each other.\nexport HISTSIZE=10000\nexport HISTFILESIZE=20000\nexport HISTCONTROL=ignoredups:erasedups\nshopt -s histappend 2>/dev/null || true\nshopt -s checkwinsize 2>/dev/null || true\n\n# Per-user customisation lives in ~/.bashrc, on the jump-home volume --\n# it survives both a restart and a full recreate (ADR-0183).\nif [ -r \"$HOME/.bashrc\" ]; then\n\t. \"$HOME/.bashrc\"\nfi\n",
       "mode": "0644"
     },
     {
       "path": "/etc/skel/.bashrc",
-      "content": "# ~/.bashrc -- your own customisations.\n#\n# HEADS UP: this file lives in the container's overlay upper layer. It\n# survives a stop/start, but a recreate of this container (delete +\n# apply-recipe) removes it along with the rest of the home directory.\n# Anything you want to keep permanently belongs in the container recipe's\n# files[] instead, where it is re-staged every time.\n\n# Examples:\n# alias k='kubectl'\n# export PATH=\"$HOME/bin:$PATH\"\n",
+      "content": "# ~/.bashrc -- your own customisations.\n#\n# This home directory lives on the `jump-home` volume (ADR-0183), so\n# anything you put here survives the container being restarted, and\n# survives it being recreated -- which happens on its own whenever the\n# jumpbox image is rebuilt (follow_rolling). Before volumes existed,\n# every recreate silently took this file with it.\n#\n# Shell setup that should be there for EVERYONE still belongs in the\n# container recipe's /etc/profile instead, so a brand-new account gets\n# it too.\n\n# Examples:\n# alias k='kubectl'\n# export PATH=\"$HOME/bin:$PATH\"\n",
       "mode": "0644"
     }
   ],
@@ -64,5 +64,11 @@
   "memory_max": 2147483648,
   "cpuset_cpus": "0-1",
   "disk_quota_bytes": 16106127360,
-  "ldap_login": true
+  "ldap_login": true,
+  "volumes": [
+    {
+      "name": "jump-home",
+      "path": "/home"
+    }
+  ]
 }
