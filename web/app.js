@@ -980,6 +980,7 @@ const CATEGORY_VIEWS = {
 	"syslog-targets": "view-syslog-targets",
 	"tls-throttle": "view-tls-throttle",
 	logs: "view-logs",
+	kmsg: "view-kmsg",
 	backup: "view-backup",
 	update: "view-update",
 };
@@ -1040,6 +1041,8 @@ function renderCurrentView() {
 			refreshTlsThrottleStatus();
 		else if (route.category === "logs")
 			renderLogsList();
+		else if (route.category === "kmsg")
+			refreshKmsg();
 		else if (route.category === "images" && route.name !== null)
 			renderImageDetail(route.name);
 		else if (route.category === "devices")
@@ -1501,6 +1504,7 @@ function renderTree() {
 						{ label: "Host Stats", hash: "host-stats", icon: "stats" },
 						{ label: "Processes", hash: "processes", icon: "stats" },
 						{ label: "Log Store", hash: "logs", icon: "system" },
+						{ label: "Kernel Log", hash: "kmsg", icon: "system" },
 						{ label: "Syslog Targets", hash: "syslog-targets", icon: "system" },
 					],
 				},
@@ -2601,6 +2605,16 @@ for (const tabButton of document.querySelectorAll(".tab-bar .tab-button")) {
 	});
 }
 
+/* Issue #78: render exit_status together with term_signal so a signal death
+   is never shown as (or mistaken for) a plain exit code of the same number. */
+function formatExitStatus(c) {
+	if (c.exit_status === null || c.exit_status === undefined)
+		return "-";
+	if (c.term_signal)
+		return "killed by signal " + c.term_signal;
+	return "exit code " + c.exit_status;
+}
+
 function renderContainerDetail(name) {
 	const c = cache.containers.find((x) => x.name === name);
 	const title = document.getElementById("cd-title");
@@ -2636,9 +2650,16 @@ function renderContainerDetail(name) {
 	fields.appendChild(fieldBlock("Status", c.status));
 	fields.appendChild(fieldBlock("Image", c.image));
 	fields.appendChild(fieldBlock("PID", c.pid === null || c.pid === undefined ? "-" : String(c.pid)));
-	fields.appendChild(
-		fieldBlock("Exit status", c.exit_status === null || c.exit_status === undefined ? "-" : String(c.exit_status))
-	);
+	/*
+	 * Issue #78/#77: exit_status alone is ambiguous -- a container killed by
+	 * a signal reports that SIGNAL NUMBER here, indistinguishable from a
+	 * real exit code of the same value (a stop/delete SIGKILL shows 9, which
+	 * is not "exit code 9"). term_signal is what disambiguates it, so say
+	 * which one this actually is rather than printing a bare number.
+	 */
+	fields.appendChild(fieldBlock("Exit status", formatExitStatus(c)));
+	if (c.exit_reason)
+		fields.appendChild(fieldBlock("Exit reason", c.exit_reason));
 	fields.appendChild(fieldBlock("Command", (c.cmd || []).join(" ") || "-"));
 
 	/* Resource limits -- moved onto the Hardware tab (issue #69,
@@ -6367,6 +6388,10 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 	const network = document.getElementById("f-network").value.trim();
 	const ipForward = document.getElementById("f-ip-forward").checked;
 	const dnsRegister = document.getElementById("f-dns-register").checked;
+	/* Issue #77 surface parity -- REST-only until now. */
+	const userns = document.getElementById("f-userns").checked;
+	const ldapLogin = document.getElementById("f-ldap-login").checked;
+	const captureOutput = document.getElementById("f-capture-output").checked;
 	const routesText = document.getElementById("f-routes").value.trim();
 	const dnsServersText = document.getElementById("f-dns-servers").value.trim();
 	const devices = Array.from(document.getElementById("f-devices").selectedOptions).map((o) => o.value);
@@ -6419,6 +6444,12 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 		body.ip_forward = true;
 	if (dnsRegister)
 		body.dns_register = true;
+	if (userns)
+		body.userns = true;
+	if (ldapLogin)
+		body.ldap_login = true;
+	if (captureOutput)
+		body.capture_output = true;
 	if (routesText !== "") {
 		body.routes = routesText
 			.split(",")
@@ -7488,6 +7519,48 @@ function renderLogsList() {
 	refreshLogsConfig();
 }
 
+/*
+ * Issue #77 surface parity: GET /v1/system/kmsg (the kernel ring buffer)
+ * had no web surface at all. Rendered as plain text rather than a table --
+ * kmsg is a linear stream of kernel messages, and an operator reading it is
+ * scanning for a failure in sequence, exactly as with dmesg.
+ */
+const KMSG_PRIORITY_NAMES = ["emerg", "alert", "crit", "err", "warn", "notice", "info", "debug"];
+
+async function refreshKmsg() {
+	const out = document.getElementById("kmsg-output");
+	const tailRaw = document.getElementById("kmsg-tail").value;
+	const tail = parseInt(tailRaw, 10);
+	const path = Number.isFinite(tail) && tail > 0 ? "/v1/system/kmsg?tail=" + tail : "/v1/system/kmsg";
+
+	out.textContent = "(loading)";
+	try {
+		const data = await apiRequest("GET", path);
+		const entries = data.entries || [];
+
+		if (entries.length === 0) {
+			out.textContent = "(no kernel log entries)";
+			return;
+		}
+		out.textContent = entries
+			.map((e) => {
+				/* ts_usec is the kernel's own monotonic time since boot, not a
+				   wall clock -- shown as seconds, the way dmesg itself does. */
+				const secs = (Number(e.ts_usec) / 1000000).toFixed(6).padStart(14);
+				const prio = KMSG_PRIORITY_NAMES[e.priority] || String(e.priority);
+				return "[" + secs + "] " + prio.padEnd(6) + " " + (e.message || "");
+			})
+			.join("\n");
+	} catch (err) {
+		out.textContent = "(failed to read the kernel log: " + err.message + ")";
+	}
+}
+
+document.getElementById("kmsg-form").addEventListener("submit", (event) => {
+	event.preventDefault();
+	refreshKmsg();
+});
+
 document.getElementById("logs-config-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 	try {
@@ -7904,10 +7977,24 @@ function contextMenuItemsFor(category, name) {
 			{ label: "Open console", danger: false, action: () => { location.hash = "#containers/" + encodeURIComponent(name); } },
 		];
 
-		if (status === "stopped") items.push({ label: "Start", danger: false, action: () => startContainer(name) });
+		/*
+		 * ADR-0181 (issue #73/#77): a container is no longer just
+		 * running/paused/stopped. Since every container is persisted, one
+		 * that exits on its own is RETAINED as "exited" (with its real exit
+		 * code) rather than disappearing -- and it is startable again, just
+		 * like a "stopped" one. "stopping"/"deleting" are transient
+		 * teardown states with nothing useful to offer.
+		 * Start  -> anything not currently alive (stopped OR exited).
+		 * Stop   -> only something actually alive; stopping an already-dead
+		 *           container is a no-op that reads like a broken button.
+		 */
+		const alive = status === "running" || status === "paused";
+		const revivable = status === "stopped" || status === "exited";
+
+		if (revivable) items.push({ label: "Start", danger: false, action: () => startContainer(name) });
 		if (status === "running") items.push({ label: "Pause", danger: false, action: () => pauseContainer(name) });
 		if (status === "paused") items.push({ label: "Unpause", danger: false, action: () => unpauseContainer(name) });
-		if (status !== "stopped") items.push({ label: "Stop", danger: false, action: () => stopContainer(name) });
+		if (alive) items.push({ label: "Stop", danger: false, action: () => stopContainer(name) });
 		items.push({ label: "Remove", danger: true, action: () => removeContainer(name) });
 		return items;
 	}

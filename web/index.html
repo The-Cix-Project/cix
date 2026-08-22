@@ -1486,6 +1486,25 @@
 			</div>
 		</section>
 
+		<!-- Issue #77 surface parity: GET /v1/system/kmsg had no web surface at
+		     all. Distinct from the Log Store above: this is the KERNEL's own
+		     ring buffer (mount failures, driver probes, OOM kills), the only
+		     kernel-log window a shell-less installed host has. -->
+		<section class="view" id="view-kmsg" hidden>
+			<div class="view-list">
+				<h2>Kernel Log</h2>
+				<p class="hint">The kernel's own ring buffer (<code>/dev/kmsg</code>) &mdash; dmesg over REST. This is where mount failures, driver probes and OOM kills surface, and on a real installed host with no shell it is the only way to read them. Distinct from the Log Store, which carries <code>thincd</code>'s own diagnostics and the audit trail.</p>
+				<form id="kmsg-form">
+					<label>
+						Tail (entries)
+						<input type="number" id="kmsg-tail" min="1" max="1024" value="200">
+					</label>
+					<button type="submit">Refresh</button>
+				</form>
+				<pre id="kmsg-output" class="log-output">(not loaded)</pre>
+			</div>
+		</section>
+
 		<section class="view" id="view-backup" hidden>
 			<h2>Backup</h2>
 			<p class="hint">Platform configuration state (container defs, networks, DNS records, pkg install
@@ -1665,6 +1684,23 @@
 						<label class="checkbox">
 							<input type="checkbox" id="f-dns-register">
 							Register DNS name
+						</label>
+						<!-- Issue #77 surface parity: these three were REST-only until now.
+						     userns = ADR-0179 user namespaces (opt-in);
+						     ldap_login = server-staged nsswitch/nslcd from /ldap/config (#80);
+						     capture_output = keep the container's own stdout/stderr, the
+						     first thing to reach for on a silent crash-loop. -->
+						<label class="checkbox">
+							<input type="checkbox" id="f-userns">
+							User namespace (map root to an unprivileged host uid)
+						</label>
+						<label class="checkbox">
+							<input type="checkbox" id="f-ldap-login">
+							LDAP login (stage nsswitch.conf + nslcd.conf from the daemon's LDAP config)
+						</label>
+						<label class="checkbox">
+							<input type="checkbox" id="f-capture-output">
+							Capture stdout/stderr (diagnose a container that dies at startup)
 						</label>
 						<label class="wide">
 							Static routes
