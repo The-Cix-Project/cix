@@ -162,6 +162,11 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | `network detach-interface NAME --interface=IFNAME` | Detach |
 
 
+
+| Command | |
+|---|---|
+| `factory-reset --confirm=<instance name>` | Return the box to its just-installed state and reboot. Destroys every container, image, network, registration, package state, the log store, and **every volume and all data in them**. Keeps the installed OS; forgets disk roles without reformatting the disks |
+
 ## Software
 
 | Command | |

@@ -304,25 +304,7 @@
 		</section>
 
 		<!-- Routes -->
-		<section class="view" id="view-routes" hidden>
-			<div class="view-list">
-				<h2>Routes</h2>
-				<p class="hint">The box's own real kernel IPv4 routing table (ADR-0066) -- not a persisted thinC resource; a route added or removed here is gone on the next reboot unless re-applied by whatever set it up in the first place. Add one via the "+ Create" menu above.</p>
-				<table id="routes">
-					<thead>
-						<tr>
-							<th>Destination</th>
-							<th>Gateway</th>
-							<th>Interface</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="routes-body">
-						<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-		</section>
+		
 
 		<!-- Images -->
 		
@@ -699,10 +681,15 @@
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="daemon-config">Daemon</button>
 				<button type="button" class="tab-button" data-tab="site">Site</button>
+				<button type="button" class="tab-button" data-tab="routes">Routes</button>
 				<button type="button" class="tab-button" data-tab="hostauth-sessions">Sessions</button>
 				<button type="button" class="tab-button" data-tab="host-swap">Swap</button>
 				<button type="button" class="tab-button" data-tab="rolling-restart">Rolling Restart</button>
 				<button type="button" class="tab-button" data-tab="storage-placement">Storage Placement</button>
+				<button type="button" class="tab-button" data-tab="tls-throttle">TLS Throttle</button>
+				<button type="button" class="tab-button" data-tab="backup">Backup</button>
+				<button type="button" class="tab-button" data-tab="volume-backup-config">Volume Backups</button>
+				<button type="button" class="tab-button" data-tab="factory-reset">Factory Reset</button>
 			</div>
 			<div class="tab-panel" data-tab="daemon-config">
 			<h2>Daemon</h2>
@@ -771,6 +758,25 @@
 				</label>
 				<button type="submit">Save</button>
 			</form>
+		</div>
+			<div class="tab-panel" data-tab="routes" hidden>
+			<div class="view-list">
+				<h2>Routes</h2>
+				<p class="hint">The box's own real kernel IPv4 routing table (ADR-0066) -- not a persisted thinC resource; a route added or removed here is gone on the next reboot unless re-applied by whatever set it up in the first place. Add one via the "+ Create" menu above.</p>
+				<table id="routes">
+					<thead>
+						<tr>
+							<th>Destination</th>
+							<th>Gateway</th>
+							<th>Interface</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="routes-body">
+						<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
 		</div>
 			<div class="tab-panel" data-tab="hostauth-sessions" hidden>
 			<div class="view-list">
@@ -878,6 +884,138 @@
 					on (ADR-0169).</p>
 			</div>
 		</div>
+			<div class="tab-panel" data-tab="tls-throttle" hidden>
+			<div class="view-list">
+				<h2>TLS Throttle</h2>
+				<p class="hint">Per-source-IP throttling for repeated failed HTTPS handshakes (ADR-0134) -- a source that fails enough handshakes within the window is refused outright, on both listeners, until the block expires. Loopback (127.0.0.1) is never throttled, so this daemon's own local admin access can't be locked out by a hostile source sharing the box.</p>
+				<h3>Config</h3>
+				<form id="ttf-form">
+					<label class="checkbox">
+						<input type="checkbox" id="ttf-enabled">
+						Enabled
+					</label>
+					<label>
+						Threshold (failures)
+						<input type="number" id="ttf-threshold" min="1" max="100000">
+					</label>
+					<label>
+						Window (seconds)
+						<input type="number" id="ttf-window" min="1" max="86400">
+					</label>
+					<label>
+						Block duration (seconds)
+						<input type="number" id="ttf-block" min="1" max="604800">
+					</label>
+					<label>
+						Log interval (seconds)
+						<input type="number" id="ttf-log-interval" min="0" max="3600">
+					</label>
+					<button type="submit">Save</button>
+				</form>
+				<p class="hint">Log interval caps how often a repeatedly-failing source's own log line is written (0 logs every single failure) -- independent of the threshold/block above, since a source can flood the log store long before it ever fails enough to actually be blocked (e.g. a browser retrying against an untrusted cert).</p>
+				<h3>Currently tracked</h3>
+				<table id="tls-throttle-status">
+					<thead>
+						<tr>
+							<th>IP</th>
+							<th>Failures</th>
+							<th>Blocked</th>
+							<th>Blocked until</th>
+						</tr>
+					</thead>
+					<tbody id="tls-throttle-status-body">
+						<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+			<div class="tab-panel" data-tab="backup" hidden>
+			<h2>Backup</h2>
+			<p class="hint">Platform configuration state (container defs, networks, DNS records, pkg install
+				state + recipes, site config) -- not workload data, not image content, never PKI keys.</p>
+			<button type="button" id="sys-backup">Download backup</button>
+			<h3>Restore</h3>
+			<form id="sys-restore-form">
+				<label class="wide">
+					Backup bundle
+					<input type="file" id="sys-restore-file" required>
+				</label>
+				<button type="submit">Restore</button>
+			</form>
+			<p class="hint">Writes fields back to their real state files. Does not reboot or hot-reload --
+				reboot separately for it to take effect.</p>
+
+			<h3>Automatic snapshots</h3>
+			<p class="hint" id="bc-status">Snapshots: unknown</p>
+			<form id="bc-form">
+				<label>
+					Disk
+					<select id="bc-disk">
+						<option value="">(none -- automatic snapshots disabled)</option>
+					</select>
+				</label>
+				<label>
+					<input type="checkbox" id="bc-enabled">
+					Enabled
+				</label>
+				<label>
+					Interval (hours, 0 = manual only)
+					<input type="number" id="bc-interval" min="0" value="0">
+				</label>
+				<button type="submit">Save</button>
+				<button type="button" id="bc-snapshot-now">Snapshot now</button>
+			</form>
+			<p class="hint">Writes the same bundle above to a disk carrying the <code>backup</code> role
+				(ADR-0141) -- a single, always-current snapshot, not a timestamped history. The target
+				disk is validated when a snapshot actually runs, not when saved here.</p>
+		</div>
+			<div class="tab-panel" data-tab="volume-backup-config" hidden>
+			<div class="view-list">
+				<h2>Volume Backups</h2>
+				<p class="hint">Scheduled snapshots of what volumes <em>hold</em> &mdash; workload data,
+					which the platform backup bundle deliberately never carries (ADR-0033 keeps it to
+					configuration, on the same reasoning that keeps image content out). Opt in per volume
+					on that volume's own page; this is the schedule they share and the disk they go to.
+					One interval rather than one per volume: N timers is N ways for a schedule to be
+					quietly wrong.</p>
+				<form id="vbc-form">
+					<label>
+						<input type="checkbox" id="vbc-enabled"> Run scheduled volume backups
+					</label>
+					<label>
+						Disk
+						<select id="vbc-disk">
+							<option value="">(none)</option>
+						</select>
+					</label>
+					<label>
+						Every
+						<input type="number" id="vbc-interval" min="1" max="8760" style="width:5rem"> hours
+					</label>
+					<button type="submit">Save</button>
+				</form>
+			</div>
+		</div>
+			<div class="tab-panel" data-tab="factory-reset" hidden>
+				<div class="view-list">
+					<h2>Factory Reset</h2>
+					<p class="hint">Returns this box to its <strong>just-installed</strong> state and reboots.
+						Destroys every container, image, network, DNS/PKI/LDAP/NTP registration, package state,
+						the log store, and <strong>every volume and all data in them</strong>. This cannot be
+						undone and there is no backup taken on your behalf.</p>
+					<p class="hint">It keeps the installed OS itself &mdash; both root slots, the kernel, the
+						ESP and the install-time config &mdash; so the box comes back exactly as the installer
+						left it rather than as nothing. Disks that carried a role are <em>forgotten</em>, not
+						reformatted: the filesystems on them are left alone.</p>
+					<form id="factory-reset-form">
+						<label>
+							Type this install's instance name to confirm
+							<input type="text" id="fr-confirm" placeholder="instance name" required>
+						</label>
+						<button type="submit" class="danger">Factory reset and reboot</button>
+					</form>
+				</div>
+			</div>
 		</section>
 
 
@@ -1253,6 +1391,7 @@
 				<button type="button" class="tab-button" data-tab="cat-packages">Packages</button>
 				<button type="button" class="tab-button" data-tab="cat-cache">Cache &amp; Artifacts</button>
 				<button type="button" class="tab-button" data-tab="pkg-build-config">Package Builds</button>
+				<button type="button" class="tab-button" data-tab="update">Update</button>
 			</div>
 			<div class="tab-panel" data-tab="cat-recipes">
 			<div class="view-list">
@@ -1488,6 +1627,22 @@
 			<p class="hint">ADR-0157: how many <code>pkg install</code>/<code>pkg hostbuild</code> jobs may genuinely run at once, each in its own build container. Lowering this doesn't disrupt jobs already in flight -- only future ones once the new, lower ceiling is reached.</p>
 			<p class="hint">ADR-0165: the memory/CPU ceiling applied to every individual build's own sandbox container -- the same cgroup mechanism a regular container's own <code>--memory-max=</code>/<code>--cpu-max=</code> already uses. Found missing the hard way: a burst of concurrent installs with no ceiling hung a real box's daemon entirely. CPU quota is microseconds of CPU time per 100000-microsecond period -- "100000 100000" is one full CPU's worth, "50000 100000" is half a CPU.</p>
 		</div>
+			<div class="tab-panel" data-tab="update" hidden>
+			<h2>Update</h2>
+			<form id="sys-update-form">
+				<label class="wide">
+					Control-plane image path (optional, local to this daemon's host)
+					<input type="text" id="sys-update-image" placeholder="/path/to/thincd-root.squashfs">
+				</label>
+				<label class="wide">
+					Kernel path (optional, local to this daemon's host)
+					<input type="text" id="sys-update-kernel" placeholder="/path/to/bzImage">
+				</label>
+				<button type="submit">Stage update</button>
+			</form>
+			<p class="hint">Writes to the inactive A/B slot. Does not reboot -- reboot separately once
+				ready to cut over.</p>
+		</div>
 		</section>
 
 		<section class="view" id="view-package-detail" hidden>
@@ -1639,51 +1794,7 @@
 			</div>
 		</section>
 
-		<section class="view" id="view-tls-throttle" hidden>
-			<div class="view-list">
-				<h2>TLS Throttle</h2>
-				<p class="hint">Per-source-IP throttling for repeated failed HTTPS handshakes (ADR-0134) -- a source that fails enough handshakes within the window is refused outright, on both listeners, until the block expires. Loopback (127.0.0.1) is never throttled, so this daemon's own local admin access can't be locked out by a hostile source sharing the box.</p>
-				<h3>Config</h3>
-				<form id="ttf-form">
-					<label class="checkbox">
-						<input type="checkbox" id="ttf-enabled">
-						Enabled
-					</label>
-					<label>
-						Threshold (failures)
-						<input type="number" id="ttf-threshold" min="1" max="100000">
-					</label>
-					<label>
-						Window (seconds)
-						<input type="number" id="ttf-window" min="1" max="86400">
-					</label>
-					<label>
-						Block duration (seconds)
-						<input type="number" id="ttf-block" min="1" max="604800">
-					</label>
-					<label>
-						Log interval (seconds)
-						<input type="number" id="ttf-log-interval" min="0" max="3600">
-					</label>
-					<button type="submit">Save</button>
-				</form>
-				<p class="hint">Log interval caps how often a repeatedly-failing source's own log line is written (0 logs every single failure) -- independent of the threshold/block above, since a source can flood the log store long before it ever fails enough to actually be blocked (e.g. a browser retrying against an untrusted cert).</p>
-				<h3>Currently tracked</h3>
-				<table id="tls-throttle-status">
-					<thead>
-						<tr>
-							<th>IP</th>
-							<th>Failures</th>
-							<th>Blocked</th>
-							<th>Blocked until</th>
-						</tr>
-					</thead>
-					<tbody id="tls-throttle-status-body">
-						<tr><td colspan="4" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-		</section>
+		
 
 		<section class="view" id="view-logs" hidden>
 			<div class="view-list">
@@ -1709,33 +1820,7 @@
 		     One page for all four kinds because it is one mechanism. -->
 		<!-- Issue #88: storage that outlives the containers using it. -->
 		<!-- The global volume-snapshot schedule. -->
-		<section class="view" id="view-volume-backup-config" hidden>
-			<div class="view-list">
-				<h2>Volume Backups</h2>
-				<p class="hint">Scheduled snapshots of what volumes <em>hold</em> &mdash; workload data,
-					which the platform backup bundle deliberately never carries (ADR-0033 keeps it to
-					configuration, on the same reasoning that keeps image content out). Opt in per volume
-					on that volume's own page; this is the schedule they share and the disk they go to.
-					One interval rather than one per volume: N timers is N ways for a schedule to be
-					quietly wrong.</p>
-				<form id="vbc-form">
-					<label>
-						<input type="checkbox" id="vbc-enabled"> Run scheduled volume backups
-					</label>
-					<label>
-						Disk
-						<select id="vbc-disk">
-							<option value="">(none)</option>
-						</select>
-					</label>
-					<label>
-						Every
-						<input type="number" id="vbc-interval" min="1" max="8760" style="width:5rem"> hours
-					</label>
-					<button type="submit">Save</button>
-				</form>
-			</div>
-		</section>
+		
 
 		<!-- One volume: where its data lives, who mounts it, and moving it. -->
 		<section class="view" id="view-volume-detail" hidden>
@@ -1857,63 +1942,9 @@
 			</div>
 		</section>
 
-		<section class="view" id="view-backup" hidden>
-			<h2>Backup</h2>
-			<p class="hint">Platform configuration state (container defs, networks, DNS records, pkg install
-				state + recipes, site config) -- not workload data, not image content, never PKI keys.</p>
-			<button type="button" id="sys-backup">Download backup</button>
-			<h3>Restore</h3>
-			<form id="sys-restore-form">
-				<label class="wide">
-					Backup bundle
-					<input type="file" id="sys-restore-file" required>
-				</label>
-				<button type="submit">Restore</button>
-			</form>
-			<p class="hint">Writes fields back to their real state files. Does not reboot or hot-reload --
-				reboot separately for it to take effect.</p>
+		
 
-			<h3>Automatic snapshots</h3>
-			<p class="hint" id="bc-status">Snapshots: unknown</p>
-			<form id="bc-form">
-				<label>
-					Disk
-					<select id="bc-disk">
-						<option value="">(none -- automatic snapshots disabled)</option>
-					</select>
-				</label>
-				<label>
-					<input type="checkbox" id="bc-enabled">
-					Enabled
-				</label>
-				<label>
-					Interval (hours, 0 = manual only)
-					<input type="number" id="bc-interval" min="0" value="0">
-				</label>
-				<button type="submit">Save</button>
-				<button type="button" id="bc-snapshot-now">Snapshot now</button>
-			</form>
-			<p class="hint">Writes the same bundle above to a disk carrying the <code>backup</code> role
-				(ADR-0141) -- a single, always-current snapshot, not a timestamped history. The target
-				disk is validated when a snapshot actually runs, not when saved here.</p>
-		</section>
-
-		<section class="view" id="view-update" hidden>
-			<h2>Update</h2>
-			<form id="sys-update-form">
-				<label class="wide">
-					Control-plane image path (optional, local to this daemon's host)
-					<input type="text" id="sys-update-image" placeholder="/path/to/thincd-root.squashfs">
-				</label>
-				<label class="wide">
-					Kernel path (optional, local to this daemon's host)
-					<input type="text" id="sys-update-kernel" placeholder="/path/to/bzImage">
-				</label>
-				<button type="submit">Stage update</button>
-			</form>
-			<p class="hint">Writes to the inactive A/B slot. Does not reboot -- reboot separately once
-				ready to cut over.</p>
-		</section>
+		
 	</div>
 
 	<div id="log-panel">

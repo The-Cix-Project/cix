@@ -6923,6 +6923,83 @@ paths:
                             least one image, or a persisted container
                             definition.
 
+  /system/factory-reset:
+    post:
+      summary: Return this box to its just-installed state, and reboot (issue #63)
+      description: >
+        The most destructive endpoint this platform has.
+
+        Destroys every container and its storage, every image and all
+        its versions, every network/route/DNS/PKI/LDAP/NTP/syslog
+        registration, all package install state, recipes, build cache
+        and artifacts, the consolidated log store, and every VOLUME
+        along with all data in it. Volumes are the one category here
+        that is genuinely irreplaceable workload data rather than
+        regenerable platform state, and a just-installed box has none,
+        so a reset that kept them would not be a reset.
+
+        Keeps the installed OS itself -- both root slots, the kernel,
+        the ESP, the install-time config -- so the box returns to how
+        thinc-install left it rather than to nothing. Disks that carried
+        a role are forgotten, NOT reformatted: the filesystems on them
+        are untouched.
+
+        The mechanism is a sentinel plus a reboot rather than an inline
+        wipe, for two reasons that are both correctness. The daemon
+        holds this state in memory and rewrites its files on any change,
+        so deleting them underneath a running daemon is a race it
+        usually loses. And it is crash-safe: once armed the reset
+        happens, on this boot or the next -- a reset that got as far as
+        telling the operator "yes" and then evaporated is the worst
+        outcome for an operation whose whole purpose is being certain of
+        the starting state.
+
+        `confirm` must be this install's own instance name (GET
+        /system/site), not a boolean: a boolean can be sent by a client
+        that misunderstood the call, a name only by something that
+        looked it up first.
+      operationId: factoryReset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm]
+              properties:
+                confirm:
+                  type: string
+      responses:
+        "202":
+          description: Armed; the box is rebooting and will wipe on the way back up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  wipes:
+                    type: array
+                    items:
+                      type: string
+                  keeps:
+                    type: array
+                    items:
+                      type: string
+        "400":
+          description: confirm missing or not this install's instance name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The reset could not be armed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /system/volume-backup-config:
     get:
       summary: The shared schedule for volume content snapshots (issue #96)

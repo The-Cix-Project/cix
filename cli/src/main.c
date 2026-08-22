@@ -4415,6 +4415,54 @@ static int cmd_container_exec(const struct kx_client *c, int json_mode, int argc
 	return 1;
 }
 
+/*
+ * Issue #63: the most destructive thing this platform can do, so the
+ * CLI asks for the instance name typed back as well -- the daemon
+ * requires it regardless, and a client that sends it without the
+ * operator having seen what it destroys would defeat the point of the
+ * guard rather than honour it.
+ */
+static int cmd_factory_reset(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	struct json_writer w;
+	const char *confirm = NULL;
+	int i;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--confirm=", 10) == 0)
+			confirm = argv[i] + 10;
+	}
+	if (confirm == NULL) {
+		fprintf(stderr,
+		        "usage: thincctl factory-reset --confirm=<instance name>\n"
+		        "\n"
+		        "  Returns this box to its just-installed state and REBOOTS. Destroys every\n"
+		        "  container, image, network, DNS/PKI/LDAP/NTP registration, package state,\n"
+		        "  the log store, and every VOLUME AND ALL DATA IN THEM. Cannot be undone.\n"
+		        "\n"
+		        "  Keeps the installed OS itself, and does not reformat any disk -- disk role\n"
+		        "  assignments are forgotten, the filesystems on them are left alone.\n"
+		        "\n"
+		        "  The instance name is this install's own (thincctl site).\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "confirm");
+	jw_str(&w, confirm);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	if (kx_client_request(c, "POST", "/v1/system/factory-reset", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "thincctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, NULL);
+}
+
 static int cmd_software(const struct kx_client *c, int json_mode)
 {
 	struct kx_response r;
@@ -11431,6 +11479,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_server_health(client, json_mode, argc, argv);
 	if (strcmp(cmd, "exec") == 0)
 		return cmd_container_exec(client, json_mode, argc, argv);
+	if (strcmp(cmd, "factory-reset") == 0)
+		return cmd_factory_reset(client, json_mode, argc, argv);
 	if (strcmp(cmd, "software") == 0)
 		return cmd_software(client, json_mode);
 	if (strcmp(cmd, "volume") == 0)

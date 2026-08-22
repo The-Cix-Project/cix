@@ -1843,6 +1843,160 @@ static void handle_shutdown(int fd)
 	jw_free(&w);
 }
 
+/* ---- Issue #63: factory reset ---- */
+
+/*
+ * Returning a box to its just-installed state, without reinstalling.
+ *
+ * The mechanism is deliberately a SENTINEL plus a reboot, rather than
+ * wiping state and carrying on. Two reasons, and both are correctness
+ * rather than taste:
+ *
+ * - The daemon holds most of this state in memory and rewrites its
+ *   files on any change. Deleting them underneath a running daemon is a
+ *   race it usually loses -- the next container event, health probe or
+ *   config touch writes the file straight back, and the reset silently
+ *   half-happens.
+ * - It is crash-safe. Once the sentinel is written the reset WILL
+ *   happen, on this boot or the next one. A reset that got as far as
+ *   "the operator was told yes" and then evaporated because the reboot
+ *   did not complete is the worst possible outcome for an operation
+ *   whose entire purpose is being sure of the starting state.
+ *
+ * The wipe itself runs at startup before any subsystem loads, so
+ * nothing has read the old state yet and nothing can write it back.
+ */
+#define FACTORY_RESET_SENTINEL "FACTORY-RESET"
+
+static void factory_reset_sentinel_path(char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/%s", g_base_dir, FACTORY_RESET_SENTINEL);
+}
+
+/*
+ * Wipes every operator-owned tree back to first-boot empty. Called at
+ * startup only, before boot_subsystem_init() reads anything.
+ *
+ * What is deliberately NOT touched: the OS itself. The two root slots,
+ * the kernel, the ESP and the install-time config partition all live
+ * outside this base directory, so a reset returns the box to how
+ * thinc-install left it rather than to nothing.
+ *
+ * What IS destroyed, and worth naming because it is the part that
+ * cannot be undone: volumes and everything in them. A just-installed
+ * box has no volumes, so a reset that kept them would not be a reset --
+ * but this is the one category here that is genuinely irreplaceable
+ * workload data rather than regenerable platform state.
+ */
+static void factory_reset_apply_if_pending(void)
+{
+	char sentinel[PATH_MAX];
+	struct stat st;
+	const char *trees[] = { "state", "containers", "rebuildable", "logs", "volumes", "disks" };
+	size_t i;
+
+	factory_reset_sentinel_path(sentinel, sizeof(sentinel));
+	if (stat(sentinel, &st) != 0)
+		return;
+
+	fprintf(stderr, "factory reset: wiping all operator state back to first-boot defaults\n");
+	for (i = 0; i < sizeof(trees) / sizeof(trees[0]); i++) {
+		char path[PATH_MAX];
+
+		snprintf(path, sizeof(path), "%s/%s", g_base_dir, trees[i]);
+		/*
+		 * "disks" holds the mountpoints of role-assigned disks, not
+		 * their contents -- removing the directory does not touch the
+		 * filesystems themselves, which is right: a factory reset
+		 * forgets which disks were assigned what, it does not reformat
+		 * hardware behind the operator's back.
+		 */
+		persist_remove_tree(path);
+		fprintf(stderr, "factory reset: removed %s\n", path);
+	}
+	unlink(sentinel);
+	fprintf(stderr, "factory reset: complete -- this boot starts from install defaults\n");
+}
+
+/*
+ * POST /v1/system/factory-reset
+ *
+ * The most destructive endpoint this platform has, so the confirmation
+ * is the instance's own name typed back -- not a boolean. A boolean can
+ * be sent by a client that misunderstood what it was calling; a name
+ * can only be sent by something that looked it up first.
+ */
+static void handle_factory_reset(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	const char *confirm;
+	const char *instance = siteconfig_instance_name();
+	char sentinel[PATH_MAX];
+	int sfd;
+	struct json_writer w;
+
+	root = json_parse(body, body_len);
+	if (root == NULL || root->type != JSON_OBJECT) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	confirm = json_as_string(json_object_get(root, "confirm"));
+	if (instance == NULL || instance[0] == '\0')
+		instance = "thinc";
+	if (confirm == NULL || strcmp(confirm, instance) != 0) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "confirm must be this install's own instance name (GET /v1/system/site) -- "
+		              "this destroys every container, image, volume and all their data, and "
+		              "cannot be undone");
+		return;
+	}
+	json_free(root);
+
+	factory_reset_sentinel_path(sentinel, sizeof(sentinel));
+	sfd = open(sentinel, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+	if (sfd < 0) {
+		respond_error(fd, 500, "Internal Server Error", "could not arm the factory reset");
+		return;
+	}
+	close(sfd);
+	/*
+	 * Logged before the reboot, not after: the log store is one of the
+	 * things about to be wiped, so this line exists to reach whatever
+	 * is forwarding logs off the box, and to be the last thing in the
+	 * local store if nothing is.
+	 */
+	logstore_write("system", "warn",
+	               "FACTORY RESET armed -- rebooting, and all operator state will be wiped on the "
+	               "next boot");
+
+	g_shutdown_action = SHUTDOWN_ACTION_REBOOT;
+	g_stop = 1;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "status");
+	jw_str(&w, "factory reset armed -- rebooting");
+	jw_key(&w, "wipes");
+	jw_arr_open(&w);
+	jw_str(&w, "containers and their storage");
+	jw_str(&w, "images and every version of them");
+	jw_str(&w, "volumes AND ALL DATA IN THEM");
+	jw_str(&w, "networks, routes, DNS, PKI, LDAP, NTP, syslog registrations");
+	jw_str(&w, "package install state, recipes, build cache and artifacts");
+	jw_str(&w, "the consolidated log store");
+	jw_arr_close(&w);
+	jw_key(&w, "keeps");
+	jw_arr_open(&w);
+	jw_str(&w, "the installed OS itself (both root slots, kernel, ESP, install config)");
+	jw_str(&w, "the contents of any role-assigned disk -- roles are forgotten, disks are not reformatted");
+	jw_arr_close(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 202, "Accepted", &w);
+	jw_free(&w);
+}
+
 static void handle_reboot(int fd)
 {
 	struct json_writer w;
@@ -18502,6 +18656,10 @@ static void dispatch(int fd, const struct http_request *req)
 		handle_shutdown(fd);
 		return;
 	}
+	if (strcmp(req->method, "POST") == 0 && strcmp(req->path, "/v1/system/factory-reset") == 0) {
+		handle_factory_reset(fd, req->body, req->body_len);
+		return;
+	}
 	if (strcmp(req->method, "POST") == 0 && strcmp(req->path, "/v1/system/reboot") == 0) {
 		handle_reboot(fd);
 		return;
@@ -21965,6 +22123,19 @@ int main(int argc, char **argv)
 	 */
 	if (ensure_dir(g_base_dir) != 0 || ensure_dir(DISKS_MOUNT_DIR) != 0)
 		return 1;
+	/*
+	 * Issue #63: before the FIRST subsystem reads anything.
+	 *
+	 * Placement is the whole correctness of this. Put later in the
+	 * sequence -- which is where it was first written, and what the
+	 * test caught -- the earlier subsystems have already loaded their
+	 * state into memory, so deleting the files leaves a daemon running
+	 * with the old world still in it, ready to write every bit of it
+	 * back on the next change. The wipe looked like it worked and the
+	 * API still answered with everything that was supposed to be gone.
+	 */
+	factory_reset_apply_if_pending();
+
 	if (boot_subsystem_init(init_mode, "diskrole", diskrole_init(DISKROLE_STATE_PATH)) != 0)
 		return 1;
 	/* ADR-0142: recover any role-assigned disk this box already

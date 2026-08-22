@@ -950,7 +950,7 @@ function parseHash() {
 const CATEGORY_VIEWS = {
 	containers: "view-containers",
 	networks: "view-networks",
-	routes: "view-routes",
+	"routes": "view-daemon-config",
 	devices: "view-devices",
 	kmod: "view-kmod",
 	sysctl: "view-sysctl",
@@ -977,7 +977,7 @@ const CATEGORY_VIEWS = {
 	"host-stats": "view-host-stats",
 	processes: "view-processes",
 	"syslog-targets": "view-syslog-targets",
-	"tls-throttle": "view-tls-throttle",
+	"tls-throttle": "view-daemon-config",
 	logs: "view-logs",
 	kmsg: "view-kmsg",
 	"server-health": "view-server-health",
@@ -985,7 +985,7 @@ const CATEGORY_VIEWS = {
 	/* Repo & Sync and Cache & Artifacts became tabs on the Catalogue
 	 * page. Their old addresses still resolve to it (with the right tab
 	 * showing) rather than 404-ing a bookmark someone already has. */
-	"volume-backup-config": "view-volume-backup-config",
+	"volume-backup-config": "view-daemon-config",
 	/* Images and Packages are Catalogue tabs now, not pages. Their bare
 	 * addresses still resolve to it (with the right tab showing) --
 	 * #images/{name} is unaffected, since DETAIL_VIEWS is consulted
@@ -994,9 +994,10 @@ const CATEGORY_VIEWS = {
 	packages: "view-recipes",
 	"pkg-repo": "view-recipes",
 	"pkg-cache": "view-recipes",
+	"factory-reset": "view-daemon-config",
 	"storage-placement": "view-daemon-config",
-	backup: "view-backup",
-	update: "view-update",
+	"backup": "view-daemon-config",
+	"update": "view-recipes",
 };
 
 const DETAIL_VIEWS = {
@@ -1051,6 +1052,11 @@ const SERVICE_TAB_VIEWS = {
 	"host-swap": "view-daemon-config",
 	"rolling-restart": "view-daemon-config",
 	"storage-placement": "view-daemon-config",
+	routes: "view-daemon-config",
+	"tls-throttle": "view-daemon-config",
+	backup: "view-daemon-config",
+	"volume-backup-config": "view-daemon-config",
+	"factory-reset": "view-daemon-config",
 	"pki-ca": "view-pki-ca",
 	"pki-intermediate": "view-pki-ca",
 	"pki-certs": "view-pki-ca",
@@ -1144,7 +1150,8 @@ function renderCurrentView() {
 			renderPackagesView(route.name);
 		else if (route.category === "recipes" || route.category === "pkg-repo" ||
 		         route.category === "pkg-cache" || route.category === "images" ||
-		         route.category === "packages" || route.category === "pkg-build-config") {
+		         route.category === "packages" || route.category === "pkg-build-config" ||
+		         route.category === "update") {
 			/*
 			 * Only when the route actually CHANGED. renderCurrentView()
 			 * also runs on every poll, so forcing the tab here
@@ -1165,7 +1172,9 @@ function renderCurrentView() {
 						      ? "cat-packages"
 						      : route.category === "pkg-build-config"
 						        ? "pkg-build-config"
-						        : "cat-recipes"
+						        : route.category === "update"
+						          ? "update"
+						          : "cat-recipes"
 				);
 			renderImages(cache.images);
 			renderPackagesView(null);
@@ -1682,19 +1691,20 @@ function renderTree() {
 					 * tabbed destination -- these were nine leaves, most
 					 * of them a single form.
 					 *
-					 * Devices and Routes are NOT here: a physical
-					 * hardware inventory and the kernel routing table are
-					 * things you look at, not settings about the daemon,
-					 * so they sit beside Host rather than inside it.
-					 * Package Builds moved to Software, where build
-					 * configuration belongs.
+					 * Devices is NOT here: a physical hardware
+					 * inventory is something you look at, not something
+					 * you configure. Routes IS here, and the earlier
+					 * reasoning that grouped the two was weaker than it
+					 * sounded -- the routing table is edited from this
+					 * page, which makes it configuration of the box like
+					 * everything else on it. Package Builds moved to
+					 * Software, where build configuration belongs.
 					 */
 					label: "Host",
 					hash: "daemon-config",
 					icon: "system",
 				},
 				{ label: "Devices", hash: "devices", icon: "devices" },
-				{ label: "Routes", hash: "routes", icon: "networks" },
 				{
 					/* Everything about observing/recording what the box is
 					 * doing -- live resource graphs, the process table, and
@@ -1709,17 +1719,6 @@ function renderTree() {
 						{ label: "Log Store", hash: "logs", icon: "system" },
 						{ label: "Kernel Log", hash: "kmsg", icon: "system" },
 						{ label: "Server Health", hash: "server-health", icon: "system" },
-					],
-				},
-				{
-					/* Protecting and evolving the running system over time. */
-					label: "Maintenance",
-					hash: "tls-throttle",
-					icon: "system",
-					children: [
-						{ label: "TLS Throttle", hash: "tls-throttle", icon: "system" },
-						{ label: "Update", hash: "update", icon: "update" },
-						{ label: "Backup", hash: "backup", icon: "backup" },
 					],
 				},
 			],
@@ -8552,6 +8551,32 @@ async function refreshSoftwareReconcile() {
 			? "Everything installed has a recipe."
 			: drift + " item(s) installed with no recipe — either capture one, or they are debris.";
 }
+
+/*
+ * Issue #63. The confirmation is this install's own name typed back --
+ * the daemon requires it regardless, and pre-filling it here would turn
+ * a guard into a formality.
+ */
+document.getElementById("factory-reset-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+	const typed = document.getElementById("fr-confirm").value.trim();
+
+	if (
+		!confirm(
+			"Factory reset " +
+				typed +
+				"?\n\nThis destroys every container, image, network and VOLUME (and all data in " +
+				"them), then reboots. It cannot be undone."
+		)
+	)
+		return;
+	try {
+		await apiRequest("POST", "/v1/system/factory-reset", { confirm: typed });
+		showStatus("Factory reset armed \u2014 the box is rebooting and will come back empty.", false);
+	} catch (e) {
+		showStatus("Factory reset refused: " + e.message, true);
+	}
+});
 
 /* ---- Issue #96: volume content snapshots ---- */
 
