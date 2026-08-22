@@ -200,6 +200,30 @@ void ldap_server_write_json_list(struct json_writer *w)
 
 /* ---- LDAP user/group record store (task #726) ---- */
 
+/* Issue #83: counts used to detect managed-but-undeliverable state (users
+ * and groups exist, but no LDAP server is registered to serve them). */
+int ldap_user_count(void)
+{
+	int i, n = 0;
+
+	for (i = 0; i < LDAP_USER_MAX; i++) {
+		if (g_users[i].name[0] != '\0')
+			n++;
+	}
+	return n;
+}
+
+int ldap_group_count(void)
+{
+	int i, n = 0;
+
+	for (i = 0; i < LDAP_GROUP_MAX; i++) {
+		if (g_groups[i].name[0] != '\0')
+			n++;
+	}
+	return n;
+}
+
 int ldap_username_is_valid(const char *name)
 {
 	size_t i, len;

@@ -1496,6 +1496,7 @@
 			<div class="view-list">
 				<h2>Server Health</h2>
 				<p class="hint">Every registered backend server &mdash; LDAP, DNS, NTP and syslog &mdash; probed on an interval. A server that is drained or has failed its probes is dropped from the configuration handed to clients, so a registered-but-not-serving server can no longer break logins silently. <strong>Drain</strong> takes one out of service deliberately (maintenance); it persists across a daemon restart, while health itself is re-established by the next probe. The <em>Probe</em> column says how the verdict was reached: a <code>tcp:PORT</code> check is a real service check, <code>process</code> only means the container is running.</p>
+				<div id="server-health-warnings" hidden></div>
 				<table>
 					<thead>
 						<tr><th>Kind</th><th>Container</th><th>State</th><th>In service</th><th>Probe</th><th>Failures</th><th>Last error</th><th></th></tr>

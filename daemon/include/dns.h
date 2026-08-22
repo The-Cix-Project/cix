@@ -143,4 +143,9 @@ void dns_server_write_json_list(struct json_writer *w);
 /* Issue #81: uniform enumerator for the shared server-health prober. */
 int dns_server_list_containers(char out[][DNS_SERVER_NAME_MAX], int max);
 
+/* Issue #83: number of records currently managed -- used to detect the
+ * silent state where records exist with no registered server to receive
+ * them. */
+int dns_record_count(void);
+
 #endif /* DNS_H */

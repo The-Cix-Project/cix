@@ -470,4 +470,9 @@ void ldap_record_sync_all(void);
  */
 void ldap_ensure_service_bind_account(void);
 
+/* Issue #83: managed-record counts, for detecting users/groups that have
+ * no registered server to be served by. */
+int ldap_user_count(void);
+int ldap_group_count(void);
+
 #endif /* LDAP_SERVER_H */
