@@ -153,20 +153,11 @@ body {
 	flex-direction: column;
 }
 
-/* Vertical padding lives on the children rather than here, and there
- * is no left padding at all, so the logo cell can be exactly as wide
- * and exactly as tall as the header: its right border then continues
- * straight into the tree panel's own right border as one unbroken
- * line, and the menu bar's first topic sits directly above the content
- * pane. align-items: stretch is what lets that cell reach the bottom
- * border -- centered, it would float in the middle and the line would
- * break. */
 header {
 	display: flex;
-	align-items: stretch;
+	align-items: center;
 	justify-content: space-between;
-	padding: 0 1.5rem 0 0;
-	min-height: 3.9rem;
+	padding: 1rem 1.5rem;
 	border-bottom: 1px solid var(--border);
 	flex: 0 0 auto;
 }
@@ -218,38 +209,15 @@ header {
 	filter: none;
 }
 
-/* Sized to the tree column, from the same variable the grid uses --
- * including mid-drag, since makeResizable() sets that variable rather
- * than the grid directly. No divider between this cell and the topics:
- * the bar reads better as one continuous strip, and the alignment does
- * its own work without a line drawn through it. */
-.menu-dropdown-logo {
-	flex: 0 0 var(--tree-width, 240px);
-	align-self: stretch;
-}
-
+/* The mark is just another item in the same row -- same padding, same
+ * gap, no group of its own. It was briefly stretched to the tree
+ * column's width so the header and the tree read as one grid; that was
+ * a large empty block with the menu pushed far off to the right, and
+ * the wrapper that replaced it still left a visible seam. */
 .menu-dropdown-toggle-logo {
 	display: flex;
 	align-items: center;
-	justify-content: flex-start;
-	width: 100%;
-	height: 100%;
-	border-radius: 0;
-	padding: 0 1rem;
-}
-
-/* This inset, plus .menu-bar's own 0.15rem gap and the toggle's own
- * 0.7rem of padding, puts the first topic's text exactly 1.5rem past
- * the column boundary -- the same inset #content-scroll gives the page
- * directly below it. Measured, not estimated: 0.65 + 0.15 + 0.7. */
-.menu-bar-topics {
-	display: flex;
-	align-items: center;
-	gap: 0.15rem;
-	flex: 1 1 auto;
-	min-width: 0;
-	flex-wrap: wrap;
-	padding-left: 0.65rem;
+	padding: 0.4rem 0.7rem;
 }
 
 
@@ -360,30 +328,115 @@ header {
 	border-top: 1px solid var(--border);
 }
 
-/* ---------- daemon-reachable indicator ---------- */
+/* ---------- status bar: uptime/load, and the TX/RX LEDs ----------
+ *
+ * Two indicators, not one, because they answer different questions:
+ * the COLOR is whether the daemon is reachable (green/amber/red/grey,
+ * the same states the old single dot had), and a BLINK is real traffic
+ * -- TX when this page sends a request, RX when a response comes back.
+ * A panel LED that only ever sits still tells you nothing you could
+ * not read from a label; one that flickers with real work tells you
+ * the link is alive at a glance.
+ *
+ * The glow is a box-shadow in the LED's own color, which is what makes
+ * it read as a lamp standing proud of the surface rather than a
+ * printed dot. Both the resting and the blink state carry it, at
+ * different radii, so a blink reads as the lamp brightening rather
+ * than as a different lamp.
+ */
+.status-meta {
+	font-size: 0.72rem;
+	color: var(--muted);
+	font-variant-numeric: tabular-nums;
+	margin-right: auto;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
 
-.health-dot {
-	display: inline-block;
-	width: 0.65rem;
-	height: 0.65rem;
+.status-leds {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+}
+
+.led-pair {
+	display: flex;
+	align-items: center;
+	gap: 0.3rem;
+}
+
+.led-label {
+	font-size: 0.6rem;
+	letter-spacing: 0.06em;
+	color: var(--muted);
+}
+
+.led {
+	width: 0.6rem;
+	height: 0.6rem;
 	border-radius: 50%;
-	flex: 0 0 auto;
+	background: var(--led-color, var(--muted));
+	box-shadow: 0 0 5px 1px var(--led-glow, transparent);
+	transition: box-shadow 90ms linear, filter 90ms linear;
 }
 
-.health-dot-ok {
-	background: var(--ok);
+/* Idle is the same lamp at rest -- dimmed, not a different color, so a
+ * blink brightens rather than switching identity. */
+.led {
+	filter: brightness(0.8);
 }
 
-.health-dot-error {
-	background: var(--error);
+.led-blink {
+	filter: brightness(1.5);
+	box-shadow: 0 0 9px 2px var(--led-glow, transparent);
 }
 
-.health-dot-degraded {
-	background: var(--paused);
+.status-leds.led-state-ok {
+	--led-color: var(--ok);
+	--led-glow: var(--ok);
 }
 
-.health-dot-unknown {
-	background: var(--muted);
+.status-leds.led-state-degraded {
+	--led-color: var(--paused);
+	--led-glow: var(--paused);
+}
+
+.status-leds.led-state-error {
+	--led-color: var(--error);
+	--led-glow: var(--error);
+}
+
+.status-leds.led-state-unknown {
+	--led-color: var(--muted);
+	--led-glow: transparent;
+}
+
+/* Anything other than healthy pulses on its own, so a degraded or
+ * unreachable daemon is visible from across a room without reading
+ * anything -- and pulsing is reserved for exactly that, never for the
+ * normal case, or it stops meaning anything. */
+.status-leds.led-state-degraded .led,
+.status-leds.led-state-error .led {
+	animation: led-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes led-pulse {
+	0%, 100% {
+		filter: brightness(0.5);
+		box-shadow: 0 0 4px 0 var(--led-glow, transparent);
+	}
+	50% {
+		filter: brightness(1.4);
+		box-shadow: 0 0 10px 3px var(--led-glow, transparent);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.status-leds .led {
+		animation: none;
+		transition: none;
+	}
 }
 
 /* ---------- about panel ---------- */
@@ -536,18 +589,7 @@ header {
 		flex-basis: 100%;
 		order: 2;
 	}
-	/* The tree is a full-width band at this size, not a column, so
-	 * there is no column edge left to align the logo cell to. */
-	.menu-dropdown-logo {
-		flex: 0 0 auto;
-	}
-	.menu-bar-topics {
-		padding-left: 0;
-	}
-	header {
-		padding: 0.5rem 1rem;
-		align-items: center;
-	}
+
 }
 
 .tree-panel {
@@ -1120,6 +1162,26 @@ button:hover {
 .button-small {
 	padding: 0.3rem 0.7rem;
 	font-size: 0.8rem;
+}
+
+/* An icon, not a button: no fill, no border, and the icon itself takes
+ * the page's own text color -- so it is dark on the light theme and
+ * white on the dark one without either being hard-coded. The default
+ * button styling (solid accent blue) made a control that only cycles a
+ * display preference the loudest thing in the header. */
+#theme-toggle {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: none;
+	color: var(--text);
+	padding: 0.35rem;
+	border-radius: 6px;
+}
+
+#theme-toggle:hover {
+	background: var(--tree-active-bg);
+	filter: none;
 }
 
 table {

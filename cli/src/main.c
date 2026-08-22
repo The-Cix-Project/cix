@@ -3993,6 +3993,14 @@ static void fmt_host_stats(const struct json_value *v)
 	const struct json_value *nets = json_object_get(v, "networks");
 	size_t i;
 
+	{
+		const struct json_value *up = json_object_get(v, "uptime");
+
+		printf("uptime.host=%lld uptime.daemon=%lld\n",
+		       (long long)json_as_number(json_object_get(up, "host_seconds")),
+		       (long long)json_as_number(json_object_get(up, "daemon_seconds")));
+	}
+
 	printf("load1=%.2f load5=%.2f load15=%.2f\n",
 	       json_as_number(json_object_get(load, "load1")),
 	       json_as_number(json_object_get(load, "load5")),

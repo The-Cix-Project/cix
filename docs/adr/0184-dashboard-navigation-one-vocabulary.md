@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted; one decision in it (menus are one level with headings) superseded by [ADR-0185](0185-menu-submenus-and-tabs-as-addresses.md), which makes the branch names real hover submenus. The vocabulary rule and everything else here stands.
+Accepted, with two decisions in it superseded: menus are one level with headings, by [ADR-0185](0185-menu-submenus-and-tabs-as-addresses.md) (the branch names became real hover submenus), and the header's pixel alignment to the tree column, by [ADR-0186](0186-header-chrome-menu-bar-is-not-a-grid-column.md). The vocabulary rule this ADR exists for stands.
 
 ## Context
 

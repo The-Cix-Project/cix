@@ -572,6 +572,7 @@ The host-wide counterpart to container stats below (ADR-0073) — mirrors its ow
 
 ```json
 {
+  "uptime": {"host_seconds": 157590, "daemon_seconds": 412},
   "load": {"load1": 0.42, "load5": 0.61, "load15": 0.55},
   "cpu": {"user_jiffies": 12345, "nice_jiffies": 0, "system_jiffies": 4321, "idle_jiffies": 987654, "iowait_jiffies": 12, "irq_jiffies": 0, "softirq_jiffies": 5, "steal_jiffies": 0, "pressure": {"some": {"avg10": 3.03, "avg60": 2.8, "avg300": 2.36, "total_usec": 5812475431}, "full": {"avg10": 1.06, "avg60": 0.63, "avg300": 0.44, "total_usec": 1272027550}}},
   "memory": {"total_bytes": 17179869184, "free_bytes": 10066632704, "available_bytes": 15828671488, "buffers_bytes": 0, "cached_bytes": 5375279104, "swap_total_bytes": 4294967296, "swap_free_bytes": 4294967296, "pressure": {"some": {"avg10": 0, "avg60": 0, "avg300": 0, "total_usec": 17464583}, "full": {"avg10": 0, "avg60": 0, "avg300": 0, "total_usec": 15910263}}},
@@ -580,6 +581,7 @@ The host-wide counterpart to container stats below (ADR-0073) — mirrors its ow
 }
 ```
 
+- `uptime.host_seconds` is `/proc/uptime`; `uptime.daemon_seconds` counts from this daemon process's own start. The two are separate on purpose — they diverge after a control-plane restart that was **not** a reboot (an update confirm, a crash and respawn), and "the box has been up for days but `thincd` restarted four minutes ago" is exactly the thing worth being able to see. The dashboard's status bar shows both.
 - `load` is `/proc/loadavg`'s own 1/5/15-minute averages; `cpu` is `/proc/stat`'s own first `cpu` line (jiffies, cumulative since boot); `memory` is `/proc/meminfo` (bytes, converted from the source file's kB); `disk` is `statvfs()` on the daemon's own data directory (not necessarily the whole root filesystem, if `--data-dir=` points elsewhere).
 - `memory.available_bytes` is the kernel's own best estimate of reclaimable-and-usable memory — the number that actually answers "is the box under real memory pressure," unlike a hypervisor's own guest-level "used" figure which typically conflates page cache with genuinely unavailable memory.
 - `cpu.pressure`/`memory.pressure`/`disk.pressure` (ADR-0074) are the host-wide cgroup v2 PSI numbers (`cpu.pressure`/`memory.pressure`/`io.pressure`, read from the cgroup v2 root) — `avg10`/`avg60`/`avg300` are percentages of the last N seconds some/all tasks on the box were stalled waiting on that resource, `total_usec` is cumulative stalled time. This answers "is anything actually being held up," a genuinely different question from the raw usage counters above it — a box can show low CPU usage and still have real, measurable stall if something's contending hard for a moment. Zeroed on a kernel without PSI support, not an error.

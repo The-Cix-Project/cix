@@ -9341,8 +9341,25 @@ components:
           type: integer
     SystemStats:
       type: object
-      required: [load, cpu, memory, disk, networks]
+      required: [uptime, load, cpu, memory, disk, networks]
       properties:
+        uptime:
+          type: object
+          required: [host_seconds, daemon_seconds]
+          description: >
+            Seconds since boot, and seconds since this daemon process
+            itself started. Separate on purpose: they diverge after a
+            control-plane restart that was not a reboot (an update
+            confirm, a crash and respawn), and "the box has been up for
+            days but thincd restarted four minutes ago" is exactly the
+            thing worth being able to see. Best-effort like everything
+            else here -- an unreadable /proc/uptime reports 0 rather
+            than failing the request.
+          properties:
+            host_seconds:
+              type: integer
+            daemon_seconds:
+              type: integer
         load:
           type: object
           required: [load1, load5, load15]

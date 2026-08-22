@@ -66,7 +66,10 @@ const cache = {
 	kmodConfig: [],
 };
 
-const healthBadge = document.getElementById("health");
+const statusLeds = document.getElementById("status-leds");
+const ledTx = document.getElementById("led-tx");
+const ledRx = document.getElementById("led-rx");
+const statusMeta = document.getElementById("status-meta");
 const statusBox = document.getElementById("status");
 const treeEl = document.getElementById("tree");
 const logOutput = document.getElementById("log-output");
@@ -221,10 +224,9 @@ makeResizable(document.getElementById("tree-resize-handle"), {
 	max: 480,
 	getSize: () => document.querySelector(".tree-panel").getBoundingClientRect().width,
 	/* Publishes the width as a custom property rather than setting
-	 * .layout's grid-template-columns directly: the header's logo cell
-	 * is sized from the same variable, so the menu bar's first topic
-	 * button stays exactly above the content pane's left edge at any
-	 * tree width, including mid-drag. */
+	 * .layout's grid-template-columns directly -- one named place for
+	 * "how wide is the tree", which anything else that needs to line up
+	 * with that column can read. */
 	apply: (size) => {
 		document.documentElement.style.setProperty("--tree-width", size + "px");
 	},
@@ -854,7 +856,27 @@ function clearStatus() {
 	}
 }
 
+/*
+ * The status bar's two LEDs: color is daemon reachability
+ * (refreshHealth() below owns that), a blink is real traffic -- TX on
+ * every request this page sends, RX on every response that comes back.
+ *
+ * Restarted rather than extended when a blink is already running: back
+ * -to-back requests (the poll loop sends a couple of dozen) would
+ * otherwise hold the lamp permanently lit, which is exactly as
+ * informative as no lamp at all. Clearing the class, forcing a reflow
+ * and re-adding it is what makes each one a distinct flash.
+ */
+function ledBlink(led) {
+	led.classList.remove("led-blink");
+	void led.offsetWidth;
+	led.classList.add("led-blink");
+	clearTimeout(led.blinkTimer);
+	led.blinkTimer = setTimeout(() => led.classList.remove("led-blink"), 130);
+}
+
 async function apiRequest(method, path, body) {
+	ledBlink(ledTx);
 	const opts = { method: method, headers: {} };
 	if (authToken)
 		opts.headers["Authorization"] = "Bearer " + authToken;
@@ -863,6 +885,8 @@ async function apiRequest(method, path, body) {
 		opts.body = JSON.stringify(body);
 	}
 	const res = await fetch(path, opts);
+
+	ledBlink(ledRx);
 	let json = null;
 	if (res.status !== 204) {
 		try {
@@ -947,17 +971,63 @@ async function refreshHealth() {
 		const ms = Math.round(performance.now() - start);
 
 		consecutiveHealthFailures = 0;
-		healthBadge.className = "health-dot health-dot-ok";
-		healthBadge.title = "Daemon reachable — " + ms + "ms";
+		statusLeds.className = "status-leds led-state-ok";
+		statusLeds.title = "Daemon reachable — " + ms + "ms";
 	} catch (e) {
 		consecutiveHealthFailures++;
 		if (consecutiveHealthFailures >= 2) {
-			healthBadge.className = "health-dot health-dot-error";
-			healthBadge.title = "Daemon unreachable (" + consecutiveHealthFailures + " consecutive failed checks)";
+			statusLeds.className = "status-leds led-state-error";
+			statusLeds.title = "Daemon unreachable (" + consecutiveHealthFailures + " consecutive failed checks)";
 		} else {
-			healthBadge.className = "health-dot health-dot-degraded";
-			healthBadge.title = "Daemon check failed once — retrying";
+			statusLeds.className = "status-leds led-state-degraded";
+			statusLeds.title = "Daemon check failed once — retrying";
 		}
+	}
+}
+
+/* "3d 4h" / "2h 17m" / "45s" -- two units at most, largest first,
+ * which is as much precision as an uptime reading is ever read for. */
+function formatUptime(seconds) {
+	const d = Math.floor(seconds / 86400);
+	const h = Math.floor((seconds % 86400) / 3600);
+	const m = Math.floor((seconds % 3600) / 60);
+
+	if (d > 0)
+		return d + "d " + h + "h";
+	if (h > 0)
+		return h + "h " + m + "m";
+	if (m > 0)
+		return m + "m " + (seconds % 60) + "s";
+	return seconds + "s";
+}
+
+/*
+ * Host uptime, this daemon's own uptime, and load average, along the
+ * left of the status bar. The two uptimes are separate on purpose:
+ * they diverge after a control-plane restart that was not a reboot,
+ * and "the box has been up for days but thincd restarted four minutes
+ * ago" is exactly the thing worth noticing.
+ *
+ * Its own slow interval rather than the 2s poll -- nothing here moves
+ * fast enough to be worth a request every two seconds, and the poll
+ * loop is already the busiest thing this page does.
+ */
+async function refreshStatusMeta() {
+	try {
+		const s = await apiRequest("GET", "/v1/system/stats");
+		const up = s.uptime || {};
+		const load = s.load || {};
+
+		statusMeta.textContent =
+			"up " + formatUptime(up.host_seconds || 0) +
+			"  ·  thincd " + formatUptime(up.daemon_seconds || 0) +
+			"  ·  load " + (load.load1 || 0).toFixed(2) +
+			" " + (load.load5 || 0).toFixed(2) +
+			" " + (load.load15 || 0).toFixed(2);
+	} catch (e) {
+		/* Unreachable is already said by the LEDs going red -- saying it
+		 * twice in two places adds nothing, so the last known values
+		 * simply stand. */
 	}
 }
 
@@ -9783,3 +9853,8 @@ document.addEventListener("scroll", hideContextMenu, true);
 restoreLastViewIfNoHash();
 poll().then(ensureActiveCategoryExpanded);
 setInterval(poll, POLL_INTERVAL_MS);
+
+/* Uptime and load move slowly; 10s is plenty and keeps them out of the
+ * 2s poll, which already makes two dozen requests per round. */
+refreshStatusMeta();
+setInterval(refreshStatusMeta, 10000);
