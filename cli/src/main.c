@@ -67,6 +67,7 @@ static void print_usage(FILE *out)
 	        "      [--pki-days=N] [--ldap-provision] [--ldap-user=NAME] [--ldap-group=NAME]\n"
 	        "      [--ldap-uid=N] [--ldap-secret-dir=PATH]\n"
 	        "      [--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--optional-device=ID ...]\n"
+	        "      [--volume=NAME:/path[:ro] ...]\n"
 	        "      [--interface=IFNAME ...] [--cap-add=CAP_NAME ...] [--restart=always|on-failure|unless-stopped]\n"
 	        "      [--restart-delay=N] [--follow-rolling] [--follow-rolling-jitter-seconds=N]\n"
 	        "      [--depends-on=NAME ...] [--dns-server=A.B.C.D ...]\n"
@@ -3972,6 +3973,115 @@ static int cmd_server_health(const struct kx_client *c, int json_mode, int argc,
 	return 2;
 }
 
+/*
+ * Issue #88: persistent volumes -- storage whose lifetime is independent
+ * of any container using it.
+ */
+static void fmt_volumes(const struct json_value *v)
+{
+	const struct json_value *vols = json_object_get(v, "volumes");
+	size_t i;
+
+	if (vols == NULL || vols->type != JSON_ARRAY || vols->u.array.count == 0) {
+		printf("no volumes\n");
+		return;
+	}
+	for (i = 0; i < vols->u.array.count; i++) {
+		const struct json_value *e = vols->u.array.items[i];
+		const char *name = json_as_string(json_object_get(e, "name"));
+		const char *disk = json_as_string(json_object_get(e, "disk"));
+		const char *path = json_as_string(json_object_get(e, "host_path"));
+
+		printf("%-20s disk=%-12s path=%s\n", name != NULL ? name : "?",
+		       disk != NULL ? disk : "(default)", path != NULL ? path : "?");
+	}
+}
+
+static void fmt_volume_one(const struct json_value *v)
+{
+	const char *name = json_as_string(json_object_get(v, "name"));
+	const char *disk = json_as_string(json_object_get(v, "disk"));
+	const char *path = json_as_string(json_object_get(v, "host_path"));
+
+	printf("%-20s disk=%-12s path=%s\n", name != NULL ? name : "?",
+	       disk != NULL ? disk : "(default)", path != NULL ? path : "?");
+}
+
+static int cmd_volume(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	const char *sub = argc > 0 ? argv[0] : "ls";
+
+	if (strcmp(sub, "ls") == 0) {
+		if (kx_client_request(c, "GET", "/v1/volumes", NULL, &r) != 0) {
+			fprintf(stderr, "thincctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_volumes);
+	}
+	if (strcmp(sub, "create") == 0) {
+		struct json_writer w;
+		const char *name = NULL, *disk = NULL;
+		int i, rc;
+
+		for (i = 1; i < argc; i++) {
+			if (strncmp(argv[i], "--name=", 7) == 0)
+				name = argv[i] + 7;
+			else if (strncmp(argv[i], "--disk=", 7) == 0)
+				disk = argv[i] + 7;
+		}
+		if (name == NULL) {
+			fprintf(stderr, "usage: thincctl volume create --name=NAME [--disk=DISK]\n");
+			return 2;
+		}
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "name");
+		jw_str(&w, name);
+		if (disk != NULL) {
+			jw_key(&w, "disk");
+			jw_str(&w, disk);
+		}
+		jw_obj_close(&w);
+		w.buf[w.len] = '\0';
+		rc = kx_client_request(c, "POST", "/v1/volumes", w.buf, &r);
+		jw_free(&w);
+		if (rc != 0) {
+			fprintf(stderr, "thincctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_volume_one);
+	}
+	if (strcmp(sub, "show") == 0 && argc == 2) {
+		char path[128];
+
+		snprintf(path, sizeof(path), "/v1/volumes/%s", argv[1]);
+		if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+			fprintf(stderr, "thincctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_volume_one);
+	}
+	if (strcmp(sub, "rm") == 0 && argc == 2) {
+		char path[128];
+
+		snprintf(path, sizeof(path), "/v1/volumes/%s", argv[1]);
+		if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+			fprintf(stderr, "thincctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, NULL);
+	}
+	fprintf(stderr, "usage: thincctl volume ls\n"
+	                "       thincctl volume create --name=NAME [--disk=DISK]\n"
+	                "       thincctl volume show NAME\n"
+	                "       thincctl volume rm NAME\n"
+	                "  A volume outlives the containers using it: deleting a container never\n"
+	                "  removes its volumes, and `volume rm` refuses while any container\n"
+	                "  definition still references one.\n");
+	return 2;
+}
+
 static int cmd_host_stats(const struct kx_client *c, int json_mode)
 {
 	struct kx_response r;
@@ -4252,6 +4362,59 @@ static int cmd_console(const struct kx_client *c, int argc, char **argv)
 #define CLI_MAX_ROUTES 8
 /* Matches daemon's CONTAINER_MAX_DEVICES -- see include/container.h. */
 #define CLI_MAX_DEVICES 16
+/* Issue #88: matches CONTAINER_MAX_VOLUMES in include/container.h. */
+#define CLI_MAX_VOLUMES 8
+
+/*
+ * One --volume=NAME:/path[:ro] flag, parsed. Two colon-separated
+ * fields plus an optional trailing ":ro" -- deliberately the shape
+ * people already know from other runtimes, so nobody has to learn a
+ * thinC-specific spelling for the most ordinary thing you can ask of a
+ * volume.
+ */
+struct cli_volume_mount {
+	char name[64];
+	char path[256];
+	int read_only;
+};
+
+static int parse_volume_flag(const char *arg, struct cli_volume_mount *out)
+{
+	const char *colon = strchr(arg, ':');
+	const char *path;
+	const char *ro;
+	size_t name_len;
+	size_t path_len;
+
+	if (colon == NULL)
+		return -1;
+	name_len = (size_t)(colon - arg);
+	if (name_len == 0 || name_len >= sizeof(out->name))
+		return -1;
+	memcpy(out->name, arg, name_len);
+	out->name[name_len] = '\0';
+
+	path = colon + 1;
+	if (path[0] != '/')
+		return -1;
+	out->read_only = 0;
+	ro = strrchr(path, ':');
+	if (ro != NULL) {
+		if (strcmp(ro, ":ro") == 0)
+			out->read_only = 1;
+		else if (strcmp(ro, ":rw") != 0)
+			return -1;
+		path_len = (size_t)(ro - path);
+	} else {
+		path_len = strlen(path);
+	}
+	if (path_len == 0 || path_len >= sizeof(out->path))
+		return -1;
+	memcpy(out->path, path, path_len);
+	out->path[path_len] = '\0';
+
+	return 0;
+}
 /* Matches daemon's CONTAINER_MAX_INTERFACES -- see include/container.h. */
 #define CLI_MAX_INTERFACES 16
 #define CLI_MAX_CAP_ADD 8
@@ -5906,6 +6069,9 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	 * code above/below needed zero changes at all. */
 	const char *optional_devices[CLI_MAX_DEVICES];
 	int optional_device_count = 0;
+	/* Issue #88: persistent volumes to bind-mount into this container. */
+	struct cli_volume_mount volumes[CLI_MAX_VOLUMES];
+	int volume_count = 0;
 	const char *interfaces[CLI_MAX_INTERFACES];
 	int interface_count = 0;
 	const char *cap_add[CLI_MAX_CAP_ADD];
@@ -6004,6 +6170,20 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 				return 2;
 			}
 			optional_devices[optional_device_count++] = argv[i] + 18;
+		} else if (strncmp(argv[i], "--volume=", 9) == 0) {
+			if (volume_count >= CLI_MAX_VOLUMES) {
+				fprintf(stderr, "thincctl: too many --volume= flags (max %d)\n",
+				        CLI_MAX_VOLUMES);
+				return 2;
+			}
+			if (parse_volume_flag(argv[i] + 9, &volumes[volume_count]) != 0) {
+				fprintf(stderr,
+				        "thincctl: invalid --volume= value '%s' "
+				        "(expected NAME:/path or NAME:/path:ro)\n",
+				        argv[i] + 9);
+				return 2;
+			}
+			volume_count++;
 		} else if (strncmp(argv[i], "--interface=", 12) == 0) {
 			if (interface_count >= CLI_MAX_INTERFACES) {
 				fprintf(stderr, "thincctl: too many --interface= flags (max %d)\n",
@@ -6154,6 +6334,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		        "[--ldap-provision] [--ldap-user=NAME] [--ldap-group=NAME] "
 		        "[--ldap-uid=N] [--ldap-secret-dir=PATH] "
 		        "[--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--optional-device=ID ...] "
+	        "[--volume=NAME:/path[:ro] ...] "
 		        "[--interface=IFNAME ...] "
 		        "[--restart=always|on-failure|unless-stopped] [--restart-delay=N] "
 		        "[--follow-rolling] [--follow-rolling-jitter-seconds=N] "
@@ -6326,6 +6507,23 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 			jw_str(&w, optional_devices[i]);
 			jw_key(&w, "optional");
 			jw_bool(&w, 1);
+			jw_obj_close(&w);
+		}
+		jw_arr_close(&w);
+	}
+	if (volume_count > 0) {
+		jw_key(&w, "volumes");
+		jw_arr_open(&w);
+		for (i = 0; i < volume_count; i++) {
+			jw_obj_open(&w);
+			jw_key(&w, "name");
+			jw_str(&w, volumes[i].name);
+			jw_key(&w, "path");
+			jw_str(&w, volumes[i].path);
+			if (volumes[i].read_only) {
+				jw_key(&w, "read_only");
+				jw_bool(&w, 1);
+			}
 			jw_obj_close(&w);
 		}
 		jw_arr_close(&w);
@@ -10625,6 +10823,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_host_stats(client, json_mode);
 	if (strcmp(cmd, "server-health") == 0)
 		return cmd_server_health(client, json_mode, argc, argv);
+	if (strcmp(cmd, "volume") == 0)
+		return cmd_volume(client, json_mode, argc, argv);
 	if (strcmp(cmd, "kmsg") == 0)
 		return cmd_kmsg(client, json_mode, argc, argv);
 	if (strcmp(cmd, "process") == 0)

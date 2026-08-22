@@ -982,6 +982,7 @@ const CATEGORY_VIEWS = {
 	logs: "view-logs",
 	kmsg: "view-kmsg",
 	"server-health": "view-server-health",
+	volumes: "view-volumes",
 	backup: "view-backup",
 	update: "view-update",
 };
@@ -1046,6 +1047,8 @@ function renderCurrentView() {
 			refreshKmsg();
 		else if (route.category === "server-health")
 			refreshServerHealth();
+		else if (route.category === "volumes")
+			refreshVolumes();
 		else if (route.category === "images" && route.name !== null)
 			renderImageDetail(route.name);
 		else if (route.category === "devices")
@@ -1488,6 +1491,7 @@ function renderTree() {
 						{ label: "Site", hash: "site", icon: "dns" },
 						{ label: "Devices", hash: "devices", icon: "devices" },
 						{ label: "Disks", hash: "disks", icon: "disks" },
+						{ label: "Volumes", hash: "volumes", icon: "disks" },
 						{ label: "Routes", hash: "routes", icon: "networks" },
 						{ label: "Host Swap", hash: "host-swap", icon: "system" },
 						{ label: "Rolling Restart", hash: "rolling-restart", icon: "system" },
@@ -7564,6 +7568,84 @@ async function refreshKmsg() {
  * Issue #81: registered-server health. One table for all four kinds
  * (ldap/dns/ntp/syslog) because it is one mechanism, not four.
  */
+/*
+ * Issue #88: persistent volumes. The delete button is marked danger and
+ * confirmed, because deleting a volume destroys real data that outlived
+ * every container that ever used it -- the one genuinely irreversible
+ * operation on this page.
+ */
+async function refreshVolumes() {
+	const body = document.getElementById("volumes-body");
+
+	body.textContent = "";
+	let vols = [];
+	try {
+		const data = await apiRequest("GET", "/v1/volumes");
+		vols = data.volumes || [];
+	} catch (e) {
+		showStatus("Failed to read volumes: " + e.message, true);
+		return;
+	}
+	if (vols.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 5;
+		cell.className = "empty";
+		cell.textContent = "No volumes";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+	for (const v of vols) {
+		const row = document.createElement("tr");
+		const created = v.created_at ? new Date(v.created_at * 1000).toLocaleString() : "-";
+
+		for (const text of [v.name, v.disk || "(default)", v.host_path || "-", created]) {
+			const td = document.createElement("td");
+			td.textContent = text;
+			row.appendChild(td);
+		}
+		const actions = document.createElement("td");
+		const del = document.createElement("button");
+
+		del.type = "button";
+		del.className = "danger";
+		del.textContent = "Delete";
+		del.addEventListener("click", async () => {
+			if (!confirm("Delete volume \"" + v.name + "\"? This permanently destroys its data."))
+				return;
+			try {
+				await apiRequest("DELETE", "/v1/volumes/" + encodeURIComponent(v.name));
+				clearStatus();
+				await refreshVolumes();
+			} catch (e) {
+				showStatus("Failed to delete volume: " + e.message, true);
+			}
+		});
+		actions.appendChild(del);
+		row.appendChild(actions);
+		body.appendChild(row);
+	}
+}
+
+document.getElementById("volume-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+	const body = { name: document.getElementById("vf-name").value.trim() };
+	const disk = document.getElementById("vf-disk").value.trim();
+
+	if (disk !== "")
+		body.disk = disk;
+	try {
+		await apiRequest("POST", "/v1/volumes", body);
+		clearStatus();
+		document.getElementById("volume-form").reset();
+		await refreshVolumes();
+	} catch (e) {
+		showStatus("Failed to create volume: " + e.message, true);
+	}
+});
+
 async function refreshServerHealth() {
 	const body = document.getElementById("server-health-body");
 

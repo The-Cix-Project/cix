@@ -255,11 +255,33 @@ struct container_sysctl {
  * CONTAINER_SYSCTL_KEY_MAX already takes for its own longest real case. */
 #define CONTAINER_CAP_NAME_MAX 32
 
+/*
+ * Issue #88: one persistent volume mounted into a container. host_path
+ * is a real directory that OUTLIVES this container -- deleting the
+ * container never touches it -- bind-mounted at mount_path inside the
+ * container's own rootfs before pivot_root.
+ */
+#define CONTAINER_MAX_VOLUMES 8
+
+struct container_volume {
+	char host_path[4096];
+	char mount_path[256];
+	int read_only;
+};
+
 struct container_spec {
 	struct ns_config ns;
 	struct cgroup_limits cg;
 	struct overlay_spec ov;
 	struct mount_spec mnt;
+	/*
+	 * Issue #88: persistent storage bind-mounted in before pivot_root.
+	 * Deliberately part of the spec rather than something layered on
+	 * afterwards -- the mounts must exist inside the container's own
+	 * mount namespace, which only exists between clone3() and pivot.
+	 */
+	struct container_volume volumes[CONTAINER_MAX_VOLUMES];
+	int volume_count;
 	/*
 	 * ADR-0179 (issue #29): user-namespace mapping. userns_enabled
 	 * requests CLONE_NEWUSER with the container's own 0..userns_len-1

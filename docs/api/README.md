@@ -126,6 +126,10 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/system/rebuildable-storage` | Which disk (if any) is the active placement for images/packages/artifacts |
 | GET | `/system/rebuildable-storage/migrate` | Status of the most recent (or running) rebuildable-storage migration |
 | POST | `/system/rebuildable-storage/migrate` | Move images/packages/artifacts to a new disk, or back to the default |
+| GET | `/volumes` | List every persistent volume (issue #88, ADR-0183) |
+| POST | `/volumes` | Create a volume -- named storage whose lifetime is independent of any container |
+| GET | `/volumes/{name}` | Inspect one volume |
+| DELETE | `/volumes/{name}` | Delete a volume **and all of its data** -- refused (409) while any container definition references it |
 | GET | `/networks` | List all networks this daemon knows about |
 | POST | `/networks` | Create a network (a real bridge, persisted across restarts) |
 | GET | `/networks/{name}` | Inspect one network |
@@ -1370,6 +1374,33 @@ POST /v1/containers
 - All three survive exactly like everything else in `restart: "always"`'s own replay mechanism — no separate persistence work needed. See ADR-0030.
 - `cmd` itself is echoed back on every `GET /containers`/`GET /containers/{name}` response (`ADR-0100`) — previously there was no way to ask a running or stopped container "what is your entrypoint," since the create request's own `argv` only ever pointed into that request's transient parsed body. `env` is echoed back the same way.
 
+## Persistent volumes (issue #88, ADR-0183)
+
+Everything a container writes at runtime lives in its overlay upper layer, and `DELETE` removes that layer outright ([ADR-0106](../adr/0106-container-delete-disk-cleanup.md)). A **volume** is the one exception: a named directory whose lifetime is independent of any container using it.
+
+```
+POST /v1/volumes
+{"name": "jump-home"}
+
+POST /v1/containers
+{
+  "name": "jump",
+  "image": "jumpbox",
+  "cmd": ["/usr/bin/bash", "/usr/local/bin/jumpbox-start.sh"],
+  "volumes": [{"name": "jump-home", "path": "/home"}]
+}
+```
+
+That `/home` now survives the container being deleted and recreated — which for a container with `follow_rolling: true` happens on every image rebuild, without anyone asking for it. This is exactly the case that raised the feature: a jump box recreated about a dozen times in one working session, taking every shell history and dotfile with it, silently.
+
+- `volumes` is optional: 0–8 `{name, path, read_only}` entries. `name` must be an **existing** volume — an unknown name is a hard `400`, never an implicit create, because a typo silently producing a fresh empty volume is exactly how someone loses data and then concludes persistence "didn't work". `path` is absolute, with no `..`, and is created inside the container if the image has no such directory (so a volume can be mounted at a `/home` a minimal rootfs never had).
+- The bind mount happens inside the container's own mount namespace, before `pivot_root`, so nothing accumulates on the host — the mounts go away with the namespace.
+- **A volume that fails to mount kills the container** (exit 125) rather than starting without it. A container silently running without its persistent storage would write to the overlay upper layer instead, look perfectly healthy, and lose that data on its next recreate. Same for `read_only: true`: if the read-only remount fails, the container fails to start rather than coming up writable, because a guarantee that silently isn't one is worse than none.
+- `disk` on `POST /volumes` places the volume by the same disk-role naming a container's own `disk` field uses ([ADR-0141](../adr/0141-multi-disk-storage-placement.md)) — deliberately the same mechanism, not a second storage story. Omitted means default OS-disk placement.
+- `DELETE /volumes/{name}` is the only thing that ever removes a volume's data, and is refused `409` while **any container definition** references it — not merely while one is running. A stopped container will come back and expect its data; the error names the container holding it.
+
+Not covered, deliberately (each its own decision rather than a silent default): per-volume quotas — container overlays have `disk_quota_bytes`, a volume is currently an unbounded way to fill a disk; concurrent sharing between containers — nothing prevents it, but no locking or coordination is offered; and inclusion in the backup bundle — volumes are workload data, and [ADR-0033](../adr/0033-platform-state-backup-restore.md)'s config-only boundary stands.
+
 ## Capability restriction (issue #29)
 
 Every container's process runs as real root with no user namespace — a genuine, tracked gap (issue #29: full user-namespace support is the eventual complete fix, still open, large enough to need its own design pass). Until that lands, `thincd` closes the single most severe consequence of it directly: right before a container's `cmd` is `execve()`'d, its capability bounding set is permanently trimmed to a small default-safe list via `prctl(PR_CAPBSET_DROP, ...)` (see `src/container_caps.c` for the exact list and the reasoning behind each entry). `CAP_SYS_MODULE` is the headline case — kernel modules aren't namespaced, so an untrimmed container could otherwise call `init_module()` directly and compromise the host kernel with no exploit required at all. `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE`, `CAP_SYS_RAWIO`, `CAP_SYS_BOOT`, `CAP_BPF`, and a dozen others narrower still are dropped the same way. `CAP_NET_ADMIN`/`CAP_NET_RAW`/`CAP_SETUID`/`CAP_SETGID` stay by default — confirmed, real, in-use needs on this project's own containers today (e.g. `jumpbox1`'s `sshd`).
@@ -1741,7 +1772,7 @@ Writes **exactly the same bundle `GET /system/backup` itself produces** — cont
 - PKI: no certificate revocation/CRL, no CSR-submission flow (the daemon always generates both the keypair and the cert itself). CA regeneration/rotation **is** built (`POST /pki/reset`, above) — that gap has closed since this list was first written.
 - Package manager: up to `max_concurrent_jobs` (default/max 10, ADR-0157) install/hostbuild chains may run at once, but each individual dependency chain still resolves and builds serially within itself (a chain's own dependencies-then-target order never parallelizes), and `POST /pkg/update-all`'s own successive calls still compete for that same shared pool of slots — see [Package manager](#package-manager-source-based-asynchronous-installs) above; no version-constrained dependencies (any installed version satisfies a dependency); symlinks in a package's own `DESTDIR` output are skipped (regular files and directories only).
 - No scheduled/periodic trigger for `POST /system/update` or `POST /pkg/update-all` — both are on-demand, operator- or cron-invoked; no automatic "update then reboot" chaining.
-- No volume/bind-mount concept beyond small, content-inlined `files` (see [Per-container config files + sysctls](#per-container-config-files--sysctls) above) — a large binary asset or directory tree has no home in this model yet.
+- Volumes ([above](#persistent-volumes-issue-88-adr-0183)) closed the "no bind-mount concept" gap this list used to record, but have no per-volume quota, no coordination for concurrent sharing between containers, and are not part of the backup bundle. Injecting a *large* binary asset or directory tree at creation time still has no home — creation-time `files` are content-inlined and bounded at 64KiB each.
 - Per-connection log lines elsewhere in this daemon (the audit trail, container lifecycle events) still don't carry a peer IP the way `log_tls_error()` now does (ADR-0134) — closed for the one case that was actually flooding a real deployment's logs, not generalized to every log line this daemon writes.
 
 ## Why this file exists alongside `openapi.yaml`

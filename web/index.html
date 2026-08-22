@@ -1492,6 +1492,31 @@
 		     kernel-log window a shell-less installed host has. -->
 		<!-- Issue #81: health of every registered LDAP/DNS/NTP/syslog server.
 		     One page for all four kinds because it is one mechanism. -->
+		<!-- Issue #88: storage that outlives the containers using it. -->
+		<section class="view" id="view-volumes" hidden>
+			<div class="view-list">
+				<h2>Volumes</h2>
+				<p class="hint">Persistent storage whose lifetime is <strong>independent of any container</strong>. Everything else a container writes lives in its overlay upper layer, which is destroyed when the container is deleted &mdash; and a container gets recreated by any recipe change, package install or rolling image update. Mount a volume into a container (<code>volumes: [{"name": "home", "path": "/home"}]</code>) and that path survives. Deleting a container never touches its volumes; deleting a <em>volume</em> destroys its data and is refused while any container definition still references it.</p>
+				<form id="volume-form">
+					<label>
+						Name
+						<input type="text" id="vf-name" placeholder="home" required>
+					</label>
+					<label>
+						Disk (optional)
+						<input type="text" id="vf-disk" placeholder="(default OS-disk placement)">
+					</label>
+					<button type="submit">Create volume</button>
+				</form>
+				<table>
+					<thead>
+						<tr><th>Name</th><th>Disk</th><th>Host path</th><th>Created</th><th></th></tr>
+					</thead>
+					<tbody id="volumes-body"></tbody>
+				</table>
+			</div>
+		</section>
+
 		<section class="view" id="view-server-health" hidden>
 			<div class="view-list">
 				<h2>Server Health</h2>
