@@ -52,17 +52,40 @@ struct discovered_disk {
 	 * restart even though the real mount persists; it also only ever
 	 * knows about disks *this daemon itself* formatted, never one an
 	 * operator mounted by hand or that survived from before this
-	 * mechanism existed). Set true if any partition on this disk (or
-	 * the whole-disk device itself) currently appears in /proc/mounts;
-	 * mount_path is that mount's own real path. A disk can only really
-	 * have one role-assigned mountpoint in this project's own model, so
-	 * the first match found wins -- matching disk_enumerate()'s own
-	 * already-established precedent (resolve_os_disk_name()'s
-	 * longest-match walk) of treating /proc/mounts as the one real
-	 * source of truth rather than anything this daemon merely believes.
+	 * mechanism existed).
+	 *
+	 * True when THIS exact device appears in /proc/mounts, with
+	 * mount_path its own real mountpoint. This used to attribute a
+	 * mounted partition to its parent whole disk instead, which was
+	 * correct while only whole disks were ever enumerated, and became
+	 * wrong the moment ADR-0158 started reporting partitions too: a
+	 * genuinely mounted partition reported mounted=0 while its parent
+	 * reported mounted=1 at a path that was not its own. Confirmed live
+	 * on real hardware, in both directions -- unmounting the mounted
+	 * partition was refused as "not mounted", and DELETE of that
+	 * partition succeeded while its filesystem was live, because the
+	 * guard meant to stop exactly that reads this flag.
+	 *
+	 * The first match found wins, matching disk_enumerate()'s own
+	 * precedent (resolve_os_disk_name()'s longest-match walk) of
+	 * treating /proc/mounts as the one real source of truth rather than
+	 * anything this daemon merely believes.
 	 */
 	int mounted;
 	char mount_path[256];
+	/*
+	 * Whole disks only: true when any partition ON this disk is
+	 * mounted, even though the disk device itself is not.
+	 *
+	 * Split out from `mounted` rather than folded into it because the
+	 * two answer different questions and exactly one caller wants this
+	 * one: rewriting or growing a partition table is unsafe while
+	 * anything on the disk is in use (diskpart.c), whereas every other
+	 * caller -- storage placement, volume host paths, format's remount,
+	 * migration -- is asking "is this specific device mounted, and
+	 * where", and needs the truthful per-device answer above.
+	 */
+	int has_mounted_partition;
 	/*
 	 * ADR-0142: real, live I/O counters straight from the kernel's own
 	 * per-block-device accounting (/sys/block/<name>/stat -- see
@@ -130,6 +153,15 @@ struct discovered_disk {
  * containers partition at all, like most test/dev daemons) to leave
  * every entry's is_os_disk 0 -- never fatal either way.
  */
+/*
+ * Fills mounted/mount_path/has_mounted_partition on every entry in
+ * out[] from a /proc/mounts-format file. Exposed only so a test can
+ * exercise the attribution against a synthetic mounts file -- real
+ * callers get this via disk_enumerate(). See disk.h's own `mounted`
+ * comment for what the two flags mean and why they are separate.
+ */
+void disk_fill_mount_status_from(const char *mounts_path, struct discovered_disk *out, int count);
+
 int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containers_dir);
 
 void disk_write_json_one(const struct discovered_disk *d, struct json_writer *w);

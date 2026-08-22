@@ -170,19 +170,25 @@ static void fill_capacity(struct discovered_disk *e)
 
 /*
  * One real pass over /proc/mounts (the same ground-truth source
- * resolve_os_disk_name() above already trusts), matching each mounted
- * device back to its parent whole disk via disk_name_from_partition()
- * and recording the first mountpoint found for each entry in out[].
- * O(disks * mounts) with both counts always small in practice (a real
- * host has a handful of disks and a few dozen mounts at most) -- not
- * worth a hash table for this.
+ * resolve_os_disk_name() above already trusts), recording the first
+ * mountpoint found for each entry in out[]. O(disks * mounts) with both
+ * counts always small in practice (a real host has a handful of disks
+ * and a few dozen mounts at most) -- not worth a hash table for this.
+ *
+ * Two distinct things are recorded, and conflating them was a real bug
+ * (see disk.h's own `mounted` comment): the mounted device's OWN entry
+ * gets mounted/mount_path, and its parent whole disk separately gets
+ * has_mounted_partition. Before partitions were enumerated at all, only
+ * the second existed and was stored in the first's fields, which read
+ * correctly right up until ADR-0158 put partitions in out[] too.
  */
-static void fill_mount_status(struct discovered_disk *out, int count)
+void disk_fill_mount_status_from(const char *mounts_path, struct discovered_disk *out,
+                                 int count)
 {
 	FILE *f;
 	char line[PATH_MAX * 2];
 
-	f = fopen("/proc/mounts", "r");
+	f = fopen(mounts_path, "r");
 	if (f == NULL)
 		return;
 
@@ -201,14 +207,34 @@ static void fill_mount_status(struct discovered_disk *out, int count)
 			continue;
 		disk_name_from_partition(base, disk_name, sizeof(disk_name));
 		for (i = 0; i < count; i++) {
-			if (out[i].mounted || strcmp(out[i].name, disk_name) != 0)
-				continue;
-			out[i].mounted = 1;
-			snprintf(out[i].mount_path, sizeof(out[i].mount_path), "%s", mountpoint);
-			fill_capacity(&out[i]);
+			/* The device that is actually mounted. */
+			if (!out[i].mounted && strcmp(out[i].name, base) == 0) {
+				out[i].mounted = 1;
+				snprintf(out[i].mount_path, sizeof(out[i].mount_path), "%s", mountpoint);
+				fill_capacity(&out[i]);
+			}
+			/* Its parent whole disk, when the mount is a partition --
+			 * disk_name_from_partition() returns `base` unchanged for a
+			 * whole-disk device, so the strcmp keeps this to the
+			 * genuine parent case only. */
+			if (strcmp(base, disk_name) != 0 && strcmp(out[i].name, disk_name) == 0)
+				out[i].has_mounted_partition = 1;
 		}
 	}
 	fclose(f);
+}
+
+/*
+ * The real-host entry point. Split from the function above purely so a
+ * test can feed it a synthetic mounts file: the attribution logic is
+ * safety-critical (it gates whether a mounted partition can be deleted)
+ * and had a real bug in it, but /proc/mounts cannot be arranged to order
+ * inside a test, and this sandbox has no loop devices to mount anything
+ * on. See test_diskpart.c.
+ */
+static void fill_mount_status(struct discovered_disk *out, int count)
+{
+	disk_fill_mount_status_from("/proc/mounts", out, count);
 }
 
 /*
@@ -358,6 +384,11 @@ void disk_write_json_one(const struct discovered_disk *d, struct json_writer *w)
 	jw_bool(w, d->mounted);
 	jw_key(w, "mount_path");
 	jw_str(w, d->mount_path);
+	/* Whole disks only, and always false for a partition. Reported
+	 * because it is the reason a repartition gets refused, and an
+	 * operator with no shell has no other way to see it. */
+	jw_key(w, "has_mounted_partition");
+	jw_bool(w, d->has_mounted_partition);
 	jw_key(w, "reads_completed");
 	jw_int(w, (long long)d->reads_completed);
 	jw_key(w, "writes_completed");
