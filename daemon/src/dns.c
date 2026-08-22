@@ -508,6 +508,20 @@ void dns_server_write_json_one(const struct dns_server_binding *binding, struct 
 	jw_obj_close(w);
 }
 
+/* Issue #81: uniform enumerator so the shared server-health prober can
+ * walk this kind's registered servers exactly as it walks the others --
+ * same shape ldap_server_list_containers() already had. */
+int dns_server_list_containers(char out[][DNS_SERVER_NAME_MAX], int max)
+{
+	int i, n = 0;
+
+	for (i = 0; i < DNS_SERVER_MAX && n < max; i++) {
+		if (g_bindings[i].container_name[0] != '\0')
+			snprintf(out[n++], DNS_SERVER_NAME_MAX, "%s", g_bindings[i].container_name);
+	}
+	return n;
+}
+
 void dns_server_write_json_list(struct json_writer *w)
 {
 	int i;

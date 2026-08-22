@@ -981,6 +981,7 @@ const CATEGORY_VIEWS = {
 	"tls-throttle": "view-tls-throttle",
 	logs: "view-logs",
 	kmsg: "view-kmsg",
+	"server-health": "view-server-health",
 	backup: "view-backup",
 	update: "view-update",
 };
@@ -1043,6 +1044,8 @@ function renderCurrentView() {
 			renderLogsList();
 		else if (route.category === "kmsg")
 			refreshKmsg();
+		else if (route.category === "server-health")
+			refreshServerHealth();
 		else if (route.category === "images" && route.name !== null)
 			renderImageDetail(route.name);
 		else if (route.category === "devices")
@@ -1505,6 +1508,7 @@ function renderTree() {
 						{ label: "Processes", hash: "processes", icon: "stats" },
 						{ label: "Log Store", hash: "logs", icon: "system" },
 						{ label: "Kernel Log", hash: "kmsg", icon: "system" },
+						{ label: "Server Health", hash: "server-health", icon: "system" },
 						{ label: "Syslog Targets", hash: "syslog-targets", icon: "system" },
 					],
 				},
@@ -7553,6 +7557,78 @@ async function refreshKmsg() {
 			.join("\n");
 	} catch (err) {
 		out.textContent = "(failed to read the kernel log: " + err.message + ")";
+	}
+}
+
+/*
+ * Issue #81: registered-server health. One table for all four kinds
+ * (ldap/dns/ntp/syslog) because it is one mechanism, not four.
+ */
+async function refreshServerHealth() {
+	const body = document.getElementById("server-health-body");
+
+	body.textContent = "";
+	let servers = [];
+	try {
+		const data = await apiRequest("GET", "/v1/system/server-health");
+		servers = data.servers || [];
+	} catch (e) {
+		showStatus("Failed to read server health: " + e.message, true);
+		return;
+	}
+	if (servers.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 8;
+		cell.className = "empty";
+		cell.textContent = "No registered servers are being health-tracked yet";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+	for (const s of servers) {
+		const row = document.createElement("tr");
+		const cells = [
+			s.kind,
+			s.container,
+			s.state,
+			s.in_service ? "yes" : "no",
+			s.probe || "-",
+			String(s.consecutive_failures || 0),
+			s.last_error || "",
+		];
+
+		for (const text of cells) {
+			const td = document.createElement("td");
+			td.textContent = text;
+			row.appendChild(td);
+		}
+
+		/* Drain/undrain -- the operator override, distinct from what the
+		   probe says. Labelled by the action it performs, not the state
+		   it is in, so the button never reads as a status. */
+		const actionCell = document.createElement("td");
+		const btn = document.createElement("button");
+
+		btn.type = "button";
+		btn.textContent = s.drained ? "Undrain" : "Drain";
+		btn.addEventListener("click", async () => {
+			try {
+				await apiRequest(
+					"PUT",
+					"/v1/system/server-health/" + encodeURIComponent(s.kind) + "/" + encodeURIComponent(s.container),
+					{ drained: !s.drained }
+				);
+				clearStatus();
+				await refreshServerHealth();
+			} catch (e) {
+				showStatus("Failed to change drain state: " + e.message, true);
+			}
+		});
+		actionCell.appendChild(btn);
+		row.appendChild(actionCell);
+		body.appendChild(row);
 	}
 }
 

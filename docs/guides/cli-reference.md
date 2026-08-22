@@ -51,6 +51,8 @@ thincctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `routes` | The box's own real kernel IPv4 routing table (ADR-0066) — the only way to see this on a real install, no SSH/general shell |
 | `host-stats` | Host-wide load/CPU/memory/disk/network snapshot, including cpu/memory/io pressure-stall (PSI) figures (ADR-0073, ADR-0074) — the host-level counterpart to `stats NAME` below |
 | `kmsg [--tail=N]` | The kernel's own ring buffer (`/dev/kmsg`) — dmesg over REST (issue #77). Mount failures, driver probes and OOM kills surface here, and on a real installed host with no shell this is the only way to read them. Distinct from the log store, which carries `thincd`'s own diagnostics and the audit trail |
+| `server-health [ls]` | Health of every registered LDAP/DNS/NTP/syslog server (issue #81) — state, whether it's in service, how it was probed (`tcp:PORT` is a real service check; `process` only means the container is running), and the last error |
+| `server-health drain KIND NAME` / `server-health undrain KIND NAME` | Take one deliberately out of / back into service (maintenance). Persisted across a daemon restart, unlike the observed health state. A drained or unhealthy server is withheld from the client config thinC generates |
 | `process ls` | Every real process on the box (a direct `/proc` scan), each correlated to a container by its own real host ppid chain, if any (ADR-0131) |
 | `process kill PID` | A real, immediate SIGKILL; refuses pid 1 and this daemon's own pid |
 | `ping HOST` | Real ICMP echo against a literal IPv4 address (ADR-0075) — waits ~2s max, exits nonzero if unreachable |

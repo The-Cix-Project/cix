@@ -140,4 +140,7 @@ void dns_server_forget(const char *container_name);
 void dns_server_write_json_one(const struct dns_server_binding *binding, struct json_writer *w);
 void dns_server_write_json_list(struct json_writer *w);
 
+/* Issue #81: uniform enumerator for the shared server-health prober. */
+int dns_server_list_containers(char out[][DNS_SERVER_NAME_MAX], int max);
+
 #endif /* DNS_H */

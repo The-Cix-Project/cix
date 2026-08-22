@@ -1490,6 +1490,21 @@
 		     all. Distinct from the Log Store above: this is the KERNEL's own
 		     ring buffer (mount failures, driver probes, OOM kills), the only
 		     kernel-log window a shell-less installed host has. -->
+		<!-- Issue #81: health of every registered LDAP/DNS/NTP/syslog server.
+		     One page for all four kinds because it is one mechanism. -->
+		<section class="view" id="view-server-health" hidden>
+			<div class="view-list">
+				<h2>Server Health</h2>
+				<p class="hint">Every registered backend server &mdash; LDAP, DNS, NTP and syslog &mdash; probed on an interval. A server that is drained or has failed its probes is dropped from the configuration handed to clients, so a registered-but-not-serving server can no longer break logins silently. <strong>Drain</strong> takes one out of service deliberately (maintenance); it persists across a daemon restart, while health itself is re-established by the next probe. The <em>Probe</em> column says how the verdict was reached: a <code>tcp:PORT</code> check is a real service check, <code>process</code> only means the container is running.</p>
+				<table>
+					<thead>
+						<tr><th>Kind</th><th>Container</th><th>State</th><th>In service</th><th>Probe</th><th>Failures</th><th>Last error</th><th></th></tr>
+					</thead>
+					<tbody id="server-health-body"></tbody>
+				</table>
+			</div>
+		</section>
+
 		<section class="view" id="view-kmsg" hidden>
 			<div class="view-list">
 				<h2>Kernel Log</h2>

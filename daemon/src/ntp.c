@@ -306,6 +306,18 @@ void ntp_server_forget(const char *container_name)
  * list()'s own convention) -- the caller wraps it in {"servers": [...]}
  * both for the persisted-state save (save_server_state() above) and
  * for GET /v1/ntp/servers's own response (main.c). */
+/* Issue #81: uniform enumerator, see dns_server_list_containers(). */
+int ntp_server_list_containers(char out[][NTP_SERVER_NAME_MAX], int max)
+{
+	int i, n = 0;
+
+	for (i = 0; i < NTP_SERVER_MAX && n < max; i++) {
+		if (g_servers[i][0] != '\0')
+			snprintf(out[n++], NTP_SERVER_NAME_MAX, "%s", g_servers[i]);
+	}
+	return n;
+}
+
 void ntp_server_write_json_list(struct json_writer *w)
 {
 	int i;
