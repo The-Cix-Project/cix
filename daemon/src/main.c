@@ -13407,6 +13407,65 @@ static void respond_diskpart_error(int fd, enum diskpart_error err)
 	}
 }
 
+/*
+ * GET /v1/disks/{name}/free-space (issue #95) -- how much room is
+ * actually left in this disk's partition table, from sfdisk rather than
+ * from subtracting the partition sizes a client can already see. That
+ * subtraction is wrong in three ways it cannot detect: partition
+ * alignment, the GPT's own reserved areas at both ends, and any gap an
+ * earlier delete left in the middle.
+ *
+ * Its own endpoint rather than a field on GET /disks, because it forks
+ * a subprocess and GET /disks runs on every poll for every disk.
+ */
+static void handle_disk_free_space(int fd, const char *disk_name)
+{
+	struct diskpart_free_space fs;
+	enum diskpart_error derr;
+	struct json_writer w;
+	int i;
+
+	derr = diskpart_free_space(disk_name, CONTAINERS_DIR, &fs);
+	if (derr != DISKPART_OK) {
+		respond_diskpart_error(fd, derr);
+		return;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "disk_name");
+	jw_str(&w, disk_name);
+	jw_key(&w, "has_partition_table");
+	jw_bool(&w, fs.has_table);
+	jw_key(&w, "total_free_bytes");
+	jw_int(&w, (long long)fs.total_free_bytes);
+	/*
+	 * The largest single extent, which is the number that actually
+	 * bounds a new partition -- total free space can be spread across
+	 * gaps no one request can use.
+	 */
+	jw_key(&w, "largest_free_bytes");
+	jw_int(&w, (long long)(fs.largest_free_sectors * fs.sector_bytes));
+	jw_key(&w, "largest_free_mib");
+	jw_int(&w, (long long)(fs.largest_free_sectors * fs.sector_bytes / (1024 * 1024)));
+	jw_key(&w, "extents");
+	jw_arr_open(&w);
+	for (i = 0; i < fs.extent_count; i++) {
+		jw_obj_open(&w);
+		jw_key(&w, "start_sector");
+		jw_int(&w, (long long)fs.extents[i].start_sector);
+		jw_key(&w, "sectors");
+		jw_int(&w, (long long)fs.extents[i].sectors);
+		jw_key(&w, "bytes");
+		jw_int(&w, (long long)(fs.extents[i].sectors * fs.sector_bytes));
+		jw_obj_close(&w);
+	}
+	jw_arr_close(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_disk_partition_table_post(int fd, const char *disk_name, const char *body,
                                               size_t body_len)
 {
@@ -17915,6 +17974,10 @@ static void dispatch(int fd, const struct http_request *req)
 				memcpy(disk_name, name, slash - name);
 				disk_name[slash - name] = '\0';
 
+				if (strcmp(slash, "/free-space") == 0 && strcmp(req->method, "GET") == 0) {
+					handle_disk_free_space(fd, disk_name);
+					return;
+				}
 				if (strcmp(slash, "/partition-table") == 0 &&
 				    strcmp(req->method, "POST") == 0) {
 					handle_disk_partition_table_post(fd, disk_name, req->body,

@@ -4664,6 +4664,7 @@ function renderDiskDetail(name) {
 
 	renderDiskPartitions(d, parts);
 	renderDiskWholeActions(d, role, parts);
+	refreshDiskFreeSpace(d);
 }
 
 function renderDiskPartitions(d, parts) {
@@ -4833,6 +4834,58 @@ function renderDiskWholeActions(d, role, parts) {
 	host.appendChild(table);
 }
 
+/*
+ * Issue #95: what will actually fit, asked of the daemon rather than
+ * computed here. Subtracting the partition sizes from the disk size
+ * looks equivalent and is not -- it misses alignment, the GPT's own
+ * reserved areas, and any gap an earlier delete left behind.
+ *
+ * Fetched on demand when a disk page renders, never in the poll loop:
+ * the endpoint forks sfdisk.
+ */
+let diskFreeSpace = {};
+
+async function refreshDiskFreeSpace(d) {
+	const note = document.getElementById("dd-free-space");
+	const sizeInput = document.getElementById("dd-part-size");
+
+	if (d.is_os_disk)
+		return;
+	try {
+		const fs = await apiRequest("GET", "/v1/disks/" + encodeURIComponent(d.name) + "/free-space");
+
+		diskFreeSpace[d.name] = fs;
+		if (!fs.has_partition_table) {
+			note.textContent = "This disk has no partition table yet — write one below before adding partitions.";
+			sizeInput.max = "";
+			return;
+		}
+		/* The largest single gap is the real bound on one new
+		 * partition; total free can be spread across gaps no single
+		 * request can use, so both are shown when they differ. */
+		const largestMib = Math.floor(fs.largest_free_bytes / (1024 * 1024));
+
+		sizeInput.max = String(largestMib);
+		sizeInput.placeholder = "(rest of disk — up to " + largestMib + " MiB)";
+		if (fs.total_free_bytes > fs.largest_free_bytes) {
+			note.textContent =
+				formatBytes(fs.total_free_bytes) +
+				" free in total, but split across " +
+				fs.extents.length +
+				" gaps — the largest single gap is " +
+				formatBytes(fs.largest_free_bytes) +
+				", which is the most one new partition can take.";
+		} else {
+			note.textContent = formatBytes(fs.largest_free_bytes) + " free (" + largestMib + " MiB).";
+		}
+	} catch (e) {
+		/* Never block the form on this: the daemon still validates the
+		 * real request, so a failed advisory check must not stop
+		 * someone submitting one. */
+		note.textContent = "Could not read free space: " + e.message;
+	}
+}
+
 async function deletePartition(diskName, partitionName) {
 	if (
 		!confirm(
@@ -4848,6 +4901,7 @@ async function deletePartition(diskName, partitionName) {
 		clearStatus();
 		await refreshDisks();
 		renderDiskDetail(diskName);
+		renderTree();
 	} catch (e) {
 		showStatus("Failed to delete partition: " + e.message, true);
 	}
@@ -4904,12 +4958,30 @@ document.getElementById("dd-add-partition-form").addEventListener("submit", asyn
 
 	if (sizeText !== "")
 		body.size_mib = parseInt(sizeText, 10);
+
+	/* Catch a too-large size here rather than letting it come back as
+	 * an sfdisk rejection -- the daemon still checks, this just says so
+	 * before the round trip. */
+	const fs = diskFreeSpace[name];
+
+	if (fs && fs.has_partition_table && body.size_mib) {
+		const largestMib = Math.floor(fs.largest_free_bytes / (1024 * 1024));
+
+		if (body.size_mib > largestMib) {
+			showStatus(
+				"That is larger than the biggest free gap on this disk (" + largestMib + " MiB).",
+				true
+			);
+			return;
+		}
+	}
 	try {
 		await apiRequest("POST", "/v1/disks/" + encodeURIComponent(name) + "/partitions", body);
 		clearStatus();
 		document.getElementById("dd-add-partition-form").reset();
 		await refreshDisks();
 		renderDiskDetail(name);
+		renderTree();
 	} catch (e) {
 		showStatus("Failed to add partition: " + e.message, true);
 	}

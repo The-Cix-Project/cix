@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -257,4 +258,170 @@ enum diskpart_error diskpart_delete(const char *disk_name, const char *partition
 	if (rc != 0)
 		return DISKPART_ERR_SFDISK_FAILED;
 	return DISKPART_OK;
+}
+
+/*
+ * Reads sfdisk's own free-space report for a disk (issue #95).
+ *
+ * Adding a partition means choosing a size, and until now nothing could
+ * say how much room there was: a client could subtract the reported
+ * partition sizes from the disk size, but that is arithmetic over the
+ * reported set rather than the truth -- it ignores alignment, the GPT's
+ * own reserved areas at both ends, and any gap left behind by an
+ * earlier delete. sfdisk already knows all three exactly.
+ *
+ * Deliberately NOT folded into disk_enumerate(): that runs on every
+ * poll, for every disk, and this forks a subprocess. It is answered on
+ * demand instead, which is also when it is actually wanted -- while
+ * filling in a size.
+ *
+ * Output shape (util-linux 2.38):
+ *
+ *   Unpartitioned space /dev/sda: 822.98 MiB, 862961152 bytes, 1685471 sectors
+ *   Units: sectors of 1 * 512 = 512 bytes
+ *   Sector size (logical/physical): 512 bytes / 512 bytes
+ *
+ *    Start     End Sectors  Size
+ *     2048  206847  204800  100M
+ *   616448 2097118 1480671  723M
+ *
+ * A disk with a table but no room reports "0 B, 0 bytes, 0 sectors" and
+ * no rows. A disk with NO partition table at all prints nothing at all
+ * and still exits 0 -- which is why has_table is reported separately
+ * rather than inferred from a zero total: those are different states
+ * and only one of them is fixable by deleting something.
+ */
+static int run_sfdisk_capture(char *const argv[], char *out, size_t out_size, size_t *out_len)
+{
+	int pipefd[2];
+	pid_t pid;
+	int status;
+	size_t total = 0;
+
+	if (pipe2(pipefd, O_CLOEXEC) != 0)
+		return -1;
+	pid = fork();
+	if (pid < 0) {
+		close(pipefd[0]);
+		close(pipefd[1]);
+		return -1;
+	}
+	if (pid == 0) {
+		dup2(pipefd[1], STDOUT_FILENO);
+		close(pipefd[0]);
+		close(pipefd[1]);
+		execve(DISKPART_SFDISK_BIN, argv, environ);
+		_exit(127);
+	}
+	close(pipefd[1]);
+	while (total + 1 < out_size) {
+		ssize_t n = read(pipefd[0], out + total, out_size - total - 1);
+
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			break;
+		}
+		if (n == 0)
+			break;
+		total += (size_t)n;
+	}
+	close(pipefd[0]);
+	out[total] = '\0';
+	if (out_len != NULL)
+		*out_len = total;
+	if (waitpid(pid, &status, 0) != pid)
+		return -1;
+	return sfdisk_status_to_rc(status);
+}
+
+/*
+ * The parsing half, against a device path directly. Split out so a test
+ * can drive it against a real disk image -- sfdisk operates identically
+ * on a plain file, which is how this project already verified the
+ * partition-script syntax, and this sandbox has no block device nodes
+ * to use instead.
+ */
+enum diskpart_error diskpart_free_space_from_path(const char *dev_path,
+                                                   struct diskpart_free_space *out)
+{
+	char buf[8192];
+	char *argv[4];
+	char *line;
+	char *saveptr = NULL;
+	int in_table = 0;
+	int rc;
+
+	memset(out, 0, sizeof(*out));
+
+	argv[0] = (char *)DISKPART_SFDISK_BIN;
+	argv[1] = "--list-free";
+	argv[2] = (char *)dev_path;
+	argv[3] = NULL;
+	rc = run_sfdisk_capture(argv, buf, sizeof(buf), NULL);
+	if (rc == -2)
+		return DISKPART_ERR_SFDISK_MISSING;
+	if (rc != 0)
+		return DISKPART_ERR_SFDISK_FAILED;
+
+	for (line = strtok_r(buf, "\n", &saveptr); line != NULL;
+	     line = strtok_r(NULL, "\n", &saveptr)) {
+		unsigned long long start, end, sectors;
+
+		if (strncmp(line, "Unpartitioned space", 19) == 0) {
+			const char *comma = strchr(line, ',');
+
+			out->has_table = 1;
+			/* "...: 822.98 MiB, 862961152 bytes, 1685471 sectors" --
+			 * the exact byte count is the second field; the first is a
+			 * rounded human string deliberately not parsed. */
+			if (comma != NULL)
+				out->total_free_bytes = strtoull(comma + 1, NULL, 10);
+			continue;
+		}
+		if (strstr(line, "Start") != NULL && strstr(line, "Sectors") != NULL) {
+			in_table = 1;
+			continue;
+		}
+		if (!in_table)
+			continue;
+		if (sscanf(line, " %llu %llu %llu", &start, &end, &sectors) != 3)
+			continue;
+		if (out->extent_count < DISKPART_FREE_EXTENT_MAX) {
+			out->extents[out->extent_count].start_sector = start;
+			out->extents[out->extent_count].sectors = sectors;
+			out->extent_count++;
+		}
+		if (sectors > out->largest_free_sectors)
+			out->largest_free_sectors = sectors;
+	}
+	/*
+	 * Sector size is not parsed out of the header: every path in this
+	 * daemon that deals in sectors already assumes 512 (thinc-install.c
+	 * and the sfdisk scripts above both do), and inventing a second,
+	 * differently-sourced answer here would be the disagreement rather
+	 * than the fix. If a 4Kn disk ever needs supporting, it needs
+	 * supporting everywhere at once.
+	 */
+	out->sector_bytes = 512;
+	return DISKPART_OK;
+}
+
+enum diskpart_error diskpart_free_space(const char *disk_name, const char *os_containers_dir,
+                                         struct diskpart_free_space *out)
+{
+	struct discovered_disk d;
+
+	memset(out, 0, sizeof(*out));
+
+	if (!simple_name_is_valid(disk_name, DISKROLE_DISK_NAME_MAX))
+		return DISKPART_ERR_INVALID_DISK_NAME;
+	if (!find_disk(disk_name, os_containers_dir, &d))
+		return DISKPART_ERR_NOT_FOUND;
+	/* Free space is a property of a partition TABLE, so a partition
+	 * has no answer to give -- the question belongs to its parent. */
+	if (d.is_partition)
+		return DISKPART_ERR_IS_PARTITION;
+
+	return diskpart_free_space_from_path(d.dev_path, out);
 }

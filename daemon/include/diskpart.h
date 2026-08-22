@@ -125,4 +125,46 @@ enum diskpart_error diskpart_add(const char *disk_name, const char *os_container
 enum diskpart_error diskpart_delete(const char *disk_name, const char *partition_name,
                                      const char *os_containers_dir);
 
+/* Issue #95: how much room is left in a disk's partition table. */
+#define DISKPART_FREE_EXTENT_MAX 16
+
+struct diskpart_free_extent {
+	unsigned long long start_sector;
+	unsigned long long sectors;
+};
+
+struct diskpart_free_space {
+	/*
+	 * Whether the disk has a partition table at all. Reported
+	 * separately rather than inferred from a zero total, because
+	 * "partitioned and full" and "not partitioned yet" are different
+	 * problems with different fixes and sfdisk reports the second as
+	 * simply no output.
+	 */
+	int has_table;
+	unsigned long long total_free_bytes;
+	unsigned long long largest_free_sectors;
+	unsigned long long sector_bytes;
+	struct diskpart_free_extent extents[DISKPART_FREE_EXTENT_MAX];
+	int extent_count;
+};
+
+/*
+ * Fills out with disk_name's free space, straight from sfdisk rather
+ * than computed by subtracting partition sizes -- alignment, the GPT's
+ * own reserved areas, and gaps left by an earlier delete all make that
+ * subtraction wrong. On demand only: it forks a subprocess, so it is
+ * deliberately not part of disk_enumerate()'s per-poll work.
+ */
+/*
+ * The parsing half, against a device path directly -- exposed so a test
+ * can drive it against a real disk image, since sfdisk treats a plain
+ * file identically and this sandbox has no block device nodes.
+ */
+enum diskpart_error diskpart_free_space_from_path(const char *dev_path,
+                                                   struct diskpart_free_space *out);
+
+enum diskpart_error diskpart_free_space(const char *disk_name, const char *os_containers_dir,
+                                         struct diskpart_free_space *out);
+
 #endif /* DISKPART_H */

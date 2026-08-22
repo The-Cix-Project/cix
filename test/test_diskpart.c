@@ -36,6 +36,7 @@
  *      expected or vice versa, wrong parent, a role already assigned)
  *      -- exercised as real HTTP requests against the real daemon.
  */
+#include "diskpart.h"
 #include "disk.h"
 #include "httpclient.h"
 #include "json.h"
@@ -314,6 +315,117 @@ static int test_fs_probe(void)
 			ok = 0;
 		}
 	}
+	return ok;
+}
+
+/*
+ * Free-space reporting (issue #95). Driven against real disk *images*
+ * rather than block devices -- sfdisk operates identically on a plain
+ * file, which is how this file's own partition-syntax verification was
+ * already done, and this sandbox has no block device nodes to use
+ * instead.
+ *
+ * The gap case is the point of the whole feature: after deleting a
+ * partition from the middle, total free space and the largest usable
+ * extent are different numbers, and a client subtracting partition
+ * sizes from the disk size cannot tell them apart.
+ */
+static int run_sfdisk_script(const char *img, const char *script, const char *extra_arg)
+{
+	char cmd[512];
+
+	if (extra_arg != NULL)
+		snprintf(cmd, sizeof(cmd), "printf '%%s\\n' '%s' | /usr/sbin/sfdisk %s %s >/dev/null 2>&1",
+		         script, extra_arg, img);
+	else
+		snprintf(cmd, sizeof(cmd), "printf '%%s\\n' '%s' | /usr/sbin/sfdisk %s >/dev/null 2>&1",
+		         script, img);
+	return system(cmd);
+}
+
+static int test_free_space(void)
+{
+	char img[] = "/tmp/thinc_test_freespace_XXXXXX";
+	char cmd[512];
+	struct diskpart_free_space fs;
+	int fd;
+	int ok = 1;
+
+	fd = mkstemp(img);
+	if (fd < 0) {
+		fprintf(stderr, "FAIL: mkstemp for free-space image\n");
+		return 0;
+	}
+	close(fd);
+	snprintf(cmd, sizeof(cmd), "truncate -s 1G %s", img);
+	if (system(cmd) != 0) {
+		fprintf(stderr, "FAIL: could not create free-space image\n");
+		unlink(img);
+		return 0;
+	}
+
+	/* A raw device with no table at all: sfdisk prints nothing and
+	 * exits 0, which must NOT read as "partitioned and completely
+	 * full" -- different problem, different fix. */
+	diskpart_free_space_from_path(img, &fs);
+	if (fs.has_table) {
+		fprintf(stderr, "FAIL: an unpartitioned image reported has_table=1\n");
+		ok = 0;
+	}
+
+	run_sfdisk_script(img, "label: gpt", NULL);
+	diskpart_free_space_from_path(img, &fs);
+	if (!fs.has_table || fs.total_free_bytes == 0 || fs.largest_free_sectors == 0) {
+		fprintf(stderr,
+		        "FAIL: empty GPT reported has_table=%d total=%llu largest=%llu -- an empty "
+		        "table is all free space\n",
+		        fs.has_table, fs.total_free_bytes, fs.largest_free_sectors);
+		ok = 0;
+	}
+
+	run_sfdisk_script(img, "size=100MiB, type=linux, name=\"a\"", "--append");
+	run_sfdisk_script(img, "size=200MiB, type=linux, name=\"b\"", "--append");
+	diskpart_free_space_from_path(img, &fs);
+	{
+		unsigned long long before_total = fs.total_free_bytes;
+		unsigned long long before_largest = fs.largest_free_sectors;
+
+		if (fs.extent_count != 1) {
+			fprintf(stderr, "FAIL: two partitions at the front should leave one free extent, got %d\n",
+			        fs.extent_count);
+			ok = 0;
+		}
+
+		/* Delete the FIRST partition, leaving a hole in the middle. */
+		snprintf(cmd, sizeof(cmd), "/usr/sbin/sfdisk --delete %s 1 >/dev/null 2>&1", img);
+		if (system(cmd) != 0) {
+			fprintf(stderr, "FAIL: could not delete partition 1\n");
+			ok = 0;
+		}
+		diskpart_free_space_from_path(img, &fs);
+		if (fs.extent_count != 2) {
+			fprintf(stderr, "FAIL: a deleted middle partition should leave two free extents, got %d\n",
+			        fs.extent_count);
+			ok = 0;
+		}
+		if (fs.total_free_bytes <= before_total) {
+			fprintf(stderr, "FAIL: deleting a partition did not increase total free space\n");
+			ok = 0;
+		}
+		/* The whole point: total grew, but the biggest single usable
+		 * piece did not -- the freed 100MiB is its own separate hole.
+		 * A client subtracting sizes would report the larger number
+		 * and be wrong about what actually fits. */
+		if (fs.largest_free_sectors != before_largest) {
+			fprintf(stderr,
+			        "FAIL: largest free extent changed (%llu -> %llu) when the freed space was a "
+			        "separate hole -- total and largest must be distinct answers\n",
+			        before_largest, fs.largest_free_sectors);
+			ok = 0;
+		}
+	}
+
+	unlink(img);
 	return ok;
 }
 
@@ -660,6 +772,8 @@ int main(void)
 	if (!test_mount_attribution())
 		ok = 0;
 	if (!test_fs_probe())
+		ok = 0;
+	if (!test_free_space())
 		ok = 0;
 
 	if (ok)
