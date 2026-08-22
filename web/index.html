@@ -685,7 +685,139 @@
 		</section>
 
 		<!-- Which disk holds each platform-level concern. -->
-		<section class="view" id="view-storage-placement" hidden>
+				<!--
+		     The box itself: who it is, what it listens on, who is logged in,
+     and where its own concerns are stored. One destination with
+     tabs -- these were nine separate leaves, most of them a single
+     form, which meant navigating to find out which page a setting
+     lived on. Devices and Routes moved OUT to System level: an
+     inventory of physical hardware and the kernel routing table are
+     not settings about the daemon.
+		-->
+		<section class="view" id="view-daemon-config" hidden>
+			<h2>Host</h2>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="daemon-config">Daemon</button>
+				<button type="button" class="tab-button" data-tab="site">Site</button>
+				<button type="button" class="tab-button" data-tab="hostauth-sessions">Sessions</button>
+				<button type="button" class="tab-button" data-tab="host-swap">Swap</button>
+				<button type="button" class="tab-button" data-tab="rolling-restart">Rolling Restart</button>
+				<button type="button" class="tab-button" data-tab="storage-placement">Storage Placement</button>
+			</div>
+			<div class="tab-panel" data-tab="daemon-config">
+			<h2>Daemon</h2>
+			<p class="hint">
+				thincd's own listen port, HTTP/HTTPS exposure, and which network
+				it's currently bound to (Part 0.5). Changes apply live -- no
+				restart -- and persist across a reboot. Repointing the
+				management network only works to a network that already has its
+				own address; double-check you can actually reach the new
+				address before saving, since a mistake here has no remote undo.
+			</p>
+			<form id="sys-daemon-config-form">
+				<label>
+					Port
+					<input type="number" id="dcf-port" min="1" max="65535" required>
+				</label>
+				<label>
+					HTTPS port
+					<input type="number" id="dcf-https-port" min="1" max="65535" required>
+				</label>
+				<label class="checkbox">
+					<input type="checkbox" id="dcf-http-enabled">
+					HTTP enabled
+				</label>
+				<label class="checkbox">
+					<input type="checkbox" id="dcf-https-enabled">
+					HTTPS enabled (needs a bootstrapped PKI root CA)
+				</label>
+				<label>
+					Management network
+					<select id="dcf-management-network"></select>
+				</label>
+				<label>
+					Bind IP (optional)
+					<input type="text" id="dcf-bind-ip" placeholder="(none -- use the management network's own address)">
+				</label>
+				<label class="checkbox">
+					<input type="checkbox" id="dcf-clear-bind-ip">
+					Clear bind IP (revert to the management network's own address)
+				</label>
+				<button type="submit">Save</button>
+			</form>
+			<p class="hint" id="dcf-bind-hint"></p>
+			<p class="hint">Bind IP (ADR-0068) is a second, dedicated address on the management network's own bridge -- thincd binds there instead of that network's own address. Leave blank to make no change; check "Clear bind IP" to revert to the network's own address.</p>
+		</div>
+			<div class="tab-panel" data-tab="site" hidden>
+			<h2>Site</h2>
+			<p class="hint">
+				A real, operator-set identity for this install, used to label it in the
+				dashboard header and backups, and to suggest a default FQDN
+				(<code>&lt;name&gt;.&lt;site_name&gt;.&lt;domain_suffix&gt;</code>) when
+				creating a DNS record or issuing a PKI cert -- never enforced.
+			</p>
+			<form id="sys-site-form">
+				<label>
+					Instance name
+					<input type="text" id="sitef-instance-name" placeholder="thinc">
+				</label>
+				<label>
+					Site name (optional)
+					<input type="text" id="sitef-site-name" placeholder="lab1">
+				</label>
+				<label>
+					Domain suffix
+					<input type="text" id="sitef-domain-suffix" placeholder="internal">
+				</label>
+				<button type="submit">Save</button>
+			</form>
+		</div>
+			<div class="tab-panel" data-tab="hostauth-sessions" hidden>
+			<div class="view-list">
+				<h2>Sessions</h2>
+				<p class="hint">Every currently active host-auth session (ADR-0152) -- the raw token is
+					never shown here, before or after issuance; only the one-time login response ever
+					carries it. "Log out everywhere" revokes every active session for that user at once
+					(there is no per-session ID to target just one).</p>
+				<table id="hostauth-sessions">
+					<thead>
+						<tr>
+							<th>Username</th>
+							<th>Expires in</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="hostauth-sessions-body">
+						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+			<div class="tab-panel" data-tab="host-swap" hidden>
+			<h2>Host Swap</h2>
+			<p class="hint" id="swap-status">Swap: unknown</p>
+			<form id="swap-enable-form">
+				<label>
+					Size (MB)
+					<input type="number" id="swap-size-mb" min="64" max="1048576" value="4096">
+				</label>
+				<button type="submit">Enable</button>
+				<button type="button" id="swap-disable">Disable</button>
+			</form>
+			<p class="hint">A single on-demand swap file (ADR-0069), off by default -- useful for memory-heavy package builds (e.g. Rust/wasm) on a box with limited RAM. File-backed swap performs identically to a partition on SSD/NVMe-backed storage.</p>
+		</div>
+			<div class="tab-panel" data-tab="rolling-restart" hidden>
+			<h2>Rolling Restart</h2>
+			<form id="rc-form">
+				<label>
+					Jitter window (seconds)
+					<input type="number" id="rc-jitter-window" min="0" max="3600" value="60">
+				</label>
+				<button type="submit">Save</button>
+			</form>
+			<p class="hint">Part 5, ADR-0124: when a rolling image auto-rebuilds, every <code>follow_rolling</code> container on it gets a uniformly-random restart delay up to this window, spreading the restarts out instead of killing them all in the same instant. 0 disables jitter (restart immediately).</p>
+		</div>
+			<div class="tab-panel" data-tab="storage-placement" hidden>
 			<div class="view-list">
 				<h2>Storage Placement</h2>
 				<p class="hint">Which disk holds each platform-level concern. Each target must already carry
@@ -745,7 +877,10 @@
 					written to; <a href="#swap">Host &gt; Host Swap</a> chooses the disk the swap file lives
 					on (ADR-0169).</p>
 			</div>
+		</div>
 		</section>
+
+
 
 		<!-- DNS Records -->
 				<!--
@@ -1117,6 +1252,7 @@
 				<button type="button" class="tab-button" data-tab="cat-images">Images</button>
 				<button type="button" class="tab-button" data-tab="cat-packages">Packages</button>
 				<button type="button" class="tab-button" data-tab="cat-cache">Cache &amp; Artifacts</button>
+				<button type="button" class="tab-button" data-tab="pkg-build-config">Package Builds</button>
 			</div>
 			<div class="tab-panel" data-tab="cat-recipes">
 			<div class="view-list">
@@ -1332,6 +1468,26 @@
 				<button type="submit">Save</button>
 			</form>
 		</div>
+			<div class="tab-panel" data-tab="pkg-build-config" hidden>
+			<h2>Package Builds</h2>
+			<form id="pbc-form">
+				<label>
+					Max concurrent jobs
+					<input type="number" id="pbc-max-jobs" min="1" max="10" value="10">
+				</label>
+				<label>
+					Memory limit per build (bytes, 0 = unlimited)
+					<input type="number" id="pbc-memory-max" min="0" value="2147483648">
+				</label>
+				<label class="wide">
+					CPU limit per build (raw cgroup v2 "quota period", empty = unlimited)
+					<input type="text" id="pbc-cpu-max" placeholder="100000 100000">
+				</label>
+				<button type="submit">Save</button>
+			</form>
+			<p class="hint">ADR-0157: how many <code>pkg install</code>/<code>pkg hostbuild</code> jobs may genuinely run at once, each in its own build container. Lowering this doesn't disrupt jobs already in flight -- only future ones once the new, lower ceiling is reached.</p>
+			<p class="hint">ADR-0165: the memory/CPU ceiling applied to every individual build's own sandbox container -- the same cgroup mechanism a regular container's own <code>--memory-max=</code>/<code>--cpu-max=</code> already uses. Found missing the hard way: a burst of concurrent installs with no ceiling hung a real box's daemon entirely. CPU quota is microseconds of CPU time per 100000-microsecond period -- "100000 100000" is one full CPU's worth, "50000 100000" is half a CPU.</p>
+		</div>
 		</section>
 
 		<section class="view" id="view-package-detail" hidden>
@@ -1391,144 +1547,17 @@
 		</section>
 
 		<!-- System -->
-		<section class="view" id="view-site" hidden>
-			<h2>Site</h2>
-			<p class="hint">
-				A real, operator-set identity for this install, used to label it in the
-				dashboard header and backups, and to suggest a default FQDN
-				(<code>&lt;name&gt;.&lt;site_name&gt;.&lt;domain_suffix&gt;</code>) when
-				creating a DNS record or issuing a PKI cert -- never enforced.
-			</p>
-			<form id="sys-site-form">
-				<label>
-					Instance name
-					<input type="text" id="sitef-instance-name" placeholder="thinc">
-				</label>
-				<label>
-					Site name (optional)
-					<input type="text" id="sitef-site-name" placeholder="lab1">
-				</label>
-				<label>
-					Domain suffix
-					<input type="text" id="sitef-domain-suffix" placeholder="internal">
-				</label>
-				<button type="submit">Save</button>
-			</form>
-		</section>
+		
 
-		<section class="view" id="view-daemon-config" hidden>
-			<h2>Daemon</h2>
-			<p class="hint">
-				thincd's own listen port, HTTP/HTTPS exposure, and which network
-				it's currently bound to (Part 0.5). Changes apply live -- no
-				restart -- and persist across a reboot. Repointing the
-				management network only works to a network that already has its
-				own address; double-check you can actually reach the new
-				address before saving, since a mistake here has no remote undo.
-			</p>
-			<form id="sys-daemon-config-form">
-				<label>
-					Port
-					<input type="number" id="dcf-port" min="1" max="65535" required>
-				</label>
-				<label>
-					HTTPS port
-					<input type="number" id="dcf-https-port" min="1" max="65535" required>
-				</label>
-				<label class="checkbox">
-					<input type="checkbox" id="dcf-http-enabled">
-					HTTP enabled
-				</label>
-				<label class="checkbox">
-					<input type="checkbox" id="dcf-https-enabled">
-					HTTPS enabled (needs a bootstrapped PKI root CA)
-				</label>
-				<label>
-					Management network
-					<select id="dcf-management-network"></select>
-				</label>
-				<label>
-					Bind IP (optional)
-					<input type="text" id="dcf-bind-ip" placeholder="(none -- use the management network's own address)">
-				</label>
-				<label class="checkbox">
-					<input type="checkbox" id="dcf-clear-bind-ip">
-					Clear bind IP (revert to the management network's own address)
-				</label>
-				<button type="submit">Save</button>
-			</form>
-			<p class="hint" id="dcf-bind-hint"></p>
-			<p class="hint">Bind IP (ADR-0068) is a second, dedicated address on the management network's own bridge -- thincd binds there instead of that network's own address. Leave blank to make no change; check "Clear bind IP" to revert to the network's own address.</p>
-		</section>
+		
 
-		<section class="view" id="view-host-swap" hidden>
-			<h2>Host Swap</h2>
-			<p class="hint" id="swap-status">Swap: unknown</p>
-			<form id="swap-enable-form">
-				<label>
-					Size (MB)
-					<input type="number" id="swap-size-mb" min="64" max="1048576" value="4096">
-				</label>
-				<button type="submit">Enable</button>
-				<button type="button" id="swap-disable">Disable</button>
-			</form>
-			<p class="hint">A single on-demand swap file (ADR-0069), off by default -- useful for memory-heavy package builds (e.g. Rust/wasm) on a box with limited RAM. File-backed swap performs identically to a partition on SSD/NVMe-backed storage.</p>
-		</section>
+		
 
-		<section class="view" id="view-rolling-restart" hidden>
-			<h2>Rolling Restart</h2>
-			<form id="rc-form">
-				<label>
-					Jitter window (seconds)
-					<input type="number" id="rc-jitter-window" min="0" max="3600" value="60">
-				</label>
-				<button type="submit">Save</button>
-			</form>
-			<p class="hint">Part 5, ADR-0124: when a rolling image auto-rebuilds, every <code>follow_rolling</code> container on it gets a uniformly-random restart delay up to this window, spreading the restarts out instead of killing them all in the same instant. 0 disables jitter (restart immediately).</p>
-		</section>
+		
 
-		<section class="view" id="view-pkg-build-config" hidden>
-			<h2>Package Builds</h2>
-			<form id="pbc-form">
-				<label>
-					Max concurrent jobs
-					<input type="number" id="pbc-max-jobs" min="1" max="10" value="10">
-				</label>
-				<label>
-					Memory limit per build (bytes, 0 = unlimited)
-					<input type="number" id="pbc-memory-max" min="0" value="2147483648">
-				</label>
-				<label class="wide">
-					CPU limit per build (raw cgroup v2 "quota period", empty = unlimited)
-					<input type="text" id="pbc-cpu-max" placeholder="100000 100000">
-				</label>
-				<button type="submit">Save</button>
-			</form>
-			<p class="hint">ADR-0157: how many <code>pkg install</code>/<code>pkg hostbuild</code> jobs may genuinely run at once, each in its own build container. Lowering this doesn't disrupt jobs already in flight -- only future ones once the new, lower ceiling is reached.</p>
-			<p class="hint">ADR-0165: the memory/CPU ceiling applied to every individual build's own sandbox container -- the same cgroup mechanism a regular container's own <code>--memory-max=</code>/<code>--cpu-max=</code> already uses. Found missing the hard way: a burst of concurrent installs with no ceiling hung a real box's daemon entirely. CPU quota is microseconds of CPU time per 100000-microsecond period -- "100000 100000" is one full CPU's worth, "50000 100000" is half a CPU.</p>
-		</section>
+		
 
-		<section class="view" id="view-hostauth-sessions" hidden>
-			<div class="view-list">
-				<h2>Sessions</h2>
-				<p class="hint">Every currently active host-auth session (ADR-0152) -- the raw token is
-					never shown here, before or after issuance; only the one-time login response ever
-					carries it. "Log out everywhere" revokes every active session for that user at once
-					(there is no per-session ID to target just one).</p>
-				<table id="hostauth-sessions">
-					<thead>
-						<tr>
-							<th>Username</th>
-							<th>Expires in</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="hostauth-sessions-body">
-						<tr><td colspan="3" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-		</section>
+		
 
 		<section class="view" id="view-host-stats" hidden>
 			<h2>Host Stats</h2>

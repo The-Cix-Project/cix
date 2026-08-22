@@ -217,6 +217,29 @@ int main(void)
 	CHECK(kx_client_request(&client, "DELETE", "/v1/containers/crtest", NULL, &r) == 0,
 	      "rm crtest to free the name for scenario 6");
 	kx_response_free(&r);
+	{
+		/*
+		 * ADR-0180: settle the async delete before reusing the name.
+		 * This one was missed when the suite was converted -- DELETE
+		 * returns as soon as the intent is durable, so the create below
+		 * could still hit the old container's name and 409. It only
+		 * showed under load (the whole suite running before it), which
+		 * is exactly how a race that is always present manages to look
+		 * like an unrelated regression.
+		 */
+		int i;
+
+		for (i = 0; i < 50; i++) {
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "GET", "/v1/containers/crtest", NULL, &r) == 0 &&
+			    r.status == 404) {
+				kx_response_free(&r);
+				break;
+			}
+			kx_response_free(&r);
+			usleep(100 * 1000);
+		}
+	}
 
 	/* --- scenario 6: apply with NO secret supplied leaves the token
 	 * untouched (never silently swallowed) --- */
