@@ -87,6 +87,17 @@ struct discovered_disk {
 	 */
 	int has_mounted_partition;
 	/*
+	 * The filesystem actually on this device, probed from its own
+	 * superblock (issue #90) -- "ext4", "btrfs", "vfat", "swap",
+	 * "squashfs", or "" for none recognised. Independent of any role:
+	 * the OS layout carries no role at all, and its partitions are
+	 * exactly where "is this formatted, and as what" is least
+	 * guessable. Distinct from diskrole_lookup_fs_type(), which is a
+	 * persisted note of what a role-assigned disk was last mounted as,
+	 * used to choose a mount type rather than to report truth.
+	 */
+	char fs_type[16];
+	/*
 	 * ADR-0142: real, live I/O counters straight from the kernel's own
 	 * per-block-device accounting (/sys/block/<name>/stat -- see
 	 * Documentation/admin-guide/iostats.rst upstream), fields 1/5/3/7/10
@@ -161,6 +172,16 @@ struct discovered_disk {
  * comment for what the two flags mean and why they are separate.
  */
 void disk_fill_mount_status_from(const char *mounts_path, struct discovered_disk *out, int count);
+
+/*
+ * Reads dev_path's own superblock and writes the filesystem found there
+ * ("ext4"/"btrfs"/"vfat"/"swap"/"squashfs"), or "" for none recognised
+ * or an unreadable device. Exposed both for disk_enumerate()'s own use
+ * and so a test can drive it against crafted files -- this dev sandbox
+ * has no block device nodes at all (/sys/class/block is visible, /dev
+ * entries are not), so the real path cannot be exercised here.
+ */
+void disk_probe_fs_type(const char *dev_path, char *out, size_t out_size);
 
 int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containers_dir);
 

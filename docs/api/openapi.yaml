@@ -8835,6 +8835,27 @@ components:
             was a real bug that let a mounted partition be deleted out
             from under its live filesystem. This flag is why a
             repartition gets refused with 409 while a partition is in
+        fs_type:
+          type: string
+          description: >
+            The filesystem actually on this device, read from its own
+            superblock: "ext4", "btrfs", "vfat", "swap", "squashfs", or
+            "" when none is recognised (which for a partition means
+            genuinely unformatted) or the device could not be read.
+            Answered for every disk and partition regardless of role --
+            the OS layout carries no role at all, and its partitions are
+            exactly where "is this formatted, and as what" is least
+            guessable. Distinct from the fs_type a format job reports,
+            which is a note of what a role-assigned disk was last
+            mounted as, kept to choose a mount type rather than to
+            report truth.
+        role:
+          type: string
+          nullable: true
+          description: >
+            The role assigned to this disk or partition, or null. Joined
+            here so a client does not have to fetch GET /diskroles and
+            match by name itself -- which every client was doing.
             use.
           description: The real current mountpoint when mounted is true; empty string otherwise.
         reads_completed:

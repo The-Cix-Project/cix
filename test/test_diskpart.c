@@ -211,6 +211,112 @@ static int test_mount_attribution(void)
 	return ok;
 }
 
+/*
+ * Filesystem probing (issue #90). Driven against crafted files rather
+ * than real devices because this dev sandbox has no block device nodes
+ * at all -- /sys/class/block is visible, which is why enumeration lists
+ * disks here, but /dev/sda and friends do not exist, so every open()
+ * returns ENOENT. Verified directly rather than assumed.
+ *
+ * Each case writes the real on-disk magic at its real offset, so this
+ * checks the offsets themselves, which is the only part that can be
+ * wrong in a way that silently mislabels an operator's disk.
+ */
+static int write_probe_file(char *path, size_t size, size_t offset, const void *magic,
+                            size_t magic_len)
+{
+	int fd = mkstemp(path);
+	unsigned char *zero;
+
+	if (fd < 0)
+		return -1;
+	zero = calloc(1, size);
+	if (zero == NULL) {
+		close(fd);
+		unlink(path);
+		return -1;
+	}
+	memcpy(zero + offset, magic, magic_len);
+	if (write(fd, zero, size) != (ssize_t)size) {
+		free(zero);
+		close(fd);
+		unlink(path);
+		return -1;
+	}
+	free(zero);
+	close(fd);
+	return 0;
+}
+
+static int test_fs_probe(void)
+{
+	static const unsigned char ext4_magic[2] = { 0x53, 0xEF };
+	struct {
+		const char *expect;
+		size_t size;
+		size_t offset;
+		const void *magic;
+		size_t magic_len;
+	} cases[] = {
+		{ "squashfs", 4096, 0, "hsqs", 4 },
+		{ "vfat", 4096, 0x52, "FAT32", 5 },
+		{ "ext4", 8192, 1024 + 56, ext4_magic, 2 },
+		{ "btrfs", 0x11000, 0x10040, "_BHRfS_M", 8 },
+		{ "swap", 4096, 4096 - 10, "SWAPSPACE2", 10 },
+	};
+	size_t i;
+	int ok = 1;
+
+	for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+		char path[] = "/tmp/thinc_test_fsprobe_XXXXXX";
+		char got[16];
+
+		if (write_probe_file(path, cases[i].size, cases[i].offset, cases[i].magic,
+		                      cases[i].magic_len) != 0) {
+			fprintf(stderr, "FAIL: could not write probe file for %s\n", cases[i].expect);
+			ok = 0;
+			continue;
+		}
+		disk_probe_fs_type(path, got, sizeof(got));
+		unlink(path);
+		if (strcmp(got, cases[i].expect) != 0) {
+			fprintf(stderr, "FAIL: fs probe read \"%s\", expected \"%s\"\n", got,
+			        cases[i].expect);
+			ok = 0;
+		}
+	}
+
+	/* An all-zero device is unformatted and must say so rather than
+	 * guessing -- a partition reported as ext4 when it is blank is
+	 * worse than one reported as unknown. */
+	{
+		char path[] = "/tmp/thinc_test_fsprobe_XXXXXX";
+		char got[16];
+
+		if (write_probe_file(path, 0x11000, 0, "", 0) == 0) {
+			disk_probe_fs_type(path, got, sizeof(got));
+			unlink(path);
+			if (got[0] != '\0') {
+				fprintf(stderr, "FAIL: blank device probed as \"%s\", expected \"\"\n", got);
+				ok = 0;
+			}
+		}
+	}
+
+	/* A path that does not exist is the normal case in this sandbox
+	 * and must not be reported as a filesystem. */
+	{
+		char got[16];
+
+		disk_probe_fs_type("/dev/thinc-no-such-device", got, sizeof(got));
+		if (got[0] != '\0') {
+			fprintf(stderr, "FAIL: missing device probed as \"%s\", expected \"\"\n", got);
+			ok = 0;
+		}
+	}
+	return ok;
+}
+
 int main(void)
 {
 	pid_t daemon_pid;
@@ -552,6 +658,8 @@ int main(void)
 	}
 
 	if (!test_mount_attribution())
+		ok = 0;
+	if (!test_fs_probe())
 		ok = 0;
 
 	if (ok)

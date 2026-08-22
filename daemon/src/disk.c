@@ -1,5 +1,9 @@
 #include "disk.h"
 
+#include "diskrole.h"
+
+#include <fcntl.h>
+
 #include <ctype.h>
 #include <dirent.h>
 #include <limits.h>
@@ -238,6 +242,82 @@ static void fill_mount_status(struct discovered_disk *out, int count)
 }
 
 /*
+ * What filesystem, if any, is on this device -- read from the device's
+ * own superblock rather than from anything this daemon remembers.
+ *
+ * There was already a remembered fs_type (diskrole_set_fs_type(),
+ * persisted), but only for disks carrying a role, so nothing could
+ * answer the question for the OS layout or for a freshly-partitioned
+ * disk -- which is exactly where an operator most wants it, since a
+ * partition with no role and no reported filesystem reads as empty
+ * whether or not it is. The device is the truth; the remembered value
+ * is a cache for choosing a mount type.
+ *
+ * Deliberately a direct read rather than shelling out to blkid: this
+ * project has just been bitten once by a compiled-in binary path that
+ * was never staged into the control-plane image (issue #9's sfdisk), and
+ * these magics are a handful of fixed offsets.
+ *
+ * Only the filesystems this platform actually produces or boots from
+ * are recognised. Anything else reports "" -- honestly unknown, not
+ * guessed. Opened O_RDONLY with no O_EXCL, so this is safe against a
+ * device that is currently mounted and in use.
+ */
+void disk_probe_fs_type(const char *dev_path, char *out, size_t out_size)
+{
+	unsigned char buf[4096];
+	int fd;
+
+	if (out_size == 0)
+		return;
+	out[0] = '\0';
+
+	fd = open(dev_path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return; /* removable with no media (sr0), or genuinely unreadable */
+
+	/* squashfs: "hsqs" at offset 0. */
+	if (pread(fd, buf, 4, 0) == 4 && memcmp(buf, "hsqs", 4) == 0) {
+		snprintf(out, out_size, "squashfs");
+		close(fd);
+		return;
+	}
+	/* FAT: the type string sits at 0x36 for FAT12/16 and 0x52 for
+	 * FAT32. This is the ESP's own filesystem, so it matters here. */
+	if (pread(fd, buf, 512, 0) == 512) {
+		if (memcmp(buf + 0x52, "FAT32", 5) == 0 || memcmp(buf + 0x36, "FAT", 3) == 0) {
+			snprintf(out, out_size, "vfat");
+			close(fd);
+			return;
+		}
+	}
+	/* ext2/3/4: magic 0xEF53 at byte 56 of the superblock, which
+	 * itself starts at 1024. Reported as "ext4" -- the only ext
+	 * variant this project's own mkfs ever produces, and the string
+	 * mount(2) is given. */
+	if (pread(fd, buf, 2, 1024 + 56) == 2 && buf[0] == 0x53 && buf[1] == 0xEF) {
+		snprintf(out, out_size, "ext4");
+		close(fd);
+		return;
+	}
+	/* btrfs: "_BHRfS_M" at 0x10040. */
+	if (pread(fd, buf, 8, 0x10040) == 8 && memcmp(buf, "_BHRfS_M", 8) == 0) {
+		snprintf(out, out_size, "btrfs");
+		close(fd);
+		return;
+	}
+	/* swap: the signature lives at the end of the first page. */
+	if (pread(fd, buf, 4096, 0) == 4096 &&
+	    (memcmp(buf + 4096 - 10, "SWAPSPACE2", 10) == 0 ||
+	     memcmp(buf + 4096 - 10, "SWAP-SPACE", 10) == 0)) {
+		snprintf(out, out_size, "swap");
+		close(fd);
+		return;
+	}
+	close(fd);
+}
+
+/*
  * Fills in the fields common to both a whole disk and a partition entry
  * (name/dev_path/size_bytes/io_stats) -- everything disk_enumerate()'s
  * two passes below share. model/removable/is_os_disk are set by the
@@ -249,6 +329,7 @@ static void fill_common(struct discovered_disk *e, const char *d_name, const cha
 	memset(e, 0, sizeof(*e));
 	snprintf(e->name, sizeof(e->name), "%s", d_name);
 	snprintf(e->dev_path, sizeof(e->dev_path), "/dev/%s", d_name);
+	disk_probe_fs_type(e->dev_path, e->fs_type, sizeof(e->fs_type));
 	/* sysfs "size" is always in 512-byte sectors, regardless of the
 	 * device's own real logical block size. */
 	e->size_bytes = strtoull(size_str, NULL, 10) * 512ULL;
@@ -389,6 +470,24 @@ void disk_write_json_one(const struct discovered_disk *d, struct json_writer *w)
 	 * operator with no shell has no other way to see it. */
 	jw_key(w, "has_mounted_partition");
 	jw_bool(w, d->has_mounted_partition);
+	/*
+	 * Issue #90. fs_type is probed from the device itself, so it is
+	 * answered for every disk and partition, role or not -- "" means
+	 * no recognised filesystem, which for a partition genuinely means
+	 * unformatted. role is joined here rather than leaving every client
+	 * to fetch GET /diskroles and match by name itself.
+	 */
+	jw_key(w, "fs_type");
+	jw_str(w, d->fs_type);
+	jw_key(w, "role");
+	{
+		const char *role = diskrole_lookup(d->name);
+
+		if (role != NULL)
+			jw_str(w, role);
+		else
+			jw_null(w);
+	}
 	jw_key(w, "reads_completed");
 	jw_int(w, (long long)d->reads_completed);
 	jw_key(w, "writes_completed");
