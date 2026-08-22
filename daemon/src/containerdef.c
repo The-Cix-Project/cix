@@ -134,6 +134,27 @@ int containerdef_add(const char *name, const char *body, size_t body_len,
 	return save_state();
 }
 
+int containerdef_set_body(const char *name, const char *body, size_t body_len)
+{
+	struct container_def *d = containerdef_find(name);
+	char *copy;
+
+	if (d == NULL)
+		return -1;
+
+	copy = malloc(body_len + 1);
+	if (copy == NULL)
+		return -1;
+	memcpy(copy, body, body_len);
+	copy[body_len] = '\0';
+
+	free(d->body);
+	d->body = copy;
+	d->body_len = body_len;
+
+	return save_state();
+}
+
 int containerdef_remove(const char *name)
 {
 	struct container_def *d = containerdef_find(name);

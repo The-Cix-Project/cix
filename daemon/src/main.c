@@ -11221,6 +11221,233 @@ static void handle_unpause(int fd, const char *name)
 }
 
 /*
+ * Issue #92: attach/detach a volume on an EXISTING container.
+ *
+ * Deliberately the opposite posture to POST .../networks, which is live
+ * and ephemeral (ADR-0156): these edit the container's own persisted
+ * definition and take effect on its NEXT start. A bind mount has to
+ * land inside the container's own mount namespace, which only exists
+ * between clone3() and pivot_root (ADR-0183) -- attaching to an
+ * already-running container needs a primitive to enter another
+ * namespace from outside that this daemon does not have. Rather than
+ * pretend otherwise, the durable half ships now and says so plainly;
+ * the live half stays tracked on #92.
+ *
+ * Editing the definition body is the whole mechanism -- no second
+ * store of "which volumes does this container have", so nothing can
+ * disagree with the definition that a restart actually replays.
+ */
+static void respond_container_volumes(int fd, int status, const char *status_text,
+                                       const char *name, const struct json_value *body_root)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	containerdef_write_json_volumes(body_root, &w);
+	jw_key(&w, "applies");
+	/* Said explicitly rather than left for the caller to discover: the
+	 * running container is unchanged by this call. */
+	jw_str(&w, "on next start");
+	jw_obj_close(&w);
+	respond_json(fd, status, status_text, &w);
+	jw_free(&w);
+}
+
+/*
+ * Rewrites def's stored body with `volumes` replaced by new_volumes
+ * (which may be NULL to drop the key entirely). Every other field is
+ * copied through the parsed tree verbatim.
+ */
+static int container_def_replace_volumes(struct container_def *def, const struct json_value *root,
+                                          const struct json_value *const *new_volumes,
+                                          size_t new_count)
+{
+	struct json_writer w;
+	size_t i;
+	int rc;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	for (i = 0; i < root->u.object.count; i++) {
+		if (strcmp(root->u.object.keys[i], "volumes") == 0)
+			continue;
+		jw_key(&w, root->u.object.keys[i]);
+		jw_value(&w, root->u.object.values[i]);
+	}
+	if (new_count > 0) {
+		jw_key(&w, "volumes");
+		jw_arr_open(&w);
+		for (i = 0; i < new_count; i++)
+			jw_value(&w, new_volumes[i]);
+		jw_arr_close(&w);
+	}
+	jw_obj_close(&w);
+	if (w.buf == NULL) {
+		jw_free(&w);
+		return -1;
+	}
+	rc = containerdef_set_body(def->name, w.buf, w.len);
+	jw_free(&w);
+	return rc;
+}
+
+static void handle_container_volume_attach(int fd, const char *container_name, const char *body,
+                                            size_t body_len)
+{
+	struct container_def *def = containerdef_find(container_name);
+	struct json_value *req = NULL;
+	struct json_value *root = NULL;
+	const struct json_value *jvols;
+	const struct json_value *existing[CONTAINER_MAX_VOLUMES + 1];
+	size_t count = 0;
+	const char *vname;
+	const char *vpath;
+	size_t i;
+
+	if (def == NULL) {
+		respond_error(fd, 404, "Not Found", "no such container");
+		return;
+	}
+	req = json_parse(body, body_len);
+	if (req == NULL || req->type != JSON_OBJECT) {
+		json_free(req);
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	vname = json_as_string(json_object_get(req, "name"));
+	vpath = json_as_string(json_object_get(req, "path"));
+	if (vname == NULL || vpath == NULL || vpath[0] != '/' || !file_path_is_safe(vpath)) {
+		json_free(req);
+		respond_error(fd, 400, "Bad Request",
+		              "name and an absolute path with no '..' are both required");
+		return;
+	}
+	if (volume_find(vname) == NULL) {
+		json_free(req);
+		respond_error(fd, 404, "Not Found",
+		              "no such volume -- create it first (POST /v1/volumes); a container is "
+		              "never given a volume that does not already exist");
+		return;
+	}
+
+	root = json_parse(def->body, def->body_len);
+	if (root == NULL || root->type != JSON_OBJECT) {
+		json_free(root);
+		json_free(req);
+		respond_error(fd, 500, "Internal Server Error",
+		              "this container's stored definition could not be parsed");
+		return;
+	}
+	jvols = json_object_get(root, "volumes");
+	if (jvols != NULL && jvols->type == JSON_ARRAY) {
+		for (i = 0; i < jvols->u.array.count && count < CONTAINER_MAX_VOLUMES; i++) {
+			const struct json_value *item = jvols->u.array.items[i];
+			const char *n = json_as_string(json_object_get(item, "name"));
+			const char *pth = json_as_string(json_object_get(item, "path"));
+
+			/* Two different volumes cannot share a mount path, and
+			 * the same volume twice is a no-op the caller almost
+			 * certainly did not mean -- both are 409 rather than a
+			 * silently-ignored duplicate. */
+			if (n != NULL && strcmp(n, vname) == 0) {
+				json_free(root);
+				json_free(req);
+				respond_error(fd, 409, "Conflict",
+				              "this container already mounts that volume");
+				return;
+			}
+			if (pth != NULL && strcmp(pth, vpath) == 0) {
+				json_free(root);
+				json_free(req);
+				respond_error(fd, 409, "Conflict",
+				              "this container already mounts a volume at that path");
+				return;
+			}
+			existing[count++] = item;
+		}
+	}
+	if (count >= CONTAINER_MAX_VOLUMES) {
+		json_free(root);
+		json_free(req);
+		respond_error(fd, 409, "Conflict", "this container already has the maximum volumes");
+		return;
+	}
+	existing[count++] = req;
+
+	if (container_def_replace_volumes(def, root, existing, count) != 0) {
+		json_free(root);
+		json_free(req);
+		respond_error(fd, 500, "Internal Server Error", "could not persist the definition");
+		return;
+	}
+	json_free(root);
+	json_free(req);
+
+	/* Re-read what was actually stored rather than echoing what was
+	 * asked for -- the whole point of the call is the persisted state. */
+	def = containerdef_find(container_name);
+	root = def != NULL ? json_parse(def->body, def->body_len) : NULL;
+	respond_container_volumes(fd, 200, "OK", container_name, root);
+	json_free(root);
+}
+
+static void handle_container_volume_detach(int fd, const char *container_name,
+                                            const char *volume_name)
+{
+	struct container_def *def = containerdef_find(container_name);
+	struct json_value *root;
+	const struct json_value *jvols;
+	const struct json_value *kept[CONTAINER_MAX_VOLUMES];
+	size_t count = 0;
+	int found = 0;
+	size_t i;
+
+	if (def == NULL) {
+		respond_error(fd, 404, "Not Found", "no such container");
+		return;
+	}
+	root = json_parse(def->body, def->body_len);
+	if (root == NULL || root->type != JSON_OBJECT) {
+		json_free(root);
+		respond_error(fd, 500, "Internal Server Error",
+		              "this container's stored definition could not be parsed");
+		return;
+	}
+	jvols = json_object_get(root, "volumes");
+	if (jvols != NULL && jvols->type == JSON_ARRAY) {
+		for (i = 0; i < jvols->u.array.count && count < CONTAINER_MAX_VOLUMES; i++) {
+			const struct json_value *item = jvols->u.array.items[i];
+			const char *n = json_as_string(json_object_get(item, "name"));
+
+			if (n != NULL && strcmp(n, volume_name) == 0) {
+				found = 1;
+				continue;
+			}
+			kept[count++] = item;
+		}
+	}
+	if (!found) {
+		json_free(root);
+		respond_error(fd, 404, "Not Found", "this container does not mount that volume");
+		return;
+	}
+	if (container_def_replace_volumes(def, root, kept, count) != 0) {
+		json_free(root);
+		respond_error(fd, 500, "Internal Server Error", "could not persist the definition");
+		return;
+	}
+	json_free(root);
+
+	def = containerdef_find(container_name);
+	root = def != NULL ? json_parse(def->body, def->body_len) : NULL;
+	respond_container_volumes(fd, 200, "OK", container_name, root);
+	json_free(root);
+}
+
+/*
  * POST /v1/containers/{name}/networks (ADR-0156, task #861): attaches
  * one more network to an ALREADY-RUNNING container, live -- no
  * recreate. Deliberately LIVE and EPHEMERAL, the same posture ADR-0153
@@ -17575,6 +17802,28 @@ static void dispatch(int fd, const struct http_request *req)
 						memcpy(container_name, name, slash - name);
 						container_name[slash - name] = '\0';
 						handle_container_network_detach(fd, container_name, slash + 10);
+						return;
+					}
+					/* "/volumes" (attach) / "/volumes/{volume}" (detach),
+					 * issue #92 -- same splitting as "/networks" above.
+					 * Both edit the persisted definition and apply on the
+					 * container's next start, never live. */
+					if (strcmp(slash, "/volumes") == 0 && strcmp(req->method, "POST") == 0) {
+						char container_name[REGISTRY_NAME_MAX];
+
+						memcpy(container_name, name, slash - name);
+						container_name[slash - name] = '\0';
+						handle_container_volume_attach(fd, container_name, req->body,
+						                                req->body_len);
+						return;
+					}
+					if (strncmp(slash, "/volumes/", 9) == 0 &&
+					    strcmp(req->method, "DELETE") == 0 && slash[9] != '\0') {
+						char container_name[REGISTRY_NAME_MAX];
+
+						memcpy(container_name, name, slash - name);
+						container_name[slash - name] = '\0';
+						handle_container_volume_detach(fd, container_name, slash + 9);
 						return;
 					}
 					/* "/devices" (attach)/"/devices/{id}" (detach)

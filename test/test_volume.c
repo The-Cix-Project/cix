@@ -258,6 +258,120 @@ int main(void)
 	check(strstr(out, "READ:PERSISTED") != NULL,
 	      "volume data SURVIVED the first container being deleted");
 
+	/* 5b. attach/detach on an EXISTING container (issue #92).
+	 *
+	 * These edit the persisted definition and apply on the next start,
+	 * never live -- so the assertion that matters is not that the API
+	 * returns 200, it is that a container created with NO volume, then
+	 * attached to one, actually has it mounted when it next starts.
+	 * Everything weaker than that would pass against an endpoint that
+	 * updated bookkeeping and nothing else. */
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "POST", "/v1/volumes", "{\"name\":\"vol2\"}", &r) == 0 &&
+	          r.status == 201,
+	      "a second volume for the attach test");
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "POST", "/v1/containers",
+	                         "{\"name\":\"cattach\",\"image\":\"voltest\",\"capture_output\":true,"
+	                         "\"restart\":\"no\","
+	                         "\"cmd\":[\"/bin/volume_child\",\"write\"]}",
+	                         &r) == 0 &&
+	          r.status == 201,
+	      "container created with no volumes at all");
+	kx_response_free(&r);
+
+	out[0] = '\0';
+	check(wait_exited(&client, "cattach", out, sizeof(out)) == 0, "first run exited");
+	check(strstr(out, "WROTE") == NULL,
+	      "with no volume mounted the writer could not write -- the baseline the attach has to "
+	      "change");
+
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "POST", "/v1/containers/cattach/volumes",
+	                         "{\"name\":\"vol2\",\"path\":\"/vol\"}", &r) == 0 &&
+	          r.status == 200,
+	      "attaching a volume to an existing container");
+	kx_response_free(&r);
+
+	/* A duplicate, and a second volume at a path already in use, are
+	 * both refused -- silently ignoring either would leave the caller
+	 * believing something happened that did not. */
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "POST", "/v1/containers/cattach/volumes",
+	                         "{\"name\":\"vol2\",\"path\":\"/elsewhere\"}", &r) == 0 &&
+	          r.status == 409,
+	      "attaching the same volume twice is refused (409)");
+	kx_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "POST", "/v1/containers/cattach/volumes",
+	                         "{\"name\":\"vol1\",\"path\":\"/vol\"}", &r) == 0 &&
+	          r.status == 409,
+	      "a second volume at an already-used path is refused (409)");
+	kx_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "POST", "/v1/containers/cattach/volumes",
+	                         "{\"name\":\"nosuchvol\",\"path\":\"/x\"}", &r) == 0 &&
+	          r.status == 404,
+	      "attaching an unknown volume is refused (404)");
+	kx_response_free(&r);
+
+	/* The point: start it again and the volume is really there. */
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "POST", "/v1/containers/cattach/start", NULL, &r) == 0 &&
+	          r.status == 200,
+	      "restarting the container after the attach");
+	kx_response_free(&r);
+
+	out[0] = '\0';
+	check(wait_exited(&client, "cattach", out, sizeof(out)) == 0, "second run exited");
+	check(strstr(out, "WROTE") != NULL,
+	      "the attached volume was really mounted on the next start, not just recorded");
+
+	/* Detach, restart, and confirm it is genuinely gone again -- an
+	 * endpoint that only ever adds would pass every assertion above. */
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "DELETE", "/v1/containers/cattach/volumes/vol2", NULL, &r) ==
+	              0 &&
+	          r.status == 200,
+	      "detaching the volume");
+	kx_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "DELETE", "/v1/containers/cattach/volumes/vol2", NULL, &r) ==
+	              0 &&
+	          r.status == 404,
+	      "detaching a volume the container does not mount is 404");
+	kx_response_free(&r);
+
+	/*
+	 * The detach is checked on the definition, not by watching the
+	 * write fail. It would not fail: the mount point the attach created
+	 * stays behind in the container's overlay upper layer, so a write
+	 * to /vol still succeeds afterwards -- it just lands in the overlay
+	 * and dies with the container instead of persisting. Asserting on
+	 * the write here would be asserting something untrue.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET", "/v1/containers/cattach", NULL, &r) == 0 &&
+	    r.status == 200) {
+		const struct json_value *jv = json_object_get(r.json, "volumes");
+
+		check(jv != NULL && jv->type == JSON_ARRAY && jv->u.array.count == 0,
+		      "after detaching, the container's definition carries no volumes");
+	} else {
+		check(0, "after detaching, the container's definition carries no volumes");
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	kx_client_request(&client, "DELETE", "/v1/containers/cattach", NULL, &r);
+	kx_response_free(&r);
+	wait_gone(&client, "cattach");
+	memset(&r, 0, sizeof(r));
+	kx_client_request(&client, "DELETE", "/v1/volumes/vol2", NULL, &r);
+	kx_response_free(&r);
+
 	/* 6. deleting a volume is refused while a container definition still
 	 * references it -- silently removing data a stopped container will
 	 * expect on its next start would be a data-loss bug. */

@@ -6705,6 +6705,99 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /containers/{name}/volumes:
+    post:
+      summary: Attach a persistent volume to an existing container (issue #92)
+      description: >
+        Edits the container's persisted definition and takes effect on
+        its NEXT start -- deliberately the opposite of POST
+        .../networks, which is live and ephemeral. A bind mount has to
+        land inside the container's own mount namespace, which only
+        exists between clone3() and pivot_root (ADR-0183), so attaching
+        to an already-running container needs a primitive to enter
+        another namespace from outside that this daemon does not have.
+        The response says so in its `applies` field rather than leaving
+        the caller to discover it.
+      operationId: attachContainerVolume
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContainerVolumeMount"
+      responses:
+        "200":
+          description: Definition updated; the container's volumes as now stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContainerVolumesResponse"
+        "400":
+          description: Missing name, or a path that is not absolute or contains ".."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such container, or no such volume (never created implicitly)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            This container already mounts that volume, already mounts a
+            different volume at that path, or is already at the
+            per-container volume maximum
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The stored definition could not be parsed, or the edit could not be persisted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /containers/{name}/volumes/{volume_name}:
+    delete:
+      summary: Detach a volume from an existing container (issue #92)
+      description: >
+        Same deferred semantics as the attach above: the definition is
+        edited and the change applies on the container's next start.
+        Never deletes the volume or its data -- only this container's
+        reference to it.
+      operationId: detachContainerVolume
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+        - name: volume_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Definition updated; the container's remaining volumes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContainerVolumesResponse"
+        "404":
+          description: No such container, or this container does not mount that volume
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The stored definition could not be parsed, or the edit could not be persisted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /containers/{name}/networks:
     post:
       summary: >
@@ -7773,6 +7866,23 @@ components:
             the container fails to start rather than coming up
             writable -- a guarantee that silently is not one would be
             worse than no guarantee at all.
+
+    ContainerVolumesResponse:
+      type: object
+      required: [name, volumes, applies]
+      properties:
+        name:
+          type: string
+        volumes:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContainerVolumeMount"
+        applies:
+          type: string
+          description: >
+            Always "on next start" -- stated explicitly because the
+            running container is genuinely unchanged by these calls, and
+            a client that assumed otherwise would be wrong.
 
     Volume:
       type: object
