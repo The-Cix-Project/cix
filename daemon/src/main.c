@@ -892,6 +892,9 @@ enum conn_kind {
 	CONN_DISK_FORMAT,       /* disk format+mount job (multi-disk management Phase C) */
 	CONN_STORAGE_MIGRATE,   /* state/rebuildable/log-storage migration job (ADR-0141 Phase 2) */
 	CONN_CONTAINER_STORAGE_MIGRATE, /* one container's own overlay-storage migration job (ADR-0142 Section 4) */
+	CONN_EXEC_OUTPUT,       /* issue #62 -- the pipe carrying an exec job's output */
+	CONN_EXEC_CHILD,        /* same job's pidfd, so its exit is noticed without polling */
+	CONN_EXEC_TIMER,        /* same job's deadline */
 	CONN_PING,              /* GET/POST /v1/system/ping -- the raw ICMP socket half */
 	CONN_PING_TIMER,        /* same job's paired timeout -- see ping_job_teardown() */
 	CONN_NTP_PERIODIC_TIMER, /* permanent, re-arms itself -- fires ntp_sync_start() periodically (task #751) */
@@ -3592,6 +3595,327 @@ static void ping_job_teardown(void)
 		queue_conn_free(g_ping_timer_conn);
 		g_ping_timer_conn = NULL;
 	}
+}
+
+/* ---- Issue #62: non-interactive exec ---- */
+
+/*
+ * Run a command inside a running container and collect its output.
+ *
+ * The two ways to do this before were both poor diagnostics: the
+ * interactive console mangles piped input through its pty line
+ * discipline (a corrupted one-liner fed a wrong hang diagnosis during
+ * Part 201), and a throwaway container with capture_output gets a fresh
+ * namespace, which is useless for inspecting the state of an
+ * already-running one -- the actual need during an investigation.
+ *
+ * An async job with a poll endpoint, not a blocking handler. Holding
+ * the epoll loop for the length of someone's command is exactly the
+ * wedge ADR-0180 exists to prevent, and this daemon already has this
+ * shape for every other slow thing (ping, disk format, storage
+ * migration): start it, respond, let the client poll.
+ *
+ * One at a time, deliberately. Concurrent execs would need per-job
+ * state and identifiers for a diagnostic tool that is used one command
+ * at a time; "another exec is already running" is a clearer answer than
+ * silently queueing.
+ */
+#define EXEC_OUTPUT_MAX 65536
+#define EXEC_DEFAULT_TIMEOUT_SECONDS 30
+#define EXEC_MAX_TIMEOUT_SECONDS 300
+#define EXEC_MAX_ARGV 32
+
+static struct {
+	int in_use;
+	int done;
+	int timed_out;
+	int exit_status;
+	pid_t child_pid;
+	char container[REGISTRY_NAME_MAX];
+	char output[EXEC_OUTPUT_MAX];
+	size_t output_len;
+	int truncated;
+	struct conn *out_conn;
+	struct conn *child_conn;
+	struct conn *timer_conn;
+} g_exec;
+
+static void exec_job_close_conn(struct conn **slot)
+{
+	if (*slot == NULL)
+		return;
+	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, (*slot)->fd, NULL);
+	close((*slot)->fd);
+	free(*slot);
+	*slot = NULL;
+}
+
+/*
+ * Tears the job's own fds down but KEEPS the result, so a client that
+ * polls after completion still gets the output and exit status. The
+ * result is replaced by the next exec, not cleared here.
+ */
+static void exec_job_finish(int exit_status, int timed_out)
+{
+	g_exec.exit_status = exit_status;
+	g_exec.timed_out = timed_out;
+	g_exec.done = 1;
+	if (g_exec.child_pid > 0 && timed_out) {
+		/* A command that outran its deadline is killed rather than
+		 * left running invisibly -- an exec nobody is waiting for any
+		 * more is exactly the kind of orphan that turns up later as a
+		 * mystery process. */
+		kill(g_exec.child_pid, SIGKILL);
+		waitpid(g_exec.child_pid, NULL, WNOHANG);
+	}
+	exec_job_close_conn(&g_exec.out_conn);
+	exec_job_close_conn(&g_exec.child_conn);
+	exec_job_close_conn(&g_exec.timer_conn);
+	g_exec.child_pid = -1;
+}
+
+static void handle_exec_output_event(struct conn *cc)
+{
+	char buf[4096];
+	ssize_t n = read(cc->fd, buf, sizeof(buf));
+
+	if (n > 0) {
+		size_t room = sizeof(g_exec.output) - 1 - g_exec.output_len;
+
+		if ((size_t)n > room) {
+			/* Capped rather than grown without bound, and the cap is
+			 * reported: silently dropping the tail of a diagnostic is
+			 * how someone concludes the wrong thing from it. */
+			n = (ssize_t)room;
+			g_exec.truncated = 1;
+		}
+		memcpy(g_exec.output + g_exec.output_len, buf, (size_t)n);
+		g_exec.output_len += (size_t)n;
+		g_exec.output[g_exec.output_len] = '\0';
+		return;
+	}
+	/* EOF: the command closed stdout/stderr. Its exit status arrives
+	 * separately via the pidfd, so this half just stops listening. */
+	exec_job_close_conn(&g_exec.out_conn);
+}
+
+static void handle_exec_child_event(struct conn *cc)
+{
+	siginfo_t info;
+
+	memset(&info, 0, sizeof(info));
+	if (waitid(P_PID, (id_t)g_exec.child_pid, &info, WEXITED | WNOHANG) == 0) {
+		/*
+		 * Drain whatever is still buffered in the pipe before
+		 * reporting: a command that writes and exits immediately would
+		 * otherwise be reported with empty output purely because its
+		 * exit was noticed first.
+		 */
+		if (g_exec.out_conn != NULL) {
+			for (;;) {
+				char buf[4096];
+				ssize_t n = read(g_exec.out_conn->fd, buf, sizeof(buf));
+				size_t room;
+
+				if (n <= 0)
+					break;
+				room = sizeof(g_exec.output) - 1 - g_exec.output_len;
+				if ((size_t)n > room) {
+					n = (ssize_t)room;
+					g_exec.truncated = 1;
+				}
+				if (n <= 0)
+					break;
+				memcpy(g_exec.output + g_exec.output_len, buf, (size_t)n);
+				g_exec.output_len += (size_t)n;
+				g_exec.output[g_exec.output_len] = '\0';
+			}
+		}
+		exec_job_finish(info.si_code == CLD_EXITED ? info.si_status : 128 + info.si_status, 0);
+	}
+	(void)cc;
+}
+
+static void handle_exec_timer_event(struct conn *cc)
+{
+	uint64_t ticks;
+
+	if (read(cc->fd, &ticks, sizeof(ticks)) != (ssize_t)sizeof(ticks))
+		; /* a short read just means no tick to act on */
+	exec_job_finish(-1, 1);
+}
+
+static void handle_container_exec_get(int fd, const char *name)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "container");
+	jw_str(&w, g_exec.in_use ? g_exec.container : name);
+	jw_key(&w, "state");
+	if (!g_exec.in_use)
+		jw_str(&w, "none");
+	else if (!g_exec.done)
+		jw_str(&w, "running");
+	else if (g_exec.timed_out)
+		jw_str(&w, "timeout");
+	else
+		jw_str(&w, "done");
+	jw_key(&w, "exit_status");
+	if (g_exec.in_use && g_exec.done && !g_exec.timed_out)
+		jw_int(&w, g_exec.exit_status);
+	else
+		jw_null(&w);
+	jw_key(&w, "output");
+	jw_str(&w, g_exec.in_use ? g_exec.output : "");
+	jw_key(&w, "truncated");
+	jw_bool(&w, g_exec.in_use && g_exec.truncated);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static struct conn *exec_register(int fd, enum conn_kind kind)
+{
+	struct conn *cc = malloc(sizeof(*cc));
+	struct kx_epoll_event ev;
+
+	if (cc == NULL)
+		return NULL;
+	memset(cc, 0, sizeof(*cc));
+	cc->kind = kind;
+	cc->fd = fd;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+		free(cc);
+		return NULL;
+	}
+	return cc;
+}
+
+static void handle_container_exec_post(int fd, const char *name, const char *body, size_t body_len)
+{
+	struct registry_entry *e = registry_find(name);
+	struct json_value *root;
+	const struct json_value *jargv;
+	char *argv_storage[EXEC_MAX_ARGV + 1];
+	char argv_buf[EXEC_MAX_ARGV][512];
+	long timeout_s = EXEC_DEFAULT_TIMEOUT_SECONDS;
+	int argc = 0;
+	int read_fd = -1;
+	pid_t child = -1;
+	int pidfd, tfd;
+	struct itimerspec its;
+	size_t i;
+
+	if (e == NULL || !e->running) {
+		respond_error(fd, 409, "Conflict",
+		              "this container is not running -- there is no namespace to run a command in. "
+		              "For a container that has exited, read its files instead "
+		              "(GET /v1/containers/{name}/files)");
+		return;
+	}
+	if (e->paused) {
+		respond_error(fd, 409, "Conflict",
+		              "this container is paused -- a command started in it would be frozen too");
+		return;
+	}
+	if (g_exec.in_use && !g_exec.done) {
+		respond_error(fd, 409, "Conflict", "another exec is already running");
+		return;
+	}
+
+	root = json_parse(body, body_len);
+	if (root == NULL || root->type != JSON_OBJECT) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	jargv = json_object_get(root, "argv");
+	if (jargv == NULL || jargv->type != JSON_ARRAY || jargv->u.array.count == 0) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "argv must be a non-empty array");
+		return;
+	}
+	if (jargv->u.array.count > EXEC_MAX_ARGV) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "too many argv entries");
+		return;
+	}
+	for (i = 0; i < jargv->u.array.count; i++) {
+		const char *a = json_as_string(jargv->u.array.items[i]);
+
+		if (a == NULL) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "every argv entry must be a string");
+			return;
+		}
+		snprintf(argv_buf[argc], sizeof(argv_buf[argc]), "%s", a);
+		argv_storage[argc] = argv_buf[argc];
+		argc++;
+	}
+	argv_storage[argc] = NULL;
+	{
+		const struct json_value *jt = json_object_get(root, "timeout_seconds");
+
+		if (jt != NULL && jt->type == JSON_NUMBER) {
+			timeout_s = (long)json_as_number(jt);
+			if (timeout_s < 1 || timeout_s > EXEC_MAX_TIMEOUT_SECONDS) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request", "timeout_seconds must be between 1 and 300");
+				return;
+			}
+		}
+	}
+	json_free(root);
+
+	/*
+	 * argv[0] is exec'd directly -- no shell, so no quoting, globbing
+	 * or word splitting happens anywhere. That is the point: a shell
+	 * between the caller and the command is another thing that can
+	 * reinterpret what was asked for, which is the class of problem
+	 * this endpoint exists to avoid.
+	 */
+	if (exec_into_container_piped(e->handle.pid, argv_storage, &read_fd, &child) != 0) {
+		respond_error(fd, 500, "Internal Server Error",
+		              "could not enter the container's namespaces to run the command");
+		return;
+	}
+
+	memset(&g_exec, 0, sizeof(g_exec));
+	g_exec.in_use = 1;
+	g_exec.child_pid = child;
+	snprintf(g_exec.container, sizeof(g_exec.container), "%s", name);
+
+	pidfd = sys_pidfd_open(child, 0);
+	tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+	if (pidfd < 0 || tfd < 0) {
+		if (pidfd >= 0) close(pidfd);
+		if (tfd >= 0) close(tfd);
+		close(read_fd);
+		kill(child, SIGKILL);
+		waitpid(child, NULL, 0);
+		memset(&g_exec, 0, sizeof(g_exec));
+		respond_error(fd, 500, "Internal Server Error", "could not watch the command");
+		return;
+	}
+	memset(&its, 0, sizeof(its));
+	its.it_value.tv_sec = timeout_s;
+	timerfd_settime(tfd, 0, &its, NULL);
+
+	g_exec.out_conn = exec_register(read_fd, CONN_EXEC_OUTPUT);
+	g_exec.child_conn = exec_register(pidfd, CONN_EXEC_CHILD);
+	g_exec.timer_conn = exec_register(tfd, CONN_EXEC_TIMER);
+	if (g_exec.out_conn == NULL || g_exec.child_conn == NULL || g_exec.timer_conn == NULL) {
+		exec_job_finish(-1, 0);
+		memset(&g_exec, 0, sizeof(g_exec));
+		respond_error(fd, 500, "Internal Server Error", "could not watch the command");
+		return;
+	}
+	handle_container_exec_get(fd, name);
 }
 
 static void handle_ping_socket_event(struct conn *cc)
@@ -18720,6 +19044,22 @@ static void dispatch(int fd, const struct http_request *req)
 					 * issue #92 -- same splitting as "/networks" above.
 					 * Both edit the persisted definition and apply on the
 					 * container's next start, never live. */
+					if (strcmp(slash, "/exec") == 0 && strcmp(req->method, "POST") == 0) {
+						char container_name[REGISTRY_NAME_MAX];
+
+						memcpy(container_name, name, slash - name);
+						container_name[slash - name] = '\0';
+						handle_container_exec_post(fd, container_name, req->body, req->body_len);
+						return;
+					}
+					if (strcmp(slash, "/exec") == 0 && strcmp(req->method, "GET") == 0) {
+						char container_name[REGISTRY_NAME_MAX];
+
+						memcpy(container_name, name, slash - name);
+						container_name[slash - name] = '\0';
+						handle_container_exec_get(fd, container_name);
+						return;
+					}
 					if (strcmp(slash, "/volumes") == 0 && strcmp(req->method, "POST") == 0) {
 						char container_name[REGISTRY_NAME_MAX];
 
@@ -21895,6 +22235,12 @@ int main(int argc, char **argv)
 				handle_pkg_sync_fetch_event(cc);
 			else if (cc->kind == CONN_PKG_SYNC_PERIODIC_TIMER)
 				handle_pkg_sync_periodic_timer_event(cc);
+			else if (cc->kind == CONN_EXEC_OUTPUT)
+				handle_exec_output_event(cc);
+			else if (cc->kind == CONN_EXEC_CHILD)
+				handle_exec_child_event(cc);
+			else if (cc->kind == CONN_EXEC_TIMER)
+				handle_exec_timer_event(cc);
 			else if (cc->kind == CONN_BACKUP_PERIODIC_TIMER) {
 				/*
 				 * Issue #96: the volume sweep rides this same tick

@@ -4323,6 +4323,98 @@ static void fmt_software(const struct json_value *v)
 		       drift);
 }
 
+/*
+ * Issue #62: run a command inside a running container and print what it
+ * wrote. Polls the async job so it behaves like a synchronous command,
+ * the same way `pkg install --wait` and disk-format status already do --
+ * the daemon must not block its event loop for the length of someone's
+ * command (ADR-0180), but the operator should not have to know that.
+ */
+static int cmd_container_exec(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	char path[300];
+	struct kx_response r;
+	struct json_writer w;
+	const char *name;
+	int i, sep = -1;
+
+	for (i = 0; i < argc; i++) {
+		if (strcmp(argv[i], "--") == 0) {
+			sep = i;
+			break;
+		}
+	}
+	if (argc < 1 || sep < 1 || sep + 1 >= argc) {
+		fprintf(stderr, "usage: thincctl exec NAME -- COMMAND [ARGS...]\n"
+		                "  Runs COMMAND inside the RUNNING container's own namespaces.\n"
+		                "  No shell: no quoting, globbing or word splitting happens anywhere,\n"
+		                "  which is the point -- nothing reinterprets what you asked for.\n");
+		return 2;
+	}
+	name = argv[0];
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "argv");
+	jw_arr_open(&w);
+	for (i = sep + 1; i < argc; i++)
+		jw_str(&w, argv[i]);
+	jw_arr_close(&w);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	snprintf(path, sizeof(path), "/v1/containers/%s/exec", name);
+	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "thincctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	if (r.status != 200) {
+		emit(&r, json_mode, NULL);
+		return 1;
+	}
+	kx_response_free(&r);
+
+	for (i = 0; i < 3000; i++) {
+		const char *state;
+
+		usleep(100000);
+		if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+			fprintf(stderr, "thincctl: could not reach daemon\n");
+			return 1;
+		}
+		state = json_as_string(json_object_get(r.json, "state"));
+		if (state != NULL && strcmp(state, "running") == 0) {
+			kx_response_free(&r);
+			continue;
+		}
+		if (json_mode)
+			return emit(&r, json_mode, NULL);
+		{
+			const char *out = json_as_string(json_object_get(r.json, "output"));
+			const struct json_value *es = json_object_get(r.json, "exit_status");
+			const struct json_value *tr = json_object_get(r.json, "truncated");
+			int rc;
+
+			if (out != NULL && out[0] != '\0')
+				fputs(out, stdout);
+			if (tr != NULL && tr->type == JSON_BOOL && tr->u.boolean)
+				fprintf(stderr, "thincctl: output truncated at the capture limit\n");
+			if (state != NULL && strcmp(state, "timeout") == 0) {
+				fprintf(stderr, "thincctl: the command timed out and was killed\n");
+				kx_response_free(&r);
+				return 124; /* timeout(1)'s own convention */
+			}
+			rc = (es != NULL && es->type == JSON_NUMBER) ? (int)json_as_number(es) : 1;
+			kx_response_free(&r);
+			return rc;
+		}
+	}
+	fprintf(stderr, "thincctl: gave up waiting for the command\n");
+	return 1;
+}
+
 static int cmd_software(const struct kx_client *c, int json_mode)
 {
 	struct kx_response r;
@@ -11337,6 +11429,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_host_stats(client, json_mode);
 	if (strcmp(cmd, "server-health") == 0)
 		return cmd_server_health(client, json_mode, argc, argv);
+	if (strcmp(cmd, "exec") == 0)
+		return cmd_container_exec(client, json_mode, argc, argv);
 	if (strcmp(cmd, "software") == 0)
 		return cmd_software(client, json_mode);
 	if (strcmp(cmd, "volume") == 0)
