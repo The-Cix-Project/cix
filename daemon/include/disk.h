@@ -107,6 +107,17 @@ struct discovered_disk {
 	 */
 	unsigned long long start_sector;
 	/*
+	 * Partitions only: the partition's own name in the GPT. This is
+	 * what created it called it -- thinc-install.c writes thinc-esp,
+	 * thinc-root-a, thinc-root-b, thinc-config and thinc-containers,
+	 * and POST /disks/{d}/partitions writes the caller's own `name`.
+	 * That field was write-only before this: accepted, stored in the
+	 * table, and never readable, which left the fixed OS layout showing
+	 * as five indistinguishable partitions with no role at all.
+	 * Empty for a whole disk, an MBR disk, or an unreadable device.
+	 */
+	char part_label[40];
+	/*
 	 * ADR-0142: real, live I/O counters straight from the kernel's own
 	 * per-block-device accounting (/sys/block/<name>/stat -- see
 	 * Documentation/admin-guide/iostats.rst upstream), fields 1/5/3/7/10

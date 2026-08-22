@@ -4268,7 +4268,7 @@ function diskListRow(d) {
 
 	const roleCell = document.createElement("td");
 
-	roleCell.textContent = role ? role.role : "-";
+	roleCell.textContent = role ? role.role : d.part_label || "-";
 	row.appendChild(roleCell);
 
 	/* Issue #90: read from the device's own superblock, so it is
@@ -4364,7 +4364,7 @@ function diskRow(d) {
 	const role = diskRoleFor(d.name);
 	const roleCell = document.createElement("td");
 
-	roleCell.textContent = role ? role.role : "-";
+	roleCell.textContent = role ? role.role : d.part_label || "-";
 	row.appendChild(roleCell);
 
 	const formatStatus = cache.diskFormatStatus[d.name];
@@ -4740,7 +4740,7 @@ function renderDiskPartitions(d, parts) {
 		row.appendChild(nameCell);
 		for (const text of [
 			formatBytes(p.size_bytes),
-			role ? role.role : "-",
+			role ? role.role : p.part_label ? p.part_label + " (fixed)" : "-",
 			p.fs_type || "unformatted",
 			p.mounted ? p.mount_path : "-",
 			p.mounted && p.used_bytes + p.free_bytes > 0

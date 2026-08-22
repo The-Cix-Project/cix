@@ -9000,6 +9000,25 @@ components:
             was a real bug that let a mounted partition be deleted out
             from under its live filesystem. This flag is why a
             repartition gets refused with 409 while a partition is in
+        part_label:
+          type: string
+          description: >
+            Partitions only: the partition's own name in the GPT --
+            what whoever created it actually called it. The fixed OS
+            layout carries thinc-esp, thinc-root-a, thinc-root-b,
+            thinc-config and thinc-containers; a partition created via
+            POST /disks/{name}/partitions carries whatever `name` that
+            request gave it, which was write-only until this was
+            reported. Empty for a whole disk, an MBR disk, or a device
+            that could not be read.
+        start_sector:
+          type: integer
+          description: >
+            Partitions only: where this partition starts on its parent
+            disk, in 512-byte sectors. Reported because it is what tells
+            a client whether a free extent is adjacent to this partition
+            and can therefore grow it -- free space elsewhere on the
+            disk cannot. Zero for a whole disk.
         fs_type:
           type: string
           description: >
