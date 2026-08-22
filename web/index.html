@@ -78,37 +78,69 @@
 			<div class="menu-dropdown">
 				<button type="button" class="menu-dropdown-toggle" data-menu="services">Services</button>
 				<ul class="menu-dropdown-menu" data-menu="services" hidden>
-					<li class="menu-group-label">PKI</li>
-					<li><button type="button" data-modal="pki-cert-form" data-title="Issue certificate">Issue Certificate</button></li>
-					<li class="menu-group-label">DNS</li>
-					<li><button type="button" data-modal="dns-record-form" data-title="Create DNS record">New Record</button></li>
-					<li><button type="button" data-modal="dns-server-form" data-title="Register DNS server">Register Server</button></li>
-					<li class="menu-group-label">LDAP</li>
-					<li><button type="button" data-modal="ldap-user-form" data-title="Create LDAP user">New User</button></li>
-					<li><button type="button" data-modal="ldap-group-form" data-title="Create LDAP group">New Group</button></li>
-					<li><button type="button" data-modal="ldap-server-form" data-title="Register LDAP server">Register Server</button></li>
-					<li class="menu-group-label">NTP</li>
-					<li><button type="button" data-modal="ntp-server-form" data-title="Register NTP server">Register Server</button></li>
-					<li class="menu-group-label">Syslog</li>
-					<li><button type="button" data-modal="syslog-target-form" data-title="Register syslog forward target">Register Target</button></li>
+					<li class="menu-submenu">
+						<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">PKI</button>
+						<ul class="menu-submenu-menu" hidden>
+							<li><button type="button" data-modal="pki-cert-form" data-title="Issue certificate">Issue Certificate</button></li>
+						</ul>
+					</li>
+					<li class="menu-submenu">
+						<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">DNS</button>
+						<ul class="menu-submenu-menu" hidden>
+							<li><button type="button" data-modal="dns-record-form" data-title="Create DNS record">New Record</button></li>
+							<li><button type="button" data-modal="dns-server-form" data-title="Register DNS server">Register Server</button></li>
+						</ul>
+					</li>
+					<li class="menu-submenu">
+						<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">LDAP</button>
+						<ul class="menu-submenu-menu" hidden>
+							<li><button type="button" data-modal="ldap-user-form" data-title="Create LDAP user">New User</button></li>
+							<li><button type="button" data-modal="ldap-group-form" data-title="Create LDAP group">New Group</button></li>
+							<li><button type="button" data-modal="ldap-server-form" data-title="Register LDAP server">Register Server</button></li>
+						</ul>
+					</li>
+					<li class="menu-submenu">
+						<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">NTP</button>
+						<ul class="menu-submenu-menu" hidden>
+							<li><button type="button" data-modal="ntp-server-form" data-title="Register NTP server">Register Server</button></li>
+						</ul>
+					</li>
+					<li class="menu-submenu">
+						<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">Syslog</button>
+						<ul class="menu-submenu-menu" hidden>
+							<li><button type="button" data-modal="syslog-target-form" data-title="Register syslog forward target">Register Target</button></li>
+						</ul>
+					</li>
 				</ul>
 			</div>
 
 			<div class="menu-dropdown">
 				<button type="button" class="menu-dropdown-toggle" data-menu="system">System</button>
 				<ul class="menu-dropdown-menu" data-menu="system" hidden>
-					<li class="menu-group-label">Software</li>
-					<li><button type="button" data-modal="image-form" data-title="Create image">New Image</button></li>
-					<li><button type="button" data-modal="pkg-install-form" data-title="Install a package">Install Package</button></li>
-					<li><button type="button" data-modal="pkg-recipe-form" data-title="Add or update a recipe">New/Update Recipe</button></li>
-					<li><button type="button" data-modal="pkg-bootstrap-form" data-title="Bootstrap build image">Bootstrap Build Image</button></li>
-					<li class="menu-group-label">Host</li>
-					<li><button type="button" data-modal="route-add-form" data-title="Add route">Add Route</button></li>
-					<li><button type="button" data-modal="sysctl-set-form" data-title="Set a sysctl">Set Sysctl</button></li>
-					<li class="menu-group-label">Devices</li>
-					<li><button type="button" data-modal="devicemap-form" data-title="Name a device">Name a Device Mapping</button></li>
-					<li><button type="button" data-modal="kmod-load-form" data-title="Load a kernel module">Load Module</button></li>
-					<li><button type="button" data-modal="kmodconfig-set-form" data-title="Configure a kernel module">Configure Module</button></li>
+					<li class="menu-submenu">
+						<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">Software</button>
+						<ul class="menu-submenu-menu" hidden>
+							<li><button type="button" data-modal="image-form" data-title="Create image">New Image</button></li>
+							<li><button type="button" data-modal="pkg-install-form" data-title="Install a package">Install Package</button></li>
+							<li><button type="button" data-modal="pkg-recipe-form" data-title="Add or update a recipe">New/Update Recipe</button></li>
+							<li><button type="button" data-modal="pkg-bootstrap-form" data-title="Bootstrap build image">Bootstrap Build Image</button></li>
+						</ul>
+					</li>
+					<li class="menu-submenu">
+						<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">Host</button>
+						<ul class="menu-submenu-menu" hidden>
+							<li><button type="button" data-modal="route-add-form" data-title="Add route">Add Route</button></li>
+							<li><button type="button" data-modal="sysctl-set-form" data-title="Set a sysctl">Set Sysctl</button></li>
+						</ul>
+					</li>
+					<li class="menu-submenu">
+						<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">Devices</button>
+						<ul class="menu-submenu-menu" hidden>
+							<li><button type="button" data-modal="devicemap-form" data-title="Name a device">Name a Device Mapping</button></li>
+							<li><button type="button" data-modal="kmod-load-form" data-title="Load a kernel module">Load Module</button></li>
+							<li><button type="button" data-modal="kmodconfig-set-form" data-title="Configure a kernel module">Configure Module</button></li>
+						</ul>
+					</li>
 				</ul>
 			</div>
 		</div>
@@ -1730,7 +1762,23 @@
 
 		
 
-		<section class="view" id="view-host-stats" hidden>
+				<!--
+		  Monitoring: everything about observing what the box is doing, on
+		  one page. These were five tree leaves; each is a facet of the same
+		  question, and a folder of five single-purpose pages meant
+		  navigating to find out which one a thing was on -- the same
+		  reasoning that collapsed Software, Host and each service.
+		-->
+		<section class="view" id="view-monitoring" hidden>
+			<h2>Monitoring</h2>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="host-stats">Host Stats</button>
+				<button type="button" class="tab-button" data-tab="processes">Processes</button>
+				<button type="button" class="tab-button" data-tab="logs">Log Store</button>
+				<button type="button" class="tab-button" data-tab="kmsg">Kernel Log</button>
+				<button type="button" class="tab-button" data-tab="server-health">Server Health</button>
+			</div>
+			<div class="tab-panel" data-tab="host-stats">
 			<h2>Host Stats</h2>
 			<div class="stats-grid">
 				<div class="stats-card">
@@ -1766,9 +1814,9 @@
 			</div>
 			<p class="hint" id="hs-stats-load">Load average: &hellip;</p>
 			<p class="hint">Real, host-side usage (ADR-0073/ADR-0130) -- /proc + statvfs() on the daemon's own data directory, no in-container agent, sampled every 2s while this page stays open. History resets whenever this page (re)opens. Disk is the filesystem thincd's own data directory lives on, not every mounted filesystem on the box.</p>
-		</section>
-
-		<section class="view" id="view-processes" hidden>
+		
+			</div>
+			<div class="tab-panel" data-tab="processes" hidden>
 			<div class="view-list">
 				<h2>Processes</h2>
 				<p class="hint">Every real process on the box (ADR-0131) -- a direct <code>/proc</code> scan, each one correlated to a container (if any) by its own real host ppid chain. A snapshot, not a live feed -- press Refresh for a fresh one. Kill is a real, immediate SIGKILL; refuses pid 1 and this daemon's own pid.</p>
@@ -1789,6 +1837,53 @@
 						<tr><td colspan="7" class="empty">Loading&hellip;</td></tr>
 					</tbody>
 				</table>
+			</div>
+		
+			</div>
+			<div class="tab-panel" data-tab="logs" hidden>
+			<div class="view-list">
+				<h2>Log Store</h2>
+				<p class="hint">A consolidated log (ADR-0070/ADR-0126): real kernel dmesg, thincd's own diagnostics, a per-request audit trail, and every container's own stdout/stderr -- all in one place, size-capped with the oldest entries dropped first once the cap is reached. Browse it live in the Log panel at the bottom of every page (source filter includes this browser's own local activity too, kept client-side only) -- this page just configures the store's size cap, not what's logged.</p>
+				<h3>Size cap</h3>
+				<form id="logs-config-form">
+					<label>
+						Max bytes
+						<input type="number" id="lcf-max-bytes" min="1048576" max="107374182400" step="1048576">
+					</label>
+					<button type="submit">Save</button>
+				</form>
+				<p class="hint">Enforced at segment granularity (8 rotating segments, oldest dropped whole when a new one is needed), not byte-exact -- a few percent of slop against this cap is expected.</p>
+			</div>
+		
+			</div>
+			<div class="tab-panel" data-tab="kmsg" hidden>
+			<div class="view-list">
+				<h2>Kernel Log</h2>
+				<p class="hint">The kernel's own ring buffer (<code>/dev/kmsg</code>) &mdash; dmesg over REST. This is where mount failures, driver probes and OOM kills surface, and on a real installed host with no shell it is the only way to read them. Distinct from the Log Store, which carries <code>thincd</code>'s own diagnostics and the audit trail.</p>
+				<form id="kmsg-form">
+					<label>
+						Tail (entries)
+						<input type="number" id="kmsg-tail" min="1" max="1024" value="200">
+					</label>
+					<button type="submit">Refresh</button>
+				</form>
+				<pre id="kmsg-output" class="log-output">(not loaded)</pre>
+			</div>
+		
+			</div>
+			<div class="tab-panel" data-tab="server-health" hidden>
+			<div class="view-list">
+				<h2>Server Health</h2>
+				<p class="hint">Every registered backend server &mdash; LDAP, DNS, NTP and syslog &mdash; probed on an interval. A server that is drained or has failed its probes is dropped from the configuration handed to clients, so a registered-but-not-serving server can no longer break logins silently. <strong>Drain</strong> takes one out of service deliberately (maintenance); it persists across a daemon restart, while health itself is re-established by the next probe. The <em>Probe</em> column says how the verdict was reached: a <code>tcp:PORT</code> check is a real service check, <code>process</code> only means the container is running.</p>
+				<div id="server-health-warnings" hidden></div>
+				<table>
+					<thead>
+						<tr><th>Kind</th><th>Container</th><th>State</th><th>In service</th><th>Probe</th><th>Failures</th><th>Last error</th><th></th></tr>
+					</thead>
+					<tbody id="server-health-body"></tbody>
+				</table>
+			</div>
+		
 			</div>
 		</section>
 
@@ -1811,22 +1906,6 @@
 		</section>
 
 		
-
-		<section class="view" id="view-logs" hidden>
-			<div class="view-list">
-				<h2>Log Store</h2>
-				<p class="hint">A consolidated log (ADR-0070/ADR-0126): real kernel dmesg, thincd's own diagnostics, a per-request audit trail, and every container's own stdout/stderr -- all in one place, size-capped with the oldest entries dropped first once the cap is reached. Browse it live in the Log panel at the bottom of every page (source filter includes this browser's own local activity too, kept client-side only) -- this page just configures the store's size cap, not what's logged.</p>
-				<h3>Size cap</h3>
-				<form id="logs-config-form">
-					<label>
-						Max bytes
-						<input type="number" id="lcf-max-bytes" min="1048576" max="107374182400" step="1048576">
-					</label>
-					<button type="submit">Save</button>
-				</form>
-				<p class="hint">Enforced at segment granularity (8 rotating segments, oldest dropped whole when a new one is needed), not byte-exact -- a few percent of slop against this cap is expected.</p>
-			</div>
-		</section>
 
 		<!-- Issue #77 surface parity: GET /v1/system/kmsg had no web surface at
 		     all. Distinct from the Log Store above: this is the KERNEL's own
@@ -1926,35 +2005,6 @@
 					</thead>
 					<tbody id="volumes-body"></tbody>
 				</table>
-			</div>
-		</section>
-
-		<section class="view" id="view-server-health" hidden>
-			<div class="view-list">
-				<h2>Server Health</h2>
-				<p class="hint">Every registered backend server &mdash; LDAP, DNS, NTP and syslog &mdash; probed on an interval. A server that is drained or has failed its probes is dropped from the configuration handed to clients, so a registered-but-not-serving server can no longer break logins silently. <strong>Drain</strong> takes one out of service deliberately (maintenance); it persists across a daemon restart, while health itself is re-established by the next probe. The <em>Probe</em> column says how the verdict was reached: a <code>tcp:PORT</code> check is a real service check, <code>process</code> only means the container is running.</p>
-				<div id="server-health-warnings" hidden></div>
-				<table>
-					<thead>
-						<tr><th>Kind</th><th>Container</th><th>State</th><th>In service</th><th>Probe</th><th>Failures</th><th>Last error</th><th></th></tr>
-					</thead>
-					<tbody id="server-health-body"></tbody>
-				</table>
-			</div>
-		</section>
-
-		<section class="view" id="view-kmsg" hidden>
-			<div class="view-list">
-				<h2>Kernel Log</h2>
-				<p class="hint">The kernel's own ring buffer (<code>/dev/kmsg</code>) &mdash; dmesg over REST. This is where mount failures, driver probes and OOM kills surface, and on a real installed host with no shell it is the only way to read them. Distinct from the Log Store, which carries <code>thincd</code>'s own diagnostics and the audit trail.</p>
-				<form id="kmsg-form">
-					<label>
-						Tail (entries)
-						<input type="number" id="kmsg-tail" min="1" max="1024" value="200">
-					</label>
-					<button type="submit">Refresh</button>
-				</form>
-				<pre id="kmsg-output" class="log-output">(not loaded)</pre>
 			</div>
 		</section>
 

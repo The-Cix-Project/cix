@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted; one decision in it (menus are one level with headings) superseded by [ADR-0185](0185-menu-submenus-and-tabs-as-addresses.md), which makes the branch names real hover submenus. The vocabulary rule and everything else here stands.
 
 ## Context
 

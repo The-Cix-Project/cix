@@ -359,8 +359,10 @@ document.addEventListener("keydown", (event) => {
  * shutdown/login -- with no per-item wiring needed here).
  */
 function closeAllMenus() {
-	for (const menu of document.querySelectorAll(".menu-dropdown-menu"))
+	for (const menu of document.querySelectorAll(".menu-dropdown-menu, .menu-submenu-menu"))
 		menu.hidden = true;
+	for (const t of document.querySelectorAll(".menu-submenu-toggle"))
+		t.setAttribute("aria-expanded", "false");
 }
 
 for (const dropdown of document.querySelectorAll(".menu-dropdown")) {
@@ -374,8 +376,61 @@ for (const dropdown of document.querySelectorAll(".menu-dropdown")) {
 		menu.hidden = !shouldOpen;
 	});
 	menu.addEventListener("click", (event) => {
-		if (event.target.closest("a, button"))
+		/* A submenu's own toggle is the one button in here that must
+		 * NOT close the menu it lives in -- it opens a level, it
+		 * doesn't perform an action. */
+		if (event.target.closest("a, button") && !event.target.closest(".menu-submenu-toggle"))
 			menu.hidden = true;
+	});
+}
+
+/*
+ * Second level: the branches inside Services and System (PKI/DNS/...,
+ * Software/Host/Devices) are real submenus that open on hover, rather
+ * than headings over one long list. They were headings first; a menu
+ * of thirteen items with five headings scans no faster than thirteen
+ * items, whereas five things you point at do.
+ *
+ * Hover-to-open is done here rather than with CSS :hover so the same
+ * open path serves click (touch, and keyboard focus) and so a submenu
+ * that would run off the right edge of the window can be flipped to
+ * the parent's left side -- neither of which CSS can decide on its
+ * own. Opening one closes its siblings; leaving the parent <li>
+ * closes it, which covers moving the pointer diagonally out of the
+ * menu entirely.
+ */
+for (const sub of document.querySelectorAll(".menu-submenu")) {
+	const toggle = sub.querySelector(".menu-submenu-toggle");
+	const panel = sub.querySelector(".menu-submenu-menu");
+
+	function openSubmenu() {
+		for (const other of sub.parentElement.querySelectorAll(".menu-submenu-menu"))
+			if (other !== panel)
+				other.hidden = true;
+		panel.hidden = false;
+		toggle.setAttribute("aria-expanded", "true");
+
+		/* Measured after it is visible, since a hidden element has no
+		 * box to measure. 8px of margin so a flipped submenu never
+		 * sits flush against the window edge. */
+		panel.classList.remove("menu-submenu-menu-left");
+		if (panel.getBoundingClientRect().right > window.innerWidth - 8)
+			panel.classList.add("menu-submenu-menu-left");
+	}
+	function closeSubmenu() {
+		panel.hidden = true;
+		toggle.setAttribute("aria-expanded", "false");
+	}
+
+	sub.addEventListener("mouseenter", openSubmenu);
+	sub.addEventListener("mouseleave", closeSubmenu);
+	toggle.addEventListener("focus", openSubmenu);
+	toggle.addEventListener("click", (event) => {
+		event.stopPropagation();
+		if (panel.hidden)
+			openSubmenu();
+		else
+			closeSubmenu();
 	});
 }
 document.addEventListener("click", closeAllMenus);
@@ -387,7 +442,7 @@ document.addEventListener("keydown", (event) => {
 /* Create-action items (data-modal, shared across every topical menu
  * above) all open the same modal shell the old single +Create
  * dropdown already used -- only where they live changed. */
-for (const item of document.querySelectorAll(".menu-dropdown-menu button[data-modal]")) {
+for (const item of document.querySelectorAll(".menu-bar button[data-modal]")) {
 	item.addEventListener("click", () => openModal(item.dataset.modal, item.dataset.title));
 }
 
@@ -979,13 +1034,13 @@ const CATEGORY_VIEWS = {
 	"rolling-restart": "view-daemon-config",
 	"pkg-build-config": "view-recipes",
 	"hostauth-sessions": "view-daemon-config",
-	"host-stats": "view-host-stats",
-	processes: "view-processes",
+	"host-stats": "view-monitoring",
+	processes: "view-monitoring",
 	"syslog-targets": "view-syslog-targets",
 	"tls-throttle": "view-daemon-config",
-	logs: "view-logs",
-	kmsg: "view-kmsg",
-	"server-health": "view-server-health",
+	logs: "view-monitoring",
+	kmsg: "view-monitoring",
+	"server-health": "view-monitoring",
 	volumes: "view-volumes",
 	/* Repo & Sync and Cache & Artifacts became tabs on the Catalogue
 	 * page. Their old addresses still resolve to it (with the right tab
@@ -1074,6 +1129,11 @@ const SERVICE_TAB_VIEWS = {
 	"ntp-config": "view-ntp-config",
 	"ntp-servers": "view-ntp-config",
 	"ntp-time": "view-ntp-config",
+	"host-stats": "view-monitoring",
+	processes: "view-monitoring",
+	logs: "view-monitoring",
+	kmsg: "view-monitoring",
+	"server-health": "view-monitoring",
 };
 
 /* The category last rendered, so a re-render triggered by the poll loop
@@ -1735,20 +1795,17 @@ function renderTree() {
 				},
 				{ label: "Devices", hash: "devices", icon: "devices" },
 				{
-					/* Everything about observing/recording what the box is
-					 * doing -- live resource graphs, the process table, and
-					 * the two ends of the log pipeline (local store config,
-					 * forward-target registration) together. */
+					/* Everything about observing what the box is doing --
+					 * live resource graphs, the process table, the log
+					 * store and the kernel ring buffer, and registered-
+					 * server health -- on one tabbed page. These were five
+					 * leaves; each is a facet of the same question, and a
+					 * folder of five single-purpose pages meant navigating
+					 * to find out which one a thing was on. Same reasoning
+					 * that collapsed Software, Host and each service. */
 					label: "Monitoring",
 					hash: "host-stats",
 					icon: "stats",
-					children: [
-						{ label: "Host Stats", hash: "host-stats", icon: "stats" },
-						{ label: "Processes", hash: "processes", icon: "stats" },
-						{ label: "Log Store", hash: "logs", icon: "system" },
-						{ label: "Kernel Log", hash: "kmsg", icon: "system" },
-						{ label: "Server Health", hash: "server-health", icon: "system" },
-					],
 				},
 			],
 		},
@@ -2831,6 +2888,24 @@ for (const tabButton of document.querySelectorAll(".tab-bar .tab-button")) {
 		 * exactly what happens once one tabbed page contains another. */
 		for (const panel of tabBar.parentElement.querySelectorAll(":scope > .tab-panel"))
 			panel.hidden = panel.dataset.tab !== tabName;
+
+		/*
+		 * Every tab on a collapsed page is named after the address it
+		 * replaced, so a tab that IS an address navigates to it rather
+		 * than only revealing its panel. Without this the panel came up
+		 * holding whatever it was built with -- "Loading…", for a page
+		 * whose render only ever ran on arrival at its own old address
+		 * (confirmed: Host > Routes showed Loading… indefinitely). It
+		 * also makes each tab bookmarkable, which is what those
+		 * addresses were for in the first place.
+		 *
+		 * Tabs that are not addresses -- a container detail's own
+		 * Summary/Hardware/Options/Console, the Catalogue's cat-* tabs
+		 * (that page renders all of its content for any of its own
+		 * addresses) -- are left alone.
+		 */
+		if (SERVICE_TAB_VIEWS[tabName] !== undefined && parseHash().category !== tabName)
+			location.hash = "#" + tabName;
 		if (tabName === "console")
 			document.getElementById("cd-console-output").focus();
 		if (tabButton.id === "cd-tab-summary" && currentContainerDetailName !== null)
