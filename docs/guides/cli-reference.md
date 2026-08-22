@@ -164,7 +164,7 @@ Storage whose lifetime is independent of any container using it — deleting a c
 |---|---|
 | `volume create --name=NAME [--disk=DISK]` | Create a volume; `--disk=` places it by the same disk-role naming a container's own `--disk=` uses, omitted means default OS-disk placement |
 | `volume ls` / `volume show NAME` | List / inspect one (disk, resolved host path, creation time) |
-| `volume backups NAME [--enable\|--disable] [--retain=N] [--while-running\|--stopped-only]` | Show or set a volume's backup policy. Opt-in: nothing is copied unless asked. `--while-running` accepts a crash-consistent copy — without it, a volume mounted by an always-on container is never actually backed up |
+| `volume backups NAME [--enable\|--disable] [--retain=N] [--while-running=refuse\|pause\|allow]` | Show or set a volume's backup policy. Opt-in. `--while-running` decides what happens when a container is using it: `refuse` skips (and an always-on container means never), `pause` freezes every container using it for the copy then resumes them (a genuinely consistent snapshot, at the cost of real downtime), `allow` copies live and accepts a crash-consistent snapshot |
 | `volume backup NAME` | Take one snapshot now |
 | `volume restore NAME SNAPSHOT` | **Replace** the volume's contents with that snapshot |
 | `volume migrate NAME [--disk=DISK]` | Move its data to another disk or partition; omit `--disk` to move it back to the default OS-disk placement. Refused while a container mounting it is running |

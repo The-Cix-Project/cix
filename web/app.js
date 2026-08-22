@@ -951,7 +951,6 @@ const CATEGORY_VIEWS = {
 	containers: "view-containers",
 	networks: "view-networks",
 	routes: "view-routes",
-	images: "view-images",
 	devices: "view-devices",
 	kmod: "view-kmod",
 	sysctl: "view-sysctl",
@@ -968,7 +967,6 @@ const CATEGORY_VIEWS = {
 	"pki-ca": "view-pki-ca",
 	"pki-intermediate": "view-pki-intermediate",
 	"pki-certs": "view-pki-certs",
-	packages: "view-packages",
 	recipes: "view-recipes",
 	site: "view-site",
 	"daemon-config": "view-daemon-config",
@@ -988,6 +986,12 @@ const CATEGORY_VIEWS = {
 	 * page. Their old addresses still resolve to it (with the right tab
 	 * showing) rather than 404-ing a bookmark someone already has. */
 	"volume-backup-config": "view-volume-backup-config",
+	/* Images and Packages are Catalogue tabs now, not pages. Their bare
+	 * addresses still resolve to it (with the right tab showing) --
+	 * #images/{name} is unaffected, since DETAIL_VIEWS is consulted
+	 * first whenever a route carries a name. */
+	images: "view-recipes",
+	packages: "view-recipes",
 	"pkg-repo": "view-recipes",
 	"pkg-cache": "view-recipes",
 	"storage-placement": "view-storage-placement",
@@ -1087,17 +1091,24 @@ function renderCurrentView() {
 			renderDisks();
 		else if (route.category === "storage-placement")
 			renderAllStoragePlacements();
-		else if (route.category === "packages")
+		else if (route.category === "packages" && route.name !== null)
 			renderPackagesView(route.name);
 		else if (route.category === "recipes" || route.category === "pkg-repo" ||
-		         route.category === "pkg-cache") {
+		         route.category === "pkg-cache" || route.category === "images" ||
+		         route.category === "packages") {
 			selectCatalogueTab(
 				route.category === "pkg-repo"
 					? "cat-repo"
 					: route.category === "pkg-cache"
 					  ? "cat-cache"
-					  : "cat-recipes"
+					  : route.category === "images"
+					    ? "cat-images"
+					    : route.category === "packages"
+					      ? "cat-packages"
+					      : "cat-recipes"
 			);
+			renderImages(cache.images);
+			renderPackagesView(null);
 			renderRecipesList();
 			renderImageRecipesTable();
 			renderContainerRecipesTable();
@@ -1539,6 +1550,68 @@ function renderTree() {
 			}))),
 		},
 		{
+			/*
+			 * The services this platform runs, or registers servers
+			 * for. Grouped rather than left as four peers of
+			 * Host/Monitoring/Maintenance, which are about the box
+			 * itself -- a different kind of thing.
+			 *
+			 * Not a new idea: the header menu bar has grouped exactly
+			 * these five as "Network Services" all along, so the tree
+			 * was the half that disagreed. Syslog moves here from
+			 * Monitoring for the same reason -- registering which
+			 * container receives log lines is a service registration,
+			 * the same shape as the DNS/LDAP/NTP ones, not an
+			 * observation about the box.
+			 */
+			label: "Services",
+			hash: "pki-ca",
+			icon: "system",
+			children: [
+			{
+				label: "PKI",
+				hash: "pki-ca",
+				icon: "pki",
+				children: [
+					{ label: "Root CA", hash: "pki-ca", icon: "pki" },
+					{ label: "Intermediate CA", hash: "pki-intermediate", icon: "pki" },
+					{ label: "Certificates", hash: "pki-certs", icon: "pki" },
+				],
+			},
+			{
+				label: "DNS",
+				hash: "dns-records",
+				icon: "dns",
+				children: [
+					{ label: "Records", hash: "dns-records", icon: "dns" },
+					{ label: "Servers", hash: "dns-servers", icon: "dns" },
+				],
+			},
+			{
+				label: "LDAP",
+				hash: "ldap-servers",
+				icon: "dns",
+				children: [
+					{ label: "Servers", hash: "ldap-servers", icon: "dns" },
+					{ label: "Groups", hash: "ldap-groups", icon: "dns" },
+					{ label: "Users", hash: "ldap-users", icon: "dns" },
+					{ label: "Config", hash: "ldap-config", icon: "dns" },
+				],
+			},
+			{
+				label: "NTP",
+				hash: "ntp-config",
+				icon: "dns",
+				children: [
+					{ label: "Config", hash: "ntp-config", icon: "dns" },
+					{ label: "Servers", hash: "ntp-servers", icon: "dns" },
+					{ label: "Time & Sync", hash: "ntp-time", icon: "dns" },
+				],
+			},
+				{ label: "Syslog", hash: "syslog-targets", icon: "system" },
+			],
+		},
+		{
 			/* Aliases to its own FIRST child's hash ("pki-ca", same as
 			 * PKI's own address, same as PKI's own first child "Root CA"'s
 			 * address) -- matching the exact convention every other group
@@ -1573,51 +1646,6 @@ function renderTree() {
 					label: "Software",
 					hash: "recipes",
 					icon: "recipes",
-					children: [
-						{ label: "Catalogue", hash: "recipes", icon: "recipes" },
-						{ label: "Images", hash: "images", icon: "images" },
-						{ label: "Packages", hash: "packages", icon: "packages" },
-					],
-				},
-				{
-					label: "PKI",
-					hash: "pki-ca",
-					icon: "pki",
-					children: [
-						{ label: "Root CA", hash: "pki-ca", icon: "pki" },
-						{ label: "Intermediate CA", hash: "pki-intermediate", icon: "pki" },
-						{ label: "Certificates", hash: "pki-certs", icon: "pki" },
-					],
-				},
-				{
-					label: "DNS",
-					hash: "dns-records",
-					icon: "dns",
-					children: [
-						{ label: "Records", hash: "dns-records", icon: "dns" },
-						{ label: "Servers", hash: "dns-servers", icon: "dns" },
-					],
-				},
-				{
-					label: "LDAP",
-					hash: "ldap-servers",
-					icon: "dns",
-					children: [
-						{ label: "Servers", hash: "ldap-servers", icon: "dns" },
-						{ label: "Groups", hash: "ldap-groups", icon: "dns" },
-						{ label: "Users", hash: "ldap-users", icon: "dns" },
-						{ label: "Config", hash: "ldap-config", icon: "dns" },
-					],
-				},
-				{
-					label: "NTP",
-					hash: "ntp-config",
-					icon: "dns",
-					children: [
-						{ label: "Config", hash: "ntp-config", icon: "dns" },
-						{ label: "Servers", hash: "ntp-servers", icon: "dns" },
-						{ label: "Time & Sync", hash: "ntp-time", icon: "dns" },
-					],
 				},
 				{
 					/* Core host identity/hardware/network config -- this
@@ -1655,7 +1683,6 @@ function renderTree() {
 						{ label: "Log Store", hash: "logs", icon: "system" },
 						{ label: "Kernel Log", hash: "kmsg", icon: "system" },
 						{ label: "Server Health", hash: "server-health", icon: "system" },
-						{ label: "Syslog Targets", hash: "syslog-targets", icon: "system" },
 					],
 				},
 				{
@@ -8502,7 +8529,7 @@ async function renderVolumeBackups(volumeName) {
 	}
 	document.getElementById("vd-backup-enabled").checked = !!data.enabled;
 	document.getElementById("vd-backup-retain").value = data.retain;
-	document.getElementById("vd-backup-while-running").checked = !!data.allow_while_running;
+	document.getElementById("vd-backup-while-running").value = data.while_running || "refuse";
 
 	const failed = data.status && data.status.last_error;
 
@@ -8514,7 +8541,7 @@ async function renderVolumeBackups(volumeName) {
 	 */
 	const blocked =
 		data.enabled &&
-		!data.allow_while_running &&
+		(data.while_running || "refuse") === "refuse" &&
 		(cache.containers || []).some(
 			(c) =>
 				(c.status === "running" || c.status === "paused") &&
@@ -8522,7 +8549,7 @@ async function renderVolumeBackups(volumeName) {
 		);
 
 	note.textContent = blocked
-		? "Enabled, but never actually running: a container mounting this volume is up, and this volume is not allowed to be copied while that is true. Tick the box below, or stop the container for each backup."
+		? "Enabled, but never actually running: a container mounting this volume is up, and this volume is set to skip the backup while that is true. Choose \"pause it, copy, then resume\" below, or stop the container for each backup."
 		: failed
 		  ? "Last attempt failed: " + data.status.last_error
 		  : data.enabled
@@ -8621,7 +8648,7 @@ document.getElementById("vd-backup-form").addEventListener("submit", async (even
 		await apiRequest("PUT", "/v1/volumes/" + encodeURIComponent(name) + "/backups", {
 			enabled: document.getElementById("vd-backup-enabled").checked,
 			retain: parseInt(document.getElementById("vd-backup-retain").value, 10),
-			allow_while_running: document.getElementById("vd-backup-while-running").checked,
+			while_running: document.getElementById("vd-backup-while-running").value,
 		});
 		clearStatus();
 		await renderVolumeBackups(name);

@@ -268,8 +268,21 @@ static void trim_to_retention(const char *volume_name, int retain)
 	}
 }
 
+/*
+ * Thaws whatever this call froze. Called on every exit path after the
+ * freeze, including the failures: a copy that fails must not leave a
+ * container frozen, or a missed backup becomes an outage.
+ */
+static void thaw_if_paused(const char *volume_name, const struct volumebackup_hooks *hooks,
+                           int paused)
+{
+	if (!paused || hooks == NULL || hooks->set_paused == NULL)
+		return;
+	hooks->set_paused(volume_name, 0);
+}
+
 enum volumebackup_error volumebackup_take(const char *volume_name,
-                                          int (*is_running)(const char *volume_name))
+                                          const struct volumebackup_hooks *hooks)
 {
 	struct volume *v = volume_find(volume_name);
 	char root[PATH_MAX];
@@ -278,6 +291,10 @@ enum volumebackup_error volumebackup_take(const char *volume_name,
 	char stamp[VOLUMEBACKUP_STAMP_MAX];
 	time_t now = time(NULL);
 	int rc;
+	/* Whether this call froze anything, so every exit path below thaws
+	 * it again -- leaving a container frozen because a copy failed
+	 * would turn a missed backup into an outage. */
+	int paused = 0;
 
 	if (v == NULL)
 		return VOLUMEBACKUP_ERR_NOT_FOUND;
@@ -292,20 +309,32 @@ enum volumebackup_error volumebackup_take(const char *volume_name,
 	 * a crash-consistent copy, which for a home or config tree it
 	 * generally does.
 	 */
-	if (!v->backup_while_running && is_running != NULL && is_running(volume_name)) {
-		record_attempt(volume_name, 0, "a container mounting this volume is running");
-		return VOLUMEBACKUP_ERR_IN_USE_RUNNING;
+	if (hooks != NULL && hooks->is_running != NULL && hooks->is_running(volume_name)) {
+		if (v->backup_while_running == VOLUME_RUNNING_REFUSE) {
+			record_attempt(volume_name, 0, "a container mounting this volume is running");
+			return VOLUMEBACKUP_ERR_IN_USE_RUNNING;
+		}
+		if (v->backup_while_running == VOLUME_RUNNING_PAUSE) {
+			if (hooks->set_paused == NULL || hooks->set_paused(volume_name, 1) < 0) {
+				record_attempt(volume_name, 0, "could not pause the containers using this volume");
+				return VOLUMEBACKUP_ERR_IN_USE_RUNNING;
+			}
+			paused = 1;
+		}
 	}
 	rc = store_root(root, sizeof(root));
 	if (rc == -2) {
+		thaw_if_paused(volume_name, hooks, paused);
 		record_attempt(volume_name, 0, "the configured backup disk is not mounted");
 		return VOLUMEBACKUP_ERR_DISK_NOT_READY;
 	}
 	if (rc != 0) {
+		thaw_if_paused(volume_name, hooks, paused);
 		record_attempt(volume_name, 0, "no backup disk configured");
 		return VOLUMEBACKUP_ERR_NO_DISK;
 	}
 	if (volume_host_path(v, src, sizeof(src)) != 0) {
+		thaw_if_paused(volume_name, hooks, paused);
 		record_attempt(volume_name, 0, "could not resolve the volume's own path");
 		return VOLUMEBACKUP_ERR_COPY_FAILED;
 	}
@@ -316,9 +345,14 @@ enum volumebackup_error volumebackup_take(const char *volume_name,
 		/* A partial copy is not a snapshot. Remove it rather than
 		 * leaving something that will later be restored as if whole. */
 		persist_remove_tree(dst);
+		thaw_if_paused(volume_name, hooks, paused);
 		record_attempt(volume_name, 0, "copying the volume's data failed");
 		return VOLUMEBACKUP_ERR_COPY_FAILED;
 	}
+	/* Thawed as soon as the copy is done -- retention and bookkeeping
+	 * below touch the backup store, never the volume, so holding the
+	 * freeze through them would be downtime for nothing. */
+	thaw_if_paused(volume_name, hooks, paused);
 
 	trim_to_retention(volume_name, v->backup_retain);
 	volume_note_backup_taken(volume_name, now);
@@ -327,7 +361,7 @@ enum volumebackup_error volumebackup_take(const char *volume_name,
 }
 
 enum volumebackup_error volumebackup_restore(const char *volume_name, const char *stamp,
-                                             int (*is_running)(const char *volume_name))
+                                             const struct volumebackup_hooks *hooks)
 {
 	struct volume *v = volume_find(volume_name);
 	char root[PATH_MAX];
@@ -340,7 +374,11 @@ enum volumebackup_error volumebackup_restore(const char *volume_name, const char
 		return VOLUMEBACKUP_ERR_NOT_FOUND;
 	if (stamp == NULL || stamp[0] == '\0' || strchr(stamp, '/') != NULL)
 		return VOLUMEBACKUP_ERR_INVALID;
-	if (is_running != NULL && is_running(volume_name))
+	/* Always refused while running, whatever the volume's snapshot
+	 * policy says: this replaces data rather than reading it, and no
+	 * amount of pausing makes swapping a filesystem out from under a
+	 * live process safe. */
+	if (hooks != NULL && hooks->is_running != NULL && hooks->is_running(volume_name))
 		return VOLUMEBACKUP_ERR_IN_USE_RUNNING;
 	rc = store_root(root, sizeof(root));
 	if (rc == -2)
@@ -384,7 +422,7 @@ enum volumebackup_error volumebackup_delete_snapshot(const char *volume_name, co
 	return VOLUMEBACKUP_OK;
 }
 
-int volumebackup_sweep(time_t now, int (*is_running)(const char *volume_name))
+int volumebackup_sweep(time_t now, const struct volumebackup_hooks *hooks)
 {
 	struct volume list[VOLUME_MAX];
 	int n, i, taken = 0;
@@ -410,9 +448,10 @@ int volumebackup_sweep(time_t now, int (*is_running)(const char *volume_name))
 		 * The state is visible either way -- the volume's own policy
 		 * says whether it can be backed up while running.
 		 */
-		if (!list[i].backup_while_running && is_running != NULL && is_running(list[i].name))
+		if (list[i].backup_while_running == VOLUME_RUNNING_REFUSE && hooks != NULL &&
+		    hooks->is_running != NULL && hooks->is_running(list[i].name))
 			continue;
-		if (volumebackup_take(list[i].name, is_running) == VOLUMEBACKUP_OK)
+		if (volumebackup_take(list[i].name, hooks) == VOLUMEBACKUP_OK)
 			taken++;
 	}
 	return taken;

@@ -31,11 +31,7 @@ Disks
     <one leaf per partition on it>
       <volumes held on that partition>
     <volumes held on the disk itself>
-System
-  Software
-    Catalogue      (tabs: Recipes / Repo & Sync / Cache & Artifacts)
-    Images
-    Packages
+Services
   PKI
     Root CA
     Intermediate CA
@@ -53,6 +49,9 @@ System
     Config
     Servers
     Time & Sync
+  Syslog
+System
+  Software         (tabs: Recipes / Repo & Sync / Images / Packages / Cache & Artifacts)
   Host
     Daemon
     Site
@@ -79,6 +78,14 @@ Reorganized (ADR-0138) from an earlier, flatter shape where a single 10-leaf "Se
 
 Container leaves are colored by live status (running/paused/stopped -- tinted icon, not a separate dot); network leaves are tinted by whether anything is currently attached. Right-clicking a container or network or image leaf opens a context menu with the relevant quick actions (a container's own menu is status-aware: `Start` only appears when stopped, `Pause`/`Unpause`/`Stop` only when applicable, `Remove` always last and marked destructive).
 
+
+## Why the tree is shaped this way
+
+Top level is the things you work with -- **Containers, Networks, Disks, Services** -- and then **System**, which is the box itself and its housekeeping. Services being a peer of the others rather than a folder inside System is the point: a DNS or LDAP service is something you manage, not a system setting. It also matches the header menu bar, which has grouped exactly these five (DNS, PKI, LDAP, NTP, Syslog) as "Network Services" all along -- the tree was the half that disagreed.
+
+**Software is one leaf, not a subtree.** Recipes, Repo & Sync, Images, Packages and Cache & Artifacts are one subject -- the software on this box, where it came from, and how it got here -- and five tree leaves meant navigating to find out which page a thing was on. They are tabs on one page now. Part 195 split "Catalog" (declared) from "Build & Deploy" (live) along a real axis; the axis is real, but it did not earn a navigation level.
+
+None of this changes the API. Every page here was already backed by endpoints and still is; the tree is navigation, and reorganising it neither adds nor removes a capability. Where a page's own address changed (`#pkg-repo`, `#pkg-cache`, `#images`, `#packages`) the old address still resolves, to the right tab, rather than breaking a bookmark.
 
 ## Disks in the tree, and right-click actions
 

@@ -88,8 +88,23 @@ void volumebackup_write_config_json(struct json_writer *w);
  * is_running is injected rather than looked up so this module needs no
  * knowledge of the registry.
  */
+/*
+ * Callbacks the caller supplies so this module needs no knowledge of
+ * the registry or of container definitions.
+ *
+ * set_paused freezes (or thaws) EVERY running container mounting the
+ * volume and returns how many it acted on, or -1 on failure. All of
+ * them, not just one: any container with the volume mounted could be
+ * writing, so freezing a subset would leave the copy exposed to the
+ * rest.
+ */
+struct volumebackup_hooks {
+	int (*is_running)(const char *volume_name);
+	int (*set_paused)(const char *volume_name, int freeze);
+};
+
 enum volumebackup_error volumebackup_take(const char *volume_name,
-                                          int (*is_running)(const char *volume_name));
+                                          const struct volumebackup_hooks *hooks);
 
 /* Every snapshot of volume_name, newest first. Returns the count. */
 int volumebackup_list(const char *volume_name, struct volumebackup_snapshot *out, int cap);
@@ -103,7 +118,7 @@ void volumebackup_write_list_json(struct json_writer *w, const char *volume_name
  * is a silent split-brain rather than an error.
  */
 enum volumebackup_error volumebackup_restore(const char *volume_name, const char *stamp,
-                                             int (*is_running)(const char *volume_name));
+                                             const struct volumebackup_hooks *hooks);
 
 enum volumebackup_error volumebackup_delete_snapshot(const char *volume_name, const char *stamp);
 
@@ -112,7 +127,7 @@ enum volumebackup_error volumebackup_delete_snapshot(const char *volume_name, co
  * Returns how many it took. now is injected so the caller owns the
  * clock, matching how the rest of this daemon's timers are testable.
  */
-int volumebackup_sweep(time_t now, int (*is_running)(const char *volume_name));
+int volumebackup_sweep(time_t now, const struct volumebackup_hooks *hooks);
 
 /* Outcome of the most recent attempt for one volume, for the API. */
 void volumebackup_write_status_json(struct json_writer *w, const char *volume_name);

@@ -117,10 +117,9 @@ int volume_init(const char *state_path)
 			g_volumes[count].backup_last_at =
 			    (bl != NULL && bl->type == JSON_NUMBER) ? (time_t)json_as_number(bl) : 0;
 			{
-				const struct json_value *wr = json_object_get(item, "backup_while_running");
+				const char *wr = json_as_string(json_object_get(item, "backup_while_running"));
 
-				g_volumes[count].backup_while_running =
-				    (wr != NULL && wr->type == JSON_BOOL && wr->u.boolean);
+				g_volumes[count].backup_while_running = volume_running_mode_parse(wr);
 			}
 		}
 		g_volumes[count].in_use = 1;
@@ -267,7 +266,7 @@ void volume_write_json_one(const struct volume *v, struct json_writer *w)
 	jw_key(w, "backup_last_at");
 	jw_int(w, (long long)v->backup_last_at);
 	jw_key(w, "backup_while_running");
-	jw_bool(w, v->backup_while_running);
+	jw_str(w, volume_running_mode_name(v->backup_while_running));
 	/* Reported so an operator can see where the data really landed --
 	 * a disk that is currently unmounted silently falls back to the
 	 * default location, and that should never be invisible. */
@@ -376,15 +375,38 @@ enum volume_error volume_migrate(const char *name, const char *disk_name)
 	return VOLUME_OK;
 }
 
+enum volume_running_mode volume_running_mode_parse(const char *s)
+{
+	if (s == NULL)
+		return VOLUME_RUNNING_REFUSE;
+	if (strcmp(s, "pause") == 0)
+		return VOLUME_RUNNING_PAUSE;
+	if (strcmp(s, "allow") == 0)
+		return VOLUME_RUNNING_ALLOW;
+	return VOLUME_RUNNING_REFUSE;
+}
+
+const char *volume_running_mode_name(enum volume_running_mode m)
+{
+	switch (m) {
+	case VOLUME_RUNNING_PAUSE:
+		return "pause";
+	case VOLUME_RUNNING_ALLOW:
+		return "allow";
+	default:
+		return "refuse";
+	}
+}
+
 enum volume_error volume_set_backup_policy(const char *name, int enabled, int retain,
-                                          int while_running)
+                                          enum volume_running_mode while_running)
 {
 	struct volume *v = volume_find(name);
 
 	if (v == NULL)
 		return VOLUME_ERR_NOT_FOUND;
 	v->backup_enabled = enabled ? 1 : 0;
-	v->backup_while_running = while_running ? 1 : 0;
+	v->backup_while_running = while_running;
 	if (retain > 0)
 		v->backup_retain = retain;
 	if (save_state() != 0)

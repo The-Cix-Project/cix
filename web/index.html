@@ -325,22 +325,7 @@
 		</section>
 
 		<!-- Images -->
-		<section class="view" id="view-images" hidden>
-			<div class="view-list">
-				<h2>Images</h2>
-				<table id="images">
-					<thead>
-						<tr>
-							<th>Name</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="images-body">
-						<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-		</section>
+		
 
 		<section class="view" id="view-image-detail" hidden>
 			<div class="detail-topbar">
@@ -1040,28 +1025,7 @@
 		</section>
 
 		<!-- Packages -->
-		<section class="view" id="view-packages" hidden>
-			<div class="view-list">
-				<h2>Packages</h2>
-				<p class="hint">What's actually installed, on which image, right now -- one row per real
-					installation. For the recipe catalog itself (add/edit/delete a buildable definition),
-					see Recipes.</p>
-				<table id="packages">
-					<thead>
-						<tr>
-							<th>Name</th>
-							<th>Image</th>
-							<th>Version</th>
-							<th>State</th>
-							<th></th>
-						</tr>
-					</thead>
-					<tbody id="packages-body">
-						<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
-					</tbody>
-				</table>
-			</div>
-		</section>
+		
 
 		<!--
 		     The catalogue: what is declared, and how it gets here. Three tabs
@@ -1077,6 +1041,8 @@
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="cat-recipes">Recipes</button>
 				<button type="button" class="tab-button" data-tab="cat-repo">Repo &amp; Sync</button>
+				<button type="button" class="tab-button" data-tab="cat-images">Images</button>
+				<button type="button" class="tab-button" data-tab="cat-packages">Packages</button>
 				<button type="button" class="tab-button" data-tab="cat-cache">Cache &amp; Artifacts</button>
 			</div>
 			<div class="tab-panel" data-tab="cat-recipes">
@@ -1201,7 +1167,45 @@
 			<div id="pkg-sync-status-box" class="pki-ca-status"></div>
 			<button type="button" id="pkg-sync-now">Sync now</button>
 		</div>
-			<div class="tab-panel" data-tab="cat-cache" hidden>
+			<div class="tab-panel" data-tab="cat-images" hidden>
+			<div class="view-list">
+				<h2>Images</h2>
+				<table id="images">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="images-body">
+						<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+			<div class="tab-panel" data-tab="cat-packages" hidden>
+			<div class="view-list">
+				<h2>Packages</h2>
+				<p class="hint">What's actually installed, on which image, right now -- one row per real
+					installation. For the recipe catalog itself (add/edit/delete a buildable definition),
+					see Recipes.</p>
+				<table id="packages">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Image</th>
+							<th>Version</th>
+							<th>State</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody id="packages-body">
+						<tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+						<div class="tab-panel" data-tab="cat-cache" hidden>
 			<h2>Package Cache &amp; Artifacts</h2>
 			<p class="hint">
 				Tier 1: a local build-artifact cache (LRU-evicted, keyed by name+version) that skips a
@@ -1631,7 +1635,12 @@
 					<input type="number" id="vd-backup-retain" min="1" max="365" style="width:5rem"> snapshots
 				</label>
 				<label>
-					<input type="checkbox" id="vd-backup-while-running"> Back up even while a container using it is running
+					When a container using it is running
+					<select id="vd-backup-while-running">
+						<option value="refuse">skip the backup</option>
+						<option value="pause">pause it, copy, then resume</option>
+						<option value="allow">copy it live (crash-consistent)</option>
+					</select>
 				</label>
 				<button type="submit">Save</button>
 				<button type="button" id="vd-backup-now">Back up now</button>
@@ -1644,14 +1653,16 @@
 				under <a href="#volume-backup-config">System &gt; Maintenance &gt; Volume Backups</a>.
 				Restoring <strong>replaces</strong> everything currently in the volume, and is always
 				refused while a container mounting it is running.</p>
-			<p class="hint">Backups are refused while a container is running too, unless you tick the box
-				above. That option matters more than it sounds: a service container is normally
-				<code>restart: always</code> and never stops, so without it such a volume is simply never
-				backed up &mdash; quietly, forever. Ticking it accepts a <strong>crash-consistent</strong>
-				copy: the snapshot sees whatever was on disk at that moment, so a file being written
-				mid-copy is captured half-written. For a home or config tree that is normally fine and is
-				what an ordinary filesystem backup has always given you. For a database it is not &mdash;
-				that wants its own dump, taken by something that understands its format.</p>
+			<p class="hint">The middle setting above decides whether this volume is ever actually
+				backed up. A service container is normally <code>restart: always</code> and never stops, so
+				<strong>skip</strong> means it is never snapshotted &mdash; quietly, forever.
+				<strong>Pause</strong> freezes every container using the volume for the length of the copy
+				and then resumes them: nothing can write while it runs, so the snapshot is genuinely
+				consistent, at the cost of real downtime for that time. <strong>Copy live</strong> takes a
+				crash-consistent snapshot &mdash; it sees whatever was on disk at that moment, so a file
+				being written mid-copy is caught half-written. That is normally fine for a home or config
+				tree and is what an ordinary filesystem backup has always given you; for a database it is
+				not, and that wants its own dump from something that understands its format.</p>
 
 			<h3>Move it</h3>
 			<p class="hint" id="vd-migrate-note"></p>
