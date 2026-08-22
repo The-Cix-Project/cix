@@ -126,6 +126,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/system/rebuildable-storage` | Which disk (if any) is the active placement for images/packages/artifacts |
 | GET | `/system/rebuildable-storage/migrate` | Status of the most recent (or running) rebuildable-storage migration |
 | POST | `/system/rebuildable-storage/migrate` | Move images/packages/artifacts to a new disk, or back to the default |
+| POST | `/containers/{name}/exec` | Run a command inside a running container, no shell and no pty (issue #62) |
+| GET | `/containers/{name}/exec` | That command's state, output and exit status |
 | POST | `/containers/{name}/volumes` | Attach a volume to an existing container -- edits the definition, applies on next start (issue #92) |
 | DELETE | `/containers/{name}/volumes/{volume}` | Detach it again; never touches the volume or its data |
 | POST | `/disks/{name}/partitions/{part}/resize` | Grow a partition **and** the filesystem inside it — grow only (issue #94) |
@@ -1499,6 +1501,22 @@ This is reconciled by the daemon rather than left to each client, because the jo
 It reports; it does not act. Capturing a recipe from an existing image is a real operation with real choices in it, and deleting an image is destructive — seeing the three states is the piece worth having first.
 
 The gap was not hypothetical: on a live box 11 images existed and 8 had recipes, and two of the three without one were leftovers from earlier investigations that nobody had noticed, because nothing anywhere put the two sets side by side.
+
+
+## Running a command in a container without a terminal
+
+```
+POST /v1/containers/jump/exec   {"argv":["/usr/bin/ps","aux"],"timeout_seconds":20}
+GET  /v1/containers/jump/exec
+```
+
+There were two ways to do this before and both were poor diagnostics. The interactive console runs through a **pty**, whose line discipline echoes and edits what passes through it — a `/proc`-walking one-liner came back visibly corrupted during a hang investigation (`$p`→`$pp`) and fed a wrong diagnosis. A throwaway container with `capture_output` gets a **fresh namespace**, which is useless for inspecting the state of an already-running container, which is the actual need.
+
+This enters the running container's own namespaces and runs `argv` directly. **No shell** — nothing resolves a bare name, expands a glob or splits a word, which is the point: a shell between you and the command is one more thing that can reinterpret what you asked for. **No pty** — the output is exactly the bytes the command wrote.
+
+It is **asynchronous with a poll endpoint** rather than a blocking call, because holding the daemon's event loop for the length of someone's command is precisely the wedge [ADR-0180](../adr/0180-async-container-teardown.md) exists to prevent; every other slow operation here has the same shape, and `thincctl exec NAME -- cmd...` polls for you so it still feels synchronous.
+
+A command that outruns `timeout_seconds` is SIGKILLed rather than left running invisibly, and reported as `timeout` rather than `done` so it is never mistaken for a command that finished. Output is capped, and `truncated` says so — silently dropping the tail of a diagnostic is how someone concludes the wrong thing from it.
 
 
 ## Capability restriction (issue #29)

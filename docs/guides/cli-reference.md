@@ -147,6 +147,11 @@ container run --name=NAME --image=IMAGE
 
 Each flag maps directly to the matching `ContainerCreateRequest` field — see [`docs/api/README.md`](../api/README.md#creating-a-container) for what each one actually means and its validation rules (network membership, route format, restart-policy semantics, readiness checks, and so on); this reference only lists the CLI surface, not the payload contract behind it. `--optional-device=ID` (ADR-0161 Phase B) is the one exception to "a bad device id fails creation": unlike `--device=ID`, a currently-unresolvable `--optional-device=` still creates the container, without that grant — the reference itself is remembered and matched against real hardware as it appears, see [`administration.md`](administration.md#device-hotplug) for the operator-facing walkthrough.
 
+
+| Command | |
+|---|---|
+| `exec NAME -- COMMAND [ARGS...]` | Run a command inside a **running** container's own namespaces and print what it wrote. No shell (nothing reinterprets your arguments) and no pty (nothing echoes or edits the output) &mdash; which is what makes it a usable diagnostic where the interactive console is not. Exits with the command's own status |
+
 ## Networks
 
 | Command | |

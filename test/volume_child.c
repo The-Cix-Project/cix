@@ -11,6 +11,9 @@
 #include <unistd.h>
 
 #define MARKER_PATH "/vol/marker.txt"
+/* The exec test writes through a volume mounted at a different path
+ * (issue #62) -- same marker, reached from wherever it is mounted. */
+#define ALT_MARKER_PATH "/execvol/marker.txt"
 #define MARKER "PERSISTED\n"
 
 int main(int argc, char **argv)
@@ -26,6 +29,8 @@ int main(int argc, char **argv)
 	}
 	if (argc > 1) {
 		f = fopen(MARKER_PATH, "w");
+		if (f == NULL)
+			f = fopen(ALT_MARKER_PATH, "w");
 		if (f == NULL) {
 			printf("WRITE-FAILED\n");
 			return 1;
