@@ -429,6 +429,163 @@ static int test_free_space(void)
 	return ok;
 }
 
+/*
+ * Growing a partition (issue #94).
+ *
+ * The table half is driven against a real disk image, where sfdisk
+ * behaves identically to a block device. The filesystem half is
+ * verified separately against a plain ext4 image, because putting a
+ * filesystem *inside* a partition of an image needs a loop device and
+ * this sandbox has none -- so the two mechanisms are each proven, and
+ * their combination is what needs a real box.
+ */
+static unsigned long long partition_sectors(const char *img, int partno)
+{
+	char cmd[512];
+	FILE *f;
+	char line[512];
+	unsigned long long sectors = 0;
+	int n = 0;
+
+	snprintf(cmd, sizeof(cmd), "/usr/sbin/sfdisk -d %s 2>/dev/null", img);
+	f = popen(cmd, "r");
+	if (f == NULL)
+		return 0;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		const char *size = strstr(line, "size=");
+
+		if (size == NULL)
+			continue;
+		n++;
+		if (n == partno) {
+			sectors = strtoull(size + 5, NULL, 10);
+			break;
+		}
+	}
+	pclose(f);
+	return sectors;
+}
+
+static int test_partition_grow(void)
+{
+	char img[] = "/tmp/thinc_test_grow_XXXXXX";
+	char cmd[512];
+	int fd;
+	int ok = 1;
+	unsigned long long before, after;
+
+	fd = mkstemp(img);
+	if (fd < 0) {
+		fprintf(stderr, "FAIL: mkstemp for grow image\n");
+		return 0;
+	}
+	close(fd);
+	snprintf(cmd, sizeof(cmd), "truncate -s 1G %s", img);
+	if (system(cmd) != 0) {
+		unlink(img);
+		fprintf(stderr, "FAIL: could not create grow image\n");
+		return 0;
+	}
+	run_sfdisk_script(img, "label: gpt", NULL);
+	run_sfdisk_script(img, "size=100MiB, type=linux, name=\"a\"", "--append");
+
+	before = partition_sectors(img, 1);
+
+	/* The table half: sfdisk -N grows the entry in place. */
+	snprintf(cmd, sizeof(cmd),
+	         "printf 'size=300MiB\\n' | /usr/sbin/sfdisk -N 1 --force %s >/dev/null 2>&1", img);
+	if (system(cmd) != 0) {
+		fprintf(stderr, "FAIL: sfdisk -N could not grow the partition\n");
+		ok = 0;
+	}
+	after = partition_sectors(img, 1);
+	if (after <= before) {
+		fprintf(stderr, "FAIL: partition did not grow (%llu -> %llu sectors)\n", before, after);
+		ok = 0;
+	}
+
+	/* And the safety property this whole feature rests on: sfdisk
+	 * refuses to grow one partition over another, and leaves the table
+	 * untouched when it does. Without that, a grow could silently eat
+	 * the next partition. */
+	run_sfdisk_script(img, "size=100MiB, type=linux, name=\"b\"", "--append");
+	{
+		unsigned long long p1_before = partition_sectors(img, 1);
+		unsigned long long p2_before = partition_sectors(img, 2);
+
+		snprintf(cmd, sizeof(cmd),
+		         "printf 'size=800MiB\\n' | /usr/sbin/sfdisk -N 1 --force %s >/dev/null 2>&1", img);
+		if (system(cmd) == 0) {
+			fprintf(stderr, "FAIL: sfdisk accepted a grow that would overlap the next partition\n");
+			ok = 0;
+		}
+		if (partition_sectors(img, 1) != p1_before || partition_sectors(img, 2) != p2_before) {
+			fprintf(stderr, "FAIL: a refused grow still altered the table\n");
+			ok = 0;
+		}
+	}
+	unlink(img);
+
+	/* The filesystem half, on its own image: after the space behind it
+	 * grows, resize2fs makes the filesystem use it. Growing the table
+	 * entry alone would leave the extra space invisible, which is why
+	 * both halves are one operation. */
+	{
+		char fsimg[] = "/tmp/thinc_test_growfs_XXXXXX";
+		char blocks_before[64] = "";
+		char blocks_after[64] = "";
+		FILE *f;
+
+		fd = mkstemp(fsimg);
+		if (fd < 0) {
+			fprintf(stderr, "FAIL: mkstemp for grow-fs image\n");
+			return 0;
+		}
+		close(fd);
+		snprintf(cmd, sizeof(cmd), "truncate -s 64M %s && /usr/sbin/mkfs.ext4 -q -F %s 2>/dev/null",
+		         fsimg, fsimg);
+		if (system(cmd) != 0) {
+			fprintf(stderr, "FAIL: could not make an ext4 image\n");
+			unlink(fsimg);
+			return 0;
+		}
+		snprintf(cmd, sizeof(cmd),
+		         "/usr/sbin/dumpe2fs -h %s 2>/dev/null | awk '/Block count/{print $3}'", fsimg);
+		f = popen(cmd, "r");
+		if (f != NULL) {
+			if (fgets(blocks_before, sizeof(blocks_before), f) == NULL)
+				blocks_before[0] = '\0';
+			pclose(f);
+		}
+		snprintf(cmd, sizeof(cmd), "truncate -s 192M %s", fsimg);
+		if (system(cmd) != 0)
+			ok = 0;
+		snprintf(cmd, sizeof(cmd), "/usr/sbin/resize2fs %s >/dev/null 2>&1", fsimg);
+		if (system(cmd) != 0) {
+			fprintf(stderr, "FAIL: resize2fs could not grow the filesystem\n");
+			ok = 0;
+		}
+		snprintf(cmd, sizeof(cmd),
+		         "/usr/sbin/dumpe2fs -h %s 2>/dev/null | awk '/Block count/{print $3}'", fsimg);
+		f = popen(cmd, "r");
+		if (f != NULL) {
+			if (fgets(blocks_after, sizeof(blocks_after), f) == NULL)
+				blocks_after[0] = '\0';
+			pclose(f);
+		}
+		if (blocks_before[0] == '\0' || blocks_after[0] == '\0' ||
+		    strtoull(blocks_after, NULL, 10) <= strtoull(blocks_before, NULL, 10)) {
+			fprintf(stderr,
+			        "FAIL: filesystem block count did not grow (\"%s\" -> \"%s\") -- the extra "
+			        "space would be invisible to anything using it\n",
+			        blocks_before, blocks_after);
+			ok = 0;
+		}
+		unlink(fsimg);
+	}
+	return ok;
+}
+
 int main(void)
 {
 	pid_t daemon_pid;
@@ -774,6 +931,8 @@ int main(void)
 	if (!test_fs_probe())
 		ok = 0;
 	if (!test_free_space())
+		ok = 0;
+	if (!test_partition_grow())
 		ok = 0;
 
 	if (ok)

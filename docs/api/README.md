@@ -128,6 +128,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/system/rebuildable-storage/migrate` | Move images/packages/artifacts to a new disk, or back to the default |
 | POST | `/containers/{name}/volumes` | Attach a volume to an existing container -- edits the definition, applies on next start (issue #92) |
 | DELETE | `/containers/{name}/volumes/{volume}` | Detach it again; never touches the volume or its data |
+| POST | `/disks/{name}/partitions/{part}/resize` | Grow a partition **and** the filesystem inside it — grow only (issue #94) |
 | GET | `/disks/{name}/free-space` | How much room is left in this disk's partition table, from sfdisk (issue #95) |
 | GET | `/volumes` | List every persistent volume (issue #88, ADR-0183) |
 | POST | `/volumes` | Create a volume -- named storage whose lifetime is independent of any container |
@@ -1294,6 +1295,12 @@ DELETE /v1/disks/sdb/partitions/sdb1
 Removes one partition — every other partition on the disk is untouched. `404` if `partition_name` doesn't currently exist or doesn't actually belong to `disk_name`; `400` if it isn't actually a partition at all (a whole disk name given where a partition was expected); `409` if it's part of the OS disk's own layout, still has a role assigned (`DELETE /diskroles/{name}` first, same no-silent-data-loss convention role removal already has elsewhere), or is currently mounted.
 
 A disk is used in exactly one of two mutually-exclusive modes: role assigned directly to the whole disk (the original model), or partitioned with roles assigned to the individual partitions instead — `diskrole.c`/`diskformat.c` needed no code changes of their own for this, since both already operate purely on whatever `GET /disks` reports, partition or whole disk alike.
+
+`POST /disks/{name}/partitions/{part}/resize` grows a partition. **Grow only, deliberately** — shrinking is not the mirror image of growing: the filesystem has to shrink *first*, and cutting the table entry before that destroys the tail of a live filesystem. Refusing is the difference between an operation that cannot lose data and one that can.
+
+It does **both halves** of the job: the table entry, then the filesystem inside it. Growing only the entry would leave the extra space invisible to everything using the filesystem, which reads as the resize having silently done nothing. That is also why it is limited to ext4 or an unformatted partition — a btrfs filesystem is refused rather than half-grown, because `btrfs filesystem resize` needs the filesystem *mounted* and this operation needs it unmounted, making it a genuinely different flow rather than another binary to call. `resize2fs` requires a clean filesystem, so `e2fsck -f -p` runs first; preen mode makes only the automatic, unambiguous repairs and refuses anything needing a human, and if it refuses, the partition table is left unchanged and you are told to check by hand.
+
+Only free space **immediately after** the partition can be used. Free space elsewhere on the disk cannot extend it, so a `409` here is about adjacency, not about the disk being full.
 
 `GET /disks/{name}/free-space` answers what will actually fit before you ask for it. It looks like a client could subtract the reported partition sizes from the disk size instead — it can't: that misses partition alignment, the GPT's own reserved areas at both ends, and any gap an earlier delete left in the middle. Two numbers come back and they are genuinely different: `total_free_bytes` and `largest_free_bytes`, the latter being what actually bounds one new partition, since free space split across several gaps can't be handed to a single request. `has_partition_table` is reported separately rather than inferred from a zero total, because "partitioned and full" and "not partitioned yet" are different problems with different fixes and sfdisk reports the second as no output at all. It is its own endpoint rather than a field on `GET /disks` because it forks a subprocess and `GET /disks` runs on every poll for every disk.
 

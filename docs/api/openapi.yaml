@@ -3255,6 +3255,91 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /disks/{disk_name}/partitions/{partition_name}/resize:
+    post:
+      summary: Grow a partition, and the filesystem inside it (issue #94)
+      description: >
+        GROW ONLY, deliberately. Shrinking is not the mirror image of
+        growing: the filesystem has to shrink first, and cutting the
+        table entry before that destroys the tail of a live filesystem.
+        Both halves of the grow happen here -- the table entry, then the
+        filesystem -- because growing only the entry leaves the extra
+        space invisible to everything using the filesystem, which reads
+        as the resize having silently done nothing.
+        Requires the partition to be unmounted, not part of the OS
+        layout, and either ext4 or unformatted; a btrfs filesystem is
+        refused because growing it needs it mounted, which this
+        operation does not permit. Only free space IMMEDIATELY AFTER the
+        partition can be used -- free space elsewhere on the disk cannot
+        extend it (see GET /disks/{name}/free-space).
+      operationId: resizeDiskPartition
+      parameters:
+        - name: disk_name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: partition_name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                size_mib:
+                  type: integer
+                  minimum: 0
+                  description: >
+                    The new TOTAL size in MiB. 0 or omitted means "all
+                    contiguous free space immediately after this
+                    partition".
+      responses:
+        "200":
+          description: Grown; every partition now on this disk
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiskPartitionsResponse"
+        "400":
+          description: >
+            Invalid body or names, this is a whole disk rather than a
+            partition, it is part of the OS layout, the requested size
+            would shrink it, or its filesystem is one this cannot grow
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such disk or partition, or it does not belong to the named disk
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            The partition is mounted, there is not enough free space
+            immediately after it, or its filesystem needs a check that
+            cannot be made automatically (the table is NOT changed in
+            that case)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: >
+            sfdisk is missing or failed, or the partition grew but the
+            filesystem inside it could not be grown to match -- in which
+            case the extra space is real but not yet usable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /disks/{disk_name}/partitions/{partition_name}:
     delete:
       summary: Removes one partition from a disk's table (task #844)

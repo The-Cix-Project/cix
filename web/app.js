@@ -4667,6 +4667,21 @@ function renderDiskRoleTab(d, role) {
 		unmountBtn.addEventListener("click", () => unmountDisk(d.name));
 		actions.appendChild(unmountBtn);
 	}
+	if (d.is_partition && !d.mounted && (d.fs_type === "" || d.fs_type === "ext4")) {
+		/*
+		 * Grow only, and only where it can finish the job: an ext4 or
+		 * unformatted partition that is unmounted. A btrfs partition
+		 * gets no button, because growing btrfs needs it mounted and
+		 * this operation needs it unmounted -- offering a button that
+		 * would be refused is worse than not offering one.
+		 */
+		const growBtn = document.createElement("button");
+
+		growBtn.type = "button";
+		growBtn.textContent = "Grow…";
+		growBtn.addEventListener("click", () => growPartition(d));
+		actions.appendChild(growBtn);
+	}
 	if (d.is_partition) {
 		const delBtn = document.createElement("button");
 
@@ -4738,6 +4753,72 @@ function renderDiskPartitions(d, parts) {
 			row.appendChild(td);
 		}
 		body.appendChild(row);
+	}
+}
+
+/*
+ * Issue #94: grow a partition into the free space immediately after it.
+ * Only that space counts -- free space elsewhere on the disk cannot
+ * extend this partition -- so the prompt names the real limit rather
+ * than the disk's total free space.
+ */
+async function growPartition(p) {
+	let room = null;
+
+	try {
+		const fs = await apiRequest(
+			"GET",
+			"/v1/disks/" + encodeURIComponent(p.parent_disk) + "/free-space"
+		);
+		const endSector = p.start_sector + p.size_bytes / 512;
+		const after = (fs.extents || []).find((e) => e.start_sector === endSector);
+
+		room = after ? after.bytes : 0;
+	} catch (e) {
+		/* Advisory only; the daemon validates for real. */
+	}
+	if (room === 0) {
+		showStatus(
+			"There is no free space immediately after " +
+				p.name +
+				" — free space elsewhere on the disk cannot extend it.",
+			true
+		);
+		return;
+	}
+	const roomMib = room === null ? null : Math.floor(room / (1024 * 1024));
+	const answer = prompt(
+		"Grow " +
+			p.name +
+			" by how much?\n\n" +
+			"Enter a new TOTAL size in MiB, or leave blank to use all " +
+			(roomMib === null ? "free space after it" : roomMib + " MiB available after it") +
+			".\n\nCurrent size: " +
+			Math.floor(p.size_bytes / (1024 * 1024)) +
+			" MiB. A partition can only be grown, never shrunk.",
+		""
+	);
+
+	if (answer === null)
+		return;
+	const body = { size_mib: answer.trim() === "" ? 0 : parseInt(answer, 10) };
+
+	if (answer.trim() !== "" && (!body.size_mib || body.size_mib <= 0)) {
+		showStatus("That is not a valid size.", true);
+		return;
+	}
+	try {
+		await apiRequest(
+			"POST",
+			"/v1/disks/" + encodeURIComponent(p.parent_disk) + "/partitions/" + encodeURIComponent(p.name) + "/resize",
+			body
+		);
+		clearStatus();
+		await refreshDisks();
+		renderDiskDetail(p.name);
+		renderTree();
+	} catch (e) {
+		showStatus("Failed to grow partition: " + e.message, true);
 	}
 }
 
@@ -8983,6 +9064,8 @@ function contextMenuItemsFor(category, name) {
 		}
 		if (d.mounted)
 			items.push({ label: "Unmount", danger: false, action: () => unmountDisk(name) });
+		if (d.is_partition && !d.mounted && (d.fs_type === "" || d.fs_type === "ext4"))
+			items.push({ label: "Grow…", danger: false, action: () => growPartition(d) });
 		if (d.is_partition && !d.mounted)
 			items.push({ label: "Delete partition", danger: true, action: () => deletePartition(d.parent_disk, name) });
 		return items;

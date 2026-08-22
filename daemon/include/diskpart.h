@@ -46,6 +46,14 @@
  */
 
 #define DISKPART_SFDISK_BIN "/usr/sbin/sfdisk"
+/*
+ * Issue #94: growing a partition is two operations. The table entry
+ * grows (sfdisk), and then the filesystem inside it has to be grown to
+ * match, or the extra space is simply invisible to anything using it.
+ * resize2fs requires a clean filesystem, which is what e2fsck is for.
+ */
+#define DISKPART_RESIZE2FS_BIN "/usr/sbin/resize2fs"
+#define DISKPART_E2FSCK_BIN "/usr/sbin/e2fsck"
 
 /* Same charset/length rules as every other simple resource name in
  * this project (simple_name_is_valid(), namecheck.h) -- a GPT
@@ -77,6 +85,14 @@ enum diskpart_error {
 	 * whole release.
 	 */
 	DISKPART_ERR_SFDISK_MISSING,
+	/* Issue #94's own refusals, each a different thing to tell an
+	 * operator and so each its own value rather than one generic
+	 * "cannot resize". */
+	DISKPART_ERR_SHRINK_REFUSED,
+	DISKPART_ERR_NO_ROOM_AFTER,
+	DISKPART_ERR_FS_UNSUPPORTED,
+	DISKPART_ERR_FS_UNCLEAN,
+	DISKPART_ERR_RESIZE_FS_FAILED,
 };
 
 /*
@@ -166,5 +182,13 @@ enum diskpart_error diskpart_free_space_from_path(const char *dev_path,
 
 enum diskpart_error diskpart_free_space(const char *disk_name, const char *os_containers_dir,
                                          struct diskpart_free_space *out);
+
+/*
+ * Grows partition_name to size_mib (0 meaning "all contiguous free
+ * space immediately after it"). Grow only -- see diskpart.c for why
+ * shrinking is refused rather than supported.
+ */
+enum diskpart_error diskpart_resize(const char *disk_name, const char *partition_name,
+                                     const char *os_containers_dir, unsigned long long size_mib);
 
 #endif /* DISKPART_H */
