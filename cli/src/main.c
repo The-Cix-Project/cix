@@ -62,7 +62,8 @@ static void print_usage(FILE *out)
 	        "  container ls  -- every provisioned container and its current state\n"
 	        "  container run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N]\n"
 	        "      [--cpu-max=\"Q P\"] [--cpuset=0-1,3] [--disk-quota=BYTES] [--network=NAME[:IP] ...]\n"
-	        "      [--ip-forward] [--dns-register] [--pki-issue] [--pki-cert-dir=PATH]\n"
+	        "      [--ip-forward] [--dns-register] [--userns] [--ldap-login] [--capture-output]\n"
+	        "      [--pki-issue] [--pki-cert-dir=PATH]\n"
 	        "      [--pki-days=N] [--ldap-provision] [--ldap-user=NAME] [--ldap-group=NAME]\n"
 	        "      [--ldap-uid=N] [--ldap-secret-dir=PATH]\n"
 	        "      [--route=DEST/PREFIX:VIA ...] [--device=ID ...] [--optional-device=ID ...]\n"
@@ -297,6 +298,8 @@ static void print_usage(FILE *out)
 	        "               OS-disk location -- omit for the default\n"
 	        "  swap disable  -- deactivate and remove it\n"
 	        "  host-stats  -- host-wide load/CPU/memory/disk/network snapshot (ADR-0073)\n"
+	        "  kmsg [--tail=N]  -- the kernel ring buffer (/dev/kmsg), dmesg over REST --\n"
+	        "               the only kernel-log window a shell-less installed host has\n"
 	        "  process ls  -- every real process on the box (a direct /proc scan), each\n"
 	        "               correlated to a container by its own real host ppid chain, if any\n"
 	        "               (ADR-0131)\n"
@@ -440,6 +443,7 @@ static void fmt_container_line(const struct json_value *v)
 	const char *status = json_str_field(v, "status");
 	long pid = (long)json_as_number(json_object_get(v, "pid"));
 	const struct json_value *exitv = json_object_get(v, "exit_status");
+	const struct json_value *termsig = json_object_get(v, "term_signal");
 	const struct json_value *networks = json_object_get(v, "networks");
 	const struct json_value *ip_forward = json_object_get(v, "ip_forward");
 	const char *restart = json_str_field(v, "restart");
@@ -474,7 +478,18 @@ static void fmt_container_line(const struct json_value *v)
 	size_t cmd_off = 0;
 	size_t i;
 
-	if (exitv != NULL && exitv->type == JSON_NUMBER)
+	/*
+	 * Issue #78/#77: exit_status alone is ambiguous -- a container killed
+	 * by a signal reports that signal's NUMBER here, indistinguishable
+	 * from a real exit code of the same value (a stop/delete SIGKILL is
+	 * exit_status 9, not "exit code 9"). term_signal disambiguates it, so
+	 * render a signal death as "sig9" rather than a bare "9" instead of
+	 * spending another column on it.
+	 */
+	if (termsig != NULL && termsig->type == JSON_NUMBER &&
+	    (long)json_as_number(termsig) != 0)
+		snprintf(exit_buf, sizeof(exit_buf), "sig%ld", (long)json_as_number(termsig));
+	else if (exitv != NULL && exitv->type == JSON_NUMBER)
 		snprintf(exit_buf, sizeof(exit_buf), "%ld", (long)json_as_number(exitv));
 	else
 		snprintf(exit_buf, sizeof(exit_buf), "-");
@@ -3794,6 +3809,75 @@ static void fmt_host_stats(const struct json_value *v)
 	}
 }
 
+/*
+ * GET /v1/system/kmsg (issue #77 surface parity) -- the kernel ring
+ * buffer, the only kernel-log window a shell-less installed host has.
+ * priority is the standard syslog level (0 emerg .. 7 debug); ts_usec is
+ * the kernel's own monotonic timestamp since boot, printed as seconds
+ * the way dmesg itself does rather than reformatted as a wall clock it
+ * genuinely isn't.
+ */
+static const char *kmsg_priority_name(long long prio)
+{
+	switch (prio) {
+	case 0: return "emerg";
+	case 1: return "alert";
+	case 2: return "crit";
+	case 3: return "err";
+	case 4: return "warn";
+	case 5: return "notice";
+	case 6: return "info";
+	case 7: return "debug";
+	default: return "?";
+	}
+}
+
+static void fmt_kmsg(const struct json_value *v)
+{
+	const struct json_value *entries = json_object_get(v, "entries");
+	size_t i;
+
+	if (entries == NULL || entries->type != JSON_ARRAY || entries->u.array.count == 0) {
+		printf("no kernel log entries\n");
+		return;
+	}
+	for (i = 0; i < entries->u.array.count; i++) {
+		const struct json_value *e = entries->u.array.items[i];
+		long long prio = (long long)json_as_number(json_object_get(e, "priority"));
+		double ts = json_as_number(json_object_get(e, "ts_usec")) / 1000000.0;
+		const char *msg = json_as_string(json_object_get(e, "message"));
+
+		printf("[%12.6f] %-6s %s\n", ts, kmsg_priority_name(prio), msg != NULL ? msg : "");
+	}
+}
+
+static int cmd_kmsg(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[64];
+	long tail = -1;
+	int i;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--tail=", 7) == 0) {
+			tail = atol(argv[i] + 7);
+		} else {
+			fprintf(stderr, "usage: thincctl kmsg [--tail=N]\n");
+			return 2;
+		}
+	}
+	if (tail > 0)
+		snprintf(path, sizeof(path), "/v1/system/kmsg?tail=%ld", tail);
+	else
+		snprintf(path, sizeof(path), "/v1/system/kmsg");
+
+	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "thincctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_kmsg);
+}
+
 static int cmd_host_stats(const struct kx_client *c, int json_mode)
 {
 	struct kx_response r;
@@ -5742,6 +5826,9 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	long readiness_timeout = -1;
 	int ip_forward = 0;
 	int dns_register = 0;
+	int userns = 0;
+	int ldap_login = 0;
+	int capture_output = 0;
 	int pki_issue = 0;
 	const char *pki_cert_dir = NULL;
 	long pki_days = -1;
@@ -5860,6 +5947,12 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 			ip_forward = 1;
 		} else if (strcmp(argv[i], "--dns-register") == 0) {
 			dns_register = 1;
+		} else if (strcmp(argv[i], "--userns") == 0) {
+			userns = 1;
+		} else if (strcmp(argv[i], "--ldap-login") == 0) {
+			ldap_login = 1;
+		} else if (strcmp(argv[i], "--capture-output") == 0) {
+			capture_output = 1;
 		} else if (strcmp(argv[i], "--pki-issue") == 0) {
 			pki_issue = 1;
 		} else if (strncmp(argv[i], "--pki-cert-dir=", 15) == 0) {
@@ -6067,6 +6160,18 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	}
 	if (dns_register) {
 		jw_key(&w, "dns_register");
+		jw_bool(&w, 1);
+	}
+	if (userns) {
+		jw_key(&w, "userns");
+		jw_bool(&w, 1);
+	}
+	if (ldap_login) {
+		jw_key(&w, "ldap_login");
+		jw_bool(&w, 1);
+	}
+	if (capture_output) {
+		jw_key(&w, "capture_output");
 		jw_bool(&w, 1);
 	}
 	if (pki_issue) {
@@ -10424,6 +10529,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_swap(client, json_mode, argc, argv);
 	if (strcmp(cmd, "host-stats") == 0)
 		return cmd_host_stats(client, json_mode);
+	if (strcmp(cmd, "kmsg") == 0)
+		return cmd_kmsg(client, json_mode, argc, argv);
 	if (strcmp(cmd, "process") == 0)
 		return cmd_process(client, json_mode, argc, argv);
 	if (strcmp(cmd, "ping") == 0)

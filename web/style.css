@@ -1398,3 +1398,22 @@ td.empty {
 .context-menu button.button-danger:hover {
 	background: var(--error-bg);
 }
+
+/* Issue #77: the Kernel Log view's own output pane. Deliberately a plain
+   scrollable monospace block rather than reusing #log-panel's live-tailing
+   machinery -- kmsg is fetched on demand (a ring-buffer snapshot), not
+   streamed, so it needs none of that panel's flex/collapse behaviour. */
+.log-output {
+	max-height: 60vh;
+	overflow: auto;
+	padding: 0.6rem 0.8rem;
+	margin-top: 0.75rem;
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: 0.8rem;
+	line-height: 1.45;
+	white-space: pre;
+	tab-size: 4;
+}
