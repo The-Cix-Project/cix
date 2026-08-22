@@ -1630,6 +1630,9 @@
 					Keep
 					<input type="number" id="vd-backup-retain" min="1" max="365" style="width:5rem"> snapshots
 				</label>
+				<label>
+					<input type="checkbox" id="vd-backup-while-running"> Back up even while a container using it is running
+				</label>
 				<button type="submit">Save</button>
 				<button type="button" id="vd-backup-now">Back up now</button>
 			</form>
@@ -1639,10 +1642,16 @@
 			</table>
 			<p class="hint">Snapshots go to the disk carrying the <code>backup</code> role, configured
 				under <a href="#volume-backup-config">System &gt; Maintenance &gt; Volume Backups</a>.
-				Restoring <strong>replaces</strong> everything currently in the volume. Both are refused
-				while a container mounting it is running &mdash; copying a tree out from under a live
-				writer captures a half-written state, which looks exactly like a good snapshot until
-				someone restores it.</p>
+				Restoring <strong>replaces</strong> everything currently in the volume, and is always
+				refused while a container mounting it is running.</p>
+			<p class="hint">Backups are refused while a container is running too, unless you tick the box
+				above. That option matters more than it sounds: a service container is normally
+				<code>restart: always</code> and never stops, so without it such a volume is simply never
+				backed up &mdash; quietly, forever. Ticking it accepts a <strong>crash-consistent</strong>
+				copy: the snapshot sees whatever was on disk at that moment, so a file being written
+				mid-copy is captured half-written. For a home or config tree that is normally fine and is
+				what an ordinary filesystem backup has always given you. For a database it is not &mdash;
+				that wants its own dump, taken by something that understands its format.</p>
 
 			<h3>Move it</h3>
 			<p class="hint" id="vd-migrate-note"></p>

@@ -6967,6 +6967,30 @@ paths:
                   type: integer
                   minimum: 1
                   maximum: 365
+                allow_while_running:
+                  type: boolean
+                  description: >
+                    Take the snapshot even while a container mounting
+                    this volume is running, accepting a
+                    CRASH-CONSISTENT copy: it sees whatever was on disk
+                    at that moment, so a file being written mid-copy is
+                    captured half-written.
+
+                    This matters more than it sounds. A service
+                    container is normally restart:always and never
+                    stops, so without this the volume is simply never
+                    backed up -- quietly, forever, for exactly the
+                    volumes that most need it. For a home or config
+                    tree a crash-consistent copy is normally fine and
+                    is what an ordinary filesystem backup has always
+                    given you; for a database it is not, and that wants
+                    its own dump from something that understands its
+                    format.
+
+                    Omitting the field leaves the current setting
+                    alone. Restore is always refused while a container
+                    is running regardless -- this only affects taking
+                    snapshots.
       responses:
         "200":
           description: Saved; the volume's backup state
@@ -8398,6 +8422,9 @@ components:
           type: boolean
         retain:
           type: integer
+        allow_while_running:
+          type: boolean
+          description: Whether snapshots may be taken while a container mounting this volume is running.
         last_backup_at:
           type: integer
           description: Unix time of the last scheduled snapshot, 0 if never.

@@ -6542,6 +6542,11 @@ static void handle_volume_backups_get(int fd, const char *name)
 	jw_bool(&w, v->backup_enabled);
 	jw_key(&w, "retain");
 	jw_int(&w, v->backup_retain > 0 ? v->backup_retain : VOLUMEBACKUP_DEFAULT_RETAIN);
+	/* Whether this volume can be snapshotted while a container using it
+	 * is running -- without it, an always-on service's volume is never
+	 * backed up at all, which is the state most worth surfacing. */
+	jw_key(&w, "allow_while_running");
+	jw_bool(&w, v->backup_while_running);
 	jw_key(&w, "last_backup_at");
 	jw_int(&w, (long long)v->backup_last_at);
 	jw_key(&w, "snapshots");
@@ -6577,8 +6582,15 @@ static void handle_volume_backup_policy_put(int fd, const char *name, const char
 		}
 		retain = (int)json_as_number(jre);
 	}
-	verr = volume_set_backup_policy(name, jen != NULL && jen->type == JSON_BOOL && jen->u.boolean,
-	                                retain);
+	{
+		const struct json_value *jwr = json_object_get(root, "allow_while_running");
+		struct volume *cur = volume_find(name);
+
+		verr = volume_set_backup_policy(
+		    name, jen != NULL && jen->type == JSON_BOOL && jen->u.boolean, retain,
+		    jwr != NULL ? (jwr->type == JSON_BOOL && jwr->u.boolean)
+		                : (cur != NULL ? cur->backup_while_running : 0));
+	}
 	json_free(root);
 	if (verr != VOLUME_OK) {
 		respond_volume_error(fd, verr);

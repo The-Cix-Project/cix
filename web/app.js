@@ -8502,14 +8502,32 @@ async function renderVolumeBackups(volumeName) {
 	}
 	document.getElementById("vd-backup-enabled").checked = !!data.enabled;
 	document.getElementById("vd-backup-retain").value = data.retain;
+	document.getElementById("vd-backup-while-running").checked = !!data.allow_while_running;
 
 	const failed = data.status && data.status.last_error;
 
-	note.textContent = failed
-		? "Last attempt failed: " + data.status.last_error
-		: data.enabled
-		  ? "Backed up on the shared schedule, keeping the newest " + data.retain + "."
-		  : "Not backed up. Opt in below — copying workload data is never assumed.";
+	/*
+	 * The state most worth surfacing is the quiet one: enabled, but
+	 * mounted by a container that never stops and not allowed to be
+	 * copied while running -- which means it is never actually backed
+	 * up, and nothing else on the page would say so.
+	 */
+	const blocked =
+		data.enabled &&
+		!data.allow_while_running &&
+		(cache.containers || []).some(
+			(c) =>
+				(c.status === "running" || c.status === "paused") &&
+				(c.volumes || []).some((m) => m.name === volumeName)
+		);
+
+	note.textContent = blocked
+		? "Enabled, but never actually running: a container mounting this volume is up, and this volume is not allowed to be copied while that is true. Tick the box below, or stop the container for each backup."
+		: failed
+		  ? "Last attempt failed: " + data.status.last_error
+		  : data.enabled
+		    ? "Backed up on the shared schedule, keeping the newest " + data.retain + "."
+		    : "Not backed up. Opt in below — copying workload data is never assumed.";
 
 	body.textContent = "";
 	const snaps = data.snapshots || [];
@@ -8603,6 +8621,7 @@ document.getElementById("vd-backup-form").addEventListener("submit", async (even
 		await apiRequest("PUT", "/v1/volumes/" + encodeURIComponent(name) + "/backups", {
 			enabled: document.getElementById("vd-backup-enabled").checked,
 			retain: parseInt(document.getElementById("vd-backup-retain").value, 10),
+			allow_while_running: document.getElementById("vd-backup-while-running").checked,
 		});
 		clearStatus();
 		await renderVolumeBackups(name);
