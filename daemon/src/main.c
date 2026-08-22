@@ -11132,7 +11132,6 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 {
 	struct registry_entry *e = registry_find(name);
 	char full_path[PATH_MAX];
-	char resolved_version[IMAGE_VERSION_MAX];
 	int file_fd;
 	struct stat st;
 	char *buf;
@@ -11175,29 +11174,32 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 		file_fd = open(full_path, O_RDONLY);
 		if (file_fd < 0) {
 			/*
-			 * ADR-0107/0108: fall back to the EXACT version this
-			 * container's own overlay lowerdir was built from
-			 * (e->image_version, resolved once at creation time),
-			 * never the image's current version -- an unchanged base
-			 * file this container never wrote to still has to come
-			 * from the same rootfs its own overlay actually used, not
-			 * whatever a later `pkg install` against the same image
-			 * name has since produced.
+			 * Not in the upper layer -- fall back to the container's
+			 * own read-only lowerdir, i.e. the exact tree its overlay
+			 * was actually built on (entry->lowerdir, recorded verbatim
+			 * at creation time). Issue #61: this used to RECONSTRUCT
+			 * that path from image/image_version instead, which works
+			 * only for an ordinary container. A build container
+			 * ("__pkgbuild-N") is registered under the synthetic image
+			 * name "pkgbuild" with an empty version, so both branches of
+			 * that reconstruction missed and it fell through to an EMPTY
+			 * prefix -- turning the read into a bare open() of rel_path
+			 * on the HOST filesystem. That both failed to find real
+			 * lowerdir content (the reported bug: /usr/bin/gcc 404ing on
+			 * a preserved build container while /build/* worked) and, far
+			 * worse, could serve the daemon host's OWN file at that path
+			 * through a per-container endpoint. Using the recorded
+			 * lowerdir fixes both at once and keeps ADR-0107/0108's
+			 * guarantee intact -- for an ordinary container this IS the
+			 * pinned image-version rootfs, byte-for-byte the same path
+			 * the reconstruction produced, never the image's current
+			 * version. An empty lowerdir (userns containers, which have
+			 * no overlay) correctly reads as "no fallback".
 			 */
-			char image_rootfs[PATH_MAX];
-
-			if (e->image_version[0] != '\0') {
-				image_version_rootfs_path(e->image, e->image_version, image_rootfs,
-				                           sizeof(image_rootfs));
-			} else if (image_current_version(e->image, resolved_version,
-			                                  sizeof(resolved_version)) == IMAGE_OK) {
-				image_version_rootfs_path(e->image, resolved_version, image_rootfs,
-				                           sizeof(image_rootfs));
-			} else {
-				image_rootfs[0] = '\0';
+			if (e->lowerdir[0] != '\0') {
+				snprintf(full_path, sizeof(full_path), "%s%s", e->lowerdir, rel_path);
+				file_fd = open(full_path, O_RDONLY);
 			}
-			snprintf(full_path, sizeof(full_path), "%s%s", image_rootfs, rel_path);
-			file_fd = open(full_path, O_RDONLY);
 		}
 	}
 	if (file_fd < 0) {

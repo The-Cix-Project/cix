@@ -2404,6 +2404,52 @@ skip_hostbuild:
 		}
 		kx_response_free(&r);
 
+		/*
+		 * Issue #61: the same preserved build container must also serve
+		 * reads that fall through to its LOWERDIR, not just its upper
+		 * (/build/* above). A build container is registered under the
+		 * synthetic image name "pkgbuild" with an empty image_version,
+		 * so the read fallback could not reconstruct its lowerdir from
+		 * image/image_version the way an ordinary container's is -- it
+		 * fell through to an EMPTY path prefix, which (a) 404'd real
+		 * lowerdir content and (b) turned the read into a bare open() of
+		 * the path on the DAEMON HOST's own filesystem. Both halves are
+		 * asserted here.
+		 *
+		 * Positive: /usr/bin/tcc is staged into the build lowerdir by
+		 * test_image_fixture_stage_toolchain(), so it must read back.
+		 */
+		snprintf(kf_container_path, sizeof(kf_container_path),
+		         "/v1/containers/%s/files?path=%%2Fusr%%2Fbin%%2Ftcc", kept_name);
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", kf_container_path, NULL, &r) != 0 || r.status != 200 ||
+		    r.body == NULL || r.body_len == 0) {
+			fprintf(stderr,
+			        "FAIL: GET %s (build container lowerdir read) status=%d body_len=%zu\n",
+			        kf_container_path, r.status, r.body_len);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/*
+		 * Negative (the host-leak half): /etc/os-release exists on the
+		 * daemon's own host but is NOT staged into the build lowerdir
+		 * (only /etc/alternatives is). It must therefore 404 -- a 200
+		 * here means the endpoint served a host file through a
+		 * per-container path.
+		 */
+		snprintf(kf_container_path, sizeof(kf_container_path),
+		         "/v1/containers/%s/files?path=%%2Fetc%%2Fos-release", kept_name);
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", kf_container_path, NULL, &r) != 0 || r.status != 404) {
+			fprintf(stderr,
+			        "FAIL: GET %s expected 404 -- a host file must never be readable through a "
+			        "container's own files endpoint, status=%d\n",
+			        kf_container_path, r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
 		/* explicit cleanup -- the completely ordinary DELETE path,
 		 * no new mechanism. */
 		snprintf(kf_container_path, sizeof(kf_container_path), "/v1/containers/%s", kept_name);

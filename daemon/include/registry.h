@@ -7,6 +7,7 @@
 #include "network.h"
 #include "resolv.h"
 
+#include <limits.h>
 #include <time.h>
 
 #define REGISTRY_MAX_CONTAINERS 256
@@ -128,6 +129,20 @@ struct registry_entry {
 	 * sandbox, rooted on g_pkgbuild_rootfs, not any named image.
 	 */
 	char image_version[65];
+	/*
+	 * The container's REAL overlay lowerdir, copied verbatim from the
+	 * container_spec at create time (issue #61). Ordinary containers get
+	 * their image-version rootfs here -- the same path the read-file
+	 * fallback used to reconstruct from image/image_version -- but a
+	 * build container ("__pkgbuild-N", registered under the synthetic
+	 * image name "pkgbuild" with no version) gets g_pkgbuild_rootfs or a
+	 * custom build image's rootfs, which that reconstruction could never
+	 * produce. Storing what was actually used removes the guesswork and
+	 * makes exited-container reads work for every container kind.
+	 * Empty for a userns container, which uses a per-container rootfs
+	 * rather than an overlay (ADR-0179 phase 2c).
+	 */
+	char lowerdir[PATH_MAX];
 	struct container_handle handle;
 	int running;       /* 1 while the container's process is alive */
 	int exit_status;   /* valid once running == 0; raw waitid() si_status */
