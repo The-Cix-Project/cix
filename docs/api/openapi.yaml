@@ -3060,6 +3060,86 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /disks/{disk_name}/free-space:
+    get:
+      summary: How much room is left in this disk's partition table (issue #95)
+      description: >
+        Read from sfdisk rather than computed by subtracting the
+        partition sizes a client can already see -- that subtraction
+        misses partition alignment, the GPT's own reserved areas at both
+        ends, and any gap an earlier delete left in the middle. Its own
+        endpoint rather than a field on GET /disks, because it forks a
+        subprocess and GET /disks runs on every poll for every disk.
+        A partition has no answer to give (free space is a property of a
+        table) and is refused.
+      operationId: getDiskFreeSpace
+      parameters:
+        - name: disk_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Free space on this disk
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [disk_name, has_partition_table, total_free_bytes, largest_free_bytes]
+                properties:
+                  disk_name:
+                    type: string
+                  has_partition_table:
+                    type: boolean
+                    description: >
+                      False when the disk has no table at all -- reported
+                      separately rather than inferred from a zero total,
+                      because "partitioned and full" and "not partitioned
+                      yet" are different problems with different fixes,
+                      and sfdisk reports the second as no output at all.
+                  total_free_bytes:
+                    type: integer
+                  largest_free_bytes:
+                    type: integer
+                    description: >
+                      The largest single free extent, which is what
+                      actually bounds one new partition -- total free
+                      space can be spread across gaps no single request
+                      can use.
+                  largest_free_mib:
+                    type: integer
+                    description: The same figure in MiB, matching the units POST .../partitions takes.
+                  extents:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        start_sector:
+                          type: integer
+                        sectors:
+                          type: integer
+                        bytes:
+                          type: integer
+        "400":
+          description: Invalid disk name, or this name is a partition rather than a whole disk
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such disk
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: sfdisk is not installed, or it failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /disks/{disk_name}/partition-table:
     post:
       summary: Destructively writes a fresh, empty GPT partition table to a whole disk (task #844)

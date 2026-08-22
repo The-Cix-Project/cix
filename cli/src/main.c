@@ -1528,6 +1528,56 @@ static void fmt_disk_or_partitions(const struct json_value *v)
 	fmt_disk_line(v);
 }
 
+/*
+ * Issue #95: what will actually fit. `disks ls` reports each partition's
+ * size and the disk's size, so it looks like you can subtract -- but
+ * that misses alignment, the GPT's reserved areas, and gaps left by an
+ * earlier delete. This asks sfdisk.
+ */
+static void fmt_disk_free_space(const struct json_value *v)
+{
+	const struct json_value *has_table = json_object_get(v, "has_partition_table");
+	const struct json_value *extents = json_object_get(v, "extents");
+	double total = json_as_number(json_object_get(v, "total_free_bytes"));
+	double largest = json_as_number(json_object_get(v, "largest_free_bytes"));
+	int i;
+
+	if (has_table == NULL || has_table->type != JSON_BOOL || !has_table->u.boolean) {
+		printf("no partition table -- create one first (disks partition-table NAME)\n");
+		return;
+	}
+	printf("total free:   %.0f bytes (%.0f MiB)\n", total, total / (1024 * 1024));
+	printf("largest gap:  %.0f bytes (%.0f MiB)  <- the most one new partition can take\n", largest,
+	       largest / (1024 * 1024));
+	if (extents != NULL && extents->type == JSON_ARRAY && extents->u.array.count > 1) {
+		printf("free space is split across %d gaps:\n", extents->u.array.count);
+		for (i = 0; i < extents->u.array.count; i++) {
+			const struct json_value *e = extents->u.array.items[i];
+
+			printf("  start sector %-12.0f %.0f MiB\n",
+			       json_as_number(json_object_get(e, "start_sector")),
+			       json_as_number(json_object_get(e, "bytes")) / (1024 * 1024));
+		}
+	}
+}
+
+static int cmd_disks_free_space(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	char path[256];
+	struct kx_response r;
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: thincctl disks free-space NAME\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/disks/%s/free-space", argv[0]);
+	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "thincctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_disk_free_space);
+}
+
 static int cmd_disks_partition_table(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *disk_name;
@@ -1650,6 +1700,8 @@ static int cmd_disks(const struct kx_client *c, int json_mode, int argc, char **
 		return cmd_disks_format_status(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "unmount") == 0)
 		return cmd_disks_unmount(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "free-space") == 0)
+		return cmd_disks_free_space(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "partition-table") == 0)
 		return cmd_disks_partition_table(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "add-partition") == 0)
@@ -1661,6 +1713,7 @@ static int cmd_disks(const struct kx_client *c, int json_mode, int argc, char **
 	                "       thincctl disks format NAME [--fs-type=ext4|btrfs]\n"
 	                "       thincctl disks format-status NAME\n"
 	                "       thincctl disks unmount NAME\n"
+	                "       thincctl disks free-space NAME\n"
 	                "       thincctl disks partition-table NAME\n"
 	                "       thincctl disks add-partition NAME --name=PART_NAME [--size-mib=N]\n"
 	                "       thincctl disks rm-partition DISK_NAME PARTITION_NAME\n");
