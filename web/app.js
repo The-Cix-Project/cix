@@ -22,6 +22,9 @@ const cache = {
 	devices: [],
 	deviceMaps: [],
 	disks: [],
+	/* Cached so the Storage tree can hang each volume under whichever
+	 * device actually holds it, without every tree render refetching. */
+	volumes: [],
 	diskRoles: [],
 	diskFormatStatus: {},
 	stateStorage: { disk: null },
@@ -1306,6 +1309,8 @@ function buildTreeNode(item, parentUl, parentId, depth, parentPath) {
 			  );
 
 	row.appendChild(anchor);
+	if (item.actions)
+		row.addEventListener("contextmenu", (event) => openTreeContextMenu(event, item.actions()));
 	li.appendChild(row);
 	nodeToggle[nodeId] = hasChildren ? toggle : null;
 	nodeAnchor[nodeId] = anchor;
@@ -1335,6 +1340,240 @@ function buildTreeNode(item, parentUl, parentId, depth, parentPath) {
 		});
 	}
 	parentUl.appendChild(li);
+}
+
+/*
+ * Which disk or partition a volume's data actually sits on.
+ *
+ * Derived rather than stored, because the volume record cannot answer
+ * it: `disk` is only set when an operator placed it explicitly, and the
+ * common case (no disk set, default placement) would otherwise have
+ * nowhere to hang. The volume's own resolved host_path plus each
+ * device's mount_path is enough -- the device whose mount point is the
+ * longest prefix of the path is the one holding it, which is the same
+ * longest-match walk disk.c uses server-side to find the OS disk.
+ *
+ * Longest match matters: /var/lib/thinc/volumes/x sits under both "/"
+ * and "/var/lib/thinc" when both are mounted, and only the second is
+ * the true answer.
+ */
+function deviceHoldingVolume(v) {
+	let best = null;
+
+	if (!v.host_path)
+		return null;
+	for (const d of cache.disks) {
+		if (!d.mounted || !d.mount_path)
+			continue;
+		const base = d.mount_path === "/" ? "/" : d.mount_path + "/";
+
+		if (v.host_path === d.mount_path || v.host_path.startsWith(base)) {
+			if (best === null || d.mount_path.length > best.mount_path.length)
+				best = d;
+		}
+	}
+	return best;
+}
+
+/*
+ * One disk's subtree: its partitions, and any volumes living on it.
+ * A volume hangs off whichever device actually holds it, so a volume on
+ * a partition appears under that partition rather than under the disk
+ * as a whole.
+ */
+function diskTreeChildren(diskName) {
+	const children = [];
+
+	for (const v of cache.volumes || []) {
+		const holder = deviceHoldingVolume(v);
+
+		if (holder !== null && holder.name === diskName)
+			children.push({
+				label: v.name,
+				hash: "volumes",
+				icon: "disks",
+				iconColor: "tree-icon-ok",
+				actions: () => volumeTreeActions(v),
+			});
+	}
+	for (const p of partitionsOf(diskName)) {
+		children.push({
+			label: p.name,
+			hash: "disks/" + encodeURIComponent(p.name),
+			icon: "disks",
+			iconColor: p.mounted ? "tree-icon-ok" : "tree-icon-idle",
+			actions: () => diskTreeActions(p),
+			children: (cache.volumes || [])
+				.filter((v) => {
+					const holder = deviceHoldingVolume(v);
+
+					return holder !== null && holder.name === p.name;
+				})
+				.map((v) => ({
+					label: v.name,
+					hash: "volumes",
+					icon: "disks",
+					iconColor: "tree-icon-ok",
+					actions: () => volumeTreeActions(v),
+				})),
+		});
+	}
+	return children;
+}
+
+/* ---- Tree context menu (right-click) ---- */
+
+/*
+ * Right-click on a tree row for the actions that apply to whatever it
+ * is. Deliberately a SHORTCUT, never the only route: every action here
+ * also exists on the relevant page, because an action reachable only by
+ * right-click is one most people will never find. The menu is built
+ * from an `actions` array on the tree item, so a node type that has no
+ * actions simply gets the browser's own menu.
+ */
+let treeContextMenuEl = null;
+
+function closeTreeContextMenu() {
+	if (treeContextMenuEl !== null) {
+		treeContextMenuEl.remove();
+		treeContextMenuEl = null;
+	}
+}
+
+document.addEventListener("click", closeTreeContextMenu);
+document.addEventListener("keydown", (event) => {
+	if (event.key === "Escape")
+		closeTreeContextMenu();
+});
+window.addEventListener("blur", closeTreeContextMenu);
+
+function openTreeContextMenu(event, actions) {
+	closeTreeContextMenu();
+	event.preventDefault();
+
+	const menu = document.createElement("ul");
+
+	menu.className = "tree-context-menu";
+	for (const action of actions) {
+		const li = document.createElement("li");
+
+		if (action.separator) {
+			li.className = "separator";
+			menu.appendChild(li);
+			continue;
+		}
+		const btn = document.createElement("button");
+
+		btn.type = "button";
+		if (action.danger)
+			btn.className = "danger";
+		btn.textContent = action.label;
+		btn.disabled = action.disabled === true;
+		if (action.title)
+			btn.title = action.title;
+		btn.addEventListener("click", (e) => {
+			e.stopPropagation();
+			closeTreeContextMenu();
+			action.run();
+		});
+		li.appendChild(btn);
+		menu.appendChild(li);
+	}
+	document.body.appendChild(menu);
+
+	/* Keep it on screen when the row is near the bottom or right edge --
+	 * measured after insertion, since the height depends on the action
+	 * count. */
+	const rect = menu.getBoundingClientRect();
+	const x = Math.min(event.clientX, window.innerWidth - rect.width - 8);
+	const y = Math.min(event.clientY, window.innerHeight - rect.height - 8);
+
+	menu.style.left = Math.max(4, x) + "px";
+	menu.style.top = Math.max(4, y) + "px";
+	treeContextMenuEl = menu;
+}
+
+/*
+ * The actions for one disk or partition, matching what its page offers.
+ * The OS disk gets an explanation instead of a menu of things that would
+ * all be refused.
+ */
+function diskTreeActions(d) {
+	const role = diskRoleFor(d.name);
+	const actions = [];
+
+	actions.push({ label: "Open", run: () => (location.hash = "#disks/" + encodeURIComponent(d.name)) });
+	if (d.is_os_disk) {
+		actions.push({ separator: true });
+		actions.push({
+			label: "OS disk — never modified",
+			disabled: true,
+			title: "This disk holds the fixed ESP/root-a/root-b/config/containers layout.",
+			run: () => {},
+		});
+		return actions;
+	}
+	actions.push({ separator: true });
+	if (!role) {
+		actions.push({
+			label: "Assign role…",
+			run: () => {
+				populateDiskRoleSelect();
+				document.getElementById("drf-disk-name").value = d.name;
+				document.getElementById("drf-role").value = "container-storage";
+				openModal("diskrole-form", "Assign disk role");
+			},
+		});
+	} else {
+		actions.push({ label: "Remove role (" + role.role + ")", run: () => removeDiskRole(d.name) });
+		actions.push({ label: "Format as ext4…", danger: true, run: () => formatDisk(d.name, "ext4") });
+		actions.push({ label: "Format as btrfs…", danger: true, run: () => formatDisk(d.name, "btrfs") });
+	}
+	if (d.mounted)
+		actions.push({ label: "Unmount", run: () => unmountDisk(d.name) });
+	if (d.is_partition) {
+		actions.push({ separator: true });
+		actions.push({
+			label: "Delete partition",
+			danger: true,
+			disabled: d.mounted,
+			title: d.mounted ? "Unmount it first." : "",
+			run: () => deletePartition(d.parent_disk, d.name),
+		});
+	} else {
+		actions.push({ separator: true });
+		actions.push({
+			label: "Add partition…",
+			run: () => (location.hash = "#disks/" + encodeURIComponent(d.name)),
+		});
+	}
+	return actions;
+}
+
+function volumeTreeActions(v) {
+	return [
+		{ label: "Open volumes", run: () => (location.hash = "#volumes") },
+		{ separator: true },
+		{
+			label: "Delete volume",
+			danger: true,
+			title: "Destroys its data; refused while any container definition references it.",
+			run: async () => {
+				if (!confirm('Delete volume "' + v.name + '"? This permanently destroys its data.'))
+					return;
+				try {
+					await apiRequest("DELETE", "/v1/volumes/" + encodeURIComponent(v.name));
+					clearStatus();
+					await refreshVolumeCache();
+					renderTree();
+					if (parseHash().category === "volumes")
+						await refreshVolumes();
+				} catch (e) {
+					showStatus("Failed to delete volume: " + e.message, true);
+				}
+			},
+		},
+	];
 }
 
 function renderTree() {
@@ -1377,6 +1616,51 @@ function renderTree() {
 				 * not a separate dot" treatment containers get. */
 				iconColor: n.interfaces && n.interfaces.length > 0 ? "tree-icon-ok" : "tree-icon-idle",
 			})),
+		},
+		{
+			/*
+			 * Storage as a first-class top-level concern rather than
+			 * three scattered leaves under Host. Disks are dynamic, each
+			 * carrying its own partitions, and a volume hangs under
+			 * whichever device actually holds it -- so the tree shows
+			 * real placement instead of a flat list that implies none.
+			 * Aliases to its own first child's hash, the same convention
+			 * every other group here uses.
+			 */
+			label: "Storage",
+			hash: "disks",
+			icon: "disks",
+			children: [
+				{
+					label: "Disks",
+					hash: "disks",
+					icon: "disks",
+					children: wholeDisks().map((d) => ({
+						label: d.name,
+						hash: "disks/" + encodeURIComponent(d.name),
+						icon: "disks",
+						iconColor: d.is_os_disk
+							? "tree-icon-idle"
+							: d.mounted || d.has_mounted_partition
+							  ? "tree-icon-ok"
+							  : "tree-icon-idle",
+						actions: () => diskTreeActions(d),
+						children: diskTreeChildren(d.name),
+					})),
+				},
+				{
+					label: "Volumes",
+					hash: "volumes",
+					icon: "disks",
+					children: (cache.volumes || []).map((v) => ({
+						label: v.name,
+						hash: "volumes",
+						icon: "disks",
+						actions: () => volumeTreeActions(v),
+					})),
+				},
+				{ label: "Placement", hash: "storage-placement", icon: "disks" },
+			],
 		},
 		{
 			/* Aliases to its own first child's hash ("recipes", same as
@@ -1494,9 +1778,6 @@ function renderTree() {
 						{ label: "Daemon", hash: "daemon-config", icon: "system" },
 						{ label: "Site", hash: "site", icon: "dns" },
 						{ label: "Devices", hash: "devices", icon: "devices" },
-						{ label: "Disks", hash: "disks", icon: "disks" },
-						{ label: "Volumes", hash: "volumes", icon: "disks" },
-						{ label: "Storage Placement", hash: "storage-placement", icon: "disks" },
 						{ label: "Routes", hash: "routes", icon: "networks" },
 						{ label: "Host Swap", hash: "host-swap", icon: "system" },
 						{ label: "Rolling Restart", hash: "rolling-restart", icon: "system" },
@@ -4320,10 +4601,38 @@ let currentDiskDetailName = null;
  * usually wants exactly that, and burying it behind a partition table
  * would push people into partitioning they do not need.
  */
+/* Shows one of the disk page's tabs, driving the same active/hidden
+ * state a click would. Used when a route lands on a partition, which
+ * belongs on the Partitions tab rather than the Overview. */
+function selectDiskTab(tabName) {
+	const view = document.getElementById("view-disk-detail");
+
+	for (const btn of view.querySelectorAll(".tab-bar .tab-button"))
+		btn.classList.toggle("active", btn.dataset.tab === tabName);
+	for (const panel of view.querySelectorAll(".tab-panel"))
+		panel.hidden = panel.dataset.tab !== tabName;
+}
+
 function renderDiskDetail(name) {
-	const d = cache.disks.find((x) => x.name === name && !x.is_partition);
 	const title = document.getElementById("dd-title");
 	const fields = document.getElementById("dd-fields");
+	let d = cache.disks.find((x) => x.name === name && !x.is_partition);
+
+	/* A partition is addressable in its own right (the tree links each
+	 * one directly), but it has no page of its own -- it belongs to a
+	 * disk, so it opens that disk with the Partitions tab already
+	 * showing rather than dropping you on the Overview to go find it. */
+	if (!d) {
+		const part = cache.disks.find((x) => x.name === name && x.is_partition);
+
+		if (part && part.parent_disk) {
+			d = cache.disks.find((x) => x.name === part.parent_disk && !x.is_partition);
+			if (d) {
+				name = d.name;
+				selectDiskTab("dd-partitions");
+			}
+		}
+	}
 
 	currentDiskDetailName = name;
 	if (!d) {
@@ -8011,6 +8320,20 @@ async function refreshKmsg() {
  * every container that ever used it -- the one genuinely irreversible
  * operation on this page.
  */
+/* Just the fetch, for the poll loop and the tree -- refreshVolumes()
+ * also renders the Volumes page, which is wasted work when that page
+ * is not the one being viewed. */
+async function refreshVolumeCache() {
+	try {
+		const data = await apiRequest("GET", "/v1/volumes");
+
+		cache.volumes = data.volumes || [];
+	} catch (e) {
+		/* A failed poll must never blank the tree -- keep the last
+		 * known list, exactly as every other cached resource here does. */
+	}
+}
+
 async function refreshVolumes() {
 	const body = document.getElementById("volumes-body");
 
@@ -8020,6 +8343,7 @@ async function refreshVolumes() {
 	try {
 		const data = await apiRequest("GET", "/v1/volumes");
 		vols = data.volumes || [];
+		cache.volumes = vols;
 		/*
 		 * The reverse mapping -- which containers mount each volume --
 		 * is what actually explains the ownership model, and there is
@@ -8531,6 +8855,10 @@ async function poll() {
 		await refreshDisks();
 		await refreshDiskRoles();
 		await refreshDiskFormatStatuses();
+		/* The Storage tree hangs volumes under the device holding them,
+		 * so the volume list has to be current whether or not the
+		 * Volumes page is the one showing. */
+		await refreshVolumeCache();
 		await refreshStoragePlacement("state");
 		await refreshStoragePlacementMigrate("state");
 		await refreshStoragePlacement("logs");

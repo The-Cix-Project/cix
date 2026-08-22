@@ -26,6 +26,15 @@ Containers
   <one leaf per container>
 Networks
   <one leaf per network>
+Storage
+  Disks
+    <one leaf per real disk>
+      <one leaf per partition on it>
+        <volumes held on that partition>
+      <volumes held on the disk itself>
+  Volumes
+    <one leaf per volume>
+  Placement
 Software
   Catalog
     Images
@@ -56,9 +65,6 @@ System
     Daemon
     Site
     Devices
-    Disks
-    Volumes
-    Storage Placement
     Routes
     Host Swap
     Rolling Restart
@@ -78,6 +84,15 @@ System
 Reorganized (ADR-0138) from an earlier, flatter shape where a single 10-leaf "Server" group held everything that wasn't PKI/DNS/LDAP/NTP -- now split by what each page actually is: **Host** (core identity/hardware/network config), **Monitoring** (live visibility into what the box is doing), **Maintenance** (protecting and evolving the running system over time), none of them standing out as a dumping ground the way the original single group did. **Software** picked up the same two-tier shape (Catalog vs. Build Pipeline) for the same reason.
 
 Container leaves are colored by live status (running/paused/stopped -- tinted icon, not a separate dot); network leaves are tinted by whether anything is currently attached. Right-clicking a container or network or image leaf opens a context menu with the relevant quick actions (a container's own menu is status-aware: `Start` only appears when stopped, `Pause`/`Unpause`/`Stop` only when applicable, `Remove` always last and marked destructive).
+
+
+## Storage in the tree, and right-click actions
+
+Storage is a top-level group rather than three leaves under Host, and its disks are dynamic: every real disk is its own node, each partition hangs under the disk it belongs to, and each volume hangs under the device that actually holds it.
+
+That last one is **derived, not stored**. A volume record cannot answer it — `disk` is only set when an operator placed the volume explicitly, and the common case (no disk set, default placement) would have nowhere to hang. Instead the volume's own resolved `host_path` is matched against each device's `mount_path`, longest prefix wins. Longest match is what makes it correct: `/var/lib/thinc/volumes/x` sits under both `/` and `/var/lib/thinc` when both are mounted, and only the second is the true answer. A volume whose holder cannot be determined still appears in the flat **Volumes** list, so nothing is ever hidden by a failed derivation.
+
+**Right-clicking** a disk, partition or volume opens its actions — assign or remove a role, format, unmount, delete a partition, delete a volume. This is deliberately a *shortcut*: every one of those actions also exists on the relevant page, because an action reachable only by right-click is one most people never find. The OS disk's menu is a single disabled line explaining that its layout is fixed, rather than a list of things that would all be refused.
 
 ## Container detail view
 
@@ -102,14 +117,14 @@ Four tabs, Proxmox-style: **Summary** (the default tab when you open a container
 - **System > Host > Routes** -- the box's own real kernel IPv4 routing table (ADR-0066), created via the header's `+ Create > Route` modal like every other resource (ADR-0138 -- previously its own inline form, the one creatable resource that didn't go through the shared modal). Add/remove real routes directly (ADR-0067 Part 3) -- a route added or removed here is gone on the next reboot unless something else re-applies it, same as any kernel route not backed by persisted thinC state.
 - **System > Host > Daemon** -- `thincd`'s own listen port, HTTP/HTTPS toggles, and which network it's currently bound to (Part 0.5). The management-network dropdown only lists networks with their own address (repointing anywhere else is refused server-side). A "Bind IP (optional)" field sets a dedicated second address on the management network's own bridge (ADR-0068) -- thincd binds there instead of that network's own address; a "Clear bind IP" checkbox reverts to it. Since the dashboard's own requests are relative to the page it was loaded from, saving a change to the port, the management network, or the bind IP disconnects the page the moment it takes effect -- confirmed with a dialog before submitting any of them.
 - **System > Host > Site** -- this install's own identity (instance_name/site_name/domain_suffix), used to label it in the dashboard header and backups and to suggest a default FQDN when creating a DNS record or issuing a PKI cert. Filed under Host (ADR-0138) rather than DNS -- it's general instance identity consumed by DNS *and* PKI, not a DNS-specific setting.
-- **System > Host > Disks** -- real host block devices, discovered live from sysfs every poll, **whole disks only**. Partitions are not peers of the disks they belong to and are no longer listed alongside them (which is what made `vda`, `vda1`-`vda5`, `sda` and `sr0` read as one flat set of eight equivalent things); each disk's name links to its own page. Columns are identity and state only -- model, size, OS-disk flag, role, filesystem, mount, usage, I/O -- with no actions, so nothing destructive is ever one stray click away in a list.
+- **Storage > Disks** -- real host block devices, discovered live from sysfs every poll, **whole disks only**. Partitions are not peers of the disks they belong to and are no longer listed alongside them (which is what made `vda`, `vda1`-`vda5`, `sda` and `sr0` read as one flat set of eight equivalent things); each disk's name links to its own page. Columns are identity and state only -- model, size, OS-disk flag, role, filesystem, mount, usage, I/O -- with no actions, so nothing destructive is ever one stray click away in a list.
 - **Disk detail** (`#disks/{name}`) -- three tabs, and every action that touches this disk:
   - **Overview** -- device path, size, removable, OS-disk flag, role, filesystem, mount state and usage, partition count, live I/O.
   - **Partitions** -- the table on this disk, each row showing its own size, role, filesystem, mount point and usage, with per-partition Assign role / Remove role / Format / Unmount / Delete. Below it, add a partition (name plus size, or blank for the rest of the disk) and write a fresh empty GPT table -- both `confirm()`-guarded, since both destroy data. When something on the disk is mounted the page says so and explains that the table cannot be rewritten and a mounted partition cannot be deleted, which is the `has_mounted_partition` flag surfaced as a reason rather than a bare 409. There is deliberately **no resize**: the underlying tool is driven in append and delete modes only, and growing or moving a partition in place is a data-bearing operation that needs its own design rather than a button.
   - **Whole disk** -- assigning a role and formatting the whole device, with no partition table at all. Its own tab rather than a footnote, because a single-purpose data disk usually wants exactly this and burying it would push people into partitioning they do not need. A disk that already has partitions says so and points at the Partitions tab instead.
   - The OS disk offers no destructive action anywhere on this page, and says why rather than showing buttons that would be refused.
-- **System > Host > Storage Placement** -- which disk holds each platform-level concern, in one place instead of three: state-storage, log-storage and rebuildable-storage (ADR-0141), each with its current location, a target select populated from disks already carrying the matching role, and a live Migrate with inline status. Backup-config and swap placement are **linked, not repeated** -- they live on Maintenance > Backup and Host > Host Swap respectively, and duplicating their controls here would mean one setting with two places to change it.
-- **System > Host > Volumes** -- persistent volumes (issue #88, ADR-0183): storage whose lifetime is independent of any container, so it survives the container being deleted and recreated. Filed beside Disks rather than under Monitoring -- it is storage management, and it shares Disks' own role mechanism for placement. Created via the header's `Create > New Volume` modal like every other creatable resource (ADR-0138). Each row shows a **Mounted by** column -- which containers currently mount this volume and at which path -- because that reverse mapping is the thing the ownership model is easy to be unsure about: containers reference volumes, never the other way round, so a volume genuinely does not know who uses it and the column is cross-referenced client-side against the container list (the same approach the network detail page uses for "containers on this network"). "not currently mounted" is deliberately not styled as an error: a volume outliving every container that used it is the whole point, and is exactly when its data is most at risk of being deleted by someone assuming it is dead weight. Per-row Delete is a `confirm()`-guarded danger action, refused outright (409, naming the container) while any container definition still references it.
+- **Storage > Placement** -- which disk holds each platform-level concern, in one place instead of three: state-storage, log-storage and rebuildable-storage (ADR-0141), each with its current location, a target select populated from disks already carrying the matching role, and a live Migrate with inline status. Backup-config and swap placement are **linked, not repeated** -- they live on Maintenance > Backup and Host > Host Swap respectively, and duplicating their controls here would mean one setting with two places to change it.
+- **Storage > Volumes** -- persistent volumes (issue #88, ADR-0183): storage whose lifetime is independent of any container, so it survives the container being deleted and recreated. Filed beside Disks rather than under Monitoring -- it is storage management, and it shares Disks' own role mechanism for placement. Created via the header's `Create > New Volume` modal like every other creatable resource (ADR-0138). Each row shows a **Mounted by** column -- which containers currently mount this volume and at which path -- because that reverse mapping is the thing the ownership model is easy to be unsure about: containers reference volumes, never the other way round, so a volume genuinely does not know who uses it and the column is cross-referenced client-side against the container list (the same approach the network detail page uses for "containers on this network"). "not currently mounted" is deliberately not styled as an error: a volume outliving every container that used it is the whole point, and is exactly when its data is most at risk of being deleted by someone assuming it is dead weight. Per-row Delete is a `confirm()`-guarded danger action, refused outright (409, naming the container) while any container definition still references it.
 - **System > Host > Host Swap** -- whether a swap file is currently enabled (ADR-0069), with a size field + Enable button and a Disable button -- useful for memory-heavy package builds on a box with limited RAM.
 - **System > Host > Rolling Restart** -- the daemon-wide `jitter_window_seconds` (ADR-0124) used to spread out `follow_rolling` container restarts after a rolling image rebuild -- 0 disables jitter (restart happens immediately).
 - **System > Monitoring > Host Stats** -- the host-wide counterpart to a container's own Summary-tab graphs (ADR-0130): four live graphs (CPU/memory/disk/network, same hand-rolled canvas rendering, no charting library) for `GET /system/stats`, plus a load-average text line. Network is every real interface combined (loopback and every container's own veth included), labeled as such. Polls only while this page is open.
