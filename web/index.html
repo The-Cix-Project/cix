@@ -205,8 +205,11 @@
 				<h3>Networks</h3>
 				<table id="cd-networks"><tbody></tbody></table>
 				<h3>Volumes</h3>
-				<p class="hint">Storage that outlives this container -- deleting the container never deletes these. Each row links to the volume itself, which may be mounted by other containers too.</p>
-				<table id="cd-volumes"><tbody></tbody></table>
+				<p class="hint">Storage that outlives this container &mdash; deleting the container never deletes these. Each row links to the volume itself, which may be mounted by other containers too, and shows that volume's own backups: the policy belongs to the volume, since two containers can mount one volume and it should not end up with two.</p>
+				<table id="cd-volumes">
+					<thead><tr><th>Volume</th><th>Mounted at</th><th>Mode</th><th>Backups</th></tr></thead>
+					<tbody></tbody>
+				</table>
 			</div>
 			<div class="tab-panel" id="cd-panel-options" data-tab="options" hidden>
 				<div class="detail-grid" id="cd-options-fields"></div>
@@ -1584,10 +1587,63 @@
 		<!-- Issue #81: health of every registered LDAP/DNS/NTP/syslog server.
 		     One page for all four kinds because it is one mechanism. -->
 		<!-- Issue #88: storage that outlives the containers using it. -->
+		<!-- The global volume-snapshot schedule. -->
+		<section class="view" id="view-volume-backup-config" hidden>
+			<div class="view-list">
+				<h2>Volume Backups</h2>
+				<p class="hint">Scheduled snapshots of what volumes <em>hold</em> &mdash; workload data,
+					which the platform backup bundle deliberately never carries (ADR-0033 keeps it to
+					configuration, on the same reasoning that keeps image content out). Opt in per volume
+					on that volume's own page; this is the schedule they share and the disk they go to.
+					One interval rather than one per volume: N timers is N ways for a schedule to be
+					quietly wrong.</p>
+				<form id="vbc-form">
+					<label>
+						<input type="checkbox" id="vbc-enabled"> Run scheduled volume backups
+					</label>
+					<label>
+						Disk
+						<select id="vbc-disk">
+							<option value="">(none)</option>
+						</select>
+					</label>
+					<label>
+						Every
+						<input type="number" id="vbc-interval" min="1" max="8760" style="width:5rem"> hours
+					</label>
+					<button type="submit">Save</button>
+				</form>
+			</div>
+		</section>
+
 		<!-- One volume: where its data lives, who mounts it, and moving it. -->
 		<section class="view" id="view-volume-detail" hidden>
 			<h2 id="vd-title"></h2>
 			<div class="detail-grid" id="vd-fields"></div>
+			<h3>Backups</h3>
+			<p class="hint" id="vd-backup-note"></p>
+			<form id="vd-backup-form">
+				<label>
+					<input type="checkbox" id="vd-backup-enabled"> Back this volume up on the schedule
+				</label>
+				<label>
+					Keep
+					<input type="number" id="vd-backup-retain" min="1" max="365" style="width:5rem"> snapshots
+				</label>
+				<button type="submit">Save</button>
+				<button type="button" id="vd-backup-now">Back up now</button>
+			</form>
+			<table id="vd-snapshots">
+				<thead><tr><th>Snapshot</th><th></th></tr></thead>
+				<tbody id="vd-snapshots-body"></tbody>
+			</table>
+			<p class="hint">Snapshots go to the disk carrying the <code>backup</code> role, configured
+				under <a href="#volume-backup-config">System &gt; Maintenance &gt; Volume Backups</a>.
+				Restoring <strong>replaces</strong> everything currently in the volume. Both are refused
+				while a container mounting it is running &mdash; copying a tree out from under a live
+				writer captures a half-written state, which looks exactly like a good snapshot until
+				someone restores it.</p>
+
 			<h3>Move it</h3>
 			<p class="hint" id="vd-migrate-note"></p>
 			<form id="vd-migrate-form">

@@ -987,6 +987,7 @@ const CATEGORY_VIEWS = {
 	/* Repo & Sync and Cache & Artifacts became tabs on the Catalogue
 	 * page. Their old addresses still resolve to it (with the right tab
 	 * showing) rather than 404-ing a bookmark someone already has. */
+	"volume-backup-config": "view-volume-backup-config",
 	"pkg-repo": "view-recipes",
 	"pkg-cache": "view-recipes",
 	"storage-placement": "view-storage-placement",
@@ -1072,6 +1073,8 @@ function renderCurrentView() {
 			refreshKmsg();
 		else if (route.category === "server-health")
 			refreshServerHealth();
+		else if (route.category === "volume-backup-config")
+			refreshVolumeBackupConfig();
 		else if (route.category === "volumes" && route.name !== null)
 			renderVolumeDetail(route.name);
 		else if (route.category === "volumes")
@@ -2905,7 +2908,7 @@ function renderContainerDetail(name) {
 			const row = document.createElement("tr");
 			const cell = document.createElement("td");
 
-			cell.colSpan = 3;
+			cell.colSpan = 4;
 			cell.className = "empty";
 			cell.textContent = "No volumes -- everything this container writes is lost when it is deleted";
 			row.appendChild(cell);
@@ -2917,12 +2920,38 @@ function renderContainerDetail(name) {
 				const pathCell = document.createElement("td");
 				const modeCell = document.createElement("td");
 
-				nameCell.appendChild(treeLink("#volumes", v.name, ""));
+				nameCell.appendChild(treeLink("#volumes/" + encodeURIComponent(v.name), v.name, ""));
 				pathCell.textContent = v.path;
 				modeCell.textContent = v.read_only ? "read-only" : "read-write";
+				const backupCell = document.createElement("td");
+
+				/*
+				 * Issue #96: a container shows the backups of the
+				 * volumes it mounts, derived rather than stored. The
+				 * policy belongs to the volume -- two containers can
+				 * mount the same one, and hanging it on the container
+				 * would mean two policies over one set of bytes -- so
+				 * this reads the volume's own answer and links to it.
+				 */
+				backupCell.textContent = "…";
+				apiRequest("GET", "/v1/volumes/" + encodeURIComponent(v.name) + "/backups")
+					.then((b) => {
+						const n = (b.snapshots || []).length;
+
+						backupCell.textContent = !b.enabled
+							? "not backed up"
+							: n === 0
+							  ? "on, no snapshots yet"
+							  : n + " snapshot" + (n === 1 ? "" : "s") + ", newest " + b.snapshots[0].stamp;
+					})
+					.catch(() => {
+						backupCell.textContent = "-";
+					});
+
 				row.appendChild(nameCell);
 				row.appendChild(pathCell);
 				row.appendChild(modeCell);
+				row.appendChild(backupCell);
 				volBody.appendChild(row);
 			}
 		}
@@ -8405,6 +8434,197 @@ async function deleteVolumeByName(name) {
 	}
 }
 
+/* ---- Issue #96: volume content snapshots ---- */
+
+async function refreshVolumeBackupConfig() {
+	const select = document.getElementById("vbc-disk");
+
+	try {
+		const cfg = await apiRequest("GET", "/v1/system/volume-backup-config");
+
+		select.textContent = "";
+		const none = document.createElement("option");
+
+		none.value = "";
+		none.textContent = "(none)";
+		select.appendChild(none);
+		/* Only disks carrying the backup role: offering any other would
+		 * be offering a choice the daemon is going to refuse. */
+		for (const d of cache.disks) {
+			const role = diskRoleFor(d.name);
+
+			if (!role || role.role !== "backup")
+				continue;
+			const opt = document.createElement("option");
+
+			opt.value = d.name;
+			opt.textContent = d.name + (d.mounted ? " (" + d.mount_path + ")" : " — not mounted");
+			select.appendChild(opt);
+		}
+		select.value = cfg.disk || "";
+		document.getElementById("vbc-enabled").checked = !!cfg.enabled;
+		document.getElementById("vbc-interval").value = cfg.interval_hours;
+	} catch (e) {
+		showStatus("Failed to read the volume backup config: " + e.message, true);
+	}
+}
+
+document.getElementById("vbc-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+	try {
+		await apiRequest("PUT", "/v1/system/volume-backup-config", {
+			disk: document.getElementById("vbc-disk").value,
+			enabled: document.getElementById("vbc-enabled").checked,
+			interval_hours: parseInt(document.getElementById("vbc-interval").value, 10),
+		});
+		clearStatus();
+		await refreshVolumeBackupConfig();
+	} catch (e) {
+		showStatus("Failed to save: " + e.message, true);
+	}
+});
+
+/*
+ * A volume's own snapshots. Rendered from one response carrying policy,
+ * snapshots and last-attempt together -- they are always wanted at once
+ * and three calls to draw one panel would be three round trips.
+ */
+async function renderVolumeBackups(volumeName) {
+    const note = document.getElementById("vd-backup-note");
+	const body = document.getElementById("vd-snapshots-body");
+	let data;
+
+	try {
+		data = await apiRequest("GET", "/v1/volumes/" + encodeURIComponent(volumeName) + "/backups");
+	} catch (e) {
+		note.textContent = "Could not read backups: " + e.message;
+		return;
+	}
+	document.getElementById("vd-backup-enabled").checked = !!data.enabled;
+	document.getElementById("vd-backup-retain").value = data.retain;
+
+	const failed = data.status && data.status.last_error;
+
+	note.textContent = failed
+		? "Last attempt failed: " + data.status.last_error
+		: data.enabled
+		  ? "Backed up on the shared schedule, keeping the newest " + data.retain + "."
+		  : "Not backed up. Opt in below — copying workload data is never assumed.";
+
+	body.textContent = "";
+	const snaps = data.snapshots || [];
+
+	if (snaps.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 2;
+		cell.className = "empty";
+		cell.textContent = "No snapshots yet";
+		row.appendChild(cell);
+		body.appendChild(row);
+		return;
+	}
+	for (const snap of snaps) {
+		const row = document.createElement("tr");
+		const nameCell = document.createElement("td");
+		const actions = document.createElement("td");
+		const restore = document.createElement("button");
+		const del = document.createElement("button");
+
+		nameCell.textContent = snap.stamp;
+		restore.type = "button";
+		restore.className = "button-danger button-small";
+		restore.textContent = "Restore";
+		restore.addEventListener("click", () => restoreVolumeSnapshot(volumeName, snap.stamp));
+		del.type = "button";
+		del.className = "button-small";
+		del.textContent = "Delete";
+		del.addEventListener("click", async () => {
+			if (!confirm("Delete snapshot " + snap.stamp + "?"))
+				return;
+			try {
+				await apiRequest(
+					"DELETE",
+					"/v1/volumes/" + encodeURIComponent(volumeName) + "/backups/" + encodeURIComponent(snap.stamp)
+				);
+				clearStatus();
+				await renderVolumeBackups(volumeName);
+			} catch (e) {
+				showStatus("Failed to delete snapshot: " + e.message, true);
+			}
+		});
+		actions.appendChild(restore);
+		actions.appendChild(del);
+		row.appendChild(nameCell);
+		row.appendChild(actions);
+		body.appendChild(row);
+	}
+}
+
+/* Restoring replaces everything in the volume, so it asks for the
+ * volume's name typed back -- the same bar every other irreversible
+ * action in this dashboard sets. */
+async function restoreVolumeSnapshot(volumeName, stamp) {
+	const typed = prompt(
+		"Restoring " +
+			stamp +
+			" REPLACES everything currently in volume \"" +
+			volumeName +
+			"\". This cannot be undone.\n\nType the volume name to confirm:",
+		""
+	);
+
+	if (typed === null)
+		return;
+	if (typed !== volumeName) {
+		showStatus("Name did not match — nothing was restored.", true);
+		return;
+	}
+	try {
+		await apiRequest("POST", "/v1/volumes/" + encodeURIComponent(volumeName) + "/restore", {
+			snapshot: stamp,
+			confirm_volume_name: volumeName,
+		});
+		clearStatus();
+		await renderVolumeBackups(volumeName);
+	} catch (e) {
+		showStatus("Failed to restore: " + e.message, true);
+	}
+}
+
+document.getElementById("vd-backup-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+	const name = currentVolumeDetailName;
+
+	if (name === null)
+		return;
+	try {
+		await apiRequest("PUT", "/v1/volumes/" + encodeURIComponent(name) + "/backups", {
+			enabled: document.getElementById("vd-backup-enabled").checked,
+			retain: parseInt(document.getElementById("vd-backup-retain").value, 10),
+		});
+		clearStatus();
+		await renderVolumeBackups(name);
+	} catch (e) {
+		showStatus("Failed to save the backup policy: " + e.message, true);
+	}
+});
+
+document.getElementById("vd-backup-now").addEventListener("click", async () => {
+	const name = currentVolumeDetailName;
+
+	if (name === null)
+		return;
+	try {
+		await apiRequest("POST", "/v1/volumes/" + encodeURIComponent(name) + "/backup", {});
+		clearStatus();
+		await renderVolumeBackups(name);
+	} catch (e) {
+		showStatus("Failed to back up: " + e.message, true);
+	}
+});
+
 /* ---- One volume's page ---- */
 
 let currentVolumeDetailName = null;
@@ -8474,6 +8694,8 @@ async function renderVolumeDetail(name) {
 		select.appendChild(opt);
 	}
 	select.value = v.disk || "";
+
+	renderVolumeBackups(v.name);
 
 	note.textContent =
 		running.length > 0

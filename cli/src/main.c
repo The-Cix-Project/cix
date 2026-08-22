@@ -4235,6 +4235,134 @@ static void fmt_volume_one(const struct json_value *v)
 	       disk != NULL ? disk : "(default)", path != NULL ? path : "?");
 }
 
+/*
+ * Issue #96: a volume's own content snapshots. Distinct from `backup`
+ * (the platform configuration bundle, ADR-0033) -- that one is config
+ * and never workload data; this is the workload data itself, opt-in per
+ * volume.
+ */
+static void fmt_volume_backups(const struct json_value *v)
+{
+	const struct json_value *snaps = json_object_get(v, "snapshots");
+	const struct json_value *en = json_object_get(v, "enabled");
+	const struct json_value *status = json_object_get(v, "status");
+	int i;
+
+	printf("backups:  %s\n", (en != NULL && en->type == JSON_BOOL && en->u.boolean)
+	                             ? "enabled"
+	                             : "disabled (opt in with: volume backups NAME --enable)");
+	printf("retain:   %.0f\n", json_as_number(json_object_get(v, "retain")));
+	if (status != NULL) {
+		const char *err = json_as_string(json_object_get(status, "last_error"));
+
+		if (err != NULL && err[0] != '\0')
+			printf("last try: FAILED -- %s\n", err);
+	}
+	if (snaps == NULL || snaps->type != JSON_ARRAY || snaps->u.array.count == 0) {
+		printf("no snapshots\n");
+		return;
+	}
+	printf("snapshots (newest first):\n");
+	for (i = 0; i < snaps->u.array.count; i++)
+		printf("  %s\n", json_as_string(json_object_get(snaps->u.array.items[i], "stamp")));
+}
+
+static int cmd_volume_backups(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	char path[300];
+	struct kx_response r;
+	struct json_writer w;
+	int enable = -1;
+	long retain = 0;
+	int i;
+
+	if (argc < 2) {
+		fprintf(stderr, "usage: thincctl volume backups NAME [--enable|--disable] [--retain=N]\n");
+		return 2;
+	}
+	for (i = 2; i < argc; i++) {
+		if (strcmp(argv[i], "--enable") == 0)
+			enable = 1;
+		else if (strcmp(argv[i], "--disable") == 0)
+			enable = 0;
+		else if (strncmp(argv[i], "--retain=", 9) == 0)
+			retain = atol(argv[i] + 9);
+	}
+	snprintf(path, sizeof(path), "/v1/volumes/%s/backups", argv[1]);
+
+	if (enable < 0 && retain == 0) {
+		if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+			fprintf(stderr, "thincctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_volume_backups);
+	}
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "enabled");
+	jw_bool(&w, enable > 0);
+	if (retain > 0) {
+		jw_key(&w, "retain");
+		jw_int(&w, retain);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	if (kx_client_request(c, "PUT", path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "thincctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_volume_backups);
+}
+
+static int cmd_volume_backup_now(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	char path[300];
+	struct kx_response r;
+
+	if (argc < 2) {
+		fprintf(stderr, "usage: thincctl volume backup NAME\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/volumes/%s/backup", argv[1]);
+	if (kx_client_request(c, "POST", path, "{}", &r) != 0) {
+		fprintf(stderr, "thincctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_volume_backups);
+}
+
+static int cmd_volume_restore(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	char path[300];
+	struct kx_response r;
+	struct json_writer w;
+
+	if (argc < 3) {
+		fprintf(stderr, "usage: thincctl volume restore NAME SNAPSHOT\n"
+		                "  Replaces everything currently in the volume with that snapshot.\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/volumes/%s/restore", argv[1]);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "snapshot");
+	jw_str(&w, argv[2]);
+	jw_key(&w, "confirm_volume_name");
+	jw_str(&w, argv[1]);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "thincctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_volume_backups);
+}
+
 static int cmd_volume(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	struct kx_response r;
@@ -4300,6 +4428,12 @@ static int cmd_volume(const struct kx_client *c, int json_mode, int argc, char *
 		}
 		return emit(&r, json_mode, NULL);
 	}
+	if (strcmp(argv[0], "backups") == 0)
+		return cmd_volume_backups(c, json_mode, argc, argv);
+	if (strcmp(argv[0], "backup") == 0)
+		return cmd_volume_backup_now(c, json_mode, argc, argv);
+	if (strcmp(argv[0], "restore") == 0)
+		return cmd_volume_restore(c, json_mode, argc, argv);
 	if (strcmp(argv[0], "migrate") == 0) {
 		const char *disk = "";
 		struct json_writer w;
@@ -4338,6 +4472,9 @@ static int cmd_volume(const struct kx_client *c, int json_mode, int argc, char *
 	                "       thincctl volume show NAME\n"
 	                "       thincctl volume rm NAME\n"
 	                "       thincctl volume migrate NAME [--disk=DISK]\n"
+	                "       thincctl volume backups NAME [--enable|--disable] [--retain=N]\n"
+	                "       thincctl volume backup NAME\n"
+	                "       thincctl volume restore NAME SNAPSHOT\n"
 	                "  A volume outlives the containers using it: deleting a container never\n"
 	                "  removes its volumes, and `volume rm` refuses while any container\n"
 	                "  definition still references one.\n");

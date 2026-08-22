@@ -2,6 +2,7 @@
 #include "disk.h"
 #include "persist.h"
 #include "treecopy.h"
+#include "volumebackup.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -101,6 +102,21 @@ int volume_init(const char *state_path)
 			snprintf(g_volumes[count].disk, sizeof(g_volumes[count].disk), "%s", disk);
 		if (created != NULL && created->type == JSON_NUMBER)
 			g_volumes[count].created_at = (time_t)json_as_number(created);
+		{
+			/* Issue #96. Absent means off with the default retention --
+			 * a state file written before this existed loads as
+			 * "backups not asked for", which is the correct reading of
+			 * a volume nobody ever opted in. */
+			const struct json_value *be = json_object_get(item, "backup_enabled");
+			const struct json_value *br = json_object_get(item, "backup_retain");
+			const struct json_value *bl = json_object_get(item, "backup_last_at");
+
+			g_volumes[count].backup_enabled = (be != NULL && be->type == JSON_BOOL && be->u.boolean);
+			g_volumes[count].backup_retain =
+			    (br != NULL && br->type == JSON_NUMBER) ? (int)json_as_number(br) : 0;
+			g_volumes[count].backup_last_at =
+			    (bl != NULL && bl->type == JSON_NUMBER) ? (time_t)json_as_number(bl) : 0;
+		}
 		g_volumes[count].in_use = 1;
 		count++;
 	}
@@ -235,6 +251,15 @@ void volume_write_json_one(const struct volume *v, struct json_writer *w)
 		jw_null(w);
 	jw_key(w, "created_at");
 	jw_int(w, (long long)v->created_at);
+	/* Issue #96: the volume's own backup policy. Persisted through the
+	 * same writer the state file uses, so the API response and the
+	 * on-disk record can never describe different policies. */
+	jw_key(w, "backup_enabled");
+	jw_bool(w, v->backup_enabled);
+	jw_key(w, "backup_retain");
+	jw_int(w, v->backup_retain > 0 ? v->backup_retain : VOLUMEBACKUP_DEFAULT_RETAIN);
+	jw_key(w, "backup_last_at");
+	jw_int(w, (long long)v->backup_last_at);
 	/* Reported so an operator can see where the data really landed --
 	 * a disk that is currently unmounted silently falls back to the
 	 * default location, and that should never be invisible. */
@@ -341,4 +366,30 @@ enum volume_error volume_migrate(const char *name, const char *disk_name)
 	 */
 	persist_remove_tree(old_path);
 	return VOLUME_OK;
+}
+
+enum volume_error volume_set_backup_policy(const char *name, int enabled, int retain)
+{
+	struct volume *v = volume_find(name);
+
+	if (v == NULL)
+		return VOLUME_ERR_NOT_FOUND;
+	v->backup_enabled = enabled ? 1 : 0;
+	if (retain > 0)
+		v->backup_retain = retain;
+	if (save_state() != 0)
+		return VOLUME_ERR_PERSIST_FAILED;
+	return VOLUME_OK;
+}
+
+void volume_note_backup_taken(const char *name, time_t when)
+{
+	struct volume *v = volume_find(name);
+
+	if (v == NULL)
+		return;
+	v->backup_last_at = when;
+	/* Persisted deliberately: without it a daemon restart would make
+	 * every opted-in volume look overdue and re-snapshot the lot. */
+	save_state();
 }

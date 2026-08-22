@@ -6870,6 +6870,253 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/volume-backup-config:
+    get:
+      summary: The shared schedule for volume content snapshots (issue #96)
+      operationId: getVolumeBackupConfig
+      responses:
+        "200":
+          description: Current schedule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VolumeBackupConfig"
+    put:
+      summary: Set the shared schedule for volume content snapshots
+      description: >
+        One interval for every opted-in volume rather than one per
+        volume: N independent timers is N ways for a schedule to be
+        quietly wrong. Per-volume opt-in and retention live on the
+        volume (PUT /volumes/{name}/backups). The disk must carry the
+        `backup` role -- the same role the configuration snapshots use,
+        so there is one answer to "where do backups go".
+      operationId: setVolumeBackupConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VolumeBackupConfig"
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VolumeBackupConfig"
+        "400":
+          description: Invalid body or interval
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /volumes/{volume_name}/backups:
+    get:
+      summary: A volume's backup policy, snapshots and last attempt (issue #96)
+      description: >
+        All three in one response because they are always wanted
+        together -- rendering one panel should not cost three round
+        trips.
+      operationId: getVolumeBackups
+      parameters:
+        - name: volume_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Policy, snapshots (newest first) and the most recent attempt
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VolumeBackups"
+        "404":
+          description: No such volume
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      summary: Set a volume's own backup policy
+      description: >
+        Opt-in: nothing is copied unless asked for, because a volume
+        holding a scratch build tree should not be snapshotted just for
+        existing. Retention lives here rather than in the shared
+        schedule -- how much history is worth keeping is a property of
+        what the volume holds. Omitting `retain` leaves the existing
+        value alone rather than resetting it.
+      operationId: setVolumeBackupPolicy
+      parameters:
+        - name: volume_name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                retain:
+                  type: integer
+                  minimum: 1
+                  maximum: 365
+      responses:
+        "200":
+          description: Saved; the volume's backup state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VolumeBackups"
+        "400":
+          description: Invalid body, or a retention outside 1-365
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such volume
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /volumes/{volume_name}/backup:
+    post:
+      summary: Take one snapshot of a volume now
+      description: >
+        Refused while a container mounting the volume is running:
+        copying a tree out from under a live writer captures a
+        half-written state, which is worse than no snapshot because it
+        looks exactly like a good one until someone restores it. The
+        volume's retention is applied afterwards, never before -- 
+        deleting the oldest to make room for one that then fails would
+        lose history for nothing.
+      operationId: takeVolumeBackup
+      parameters:
+        - name: volume_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Taken; the volume's backup state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VolumeBackups"
+        "404":
+          description: No such volume
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            No backup disk configured, the configured disk is not
+            mounted, or a container mounting this volume is running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The copy failed; the partial snapshot is removed rather than left to be restored later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /volumes/{volume_name}/restore:
+    post:
+      summary: Replace a volume's contents with one of its snapshots
+      description: >
+        Destructive: the volume's current contents are removed and
+        replaced, not merged. Merging would produce a third state that
+        is neither what was there nor what was backed up, and a restore
+        that yields something nobody has ever seen is worse than a
+        refusal. Requires `confirm_volume_name` to match, and is refused
+        while a container mounting the volume is running.
+      operationId: restoreVolume
+      parameters:
+        - name: volume_name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [snapshot, confirm_volume_name]
+              properties:
+                snapshot:
+                  type: string
+                confirm_volume_name:
+                  type: string
+      responses:
+        "200":
+          description: Restored; the volume's backup state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VolumeBackups"
+        "400":
+          description: Missing snapshot, or confirm_volume_name missing/mismatched
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such volume, or no such snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A container mounting this volume is running, or the backup disk is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /volumes/{volume_name}/backups/{snapshot}:
+    delete:
+      summary: Delete one snapshot
+      operationId: deleteVolumeSnapshot
+      parameters:
+        - name: volume_name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: snapshot
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deleted; the volume's remaining backup state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VolumeBackups"
+        "404":
+          description: No such volume or snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /volumes/{volume_name}/migrate:
     post:
       summary: Move a volume's data to another disk or partition
@@ -8127,6 +8374,58 @@ components:
             Always "on next start" -- stated explicitly because the
             running container is genuinely unchanged by these calls, and
             a client that assumed otherwise would be wrong.
+
+    VolumeBackupConfig:
+      type: object
+      properties:
+        disk:
+          type: string
+          nullable: true
+          description: A disk or partition carrying the `backup` role. Null or empty means no target, and the sweep does nothing.
+        enabled:
+          type: boolean
+        interval_hours:
+          type: integer
+          minimum: 1
+
+    VolumeBackups:
+      type: object
+      required: [volume, enabled, retain, snapshots]
+      properties:
+        volume:
+          type: string
+        enabled:
+          type: boolean
+        retain:
+          type: integer
+        last_backup_at:
+          type: integer
+          description: Unix time of the last scheduled snapshot, 0 if never.
+        snapshots:
+          type: array
+          description: Newest first. The stamp is a sortable UTC timestamp, which is what makes retention a trim rather than a date parse.
+          items:
+            type: object
+            properties:
+              stamp:
+                type: string
+        status:
+          type: object
+          description: >
+            The most recent attempt in THIS daemon's lifetime. Not
+            persisted -- a replayed "it worked yesterday" is not
+            evidence about now, the same reasoning ADR-0182 applies to
+            probed server health.
+          properties:
+            last_attempt_at:
+              type: integer
+              nullable: true
+            last_attempt_ok:
+              type: boolean
+              nullable: true
+            last_error:
+              type: string
+              nullable: true
 
     Volume:
       type: object

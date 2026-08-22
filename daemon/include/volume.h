@@ -71,6 +71,23 @@ struct volume {
 	 */
 	char disk[VOLUME_DISK_NAME_MAX];
 	time_t created_at;
+	/*
+	 * Issue #96: per-volume backup policy. Opt-in, because a volume
+	 * holding a scratch build tree should not be snapshotted just for
+	 * existing, and because copying workload data is something to be
+	 * asked for rather than assumed.
+	 *
+	 * Retention lives here rather than in the global schedule: how much
+	 * history is worth keeping is a property of what the volume holds,
+	 * and a database and a home directory rarely want the same answer.
+	 * The interval is global, though -- N independent timers is N ways
+	 * for a schedule to be quietly wrong.
+	 */
+	int backup_enabled;
+	int backup_retain;
+	/* When the scheduled sweep last took one, so it can tell what is
+	 * due without re-reading the snapshot store for every volume. */
+	time_t backup_last_at;
 	int in_use;
 };
 
@@ -132,5 +149,18 @@ void volume_write_json_list(struct json_writer *w);
  * location with no indication anything had changed.
  */
 enum volume_error volume_migrate(const char *name, const char *disk_name);
+
+/*
+ * Issue #96: set a volume's own backup policy. A retain of 0 means
+ * "leave whatever is already set" -- the caller validates any explicit
+ * value, so 0 only ever reaches here when the field was omitted, and a
+ * volume that has never had one set falls back to the default when it
+ * is read.
+ */
+enum volume_error volume_set_backup_policy(const char *name, int enabled, int retain);
+
+/* Records that a scheduled snapshot was taken, so the sweep knows what
+ * is due. Persisted, so a restart does not re-snapshot everything. */
+void volume_note_backup_taken(const char *name, time_t when);
 
 #endif /* VOLUME_H */
