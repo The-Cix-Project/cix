@@ -622,7 +622,16 @@ enum ldap_record_error ldap_config_set_client(const char *client_uri, const char
 	return rc;
 }
 
-void ldap_config_write_json(struct json_writer *w)
+/*
+ * The open half: object opened, every stored field written, NOT closed
+ * -- so a caller can append a field of its own before closing. The one
+ * caller that does is GET /ldap/config, which appends
+ * effective_client_uri (issue #84): what clients are actually handed
+ * right now is a different question from what is configured, and
+ * deriving it needs the registry and health state, neither of which
+ * this module can see.
+ */
+void ldap_config_write_json_open(struct json_writer *w)
 {
 	/*
 	 * Sync g_config.base_dn to the canonical hostauth value before
@@ -656,6 +665,11 @@ void ldap_config_write_json(struct json_writer *w)
 		jw_null(w);
 	jw_key(w, "bind_password_set");
 	jw_bool(w, g_config.bind_password[0] != '\0');
+}
+
+void ldap_config_write_json(struct json_writer *w)
+{
+	ldap_config_write_json_open(w);
 	jw_obj_close(w);
 }
 

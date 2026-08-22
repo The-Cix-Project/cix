@@ -5682,6 +5682,15 @@ async function refreshLdapConfig() {
 		const config = await apiRequest("GET", "/v1/ldap/config");
 
 		cache.ldapConfig = config;
+		{
+			const grid = document.getElementById("ldap-client-delivery");
+
+			grid.textContent = "";
+			grid.appendChild(fieldBlock("Configured client_uri",
+			                            config.client_uri || "(unset — derived from registered servers)"));
+			grid.appendChild(fieldBlock("Effective (what clients get)",
+			                            config.effective_client_uri || "(none)"));
+		}
 		if (!ldapConfigDirty) {
 			document.getElementById("lcf-start-uid").value = config.start_uid;
 			document.getElementById("lcf-start-gid").value = config.start_gid;

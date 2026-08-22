@@ -10362,6 +10362,22 @@ components:
           nullable: true
         bind_password_set:
           type: boolean
+        effective_client_uri:
+          type: [string, "null"]
+          description: >
+            What ldap_login containers are actually handed right now,
+            after derivation from registered servers and after health
+            filtering -- a different question from client_uri, which is
+            only what was configured. Drained or confirmed-unhealthy
+            registered servers are dropped from BOTH the derived list
+            and an explicit client_uri (issue #84; before that fix an
+            explicit list skipped filtering entirely, which made every
+            health rule inert on any box that had one set). A URI that
+            maps to no registered server is never dropped -- it may be a
+            directory this platform does not manage -- and if filtering
+            would leave nothing, the unfiltered list stands: handing a
+            client a server that might be down beats handing it none.
+            null when neither source yields anything.
           description: Read-only. PUT accepts a write-only bind_password string instead.
         start_uid:
           type: integer
