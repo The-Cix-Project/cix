@@ -2455,6 +2455,8 @@ Tracked issue by issue in the repo's own Gitea tracker rather than restated here
 
 **Identity** (#76 per-container LDAP login restriction with [ADR-0191](../adr/0191-per-container-ldap-login-restriction.md)): `ldap_allow_groups` renders a `pam_authz_search` into the staged `/etc/nslcd.conf`, so *which users may log into this container* is enforced by `nslcd` against the directory, holding with `thincd` stopped. The field it extends was renamed `ldap_login` -> `ldap_client` in the same change (a clean cut-over with a one-shot definition migration), since it configures a container as an LDAP client and never had anything to do with logging in.
 
+**Reproducible builds** (#109 with [ADR-0199](../adr/0199-recipes-declare-their-build-tools.md)): a recipe declares its build tools and its build container is composed from exactly those packages' own cached output -- what a build ran against becomes a property of the recipe rather than of the box's install history. Supersedes the direction of ADR-0198 after measurement showed 67% of the shared sandbox was an undeclared Rust/Go toolchain.
+
 **Build sandbox** (#40 with [ADR-0198](../adr/0198-build-sandbox-is-a-real-image.md)): the shared package-build lowerdir becomes the ordinary `thinc-builder` image with real version history, resolved the same way a hostbuild's own `--build-image=` already is, with existing flat content migrated in rather than dropped.
 
 **DHCP** ([ADR-0197](../adr/0197-dhcp-served-by-the-dns-server.md)): per-network ranges, static reservations and leases, served by the same dnsmasq that serves DNS -- so a lease resolves the moment it is issued, structurally rather than by synchronisation. A lease is deliberately not a DNS record.
