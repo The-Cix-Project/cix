@@ -331,6 +331,94 @@ int main(void)
 		}
 		kx_response_free(&r);
 
+		/*
+		 * Issue #11: edit the stored definition in place, instead of
+		 * delete-and-recreate being the only way to change a cmd, an
+		 * env var or a file.
+		 *
+		 * The edit is asserted through a real STOP/START cycle, not
+		 * just by reading the definition back: what matters is that
+		 * the next start actually runs the new definition, and a
+		 * response that merely echoes what it was told proves nothing.
+		 */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PATCH", "/v1/containers/lc1",
+		                       "{\"cmd\":[\"/bin/daemon_child\",\"45\",\"0\"],"
+		                       "\"env\":{\"PATCHED\":\"yes\"}}",
+		                       &r) != 0 ||
+		    r.status != 200 || !str_eq(json_str_field(r.json, "applies"), "next-start") ||
+		    !json_bool_field(r.json, "restart_required")) {
+			fprintf(stderr, "FAIL: PATCH lc1, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* Its identity is not editable -- that is a different container. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PATCH", "/v1/containers/lc1", "{\"name\":\"lc1-renamed\"}",
+		                       &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: PATCH name should be 400, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* An index field is refused with a 400 that names it, rather
+		 * than being silently stored and quietly ignored. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PATCH", "/v1/containers/lc1", "{\"restart\":\"always\"}",
+		                       &r) != 0 ||
+		    r.status != 400 || json_str_field(r.json, "error") == NULL ||
+		    strstr(json_str_field(r.json, "error"), "restart") == NULL) {
+			fprintf(stderr, "FAIL: PATCH restart should 400 naming it, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* Now prove the edit is real: stop, start, and read the
+		 * container back -- the new env must be there. */
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "POST", "/v1/containers/lc1/stop", NULL, &r);
+		kx_response_free(&r);
+		{
+			int i;
+
+			for (i = 0; i < 50; i++) {
+				memset(&r, 0, sizeof(r));
+				if (kx_client_request(&client, "GET", "/v1/containers/lc1", NULL, &r) == 0 &&
+				    r.status == 200 && str_eq(json_str_field(r.json, "status"), "stopped")) {
+					kx_response_free(&r);
+					break;
+				}
+				kx_response_free(&r);
+				usleep(100000);
+			}
+		}
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/containers/lc1/start", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: start after PATCH, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/containers/lc1", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: GET lc1 after patched start, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *env = json_object_get(r.json, "env");
+			const char *patched = env != NULL ? json_str_field(env, "PATCHED") : NULL;
+			int found = patched != NULL && strcmp(patched, "yes") == 0;
+
+			if (!found) {
+				fprintf(stderr, "FAIL: patched env did not reach the restarted container\n");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
 		/* start on a name with no definition at all is 404. */
 		memset(&r, 0, sizeof(r));
 		if (kx_client_request(&client, "POST", "/v1/containers/never-existed/start", NULL, &r) != 0 ||

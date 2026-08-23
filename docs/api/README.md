@@ -87,6 +87,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/containers` | List all containers this daemon knows about |
 | POST | `/containers` | Create and start a container |
 | GET | `/containers/{name}` | Inspect one container |
+| PATCH | `/containers/{name}` | Edit the stored definition in place — cmd, env, files, limits, volumes (issue #11). Applies at next start |
 | DELETE | `/containers/{name}` | Stop (if running), remove it, and forget any persisted definition |
 | POST | `/containers/{name}/start` | Bring a stopped or exited container back to life |
 | POST | `/containers/{name}/stop` | Kill it now, always keep its persisted definition (only `DELETE` removes a container) |
@@ -1587,6 +1588,24 @@ POST /v1/pkg/sync   {"refetch": "kernel@6.18.40-13"}
 The daemon now tees each build's stdout/stderr to `<data-dir>/pkg/build-logs/<name>-<version>-<started>.log` as it streams. A build that is killed keeps its log up to the moment it died, which is the case most worth reading. The directory is bounded (oldest pruned when a new build starts) — diagnostics must not fill the disk they exist to debug. `GET /pkg/build-logs/{file}` returns text, tail-first if the log is larger than the response cap, and says so on its own first line rather than only in a header. `thincctl pkg build-logs --last` prints the newest one whole.
 
 **`refetch` re-fetches exactly one recipe version** (issue #59). `pkg sync` is additive and never overwrites a `name@version` it has already seen — a sound default, since [ADR-0107](../adr/0107-image-versioning.md)'s resolution rules depend on version immutability. During active development of a recipe, though, the only workaround was burning a new version number per iteration, and the catalogue really did collect five dead kernel pins and four dead gcc pins from a single investigation. `{"refetch": "name@version"}` lets that one sync replace that one version. It is one-shot (cleared when the sync completes, so the periodic background sync can never inherit it), and a bare package name is a `400` — immutability is per version, so the escape hatch is too.
+
+
+## Editing a container without recreating it (issue #11)
+
+```
+PATCH /v1/containers/{name}   {"cmd": ["/usr/bin/dnsmasq", "-k", "..."], "env": {"TZ": "UTC"}}
+```
+
+Until now, changing a `cmd`, an env var or a staged file meant delete-and-recreate — reconstructing the whole request body by hand, with every chance to drop a field. A `PATCH` merges the fields you give into the stored definition: a key present replaces that key, a key set to `null` removes it, everything else is untouched. The merge is top-level only; a deep merge would make "how do I clear one entry of `files[]`" unanswerable.
+
+**It applies at the container's next start, and the response says so** (`"applies": "next-start"`, plus `"restart_required": true` when it is running right now). That is not a limitation being papered over: a running process's argv cannot be changed without re-exec'ing it, so "change `cmd` on a running container" is `restart` by another name. What genuinely *can* change live already does, through its own endpoints — [volumes](#volumes) and [network attach](#networks).
+
+Two groups of fields are refused rather than silently ignored:
+
+- **`name`** — a container's name is its identity; that would be a different container.
+- **`restart`, `restart_delay_seconds`, `depends_on`, `readiness`, `follow_rolling`, `follow_rolling_jitter_seconds`** — these feed the definition index, and its one parser lives in the create path. A second parser here would be a parallel implementation of the same validation, which this project does not do. The `400` names the offending field and says to recreate the container; extracting that parser is the follow-up that lifts the restriction.
+
+`thincctl container edit NAME --json='{...}'` is the CLI surface.
 
 
 ## Capability restriction (issue #29)

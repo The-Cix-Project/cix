@@ -6450,6 +6450,72 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+    patch:
+      summary: Edit a container's stored definition in place (issue #11)
+      description: >
+        Changes the persisted definition without delete-and-recreate,
+        which was previously the only way to change a cmd, an env var or
+        a file.
+
+        Applies at the container's NEXT START, and the response says so.
+        That is not a limitation being papered over: a running process's
+        argv cannot be changed without re-exec'ing it, so "change cmd on
+        a running container" is `restart` by another name. What
+        genuinely can change live already does, through its own
+        endpoints -- volumes (issue #92) and network attach (ADR-0156).
+
+        Merge is top-level: a key present in the body replaces that key,
+        a key set to null removes it, everything else is untouched. A
+        deep merge would make "how do I clear one entry of files[]"
+        unanswerable.
+
+        `name` is refused -- a container's name is its identity.
+        `restart`, `restart_delay_seconds`, `depends_on`, `readiness`,
+        `follow_rolling` and `follow_rolling_jitter_seconds` are refused
+        too, with a 400 naming the field: they feed the definition
+        index, whose one parser lives in the create path, and a second
+        parser here would be a parallel implementation of the same
+        validation. Recreate the container to change those.
+      operationId: patchContainer
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: The fields to change; null removes a field.
+      responses:
+        "200":
+          description: The definition was updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  applies:
+                    type: string
+                    enum: ["next-start"]
+                  restart_required:
+                    type: boolean
+                    description: True when the container is running right now, so the edit is not yet in effect.
+                  definition:
+                    type: object
+        "400":
+          description: A field that cannot be edited, or a malformed body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such container definition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /containers/{name}/start:
     post:
       summary: >
