@@ -85,7 +85,15 @@
 #define TARGET_ESP_SIZE_MIB 64
 #define TARGET_ROOT_SIZE_MIB 160
 #define TARGET_CONFIG_SIZE_MIB 64
-#define TARGET_DISK_SIZE_BYTES (512 * 1024 * 1024) /* ESP+root-a+root-b+config, containers gets the rest */
+/*
+ * Issue #104: the installer no longer takes the rest of the disk -- the
+ * data partition is bounded and the remainder is deliberately left
+ * unallocated for the admin. So the target has to be big enough to have
+ * a remainder worth leaving: 448 MiB of system partitions out of 1 GiB
+ * leaves ~568 MiB, of which the data partition takes half. The file is
+ * sparse, so the extra size costs nothing.
+ */
+#define TARGET_DISK_SIZE_BYTES (1024 * 1024 * 1024)
 #define SECTOR_SIZE 512
 
 #define INSTALL_TIMEOUT_SECONDS 180
@@ -477,6 +485,32 @@ int main(void)
 			return 1;
 		if (sfdisk_dump_offset(sfdisk_dump, 5, &containers_start_sec, &containers_size_sec) != 0)
 			return 1;
+
+		/*
+		 * Issue #104: and the disk is NOT fully consumed. The installer
+		 * used to end the data partition at the last usable sector,
+		 * which decided how the whole machine's storage was carved up
+		 * before its owner had said anything. What is left is the
+		 * admin's, and this asserts it is really there rather than
+		 * taking the layout's word for it.
+		 */
+		{
+			long long total_sec = TARGET_DISK_SIZE_BYTES / 512;
+			long long used_end_sec = containers_start_sec + containers_size_sec;
+			long long free_sec = total_sec - used_end_sec;
+
+			/* 34 sectors of secondary GPT sit at the very end; anything
+			 * beyond that is genuinely unallocated space. */
+			if (free_sec < 34 + 2048) {
+				fprintf(stderr,
+				        "FAIL: the installer left only %lld sectors unallocated -- a fresh "
+				        "install must not claim the whole disk (issue #104)\n",
+				        free_sec);
+				return 1;
+			}
+			printf("layout leaves %lld MiB unallocated for the operator\n",
+			       (free_sec - 34) / 2048);
+		}
 	}
 
 	{
