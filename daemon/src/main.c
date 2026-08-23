@@ -30,6 +30,7 @@
 #include "volume.h"
 #include "volumebackup.h"
 #include "cpreserve.h"
+#include "pkgpolicy.h"
 #include "exec.h"
 #include "http.h"
 #include "image.h"
@@ -150,6 +151,7 @@ static char LDAP_CONFIG_STATE_PATH[PATH_MAX];
 static char SUBID_STATE_PATH[PATH_MAX]; /* ADR-0179 */
 static char SERVERHEALTH_STATE_PATH[PATH_MAX]; /* issue #81 -- drain flags only */
 static char CPRESERVE_STATE_PATH[PATH_MAX]; /* issue #86 -- control-plane reservation */
+static char PKGPOLICY_STATE_PATH[PATH_MAX];  /* issue #64 -- per-package rolling policy */
 static char VOLUMES_STATE_PATH[PATH_MAX];      /* issue #88 */
 static char VOLUMES_DIR[PATH_MAX];             /* issue #88 -- where volume data lives */
 static char VOLUME_BACKUP_CONFIG_PATH[PATH_MAX]; /* issue #96 -- the volume-snapshot schedule */
@@ -284,6 +286,8 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(VOLUMES_STATE_PATH, sizeof(VOLUMES_STATE_PATH), "%s/volumes.json", STATE_DIR);
 	snprintf(CPRESERVE_STATE_PATH, sizeof(CPRESERVE_STATE_PATH),
 	         "%s/control_plane_reservation.json", STATE_DIR);
+	snprintf(PKGPOLICY_STATE_PATH, sizeof(PKGPOLICY_STATE_PATH), "%s/pkg_policies.json",
+	         STATE_DIR);
 	/*
 	 * Issue #88: volume data is a direct child of the base dir, alongside
 	 * CONTAINERS_DIR rather than inside it -- a volume deliberately
@@ -18077,6 +18081,90 @@ static void handle_rolling_config_put(int fd, const char *body, size_t body_len)
 }
 
 
+
+/*
+ * GET /v1/pkg/policies, PUT/DELETE /v1/pkg/policies/{name} (issue #64).
+ *
+ * Which version an omitted version resolves to, per package. `highest`
+ * (dpkg-style, the rolling-release default) is what every package has
+ * unless an operator says otherwise, so "no policy set" and "the
+ * default policy" are the same state rather than two to keep in step.
+ */
+static void handle_pkg_policies_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "policies");
+	pkgpolicy_write_json(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_pkg_policy_put(int fd, const char *name, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	enum pkg_policy_kind kind;
+	const char *policy_str, *version;
+	struct json_writer w;
+
+	if (!simple_name_is_valid(name, PKG_NAME_MAX)) {
+		respond_error(fd, 400, "Bad Request", "invalid package name");
+		return;
+	}
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	policy_str = json_as_string(json_object_get(root, "policy"));
+	version = json_as_string(json_object_get(root, "version"));
+	if (pkgpolicy_kind_parse(policy_str, &kind) != 0) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "policy must be \"highest\", \"newest\" or \"pinned\"");
+		return;
+	}
+	if (pkgpolicy_set(name, kind, version) != 0) {
+		json_free(root);
+		/* The only reachable failure worth its own words: a pin with no
+		 * version would claim to hold something while meaning
+		 * "highest" -- the exact drift a pin exists to stop. */
+		respond_error(fd, 400, "Bad Request",
+		              "\"pinned\" needs a version to pin to -- a pin without one is not a hold");
+		return;
+	}
+	json_free(root);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "policies");
+	pkgpolicy_write_json(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_pkg_policy_delete(int fd, const char *name)
+{
+	if (!simple_name_is_valid(name, PKG_NAME_MAX)) {
+		respond_error(fd, 400, "Bad Request", "invalid package name");
+		return;
+	}
+	/* Clearing a policy that was never set is a 204, not a 404: the
+	 * caller's intent ("this package is on the default") is satisfied
+	 * either way, and reporting a failure for an already-correct state
+	 * makes scripts handle a distinction that does not matter. */
+	if (pkgpolicy_clear(name) != 0) {
+		respond_error(fd, 500, "Internal Server Error", "could not persist the policy change");
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
 /*
  * GET /v1/pkg/build-logs (issue #57) -- every persisted build log,
  * newest first. The complete output of each build, not the ~4KB tail
@@ -20613,6 +20701,26 @@ static void dispatch(int fd, const struct http_request *req)
 			return;
 		}
 	}
+	if (strcmp(req->path, "/v1/pkg/policies") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_pkg_policies_get(fd);
+			return;
+		}
+	}
+	if (strncmp(req->path, "/v1/pkg/policies/", 17) == 0) {
+		const char *pname = req->path + 17;
+
+		if (pname[0] != '\0') {
+			if (strcmp(req->method, "PUT") == 0) {
+				handle_pkg_policy_put(fd, pname, req->body, req->body_len);
+				return;
+			}
+			if (strcmp(req->method, "DELETE") == 0) {
+				handle_pkg_policy_delete(fd, pname);
+				return;
+			}
+		}
+	}
 	if (strcmp(req->path, "/v1/pkg/build-logs") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_pkg_build_logs_list(fd);
@@ -22940,6 +23048,7 @@ int main(int argc, char **argv)
 		return 1;
 	volume_set_dir(VOLUMES_DIR);
 	cpreserve_init(CPRESERVE_STATE_PATH);
+	pkgpolicy_init(PKGPOLICY_STATE_PATH); /* issue #64 */
 	if (boot_subsystem_init(init_mode, "volume", volume_init(VOLUMES_STATE_PATH)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "ldap_config", ldap_config_init(LDAP_CONFIG_STATE_PATH)) != 0)

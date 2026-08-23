@@ -5867,6 +5867,104 @@ paths:
               schema:
                 $ref: "#/components/schemas/PkgArtifactConfig"
 
+  /pkg/policies:
+    get:
+      summary: Per-package rolling policy (issue #64)
+      description: >
+        Which version an omitted version resolves to, per package.
+        Every implicit resolution in this daemon -- plain install,
+        dependency resolution, hostbuild, update-candidate checks, a
+        follow_rolling image's rebuild -- goes through one resolver, so
+        a policy set here applies everywhere by construction.
+
+        Only packages an operator has actually set a policy for are
+        listed. "No policy" and "the default policy" are the same state
+        rather than two to keep in step.
+      operationId: listPkgPolicies
+      responses:
+        "200":
+          description: Policies currently set
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policies:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PkgPolicy"
+
+  /pkg/policies/{name}:
+    put:
+      summary: Set a package's rolling policy (issue #64)
+      description: >
+        `highest` (dpkg-style, the rolling-release default), `newest`
+        (the most recently PUBLISHED recipe wins -- a recipe version's
+        file is written once and never touched again, so its mtime is a
+        real first-published timestamp), or `pinned` (an explicit
+        version nothing may bump: update-all and follow_rolling resolve
+        to it, so there is never an update to apply).
+
+        A pin with no version is a 400 -- it would claim to hold
+        something while meaning "highest", which is the exact drift a
+        pin exists to prevent. A pinned version that is not published is
+        an unresolvable package, deliberately: silently resolving
+        somewhere else is what the pin is for.
+      operationId: setPkgPolicy
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [policy]
+              properties:
+                policy:
+                  type: string
+                  enum: [highest, newest, pinned]
+                version:
+                  type: string
+      responses:
+        "200":
+          description: The full policy set after the change
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policies:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PkgPolicy"
+        "400":
+          description: Unknown policy, invalid name, or a pin with no version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Put a package back on the default policy (issue #64)
+      description: >
+        204 whether or not a policy was set: the caller's intent ("this
+        package is on the default") is satisfied either way, and a 404
+        would make scripts handle a distinction that does not matter.
+      operationId: clearPkgPolicy
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: On the default policy
+
   /pkg/build-logs:
     get:
       summary: Every persisted build log, newest first (issue #57)
@@ -9609,6 +9707,19 @@ components:
         cgroup:
           type: string
           description: Name of the parent cgroup carrying the ceiling.
+
+    PkgPolicy:
+      type: object
+      required: [name, policy]
+      properties:
+        name:
+          type: string
+        policy:
+          type: string
+          enum: [highest, newest, pinned]
+        version:
+          type: [string, "null"]
+          description: The held version; null unless the policy is `pinned`.
 
     SystemStats:
       type: object

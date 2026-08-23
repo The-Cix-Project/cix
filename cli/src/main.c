@@ -11231,6 +11231,98 @@ static int cmd_pkg_build_logs(const struct kx_client *c, int json_mode, int argc
 	return 0;
 }
 
+/*
+ * Issue #64: thincctl pkg policy ls|set|clear -- which version an
+ * omitted version resolves to, per package. `highest` is the
+ * rolling-release default and stays it; `newest` and `pinned` exist for
+ * the cases where highest is the wrong answer (a bootstrap chain whose
+ * versions were published out of numeric order, most concretely).
+ */
+static void fmt_pkg_policies(const struct json_value *v)
+{
+	const struct json_value *arr = json_object_get(v, "policies");
+	size_t i;
+
+	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		printf("every package is on the default policy (highest)\n");
+		return;
+	}
+	for (i = 0; i < arr->u.array.count; i++) {
+		const struct json_value *p = arr->u.array.items[i];
+		const char *version = json_str_field(p, "version");
+
+		printf("%-24s %-8s %s\n", json_str_field(p, "name") != NULL ? json_str_field(p, "name") : "-",
+		       json_str_field(p, "policy") != NULL ? json_str_field(p, "policy") : "-",
+		       version != NULL ? version : "");
+	}
+}
+
+static int cmd_pkg_policy(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	const char *sub = argc > 0 ? argv[0] : "ls";
+	char path[256];
+
+	if (strcmp(sub, "ls") == 0) {
+		if (kx_client_request(c, "GET", "/v1/pkg/policies", NULL, &r) != 0) {
+			fprintf(stderr, "thincctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_pkg_policies);
+	}
+	if (strcmp(sub, "clear") == 0 && argc >= 2) {
+		snprintf(path, sizeof(path), "/v1/pkg/policies/%s", argv[1]);
+		if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+			fprintf(stderr, "thincctl: could not reach daemon\n");
+			return 1;
+		}
+		if (r.status != 204) {
+			int rc = emit(&r, json_mode, NULL);
+
+			return rc != 0 ? rc : 1;
+		}
+		kx_response_free(&r);
+		printf("%s: back on the default policy (highest)\n", argv[1]);
+		return 0;
+	}
+	if (strcmp(sub, "set") == 0 && argc >= 2) {
+		const char *policy = NULL, *version = NULL;
+		char body[256];
+		int i;
+
+		for (i = 2; i < argc; i++) {
+			if (strncmp(argv[i], "--policy=", 9) == 0)
+				policy = argv[i] + 9;
+			else if (strncmp(argv[i], "--version=", 10) == 0)
+				version = argv[i] + 10;
+			else {
+				fprintf(stderr, "thincctl: unknown pkg policy set option '%s'\n", argv[i]);
+				return 2;
+			}
+		}
+		if (policy == NULL) {
+			fprintf(stderr, "usage: thincctl pkg policy set NAME --policy=highest|newest|pinned "
+			                "[--version=V]\n");
+			return 2;
+		}
+		if (version != NULL)
+			snprintf(body, sizeof(body), "{\"policy\":\"%s\",\"version\":\"%s\"}", policy, version);
+		else
+			snprintf(body, sizeof(body), "{\"policy\":\"%s\"}", policy);
+		snprintf(path, sizeof(path), "/v1/pkg/policies/%s", argv[1]);
+		if (kx_client_request(c, "PUT", path, body, &r) != 0) {
+			fprintf(stderr, "thincctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_pkg_policies);
+	}
+
+	fprintf(stderr, "usage: thincctl pkg policy ls\n"
+	                "       thincctl pkg policy set NAME --policy=highest|newest|pinned [--version=V]\n"
+	                "       thincctl pkg policy clear NAME\n");
+	return 2;
+}
+
 static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
@@ -11251,6 +11343,7 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 		                "[--keep-on-failure]\n"
 		                "       thincctl pkg build-log\n"
 		                "       thincctl pkg build-logs [--last | --file=NAME]\n"
+		                "       thincctl pkg policy ls | set NAME --policy=... | clear NAME\n"
 		                "       thincctl pkg ls\n"
 		                "       thincctl pkg rm NAME[@IMAGE]\n"
 		                "       thincctl pkg update-all\n"
@@ -11285,6 +11378,8 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 		return cmd_pkg_resume(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "build-log") == 0)
 		return cmd_pkg_build_log(c);
+	if (strcmp(sub, "policy") == 0)
+		return cmd_pkg_policy(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "build-logs") == 0)
 		return cmd_pkg_build_logs(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "ls") == 0)
