@@ -31,6 +31,7 @@
 #include "volumebackup.h"
 #include "cpreserve.h"
 #include "pkgpolicy.h"
+#include "bootconsole.h"
 #include "exec.h"
 #include "http.h"
 #include "image.h"
@@ -152,6 +153,7 @@ static char SUBID_STATE_PATH[PATH_MAX]; /* ADR-0179 */
 static char SERVERHEALTH_STATE_PATH[PATH_MAX]; /* issue #81 -- drain flags only */
 static char CPRESERVE_STATE_PATH[PATH_MAX]; /* issue #86 -- control-plane reservation */
 static char PKGPOLICY_STATE_PATH[PATH_MAX];  /* issue #64 -- per-package rolling policy */
+static char BOOTCONSOLE_STATE_PATH[PATH_MAX]; /* issue #24 -- boot console parameters */
 static char VOLUMES_STATE_PATH[PATH_MAX];      /* issue #88 */
 static char VOLUMES_DIR[PATH_MAX];             /* issue #88 -- where volume data lives */
 static char VOLUME_BACKUP_CONFIG_PATH[PATH_MAX]; /* issue #96 -- the volume-snapshot schedule */
@@ -287,6 +289,8 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(CPRESERVE_STATE_PATH, sizeof(CPRESERVE_STATE_PATH),
 	         "%s/control_plane_reservation.json", STATE_DIR);
 	snprintf(PKGPOLICY_STATE_PATH, sizeof(PKGPOLICY_STATE_PATH), "%s/pkg_policies.json",
+	         STATE_DIR);
+	snprintf(BOOTCONSOLE_STATE_PATH, sizeof(BOOTCONSOLE_STATE_PATH), "%s/boot_console.json",
 	         STATE_DIR);
 	/*
 	 * Issue #88: volume data is a direct child of the base dir, alongside
@@ -682,6 +686,14 @@ static void migrate_diskroles_out_of_state_dir(void)
 #define ESP_DEVICE "/dev/vda1"
 #define ESP_DIR "/boot"
 #define ESP_LOADER_ENTRIES_DIR ESP_DIR "/loader/entries"
+/*
+ * The real path above, resolved once at startup so a test can point it
+ * somewhere harmless (--test-esp-entries-dir=). Every reader and writer
+ * of loader entries goes through this, so there is still exactly one
+ * answer to "where do boot entries live" -- the flag changes it, it
+ * does not add a second copy of it.
+ */
+static char g_esp_entries_dir[PATH_MAX] = ESP_LOADER_ENTRIES_DIR;
 /*
  * Partitions 2/3 in thinc-install's own layout (image/src/thinc-
  * install.c's auto_partition()), same fixed QEMU virtio-blk layout/
@@ -1628,15 +1640,15 @@ static int confirm_boot(const char *slot)
 	snprintf(prefix, sizeof(prefix), "thinc-%s", slot);
 	prefix_len = strlen(prefix);
 
-	d = opendir(ESP_LOADER_ENTRIES_DIR);
+	d = opendir(g_esp_entries_dir);
 	if (d == NULL) {
-		perror(ESP_LOADER_ENTRIES_DIR);
+		perror(g_esp_entries_dir);
 		return -1;
 	}
 	while ((de = readdir(d)) != NULL) {
 		if (strncmp(de->d_name, prefix, prefix_len) == 0) {
 			found = 1;
-			snprintf(oldpath, sizeof(oldpath), "%s/%s", ESP_LOADER_ENTRIES_DIR, de->d_name);
+			snprintf(oldpath, sizeof(oldpath), "%s/%s", g_esp_entries_dir, de->d_name);
 			break;
 		}
 	}
@@ -1647,7 +1659,7 @@ static int confirm_boot(const char *slot)
 		return -1;
 	}
 
-	snprintf(newpath, sizeof(newpath), "%s/thinc-%s.conf", ESP_LOADER_ENTRIES_DIR, slot);
+	snprintf(newpath, sizeof(newpath), "%s/thinc-%s.conf", g_esp_entries_dir, slot);
 	if (strcmp(oldpath, newpath) == 0)
 		return 0; /* already confirmed (no counter suffix) -- nothing to do */
 	if (rename(oldpath, newpath) != 0) {
@@ -2299,7 +2311,7 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		return 500;
 	}
 
-	snprintf(entry_path, sizeof(entry_path), "%s/thinc-%s+%d.conf", ESP_LOADER_ENTRIES_DIR,
+	snprintf(entry_path, sizeof(entry_path), "%s/thinc-%s+%d.conf", g_esp_entries_dir,
 	         inactive_slot, ROOT_UPDATE_TRIES);
 	/* version is this boot's own current timestamp -- always higher
 	 * than whatever's already on disk, so systemd-boot sorts this
@@ -2308,15 +2320,26 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 	 * thinc-bzImage-<slot> (pre-staged for both slots at install
 	 * time, ADR-0032) -- whether or not kernel_path was given this
 	 * call, that file already exists and is exactly what should boot. */
-	snprintf(entry_conf, sizeof(entry_conf),
-	         "title thinC (%s)\n"
-	         "sort-key thinc\n"
-	         "version %ld\n"
-	         "linux /thinc-bzImage-%s\n"
-	         "options console=tty0 console=ttyS0 root=%s rw init=/bin/thincd -- --init-mode "
-	         "--slot=%s --bind=%s\n",
-	         inactive_slot[0] == 'a' ? "A" : "B", (long)time(NULL), inactive_slot, device,
-	         inactive_slot, g_bind_addr);
+	{
+		/* Issue #24: the console portion comes from the operator's own
+		 * configuration rather than being fixed here. Everything else
+		 * on this line -- root=, rw, init= and the daemon's own
+		 * arguments -- stays this function's business: those decide
+		 * whether the machine boots at all, not what it displays. */
+		char console_opts[512];
+
+		bootconsole_render(console_opts, sizeof(console_opts));
+		snprintf(entry_conf, sizeof(entry_conf),
+		         "title thinC (%s)\n"
+		         "sort-key thinc\n"
+		         "version %ld\n"
+		         "linux /thinc-bzImage-%s\n"
+		         "options %s%sroot=%s rw init=/bin/thincd -- --init-mode "
+		         "--slot=%s --bind=%s\n",
+		         inactive_slot[0] == 'a' ? "A" : "B", (long)time(NULL), inactive_slot,
+		         console_opts, console_opts[0] != '\0' ? " " : "", device, inactive_slot,
+		         g_bind_addr);
+	}
 
 	{
 		int efd = open(entry_path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
@@ -18365,6 +18388,244 @@ static void handle_pkg_build_config_put(int fd, const char *body, size_t body_le
 }
 
 
+
+/*
+ * GET/PUT /v1/system/boot-console (issue #24) -- what the installed
+ * system's own boot line says about consoles.
+ *
+ * An installed host boots through systemd-boot, and every loader entry
+ * carried a hardcoded `console=tty0 console=ttyS0`. Fine as a default,
+ * bad as a permanent one: real hardware needs a serial console at a
+ * particular baud, or a framebuffer argument to produce any output at
+ * all, or exactly the opposite when the framebuffer is the problem.
+ * None of it was reachable without reinstalling.
+ *
+ * A change is applied to the loader entries already on the ESP, not
+ * only to future ones -- an operator who cannot see the console is not
+ * in a position to wait for the next A/B update to fix it.
+ */
+
+/* Rewrites one loader entry's console parameters in place, preserving
+ * everything from `root=` onward (which is what actually decides
+ * whether the machine boots, and is never this endpoint's business).
+ * Returns 1 if the file was rewritten, 0 if it was left alone. */
+static int bootconsole_rewrite_entry(const char *path, const char *console_opts)
+{
+	char buf[4096];
+	char out[4096];
+	int fd;
+	ssize_t n;
+	char *opt_line, *root_at, *line_end;
+	size_t prefix_len, out_len;
+
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return 0;
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return 0;
+	buf[n] = '\0';
+
+	opt_line = strstr(buf, "\noptions ");
+	if (opt_line == NULL && strncmp(buf, "options ", 8) == 0)
+		opt_line = buf;
+	else if (opt_line != NULL)
+		opt_line++; /* past the newline */
+	if (opt_line == NULL)
+		return 0;
+	line_end = strchr(opt_line, '\n');
+	root_at = strstr(opt_line, "root=");
+	/* An entry whose options line has no root= is not one this daemon
+	 * wrote; leaving it untouched is the only safe reading. */
+	if (root_at == NULL || (line_end != NULL && root_at > line_end))
+		return 0;
+
+	prefix_len = (size_t)(opt_line - buf);
+	if (prefix_len >= sizeof(out))
+		return 0;
+	memcpy(out, buf, prefix_len);
+	out_len = prefix_len;
+	out_len += (size_t)snprintf(out + out_len, sizeof(out) - out_len, "options %s%s%s",
+	                             console_opts, console_opts[0] != '\0' ? " " : "", root_at);
+	if (out_len >= sizeof(out))
+		return 0;
+
+	fd = open(path, O_WRONLY | O_TRUNC);
+	if (fd < 0)
+		return 0;
+	if (write(fd, out, out_len) != (ssize_t)out_len || fsync(fd) != 0) {
+		close(fd);
+		return 0;
+	}
+	close(fd);
+	return 1;
+}
+
+static int bootconsole_apply_to_esp(void)
+{
+	char console_opts[512];
+	DIR *d;
+	struct dirent *de;
+	int rewritten = 0;
+
+	bootconsole_render(console_opts, sizeof(console_opts));
+	d = opendir(g_esp_entries_dir);
+	if (d == NULL)
+		return 0; /* no ESP here (a dev sandbox) -- nothing to apply to */
+	while ((de = readdir(d)) != NULL) {
+		char path[PATH_MAX];
+
+		if (de->d_name[0] == '.')
+			continue;
+		snprintf(path, sizeof(path), "%s/%s", g_esp_entries_dir, de->d_name);
+		rewritten += bootconsole_rewrite_entry(path, console_opts);
+	}
+	closedir(d);
+	return rewritten;
+}
+
+/* The options line each loader entry currently carries, so the response
+ * shows what the machine will really boot with rather than only what
+ * was asked for -- the two differ on any box whose ESP is not writable
+ * from here, and that difference is the thing worth seeing. */
+static void bootconsole_write_entries_json(struct json_writer *w)
+{
+	DIR *d = opendir(g_esp_entries_dir);
+	struct dirent *de;
+
+	jw_arr_open(w);
+	if (d == NULL) {
+		jw_arr_close(w);
+		return;
+	}
+	while ((de = readdir(d)) != NULL) {
+		char path[PATH_MAX];
+		char buf[4096];
+		int fd;
+		ssize_t n;
+		char *opt_line, *line_end;
+
+		if (de->d_name[0] == '.')
+			continue;
+		snprintf(path, sizeof(path), "%s/%s", g_esp_entries_dir, de->d_name);
+		fd = open(path, O_RDONLY);
+		if (fd < 0)
+			continue;
+		n = read(fd, buf, sizeof(buf) - 1);
+		close(fd);
+		if (n <= 0)
+			continue;
+		buf[n] = '\0';
+		opt_line = strstr(buf, "\noptions ");
+		if (opt_line != NULL)
+			opt_line += 9;
+		else if (strncmp(buf, "options ", 8) == 0)
+			opt_line = buf + 8;
+		if (opt_line == NULL)
+			continue;
+		line_end = strchr(opt_line, '\n');
+		if (line_end != NULL)
+			*line_end = '\0';
+
+		jw_obj_open(w);
+		jw_key(w, "entry");
+		jw_str(w, de->d_name);
+		jw_key(w, "options");
+		jw_str(w, opt_line);
+		jw_obj_close(w);
+	}
+	closedir(d);
+	jw_arr_close(w);
+}
+
+static void handle_bootconsole_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "config");
+	bootconsole_write_json(&w);
+	jw_key(&w, "loader_entries");
+	bootconsole_write_entries_json(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_bootconsole_put(int fd, const char *body, size_t body_len)
+{
+	char consoles[BOOTCONSOLE_MAX_CONSOLES][BOOTCONSOLE_CONSOLE_MAX];
+	int console_count = 0;
+	const struct bootconsole_config *cur = bootconsole_get();
+	struct json_value *root;
+	const struct json_value *jconsoles, *jextra;
+	const char *extra;
+	enum bootconsole_error err;
+	struct json_writer w;
+	int applied;
+	size_t i;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	/* Absent means unchanged, same convention as every other config
+	 * endpoint here -- an operator changing only `extra` should not
+	 * have to restate the console list to keep it. */
+	jconsoles = json_object_get(root, "consoles");
+	if (jconsoles != NULL && jconsoles->type == JSON_ARRAY) {
+		for (i = 0; i < jconsoles->u.array.count && console_count < BOOTCONSOLE_MAX_CONSOLES; i++) {
+			const char *c = json_as_string(jconsoles->u.array.items[i]);
+
+			snprintf(consoles[console_count], BOOTCONSOLE_CONSOLE_MAX, "%s", c != NULL ? c : "");
+			console_count++;
+		}
+	} else {
+		for (console_count = 0; console_count < cur->console_count; console_count++)
+			snprintf(consoles[console_count], BOOTCONSOLE_CONSOLE_MAX, "%s",
+			         cur->consoles[console_count]);
+	}
+	jextra = json_object_get(root, "extra");
+	extra = jextra != NULL ? json_as_string(jextra) : cur->extra;
+
+	err = bootconsole_set(consoles, console_count, extra);
+	json_free(root);
+	if (err == BOOTCONSOLE_ERR_INVALID) {
+		respond_error(fd, 400, "Bad Request",
+		              "a console is a bare tty name with optional comma-separated options "
+		              "(\"ttyS0,115200n8\"), and extra parameters are plain kernel arguments -- "
+		              "console=/root=/init= are not accepted there, and nothing that could split "
+		              "the boot line is accepted at all");
+		return;
+	}
+	if (err != BOOTCONSOLE_OK) {
+		respond_error(fd, 500, "Internal Server Error", "could not persist the console settings");
+		return;
+	}
+
+	/* Applied to the entries already on the ESP, not just future ones:
+	 * an operator who cannot see the console cannot wait for the next
+	 * A/B update to fix it. */
+	applied = bootconsole_apply_to_esp();
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "config");
+	bootconsole_write_json(&w);
+	jw_key(&w, "loader_entries_updated");
+	jw_int(&w, applied);
+	jw_key(&w, "loader_entries");
+	bootconsole_write_entries_json(&w);
+	jw_key(&w, "applies");
+	jw_str(&w, "next-boot");
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 /*
  * GET/PUT /v1/system/control-plane-reservation (issue #86) -- how much
  * of the machine is held back for the daemon itself.
@@ -19734,6 +19995,16 @@ static void dispatch(int fd, const struct http_request *req)
 		}
 		if (strcmp(req->method, "PUT") == 0) {
 			handle_pkg_build_config_put(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/system/boot-console") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_bootconsole_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_bootconsole_put(fd, req->body, req->body_len);
 			return;
 		}
 	}
@@ -22799,6 +23070,8 @@ int main(int argc, char **argv)
 			slot = argv[i] + 7;
 		else if (strcmp(argv[i], "--simulate-unhealthy-boot") == 0)
 			simulate_unhealthy = 1;
+		else if (strncmp(argv[i], "--test-esp-entries-dir=", 23) == 0)
+			snprintf(g_esp_entries_dir, sizeof(g_esp_entries_dir), "%s", argv[i] + 23);
 		else if (strncmp(argv[i], "--test-update-image=", 20) == 0)
 			test_update_image = argv[i] + 20;
 		else if (strncmp(argv[i], "--test-update-kernel=", 21) == 0)
@@ -22843,6 +23116,21 @@ int main(int argc, char **argv)
 	 * here, already covered structurally by every other JSON-bodied
 	 * endpoint's own tests.
 	 */
+	/*
+	 * These three are plain config loads with no dependency beyond
+	 * their own state paths, and they sit HERE rather than with the
+	 * rest of the subsystem init below because the test-update block
+	 * immediately following performs a real A/B update -- and that
+	 * writes a loader entry whose console parameters come from
+	 * bootconsole. Initialised afterwards, the entry was written with
+	 * no console= at all, and the machine booted with nothing on the
+	 * serial console: found exactly that way, as a boot test that
+	 * timed out waiting for output that could no longer exist.
+	 */
+	cpreserve_init(CPRESERVE_STATE_PATH);   /* issue #86 */
+	pkgpolicy_init(PKGPOLICY_STATE_PATH);   /* issue #64 */
+	bootconsole_init(BOOTCONSOLE_STATE_PATH); /* issue #24 */
+
 	if (test_update_image != NULL || test_update_kernel != NULL) {
 		char body[2 * PATH_MAX + 64];
 		char out_slot[8];
@@ -23047,8 +23335,6 @@ int main(int argc, char **argv)
 	                         serverhealth_init(SERVERHEALTH_STATE_PATH)) != 0)
 		return 1;
 	volume_set_dir(VOLUMES_DIR);
-	cpreserve_init(CPRESERVE_STATE_PATH);
-	pkgpolicy_init(PKGPOLICY_STATE_PATH); /* issue #64 */
 	if (boot_subsystem_init(init_mode, "volume", volume_init(VOLUMES_STATE_PATH)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "ldap_config", ldap_config_init(LDAP_CONFIG_STATE_PATH)) != 0)

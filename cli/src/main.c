@@ -6224,6 +6224,108 @@ static int cmd_pkg_build_config(const struct kx_client *c, int json_mode, int ar
 
 
 /*
+ * Issue #24: thincctl boot-console show|set -- what the installed
+ * system's own boot line says about consoles. Applied to the loader
+ * entries already on the ESP, so it takes effect at the next boot
+ * rather than at the next A/B update.
+ */
+static void fmt_boot_console(const struct json_value *v)
+{
+	const struct json_value *cfg = json_object_get(v, "config");
+	const struct json_value *entries = json_object_get(v, "loader_entries");
+	const struct json_value *updated = json_object_get(v, "loader_entries_updated");
+	size_t i;
+
+	printf("rendered: %s\n",
+	       cfg != NULL && json_str_field(cfg, "rendered") != NULL ? json_str_field(cfg, "rendered")
+	                                                              : "(none)");
+	if (updated != NULL)
+		printf("loader entries rewritten: %d (takes effect at the next boot)\n",
+		       (int)json_as_number(updated));
+	if (entries != NULL && entries->type == JSON_ARRAY) {
+		if (entries->u.array.count == 0)
+			printf("no loader entries visible from here (not an installed host)\n");
+		for (i = 0; i < entries->u.array.count; i++)
+			printf("%-20s %s\n",
+			       json_str_field(entries->u.array.items[i], "entry") != NULL
+			           ? json_str_field(entries->u.array.items[i], "entry")
+			           : "-",
+			       json_str_field(entries->u.array.items[i], "options") != NULL
+			           ? json_str_field(entries->u.array.items[i], "options")
+			           : "-");
+	}
+}
+
+static int cmd_boot_console(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	const char *sub = argc > 0 ? argv[0] : "show";
+	const char *consoles[8];
+	int console_count = 0;
+	const char *extra = NULL;
+	int i;
+	struct json_writer w;
+
+	if (strcmp(sub, "show") == 0) {
+		if (kx_client_request(c, "GET", "/v1/system/boot-console", NULL, &r) != 0) {
+			fprintf(stderr, "thincctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_boot_console);
+	}
+	if (strcmp(sub, "set") != 0) {
+		fprintf(stderr, "usage: thincctl boot-console show\n"
+		                "       thincctl boot-console set [--console=NAME ...] [--extra=\"...\"]\n"
+		                "  --console is repeatable and ordered (e.g. --console=tty0 "
+		                "--console=ttyS0,115200n8)\n");
+		return 2;
+	}
+	for (i = 1; i < argc; i++) {
+		if (strncmp(argv[i], "--console=", 10) == 0) {
+			if (console_count >= (int)(sizeof(consoles) / sizeof(consoles[0]))) {
+				fprintf(stderr, "thincctl: too many --console= values\n");
+				return 2;
+			}
+			consoles[console_count++] = argv[i] + 10;
+		} else if (strncmp(argv[i], "--extra=", 8) == 0) {
+			extra = argv[i] + 8;
+		} else {
+			fprintf(stderr, "thincctl: unknown boot-console set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (console_count == 0 && extra == NULL) {
+		fprintf(stderr, "usage: thincctl boot-console set [--console=NAME ...] [--extra=\"...\"]\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	if (console_count > 0) {
+		jw_key(&w, "consoles");
+		jw_arr_open(&w);
+		for (i = 0; i < console_count; i++)
+			jw_str(&w, consoles[i]);
+		jw_arr_close(&w);
+	}
+	if (extra != NULL) {
+		jw_key(&w, "extra");
+		jw_str(&w, extra);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "PUT", "/v1/system/boot-console", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "thincctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_boot_console);
+}
+
+
+/*
  * Issue #86: thincctl control-plane-reservation show|set -- how much of
  * the machine is held back for the daemon itself. Reported with the
  * derived workload ceiling, because a percentage on its own is not
@@ -11818,6 +11920,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_tls_throttle(client, json_mode, argc, argv);
 	if (strcmp(cmd, "control-plane-reservation") == 0)
 		return cmd_cpreserve(client, json_mode, argc, argv);
+	if (strcmp(cmd, "boot-console") == 0)
+		return cmd_boot_console(client, json_mode, argc, argv);
 	if (strcmp(cmd, "hostauth-config") == 0)
 		return cmd_hostauth_config(client, json_mode, argc, argv);
 	if (strcmp(cmd, "hostauth-sessions") == 0)
@@ -12019,7 +12123,7 @@ static const char *const SHELL_COMMANDS[] = {
 	"resolv",
 	"restore", "rm",       "rolling-config", "routes",        "run",      "shutdown",  "site",
 	"start",  "stats",     "stop",          "storage",  "swap",     "sysctl",   "syslog",    "time",      "tls-throttle", "unpause",   "update",
-	"control-plane-reservation",
+	"control-plane-reservation", "boot-console",
 	NULL
 };
 
