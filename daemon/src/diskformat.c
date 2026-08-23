@@ -148,7 +148,22 @@ void diskformat_completed(int exit_status)
 		return;
 	}
 	g_state = DISKFORMAT_STATE_FAILED;
-	if (exit_status == 1)
+	if (exit_status == 127)
+		/*
+		 * The child's own execve() failed, and by far the likeliest
+		 * reason is that this binary is not on this host at all --
+		 * which is exactly what happened to btrfs: the API accepted
+		 * fs_type "btrfs" from the day multi-disk management shipped
+		 * while mkbootroot never staged mkfs.btrfs, so every real
+		 * attempt died here and reported only "exited abnormally
+		 * (status 127)". Saying which binary is missing is the
+		 * difference between a shrug and a fix.
+		 */
+		snprintf(g_error, sizeof(g_error),
+		         "mkfs.%s could not be run -- it is not present on this host (the control-plane "
+		         "image was built without it)",
+		         fs_type_str(g_fs_type));
+	else if (exit_status == 1)
 		snprintf(g_error, sizeof(g_error), "mkfs.%s failed", fs_type_str(g_fs_type));
 	else if (exit_status == 2)
 		snprintf(g_error, sizeof(g_error), "mkfs.%s succeeded but mount(2) failed: %s",

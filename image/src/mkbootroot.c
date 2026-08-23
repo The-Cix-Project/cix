@@ -362,6 +362,20 @@ int main(int argc, char **argv)
 			 */
 			{ "/usr/sbin/mkfs.ext4", "usr/sbin/mkfs.ext4" },
 			/*
+			 * mkfs.btrfs -- DISKFORMAT_MKFS_BTRFS_BIN, same file. The
+			 * API has accepted fs_type: "btrfs" since multi-disk
+			 * management shipped, and this binary was never staged, so
+			 * on a real installed host that request could only ever
+			 * fail at execve() -- reported by an operator who asked for
+			 * btrfs and got ext4. (The ext4 they got was a separate
+			 * dashboard bug; this is why btrfs could not have worked
+			 * even once that was fixed.) btrfs is not a hypothetical
+			 * here either: ADR-0103 uses btrfs qgroups for volume
+			 * quotas, so the platform already treats it as a supported
+			 * filesystem.
+			 */
+			{ "/usr/sbin/mkfs.btrfs", "usr/sbin/mkfs.btrfs" },
+			/*
 			 * sfdisk -- DISKPART_SFDISK_BIN, daemon/src/diskpart.c
 			 * (partition-level disk management, ADR-0158). This was
 			 * missing from the moment that feature shipped, which is

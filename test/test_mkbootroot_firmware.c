@@ -13,6 +13,7 @@
  * same synthetic-stand-in reasoning (a real kernel module tree needs a
  * real kernel build, not practical inside an automated test either).
  */
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -233,30 +234,89 @@ int main(void)
 	 * kmod_bin_dir argument rather than this fixed table, and are
 	 * asserted directly above.
 	 */
+	/*
+	 * Derived from the source, not kept in step with it by hand.
+	 *
+	 * This list used to be a hand-maintained copy of the *_BIN defines,
+	 * and it drifted exactly as a hand-maintained copy does:
+	 * mkfs.btrfs was declared in daemon/include/diskformat.h and never
+	 * staged, so `fs_type: "btrfs"` could only ever fail at execve() on
+	 * a real installed host -- found by an operator asking for btrfs.
+	 * A test whose whole job is catching that class of gap must not be
+	 * a second source of truth for the same fact.
+	 *
+	 * So: scan the daemon's own headers and sources for the `_BIN
+	 * "/abs/path"` convention they already use, and require every
+	 * absolute path to be present in the staged tree. A new shelled-out
+	 * tool is then covered the moment it is declared.
+	 */
 	{
-		static const char *const shelled_bins[] = {
-			"usr/bin/openssl",    /* PKI_OPENSSL_BIN, WS_OPENSSL_BIN */
-			"usr/bin/curl",       /* PKG_CURL_BIN */
-			"usr/bin/tar",        /* PKG_TAR_BIN */
-			"usr/bin/unsquashfs", /* PKG_UNSQUASHFS_BIN */
-			"bin/rm",             /* PKG_RM_BIN -- /bin, not /usr/bin */
-			"usr/sbin/mkfs.ext4", /* DISKFORMAT_MKFS_EXT4_BIN */
-			"usr/sbin/sfdisk",    /* DISKPART_SFDISK_BIN */
-			"usr/sbin/resize2fs", /* DISKPART_RESIZE2FS_BIN */
-			"usr/sbin/e2fsck",    /* DISKPART_E2FSCK_BIN */
+		static const char *const sources[] = {
+			"daemon/include/diskformat.h", "daemon/include/diskpart.h", "daemon/src/pkg.c",
+			"daemon/src/pki.c",            "daemon/src/websocket.c",     "daemon/src/kmod.c",
+			"daemon/src/kmodconfig.c",     "daemon/src/main.c",          "daemon/src/image.c",
 		};
-		size_t bi;
+		/*
+		 * Deliberately not required here, each for a stated reason --
+		 * an exemption list that has to say why is a different thing
+		 * from a copy of the answer.
+		 */
+		static const char *const exempt[] = {
+			"/usr/bin/modprobe", /* comes from the operator's own kmod_bin_dir, asserted above */
+			"/usr/bin/modinfo",  /* same */
+			"/usr/bin/sha256sum", /* ADR-0078: staged from host_tools_dir, not this fixed table */
+		};
+		size_t si, ei;
+		int checked = 0;
 
-		for (bi = 0; bi < sizeof(shelled_bins) / sizeof(shelled_bins[0]); bi++) {
-			snprintf(path, sizeof(path), "%s/%s", STAGE_DIR, shelled_bins[bi]);
-			if (!file_exists(path)) {
-				fprintf(stderr,
-				        "FAIL: %s not staged -- the daemon shells out to it by absolute "
-				        "path, so the feature using it cannot work on a real installed "
-				        "host\n",
-				        shelled_bins[bi]);
-				ok = 0;
+		for (si = 0; si < sizeof(sources) / sizeof(sources[0]); si++) {
+			FILE *f = fopen(sources[si], "r");
+			char line[1024];
+
+			if (f == NULL)
+				continue;
+			while (fgets(line, sizeof(line), f) != NULL) {
+				char *marker = strstr(line, "_BIN \"/");
+				char *start, *end;
+				char binpath[PATH_MAX];
+				int is_exempt = 0;
+
+				if (marker == NULL)
+					continue;
+				start = strchr(marker, '"');
+				if (start == NULL)
+					continue;
+				start++;
+				end = strchr(start, '"');
+				if (end == NULL || (size_t)(end - start) >= sizeof(binpath))
+					continue;
+				memcpy(binpath, start, (size_t)(end - start));
+				binpath[end - start] = '\0';
+
+				for (ei = 0; ei < sizeof(exempt) / sizeof(exempt[0]); ei++)
+					if (strcmp(binpath, exempt[ei]) == 0)
+						is_exempt = 1;
+				if (is_exempt)
+					continue;
+
+				/* binpath is absolute; the staged tree is relative. */
+				snprintf(path, sizeof(path), "%s%s", STAGE_DIR, binpath);
+				checked++;
+				if (!file_exists(path)) {
+					fprintf(stderr,
+					        "FAIL: %s is declared as a shelled-out binary in %s but is not "
+					        "staged -- the daemon invokes it by absolute path, so the feature "
+					        "using it cannot work on a real installed host\n",
+					        binpath, sources[si]);
+					ok = 0;
+				}
 			}
+			fclose(f);
+		}
+		if (checked == 0) {
+			fprintf(stderr, "FAIL: found no _BIN declarations at all -- this check has stopped "
+			                "checking anything\n");
+			ok = 0;
 		}
 	}
 

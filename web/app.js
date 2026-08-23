@@ -4733,16 +4733,7 @@ function diskRow(d) {
 		removeRoleBtn.addEventListener("click", () => removeDiskRole(d.name));
 		actionCell.appendChild(removeRoleBtn);
 
-		const fsSelect = document.createElement("select");
-
-		for (const fs of ["ext4", "btrfs"]) {
-			const opt = document.createElement("option");
-
-			opt.value = fs;
-			opt.textContent = fs;
-			fsSelect.appendChild(opt);
-		}
-
+		const fsSelect = buildFsSelect(d.name);
 		const formatBtn = document.createElement("button");
 
 		formatBtn.type = "button";
@@ -4964,15 +4955,7 @@ function renderDiskRoleTab(d, role) {
 	removeBtn.addEventListener("click", () => removeDiskRole(d.name));
 	actions.appendChild(removeBtn);
 
-	const fsSelect = document.createElement("select");
-
-	for (const fs of ["ext4", "btrfs"]) {
-		const opt = document.createElement("option");
-
-		opt.value = fs;
-		opt.textContent = fs;
-		fsSelect.appendChild(opt);
-	}
+	const fsSelect = buildFsSelect(d.name);
 	const formatBtn = document.createElement("button");
 
 	formatBtn.type = "button";
@@ -5344,6 +5327,36 @@ async function removeDiskRole(diskName) {
  * mirroring thincctl's own "the operator already specified which disk
  * by typing its name once" reasoning (cli/src/main.c's cmd_disks_
  * format()), not asked for a second time as a separate typed field. */
+/*
+ * The filesystem chosen for a format, remembered per disk.
+ *
+ * Both format controls are rebuilt from scratch on every render, and a
+ * rebuilt <select> starts at its first option -- ext4. So choosing
+ * btrfs and then waiting for one poll silently reverted the choice, and
+ * the format went ahead as ext4: reported by an operator who asked for
+ * btrfs on sda1 and got ext4, with nothing anywhere saying so. A
+ * destructive action must never be able to change its own meaning
+ * between choosing it and confirming it.
+ */
+const diskFormatFsChoice = {};
+
+function buildFsSelect(diskName) {
+	const select = document.createElement("select");
+
+	for (const fs of ["ext4", "btrfs"]) {
+		const opt = document.createElement("option");
+
+		opt.value = fs;
+		opt.textContent = fs;
+		select.appendChild(opt);
+	}
+	select.value = diskFormatFsChoice[diskName] || "ext4";
+	select.addEventListener("change", () => {
+		diskFormatFsChoice[diskName] = select.value;
+	});
+	return select;
+}
+
 async function formatDisk(diskName, fsType) {
 	if (!confirm("Format " + diskName + " as " + fsType + "? This destroys every byte of existing content on the disk. This cannot be undone."))
 		return;
