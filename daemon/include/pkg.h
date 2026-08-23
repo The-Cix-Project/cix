@@ -757,6 +757,27 @@ int pkg_build_output_snapshot(int chain_idx, char *out, int out_cap);
  * case). Safe to call when already closed (no-op). */
 void pkg_build_output_close(int chain_idx);
 
+/*
+ * Issue #57: every build's COMPLETE output, teed to a file as it
+ * streams. The in-memory capture is a ~4KB tail and `pkg build-log` is
+ * live-only, so a finished build's full output used to survive nowhere
+ * -- which cost two multi-hour round trips on gcc: once when a verbose
+ * configure swamped the tail and hid the real error, once when the
+ * workaround silenced the live stream and a healthy 71-minute build was
+ * misread as hung and killed. Both were the same missing primitive.
+ */
+struct pkg_build_log_entry {
+	char file[256];
+	long long size_bytes;
+	long long modified_at;
+};
+
+int pkg_build_log_list(struct pkg_build_log_entry *out, int max);
+/* Returns bytes written into buf (tail-first if the log is larger than
+ * cap -- the end is where the failure is), or -1 for no such log.
+ * out_total, when non-NULL, receives the log's real full size. */
+long long pkg_build_log_read(const char *file, char *buf, long long cap, long long *out_total);
+
 /* Metadata for every known package (installed or in-flight): name,
  * image, version, state, error (null unless FAILED), files (manifest,
  * empty until INSTALLED), available_version (null if up to date or
@@ -848,6 +869,16 @@ int pkg_repo_is_configured(void);
  * the caller exactly like every other async pkg.c job (pkg_install_
  * start(), pkg_bootstrap_from_toolchain(), ...).
  */
+/*
+ * Issue #59: arms a one-shot re-fetch of a single name@version for the
+ * next sync, so a recipe under active development can be corrected in
+ * place instead of burning a new version number per iteration (the
+ * catalogue really did collect five dead kernel pins and four dead gcc
+ * pins from one investigation). Immutability stays the default for
+ * everything else. Returns -1 if version is missing.
+ */
+int pkg_sync_set_refetch(const char *name, const char *version);
+
 enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd);
 
 /*

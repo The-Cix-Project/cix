@@ -208,6 +208,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/pkg/repo-config` | The configured recipe-sync source (ADR-0121); `auth_token` itself is never returned |
 | PUT | `/pkg/repo-config` | Partially update the configured recipe repo — fields omitted from the body are left unchanged |
 | POST | `/pkg/sync` | Start an async fetch-and-merge of the configured repo's recipes (async — returns immediately) |
+| GET | `/pkg/build-logs` | Every persisted build log, newest first — the complete output of each recent build (issue #57) |
+| GET | `/pkg/build-logs/{file}` | One build log as plain text, tail-first if it is larger than the response cap |
 | GET | `/pkg/sync` | The most recent (or currently running) sync's status |
 | GET | `/pkg/cache-config` | The configured local build-artifact cache size cap |
 | PUT | `/pkg/cache-config` | Set the cache's size cap (always a real cap — no "unlimited" mode) |
@@ -1570,6 +1572,21 @@ Here the REST daemon is not one management path among several — it is the only
 **Enabled by default** (10%, 512 MiB). A reservation that has to be discovered and switched on is a reservation nobody has when they need it, and the failure it prevents is the worst one this platform has. `cpu_percent` is capped at 50 and `memory_bytes` floored at 64 MiB: a bigger reservation is not a safety margin, it is a second workload budget. Disabling it leaves the hierarchy exactly as it is and only removes the ceilings — turning it off is not a migration.
 
 Changes apply to the live cgroup immediately, not at the next container creation: an operator raising the reservation because the box is under strain needs it while it is under strain.
+
+
+## Build logs, and re-fetching one recipe version
+
+```
+GET /v1/pkg/build-logs
+GET /v1/pkg/build-logs/{file}
+POST /v1/pkg/sync   {"refetch": "kernel@6.18.40-13"}
+```
+
+**Every build's complete output is kept** (issue #57). The consolidated log store keeps a ~4KB *tail* of build output and `pkg build-log` is a live-only stream, so until now a finished build's real output survived nowhere unless the recipe itself redirected to a file *and* the container was preserved. That cost two multi-hour round trips on one package: first a verbose `configure` swamped the tail and hid the actual error; then the workaround — redirecting to a file inside the container — silenced the live stream, and a healthy 71-minute build was misread as hung and killed by hand. Two failure modes, one missing primitive.
+
+The daemon now tees each build's stdout/stderr to `<data-dir>/pkg/build-logs/<name>-<version>-<started>.log` as it streams. A build that is killed keeps its log up to the moment it died, which is the case most worth reading. The directory is bounded (oldest pruned when a new build starts) — diagnostics must not fill the disk they exist to debug. `GET /pkg/build-logs/{file}` returns text, tail-first if the log is larger than the response cap, and says so on its own first line rather than only in a header. `thincctl pkg build-logs --last` prints the newest one whole.
+
+**`refetch` re-fetches exactly one recipe version** (issue #59). `pkg sync` is additive and never overwrites a `name@version` it has already seen — a sound default, since [ADR-0107](../adr/0107-image-versioning.md)'s resolution rules depend on version immutability. During active development of a recipe, though, the only workaround was burning a new version number per iteration, and the catalogue really did collect five dead kernel pins and four dead gcc pins from a single investigation. `{"refetch": "name@version"}` lets that one sync replace that one version. It is one-shot (cleared when the sync completes, so the periodic background sync can never inherit it), and a bare package name is a `400` — immutability is per version, so the escape hatch is too.
 
 
 ## Capability restriction (issue #29)

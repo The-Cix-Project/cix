@@ -1317,6 +1317,7 @@ function renderCurrentView() {
 				);
 			renderImages(cache.images);
 			renderPackagesView(null);
+			refreshBuildLogs();
 			refreshSoftwareReconcile();
 			renderRecipesList();
 			renderImageRecipesTable();
@@ -5677,6 +5678,75 @@ async function removeLdapUser(name) {
 	}
 }
 
+
+
+/* ---------- Build logs (issue #57) ---------- */
+
+async function refreshBuildLogs() {
+	const body = document.getElementById("build-logs-body");
+
+	try {
+		const data = await apiRequest("GET", "/v1/pkg/build-logs");
+		const logs = data.logs || [];
+
+		body.textContent = "";
+		if (logs.length === 0) {
+			const tr = document.createElement("tr");
+			const td = document.createElement("td");
+
+			td.colSpan = 4;
+			td.className = "empty";
+			td.textContent = "No builds recorded yet";
+			tr.appendChild(td);
+			body.appendChild(tr);
+			return;
+		}
+		for (const l of logs) {
+			const tr = document.createElement("tr");
+			const view = document.createElement("button");
+
+			for (const text of [l.file, formatBytes(l.size_bytes),
+			                    new Date(l.modified_at * 1000).toLocaleString()]) {
+				const c = document.createElement("td");
+
+				c.textContent = text;
+				tr.appendChild(c);
+			}
+			view.textContent = "View";
+			view.className = "button-small";
+			view.addEventListener("click", () => showBuildLog(l.file));
+			const td = document.createElement("td");
+
+			td.appendChild(view);
+			tr.appendChild(td);
+			body.appendChild(tr);
+		}
+	} catch (e) {
+		/* Best-effort, same as every other panel here. */
+	}
+}
+
+async function showBuildLog(file) {
+	const view = document.getElementById("build-log-view");
+
+	view.hidden = false;
+	view.textContent = "Loading…";
+	try {
+		/* Fetched directly rather than through apiRequest(): the
+		 * response is plain text, not JSON, and it can be megabytes --
+		 * the log is the point, so it is not summarised or reshaped
+		 * here. */
+		const res = await fetch("/v1/pkg/build-logs/" + encodeURIComponent(file), {
+			headers: authToken ? { Authorization: "Bearer " + authToken } : {},
+		});
+
+		view.textContent = res.ok ? await res.text() : "Could not read " + file;
+		/* The tail is what matters on a truncated log, so land there. */
+		view.scrollTop = view.scrollHeight;
+	} catch (e) {
+		view.textContent = "Could not read " + file + ": " + e.message;
+	}
+}
 
 /* ---------- Control Plane Reservation (issue #86) ---------- */
 

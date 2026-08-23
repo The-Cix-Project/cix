@@ -1630,3 +1630,21 @@ td.empty {
 .usage-gauge-fill.usage-gauge-critical {
 	background: var(--error);
 }
+
+/* Issue #57: a persisted build log, shown in place. Its own scroll
+ * container so a 2 MB tail never makes the page itself scroll
+ * sideways, and monospace because build output is column-aligned by
+ * whatever produced it. */
+.log-view {
+	max-height: 60vh;
+	overflow: auto;
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 0.75rem;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: 0.75rem;
+	line-height: 1.45;
+	white-space: pre;
+	tab-size: 4;
+}
