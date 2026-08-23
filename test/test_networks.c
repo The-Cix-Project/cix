@@ -279,6 +279,71 @@ int main(void)
 	}
 	thinc_response_free(&r);
 
+	/*
+	 * Issue #26: the switch panel's own data. The port list comes from
+	 * the kernel's view of the bridge, so a running container has to
+	 * show up as a real port -- attributed to itself, carrying its own
+	 * IP, with counters read from the port's own side.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (thinc_client_request(&client, "GET", "/v1/networks/neta/ports", NULL, &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: #26 GET neta/ports, status=%d\n", r.status);
+		ok = 0;
+	} else {
+		const struct json_value *ports = json_object_get(r.json, "ports");
+		int found = 0;
+		size_t pi;
+
+		if (ports == NULL || ports->type != JSON_ARRAY || ports->u.array.count == 0) {
+			fprintf(stderr, "FAIL: #26 a running container is not a port on its own bridge\n");
+			ok = 0;
+		} else {
+			for (pi = 0; pi < ports->u.array.count; pi++) {
+				const struct json_value *pv = ports->u.array.items[pi];
+
+				if (!str_eq(json_str_field(pv, "container"), "c1"))
+					continue;
+				found = 1;
+				if (!str_eq(json_str_field(pv, "kind"), "container")) {
+					fprintf(stderr, "FAIL: #26 c1's port is not kind=container\n");
+					ok = 0;
+				}
+				if (json_str_field(pv, "ip") == NULL) {
+					fprintf(stderr, "FAIL: #26 c1's port carries no IP\n");
+					ok = 0;
+				}
+				if (json_object_get(pv, "rx_bytes") == NULL ||
+				    json_object_get(pv, "tx_bytes") == NULL) {
+					fprintf(stderr, "FAIL: #26 c1's port carries no counters\n");
+					ok = 0;
+				}
+				/* vlan_id belongs to an uplink; a container port must
+				 * report null rather than a number that means nothing. */
+				if (json_object_get(pv, "vlan_id") == NULL ||
+				    json_object_get(pv, "vlan_id")->type != JSON_NULL) {
+					fprintf(stderr, "FAIL: #26 a container port reported a vlan_id\n");
+					ok = 0;
+				}
+			}
+			if (!found) {
+				fprintf(stderr, "FAIL: #26 no port on neta is attributed to c1\n");
+				ok = 0;
+			}
+		}
+	}
+	thinc_response_free(&r);
+
+	/* A network that does not exist is a 404 here too -- the ports of
+	 * nothing is not an empty list. */
+	memset(&r, 0, sizeof(r));
+	if (thinc_client_request(&client, "GET", "/v1/networks/nosuchnet/ports", NULL, &r) != 0 ||
+	    r.status != 404) {
+		fprintf(stderr, "FAIL: #26 ports of an unknown network should 404, got %d\n", r.status);
+		ok = 0;
+	}
+	thinc_response_free(&r);
+
 	memset(&r, 0, sizeof(r));
 	if (thinc_client_request(&client, "DELETE", "/v1/networks/neta", NULL, &r) != 0 ||
 	    r.status != 409) {

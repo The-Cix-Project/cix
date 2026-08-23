@@ -163,6 +163,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | DELETE | `/networks/{name}` | Remove a network (refused if any container is still attached, or if it's the management network) |
 | POST | `/networks/{name}/interfaces` | Attach a real host network interface to this network's bridge |
 | DELETE | `/networks/{name}/interfaces/{ifname}` | Detach a previously-attached interface (refused for the management network) |
+| GET | `/networks/{name}/ports` | What is plugged into this network's bridge right now, per port, with each port's own counters (issue #26) |
 | GET | `/images` | List every image this daemon knows about |
 | POST | `/images` | Create an empty image (runtime pre-seeded, ready for `pkg install`) |
 | GET | `/images/{name}` | Inspect one image, including its manifest |
@@ -345,6 +346,36 @@ PUT /v1/system/daemon-config
 ```
 
 Resolves `lan1`'s own existing address (it must already have one — `has_address: true`, `400` otherwise) and performs a live listen-socket rebind to it — the new socket is created, bound, and added to `epoll` *before* the old one is torn down, so a failure rolls back to the still-working previous listener rather than leaving a gap. Only once the rebind succeeds does `is_management` actually move from the old network to `lan1`. This works identically whether `lan1` has a physical NIC attached directly or gets its connectivity entirely from a container (e.g. a WiFi-AP container bridging a passed-through wireless radio) — thincd only ever cares about the network's own address, never how it's fed.
+
+### What is plugged in: the switch panel (issue #26)
+
+```
+GET /v1/networks/management/ports
+```
+
+```json
+{"network": "management", "bridge_present": true, "ports": [
+  {"ifname": "eth0", "kind": "uplink", "vlan_id": 0, "container": null, "ip": null,
+   "link": "up", "rx_bytes": 918273645, "tx_bytes": 51234567, "rx_packets": 0, "tx_packets": 0},
+  {"ifname": "vh97-0", "kind": "container", "vlan_id": null, "container": "dns-1",
+   "container_ifname": "eth0", "ip": "192.168.15.101", "link": "up",
+   "rx_bytes": 59895, "tx_bytes": 4240, "rx_packets": 952, "tx_packets": 68}
+]}
+```
+
+**The port list comes from the kernel.** Everything currently enslaved to this network's bridge, read from `/sys/class/net/<bridge>/brif` — not from what this daemon believes it attached. If the two ever disagree, the kernel is the one that is right, and a port that cannot be accounted for is reported as `kind: "unattributed"` rather than dropped. A veth sitting on the bridge that belongs to no container we know of is exactly the thing an operator needs to see, and asking the switch what is plugged into it is the only way to see it.
+
+The registry is the annotation layer on top: which container owns a port, what the interface is called inside it, which IP it holds.
+
+**A container that is not running has no port.** It has no veth on the bridge — nothing is plugged in — and drawing a port for it would say otherwise. The containers *defined* on a network are a different question, already answered by cross-referencing `GET /containers`.
+
+**`rx`/`tx` are from the port's own side**, which is the switch's side: `rx_bytes` is what reached the switch from whatever is plugged in. That is the inverse of what the container sees on its own interface, and saying which way round it is here is the difference between a useful number and a misleading one. Raw counters only — the caller computes rates, exactly as with [`/containers/{name}/stats`](#container-stats) and [`/system/stats`](#host-stats).
+
+**No port numbers.** Ports come and go with containers, so any number would be positional and would move; `ifname` is what names a port. The order returned *is* deterministic (uplinks, then container ports by container name, then unattributed) so a rendered panel does not reshuffle between polls — the dashboard numbers what it draws, and says that number is its own.
+
+A VLAN sub-interface is a port in its own right, carrying its `vlan_id`; its parent NIC is not a port of this bridge unless separately enslaved. `bridge_present: false` with an empty list means the network is defined in state but not realised on this host — a fact, not a fault.
+
+`thincctl network ports NAME` is the CLI surface; the dashboard draws it as a switch panel on the network's own page, with a per-network traffic chart under it.
 
 ### A dedicated bind IP, decoupled from the management network's own address
 

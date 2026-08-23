@@ -159,6 +159,7 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 |---|---|
 | `network create --name=NAME --subnet=A.B.C.D --prefix=N [--address=A.B.C.D] [--alloc-start=IP --alloc-end=IP]` | Create a network — no `--address=` means pure L2 (the default); `--alloc-start/--alloc-end` bound the auto-IP window (issue #70; a management network skips `.1` by default regardless) |
 | `network ls` / `network rm NAME` | List / remove |
+| `network ports NAME` | What is plugged into this network's bridge right now, per port, with each port's own counters (issue #26). The list is the kernel's, so a port nothing can account for prints as `unattributed` rather than being left out |
 | `network attach-interface NAME --interface=IFNAME [--vlan=N]` | Enslave a real host interface to this network's bridge; `--vlan=` creates an 802.1q sub-interface instead |
 | `network detach-interface NAME --interface=IFNAME` | Detach |
 

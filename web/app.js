@@ -1342,6 +1342,8 @@ function renderCurrentView() {
 			stopHostStatsPolling();
 		if (route.category === "networks" && route.name !== null)
 			renderNetworkDetail(route.name);
+		else if (netPortsName !== null)
+			stopNetPortsPolling();
 		else if (route.category === "disks" && route.name !== null)
 			renderDiskDetail(route.name);
 		else if (route.category === "routes")
@@ -3414,6 +3416,213 @@ async function removeNetwork(name) {
 	}
 }
 
+/*
+ * ---------- Issue #26: per-network switch panel ----------
+ *
+ * Same shape as the container/host stats windows above: a client-side
+ * rolling window kept only while this page is open, raw counters from
+ * the daemon, rates computed here. GET /networks/{name}/ports is the
+ * per-port counterpart of GET /system/stats, and drawChart() is reused
+ * verbatim for the aggregate.
+ */
+const NET_PORTS_HISTORY_MAX = 60;
+
+let netPortsTimer = null;
+let netPortsName = null;
+let netPortsHistory = [];
+
+function stopNetPortsPolling() {
+	if (netPortsTimer !== null) {
+		clearInterval(netPortsTimer);
+		netPortsTimer = null;
+	}
+	netPortsName = null;
+	netPortsHistory = [];
+}
+
+/* Bytes per second between two samples of one port's counters. Returns
+ * null rather than 0 when there is no prior sample to diff against, or
+ * when the port was not there last time -- a port that has just
+ * appeared has no rate yet, and showing 0 would be a measurement it
+ * has not made. */
+function portRate(prev, cur, ifname, field, dtMs) {
+	const before = prev === undefined ? undefined : prev.byIf[ifname];
+
+	if (before === undefined || dtMs <= 0)
+		return null;
+	const delta = cur.byIf[ifname][field] - before[field];
+
+	/* A counter that went backwards means the interface was recreated
+	 * under the same name (a container restarting into the same pid is
+	 * rare but real). Not a negative rate -- no measurement. */
+	if (delta < 0)
+		return null;
+	return (delta * 1000) / dtMs;
+}
+
+function renderNetPorts() {
+	const panel = document.getElementById("nd-ports");
+	const h = netPortsHistory;
+
+	if (h.length === 0)
+		return;
+	const cur = h[h.length - 1];
+	const prev = h.length > 1 ? h[h.length - 2] : undefined;
+	const dtMs = prev === undefined ? 0 : cur.t - prev.t;
+
+	panel.textContent = "";
+	if (!cur.bridgePresent) {
+		const p = document.createElement("p");
+
+		p.className = "hint";
+		p.textContent = "No bridge for this network on this host — nothing is plugged in.";
+		panel.appendChild(p);
+		return;
+	}
+	if (cur.ports.length === 0) {
+		const p = document.createElement("p");
+
+		p.className = "hint";
+		p.textContent = "The bridge exists, but nothing is on it.";
+		panel.appendChild(p);
+		return;
+	}
+
+	cur.ports.forEach((port, i) => {
+		const box = document.createElement("div");
+		const head = document.createElement("div");
+		const jack = document.createElement("span");
+		const num = document.createElement("span");
+		const ifn = document.createElement("span");
+		const attached = document.createElement("div");
+		const rate = document.createElement("div");
+
+		/*
+		 * Only "up" is up and only a real down state is down. An
+		 * operstate of "unknown" is what a driver reports when it does
+		 * not track carrier at all (a dummy or tap interface), and
+		 * colouring that red would invent a fault out of a driver's
+		 * silence.
+		 */
+		box.className = "switch-port " +
+			(port.link === "up"
+				? "switch-port-up"
+				: port.link === "down" || port.link === "lowerlayerdown"
+				  ? "switch-port-down"
+				  : "") +
+			(port.kind === "unattributed" ? " switch-port-unattributed" : "");
+		/* The number is this panel's own position, not a port identity:
+		 * ports come and go with containers. The title carries what
+		 * actually names it. */
+		box.title = port.ifname + " — " + port.kind +
+			(port.link !== null ? ", link " + port.link : ", link unknown");
+
+		jack.className = "switch-port-jack";
+		num.className = "switch-port-num";
+		num.textContent = String(i + 1);
+		ifn.className = "switch-port-if";
+		ifn.textContent = port.ifname;
+		head.className = "switch-port-head";
+		head.appendChild(jack);
+		head.appendChild(num);
+		head.appendChild(ifn);
+
+		attached.className = "switch-port-attached";
+		if (port.container !== null) {
+			attached.appendChild(treeLink("#containers/" + encodeURIComponent(port.container),
+			                               port.container, ""));
+			if (port.ip !== null)
+				attached.appendChild(document.createTextNode(" " + port.ip));
+		} else if (port.kind === "uplink") {
+			attached.textContent = "uplink" + (port.vlan_id ? " · vlan " + port.vlan_id : "");
+		} else {
+			attached.textContent = "not accounted for";
+		}
+
+		const rxRate = portRate(prev, cur, port.ifname, "rx_bytes", dtMs);
+		const txRate = portRate(prev, cur, port.ifname, "tx_bytes", dtMs);
+
+		rate.className = "switch-port-rate";
+		rate.textContent = rxRate === null
+			? "in … · out …"
+			: "in " + formatBytes(rxRate) + "/s · out " + formatBytes(txRate) + "/s";
+
+		box.appendChild(head);
+		box.appendChild(attached);
+		box.appendChild(rate);
+		panel.appendChild(box);
+	});
+
+	/* The aggregate: every port summed. Uplink and container ports both
+	 * count, and the same byte crossing the switch is seen on two of
+	 * them -- so this is switch throughput, not the network's traffic
+	 * with the outside world, and the label says so. */
+	const rateTimes = [];
+	const rxValues = [];
+	const txValues = [];
+
+	for (let i = 1; i < h.length; i++) {
+		const dt = h[i].t - h[i - 1].t;
+		let rx = 0;
+		let tx = 0;
+
+		for (const port of h[i].ports) {
+			const r = portRate(h[i - 1], h[i], port.ifname, "rx_bytes", dt);
+			const t = portRate(h[i - 1], h[i], port.ifname, "tx_bytes", dt);
+
+			rx += r === null ? 0 : r;
+			tx += t === null ? 0 : t;
+		}
+		rateTimes.push(h[i].t);
+		rxValues.push(rx);
+		txValues.push(tx);
+	}
+	drawChart(
+		document.getElementById("nd-traffic"),
+		[{ values: rxValues, color: "#30d158" }, { values: txValues, color: "#0a84ff" }],
+		{ times: rateTimes, formatY: (v) => formatBytes(v) + "/s" }
+	);
+	document.getElementById("nd-traffic-label").textContent =
+		rxValues.length === 0
+			? "…"
+			: "in " + formatBytes(rxValues[rxValues.length - 1]) + "/s · out " +
+			  formatBytes(txValues[txValues.length - 1]) + "/s — summed over every port, so a " +
+			  "byte crossing the switch is counted on both the port it came in on and the one " +
+			  "it left by";
+}
+
+async function pollNetPortsOnce(name) {
+	try {
+		const data = await apiRequest("GET", "/v1/networks/" + encodeURIComponent(name) + "/ports");
+		const byIf = {};
+
+		for (const p of data.ports || [])
+			byIf[p.ifname] = p;
+		netPortsHistory.push({
+			t: Date.now(),
+			bridgePresent: data.bridge_present,
+			ports: data.ports || [],
+			byIf: byIf,
+		});
+		if (netPortsHistory.length > NET_PORTS_HISTORY_MAX)
+			netPortsHistory.shift();
+		renderNetPorts();
+	} catch (e) {
+		/* Best-effort; the last drawn panel stays put rather than
+		 * blanking on one failed poll. */
+	}
+}
+
+function startNetPortsPolling(name) {
+	if (netPortsName === name && netPortsTimer !== null)
+		return; /* a poll-driven re-render of the same network must not
+		         * reset the window it has been building */
+	stopNetPortsPolling();
+	netPortsName = name;
+	pollNetPortsOnce(name);
+	netPortsTimer = setInterval(() => pollNetPortsOnce(name), POLL_INTERVAL_MS);
+}
+
 function renderNetworkDetail(name) {
 	const n = cache.networks.find((x) => x.name === name);
 	const title = document.getElementById("nd-title");
@@ -3422,10 +3631,12 @@ function renderNetworkDetail(name) {
 	if (!n) {
 		title.textContent = name + " (not found)";
 		fields.textContent = "";
+		stopNetPortsPolling();
 		return;
 	}
 
 	title.textContent = n.name;
+	startNetPortsPolling(n.name);
 	fields.textContent = "";
 	fields.appendChild(fieldBlock("Subnet", n.subnet));
 	fields.appendChild(fieldBlock("Prefix length", String(n.prefix_len)));
