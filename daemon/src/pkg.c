@@ -3132,6 +3132,15 @@ static int start_build_container_spec(int chain_idx, struct pkg_entry *e,
 int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *spec_out,
                          int *out_stdio_write_fd)
 {
+	/*
+	 * Issue #98: the fetch path has the same chain-slot-reuse exposure
+	 * the build path had, minus a container name to key on. The
+	 * discriminator here is the entry's own state: an entry that is not
+	 * FETCHING cannot be the one whose fetch just exited, so a late
+	 * event that resolved onto a reused slot's new job is dropped
+	 * instead of driving that job's package into a build it never
+	 * asked for.
+	 */
 	struct pkg_entry *e = pkg_find(g_chains[chain_idx].name, g_chains[chain_idx].image);
 	char recipe_path[PATH_MAX];
 	struct pkg_recipe recipe;
@@ -3141,6 +3150,8 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 	int is_final_upgrade;
 	int i;
 
+	if (e != NULL && e->state != PKG_STATE_FETCHING)
+		return 0; /* stale: this slot has moved on (issue #98) */
 	if (e == NULL) {
 		g_chains[chain_idx].name[0] = '\0';
 		g_chains[chain_idx].dep_queue_count = 0;
@@ -3248,6 +3259,26 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 	}
 
 	pkg_build_container_name(chain_idx, e->build_container_name, sizeof(e->build_container_name));
+	/*
+	 * Issue #98: exactly one entry may claim a given build container
+	 * name at a time. Build container names are per chain SLOT
+	 * ("__pkgbuild-0"), and slots are reused constantly, so without
+	 * this every package that ever built in slot 0 keeps claiming
+	 * "__pkgbuild-0" forever -- and anything resolving an exited
+	 * container back to its owner finds the oldest claimant instead of
+	 * the real one. Establishing the invariant here, at the moment the
+	 * claim is made, is what makes that resolution exact.
+	 */
+	{
+		int oi;
+
+		for (oi = 0; oi < PKG_MAX_PACKAGES; oi++) {
+			if (&g_packages[oi] == e || !g_packages[oi].in_use)
+				continue;
+			if (strcmp(g_packages[oi].build_container_name, e->build_container_name) == 0)
+				g_packages[oi].build_container_name[0] = '\0';
+		}
+	}
 	snprintf(container_base, sizeof(container_base), "%s/%s", g_containers_dir,
 	         e->build_container_name);
 	/* A hostbuild job's own build container is rooted on build_image's
@@ -3963,6 +3994,39 @@ static int install_mutate(const char *staging_rootfs, void *ctx_v)
 	return merge_tree(ctx->dest_dir, staging_rootfs, "", ctx->e);
 }
 
+/*
+ * Issue #98: the entry that owns a given build container, found by the
+ * container's own name rather than by whatever the chain slot currently
+ * says.
+ *
+ * pkg_build_completed() used to resolve its entry with
+ * pkg_find(g_chains[idx].name, ...). A chain slot is freed on several
+ * failure paths and can then be reallocated to a different job, while
+ * the previous job's build container is still alive -- its exit event
+ * arrives afterwards, resolves against the NEW job's name, and lands on
+ * an entry that never started a build. The visible symptom was a
+ * harvest running against "<containers_dir>//upper/build/pkg-dest" (an
+ * empty container name in the middle of the path), and the invisible
+ * one was completion state being written onto an unrelated package.
+ *
+ * The container name is the exact key: every build container is named
+ * for the chain that started it and recorded on the entry it belongs
+ * to, so this cannot resolve to a bystander.
+ */
+static struct pkg_entry *pkg_find_by_build_container(const char *container_name)
+{
+	int i;
+
+	if (container_name == NULL || container_name[0] == '\0')
+		return NULL;
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		if (g_packages[i].in_use && g_packages[i].build_container_name[0] != '\0' &&
+		    strcmp(g_packages[i].build_container_name, container_name) == 0)
+			return &g_packages[i];
+	}
+	return NULL;
+}
+
 int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_pid,
                          int *out_pidfd, int *out_chain_idx, char *out_hostbuild_done_name,
                          int *out_kept)
@@ -3980,10 +4044,27 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	if (chain_idx < 0)
 		return 0;
 
-	e = pkg_find(g_chains[chain_idx].name, g_chains[chain_idx].image);
+	/*
+	 * Issue #98: keyed on the container that actually exited. Resolving
+	 * through the chain slot's current name is wrong whenever that slot
+	 * has been freed and reused since this build started -- see
+	 * pkg_find_by_build_container()'s own comment.
+	 */
+	e = pkg_find_by_build_container(container_name);
 	if (e == NULL) {
-		g_chains[chain_idx].name[0] = '\0';
-		g_chains[chain_idx].dep_queue_count = 0;
+		/* Nothing owns this container: a stale exit for a job that is
+		 * already finished and cleaned up. Touch no entry -- the whole
+		 * bug this guards against was completion state being written
+		 * onto a bystander. The chain slot is only cleared if it is
+		 * still the one this container belonged to. */
+		struct pkg_entry *chain_entry =
+		    pkg_find(g_chains[chain_idx].name, g_chains[chain_idx].image);
+
+		if (chain_entry == NULL ||
+		    strcmp(chain_entry->build_container_name, container_name) == 0) {
+			g_chains[chain_idx].name[0] = '\0';
+			g_chains[chain_idx].dep_queue_count = 0;
+		}
 		return 0;
 	}
 
