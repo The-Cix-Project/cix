@@ -56,7 +56,15 @@ This produces `build/thinc-install.iso` — attach it as a CD-ROM/optical drive 
 
 **Partitioning** — three ways, pick one via `thinc-install`'s own flags (baked into the last argument above):
 
-- **`--auto-partition`** (recommended for VMs / scripted provisioning): partitions the disk itself, non-interactively, with the standard fixed layout below — no typing required. This is what the example above uses, and what `test/test_installer.c`'s own install session actually exercises.
+- **`--auto-partition`** (recommended for VMs / scripted provisioning): partitions the disk itself, non-interactively, with the standard layout below — no typing required. This is what the example above uses, and what `test/test_installer.c`'s own install session actually exercises.
+
+  **It does not take the whole disk** ([ADR-0190](../adr/0190-install-leaves-the-disk-mostly-unallocated.md), issue #104). `thinc-containers` is the smaller of 16 GiB and half of what remains after the system partitions, and everything past it is left unallocated for you. The installer prints what it did:
+
+  ```
+  partitioning /dev/sda: 1907729 MiB total, 448 MiB system, 16384 MiB data, 1890897 MiB left unallocated for you to use
+  ```
+
+  Grow that data partition into the free space whenever you want (`thincctl disks partition resize`, issue #94), or partition the remainder yourself and give it a role. The reason for the conservative default is that the reversible direction should be the one left open: growing into free space is safe, shrinking a filesystem that already holds the system's state is not.
 - **(no flag, the default)**: drops into a real, interactive `fdisk` session — use this if you need different partition sizes than the standard layout. GPT, five partitions, named exactly (`thinc-esp`, `thinc-root-a`, `thinc-root-b`, `thinc-config`, `thinc-containers` — see `docs/roadmap/ROADMAP.md`'s Phase 11 part 3 write-up for the role each one plays):
 
   ```
@@ -65,7 +73,7 @@ This produces `build/thinc-install.iso` — attach it as a CD-ROM/optical drive 
   n  2    +160M                      # thinc-root-a
   n  3    +160M                      # thinc-root-b
   n  4    +64M                       # thinc-config
-  n  5                               # thinc-containers (rest of the disk -- Enter twice, no size)
+  n  5    +16G                       # thinc-containers (or whatever size suits -- see the note above)
   t  1  1                            # partition 1 -> EFI System type
   x                                  # expert menu, to set partition names
   n  1  thinc-esp
@@ -77,7 +85,7 @@ This produces `build/thinc-install.iso` — attach it as a CD-ROM/optical drive 
   w                                  # write and exit
   ```
 
-  (Each `n  <number>  <size>` above is really three separate prompts: partition number, first sector — just press Enter for the default — then last sector/size, where you type `+64M` etc., or Enter alone for partition 5's "rest of the disk".)
+  (Each `n  <number>  <size>` above is really three separate prompts: partition number, first sector — just press Enter for the default — then last sector/size, where you type `+64M` etc. Pressing Enter alone on the last one takes the rest of the disk, which is exactly what `--auto-partition` deliberately no longer does — but interactively it is your call.)
 
 - **`--skip-partition`**: the disk is already partitioned correctly by other means (e.g. scripted provisioning that ran `sfdisk` itself beforehand) — `thinc-install` just reads the existing table back.
 

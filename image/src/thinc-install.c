@@ -81,6 +81,24 @@ extern char **environ;
 #define AUTO_ESP_SIZE_MIB 64
 #define AUTO_ROOT_SIZE_MIB 160
 #define AUTO_CONFIG_SIZE_MIB 64
+/*
+ * Issue #104: the data partition is BOUNDED, and the rest of the disk
+ * is left unallocated.
+ *
+ * It used to be "rest of disk", which quietly decided how the whole
+ * machine's storage was carved up before its owner had said anything --
+ * and left them no room to decide differently without destroying and
+ * re-partitioning. The installer's job is to make the system bootable
+ * and persistent, not to claim every byte it can see.
+ *
+ * The cap is a ceiling, not a fixed size: on a small disk, taking 16
+ * GiB of a 20 GiB disk would be "the rest of the disk" wearing a
+ * number, so the actual size is the smaller of this cap and half of
+ * what remains after the system partitions. Whatever is left over is
+ * the admin's, and growing the data partition into it later is a real,
+ * supported operation (POST /disks/{disk}/partitions/{part}/resize).
+ */
+#define AUTO_DATA_MAX_MIB 16384
 
 /*
  * The loader entry's root= and every future boot's own partition access
@@ -368,10 +386,69 @@ static int mkfs_ext4(const char *device, const char *label, int with_quota)
  * session produces, for VM/scripted-provisioning use where an operator
  * typing the same fixed command sequence by hand every time is pure
  * friction, not a meaningful safety check. */
+/*
+ * The disk's own size in MiB, read from sysfs rather than computed from
+ * anything this installer was told: /sys/class/block/<name>/size is in
+ * 512-byte sectors, and it is the kernel's own answer for the device
+ * actually present. 0 means "could not tell", which the caller treats
+ * as a reason to stop rather than to guess.
+ */
+static long disk_size_mib(const char *disk)
+{
+	const char *base = strrchr(disk, '/');
+	char path[256];
+	char buf[64];
+	FILE *f;
+	long long sectors = 0;
+
+	base = base != NULL ? base + 1 : disk;
+	snprintf(path, sizeof(path), "/sys/class/block/%s/size", base);
+	f = fopen(path, "r");
+	if (f == NULL)
+		return 0;
+	if (fgets(buf, sizeof(buf), f) == NULL) {
+		fclose(f);
+		return 0;
+	}
+	fclose(f);
+	sectors = atoll(buf);
+	return (long)(sectors / 2048); /* 512-byte sectors -> MiB */
+}
+
 static int auto_partition(const char *disk)
 {
 	char script[400];
 	char *sfdisk_argv[] = { (char *)SFDISK_BIN, (char *)disk, NULL };
+	long total_mib = disk_size_mib(disk);
+	long system_mib = AUTO_ESP_SIZE_MIB + 2 * AUTO_ROOT_SIZE_MIB + AUTO_CONFIG_SIZE_MIB;
+	long remaining_mib, data_mib;
+
+	if (total_mib <= 0) {
+		fprintf(stderr, "thinc-install: could not read the size of %s\n", disk);
+		return -1;
+	}
+	/* A few MiB for the GPT itself at both ends, plus alignment slack.
+	 * Being conservative here costs nothing and stops a layout that is
+	 * arithmetically fine from failing at sfdisk. */
+	remaining_mib = total_mib - system_mib - 8;
+	if (remaining_mib < 64) {
+		fprintf(stderr,
+		        "thinc-install: %s is %ld MiB; this layout needs at least %ld MiB "
+		        "(ESP + two root slots + config + a data partition)\n",
+		        disk, total_mib, system_mib + 8 + 64);
+		return -1;
+	}
+
+	/* Issue #104: bounded, and never more than half of what is left --
+	 * see AUTO_DATA_MAX_MIB. The remainder stays unallocated, for the
+	 * admin to partition as they choose. */
+	data_mib = remaining_mib / 2;
+	if (data_mib > AUTO_DATA_MAX_MIB)
+		data_mib = AUTO_DATA_MAX_MIB;
+
+	printf("partitioning %s: %ld MiB total, %ld MiB system, %ld MiB data, %ld MiB left "
+	       "unallocated for you to use\n",
+	       disk, total_mib, system_mib, data_mib, remaining_mib - data_mib);
 
 	snprintf(script, sizeof(script),
 	         "label: gpt\n"
@@ -379,8 +456,9 @@ static int auto_partition(const char *disk)
 	         "size=%dMiB, type=linux, name=\"thinc-root-a\"\n"
 	         "size=%dMiB, type=linux, name=\"thinc-root-b\"\n"
 	         "size=%dMiB, type=linux, name=\"thinc-config\"\n"
-	         "type=linux, name=\"thinc-containers\"\n",
-	         AUTO_ESP_SIZE_MIB, AUTO_ROOT_SIZE_MIB, AUTO_ROOT_SIZE_MIB, AUTO_CONFIG_SIZE_MIB);
+	         "size=%ldMiB, type=linux, name=\"thinc-containers\"\n",
+	         AUTO_ESP_SIZE_MIB, AUTO_ROOT_SIZE_MIB, AUTO_ROOT_SIZE_MIB, AUTO_CONFIG_SIZE_MIB,
+	         data_mib);
 	return run_subprocess_stdin(SFDISK_BIN, sfdisk_argv, script);
 }
 
