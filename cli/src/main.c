@@ -3148,21 +3148,41 @@ static void fmt_dhcp(const struct json_value *v)
 			const struct json_value *en = json_object_get(n, "enabled");
 			int on = en != NULL && en->type == JSON_BOOL && en->u.boolean;
 
+			const struct json_value *slices = json_object_get(n, "slices");
+
 			if (!any) {
-				printf("%-16s %-9s %-32s %-8s %s\n", "NETWORK", "STATE", "RANGE", "LEASE",
-				       "SERVER");
+				printf("%-16s %-9s %-34s %s\n", "NETWORK", "STATE", "RANGE", "LEASE");
 				any = 1;
 			}
-			printf("%-16s %-9s %-32s %-8lds %s\n",
-			       json_str_field(n, "network") != NULL ? json_str_field(n, "network") : "-",
-			       on ? "enabled" : "disabled",
-			       json_str_field(n, "range_start") != NULL
-			           ? json_str_field(n, "range_start")
-			           : "-",
-			       (long)json_as_number(json_object_get(n, "lease_seconds")),
-			       json_str_field(n, "server") != NULL ? json_str_field(n, "server") : "-");
-			if (json_str_field(n, "range_end") != NULL)
-				printf("%-16s %-9s   .. %s\n", "", "", json_str_field(n, "range_end"));
+			{
+				char range[80];
+
+				if (json_str_field(n, "range_start") != NULL)
+					snprintf(range, sizeof(range), "%s - %s", json_str_field(n, "range_start"),
+					         json_str_field(n, "range_end"));
+				else
+					snprintf(range, sizeof(range), "%s", "-");
+				printf("%-16s %-9s %-34s %lds\n",
+				       json_str_field(n, "network") != NULL ? json_str_field(n, "network") : "-",
+				       on ? "enabled" : "disabled", range,
+				       (long)json_as_number(json_object_get(n, "lease_seconds")));
+			}
+			/*
+			 * Which server holds which part. dnsmasq has no failover
+			 * protocol, so redundancy here is disjoint pools -- and the
+			 * split is the thing worth seeing, since it is what makes
+			 * two servers safe rather than merely two.
+			 */
+			if (slices != NULL && slices->type == JSON_ARRAY) {
+				size_t k;
+
+				for (k = 0; k < slices->u.array.count; k++) {
+					const struct json_value *sl = slices->u.array.items[k];
+
+					printf("    served by %-14s %s - %s\n", json_str_field(sl, "server"),
+					       json_str_field(sl, "range_start"), json_str_field(sl, "range_end"));
+				}
+			}
 		}
 	}
 	if (!any)
@@ -3203,7 +3223,7 @@ static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char 
 {
 	struct thinc_response r;
 	const char *sub = argc > 0 ? argv[0] : "show";
-	const char *network = NULL, *range = NULL, *server = NULL, *router = NULL;
+	const char *network = NULL, *range = NULL, *router = NULL;
 	const char *mac = NULL, *ip = NULL, *hostname = NULL;
 	long lease_seconds = -1;
 	char path[256];
@@ -3229,8 +3249,6 @@ static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char 
 			network = argv[i] + 10;
 		else if (strncmp(argv[i], "--range=", 8) == 0)
 			range = argv[i] + 8;
-		else if (strncmp(argv[i], "--server=", 9) == 0)
-			server = argv[i] + 9;
 		else if (strncmp(argv[i], "--router=", 9) == 0)
 			router = argv[i] + 9;
 		else if (strncmp(argv[i], "--lease-seconds=", 16) == 0)
@@ -3248,14 +3266,15 @@ static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char 
 	if (strcmp(sub, "enable") == 0 || strcmp(sub, "disable") == 0) {
 		int enable = strcmp(sub, "enable") == 0;
 
-		if (network == NULL || (enable && (range == NULL || server == NULL))) {
+		if (network == NULL || (enable && range == NULL)) {
 			fprintf(stderr,
-			        "usage: thincctl dhcp enable --network=NAME --range=START-END "
-			        "--server=CONTAINER\n"
+			        "usage: thincctl dhcp enable --network=NAME --range=START-END\n"
 			        "                            [--lease-seconds=N] [--router=IP]\n"
 			        "       thincctl dhcp disable --network=NAME\n"
-			        "  --server= must already be a registered DNS server: DHCP is served by\n"
-			        "  the same dnsmasq, so a lease resolves the moment it is handed out\n");
+			        "  Served by EVERY registered DNS server, so a lease resolves the moment\n"
+			        "  it is handed out. The range is split into one disjoint slice per\n"
+			        "  server: dnsmasq has no failover protocol, so that split is what makes\n"
+			        "  two servers redundant rather than two servers colliding.\n");
 			return 2;
 		}
 		jw_init(&w);
@@ -3287,10 +3306,6 @@ static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char 
 				jw_key(&w, "range_end");
 				jw_str(&w, dash + 1);
 			}
-		}
-		if (server != NULL) {
-			jw_key(&w, "server");
-			jw_str(&w, server);
 		}
 		if (router != NULL) {
 			jw_key(&w, "router");
@@ -3359,8 +3374,7 @@ static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char 
 	}
 
 	fprintf(stderr, "usage: thincctl dhcp show | leases\n"
-	                "       thincctl dhcp enable --network=NAME --range=START-END "
-	                "--server=CONTAINER\n"
+	                "       thincctl dhcp enable --network=NAME --range=START-END\n"
 	                "       thincctl dhcp disable --network=NAME\n"
 	                "       thincctl dhcp static add --mac=M --ip=IP [--hostname=NAME]\n"
 	                "       thincctl dhcp static rm MAC\n");

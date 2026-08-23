@@ -89,7 +89,7 @@ thincctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `swap disable` | Deactivate and remove it |
 | `dhcp show` | Every DHCP-configured network and every static reservation (ADR-0197) |
 | `dhcp leases` | Current leases, read from the serving container's own lease file. A lease is not a DNS record -- it resolves anyway, because the same dnsmasq issues it and answers for it |
-| `dhcp enable --network=NAME --range=START-END --server=CONTAINER [--lease-seconds=N] [--router=IP]` | Enable DHCP on a network. `--server=` must already be a registered DNS server. **Changes to a range restart the serving containers**, since dnsmasq reads ranges only at startup |
+| `dhcp enable --network=NAME --range=START-END [--lease-seconds=N] [--router=IP]` | Enable DHCP on a network. Served by **every** registered DNS server, each from its own disjoint slice of the range -- dnsmasq has no failover protocol, so that split is what makes two servers redundant rather than colliding. **Changes to a range restart the serving containers**, since dnsmasq reads ranges only at startup |
 | `dhcp disable --network=NAME` | Turn it off |
 | `dhcp static add --mac=M --ip=IP [--hostname=NAME]` | Reserve an address for a MAC. Live -- no restart |
 | `dhcp static rm MAC` | Remove a reservation |

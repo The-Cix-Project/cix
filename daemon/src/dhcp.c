@@ -19,7 +19,7 @@ static char g_state_path[512];
  * config changed but the servers are still serving the old one" a
  * detectable state rather than an invisible one.
  */
-static char g_conf_in_force[4096];
+static char g_conf_in_force[16384];
 
 static int mac_is_valid(const char *mac)
 {
@@ -125,7 +125,7 @@ static int save_state(void)
 	jw_arr_open(&w);
 	for (i = 0; i < DHCP_MAX_NETWORKS; i++)
 		if (g_networks[i].network[0] != '\0')
-			dhcp_network_write_json(&g_networks[i], &w);
+			dhcp_network_write_json(&g_networks[i], 0, &w);
 	jw_arr_close(&w);
 	jw_key(&w, "static");
 	jw_arr_open(&w);
@@ -206,10 +206,6 @@ int dhcp_init(const char *path)
 			g_networks[slot].lease_seconds =
 			    (int)json_as_number(json_object_get(e, "lease_seconds"));
 			g_networks[slot].router_be = parse_ip(json_as_string(json_object_get(e, "router")));
-			snprintf(g_networks[slot].server, sizeof(g_networks[slot].server), "%s",
-			         json_as_string(json_object_get(e, "server")) != NULL
-			             ? json_as_string(json_object_get(e, "server"))
-			             : "");
 			slot++;
 		}
 	}
@@ -260,8 +256,6 @@ enum dhcp_error dhcp_network_set(const struct dhcp_network *cfg)
 		if (ntohl(cfg->range_start_be) > ntohl(cfg->range_end_be))
 			return DHCP_ERR_INVALID;
 		if (cfg->lease_seconds < 60 || cfg->lease_seconds > 30 * 24 * 3600)
-			return DHCP_ERR_INVALID;
-		if (cfg->server[0] == '\0')
 			return DHCP_ERR_INVALID;
 	}
 
@@ -346,7 +340,49 @@ enum dhcp_error dhcp_static_delete(const char *mac)
 	return save_state() == 0 ? DHCP_OK : DHCP_ERR_PERSIST_FAILED;
 }
 
-int dhcp_render_conf(char *out, size_t out_size)
+/*
+ * Server i of n gets a contiguous, disjoint slice of the range. The
+ * remainder goes to the earlier servers one address each, rather than
+ * all to the last -- with three servers over ten addresses that is
+ * 4/3/3, not 3/3/4, and no address belongs to two servers either way.
+ *
+ * Disjointness is the whole safety property: two dnsmasq instances have
+ * no failover protocol and no shared lease database, so the only thing
+ * preventing them handing one address to two machines is that neither
+ * holds it.
+ */
+int dhcp_slice_for(const struct dhcp_network *cfg, int server_index, int server_count,
+                    uint32_t *out_start_be, uint32_t *out_end_be)
+{
+	uint32_t first = ntohl(cfg->range_start_be);
+	uint32_t last = ntohl(cfg->range_end_be);
+	uint32_t total;
+	uint32_t base;
+	uint32_t extra;
+	uint32_t start;
+	uint32_t size;
+
+	if (server_count <= 1) {
+		*out_start_be = cfg->range_start_be;
+		*out_end_be = cfg->range_end_be;
+		return 0;
+	}
+	if (last < first)
+		return -1;
+	total = last - first + 1;
+	if (total < (uint32_t)server_count)
+		return -1;
+	base = total / (uint32_t)server_count;
+	extra = total % (uint32_t)server_count;
+	start = first + base * (uint32_t)server_index +
+	        ((uint32_t)server_index < extra ? (uint32_t)server_index : extra);
+	size = base + ((uint32_t)server_index < extra ? 1 : 0);
+	*out_start_be = htonl(start);
+	*out_end_be = htonl(start + size - 1);
+	return 0;
+}
+
+int dhcp_render_conf(int server_index, int server_count, char *out, size_t out_size)
 {
 	size_t off = 0;
 	int i;
@@ -355,18 +391,25 @@ int dhcp_render_conf(char *out, size_t out_size)
 	n = snprintf(out, out_size,
 	             "# Rendered by thincd -- every edit here is overwritten.\n"
 	             "# Ranges take effect only when dnsmasq starts, which is why\n"
-	             "# changing one restarts this container.\n");
+	             "# changing one restarts this container.\n"
+	             "# This server holds slice %d of %d: dnsmasq has no failover\n"
+	             "# protocol, so redundancy here is disjoint pools.\n",
+	             server_index + 1, server_count < 1 ? 1 : server_count);
 	if (n < 0 || (size_t)n >= out_size)
 		return -1;
 	off = (size_t)n;
 
 	for (i = 0; i < DHCP_MAX_NETWORKS; i++) {
 		char start[16], end[16], router[16];
+		uint32_t slice_start, slice_end;
 
 		if (g_networks[i].network[0] == '\0' || !g_networks[i].enabled)
 			continue;
-		ip_str(g_networks[i].range_start_be, start, sizeof(start));
-		ip_str(g_networks[i].range_end_be, end, sizeof(end));
+		if (dhcp_slice_for(&g_networks[i], server_index, server_count, &slice_start,
+		                    &slice_end) != 0)
+			continue;
+		ip_str(slice_start, start, sizeof(start));
+		ip_str(slice_end, end, sizeof(end));
 		n = snprintf(out + off, out_size - off, "dhcp-range=%s,%s,%ds\n", start, end,
 		             g_networks[i].lease_seconds);
 		if (n < 0 || (size_t)n >= out_size - off)
@@ -415,6 +458,7 @@ int dhcp_render_hosts(char *out, size_t out_size)
 void dhcp_sync_all(int *out_conf_changed)
 {
 	char conf[4096];
+	static char all_conf[16384];
 	char hosts[8192];
 	char names[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
 	int count;
@@ -422,15 +466,25 @@ void dhcp_sync_all(int *out_conf_changed)
 
 	if (out_conf_changed != NULL)
 		*out_conf_changed = 0;
-	if (dhcp_render_conf(conf, sizeof(conf)) < 0 ||
-	    dhcp_render_hosts(hosts, sizeof(hosts)) < 0)
+	if (dhcp_render_hosts(hosts, sizeof(hosts)) < 0)
 		return;
 
 	count = dns_server_list_containers(names, DNS_SERVER_MAX);
+	/*
+	 * Every server's conf is compared as one string, not each against
+	 * its own: adding or removing a server changes every OTHER server's
+	 * slice too, so "did the config change" is a question about the set,
+	 * never about one member of it.
+	 */
+	all_conf[0] = '\0';
 	for (i = 0; i < count; i++) {
 		struct registry_entry *entry = registry_find(names[i]);
 		char path[128];
 
+		if (dhcp_render_conf(i, count, conf, sizeof(conf)) < 0)
+			return;
+		if (strlen(all_conf) + strlen(conf) + 1 < sizeof(all_conf))
+			strcat(all_conf, conf);
 		if (entry == NULL || !entry->running)
 			continue;
 		snprintf(path, sizeof(path), "/proc/%d/root%s", (int)entry->handle.pid, DHCP_CONF_PATH);
@@ -442,14 +496,15 @@ void dhcp_sync_all(int *out_conf_changed)
 		sys_pidfd_send_signal(entry->handle.pidfd, SIGHUP);
 	}
 
-	if (strcmp(conf, g_conf_in_force) != 0) {
+	if (strcmp(all_conf, g_conf_in_force) != 0) {
 		if (out_conf_changed != NULL)
 			*out_conf_changed = 1;
-		snprintf(g_conf_in_force, sizeof(g_conf_in_force), "%s", conf);
+		snprintf(g_conf_in_force, sizeof(g_conf_in_force), "%s", all_conf);
 	}
 }
 
-void dhcp_network_write_json(const struct dhcp_network *cfg, struct json_writer *w)
+void dhcp_network_write_json(const struct dhcp_network *cfg, int include_slices,
+                              struct json_writer *w)
 {
 	char buf[16];
 
@@ -481,11 +536,32 @@ void dhcp_network_write_json(const struct dhcp_network *cfg, struct json_writer 
 	} else {
 		jw_null(w);
 	}
-	jw_key(w, "server");
-	if (cfg->server[0] != '\0')
-		jw_str(w, cfg->server);
-	else
-		jw_null(w);
+	if (include_slices) {
+		char names[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
+		int count = dns_server_list_containers(names, DNS_SERVER_MAX);
+		int i;
+
+		jw_key(w, "slices");
+		jw_arr_open(w);
+		for (i = 0; cfg->enabled && i < count; i++) {
+			uint32_t start_be, end_be;
+			char a[16], b[16];
+
+			if (dhcp_slice_for(cfg, i, count, &start_be, &end_be) != 0)
+				continue;
+			ip_str(start_be, a, sizeof(a));
+			ip_str(end_be, b, sizeof(b));
+			jw_obj_open(w);
+			jw_key(w, "server");
+			jw_str(w, names[i]);
+			jw_key(w, "range_start");
+			jw_str(w, a);
+			jw_key(w, "range_end");
+			jw_str(w, b);
+			jw_obj_close(w);
+		}
+		jw_arr_close(w);
+	}
 	jw_obj_close(w);
 }
 
@@ -498,7 +574,7 @@ void dhcp_write_json(struct json_writer *w)
 	jw_arr_open(w);
 	for (i = 0; i < DHCP_MAX_NETWORKS; i++)
 		if (g_networks[i].network[0] != '\0')
-			dhcp_network_write_json(&g_networks[i], w);
+			dhcp_network_write_json(&g_networks[i], 1, w);
 	jw_arr_close(w);
 	jw_key(w, "static");
 	jw_arr_open(w);

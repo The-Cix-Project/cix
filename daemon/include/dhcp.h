@@ -13,10 +13,23 @@
  * That pairing is the whole design, not an implementation convenience:
  * a lease handed out by an instance that is also the resolver is
  * resolvable the instant it is handed out, with no glue between the two
- * and nothing to fall out of step. It is why enabling DHCP on a network
- * requires naming a container that is already a REGISTERED DNS SERVER
- * (dns_server_register()) -- "plays nice with DNS" is enforced by
- * construction rather than left to configuration.
+ * and nothing to fall out of step. So DHCP is served by EVERY
+ * registered DNS server (dns_server_register()) -- "plays nice with
+ * DNS" is enforced by construction rather than left to configuration.
+ *
+ * Redundancy is SPLIT SCOPE, and it has to be, because dnsmasq
+ * implements no failover protocol -- there is no equivalent of ISC
+ * dhcpd's peer relationship for it to join. The standard, real
+ * technique in its absence is to give each server a disjoint slice of
+ * one range: both answer, a client takes whichever offer arrives
+ * first, and handing the same address to two machines is impossible
+ * because no two servers hold it. Either server alone keeps serving
+ * from its own slice, which is what redundancy has to mean here.
+ *
+ * The slices are computed by this daemon, not configured: an operator
+ * setting them by hand would be maintaining, in two places, a division
+ * that has exactly one correct answer given the range and the number of
+ * servers.
  *
  * A lease is NOT a DNS record here. A record is durable operator intent
  * (dns.c, persisted, survives every server); a lease is short-lived
@@ -60,7 +73,6 @@ struct dhcp_network {
 	uint32_t range_start_be;
 	uint32_t range_end_be;
 	int lease_seconds;
-	char server[DHCP_SERVER_NAME_MAX];
 	uint32_t router_be; /* 0 = advertise no default route */
 };
 
@@ -94,7 +106,17 @@ enum dhcp_error dhcp_static_delete(const char *mac);
  * for the same reason: a partial update is a second thing that can be
  * wrong. Returns bytes written (excluding NUL), or -1 if it did not
  * fit. */
-int dhcp_render_conf(char *out, size_t out_size);
+/*
+ * server_index of server_count: renders only that server's own slice of
+ * every enabled range. server_count of 0 or 1 renders the whole range,
+ * which is the single-server case and needs no special path.
+ */
+int dhcp_render_conf(int server_index, int server_count, char *out, size_t out_size);
+
+/* The slice server_index of server_count would be given, for reporting
+ * it back. Returns -1 if the range cannot be divided that many ways. */
+int dhcp_slice_for(const struct dhcp_network *cfg, int server_index, int server_count,
+                    uint32_t *out_start_be, uint32_t *out_end_be);
 int dhcp_render_hosts(char *out, size_t out_size);
 
 /*
@@ -110,7 +132,14 @@ void dhcp_sync_all(int *out_conf_changed);
 int dhcp_any_enabled(void);
 
 void dhcp_write_json(struct json_writer *w);
-void dhcp_network_write_json(const struct dhcp_network *cfg, struct json_writer *w);
+/*
+ * include_slices adds which registered server holds which part of the
+ * range -- computed, never stored, so it is written for the API and not
+ * for the state file. Seeing the split is how an operator knows
+ * redundancy is actually in place rather than configured.
+ */
+void dhcp_network_write_json(const struct dhcp_network *cfg, int include_slices,
+                              struct json_writer *w);
 
 /* Reads leases back from each running server's own lease file. This
  * is the server's state, not ours -- read every time, never cached. */
