@@ -3261,20 +3261,7 @@ function renderContainerDetail(name) {
 				 * would mean two policies over one set of bytes -- so
 				 * this reads the volume's own answer and links to it.
 				 */
-				backupCell.textContent = "…";
-				apiRequest("GET", "/v1/volumes/" + encodeURIComponent(v.name) + "/backups")
-					.then((b) => {
-						const n = (b.snapshots || []).length;
-
-						backupCell.textContent = !b.enabled
-							? "not backed up"
-							: n === 0
-							  ? "on, no snapshots yet"
-							  : n + " snapshot" + (n === 1 ? "" : "s") + ", newest " + b.snapshots[0].stamp;
-					})
-					.catch(() => {
-						backupCell.textContent = "-";
-					});
+				fillVolumeBackupCell(v.name, backupCell);
 
 				row.appendChild(nameCell);
 				row.appendChild(pathCell);
@@ -9207,6 +9194,62 @@ document.getElementById("vbc-form").addEventListener("submit", async (event) => 
 });
 
 /*
+ * One sentence saying where a volume's backups stand, composed in one
+ * place. Both the volume's own page and the mounting container's
+ * volumes table say it, and two spellings of one fact would drift.
+ */
+function volumeBackupSummaryText(data) {
+	const n = (data.snapshots || []).length;
+
+	if (!data.enabled)
+		return "not backed up";
+	if (n === 0)
+		return "on, no snapshots yet";
+	return n + " snapshot" + (n === 1 ? "" : "s") + ", newest " + data.snapshots[0].stamp;
+}
+
+/*
+ * name -> { text, fetchedAt }. The container detail page redraws its
+ * whole volumes table on every poll, and re-asking (and re-blanking
+ * the cell to a placeholder) each time made that column jump width
+ * once per cycle -- a table that visibly resized while you read it.
+ * The answer only changes when a snapshot is taken or the policy is
+ * edited, so a remembered one is the right one nearly always.
+ */
+const volumeBackupSummaries = new Map();
+const VOLUME_BACKUP_SUMMARY_MAX_AGE_MS = 30000;
+
+/* Writes the summary into a cell, from memory where we have it, and
+ * re-asks only once it is old enough to be worth another request. The
+ * cell may have been replaced by a later redraw before the answer
+ * arrives -- writing to a detached node is harmless, and that redraw
+ * has already read the fresher value out of the cache. */
+function fillVolumeBackupCell(volumeName, cell) {
+	const known = volumeBackupSummaries.get(volumeName);
+
+	cell.textContent = known !== undefined ? known.text : "…";
+	if (known !== undefined && Date.now() - known.fetchedAt < VOLUME_BACKUP_SUMMARY_MAX_AGE_MS)
+		return;
+	apiRequest("GET", "/v1/volumes/" + encodeURIComponent(volumeName) + "/backups")
+		.then((b) => {
+			cell.textContent = rememberVolumeBackupSummary(volumeName, b);
+		})
+		.catch(() => {
+			/* Keep the last true thing we were told rather than
+			 * replacing it with a dash on one failed poll. */
+			if (!volumeBackupSummaries.has(volumeName))
+				cell.textContent = "-";
+		});
+}
+
+function rememberVolumeBackupSummary(volumeName, data) {
+	const text = volumeBackupSummaryText(data);
+
+	volumeBackupSummaries.set(volumeName, { text: text, fetchedAt: Date.now() });
+	return text;
+}
+
+/*
  * A volume's own snapshots. Rendered from one response carrying policy,
  * snapshots and last-attempt together -- they are always wanted at once
  * and three calls to draw one panel would be three round trips.
@@ -9222,6 +9265,11 @@ async function renderVolumeBackups(volumeName, fresh) {
 		note.textContent = "Could not read backups: " + e.message;
 		return;
 	}
+	/* This response is the authoritative one, and it is fetched here
+	 * whenever a snapshot is taken, deleted or restored -- so the
+	 * summary a container's table shows is refreshed from the same
+	 * answer rather than going stale behind its own 30s window. */
+	rememberVolumeBackupSummary(volumeName, data);
 	/* Same reasoning as the quota input: these are controls the
 	 * operator edits, so they are filled on arrival and then left
 	 * alone rather than rewritten under them on every poll. */
