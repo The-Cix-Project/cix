@@ -338,6 +338,68 @@ int main(void)
 		}
 
 		/*
+		 * Issue #51: the zswap endpoint's own contract. A successful
+		 * apply is deliberately NOT asserted here -- this sandbox
+		 * mounts /sys read-only (like every LXC), so writing a kernel
+		 * module parameter is impossible regardless of privilege, and
+		 * a test that pretended otherwise would only ever be testing
+		 * itself. What IS asserted is the part that holds everywhere:
+		 * the reported shape, and that a request the kernel could not
+		 * honour is refused before it is written.
+		 */
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "GET", "/v1/system/zswap", NULL, &r) != 0 ||
+		    r.status != 200 || json_object_get(r.json, "supported") == NULL ||
+		    json_object_get(r.json, "kernel") == NULL ||
+		    json_object_get(r.json, "available_compressors") == NULL) {
+			fprintf(stderr, "FAIL: #51 GET zswap, status=%d\n", r.status);
+			ok = 0;
+		}
+		thinc_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "PUT", "/v1/system/zswap",
+		                       "{\"max_pool_percent\":0}", &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: #51 max_pool_percent=0 should 400, got %d\n", r.status);
+			ok = 0;
+		}
+		thinc_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "PUT", "/v1/system/zswap",
+		                       "{\"max_pool_percent\":101}", &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: #51 max_pool_percent=101 should 400, got %d\n", r.status);
+			ok = 0;
+		}
+		thinc_response_free(&r);
+
+		/* The compressor name is written into a sysfs file; anything
+		 * that is not a plain algorithm name is refused, never
+		 * escaped. */
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "PUT", "/v1/system/zswap",
+		                       "{\"compressor\":\"lzo\\nY\"}", &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: #51 a newline in compressor should 400, got %d\n", r.status);
+			ok = 0;
+		}
+		thinc_response_free(&r);
+
+		/* A compressor this kernel was not built with is refused
+		 * rather than written and silently ignored -- 409, since the
+		 * request is well-formed and this machine simply cannot do it. */
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "PUT", "/v1/system/zswap",
+		                       "{\"compressor\":\"nosuchalgo\"}", &r) != 0 ||
+		    r.status != 409) {
+			fprintf(stderr, "FAIL: #51 an unavailable compressor should 409, got %d\n", r.status);
+			ok = 0;
+		}
+		thinc_response_free(&r);
+
+		/*
 		 * Issue #65: the kernel-line endpoint's own contract. The
 		 * resolution logic itself is test_kernelpolicy's job (no
 		 * network there, and none needed here either) -- what this

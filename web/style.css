@@ -1229,9 +1229,16 @@ td.empty {
 	padding: 1rem 1.25rem;
 }
 
+/*
+ * auto-FILL, not auto-fit: with fewer cards than the row has room for,
+ * auto-fit collapses the empty tracks and stretches what is left, so a
+ * grid holding one chart drew it across the whole page. auto-fill keeps
+ * the tracks, so one card is one card. Pages that fill every track --
+ * container and host stats -- are unaffected.
+ */
 .stats-grid {
 	display: grid;
-	grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+	grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
 	gap: 0.75rem;
 }
 
@@ -1736,4 +1743,57 @@ td.empty {
  * not something to render as if it were understood either. */
 .switch-port-unattributed {
 	border-style: dashed;
+}
+
+/*
+ * Per-port TX/RX lamps, the same idea as the status bar's own pair but
+ * driven by that port's counters rather than by this page's requests.
+ * The panel rebuilds every poll, so a lit lamp is a fresh element and
+ * the animation plays from its start -- no timer to reset, and no way
+ * for a blink to outlive the traffic that caused it.
+ */
+.switch-port-leds {
+	margin-left: auto;
+	display: flex;
+	align-items: center;
+	gap: 0.3rem;
+}
+
+.switch-port-led {
+	width: 0.45rem;
+	height: 0.45rem;
+	border-radius: 50%;
+	background: var(--muted);
+	filter: brightness(0.55);
+}
+
+.switch-port-led-tx.switch-port-led-on {
+	/* The base button colour; this file has no --accent variable (see
+	 * .resize-handle's own note). */
+	background: #0a84ff;
+	filter: brightness(1.4);
+	box-shadow: 0 0 6px 1px #0a84ff;
+	animation: switch-port-flash 500ms ease-out;
+}
+
+.switch-port-led-rx.switch-port-led-on {
+	background: var(--ok);
+	filter: brightness(1.4);
+	box-shadow: 0 0 6px 1px var(--ok);
+	animation: switch-port-flash 500ms ease-out;
+}
+
+@keyframes switch-port-flash {
+	from { filter: brightness(2); }
+	to { filter: brightness(1.4); }
+}
+
+/* A lamp that flashes is decoration to anyone who cannot see it flash;
+ * the traffic it reports is already in the rate line below it, so
+ * removing the motion removes nothing. */
+@media (prefers-reduced-motion: reduce) {
+	.switch-port-led-tx.switch-port-led-on,
+	.switch-port-led-rx.switch-port-led-on {
+		animation: none;
+	}
 }

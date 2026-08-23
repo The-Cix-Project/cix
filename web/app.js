@@ -3538,6 +3538,29 @@ function renderNetPorts() {
 		head.appendChild(num);
 		head.appendChild(ifn);
 
+		/*
+		 * TX/RX lamps, lit when this port's own counters moved since
+		 * the previous poll. Deliberately per-port and counter-driven,
+		 * unlike the status bar's pair, which reports this page's own
+		 * requests: here the light means real traffic crossed this
+		 * port. Both are named from the port's own side, matching the
+		 * rate line -- RX is what reached the switch.
+		 */
+		const leds = document.createElement("div");
+
+		leds.className = "switch-port-leds";
+		leds.title = "RX and TX lamps — lit while this port's own counters are moving";
+		for (const [cls, field] of [["switch-port-led-rx", "rx_bytes"],
+		                             ["switch-port-led-tx", "tx_bytes"]]) {
+			const led = document.createElement("span");
+			const moved = portRate(prev, cur, port.ifname, field, dtMs);
+
+			led.className = "switch-port-led " + cls +
+				(moved !== null && moved > 0 ? " switch-port-led-on" : "");
+			leds.appendChild(led);
+		}
+		head.appendChild(leds);
+
 		attached.className = "switch-port-attached";
 		if (port.container !== null) {
 			attached.appendChild(treeLink("#containers/" + encodeURIComponent(port.container),
@@ -3593,13 +3616,14 @@ function renderNetPorts() {
 		[{ values: rxValues, color: "#30d158" }, { values: txValues, color: "#0a84ff" }],
 		{ times: rateTimes, formatY: (v) => formatBytes(v) + "/s" }
 	);
+	/* The caveat about double-counting lives in the panel's own hint
+	 * text, not here: a label under a small chart is read at a glance,
+	 * and three lines of explanation under it is not a glance. */
 	document.getElementById("nd-traffic-label").textContent =
 		rxValues.length === 0
 			? "…"
 			: "in " + formatBytes(rxValues[rxValues.length - 1]) + "/s · out " +
-			  formatBytes(txValues[txValues.length - 1]) + "/s — summed over every port, so a " +
-			  "byte crossing the switch is counted on both the port it came in on and the one " +
-			  "it left by";
+			  formatBytes(txValues[txValues.length - 1]) + "/s";
 }
 
 async function pollNetPortsOnce(name) {
@@ -10255,6 +10279,90 @@ document.getElementById("sys-daemon-config-form").addEventListener("submit", asy
 	}
 });
 
+/* ---------- zswap (issue #51) ---------- */
+
+let zswapDirty = false;
+
+function renderZswap(z) {
+	const kernelGrid = document.getElementById("zswap-kernel");
+	const divergence = document.getElementById("zswap-divergence");
+	const select = document.getElementById("zswap-compressor");
+
+	if (!zswapDirty) {
+		document.getElementById("zswap-enabled").checked = !!z.enabled;
+		document.getElementById("zswap-max-pool").value = z.max_pool_percent;
+		/* Only what this kernel actually has. A compressor it was not
+		 * built with is one it will refuse, and offering it would be
+		 * offering a setting that cannot take. */
+		select.textContent = "";
+		for (const name of z.available_compressors || []) {
+			const opt = document.createElement("option");
+
+			opt.value = name;
+			opt.textContent = name;
+			select.appendChild(opt);
+		}
+		select.value = z.compressor;
+	}
+
+	kernelGrid.textContent = "";
+	if (!z.supported) {
+		divergence.hidden = false;
+		divergence.textContent = "This kernel has no zswap at all — nothing here can take effect.";
+		return;
+	}
+	kernelGrid.appendChild(fieldBlock("Kernel says",
+	                                   (z.kernel.enabled === null
+	                                       ? "unknown"
+	                                       : z.kernel.enabled ? "enabled" : "disabled") +
+	                                       ", " + z.kernel.max_pool_percent + "%, " +
+	                                       z.kernel.compressor));
+	/*
+	 * The only genuinely interesting state: what was asked for and what
+	 * the kernel has are different. Silence when they agree — a panel
+	 * that always says something teaches people to stop reading it.
+	 */
+	if (z.kernel.enabled !== null && z.kernel.enabled !== z.enabled) {
+		divergence.hidden = false;
+		divergence.textContent = "Configured " + (z.enabled ? "enabled" : "disabled") +
+			", but the kernel reports " + (z.kernel.enabled ? "enabled" : "disabled") +
+			" — the setting did not take.";
+	} else {
+		divergence.hidden = true;
+	}
+}
+
+async function refreshZswap() {
+	try {
+		renderZswap(await apiRequest("GET", "/v1/system/zswap"));
+	} catch (e) {
+		/* Best-effort, same as every other panel here. */
+	}
+}
+
+for (const id of ["zswap-enabled", "zswap-max-pool", "zswap-compressor"]) {
+	document.getElementById(id).addEventListener("change", () => {
+		zswapDirty = true;
+	});
+}
+
+document.getElementById("zswap-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+	try {
+		const res = await apiRequest("PUT", "/v1/system/zswap", {
+			enabled: document.getElementById("zswap-enabled").checked,
+			max_pool_percent: parseInt(document.getElementById("zswap-max-pool").value, 10),
+			compressor: document.getElementById("zswap-compressor").value,
+		});
+
+		zswapDirty = false;
+		showStatus("zswap saved.", false);
+		renderZswap(res);
+	} catch (e) {
+		showStatus("Failed to save zswap: " + e.message, true);
+	}
+});
+
 async function refreshSwap() {
 	try {
 		const s = await apiRequest("GET", "/v1/system/swap");
@@ -10550,7 +10658,7 @@ const VIEW_REFRESHERS = {
 	site: [refreshSiteConfig],
 	routes: [refreshRoutes],
 	sysctl: [refreshSysctl],
-	"host-swap": [refreshSwap],
+	"host-swap": [refreshSwap, refreshZswap],
 	"rolling-restart": [refreshRollingConfig],
 	"tls-throttle": [refreshTlsThrottleConfig, refreshTlsThrottleStatus],
 	backup: [refreshBackupConfig, refreshBackupStatus],

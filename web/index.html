@@ -315,53 +315,68 @@
 		</section>
 
 		<section class="view" id="view-network-detail" hidden>
-			<h2 id="nd-title"></h2>
-			<div class="detail-grid" id="nd-fields"></div>
-			<h3>Switch panel</h3>
-			<p class="hint">
-				What is plugged into this network's bridge right now &mdash; read from the
-				kernel, not from what the daemon believes it attached, so a port nothing can
-				account for shows up rather than being quietly left out. Rates are from the
-				<strong>port's own side</strong>: in is what reached the switch from whatever is
-				plugged in, which is the inverse of what a container sees on its own interface.
-			</p>
-			<div class="switch-panel" id="nd-ports"></div>
-			<div class="stats-grid">
-				<div class="stats-card">
-					<h3>Traffic across all ports</h3>
-					<canvas id="nd-traffic" width="420" height="130"></canvas>
-					<p class="hint" id="nd-traffic-label">&hellip;</p>
+			<div class="detail-topbar">
+				<h2 id="nd-title"></h2>
+				<div class="detail-actions">
+					<button type="button" id="nd-remove" class="button-danger">Remove network</button>
 				</div>
 			</div>
-			<h3>Containers on this network</h3>
-			<table id="nd-containers">
-				<thead>
-					<tr>
-						<th>Container</th>
-						<th>IP</th>
-						<th>Status</th>
-					</tr>
-				</thead>
-				<tbody></tbody>
-			</table>
-			<h3>Attached interfaces</h3>
-			<table id="nd-interfaces"><tbody></tbody></table>
-			<form id="nd-attach-form">
-				<label class="wide">
-					Interface to attach
-					<select id="nd-attach-ifname"></select>
-				</label>
-				<label>
-					VLAN id (optional)
-					<input type="number" id="nd-attach-vlan" min="1" max="4094">
-				</label>
-				<button type="submit">Attach</button>
-			</form>
-			<h3>Routes on this network</h3>
-			<p class="hint">Filtered from the box's own real kernel routing table (ADR-0066) -- routes the kernel resolves to this network's own bridge interface as their outgoing route.</p>
-			<table id="nd-routes"><tbody></tbody></table>
-			<div class="detail-actions">
-				<button type="button" id="nd-remove" class="button-danger">Remove network</button>
+			<div class="detail-grid" id="nd-fields"></div>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="ports">Switch Panel</button>
+				<button type="button" class="tab-button" data-tab="containers">Containers</button>
+				<button type="button" class="tab-button" data-tab="interfaces">Interfaces</button>
+				<button type="button" class="tab-button" data-tab="netroutes">Routes</button>
+			</div>
+			<div class="tab-panel" data-tab="ports">
+				<p class="hint">
+					What is plugged into this network's bridge right now &mdash; read from the
+					kernel, not from what the daemon believes it attached, so a port nothing can
+					account for shows up rather than being quietly left out. Rates are from the
+					<strong>port's own side</strong>: in is what reached the switch from whatever is
+					plugged in, which is the inverse of what a container sees on its own interface.
+					The chart below sums every port, so a byte crossing the switch is counted twice
+					&mdash; once on the port it came in by, once on the one it left by. It is switch
+					throughput, not this network's traffic with the outside world.
+				</p>
+				<div class="switch-panel" id="nd-ports"></div>
+				<div class="stats-grid">
+					<div class="stats-card">
+						<h3>Traffic across all ports</h3>
+						<canvas id="nd-traffic" width="420" height="130"></canvas>
+						<p class="hint" id="nd-traffic-label">&hellip;</p>
+					</div>
+				</div>
+			</div>
+			<div class="tab-panel" data-tab="containers" hidden>
+				<table id="nd-containers">
+					<thead>
+						<tr>
+							<th>Container</th>
+							<th>IP</th>
+							<th>Status</th>
+						</tr>
+					</thead>
+					<tbody></tbody>
+				</table>
+			</div>
+			<div class="tab-panel" data-tab="interfaces" hidden>
+				<table id="nd-interfaces"><tbody></tbody></table>
+				<form id="nd-attach-form">
+					<label class="wide">
+						Interface to attach
+						<select id="nd-attach-ifname"></select>
+					</label>
+					<label>
+						VLAN id (optional)
+						<input type="number" id="nd-attach-vlan" min="1" max="4094">
+					</label>
+					<button type="submit">Attach</button>
+				</form>
+			</div>
+			<div class="tab-panel" data-tab="netroutes" hidden>
+				<p class="hint">Filtered from the box's own real kernel routing table (ADR-0066) -- routes the kernel resolves to this network's own bridge interface as their outgoing route.</p>
+				<table id="nd-routes"><tbody></tbody></table>
 			</div>
 		</section>
 
@@ -876,6 +891,30 @@
 				<button type="button" id="swap-disable">Disable</button>
 			</form>
 			<p class="hint">A single on-demand swap file (ADR-0069), off by default -- useful for memory-heavy package builds (e.g. Rust/wasm) on a box with limited RAM. File-backed swap performs identically to a partition on SSD/NVMe-backed storage.</p>
+			<h3>Compressed swap cache (zswap)</h3>
+			<p class="hint">
+				zswap compresses pages in RAM before they would otherwise be written to the real
+				swap device, so memory pressure costs CPU instead of disk I/O (issue #51). It
+				consumes nothing until the box is actually swapping, which is why it is on by
+				default here while the swap file itself is not.
+			</p>
+			<p class="hint" id="zswap-divergence" hidden></p>
+			<form id="zswap-form">
+				<label class="checkbox">
+					<input type="checkbox" id="zswap-enabled">
+					Enabled
+				</label>
+				<label>
+					Max pool (% of RAM)
+					<input type="number" id="zswap-max-pool" min="1" max="100">
+				</label>
+				<label>
+					Compressor
+					<select id="zswap-compressor"></select>
+				</label>
+				<button type="submit">Save</button>
+			</form>
+			<div class="detail-grid" id="zswap-kernel"></div>
 		</div>
 			<div class="tab-panel" data-tab="rolling-restart" hidden>
 			<h2>Rolling Restart</h2>

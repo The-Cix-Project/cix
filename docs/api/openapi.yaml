@@ -1958,6 +1958,88 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /system/zswap:
+    get:
+      summary: The compressed swap cache (issue #51)
+      description: >
+        zswap compresses pages in RAM before they would otherwise be
+        written to the real swap device, so memory pressure costs CPU
+        instead of disk I/O.
+
+        Reports the configured intent **and what the kernel actually
+        has**, separately. They are different questions: the kernel
+        silently ignores a parameter it cannot honour, and an endpoint
+        that only echoed back its own input could never show that. When
+        `kernel.enabled` and `enabled` disagree, the setting did not
+        take.
+
+        `available_compressors` is read from `/proc/crypto` -- the
+        algorithms this kernel was actually built with. It is what
+        decides whether the `compressor` knob means anything, and an
+        empty list means this kernel has no zswap at all
+        (`supported: false`).
+
+        Unlike the swap file itself (ADR-0069), zswap is **on by
+        default**: it consumes nothing until the box is already
+        swapping, and at that point there is no reading of "off by
+        default" that helps the operator whose box is thrashing.
+      operationId: getZswap
+      responses:
+        "200":
+          description: Configured intent, the kernel's own state, and the compressors it has
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Zswap"
+    put:
+      summary: Configure the compressed swap cache (issue #51)
+      description: >
+        Partial update -- absent fields keep what is configured now.
+        Persisted, and re-applied at every daemon start, because the
+        kernel's own default is deliberately off: this platform's
+        config is the only thing that turns zswap on, so there is one
+        source of truth for whether it is running rather than two.
+
+        Validated before it is written, never after: a compressor this
+        kernel was not built with is a `409` rather than a write the
+        kernel would ignore, and a compressor name that is not a plain
+        algorithm name is a `400` -- the string goes into a sysfs file,
+        so it is refused rather than escaped.
+
+        If the kernel refuses the settings, the previous ones are
+        restored and nothing is persisted: a config file describing a
+        state the machine is not in is worse than the failure it was
+        trying to record.
+      operationId: setZswap
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                max_pool_percent:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+                  description: Ceiling on how much of RAM the compressed pool may occupy. The kernel's own default is 20.
+                compressor:
+                  type: string
+      responses:
+        "200":
+          description: Applied and persisted; reported the same way GET reports it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Zswap"
+        "400":
+          description: Out-of-range percentage, or a compressor name that is not a plain algorithm name
+        "409":
+          description: This kernel has no zswap, or was not built with the requested compressor
+        "500":
+          description: The kernel refused the settings (previous ones restored), or they applied but could not be persisted
   /system/swap:
     get:
       summary: Whether the host swap file is enabled (ADR-0069)
@@ -10160,6 +10242,37 @@ components:
                 type: integer
               tx_packets:
                 type: integer
+    Zswap:
+      type: object
+      properties:
+        supported:
+          type: boolean
+          description: Whether this kernel has zswap at all.
+        enabled:
+          type: boolean
+          description: The configured intent.
+        max_pool_percent:
+          type: integer
+        compressor:
+          type: string
+        kernel:
+          type: object
+          description: What the kernel itself reports, read back rather than echoed. Disagreement with the fields above means the setting did not take.
+          properties:
+            enabled:
+              type: boolean
+              nullable: true
+            max_pool_percent:
+              type: integer
+              nullable: true
+            compressor:
+              type: string
+              nullable: true
+        available_compressors:
+          type: array
+          description: Compression algorithms this kernel was built with, from /proc/crypto. Empty means no zswap at all.
+          items:
+            type: string
     BootConsole:
       type: object
       properties:

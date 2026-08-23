@@ -3130,6 +3130,120 @@ static int cmd_time(const struct thinc_client *c, int json_mode, int argc, char 
 	return 2;
 }
 
+/*
+ * Issue #51: thincctl zswap show|set. Prints the configured intent and
+ * what the kernel actually reports side by side -- they are different
+ * questions, and the only interesting case is when they differ.
+ */
+static void fmt_zswap(const struct json_value *v)
+{
+	const struct json_value *supported = json_object_get(v, "supported");
+	const struct json_value *enabled = json_object_get(v, "enabled");
+	const struct json_value *pct = json_object_get(v, "max_pool_percent");
+	const struct json_value *kernel = json_object_get(v, "kernel");
+	const struct json_value *avail = json_object_get(v, "available_compressors");
+	const char *comp = json_str_field(v, "compressor");
+	int cfg_on = enabled != NULL && enabled->type == JSON_BOOL && enabled->u.boolean;
+
+	if (supported != NULL && supported->type == JSON_BOOL && !supported->u.boolean) {
+		printf("this kernel has no zswap at all -- nothing here can take effect\n");
+		return;
+	}
+	printf("configured: %s, max_pool_percent=%d, compressor=%s\n", cfg_on ? "enabled" : "disabled",
+	       (int)json_as_number(pct), comp != NULL ? comp : "-");
+	if (kernel != NULL) {
+		const struct json_value *ken = json_object_get(kernel, "enabled");
+		const char *kcomp = json_str_field(kernel, "compressor");
+		int k_on = ken != NULL && ken->type == JSON_BOOL && ken->u.boolean;
+
+		printf("kernel:     %s, max_pool_percent=%d, compressor=%s\n",
+		       ken == NULL || ken->type == JSON_NULL ? "unknown" : k_on ? "enabled" : "disabled",
+		       (int)json_as_number(json_object_get(kernel, "max_pool_percent")),
+		       kcomp != NULL ? kcomp : "-");
+		if (ken != NULL && ken->type == JSON_BOOL && k_on != cfg_on)
+			printf("  ^ these disagree: the kernel did not take what was configured\n");
+	}
+	if (avail != NULL && avail->type == JSON_ARRAY) {
+		size_t i;
+
+		printf("compressors this kernel has:");
+		for (i = 0; i < avail->u.array.count; i++)
+			printf(" %s", json_as_string(avail->u.array.items[i]));
+		printf("%s\n", avail->u.array.count == 0 ? " (none)" : "");
+	}
+}
+
+static int cmd_zswap(const struct thinc_client *c, int json_mode, int argc, char **argv)
+{
+	struct thinc_response r;
+	const char *sub = argc > 0 ? argv[0] : "show";
+	const char *compressor = NULL;
+	long max_pool_percent = -1;
+	int enabled = -1;
+	int i;
+	struct json_writer w;
+
+	if (strcmp(sub, "show") == 0) {
+		if (thinc_client_request(c, "GET", "/v1/system/zswap", NULL, &r) != 0) {
+			fprintf(stderr, "thincctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_zswap);
+	}
+	if (strcmp(sub, "set") != 0) {
+		fprintf(stderr, "usage: thincctl zswap show\n"
+		                "       thincctl zswap set [--enable | --disable] "
+		                "[--max-pool-percent=N] [--compressor=NAME]\n"
+		                "  zswap compresses pages in RAM before they would be written to the\n"
+		                "  real swap device -- memory pressure costs CPU instead of disk I/O\n");
+		return 2;
+	}
+	for (i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--enable") == 0)
+			enabled = 1;
+		else if (strcmp(argv[i], "--disable") == 0)
+			enabled = 0;
+		else if (strncmp(argv[i], "--max-pool-percent=", 19) == 0)
+			max_pool_percent = atol(argv[i] + 19);
+		else if (strncmp(argv[i], "--compressor=", 13) == 0)
+			compressor = argv[i] + 13;
+		else {
+			fprintf(stderr, "thincctl: unknown zswap set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (enabled < 0 && max_pool_percent < 0 && compressor == NULL) {
+		fprintf(stderr, "usage: thincctl zswap set [--enable | --disable] "
+		                "[--max-pool-percent=N] [--compressor=NAME]\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	if (enabled >= 0) {
+		jw_key(&w, "enabled");
+		jw_bool(&w, enabled);
+	}
+	if (max_pool_percent >= 0) {
+		jw_key(&w, "max_pool_percent");
+		jw_int(&w, max_pool_percent);
+	}
+	if (compressor != NULL) {
+		jw_key(&w, "compressor");
+		jw_str(&w, compressor);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (thinc_client_request(c, "PUT", "/v1/system/zswap", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "thincctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_zswap);
+}
+
 static int cmd_swap_status(const struct thinc_client *c, int json_mode)
 {
 	struct thinc_response r;
@@ -12295,6 +12409,8 @@ static int dispatch_command(const struct thinc_client *client, int json_mode, co
 		return cmd_storage(client, json_mode, argc, argv);
 	if (strcmp(cmd, "logs") == 0)
 		return cmd_logs_top(client, json_mode, argc, argv);
+	if (strcmp(cmd, "zswap") == 0)
+		return cmd_zswap(client, json_mode, argc, argv);
 	if (strcmp(cmd, "swap") == 0)
 		return cmd_swap(client, json_mode, argc, argv);
 	if (strcmp(cmd, "host-stats") == 0)
@@ -12480,7 +12596,7 @@ static const char *const SHELL_COMMANDS[] = {
 	"resolv",
 	"restore", "rm",       "rolling-config", "routes",        "run",      "shutdown",  "site",
 	"start",  "stats",     "stop",          "storage",  "swap",     "sysctl",   "syslog",    "time",      "tls-throttle", "unpause",   "update",
-	"control-plane-reservation", "boot-console", "kernel-policy", "stalls",
+	"control-plane-reservation", "boot-console", "kernel-policy", "zswap", "stalls",
 	NULL
 };
 
