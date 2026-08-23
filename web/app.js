@@ -9323,6 +9323,27 @@ async function renderVolumeDetail(name) {
 	fields.appendChild(
 		fieldBlock("Created", v.created_at ? new Date(v.created_at * 1000).toLocaleString() : "-")
 	);
+	fields.appendChild(
+		fieldBlock("Owner",
+		           v.owner_uid !== null && v.owner_uid !== undefined
+		               ? v.owner_uid + ":" + v.owner_gid
+		               : "root (0:0)")
+	);
+
+	/* Issue #102: only refilled on arrival, so typing here is not
+	 * overwritten by the poll -- the same reasoning the quota input
+	 * below already documents. */
+	if (volumeDetailFresh) {
+		document.getElementById("vd-owner-uid").value =
+			v.owner_uid !== null && v.owner_uid !== undefined ? v.owner_uid : "";
+		document.getElementById("vd-owner-gid").value =
+			v.owner_gid !== null && v.owner_gid !== undefined ? v.owner_gid : "";
+		document.getElementById("vd-owner-recursive").checked = false;
+	}
+	document.getElementById("vd-owner-note").textContent =
+		v.owner_uid !== null && v.owner_uid !== undefined
+			? "Owned by " + v.owner_uid + ":" + v.owner_gid + "."
+			: "Owned by root — a workload running as anyone else cannot write to it.";
 
 	/* Only devices that could actually hold it: mounted, and not the
 	 * one it is already on. Offering anything else would be offering a
@@ -9524,6 +9545,42 @@ async function refreshVolumes() {
 	}
 }
 
+
+/* ---------- volume ownership (issue #102) ---------- */
+
+async function applyVolumeOwner(clear) {
+	const name = currentVolumeDetailName;
+
+	if (!name)
+		return;
+	const uid = document.getElementById("vd-owner-uid").value.trim();
+	const gid = document.getElementById("vd-owner-gid").value.trim();
+
+	if (!clear && (uid === "" || gid === "")) {
+		showStatus("Give both a uid and a gid, or hand it back to root.", true);
+		return;
+	}
+	try {
+		await apiRequest("PUT", "/v1/volumes/" + encodeURIComponent(name) + "/owner", {
+			uid: clear ? null : parseInt(uid, 10),
+			gid: clear ? null : parseInt(gid, 10),
+			recursive: document.getElementById("vd-owner-recursive").checked,
+		});
+		showStatus(clear ? name + " handed back to root." : name + " now belongs to " + uid + ":" + gid + ".",
+		           false);
+		currentVolumeDetailName = null; /* force a fresh render of the inputs */
+		await renderVolumeDetail(name);
+	} catch (e) {
+		showStatus("Could not change the owner: " + e.message, true);
+	}
+}
+
+document.getElementById("vd-owner-form").addEventListener("submit", (event) => {
+	event.preventDefault();
+	applyVolumeOwner(false);
+});
+document.getElementById("vd-owner-root").addEventListener("click", () => applyVolumeOwner(true));
+
 document.getElementById("volume-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 	const body = { name: document.getElementById("vf-name").value.trim() };
@@ -9531,6 +9588,22 @@ document.getElementById("volume-form").addEventListener("submit", async (event) 
 
 	if (disk !== "")
 		body.disk = disk;
+	{
+		/* Issue #102: both or neither -- a volume owned by one user and
+		 * an unrelated group is almost always a typo, and the daemon
+		 * refuses it, so say so here rather than sending it. */
+		const uid = document.getElementById("vf-owner-uid").value.trim();
+		const gid = document.getElementById("vf-owner-gid").value.trim();
+
+		if ((uid === "") !== (gid === "")) {
+			showStatus("Give both an owner uid and gid, or neither.", true);
+			return;
+		}
+		if (uid !== "") {
+			body.owner_uid = parseInt(uid, 10);
+			body.owner_gid = parseInt(gid, 10);
+		}
+	}
 	try {
 		await apiRequest("POST", "/v1/volumes", body);
 		clearStatus();

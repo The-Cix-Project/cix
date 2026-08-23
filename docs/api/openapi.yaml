@@ -7511,6 +7511,71 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /volumes/{volume_name}/owner:
+    put:
+      summary: Who owns this volume's directory (issue #102)
+      description: >
+        A volume is a directory the daemon creates as root, and nothing
+        could change that -- so a workload not running as root could not
+        write to its own volume. Found the plain way: an operator logged
+        into the jump box and their home directory, which is a volume,
+        belonged to root.
+
+        uid and gid are both required, so changing one is always a
+        deliberate statement about the pair; pass the value it already
+        has to leave one alone. Both null hands the volume back to root,
+        and really chowns it there rather than leaving whoever owned it
+        last still owning it.
+
+        `recursive` defaults to false and is the caller's explicit
+        choice. A volume that has been in use holds files whose
+        ownership someone may have set deliberately, and rewriting all
+        of them because the top-level owner changed is a quiet kind of
+        data loss.
+
+        The ids are the numeric ones the CONTAINER sees, which for every
+        container without a user namespace are the host's own ids too.
+      operationId: setVolumeOwner
+      parameters:
+        - name: volume_name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [uid, gid]
+              properties:
+                uid:
+                  type: [integer, "null"]
+                gid:
+                  type: [integer, "null"]
+                recursive:
+                  type: boolean
+      responses:
+        "200":
+          description: The volume, with its new owner
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Volume"
+        "400":
+          description: uid without gid, or a negative id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No such volume
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /volumes/{volume_name}/quota:
     put:
       summary: Set or clear a volume's size limit (issue #93)
@@ -9300,6 +9365,15 @@ components:
             the same mechanism, so there is one answer to "where does
             container data live" rather than two. Empty means the
             default OS-disk placement.
+        owner_uid:
+          type: [integer, "null"]
+          description: >
+            Who owns the volume's own directory (issue #102). Null means
+            nobody has said, which is root -- null rather than 0 on
+            purpose, since 0 is a real uid and a field that cannot tell
+            "root" from "unsaid" is one that gets read wrong eventually.
+        owner_gid:
+          type: [integer, "null"]
         host_path:
           type: string
           description: The resolved host directory backing this volume, for operator visibility.
@@ -9322,6 +9396,17 @@ components:
         disk:
           type: string
           description: Optional disk-role name; omitted means default OS-disk placement.
+        owner_uid:
+          type: integer
+          description: >
+            Issue #102: who owns the volume's own directory, applied at
+            creation -- the one moment its contents are certainly empty.
+            owner_uid and owner_gid must be given together; a volume
+            owned by one user and an unrelated group is almost always a
+            typo. Omitted means root, which is what a volume has always
+            been and what a non-root workload cannot write to.
+        owner_gid:
+          type: integer
 
     NetworkAttachmentRequest:
       type: object

@@ -8,7 +8,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 static struct volume g_volumes[VOLUME_MAX];
 static char g_state_path[PATH_MAX];
@@ -120,9 +122,19 @@ int volume_init(const char *state_path)
 				const char *wr = json_as_string(json_object_get(item, "backup_while_running"));
 				const struct json_value *q = json_object_get(item, "quota_bytes");
 
+				const struct json_value *ou = json_object_get(item, "owner_uid");
+				const struct json_value *og = json_object_get(item, "owner_gid");
+
 				g_volumes[count].backup_while_running = volume_running_mode_parse(wr);
 				g_volumes[count].quota_bytes =
 				    (q != NULL && q->type == JSON_NUMBER) ? (long long)json_as_number(q) : 0;
+				/* Issue #102: absent means never set, which is root --
+				 * exactly what a volume written before this existed
+				 * already is on disk. */
+				g_volumes[count].owner_uid =
+				    (ou != NULL && ou->type == JSON_NUMBER) ? (int)json_as_number(ou) : -1;
+				g_volumes[count].owner_gid =
+				    (og != NULL && og->type == JSON_NUMBER) ? (int)json_as_number(og) : -1;
 			}
 		}
 		g_volumes[count].in_use = 1;
@@ -191,6 +203,12 @@ enum volume_error volume_create(const char *name, const char *disk, struct volum
 
 	v = &g_volumes[slot];
 	memset(v, 0, sizeof(*v));
+	/* Issue #102: "never set", not uid 0. memset() would otherwise make
+	 * every new volume claim to be deliberately owned by root, which is
+	 * a different statement from nobody having said anything -- and the
+	 * one the API reports as null. */
+	v->owner_uid = -1;
+	v->owner_gid = -1;
 	snprintf(v->name, sizeof(v->name), "%s", name);
 	if (disk != NULL)
 		snprintf(v->disk, sizeof(v->disk), "%s", disk);
@@ -272,6 +290,19 @@ void volume_write_json_one(const struct volume *v, struct json_writer *w)
 	jw_str(w, volume_running_mode_name(v->backup_while_running));
 	jw_key(w, "quota_bytes");
 	jw_int(w, v->quota_bytes);
+	/* Issue #102: null rather than 0 for "never set" -- 0 is a real
+	 * uid (root), and a field that cannot tell "root" from "nobody
+	 * said" is a field that will eventually be read wrong. */
+	jw_key(w, "owner_uid");
+	if (v->owner_uid >= 0)
+		jw_int(w, v->owner_uid);
+	else
+		jw_null(w);
+	jw_key(w, "owner_gid");
+	if (v->owner_gid >= 0)
+		jw_int(w, v->owner_gid);
+	else
+		jw_null(w);
 	/* Reported so an operator can see where the data really landed --
 	 * a disk that is currently unmounted silently falls back to the
 	 * default location, and that should never be invisible. */
@@ -293,6 +324,92 @@ void volume_write_json_list(struct json_writer *w)
 			volume_write_json_one(&g_volumes[i], w);
 	}
 	jw_arr_close(w);
+}
+
+
+/*
+ * Issue #102: recursive chown, done by hand rather than by shelling out
+ * -- this walks a directory the daemon owns, and a subprocess for it
+ * would be a second way to do something this file can already do.
+ *
+ * lchown(), never chown(): a symlink inside the volume must have ITS
+ * own ownership changed, never the thing it points at, which may be
+ * anywhere on the host. Directory recursion likewise never follows a
+ * symlink, so a link to / cannot turn a volume chown into a host-wide
+ * one.
+ */
+static int chown_tree(const char *path, uid_t uid, gid_t gid)
+{
+	DIR *d;
+	struct dirent *de;
+	int rc = 0;
+
+	if (lchown(path, uid, gid) != 0)
+		rc = -1;
+
+	d = opendir(path);
+	if (d == NULL)
+		return rc; /* a plain file, or unreadable -- nothing to walk */
+	while ((de = readdir(d)) != NULL) {
+		char child[PATH_MAX];
+		struct stat st;
+
+		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+			continue;
+		if (snprintf(child, sizeof(child), "%s/%s", path, de->d_name) >= (int)sizeof(child)) {
+			rc = -1;
+			continue;
+		}
+		if (lstat(child, &st) != 0) {
+			rc = -1;
+			continue;
+		}
+		if (S_ISDIR(st.st_mode)) {
+			if (chown_tree(child, uid, gid) != 0)
+				rc = -1;
+		} else if (lchown(child, uid, gid) != 0) {
+			rc = -1;
+		}
+	}
+	closedir(d);
+	return rc;
+}
+
+enum volume_error volume_set_owner(const char *name, int uid, int gid)
+{
+	struct volume *v = find_slot(name);
+
+	if (v == NULL)
+		return VOLUME_ERR_NOT_FOUND;
+	/* Both or neither: a volume owned by one user and one unrelated
+	 * group is almost always a typo, and "leave the other alone" is
+	 * expressible by passing the value it already has. */
+	v->owner_uid = uid;
+	v->owner_gid = gid;
+	return save_state() == 0 ? VOLUME_OK : VOLUME_ERR_PERSIST_FAILED;
+}
+
+enum volume_error volume_apply_owner(const struct volume *v, int recursive)
+{
+	char path[PATH_MAX];
+
+	if (v == NULL)
+		return VOLUME_ERR_NOT_FOUND;
+	if (v->owner_uid < 0 && v->owner_gid < 0)
+		return VOLUME_OK; /* nothing asked for -- root, as it always was */
+	if (volume_host_path(v, path, sizeof(path)) != 0)
+		return VOLUME_ERR_IO;
+
+	if (recursive) {
+		if (chown_tree(path, (uid_t)(v->owner_uid < 0 ? -1 : v->owner_uid),
+		                (gid_t)(v->owner_gid < 0 ? -1 : v->owner_gid)) != 0)
+			return VOLUME_ERR_IO;
+		return VOLUME_OK;
+	}
+	if (lchown(path, (uid_t)(v->owner_uid < 0 ? -1 : v->owner_uid),
+	            (gid_t)(v->owner_gid < 0 ? -1 : v->owner_gid)) != 0)
+		return VOLUME_ERR_IO;
+	return VOLUME_OK;
 }
 
 /*
