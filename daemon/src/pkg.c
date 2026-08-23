@@ -149,6 +149,19 @@ struct pkg_recipe {
 	char sha256[PKG_MAX_SOURCES][PKG_SHA256_MAX];
 	int source_count;
 	char depends[PKG_DEPENDS_MAX];
+	/*
+	 * Issue #109: the tools that must be present to BUILD this package,
+	 * as opposed to `depends` above, which is what the built thing
+	 * needs at runtime and is merged into the target image.
+	 *
+	 * Declaring it is what makes a build reproducible: the build
+	 * container is composed from exactly these packages and nothing
+	 * else, so what a build ran against is a property of the recipe
+	 * rather than of this box's install history. Empty means the old
+	 * shared-sandbox behaviour, which is fungible by construction and
+	 * on the way out -- see ADR-0199.
+	 */
+	char build_depends[PKG_DEPENDS_MAX];
 	/* ADR-0122: optional -- empty means this recipe never opts into
 	 * precompiled-artifact fetch, always builds from source. When set,
 	 * it's the ONLY thing that makes a fetched artifact trustworthy: a
@@ -744,6 +757,7 @@ static int parse_recipe(const char *path, struct pkg_recipe *out)
 	/* depends, artifact_sha256, and changelog are all optional -- fine
 	 * if absent */
 	extract_line_value(buf, "pkg_depends=", out->depends, sizeof(out->depends));
+	extract_line_value(buf, "pkg_build_depends=", out->build_depends, sizeof(out->build_depends));
 	extract_line_value(buf, "pkg_artifact_sha256=", out->artifact_sha256,
 	                    sizeof(out->artifact_sha256));
 	extract_line_value(buf, "pkg_changelog=", out->changelog, sizeof(out->changelog));
@@ -2127,6 +2141,201 @@ static void pkg_migrate_flat_sandbox(const char *images_dir)
  * real state (a box that has never run `pkg bootstrap`) and not an
  * error to paper over with a path that does not exist.
  */
+/* Forward-declared here rather than only at their existing site further
+ * down: the build-environment composition below is the first caller,
+ * and it sits above them. */
+static int pkg_cache_has(const char *name, const char *version);
+static int pkg_cache_extract(const char *name, const char *version, const char *out_dir);
+
+/*
+ * ---- Issue #109: a build environment composed from a recipe's own
+ * ---- declared build tools, and nothing else (ADR-0199)
+ *
+ * The environment a package builds in is a property of the recipe, not
+ * of this box's install history. A recipe naming its build tools gets a
+ * container whose lowerdir contains exactly those packages' own files:
+ * no extras to accidentally depend on, and nothing missing that the
+ * build will not immediately name.
+ *
+ * Composed from each declared package's own CACHED build output -- the
+ * files that package itself produced, which is the only honest
+ * definition of "what this package contributes". Not from an image
+ * (an image is a union of whatever was installed into it), and not
+ * from the shared sandbox (which is the problem).
+ *
+ * The result is an ordinary image named for the hash of the declared
+ * set, so the same set is composed once and reused forever, and two
+ * different sets can never collide. That reuse is not an optimisation
+ * bolted on: it is what makes "declare your tools" cheap enough to
+ * apply everywhere.
+ */
+#define PKG_BUILDENV_IMAGE_PREFIX "__buildenv-"
+#define PKG_BUILDENV_MAX_TOOLS 32
+
+struct buildenv_tool {
+	char name[PKG_NAME_MAX];
+	char version[PKG_VERSION_MAX];
+};
+
+struct buildenv_ctx {
+	const struct buildenv_tool *tools;
+	int tool_count;
+};
+
+/*
+ * Every declared tool must be a package this box has actually built --
+ * we compose from its cached output, so "installed somewhere" is not
+ * enough on its own, the cache entry has to be there too.
+ *
+ * Refused, never substituted: a build environment missing a tool the
+ * recipe declared is not a build environment, and quietly falling back
+ * to something fuller would reintroduce exactly the fungibility this
+ * exists to remove.
+ */
+static int buildenv_resolve_tools(const char *declared, struct buildenv_tool *out, int max,
+                                   char *err, size_t err_size)
+{
+	char buf[PKG_DEPENDS_MAX];
+	char *tok;
+	char *save = NULL;
+	int n = 0;
+
+	snprintf(buf, sizeof(buf), "%s", declared);
+	for (tok = strtok_r(buf, " \t", &save); tok != NULL; tok = strtok_r(NULL, " \t", &save)) {
+		struct pkg_entry *found = NULL;
+		int i;
+
+		if (n >= max) {
+			snprintf(err, err_size, "more than %d declared build tools", max);
+			return -1;
+		}
+		/* Any image will do: a package's own built files are the same
+		 * files whichever image it was installed into. */
+		for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+			if (!g_packages[i].in_use || g_packages[i].state != PKG_STATE_INSTALLED)
+				continue;
+			if (strcmp(g_packages[i].name, tok) != 0)
+				continue;
+			found = &g_packages[i];
+			break;
+		}
+		if (found == NULL) {
+			snprintf(err, err_size,
+			         "declared build tool \"%s\" is not installed anywhere, so there is nothing "
+			         "to compose a build environment from -- install it first",
+			         tok);
+			return -1;
+		}
+		if (!pkg_cache_has(found->name, found->version)) {
+			snprintf(err, err_size,
+			         "declared build tool \"%s@%s\" has no cached build output, so it cannot be "
+			         "composed into a build environment -- rebuild it",
+			         found->name, found->version);
+			return -1;
+		}
+		snprintf(out[n].name, sizeof(out[n].name), "%s", found->name);
+		snprintf(out[n].version, sizeof(out[n].version), "%s", found->version);
+		n++;
+	}
+	if (n == 0) {
+		snprintf(err, err_size, "pkg_build_depends is set but names no packages");
+		return -1;
+	}
+	return n;
+}
+
+static int buildenv_tool_cmp(const void *a, const void *b)
+{
+	const struct buildenv_tool *ta = a;
+	const struct buildenv_tool *tb = b;
+	int c = strcmp(ta->name, tb->name);
+
+	return c != 0 ? c : strcmp(ta->version, tb->version);
+}
+
+static int buildenv_mutate(const char *staging_rootfs, void *ctx_v)
+{
+	struct buildenv_ctx *ctx = ctx_v;
+	int i;
+
+	/* The same baseline every image gets: device nodes and the handful
+	 * of files a process needs to start at all. Not a "tool", and not
+	 * something a recipe should have to declare. */
+	if (pkg_seed_image_baseline(staging_rootfs) != PKG_OK)
+		return -1;
+	for (i = 0; i < ctx->tool_count; i++)
+		if (pkg_cache_extract(ctx->tools[i].name, ctx->tools[i].version, staging_rootfs) != 0)
+			return -1;
+	return 0;
+}
+
+/*
+ * Resolves a recipe's declared build tools to an image containing
+ * exactly them, creating it the first time and reusing it after.
+ * Returns 0 and fills out_image, or -1 with a message saying which
+ * declared tool could not be provided.
+ */
+static int buildenv_image_for(const char *declared, char *out_image, size_t out_image_size,
+                               char *err, size_t err_size)
+{
+	struct buildenv_tool tools[PKG_BUILDENV_MAX_TOOLS];
+	char canonical[PKG_BUILDENV_MAX_TOOLS * (PKG_NAME_MAX + PKG_VERSION_MAX + 2)];
+	char hash[IMAGE_VERSION_MAX];
+	size_t off = 0;
+	int count;
+	int i;
+
+	count = buildenv_resolve_tools(declared, tools, PKG_BUILDENV_MAX_TOOLS, err, err_size);
+	if (count < 0)
+		return -1;
+
+	/* Sorted, so the identity is the SET and not the order it happened
+	 * to be written in -- two recipes naming the same tools differently
+	 * ordered share one environment. */
+	qsort(tools, (size_t)count, sizeof(tools[0]), buildenv_tool_cmp);
+	canonical[0] = '\0';
+	for (i = 0; i < count; i++) {
+		int n = snprintf(canonical + off, sizeof(canonical) - off, "%s@%s\n", tools[i].name,
+		                 tools[i].version);
+
+		if (n < 0 || (size_t)n >= sizeof(canonical) - off) {
+			snprintf(err, err_size, "declared build tool set is too long to name");
+			return -1;
+		}
+		off += (size_t)n;
+	}
+	if (image_hash_manifest_string(canonical, hash, sizeof(hash)) != 0) {
+		snprintf(err, err_size, "could not hash the declared build tool set");
+		return -1;
+	}
+	hash[16] = '\0';
+	snprintf(out_image, out_image_size, "%s%s", PKG_BUILDENV_IMAGE_PREFIX, hash);
+
+	{
+		char existing[IMAGE_VERSION_MAX];
+
+		/* Already composed: the set is the identity, so an existing
+		 * one is by construction the right one. */
+		if (image_current_version(out_image, existing, sizeof(existing)) == IMAGE_OK &&
+		    existing[0] != '\0')
+			return 0;
+	}
+	{
+		struct buildenv_ctx ctx;
+
+		ctx.tools = tools;
+		ctx.tool_count = count;
+		if (image_produce_new_version(out_image, buildenv_mutate, &ctx, canonical) != 0) {
+			snprintf(err, err_size, "could not compose a build environment from the declared "
+			                        "tools");
+			return -1;
+		}
+	}
+	logstore_write("thincd", "info", "pkg: composed build environment %s from %d declared tool(s)",
+	               out_image, count);
+	return 0;
+}
+
 static int pkg_build_sandbox_rootfs(char *out, size_t out_size)
 {
 	char version[IMAGE_VERSION_MAX];
@@ -3561,12 +3770,50 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 			                           e->build_lowerdir, sizeof(e->build_lowerdir));
 		else
 			e->build_lowerdir[0] = '\0';
+	} else if (recipe.build_depends[0] != '\0') {
+		/*
+		 * Issue #109: this recipe declares its build tools, so its
+		 * build container is composed from exactly those and nothing
+		 * else -- the environment is a property of the recipe, not of
+		 * this box's install history.
+		 *
+		 * A tool that cannot be provided fails the build here, naming
+		 * it. Deliberately no fallback to the shared sandbox: falling
+		 * back would mean the build quietly ran against something
+		 * fuller than it declared, which is the exact failure mode
+		 * this replaces -- and it would succeed, teaching everyone
+		 * that the declaration is decorative.
+		 */
+		char env_image[PKG_IMAGE_NAME_MAX];
+		char env_err[256];
+
+		if (buildenv_image_for(recipe.build_depends, env_image, sizeof(env_image), env_err,
+		                        sizeof(env_err)) != 0) {
+			pkg_fail(e, is_final_upgrade, PKG_FAILURE_BUILD, "%s", env_err);
+			logstore_write("thincd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
+			g_chains[chain_idx].name[0] = '\0';
+			g_chains[chain_idx].dep_queue_count = 0;
+			return 0;
+		}
+		{
+			char env_version[IMAGE_VERSION_MAX];
+
+			if (image_current_version(env_image, env_version, sizeof(env_version)) == IMAGE_OK)
+				image_version_rootfs_path(env_image, env_version, e->build_lowerdir,
+				                           sizeof(e->build_lowerdir));
+			else
+				e->build_lowerdir[0] = '\0';
+		}
 	} else {
 		/* Issue #40: the shared sandbox resolves exactly like the
 		 * hostbuild image above -- same mechanism, not a second one.
 		 * An empty lowerdir here means the sandbox was never
 		 * bootstrapped, which the caller already handles as the real
-		 * state it is. */
+		 * state it is.
+		 *
+		 * Issue #109: this branch is the fungible one, kept only for
+		 * recipes that have not yet declared their build tools. It is
+		 * what a recipe opts OUT of by declaring them. */
 		if (pkg_build_sandbox_rootfs(e->build_lowerdir, sizeof(e->build_lowerdir)) != 0)
 			e->build_lowerdir[0] = '\0';
 	}

@@ -283,6 +283,41 @@ static int write_recipe(const char *name, const char *version, const char *tarba
 	return 0;
 }
 
+/*
+ * Issue #109: a recipe that DECLARES its build tools. The build
+ * container is then composed from exactly those packages and nothing
+ * else, so what this build ran against is a property of the recipe
+ * rather than of whatever the shared sandbox happens to hold.
+ */
+static int write_builddeps_recipe(const char *name, const char *version, const char *tarball_path,
+                                   const char *sha256, const char *build_depends)
+{
+	char name_dir[256];
+	char path[300];
+	FILE *f;
+
+	snprintf(name_dir, sizeof(name_dir), "%s/recipes/%s", g_pkg_state_dir, name);
+	mkdir(name_dir, 0755);
+	snprintf(path, sizeof(path), "%s/%s", name_dir, version);
+	mkdir(path, 0755);
+	snprintf(path, sizeof(path), "%s/recipes/%s/%s/build.sh", g_pkg_state_dir, name, version);
+	f = fopen(path, "w");
+	if (f == NULL)
+		return -1;
+	fprintf(f, "pkg_name=%s\n", name);
+	fprintf(f, "pkg_version=%s\n", version);
+	fprintf(f, "pkg_source=file://%s\n", tarball_path);
+	fprintf(f, "pkg_sha256=%s\n", sha256);
+	fprintf(f, "pkg_depends=\"\"\n");
+	fprintf(f, "pkg_build_depends=\"%s\"\n\n", build_depends);
+	fprintf(f, "pkg_build() {\n\tgcc -o hello hello.c\n}\n\n");
+	fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n\tcp hello "
+	           "\"$PKG_DESTDIR/usr/bin/%s\"\n}\n",
+	        name);
+	fclose(f);
+	return 0;
+}
+
 /* Multi-source recipe (ADR-0036): source 0 is the usual fixture
  * tarball; sources 1/2 are plain files that land at
  * /build/extra/extra1.txt and /build/extra/extra2.txt. pkg_install()
@@ -1089,6 +1124,49 @@ int main(void)
 		}
 		if (fp != NULL)
 			pclose(fp);
+	}
+
+	/*
+	 * Issue #109 (ADR-0199): a recipe that declares a build tool which
+	 * is not available must FAIL, naming it -- never quietly fall back
+	 * to the shared sandbox.
+	 *
+	 * That refusal is the whole property. A fallback would let the
+	 * build succeed against something fuller than it declared, which is
+	 * exactly the failure this replaces, and it would teach everyone
+	 * that the declaration is decorative.
+	 */
+	if (write_builddeps_recipe("declaredmissing", "1.0", tarball_path, sha256,
+	                            "nosuchbuildtool") != 0) {
+		fprintf(stderr, "FAIL: could not write the declared-build-deps recipe\n");
+		ok = 0;
+	}
+	memset(&r, 0, sizeof(r));
+	if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"declaredmissing\"}",
+	                       &r) != 0 ||
+	    r.status != 202) {
+		fprintf(stderr, "FAIL: #109 install of a declared-tools recipe, status=%d\n", r.status);
+		ok = 0;
+	}
+	thinc_response_free(&r);
+	if (poll_pkg_state(&client, "declaredmissing", state, sizeof(state), 60) != 0 ||
+	    strcmp(state, "failed") != 0) {
+		fprintf(stderr, "FAIL: #109 a recipe declaring an unavailable build tool ended '%s', "
+		                "expected failed -- it must not fall back to the shared sandbox\n",
+		        state);
+		ok = 0;
+	} else {
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "GET", "/v1/pkg/declaredmissing", NULL, &r) != 0 ||
+		    r.status != 200 || json_str_field(r.json, "error") == NULL ||
+		    strstr(json_str_field(r.json, "error"), "nosuchbuildtool") == NULL) {
+			fprintf(stderr, "FAIL: #109 the failure does not name the missing build tool: %s\n",
+			        r.json != NULL && json_str_field(r.json, "error") != NULL
+			            ? json_str_field(r.json, "error")
+			            : "(none)");
+			ok = 0;
+		}
+		thinc_response_free(&r);
 	}
 
 	/* 6. duplicate install of an already-installed package -> 409 */

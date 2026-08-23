@@ -25,7 +25,8 @@ pkg_depends=""
 - **`pkg_version`** — a plain string, compared byte-for-byte against what's installed to detect drift (`GET /pkg/{name}`'s `available_version` field, and what `POST /pkg/update-all` scans for). Bump it whenever the recipe changes in a way that should trigger an upgrade — there's no separate "recipe revision" concept, `pkg_version` *is* the revision.
 - **`pkg_source`** — where to fetch from. Almost always an `https://` URL; a local self-hosted git remote's own archive-download endpoint works identically (see [`building-thinc.md`](building-thinc.md) for a real example). Fetched host-side by the daemon's own `curl` subprocess, before the build container ever starts — the container itself has no network access at all, so anything a build needs must already be named here.
 - **`pkg_sha256`** — the fetched source's checksum, verified before extraction. A mismatch fails the job outright (`PKG_STATE_FAILED`, no partial state).
-- **`pkg_depends`** — a space-separated list of other recipe names to install first (empty string if none). See [Dependencies](#dependencies) below. Must be exactly empty for a hostbuild recipe (see [The hostbuild variant](#the-hostbuild-variant) below) — dependency resolution has no meaning for a one-shot artifact harvest.
+- **`pkg_build_depends`** — a space-separated list of packages that must be present to *build* this one (ADR-0199). The build container is composed from exactly these; see [Dependencies](#dependencies-two-questions-two-fields) below.
+- **`pkg_depends`** — a space-separated list of other recipe names to install first (empty string if none), i.e. what the built thing needs at *runtime*. See [Dependencies](#dependencies) below. Must be exactly empty for a hostbuild recipe (see [The hostbuild variant](#the-hostbuild-variant) below) — dependency resolution has no meaning for a one-shot artifact harvest.
 - **`{{REPO_TOKEN}}` in `pkg_source`** — optional (issue #60). The literal string `{{REPO_TOKEN}}` anywhere in a source URL is replaced at fetch time with the daemon's own stored repo auth token (`pkg repo-config set --token=`). Lets a recipe that self-fetches from the private Gitea be committed in its final, working form — no credential in the recipe, none in the catalog. Absent/empty token leaves the URL unchanged.
 - **`pkg_artifact_sha256`** — optional (ADR-0122). Absent means this recipe always builds from source, exactly as above. Set means: if a plain-HTTP precompiled-artifact server is configured (`GET`/`PUT /v1/pkg/artifact-config`, a separate, non-git thing from `pkg_source` — see [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs)), an install first tries `<base_url>/<name>-<version>.tar.gz` and verifies it against this checksum before ever trusting it; a miss (no server, 404, mismatch) silently falls back to `pkg_source`/`pkg_build()`/`pkg_install()` below, unchanged. This is the *only* thing that makes a fetched artifact trustworthy — the server itself is never a trust boundary.
 - **`pkg_changelog`** — optional (ADR-0176). A short, single-line, free-text summary of what changed in this specific published version (a commit subject line, not a release note) — shown in the Web dashboard's package detail page, on a real per-version "Versions" tab. Deliberately single-line: the scanner reads up to the closing quote or a newline, whichever comes first, so a real multi-paragraph changelog isn't representable here by construction. Absent for any recipe that doesn't set it — nothing retroactively required of existing recipes, adopt it whenever you next re-pin one.
@@ -72,9 +73,41 @@ These are genuine, confirmed environment facts about this project's own minimal 
 - **No `/bin`, only `/usr/bin`.** This project's images stage everything under `/usr/bin/` — `/bin/sh` doesn't exist unless something explicitly creates it (`bash.recipe`'s own `pkg_install()` symlinks it, see the real recipe below). glibc's `popen()`/`system()` hardcode `/bin/sh` with no override, so any build step that shells out (`make`'s own recipe lines, `configure`'s `$(shell ...)`-style macros) needs it present in the *build image*, not just the target.
 - **No `/tmp`.** Use `/run` instead for any scratch path a build step needs.
 - **Absolute tool paths inside a container, not bare names.** `gcc`/`ld` resolve their own installation prefix differently depending on how they're invoked (see `CLAUDE.md`'s own environment notes) — prefer `/usr/bin/gcc` over a bare `gcc` if a recipe's own build step execs a compiler directly rather than through `make`'s normal `$(CC)` indirection.
-- **A recipe only ever sees what its build image already has.** If `pkg_build()` needs `bc`, `sed`, `flex`, or any other tool beyond the base toolchain, that tool needs its own recipe installed onto the build image first (ordinary `pkg install --image=<build-image> --name=<tool>`) — nothing is auto-detected or auto-installed on demand.
+- **A recipe only ever sees what it declared, or (if it declared nothing) whatever its build image already has.** With `pkg_build_depends` set, the environment is exactly your declared packages — nothing is auto-detected or auto-installed on demand, and anything missing fails the build by name.
 
-## Dependencies
+## Dependencies: two questions, two fields
+
+A recipe answers two different questions, and they are **not** the same list:
+
+| field | question | where it goes |
+|---|---|---|
+| `pkg_build_depends` | what must be present to **build** this? | composed into the build container |
+| `pkg_depends` | what does the built thing need at **runtime**? | installed into the target image |
+
+`bison` needs `m4` at runtime (it shells out to it) — that is `pkg_depends`. `m4` needs `binutils` to build (it wants `ar`) — that is `pkg_build_depends`. `gcc` needs both, and different ones each.
+
+### `pkg_build_depends` — declare your build tools (ADR-0199)
+
+```sh
+pkg_build_depends="tcc make libc-dev bash coreutils sed"
+```
+
+**The build container is composed from exactly these packages and nothing else.** Not a suggestion, not documentation — it *is* the environment. Two properties follow, and both are enforced rather than trusted:
+
+- **no less** — a tool you did not declare is not there, and the build fails naming what it wanted
+- **no extras** — nothing else is present for the build to accidentally depend on
+
+A declared tool that cannot be provided (not installed anywhere, or with no cached build output to compose from) **fails the build and names it**. There is deliberately no fallback to a fuller environment: falling back would let the build succeed against something it never declared, which is the exact problem this replaces.
+
+Write the list by building and reading the failures. Each one names precisely the next thing to add, and it converges quickly — `zlib` needs six packages and its declaration says why each one earns its place.
+
+The composed environment is cached as an image named for the hash of your declared set, so recipes sharing a tool set share one environment and it is built once. Declaration order does not matter; the set is sorted before hashing.
+
+**Sufficiency is enforced, minimality is not.** If you declare a tool you do not actually need, the build still succeeds and nothing complains. Keep the list honest by review.
+
+**A recipe declaring nothing** falls back to the shared build sandbox — the old behaviour, which is fungible by construction and on its way out. Prefer declaring.
+
+### `pkg_depends` — runtime dependencies
 
 `pkg_depends` is resolved automatically and recursively, before your own recipe's `pkg_build()` ever runs:
 
