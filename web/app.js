@@ -1113,6 +1113,7 @@ const CATEGORY_VIEWS = {
 	logs: "view-monitoring",
 	kmsg: "view-monitoring",
 	"server-health": "view-monitoring",
+	stalls: "view-monitoring",
 	volumes: "view-volumes",
 	/* Repo & Sync and Cache & Artifacts became tabs on the Catalogue
 	 * page. Their old addresses still resolve to it (with the right tab
@@ -1208,6 +1209,7 @@ const SERVICE_TAB_VIEWS = {
 	logs: "view-monitoring",
 	kmsg: "view-monitoring",
 	"server-health": "view-monitoring",
+	stalls: "view-monitoring",
 };
 
 /* The category last rendered, so a re-render triggered by the poll loop
@@ -1275,6 +1277,8 @@ function renderCurrentView() {
 			refreshKmsg();
 		else if (route.category === "server-health")
 			refreshServerHealth();
+		else if (route.category === "stalls")
+			refreshStalls();
 		else if (route.category === "volume-backup-config")
 			refreshVolumeBackupConfig();
 		else if (route.category === "volumes" && route.name !== null)
@@ -5752,6 +5756,54 @@ async function showBuildLog(file) {
 	}
 }
 
+
+
+/* ---------- Control-plane stalls (issue #100) ---------- */
+
+async function refreshStalls() {
+	const body = document.getElementById("stalls-body");
+
+	try {
+		const data = await apiRequest("GET", "/v1/system/stalls");
+		const stalls = data.stalls || [];
+
+		body.textContent = "";
+		if (stalls.length === 0) {
+			const tr = document.createElement("tr");
+			const td = document.createElement("td");
+
+			td.colSpan = 6;
+			td.className = "empty";
+			/* Nothing recorded is the good case, and worth saying so
+			 * rather than leaving a blank table that reads as broken. */
+			td.textContent = "None recorded — the loop has not gone quiet";
+			tr.appendChild(td);
+			body.appendChild(tr);
+			return;
+		}
+		for (const s of stalls) {
+			const tr = document.createElement("tr");
+			const cells = [
+				new Date(s.ts * 1000).toLocaleString(),
+				s.event,
+				s.seconds + "s",
+				s.state,
+				s.wchan || "(running)",
+				s.activity || "(idle)",
+			];
+
+			for (const text of cells) {
+				const td = document.createElement("td");
+
+				td.textContent = text;
+				tr.appendChild(td);
+			}
+			body.appendChild(tr);
+		}
+	} catch (e) {
+		/* Best-effort, same as every other panel here. */
+	}
+}
 
 /* ---------- Boot Console (issue #24) ---------- */
 

@@ -6224,6 +6224,47 @@ static int cmd_pkg_build_config(const struct kx_client *c, int json_mode, int ar
 
 
 /*
+ * Issue #100: thincctl stalls -- times the control plane stopped going
+ * round its own loop, recorded by a watchdog process because the loop
+ * cannot report its own silence.
+ */
+static void fmt_stalls(const struct json_value *v)
+{
+	const struct json_value *arr = json_object_get(v, "stalls");
+	size_t i;
+
+	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		printf("no control-plane stalls recorded\n");
+		return;
+	}
+	for (i = 0; i < arr->u.array.count; i++) {
+		const struct json_value *s = arr->u.array.items[i];
+		const char *wchan = json_str_field(s, "wchan");
+		const char *activity = json_str_field(s, "activity");
+
+		printf("%-12lld %-16s %4llds state=%s wchan=%-24s %s\n",
+		       (long long)json_as_number(json_object_get(s, "ts")),
+		       json_str_field(s, "event") != NULL ? json_str_field(s, "event") : "-",
+		       (long long)json_as_number(json_object_get(s, "seconds")),
+		       json_str_field(s, "state") != NULL ? json_str_field(s, "state") : "?",
+		       wchan != NULL && wchan[0] != '\0' ? wchan : "(running)",
+		       activity != NULL && activity[0] != '\0' ? activity : "(idle)");
+	}
+}
+
+static int cmd_stalls(const struct kx_client *c, int json_mode)
+{
+	struct kx_response r;
+
+	if (kx_client_request(c, "GET", "/v1/system/stalls", NULL, &r) != 0) {
+		fprintf(stderr, "thincctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_stalls);
+}
+
+
+/*
  * Issue #24: thincctl boot-console show|set -- what the installed
  * system's own boot line says about consoles. Applied to the loader
  * entries already on the ESP, so it takes effect at the next boot
@@ -11922,6 +11963,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_cpreserve(client, json_mode, argc, argv);
 	if (strcmp(cmd, "boot-console") == 0)
 		return cmd_boot_console(client, json_mode, argc, argv);
+	if (strcmp(cmd, "stalls") == 0)
+		return cmd_stalls(client, json_mode);
 	if (strcmp(cmd, "hostauth-config") == 0)
 		return cmd_hostauth_config(client, json_mode, argc, argv);
 	if (strcmp(cmd, "hostauth-sessions") == 0)
@@ -12123,7 +12166,7 @@ static const char *const SHELL_COMMANDS[] = {
 	"resolv",
 	"restore", "rm",       "rolling-config", "routes",        "run",      "shutdown",  "site",
 	"start",  "stats",     "stop",          "storage",  "swap",     "sysctl",   "syslog",    "time",      "tls-throttle", "unpause",   "update",
-	"control-plane-reservation", "boot-console",
+	"control-plane-reservation", "boot-console", "stalls",
 	NULL
 };
 
