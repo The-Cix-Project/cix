@@ -4146,6 +4146,57 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /networks/{name}/ports:
+    get:
+      summary: What is plugged into this network's bridge right now (issue #26)
+      description: >
+        A switch panel's data. The port list comes from the **kernel** --
+        everything currently enslaved to this network's bridge, read
+        from `/sys/class/net/<bridge>/brif` -- not from what this daemon
+        believes it attached. If the two disagree the kernel is right,
+        and a port that cannot be accounted for is reported with
+        `kind: "unattributed"` rather than dropped: a veth on the bridge
+        belonging to no container we know of is exactly what an operator
+        needs to see, and asking the switch is the only way to see it.
+
+        The registry is the annotation layer: which container owns a
+        port, what that interface is called inside it, and which IP it
+        holds. A container defined on the network but not running has no
+        veth on the bridge and therefore no port -- nothing is plugged
+        in, and drawing a port for it would say otherwise.
+
+        `rx_bytes`/`tx_bytes` are from the **port's own side**, which is
+        the switch's side: rx is what reached the switch from whatever
+        is plugged in, the inverse of what the container sees on its own
+        interface. Raw counters only; the caller computes rates, the
+        same convention every other stats endpoint here uses.
+
+        Ports are returned in a deterministic order (uplinks, then
+        container ports by container name, then unattributed) so a
+        rendered panel does not reshuffle between polls. That is an
+        order, not an identity: ports come and go with containers, so no
+        port number would be stable, and none is returned -- `ifname`
+        names a port.
+
+        `bridge_present: false` with an empty list is a network defined
+        in state but not realised on this host (or a daemon that never
+        had the privilege to create one). A fact, not a fault.
+      operationId: getNetworkPorts
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The bridge's ports, annotated and with their counters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NetworkPorts"
+        "404":
+          description: No such network -- the ports of nothing is not an empty list
   /networks/{name}/interfaces:
     post:
       summary: >
@@ -10050,6 +10101,52 @@ components:
         source:
           type: string
           description: The kernel.org URL this is resolved from.
+    NetworkPorts:
+      type: object
+      properties:
+        network:
+          type: string
+        bridge_present:
+          type: boolean
+          description: False when this network has no bridge on this host; the port list is then empty.
+        ports:
+          type: array
+          items:
+            type: object
+            properties:
+              ifname:
+                type: string
+                description: The host-side interface on the bridge. This is what names a port.
+              kind:
+                type: string
+                enum: [uplink, container, unattributed]
+              vlan_id:
+                type: integer
+                nullable: true
+                description: Uplinks only; null on every other kind, rather than a zero that would mean nothing.
+              container:
+                type: string
+                nullable: true
+              container_ifname:
+                type: string
+                nullable: true
+                description: What this interface is called inside the container.
+              ip:
+                type: string
+                nullable: true
+              link:
+                type: string
+                nullable: true
+                description: The kernel's operstate. Null if the interface vanished between listing the bridge and asking about it -- a container stopping mid-request.
+              rx_bytes:
+                type: integer
+                description: From the port's own side -- what reached the switch from whatever is plugged in.
+              tx_bytes:
+                type: integer
+              rx_packets:
+                type: integer
+              tx_packets:
+                type: integer
     BootConsole:
       type: object
       properties:

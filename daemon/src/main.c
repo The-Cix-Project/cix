@@ -6418,6 +6418,28 @@ static long long read_net_stat(const char *ifname, const char *file)
 	return strtoll(buf, NULL, 10);
 }
 
+/*
+ * The host-side veth for a container's Nth network attachment. The
+ * name is a convention (src/container_net.c coins it at creation from
+ * the child's pid), not something stored -- so it is derived in one
+ * place rather than re-spelled at each call site, which is how the
+ * stats reader and the teardown path came to carry the same format
+ * string twice.
+ *
+ * A live-attached network (ADR-0156) is the exception: it was added to
+ * an already-running container and carries its real name, since it was
+ * never coined from the pid at all.
+ */
+static void container_veth_host_name(const struct registry_entry *e, int idx, char *out,
+                                      size_t out_size)
+{
+	if (e->nets[idx].veth_host[0] != '\0') {
+		snprintf(out, out_size, "%s", e->nets[idx].veth_host);
+		return;
+	}
+	snprintf(out, out_size, "vh%d-%d", (int)e->handle.pid, idx);
+}
+
 /* Best-effort: a missing/malformed /proc/loadavg leaves all three at 0,
  * same "snapshot, not all-or-nothing" convention as read_net_stat(). */
 static void read_loadavg(double *l1, double *l5, double *l15)
@@ -14354,7 +14376,7 @@ static void handle_container_stats(int fd, const char *name)
 	for (i = 0; i < e->net_count; i++) {
 		char veth[32];
 
-		snprintf(veth, sizeof(veth), "vh%d-%d", (int)e->handle.pid, i);
+		container_veth_host_name(e, i, veth, sizeof(veth));
 		jw_obj_open(&w);
 		jw_key(&w, "name");
 		jw_str(&w, e->nets[i].name);
@@ -15909,6 +15931,245 @@ static void handle_network_list(int fd)
 	jw_obj_open(&w);
 	jw_key(&w, "networks");
 	network_write_json_list(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * Issue #26: a network's ports, as a switch panel would show them.
+ *
+ * The port list comes from the KERNEL -- everything currently enslaved
+ * to this network's bridge, read from /sys/class/net/<bridge>/brif --
+ * not from what this daemon believes it attached. If the two ever
+ * disagree, the kernel is the one that is right, and a port we cannot
+ * account for is reported as such rather than dropped: a veth on the
+ * bridge that belongs to no container we know of is exactly the kind
+ * of thing an operator needs to see, and the only way to see it is to
+ * ask the switch what is plugged into it.
+ *
+ * The registry is the annotation layer on top: which container owns a
+ * port, what that interface is called inside it, which IP it holds.
+ */
+struct net_port {
+	char ifname[32];
+	const char *kind;                 /* "uplink" / "container" / "unattributed" */
+	int vlan_id;                      /* uplinks only; -1 when not applicable */
+	char container[REGISTRY_NAME_MAX];
+	char container_ifname[16];
+	char ip[16];
+	int sort_group;                   /* uplinks first, then containers, then the rest */
+};
+
+#define NET_PORTS_MAX 256
+
+static int net_port_cmp(const void *a, const void *b)
+{
+	const struct net_port *pa = a;
+	const struct net_port *pb = b;
+
+	if (pa->sort_group != pb->sort_group)
+		return pa->sort_group - pb->sort_group;
+	if (pa->sort_group == 1) {
+		int c = strcmp(pa->container, pb->container);
+
+		if (c != 0)
+			return c;
+	}
+	return strcmp(pa->ifname, pb->ifname);
+}
+
+static void net_port_write_link_state(struct json_writer *w, const char *ifname)
+{
+	char path[PATH_MAX];
+	char buf[32];
+	FILE *f;
+
+	snprintf(path, sizeof(path), "/sys/class/net/%s/operstate", ifname);
+	f = fopen(path, "r");
+	if (f == NULL || fgets(buf, sizeof(buf), f) == NULL) {
+		if (f != NULL)
+			fclose(f);
+		/* The interface vanished between listing the bridge and asking
+		 * about it -- a container stopping mid-request. Unknown is the
+		 * true answer; "down" would be a guess. */
+		jw_null(w);
+		return;
+	}
+	fclose(f);
+	buf[strcspn(buf, "\n")] = '\0';
+	jw_str(w, buf);
+}
+
+static void handle_network_ports_get(int fd, const char *name)
+{
+	struct network_def *net = network_find(name);
+	struct net_port ports[NET_PORTS_MAX];
+	int port_count = 0;
+	char cnames[REGISTRY_MAX_CONTAINERS][REGISTRY_NAME_MAX];
+	int ccount;
+	char brif_path[PATH_MAX];
+	DIR *d;
+	struct dirent *de;
+	struct json_writer w;
+	int i;
+	int j;
+
+	if (net == NULL) {
+		respond_error(fd, 404, "Not Found", "no such network");
+		return;
+	}
+
+	snprintf(brif_path, sizeof(brif_path), "/sys/class/net/%s/brif", name);
+	d = opendir(brif_path);
+	if (d == NULL) {
+		/*
+		 * No bridge on this host: a network defined in state but not
+		 * realised, or a dev daemon that never had the privilege to
+		 * create one. An empty port list with the reason said out loud
+		 * beats a 500 that reads as a fault.
+		 */
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "network");
+		jw_str(&w, name);
+		jw_key(&w, "bridge_present");
+		jw_bool(&w, 0);
+		jw_key(&w, "ports");
+		jw_arr_open(&w);
+		jw_arr_close(&w);
+		jw_obj_close(&w);
+		respond_json(fd, 200, "OK", &w);
+		jw_free(&w);
+		return;
+	}
+
+	ccount = registry_list_names(cnames, REGISTRY_MAX_CONTAINERS);
+	while ((de = readdir(d)) != NULL && port_count < NET_PORTS_MAX) {
+		struct net_port *p;
+
+		if (de->d_name[0] == '.')
+			continue;
+		p = &ports[port_count];
+		memset(p, 0, sizeof(*p));
+		snprintf(p->ifname, sizeof(p->ifname), "%s", de->d_name);
+		p->vlan_id = -1;
+		p->kind = "unattributed";
+		p->sort_group = 2;
+
+		/* An uplink: a real host interface this network was told to
+		 * bridge onto, including a VLAN sub-interface, which is a port
+		 * in its own right while its parent NIC is not one. */
+		for (i = 0; i < net->interface_count; i++) {
+			if (strcmp(net->interfaces[i].ifname, p->ifname) == 0) {
+				p->kind = "uplink";
+				p->vlan_id = net->interfaces[i].vlan_id;
+				p->sort_group = 0;
+				break;
+			}
+		}
+		if (p->sort_group == 0) {
+			port_count++;
+			continue;
+		}
+		for (i = 0; i < ccount && p->sort_group != 1; i++) {
+			struct registry_entry *e = registry_find(cnames[i]);
+
+			if (e == NULL || !e->running)
+				continue;
+			for (j = 0; j < e->net_count; j++) {
+				char veth[32];
+
+				if (strcmp(e->nets[j].name, name) != 0)
+					continue;
+				container_veth_host_name(e, j, veth, sizeof(veth));
+				if (strcmp(veth, p->ifname) != 0)
+					continue;
+				p->kind = "container";
+				p->sort_group = 1;
+				snprintf(p->container, sizeof(p->container), "%s", e->name);
+				snprintf(p->container_ifname, sizeof(p->container_ifname), "%s",
+				         e->nets[j].ifname[0] != '\0' ? e->nets[j].ifname : "eth0");
+				{
+					struct in_addr a;
+
+					a.s_addr = e->nets[j].ip_be;
+					if (inet_ntop(AF_INET, &a, p->ip, sizeof(p->ip)) == NULL)
+						p->ip[0] = '\0';
+				}
+				break;
+			}
+		}
+		port_count++;
+	}
+	closedir(d);
+
+	/*
+	 * Deterministic order so a rendered panel does not reshuffle
+	 * between polls. It is an ORDER, not an identity: ports come and go
+	 * with containers, so any number this handed out would move, and
+	 * ifname is the thing that actually names a port.
+	 */
+	qsort(ports, (size_t)port_count, sizeof(ports[0]), net_port_cmp);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "network");
+	jw_str(&w, name);
+	jw_key(&w, "bridge_present");
+	jw_bool(&w, 1);
+	jw_key(&w, "ports");
+	jw_arr_open(&w);
+	for (i = 0; i < port_count; i++) {
+		jw_obj_open(&w);
+		jw_key(&w, "ifname");
+		jw_str(&w, ports[i].ifname);
+		jw_key(&w, "kind");
+		jw_str(&w, ports[i].kind);
+		jw_key(&w, "vlan_id");
+		if (ports[i].vlan_id < 0)
+			jw_null(&w);
+		else
+			jw_int(&w, ports[i].vlan_id);
+		jw_key(&w, "container");
+		if (ports[i].container[0] != '\0')
+			jw_str(&w, ports[i].container);
+		else
+			jw_null(&w);
+		jw_key(&w, "container_ifname");
+		if (ports[i].container_ifname[0] != '\0')
+			jw_str(&w, ports[i].container_ifname);
+		else
+			jw_null(&w);
+		jw_key(&w, "ip");
+		if (ports[i].ip[0] != '\0')
+			jw_str(&w, ports[i].ip);
+		else
+			jw_null(&w);
+		jw_key(&w, "link");
+		net_port_write_link_state(&w, ports[i].ifname);
+		/*
+		 * From the PORT's own side, which is the switch's side: rx is
+		 * what arrived at the switch from whatever is plugged in, tx is
+		 * what the switch sent to it. That is the inverse of what the
+		 * container sees on its own interface, and saying which way
+		 * round it is here is the difference between a useful number
+		 * and a misleading one.
+		 *
+		 * Raw counters only; the caller computes rates -- the same
+		 * convention every other stats endpoint in this daemon uses.
+		 */
+		jw_key(&w, "rx_bytes");
+		jw_int(&w, read_net_stat(ports[i].ifname, "rx_bytes"));
+		jw_key(&w, "tx_bytes");
+		jw_int(&w, read_net_stat(ports[i].ifname, "tx_bytes"));
+		jw_key(&w, "rx_packets");
+		jw_int(&w, read_net_stat(ports[i].ifname, "rx_packets"));
+		jw_key(&w, "tx_packets");
+		jw_int(&w, read_net_stat(ports[i].ifname, "tx_packets"));
+		jw_obj_close(&w);
+	}
+	jw_arr_close(&w);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -21196,6 +21457,15 @@ static void dispatch(int fd, const struct http_request *req)
 				memcpy(net_name, name, nlen - 11);
 				net_name[nlen - 11] = '\0';
 				handle_network_attach_interface(fd, net_name, req->body, req->body_len);
+				return;
+			}
+			if (nlen > 6 && strcmp(name + nlen - 6, "/ports") == 0 &&
+			    strcmp(req->method, "GET") == 0 && nlen - 6 < NETWORK_NAME_MAX) {
+				char net_name[NETWORK_NAME_MAX];
+
+				memcpy(net_name, name, nlen - 6);
+				net_name[nlen - 6] = '\0';
+				handle_network_ports_get(fd, net_name);
 				return;
 			}
 			if (strcmp(req->method, "GET") == 0) {

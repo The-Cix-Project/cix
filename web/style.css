@@ -1653,3 +1653,87 @@ td.empty {
 	white-space: pre;
 	tab-size: 4;
 }
+
+/*
+ * Issue #26: the per-network switch panel. Plain HTML boxes rather
+ * than a canvas drawing: a port is a label, a state and two numbers,
+ * and hand-drawing that would give up selectable text and a real
+ * focus ring for nothing. Ports come and go with containers, so the
+ * grid reflows rather than pretending to a fixed faceplate.
+ */
+.switch-panel {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+	gap: 0.5rem;
+	margin-bottom: 1rem;
+}
+
+.switch-port {
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 0.5rem 0.6rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.15rem;
+	min-width: 0;
+}
+
+/* The jack: link state carried by shape and position as well as
+ * colour, so it is not the only thing distinguishing an up port from
+ * a down one. */
+.switch-port-head {
+	display: flex;
+	align-items: center;
+	gap: 0.4rem;
+	font-size: 0.8rem;
+	font-weight: 600;
+}
+
+.switch-port-jack {
+	flex: 0 0 auto;
+	width: 10px;
+	height: 10px;
+	border-radius: 2px;
+	background: var(--muted);
+	box-shadow: 0 0 5px transparent;
+}
+
+.switch-port-up .switch-port-jack {
+	background: var(--ok);
+	box-shadow: 0 0 5px var(--ok);
+}
+
+.switch-port-down .switch-port-jack {
+	background: var(--error);
+}
+
+.switch-port-num {
+	color: var(--muted);
+	font-variant-numeric: tabular-nums;
+}
+
+.switch-port-if {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.switch-port-attached {
+	font-size: 0.78rem;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.switch-port-rate {
+	font-size: 0.75rem;
+	color: var(--muted);
+	font-variant-numeric: tabular-nums;
+}
+
+/* A port on the bridge that nothing accounts for. Not an error, but
+ * not something to render as if it were understood either. */
+.switch-port-unattributed {
+	border-style: dashed;
+}

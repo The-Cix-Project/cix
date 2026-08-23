@@ -7978,6 +7978,74 @@ static int cmd_network_detach_interface(const struct thinc_client *c, int json_m
 	return emit(&r, json_mode, fmt_removed);
 }
 
+/*
+ * Issue #26: a network's ports, the way a switch panel shows them.
+ * The list is the kernel's -- everything actually on the bridge -- so a
+ * port nothing can account for prints as "unattributed" rather than
+ * being quietly left out, which is the one line here worth noticing.
+ */
+static void fmt_network_ports(const struct json_value *v)
+{
+	const struct json_value *ports = json_object_get(v, "ports");
+	const struct json_value *present = json_object_get(v, "bridge_present");
+	size_t i;
+
+	if (present != NULL && present->type == JSON_BOOL && !present->u.boolean) {
+		printf("no bridge for this network on this host -- nothing is plugged in\n");
+		return;
+	}
+	if (ports == NULL || ports->type != JSON_ARRAY || ports->u.array.count == 0) {
+		printf("no ports -- the bridge exists but nothing is on it\n");
+		return;
+	}
+	printf("%-3s %-16s %-14s %-18s %-6s %14s %14s\n", "#", "PORT", "KIND", "ATTACHED", "LINK",
+	       "RX BYTES", "TX BYTES");
+	for (i = 0; i < ports->u.array.count; i++) {
+		const struct json_value *p = ports->u.array.items[i];
+		const char *container = json_str_field(p, "container");
+		const char *ip = json_str_field(p, "ip");
+		const struct json_value *vlan = json_object_get(p, "vlan_id");
+		char attached[64];
+
+		if (container != NULL)
+			snprintf(attached, sizeof(attached), "%s %s", container, ip != NULL ? ip : "");
+		else if (vlan != NULL && vlan->type == JSON_NUMBER && (int)json_as_number(vlan) != 0)
+			snprintf(attached, sizeof(attached), "vlan %d", (int)json_as_number(vlan));
+		else
+			snprintf(attached, sizeof(attached), "%s", "-");
+		/*
+		 * The number is this listing's own, positional: ports come and
+		 * go with containers, so nothing here is a stable port
+		 * identity. The interface name is.
+		 */
+		printf("%-3d %-16s %-14s %-18s %-6s %14lld %14lld\n", (int)i + 1,
+		       json_str_field(p, "ifname") != NULL ? json_str_field(p, "ifname") : "-",
+		       json_str_field(p, "kind") != NULL ? json_str_field(p, "kind") : "-", attached,
+		       json_str_field(p, "link") != NULL ? json_str_field(p, "link") : "?",
+		       (long long)json_as_number(json_object_get(p, "rx_bytes")),
+		       (long long)json_as_number(json_object_get(p, "tx_bytes")));
+	}
+	printf("\nrx/tx are from the port's own side: rx is what reached the switch from\n"
+	       "whatever is plugged in, which is the inverse of what a container sees.\n");
+}
+
+static int cmd_network_ports(const struct thinc_client *c, int json_mode, int argc, char **argv)
+{
+	struct thinc_response r;
+	char path[256];
+
+	if (argc < 1) {
+		fprintf(stderr, "usage: thincctl network ports NAME\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/networks/%s/ports", argv[0]);
+	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
+		fprintf(stderr, "thincctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_network_ports);
+}
+
 static int cmd_network(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
@@ -7988,6 +8056,8 @@ static int cmd_network(const struct thinc_client *c, int json_mode, int argc, ch
 		        "[--address=A.B.C.D]\n"
 		        "       thincctl network ls\n"
 		        "       thincctl network rm NAME\n"
+	        "       thincctl network ports NAME  -- what is plugged into this network's\n"
+	        "                                       bridge right now, and each port's traffic\n"
 		        "       thincctl network attach-interface NAME --interface=IFNAME [--vlan=N]\n"
 		        "       thincctl network detach-interface NAME --interface=IFNAME\n");
 		return 2;
@@ -7999,6 +8069,8 @@ static int cmd_network(const struct thinc_client *c, int json_mode, int argc, ch
 		return cmd_network_ls(c, json_mode);
 	if (strcmp(sub, "rm") == 0)
 		return cmd_network_rm(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "ports") == 0)
+		return cmd_network_ports(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "attach-interface") == 0)
 		return cmd_network_attach_interface(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "detach-interface") == 0)

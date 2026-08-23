@@ -317,6 +317,22 @@
 		<section class="view" id="view-network-detail" hidden>
 			<h2 id="nd-title"></h2>
 			<div class="detail-grid" id="nd-fields"></div>
+			<h3>Switch panel</h3>
+			<p class="hint">
+				What is plugged into this network's bridge right now &mdash; read from the
+				kernel, not from what the daemon believes it attached, so a port nothing can
+				account for shows up rather than being quietly left out. Rates are from the
+				<strong>port's own side</strong>: in is what reached the switch from whatever is
+				plugged in, which is the inverse of what a container sees on its own interface.
+			</p>
+			<div class="switch-panel" id="nd-ports"></div>
+			<div class="stats-grid">
+				<div class="stats-card">
+					<h3>Traffic across all ports</h3>
+					<canvas id="nd-traffic" width="420" height="130"></canvas>
+					<p class="hint" id="nd-traffic-label">&hellip;</p>
+				</div>
+			</div>
 			<h3>Containers on this network</h3>
 			<table id="nd-containers">
 				<thead>
