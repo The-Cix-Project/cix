@@ -146,6 +146,32 @@
 
 enum pkg_state { PKG_STATE_FETCHING, PKG_STATE_BUILDING, PKG_STATE_INSTALLED, PKG_STATE_FAILED };
 
+/*
+ * Issue #101: WHY a package failed, as a field rather than as prose.
+ *
+ * "failed" alone cannot be acted on. A source that could not be reached
+ * is usually transient and the right response is to try again; a build
+ * that did not work is a real defect in a recipe or a toolchain and
+ * retrying changes nothing; a missing or unparseable recipe is a
+ * catalogue problem and neither. Until now the only thing separating
+ * them was an error string, so every caller -- `pkg ls`, the dashboard,
+ * update-all's own summary -- had to string-match to tell them apart,
+ * and none of them did.
+ */
+enum pkg_failure_kind {
+	PKG_FAILURE_NONE = 0,
+	/* The recipe itself is missing, unreadable or unparseable. */
+	PKG_FAILURE_RECIPE,
+	/* The source could not be fetched or did not match its checksum. */
+	PKG_FAILURE_FETCH,
+	/* The build container failed to start, or the build itself failed. */
+	PKG_FAILURE_BUILD,
+	/* The build succeeded; merging its output into the image did not. */
+	PKG_FAILURE_INSTALL
+};
+
+const char *pkg_failure_kind_name(enum pkg_failure_kind kind);
+
 enum pkg_error {
 	PKG_OK = 0,
 	PKG_ERR_INVALID_NAME,

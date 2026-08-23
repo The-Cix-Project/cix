@@ -10119,9 +10119,20 @@ static void fmt_pkg_line(const struct json_value *v)
 	const char *state = json_str_field(v, "state");
 	const char *error = json_str_field(v, "error");
 	const char *available = json_str_field(v, "available_version");
+	/* Issue #101: a package that could not be REACHED and one that
+	 * failed to BUILD both read "failed", and they call for opposite
+	 * responses -- retry the first, fix the second. The kind says which
+	 * without anyone having to read the message. */
+	const char *kind = json_str_field(v, "failure_kind");
+	char state_shown[32];
 
-	printf("%-24s %-16s %-12s %-10s %-14s %s\n", name,
-	       image != NULL && image[0] != '\0' ? image : "-", version, state,
+	if (kind != NULL && kind[0] != '\0')
+		snprintf(state_shown, sizeof(state_shown), "%s:%s", state, kind);
+	else
+		snprintf(state_shown, sizeof(state_shown), "%s", state != NULL ? state : "-");
+
+	printf("%-24s %-16s %-12s %-16s %-14s %s\n", name,
+	       image != NULL && image[0] != '\0' ? image : "-", version, state_shown,
 	       available != NULL && available[0] != '\0' ? available : "-",
 	       error != NULL && error[0] != '\0' ? error : "-");
 }
