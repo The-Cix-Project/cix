@@ -105,6 +105,12 @@
 					</ul>
 				</li>
 				<li class="menu-submenu">
+					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">DHCP</button>
+					<ul class="menu-submenu-menu" hidden>
+						<li><button type="button" data-modal="dhcp-static-modal-form" data-title="Reserve an address">Reserve an Address</button></li>
+					</ul>
+				</li>
+				<li class="menu-submenu">
 					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">Syslog</button>
 					<ul class="menu-submenu-menu" hidden>
 						<li><button type="button" data-modal="syslog-target-form" data-title="Register syslog forward target">Register Target</button></li>
@@ -411,12 +417,20 @@
 						Router to advertise (optional)
 						<input type="text" id="nd-dhcp-router" placeholder="(none)">
 					</label>
-					<label>
-						Server
-						<select id="nd-dhcp-server"></select>
-					</label>
 					<button type="submit">Save</button>
 				</form>
+				<h3>Who serves it</h3>
+				<p class="hint">
+					Every registered DNS server serves DHCP here, each from its own disjoint
+					slice of the range. dnsmasq has no failover protocol and the servers share
+					no lease database, so disjoint pools are what makes two of them redundant
+					rather than two of them handing the same address to different machines.
+					Either one alone keeps serving, from its own slice.
+				</p>
+				<table id="nd-dhcp-slices">
+					<thead><tr><th>Server</th><th>Serves</th></tr></thead>
+					<tbody></tbody>
+				</table>
 				<h3>Static reservations</h3>
 				<table id="nd-dhcp-static">
 					<thead><tr><th>MAC</th><th>IP</th><th>Hostname</th><th></th></tr></thead>
@@ -1483,6 +1497,72 @@
 		     navigating to find out which one a thing was on. Every old
 		     address still resolves, to its tab.
 		-->
+		<!-- DHCP as a first-class service (ADR-0197), alongside DNS/LDAP/NTP/
+		     Syslog. The per-network half stays on the network's own page,
+		     because a range belongs to a network; this is the service-wide
+		     view of it: who serves what, every reservation, every lease.
+		-->
+		<section class="view" id="view-dhcp" hidden>
+			<h2>DHCP</h2>
+			<div class="tab-bar">
+				<button type="button" class="tab-button active" data-tab="dhcp-networks">Networks</button>
+				<button type="button" class="tab-button" data-tab="dhcp-static">Reservations</button>
+				<button type="button" class="tab-button" data-tab="dhcp-leases">Leases</button>
+			</div>
+			<div class="tab-panel" data-tab="dhcp-networks">
+				<p class="hint">
+					DHCP is served by the same dnsmasq that serves this platform's DNS, so a lease
+					resolves the moment it is handed out &mdash; there is nothing in between to keep
+					in step. Every registered DNS server serves it, each from its own disjoint slice
+					of the range: dnsmasq implements no failover protocol, so disjoint pools are what
+					make two servers redundant rather than two servers handing one address to
+					different machines. Enable it on a network from that network's own page.
+				</p>
+				<table id="dhcp-networks-table">
+					<thead><tr><th>Network</th><th>State</th><th>Range</th><th>Lease</th><th>Served by</th></tr></thead>
+					<tbody></tbody>
+				</table>
+			</div>
+			<div class="tab-panel" data-tab="dhcp-static" hidden>
+				<p class="hint">
+					A MAC always gets the same address. Live &mdash; the servers re-read these on
+					SIGHUP, so nothing restarts. A hostname here becomes a name the DNS side answers
+					for too.
+				</p>
+				<table id="dhcp-static-table">
+					<thead><tr><th>MAC</th><th>IP</th><th>Hostname</th><th></th></tr></thead>
+					<tbody></tbody>
+				</table>
+				<form id="dhcp-static-form">
+					<label>
+						MAC
+						<input type="text" id="dhcp-s-mac" placeholder="aa:bb:cc:dd:ee:01">
+					</label>
+					<label>
+						IP
+						<input type="text" id="dhcp-s-ip" placeholder="172.30.7.50">
+					</label>
+					<label>
+						Hostname (optional)
+						<input type="text" id="dhcp-s-hostname" placeholder="printer">
+					</label>
+					<button type="submit">Reserve</button>
+				</form>
+			</div>
+			<div class="tab-panel" data-tab="dhcp-leases" hidden>
+				<p class="hint">
+					Read from each serving container's own lease file, every time. A lease is not a
+					DNS record &mdash; records are durable operator intent, a lease is the server's
+					own short-lived state &mdash; but it resolves anyway, because the same dnsmasq
+					issues it and answers for it.
+				</p>
+				<table id="dhcp-leases-table">
+					<thead><tr><th>MAC</th><th>IP</th><th>Hostname</th><th>Expires</th><th>Server</th></tr></thead>
+					<tbody></tbody>
+				</table>
+			</div>
+		</section>
+
 		<section class="view" id="view-ntp-config" hidden>
 			<h2>NTP</h2>
 			<div class="tab-bar">
@@ -2794,6 +2874,24 @@
 						<input type="text" id="df-ip" placeholder="172.31.0.5" required>
 					</label>
 					<button type="submit" id="df-submit">Create</button>
+				</form>
+			</div>
+
+			<div id="modal-dhcp-static-modal-form" hidden>
+				<form id="dhcp-static-modal-form">
+					<label>
+						MAC
+						<input type="text" id="dsm-mac" placeholder="aa:bb:cc:dd:ee:01" required>
+					</label>
+					<label>
+						IP
+						<input type="text" id="dsm-ip" placeholder="172.30.7.50" required>
+					</label>
+					<label>
+						Hostname (optional)
+						<input type="text" id="dsm-hostname" placeholder="printer">
+					</label>
+					<button type="submit">Reserve</button>
 				</form>
 			</div>
 

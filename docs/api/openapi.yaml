@@ -4352,10 +4352,20 @@ paths:
       description: >
         Partial update -- absent fields keep what is configured now.
 
-        `server` must name a container that is **already a registered
-        DNS server**. DHCP is served by the same dnsmasq that serves
-        DNS, so a lease is resolvable the moment it is issued; requiring
-        it makes that structural rather than something to keep in sync.
+        Served by **every registered DNS server**, with the range split
+        into one disjoint slice each. dnsmasq implements no failover
+        protocol and the servers share no lease database, so disjoint
+        pools are the only thing preventing two of them handing one
+        address to two machines -- which is what makes them redundant
+        rather than merely plural. Either server alone keeps serving,
+        from its own slice. The split is computed here, never
+        configured: it has exactly one correct answer given the range
+        and the number of servers.
+
+        Refused with no DNS server registered at all (nothing would
+        answer), and refused when the range holds fewer addresses than
+        there are servers -- rounding a server's slice down to nothing
+        would quietly make it not a server.
 
         Everything that could not actually serve is refused here rather
         than discovered by a client that never got an address: a range
@@ -4395,9 +4405,6 @@ paths:
                 router:
                   type: string
                   description: Default route to advertise (DHCP option 3). Omit to advertise none.
-                server:
-                  type: string
-                  description: A container already registered via POST /dns/servers.
       responses:
         "200":
           description: Saved and rendered to the serving container
@@ -10486,10 +10493,20 @@ components:
         router:
           type: string
           nullable: true
-        server:
-          type: string
-          nullable: true
-          description: The registered DNS server that also serves DHCP here.
+        slices:
+          type: array
+          description: >
+            Which registered server holds which part of the range.
+            Computed, never stored, and present only on the API view.
+          items:
+            type: object
+            properties:
+              server:
+                type: string
+              range_start:
+                type: string
+              range_end:
+                type: string
     Dhcp:
       type: object
       properties:

@@ -154,14 +154,12 @@ int main(void)
 	 * that never got an address. */
 	expect(&client, "PUT", "/v1/networks/dhcplab/dhcp",
 	        "{\"enabled\":true,\"range_start\":\"172.30.7.100\",\"range_end\":\"172.30.7.200\"}",
-	        400, "enabling with no server");
+	        400, "enabling with no DNS server registered anywhere");
 	expect(&client, "PUT", "/v1/networks/dhcplab/dhcp",
-	        "{\"enabled\":true,\"range_start\":\"10.0.0.1\",\"range_end\":\"10.0.0.9\","
-	        "\"server\":\"dhcpsrv\"}",
+	        "{\"enabled\":true,\"range_start\":\"10.0.0.1\",\"range_end\":\"10.0.0.9\"}",
 	        400, "a range outside the network's own subnet");
 	expect(&client, "PUT", "/v1/networks/dhcplab/dhcp",
-	        "{\"enabled\":true,\"range_start\":\"172.30.7.200\",\"range_end\":\"172.30.7.100\","
-	        "\"server\":\"dhcpsrv\"}",
+	        "{\"enabled\":true,\"range_start\":\"172.30.7.200\",\"range_end\":\"172.30.7.100\"}",
 	        400, "a range that runs backwards");
 
 	/* 3. Static reservations: shape enforced, and neither a MAC nor an
@@ -184,24 +182,86 @@ int main(void)
 	        "{\"mac\":\"aa:bb:cc:dd:ee:04\",\"ip\":\"172.30.7.54\",\"hostname\":\"bad name\"}", 400,
 	        "a hostname with a space");
 
-	/* 4. A container that is not a registered DNS server cannot be the
-	 * DHCP server -- that pairing is what makes a lease resolvable. */
+	/*
+	 * 4. Two registered servers, and the range is split between them.
+	 * dnsmasq has no failover protocol and the two share no lease
+	 * database, so disjoint pools are the only thing stopping them
+	 * handing one address to two machines -- which makes the split the
+	 * property worth asserting, not the fact that a file was written.
+	 */
 	expect(&client, "POST", "/v1/containers",
 	        "{\"name\":\"dhcpsrv\",\"image\":\"dhcptest\","
-	        "\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"],\"networks\":[\"dhcplab\"]}",
-	        201, "create the serving container");
-	expect(&client, "PUT", "/v1/networks/dhcplab/dhcp",
-	        "{\"enabled\":true,\"range_start\":\"172.30.7.100\",\"range_end\":\"172.30.7.200\","
-	        "\"server\":\"dhcpsrv\"}",
-	        400, "a server that is running but is not a DNS server");
-
+	        "\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"],\"networks\":[\"dhcplab\"],"
+	        "\"restart\":\"always\"}",
+	        201, "create the first serving container");
+	expect(&client, "POST", "/v1/containers",
+	        "{\"name\":\"dhcpsrv2\",\"image\":\"dhcptest\","
+	        "\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"],\"networks\":[\"dhcplab\"],"
+	        "\"restart\":\"always\"}",
+	        201, "create the second serving container");
 	expect(&client, "POST", "/v1/dns/servers",
 	        "{\"container\":\"dhcpsrv\",\"hosts_path\":\"/etc/dnsmasq-hosts\"}", 201,
-	        "register it as a DNS server");
+	        "register the first as a DNS server");
+	expect(&client, "POST", "/v1/dns/servers",
+	        "{\"container\":\"dhcpsrv2\",\"hosts_path\":\"/etc/dnsmasq-hosts\"}", 201,
+	        "register the second as a DNS server");
+
+	/* A range with fewer addresses than servers cannot be split, and
+	 * rounding one server down to nothing would quietly make it not a
+	 * server at all. */
+	expect(&client, "PUT", "/v1/networks/dhcplab/dhcp",
+	        "{\"enabled\":true,\"range_start\":\"172.30.7.100\",\"range_end\":\"172.30.7.100\"}",
+	        400, "one address between two servers");
+
 	expect(&client, "PUT", "/v1/networks/dhcplab/dhcp",
 	        "{\"enabled\":true,\"range_start\":\"172.30.7.100\",\"range_end\":\"172.30.7.200\","
-	        "\"server\":\"dhcpsrv\",\"router\":\"172.30.7.1\"}",
-	        200, "enabling DHCP with a registered server");
+	        "\"router\":\"172.30.7.1\"}",
+	        200, "enabling DHCP across both servers");
+
+	/* The two slices are reported, adjacent, and cover the whole range
+	 * with nothing shared: 101 addresses over two servers is 51 + 50. */
+	memset(&r, 0, sizeof(r));
+	if (thinc_client_request(&client, "GET", "/v1/networks/dhcplab/dhcp", NULL, &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: GET the split, status=%d\n", r.status);
+		ok = 0;
+	} else {
+		const struct json_value *slices = json_object_get(r.json, "slices");
+
+		if (slices == NULL || slices->type != JSON_ARRAY || slices->u.array.count != 2) {
+			fprintf(stderr, "FAIL: two servers did not produce two slices\n");
+			ok = 0;
+		} else {
+			const struct json_value *a = slices->u.array.items[0];
+			const struct json_value *b = slices->u.array.items[1];
+
+			if (strcmp(json_str_field(a, "range_start"), "172.30.7.100") != 0 ||
+			    strcmp(json_str_field(a, "range_end"), "172.30.7.150") != 0 ||
+			    strcmp(json_str_field(b, "range_start"), "172.30.7.151") != 0 ||
+			    strcmp(json_str_field(b, "range_end"), "172.30.7.200") != 0) {
+				fprintf(stderr, "FAIL: the slices are not disjoint and adjacent: %s-%s / %s-%s\n",
+				        json_str_field(a, "range_start"), json_str_field(a, "range_end"),
+				        json_str_field(b, "range_start"), json_str_field(b, "range_end"));
+				ok = 0;
+			}
+		}
+	}
+	thinc_response_free(&r);
+
+	/* And each server's own rendered conf carries only its own slice --
+	 * the split is real in the file dnsmasq reads, not just in the
+	 * answer we give about it. */
+	memset(&r, 0, sizeof(r));
+	if (thinc_client_request(&client, "GET",
+	                       "/v1/containers/dhcpsrv2/files?path=/etc/dnsmasq-dhcp.conf", NULL,
+	                       &r) != 0 ||
+	    r.status != 200 || r.body == NULL ||
+	    strstr(r.body, "dhcp-range=172.30.7.151,172.30.7.200,3600s") == NULL ||
+	    strstr(r.body, "172.30.7.100,") != NULL) {
+		fprintf(stderr, "FAIL: the second server's conf does not carry only its own slice\n");
+		ok = 0;
+	}
+	thinc_response_free(&r);
 
 	/* 5. The payoff: the rendered files are really inside the serving
 	 * container, read back rather than assumed from a successful write. */
@@ -210,7 +270,7 @@ int main(void)
 	                       "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf", NULL,
 	                       &r) != 0 ||
 	    r.status != 200 || r.body == NULL ||
-	    strstr(r.body, "dhcp-range=172.30.7.100,172.30.7.200,3600s") == NULL ||
+	    strstr(r.body, "dhcp-range=172.30.7.100,172.30.7.150,3600s") == NULL ||
 	    strstr(r.body, "dhcp-option=3,172.30.7.1") == NULL) {
 		fprintf(stderr, "FAIL: the rendered dhcp conf did not reach the server (status=%d)\n",
 		        r.status);
@@ -260,7 +320,8 @@ int main(void)
 	/* 8. Deleting the network takes its DHCP config with it: a range
 	 * for a network that no longer exists is one nothing can serve. */
 	expect(&client, "DELETE", "/v1/networks/dhcplab/dhcp", NULL, 204, "disable DHCP");
-	expect(&client, "DELETE", "/v1/containers/dhcpsrv", NULL, 204, "remove the container");
+	expect(&client, "DELETE", "/v1/containers/dhcpsrv", NULL, 204, "remove the first container");
+	expect(&client, "DELETE", "/v1/containers/dhcpsrv2", NULL, 204, "remove the second container");
 	/*
 	 * The bridge is real kernel state that outlives this daemon, so
 	 * leaving it behind would make the NEXT run of this test fail at
@@ -269,17 +330,21 @@ int main(void)
 	 * network's attachment for a moment after DELETE returns.
 	 */
 	{
+		const char *gone[] = { "/v1/containers/dhcpsrv", "/v1/containers/dhcpsrv2" };
+		size_t g;
 		int i;
 
-		for (i = 0; i < 50; i++) {
-			memset(&r, 0, sizeof(r));
-			if (thinc_client_request(&client, "GET", "/v1/containers/dhcpsrv", NULL, &r) == 0 &&
-			    r.status == 404) {
+		for (g = 0; g < sizeof(gone) / sizeof(gone[0]); g++) {
+			for (i = 0; i < 50; i++) {
+				memset(&r, 0, sizeof(r));
+				if (thinc_client_request(&client, "GET", gone[g], NULL, &r) == 0 &&
+				    r.status == 404) {
+					thinc_response_free(&r);
+					break;
+				}
 				thinc_response_free(&r);
-				break;
+				usleep(100 * 1000);
 			}
-			thinc_response_free(&r);
-			usleep(100 * 1000);
 		}
 	}
 	expect(&client, "DELETE", "/v1/networks/dhcplab", NULL, 204, "remove the lab network");

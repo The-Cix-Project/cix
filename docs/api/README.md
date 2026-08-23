@@ -1767,13 +1767,25 @@ Validation refuses rather than escapes. A console is a bare tty name with option
 GET    /v1/networks/lab/dhcp
 PUT    /v1/networks/lab/dhcp   {"enabled": true, "range_start": "172.30.7.100",
                                 "range_end": "172.30.7.200", "lease_seconds": 3600,
-                                "router": "172.30.7.1", "server": "dns-1"}
+                                "router": "172.30.7.1"}
 POST   /v1/dhcp/static         {"mac": "aa:bb:cc:dd:ee:01", "ip": "172.30.7.50", "hostname": "printer"}
 DELETE /v1/dhcp/static/aa:bb:cc:dd:ee:01
 GET    /v1/dhcp/leases
 ```
 
-**`server` must already be a registered DNS server**, and that is the design rather than a restriction. dnsmasq resolves the names of clients it has itself leased addresses to, so when the instance handing out the address is the instance answering for the name, a lease is resolvable the moment it exists — no synchronisation between two systems, and no window where they disagree. Naming a container that is running but not registered is a `400` that says so.
+**Every registered DNS server serves DHCP**, and that pairing is the design rather than a convenience. dnsmasq resolves the names of clients it has itself leased addresses to, so when the instance handing out the address is the instance answering for the name, a lease is resolvable the moment it exists — no synchronisation between two systems, and no window where they disagree.
+
+**Redundancy is split scope, because with dnsmasq it has to be.** dnsmasq implements no failover protocol — there is no equivalent of ISC dhcpd's primary/backup peer relationship for it to join, so two instances share no lease database and cannot coordinate. The standard technique in its absence is to give each server a disjoint slice of one range: both answer, a client takes whichever offer reaches it first, and handing one address to two machines is impossible because no two servers hold it. Either server alone keeps serving, from its own slice. The response reports the split:
+
+```json
+{"network": "lab", "enabled": true, "range_start": "172.30.7.100", "range_end": "172.30.7.200",
+ "slices": [{"server": "dns-1", "range_start": "172.30.7.100", "range_end": "172.30.7.150"},
+            {"server": "dns-2", "range_start": "172.30.7.151", "range_end": "172.30.7.200"}]}
+```
+
+The split is computed, never configured: given a range and a number of servers it has exactly one correct answer, and asking an operator to maintain it in two places would be asking them to keep two copies of one fact in step. Adding or removing a DNS server re-splits and restarts, since every other server's slice changes too.
+
+If you need true primary/backup with a failover protocol — a hot standby that takes over the *whole* pool and knows what its peer has leased — that needs a DHCP server that implements one (ISC Kea or dhcpd), which is a package this platform does not have.
 
 **A lease is not a DNS record.** A record is durable operator intent — persisted, surviving every server, listed at `/v1/dns/records`. A lease is short-lived state owned by the server that issued it. Mirroring leases into the record store would put two writers in one namespace and leave a record pointing at an address another machine now holds the first time a lease expired uncleanly. `GET /v1/dhcp/leases` reads them back from the server's own lease file, every time:
 
@@ -1800,7 +1812,7 @@ Add them to the `dnsmasq` command in the [DNS server setup](#dns) above, create 
 
 > **Enabling DHCP on a network that reaches a real LAN will answer requests from machines that are not this platform's.** A home or office LAN almost certainly already has a DHCP server, and a second one is not a redundant pair — it is two servers with separate lease databases handing out overlapping addresses. Nothing here prevents it, because nothing here can tell a lab bridge from an uplinked one. Use an isolated network unless you own the LAN's addressing.
 
-**One server per network.** Registering two DNS servers and enabling DHCP on both would give two independent lease databases over one range, so the config names a single server. DHCP redundancy specifically is not something this provides.
+Enabling is refused when no DNS server is registered at all (nothing would answer) and when the range holds fewer addresses than there are servers — rounding a server's slice down to nothing would quietly make it not a server.
 
 `thincctl dhcp show|leases|enable|disable|static add|static rm` is the CLI surface; the dashboard has DHCP on each network's own page.
 

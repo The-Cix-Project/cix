@@ -19375,24 +19375,6 @@ static int dhcp_ip_in_range(uint32_t ip_be, uint32_t start_be, uint32_t end_be)
 	return ip >= ntohl(start_be) && ip <= ntohl(end_be);
 }
 
-/* Whether this container is one the DNS subsystem already knows as a
- * server. Asked through the enumerator dns.c already exposes, rather
- * than a second lookup of its own table. */
-static int dhcp_server_is_dns_server(const char *name)
-{
-	char names[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
-	int count;
-	int i;
-
-	if (name == NULL || name[0] == '\0')
-		return 0;
-	count = dns_server_list_containers(names, DNS_SERVER_MAX);
-	for (i = 0; i < count; i++)
-		if (strcmp(names[i], name) == 0)
-			return 1;
-	return 0;
-}
-
 static void arm_rolling_restart_timer(const char *name, int delay_seconds);
 static int rolling_jitter_seconds(int window);
 
@@ -19424,6 +19406,18 @@ static void dhcp_apply_and_maybe_restart(void)
 
 		if (e == NULL || !e->running)
 			continue;
+		/*
+		 * Restarted whatever its restart policy says. ADR-0181's rule
+		 * -- restart:"no" is never auto-recreated -- is about
+		 * recreation nobody asked for, a rolling image update
+		 * happening on its own schedule. This restart is the direct,
+		 * immediate consequence of an operator changing a setting on
+		 * this very container, and declining to carry it out would
+		 * leave them with a range that reports itself in force and is
+		 * not. Checked rather than assumed: a container has a
+		 * persisted definition regardless of its restart policy, so
+		 * the timer really does replay it.
+		 */
 		arm_rolling_restart_timer(names[i], rolling_jitter_seconds(DHCP_RESTART_JITTER_SECONDS));
 	}
 	logstore_write("thincd", "info",
@@ -19554,7 +19548,7 @@ static void handle_network_dhcp_get(int fd, const char *network)
 		cfg = &empty;
 	}
 	jw_init(&w);
-	dhcp_network_write_json(cfg, &w);
+	dhcp_network_write_json(cfg, 1, &w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
@@ -19604,9 +19598,6 @@ static void handle_network_dhcp_put(int fd, const char *network, const char *bod
 		cfg.router_be = addr.s_addr;
 	if (json_object_get(root, "lease_seconds") != NULL)
 		cfg.lease_seconds = (int)json_as_number(json_object_get(root, "lease_seconds"));
-	s = json_as_string(json_object_get(root, "server"));
-	if (s != NULL)
-		snprintf(cfg.server, sizeof(cfg.server), "%s", s);
 	json_free(root);
 
 	if (cfg.enabled) {
@@ -19632,20 +19623,40 @@ static void handle_network_dhcp_put(int fd, const char *network, const char *bod
 			return;
 		}
 		/*
-		 * The server must already be a REGISTERED DNS SERVER. That is
-		 * what makes a lease resolvable the moment it is issued: the
-		 * instance handing out the address is the one answering for
-		 * the name. Anything else would need glue between two daemons
-		 * and a window where the two disagree.
+		 * DHCP is served by EVERY registered DNS server, so there has
+		 * to be at least one -- otherwise this stores a range nothing
+		 * will ever answer for.
 		 */
-		if (!dhcp_server_is_dns_server(cfg.server)) {
-			snprintf(errbuf, sizeof(errbuf),
-			         "server \"%s\" is not a registered DNS server -- DHCP is served by the "
-			         "same dnsmasq that serves DNS, so a lease resolves the moment it is "
-			         "issued; register it with POST /v1/dns/servers first",
-			         cfg.server);
-			respond_error(fd, 400, "Bad Request", errbuf);
-			return;
+		{
+			char names[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
+			int servers = dns_server_list_containers(names, DNS_SERVER_MAX);
+			uint32_t first = ntohl(cfg.range_start_be);
+			uint32_t last = ntohl(cfg.range_end_be);
+
+			if (servers == 0) {
+				respond_error(fd, 400, "Bad Request",
+				               "no DNS server is registered -- DHCP is served by the same "
+				               "dnsmasq that serves DNS, so a lease resolves the moment it is "
+				               "issued; register one with POST /v1/dns/servers first");
+				return;
+			}
+			/*
+			 * The range is split into one disjoint slice per server
+			 * (dnsmasq has no failover protocol, so disjoint pools are
+			 * what makes two servers safe). A range with fewer
+			 * addresses than servers cannot be split, and rounding one
+			 * server down to nothing would silently make it not a
+			 * server at all.
+			 */
+			if (last - first + 1 < (uint32_t)servers) {
+				snprintf(errbuf, sizeof(errbuf),
+				         "the range holds %u address(es) but there are %d DNS servers to split "
+				         "it between -- each needs at least one, since they have no shared "
+				         "lease database and only disjoint pools keep them from colliding",
+				         last - first + 1, servers);
+				respond_error(fd, 400, "Bad Request", errbuf);
+				return;
+			}
 		}
 	}
 
@@ -19666,7 +19677,7 @@ static void handle_network_dhcp_put(int fd, const char *network, const char *bod
 	}
 	dhcp_apply_and_maybe_restart();
 	jw_init(&w);
-	dhcp_network_write_json(dhcp_network_find(network), &w);
+	dhcp_network_write_json(dhcp_network_find(network), 1, &w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
