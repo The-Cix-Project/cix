@@ -3427,6 +3427,191 @@ async function removeNetwork(name) {
 	}
 }
 
+/* ---------- DHCP (ADR-0197) ---------- */
+
+let dhcpDirty = false;
+let dhcpNetworkName = null;
+
+function renderDhcpTables(all, leases) {
+	const staticBody = document.querySelector("#nd-dhcp-static tbody");
+	const leaseBody = document.querySelector("#nd-dhcp-leases tbody");
+
+	staticBody.textContent = "";
+	const entries = (all && all.static) || [];
+
+	if (entries.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 4;
+		cell.className = "empty";
+		cell.textContent = "No reservations — every client gets an address from the range";
+		row.appendChild(cell);
+		staticBody.appendChild(row);
+	} else {
+		for (const e of entries) {
+			const row = document.createElement("tr");
+			const actions = document.createElement("td");
+			const del = document.createElement("button");
+
+			for (const text of [e.mac, e.ip, e.hostname === null ? "-" : e.hostname]) {
+				const td = document.createElement("td");
+
+				td.textContent = text;
+				row.appendChild(td);
+			}
+			del.type = "button";
+			del.className = "button-small";
+			del.textContent = "Remove";
+			del.addEventListener("click", async () => {
+				try {
+					await apiRequest("DELETE", "/v1/dhcp/static/" + encodeURIComponent(e.mac));
+					showStatus("Reservation removed.", false);
+					refreshNetworkDhcp(dhcpNetworkName);
+				} catch (err) {
+					showStatus("Failed to remove: " + err.message, true);
+				}
+			});
+			actions.appendChild(del);
+			row.appendChild(actions);
+			staticBody.appendChild(row);
+		}
+	}
+
+	leaseBody.textContent = "";
+	const rows = (leases && leases.leases) || [];
+
+	if (rows.length === 0) {
+		const row = document.createElement("tr");
+		const cell = document.createElement("td");
+
+		cell.colSpan = 4;
+		cell.className = "empty";
+		cell.textContent = "No leases — nothing has asked for an address yet";
+		row.appendChild(cell);
+		leaseBody.appendChild(row);
+		return;
+	}
+	for (const l of rows) {
+		const row = document.createElement("tr");
+
+		for (const text of [l.mac, l.ip, l.hostname === null ? "-" : l.hostname,
+		                     new Date(l.expires_at * 1000).toLocaleString()]) {
+			const td = document.createElement("td");
+
+			td.textContent = text;
+			row.appendChild(td);
+		}
+		leaseBody.appendChild(row);
+	}
+}
+
+async function refreshNetworkDhcp(name) {
+	if (name === null || name === undefined)
+		return;
+	dhcpNetworkName = name;
+	try {
+		const [cfg, all, leases] = await Promise.all([
+			apiRequest("GET", "/v1/networks/" + encodeURIComponent(name) + "/dhcp"),
+			apiRequest("GET", "/v1/dhcp"),
+			apiRequest("GET", "/v1/dhcp/leases"),
+		]);
+		const select = document.getElementById("nd-dhcp-server");
+
+		if (!dhcpDirty) {
+			document.getElementById("nd-dhcp-enabled").checked = !!cfg.enabled;
+			document.getElementById("nd-dhcp-start").value = cfg.range_start || "";
+			document.getElementById("nd-dhcp-end").value = cfg.range_end || "";
+			document.getElementById("nd-dhcp-lease").value = cfg.lease_seconds;
+			document.getElementById("nd-dhcp-router").value = cfg.router || "";
+			/*
+			 * Only registered DNS servers, because only they can serve
+			 * DHCP here. Offering anything else would offer a choice
+			 * the daemon then refuses.
+			 */
+			select.textContent = "";
+			for (const srv of cache.dnsServers || []) {
+				const opt = document.createElement("option");
+
+				opt.value = srv.container;
+				opt.textContent = srv.container;
+				select.appendChild(opt);
+			}
+			if (select.options.length === 0) {
+				const opt = document.createElement("option");
+
+				opt.value = "";
+				opt.textContent = "(no DNS server registered yet)";
+				select.appendChild(opt);
+			}
+			if (cfg.server !== null)
+				select.value = cfg.server;
+		}
+		renderDhcpTables(all, leases);
+	} catch (e) {
+		/* Best-effort, same as every other panel here. */
+	}
+}
+
+for (const id of ["nd-dhcp-enabled", "nd-dhcp-start", "nd-dhcp-end", "nd-dhcp-lease",
+                   "nd-dhcp-router", "nd-dhcp-server"]) {
+	document.getElementById(id).addEventListener("input", () => {
+		dhcpDirty = true;
+	});
+}
+
+document.getElementById("nd-dhcp-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+	if (dhcpNetworkName === null)
+		return;
+	const router = document.getElementById("nd-dhcp-router").value.trim();
+	const body = {
+		enabled: document.getElementById("nd-dhcp-enabled").checked,
+		range_start: document.getElementById("nd-dhcp-start").value.trim(),
+		range_end: document.getElementById("nd-dhcp-end").value.trim(),
+		lease_seconds: parseInt(document.getElementById("nd-dhcp-lease").value, 10),
+		server: document.getElementById("nd-dhcp-server").value,
+	};
+
+	if (router !== "")
+		body.router = router;
+	try {
+		await apiRequest("PUT", "/v1/networks/" + encodeURIComponent(dhcpNetworkName) + "/dhcp",
+		                  body);
+		dhcpDirty = false;
+		/* Said every time, not only when a range actually changed: the
+		 * daemon decides that, and promising "no restart" from here
+		 * would be this page guessing at it. */
+		showStatus("DHCP saved — if the range changed, the serving container is being restarted.",
+		           false);
+		refreshNetworkDhcp(dhcpNetworkName);
+	} catch (e) {
+		showStatus("Failed to save DHCP: " + e.message, true);
+	}
+});
+
+document.getElementById("nd-dhcp-static-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+	const hostname = document.getElementById("nd-dhcp-hostname").value.trim();
+	const body = {
+		mac: document.getElementById("nd-dhcp-mac").value.trim(),
+		ip: document.getElementById("nd-dhcp-ip").value.trim(),
+	};
+
+	if (hostname !== "")
+		body.hostname = hostname;
+	try {
+		await apiRequest("POST", "/v1/dhcp/static", body);
+		showStatus("Reserved.", false);
+		document.getElementById("nd-dhcp-mac").value = "";
+		document.getElementById("nd-dhcp-ip").value = "";
+		document.getElementById("nd-dhcp-hostname").value = "";
+		refreshNetworkDhcp(dhcpNetworkName);
+	} catch (e) {
+		showStatus("Failed to reserve: " + e.message, true);
+	}
+});
+
 /*
  * ---------- Issue #26: per-network switch panel ----------
  *
@@ -3672,6 +3857,7 @@ function renderNetworkDetail(name) {
 
 	title.textContent = n.name;
 	startNetPortsPolling(n.name);
+	refreshNetworkDhcp(n.name);
 	fields.textContent = "";
 	fields.appendChild(fieldBlock("Subnet", n.subnet));
 	fields.appendChild(fieldBlock("Prefix length", String(n.prefix_len)));

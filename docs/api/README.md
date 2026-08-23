@@ -165,6 +165,13 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | DELETE | `/networks/{name}` | Remove a network (refused if any container is still attached, or if it's the management network) |
 | POST | `/networks/{name}/interfaces` | Attach a real host network interface to this network's bridge |
 | DELETE | `/networks/{name}/interfaces/{ifname}` | Detach a previously-attached interface (refused for the management network) |
+| GET | `/networks/{name}/dhcp` | This network's DHCP configuration (ADR-0197) |
+| PUT | `/networks/{name}/dhcp` | Enable/disable DHCP here, with its range, lease time and serving container |
+| DELETE | `/networks/{name}/dhcp` | Remove this network's DHCP configuration |
+| GET | `/dhcp` | Every DHCP-configured network and every static reservation |
+| GET | `/dhcp/leases` | Current leases, read from the serving container's own lease file |
+| POST | `/dhcp/static` | Reserve an address for a MAC (live -- no restart) |
+| DELETE | `/dhcp/static/{mac}` | Remove a reservation |
 | GET | `/networks/{name}/ports` | What is plugged into this network's bridge right now, per port, with each port's own counters (issue #26) |
 | GET | `/images` | List every image this daemon knows about |
 | POST | `/images` | Create an empty image (runtime pre-seeded, ready for `pkg install`) |
@@ -1753,6 +1760,49 @@ Validation refuses rather than escapes. A console is a bare tty name with option
 
 `thincctl boot-console show|set --console=… --extra="…"` is the CLI surface; the dashboard has a **Boot Console** tab under System > Host.
 
+
+## DHCP, served by the DNS server (ADR-0197)
+
+```
+GET    /v1/networks/lab/dhcp
+PUT    /v1/networks/lab/dhcp   {"enabled": true, "range_start": "172.30.7.100",
+                                "range_end": "172.30.7.200", "lease_seconds": 3600,
+                                "router": "172.30.7.1", "server": "dns-1"}
+POST   /v1/dhcp/static         {"mac": "aa:bb:cc:dd:ee:01", "ip": "172.30.7.50", "hostname": "printer"}
+DELETE /v1/dhcp/static/aa:bb:cc:dd:ee:01
+GET    /v1/dhcp/leases
+```
+
+**`server` must already be a registered DNS server**, and that is the design rather than a restriction. dnsmasq resolves the names of clients it has itself leased addresses to, so when the instance handing out the address is the instance answering for the name, a lease is resolvable the moment it exists — no synchronisation between two systems, and no window where they disagree. Naming a container that is running but not registered is a `400` that says so.
+
+**A lease is not a DNS record.** A record is durable operator intent — persisted, surviving every server, listed at `/v1/dns/records`. A lease is short-lived state owned by the server that issued it. Mirroring leases into the record store would put two writers in one namespace and leave a record pointing at an address another machine now holds the first time a lease expired uncleanly. `GET /v1/dhcp/leases` reads them back from the server's own lease file, every time:
+
+```json
+{"leases": [{"server": "dns-1", "mac": "aa:bb:cc:dd:ee:01", "ip": "172.30.7.101",
+             "hostname": "laptop", "expires_at": 1787500000}]}
+```
+
+**Static reservations are live; range changes are not.** dnsmasq re-reads the reservations file on `SIGHUP`, so `POST /v1/dhcp/static` takes effect immediately, exactly like a DNS record. It reads ranges only at startup — so **changing a range restarts the serving containers**, through the same jittered rolling-restart timer a rolling image update uses. Rendering a range without restarting would leave a setting that reports itself in force and is not.
+
+Everything that could not actually serve is refused at the point of asking rather than discovered by a client that never got an address: a range outside the network's own subnet, a range covering the network's own address (a conflict, not a lease), a range that runs backwards, a lease time outside 60s–30d, enabling with no addresses. Two reservations for one address is a `409` — that is a conflict waiting for both machines to be powered on at once. MACs and hostnames are refused, never sanitised: both go into a file dnsmasq parses, and a hostname becomes a name it answers for.
+
+### Setting up the serving container
+
+DHCP is rendered into three well-known paths, so the dnsmasq container must be started against them, with the first two staged (even empty) at creation — dnsmasq refuses to start on a `--conf-file` that does not exist:
+
+```
+--conf-file=/etc/dnsmasq-dhcp.conf
+--dhcp-hostsfile=/etc/dnsmasq-dhcp-hosts
+--dhcp-leasefile=/run/dnsmasq.leases
+```
+
+Add them to the `dnsmasq` command in the [DNS server setup](#dns) above, create the container with `files[]` entries for the two config paths, then register it with `POST /v1/dns/servers` as usual. One container serves both.
+
+> **Enabling DHCP on a network that reaches a real LAN will answer requests from machines that are not this platform's.** A home or office LAN almost certainly already has a DHCP server, and a second one is not a redundant pair — it is two servers with separate lease databases handing out overlapping addresses. Nothing here prevents it, because nothing here can tell a lab bridge from an uplinked one. Use an isolated network unless you own the LAN's addressing.
+
+**One server per network.** Registering two DNS servers and enabling DHCP on both would give two independent lease databases over one range, so the config names a single server. DHCP redundancy specifically is not something this provides.
+
+`thincctl dhcp show|leases|enable|disable|static add|static rm` is the CLI surface; the dashboard has DHCP on each network's own page.
 
 ## Compressed swap cache: zswap (issue #51)
 

@@ -87,6 +87,12 @@ thincctl [--host=ADDR] [--port=N] [--json] <command> [args...]
 | `swap` | Whether the host swap file is enabled (ADR-0069) and which disk (if any) it's placed on |
 | `swap enable --size-mb=N [--disk=NAME]` | Create and activate a swap file of this size; `--disk=` places it on a disk carrying the `swap` role (issue #28) instead of the default OS-disk location |
 | `swap disable` | Deactivate and remove it |
+| `dhcp show` | Every DHCP-configured network and every static reservation (ADR-0197) |
+| `dhcp leases` | Current leases, read from the serving container's own lease file. A lease is not a DNS record -- it resolves anyway, because the same dnsmasq issues it and answers for it |
+| `dhcp enable --network=NAME --range=START-END --server=CONTAINER [--lease-seconds=N] [--router=IP]` | Enable DHCP on a network. `--server=` must already be a registered DNS server. **Changes to a range restart the serving containers**, since dnsmasq reads ranges only at startup |
+| `dhcp disable --network=NAME` | Turn it off |
+| `dhcp static add --mac=M --ip=IP [--hostname=NAME]` | Reserve an address for a MAC. Live -- no restart |
+| `dhcp static rm MAC` | Remove a reservation |
 | `zswap show` | The compressed swap cache (issue #51): configured intent, what the kernel actually reports, and the compressors this kernel was built with. A disagreement between the first two means the setting did not take |
 | `zswap set [--enable \| --disable] [--max-pool-percent=N] [--compressor=NAME]` | Configure it. On by default -- it costs nothing until the box is actually swapping |
 | `logs [--source=kernel\|thincd\|audit\|container] [--level=...] [--container=NAME] [--regex=PATTERN] [--tail=N] [--since=UNIXTS]` | The consolidated log — kernel dmesg, thincd diagnostics, a per-request audit trail, and every container's own stdout/stderr, transparently (ADR-0070, ADR-0126) — `--container=` filters to one container's own lines, `--regex=` is a POSIX extended regex (case-insensitive) matched against the message text |
