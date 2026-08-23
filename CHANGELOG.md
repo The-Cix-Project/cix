@@ -11,6 +11,14 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 - **On by default**, unlike the swap file, which is opt-in because it consumes real disk. zswap consumes nothing until the box is already swapping, and at that point there is no reading of "off by default" that helps.
 - Application order is load-bearing: pool percentage and compressor are written **before** the enable flag, because zswap allocates its pool when first enabled and a compressor set afterwards applies only to pages compressed from then on.
 - **A new confirmed dev-sandbox limitation**: an LXC mounts `/sys` read-only, so writing a kernel module parameter fails regardless of privilege — verified as real root (`Read-only file system`). The apply path is verified on the real host; what the sandbox proves is the *reporting*, which correctly shows configured `enabled` against kernel `disabled`. The test asserts only what holds everywhere rather than pretending otherwise.
+- **Measured on the real box rather than assumed**, which is what the issue asked for. A fixed, memcg-contained workload (a container capped at 128 MiB building a 400 MB anonymous buffer, so 400-700 MiB must leave RAM), two runs each way:
+
+  | | wall | `vda` io_time | sectors written |
+  |---|---|---|---|
+  | zswap off | 75.2s / 73.1s | 52,796 ms / 52,132 ms | 4,197 MiB / 4,197 MiB |
+  | zswap on | 24.3s / 24.3s | 88 ms / 24 ms | 0.3 MiB / 0.2 MiB |
+
+  Real disk writes went from 4.2 GiB to a quarter of a megabyte, and the workload finished three times faster. **The magnitude is best case, not typical** — the buffer is one repeated byte, which compresses about as well as anything can; what this establishes is the mechanism and its direction under genuine pressure. Pressure was contained inside one cgroup on purpose: driving a box running nine real containers host-wide is the incident this exists to mitigate, not a test to run deliberately.
 - `thincctl zswap show|set`, a zswap section under System > Host > Swap, and openapi/README/cli-reference.
 
 **#52 done: a per-container swap limit** ([ADR-0195](docs/adr/0195-per-container-swap-limit.md)). A container's `memory.max` caps what it may hold; it says nothing about what happens next. Under pressure that memory goes to swap, a host-wide resource with no per-container accounting at all — one container could take the whole 8 GiB swapfile with its own memory limit perfectly respected throughout.
