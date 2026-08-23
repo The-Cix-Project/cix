@@ -45,14 +45,14 @@ static const char *json_str_field(const struct json_value *obj, const char *key)
 	return json_as_string(json_object_get(obj, key));
 }
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -95,24 +95,24 @@ static int stop_daemon(pid_t pid)
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
-/* kx_client_request() has no built-in header-injection support beyond
+/* thinc_client_request() has no built-in header-injection support beyond
  * what httpclient.h exposes -- check for an authenticated-request
  * helper; if none exists, requests needing Authorization go through
- * kx_client_request_with_header() below (added here, matching this
+ * thinc_client_request_with_header() below (added here, matching this
  * test's own real need rather than growing the shared client for a
  * single caller). */
-static int request_with_token(const struct kx_client *c, const char *method, const char *path,
-                               const char *token, const char *body, struct kx_response *r)
+static int request_with_token(const struct thinc_client *c, const char *method, const char *path,
+                               const char *token, const char *body, struct thinc_response *r)
 {
-	return kx_client_request_with_auth(c, method, path, token, body, r);
+	return thinc_client_request_with_auth(c, method, path, token, body, r);
 }
 
 int main(void)
 {
 	pid_t daemon_pid;
-	struct kx_client client;
+	struct thinc_client client;
 	int ok = 1;
-	struct kx_response r;
+	struct thinc_response r;
 	char token[128] = "";
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
@@ -124,7 +124,7 @@ int main(void)
 		return 1;
 	}
 
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -138,49 +138,49 @@ int main(void)
 	 * credentials, same as this whole project's behavior before
 	 * ADR-0144 existed. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/ldap/groups", "{\"name\":\"engineers\",\"gidnumber\":7001}",
+	if (thinc_client_request(&client, "POST", "/v1/ldap/groups", "{\"name\":\"engineers\",\"gidnumber\":7001}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: pre-bootstrap group create (should be open), status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 2. Configure the admin group -- also an open write, since gating
 	 * still isn't active (no user is a member of "admins" yet). */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "PUT", "/v1/system/hostauth-config",
+	if (thinc_client_request(&client, "PUT", "/v1/system/hostauth-config",
 	                       "{\"admin_groups\":[\"admins\"],\"idle_timeout_seconds\":900}", &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: PUT hostauth-config, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/ldap/groups", "{\"name\":\"admins\",\"gidnumber\":7002}",
+	if (thinc_client_request(&client, "POST", "/v1/ldap/groups", "{\"name\":\"admins\",\"gidnumber\":7002}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: create group admins, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 3. Login with a user that doesn't exist yet -> 401. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/login",
+	if (thinc_client_request(&client, "POST", "/v1/login",
 	                       "{\"username\":\"nosuchuser\",\"password\":\"whatever\"}", &r) != 0 ||
 	    r.status != 401) {
 		fprintf(stderr, "FAIL: login as nonexistent user expected 401, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 4. Create a real user in the admin group, with a real password --
 	 * still an open write, gating still isn't active (this create IS
 	 * what activates it, but only from the moment it lands). */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/ldap/users",
+	if (thinc_client_request(&client, "POST", "/v1/ldap/users",
 	                       "{\"name\":\"root_admin\",\"uidnumber\":7100,\"primarygroup\":7002,"
 	                       "\"password\":\"correct horse battery staple\"}",
 	                       &r) != 0 ||
@@ -188,41 +188,41 @@ int main(void)
 		fprintf(stderr, "FAIL: create admin user, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 5. Gating is NOW active -- an unauthenticated write is refused. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/ldap/groups", "{\"name\":\"unrelated\",\"gidnumber\":7003}",
+	if (thinc_client_request(&client, "POST", "/v1/ldap/groups", "{\"name\":\"unrelated\",\"gidnumber\":7003}",
 	                       &r) != 0 ||
 	    r.status != 401) {
 		fprintf(stderr, "FAIL: unauthenticated write after gating activated expected 401, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* Reads still work with zero credentials, always. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/ldap/groups", NULL, &r) != 0 || r.status != 200) {
+	if (thinc_client_request(&client, "GET", "/v1/ldap/groups", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: unauthenticated GET after gating activated expected 200, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 6. Wrong password -> 401, no token issued. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/login",
+	if (thinc_client_request(&client, "POST", "/v1/login",
 	                       "{\"username\":\"root_admin\",\"password\":\"wrong\"}", &r) != 0 ||
 	    r.status != 401) {
 		fprintf(stderr, "FAIL: login with wrong password expected 401, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 7. Real login -> a real token. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/login",
+	if (thinc_client_request(&client, "POST", "/v1/login",
 	                       "{\"username\":\"root_admin\",\"password\":\"correct horse battery staple\"}",
 	                       &r) != 0 ||
 	    r.status != 200) {
@@ -238,7 +238,7 @@ int main(void)
 			snprintf(token, sizeof(token), "%s", t);
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 8. The same write, now with the token, succeeds. */
 	memset(&r, 0, sizeof(r));
@@ -248,7 +248,7 @@ int main(void)
 		fprintf(stderr, "FAIL: authenticated write expected 201, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 9. A garbage token is rejected the same way as no token at all. */
 	memset(&r, 0, sizeof(r));
@@ -257,13 +257,13 @@ int main(void)
 		fprintf(stderr, "FAIL: garbage token expected 401, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 9b. ADR-0152: session listing shows the real active session, a
 	 * real expires_in_seconds (idle_timeout_seconds=900 here, so never
 	 * null), and never a raw token anywhere in the response. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/system/hostauth/sessions", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "GET", "/v1/system/hostauth/sessions", NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: GET hostauth sessions, status=%d\n", r.status);
 		ok = 0;
@@ -302,7 +302,7 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 9c. Revoking root_admin's sessions logs it out everywhere -- its
 	 * existing token stops working immediately. This DELETE is itself
@@ -315,7 +315,7 @@ int main(void)
 		fprintf(stderr, "FAIL: DELETE hostauth sessions for root_admin, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
 	if (request_with_token(&client, "POST", "/v1/ldap/groups", token,
@@ -325,13 +325,13 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* Re-authenticate -- the revoke above killed the only token this
 	 * test had, and the no-op check right below is itself a write,
 	 * needing a real one attached. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/login",
+	if (thinc_client_request(&client, "POST", "/v1/login",
 	                       "{\"username\":\"root_admin\",\"password\":\"correct horse battery staple\"}",
 	                       &r) != 0 ||
 	    r.status != 200) {
@@ -343,7 +343,7 @@ int main(void)
 		if (t != NULL)
 			snprintf(token, sizeof(token), "%s", t);
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* Revoking a user with no active session at all is a real no-op,
 	 * not an error -- same idempotent posture handle_logout() already
@@ -356,7 +356,7 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 10. A real user who is NOT in the admin group authenticates fine
 	 * but still can't write -- authentication and authorization are
@@ -370,13 +370,13 @@ int main(void)
 		fprintf(stderr, "FAIL: create plain_user (as admin), status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	{
 		char plain_token[128] = "";
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/login",
+		if (thinc_client_request(&client, "POST", "/v1/login",
 		                       "{\"username\":\"plain_user\",\"password\":\"plainpassword123\"}",
 		                       &r) != 0 ||
 		    r.status != 200) {
@@ -389,7 +389,7 @@ int main(void)
 			if (t != NULL)
 				snprintf(plain_token, sizeof(plain_token), "%s", t);
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
 		if (plain_token[0] != '\0') {
@@ -401,7 +401,7 @@ int main(void)
 				        r.status);
 				ok = 0;
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 		}
 	}
 
@@ -411,7 +411,7 @@ int main(void)
 		fprintf(stderr, "FAIL: logout expected 204, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
 	if (request_with_token(&client, "POST", "/v1/ldap/groups", token,
@@ -420,7 +420,7 @@ int main(void)
 		fprintf(stderr, "FAIL: write after logout expected 401, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* Logout is idempotent -- a second call on an already-gone token
 	 * is still 204, never an error. */
@@ -429,14 +429,14 @@ int main(void)
 		fprintf(stderr, "FAIL: repeat logout expected 204, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 12. idle_timeout_seconds=0 -- a fresh login's token is single-use. */
 	memset(&r, 0, sizeof(r));
 	if (request_with_token(&client, "PUT", "/v1/system/hostauth-config", token, NULL, &r) == 0) {
 		/* no-op: token already invalid, just draining any stray response */
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	{
 		/* Need a fresh admin session to change hostauth-config itself
@@ -444,7 +444,7 @@ int main(void)
 		char admin_token[128] = "";
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/login",
+		if (thinc_client_request(&client, "POST", "/v1/login",
 		                       "{\"username\":\"root_admin\",\"password\":\"correct horse battery "
 		                       "staple\"}",
 		                       &r) == 0 &&
@@ -457,7 +457,7 @@ int main(void)
 			fprintf(stderr, "FAIL: re-login for zero-idle-timeout scenario, status=%d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		if (admin_token[0] != '\0') {
 			memset(&r, 0, sizeof(r));
@@ -468,12 +468,12 @@ int main(void)
 				fprintf(stderr, "FAIL: set idle_timeout_seconds=0, status=%d\n", r.status);
 				ok = 0;
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 		}
 	}
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/login",
+	if (thinc_client_request(&client, "POST", "/v1/login",
 	                       "{\"username\":\"root_admin\",\"password\":\"correct horse battery staple\"}",
 	                       &r) != 0 ||
 	    r.status != 200) {
@@ -485,7 +485,7 @@ int main(void)
 
 		if (t != NULL)
 			snprintf(once_token, sizeof(once_token), "%s", t);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		if (once_token[0] != '\0') {
 			memset(&r, 0, sizeof(r));
@@ -496,7 +496,7 @@ int main(void)
 				        r.status);
 				ok = 0;
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 
 			memset(&r, 0, sizeof(r));
 			if (request_with_token(&client, "POST", "/v1/ldap/groups", once_token,
@@ -507,7 +507,7 @@ int main(void)
 				        r.status);
 				ok = 0;
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 		}
 	}
 
@@ -533,7 +533,7 @@ int main(void)
 #define RELOGIN_ROOT_ADMIN()                                                                        \
 	do {                                                                                         \
 		memset(&r, 0, sizeof(r));                                                           \
-		if (kx_client_request(&client, "POST", "/v1/login",                                \
+		if (thinc_client_request(&client, "POST", "/v1/login",                                \
 		                       "{\"username\":\"root_admin\",\"password\":\"correct horse " \
 		                       "battery staple\"}",                                        \
 		                       &r) == 0 &&                                                 \
@@ -546,7 +546,7 @@ int main(void)
 			ok = 0;                                                                     \
 			admin_token[0] = '\0';                                                      \
 		}                                                                                    \
-		kx_response_free(&r);                                                               \
+		thinc_response_free(&r);                                                               \
 	} while (0)
 
 		/* 13a. ldap_enabled=true with zero servers -> rejected. */
@@ -561,7 +561,7 @@ int main(void)
 			fprintf(stderr, "FAIL: ldap_enabled with no servers expected 400, got %d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* 13b. ldap_enabled=true with an empty base DN -> rejected. */
 		RELOGIN_ROOT_ADMIN();
@@ -575,7 +575,7 @@ int main(void)
 			fprintf(stderr, "FAIL: ldap_enabled with empty base_dn expected 400, got %d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* 13c. ldap_port out of range -> rejected, regardless of ldap_enabled. */
 		RELOGIN_ROOT_ADMIN();
@@ -589,7 +589,7 @@ int main(void)
 			fprintf(stderr, "FAIL: ldap_port out of range expected 400, got %d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/*
 		 * 13d. A valid config, pointed at a real local port nothing is
@@ -608,11 +608,11 @@ int main(void)
 			fprintf(stderr, "FAIL: valid ldap config expected 200, got %d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 #undef RELOGIN_ROOT_ADMIN
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/system/hostauth-config", NULL, &r) != 0 ||
+		if (thinc_client_request(&client, "GET", "/v1/system/hostauth-config", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: GET hostauth-config after LDAP setup, status=%d\n", r.status);
 			ok = 0;
@@ -630,7 +630,7 @@ int main(void)
 				ok = 0;
 			}
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/*
 		 * 13e. Login as root_admin with the CORRECT local password.
@@ -640,7 +640,7 @@ int main(void)
 		 * login outright. A real token comes back, usable for a write.
 		 */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/login",
+		if (thinc_client_request(&client, "POST", "/v1/login",
 		                       "{\"username\":\"root_admin\",\"password\":\"correct horse battery "
 		                       "staple\"}",
 		                       &r) != 0 ||
@@ -650,14 +650,14 @@ int main(void)
 			        "(200), got %d\n",
 			        r.status);
 			ok = 0;
-			kx_response_free(&r);
+			thinc_response_free(&r);
 		} else {
 			const char *t = json_str_field(r.json, "token");
 			char fallback_token[128] = "";
 
 			if (t != NULL)
 				snprintf(fallback_token, sizeof(fallback_token), "%s", t);
-			kx_response_free(&r);
+			thinc_response_free(&r);
 
 			if (fallback_token[0] != '\0') {
 				memset(&r, 0, sizeof(r));
@@ -670,7 +670,7 @@ int main(void)
 					        r.status);
 					ok = 0;
 				}
-				kx_response_free(&r);
+				thinc_response_free(&r);
 			}
 		}
 
@@ -680,7 +680,7 @@ int main(void)
 		 * never bypass real credential verification.
 		 */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/login",
+		if (thinc_client_request(&client, "POST", "/v1/login",
 		                       "{\"username\":\"root_admin\",\"password\":\"wrong\"}", &r) != 0 ||
 		    r.status != 401) {
 			fprintf(stderr,
@@ -688,7 +688,7 @@ int main(void)
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	}
 
 	/*
@@ -708,7 +708,7 @@ int main(void)
 		 * correctness shouldn't depend on exactly how much of the rest
 		 * of this file ran before it. */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/login",
+		if (thinc_client_request(&client, "POST", "/v1/login",
 		                       "{\"username\":\"root_admin\",\"password\":\"correct horse battery "
 		                       "staple\"}",
 		                       &r) != 0 ||
@@ -721,7 +721,7 @@ int main(void)
 			if (t != NULL)
 				snprintf(rename_token, sizeof(rename_token), "%s", t);
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
 		if (request_with_token(&client, "PUT", "/v1/ldap/groups/admins", rename_token,
@@ -730,13 +730,13 @@ int main(void)
 			fprintf(stderr, "FAIL: rename active admin group, status=%d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* hostauth-config's own admin_groups must now read
 		 * "root-admins", not "admins" -- the daemon-side propagation,
 		 * not anything this test itself did. */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/system/hostauth-config", NULL, &r) != 0 ||
+		if (thinc_client_request(&client, "GET", "/v1/system/hostauth-config", NULL, &r) != 0 ||
 		    r.status != 200 ||
 		    memmem(r.body, r.body_len, "\"root-admins\"", strlen("\"root-admins\"")) == NULL ||
 		    memmem(r.body, r.body_len, "\"admins\"", strlen("\"admins\"")) != NULL) {
@@ -746,14 +746,14 @@ int main(void)
 			        r.status, (int)r.body_len, r.body);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* root_admin's own primarygroup is a gidnumber (7002), unaffected
 		 * by the rename -- a fresh login must still succeed, proving
 		 * gating genuinely still recognizes this user as an admin under
 		 * the group's new name, not just that the config string changed. */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/login",
+		if (thinc_client_request(&client, "POST", "/v1/login",
 		                       "{\"username\":\"root_admin\",\"password\":\"correct horse battery "
 		                       "staple\"}",
 		                       &r) != 0 ||
@@ -761,7 +761,7 @@ int main(void)
 			fprintf(stderr, "FAIL: login after admin-group rename expected 200, got %d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* Another fresh token (idle_timeout_seconds=0 by this point in
 		 * the file means single-use) -- login as root_admin still
@@ -769,7 +769,7 @@ int main(void)
 		 * rename didn't break gating. */
 		rename_token[0] = '\0';
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/login",
+		if (thinc_client_request(&client, "POST", "/v1/login",
 		                       "{\"username\":\"root_admin\",\"password\":\"correct horse battery "
 		                       "staple\"}",
 		                       &r) != 0 ||
@@ -782,7 +782,7 @@ int main(void)
 			if (t != NULL)
 				snprintf(rename_token, sizeof(rename_token), "%s", t);
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* Renaming to a name that already exists is a real, rejected
 		 * collision (409-shaped LDAP_RECORD_ERR_DUPLICATE), not silently
@@ -795,7 +795,7 @@ int main(void)
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	}
 
 	if (stop_daemon(daemon_pid) != 0) {

@@ -33,14 +33,14 @@ extern char **environ;
 static char g_data_dir[PATH_MAX];
 static char g_image_root[PATH_MAX];
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -68,9 +68,9 @@ int main(void)
 	pid_t daemon_pid;
 	char *dargv[5];
 	char data_dir_arg[PATH_MAX + 11];
-	struct kx_client client;
+	struct thinc_client client;
 	int ok = 1;
-	struct kx_response r;
+	struct thinc_response r;
 	char pid_path[64];
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
@@ -108,7 +108,7 @@ int main(void)
 		_exit(127);
 	}
 
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -120,7 +120,7 @@ int main(void)
 	/* 1. GET /v1/system/processes: a real scan, this daemon's own real
 	 * pid (execve() doesn't change it) is among the results. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/system/processes", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "GET", "/v1/system/processes", NULL, &r) != 0 ||
 	    r.status != 200 || r.json == NULL || r.json->type != JSON_ARRAY) {
 		fprintf(stderr, "FAIL: GET /v1/system/processes, status=%d\n", r.status);
 		ok = 0;
@@ -144,12 +144,12 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 2. A real, running container -- its own process must be
 	 * correlated to it by name. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"hpc1\",\"image\":\"hostproctest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"300\",\"0\"]}",
 	                       &r) != 0 ||
@@ -157,21 +157,21 @@ int main(void)
 		fprintf(stderr, "FAIL: POST hpc1, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
 	long container_pid = 0;
 
-	if (kx_client_request(&client, "GET", "/v1/containers/hpc1", NULL, &r) != 0 || r.status != 200) {
+	if (thinc_client_request(&client, "GET", "/v1/containers/hpc1", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET hpc1, status=%d\n", r.status);
 		ok = 0;
 	} else {
 		container_pid = json_num_field(r.json, "pid");
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/system/processes", NULL, &r) != 0 || r.status != 200) {
+	if (thinc_client_request(&client, "GET", "/v1/system/processes", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/system/processes (2), status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -197,42 +197,42 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 3. Kill validation: pid 1 and this daemon's own pid are both
 	 * refused (400); a plainly nonexistent pid is 404; a non-numeric
 	 * pid is 400. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "DELETE", "/v1/system/processes/1", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "DELETE", "/v1/system/processes/1", NULL, &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: DELETE pid 1 expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
 	snprintf(pid_path, sizeof(pid_path), "/v1/system/processes/%d", (int)daemon_pid);
-	if (kx_client_request(&client, "DELETE", pid_path, NULL, &r) != 0 || r.status != 400) {
+	if (thinc_client_request(&client, "DELETE", pid_path, NULL, &r) != 0 || r.status != 400) {
 		fprintf(stderr, "FAIL: DELETE daemon's own pid expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "DELETE", "/v1/system/processes/999999999", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "DELETE", "/v1/system/processes/999999999", NULL, &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: DELETE nonexistent pid expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "DELETE", "/v1/system/processes/notapid", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "DELETE", "/v1/system/processes/notapid", NULL, &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: DELETE non-numeric pid expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 4. A real, disposable process (forked by this test, never a
 	 * container) really dies when killed via the API. */
@@ -247,12 +247,12 @@ int main(void)
 
 		memset(&r, 0, sizeof(r));
 		snprintf(pid_path, sizeof(pid_path), "/v1/system/processes/%d", (int)victim);
-		if (kx_client_request(&client, "DELETE", pid_path, NULL, &r) != 0 || r.status != 204) {
+		if (thinc_client_request(&client, "DELETE", pid_path, NULL, &r) != 0 || r.status != 204) {
 			fprintf(stderr, "FAIL: DELETE real victim pid expected 204, got %d\n", r.status);
 			ok = 0;
 			kill(victim, SIGKILL);
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		{
 			int status;
@@ -265,8 +265,8 @@ int main(void)
 		}
 	}
 
-	kx_client_request(&client, "DELETE", "/v1/containers/hpc1", NULL, &r);
-	kx_response_free(&r);
+	thinc_client_request(&client, "DELETE", "/v1/containers/hpc1", NULL, &r);
+	thinc_response_free(&r);
 
 	kill(daemon_pid, SIGTERM);
 	{

@@ -28,14 +28,14 @@ extern char **environ;
 static char g_data_dir[PATH_MAX];
 static char g_image_root[PATH_MAX];
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -63,16 +63,16 @@ static int str_eq(const char *a, const char *b)
 	return a != NULL && b != NULL && strcmp(a, b) == 0;
 }
 
-static int poll_until_exited(const struct kx_client *c, const char *name, int max_attempts,
-                              struct kx_response *out)
+static int poll_until_exited(const struct thinc_client *c, const char *name, int max_attempts,
+                              struct thinc_response *out)
 {
 	int i;
 	char path[128];
 
 	snprintf(path, sizeof(path), "/v1/containers/%s", name);
 	for (i = 0; i < max_attempts; i++) {
-		kx_response_free(out);
-		if (kx_client_request(c, "GET", path, NULL, out) != 0)
+		thinc_response_free(out);
+		if (thinc_client_request(c, "GET", path, NULL, out) != 0)
 			return -1;
 		if (out->status == 200 && str_eq(json_str_field(out->json, "status"), "exited"))
 			return 0;
@@ -85,13 +85,13 @@ int main(void)
 {
 	pid_t daemon_pid;
 	int ok = 1;
-	struct kx_response r;
-	struct kx_client client;
+	struct thinc_response r;
+	struct thinc_client client;
 	char *dargv[4];
 	char data_dir_arg[PATH_MAX + 11];
 
 	memset(&r, 0, sizeof(r));
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
@@ -141,25 +141,25 @@ int main(void)
 	}
 
 	/* 1. health */
-	if (kx_client_request(&client, "GET", "/v1/health", NULL, &r) != 0 || r.status != 200 ||
+	if (thinc_client_request(&client, "GET", "/v1/health", NULL, &r) != 0 || r.status != 200 ||
 	    !str_eq(json_str_field(r.json, "status"), "ok")) {
 		fprintf(stderr, "FAIL: GET /v1/health\n");
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 2. create c1, exits quickly with code 5 */
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"c1\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"5\"]}",
 	                       &r) != 0 ||
 	    r.status != 201 || !str_eq(json_str_field(r.json, "status"), "running")) {
 		fprintf(stderr, "FAIL: POST /v1/containers (c1), status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 3. list shows it */
-	if (kx_client_request(&client, "GET", "/v1/containers", NULL, &r) != 0 || r.status != 200) {
+	if (thinc_client_request(&client, "GET", "/v1/containers", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/containers\n");
 		ok = 0;
 	} else {
@@ -178,7 +178,7 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 4. poll until c1 exits, check exit_status */
 	if (poll_until_exited(&client, "c1", 50, &r) != 0) {
@@ -189,10 +189,10 @@ int main(void)
 		        json_int_field(r.json, "exit_status"));
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 5. create c2, sleeps 30s -- then delete it while running */
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"c2\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -204,14 +204,14 @@ int main(void)
 		char proc_path[64];
 		struct stat st;
 
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
-		if (kx_client_request(&client, "DELETE", "/v1/containers/c2", NULL, &r) != 0 ||
+		if (thinc_client_request(&client, "DELETE", "/v1/containers/c2", NULL, &r) != 0 ||
 		    r.status != 204) {
 			fprintf(stderr, "FAIL: DELETE /v1/containers/c2, status=%d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* ADR-0180: DELETE of a running container is asynchronous --
 		 * 204 records the intent + sends the SIGKILL; the process
@@ -223,16 +223,16 @@ int main(void)
 
 			snprintf(proc_path, sizeof(proc_path), "/proc/%ld", c2_pid);
 			for (i = 0; i < 50; i++) {
-				struct kx_response gr;
+				struct thinc_response gr;
 
 				memset(&gr, 0, sizeof(gr));
-				if (kx_client_request(&client, "GET", "/v1/containers/c2", NULL, &gr) == 0 &&
+				if (thinc_client_request(&client, "GET", "/v1/containers/c2", NULL, &gr) == 0 &&
 				    gr.status == 404 && stat(proc_path, &st) != 0) {
 					reaped = 1;
-					kx_response_free(&gr);
+					thinc_response_free(&gr);
 					break;
 				}
-				kx_response_free(&gr);
+				thinc_response_free(&gr);
 				usleep(100 * 1000);
 			}
 			if (!reaped) {
@@ -268,12 +268,12 @@ int main(void)
 	}
 
 	/* 6. deleted container is gone */
-	if (kx_client_request(&client, "GET", "/v1/containers/c2", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "GET", "/v1/containers/c2", NULL, &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: GET /v1/containers/c2 after delete, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 6.5. issue #68: unknown top-level fields are a 400 naming the
 	 * offender, never silently dropped (a typo'd "cpuset" once cost a
@@ -281,7 +281,7 @@ int main(void)
 	 * issue #49: cpuset_cpus/disk_quota_bytes now read back in GET
 	 * (cpuset live from the real cgroup file; quota from the
 	 * creation-time mirror). */
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"c49\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 	                       "\"cpuset\":\"0\"}",
 	                       &r) != 0 ||
@@ -291,13 +291,13 @@ int main(void)
 		fprintf(stderr, "FAIL: unknown field should 400 naming it, got status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	/* disk_quota_bytes deliberately not exercised here: this test
 	 * env's filesystem has no prjquota support, so requesting one
 	 * correctly 500s -- the quota mirror's read-back shares the same
 	 * serializer path asserted below and is verified against a real
 	 * quota-capable install instead. */
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"c49\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 	                       "\"cpuset_cpus\":\"0\"}",
 	                       &r) != 0 ||
@@ -305,15 +305,15 @@ int main(void)
 		fprintf(stderr, "FAIL: POST c49 with cpuset, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
-	if (kx_client_request(&client, "GET", "/v1/containers/c49", NULL, &r) != 0 || r.status != 200 ||
+	thinc_response_free(&r);
+	if (thinc_client_request(&client, "GET", "/v1/containers/c49", NULL, &r) != 0 || r.status != 200 ||
 	    !str_eq(json_str_field(r.json, "cpuset_cpus"), "0") ||
 	    json_object_get(r.json, "disk_quota_bytes") == NULL) {
 		fprintf(stderr, "FAIL: c49 cpuset_cpus not read back / quota key missing (status=%d)\n",
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	/*
 	 * Issue #86: a container's cgroup is a LEAF UNDER the workload
 	 * parent, and that parent carries the machine-minus-reservation
@@ -338,33 +338,33 @@ int main(void)
 		}
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/system/control-plane-reservation", NULL, &r) !=
+		if (thinc_client_request(&client, "GET", "/v1/system/control-plane-reservation", NULL, &r) !=
 		        0 ||
 		    r.status != 200 || json_object_get(r.json, "enabled") == NULL ||
 		    !str_eq(json_str_field(r.json, "cgroup"), "thinc-workload")) {
 			fprintf(stderr, "FAIL: #86 GET control-plane-reservation, status=%d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* A reservation big enough to be a second workload budget is
 		 * refused: the range check is the difference between a safety
 		 * margin and an accidental new ceiling. */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "PUT", "/v1/system/control-plane-reservation",
+		if (thinc_client_request(&client, "PUT", "/v1/system/control-plane-reservation",
 		                       "{\"cpu_percent\":80}", &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: #86 cpu_percent=80 should 400, got %d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* A real change takes effect immediately, on the live cgroup --
 		 * an operator raising the reservation because the box is under
 		 * strain needs it while it is under strain, not at the next
 		 * container creation. */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "PUT", "/v1/system/control-plane-reservation",
+		if (thinc_client_request(&client, "PUT", "/v1/system/control-plane-reservation",
 		                       "{\"cpu_percent\":25}", &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: #86 PUT cpu_percent=25, status=%d\n", r.status);
@@ -385,23 +385,23 @@ int main(void)
 				ok = 0;
 			}
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		kx_client_request(&client, "PUT", "/v1/system/control-plane-reservation",
+		thinc_client_request(&client, "PUT", "/v1/system/control-plane-reservation",
 		                   "{\"cpu_percent\":10}", &r);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	}
 
 	memset(&r, 0, sizeof(r));
-	kx_client_request(&client, "DELETE", "/v1/containers/c49", NULL, &r);
-	kx_response_free(&r);
+	thinc_client_request(&client, "DELETE", "/v1/containers/c49", NULL, &r);
+	thinc_response_free(&r);
 
 	/* 6.6. issue #66: ldap_client refused with no client config, then
 	 * accepted once configured -- and it stages the two identity files
 	 * rendered from that config (nslcd.conf carries the bind values,
 	 * proving they came from the daemon, not the recipe). */
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"cll\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 	                       "\"ldap_client\":true}",
 	                       &r) != 0 ||
@@ -409,8 +409,8 @@ int main(void)
 		fprintf(stderr, "FAIL: ldap_client with no client config should 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
-	if (kx_client_request(&client, "PUT", "/v1/ldap/config",
+	thinc_response_free(&r);
+	if (thinc_client_request(&client, "PUT", "/v1/ldap/config",
 	                       "{\"client_uri\":\"ldap://10.7.7.7:3893/\","
 	                       "\"base_dn\":\"dc=t,dc=local\","
 	                       "\"bind_dn\":\"cn=svc,dc=t,dc=local\","
@@ -418,8 +418,8 @@ int main(void)
 		fprintf(stderr, "FAIL: PUT ldap client config for ldap_client, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	thinc_response_free(&r);
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"cll\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 	                       "\"ldap_client\":true}",
 	                       &r) != 0 ||
@@ -427,8 +427,8 @@ int main(void)
 		fprintf(stderr, "FAIL: ldap_client create once configured, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
-	if (kx_client_request(&client, "GET", "/v1/containers/cll/files?path=/etc/nslcd.conf", NULL,
+	thinc_response_free(&r);
+	if (thinc_client_request(&client, "GET", "/v1/containers/cll/files?path=/etc/nslcd.conf", NULL,
 	                       &r) != 0 ||
 	    r.status != 200 || r.body == NULL ||
 	    strstr(r.body, "uri ldap://10.7.7.7:3893/") == NULL ||
@@ -444,7 +444,7 @@ int main(void)
 		fprintf(stderr, "FAIL: an unrestricted ldap_client container carries a pam_authz_search\n");
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/*
 	 * Issue #76: host-scoped authorisation. Which users may log into
@@ -453,7 +453,7 @@ int main(void)
 	 * to still be running.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"cllg\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 	                       "\"ldap_client\":true,\"ldap_allow_groups\":[\"nosuchgroup\"]}",
 	                       &r) != 0 ||
@@ -462,15 +462,15 @@ int main(void)
 		fprintf(stderr, "FAIL: an unknown allow-group should 400 naming it, got %d: %.*s\n", r.status, (int)r.body_len, r.body ? r.body : "");
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/ldap/groups", "{\"name\":\"jumpusers\"}", &r) != 0 ||
+	if (thinc_client_request(&client, "POST", "/v1/ldap/groups", "{\"name\":\"jumpusers\"}", &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: create group jumpusers, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/*
 	 * A name that would change the filter's meaning is refused, never
@@ -478,7 +478,7 @@ int main(void)
 	 * LDAP filter.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"cllg\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 	                       "\"ldap_client\":true,\"ldap_allow_groups\":[\"evil)(uid=*\"]}",
 	                       &r) != 0 ||
@@ -486,10 +486,10 @@ int main(void)
 		fprintf(stderr, "FAIL: a filter-shaped group name should 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"cllg\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 	                       "\"ldap_client\":true,\"ldap_allow_groups\":[\"jumpusers\"]}",
 	                       &r) != 0 ||
@@ -497,10 +497,10 @@ int main(void)
 		fprintf(stderr, "FAIL: ldap_client with an allow-group, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/containers/cllg/files?path=/etc/nslcd.conf", NULL,
+	if (thinc_client_request(&client, "GET", "/v1/containers/cllg/files?path=/etc/nslcd.conf", NULL,
 	                       &r) != 0 ||
 	    r.status != 200 || r.body == NULL ||
 	    strstr(r.body, "pam_authz_search (&(objectClass=posixAccount)(uid=$username)"
@@ -509,40 +509,40 @@ int main(void)
 		        (int)r.body_len, r.body != NULL ? r.body : "");
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	kx_client_request(&client, "DELETE", "/v1/containers/cllg", NULL, &r);
-	kx_response_free(&r);
-	if (kx_client_request(&client, "GET", "/v1/containers/cll/files?path=/etc/nsswitch.conf", NULL,
+	thinc_client_request(&client, "DELETE", "/v1/containers/cllg", NULL, &r);
+	thinc_response_free(&r);
+	if (thinc_client_request(&client, "GET", "/v1/containers/cll/files?path=/etc/nsswitch.conf", NULL,
 	                       &r) != 0 ||
 	    r.status != 200 || r.body == NULL || strstr(r.body, "files ldap") == NULL) {
 		fprintf(stderr, "FAIL: ldap_client nsswitch.conf not staged (status=%d)\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	memset(&r, 0, sizeof(r));
-	kx_client_request(&client, "DELETE", "/v1/containers/cll", NULL, &r);
-	kx_response_free(&r);
+	thinc_client_request(&client, "DELETE", "/v1/containers/cll", NULL, &r);
+	thinc_response_free(&r);
 
 	/* 7. duplicate name -> 409 */
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"c1\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"1\"]}",
 	                       &r) != 0 ||
 	    r.status != 409) {
 		fprintf(stderr, "FAIL: duplicate name expected 409, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 8. missing image -> 400 */
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"c3\",\"cmd\":[\"/bin/daemon_child\"]}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: missing image expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 8a. GET/PUT /v1/system/resolv (ADR-0076/ADR-0132): a real
 	 * round-trip proving resolv_set()'s own write mechanism (changed
@@ -555,16 +555,16 @@ int main(void)
 	 * limitation as every other real-boot-only behavior in this
 	 * project. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "PUT", "/v1/system/resolv",
+	if (thinc_client_request(&client, "PUT", "/v1/system/resolv",
 	                       "{\"nameservers\":[\"192.168.15.101\",\"192.168.15.102\"]}", &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: PUT /v1/system/resolv, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/system/resolv", NULL, &r) != 0 || r.status != 200) {
+	if (thinc_client_request(&client, "GET", "/v1/system/resolv", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/system/resolv, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -577,7 +577,7 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 9. clean shutdown */
 	kill(daemon_pid, SIGTERM);

@@ -34,14 +34,14 @@ extern char **environ;
 static char g_data_dir[PATH_MAX];
 static char g_esp_dir[PATH_MAX];
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -123,8 +123,8 @@ static int read_entry(const char *path, char *buf, size_t cap)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct kx_client client;
-	struct kx_response r;
+	struct thinc_client client;
+	struct thinc_response r;
 	char entry_path[PATH_MAX];
 	char after[4096];
 	int ok = 1;
@@ -148,7 +148,7 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -160,7 +160,7 @@ int main(void)
 	/* 1. The default is exactly what was hardcoded before this existed,
 	 * so an install that never touches the setting boots identically. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/system/boot-console", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "GET", "/v1/system/boot-console", NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: GET boot-console, status=%d\n", r.status);
 		ok = 0;
@@ -180,19 +180,19 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 2. A real change: serial console at a real baud, plus a
 	 * framebuffer argument -- and the entry on disk is rewritten. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "PUT", "/v1/system/boot-console",
+	if (thinc_client_request(&client, "PUT", "/v1/system/boot-console",
 	                       "{\"consoles\":[\"ttyS0,115200n8\"],\"extra\":\"nomodeset\"}", &r) != 0 ||
 	    r.status != 200 ||
 	    (long)json_as_number(json_object_get(r.json, "loader_entries_updated")) != 1) {
 		fprintf(stderr, "FAIL: PUT boot-console, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	if (read_entry(entry_path, after, sizeof(after)) != 0) {
 		fprintf(stderr, "FAIL: could not read the rewritten entry\n");
@@ -228,7 +228,7 @@ int main(void)
 		return 1;
 	}
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/system/boot-console", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "GET", "/v1/system/boot-console", NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: GET after restart, status=%d\n", r.status);
 		ok = 0;
@@ -242,7 +242,7 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/*
 	 * 4. Anything that could split the boot line, or smuggle in a
@@ -263,12 +263,12 @@ int main(void)
 
 		for (i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "PUT", "/v1/system/boot-console", bad[i], &r) != 0 ||
+			if (thinc_client_request(&client, "PUT", "/v1/system/boot-console", bad[i], &r) != 0 ||
 			    r.status != 400) {
 				fprintf(stderr, "FAIL: %s should be 400, got %d\n", bad[i], r.status);
 				ok = 0;
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 		}
 	}
 

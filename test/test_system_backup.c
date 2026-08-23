@@ -37,14 +37,14 @@ static char g_networks_path[PATH_MAX];
 static char g_dns_records_path[PATH_MAX];
 static char g_containers_dir[PATH_MAX];
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -113,22 +113,22 @@ static void reset_state(void)
 	system(cmd);
 }
 
-static int container_exists(const struct kx_client *c, const char *name)
+static int container_exists(const struct thinc_client *c, const char *name)
 {
 	char path[128];
-	struct kx_response r;
+	struct thinc_response r;
 	int status;
 
 	snprintf(path, sizeof(path), "/v1/containers/%s", name);
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(c, "GET", path, NULL, &r) != 0)
+	if (thinc_client_request(c, "GET", path, NULL, &r) != 0)
 		return -1;
 	status = r.status;
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	return status == 200;
 }
 
-static time_t wait_for_present(const struct kx_client *c, const char *name, int max_attempts)
+static time_t wait_for_present(const struct thinc_client *c, const char *name, int max_attempts)
 {
 	int attempts;
 
@@ -146,7 +146,7 @@ static time_t wait_for_present(const struct kx_client *c, const char *name, int 
  * a moment later when the reactor reaps the process, so a bare check
  * right after DELETE can still see the container as "deleting" (200).
  * Bounded tight: >5s to tear down a SIGKILLed child is a real regression. */
-static time_t wait_for_absent(const struct kx_client *c, const char *name, int max_attempts)
+static time_t wait_for_absent(const struct thinc_client *c, const char *name, int max_attempts)
 {
 	int attempts;
 
@@ -161,9 +161,9 @@ static time_t wait_for_absent(const struct kx_client *c, const char *name, int m
 int main(void)
 {
 	pid_t daemon_pid;
-	struct kx_client client;
+	struct thinc_client client;
 	int ok = 1;
-	struct kx_response r;
+	struct thinc_response r;
 	char *saved_bundle = NULL;
 	size_t saved_bundle_len = 0;
 	char *pre_restore_defs = NULL;
@@ -199,7 +199,7 @@ int main(void)
 		return 1;
 	}
 
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -211,26 +211,26 @@ int main(void)
 	/* 1. Real state: a network, a DNS record, and a persisted
 	 * ("restart":"always") container named "keeper". */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/networks",
+	if (thinc_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"backupnet\",\"subnet\":\"172.62.0.0\",\"prefix_len\":24}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST network, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/dns/records",
+	if (thinc_client_request(&client, "POST", "/v1/dns/records",
 	                       "{\"name\":\"backup.internal\",\"ip\":\"172.62.0.5\"}", &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST dns record, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"keeper\",\"image\":\"backuptest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"],"
 	                       "\"restart\":\"always\"}",
@@ -239,10 +239,10 @@ int main(void)
 		fprintf(stderr, "FAIL: POST keeper, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "PUT", "/v1/system/site",
+	if (thinc_client_request(&client, "PUT", "/v1/system/site",
 	                       "{\"instance_name\":\"backuptest-instance\",\"site_name\":\"\","
 	                       "\"domain_suffix\":\"internal\"}",
 	                       &r) != 0 ||
@@ -250,7 +250,7 @@ int main(void)
 		fprintf(stderr, "FAIL: PUT site config, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* ADR-0120 regression coverage: do_system_backup()'s own recipe walk
 	 * used to assume the pre-ADR-0107 flat <name>.recipe layout
@@ -280,12 +280,12 @@ int main(void)
 		rw.buf[rw.len] = '\0';
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/pkg/recipes", rw.buf, &r) != 0 ||
+		if (thinc_client_request(&client, "POST", "/v1/pkg/recipes", rw.buf, &r) != 0 ||
 		    r.status != 204) {
 			fprintf(stderr, "FAIL: POST recipe backuptestpkg, status=%d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		free(rw.buf);
 	}
 
@@ -295,18 +295,18 @@ int main(void)
 	 * bundle without the registry restores onto a box where every
 	 * container with a volume fails to start. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/volumes", "{\"name\":\"backupvol\"}", &r) != 0 ||
+	if (thinc_client_request(&client, "POST", "/v1/volumes", "{\"name\":\"backupvol\"}", &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST /v1/volumes backupvol, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 2. GET /system/backup: confirm the bundle's own container_defs
 	 * field, re-parsed, actually mentions "keeper", and that
 	 * site_config actually carries the instance_name just set. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/system/backup", NULL, &r) != 0 || r.status != 200) {
+	if (thinc_client_request(&client, "GET", "/v1/system/backup", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET backup, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -372,7 +372,7 @@ int main(void)
 				memcpy(saved_bundle, defs, saved_bundle_len + 1);
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	if (saved_bundle == NULL) {
 		fprintf(stderr, "FAIL: could not capture the backup bundle for later restore\n");
@@ -387,19 +387,19 @@ int main(void)
 	 * test_networks.c's own suite already follows -- it has no
 	 * reset_state() at all, relying entirely on DELETE for cleanup). */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "DELETE", "/v1/networks/backupnet", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "DELETE", "/v1/networks/backupnet", NULL, &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "FAIL: DELETE backupnet expected 204, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "DELETE", "/v1/dns/records/backup.internal", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "DELETE", "/v1/dns/records/backup.internal", NULL, &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "FAIL: DELETE backup.internal expected 204, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* Remember the real on-disk container_defs.json content before
 	 * restore ever runs, to prove a bad restore leaves it untouched. */
@@ -423,13 +423,13 @@ int main(void)
 	/* 3. Bad restore: a malformed container_defs field is rejected 400,
 	 * and the real file on disk is confirmed byte-for-byte untouched. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/system/restore",
+	if (thinc_client_request(&client, "POST", "/v1/system/restore",
 	                       "{\"container_defs\":\"not valid json\"}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: restore with bad container_defs expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	{
 		FILE *f = fopen(g_container_defs_path, "rb");
 		char after[65536] = { 0 };
@@ -448,24 +448,24 @@ int main(void)
 
 	/* 4. Restore with none of the six recognized fields -> 400. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/system/restore", "{}", &r) != 0 ||
+	if (thinc_client_request(&client, "POST", "/v1/system/restore", "{}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: restore with no fields expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 5. Delete "keeper" entirely (live + persisted definition gone),
 	 * then restore the earlier-saved bundle and confirm a real daemon
 	 * restart brings "keeper" back -- the actual end-to-end proof, not
 	 * just that a write succeeded. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "DELETE", "/v1/containers/keeper", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "DELETE", "/v1/containers/keeper", NULL, &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "FAIL: DELETE keeper expected 204, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* DELETE of the running keeper is asynchronous (ADR-0180) -- wait for
 	 * its slot to actually be released (404) rather than racing the still-
@@ -486,13 +486,13 @@ int main(void)
 		restore_body.buf[restore_body.len] = '\0';
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/system/restore", restore_body.buf, &r) != 0 ||
+		if (thinc_client_request(&client, "POST", "/v1/system/restore", restore_body.buf, &r) != 0 ||
 		    r.status != 200 || !str_eq(json_str_field(r.json, "status"), "restored")) {
 			fprintf(stderr, "FAIL: restore of saved bundle expected 200 \"restored\", got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		jw_free(&restore_body);
 	}
 
@@ -520,13 +520,13 @@ int main(void)
 		recipe_restore.buf[recipe_restore.len] = '\0';
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/system/restore", recipe_restore.buf, &r) !=
+		if (thinc_client_request(&client, "POST", "/v1/system/restore", recipe_restore.buf, &r) !=
 		        0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: restore of pkg_recipes expected 200, got %d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		jw_free(&recipe_restore);
 
 		snprintf(expected_path, sizeof(expected_path), "%s/rebuildable/pkg/recipes/restoredpkg/2.0/build.sh",

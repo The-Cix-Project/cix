@@ -26,7 +26,7 @@ A stale `registry_entry.handle.pid` is never trusted once `running == 0` — PID
 
 ## Consequences
 
-- The CLI (`thincctl files get NAME --path=... [--output=PATH]`) needed no new HTTP client primitive: `kx_client_request()` already captures a response's raw bytes into `struct kx_response.body`/`body_len` regardless of Content-Type (`json` is simply `NULL` when the body isn't valid JSON) — reused as-is rather than adding a redundant `..._raw()` sibling function.
+- The CLI (`thincctl files get NAME --path=... [--output=PATH]`) needed no new HTTP client primitive: `thinc_client_request()` already captures a response's raw bytes into `struct thinc_response.body`/`body_len` regardless of Content-Type (`json` is simply `NULL` when the body isn't valid JSON) — reused as-is rather than adding a redundant `..._raw()` sibling function.
 - No streaming/range support (`Range:` header, partial content) — every file this daemon has any reason to serve this way is small; there's no precedent for chunked responses anywhere in this codebase, and none was added here either.
 - No directory listing. An operator wanting to browse a container's rootfs still needs `console` + `ls`; this endpoint only ever answers "give me exactly this one file's bytes."
 - No new authentication/authorization boundary — this endpoint is exactly as protected as every other one here (network reachability only), same as ADR-0043 already noted for `console`.

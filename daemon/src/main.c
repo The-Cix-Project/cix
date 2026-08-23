@@ -1047,7 +1047,7 @@ static volatile sig_atomic_t g_shutdown_action = SHUTDOWN_ACTION_POWEROFF;
 
 /*
  * conns torn down mid-batch are queued here instead of free()'d
- * immediately. A single kx_epoll_wait() call can report BOTH halves of
+ * immediately. A single thinc_epoll_wait() call can report BOTH halves of
  * one console session's fd pair as ready in the same batch; freeing
  * the first one processed would leave the second event's own `struct
  * conn *` dangling for the rest of that same batch's for-loop. Drained
@@ -1095,7 +1095,7 @@ static void console_session_teardown(struct console_exec_session *sess)
 	kill(sess->exec_pid, SIGKILL);
 	waitpid(sess->exec_pid, NULL, 0);
 
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, sess->ws_conn->fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, sess->ws_conn->fd, NULL);
 	if (sess->ws_conn->ssl != NULL) {
 		tls_unregister(sess->ws_conn->fd);
 		SSL_free(sess->ws_conn->ssl);
@@ -1105,7 +1105,7 @@ static void console_session_teardown(struct console_exec_session *sess)
 	sess->ws_conn->kind = CONN_DEAD;
 	queue_conn_free(sess->ws_conn);
 
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, sess->pty_conn->fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, sess->pty_conn->fd, NULL);
 	close(sess->pty_conn->fd);
 	sess->pty_conn->kind = CONN_DEAD;
 	queue_conn_free(sess->pty_conn);
@@ -3240,7 +3240,7 @@ static int rebind_listener(const char *new_bind_addr, int new_port)
 {
 	int new_fd;
 	int old_fd;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	if (strcmp(new_bind_addr, g_bind_addr) == 0 && new_port == g_port)
 		return 0;
@@ -3254,14 +3254,14 @@ static int rebind_listener(const char *new_bind_addr, int new_port)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = &g_listener_conn;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, new_fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, new_fd, &ev) != 0) {
 		perror("rebind_listener: epoll_ctl ADD");
 		g_listener_conn.fd = old_fd;
 		close(new_fd);
 		return -1;
 	}
 
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, old_fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, old_fd, NULL);
 	close(old_fd);
 
 	snprintf(g_bind_addr_buf, sizeof(g_bind_addr_buf), "%s", new_bind_addr);
@@ -3281,7 +3281,7 @@ static int rebind_listener(const char *new_bind_addr, int new_port)
  * source (thincd's own diagnostics, the audit trail) is unaffected. */
 static void start_kmsg_watch(void)
 {
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 	int fd = logstore_kmsg_fd();
 
 	if (fd < 0)
@@ -3291,7 +3291,7 @@ static void start_kmsg_watch(void)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = &g_kmsg_conn;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0)
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0)
 		g_kmsg_conn.fd = -1;
 }
 
@@ -3324,7 +3324,7 @@ static int live_attach_one_device(struct registry_entry *e, const struct discove
  */
 static void start_uevent_watch(void)
 {
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 	int fd;
 	struct sockaddr_nl addr;
 
@@ -3346,7 +3346,7 @@ static void start_uevent_watch(void)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = &g_uevent_conn;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
 		close(fd);
 		g_uevent_conn.fd = -1;
 	}
@@ -3548,7 +3548,7 @@ static void handle_uevent_event(struct conn *cc)
 
 static int start_http_listener(const char *bind_addr, int port)
 {
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 	int fd = create_listen_socket(bind_addr, port);
 
 	if (fd < 0)
@@ -3558,7 +3558,7 @@ static int start_http_listener(const char *bind_addr, int port)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = &g_listener_conn;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
 		perror("start_http_listener: epoll_ctl ADD");
 		close(fd);
 		g_listener_conn.fd = -1;
@@ -3573,7 +3573,7 @@ static void stop_http_listener(void)
 {
 	if (g_listener_conn.fd < 0)
 		return;
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_listener_conn.fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_listener_conn.fd, NULL);
 	close(g_listener_conn.fd);
 	g_listener_conn.fd = -1;
 }
@@ -3588,7 +3588,7 @@ static void stop_http_listener(void)
  */
 static int start_https_listener(const char *bind_addr, int port)
 {
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 	int fd;
 
 	if (g_tls_ctx == NULL) {
@@ -3605,7 +3605,7 @@ static int start_https_listener(const char *bind_addr, int port)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = &g_https_listener_conn;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
 		perror("start_https_listener: epoll_ctl ADD");
 		close(fd);
 		g_https_listener_conn.fd = -1;
@@ -3620,7 +3620,7 @@ static void stop_https_listener(void)
 {
 	if (g_https_listener_conn.fd < 0)
 		return;
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_https_listener_conn.fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_https_listener_conn.fd, NULL);
 	close(g_https_listener_conn.fd);
 	g_https_listener_conn.fd = -1;
 }
@@ -3629,7 +3629,7 @@ static int rebind_https_listener(const char *new_bind_addr, int new_port)
 {
 	int new_fd;
 	int old_fd;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	/* Same no-op short-circuit rebind_listener() has, and for the same
 	 * reason: binding new_bind_addr:new_port a second time while the
@@ -3651,14 +3651,14 @@ static int rebind_https_listener(const char *new_bind_addr, int new_port)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = &g_https_listener_conn;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, new_fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, new_fd, &ev) != 0) {
 		perror("rebind_https_listener: epoll_ctl ADD");
 		g_https_listener_conn.fd = old_fd;
 		close(new_fd);
 		return -1;
 	}
 
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, old_fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, old_fd, NULL);
 	close(old_fd);
 
 	printf("thincd rebound https listener to %s:%d\n", new_bind_addr, new_port);
@@ -3692,7 +3692,7 @@ static void arm_bind_ip_cleanup_timer(const char *ifname, uint32_t addr_be, int 
 	int tfd;
 	struct itimerspec its;
 	struct conn *cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 	if (tfd < 0) {
@@ -3723,7 +3723,7 @@ static void arm_bind_ip_cleanup_timer(const char *ifname, uint32_t addr_be, int 
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
 		perror("epoll_ctl ADD bind_ip cleanup timer");
 		close(tfd);
 		free(cc);
@@ -3738,7 +3738,7 @@ static void handle_bind_ip_cleanup_timer_event(struct conn *cc)
 	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
 		perror("read (bind_ip cleanup timerfd)");
 
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	close(cc->fd);
 
 	rtfd = rtnl_open();
@@ -3771,14 +3771,14 @@ static struct conn *g_ping_timer_conn;
 static void ping_job_teardown(void)
 {
 	if (g_ping_sock_conn != NULL) {
-		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_ping_sock_conn->fd, NULL);
+		thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_ping_sock_conn->fd, NULL);
 		close(g_ping_sock_conn->fd);
 		g_ping_sock_conn->kind = CONN_DEAD;
 		queue_conn_free(g_ping_sock_conn);
 		g_ping_sock_conn = NULL;
 	}
 	if (g_ping_timer_conn != NULL) {
-		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_ping_timer_conn->fd, NULL);
+		thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_ping_timer_conn->fd, NULL);
 		close(g_ping_timer_conn->fd);
 		g_ping_timer_conn->kind = CONN_DEAD;
 		queue_conn_free(g_ping_timer_conn);
@@ -3833,7 +3833,7 @@ static void exec_job_close_conn(struct conn **slot)
 {
 	if (*slot == NULL)
 		return;
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, (*slot)->fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, (*slot)->fd, NULL);
 	close((*slot)->fd);
 	free(*slot);
 	*slot = NULL;
@@ -3968,7 +3968,7 @@ static void handle_container_exec_get(int fd, const char *name)
 static struct conn *exec_register(int fd, enum conn_kind kind)
 {
 	struct conn *cc = malloc(sizeof(*cc));
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	if (cc == NULL)
 		return NULL;
@@ -3978,7 +3978,7 @@ static struct conn *exec_register(int fd, enum conn_kind kind)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
 		free(cc);
 		return NULL;
 	}
@@ -4135,7 +4135,7 @@ static void handle_ping_post(int fd, const char *body, size_t body_len)
 	int sockfd;
 	enum ping_error perr;
 	struct conn *sock_cc, *timer_cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 	int tfd;
 	struct itimerspec its;
 	struct json_writer w;
@@ -4201,7 +4201,7 @@ static void handle_ping_post(int fd, const char *body, size_t body_len)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = sock_cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, sockfd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, sockfd, &ev) != 0) {
 		perror("epoll_ctl ADD ping socket");
 		free(sock_cc);
 		free(timer_cc);
@@ -4211,9 +4211,9 @@ static void handle_ping_post(int fd, const char *body, size_t body_len)
 		return;
 	}
 	ev.data.ptr = timer_cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
 		perror("epoll_ctl ADD ping timer");
-		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, sockfd, NULL);
+		thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, sockfd, NULL);
 		free(sock_cc);
 		free(timer_cc);
 		close(tfd);
@@ -4257,14 +4257,14 @@ static struct conn g_ntp_periodic_conn; /* permanent -- registered once at start
 static void ntp_job_teardown(void)
 {
 	if (g_ntp_sync_conn != NULL) {
-		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_ntp_sync_conn->fd, NULL);
+		thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_ntp_sync_conn->fd, NULL);
 		close(g_ntp_sync_conn->fd);
 		g_ntp_sync_conn->kind = CONN_DEAD;
 		queue_conn_free(g_ntp_sync_conn);
 		g_ntp_sync_conn = NULL;
 	}
 	if (g_ntp_timer_conn != NULL) {
-		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_ntp_timer_conn->fd, NULL);
+		thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, g_ntp_timer_conn->fd, NULL);
 		close(g_ntp_timer_conn->fd);
 		g_ntp_timer_conn->kind = CONN_DEAD;
 		queue_conn_free(g_ntp_timer_conn);
@@ -4327,7 +4327,7 @@ static enum ntp_start_error start_ntp_sync_job(void)
 	int sockfd;
 	enum ntp_start_error serr;
 	struct conn *sock_cc, *timer_cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 	int tfd;
 	struct itimerspec its;
 
@@ -4369,7 +4369,7 @@ static enum ntp_start_error start_ntp_sync_job(void)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = sock_cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, sockfd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, sockfd, &ev) != 0) {
 		perror("epoll_ctl ADD ntp sync socket");
 		free(sock_cc);
 		free(timer_cc);
@@ -4378,9 +4378,9 @@ static enum ntp_start_error start_ntp_sync_job(void)
 		return NTP_START_SOCKET_FAILED;
 	}
 	ev.data.ptr = timer_cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
 		perror("epoll_ctl ADD ntp sync timer");
-		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, sockfd, NULL);
+		thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, sockfd, NULL);
 		free(sock_cc);
 		free(timer_cc);
 		close(tfd);
@@ -4517,7 +4517,7 @@ static void serverhealth_inflight_remove(struct conn *cc)
 static void serverhealth_probe_teardown(struct conn *cc)
 {
 	serverhealth_inflight_remove(cc);
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	close(cc->fd);
 	free(cc);
 }
@@ -4572,7 +4572,7 @@ static void serverhealth_start_tcp_probe(const char *kind, const char *container
 {
 	struct sockaddr_in sa;
 	struct conn *cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 	char desc[SERVERHEALTH_PROBE_MAX];
 	int fd;
 
@@ -4614,7 +4614,7 @@ static void serverhealth_start_tcp_probe(const char *kind, const char *container
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLOUT;
 	ev.data.ptr = cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
 		close(fd);
 		free(cc);
 		serverhealth_record_result(kind, container, desc, 0, "epoll registration failed");
@@ -4711,7 +4711,7 @@ static void protect_control_plane(void)
 
 static void start_serverhealth_timer(void)
 {
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 
 	g_serverhealth_timer_conn.fd = -1;
@@ -4724,7 +4724,7 @@ static void start_serverhealth_timer(void)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = &g_serverhealth_timer_conn;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
 		close(fd);
 		g_serverhealth_timer_conn.fd = -1;
 		return;
@@ -4759,7 +4759,7 @@ static void handle_serverhealth_probe_event(struct conn *cc)
 
 static void start_ntp_periodic_timer(void)
 {
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 
 	if (fd < 0) {
@@ -4771,7 +4771,7 @@ static void start_ntp_periodic_timer(void)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = &g_ntp_periodic_conn;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
 		close(fd);
 		g_ntp_periodic_conn.fd = -1;
 		return;
@@ -7727,7 +7727,7 @@ static void handle_get_one(int fd, const char *name)
 static void register_container_pidfd(struct registry_entry *entry)
 {
 	struct conn *cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -7750,7 +7750,7 @@ static void register_container_pidfd(struct registry_entry *entry)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD pidfd");
 		abort();
 	}
@@ -7767,7 +7767,7 @@ static void register_container_pidfd(struct registry_entry *entry)
 static void register_pkg_fetch_pidfd(pid_t pid, int pidfd, int chain_idx)
 {
 	struct conn *cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -7782,7 +7782,7 @@ static void register_pkg_fetch_pidfd(pid_t pid, int pidfd, int chain_idx)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD pkg fetch pidfd");
 		abort();
 	}
@@ -7839,7 +7839,7 @@ static void try_start_queued_pkg_rebuild(void)
 static void register_pkg_build_output(int output_fd, int chain_idx)
 {
 	struct conn *cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	if (output_fd < 0)
 		return;
@@ -7856,7 +7856,7 @@ static void register_pkg_build_output(int output_fd, int chain_idx)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD pkg build output fd");
 		abort();
 	}
@@ -7905,7 +7905,7 @@ static void build_log_ws_broadcast(int chain_idx, const void *data, size_t len)
 			continue;
 		}
 		if (ws_write_frame(cc->fd, WS_OPCODE_TEXT, data, len) != 0) {
-			kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+			thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 			ws_conn_free(&cc->ws);
 			close(cc->fd);
 			g_build_log_ws_conns[i] = g_build_log_ws_conns[g_build_log_ws_conn_count - 1];
@@ -7936,7 +7936,7 @@ static void build_log_ws_teardown_all(int chain_idx)
 			continue;
 		}
 		ws_write_frame(cc->fd, WS_OPCODE_CLOSE, NULL, 0);
-		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+		thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 		ws_conn_free(&cc->ws);
 		close(cc->fd);
 		free(cc);
@@ -7967,7 +7967,7 @@ static void handle_pkg_build_output_event(struct conn *cc)
 	if (new_len > 0 && g_build_log_ws_conn_count > 0)
 		build_log_ws_broadcast(cc->pkg_chain_idx, new_data, (size_t)new_len);
 	if (eof) {
-		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+		thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 		pkg_build_output_close(cc->pkg_chain_idx);
 		build_log_ws_teardown_all(cc->pkg_chain_idx);
 		free(cc);
@@ -7989,7 +7989,7 @@ static void handle_pkg_build_output_event(struct conn *cc)
 static void register_container_output(struct registry_entry *entry)
 {
 	struct conn *cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	if (entry->output_fd < 0)
 		return;
@@ -8007,7 +8007,7 @@ static void register_container_output(struct registry_entry *entry)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD container output fd");
 		abort();
 	}
@@ -8127,7 +8127,7 @@ static void handle_container_output_event(struct conn *cc)
 	if (eof) {
 		if (cc->entry->in_use && cc->entry->output_fd == cc->fd)
 			forward_container_output_to_logstore(cc, "", 0, 1);
-		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+		thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 		close(cc->fd);
 		if (cc->entry->output_fd == cc->fd)
 			cc->entry->output_fd = -1;
@@ -8208,7 +8208,7 @@ static void bootroot_output_close(void)
 static void register_bootroot_output(void)
 {
 	struct conn *cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	if (g_bootroot_output_rd < 0)
 		return;
@@ -8224,7 +8224,7 @@ static void register_bootroot_output(void)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD bootroot output fd");
 		abort();
 	}
@@ -8233,7 +8233,7 @@ static void register_bootroot_output(void)
 static void handle_bootroot_output_event(struct conn *cc)
 {
 	if (bootroot_output_readable()) {
-		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+		thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 		bootroot_output_close();
 		free(cc);
 	}
@@ -8247,7 +8247,7 @@ static void handle_bootroot_output_event(struct conn *cc)
 static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
 {
 	struct conn *cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -8261,7 +8261,7 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD bootroot assemble pidfd");
 		abort();
 	}
@@ -8463,7 +8463,7 @@ static char ISO_OUTPUT_PATH[PATH_MAX];
 static void register_iso_assemble_pidfd(pid_t pid, int pidfd)
 {
 	struct conn *cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -8477,7 +8477,7 @@ static void register_iso_assemble_pidfd(pid_t pid, int pidfd)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD iso assemble pidfd");
 		abort();
 	}
@@ -8610,7 +8610,7 @@ static void handle_iso_assemble_event(struct conn *cc)
 {
 	int status;
 
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status) &&
 	    WEXITSTATUS(status) == 0) {
 		g_iso_build_state = ISO_BUILD_READY;
@@ -8653,7 +8653,7 @@ static char g_bootstrap_fetch_sha256_expected[PKG_SHA256_MAX];
 static void register_bootstrap_fetch_pidfd(pid_t pid, int pidfd)
 {
 	struct conn *cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -8667,7 +8667,7 @@ static void register_bootstrap_fetch_pidfd(pid_t pid, int pidfd)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD bootstrap fetch pidfd");
 		abort();
 	}
@@ -8679,7 +8679,7 @@ static void register_bootstrap_fetch_pidfd(pid_t pid, int pidfd)
 static void register_pkg_sync_fetch_pidfd(pid_t pid, int pidfd)
 {
 	struct conn *cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -8693,7 +8693,7 @@ static void register_pkg_sync_fetch_pidfd(pid_t pid, int pidfd)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD pkg sync fetch pidfd");
 		abort();
 	}
@@ -8707,7 +8707,7 @@ static void handle_pkg_sync_fetch_event(struct conn *cc)
 	int status;
 	int exit_status;
 
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
 		exit_status = WEXITSTATUS(status);
 	else
@@ -8724,7 +8724,7 @@ static void handle_pkg_sync_fetch_event(struct conn *cc)
 static void register_image_recipe_fetch_pidfd(pid_t pid, int pidfd)
 {
 	struct conn *cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -8738,7 +8738,7 @@ static void register_image_recipe_fetch_pidfd(pid_t pid, int pidfd)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD image recipe fetch pidfd");
 		abort();
 	}
@@ -8753,7 +8753,7 @@ static void handle_image_recipe_fetch_event(struct conn *cc)
 	int status;
 	int exit_status;
 
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
 		exit_status = WEXITSTATUS(status);
 	else
@@ -8804,7 +8804,7 @@ static void handle_pkg_sync_periodic_timer_event(struct conn *cc)
  * remains fully usable via manual trigger regardless. */
 static void start_pkg_sync_periodic_timer(void)
 {
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 
 	g_pkg_sync_periodic_conn.fd = -1;
@@ -8817,7 +8817,7 @@ static void start_pkg_sync_periodic_timer(void)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = &g_pkg_sync_periodic_conn;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
 		close(fd);
 		g_pkg_sync_periodic_conn.fd = -1;
 		return;
@@ -8864,7 +8864,7 @@ static void handle_backup_periodic_timer_event(struct conn *cc)
  * regardless. */
 static void start_backup_periodic_timer(void)
 {
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 	int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 
 	g_backup_periodic_conn.fd = -1;
@@ -8877,7 +8877,7 @@ static void start_backup_periodic_timer(void)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = &g_backup_periodic_conn;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
 		close(fd);
 		g_backup_periodic_conn.fd = -1;
 		return;
@@ -9383,7 +9383,7 @@ static void handle_bootstrap_fetch_event(struct conn *cc)
 	int status;
 	char sha_out[PKG_SHA256_MAX];
 
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) != cc->pkg_fetch_pid || !WIFEXITED(status) ||
 	    WEXITSTATUS(status) != 0) {
 		g_bootstrap_fetch_state = BOOTSTRAP_FETCH_FAILED;
@@ -9431,7 +9431,7 @@ static void handle_bootstrap_fetch_event(struct conn *cc)
 static void register_disk_format_pidfd(pid_t pid, int pidfd)
 {
 	struct conn *cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -9445,7 +9445,7 @@ static void register_disk_format_pidfd(pid_t pid, int pidfd)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD disk format pidfd");
 		abort();
 	}
@@ -9461,7 +9461,7 @@ static void handle_disk_format_event(struct conn *cc)
 	int status;
 	int exit_status;
 
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
 		exit_status = WEXITSTATUS(status);
 	else
@@ -9481,7 +9481,7 @@ static void handle_disk_format_event(struct conn *cc)
 static void register_storage_migrate_pidfd(enum storage_kind kind, pid_t pid, int pidfd)
 {
 	struct conn *cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -9496,7 +9496,7 @@ static void register_storage_migrate_pidfd(enum storage_kind kind, pid_t pid, in
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD storage migrate pidfd");
 		abort();
 	}
@@ -9507,7 +9507,7 @@ static void register_storage_migrate_pidfd(enum storage_kind kind, pid_t pid, in
 static void register_container_storage_migrate_pidfd(const char *name, pid_t pid, int pidfd)
 {
 	struct conn *cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -9522,7 +9522,7 @@ static void register_container_storage_migrate_pidfd(const char *name, pid_t pid
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD container storage migrate pidfd");
 		abort();
 	}
@@ -9693,7 +9693,7 @@ static void handle_storage_migrate_event(struct conn *cc)
 	int exit_status;
 	enum storage_kind kind = cc->storage_migrate_kind;
 
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
 		exit_status = WEXITSTATUS(status);
 	else
@@ -12301,7 +12301,7 @@ static void handle_delete(int fd, const char *name)
 	if (e != NULL) {
 		if (e->reactor_conn != NULL) {
 			cc = e->reactor_conn;
-			kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+			thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 			free(cc);
 			e->reactor_conn = NULL;
 		}
@@ -12490,7 +12490,7 @@ static void finalize_container_storage_migration(const char *name)
 		if (live->reactor_conn != NULL) {
 			struct conn *rc = live->reactor_conn;
 
-			kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, rc->fd, NULL);
+			thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, rc->fd, NULL);
 			free(rc);
 			live->reactor_conn = NULL;
 		}
@@ -12578,7 +12578,7 @@ static void handle_container_storage_migrate_event(struct conn *cc)
 
 	snprintf(name, sizeof(name), "%s", cc->container_storage_migrate_name);
 
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
 		exit_status = WEXITSTATUS(status);
 	else
@@ -14453,7 +14453,7 @@ static void handle_stop(int fd, const char *name)
 		 * skipped for a non-running entry, so nothing here can block. */
 		if (e->reactor_conn != NULL) {
 			cc = e->reactor_conn;
-			kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+			thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 			free(cc);
 			e->reactor_conn = NULL;
 		}
@@ -21468,7 +21468,7 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	int rlen;
 	struct console_exec_session *sess;
 	struct conn *pty_cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	if (strcmp(req->method, "GET") != 0)
 		return CONSOLE_NOT_MATCHED;
@@ -21623,7 +21623,7 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 
 	ev.events = EPOLLIN;
 	ev.data.ptr = pty_cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, pty_cc->fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, pty_cc->fd, &ev) != 0) {
 		/* Extremely unlikely (fd/epoll exhaustion) -- tear the whole
 		 * session down the normal way (queues cc for deferred free
 		 * too) rather than leaving half of it dangling. */
@@ -21791,7 +21791,7 @@ static enum console_route_result try_pkg_build_log_upgrade(struct conn *cc, cons
 	snapshot_len = pkg_build_output_snapshot(chain_idx, snapshot, sizeof(snapshot));
 	if (snapshot_len > 0 && ws_write_frame(cc->fd, WS_OPCODE_TEXT, snapshot, (size_t)snapshot_len) != 0) {
 		build_log_ws_detach(cc);
-		kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+		thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 		ws_conn_free(&cc->ws);
 		close(cc->fd);
 		free(cc);
@@ -21843,7 +21843,7 @@ static void handle_pkg_build_log_ws_event(struct conn *cc)
 
 gone:
 	build_log_ws_detach(cc);
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	ws_conn_free(&cc->ws);
 	close(cc->fd);
 	free(cc);
@@ -21880,7 +21880,7 @@ static void handle_console_ws_event(struct conn *cc)
 
 			if (frame.opcode == WS_OPCODE_TEXT || frame.opcode == WS_OPCODE_BINARY) {
 				if (frame.payload_len > 0 &&
-				    kx_write_all(cc->exec_session->pty_conn->fd, frame.payload, frame.payload_len) !=
+				    thinc_write_all(cc->exec_session->pty_conn->fd, frame.payload, frame.payload_len) !=
 				        0) {
 					ws_conn_consume(&cc->ws, frame.frame_len);
 					console_session_teardown(cc->exec_session);
@@ -21982,7 +21982,7 @@ static void log_tls_error(const char *context, const char *peer_ip, int should_l
  */
 static void client_conn_teardown(struct conn *cc)
 {
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (cc->ssl != NULL) {
 		tls_unregister(cc->fd);
 		SSL_free(cc->ssl);
@@ -22013,7 +22013,7 @@ static int client_conn_advance_handshake(struct conn *cc)
 {
 	int r;
 	int err;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	r = SSL_accept(cc->ssl);
 	if (r == 1) {
@@ -22028,7 +22028,7 @@ static int client_conn_advance_handshake(struct conn *cc)
 		memset(&ev, 0, sizeof(ev));
 		ev.events = EPOLLIN | EPOLLOUT;
 		ev.data.ptr = cc;
-		kx_epoll_ctl(g_epfd, EPOLL_CTL_MOD, cc->fd, &ev);
+		thinc_epoll_ctl(g_epfd, EPOLL_CTL_MOD, cc->fd, &ev);
 		return 0;
 	}
 	log_tls_error("https handshake failed", cc->peer_ip, connthrottle_should_log_failure(cc->peer_ip));
@@ -22060,12 +22060,12 @@ static void handle_client_event(struct conn *cc)
 		 * application data immediately below, not on the next event
 		 * (SSL_pending() may already be nonzero). */
 		{
-			struct kx_epoll_event ev;
+			struct thinc_epoll_event ev;
 
 			memset(&ev, 0, sizeof(ev));
 			ev.events = EPOLLIN;
 			ev.data.ptr = cc;
-			kx_epoll_ctl(g_epfd, EPOLL_CTL_MOD, cc->fd, &ev);
+			thinc_epoll_ctl(g_epfd, EPOLL_CTL_MOD, cc->fd, &ev);
 		}
 	}
 
@@ -22159,7 +22159,7 @@ static void arm_restart_timer(const char *name, int delay_seconds)
 	int tfd;
 	struct itimerspec its;
 	struct conn *cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 	if (tfd < 0) {
@@ -22188,7 +22188,7 @@ static void arm_restart_timer(const char *name, int delay_seconds)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
 		perror("epoll_ctl ADD restart timer");
 		close(tfd);
 		free(cc);
@@ -22219,7 +22219,7 @@ static void handle_restart_timer_event(struct conn *cc)
 	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
 		perror("read (restart timerfd)");
 
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	close(cc->fd);
 
 	def = containerdef_find(cc->restart_name);
@@ -22273,7 +22273,7 @@ static void arm_rolling_restart_timer(const char *name, int delay_seconds)
 	int tfd;
 	struct itimerspec its;
 	struct conn *cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 	if (tfd < 0) {
@@ -22304,7 +22304,7 @@ static void arm_rolling_restart_timer(const char *name, int delay_seconds)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
 		perror("epoll_ctl ADD rolling restart timer");
 		close(tfd);
 		free(cc);
@@ -22339,7 +22339,7 @@ static void handle_rolling_restart_timer_event(struct conn *cc)
 	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
 		perror("read (rolling restart timerfd)");
 
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	close(cc->fd);
 
 	def = containerdef_find(cc->restart_name);
@@ -22350,7 +22350,7 @@ static void handle_rolling_restart_timer_event(struct conn *cc)
 			if (live->reactor_conn != NULL) {
 				struct conn *rc = live->reactor_conn;
 
-				kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, rc->fd, NULL);
+				thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, rc->fd, NULL);
 				free(rc);
 				live->reactor_conn = NULL;
 			}
@@ -22518,7 +22518,7 @@ static void handle_container_event(struct conn *cc)
 	char hostbuild_done_name[PKG_NAME_MAX];
 	int kept_build_container;
 
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	registry_mark_exited(entry);
 	entry->reactor_conn = NULL;
 	free(cc);
@@ -22704,7 +22704,7 @@ static void handle_pkg_fetch_event(struct conn *cc)
 	int stdio_write_fd;
 	int chain_idx = cc->pkg_chain_idx;
 
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
 		exit_status = WEXITSTATUS(status);
 	else
@@ -22796,7 +22796,7 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 	char output[BOOTROOT_OUTPUT_CAPTURE_MAX + 1];
 	ssize_t output_len;
 
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	reaped = waitpid(cc->pkg_fetch_pid, &status, 0);
 	/*
 	 * ADR-0087: g_bootroot_output_captured has already been
@@ -22881,7 +22881,7 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 static void register_console_shell_pidfd(pid_t pid, int pidfd, const char *tty_path)
 {
 	struct conn *cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	cc = malloc(sizeof(*cc));
 	if (cc == NULL) {
@@ -22897,7 +22897,7 @@ static void register_console_shell_pidfd(pid_t pid, int pidfd, const char *tty_p
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
 		perror("epoll_ctl ADD console shell pidfd");
 		close(pidfd);
 		free(cc);
@@ -22978,7 +22978,7 @@ static void arm_console_respawn_timer(const char *tty_path, int delay_seconds)
 	int tfd;
 	struct itimerspec its;
 	struct conn *cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 
 	tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
 	if (tfd < 0) {
@@ -23007,7 +23007,7 @@ static void arm_console_respawn_timer(const char *tty_path, int delay_seconds)
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;
 	ev.data.ptr = cc;
-	if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, tfd, &ev) != 0) {
 		perror("epoll_ctl ADD console respawn timer");
 		close(tfd);
 		free(cc);
@@ -23023,7 +23023,7 @@ static void handle_console_shell_event(struct conn *cc)
 	int status;
 	char tty_path[sizeof(cc->console_tty)];
 
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	waitpid(cc->console_pid, &status, 0);
 	close(cc->fd);
 	snprintf(tty_path, sizeof(tty_path), "%s", cc->console_tty);
@@ -23043,7 +23043,7 @@ static void handle_console_respawn_timer_event(struct conn *cc)
 	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
 		perror("read (console respawn timerfd)");
 
-	kx_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	close(cc->fd);
 	snprintf(tty_path, sizeof(tty_path), "%s", cc->console_tty);
 	free(cc);
@@ -23064,7 +23064,7 @@ static void accept_loop(struct conn *listener)
 {
 	int client_fd;
 	struct conn *cc;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 	int is_tls = (listener->kind == CONN_LISTENER_TLS);
 	struct sockaddr_in peer_addr;
 	socklen_t peer_len;
@@ -23139,7 +23139,7 @@ static void accept_loop(struct conn *listener)
 		memset(&ev, 0, sizeof(ev));
 		ev.events = EPOLLIN;
 		ev.data.ptr = cc;
-		if (kx_epoll_ctl(g_epfd, EPOLL_CTL_ADD, client_fd, &ev) != 0) {
+		if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, client_fd, &ev) != 0) {
 			perror("epoll_ctl ADD client");
 			if (cc->ssl != NULL) {
 				tls_unregister(client_fd);
@@ -23348,7 +23348,7 @@ int main(int argc, char **argv)
 	const char *test_bootstrap_toolchain = NULL;
 	int i;
 	int listen_fd;
-	struct kx_epoll_event ev;
+	struct thinc_epoll_event ev;
 	struct sigaction sa;
 
 	/* Stamped before anything else so a slow startup (image scan, state
@@ -23890,7 +23890,7 @@ int main(int argc, char **argv)
 	stallwatch_start(STALLWATCH_RECORDS_PATH);
 
 	while (!g_stop) {
-		struct kx_epoll_event events[MAX_EVENTS];
+		struct thinc_epoll_event events[MAX_EVENTS];
 		/*
 		 * One-second timeout rather than an indefinite block: the
 		 * heartbeat below has to happen even with nothing to do, or an
@@ -23898,7 +23898,7 @@ int main(int argc, char **argv)
 		 * A wakeup per second costs nothing next to the per-2s polling
 		 * every dashboard client already does.
 		 */
-		int n = kx_epoll_wait(g_epfd, events, MAX_EVENTS, 1000);
+		int n = thinc_epoll_wait(g_epfd, events, MAX_EVENTS, 1000);
 		int j;
 		struct conn *cc;
 

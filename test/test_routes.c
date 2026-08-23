@@ -70,14 +70,14 @@ static int stop_daemon(pid_t pid)
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -89,16 +89,16 @@ static int wait_for_daemon(const struct kx_client *c, int max_attempts)
  * this exact dest/prefix appears -- the real, kernel-backed proof a
  * mutation actually took effect, not just that the daemon returned the
  * status code it was supposed to. */
-static int route_dump_contains(const struct kx_client *c, const char *dest, int prefix)
+static int route_dump_contains(const struct thinc_client *c, const char *dest, int prefix)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	const struct json_value *routes;
 	size_t i;
 	int found = 0;
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(c, "GET", "/v1/system/routes", NULL, &r) != 0 || r.status != 200) {
-		kx_response_free(&r);
+	if (thinc_client_request(c, "GET", "/v1/system/routes", NULL, &r) != 0 || r.status != 200) {
+		thinc_response_free(&r);
 		return -1;
 	}
 
@@ -117,16 +117,16 @@ static int route_dump_contains(const struct kx_client *c, const char *dest, int 
 			}
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	return found;
 }
 
 int main(void)
 {
 	pid_t daemon_pid;
-	struct kx_client client;
+	struct thinc_client client;
 	int ok = 1;
-	struct kx_response r;
+	struct thinc_response r;
 	int present;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
@@ -138,7 +138,7 @@ int main(void)
 		return 1;
 	}
 
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -158,7 +158,7 @@ int main(void)
 
 	/* 2. Add it via POST, expect 204. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (kx_client_request(&client, "POST", "/v1/system/routes",
+	if (ok && (thinc_client_request(&client, "POST", "/v1/system/routes",
 	                              "{\"dest\":\"" TEST_DEST "\",\"prefix\":24,\"gateway\":\"" TEST_GATEWAY
 	                              "\"}",
 	                              &r) != 0 ||
@@ -166,7 +166,7 @@ int main(void)
 		fprintf(stderr, "FAIL: POST /v1/system/routes, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 3. Real, kernel-backed proof it's there: re-dump and find it. */
 	if (ok) {
@@ -183,7 +183,7 @@ int main(void)
 	 * itself rejects the duplicate (no NLM_F_REPLACE), and the daemon
 	 * must surface that as 400, not silently succeed or crash. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (kx_client_request(&client, "POST", "/v1/system/routes",
+	if (ok && (thinc_client_request(&client, "POST", "/v1/system/routes",
 	                              "{\"dest\":\"" TEST_DEST "\",\"prefix\":24,\"gateway\":\"" TEST_GATEWAY
 	                              "\"}",
 	                              &r) != 0 ||
@@ -191,28 +191,28 @@ int main(void)
 		fprintf(stderr, "FAIL: duplicate POST /v1/system/routes expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 5. Malformed body (bad dest) must 400, not crash or silently
 	 * install a garbage route. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (kx_client_request(&client, "POST", "/v1/system/routes",
+	if (ok && (thinc_client_request(&client, "POST", "/v1/system/routes",
 	                              "{\"dest\":\"not-an-ip\",\"prefix\":24}", &r) != 0 ||
 	           r.status != 400)) {
 		fprintf(stderr, "FAIL: invalid dest POST expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 6. Delete it via DELETE, expect 204. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (kx_client_request(&client, "DELETE", "/v1/system/routes",
+	if (ok && (thinc_client_request(&client, "DELETE", "/v1/system/routes",
 	                              "{\"dest\":\"" TEST_DEST "\",\"prefix\":24}", &r) != 0 ||
 	           r.status != 204)) {
 		fprintf(stderr, "FAIL: DELETE /v1/system/routes, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 7. Real, kernel-backed proof it's gone: re-dump and confirm it's
 	 * absent again. */
@@ -229,13 +229,13 @@ int main(void)
 	/* 8. Deleting an already-gone route must 404, not crash or silently
 	 * report success. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (kx_client_request(&client, "DELETE", "/v1/system/routes",
+	if (ok && (thinc_client_request(&client, "DELETE", "/v1/system/routes",
 	                              "{\"dest\":\"" TEST_DEST "\",\"prefix\":24}", &r) != 0 ||
 	           r.status != 404)) {
 		fprintf(stderr, "FAIL: DELETE of already-gone route expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	if (ok)
 		printf("ROUTES RESULT: PASS\n");

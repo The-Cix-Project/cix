@@ -36,14 +36,14 @@ static char g_image_root[PATH_MAX];
 #define TEST_NETWORK_NAME2 "dnettest2"
 #define TEST_NETWORK_SUBNET2 "172.34.0.0"
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -125,9 +125,9 @@ int main(void)
 	pid_t daemon_pid;
 	char *dargv[4];
 	char data_dir_arg[PATH_MAX + 11];
-	struct kx_client client;
+	struct thinc_client client;
 	int ok = 1;
-	struct kx_response r;
+	struct thinc_response r;
 	char ip1[64] = { 0 };
 	char ip2[64] = { 0 };
 
@@ -175,7 +175,7 @@ int main(void)
 		_exit(127);
 	}
 
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -191,7 +191,7 @@ int main(void)
 	 * default the host has no route into either subnet at all
 	 * (correct, intended behavior, not a bug). */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/networks",
+	if (thinc_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"" TEST_NETWORK_NAME "\",\"subnet\":\"" TEST_NETWORK_SUBNET
 	                       "\",\"prefix_len\":24,\"address\":\"172.33.0.1\"}",
 	                       &r) != 0 ||
@@ -199,10 +199,10 @@ int main(void)
 		fprintf(stderr, "FAIL: POST /v1/networks, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/networks",
+	if (thinc_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"" TEST_NETWORK_NAME2 "\",\"subnet\":\"" TEST_NETWORK_SUBNET2
 	                       "\",\"prefix_len\":24,\"address\":\"172.34.0.1\"}",
 	                       &r) != 0 ||
@@ -210,12 +210,12 @@ int main(void)
 		fprintf(stderr, "FAIL: POST /v1/networks (2nd), status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 2-3. create n1 with networking, confirm a real assigned ip and
 	 * real connectivity through it */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"n1\",\"image\":\"nettest\",\"cmd\":[\"/bin/net_child\"],"
 	                       "\"networks\":[\"" TEST_NETWORK_NAME "\"]}",
 	                       &r) != 0 ||
@@ -236,11 +236,11 @@ int main(void)
 			}
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 4. second networked container gets a DIFFERENT ip */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"n2\",\"image\":\"nettest\",\"cmd\":[\"/bin/net_child\"],"
 	                       "\"networks\":[\"" TEST_NETWORK_NAME "\"]}",
 	                       &r) != 0 ||
@@ -265,11 +265,11 @@ int main(void)
 			}
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 5. GET /v1/containers shows both with their correct, distinct ips */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/containers", NULL, &r) != 0 || r.status != 200) {
+	if (thinc_client_request(&client, "GET", "/v1/containers", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/containers\n");
 		ok = 0;
 	} else {
@@ -295,12 +295,12 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 6. no "networks" field -> empty networks array, regression check
 	 * on unchanged default behavior */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"n3\",\"image\":\"nettest\",\"cmd\":[\"/bin/net_child\"]}",
 	                       &r) != 0 ||
 	    r.status != 201) {
@@ -314,11 +314,11 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 7. unsupported network name -> 400 */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"n4\",\"image\":\"nettest\",\"cmd\":[\"/bin/net_child\"],"
 	                       "\"networks\":[\"bogus\"]}",
 	                       &r) != 0 ||
@@ -326,11 +326,11 @@ int main(void)
 		fprintf(stderr, "FAIL: unsupported network expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 8. multi-homing: one container, two networks -- Phase 7 part 2 */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"n5\",\"image\":\"nettest\",\"cmd\":[\"/bin/net_child\",\"2\"],"
 	                       "\"networks\":[\"" TEST_NETWORK_NAME "\",\"" TEST_NETWORK_NAME2 "\"]}",
 	                       &r) != 0 ||
@@ -361,7 +361,7 @@ int main(void)
 			}
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 9. real router topology (Phase 7 part 3): router sits on both
 	 * networks with ip_forward on; h and t each get a static route via
@@ -376,7 +376,7 @@ int main(void)
 		char t_ip[64] = { 0 };
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/containers",
+		if (thinc_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"router\",\"image\":\"nettest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"6\",\"0\"],"
 		                       "\"networks\":[\"" TEST_NETWORK_NAME "\",\"" TEST_NETWORK_NAME2
@@ -397,7 +397,7 @@ int main(void)
 				snprintf(r_ip_b, sizeof(r_ip_b), "%s", ip_b);
 			}
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		if (r_ip_b[0] != '\0') {
 			/* t lives on TEST_NETWORK_NAME2, so its route to
@@ -412,7 +412,7 @@ int main(void)
 			         TEST_NETWORK_NAME2, TEST_NETWORK_SUBNET, r_ip_b);
 
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "POST", "/v1/containers", body, &r) != 0 ||
+			if (thinc_client_request(&client, "POST", "/v1/containers", body, &r) != 0 ||
 			    r.status != 201) {
 				fprintf(stderr, "FAIL: POST t (router scenario), status=%d\n", r.status);
 				ok = 0;
@@ -426,7 +426,7 @@ int main(void)
 					snprintf(t_ip, sizeof(t_ip), "%s", ip);
 				}
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 		}
 
 		if (r_ip_a[0] != '\0' && t_ip[0] != '\0') {
@@ -445,26 +445,26 @@ int main(void)
 			         t_ip, TEST_NETWORK_NAME, TEST_NETWORK_SUBNET2, r_ip_a);
 
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "POST", "/v1/containers", body, &r) != 0 ||
+			if (thinc_client_request(&client, "POST", "/v1/containers", body, &r) != 0 ||
 			    r.status != 201) {
 				fprintf(stderr, "FAIL: POST h (router scenario), status=%d\n", r.status);
 				ok = 0;
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 
 			/* h's own exit status is the real proof: net_connect only
 			 * exits 0 if its round trip through router's kernel
 			 * routing table actually succeeded. */
 			for (attempt = 0; attempt < 100; attempt++) {
 				memset(&r, 0, sizeof(r));
-				if (kx_client_request(&client, "GET", "/v1/containers/h", NULL, &r) == 0 &&
+				if (thinc_client_request(&client, "GET", "/v1/containers/h", NULL, &r) == 0 &&
 				    r.status == 200 && str_eq(json_str_field(r.json, "status"), "exited")) {
 					seen = 1;
 					exit_status = (long)json_as_number(json_object_get(r.json, "exit_status"));
-					kx_response_free(&r);
+					thinc_response_free(&r);
 					break;
 				}
-				kx_response_free(&r);
+				thinc_response_free(&r);
 				usleep(100000);
 			}
 			if (!seen) {
@@ -481,12 +481,12 @@ int main(void)
 
 		/* cleanup: h/t/router removed before their networks -- same
 		 * ordering rule the rest of this file already follows */
-		kx_client_request(&client, "DELETE", "/v1/containers/h", NULL, &r);
-		kx_response_free(&r);
-		kx_client_request(&client, "DELETE", "/v1/containers/t", NULL, &r);
-		kx_response_free(&r);
-		kx_client_request(&client, "DELETE", "/v1/containers/router", NULL, &r);
-		kx_response_free(&r);
+		thinc_client_request(&client, "DELETE", "/v1/containers/h", NULL, &r);
+		thinc_response_free(&r);
+		thinc_client_request(&client, "DELETE", "/v1/containers/t", NULL, &r);
+		thinc_response_free(&r);
+		thinc_client_request(&client, "DELETE", "/v1/containers/router", NULL, &r);
+		thinc_response_free(&r);
 	}
 
 	/* 9.5 (ADR-0156/task #861): live network attach/detach on an
@@ -500,7 +500,7 @@ int main(void)
 		char n6_ip2[64] = { 0 };
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/containers",
+		if (thinc_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"n6\",\"image\":\"nettest\","
 		                       "\"cmd\":[\"/bin/net_child\",\"2\"]}",
 		                       &r) != 0 ||
@@ -508,32 +508,32 @@ int main(void)
 			fprintf(stderr, "FAIL: POST n6 (no networks), status=%d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* attach to a nonexistent network -> 404 */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/containers/n6/networks",
+		if (thinc_client_request(&client, "POST", "/v1/containers/n6/networks",
 		                       "{\"name\":\"bogus\"}", &r) != 0 ||
 		    r.status != 404) {
 			fprintf(stderr, "FAIL: live attach to bogus network expected 404, got %d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* attach to a nonexistent/not-running container -> 404 */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/containers/nosuchcontainer/networks",
+		if (thinc_client_request(&client, "POST", "/v1/containers/nosuchcontainer/networks",
 		                       "{\"name\":\"" TEST_NETWORK_NAME "\"}", &r) != 0 ||
 		    r.status != 404) {
 			fprintf(stderr, "FAIL: live attach to unknown container expected 404, got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* the real attach */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/containers/n6/networks",
+		if (thinc_client_request(&client, "POST", "/v1/containers/n6/networks",
 		                       "{\"name\":\"" TEST_NETWORK_NAME "\"}", &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: live attach n6 to %s, status=%d\n", TEST_NETWORK_NAME, r.status);
@@ -555,22 +555,22 @@ int main(void)
 				}
 			}
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* re-attaching the same network -> 409 */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/containers/n6/networks",
+		if (thinc_client_request(&client, "POST", "/v1/containers/n6/networks",
 		                       "{\"name\":\"" TEST_NETWORK_NAME "\"}", &r) != 0 ||
 		    r.status != 409) {
 			fprintf(stderr, "FAIL: re-attaching already-attached network expected 409, got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* GET reflects it, marked live */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/containers/n6", NULL, &r) != 0 ||
+		if (thinc_client_request(&client, "GET", "/v1/containers/n6", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: GET n6 after live attach\n");
 			ok = 0;
@@ -595,32 +595,32 @@ int main(void)
 				ok = 0;
 			}
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* detaching a network never attached -> 404 */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "DELETE", "/v1/containers/n6/networks/" TEST_NETWORK_NAME2,
+		if (thinc_client_request(&client, "DELETE", "/v1/containers/n6/networks/" TEST_NETWORK_NAME2,
 		                       NULL, &r) != 0 ||
 		    r.status != 404) {
 			fprintf(stderr, "FAIL: detach never-attached network expected 404, got %d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* the real detach */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "DELETE", "/v1/containers/n6/networks/" TEST_NETWORK_NAME,
+		if (thinc_client_request(&client, "DELETE", "/v1/containers/n6/networks/" TEST_NETWORK_NAME,
 		                       NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: live detach n6 from %s, status=%d\n", TEST_NETWORK_NAME,
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* GET no longer shows it at all */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/containers/n6", NULL, &r) != 0 ||
+		if (thinc_client_request(&client, "GET", "/v1/containers/n6", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: GET n6 after live detach\n");
 			ok = 0;
@@ -632,14 +632,14 @@ int main(void)
 				ok = 0;
 			}
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* re-attach after detach -- proves veth-naming collision-free
 		 * across a full attach/detach/attach cycle, and that the same
 		 * container can still reach the network again through a fresh
 		 * pair. n6 still has one more accept() left (want_connections=2). */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/containers/n6/networks",
+		if (thinc_client_request(&client, "POST", "/v1/containers/n6/networks",
 		                       "{\"name\":\"" TEST_NETWORK_NAME "\"}", &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: re-attach n6 to %s after detach, status=%d\n", TEST_NETWORK_NAME,
@@ -659,7 +659,7 @@ int main(void)
 				}
 			}
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* detaching a create-time (non-live) attachment -> 409, not
 		 * silently torn down. A fresh, dedicated container for this --
@@ -668,7 +668,7 @@ int main(void)
 		 * would wrongly test the "not running" 404 path instead of
 		 * this one. */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/containers",
+		if (thinc_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"n7\",\"image\":\"nettest\",\"cmd\":[\"/bin/net_child\"],"
 		                       "\"networks\":[\"" TEST_NETWORK_NAME "\"]}",
 		                       &r) != 0 ||
@@ -676,10 +676,10 @@ int main(void)
 			fprintf(stderr, "FAIL: POST n7, status=%d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "DELETE", "/v1/containers/n7/networks/" TEST_NETWORK_NAME,
+		if (thinc_client_request(&client, "DELETE", "/v1/containers/n7/networks/" TEST_NETWORK_NAME,
 		                       NULL, &r) != 0 ||
 		    r.status != 409) {
 			fprintf(stderr,
@@ -687,53 +687,53 @@ int main(void)
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
-		kx_client_request(&client, "DELETE", "/v1/containers/n7", NULL, &r);
-		kx_response_free(&r);
+		thinc_client_request(&client, "DELETE", "/v1/containers/n7", NULL, &r);
+		thinc_response_free(&r);
 
-		kx_client_request(&client, "DELETE", "/v1/containers/n6", NULL, &r);
-		kx_response_free(&r);
+		thinc_client_request(&client, "DELETE", "/v1/containers/n6", NULL, &r);
+		thinc_response_free(&r);
 	}
 
 	/* 10. deleting a network still in use by a container -> 409 */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "DELETE", "/v1/networks/" TEST_NETWORK_NAME, NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "DELETE", "/v1/networks/" TEST_NETWORK_NAME, NULL, &r) != 0 ||
 	    r.status != 409) {
 		fprintf(stderr, "FAIL: DELETE in-use network expected 409, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 11. cleanup: remove containers (kills n3, still blocked in
 	 * accept() since nothing can reach it -- no networking, isolated
 	 * netns), then both networks via the real API */
-	kx_client_request(&client, "DELETE", "/v1/containers/n1", NULL, &r);
-	kx_response_free(&r);
-	kx_client_request(&client, "DELETE", "/v1/containers/n2", NULL, &r);
-	kx_response_free(&r);
-	kx_client_request(&client, "DELETE", "/v1/containers/n3", NULL, &r);
-	kx_response_free(&r);
-	kx_client_request(&client, "DELETE", "/v1/containers/n5", NULL, &r);
-	kx_response_free(&r);
+	thinc_client_request(&client, "DELETE", "/v1/containers/n1", NULL, &r);
+	thinc_response_free(&r);
+	thinc_client_request(&client, "DELETE", "/v1/containers/n2", NULL, &r);
+	thinc_response_free(&r);
+	thinc_client_request(&client, "DELETE", "/v1/containers/n3", NULL, &r);
+	thinc_response_free(&r);
+	thinc_client_request(&client, "DELETE", "/v1/containers/n5", NULL, &r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "DELETE", "/v1/networks/" TEST_NETWORK_NAME, NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "DELETE", "/v1/networks/" TEST_NETWORK_NAME, NULL, &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "FAIL: DELETE " TEST_NETWORK_NAME " (unused) expected 204, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "DELETE", "/v1/networks/" TEST_NETWORK_NAME2, NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "DELETE", "/v1/networks/" TEST_NETWORK_NAME2, NULL, &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "FAIL: DELETE " TEST_NETWORK_NAME2 " (unused) expected 204, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	kill(daemon_pid, SIGTERM);
 	{

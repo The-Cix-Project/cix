@@ -29,14 +29,14 @@ static char g_image_root[PATH_MAX];
 
 static int wait_for_daemon(int max_attempts)
 {
-	struct kx_client c;
-	struct kx_response r;
+	struct thinc_client c;
+	struct thinc_response r;
 	int i;
 
-	kx_client_init(&c, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&c, "127.0.0.1", TEST_PORT);
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(&c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(&c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);

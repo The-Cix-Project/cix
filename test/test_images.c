@@ -31,14 +31,14 @@ static char g_data_dir[PATH_MAX];
 static char g_pkg_state_dir[PATH_MAX];
 static char g_images_dir[PATH_MAX];
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -170,7 +170,7 @@ static int write_recipe(const char *name, const char *tarball_path)
 	return 0;
 }
 
-static int poll_pkg_state(const struct kx_client *c, const char *name, char *out_state,
+static int poll_pkg_state(const struct thinc_client *c, const char *name, char *out_state,
                            size_t out_state_size, int max_attempts)
 {
 	int i;
@@ -178,21 +178,21 @@ static int poll_pkg_state(const struct kx_client *c, const char *name, char *out
 
 	snprintf(path, sizeof(path), "/v1/pkg/%s", name);
 	for (i = 0; i < max_attempts; i++) {
-		struct kx_response r;
+		struct thinc_response r;
 		const char *state;
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(c, "GET", path, NULL, &r) != 0 || r.status != 200) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", path, NULL, &r) != 0 || r.status != 200) {
+			thinc_response_free(&r);
 			return -1;
 		}
 		state = json_str_field(r.json, "state");
 		if (state == NULL) {
-			kx_response_free(&r);
+			thinc_response_free(&r);
 			return -1;
 		}
 		snprintf(out_state, out_state_size, "%s", state);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		if (strcmp(out_state, "fetching") != 0 && strcmp(out_state, "building") != 0)
 			return 0;
 		usleep(200000);
@@ -203,9 +203,9 @@ static int poll_pkg_state(const struct kx_client *c, const char *name, char *out
 int main(void)
 {
 	pid_t daemon_pid;
-	struct kx_client client;
+	struct thinc_client client;
 	int ok = 1;
-	struct kx_response r;
+	struct thinc_response r;
 	char scratch_dir[] = "/tmp/thinc_test_images_XXXXXX";
 	struct stat st;
 
@@ -229,7 +229,7 @@ int main(void)
 		return 1;
 	}
 
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -240,16 +240,16 @@ int main(void)
 
 	/* 1. create, list, get */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/images", "{\"name\":\"imgtest_empty\"}", &r) !=
+	if (thinc_client_request(&client, "POST", "/v1/images", "{\"name\":\"imgtest_empty\"}", &r) !=
 	        0 ||
 	    r.status != 201 || !str_eq(json_str_field(r.json, "name"), "imgtest_empty")) {
 		fprintf(stderr, "FAIL: POST imgtest_empty, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/images", NULL, &r) != 0 || r.status != 200) {
+	if (thinc_client_request(&client, "GET", "/v1/images", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/images, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -269,25 +269,25 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/images/imgtest_empty", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "GET", "/v1/images/imgtest_empty", NULL, &r) != 0 ||
 	    r.status != 200 || !str_eq(json_str_field(r.json, "name"), "imgtest_empty")) {
 		fprintf(stderr, "FAIL: GET imgtest_empty, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 2. duplicate create -> 409 */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/images", "{\"name\":\"imgtest_empty\"}", &r) !=
+	if (thinc_client_request(&client, "POST", "/v1/images", "{\"name\":\"imgtest_empty\"}", &r) !=
 	        0 ||
 	    r.status != 409) {
 		fprintf(stderr, "FAIL: duplicate create expected 409, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/*
 	 * 3. runtime seeded immediately -- ADR-0023. ADR-0107/0108: resolved
@@ -323,47 +323,47 @@ int main(void)
 	 * delete check below to actually exercise IMAGE_ERR_PROTECTED rather
 	 * than IMAGE_ERR_NOT_FOUND. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/images", "{\"name\":\"base\"}", &r) != 0 ||
+	if (thinc_client_request(&client, "POST", "/v1/images", "{\"name\":\"base\"}", &r) != 0 ||
 	    (r.status != 201 && r.status != 409)) {
 		fprintf(stderr, "FAIL: POST base, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "DELETE", "/v1/images/base", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "DELETE", "/v1/images/base", NULL, &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: DELETE base expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 5. unknown image -> 404 on both GET and DELETE */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/images/doesnotexist", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "GET", "/v1/images/doesnotexist", NULL, &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: GET doesnotexist expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "DELETE", "/v1/images/doesnotexist", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "DELETE", "/v1/images/doesnotexist", NULL, &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: DELETE doesnotexist expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 6. delete refused while a running container references the image;
 	 * succeeds once that container is gone, directory genuinely removed */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/images", "{\"name\":\"imgtest_ctr\"}", &r) !=
+	if (thinc_client_request(&client, "POST", "/v1/images", "{\"name\":\"imgtest_ctr\"}", &r) !=
 	        0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST imgtest_ctr, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	{
 		char ctr_rootfs[PATH_MAX];
@@ -388,7 +388,7 @@ int main(void)
 	}
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"imgtest-c1\",\"image\":\"imgtest_ctr\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"]}",
 	                       &r) != 0 ||
@@ -396,24 +396,24 @@ int main(void)
 		fprintf(stderr, "FAIL: POST imgtest-c1, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "DELETE", "/v1/images/imgtest_ctr", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "DELETE", "/v1/images/imgtest_ctr", NULL, &r) != 0 ||
 	    r.status != 409) {
 		fprintf(stderr, "FAIL: DELETE imgtest_ctr while in use expected 409, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "DELETE", "/v1/containers/imgtest-c1", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "DELETE", "/v1/containers/imgtest-c1", NULL, &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "FAIL: DELETE imgtest-c1, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/*
 	 * DELETE of a container is asynchronous (ADR-0180): the 204 records
@@ -428,13 +428,13 @@ int main(void)
 		int i, gone = 0;
 
 		for (i = 0; i < 50; i++) {
-			struct kx_response gr;
+			struct thinc_response gr;
 
 			memset(&gr, 0, sizeof(gr));
-			if (kx_client_request(&client, "GET", "/v1/containers/imgtest-c1", NULL, &gr) == 0 &&
+			if (thinc_client_request(&client, "GET", "/v1/containers/imgtest-c1", NULL, &gr) == 0 &&
 			    gr.status == 404)
 				gone = 1;
-			kx_response_free(&gr);
+			thinc_response_free(&gr);
 			if (gone)
 				break;
 			usleep(100 * 1000);
@@ -446,13 +446,13 @@ int main(void)
 	}
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "DELETE", "/v1/images/imgtest_ctr", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "DELETE", "/v1/images/imgtest_ctr", NULL, &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "FAIL: DELETE imgtest_ctr (now unused) expected 204, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	{
 		char ctr_dir[PATH_MAX];
 
@@ -468,13 +468,13 @@ int main(void)
 	 * real build ever launches), but the entry stays tracked either
 	 * way -- exactly the property under test. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/images", "{\"name\":\"imgtest_pkg\"}", &r) !=
+	if (thinc_client_request(&client, "POST", "/v1/images", "{\"name\":\"imgtest_pkg\"}", &r) !=
 	        0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST imgtest_pkg, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	{
 		char tarball_path[512];
@@ -488,7 +488,7 @@ int main(void)
 			char state[32];
 
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "POST", "/v1/pkg/install",
+			if (thinc_client_request(&client, "POST", "/v1/pkg/install",
 			                       "{\"name\":\"badsum2\",\"image\":\"imgtest_pkg\"}",
 			                       &r) != 0 ||
 			    r.status != 202) {
@@ -496,7 +496,7 @@ int main(void)
 				        r.status);
 				ok = 0;
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 
 			if (poll_pkg_state(&client, "badsum2@imgtest_pkg", state, sizeof(state), 30) !=
 			        0 ||
@@ -506,7 +506,7 @@ int main(void)
 			}
 
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "DELETE", "/v1/images/imgtest_pkg", NULL, &r) !=
+			if (thinc_client_request(&client, "DELETE", "/v1/images/imgtest_pkg", NULL, &r) !=
 			        0 ||
 			    r.status != 409) {
 				fprintf(stderr,
@@ -515,7 +515,7 @@ int main(void)
 				        r.status);
 				ok = 0;
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 		}
 	}
 
@@ -523,7 +523,7 @@ int main(void)
 	 * empty manifest; POST upserts (add, then update the same package
 	 * in place); DELETE removes one entry, leaving others intact. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/images", "{\"name\":\"imgtest_manifest\"}", &r) !=
+	if (thinc_client_request(&client, "POST", "/v1/images", "{\"name\":\"imgtest_manifest\"}", &r) !=
 	        0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST imgtest_manifest, status=%d\n", r.status);
@@ -536,10 +536,10 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/images/imgtest_manifest/manifest",
+	if (thinc_client_request(&client, "POST", "/v1/images/imgtest_manifest/manifest",
 	                       "{\"package\":\"curl\",\"mode\":\"pinned\",\"version\":\"8.20.0\"}",
 	                       &r) != 0 ||
 	    r.status != 204) {
@@ -547,10 +547,10 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/images/imgtest_manifest/manifest",
+	if (thinc_client_request(&client, "POST", "/v1/images/imgtest_manifest/manifest",
 	                       "{\"package\":\"bash\",\"mode\":\"rolling\",\"version\":\"5.2.0\"}",
 	                       &r) != 0 ||
 	    r.status != 204) {
@@ -558,12 +558,12 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* upsert: re-set curl at a different version/mode -> must update in
 	 * place, not duplicate */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/images/imgtest_manifest/manifest",
+	if (thinc_client_request(&client, "POST", "/v1/images/imgtest_manifest/manifest",
 	                       "{\"package\":\"curl\",\"mode\":\"rolling\",\"version\":\"8.19.0\"}",
 	                       &r) != 0 ||
 	    r.status != 204) {
@@ -571,10 +571,10 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/images/imgtest_manifest", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "GET", "/v1/images/imgtest_manifest", NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: GET imgtest_manifest, status=%d\n", r.status);
 		ok = 0;
@@ -608,19 +608,19 @@ int main(void)
 			}
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "DELETE", "/v1/images/imgtest_manifest/manifest/bash", NULL,
+	if (thinc_client_request(&client, "DELETE", "/v1/images/imgtest_manifest/manifest/bash", NULL,
 	                       &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "FAIL: DELETE imgtest_manifest/manifest/bash, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/images/imgtest_manifest", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "GET", "/v1/images/imgtest_manifest", NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: GET imgtest_manifest after delete, status=%d\n", r.status);
 		ok = 0;
@@ -634,36 +634,36 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* invalid mode -> 400, invalid image name -> 404 */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/images/imgtest_manifest/manifest",
+	if (thinc_client_request(&client, "POST", "/v1/images/imgtest_manifest/manifest",
 	                       "{\"package\":\"x\",\"mode\":\"bogus\",\"version\":\"1.0\"}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: POST manifest with invalid mode expected 400, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/images/never-created-image/manifest",
+	if (thinc_client_request(&client, "POST", "/v1/images/never-created-image/manifest",
 	                       "{\"package\":\"x\",\"mode\":\"pinned\",\"version\":\"1.0\"}", &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: POST manifest on a never-created image expected 404, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "DELETE", "/v1/images/imgtest_manifest", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "DELETE", "/v1/images/imgtest_manifest", NULL, &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "FAIL: DELETE imgtest_manifest, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* cleanup */
 	run_cmd("rm -rf '%s'", scratch_dir);

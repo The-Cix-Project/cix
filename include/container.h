@@ -106,7 +106,7 @@ struct overlay_spec {
 
 /*
  * True if path's own backing filesystem is btrfs (a plain statfs(2)
- * check against KX_BTRFS_SUPER_MAGIC), false for anything else
+ * check against THINC_BTRFS_SUPER_MAGIC), false for anything else
  * (including a statfs() failure -- a path that can't even be statfs'd
  * is conservatively never treated as btrfs). Exposed publicly (not
  * static to src/overlay.c) because daemon/src/main.c's own container-

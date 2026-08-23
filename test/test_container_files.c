@@ -37,14 +37,14 @@ static long json_num_field(const struct json_value *obj, const char *key)
 	return (long)json_as_number(json_object_get(obj, key));
 }
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -111,17 +111,17 @@ static void reset_state(void)
 	system(cmd);
 }
 
-static long fetch_pid(const struct kx_client *c, const char *name)
+static long fetch_pid(const struct thinc_client *c, const char *name)
 {
 	char path[128];
-	struct kx_response r;
+	struct thinc_response r;
 	long pid = -1;
 
 	snprintf(path, sizeof(path), "/v1/containers/%s", name);
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200)
+	if (thinc_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200)
 		pid = json_num_field(r.json, "pid");
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	return pid;
 }
 
@@ -206,9 +206,9 @@ static int read_sysctl_in_netns(long pid, const char *sysctl_path, char *out_val
 int main(void)
 {
 	pid_t daemon_pid;
-	struct kx_client client;
+	struct thinc_client client;
 	int ok = 1;
-	struct kx_response r;
+	struct thinc_response r;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
@@ -238,7 +238,7 @@ int main(void)
 		return 1;
 	}
 
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -250,7 +250,7 @@ int main(void)
 	/* 1. a real file lands at the right host path, with the right
 	 * content and mode. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"filetest\",\"image\":\"filestest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 	                       "\"files\":[{\"path\":\"/etc/bird.conf\","
@@ -268,7 +268,7 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	{
 		char bird_conf_path[PATH_MAX];
@@ -302,7 +302,7 @@ int main(void)
 	 * own /proc/<pid>/root branch -- proven with a real byte-for-byte
 	 * comparison, not just a 200. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/containers/filetest/files?path=%2Fetc%2Fbird.conf",
+	if (thinc_client_request(&client, "GET", "/v1/containers/filetest/files?path=%2Fetc%2Fbird.conf",
 	                       NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: GET files (running) status=%d\n", r.status);
@@ -312,16 +312,16 @@ int main(void)
 		fprintf(stderr, "FAIL: GET files (running) wrong content\n");
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	kx_client_request(&client, "DELETE", "/v1/containers/filetest", NULL, &r);
-	kx_response_free(&r);
+	thinc_client_request(&client, "DELETE", "/v1/containers/filetest", NULL, &r);
+	thinc_response_free(&r);
 
 	/* 2. path traversal rejected -- both a ".." component and a
 	 * missing leading '/'. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"badpath1\",\"image\":\"filestest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],"
 	                       "\"files\":[{\"path\":\"/../../etc/passwd\",\"content\":\"x\"}]}",
@@ -330,10 +330,10 @@ int main(void)
 		fprintf(stderr, "FAIL: files path traversal expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"badpath2\",\"image\":\"filestest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],"
 	                       "\"files\":[{\"path\":\"etc/passwd\",\"content\":\"x\"}]}",
@@ -342,12 +342,12 @@ int main(void)
 		fprintf(stderr, "FAIL: files no-leading-slash expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 3. a sysctl actually lands inside THIS container's own netns,
 	 * not the host's. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"sysctltest\",\"image\":\"filestest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 	                       "\"sysctls\":{\"net.ipv4.conf.all.rp_filter\":\"0\"}}",
@@ -356,7 +356,7 @@ int main(void)
 		fprintf(stderr, "FAIL: POST sysctltest, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	{
 		long pid = fetch_pid(&client, "sysctltest");
@@ -377,12 +377,12 @@ int main(void)
 	}
 
 	memset(&r, 0, sizeof(r));
-	kx_client_request(&client, "DELETE", "/v1/containers/sysctltest", NULL, &r);
-	kx_response_free(&r);
+	thinc_client_request(&client, "DELETE", "/v1/containers/sysctltest", NULL, &r);
+	thinc_response_free(&r);
 
 	/* 4. sysctl key validation: non-net.* and a malformed net.* key. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"badsysctl1\",\"image\":\"filestest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],"
 	                       "\"sysctls\":{\"vm.swappiness\":\"10\"}}",
@@ -391,10 +391,10 @@ int main(void)
 		fprintf(stderr, "FAIL: non-net.* sysctl expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"badsysctl2\",\"image\":\"filestest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],"
 	                       "\"sysctls\":{\"net..foo\":\"1\"}}",
@@ -403,13 +403,13 @@ int main(void)
 		fprintf(stderr, "FAIL: malformed sysctl key expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 5. files survive a real daemon restart, correctly re-staged from
 	 * the persisted body (ADR-0025's own replay mechanism, no extra
 	 * work needed for files -- confirmed here, not just assumed). */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"persisttest\",\"image\":\"filestest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"],\"restart\":\"always\","
 	                       "\"files\":[{\"path\":\"/etc/pbr.conf\",\"content\":\"mode=pbr\\n\"}]}",
@@ -418,7 +418,7 @@ int main(void)
 		fprintf(stderr, "FAIL: POST persisttest, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM (first instance)\n");
@@ -468,8 +468,8 @@ int main(void)
 	}
 
 	memset(&r, 0, sizeof(r));
-	kx_client_request(&client, "DELETE", "/v1/containers/persisttest", NULL, &r);
-	kx_response_free(&r);
+	thinc_client_request(&client, "DELETE", "/v1/containers/persisttest", NULL, &r);
+	thinc_response_free(&r);
 
 	/* 6. GET .../files?path=... (ADR-0055) once a container has exited
 	 * on its own (registry_mark_exited() -- a natural process exit,
@@ -480,7 +480,7 @@ int main(void)
 	 * unsafe path and 404 for both a missing container and a missing
 	 * file. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"readtest\",\"image\":\"filestest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"],"
 	                       "\"files\":[{\"path\":\"/etc/only-in-upper.conf\","
@@ -490,7 +490,7 @@ int main(void)
 		fprintf(stderr, "FAIL: POST readtest, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* A real wait for the child to actually exit and for
 	 * handle_container_event() to call registry_mark_exited() -- not
@@ -498,7 +498,7 @@ int main(void)
 	usleep(500000);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET",
+	if (thinc_client_request(&client, "GET",
 	                       "/v1/containers/readtest/files?path=%2Fetc%2Fonly-in-upper.conf", NULL,
 	                       &r) != 0 ||
 	    r.status != 200) {
@@ -509,10 +509,10 @@ int main(void)
 		fprintf(stderr, "FAIL: GET files (exited, upper/) wrong content\n");
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/containers/readtest/files?path=%2Fbin%2Fdaemon_child",
+	if (thinc_client_request(&client, "GET", "/v1/containers/readtest/files?path=%2Fbin%2Fdaemon_child",
 	                       NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: GET files (exited, rootfs/ fallback) status=%d\n", r.status);
@@ -521,50 +521,50 @@ int main(void)
 		fprintf(stderr, "FAIL: GET files (exited, rootfs/ fallback) empty body\n");
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET",
+	if (thinc_client_request(&client, "GET",
 	                       "/v1/containers/readtest/files?path=%2F..%2F..%2Fetc%2Fpasswd", NULL,
 	                       &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: GET files traversal expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/containers/readtest/files?path=etc%2Fhosts", NULL,
+	if (thinc_client_request(&client, "GET", "/v1/containers/readtest/files?path=etc%2Fhosts", NULL,
 	                       &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: GET files no-leading-slash expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET",
+	if (thinc_client_request(&client, "GET",
 	                       "/v1/containers/nosuchcontainer/files?path=%2Fetc%2Fhosts", NULL,
 	                       &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: GET files unknown container expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET",
+	if (thinc_client_request(&client, "GET",
 	                       "/v1/containers/readtest/files?path=%2Fno%2Fsuch%2Ffile", NULL,
 	                       &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: GET files missing file expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	kx_client_request(&client, "DELETE", "/v1/containers/readtest", NULL, &r);
-	kx_response_free(&r);
+	thinc_client_request(&client, "DELETE", "/v1/containers/readtest", NULL, &r);
+	thinc_response_free(&r);
 
 	/* owner/group (ADR-0144): a staged file's real on-disk uid/gid,
 	 * checked directly via stat() against the container's own
@@ -576,7 +576,7 @@ int main(void)
 		char owned_path[PATH_MAX];
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/containers",
+		if (thinc_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"ownertest\",\"image\":\"filestest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 		                       "\"files\":[{\"path\":\"/etc/owned\",\"content\":\"x\\n\","
@@ -586,7 +586,7 @@ int main(void)
 			fprintf(stderr, "FAIL: POST ownertest, status=%d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		snprintf(owned_path, sizeof(owned_path), "%s/ownertest/upper/etc/owned", g_containers_dir);
 		if (stat(owned_path, &st) != 0) {
@@ -600,8 +600,8 @@ int main(void)
 		}
 
 		memset(&r, 0, sizeof(r));
-		kx_client_request(&client, "DELETE", "/v1/containers/ownertest", NULL, &r);
-		kx_response_free(&r);
+		thinc_client_request(&client, "DELETE", "/v1/containers/ownertest", NULL, &r);
+		thinc_response_free(&r);
 	}
 
 	/* 8. PUT .../files?path=... (ADR-0153) writes a new file into a
@@ -610,7 +610,7 @@ int main(void)
 	 * directly with stat()+fopen(), and a follow-up GET proves the
 	 * daemon's own read path sees the exact same bytes. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"writetest\",\"image\":\"filestest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}",
 	                       &r) != 0 ||
@@ -618,10 +618,10 @@ int main(void)
 		fprintf(stderr, "FAIL: POST writetest, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "PUT",
+	if (thinc_client_request(&client, "PUT",
 	                       "/v1/containers/writetest/files?path=%2Fetc%2Flive.conf",
 	                       "{\"content\":\"hello live world\\n\",\"mode\":\"0640\","
 	                       "\"owner\":75,\"group\":76}",
@@ -630,7 +630,7 @@ int main(void)
 		fprintf(stderr, "FAIL: PUT files (running) status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	{
 		char live_conf_path[PATH_MAX];
@@ -663,7 +663,7 @@ int main(void)
 	}
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/containers/writetest/files?path=%2Fetc%2Flive.conf",
+	if (thinc_client_request(&client, "GET", "/v1/containers/writetest/files?path=%2Fetc%2Flive.conf",
 	                       NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: GET files after PUT (running) status=%d\n", r.status);
@@ -673,21 +673,21 @@ int main(void)
 		fprintf(stderr, "FAIL: GET files after PUT (running) wrong content\n");
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* overwriting an existing file replaces its content, not appends. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "PUT",
+	if (thinc_client_request(&client, "PUT",
 	                       "/v1/containers/writetest/files?path=%2Fetc%2Flive.conf",
 	                       "{\"content\":\"replaced\\n\"}", &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "FAIL: PUT files (overwrite) status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/containers/writetest/files?path=%2Fetc%2Flive.conf",
+	if (thinc_client_request(&client, "GET", "/v1/containers/writetest/files?path=%2Fetc%2Flive.conf",
 	                       NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: GET files after overwrite status=%d\n", r.status);
@@ -698,51 +698,51 @@ int main(void)
 		        (int)r.body_len, r.body ? r.body : "");
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* path traversal / missing leading slash / missing content / unknown
 	 * container all rejected the same way the read side already is. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "PUT",
+	if (thinc_client_request(&client, "PUT",
 	                       "/v1/containers/writetest/files?path=%2F..%2F..%2Fetc%2Fpasswd",
 	                       "{\"content\":\"x\"}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: PUT files traversal expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "PUT", "/v1/containers/writetest/files?path=etc%2Fhosts",
+	if (thinc_client_request(&client, "PUT", "/v1/containers/writetest/files?path=etc%2Fhosts",
 	                       "{\"content\":\"x\"}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: PUT files no-leading-slash expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "PUT", "/v1/containers/writetest/files?path=%2Fetc%2Fx", "{}",
+	if (thinc_client_request(&client, "PUT", "/v1/containers/writetest/files?path=%2Fetc%2Fx", "{}",
 	                       &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: PUT files missing content expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "PUT",
+	if (thinc_client_request(&client, "PUT",
 	                       "/v1/containers/nosuchcontainer/files?path=%2Fetc%2Fx",
 	                       "{\"content\":\"x\"}", &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: PUT files unknown container expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	kx_client_request(&client, "DELETE", "/v1/containers/writetest", NULL, &r);
-	kx_response_free(&r);
+	thinc_client_request(&client, "DELETE", "/v1/containers/writetest", NULL, &r);
+	thinc_response_free(&r);
 
 	/* 9. PUT against a container that has exited on its own (the !running
 	 * branch, writing straight into upper/ rather than through
@@ -751,7 +751,7 @@ int main(void)
 	 * NOT what a recreate would replay (that durability boundary belongs
 	 * to a container recipe instead, by design -- see ADR-0153). */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"writetest2\",\"image\":\"filestest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"]}",
 	                       &r) != 0 ||
@@ -759,22 +759,22 @@ int main(void)
 		fprintf(stderr, "FAIL: POST writetest2, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	usleep(500000);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "PUT",
+	if (thinc_client_request(&client, "PUT",
 	                       "/v1/containers/writetest2/files?path=%2Fetc%2Fstopped.conf",
 	                       "{\"content\":\"written while stopped\\n\"}", &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "FAIL: PUT files (!running) status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET",
+	if (thinc_client_request(&client, "GET",
 	                       "/v1/containers/writetest2/files?path=%2Fetc%2Fstopped.conf", NULL,
 	                       &r) != 0 ||
 	    r.status != 200) {
@@ -785,11 +785,11 @@ int main(void)
 		fprintf(stderr, "FAIL: GET files after PUT (!running) wrong content\n");
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	kx_client_request(&client, "DELETE", "/v1/containers/writetest2", NULL, &r);
-	kx_response_free(&r);
+	thinc_client_request(&client, "DELETE", "/v1/containers/writetest2", NULL, &r);
+	thinc_response_free(&r);
 
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM (second instance)\n");

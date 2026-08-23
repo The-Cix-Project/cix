@@ -5,7 +5,7 @@
  * repoint management to a fresh network (a real listen-socket rebind
  * to that network's own address), then set bind_ip (another real
  * rebind, this time to a second, distinct address added to the same
- * bridge), confirmed both via reconnecting kx_client instances at each
+ * bridge), confirmed both via reconnecting thinc_client instances at each
  * new address AND via getifaddrs() reading the bridge's real kernel
  * address list directly -- then clears bind_ip and confirms the
  * daemon falls back to the network's own address with the dedicated
@@ -78,14 +78,14 @@ static int stop_daemon(pid_t pid)
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -130,9 +130,9 @@ static int ifname_has_ipv4(const char *ifname, const char *ip_str)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct kx_client client_initial, client_net_addr, client_bind_ip, client_fallback;
+	struct thinc_client client_initial, client_net_addr, client_bind_ip, client_fallback;
 	int ok = 1;
-	struct kx_response r;
+	struct thinc_response r;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
@@ -143,7 +143,7 @@ int main(void)
 		return 1;
 	}
 
-	kx_client_init(&client_initial, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client_initial, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client_initial, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -154,7 +154,7 @@ int main(void)
 
 	/* 1. Create the network bind_ip will eventually live alongside. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client_initial, "POST", "/v1/networks",
+	if (thinc_client_request(&client_initial, "POST", "/v1/networks",
 	                       "{\"name\":\"" TEST_NETWORK_NAME "\",\"subnet\":\"" TEST_NETWORK_SUBNET
 	                       "\",\"prefix_len\":24,\"address\":\"" NET_ADDR "\"}",
 	                       &r) != 0 ||
@@ -162,7 +162,7 @@ int main(void)
 		fprintf(stderr, "FAIL: POST /v1/networks, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 2. Repoint management to it -- a real listen-socket rebind to
 	 * NET_ADDR. The response to this exact request still arrives over
@@ -171,15 +171,15 @@ int main(void)
 	 * further request needs a client actually connected to the new
 	 * address. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (kx_client_request(&client_initial, "PUT", "/v1/system/daemon-config",
+	if (ok && (thinc_client_request(&client_initial, "PUT", "/v1/system/daemon-config",
 	                              "{\"management_network\":\"" TEST_NETWORK_NAME "\"}", &r) != 0 ||
 	           r.status != 200)) {
 		fprintf(stderr, "FAIL: PUT management_network, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
-	kx_client_init(&client_net_addr, NET_ADDR, TEST_PORT);
+	thinc_client_init(&client_net_addr, NET_ADDR, TEST_PORT);
 	if (ok && wait_for_daemon(&client_net_addr, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon did not become reachable at " NET_ADDR " after repoint\n");
 		ok = 0;
@@ -188,15 +188,15 @@ int main(void)
 	/* 3. Set a dedicated bind_ip -- a second, real address added to
 	 * the SAME bridge, then another rebind, this time to it. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (kx_client_request(&client_net_addr, "PUT", "/v1/system/daemon-config",
+	if (ok && (thinc_client_request(&client_net_addr, "PUT", "/v1/system/daemon-config",
 	                              "{\"bind_ip\":\"" BIND_IP "\"}", &r) != 0 ||
 	           r.status != 200)) {
 		fprintf(stderr, "FAIL: PUT bind_ip, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
-	kx_client_init(&client_bind_ip, BIND_IP, TEST_PORT);
+	thinc_client_init(&client_bind_ip, BIND_IP, TEST_PORT);
 	if (ok && wait_for_daemon(&client_bind_ip, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon did not become reachable at " BIND_IP " after bind_ip set\n");
 		ok = 0;
@@ -205,7 +205,7 @@ int main(void)
 	/* 4. GET daemon-config reports both bind (== bind_ip now) and
 	 * bind_ip itself, distinctly. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (kx_client_request(&client_bind_ip, "GET", "/v1/system/daemon-config", NULL, &r) != 0 ||
+	if (ok && (thinc_client_request(&client_bind_ip, "GET", "/v1/system/daemon-config", NULL, &r) != 0 ||
 	           r.status != 200)) {
 		fprintf(stderr, "FAIL: GET daemon-config after bind_ip set, status=%d\n", r.status);
 		ok = 0;
@@ -224,12 +224,12 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 5. The network's own address must be completely untouched by
 	 * bind_ip's existence. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (kx_client_request(&client_bind_ip, "GET",
+	if (ok && (thinc_client_request(&client_bind_ip, "GET",
 	                              "/v1/networks/" TEST_NETWORK_NAME, NULL, &r) != 0 ||
 	           r.status != 200)) {
 		fprintf(stderr, "FAIL: GET network after bind_ip set, status=%d\n", r.status);
@@ -244,7 +244,7 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 6. Real kernel-level proof: BOTH addresses now sit on the bridge
 	 * simultaneously (via getifaddrs(), independent of the daemon's
@@ -262,22 +262,22 @@ int main(void)
 	 * the dedicated one is genuinely removed from the bridge, not just
 	 * unreferenced. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (kx_client_request(&client_bind_ip, "PUT", "/v1/system/daemon-config",
+	if (ok && (thinc_client_request(&client_bind_ip, "PUT", "/v1/system/daemon-config",
 	                              "{\"bind_ip\":null}", &r) != 0 ||
 	           r.status != 200)) {
 		fprintf(stderr, "FAIL: PUT bind_ip clear, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
-	kx_client_init(&client_fallback, NET_ADDR, TEST_PORT);
+	thinc_client_init(&client_fallback, NET_ADDR, TEST_PORT);
 	if (ok && wait_for_daemon(&client_fallback, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon did not fall back to " NET_ADDR " after bind_ip clear\n");
 		ok = 0;
 	}
 
 	memset(&r, 0, sizeof(r));
-	if (ok && (kx_client_request(&client_fallback, "GET", "/v1/system/daemon-config", NULL, &r) != 0 ||
+	if (ok && (thinc_client_request(&client_fallback, "GET", "/v1/system/daemon-config", NULL, &r) != 0 ||
 	           r.status != 200)) {
 		fprintf(stderr, "FAIL: GET daemon-config after bind_ip clear, status=%d\n", r.status);
 		ok = 0;
@@ -296,7 +296,7 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 8. Real kernel-level proof the dedicated address is genuinely
 	 * gone, not merely unreferenced -- the network's own address must

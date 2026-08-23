@@ -1188,7 +1188,7 @@ static void fmt_pki_reset(const struct json_value *v)
  * the API's {"error": "..."} message to stderr. Always frees r.
  * Returns the process exit code.
  */
-static int emit(struct kx_response *r, int json_mode, void (*fmt)(const struct json_value *))
+static int emit(struct thinc_response *r, int json_mode, void (*fmt)(const struct json_value *))
 {
 	int rc;
 
@@ -1205,44 +1205,44 @@ static int emit(struct kx_response *r, int json_mode, void (*fmt)(const struct j
 		fmt(r->json);
 		rc = 0;
 	}
-	kx_response_free(r);
+	thinc_response_free(r);
 	return rc;
 }
 
-static int cmd_health(const struct kx_client *c, int json_mode)
+static int cmd_health(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/health", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
 }
 
-static int cmd_boot(const struct kx_client *c, int json_mode)
+static int cmd_boot(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/boot", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/boot", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_boot);
 }
 
-static int cmd_routes_ls(const struct kx_client *c, int json_mode)
+static int cmd_routes_ls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/routes", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/routes", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_route_list);
 }
 
-static int cmd_routes_add(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_routes_add(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *dest = NULL;
 	const char *gateway = NULL;
@@ -1250,7 +1250,7 @@ static int cmd_routes_add(const struct kx_client *c, int json_mode, int argc, ch
 	int is_default = 0;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--dest=", 7) == 0)
@@ -1289,7 +1289,7 @@ static int cmd_routes_add(const struct kx_client *c, int json_mode, int argc, ch
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/system/routes", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/system/routes", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -1299,14 +1299,14 @@ static int cmd_routes_add(const struct kx_client *c, int json_mode, int argc, ch
 	return emit(&r, json_mode, fmt_added);
 }
 
-static int cmd_routes_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_routes_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *dest = NULL;
 	const char *prefix = NULL;
 	int is_default = 0;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--dest=", 7) == 0)
@@ -1339,7 +1339,7 @@ static int cmd_routes_rm(const struct kx_client *c, int json_mode, int argc, cha
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "DELETE", "/v1/system/routes", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", "/v1/system/routes", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -1349,7 +1349,7 @@ static int cmd_routes_rm(const struct kx_client *c, int json_mode, int argc, cha
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_routes(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_routes(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -1373,11 +1373,11 @@ static int cmd_routes(const struct kx_client *c, int json_mode, int argc, char *
 	return 2;
 }
 
-static int cmd_disks_ls(const struct kx_client *c, int json_mode)
+static int cmd_disks_ls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/disks", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/disks", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -1417,13 +1417,13 @@ static void fmt_diskformat_status(const struct json_value *v)
  * "pki reset" precedent for destructive operations -- the request body
  * confirmation IS the safety gate.
  */
-static int cmd_disks_format(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_disks_format(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *disk_name;
 	const char *fs_type = NULL;
 	char path[256];
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 	int i;
 
 	if (argc < 1) {
@@ -1448,7 +1448,7 @@ static int cmd_disks_format(const struct kx_client *c, int json_mode, int argc, 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -1457,11 +1457,11 @@ static int cmd_disks_format(const struct kx_client *c, int json_mode, int argc, 
 	return emit(&r, json_mode, fmt_diskformat_status);
 }
 
-static int cmd_disks_format_status(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_disks_format_status(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *disk_name;
 	char path[256];
-	struct kx_response r;
+	struct thinc_response r;
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: thincctl disks format-status NAME\n");
@@ -1469,7 +1469,7 @@ static int cmd_disks_format_status(const struct kx_client *c, int json_mode, int
 	}
 	disk_name = argv[0];
 	snprintf(path, sizeof(path), "/v1/disks/%s/format", disk_name);
-	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -1486,12 +1486,12 @@ static int cmd_disks_format_status(const struct kx_client *c, int json_mode, int
  * sent as the request body's own confirm_disk_name, no further
  * interactive prompt, the request body confirmation IS the safety gate.
  */
-static int cmd_disks_unmount(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_disks_unmount(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *disk_name;
 	char path[256];
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: thincctl disks unmount NAME\n");
@@ -1507,7 +1507,7 @@ static int cmd_disks_unmount(const struct kx_client *c, int json_mode, int argc,
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -1575,14 +1575,14 @@ static void fmt_disk_free_space(const struct json_value *v)
  * -- shrinking needs the filesystem shrunk first, and cutting the table
  * entry before that destroys the tail of a live filesystem.
  */
-static int cmd_disks_grow_partition(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_disks_grow_partition(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *disk_name = NULL;
 	const char *part_name = NULL;
 	long size_mib = 0;
 	char path[300];
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 	int i;
 
 	for (i = 0; i < argc; i++) {
@@ -1613,7 +1613,7 @@ static int cmd_disks_grow_partition(const struct kx_client *c, int json_mode, in
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -1622,29 +1622,29 @@ static int cmd_disks_grow_partition(const struct kx_client *c, int json_mode, in
 	return emit(&r, json_mode, fmt_disk_or_partitions);
 }
 
-static int cmd_disks_free_space(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_disks_free_space(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	char path[256];
-	struct kx_response r;
+	struct thinc_response r;
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: thincctl disks free-space NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/disks/%s/free-space", argv[0]);
-	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_disk_free_space);
 }
 
-static int cmd_disks_partition_table(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_disks_partition_table(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *disk_name;
 	char path[256];
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: thincctl disks partition-table NAME\n");
@@ -1660,7 +1660,7 @@ static int cmd_disks_partition_table(const struct kx_client *c, int json_mode, i
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -1669,14 +1669,14 @@ static int cmd_disks_partition_table(const struct kx_client *c, int json_mode, i
 	return emit(&r, json_mode, fmt_disk_or_partitions);
 }
 
-static int cmd_disks_add_partition(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_disks_add_partition(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *disk_name;
 	const char *part_name = NULL;
 	unsigned long long size_mib = 0;
 	char path[256];
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 	int i;
 
 	if (argc < 2) {
@@ -1709,7 +1709,7 @@ static int cmd_disks_add_partition(const struct kx_client *c, int json_mode, int
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -1718,34 +1718,34 @@ static int cmd_disks_add_partition(const struct kx_client *c, int json_mode, int
 	return emit(&r, json_mode, fmt_disk_or_partitions);
 }
 
-static int cmd_disks_rm_partition(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_disks_rm_partition(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	char path[256];
-	struct kx_response r;
+	struct thinc_response r;
 
 	if (argc < 2) {
 		fprintf(stderr, "usage: thincctl disks rm-partition DISK_NAME PARTITION_NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/disks/%s/partitions/%s", argv[0], argv[1]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	if (json_mode) {
 		printf("{\"status\":%d}\n", r.status);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		return r.status == 204 ? 0 : 1;
 	}
 	if (r.status == 204)
 		printf("partition removed\n");
 	else
 		printf("error: status %d\n", r.status);
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	return r.status == 204 ? 0 : 1;
 }
 
-static int cmd_disks(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_disks(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -1826,26 +1826,26 @@ static void fmt_storage_migrate_status(const struct json_value *v)
  * {state,logs} both share this identical shape, only the REST path
  * segment (and thus which daemon-side storage_kind ends up acted on)
  * differs. */
-static int cmd_storage_kind_show(const struct kx_client *c, int json_mode, const char *endpoint)
+static int cmd_storage_kind_show(const struct thinc_client *c, int json_mode, const char *endpoint)
 {
 	char path[64];
-	struct kx_response r;
+	struct thinc_response r;
 
 	snprintf(path, sizeof(path), "/v1/system/%s", endpoint);
-	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_storage_placement);
 }
 
-static int cmd_storage_kind_migrate(const struct kx_client *c, int json_mode, const char *endpoint,
+static int cmd_storage_kind_migrate(const struct thinc_client *c, int json_mode, const char *endpoint,
                                      int argc, char **argv)
 {
 	const char *disk = NULL;
 	char path[64];
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 	int i;
 
 	for (i = 0; i < argc; i++) {
@@ -1868,7 +1868,7 @@ static int cmd_storage_kind_migrate(const struct kx_client *c, int json_mode, co
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/system/%s/migrate", endpoint);
-	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -1877,20 +1877,20 @@ static int cmd_storage_kind_migrate(const struct kx_client *c, int json_mode, co
 	return emit(&r, json_mode, fmt_storage_migrate_status);
 }
 
-static int cmd_storage_kind_migrate_status(const struct kx_client *c, int json_mode, const char *endpoint)
+static int cmd_storage_kind_migrate_status(const struct thinc_client *c, int json_mode, const char *endpoint)
 {
 	char path[64];
-	struct kx_response r;
+	struct thinc_response r;
 
 	snprintf(path, sizeof(path), "/v1/system/%s/migrate", endpoint);
-	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_storage_migrate_status);
 }
 
-static int cmd_storage_kind(const struct kx_client *c, int json_mode, const char *name,
+static int cmd_storage_kind(const struct thinc_client *c, int json_mode, const char *name,
                              const char *endpoint, int argc, char **argv)
 {
 	const char *sub;
@@ -1915,7 +1915,7 @@ static int cmd_storage_kind(const struct kx_client *c, int json_mode, const char
 	return 2;
 }
 
-static int cmd_storage(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_storage(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -1987,28 +1987,28 @@ static void fmt_sysctl_list(const struct json_value *v)
 		fmt_sysctl_one(arr->u.array.items[i]);
 }
 
-static int cmd_sysctl_show(const struct kx_client *c, int json_mode)
+static int cmd_sysctl_show(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/sysctl", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/sysctl", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_sysctl_list);
 }
 
-static int cmd_sysctl_get(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_sysctl_get(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	char path[192];
-	struct kx_response r;
+	struct thinc_response r;
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: thincctl sysctl get KEY\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/system/sysctl/%s", argv[0]);
-	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -2022,7 +2022,7 @@ static int cmd_sysctl_get(const struct kx_client *c, int json_mode, int argc, ch
  * shape the daemon already accepts. */
 #define CLI_SYSCTL_MAX_VALUES 8
 
-static int cmd_sysctl_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_sysctl_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *key;
 	const char *values[CLI_SYSCTL_MAX_VALUES];
@@ -2031,7 +2031,7 @@ static int cmd_sysctl_set(const struct kx_client *c, int json_mode, int argc, ch
 	int i;
 	char path[192];
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: thincctl sysctl set KEY --value=V [--value=V ...] [--no-persist]\n");
@@ -2077,7 +2077,7 @@ static int cmd_sysctl_set(const struct kx_client *c, int json_mode, int argc, ch
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/system/sysctl/%s", key);
-	if (kx_client_request(c, "PUT", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -2086,34 +2086,34 @@ static int cmd_sysctl_set(const struct kx_client *c, int json_mode, int argc, ch
 	return emit(&r, json_mode, fmt_sysctl_one);
 }
 
-static int cmd_sysctl_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_sysctl_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	char path[192];
-	struct kx_response r;
+	struct thinc_response r;
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: thincctl sysctl rm KEY\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/system/sysctl/%s", argv[0]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	if (json_mode) {
 		printf("{\"status\":%d}\n", r.status);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		return r.status == 204 ? 0 : 1;
 	}
 	if (r.status == 204)
 		printf("removed from persisted config (live value untouched)\n");
 	else
 		printf("error: status %d\n", r.status);
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	return r.status == 204 ? 0 : 1;
 }
 
-static int cmd_sysctl(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_sysctl(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -2231,28 +2231,28 @@ static void fmt_kmod_info(const struct json_value *v)
 	}
 }
 
-static int cmd_kmod_ls(const struct kx_client *c, int json_mode)
+static int cmd_kmod_ls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/kmod", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/kmod", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_kmod_list);
 }
 
-static int cmd_kmod_show(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_kmod_show(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	char path[192];
-	struct kx_response r;
+	struct thinc_response r;
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: thincctl kmod show NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/system/kmod/%s", argv[0]);
-	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -2261,7 +2261,7 @@ static int cmd_kmod_show(const struct kx_client *c, int json_mode, int argc, cha
 
 #define CLI_KMOD_MAX_OPTIONS 8
 
-static int cmd_kmod_load(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_kmod_load(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name;
 	const char *options[CLI_KMOD_MAX_OPTIONS];
@@ -2269,7 +2269,7 @@ static int cmd_kmod_load(const struct kx_client *c, int json_mode, int argc, cha
 	int i;
 	char path[192];
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: thincctl kmod load NAME [--option=KEY=VALUE ...]\n");
@@ -2314,7 +2314,7 @@ static int cmd_kmod_load(const struct kx_client *c, int json_mode, int argc, cha
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/system/kmod/%s", name);
-	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -2322,45 +2322,45 @@ static int cmd_kmod_load(const struct kx_client *c, int json_mode, int argc, cha
 	jw_free(&w);
 	if (json_mode) {
 		printf("{\"status\":%d}\n", r.status);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		return r.status == 200 ? 0 : 1;
 	}
 	if (r.status == 200)
 		printf("loaded %s\n", name);
 	else
 		printf("error: status %d\n", r.status);
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	return r.status == 200 ? 0 : 1;
 }
 
-static int cmd_kmod_unload(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_kmod_unload(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	char path[192];
-	struct kx_response r;
+	struct thinc_response r;
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: thincctl kmod unload NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/system/kmod/%s", argv[0]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	if (json_mode) {
 		printf("{\"status\":%d}\n", r.status);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		return r.status == 204 ? 0 : 1;
 	}
 	if (r.status == 204)
 		printf("unloaded %s\n", argv[0]);
 	else
 		printf("error: status %d\n", r.status);
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	return r.status == 204 ? 0 : 1;
 }
 
-static int cmd_kmod(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_kmod(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -2407,18 +2407,18 @@ static void fmt_kmodconfig_list(const struct json_value *v)
 		fmt_kmodconfig_one(arr->u.array.items[i]);
 }
 
-static int cmd_kmodconfig_ls(const struct kx_client *c, int json_mode)
+static int cmd_kmodconfig_ls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/kmod-config", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/kmod-config", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_kmodconfig_list);
 }
 
-static int cmd_kmodconfig_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_kmodconfig_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name;
 	const char *options[CLI_KMOD_MAX_OPTIONS];
@@ -2429,7 +2429,7 @@ static int cmd_kmodconfig_set(const struct kx_client *c, int json_mode, int argc
 	int i;
 	char path[192];
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: thincctl kmod-config set NAME [--option=KEY=VALUE ...] "
@@ -2493,7 +2493,7 @@ static int cmd_kmodconfig_set(const struct kx_client *c, int json_mode, int argc
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/system/kmod-config/%s", name);
-	if (kx_client_request(c, "PUT", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -2502,34 +2502,34 @@ static int cmd_kmodconfig_set(const struct kx_client *c, int json_mode, int argc
 	return emit(&r, json_mode, fmt_kmodconfig_one);
 }
 
-static int cmd_kmodconfig_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_kmodconfig_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	char path[192];
-	struct kx_response r;
+	struct thinc_response r;
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: thincctl kmod-config rm NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/system/kmod-config/%s", argv[0]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	if (json_mode) {
 		printf("{\"status\":%d}\n", r.status);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		return r.status == 204 ? 0 : 1;
 	}
 	if (r.status == 204)
 		printf("removed kmod-config for %s\n", argv[0]);
 	else
 		printf("error: status %d\n", r.status);
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	return r.status == 204 ? 0 : 1;
 }
 
-static int cmd_kmodconfig(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_kmodconfig(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -2566,11 +2566,11 @@ static void fmt_resolv(const struct json_value *v)
 		printf("nameserver %s\n", json_as_string(arr->u.array.items[i]));
 }
 
-static int cmd_resolv_show(const struct kx_client *c, int json_mode)
+static int cmd_resolv_show(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/resolv", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/resolv", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -2583,13 +2583,13 @@ static int cmd_resolv_show(const struct kx_client *c, int json_mode)
  * clears the host's own resolver config entirely, same "the absence
  * of the flag is a real, valid choice" precedent --clear-bind-ip
  * established for daemon-config. */
-static int cmd_resolv_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_resolv_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *nameservers[CLI_RESOLV_MAX_NAMESERVERS];
 	int count = 0;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--nameserver=", 13) == 0) {
@@ -2615,7 +2615,7 @@ static int cmd_resolv_set(const struct kx_client *c, int json_mode, int argc, ch
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "PUT", "/v1/system/resolv", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", "/v1/system/resolv", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -2624,7 +2624,7 @@ static int cmd_resolv_set(const struct kx_client *c, int json_mode, int argc, ch
 	return emit(&r, json_mode, fmt_resolv);
 }
 
-static int cmd_resolv(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_resolv(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -2665,24 +2665,24 @@ static void fmt_ntp_config(const struct json_value *v)
 		printf("server %s\n", json_as_string(arr->u.array.items[i]));
 }
 
-static int cmd_ntp_config_show(const struct kx_client *c, int json_mode)
+static int cmd_ntp_config_show(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/ntp", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/ntp", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_ntp_config);
 }
 
-static int cmd_ntp_config_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_ntp_config_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *upstream[CLI_NTP_MAX_UPSTREAM];
 	int count = 0;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--server=", 9) == 0) {
@@ -2708,7 +2708,7 @@ static int cmd_ntp_config_set(const struct kx_client *c, int json_mode, int argc
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "PUT", "/v1/system/ntp", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", "/v1/system/ntp", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -2717,7 +2717,7 @@ static int cmd_ntp_config_set(const struct kx_client *c, int json_mode, int argc
 	return emit(&r, json_mode, fmt_ntp_config);
 }
 
-static int cmd_ntp_config(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_ntp_config(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -2750,11 +2750,11 @@ static void fmt_ntp_status(const struct json_value *v)
 	printf("\n");
 }
 
-static int cmd_ntp_status(const struct kx_client *c, int json_mode)
+static int cmd_ntp_status(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/ntp/status", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/ntp/status", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -2764,11 +2764,11 @@ static int cmd_ntp_status(const struct kx_client *c, int json_mode)
 /* Triggers one sync attempt on demand rather than waiting for the
  * next hourly automatic fire -- 202 on success, no body; check
  * `ntp status` afterward for the outcome. */
-static int cmd_ntp_sync(const struct kx_client *c, int json_mode)
+static int cmd_ntp_sync(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "POST", "/v1/system/ntp/sync", NULL, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/system/ntp/sync", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -2777,14 +2777,14 @@ static int cmd_ntp_sync(const struct kx_client *c, int json_mode)
 
 		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "sync failed to start",
 		        r.status);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		return 1;
 	}
 	if (!json_mode)
 		printf("sync started\n");
 	else
 		print_raw_json(r.json);
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	return 0;
 }
 
@@ -2806,12 +2806,12 @@ static void fmt_ntp_server_list(const struct json_value *v)
 		fmt_ntp_server_line(servers->u.array.items[i]);
 }
 
-static int cmd_ntp_server_register(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_ntp_server_register(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *container = NULL;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--container=", 12) == 0)
@@ -2833,7 +2833,7 @@ static int cmd_ntp_server_register(const struct kx_client *c, int json_mode, int
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/ntp/servers", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/ntp/servers", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -2842,21 +2842,21 @@ static int cmd_ntp_server_register(const struct kx_client *c, int json_mode, int
 	return emit(&r, json_mode, fmt_ntp_server_line);
 }
 
-static int cmd_ntp_server_ls(const struct kx_client *c, int json_mode)
+static int cmd_ntp_server_ls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/ntp/servers", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/ntp/servers", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_ntp_server_list);
 }
 
-static int cmd_ntp_server_unregister(const struct kx_client *c, int json_mode, int argc,
+static int cmd_ntp_server_unregister(const struct thinc_client *c, int json_mode, int argc,
                                       char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 
 	if (argc < 1) {
@@ -2864,14 +2864,14 @@ static int cmd_ntp_server_unregister(const struct kx_client *c, int json_mode, i
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/ntp/servers/%s", argv[0]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_ntp_server(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_ntp_server(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -2894,7 +2894,7 @@ static int cmd_ntp_server(const struct kx_client *c, int json_mode, int argc, ch
 	return 2;
 }
 
-static int cmd_ntp(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_ntp(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -2942,12 +2942,12 @@ static void fmt_syslog_target_list(const struct json_value *v)
 		fmt_syslog_target_line(targets->u.array.items[i]);
 }
 
-static int cmd_syslog_target_register(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_syslog_target_register(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *container = NULL;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--container=", 12) == 0)
@@ -2969,7 +2969,7 @@ static int cmd_syslog_target_register(const struct kx_client *c, int json_mode, 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/syslog/targets", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/syslog/targets", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -2978,21 +2978,21 @@ static int cmd_syslog_target_register(const struct kx_client *c, int json_mode, 
 	return emit(&r, json_mode, fmt_syslog_target_line);
 }
 
-static int cmd_syslog_target_ls(const struct kx_client *c, int json_mode)
+static int cmd_syslog_target_ls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/syslog/targets", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/syslog/targets", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_syslog_target_list);
 }
 
-static int cmd_syslog_target_unregister(const struct kx_client *c, int json_mode, int argc,
+static int cmd_syslog_target_unregister(const struct thinc_client *c, int json_mode, int argc,
                                          char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 
 	if (argc < 1) {
@@ -3000,14 +3000,14 @@ static int cmd_syslog_target_unregister(const struct kx_client *c, int json_mode
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/syslog/targets/%s", argv[0]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_syslog_target(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_syslog_target(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -3030,7 +3030,7 @@ static int cmd_syslog_target(const struct kx_client *c, int json_mode, int argc,
 	return 2;
 }
 
-static int cmd_syslog(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_syslog(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -3062,23 +3062,23 @@ static void fmt_time(const struct json_value *v)
 		printf("unixtime=%lld\n", (long long)unixtime->u.number);
 }
 
-static int cmd_time_show(const struct kx_client *c, int json_mode)
+static int cmd_time_show(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/time", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/time", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_time);
 }
 
-static int cmd_time_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_time_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *unixtime = NULL;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--unixtime=", 11) == 0)
@@ -3100,7 +3100,7 @@ static int cmd_time_set(const struct kx_client *c, int json_mode, int argc, char
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "PUT", "/v1/system/time", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", "/v1/system/time", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -3109,7 +3109,7 @@ static int cmd_time_set(const struct kx_client *c, int json_mode, int argc, char
 	return emit(&r, json_mode, fmt_time);
 }
 
-static int cmd_time(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_time(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -3128,24 +3128,24 @@ static int cmd_time(const struct kx_client *c, int json_mode, int argc, char **a
 	return 2;
 }
 
-static int cmd_swap_status(const struct kx_client *c, int json_mode)
+static int cmd_swap_status(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/swap", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/swap", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_swap);
 }
 
-static int cmd_swap_enable(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_swap_enable(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *size_mb = NULL;
 	const char *disk = NULL;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--size-mb=", 10) == 0)
@@ -3176,7 +3176,7 @@ static int cmd_swap_enable(const struct kx_client *c, int json_mode, int argc, c
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/system/swap", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/system/swap", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -3186,11 +3186,11 @@ static int cmd_swap_enable(const struct kx_client *c, int json_mode, int argc, c
 	return emit(&r, json_mode, fmt_swap);
 }
 
-static int cmd_swap_disable(const struct kx_client *c, int json_mode)
+static int cmd_swap_disable(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "DELETE", "/v1/system/swap", NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", "/v1/system/swap", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -3204,7 +3204,7 @@ static int cmd_swap_disable(const struct kx_client *c, int json_mode)
  * corrupt. */
 static void url_encode_query_value(const char *in, char *out, size_t out_size);
 
-static int cmd_logs(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_logs(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *source = NULL;
 	const char *level = NULL;
@@ -3219,7 +3219,7 @@ static int cmd_logs(const struct kx_client *c, int json_mode, int argc, char **a
 	char encoded_regex[256 * 3];
 	int i;
 	size_t o;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--source=", 9) == 0)
@@ -3258,7 +3258,7 @@ static int cmd_logs(const struct kx_client *c, int json_mode, int argc, char **a
 	if (since != NULL)
 		(void)snprintf(path + o, sizeof(path) - o, "since=%s&", since);
 
-	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -3266,18 +3266,18 @@ static int cmd_logs(const struct kx_client *c, int json_mode, int argc, char **a
 		fprintf(stderr, "thincctl: %s\n",
 		        json_str_field(r.json, "error") != NULL ? json_str_field(r.json, "error") :
 		                                                   "bad request");
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_logs);
 }
 
-static int cmd_logs_config(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_logs_config(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *max_bytes = NULL;
 	const char *min_level = NULL;
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--max-bytes=", 12) == 0)
@@ -3291,7 +3291,7 @@ static int cmd_logs_config(const struct kx_client *c, int json_mode, int argc, c
 	}
 
 	if (max_bytes == NULL && min_level == NULL) {
-		if (kx_client_request(c, "GET", "/v1/system/logs/config", NULL, &r) != 0) {
+		if (thinc_client_request(c, "GET", "/v1/system/logs/config", NULL, &r) != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
 		}
@@ -3314,7 +3314,7 @@ static int cmd_logs_config(const struct kx_client *c, int json_mode, int argc, c
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 
-		if (kx_client_request(c, "PUT", "/v1/system/logs/config", w.buf, &r) != 0) {
+		if (thinc_client_request(c, "PUT", "/v1/system/logs/config", w.buf, &r) != 0) {
 			jw_free(&w);
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
@@ -3324,14 +3324,14 @@ static int cmd_logs_config(const struct kx_client *c, int json_mode, int argc, c
 	return emit(&r, json_mode, fmt_logs_config);
 }
 
-static int cmd_logs_top(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_logs_top(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	if (argc > 0 && strcmp(argv[0], "config") == 0)
 		return cmd_logs_config(c, json_mode, argc - 1, argv + 1);
 	return cmd_logs(c, json_mode, argc, argv);
 }
 
-static int cmd_swap(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_swap(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -3353,22 +3353,22 @@ static int cmd_swap(const struct kx_client *c, int json_mode, int argc, char **a
 	return 2;
 }
 
-static int cmd_shutdown(const struct kx_client *c, int json_mode)
+static int cmd_shutdown(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "POST", "/v1/system/shutdown", NULL, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/system/shutdown", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
 }
 
-static int cmd_reboot(const struct kx_client *c, int json_mode)
+static int cmd_reboot(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "POST", "/v1/system/reboot", NULL, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/system/reboot", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -3389,13 +3389,13 @@ static void fmt_update(const struct json_value *v)
 	printf("\n");
 }
 
-static int cmd_update(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_update(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *image = NULL;
 	const char *kernel = NULL;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--image=", 8) == 0)
@@ -3425,7 +3425,7 @@ static int cmd_update(const struct kx_client *c, int json_mode, int argc, char *
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/system/update", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/system/update", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -3435,11 +3435,11 @@ static int cmd_update(const struct kx_client *c, int json_mode, int argc, char *
 	return emit(&r, json_mode, fmt_update);
 }
 
-static int cmd_ps(const struct kx_client *c, int json_mode)
+static int cmd_ps(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/containers", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/containers", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -3454,8 +3454,8 @@ static int cmd_ps(const struct kx_client *c, int json_mode)
  * the operations themselves are their own real usability value, not
  * something this adds to replace, only to give a second, equally
  * discoverable entry point into for a plain "list what's running". */
-static int cmd_container_recipe(const struct kx_client *c, int json_mode, int argc, char **argv);
-static int cmd_container_apply_recipe(const struct kx_client *c, int json_mode, int argc,
+static int cmd_container_recipe(const struct thinc_client *c, int json_mode, int argc, char **argv);
+static int cmd_container_apply_recipe(const struct thinc_client *c, int json_mode, int argc,
                                        char **argv);
 
 /*
@@ -3464,7 +3464,7 @@ static int cmd_container_apply_recipe(const struct kx_client *c, int json_mode, 
  * comment on handle_container_network_attach() for the full
  * live/ephemeral design reasoning.
  */
-static int cmd_container_network_attach(const struct kx_client *c, int json_mode, int argc,
+static int cmd_container_network_attach(const struct thinc_client *c, int json_mode, int argc,
                                          char **argv)
 {
 	const char *name = NULL;
@@ -3472,7 +3472,7 @@ static int cmd_container_network_attach(const struct kx_client *c, int json_mode
 	const char *ip = NULL;
 	struct json_writer w;
 	char path[300];
-	struct kx_response r;
+	struct thinc_response r;
 	int i;
 
 	for (i = 0; i < argc; i++) {
@@ -3505,7 +3505,7 @@ static int cmd_container_network_attach(const struct kx_client *c, int json_mode
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/containers/%s/networks", name);
-	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -3514,10 +3514,10 @@ static int cmd_container_network_attach(const struct kx_client *c, int json_mode
 	return emit(&r, json_mode, fmt_container_line);
 }
 
-static int cmd_container_network_detach(const struct kx_client *c, int json_mode, int argc,
+static int cmd_container_network_detach(const struct thinc_client *c, int json_mode, int argc,
                                          char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[300];
 
 	if (argc < 2) {
@@ -3525,14 +3525,14 @@ static int cmd_container_network_detach(const struct kx_client *c, int json_mode
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/networks/%s", argv[0], argv[1]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_container_line);
 }
 
-static int cmd_container_network(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_container_network(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	if (argc >= 1 && strcmp(argv[0], "attach") == 0)
 		return cmd_container_network_attach(c, json_mode, argc - 1, argv + 1);
@@ -3575,7 +3575,7 @@ static void fmt_container_volumes(const struct json_value *v)
 		printf("(applies %s -- the running container is unchanged)\n", applies);
 }
 
-static int cmd_container_volume_attach(const struct kx_client *c, int json_mode, int argc,
+static int cmd_container_volume_attach(const struct thinc_client *c, int json_mode, int argc,
                                         char **argv)
 {
 	const char *name = NULL;
@@ -3584,7 +3584,7 @@ static int cmd_container_volume_attach(const struct kx_client *c, int json_mode,
 	int read_only = 0;
 	struct json_writer w;
 	char path[300];
-	struct kx_response r;
+	struct thinc_response r;
 	int i;
 
 	for (i = 0; i < argc; i++) {
@@ -3621,7 +3621,7 @@ static int cmd_container_volume_attach(const struct kx_client *c, int json_mode,
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/containers/%s/volumes", name);
-	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -3630,10 +3630,10 @@ static int cmd_container_volume_attach(const struct kx_client *c, int json_mode,
 	return emit(&r, json_mode, fmt_container_volumes);
 }
 
-static int cmd_container_volume_detach(const struct kx_client *c, int json_mode, int argc,
+static int cmd_container_volume_detach(const struct thinc_client *c, int json_mode, int argc,
                                         char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[300];
 
 	if (argc < 2) {
@@ -3641,14 +3641,14 @@ static int cmd_container_volume_detach(const struct kx_client *c, int json_mode,
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/volumes/%s", argv[0], argv[1]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_container_volumes);
 }
 
-static int cmd_container_volume(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_container_volume(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	if (argc >= 1 && strcmp(argv[0], "attach") == 0)
 		return cmd_container_volume_attach(c, json_mode, argc - 1, argv + 1);
@@ -3667,10 +3667,10 @@ static int cmd_container_volume(const struct kx_client *c, int json_mode, int ar
  * callable-by-hand primitive first; Phase C's own hotplug listener is
  * just another, internal caller of the identical daemon-side
  * mechanism). */
-static int cmd_container_device_attach(const struct kx_client *c, int json_mode, int argc,
+static int cmd_container_device_attach(const struct thinc_client *c, int json_mode, int argc,
                                         char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[300];
 	struct json_writer w;
 
@@ -3687,7 +3687,7 @@ static int cmd_container_device_attach(const struct kx_client *c, int json_mode,
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/containers/%s/devices", argv[0]);
-	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -3696,10 +3696,10 @@ static int cmd_container_device_attach(const struct kx_client *c, int json_mode,
 	return emit(&r, json_mode, fmt_container_line);
 }
 
-static int cmd_container_device_detach(const struct kx_client *c, int json_mode, int argc,
+static int cmd_container_device_detach(const struct thinc_client *c, int json_mode, int argc,
                                         char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[400];
 
 	if (argc < 2) {
@@ -3707,14 +3707,14 @@ static int cmd_container_device_detach(const struct kx_client *c, int json_mode,
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/devices/%s", argv[0], argv[1]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_container_line);
 }
 
-static int cmd_container_device(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_container_device(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	if (argc >= 1 && strcmp(argv[0], "attach") == 0)
 		return cmd_container_device_attach(c, json_mode, argc - 1, argv + 1);
@@ -3729,23 +3729,23 @@ static int cmd_container_device(const struct kx_client *c, int json_mode, int ar
 
 /* Forward declarations: cmd_container() dispatches to these container verbs,
  * which are defined below it (issue #74 -- all container ops under `container`). */
-static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **argv);
-static int cmd_inspect(const struct kx_client *c, int json_mode, int argc, char **argv);
-static int cmd_start(const struct kx_client *c, int json_mode, int argc, char **argv);
-static int cmd_stop(const struct kx_client *c, int json_mode, int argc, char **argv);
-static int cmd_pause(const struct kx_client *c, int json_mode, int argc, char **argv);
-static int cmd_unpause(const struct kx_client *c, int json_mode, int argc, char **argv);
-static int cmd_rm(const struct kx_client *c, int json_mode, int argc, char **argv);
-static int cmd_container_stats(const struct kx_client *c, int json_mode, int argc, char **argv);
-static int cmd_console(const struct kx_client *c, int argc, char **argv);
-static int cmd_files(const struct kx_client *c, int argc, char **argv);
-static int cmd_migrate_storage(const struct kx_client *c, int json_mode, int argc, char **argv);
-static int cmd_migrate_storage_status(const struct kx_client *c, int json_mode, int argc, char **argv);
+static int cmd_run(const struct thinc_client *c, int json_mode, int argc, char **argv);
+static int cmd_inspect(const struct thinc_client *c, int json_mode, int argc, char **argv);
+static int cmd_start(const struct thinc_client *c, int json_mode, int argc, char **argv);
+static int cmd_stop(const struct thinc_client *c, int json_mode, int argc, char **argv);
+static int cmd_pause(const struct thinc_client *c, int json_mode, int argc, char **argv);
+static int cmd_unpause(const struct thinc_client *c, int json_mode, int argc, char **argv);
+static int cmd_rm(const struct thinc_client *c, int json_mode, int argc, char **argv);
+static int cmd_container_stats(const struct thinc_client *c, int json_mode, int argc, char **argv);
+static int cmd_console(const struct thinc_client *c, int argc, char **argv);
+static int cmd_files(const struct thinc_client *c, int argc, char **argv);
+static int cmd_migrate_storage(const struct thinc_client *c, int json_mode, int argc, char **argv);
+static int cmd_migrate_storage_status(const struct thinc_client *c, int json_mode, int argc, char **argv);
 
-static int cmd_container_edit(const struct kx_client *c, int json_mode, int argc,
+static int cmd_container_edit(const struct thinc_client *c, int json_mode, int argc,
                                char **argv); /* issue #11 -- defined below */
 
-static int cmd_container(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_container(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	if (argc >= 1 && strcmp(argv[0], "recipe") == 0)
 		return cmd_container_recipe(c, json_mode, argc - 1, argv + 1);
@@ -3804,9 +3804,9 @@ static int cmd_container(const struct kx_client *c, int json_mode, int argc, cha
 	return 2;
 }
 
-static int cmd_inspect(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_inspect(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 
 	if (argc < 1) {
@@ -3814,16 +3814,16 @@ static int cmd_inspect(const struct kx_client *c, int json_mode, int argc, char 
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s", argv[0]);
-	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_container_line);
 }
 
-static int cmd_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 
 	if (argc < 1) {
@@ -3831,16 +3831,16 @@ static int cmd_rm(const struct kx_client *c, int json_mode, int argc, char **arg
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s", argv[0]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_stop(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_stop(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[300];
 
 	if (argc < 1) {
@@ -3848,7 +3848,7 @@ static int cmd_stop(const struct kx_client *c, int json_mode, int argc, char **a
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/stop", argv[0]);
-	if (kx_client_request(c, "POST", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "POST", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -3862,12 +3862,12 @@ static int cmd_stop(const struct kx_client *c, int json_mode, int argc, char **a
  * overlay directory -- see main.c's handle_container_migrate_storage_
  * post()/get() for the full cutover this triggers daemon-side.
  */
-static int cmd_migrate_storage(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_migrate_storage(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *disk = NULL;
 	char path[300];
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 	int i;
 
 	if (argc < 1) {
@@ -3894,7 +3894,7 @@ static int cmd_migrate_storage(const struct kx_client *c, int json_mode, int arg
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/containers/%s/migrate-storage", argv[0]);
-	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -3903,26 +3903,26 @@ static int cmd_migrate_storage(const struct kx_client *c, int json_mode, int arg
 	return emit(&r, json_mode, fmt_storage_migrate_status);
 }
 
-static int cmd_migrate_storage_status(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_migrate_storage_status(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	char path[300];
-	struct kx_response r;
+	struct thinc_response r;
 
 	if (argc < 1) {
 		fprintf(stderr, "thincctl: migrate-storage-status requires a container name\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/migrate-storage", argv[0]);
-	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_storage_migrate_status);
 }
 
-static int cmd_start(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_start(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[300];
 
 	if (argc < 1) {
@@ -3930,16 +3930,16 @@ static int cmd_start(const struct kx_client *c, int json_mode, int argc, char **
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/start", argv[0]);
-	if (kx_client_request(c, "POST", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "POST", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
 }
 
-static int cmd_pause(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pause(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[300];
 
 	if (argc < 1) {
@@ -3947,16 +3947,16 @@ static int cmd_pause(const struct kx_client *c, int json_mode, int argc, char **
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/pause", argv[0]);
-	if (kx_client_request(c, "POST", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "POST", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
 }
 
-static int cmd_unpause(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_unpause(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[300];
 
 	if (argc < 1) {
@@ -3964,7 +3964,7 @@ static int cmd_unpause(const struct kx_client *c, int json_mode, int argc, char 
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/unpause", argv[0]);
-	if (kx_client_request(c, "POST", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "POST", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -4105,9 +4105,9 @@ static void fmt_kmsg(const struct json_value *v)
 	}
 }
 
-static int cmd_kmsg(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_kmsg(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[64];
 	long tail = -1;
 	int i;
@@ -4125,7 +4125,7 @@ static int cmd_kmsg(const struct kx_client *c, int json_mode, int argc, char **a
 	else
 		snprintf(path, sizeof(path), "/v1/system/kmsg");
 
-	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -4185,12 +4185,12 @@ static void fmt_server_health(const struct json_value *v)
 	}
 }
 
-static int cmd_server_health(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_server_health(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
 	if (argc == 0 || strcmp(argv[0], "ls") == 0) {
-		if (kx_client_request(c, "GET", "/v1/system/server-health", NULL, &r) != 0) {
+		if (thinc_client_request(c, "GET", "/v1/system/server-health", NULL, &r) != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
 		}
@@ -4208,7 +4208,7 @@ static int cmd_server_health(const struct kx_client *c, int json_mode, int argc,
 		jw_bool(&w, strcmp(argv[0], "drain") == 0);
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
-		rc = kx_client_request(c, "PUT", path, w.buf, &r);
+		rc = thinc_client_request(c, "PUT", path, w.buf, &r);
 		jw_free(&w);
 		if (rc != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
@@ -4364,10 +4364,10 @@ static void fmt_software(const struct json_value *v)
  * the daemon must not block its event loop for the length of someone's
  * command (ADR-0180), but the operator should not have to know that.
  */
-static int cmd_container_exec(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_container_exec(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	char path[300];
-	struct kx_response r;
+	struct thinc_response r;
 	struct json_writer w;
 	const char *name;
 	int i, sep = -1;
@@ -4398,7 +4398,7 @@ static int cmd_container_exec(const struct kx_client *c, int json_mode, int argc
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/containers/%s/exec", name);
-	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -4408,19 +4408,19 @@ static int cmd_container_exec(const struct kx_client *c, int json_mode, int argc
 		emit(&r, json_mode, NULL);
 		return 1;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	for (i = 0; i < 3000; i++) {
 		const char *state;
 
 		usleep(100000);
-		if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+		if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
 		}
 		state = json_as_string(json_object_get(r.json, "state"));
 		if (state != NULL && strcmp(state, "running") == 0) {
-			kx_response_free(&r);
+			thinc_response_free(&r);
 			continue;
 		}
 		if (json_mode)
@@ -4437,11 +4437,11 @@ static int cmd_container_exec(const struct kx_client *c, int json_mode, int argc
 				fprintf(stderr, "thincctl: output truncated at the capture limit\n");
 			if (state != NULL && strcmp(state, "timeout") == 0) {
 				fprintf(stderr, "thincctl: the command timed out and was killed\n");
-				kx_response_free(&r);
+				thinc_response_free(&r);
 				return 124; /* timeout(1)'s own convention */
 			}
 			rc = (es != NULL && es->type == JSON_NUMBER) ? (int)json_as_number(es) : 1;
-			kx_response_free(&r);
+			thinc_response_free(&r);
 			return rc;
 		}
 	}
@@ -4456,9 +4456,9 @@ static int cmd_container_exec(const struct kx_client *c, int json_mode, int argc
  * operator having seen what it destroys would defeat the point of the
  * guard rather than honour it.
  */
-static int cmd_factory_reset(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_factory_reset(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	struct json_writer w;
 	const char *confirm = NULL;
 	int i;
@@ -4488,7 +4488,7 @@ static int cmd_factory_reset(const struct kx_client *c, int json_mode, int argc,
 	jw_str(&w, confirm);
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
-	if (kx_client_request(c, "POST", "/v1/system/factory-reset", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/system/factory-reset", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -4497,21 +4497,21 @@ static int cmd_factory_reset(const struct kx_client *c, int json_mode, int argc,
 	return emit(&r, json_mode, NULL);
 }
 
-static int cmd_software(const struct kx_client *c, int json_mode)
+static int cmd_software(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/software", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/software", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_software);
 }
 
-static int cmd_volume_quota(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_volume_quota(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	char path[300];
-	struct kx_response r;
+	struct thinc_response r;
 	struct json_writer w;
 	long long bytes;
 
@@ -4530,7 +4530,7 @@ static int cmd_volume_quota(const struct kx_client *c, int json_mode, int argc, 
 	jw_int(&w, bytes);
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
-	if (kx_client_request(c, "PUT", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -4539,10 +4539,10 @@ static int cmd_volume_quota(const struct kx_client *c, int json_mode, int argc, 
 	return emit(&r, json_mode, fmt_volume_one);
 }
 
-static int cmd_volume_backups(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_volume_backups(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	char path[300];
-	struct kx_response r;
+	struct thinc_response r;
 	struct json_writer w;
 	int enable = -1;
 	long retain = 0;
@@ -4573,7 +4573,7 @@ static int cmd_volume_backups(const struct kx_client *c, int json_mode, int argc
 	snprintf(path, sizeof(path), "/v1/volumes/%s/backups", argv[1]);
 
 	if (enable < 0 && retain == 0 && while_running == NULL) {
-		if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+		if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
 		}
@@ -4593,7 +4593,7 @@ static int cmd_volume_backups(const struct kx_client *c, int json_mode, int argc
 	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
-	if (kx_client_request(c, "PUT", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -4602,27 +4602,27 @@ static int cmd_volume_backups(const struct kx_client *c, int json_mode, int argc
 	return emit(&r, json_mode, fmt_volume_backups);
 }
 
-static int cmd_volume_backup_now(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_volume_backup_now(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	char path[300];
-	struct kx_response r;
+	struct thinc_response r;
 
 	if (argc < 2) {
 		fprintf(stderr, "usage: thincctl volume backup NAME\n");
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/volumes/%s/backup", argv[1]);
-	if (kx_client_request(c, "POST", path, "{}", &r) != 0) {
+	if (thinc_client_request(c, "POST", path, "{}", &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_volume_backups);
 }
 
-static int cmd_volume_restore(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_volume_restore(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	char path[300];
-	struct kx_response r;
+	struct thinc_response r;
 	struct json_writer w;
 
 	if (argc < 3) {
@@ -4640,7 +4640,7 @@ static int cmd_volume_restore(const struct kx_client *c, int json_mode, int argc
 	jw_str(&w, argv[1]);
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
-	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -4649,13 +4649,13 @@ static int cmd_volume_restore(const struct kx_client *c, int json_mode, int argc
 	return emit(&r, json_mode, fmt_volume_backups);
 }
 
-static int cmd_volume(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_volume(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	const char *sub = argc > 0 ? argv[0] : "ls";
 
 	if (strcmp(sub, "ls") == 0) {
-		if (kx_client_request(c, "GET", "/v1/volumes", NULL, &r) != 0) {
+		if (thinc_client_request(c, "GET", "/v1/volumes", NULL, &r) != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
 		}
@@ -4700,7 +4700,7 @@ static int cmd_volume(const struct kx_client *c, int json_mode, int argc, char *
 		}
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
-		rc = kx_client_request(c, "POST", "/v1/volumes", w.buf, &r);
+		rc = thinc_client_request(c, "POST", "/v1/volumes", w.buf, &r);
 		jw_free(&w);
 		if (rc != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
@@ -4757,7 +4757,7 @@ static int cmd_volume(const struct kx_client *c, int json_mode, int argc, char *
 		w.buf[w.len] = '\0';
 
 		snprintf(path, sizeof(path), "/v1/volumes/%s/owner", argv[1]);
-		rc = kx_client_request(c, "PUT", path, w.buf, &r);
+		rc = thinc_client_request(c, "PUT", path, w.buf, &r);
 		jw_free(&w);
 		if (rc != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
@@ -4769,7 +4769,7 @@ static int cmd_volume(const struct kx_client *c, int json_mode, int argc, char *
 		char path[128];
 
 		snprintf(path, sizeof(path), "/v1/volumes/%s", argv[1]);
-		if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+		if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
 		}
@@ -4779,7 +4779,7 @@ static int cmd_volume(const struct kx_client *c, int json_mode, int argc, char *
 		char path[128];
 
 		snprintf(path, sizeof(path), "/v1/volumes/%s", argv[1]);
-		if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
 		}
@@ -4796,7 +4796,7 @@ static int cmd_volume(const struct kx_client *c, int json_mode, int argc, char *
 	if (strcmp(argv[0], "migrate") == 0) {
 		const char *disk = "";
 		struct json_writer w;
-		struct kx_response r;
+		struct thinc_response r;
 		char path[256];
 		int i;
 
@@ -4818,7 +4818,7 @@ static int cmd_volume(const struct kx_client *c, int json_mode, int argc, char *
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 
-		if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+		if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
 			jw_free(&w);
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
@@ -4841,11 +4841,11 @@ static int cmd_volume(const struct kx_client *c, int json_mode, int argc, char *
 	return 2;
 }
 
-static int cmd_host_stats(const struct kx_client *c, int json_mode)
+static int cmd_host_stats(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/stats", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/stats", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -4883,20 +4883,20 @@ static void fmt_process_list(const struct json_value *v)
 		fmt_process_line(v->u.array.items[i]);
 }
 
-static int cmd_process_ls(const struct kx_client *c, int json_mode)
+static int cmd_process_ls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/processes", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/processes", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_process_list);
 }
 
-static int cmd_process_kill(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_process_kill(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[64];
 
 	if (argc < 1) {
@@ -4904,14 +4904,14 @@ static int cmd_process_kill(const struct kx_client *c, int json_mode, int argc, 
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/system/processes/%s", argv[0]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_process(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_process(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -4952,27 +4952,27 @@ static void fmt_ping(const struct json_value *v)
  * shape as poll_bootstrap_fetch()/poll_hostbuild()/poll_iso(); the
  * server side itself is bounded to a fixed ~2s timeout, so this loop
  * always terminates. */
-static int poll_ping(const struct kx_client *c, struct kx_response *out)
+static int poll_ping(const struct thinc_client *c, struct thinc_response *out)
 {
 	for (;;) {
 		const char *state;
 
-		if (kx_client_request(c, "GET", "/v1/system/ping", NULL, out) != 0) {
+		if (thinc_client_request(c, "GET", "/v1/system/ping", NULL, out) != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return -1;
 		}
 		state = json_str_field(out->json, "state");
 		if (state == NULL || strcmp(state, "pending") != 0)
 			return 0;
-		kx_response_free(out);
+		thinc_response_free(out);
 		usleep(100000);
 	}
 }
 
-static int cmd_ping(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_ping(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 	int rc;
 
 	if (argc < 1) {
@@ -4987,21 +4987,21 @@ static int cmd_ping(const struct kx_client *c, int json_mode, int argc, char **a
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/system/ping", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/system/ping", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	jw_free(&w);
 	if (r.status == 409) {
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		fprintf(stderr, "thincctl: another ping is already in flight\n");
 		return 1;
 	}
 	if (r.status != 202) {
 		return emit(&r, json_mode, fmt_ping);
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	if (poll_ping(c, &r) != 0)
 		return 1;
@@ -5075,9 +5075,9 @@ static void fmt_container_stats(const struct json_value *v)
 	}
 }
 
-static int cmd_container_stats(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_container_stats(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[300];
 
 	if (argc < 1) {
@@ -5085,14 +5085,14 @@ static int cmd_container_stats(const struct kx_client *c, int json_mode, int arg
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s/stats", argv[0]);
-	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_container_stats);
 }
 
-static int cmd_console(const struct kx_client *c, int argc, char **argv)
+static int cmd_console(const struct thinc_client *c, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *cmd = NULL;
@@ -5113,7 +5113,7 @@ static int cmd_console(const struct kx_client *c, int argc, char **argv)
 		return 2;
 	}
 
-	return kx_console_run(c, name, cmd) == 0 ? 0 : 1;
+	return thinc_console_run(c, name, cmd) == 0 ? 0 : 1;
 }
 
 /* Matches daemon's CONTAINER_MAX_NETWORKS -- see include/container.h. */
@@ -5450,14 +5450,14 @@ static void url_encode_query_value(const char *in, char *out, size_t out_size)
 	out[oi] = '\0';
 }
 
-static int cmd_files_get(const struct kx_client *c, int argc, char **argv)
+static int cmd_files_get(const struct thinc_client *c, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *path_arg = NULL;
 	const char *output = NULL;
 	char encoded_path[256 * 3]; /* 256 matches daemon's CONTAINER_FILE_PATH_MAX */
 	char path[400];
-	struct kx_response r;
+	struct thinc_response r;
 	int i;
 
 	for (i = 0; i < argc; i++) {
@@ -5480,7 +5480,7 @@ static int cmd_files_get(const struct kx_client *c, int argc, char **argv)
 	url_encode_query_value(path_arg, encoded_path, sizeof(encoded_path));
 	snprintf(path, sizeof(path), "/v1/containers/%s/files?path=%s", name, encoded_path);
 
-	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -5488,7 +5488,7 @@ static int cmd_files_get(const struct kx_client *c, int argc, char **argv)
 		const char *msg = json_str_field(r.json, "error");
 
 		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed", r.status);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		return 1;
 	}
 
@@ -5505,7 +5505,7 @@ static int cmd_files_get(const struct kx_client *c, int argc, char **argv)
 			perror(output);
 			if (f != NULL)
 				fclose(f);
-			kx_response_free(&r);
+			thinc_response_free(&r);
 			return 1;
 		}
 		fclose(f);
@@ -5513,7 +5513,7 @@ static int cmd_files_get(const struct kx_client *c, int argc, char **argv)
 		fwrite(r.body, 1, r.body_len, stdout);
 	}
 
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	return 0;
 }
 
@@ -5527,7 +5527,7 @@ static int cmd_files_get(const struct kx_client *c, int argc, char **argv)
  * survive a recreate" path is a container recipe (`container recipe
  * add`/`container apply-recipe`), not this command.
  */
-static int cmd_files_put(const struct kx_client *c, int argc, char **argv)
+static int cmd_files_put(const struct thinc_client *c, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *path_arg = NULL;
@@ -5538,7 +5538,7 @@ static int cmd_files_put(const struct kx_client *c, int argc, char **argv)
 	char encoded_path[256 * 3];
 	char path[400];
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 	int i;
 
 	for (i = 0; i < argc; i++) {
@@ -5581,7 +5581,7 @@ static int cmd_files_put(const struct kx_client *c, int argc, char **argv)
 	url_encode_query_value(path_arg, encoded_path, sizeof(encoded_path));
 	snprintf(path, sizeof(path), "/v1/containers/%s/files?path=%s", name, encoded_path);
 
-	if (kx_client_request(c, "PUT", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -5592,15 +5592,15 @@ static int cmd_files_put(const struct kx_client *c, int argc, char **argv)
 		const char *msg = json_str_field(r.json, "error");
 
 		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed", r.status);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		return 1;
 	}
 	printf("wrote %s on %s\n", path_arg, name);
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	return 0;
 }
 
-static int cmd_files(const struct kx_client *c, int argc, char **argv)
+static int cmd_files(const struct thinc_client *c, int argc, char **argv)
 {
 	const char *sub;
 
@@ -5620,11 +5620,11 @@ static int cmd_files(const struct kx_client *c, int argc, char **argv)
 	return 2;
 }
 
-static int cmd_backup(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_backup(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *output = NULL;
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--output=", 9) == 0)
@@ -5635,7 +5635,7 @@ static int cmd_backup(const struct kx_client *c, int json_mode, int argc, char *
 		}
 	}
 
-	if (kx_client_request(c, "GET", "/v1/system/backup", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/backup", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -5644,7 +5644,7 @@ static int cmd_backup(const struct kx_client *c, int json_mode, int argc, char *
 
 		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r.status);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		return 1;
 	}
 
@@ -5659,25 +5659,25 @@ static int cmd_backup(const struct kx_client *c, int json_mode, int argc, char *
 			perror(output);
 			if (f != NULL)
 				fclose(f);
-			kx_response_free(&r);
+			thinc_response_free(&r);
 			return 1;
 		}
 		fclose(f);
 		printf("backup written to %s (%zu bytes)\n", output, r.body_len);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		return 0;
 	}
 
 	return emit(&r, json_mode, NULL);
 }
 
-static int cmd_restore(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_restore(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *input = NULL;
 	int i;
 	char *buf;
 	size_t len;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--input=", 8) == 0)
@@ -5696,7 +5696,7 @@ static int cmd_restore(const struct kx_client *c, int json_mode, int argc, char 
 		return 1;
 	}
 
-	if (kx_client_request(c, "POST", "/v1/system/restore", buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/system/restore", buf, &r) != 0) {
 		free(buf);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -5718,11 +5718,11 @@ static void fmt_site_config(const struct json_value *v)
 	       domain_suffix != NULL ? domain_suffix : "?");
 }
 
-static int cmd_site_show(const struct kx_client *c, int json_mode)
+static int cmd_site_show(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/site", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/site", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -5737,7 +5737,7 @@ static int cmd_site_show(const struct kx_client *c, int json_mode)
  * fetches the current config first and only overrides what was
  * actually passed on the command line.
  */
-static int cmd_site_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_site_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	char instance_name[128];
 	char site_name[128];
@@ -5748,7 +5748,7 @@ static int cmd_site_set(const struct kx_client *c, int json_mode, int argc, char
 	const char *cur;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--instance-name=", 16) == 0)
@@ -5768,13 +5768,13 @@ static int cmd_site_set(const struct kx_client *c, int json_mode, int argc, char
 		return 2;
 	}
 
-	if (kx_client_request(c, "GET", "/v1/system/site", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/site", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	if (r.status < 200 || r.status >= 300) {
 		fprintf(stderr, "thincctl: could not read current site config (HTTP %d)\n", r.status);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		return 1;
 	}
 	cur = json_str_field(r.json, "instance_name");
@@ -5783,7 +5783,7 @@ static int cmd_site_set(const struct kx_client *c, int json_mode, int argc, char
 	snprintf(site_name, sizeof(site_name), "%s", cur != NULL ? cur : "");
 	cur = json_str_field(r.json, "domain_suffix");
 	snprintf(domain_suffix, sizeof(domain_suffix), "%s", cur != NULL ? cur : "internal");
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	if (new_instance_name != NULL)
 		snprintf(instance_name, sizeof(instance_name), "%s", new_instance_name);
@@ -5803,7 +5803,7 @@ static int cmd_site_set(const struct kx_client *c, int json_mode, int argc, char
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "PUT", "/v1/system/site", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", "/v1/system/site", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -5813,7 +5813,7 @@ static int cmd_site_set(const struct kx_client *c, int json_mode, int argc, char
 	return emit(&r, json_mode, fmt_site_config);
 }
 
-static int cmd_site(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_site(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -5851,11 +5851,11 @@ static void fmt_daemon_config(const struct json_value *v)
 	       (long)json_as_number(json_object_get(v, "https_port")));
 }
 
-static int cmd_daemon_config_show(const struct kx_client *c, int json_mode)
+static int cmd_daemon_config_show(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/daemon-config", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/daemon-config", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -5869,7 +5869,7 @@ static int cmd_daemon_config_show(const struct kx_client *c, int json_mode)
  * are. So this sends only what the operator actually gave on the
  * command line, no fetch-then-merge dance needed.
  */
-static int cmd_daemon_config_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_daemon_config_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *port = NULL;
 	const char *https_port = NULL;
@@ -5880,7 +5880,7 @@ static int cmd_daemon_config_set(const struct kx_client *c, int json_mode, int a
 	int want_https = -1;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--port=", 7) == 0)
@@ -5951,7 +5951,7 @@ static int cmd_daemon_config_set(const struct kx_client *c, int json_mode, int a
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "PUT", "/v1/system/daemon-config", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", "/v1/system/daemon-config", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -5961,7 +5961,7 @@ static int cmd_daemon_config_set(const struct kx_client *c, int json_mode, int a
 	return emit(&r, json_mode, fmt_daemon_config);
 }
 
-static int cmd_daemon_config(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_daemon_config(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -6009,25 +6009,25 @@ static void fmt_backup_status(const struct json_value *v)
 	printf("\n");
 }
 
-static int cmd_backup_config_show(const struct kx_client *c, int json_mode)
+static int cmd_backup_config_show(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/backup-config", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/backup-config", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_backup_config);
 }
 
-static int cmd_backup_config_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_backup_config_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *disk = NULL;
 	int clear_disk = 0;
 	int want_enabled = -1; /* -1: not given */
 	const char *interval_hours = NULL;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 	int i;
 
 	for (i = 0; i < argc; i++) {
@@ -6077,7 +6077,7 @@ static int cmd_backup_config_set(const struct kx_client *c, int json_mode, int a
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "PUT", "/v1/system/backup-config", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", "/v1/system/backup-config", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -6086,29 +6086,29 @@ static int cmd_backup_config_set(const struct kx_client *c, int json_mode, int a
 	return emit(&r, json_mode, fmt_backup_config);
 }
 
-static int cmd_backup_config_status(const struct kx_client *c, int json_mode)
+static int cmd_backup_config_status(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/backup-config/status", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/backup-config/status", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_backup_status);
 }
 
-static int cmd_backup_config_snapshot_now(const struct kx_client *c, int json_mode)
+static int cmd_backup_config_snapshot_now(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "POST", "/v1/system/backup-config/snapshot-now", NULL, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/system/backup-config/snapshot-now", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_backup_status);
 }
 
-static int cmd_backup_config(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_backup_config(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -6140,23 +6140,23 @@ static void fmt_rolling_config(const struct json_value *v)
 	       (long)json_as_number(json_object_get(v, "jitter_window_seconds")));
 }
 
-static int cmd_rolling_config_show(const struct kx_client *c, int json_mode)
+static int cmd_rolling_config_show(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/rolling-config", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/rolling-config", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_rolling_config);
 }
 
-static int cmd_rolling_config_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_rolling_config_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *window = NULL;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--jitter-window-seconds=", 24) == 0)
@@ -6178,7 +6178,7 @@ static int cmd_rolling_config_set(const struct kx_client *c, int json_mode, int 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "PUT", "/v1/system/rolling-config", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", "/v1/system/rolling-config", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -6188,7 +6188,7 @@ static int cmd_rolling_config_set(const struct kx_client *c, int json_mode, int 
 	return emit(&r, json_mode, fmt_rolling_config);
 }
 
-static int cmd_rolling_config(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_rolling_config(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -6224,25 +6224,25 @@ static void fmt_pkg_build_config(const struct json_value *v)
 	printf("cpu_max=%s\n", cpu_max != NULL ? cpu_max : "(none)");
 }
 
-static int cmd_pkg_build_config_show(const struct kx_client *c, int json_mode)
+static int cmd_pkg_build_config_show(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/pkg-build-config", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/pkg-build-config", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_build_config);
 }
 
-static int cmd_pkg_build_config_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_build_config_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *max_jobs = NULL;
 	const char *memory_max = NULL;
 	const char *cpu_max = NULL;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--max-concurrent-jobs=", 23) == 0)
@@ -6279,7 +6279,7 @@ static int cmd_pkg_build_config_set(const struct kx_client *c, int json_mode, in
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "PUT", "/v1/system/pkg-build-config", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", "/v1/system/pkg-build-config", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -6289,7 +6289,7 @@ static int cmd_pkg_build_config_set(const struct kx_client *c, int json_mode, in
 	return emit(&r, json_mode, fmt_pkg_build_config);
 }
 
-static int cmd_pkg_build_config(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_build_config(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -6338,11 +6338,11 @@ static void fmt_stalls(const struct json_value *v)
 	}
 }
 
-static int cmd_stalls(const struct kx_client *c, int json_mode)
+static int cmd_stalls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/stalls", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/stalls", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -6383,9 +6383,9 @@ static void fmt_boot_console(const struct json_value *v)
 	}
 }
 
-static int cmd_boot_console(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_boot_console(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	const char *sub = argc > 0 ? argv[0] : "show";
 	const char *consoles[8];
 	int console_count = 0;
@@ -6394,7 +6394,7 @@ static int cmd_boot_console(const struct kx_client *c, int json_mode, int argc, 
 	struct json_writer w;
 
 	if (strcmp(sub, "show") == 0) {
-		if (kx_client_request(c, "GET", "/v1/system/boot-console", NULL, &r) != 0) {
+		if (thinc_client_request(c, "GET", "/v1/system/boot-console", NULL, &r) != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
 		}
@@ -6442,7 +6442,7 @@ static int cmd_boot_console(const struct kx_client *c, int json_mode, int argc, 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "PUT", "/v1/system/boot-console", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", "/v1/system/boot-console", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -6485,9 +6485,9 @@ static void fmt_cpreserve(const struct json_value *v)
 	}
 }
 
-static int cmd_cpreserve(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_cpreserve(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	const char *sub = argc > 0 ? argv[0] : "show";
 	const char *cpu = NULL, *mem = NULL;
 	int want_enabled = -1;
@@ -6495,7 +6495,7 @@ static int cmd_cpreserve(const struct kx_client *c, int json_mode, int argc, cha
 	struct json_writer w;
 
 	if (strcmp(sub, "show") == 0) {
-		if (kx_client_request(c, "GET", "/v1/system/control-plane-reservation", NULL, &r) != 0) {
+		if (thinc_client_request(c, "GET", "/v1/system/control-plane-reservation", NULL, &r) != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
 		}
@@ -6545,7 +6545,7 @@ static int cmd_cpreserve(const struct kx_client *c, int json_mode, int argc, cha
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "PUT", "/v1/system/control-plane-reservation", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", "/v1/system/control-plane-reservation", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -6574,18 +6574,18 @@ static void fmt_tls_throttle(const struct json_value *v)
 	       (long)json_as_number(json_object_get(v, "log_interval_seconds")));
 }
 
-static int cmd_tls_throttle_show(const struct kx_client *c, int json_mode)
+static int cmd_tls_throttle_show(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/tls-throttle", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/tls-throttle", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_tls_throttle);
 }
 
-static int cmd_tls_throttle_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_tls_throttle_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *threshold = NULL;
 	const char *window = NULL;
@@ -6594,7 +6594,7 @@ static int cmd_tls_throttle_set(const struct kx_client *c, int json_mode, int ar
 	int want_enabled = -1; /* -1: untouched, 0: disable, 1: enable */
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strcmp(argv[i], "--enabled") == 0)
@@ -6646,7 +6646,7 @@ static int cmd_tls_throttle_set(const struct kx_client *c, int json_mode, int ar
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "PUT", "/v1/system/tls-throttle", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", "/v1/system/tls-throttle", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -6681,18 +6681,18 @@ static void fmt_tls_throttle_status(const struct json_value *v)
 		fmt_tls_throttle_status_line(entries->u.array.items[i]);
 }
 
-static int cmd_tls_throttle_status(const struct kx_client *c, int json_mode)
+static int cmd_tls_throttle_status(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/tls-throttle/status", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/tls-throttle/status", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_tls_throttle_status);
 }
 
-static int cmd_tls_throttle(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_tls_throttle(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -6755,18 +6755,18 @@ static void fmt_hostauth_config(const struct json_value *v)
 	       base_dn != NULL && base_dn[0] != '\0' ? base_dn : "-");
 }
 
-static int cmd_hostauth_config_show(const struct kx_client *c, int json_mode)
+static int cmd_hostauth_config_show(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/hostauth-config", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/hostauth-config", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_hostauth_config);
 }
 
-static int cmd_hostauth_config_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_hostauth_config_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *admin_groups[8];
 	int admin_group_count = -1; /* -1: not given, keep current */
@@ -6778,7 +6778,7 @@ static int cmd_hostauth_config_set(const struct kx_client *c, int json_mode, int
 	const char *ldap_base_dn = NULL;
 	int i;
 	struct json_value *current;
-	struct kx_response r;
+	struct thinc_response r;
 	struct json_writer w;
 
 	admin_group_count = 0;
@@ -6827,7 +6827,7 @@ static int cmd_hostauth_config_set(const struct kx_client *c, int json_mode, int
 	/* Read-modify-write: fetch the current config so any flag NOT
 	 * given here is preserved exactly, not reset by the server's own
 	 * full-replacement PUT semantics. */
-	if (kx_client_request(c, "GET", "/v1/system/hostauth-config", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/hostauth-config", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -6891,9 +6891,9 @@ static int cmd_hostauth_config_set(const struct kx_client *c, int json_mode, int
 	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
-	if (kx_client_request(c, "PUT", "/v1/system/hostauth-config", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", "/v1/system/hostauth-config", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -6903,7 +6903,7 @@ static int cmd_hostauth_config_set(const struct kx_client *c, int json_mode, int
 	return emit(&r, json_mode, fmt_hostauth_config);
 }
 
-static int cmd_hostauth_config(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_hostauth_config(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -6952,21 +6952,21 @@ static void fmt_hostauth_sessions_list(const struct json_value *v)
 		fmt_hostauth_session_line(sessions->u.array.items[i]);
 }
 
-static int cmd_hostauth_sessions_ls(const struct kx_client *c, int json_mode)
+static int cmd_hostauth_sessions_ls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/hostauth/sessions", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/hostauth/sessions", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_hostauth_sessions_list);
 }
 
-static int cmd_hostauth_sessions_revoke(const struct kx_client *c, int json_mode, int argc,
+static int cmd_hostauth_sessions_revoke(const struct thinc_client *c, int json_mode, int argc,
                                          char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 
 	if (argc < 1) {
@@ -6974,14 +6974,14 @@ static int cmd_hostauth_sessions_revoke(const struct kx_client *c, int json_mode
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/system/hostauth/sessions/%s", argv[0]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_hostauth_sessions(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_hostauth_sessions(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -7062,7 +7062,7 @@ static int parse_env_flag(const char *s, struct cli_env *out)
 	return 0;
 }
 
-static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_run(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *image = NULL;
@@ -7131,7 +7131,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	int i = 0;
 	int cmd_start = -1;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	while (i < argc) {
 		if (strcmp(argv[i], "--") == 0) {
@@ -7660,14 +7660,14 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	jw_obj_close(&w);
 
 	/*
-	 * kx_client_request() needs a NUL-terminated C string; w.buf isn't
+	 * thinc_client_request() needs a NUL-terminated C string; w.buf isn't
 	 * one, but jw_ensure()'s growth policy always keeps at least one
 	 * spare byte of capacity beyond w.len, so writing the NUL directly
 	 * here is safe without a further allocation.
 	 */
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/containers", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/containers", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -7677,7 +7677,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	return emit(&r, json_mode, fmt_container_line);
 }
 
-static int cmd_network_create(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_network_create(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *subnet = NULL;
@@ -7686,7 +7686,7 @@ static int cmd_network_create(const struct kx_client *c, int json_mode, int argc
 	long prefix_len = -1;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
@@ -7740,7 +7740,7 @@ static int cmd_network_create(const struct kx_client *c, int json_mode, int argc
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/networks", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/networks", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -7750,20 +7750,20 @@ static int cmd_network_create(const struct kx_client *c, int json_mode, int argc
 	return emit(&r, json_mode, fmt_network_line);
 }
 
-static int cmd_network_ls(const struct kx_client *c, int json_mode)
+static int cmd_network_ls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/networks", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/networks", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_network_list);
 }
 
-static int cmd_network_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_network_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 
 	if (argc < 1) {
@@ -7771,14 +7771,14 @@ static int cmd_network_rm(const struct kx_client *c, int json_mode, int argc, ch
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/networks/%s", argv[0]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_network_attach_interface(const struct kx_client *c, int json_mode, int argc,
+static int cmd_network_attach_interface(const struct thinc_client *c, int json_mode, int argc,
                                          char **argv)
 {
 	const char *net_name;
@@ -7786,7 +7786,7 @@ static int cmd_network_attach_interface(const struct kx_client *c, int json_mode
 	long vlan_id = 0;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 
 	if (argc < 1) {
@@ -7822,7 +7822,7 @@ static int cmd_network_attach_interface(const struct kx_client *c, int json_mode
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/networks/%s/interfaces", net_name);
-	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -7832,13 +7832,13 @@ static int cmd_network_attach_interface(const struct kx_client *c, int json_mode
 	return emit(&r, json_mode, fmt_network_line);
 }
 
-static int cmd_network_detach_interface(const struct kx_client *c, int json_mode, int argc,
+static int cmd_network_detach_interface(const struct thinc_client *c, int json_mode, int argc,
                                          char **argv)
 {
 	const char *net_name;
 	const char *ifname = NULL;
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 
 	if (argc < 1) {
@@ -7860,14 +7860,14 @@ static int cmd_network_detach_interface(const struct kx_client *c, int json_mode
 	}
 
 	snprintf(path, sizeof(path), "/v1/networks/%s/interfaces/%s", net_name, ifname);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_network(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_network(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -7897,12 +7897,12 @@ static int cmd_network(const struct kx_client *c, int json_mode, int argc, char 
 	return 2;
 }
 
-static int cmd_image_create(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_image_create(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
@@ -7925,7 +7925,7 @@ static int cmd_image_create(const struct kx_client *c, int json_mode, int argc, 
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/images", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/images", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -7935,20 +7935,20 @@ static int cmd_image_create(const struct kx_client *c, int json_mode, int argc, 
 	return emit(&r, json_mode, fmt_image_line);
 }
 
-static int cmd_image_ls(const struct kx_client *c, int json_mode)
+static int cmd_image_ls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/images", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/images", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_image_list);
 }
 
-static int cmd_image_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_image_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 
 	if (argc < 1) {
@@ -7956,16 +7956,16 @@ static int cmd_image_rm(const struct kx_client *c, int json_mode, int argc, char
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/images/%s", argv[0]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_image_show(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_image_show(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 
 	if (argc < 1) {
@@ -7973,7 +7973,7 @@ static int cmd_image_show(const struct kx_client *c, int json_mode, int argc, ch
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/images/%s", argv[0]);
-	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -7982,7 +7982,7 @@ static int cmd_image_show(const struct kx_client *c, int json_mode, int argc, ch
 
 /* ADR-0107: declares package intent on an image -- does not itself
  * trigger a rebuild (task #720's own job). */
-static int cmd_image_manifest_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_image_manifest_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *image = NULL;
 	const char *package = NULL;
@@ -7991,7 +7991,7 @@ static int cmd_image_manifest_set(const struct kx_client *c, int json_mode, int 
 	int i;
 	char path[256];
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--image=", 8) == 0)
@@ -8026,7 +8026,7 @@ static int cmd_image_manifest_set(const struct kx_client *c, int json_mode, int 
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/images/%s/manifest", image);
-	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -8038,21 +8038,21 @@ static int cmd_image_manifest_set(const struct kx_client *c, int json_mode, int 
 
 		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r.status);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		return 1;
 	}
 	printf("%s@%s (%s) set on image '%s'\n", package, version, mode, image);
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	return 0;
 }
 
-static int cmd_image_manifest_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_image_manifest_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *image = NULL;
 	const char *package = NULL;
 	int i;
 	char path[300];
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--image=", 8) == 0)
@@ -8070,14 +8070,14 @@ static int cmd_image_manifest_rm(const struct kx_client *c, int json_mode, int a
 	}
 
 	snprintf(path, sizeof(path), "/v1/images/%s/manifest/%s", image, package);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_image_manifest(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_image_manifest(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -8118,11 +8118,11 @@ static void fmt_image_recipe_list(const struct json_value *v)
 		fmt_image_recipe_line(recipes->u.array.items[i]);
 }
 
-static int cmd_image_recipe_ls(const struct kx_client *c, int json_mode)
+static int cmd_image_recipe_ls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/images/recipes", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/images/recipes", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -8132,7 +8132,7 @@ static int cmd_image_recipe_ls(const struct kx_client *c, int json_mode)
 /* Same shape as `pkg recipe add` -- --name= is the image name this
  * recipe declares intent for (recipe name == image name, a 1:1
  * relationship, ADR-0123), --file= a local path to the recipe text. */
-static int cmd_image_recipe_add(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_image_recipe_add(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *file = NULL;
@@ -8140,7 +8140,7 @@ static int cmd_image_recipe_add(const struct kx_client *c, int json_mode, int ar
 	size_t content_len;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
@@ -8171,7 +8171,7 @@ static int cmd_image_recipe_add(const struct kx_client *c, int json_mode, int ar
 	w.buf[w.len] = '\0';
 	free(content);
 
-	if (kx_client_request(c, "POST", "/v1/images/recipes", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/images/recipes", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -8183,11 +8183,11 @@ static int cmd_image_recipe_add(const struct kx_client *c, int json_mode, int ar
 
 		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r.status);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		return 1;
 	}
 	printf("image recipe '%s' added\n", name);
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	return 0;
 }
 
@@ -8198,9 +8198,9 @@ static void fmt_image_recipe_show(const struct json_value *v)
 	printf("%s", content != NULL ? content : "");
 }
 
-static int cmd_image_recipe_show(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_image_recipe_show(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 	const char *name = NULL;
 	int i;
@@ -8218,16 +8218,16 @@ static int cmd_image_recipe_show(const struct kx_client *c, int json_mode, int a
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/images/recipes/%s", name);
-	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_image_recipe_show);
 }
 
-static int cmd_image_recipe_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_image_recipe_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 	const char *name = NULL;
 	int i;
@@ -8245,14 +8245,14 @@ static int cmd_image_recipe_rm(const struct kx_client *c, int json_mode, int arg
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/images/recipes/%s", name);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_image_recipe(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_image_recipe(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -8285,9 +8285,9 @@ static int cmd_image_recipe(const struct kx_client *c, int json_mode, int argc, 
  * status`, 204 means it already fully finished (nothing more to wait
  * for).
  */
-static int cmd_image_apply_recipe(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_image_apply_recipe(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 	const char *name = NULL;
 	int i;
@@ -8305,7 +8305,7 @@ static int cmd_image_apply_recipe(const struct kx_client *c, int json_mode, int 
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/images/%s/apply-recipe", name);
-	if (kx_client_request(c, "POST", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "POST", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -8314,7 +8314,7 @@ static int cmd_image_apply_recipe(const struct kx_client *c, int json_mode, int 
 
 		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r.status);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		return 1;
 	}
 	if (r.status == 202)
@@ -8323,7 +8323,7 @@ static int cmd_image_apply_recipe(const struct kx_client *c, int json_mode, int 
 		       name);
 	else
 		printf("recipe applied for '%s'\n", name);
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	return 0;
 }
 
@@ -8337,11 +8337,11 @@ static void fmt_image_recipe_apply_status(const struct json_value *v)
 	       image != NULL ? image : "-", error != NULL ? error : "-");
 }
 
-static int cmd_image_recipe_apply_status(const struct kx_client *c, int json_mode)
+static int cmd_image_recipe_apply_status(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/images/recipe-apply-status", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/images/recipe-apply-status", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -8368,11 +8368,11 @@ static void fmt_container_recipe_list(const struct json_value *v)
 		fmt_container_recipe_line(recipes->u.array.items[i]);
 }
 
-static int cmd_container_recipe_ls(const struct kx_client *c, int json_mode)
+static int cmd_container_recipe_ls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/containers/recipes", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/containers/recipes", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -8384,7 +8384,7 @@ static int cmd_container_recipe_ls(const struct kx_client *c, int json_mode)
  * pkg_recipe_add()'s pkg_name= contract) -- unlike an image recipe,
  * a container recipe's content is a real POST /v1/containers body, so
  * it necessarily already carries its own name. */
-static int cmd_container_recipe_add(const struct kx_client *c, int json_mode, int argc,
+static int cmd_container_recipe_add(const struct thinc_client *c, int json_mode, int argc,
                                      char **argv)
 {
 	const char *name = NULL;
@@ -8393,7 +8393,7 @@ static int cmd_container_recipe_add(const struct kx_client *c, int json_mode, in
 	size_t content_len;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
@@ -8424,7 +8424,7 @@ static int cmd_container_recipe_add(const struct kx_client *c, int json_mode, in
 	w.buf[w.len] = '\0';
 	free(content);
 
-	if (kx_client_request(c, "POST", "/v1/containers/recipes", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/containers/recipes", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -8436,11 +8436,11 @@ static int cmd_container_recipe_add(const struct kx_client *c, int json_mode, in
 
 		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r.status);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		return 1;
 	}
 	printf("container recipe '%s' added\n", name);
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	return 0;
 }
 
@@ -8451,10 +8451,10 @@ static void fmt_container_recipe_show(const struct json_value *v)
 	printf("%s", content != NULL ? content : "");
 }
 
-static int cmd_container_recipe_show(const struct kx_client *c, int json_mode, int argc,
+static int cmd_container_recipe_show(const struct thinc_client *c, int json_mode, int argc,
                                       char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 	const char *name = NULL;
 	int i;
@@ -8472,17 +8472,17 @@ static int cmd_container_recipe_show(const struct kx_client *c, int json_mode, i
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/recipes/%s", name);
-	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_container_recipe_show);
 }
 
-static int cmd_container_recipe_rm(const struct kx_client *c, int json_mode, int argc,
+static int cmd_container_recipe_rm(const struct thinc_client *c, int json_mode, int argc,
                                     char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 	const char *name = NULL;
 	int i;
@@ -8500,14 +8500,14 @@ static int cmd_container_recipe_rm(const struct kx_client *c, int json_mode, int
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/recipes/%s", name);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_container_recipe(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_container_recipe(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -8540,10 +8540,10 @@ static int cmd_container_recipe(const struct kx_client *c, int json_mode, int ar
  * real error, never an async job to poll (unlike image recipes' own
  * artifact-fetch fast path, which containers have no equivalent of).
  */
-static int cmd_container_apply_recipe(const struct kx_client *c, int json_mode, int argc,
+static int cmd_container_apply_recipe(const struct thinc_client *c, int json_mode, int argc,
                                        char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 	const char *name = NULL;
 	int i;
@@ -8588,7 +8588,7 @@ static int cmd_container_apply_recipe(const struct kx_client *c, int json_mode, 
 	}
 
 	snprintf(path, sizeof(path), "/v1/containers/recipes/%s/apply", name);
-	if (kx_client_request(c, "POST", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -8600,13 +8600,13 @@ static int cmd_container_apply_recipe(const struct kx_client *c, int json_mode, 
 
 		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r.status);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_container_line);
 }
 
-static int cmd_image(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_image(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -8647,18 +8647,18 @@ static int cmd_image(const struct kx_client *c, int json_mode, int argc, char **
 	return 2;
 }
 
-static int cmd_device_ls(const struct kx_client *c, int json_mode)
+static int cmd_device_ls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/devices", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/devices", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_device_list);
 }
 
-static int cmd_device(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_device(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -8674,13 +8674,13 @@ static int cmd_device(const struct kx_client *c, int json_mode, int argc, char *
 	return 2;
 }
 
-static int cmd_diskrole_create(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_diskrole_create(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *disk_name = NULL;
 	const char *role = NULL;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--disk=", 7) == 0)
@@ -8707,7 +8707,7 @@ static int cmd_diskrole_create(const struct kx_client *c, int json_mode, int arg
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/diskroles", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/diskroles", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -8717,20 +8717,20 @@ static int cmd_diskrole_create(const struct kx_client *c, int json_mode, int arg
 	return emit(&r, json_mode, fmt_diskrole_line);
 }
 
-static int cmd_diskrole_ls(const struct kx_client *c, int json_mode)
+static int cmd_diskrole_ls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/diskroles", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/diskroles", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_diskrole_list);
 }
 
-static int cmd_diskrole_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_diskrole_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 
 	if (argc < 1) {
@@ -8738,14 +8738,14 @@ static int cmd_diskrole_rm(const struct kx_client *c, int json_mode, int argc, c
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/diskroles/%s", argv[0]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_diskrole(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_diskrole(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -8767,14 +8767,14 @@ static int cmd_diskrole(const struct kx_client *c, int json_mode, int argc, char
 	return 2;
 }
 
-static int cmd_devicemap_create(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_devicemap_create(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *kind = NULL;
 	const char *selector = NULL;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
@@ -8806,7 +8806,7 @@ static int cmd_devicemap_create(const struct kx_client *c, int json_mode, int ar
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/devicemaps", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/devicemaps", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -8816,20 +8816,20 @@ static int cmd_devicemap_create(const struct kx_client *c, int json_mode, int ar
 	return emit(&r, json_mode, fmt_devicemap_line);
 }
 
-static int cmd_devicemap_ls(const struct kx_client *c, int json_mode)
+static int cmd_devicemap_ls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/devicemaps", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/devicemaps", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_devicemap_list);
 }
 
-static int cmd_devicemap_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_devicemap_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 
 	if (argc < 1) {
@@ -8837,14 +8837,14 @@ static int cmd_devicemap_rm(const struct kx_client *c, int json_mode, int argc, 
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/devicemaps/%s", argv[0]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_devicemap(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_devicemap(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -8868,13 +8868,13 @@ static int cmd_devicemap(const struct kx_client *c, int json_mode, int argc, cha
 	return 2;
 }
 
-static int cmd_dns_record_create(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_dns_record_create(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *ip = NULL;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
@@ -8901,7 +8901,7 @@ static int cmd_dns_record_create(const struct kx_client *c, int json_mode, int a
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/dns/records", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/dns/records", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -8911,24 +8911,24 @@ static int cmd_dns_record_create(const struct kx_client *c, int json_mode, int a
 	return emit(&r, json_mode, fmt_dns_record_line);
 }
 
-static int cmd_dns_record_ls(const struct kx_client *c, int json_mode)
+static int cmd_dns_record_ls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/dns/records", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/dns/records", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_dns_record_list);
 }
 
-static int cmd_dns_record_update(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_dns_record_update(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *ip = NULL;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 
 	for (i = 0; i < argc; i++) {
@@ -8955,7 +8955,7 @@ static int cmd_dns_record_update(const struct kx_client *c, int json_mode, int a
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/dns/records/%s", name);
-	if (kx_client_request(c, "PUT", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -8965,9 +8965,9 @@ static int cmd_dns_record_update(const struct kx_client *c, int json_mode, int a
 	return emit(&r, json_mode, fmt_dns_record_line);
 }
 
-static int cmd_dns_record_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_dns_record_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 
 	if (argc < 1) {
@@ -8975,14 +8975,14 @@ static int cmd_dns_record_rm(const struct kx_client *c, int json_mode, int argc,
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/dns/records/%s", argv[0]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_dns_record(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_dns_record(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -9008,13 +9008,13 @@ static int cmd_dns_record(const struct kx_client *c, int json_mode, int argc, ch
 	return 2;
 }
 
-static int cmd_dns_server_register(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_dns_server_register(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *container = NULL;
 	const char *hosts_path = NULL;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--container=", 12) == 0)
@@ -9042,7 +9042,7 @@ static int cmd_dns_server_register(const struct kx_client *c, int json_mode, int
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/dns/servers", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/dns/servers", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -9052,21 +9052,21 @@ static int cmd_dns_server_register(const struct kx_client *c, int json_mode, int
 	return emit(&r, json_mode, fmt_dns_server_line);
 }
 
-static int cmd_dns_server_ls(const struct kx_client *c, int json_mode)
+static int cmd_dns_server_ls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/dns/servers", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/dns/servers", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_dns_server_list);
 }
 
-static int cmd_dns_server_unregister(const struct kx_client *c, int json_mode, int argc,
+static int cmd_dns_server_unregister(const struct thinc_client *c, int json_mode, int argc,
                                       char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 
 	if (argc < 1) {
@@ -9074,14 +9074,14 @@ static int cmd_dns_server_unregister(const struct kx_client *c, int json_mode, i
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/dns/servers/%s", argv[0]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_dns_server(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_dns_server(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -9104,7 +9104,7 @@ static int cmd_dns_server(const struct kx_client *c, int json_mode, int argc, ch
 	return 2;
 }
 
-static int cmd_dns(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_dns(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -9123,13 +9123,13 @@ static int cmd_dns(const struct kx_client *c, int json_mode, int argc, char **ar
 	return 2;
 }
 
-static int cmd_ldap_server_register(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_server_register(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *container = NULL;
 	const char *config_path = NULL;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--container=", 12) == 0)
@@ -9157,7 +9157,7 @@ static int cmd_ldap_server_register(const struct kx_client *c, int json_mode, in
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/ldap/servers", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/ldap/servers", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -9167,21 +9167,21 @@ static int cmd_ldap_server_register(const struct kx_client *c, int json_mode, in
 	return emit(&r, json_mode, fmt_ldap_server_line);
 }
 
-static int cmd_ldap_server_ls(const struct kx_client *c, int json_mode)
+static int cmd_ldap_server_ls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/ldap/servers", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/ldap/servers", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_ldap_server_list);
 }
 
-static int cmd_ldap_server_unregister(const struct kx_client *c, int json_mode, int argc,
+static int cmd_ldap_server_unregister(const struct thinc_client *c, int json_mode, int argc,
                                        char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 
 	if (argc < 1) {
@@ -9189,14 +9189,14 @@ static int cmd_ldap_server_unregister(const struct kx_client *c, int json_mode, 
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/ldap/servers/%s", argv[0]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_ldap_server(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_server(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -9219,13 +9219,13 @@ static int cmd_ldap_server(const struct kx_client *c, int json_mode, int argc, c
 	return 2;
 }
 
-static int cmd_ldap_group_add(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_group_add(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *gidnumber = NULL;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
@@ -9256,7 +9256,7 @@ static int cmd_ldap_group_add(const struct kx_client *c, int json_mode, int argc
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/ldap/groups", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/ldap/groups", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -9266,25 +9266,25 @@ static int cmd_ldap_group_add(const struct kx_client *c, int json_mode, int argc
 	return emit(&r, json_mode, fmt_ldap_group_line);
 }
 
-static int cmd_ldap_group_ls(const struct kx_client *c, int json_mode)
+static int cmd_ldap_group_ls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/ldap/groups", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/ldap/groups", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_ldap_group_list);
 }
 
-static int cmd_ldap_group_update(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_group_update(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *gidnumber = NULL;
 	const char *new_name = NULL;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 
 	for (i = 0; i < argc; i++) {
@@ -9322,7 +9322,7 @@ static int cmd_ldap_group_update(const struct kx_client *c, int json_mode, int a
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/ldap/groups/%s", name);
-	if (kx_client_request(c, "PUT", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -9332,9 +9332,9 @@ static int cmd_ldap_group_update(const struct kx_client *c, int json_mode, int a
 	return emit(&r, json_mode, fmt_ldap_group_line);
 }
 
-static int cmd_ldap_group_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_group_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 
 	if (argc < 1) {
@@ -9342,14 +9342,14 @@ static int cmd_ldap_group_rm(const struct kx_client *c, int json_mode, int argc,
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/ldap/groups/%s", argv[0]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_ldap_group(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_group(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -9454,10 +9454,10 @@ static void build_ldap_user_body(struct json_writer *w, int argc, char **argv, i
 	*out_name = name;
 }
 
-static int cmd_ldap_user_add(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_user_add(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 	const char *name;
 
 	jw_init(&w);
@@ -9473,7 +9473,7 @@ static int cmd_ldap_user_add(const struct kx_client *c, int json_mode, int argc,
 	}
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/ldap/users", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/ldap/users", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -9486,10 +9486,10 @@ static int cmd_ldap_user_add(const struct kx_client *c, int json_mode, int argc,
 /* PUT is full-field-replacement (see handle_ldap_user_update()'s own doc
  * comment) -- an omitted field here resets to empty/0 on the server, same
  * as "ldap group update". */
-static int cmd_ldap_user_update(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_user_update(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 	const char *name;
 	char path[256];
 
@@ -9507,7 +9507,7 @@ static int cmd_ldap_user_update(const struct kx_client *c, int json_mode, int ar
 	w.buf[w.len] = '\0';
 
 	snprintf(path, sizeof(path), "/v1/ldap/users/%s", name);
-	if (kx_client_request(c, "PUT", path, w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", path, w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -9517,20 +9517,20 @@ static int cmd_ldap_user_update(const struct kx_client *c, int json_mode, int ar
 	return emit(&r, json_mode, fmt_ldap_user_line);
 }
 
-static int cmd_ldap_user_ls(const struct kx_client *c, int json_mode)
+static int cmd_ldap_user_ls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/ldap/users", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/ldap/users", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_ldap_user_list);
 }
 
-static int cmd_ldap_user_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_user_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 
 	if (argc < 1) {
@@ -9538,14 +9538,14 @@ static int cmd_ldap_user_rm(const struct kx_client *c, int json_mode, int argc, 
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/ldap/users/%s", argv[0]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_ldap_user(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_user(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -9571,18 +9571,18 @@ static int cmd_ldap_user(const struct kx_client *c, int json_mode, int argc, cha
 	return 2;
 }
 
-static int cmd_ldap_config_show(const struct kx_client *c, int json_mode)
+static int cmd_ldap_config_show(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/ldap/config", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/ldap/config", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_ldap_config_line);
 }
 
-static int cmd_ldap_config_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_config_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	long start_uid = -1, start_gid = -1;
 	/* Issue #66: the client-login fields containers reference via
@@ -9593,7 +9593,7 @@ static int cmd_ldap_config_set(const struct kx_client *c, int json_mode, int arg
 	const char *client_uri = NULL, *base_dn = NULL, *bind_dn = NULL, *bind_password = NULL;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--start-uid=", 12) == 0)
@@ -9653,7 +9653,7 @@ static int cmd_ldap_config_set(const struct kx_client *c, int json_mode, int arg
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "PUT", "/v1/ldap/config", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", "/v1/ldap/config", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -9663,7 +9663,7 @@ static int cmd_ldap_config_set(const struct kx_client *c, int json_mode, int arg
 	return emit(&r, json_mode, fmt_ldap_config_line);
 }
 
-static int cmd_ldap_config(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap_config(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -9682,7 +9682,7 @@ static int cmd_ldap_config(const struct kx_client *c, int json_mode, int argc, c
 	return 2;
 }
 
-static int cmd_ldap(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_ldap(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -9707,13 +9707,13 @@ static int cmd_ldap(const struct kx_client *c, int json_mode, int argc, char **a
 	return 2;
 }
 
-static int cmd_pki_ca_bootstrap(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pki_ca_bootstrap(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *common_name = NULL;
 	long days = -1;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--common-name=", 14) == 0)
@@ -9739,7 +9739,7 @@ static int cmd_pki_ca_bootstrap(const struct kx_client *c, int json_mode, int ar
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/pki/ca", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/pki/ca", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -9749,18 +9749,18 @@ static int cmd_pki_ca_bootstrap(const struct kx_client *c, int json_mode, int ar
 	return emit(&r, json_mode, fmt_pki_ca);
 }
 
-static int cmd_pki_ca_show(const struct kx_client *c, int json_mode)
+static int cmd_pki_ca_show(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/pki/ca", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/pki/ca", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pki_ca);
 }
 
-static int cmd_pki_ca(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pki_ca(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -9779,14 +9779,14 @@ static int cmd_pki_ca(const struct kx_client *c, int json_mode, int argc, char *
 	return 2;
 }
 
-static int cmd_pki_intermediate_bootstrap(const struct kx_client *c, int json_mode, int argc,
+static int cmd_pki_intermediate_bootstrap(const struct thinc_client *c, int json_mode, int argc,
                                            char **argv)
 {
 	const char *common_name = NULL;
 	long days = -1;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--common-name=", 14) == 0)
@@ -9813,7 +9813,7 @@ static int cmd_pki_intermediate_bootstrap(const struct kx_client *c, int json_mo
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/pki/intermediate", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/pki/intermediate", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -9823,18 +9823,18 @@ static int cmd_pki_intermediate_bootstrap(const struct kx_client *c, int json_mo
 	return emit(&r, json_mode, fmt_pki_ca);
 }
 
-static int cmd_pki_intermediate_show(const struct kx_client *c, int json_mode)
+static int cmd_pki_intermediate_show(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/pki/intermediate", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/pki/intermediate", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pki_ca);
 }
 
-static int cmd_pki_intermediate(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pki_intermediate(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -9853,14 +9853,14 @@ static int cmd_pki_intermediate(const struct kx_client *c, int json_mode, int ar
 	return 2;
 }
 
-static int cmd_pki_cert_create(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pki_cert_create(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *sans = NULL;
 	long days = -1;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
@@ -9905,7 +9905,7 @@ static int cmd_pki_cert_create(const struct kx_client *c, int json_mode, int arg
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/pki/certs", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/pki/certs", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -9915,20 +9915,20 @@ static int cmd_pki_cert_create(const struct kx_client *c, int json_mode, int arg
 	return emit(&r, json_mode, fmt_pki_cert_issued);
 }
 
-static int cmd_pki_cert_ls(const struct kx_client *c, int json_mode)
+static int cmd_pki_cert_ls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/pki/certs", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/pki/certs", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pki_cert_list);
 }
 
-static int cmd_pki_cert_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pki_cert_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 
 	if (argc < 1) {
@@ -9936,14 +9936,14 @@ static int cmd_pki_cert_rm(const struct kx_client *c, int json_mode, int argc, c
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/pki/certs/%s", argv[0]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_pki_cert(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pki_cert(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -9974,7 +9974,7 @@ static int cmd_pki_cert(const struct kx_client *c, int json_mode, int argc, char
  * dashboard's own confirm dialog is where the "are you sure" prompt
  * lives for this project.
  */
-static int cmd_pki_reset(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pki_reset(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *root_cn = NULL;
 	const char *intermediate_cn = NULL;
@@ -9983,7 +9983,7 @@ static int cmd_pki_reset(const struct kx_client *c, int json_mode, int argc, cha
 	long leaf_days = -1;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--root-common-name=", 19) == 0)
@@ -10027,7 +10027,7 @@ static int cmd_pki_reset(const struct kx_client *c, int json_mode, int argc, cha
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/pki/reset", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/pki/reset", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -10037,7 +10037,7 @@ static int cmd_pki_reset(const struct kx_client *c, int json_mode, int argc, cha
 	return emit(&r, json_mode, fmt_pki_reset);
 }
 
-static int cmd_pki(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pki(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -10093,19 +10093,19 @@ static void fmt_bootstrap_fetch_status(const struct json_value *v)
 /* Polls GET /v1/pkg/bootstrap until state leaves "fetching" -- --wait's
  * own loop for the toolchain_url mode, the same shape poll_hostbuild()/
  * poll_iso() already established. */
-static int poll_bootstrap_fetch(const struct kx_client *c, struct kx_response *out)
+static int poll_bootstrap_fetch(const struct thinc_client *c, struct thinc_response *out)
 {
 	for (;;) {
 		const char *state;
 
-		if (kx_client_request(c, "GET", "/v1/pkg/bootstrap", NULL, out) != 0) {
+		if (thinc_client_request(c, "GET", "/v1/pkg/bootstrap", NULL, out) != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return -1;
 		}
 		state = json_str_field(out->json, "state");
 		if (state == NULL || strcmp(state, "fetching") != 0)
 			return 0;
-		kx_response_free(out);
+		thinc_response_free(out);
 		usleep(500000);
 	}
 }
@@ -10167,25 +10167,25 @@ static void fmt_pkg_list(const struct json_value *v)
 		fmt_pkg_line(packages->u.array.items[i]);
 }
 
-static int cmd_pkg_bootstrap_status(const struct kx_client *c, int json_mode)
+static int cmd_pkg_bootstrap_status(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/pkg/bootstrap", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/pkg/bootstrap", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_bootstrap_fetch_status);
 }
 
-static int cmd_pkg_bootstrap(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_bootstrap(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *toolchain = NULL;
 	const char *toolchain_url = NULL;
 	const char *toolchain_sha256 = NULL;
 	int wait = 0;
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--toolchain=", 12) == 0)
@@ -10216,7 +10216,7 @@ static int cmd_pkg_bootstrap(const struct kx_client *c, int json_mode, int argc,
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 
-		if (kx_client_request(c, "POST", "/v1/pkg/bootstrap", w.buf, &r) != 0) {
+		if (thinc_client_request(c, "POST", "/v1/pkg/bootstrap", w.buf, &r) != 0) {
 			jw_free(&w);
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
@@ -10224,7 +10224,7 @@ static int cmd_pkg_bootstrap(const struct kx_client *c, int json_mode, int argc,
 		jw_free(&w);
 		if (r.status < 200 || r.status >= 300 || !wait)
 			return emit(&r, json_mode, fmt_bootstrap_fetch_status);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		if (poll_bootstrap_fetch(c, &r) != 0)
 			return 1;
@@ -10232,7 +10232,7 @@ static int cmd_pkg_bootstrap(const struct kx_client *c, int json_mode, int argc,
 	}
 
 	if (toolchain == NULL) {
-		if (kx_client_request(c, "POST", "/v1/pkg/bootstrap", NULL, &r) != 0) {
+		if (thinc_client_request(c, "POST", "/v1/pkg/bootstrap", NULL, &r) != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
 		}
@@ -10246,7 +10246,7 @@ static int cmd_pkg_bootstrap(const struct kx_client *c, int json_mode, int argc,
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 
-		if (kx_client_request(c, "POST", "/v1/pkg/bootstrap", w.buf, &r) != 0) {
+		if (thinc_client_request(c, "POST", "/v1/pkg/bootstrap", w.buf, &r) != 0) {
 			jw_free(&w);
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
@@ -10276,18 +10276,18 @@ static void fmt_pkg_repo_config(const struct json_value *v)
 	       interval);
 }
 
-static int cmd_pkg_repo_config_show(const struct kx_client *c, int json_mode)
+static int cmd_pkg_repo_config_show(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/pkg/repo-config", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/pkg/repo-config", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_repo_config);
 }
 
-static int cmd_pkg_repo_config_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_repo_config_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *url = NULL;
 	const char *kind = NULL;
@@ -10296,7 +10296,7 @@ static int cmd_pkg_repo_config_set(const struct kx_client *c, int json_mode, int
 	long interval = -1;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--url=", 6) == 0)
@@ -10342,7 +10342,7 @@ static int cmd_pkg_repo_config_set(const struct kx_client *c, int json_mode, int
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "PUT", "/v1/pkg/repo-config", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", "/v1/pkg/repo-config", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -10351,7 +10351,7 @@ static int cmd_pkg_repo_config_set(const struct kx_client *c, int json_mode, int
 	return emit(&r, json_mode, fmt_pkg_repo_config);
 }
 
-static int cmd_pkg_repo_config(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_repo_config(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -10389,28 +10389,28 @@ static void fmt_pkg_sync_status(const struct json_value *v)
 
 /* Polls GET /v1/pkg/sync until state leaves "running" -- --wait's own
  * loop, the same shape poll_hostbuild()/poll_iso() already establish. */
-static int poll_pkg_sync(const struct kx_client *c, struct kx_response *out)
+static int poll_pkg_sync(const struct thinc_client *c, struct thinc_response *out)
 {
 	for (;;) {
 		const char *state;
 
-		if (kx_client_request(c, "GET", "/v1/pkg/sync", NULL, out) != 0) {
+		if (thinc_client_request(c, "GET", "/v1/pkg/sync", NULL, out) != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return -1;
 		}
 		state = json_str_field(out->json, "state");
 		if (state == NULL || strcmp(state, "running") != 0)
 			return 0;
-		kx_response_free(out);
+		thinc_response_free(out);
 		usleep(500000);
 	}
 }
 
-static int cmd_pkg_sync(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_sync(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	int wait = 0;
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 	const char *refetch = NULL;
 	char body[256];
 
@@ -10430,7 +10430,7 @@ static int cmd_pkg_sync(const struct kx_client *c, int json_mode, int argc, char
 	if (refetch != NULL)
 		snprintf(body, sizeof(body), "{\"refetch\":\"%s\"}", refetch);
 
-	if (kx_client_request(c, "POST", "/v1/pkg/sync", refetch != NULL ? body : NULL, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/pkg/sync", refetch != NULL ? body : NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -10439,23 +10439,23 @@ static int cmd_pkg_sync(const struct kx_client *c, int json_mode, int argc, char
 
 		return rc != 0 ? rc : 1;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	if (wait) {
 		if (poll_pkg_sync(c, &r) != 0)
 			return 1;
-	} else if (kx_client_request(c, "GET", "/v1/pkg/sync", NULL, &r) != 0) {
+	} else if (thinc_client_request(c, "GET", "/v1/pkg/sync", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_sync_status);
 }
 
-static int cmd_pkg_sync_status(const struct kx_client *c, int json_mode)
+static int cmd_pkg_sync_status(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/pkg/sync", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/pkg/sync", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -10472,23 +10472,23 @@ static void fmt_pkg_cache_status(const struct json_value *v)
 	       entry_count);
 }
 
-static int cmd_pkg_cache_config_show(const struct kx_client *c, int json_mode)
+static int cmd_pkg_cache_config_show(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/pkg/cache-config", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/pkg/cache-config", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_cache_status);
 }
 
-static int cmd_pkg_cache_config_set(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_cache_config_set(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	long max_bytes = -1;
 	int i;
 	char body[128];
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--max-bytes=", 12) == 0)
@@ -10504,14 +10504,14 @@ static int cmd_pkg_cache_config_set(const struct kx_client *c, int json_mode, in
 	}
 
 	snprintf(body, sizeof(body), "{\"max_bytes\":%ld}", max_bytes);
-	if (kx_client_request(c, "PUT", "/v1/pkg/cache-config", body, &r) != 0) {
+	if (thinc_client_request(c, "PUT", "/v1/pkg/cache-config", body, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_cache_status);
 }
 
-static int cmd_pkg_cache_config(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_cache_config(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -10529,22 +10529,22 @@ static int cmd_pkg_cache_config(const struct kx_client *c, int json_mode, int ar
 	return 2;
 }
 
-static int cmd_pkg_cache_status(const struct kx_client *c, int json_mode)
+static int cmd_pkg_cache_status(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/pkg/cache", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/pkg/cache", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_cache_status);
 }
 
-static int cmd_pkg_cache_clear(const struct kx_client *c, int json_mode)
+static int cmd_pkg_cache_clear(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "DELETE", "/v1/pkg/cache", NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", "/v1/pkg/cache", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -10565,25 +10565,25 @@ static void fmt_pkg_artifact_config(const struct json_value *v)
 	                                                                                    : "unset");
 }
 
-static int cmd_pkg_artifact_config_show(const struct kx_client *c, int json_mode)
+static int cmd_pkg_artifact_config_show(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/pkg/artifact-config", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/pkg/artifact-config", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_artifact_config);
 }
 
-static int cmd_pkg_artifact_config_set(const struct kx_client *c, int json_mode, int argc,
+static int cmd_pkg_artifact_config_set(const struct thinc_client *c, int json_mode, int argc,
                                         char **argv)
 {
 	const char *base_url = NULL;
 	const char *token = NULL;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--url=", 6) == 0)
@@ -10611,7 +10611,7 @@ static int cmd_pkg_artifact_config_set(const struct kx_client *c, int json_mode,
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "PUT", "/v1/pkg/artifact-config", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "PUT", "/v1/pkg/artifact-config", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -10620,7 +10620,7 @@ static int cmd_pkg_artifact_config_set(const struct kx_client *c, int json_mode,
 	return emit(&r, json_mode, fmt_pkg_artifact_config);
 }
 
-static int cmd_pkg_artifact_config(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_artifact_config(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -10639,11 +10639,11 @@ static int cmd_pkg_artifact_config(const struct kx_client *c, int json_mode, int
 	return 2;
 }
 
-static int cmd_pkg_recipes(const struct kx_client *c, int json_mode)
+static int cmd_pkg_recipes(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/pkg/recipes", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/pkg/recipes", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -10656,7 +10656,7 @@ static int cmd_pkg_recipes(const struct kx_client *c, int json_mode)
  * content's own pkg_name= field, validated server-side); --file= is a
  * local path to the .recipe file's content, read and embedded the
  * same way `run --file=` already stages container config files. */
-static int cmd_pkg_recipe_add(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_recipe_add(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *file = NULL;
@@ -10664,7 +10664,7 @@ static int cmd_pkg_recipe_add(const struct kx_client *c, int json_mode, int argc
 	size_t content_len;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
@@ -10695,7 +10695,7 @@ static int cmd_pkg_recipe_add(const struct kx_client *c, int json_mode, int argc
 	w.buf[w.len] = '\0';
 	free(content);
 
-	if (kx_client_request(c, "POST", "/v1/pkg/recipes", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/pkg/recipes", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -10707,11 +10707,11 @@ static int cmd_pkg_recipe_add(const struct kx_client *c, int json_mode, int argc
 
 		fprintf(stderr, "thincctl: %s (HTTP %d)\n", msg != NULL ? msg : "request failed",
 		        r.status);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		return 1;
 	}
 	printf("recipe '%s' added\n", name);
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	return 0;
 }
 
@@ -10725,9 +10725,9 @@ static void fmt_pkg_recipe_show(const struct json_value *v)
 /* ADR-0107: an optional trailing --version=X selects a specific
  * published recipe version; omitted resolves to the highest available
  * version for NAME, matching every other "no version given" caller. */
-static int cmd_pkg_recipe_show(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_recipe_show(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 	const char *name = NULL;
 	const char *version = NULL;
@@ -10751,7 +10751,7 @@ static int cmd_pkg_recipe_show(const struct kx_client *c, int json_mode, int arg
 		snprintf(path, sizeof(path), "/v1/pkg/recipes/%s?version=%s", name, version);
 	else
 		snprintf(path, sizeof(path), "/v1/pkg/recipes/%s", name);
-	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -10760,9 +10760,9 @@ static int cmd_pkg_recipe_show(const struct kx_client *c, int json_mode, int arg
 
 /* No --version= removes every published version of NAME; a specific
  * version removes only that one (ADR-0107). */
-static int cmd_pkg_recipe_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_recipe_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 	const char *name = NULL;
 	const char *version = NULL;
@@ -10786,14 +10786,14 @@ static int cmd_pkg_recipe_rm(const struct kx_client *c, int json_mode, int argc,
 		snprintf(path, sizeof(path), "/v1/pkg/recipes/%s?version=%s", name, version);
 	else
 		snprintf(path, sizeof(path), "/v1/pkg/recipes/%s", name);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_pkg_recipe(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_recipe(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -10815,7 +10815,7 @@ static int cmd_pkg_recipe(const struct kx_client *c, int json_mode, int argc, ch
 	return 2;
 }
 
-static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_install(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *image = NULL;
@@ -10824,7 +10824,7 @@ static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, c
 	int keep_on_failure = 0;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
@@ -10876,7 +10876,7 @@ static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, c
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/pkg/install", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/pkg/install", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -10898,7 +10898,7 @@ static int cmd_pkg_install(const struct kx_client *c, int json_mode, int argc, c
  * build container (GET /v1/pkg or /v1/pkg/hostbuild/NAME shows this) --
  * there is nothing to resume otherwise.
  */
-static int cmd_pkg_resume(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_resume(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *image = NULL;
@@ -10906,7 +10906,7 @@ static int cmd_pkg_resume(const struct kx_client *c, int json_mode, int argc, ch
 	int keep_on_failure = 0;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--name=", 7) == 0)
@@ -10951,7 +10951,7 @@ static int cmd_pkg_resume(const struct kx_client *c, int json_mode, int argc, ch
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/pkg/resume", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/pkg/resume", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -10965,10 +10965,10 @@ static int cmd_pkg_resume(const struct kx_client *c, int json_mode, int argc, ch
  * "building" (--wait's own loop, and --deploy's own prerequisite --
  * it needs the finished artifact_path, not the 202's own in-flight
  * snapshot). Prints nothing itself; *out is the final response,
- * caller-owned (kx_response_free()'d by the caller). Returns 0 on a
+ * caller-owned (thinc_response_free()'d by the caller). Returns 0 on a
  * real terminal state (installed/failed), -1 if the daemon became
  * unreachable mid-poll. */
-static int poll_hostbuild(const struct kx_client *c, const char *name, struct kx_response *out)
+static int poll_hostbuild(const struct thinc_client *c, const char *name, struct thinc_response *out)
 {
 	char path[300];
 
@@ -10976,14 +10976,14 @@ static int poll_hostbuild(const struct kx_client *c, const char *name, struct kx
 	for (;;) {
 		const char *state;
 
-		if (kx_client_request(c, "GET", path, NULL, out) != 0) {
+		if (thinc_client_request(c, "GET", path, NULL, out) != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return -1;
 		}
 		state = json_str_field(out->json, "state");
 		if (state == NULL || (strcmp(state, "fetching") != 0 && strcmp(state, "building") != 0))
 			return 0;
-		kx_response_free(out);
+		thinc_response_free(out);
 		usleep(500000);
 	}
 }
@@ -10994,19 +10994,20 @@ static int poll_hostbuild(const struct kx_client *c, const char *name, struct kx
  * Returns 0 with *out_completed/*out_running filled, -1 if the daemon
  * became unreachable.
  */
-static int get_bootroot_assembly_generation(const struct kx_client *c, long *out_completed, int *out_running)
+static int get_bootroot_assembly_generation(const struct thinc_client *c, long *out_completed,
+                                             int *out_running)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	const struct json_value *jrunning;
 
-	if (kx_client_request(c, "GET", "/v1/system/boot", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/boot", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return -1;
 	}
 	*out_completed = (long)json_as_number(json_object_get(r.json, "bootroot_assembly_completed_generation"));
 	jrunning = json_object_get(r.json, "bootroot_assembly_running");
 	*out_running = jrunning != NULL && jrunning->type == JSON_BOOL && jrunning->u.boolean;
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	return 0;
 }
 
@@ -11024,7 +11025,7 @@ static int get_bootroot_assembly_generation(const struct kx_client *c, long *out
  * Returns 0 once a genuinely fresh artifact is confirmed on disk, -1
  * otherwise (daemon unreachable, or the assembly failed).
  */
-static int wait_for_fresh_bootroot_assembly(const struct kx_client *c, long baseline_completed)
+static int wait_for_fresh_bootroot_assembly(const struct thinc_client *c, long baseline_completed)
 {
 	for (;;) {
 		long completed;
@@ -11044,7 +11045,7 @@ static int wait_for_fresh_bootroot_assembly(const struct kx_client *c, long base
 	}
 }
 
-static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_hostbuild(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
 	const char *build_image = NULL;
@@ -11052,7 +11053,7 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 	int wait = 0, deploy = 0, upgrade = 0, keep_on_failure = 0;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 	long bootroot_baseline_completed = 0;
 
 	for (i = 0; i < argc; i++) {
@@ -11121,7 +11122,7 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/pkg/hostbuild", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/pkg/hostbuild", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -11132,7 +11133,7 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 
 	if (!wait)
 		return emit(&r, json_mode, fmt_pkg_line);
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	if (poll_hostbuild(c, name, &r) != 0)
 		return 1;
@@ -11158,7 +11159,7 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 		int rc;
 
 		if (state == NULL || strcmp(state, "installed") != 0 || artifact_path == NULL) {
-			kx_response_free(&r);
+			thinc_response_free(&r);
 			fprintf(stderr, "thincctl: hostbuild did not produce an artifact to deploy\n");
 			return 1;
 		}
@@ -11185,17 +11186,17 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
 			 * before trusting the path below at all.
 			 */
 			if (wait_for_fresh_bootroot_assembly(c, bootroot_baseline_completed) != 0) {
-				kx_response_free(&r);
+				thinc_response_free(&r);
 				return 1;
 			}
 			snprintf(deploy_arg, sizeof(deploy_arg), "--image=%s/thincd-root.squashfs",
 			         artifact_path);
 		} else {
-			kx_response_free(&r);
+			thinc_response_free(&r);
 			fprintf(stderr, "thincctl: --deploy has no rule for hostbuild '%s' yet\n", name);
 			return 1;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		deploy_argv[0] = deploy_arg;
 		rc = cmd_update(c, json_mode, 1, deploy_argv);
 		return rc;
@@ -11210,7 +11211,7 @@ static int cmd_pkg_hostbuild(const struct kx_client *c, int json_mode, int argc,
  * produces, GET /v1/pkg/hostbuild/kernel either way). */
 #define CLI_KMOD_BUILD_MAX_SYMBOLS 16
 
-static int cmd_kmod_build(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_kmod_build(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *build_image = NULL;
 	const char *version = NULL;
@@ -11219,7 +11220,7 @@ static int cmd_kmod_build(const struct kx_client *c, int json_mode, int argc, ch
 	int wait = 0, upgrade = 0, keep_on_failure = 0;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--build-image=", 14) == 0)
@@ -11277,7 +11278,7 @@ static int cmd_kmod_build(const struct kx_client *c, int json_mode, int argc, ch
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/system/kmod-build", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/system/kmod-build", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -11287,27 +11288,27 @@ static int cmd_kmod_build(const struct kx_client *c, int json_mode, int argc, ch
 		return emit(&r, json_mode, fmt_pkg_line);
 	if (!wait)
 		return emit(&r, json_mode, fmt_pkg_line);
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	if (poll_hostbuild(c, "kernel", &r) != 0)
 		return 1;
 	return emit(&r, json_mode, fmt_pkg_line);
 }
 
-static int cmd_pkg_ls(const struct kx_client *c, int json_mode)
+static int cmd_pkg_ls(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/pkg", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/pkg", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_pkg_list);
 }
 
-static int cmd_pkg_rm(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_rm(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 
 	if (argc < 1) {
@@ -11315,7 +11316,7 @@ static int cmd_pkg_rm(const struct kx_client *c, int json_mode, int argc, char *
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/pkg/%s", argv[0]);
-	if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -11337,11 +11338,11 @@ static void fmt_pkg_update_all(const struct json_value *v)
 	fmt_pkg_line(v);
 }
 
-static int cmd_pkg_update_all(const struct kx_client *c, int json_mode)
+static int cmd_pkg_update_all(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "POST", "/v1/pkg/update-all", "{}", &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/pkg/update-all", "{}", &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -11349,12 +11350,12 @@ static int cmd_pkg_update_all(const struct kx_client *c, int json_mode)
 }
 
 /* task #676: live-tail the currently in-flight build's own output --
- * a thin wrapper, all the real work is kx_pkg_build_log_run()'s own
+ * a thin wrapper, all the real work is thinc_pkg_build_log_run()'s own
  * WS relay (client/src/console.c), same "cmd_* just calls the client
  * library" shape every other pkg subcommand here already has. */
-static int cmd_pkg_build_log(const struct kx_client *c)
+static int cmd_pkg_build_log(const struct thinc_client *c)
 {
-	return kx_pkg_build_log_run(c) == 0 ? 0 : 1;
+	return thinc_pkg_build_log_run(c) == 0 ? 0 : 1;
 }
 
 /*
@@ -11375,9 +11376,9 @@ static void fmt_container_patch(const struct json_value *v)
 	           : "");
 }
 
-static int cmd_container_edit(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_container_edit(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	char path[256];
 
 	if (argc < 2 || argv[0][0] == '-') {
@@ -11392,7 +11393,7 @@ static int cmd_container_edit(const struct kx_client *c, int json_mode, int argc
 		return 2;
 	}
 	snprintf(path, sizeof(path), "/v1/containers/%s", argv[0]);
-	if (kx_client_request(c, "PATCH", path, argv[1] + 7, &r) != 0) {
+	if (thinc_client_request(c, "PATCH", path, argv[1] + 7, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -11424,9 +11425,9 @@ static void fmt_build_log_list(const struct json_value *v)
 	}
 }
 
-static int cmd_pkg_build_logs(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_build_logs(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	const char *file = NULL;
 	int want_last = 0;
 	int i;
@@ -11442,7 +11443,7 @@ static int cmd_pkg_build_logs(const struct kx_client *c, int json_mode, int argc
 		}
 	}
 
-	if (kx_client_request(c, "GET", "/v1/pkg/build-logs", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/pkg/build-logs", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -11451,7 +11452,7 @@ static int cmd_pkg_build_logs(const struct kx_client *c, int json_mode, int argc
 		static char newest[256];
 
 		if (logs == NULL || logs->type != JSON_ARRAY || logs->u.array.count == 0) {
-			kx_response_free(&r);
+			thinc_response_free(&r);
 			fprintf(stderr, "thincctl: no build logs recorded yet\n");
 			return 1;
 		}
@@ -11464,25 +11465,25 @@ static int cmd_pkg_build_logs(const struct kx_client *c, int json_mode, int argc
 	}
 	if (file == NULL)
 		return emit(&r, json_mode, fmt_build_log_list);
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	{
 		char path[512];
 
 		snprintf(path, sizeof(path), "/v1/pkg/build-logs/%s", file);
-		if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+		if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
 		}
 		if (r.status != 200) {
 			fprintf(stderr, "thincctl: no such build log '%s'\n", file);
-			kx_response_free(&r);
+			thinc_response_free(&r);
 			return 1;
 		}
 		fwrite(r.body, 1, r.body_len, stdout);
 		if (r.body_len > 0 && r.body[r.body_len - 1] != '\n')
 			printf("\n");
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	}
 	return 0;
 }
@@ -11513,14 +11514,14 @@ static void fmt_pkg_policies(const struct json_value *v)
 	}
 }
 
-static int cmd_pkg_policy(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg_policy(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
-	struct kx_response r;
+	struct thinc_response r;
 	const char *sub = argc > 0 ? argv[0] : "ls";
 	char path[256];
 
 	if (strcmp(sub, "ls") == 0) {
-		if (kx_client_request(c, "GET", "/v1/pkg/policies", NULL, &r) != 0) {
+		if (thinc_client_request(c, "GET", "/v1/pkg/policies", NULL, &r) != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
 		}
@@ -11528,7 +11529,7 @@ static int cmd_pkg_policy(const struct kx_client *c, int json_mode, int argc, ch
 	}
 	if (strcmp(sub, "clear") == 0 && argc >= 2) {
 		snprintf(path, sizeof(path), "/v1/pkg/policies/%s", argv[1]);
-		if (kx_client_request(c, "DELETE", path, NULL, &r) != 0) {
+		if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
 		}
@@ -11537,7 +11538,7 @@ static int cmd_pkg_policy(const struct kx_client *c, int json_mode, int argc, ch
 
 			return rc != 0 ? rc : 1;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		printf("%s: back on the default policy (highest)\n", argv[1]);
 		return 0;
 	}
@@ -11566,7 +11567,7 @@ static int cmd_pkg_policy(const struct kx_client *c, int json_mode, int argc, ch
 		else
 			snprintf(body, sizeof(body), "{\"policy\":\"%s\"}", policy);
 		snprintf(path, sizeof(path), "/v1/pkg/policies/%s", argv[1]);
-		if (kx_client_request(c, "PUT", path, body, &r) != 0) {
+		if (thinc_client_request(c, "PUT", path, body, &r) != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return 1;
 		}
@@ -11579,7 +11580,7 @@ static int cmd_pkg_policy(const struct kx_client *c, int json_mode, int argc, ch
 	return 2;
 }
 
-static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_pkg(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -11679,35 +11680,35 @@ static void fmt_iso_status(const struct json_value *v)
 
 /* Polls GET /v1/system/iso until state leaves "building" -- --wait's own
  * loop, the same shape poll_hostbuild() already established. */
-static int poll_iso(const struct kx_client *c, struct kx_response *out)
+static int poll_iso(const struct thinc_client *c, struct thinc_response *out)
 {
 	for (;;) {
 		const char *state;
 
-		if (kx_client_request(c, "GET", "/v1/system/iso", NULL, out) != 0) {
+		if (thinc_client_request(c, "GET", "/v1/system/iso", NULL, out) != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");
 			return -1;
 		}
 		state = json_str_field(out->json, "state");
 		if (state == NULL || strcmp(state, "building") != 0)
 			return 0;
-		kx_response_free(out);
+		thinc_response_free(out);
 		usleep(500000);
 	}
 }
 
-static int cmd_iso_status(const struct kx_client *c, int json_mode)
+static int cmd_iso_status(const struct thinc_client *c, int json_mode)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", "/v1/system/iso", NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", "/v1/system/iso", NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_iso_status);
 }
 
-static int cmd_iso_build(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_iso_build(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *disk = NULL;
 	const char *ip = NULL;
@@ -11717,7 +11718,7 @@ static int cmd_iso_build(const struct kx_client *c, int json_mode, int argc, cha
 	int wait = 0;
 	int i;
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--disk=", 7) == 0)
@@ -11763,7 +11764,7 @@ static int cmd_iso_build(const struct kx_client *c, int json_mode, int argc, cha
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
-	if (kx_client_request(c, "POST", "/v1/system/iso", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/system/iso", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -11771,14 +11772,14 @@ static int cmd_iso_build(const struct kx_client *c, int json_mode, int argc, cha
 	jw_free(&w);
 	if (r.status < 200 || r.status >= 300 || !wait)
 		return emit(&r, json_mode, fmt_iso_status);
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	if (poll_iso(c, &r) != 0)
 		return 1;
 	return emit(&r, json_mode, fmt_iso_status);
 }
 
-static int cmd_iso(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_iso(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -11908,14 +11909,14 @@ static int read_line_noecho(const char *prompt, char *out, size_t out_size)
 	return 0;
 }
 
-static int cmd_login(const struct kx_client *c, int json_mode, int argc, char **argv)
+static int cmd_login(const struct thinc_client *c, int json_mode, int argc, char **argv)
 {
 	const char *username = NULL;
 	const char *password = NULL;
 	char username_buf[128];
 	char password_buf[256];
 	struct json_writer w;
-	struct kx_response r;
+	struct thinc_response r;
 	int i;
 
 	for (i = 0; i < argc; i++) {
@@ -11954,7 +11955,7 @@ static int cmd_login(const struct kx_client *c, int json_mode, int argc, char **
 	w.buf[w.len] = '\0';
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(c, "POST", "/v1/login", w.buf, &r) != 0) {
+	if (thinc_client_request(c, "POST", "/v1/login", w.buf, &r) != 0) {
 		jw_free(&w);
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
@@ -11966,7 +11967,7 @@ static int cmd_login(const struct kx_client *c, int json_mode, int argc, char **
 
 		fprintf(stderr, "thincctl: login failed: %s (HTTP %d)\n", msg != NULL ? msg : "?",
 		        r.status);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		return 1;
 	}
 
@@ -11975,7 +11976,7 @@ static int cmd_login(const struct kx_client *c, int json_mode, int argc, char **
 
 		if (token == NULL || token[0] == '\0') {
 			fprintf(stderr, "thincctl: login response missing a token\n");
-			kx_response_free(&r);
+			thinc_response_free(&r);
 			return 1;
 		}
 		if (save_token_file(token) != 0) {
@@ -11996,32 +11997,32 @@ static int cmd_login(const struct kx_client *c, int json_mode, int argc, char **
 		 * the const here is routing-only (every cmd_*() handler takes
 		 * one shared signature), so mutating it through this cast is
 		 * safe, not a layer violation. */
-		kx_client_set_token((struct kx_client *)c, token);
+		thinc_client_set_token((struct thinc_client *)c, token);
 		if (json_mode)
 			print_raw_json(r.json);
 		else
 			printf("Logged in as %s.\n", username);
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	return 0;
 }
 
-static int cmd_logout(const struct kx_client *c, int json_mode)
+static int cmd_logout(const struct thinc_client *c, int json_mode)
 {
 	char token[64];
-	struct kx_response r;
+	struct thinc_response r;
 
 	if (load_token_file(token, sizeof(token)) == 0) {
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request_with_auth(c, "POST", "/v1/logout", token, NULL, &r) == 0)
-			kx_response_free(&r);
+		if (thinc_client_request_with_auth(c, "POST", "/v1/logout", token, NULL, &r) == 0)
+			thinc_response_free(&r);
 	}
 	clear_token_file();
 	/* Same reasoning as cmd_login()'s own matching call -- clear the
 	 * current process's live in-memory token too, not just the on-disk
 	 * copy, so the rest of *this* session doesn't keep sending a token
 	 * the server was just told to invalidate. */
-	kx_client_set_token((struct kx_client *)c, NULL);
+	thinc_client_set_token((struct thinc_client *)c, NULL);
 
 	if (json_mode)
 		printf("{}\n");
@@ -12039,7 +12040,7 @@ static int cmd_logout(const struct kx_client *c, int json_mode)
  * global flags and the command name itself are stripped by the
  * caller before this is reached).
  */
-static int dispatch_command(const struct kx_client *client, int json_mode, const char *cmd,
+static int dispatch_command(const struct thinc_client *client, int json_mode, const char *cmd,
                              int argc, char **argv)
 {
 	if (strcmp(cmd, "health") == 0)
@@ -12227,13 +12228,13 @@ static int tokenize_line(char *line, char **tokens, int max_tokens)
 #define SHELL_PROMPT_MAX 96
 static char g_shell_prompt[SHELL_PROMPT_MAX] = "thinc> ";
 
-static void shell_prompt_init(const struct kx_client *client)
+static void shell_prompt_init(const struct thinc_client *client)
 {
-	struct kx_response site_r, whoami_r;
+	struct thinc_response site_r, whoami_r;
 	char fqdn[SHELL_PROMPT_MAX] = "thinc";
 	int authenticated = 0;
 
-	if (kx_client_request(client, "GET", "/v1/system/site", NULL, &site_r) == 0) {
+	if (thinc_client_request(client, "GET", "/v1/system/site", NULL, &site_r) == 0) {
 		if (site_r.status == 200) {
 			const char *instance_name = json_str_field(site_r.json, "instance_name");
 			const char *site_name = json_str_field(site_r.json, "site_name");
@@ -12247,16 +12248,16 @@ static void shell_prompt_init(const struct kx_client *client)
 					snprintf(fqdn, sizeof(fqdn), "%s.%s", instance_name, domain_suffix);
 			}
 		}
-		kx_response_free(&site_r);
+		thinc_response_free(&site_r);
 	}
 
-	if (kx_client_request(client, "GET", "/v1/whoami", NULL, &whoami_r) == 0) {
+	if (thinc_client_request(client, "GET", "/v1/whoami", NULL, &whoami_r) == 0) {
 		if (whoami_r.status == 200) {
 			const struct json_value *jauth = json_object_get(whoami_r.json, "authenticated");
 
 			authenticated = jauth != NULL && jauth->type == JSON_BOOL && jauth->u.boolean;
 		}
-		kx_response_free(&whoami_r);
+		thinc_response_free(&whoami_r);
 	}
 
 	snprintf(g_shell_prompt, sizeof(g_shell_prompt), "%s%s ", fqdn, authenticated ? "#" : ">");
@@ -12568,7 +12569,7 @@ static int shell_set_raw_mode(struct termios *saved)
  * failed), a real but rare case (e.g. stdin is a tty by isatty()'s
  * own check yet the underlying device rejects termios calls). Keeps
  * the shell usable rather than failing outright. */
-static int run_shell_fallback(const struct kx_client *client, int json_mode)
+static int run_shell_fallback(const struct thinc_client *client, int json_mode)
 {
 	char line[SHELL_LINE_MAX];
 	char *tokens[SHELL_MAX_TOKENS];
@@ -12614,7 +12615,7 @@ static int run_shell_fallback(const struct kx_client *client, int json_mode)
  * an empty line) end it; "help" reuses print_usage(), not a second
  * copy of it.
  */
-static int run_shell(const struct kx_client *client, int json_mode)
+static int run_shell(const struct thinc_client *client, int json_mode)
 {
 	struct termios saved;
 	char line[SHELL_LINE_MAX];
@@ -12673,7 +12674,7 @@ int main(int argc, char **argv)
 	int json_mode = 0;
 	int i = 1;
 	const char *cmd;
-	struct kx_client client;
+	struct thinc_client client;
 
 	while (i < argc && strncmp(argv[i], "--", 2) == 0) {
 		if (strncmp(argv[i], "--host=", 7) == 0)
@@ -12690,12 +12691,12 @@ int main(int argc, char **argv)
 		i++;
 	}
 
-	kx_client_init(&client, host, port);
+	thinc_client_init(&client, host, port);
 	{
 		char saved_token[64];
 
 		if (load_token_file(saved_token, sizeof(saved_token)) == 0)
-			kx_client_set_token(&client, saved_token);
+			thinc_client_set_token(&client, saved_token);
 	}
 
 	if (i >= argc) {

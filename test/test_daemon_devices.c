@@ -52,14 +52,14 @@ extern char **environ;
 static char g_data_dir[PATH_MAX];
 static char g_image_root[PATH_MAX];
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -115,9 +115,9 @@ static int stop_daemon(pid_t pid)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct kx_client client;
+	struct thinc_client client;
 	int ok = 1;
-	struct kx_response r;
+	struct thinc_response r;
 	char first_assignable_id[128];
 	char first_assignable_vendor[16] = "";
 	char first_assignable_product[16] = "";
@@ -147,7 +147,7 @@ int main(void)
 		return 1;
 	}
 
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -160,7 +160,7 @@ int main(void)
 	 * and every entry (if any) must carry the documented fields. Also
 	 * remembers the first assignable id found, if any, for scenario 3. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/devices", NULL, &r) != 0 || r.status != 200) {
+	if (thinc_client_request(&client, "GET", "/v1/devices", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/devices, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -231,12 +231,12 @@ int main(void)
 			}
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 2. an unknown device id is always rejected, regardless of what
 	 * real hardware this host has -- fully deterministic. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"devbad\",\"image\":\"devicestest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"],"
 	                       "\"devices\":[\"usb:0000:0000:nonexistent\"]}",
@@ -245,7 +245,7 @@ int main(void)
 		fprintf(stderr, "FAIL: unknown device id expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 2b. Phase 14 part 1 (ADR-0028): a bare "gpu:0" logical id, with no
 	 * GPU discovered on this host at all, is a real, deterministic
@@ -255,7 +255,7 @@ int main(void)
 	 * "grouped id expands into real grants" path (see ADR-0028's own
 	 * Consequences for why that part isn't testable in this sandbox). */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"devgpubad\",\"image\":\"devicestest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"],"
 	                       "\"devices\":[\"gpu:0\"]}",
@@ -266,7 +266,7 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 3. grant a real, currently-assignable device -- only if this
 	 * host has one. The create response and a follow-up GET must both
@@ -280,7 +280,7 @@ int main(void)
 		         first_assignable_id);
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/containers", body, &r) != 0 ||
+		if (thinc_client_request(&client, "POST", "/v1/containers", body, &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: POST devgood with a real device grant, status=%d\n",
 			        r.status);
@@ -303,10 +303,10 @@ int main(void)
 				ok = 0;
 			}
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/containers/devgood", NULL, &r) != 0 ||
+		if (thinc_client_request(&client, "GET", "/v1/containers/devgood", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: GET devgood, status=%d\n", r.status);
 			ok = 0;
@@ -318,15 +318,15 @@ int main(void)
 				ok = 0;
 			}
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "DELETE", "/v1/containers/devgood", NULL, &r) != 0 ||
+		if (thinc_client_request(&client, "DELETE", "/v1/containers/devgood", NULL, &r) != 0 ||
 		    r.status != 204) {
 			fprintf(stderr, "FAIL: DELETE devgood, status=%d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	} else {
 		printf("(no assignable device discovered on this host -- scenario 3 skipped)\n");
 	}
@@ -344,7 +344,7 @@ int main(void)
 		snprintf(body, sizeof(body), "{\"name\":\"mapexact\",\"kind\":\"exact\",\"selector\":\"%s\"}",
 		         first_assignable_id);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/devicemaps", body, &r) != 0 ||
+		if (thinc_client_request(&client, "POST", "/v1/devicemaps", body, &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: POST /v1/devicemaps (exact), status=%d\n", r.status);
 			ok = 0;
@@ -356,7 +356,7 @@ int main(void)
 				ok = 0;
 			}
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* a container referencing the MAPPING NAME (not the raw id)
 		 * resolves to the same real device -- the actual point of this
@@ -365,7 +365,7 @@ int main(void)
 		         "{\"name\":\"devmapgood\",\"image\":\"devicestest\","
 		         "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"],\"devices\":[\"mapexact\"]}");
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/containers", body, &r) != 0 || r.status != 201) {
+		if (thinc_client_request(&client, "POST", "/v1/containers", body, &r) != 0 || r.status != 201) {
 			fprintf(stderr, "FAIL: POST devmapgood via mapping name, status=%d\n", r.status);
 			ok = 0;
 		} else {
@@ -387,9 +387,9 @@ int main(void)
 				ok = 0;
 			}
 		}
-		kx_response_free(&r);
-		kx_client_request(&client, "DELETE", "/v1/containers/devmapgood", NULL, &r);
-		kx_response_free(&r);
+		thinc_response_free(&r);
+		thinc_client_request(&client, "DELETE", "/v1/containers/devmapgood", NULL, &r);
+		thinc_response_free(&r);
 
 		/* vendor_model mapping, if this device's own vendor/product ids
 		 * were captured (usb/pci entries always have them; a net/gpu
@@ -399,7 +399,7 @@ int main(void)
 			         "{\"name\":\"mapmodel\",\"kind\":\"vendor_model\",\"selector\":\"%s:%s\"}",
 			         first_assignable_vendor, first_assignable_product);
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "POST", "/v1/devicemaps", body, &r) != 0 ||
+			if (thinc_client_request(&client, "POST", "/v1/devicemaps", body, &r) != 0 ||
 			    r.status != 201) {
 				fprintf(stderr, "FAIL: POST /v1/devicemaps (vendor_model), status=%d\n",
 				        r.status);
@@ -423,15 +423,15 @@ int main(void)
 					ok = 0;
 				}
 			}
-			kx_response_free(&r);
-			kx_client_request(&client, "DELETE", "/v1/devicemaps/mapmodel", NULL, &r);
-			kx_response_free(&r);
+			thinc_response_free(&r);
+			thinc_client_request(&client, "DELETE", "/v1/devicemaps/mapmodel", NULL, &r);
+			thinc_response_free(&r);
 		}
 
 		/* GET /v1/devicemaps lists what was created (mapexact still
 		 * present at this point -- mapmodel already cleaned up above). */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/devicemaps", NULL, &r) != 0 || r.status != 200) {
+		if (thinc_client_request(&client, "GET", "/v1/devicemaps", NULL, &r) != 0 || r.status != 200) {
 			fprintf(stderr, "FAIL: GET /v1/devicemaps, status=%d\n", r.status);
 			ok = 0;
 		} else {
@@ -450,14 +450,14 @@ int main(void)
 				ok = 0;
 			}
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* a mapping that exists but currently resolves to nothing is a
 		 * real 400 at container-creation time -- NOT silently retried
 		 * as a literal raw device id (see main.c's own
 		 * devicemap_resolve()-then-device_find_group() fallback logic). */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/devicemaps",
+		if (thinc_client_request(&client, "POST", "/v1/devicemaps",
 		                       "{\"name\":\"mapabsent\",\"kind\":\"exact\","
 		                       "\"selector\":\"usb:ffff:ffff:doesnotexist\"}",
 		                       &r) != 0 ||
@@ -466,10 +466,10 @@ int main(void)
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/containers",
+		if (thinc_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"devmapabsent\",\"image\":\"devicestest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"],"
 		                       "\"devices\":[\"mapabsent\"]}",
@@ -481,35 +481,35 @@ int main(void)
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* duplicate name -> 409; delete -> 204; delete again -> 404. */
 		snprintf(body, sizeof(body), "{\"name\":\"mapexact\",\"kind\":\"exact\",\"selector\":\"%s\"}",
 		         first_assignable_id);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/devicemaps", body, &r) != 0 || r.status != 409) {
+		if (thinc_client_request(&client, "POST", "/v1/devicemaps", body, &r) != 0 || r.status != 409) {
 			fprintf(stderr, "FAIL: duplicate devicemap name expected 409, got %d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
-		kx_client_request(&client, "DELETE", "/v1/devicemaps/mapabsent", NULL, &r);
-		kx_response_free(&r);
+		thinc_client_request(&client, "DELETE", "/v1/devicemaps/mapabsent", NULL, &r);
+		thinc_response_free(&r);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "DELETE", "/v1/devicemaps/mapexact", NULL, &r) != 0 ||
+		if (thinc_client_request(&client, "DELETE", "/v1/devicemaps/mapexact", NULL, &r) != 0 ||
 		    r.status != 204) {
 			fprintf(stderr, "FAIL: DELETE mapexact expected 204, got %d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "DELETE", "/v1/devicemaps/mapexact", NULL, &r) != 0 ||
+		if (thinc_client_request(&client, "DELETE", "/v1/devicemaps/mapexact", NULL, &r) != 0 ||
 		    r.status != 404) {
 			fprintf(stderr, "FAIL: DELETE mapexact (already gone) expected 404, got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	} else {
 		printf("(no assignable device discovered on this host -- scenario 3b skipped)\n");
 	}
@@ -549,7 +549,7 @@ int main(void)
 				snprintf(net_id, sizeof(net_id), "net:%s", veth_b);
 
 				memset(&r, 0, sizeof(r));
-				if (kx_client_request(&client, "GET", "/v1/devices", NULL, &r) != 0 ||
+				if (thinc_client_request(&client, "GET", "/v1/devices", NULL, &r) != 0 ||
 				    r.status != 200) {
 					fprintf(stderr, "FAIL: GET /v1/devices (veth scenario), status=%d\n",
 					        r.status);
@@ -571,7 +571,7 @@ int main(void)
 						}
 					}
 				}
-				kx_response_free(&r);
+				thinc_response_free(&r);
 
 				{
 					char body[300];
@@ -583,7 +583,7 @@ int main(void)
 					         veth_b);
 
 					memset(&r, 0, sizeof(r));
-					if (kx_client_request(&client, "POST", "/v1/containers", body, &r) !=
+					if (thinc_client_request(&client, "POST", "/v1/containers", body, &r) !=
 					        0 ||
 					    r.status != 400) {
 						fprintf(stderr,
@@ -592,7 +592,7 @@ int main(void)
 						        r.status);
 						ok = 0;
 					}
-					kx_response_free(&r);
+					thinc_response_free(&r);
 				}
 
 				rtnl_link_delete(fd, veth_a);
@@ -614,7 +614,7 @@ int main(void)
 		char disk_name[64] = "";
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/disks", NULL, &r) != 0 || r.status != 200) {
+		if (thinc_client_request(&client, "GET", "/v1/disks", NULL, &r) != 0 || r.status != 200) {
 			fprintf(stderr, "FAIL: GET /v1/disks, status=%d\n", r.status);
 			ok = 0;
 		} else {
@@ -633,7 +633,7 @@ int main(void)
 				}
 			}
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		if (disk_name[0] == '\0') {
 			printf("(no non-OS disk discovered on this host -- scenario 6 skipped)\n");
@@ -648,7 +648,7 @@ int main(void)
 			/* 6a. role-less: must be listed, bus:"disk", assignable, and
 			 * carry a real dev_path/major/minor (never zeroed/blank). */
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "GET", "/v1/devices", NULL, &r) != 0 ||
+			if (thinc_client_request(&client, "GET", "/v1/devices", NULL, &r) != 0 ||
 			    r.status != 200) {
 				fprintf(stderr, "FAIL: GET /v1/devices (disk scenario, before role), "
 				                "status=%d\n",
@@ -686,7 +686,7 @@ int main(void)
 					}
 				}
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 			if (!listed_before) {
 				fprintf(stderr, "FAIL: %s not listed under GET /v1/devices before a "
 				                "role was assigned\n",
@@ -700,16 +700,16 @@ int main(void)
 			snprintf(role_body, sizeof(role_body), "{\"disk_name\":\"%s\",\"role\":\"backup\"}",
 			         disk_name);
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "POST", "/v1/diskroles", role_body, &r) != 0 ||
+			if (thinc_client_request(&client, "POST", "/v1/diskroles", role_body, &r) != 0 ||
 			    r.status != 201) {
 				fprintf(stderr, "FAIL: POST /v1/diskroles %s, status=%d\n", disk_name,
 				        r.status);
 				ok = 0;
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "GET", "/v1/devices", NULL, &r) != 0 ||
+			if (thinc_client_request(&client, "GET", "/v1/devices", NULL, &r) != 0 ||
 			    r.status != 200) {
 				fprintf(stderr, "FAIL: GET /v1/devices (disk scenario, after role), "
 				                "status=%d\n",
@@ -728,7 +728,7 @@ int main(void)
 					}
 				}
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 			if (listed_after_role) {
 				fprintf(stderr,
 				        "FAIL: %s still listed under GET /v1/devices after a role "
@@ -740,15 +740,15 @@ int main(void)
 			/* 6c. removing the role makes it passthrough-eligible again. */
 			snprintf(role_path, sizeof(role_path), "/v1/diskroles/%s", disk_name);
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "DELETE", role_path, NULL, &r) != 0 ||
+			if (thinc_client_request(&client, "DELETE", role_path, NULL, &r) != 0 ||
 			    r.status != 204) {
 				fprintf(stderr, "FAIL: DELETE %s, status=%d\n", role_path, r.status);
 				ok = 0;
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "GET", "/v1/devices", NULL, &r) != 0 ||
+			if (thinc_client_request(&client, "GET", "/v1/devices", NULL, &r) != 0 ||
 			    r.status != 200) {
 				fprintf(stderr, "FAIL: GET /v1/devices (disk scenario, after role "
 				                "delete), status=%d\n",
@@ -766,7 +766,7 @@ int main(void)
 					}
 				}
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 			if (!listed_after_delete) {
 				fprintf(stderr,
 				        "FAIL: %s not listed under GET /v1/devices again after its "

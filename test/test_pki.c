@@ -32,14 +32,14 @@ static char g_data_dir[PATH_MAX];
 static char g_pki_state_dir[PATH_MAX];
 static char g_pki_image_root[PATH_MAX];
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -153,9 +153,9 @@ static int write_file(const char *path, const char *content)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct kx_client client;
+	struct thinc_client client;
 	int ok = 1;
-	struct kx_response r;
+	struct thinc_response r;
 	char ca_cert_pem[8192] = { 0 };
 	char leaf_cert_pem[8192] = { 0 };
 
@@ -187,7 +187,7 @@ int main(void)
 		return 1;
 	}
 
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -198,23 +198,23 @@ int main(void)
 
 	/* 1. before bootstrap: GET ca -> 404, POST certs -> 400 */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/pki/ca", NULL, &r) != 0 || r.status != 404) {
+	if (thinc_client_request(&client, "GET", "/v1/pki/ca", NULL, &r) != 0 || r.status != 404) {
 		fprintf(stderr, "FAIL: GET /v1/pki/ca before bootstrap expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/pki/certs", "{\"name\":\"svc\"}", &r) != 0 ||
+	if (thinc_client_request(&client, "POST", "/v1/pki/certs", "{\"name\":\"svc\"}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: POST /v1/pki/certs before bootstrap expected 400, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"earlypki\",\"image\":\"pkitest\","
 	                       "\"cmd\":[\"/bin/daemon_child\"],\"pki_issue\":true}",
 	                       &r) != 0 ||
@@ -222,13 +222,13 @@ int main(void)
 		fprintf(stderr, "FAIL: pki_issue before CA bootstrap expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 2. bootstrap the CA; confirm subject/serial/dates populated and
 	 * cert_pem is real, parseable PEM (round-tripped through openssl
 	 * itself, not a string check); a second bootstrap is 409. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/pki/ca", "{\"common_name\":\"Test Root CA\"}",
+	if (thinc_client_request(&client, "POST", "/v1/pki/ca", "{\"common_name\":\"Test Root CA\"}",
 	                       &r) != 0 ||
 	    r.status != 201 || !str_eq(json_str_field(r.json, "subject"), "CN = Test Root CA") ||
 	    json_str_field(r.json, "serial") == NULL || json_str_field(r.json, "not_after") == NULL ||
@@ -238,14 +238,14 @@ int main(void)
 	} else {
 		snprintf(ca_cert_pem, sizeof(ca_cert_pem), "%s", json_str_field(r.json, "cert_pem"));
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/pki/ca", "{}", &r) != 0 || r.status != 409) {
+	if (thinc_client_request(&client, "POST", "/v1/pki/ca", "{}", &r) != 0 || r.status != 409) {
 		fprintf(stderr, "FAIL: second POST /v1/pki/ca expected 409, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	if (ca_cert_pem[0] != '\0') {
 		char scratch_dir[] = "/tmp/thinc_test_pki_XXXXXX";
@@ -272,7 +272,7 @@ int main(void)
 			 * verify it actually chains to the CA and confirm the
 			 * SAN list round-trips through openssl. */
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "POST", "/v1/pki/certs",
+			if (thinc_client_request(&client, "POST", "/v1/pki/certs",
 			                       "{\"name\":\"svc.internal\",\"sans\":[\"svc.internal\",\"svc\"],"
 			                       "\"days\":30}",
 			                       &r) != 0 ||
@@ -285,7 +285,7 @@ int main(void)
 				snprintf(leaf_cert_pem, sizeof(leaf_cert_pem), "%s",
 				         json_str_field(r.json, "cert_pem"));
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 
 			if (leaf_cert_pem[0] != '\0') {
 				snprintf(leaf_path, sizeof(leaf_path), "%s/leaf.crt", scratch_dir);
@@ -347,25 +347,25 @@ int main(void)
 
 	/* 4. duplicate name -> 409; invalid name -> 400 */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/pki/certs", "{\"name\":\"svc.internal\"}", &r) !=
+	if (thinc_client_request(&client, "POST", "/v1/pki/certs", "{\"name\":\"svc.internal\"}", &r) !=
 	        0 ||
 	    r.status != 409) {
 		fprintf(stderr, "FAIL: duplicate cert name expected 409, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/pki/certs", "{\"name\":\"bad..name\"}", &r) != 0 ||
+	if (thinc_client_request(&client, "POST", "/v1/pki/certs", "{\"name\":\"bad..name\"}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: invalid cert name expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 5. list is metadata-only; single-get has cert_pem but never key_pem */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/pki/certs", NULL, &r) != 0 || r.status != 200) {
+	if (thinc_client_request(&client, "GET", "/v1/pki/certs", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/pki/certs, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -392,10 +392,10 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/pki/certs/svc.internal", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "GET", "/v1/pki/certs/svc.internal", NULL, &r) != 0 ||
 	    r.status != 200 || json_str_field(r.json, "cert_pem") == NULL) {
 		fprintf(stderr, "FAIL: GET /v1/pki/certs/svc.internal, status=%d\n", r.status);
 		ok = 0;
@@ -403,24 +403,24 @@ int main(void)
 		fprintf(stderr, "FAIL: GET single cert leaked key_pem -- the 'shown once' guarantee is broken\n");
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 6. delete removes both the index entry and the on-disk files */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "DELETE", "/v1/pki/certs/svc.internal", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "DELETE", "/v1/pki/certs/svc.internal", NULL, &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "FAIL: DELETE svc.internal expected 204, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/pki/certs/svc.internal", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "GET", "/v1/pki/certs/svc.internal", NULL, &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: GET svc.internal after delete expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	{
 		struct stat st;
@@ -446,7 +446,7 @@ int main(void)
 		int webtls_pid = -1;
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/containers",
+		if (thinc_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"webtls\",\"image\":\"pkitest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"20\"],\"pki_issue\":true}",
 		                       &r) != 0 ||
@@ -456,16 +456,16 @@ int main(void)
 		} else {
 			webtls_pid = (int)json_as_number(json_object_get(r.json, "pid"));
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/pki/certs/webtls", NULL, &r) != 0 ||
+		if (thinc_client_request(&client, "GET", "/v1/pki/certs/webtls", NULL, &r) != 0 ||
 		    r.status != 200 || !str_eq(json_str_field(r.json, "owner"), "webtls")) {
 			fprintf(stderr, "FAIL: GET webtls cert, status=%d, owner=%s\n", r.status,
 			        json_str_field(r.json, "owner") ? json_str_field(r.json, "owner") : "(null)");
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		if (webtls_pid > 0) {
 			char proc_path[160];
@@ -542,16 +542,16 @@ int main(void)
 		 * (201) even though a cert named "shadow3" already exists.
 		 */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/pki/certs", "{\"name\":\"shadow3\"}", &r) !=
+		if (thinc_client_request(&client, "POST", "/v1/pki/certs", "{\"name\":\"shadow3\"}", &r) !=
 		        0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: POST shadow3 (manual), status=%d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/containers",
+		if (thinc_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"shadow3\",\"image\":\"pkitest\","
 		                       "\"cmd\":[\"/bin/daemon_child\"],\"pki_issue\":true}",
 		                       &r) != 0 ||
@@ -561,13 +561,13 @@ int main(void)
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
-		kx_client_request(&client, "DELETE", "/v1/containers/shadow3", NULL, &r);
-		kx_response_free(&r);
+		thinc_client_request(&client, "DELETE", "/v1/containers/shadow3", NULL, &r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/pki/certs/shadow3", NULL, &r) != 0 ||
+		if (thinc_client_request(&client, "GET", "/v1/pki/certs/shadow3", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr,
 			        "FAIL: manually-created 'shadow3' cert did not survive same-named "
@@ -575,33 +575,33 @@ int main(void)
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
-		kx_client_request(&client, "DELETE", "/v1/containers/webtls", NULL, &r);
-		kx_response_free(&r);
+		thinc_client_request(&client, "DELETE", "/v1/containers/webtls", NULL, &r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/pki/certs/webtls", NULL, &r) != 0 ||
+		if (thinc_client_request(&client, "GET", "/v1/pki/certs/webtls", NULL, &r) != 0 ||
 		    r.status != 404) {
 			fprintf(stderr,
 			        "FAIL: webtls's auto-issued cert survived container deletion, status=%d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	}
 
 	/* 7. restart-survival: the CA and any remaining cert index entries
 	 * must persist across a daemon restart (issue one more cert first,
 	 * so there's something in the index to check). */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/pki/certs", "{\"name\":\"persisted.internal\"}",
+	if (thinc_client_request(&client, "POST", "/v1/pki/certs", "{\"name\":\"persisted.internal\"}",
 	                       &r) != 0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: POST persisted.internal, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM (first instance)\n");
@@ -619,19 +619,19 @@ int main(void)
 	}
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/pki/ca", NULL, &r) != 0 || r.status != 200) {
+	if (thinc_client_request(&client, "GET", "/v1/pki/ca", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: restarted daemon forgot the CA, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/pki/certs/persisted.internal", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "GET", "/v1/pki/certs/persisted.internal", NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: restarted daemon forgot persisted.internal, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/*
 	 * Part 3 (ADR-0047): a real intermediate CA -- signed BY the root
@@ -649,16 +649,16 @@ int main(void)
 		char chainleaf_cert_pem[8192] = { 0 };
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/pki/intermediate", NULL, &r) != 0 ||
+		if (thinc_client_request(&client, "GET", "/v1/pki/intermediate", NULL, &r) != 0 ||
 		    r.status != 404) {
 			fprintf(stderr, "FAIL: GET intermediate before bootstrap expected 404, got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/pki/intermediate", "{}", &r) != 0 ||
+		if (thinc_client_request(&client, "POST", "/v1/pki/intermediate", "{}", &r) != 0 ||
 		    r.status != 201 ||
 		    !str_eq(json_str_field(r.json, "subject"), "CN = thinC Intermediate CA") ||
 		    json_str_field(r.json, "cert_pem") == NULL) {
@@ -668,16 +668,16 @@ int main(void)
 			snprintf(intermediate_cert_pem, sizeof(intermediate_cert_pem), "%s",
 			         json_str_field(r.json, "cert_pem"));
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/pki/intermediate", "{}", &r) != 0 ||
+		if (thinc_client_request(&client, "POST", "/v1/pki/intermediate", "{}", &r) != 0 ||
 		    r.status != 409) {
 			fprintf(stderr, "FAIL: second POST /v1/pki/intermediate expected 409, got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		if (intermediate_cert_pem[0] != '\0' && ca_cert_pem[0] != '\0') {
 			char scratch_dir[] = "/tmp/thinc_test_pki_intermediate_XXXXXX";
@@ -711,7 +711,7 @@ int main(void)
 				 * transparently -- pki_cert_create()'s own call
 				 * signature/response shape is unchanged. */
 				memset(&r, 0, sizeof(r));
-				if (kx_client_request(&client, "POST", "/v1/pki/certs",
+				if (thinc_client_request(&client, "POST", "/v1/pki/certs",
 				                       "{\"name\":\"chainleaf\",\"sans\":[\"chainleaf\"]}",
 				                       &r) != 0 ||
 				    r.status != 201 || json_str_field(r.json, "cert_pem") == NULL) {
@@ -721,7 +721,7 @@ int main(void)
 					snprintf(chainleaf_cert_pem, sizeof(chainleaf_cert_pem), "%s",
 					         json_str_field(r.json, "cert_pem"));
 				}
-				kx_response_free(&r);
+				thinc_response_free(&r);
 
 				if (chainleaf_cert_pem[0] != '\0') {
 					snprintf(chainleaf_path, sizeof(chainleaf_path), "%s/chainleaf.crt",
@@ -774,8 +774,8 @@ int main(void)
 			ok = 0;
 		}
 
-		kx_client_request(&client, "DELETE", "/v1/pki/certs/chainleaf", NULL, &r);
-		kx_response_free(&r);
+		thinc_client_request(&client, "DELETE", "/v1/pki/certs/chainleaf", NULL, &r);
+		thinc_response_free(&r);
 	}
 
 	/*
@@ -784,16 +784,16 @@ int main(void)
 	 */
 	{
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/system/site", NULL, &r) != 0 ||
+		if (thinc_client_request(&client, "GET", "/v1/system/site", NULL, &r) != 0 ||
 		    r.status != 200 || !str_eq(json_str_field(r.json, "instance_name"), "thinc") ||
 		    !str_eq(json_str_field(r.json, "domain_suffix"), "internal")) {
 			fprintf(stderr, "FAIL: GET /v1/system/site defaults, status=%d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "PUT", "/v1/system/site",
+		if (thinc_client_request(&client, "PUT", "/v1/system/site",
 		                       "{\"instance_name\":\"thinc1\",\"site_name\":\"lab1\","
 		                       "\"domain_suffix\":\"corp.internal\"}",
 		                       &r) != 0 ||
@@ -803,17 +803,17 @@ int main(void)
 			fprintf(stderr, "FAIL: PUT /v1/system/site, status=%d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/system/site", NULL, &r) != 0 ||
+		if (thinc_client_request(&client, "GET", "/v1/system/site", NULL, &r) != 0 ||
 		    r.status != 200 || !str_eq(json_str_field(r.json, "instance_name"), "thinc1") ||
 		    !str_eq(json_str_field(r.json, "site_name"), "lab1")) {
 			fprintf(stderr, "FAIL: GET /v1/system/site after PUT did not stick, status=%d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/*
 		 * ADR-0050: the site PUT above must have (re)issued this
@@ -827,7 +827,7 @@ int main(void)
 			char first_serial[128] = { 0 };
 
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "GET", "/v1/pki/certs/host", NULL, &r) != 0 ||
+			if (thinc_client_request(&client, "GET", "/v1/pki/certs/host", NULL, &r) != 0 ||
 			    r.status != 200) {
 				fprintf(stderr, "FAIL: GET host cert after site PUT, status=%d\n", r.status);
 				ok = 0;
@@ -857,12 +857,12 @@ int main(void)
 				snprintf(first_serial, sizeof(first_serial), "%s",
 				         json_str_field(r.json, "serial"));
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 
 			/* Changing instance_name must genuinely reissue "host" --
 			 * new SAN, new serial, not left stale. */
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "PUT", "/v1/system/site",
+			if (thinc_client_request(&client, "PUT", "/v1/system/site",
 			                       "{\"instance_name\":\"thinc2\",\"site_name\":\"lab1\","
 			                       "\"domain_suffix\":\"corp.internal\"}",
 			                       &r) != 0 ||
@@ -870,10 +870,10 @@ int main(void)
 				fprintf(stderr, "FAIL: PUT site (rename instance), status=%d\n", r.status);
 				ok = 0;
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "GET", "/v1/pki/certs/host", NULL, &r) != 0 ||
+			if (thinc_client_request(&client, "GET", "/v1/pki/certs/host", NULL, &r) != 0 ||
 			    r.status != 200) {
 				fprintf(stderr, "FAIL: GET host cert after rename, status=%d\n", r.status);
 				ok = 0;
@@ -902,20 +902,20 @@ int main(void)
 					ok = 0;
 				}
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 
 			/* Restore instance_name to what the rest of this test
 			 * expects below. */
 			memset(&r, 0, sizeof(r));
-			kx_client_request(&client, "PUT", "/v1/system/site",
+			thinc_client_request(&client, "PUT", "/v1/system/site",
 			                   "{\"instance_name\":\"thinc1\",\"site_name\":\"lab1\","
 			                   "\"domain_suffix\":\"corp.internal\"}",
 			                   &r);
-			kx_response_free(&r);
+			thinc_response_free(&r);
 		}
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "PUT", "/v1/system/site",
+		if (thinc_client_request(&client, "PUT", "/v1/system/site",
 		                       "{\"instance_name\":\"thinc1\",\"site_name\":\"lab1\","
 		                       "\"domain_suffix\":\"bad/suffix\"}",
 		                       &r) != 0 ||
@@ -923,10 +923,10 @@ int main(void)
 			fprintf(stderr, "FAIL: PUT invalid domain_suffix expected 400, got %d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "PUT", "/v1/system/site",
+		if (thinc_client_request(&client, "PUT", "/v1/system/site",
 		                       "{\"instance_name\":\"bad/name\",\"site_name\":\"lab1\","
 		                       "\"domain_suffix\":\"internal\"}",
 		                       &r) != 0 ||
@@ -934,17 +934,17 @@ int main(void)
 			fprintf(stderr, "FAIL: PUT invalid instance_name expected 400, got %d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "PUT", "/v1/system/site",
+		if (thinc_client_request(&client, "PUT", "/v1/system/site",
 		                       "{\"site_name\":\"lab1\",\"domain_suffix\":\"internal\"}", &r) !=
 		        0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: PUT missing instance_name expected 400, got %d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/*
 		 * ADR-0052: server-side default qualification for POST
@@ -954,7 +954,7 @@ int main(void)
 		 * here); an explicit sans[] entry is left untouched.
 		 */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/pki/certs", "{\"name\":\"bareleaf\"}", &r) !=
+		if (thinc_client_request(&client, "POST", "/v1/pki/certs", "{\"name\":\"bareleaf\"}", &r) !=
 		        0 ||
 		    r.status != 201 || !str_eq(json_str_field(r.json, "name"), "bareleaf.lab1.corp.internal")) {
 			fprintf(stderr, "FAIL: bare PKI cert name not qualified, got name=%s status=%d\n",
@@ -978,21 +978,21 @@ int main(void)
 				ok = 0;
 			}
 		}
-		kx_response_free(&r);
-		kx_client_request(&client, "DELETE", "/v1/pki/certs/bareleaf.lab1.corp.internal", NULL, &r);
-		kx_response_free(&r);
+		thinc_response_free(&r);
+		thinc_client_request(&client, "DELETE", "/v1/pki/certs/bareleaf.lab1.corp.internal", NULL, &r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/pki/certs",
+		if (thinc_client_request(&client, "POST", "/v1/pki/certs",
 		                       "{\"name\":\"explicit.other\",\"sans\":[\"explicit.other\"]}",
 		                       &r) != 0 ||
 		    r.status != 201 || !str_eq(json_str_field(r.json, "name"), "explicit.other")) {
 			fprintf(stderr, "FAIL: dotted PKI cert name was qualified when it shouldn't be\n");
 			ok = 0;
 		}
-		kx_response_free(&r);
-		kx_client_request(&client, "DELETE", "/v1/pki/certs/explicit.other", NULL, &r);
-		kx_response_free(&r);
+		thinc_response_free(&r);
+		thinc_client_request(&client, "DELETE", "/v1/pki/certs/explicit.other", NULL, &r);
+		thinc_response_free(&r);
 
 		/* ADR-0052: siteconfig_qualify() is gated on site_name being
 		 * non-empty -- reset it to "" here (keeping instance_name/
@@ -1004,11 +1004,11 @@ int main(void)
 		 * successful PUT above would otherwise leave site_name set to
 		 * cause. */
 		memset(&r, 0, sizeof(r));
-		kx_client_request(&client, "PUT", "/v1/system/site",
+		thinc_client_request(&client, "PUT", "/v1/system/site",
 		                   "{\"instance_name\":\"thinc1\",\"site_name\":\"\","
 		                   "\"domain_suffix\":\"corp.internal\"}",
 		                   &r);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	}
 
 	/*
@@ -1029,14 +1029,14 @@ int main(void)
 		int resetlive_pid = 0;
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/pki/ca", NULL, &r) == 0 && r.status == 200) {
+		if (thinc_client_request(&client, "GET", "/v1/pki/ca", NULL, &r) == 0 && r.status == 200) {
 			snprintf(old_root_cert_pem, sizeof(old_root_cert_pem), "%s",
 			         json_str_field(r.json, "cert_pem"));
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/pki/certs",
+		if (thinc_client_request(&client, "POST", "/v1/pki/certs",
 		                       "{\"name\":\"resettest\",\"sans\":[\"resettest\"]}", &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: POST resettest, status=%d\n", r.status);
@@ -1047,10 +1047,10 @@ int main(void)
 			snprintf(old_leaf_serial, sizeof(old_leaf_serial), "%s",
 			         json_str_field(r.json, "serial"));
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/containers",
+		if (thinc_client_request(&client, "POST", "/v1/containers",
 		                       "{\"name\":\"resetlive\",\"image\":\"pkitest\","
 		                       "\"cmd\":[\"/bin/daemon_child\",\"60\"],\"pki_issue\":true}",
 		                       &r) != 0 ||
@@ -1060,7 +1060,7 @@ int main(void)
 		} else {
 			resetlive_pid = (int)json_as_number(json_object_get(r.json, "pid"));
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		if (resetlive_pid > 0) {
 			char proc_path[160];
@@ -1082,7 +1082,7 @@ int main(void)
 		}
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/pki/reset", "{}", &r) != 0 || r.status != 200) {
+		if (thinc_client_request(&client, "POST", "/v1/pki/reset", "{}", &r) != 0 || r.status != 200) {
 			fprintf(stderr, "FAIL: POST /v1/pki/reset, status=%d\n", r.status);
 			ok = 0;
 		} else {
@@ -1183,17 +1183,17 @@ int main(void)
 				}
 			}
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* GET must reflect the new serial, not a stale index entry. */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/pki/certs/resettest", NULL, &r) != 0 ||
+		if (thinc_client_request(&client, "GET", "/v1/pki/certs/resettest", NULL, &r) != 0 ||
 		    r.status != 200 || new_leaf_serial[0] == '\0' ||
 		    !str_eq(json_str_field(r.json, "serial"), new_leaf_serial)) {
 			fprintf(stderr, "FAIL: GET resettest after reset does not reflect the new serial\n");
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* Redelivery proof: resetlive's own delivered tls.crt on disk
 		 * must have actually changed -- not left stale after the leaf
@@ -1220,10 +1220,10 @@ int main(void)
 			}
 		}
 
-		kx_client_request(&client, "DELETE", "/v1/containers/resetlive", NULL, &r);
-		kx_response_free(&r);
-		kx_client_request(&client, "DELETE", "/v1/pki/certs/resettest", NULL, &r);
-		kx_response_free(&r);
+		thinc_client_request(&client, "DELETE", "/v1/containers/resetlive", NULL, &r);
+		thinc_response_free(&r);
+		thinc_client_request(&client, "DELETE", "/v1/pki/certs/resettest", NULL, &r);
+		thinc_response_free(&r);
 	}
 
 	/*
@@ -1238,12 +1238,12 @@ int main(void)
 		struct stat st;
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/images", "{\"name\":\"imgtrust\"}", &r) != 0 ||
+		if (thinc_client_request(&client, "POST", "/v1/images", "{\"name\":\"imgtrust\"}", &r) != 0 ||
 		    r.status != 201) {
 			fprintf(stderr, "FAIL: POST /v1/images imgtrust, status=%d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		{
 			char image_dir[PATH_MAX], version[128];
@@ -1261,12 +1261,12 @@ int main(void)
 			char host_cert_pem[8192] = { 0 };
 
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "GET", "/v1/pki/certs/host", NULL, &r) == 0 &&
+			if (thinc_client_request(&client, "GET", "/v1/pki/certs/host", NULL, &r) == 0 &&
 			    r.status == 200) {
 				snprintf(host_cert_pem, sizeof(host_cert_pem), "%s",
 				         json_str_field(r.json, "cert_pem"));
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 
 			if (host_cert_pem[0] == '\0') {
 				fprintf(stderr,
@@ -1298,15 +1298,15 @@ int main(void)
 			}
 		}
 
-		kx_client_request(&client, "DELETE", "/v1/images/imgtrust", NULL, &r);
-		kx_response_free(&r);
+		thinc_client_request(&client, "DELETE", "/v1/images/imgtrust", NULL, &r);
+		thinc_response_free(&r);
 	}
 
 	/* cleanup */
-	kx_client_request(&client, "DELETE", "/v1/pki/certs/persisted.internal", NULL, &r);
-	kx_response_free(&r);
-	kx_client_request(&client, "DELETE", "/v1/pki/certs/shadow3", NULL, &r);
-	kx_response_free(&r);
+	thinc_client_request(&client, "DELETE", "/v1/pki/certs/persisted.internal", NULL, &r);
+	thinc_response_free(&r);
+	thinc_client_request(&client, "DELETE", "/v1/pki/certs/shadow3", NULL, &r);
+	thinc_response_free(&r);
 
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM (second instance)\n");

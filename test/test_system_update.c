@@ -35,14 +35,14 @@ extern char **environ;
 
 static char g_data_dir[PATH_MAX];
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -96,8 +96,8 @@ static int stop_daemon(pid_t pid)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct kx_client client;
-	struct kx_response r;
+	struct thinc_client client;
+	struct thinc_response r;
 	int ok = 1;
 	char not_squashfs_path[] = "/tmp/thinc_test_system_update_notsquashfs_XXXXXX";
 	int fd;
@@ -105,7 +105,7 @@ int main(void)
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
 
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 
 	/* 1. No --slot= at all -> the request is rejected outright, before
 	 * even looking at the body -- there is no meaningful "inactive
@@ -121,13 +121,13 @@ int main(void)
 	}
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/system/update", "{\"image_path\":\"/nonexistent\"}",
+	if (thinc_client_request(&client, "POST", "/v1/system/update", "{\"image_path\":\"/nonexistent\"}",
 	                       &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: update with no --slot= expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon (no --slot=) did not exit cleanly on SIGTERM\n");
@@ -150,22 +150,22 @@ int main(void)
 
 	/* 2a. image_path missing from the body entirely */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/system/update", "{}", &r) != 0 || r.status != 400) {
+	if (thinc_client_request(&client, "POST", "/v1/system/update", "{}", &r) != 0 || r.status != 400) {
 		fprintf(stderr, "FAIL: update with missing image_path expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 2b. image_path pointing at a file that doesn't exist */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/system/update",
+	if (thinc_client_request(&client, "POST", "/v1/system/update",
 	                       "{\"image_path\":\"/no/such/path/here\"}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: update with nonexistent image_path expected 400, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 2c. image_path pointing at a real, readable file that is NOT a
 	 * squashfs image -- rejected on magic before any device write is
@@ -187,7 +187,7 @@ int main(void)
 
 			snprintf(body, sizeof(body), "{\"image_path\":\"%s\"}", not_squashfs_path);
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "POST", "/v1/system/update", body, &r) != 0 ||
+			if (thinc_client_request(&client, "POST", "/v1/system/update", body, &r) != 0 ||
 			    r.status != 400) {
 				fprintf(stderr, "FAIL: update with non-squashfs image_path expected 400, got %d\n",
 				        r.status);
@@ -202,18 +202,18 @@ int main(void)
 					ok = 0;
 				}
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 		}
 		/* 2d. kernel_path pointing at a file that doesn't exist */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/system/update",
+		if (thinc_client_request(&client, "POST", "/v1/system/update",
 		                       "{\"kernel_path\":\"/no/such/kernel/here\"}", &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: update with nonexistent kernel_path expected 400, got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* 2e. kernel_path pointing at a real, readable file that is NOT
 		 * a valid bzImage -- the same plain-text fixture already proven
@@ -225,7 +225,7 @@ int main(void)
 
 			snprintf(body, sizeof(body), "{\"kernel_path\":\"%s\"}", not_squashfs_path);
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "POST", "/v1/system/update", body, &r) != 0 ||
+			if (thinc_client_request(&client, "POST", "/v1/system/update", body, &r) != 0 ||
 			    r.status != 400) {
 				fprintf(stderr,
 				        "FAIL: update with non-bzImage kernel_path expected 400, got %d\n",
@@ -241,7 +241,7 @@ int main(void)
 					ok = 0;
 				}
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 		}
 
 		/* 2f. A real, valid-magic image_path combined with a bad
@@ -267,7 +267,7 @@ int main(void)
 				snprintf(body, sizeof(body), "{\"image_path\":\"%s\",\"kernel_path\":\"%s\"}",
 				         good_image_path, not_squashfs_path);
 				memset(&r, 0, sizeof(r));
-				if (kx_client_request(&client, "POST", "/v1/system/update", body, &r) != 0 ||
+				if (thinc_client_request(&client, "POST", "/v1/system/update", body, &r) != 0 ||
 				    r.status != 400) {
 					fprintf(stderr,
 					        "FAIL: update with valid image_path + bad kernel_path expected "
@@ -275,7 +275,7 @@ int main(void)
 					        r.status);
 					ok = 0;
 				}
-				kx_response_free(&r);
+				thinc_response_free(&r);
 				unlink(good_image_path);
 			}
 		}

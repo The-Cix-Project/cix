@@ -78,14 +78,14 @@ static int stop_daemon(pid_t pid)
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -133,9 +133,9 @@ static int count_occurrences(const char *haystack, const char *needle)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct kx_client client;
+	struct thinc_client client;
 	int ok = 1;
-	struct kx_response r;
+	struct thinc_response r;
 	char projmap[8192];
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
@@ -162,7 +162,7 @@ int main(void)
 		return 1;
 	}
 
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -179,7 +179,7 @@ int main(void)
 	 * as a clean 500, never a crash and never a silent 201.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"quotafail1\",\"image\":\"quotatest\","
 	                       "\"cmd\":[\"/bin/daemon_child\"],\"disk_quota_bytes\":1048576}",
 	                       &r) != 0 ||
@@ -187,19 +187,19 @@ int main(void)
 		fprintf(stderr, "FAIL: quota create on unsupported fs: expected 500, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* No container should exist -- creation must have failed clean,
 	 * before ever spawning anything. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (kx_client_request(&client, "GET", "/v1/containers/quotafail1", NULL, &r) != 0 ||
+	if (ok && (thinc_client_request(&client, "GET", "/v1/containers/quotafail1", NULL, &r) != 0 ||
 	           r.status != 404)) {
 		fprintf(stderr, "FAIL: quotafail1 should not exist after a failed quota create "
 		                "(got status %d)\n",
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/*
 	 * 2. Same name, second attempt -- quotamap_get_or_assign() must
@@ -209,7 +209,7 @@ int main(void)
 	 * exactly one entry for this name exists, not two.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (ok && (kx_client_request(&client, "POST", "/v1/containers",
+	if (ok && (thinc_client_request(&client, "POST", "/v1/containers",
 	                              "{\"name\":\"quotafail1\",\"image\":\"quotatest\","
 	                              "\"cmd\":[\"/bin/daemon_child\"],\"disk_quota_bytes\":2097152}",
 	                              &r) != 0 ||
@@ -218,7 +218,7 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	if (ok && read_quota_projids(projmap, sizeof(projmap)) != 0) {
 		fprintf(stderr, "FAIL: could not read persisted quota_projids.json\n");
@@ -236,7 +236,7 @@ int main(void)
 	 * distinct project id -- both now present in the persisted map.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (ok && (kx_client_request(&client, "POST", "/v1/containers",
+	if (ok && (thinc_client_request(&client, "POST", "/v1/containers",
 	                              "{\"name\":\"quotafail2\",\"image\":\"quotatest\","
 	                              "\"cmd\":[\"/bin/daemon_child\"],\"disk_quota_bytes\":1048576}",
 	                              &r) != 0 ||
@@ -244,7 +244,7 @@ int main(void)
 		fprintf(stderr, "FAIL: quota create on quotafail2: expected 500, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	if (ok && read_quota_projids(projmap, sizeof(projmap)) != 0) {
 		fprintf(stderr, "FAIL: could not re-read persisted quota_projids.json\n");
@@ -265,7 +265,7 @@ int main(void)
 	 * quota) must be completely unaffected.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (ok && (kx_client_request(&client, "POST", "/v1/containers",
+	if (ok && (thinc_client_request(&client, "POST", "/v1/containers",
 	                              "{\"name\":\"noquota\",\"image\":\"quotatest\","
 	                              "\"cmd\":[\"/bin/daemon_child\"]}",
 	                              &r) != 0 ||
@@ -273,7 +273,7 @@ int main(void)
 		fprintf(stderr, "FAIL: no-quota create: expected 201, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	if (ok)
 		printf("DISK QUOTA RESULT: PASS\n");

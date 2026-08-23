@@ -42,14 +42,14 @@ extern char **environ;
 
 static char g_data_dir[PATH_MAX];
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -100,9 +100,9 @@ static int stop_daemon(pid_t pid)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct kx_client client;
+	struct thinc_client client;
 	int ok = 1;
-	struct kx_response r;
+	struct thinc_response r;
 	char non_os_disk[64] = "";
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
@@ -114,7 +114,7 @@ int main(void)
 		return 1;
 	}
 
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -125,7 +125,7 @@ int main(void)
 
 	/* 1. Default state, fresh daemon: no placement, no migration job. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/system/state-storage", NULL, &r) != 0 || r.status != 200) {
+	if (thinc_client_request(&client, "GET", "/v1/system/state-storage", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/system/state-storage, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -136,10 +136,10 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/system/state-storage/migrate", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "GET", "/v1/system/state-storage/migrate", NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/system/state-storage/migrate, status=%d\n", r.status);
 		ok = 0;
@@ -152,29 +152,29 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 2. A request body missing "disk" entirely (ambiguous: not the
 	 * same as an explicit null) is a real 400, not silently treated as
 	 * either. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/system/state-storage/migrate", "{}", &r) != 0 ||
+	if (thinc_client_request(&client, "POST", "/v1/system/state-storage/migrate", "{}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: POST migrate with no disk field expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 3. An unknown disk name -> 404. Fully deterministic regardless of
 	 * this host's real hardware. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/system/state-storage/migrate",
+	if (thinc_client_request(&client, "POST", "/v1/system/state-storage/migrate",
 	                       "{\"disk\":\"nonexistentdisk99\"}", &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: POST migrate unknown disk expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* Find a real, non-OS disk on this host to exercise the
 	 * role/mount-state validation paths against -- adapts to whatever
@@ -182,7 +182,7 @@ int main(void)
 	 * devices.c's own top comment already established. Every step
 	 * below (diskrole create/rm) is non-destructive. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/disks", NULL, &r) == 0 && r.status == 200) {
+	if (thinc_client_request(&client, "GET", "/v1/disks", NULL, &r) == 0 && r.status == 200) {
 		const struct json_value *disks = json_object_get(r.json, "disks");
 		size_t i;
 
@@ -198,7 +198,7 @@ int main(void)
 			}
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	if (non_os_disk[0] == '\0') {
 		printf("(no non-OS disk discovered on this host -- scenarios 4-7 skipped)\n");
@@ -208,7 +208,7 @@ int main(void)
 		/* 4. The real OS disk itself is always rejected, regardless of
 		 * which disk that actually is on this host. */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/disks", NULL, &r) == 0 && r.status == 200) {
+		if (thinc_client_request(&client, "GET", "/v1/disks", NULL, &r) == 0 && r.status == 200) {
 			const struct json_value *disks = json_object_get(r.json, "disks");
 			size_t i;
 			char os_disk[64] = "";
@@ -224,11 +224,11 @@ int main(void)
 				}
 			}
 			if (os_disk[0] != '\0') {
-				struct kx_response r2;
+				struct thinc_response r2;
 
 				snprintf(body, sizeof(body), "{\"disk\":\"%s\"}", os_disk);
 				memset(&r2, 0, sizeof(r2));
-				if (kx_client_request(&client, "POST", "/v1/system/state-storage/migrate",
+				if (thinc_client_request(&client, "POST", "/v1/system/state-storage/migrate",
 				                       body, &r2) != 0 ||
 				    r2.status != 400) {
 					fprintf(stderr,
@@ -237,43 +237,43 @@ int main(void)
 					        r2.status);
 					ok = 0;
 				}
-				kx_response_free(&r2);
+				thinc_response_free(&r2);
 			}
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* 5. A disk with the WRONG role (container-storage, not
 		 * state-storage) -> 400. */
 		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"container-storage\"}",
 		         non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
+		if (thinc_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
 			fprintf(stderr, "FAIL: POST /v1/diskroles (container-storage), status=%d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		snprintf(body, sizeof(body), "{\"disk\":\"%s\"}", non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/system/state-storage/migrate", body, &r) != 0 ||
+		if (thinc_client_request(&client, "POST", "/v1/system/state-storage/migrate", body, &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: POST migrate to a wrong-role disk expected 400, got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		kx_client_request(&client, "DELETE", "/v1/diskroles", NULL, &r); /* no-op path, ignored */
-		kx_response_free(&r);
+		thinc_client_request(&client, "DELETE", "/v1/diskroles", NULL, &r); /* no-op path, ignored */
+		thinc_response_free(&r);
 		{
 			char path[96];
 
 			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
 			memset(&r, 0, sizeof(r));
-			kx_client_request(&client, "DELETE", path, NULL, &r);
-			kx_response_free(&r);
+			thinc_client_request(&client, "DELETE", path, NULL, &r);
+			thinc_response_free(&r);
 		}
 
 		/* 6. The right role (state-storage) but not currently mounted
@@ -283,15 +283,15 @@ int main(void)
 		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"state-storage\"}",
 		         non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
+		if (thinc_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
 			fprintf(stderr, "FAIL: POST /v1/diskroles (state-storage), status=%d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		snprintf(body, sizeof(body), "{\"disk\":\"%s\"}", non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/system/state-storage/migrate", body, &r) != 0 ||
+		if (thinc_client_request(&client, "POST", "/v1/system/state-storage/migrate", body, &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr,
 			        "FAIL: POST migrate to a role-correct but unmounted disk expected "
@@ -299,7 +299,7 @@ int main(void)
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* 7. Cleanup of the state-storage-role assignment above -- a
 		 * role-only assignment (never an active placement, since the
@@ -311,14 +311,14 @@ int main(void)
 
 			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 204) {
+			if (thinc_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 204) {
 				fprintf(stderr,
 				        "FAIL: DELETE diskrole for a never-active disk expected 204, "
 				        "got %d\n",
 				        r.status);
 				ok = 0;
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 		}
 
 		/* 8. log-storage: default state, then the same wrong-role and
@@ -329,7 +329,7 @@ int main(void)
 		 * second kind, not just copy-pasted and left pointing at
 		 * "state-storage" by mistake. */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/system/log-storage", NULL, &r) != 0 ||
+		if (thinc_client_request(&client, "GET", "/v1/system/log-storage", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: GET /v1/system/log-storage, status=%d\n", r.status);
 			ok = 0;
@@ -341,49 +341,49 @@ int main(void)
 				ok = 0;
 			}
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"state-storage\"}",
 		         non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
+		if (thinc_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
 			fprintf(stderr, "FAIL: POST /v1/diskroles (wrong role for log test), status=%d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		snprintf(body, sizeof(body), "{\"disk\":\"%s\"}", non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/system/log-storage/migrate", body, &r) != 0 ||
+		if (thinc_client_request(&client, "POST", "/v1/system/log-storage/migrate", body, &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: POST log-storage migrate to a wrong-role disk expected 400, "
 			                "got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		{
 			char path[96];
 
 			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
 			memset(&r, 0, sizeof(r));
-			kx_client_request(&client, "DELETE", path, NULL, &r);
-			kx_response_free(&r);
+			thinc_client_request(&client, "DELETE", path, NULL, &r);
+			thinc_response_free(&r);
 		}
 
 		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"log-storage\"}", non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
+		if (thinc_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
 			fprintf(stderr, "FAIL: POST /v1/diskroles (log-storage), status=%d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		snprintf(body, sizeof(body), "{\"disk\":\"%s\"}", non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/system/log-storage/migrate", body, &r) != 0 ||
+		if (thinc_client_request(&client, "POST", "/v1/system/log-storage/migrate", body, &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr,
 			        "FAIL: POST log-storage migrate to a role-correct but unmounted disk "
@@ -391,10 +391,10 @@ int main(void)
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/system/log-storage/migrate", NULL, &r) != 0 ||
+		if (thinc_client_request(&client, "GET", "/v1/system/log-storage/migrate", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: GET /v1/system/log-storage/migrate, status=%d\n", r.status);
 			ok = 0;
@@ -409,7 +409,7 @@ int main(void)
 				ok = 0;
 			}
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* 9. rebuildable-storage: same validation coverage as state/log
 		 * above, proving the third and final storage_kind is wired
@@ -420,12 +420,12 @@ int main(void)
 
 			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
 			memset(&r, 0, sizeof(r));
-			kx_client_request(&client, "DELETE", path, NULL, &r);
-			kx_response_free(&r);
+			thinc_client_request(&client, "DELETE", path, NULL, &r);
+			thinc_response_free(&r);
 		}
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/system/rebuildable-storage", NULL, &r) != 0 ||
+		if (thinc_client_request(&client, "GET", "/v1/system/rebuildable-storage", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: GET /v1/system/rebuildable-storage, status=%d\n", r.status);
 			ok = 0;
@@ -439,21 +439,21 @@ int main(void)
 				ok = 0;
 			}
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"backup\"}", non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
+		if (thinc_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
 			fprintf(stderr, "FAIL: POST /v1/diskroles (wrong role for rebuildable test), "
 			                "status=%d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		snprintf(body, sizeof(body), "{\"disk\":\"%s\"}", non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/system/rebuildable-storage/migrate", body, &r) !=
+		if (thinc_client_request(&client, "POST", "/v1/system/rebuildable-storage/migrate", body, &r) !=
 		            0 ||
 		    r.status != 400) {
 			fprintf(stderr,
@@ -462,30 +462,30 @@ int main(void)
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		{
 			char path[96];
 
 			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
 			memset(&r, 0, sizeof(r));
-			kx_client_request(&client, "DELETE", path, NULL, &r);
-			kx_response_free(&r);
+			thinc_client_request(&client, "DELETE", path, NULL, &r);
+			thinc_response_free(&r);
 		}
 
 		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"rebuildable-storage\"}",
 		         non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
+		if (thinc_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
 			fprintf(stderr, "FAIL: POST /v1/diskroles (rebuildable-storage), status=%d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		snprintf(body, sizeof(body), "{\"disk\":\"%s\"}", non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/system/rebuildable-storage/migrate", body, &r) !=
+		if (thinc_client_request(&client, "POST", "/v1/system/rebuildable-storage/migrate", body, &r) !=
 		            0 ||
 		    r.status != 400) {
 			fprintf(stderr,
@@ -494,10 +494,10 @@ int main(void)
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/system/rebuildable-storage/migrate", NULL, &r) !=
+		if (thinc_client_request(&client, "GET", "/v1/system/rebuildable-storage/migrate", NULL, &r) !=
 		            0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: GET /v1/system/rebuildable-storage/migrate, status=%d\n",
@@ -514,7 +514,7 @@ int main(void)
 				ok = 0;
 			}
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* 10. Final cleanup. */
 		{
@@ -522,14 +522,14 @@ int main(void)
 
 			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 204) {
+			if (thinc_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 204) {
 				fprintf(stderr,
 				        "FAIL: DELETE diskrole for a never-active disk expected 204, "
 				        "got %d\n",
 				        r.status);
 				ok = 0;
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 		}
 	}
 

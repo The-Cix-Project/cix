@@ -205,14 +205,14 @@ static const char *json_str_field(const struct json_value *obj, const char *key)
 	return json_as_string(json_object_get(obj, key));
 }
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -221,7 +221,7 @@ static int wait_for_daemon(const struct kx_client *c, int max_attempts)
 }
 
 /* Polls GET /v1/pkg/{name} until its state matches want, or times out. */
-static int wait_for_pkg_state(const struct kx_client *c, const char *name, const char *want,
+static int wait_for_pkg_state(const struct thinc_client *c, const char *name, const char *want,
                                int max_attempts)
 {
 	int i;
@@ -229,18 +229,18 @@ static int wait_for_pkg_state(const struct kx_client *c, const char *name, const
 
 	snprintf(path, sizeof(path), "/v1/pkg/%s", name);
 	for (i = 0; i < max_attempts; i++) {
-		struct kx_response r;
+		struct thinc_response r;
 		const char *state;
 		int matched;
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(c, "GET", path, NULL, &r) != 0 || r.status != 200) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", path, NULL, &r) != 0 || r.status != 200) {
+			thinc_response_free(&r);
 			return -1;
 		}
 		state = json_str_field(r.json, "state");
 		matched = state != NULL && strcmp(state, want) == 0;
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		if (matched)
 			return 0;
 		usleep(100000);
@@ -340,8 +340,8 @@ static int recv_ws_frame(int fd, int *out_opcode, unsigned char *out_buf, size_t
 int main(void)
 {
 	pid_t daemon_pid;
-	struct kx_client client;
-	struct kx_response r;
+	struct thinc_client client;
+	struct thinc_response r;
 	char scratch_dir[] = "/tmp/thinc_test_pkgbuildlog_XXXXXX";
 	char tarball_path[512], sha256[128];
 	int fd;
@@ -377,7 +377,7 @@ int main(void)
 	if (daemon_pid < 0)
 		return 1;
 
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never became healthy\n");
 		kill(daemon_pid, SIGKILL);
@@ -386,11 +386,11 @@ int main(void)
 	}
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/pkg/bootstrap", NULL, &r) != 0 || r.status != 204) {
+	if (thinc_client_request(&client, "POST", "/v1/pkg/bootstrap", NULL, &r) != 0 || r.status != 204) {
 		fprintf(stderr, "FAIL: POST /v1/pkg/bootstrap, status=%d\n", r.status);
 		g_failures++;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* --- scenario 1: no build in progress yet -> 404 --- */
 	fd = raw_connect(TEST_PORT);
@@ -418,24 +418,24 @@ int main(void)
 	/* --- scenario 2: no Upgrade header -> 400, doesn't fall through as
 	 * an ordinary GET --- */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/pkg/build/log", NULL, &r) != 0) {
+	if (thinc_client_request(&client, "GET", "/v1/pkg/build/log", NULL, &r) != 0) {
 		fprintf(stderr, "FAIL: plain GET .../build/log unreachable\n");
 		g_failures++;
 	} else {
 		CHECK(r.status == 400, "plain GET .../build/log (no Upgrade header) should be 400");
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* --- scenario 3: the real thing -- kick off a real build, attach
 	 * mid-build, observe live incremental output, then a clean close
 	 * once the build finishes. --- */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"slowbuild\"}", &r) != 0 ||
+	if (thinc_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"slowbuild\"}", &r) != 0 ||
 	    r.status != 202) {
 		fprintf(stderr, "FAIL: POST install slowbuild, status=%d\n", r.status);
 		g_failures++;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	CHECK(wait_for_pkg_state(&client, "slowbuild", "building", 100) == 0,
 	      "slowbuild reached state=building before this test's own timeout");

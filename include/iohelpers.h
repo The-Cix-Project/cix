@@ -14,9 +14,9 @@
  * build line, by the CLI's own console client too (Part 2). One real
  * implementation, reused rather than duplicated (No Parallel
  * Implementations), matching the precedent this header's own
- * kx_mkdir_p() and daemon/include/namecheck.h already set.
+ * thinc_mkdir_p() and daemon/include/namecheck.h already set.
  */
-static inline int kx_write_all(int fd, const void *buf, size_t n)
+static inline int thinc_write_all(int fd, const void *buf, size_t n)
 {
 	const char *p = buf;
 	size_t written = 0;

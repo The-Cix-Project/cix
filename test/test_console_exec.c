@@ -108,14 +108,14 @@ static void reset_state(void)
 	system(cmd);
 }
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -123,7 +123,7 @@ static int wait_for_daemon(const struct kx_client *c, int max_attempts)
 	return -1;
 }
 
-/* Raw socket connect to the daemon -- kx_client_request() has no
+/* Raw socket connect to the daemon -- thinc_client_request() has no
  * concept of a connection that survives past one response, which is
  * the whole point of what's being tested here. */
 static int raw_connect(int port)
@@ -262,8 +262,8 @@ static int recv_ws_frame(int fd, int *out_opcode, unsigned char *out_buf, size_t
 int main(void)
 {
 	pid_t daemon_pid;
-	struct kx_client client;
-	struct kx_response r;
+	struct thinc_client client;
+	struct thinc_response r;
 	int fd;
 	char req[1024];
 	int rlen;
@@ -305,7 +305,7 @@ int main(void)
 	if (daemon_pid < 0)
 		return 1;
 
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never became healthy\n");
 		stop_daemon(daemon_pid);
@@ -314,7 +314,7 @@ int main(void)
 
 	/* --- fixture: a real, long-lived running container --- */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"consoletest\",\"image\":\"consoletest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"]}",
 	                       &r) != 0 ||
@@ -322,18 +322,18 @@ int main(void)
 		fprintf(stderr, "FAIL: POST consoletest, status=%d\n", r.status);
 		g_failures++;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* --- scenario 1: a plain GET with no Upgrade header is a 400, not
 	 * silently treated as an ordinary request for this path --- */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/containers/consoletest/console", NULL, &r) != 0) {
+	if (thinc_client_request(&client, "GET", "/v1/containers/consoletest/console", NULL, &r) != 0) {
 		fprintf(stderr, "FAIL: plain GET .../console unreachable\n");
 		g_failures++;
 	} else {
 		CHECK(r.status == 400, "plain GET .../console (no Upgrade header) should be 400");
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* --- scenario 2: console into a container that doesn't exist --- */
 	fd = raw_connect(TEST_PORT);
@@ -449,8 +449,8 @@ int main(void)
 
 	/* --- cleanup --- */
 	memset(&r, 0, sizeof(r));
-	kx_client_request(&client, "DELETE", "/v1/containers/consoletest", NULL, &r);
-	kx_response_free(&r);
+	thinc_client_request(&client, "DELETE", "/v1/containers/consoletest", NULL, &r);
+	thinc_response_free(&r);
 
 	stop_daemon(daemon_pid);
 	reset_state();
