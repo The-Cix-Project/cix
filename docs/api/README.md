@@ -216,6 +216,38 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/pkg/policies` | Per-package rolling policy — which version an omitted version resolves to (issue #64) |
 | PUT | `/pkg/policies/{name}` | Set it: `highest` (default), `newest`, or `pinned` with a version |
 | DELETE | `/pkg/policies/{name}` | Back to the default |
+### Why a package failed, as a field (issue #101)
+
+`GET /v1/pkg/{name}` and the package list report **`failure_kind`** alongside `error`:
+
+| kind | meaning | what to do about it |
+|---|---|---|
+| `fetch` | the source could not be reached, or did not match its checksum | usually transient — try again |
+| `build` | the build container failed to start, or the build itself failed | a real defect in the recipe or toolchain — retrying changes nothing |
+| `recipe` | the recipe is missing, unreadable or unparseable | a catalogue problem — sync or fix the recipe |
+| `install` | the build succeeded; merging its output into the image did not | neither of the above; look at the image |
+| `null` | nothing is wrong | — |
+
+`failed` on its own could not be acted on: a package that could not be *reached* and one that failed to *build* read identically, and every caller had to pattern-match an error string to tell them apart. `thincctl pkg ls` shows it as `failed:fetch` / `failed:build`; the dashboard shows it next to the state with the message on hover.
+
+The kind is set in the one function that records a failure, and it is a required parameter of that function — a failure cannot be recorded without saying what kind it was.
+
+### Why a package failed, as a field (issue #101)
+
+`GET /v1/pkg/{name}` and the package list report **`failure_kind`** alongside `error`:
+
+| kind | meaning | what it calls for |
+|---|---|---|
+| `fetch` | the source could not be reached, or did not match its checksum | usually transient — try again |
+| `build` | the build container failed to start, or the build itself failed | a real defect in the recipe or toolchain; retrying changes nothing |
+| `recipe` | the recipe is missing, unreadable or unparseable | a catalogue problem — sync or fix the recipe |
+| `install` | the build succeeded, merging its output into the image did not | neither of the above |
+| `null` | nothing is wrong | — |
+
+`failed` on its own could not be acted on: a package that could not be *reached* and one that failed to *build* read identically, and every caller had to pattern-match an error string to tell them apart. `thincctl pkg ls` shows it as `failed:fetch` / `failed:build`; the dashboard shows it beside the state, with the message on hover.
+
+The kind is set in the single function that records a failure, and it is a **required parameter** of that function — a failure cannot be recorded without saying what kind it was.
+
 | GET | `/pkg/build-logs` | Every persisted build log, newest first — the complete output of each recent build (issue #57) |
 | GET | `/pkg/build-logs/{file}` | One build log as plain text, tail-first if it is larger than the response cap |
 | GET | `/pkg/sync` | The most recent (or currently running) sync's status |

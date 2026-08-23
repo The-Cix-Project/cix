@@ -3915,7 +3915,15 @@ function renderImageDetailPackages(name) {
 		row.appendChild(versionCell);
 
 		const stateCell = document.createElement("td");
-		stateCell.textContent = pkg.state;
+		/* Issue #101: a package that could not be REACHED and one that
+		 * failed to BUILD both read "failed", and they call for
+		 * opposite responses -- retry the first, fix the second. The
+		 * kind sits next to the state; the message is the hover, so the
+		 * table stays readable. */
+		stateCell.textContent = pkg.failure_kind ? pkg.state + " (" + pkg.failure_kind + ")"
+		                                          : pkg.state;
+		if (pkg.error)
+			stateCell.title = pkg.error;
 		row.appendChild(stateCell);
 
 		const actionCell = document.createElement("td");
@@ -6569,7 +6577,15 @@ function renderPackagesList() {
 		row.appendChild(versionCell);
 
 		const stateCell = document.createElement("td");
-		stateCell.textContent = pkg.state;
+		/* Issue #101: a package that could not be REACHED and one that
+		 * failed to BUILD both read "failed", and they call for
+		 * opposite responses -- retry the first, fix the second. The
+		 * kind sits next to the state; the message is the hover, so the
+		 * table stays readable. */
+		stateCell.textContent = pkg.failure_kind ? pkg.state + " (" + pkg.failure_kind + ")"
+		                                          : pkg.state;
+		if (pkg.error)
+			stateCell.title = pkg.error;
 		row.appendChild(stateCell);
 
 		const actionCell = document.createElement("td");
@@ -6940,7 +6956,15 @@ function renderPackageDetailInstalled(name) {
 		row.appendChild(versionCell);
 
 		const stateCell = document.createElement("td");
-		stateCell.textContent = pkg.state;
+		/* Issue #101: a package that could not be REACHED and one that
+		 * failed to BUILD both read "failed", and they call for
+		 * opposite responses -- retry the first, fix the second. The
+		 * kind sits next to the state; the message is the hover, so the
+		 * table stays readable. */
+		stateCell.textContent = pkg.failure_kind ? pkg.state + " (" + pkg.failure_kind + ")"
+		                                          : pkg.state;
+		if (pkg.error)
+			stateCell.title = pkg.error;
 		row.appendChild(stateCell);
 
 		const availableCell = document.createElement("td");

@@ -57,6 +57,9 @@ struct pkg_entry {
 	char depends[PKG_DEPENDS_MAX];
 	enum pkg_state state;
 	char error[PKG_ERROR_MAX];
+	/* Issue #101: what kind of failure `error` describes. Set by
+	 * pkg_fail(), which is the only way a package becomes FAILED. */
+	enum pkg_failure_kind failure_kind;
 	char **files;
 	int file_count;
 	int files_cap;
@@ -471,6 +474,55 @@ int pkg_active_chain_indices(int *out_indices)
 static void fetch_error_sidecar_path(const char *name, char *out, size_t out_size)
 {
 	snprintf(out, out_size, "%s/.fetcherr-%s", g_sources_dir, name);
+}
+
+
+const char *pkg_failure_kind_name(enum pkg_failure_kind kind)
+{
+	switch (kind) {
+	case PKG_FAILURE_RECIPE:
+		return "recipe";
+	case PKG_FAILURE_FETCH:
+		return "fetch";
+	case PKG_FAILURE_BUILD:
+		return "build";
+	case PKG_FAILURE_INSTALL:
+		return "install";
+	case PKG_FAILURE_NONE:
+	default:
+		return "none";
+	}
+}
+
+/*
+ * Issue #101: the one place a package records a failure.
+ *
+ * Every site that used to write `e->state = ... FAILED` plus an error
+ * string by hand now comes through here, and the kind is a required
+ * parameter rather than something inferred afterwards from the message.
+ * That is the whole point: a failure that does not say whether the
+ * source could not be reached, the build did not work, or the recipe is
+ * unreadable is one nobody can act on -- and a string every caller has
+ * to pattern-match is the same problem wearing a disguise.
+ *
+ * keep_installed carries the pre-existing upgrade rule unchanged: a
+ * failed UPGRADE leaves the package installed at the version it already
+ * had, because that version is still there and still working. The error
+ * and the kind are recorded either way, so "the upgrade did not happen,
+ * and here is why" survives.
+ */
+static void pkg_fail(struct pkg_entry *e, int keep_installed, enum pkg_failure_kind kind,
+                     const char *fmt, ...)
+{
+	va_list ap;
+
+	if (e == NULL)
+		return;
+	e->state = keep_installed ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
+	e->failure_kind = kind;
+	va_start(ap, fmt);
+	vsnprintf(e->error, sizeof(e->error), fmt, ap);
+	va_end(ap);
 }
 
 static struct pkg_entry *pkg_find(const char *name, const char *image)
@@ -1577,6 +1629,15 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 		jw_str(w, e->error);
 	else
 		jw_null(w);
+	/* Issue #101: what kind of failure `error` describes, so a caller
+	 * deciding whether to retry does not have to read prose. Null when
+	 * there is nothing wrong, rather than the string "none" -- absence
+	 * of a failure is not a kind of failure. */
+	jw_key(w, "failure_kind");
+	if (e->failure_kind != PKG_FAILURE_NONE)
+		jw_str(w, pkg_failure_kind_name(e->failure_kind));
+	else
+		jw_null(w);
 	/* Issue #58: the first-class hang-vs-slow signal -- null unless a
 	 * build is in flight and has produced at least one byte. */
 	jw_key(w, "last_output_seconds_ago");
@@ -1739,8 +1800,12 @@ static int load_state(void)
 			const char *phase =
 			    g_packages[count].state == PKG_STATE_FETCHING ? "fetch" : "build";
 
-			g_packages[count].state = PKG_STATE_FAILED;
-			snprintf(g_packages[count].error, sizeof(g_packages[count].error),
+			/* Issue #101: the phase it died in IS the kind -- a job
+			 * killed mid-fetch is a fetch failure to anyone deciding
+			 * what to do about it, and the same for a build. */
+			pkg_fail(&g_packages[count], 0,
+			         g_packages[count].state == PKG_STATE_FETCHING ? PKG_FAILURE_FETCH
+			                                                        : PKG_FAILURE_BUILD,
 			         "interrupted by a daemon restart mid-%s", phase);
 		}
 		count++;
@@ -2676,16 +2741,14 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	e->cache_hit = cache_hit;
 
 	if (persist_mkdir_p(g_sources_dir) != 0) {
-		e->state = is_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
-		snprintf(e->error, sizeof(e->error), "could not create sources directory");
+		pkg_fail(e, is_upgrade, PKG_FAILURE_FETCH, "could not create sources directory");
 		return PKG_ERR_PERSIST_FAILED;
 	}
 
 	pid = fork();
 	if (pid < 0) {
 		perror("fork");
-		e->state = is_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
-		snprintf(e->error, sizeof(e->error), "fork failed");
+		pkg_fail(e, is_upgrade, PKG_FAILURE_FETCH, "fork failed");
 		return PKG_ERR_SPAWN_FAILED;
 	}
 	if (pid == 0) {
@@ -2871,8 +2934,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 		perror("pidfd_open");
 		kill(pid, SIGKILL);
 		waitpid(pid, NULL, 0);
-		e->state = is_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
-		snprintf(e->error, sizeof(e->error), "could not track fetch subprocess");
+		pkg_fail(e, is_upgrade, PKG_FAILURE_FETCH, "could not track fetch subprocess");
 		return PKG_ERR_SPAWN_FAILED;
 	}
 
@@ -3186,12 +3248,12 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 			}
 		}
 
-		e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
 		if (detail_len > 0)
-			snprintf(e->error, sizeof(e->error), "fetch failed (curl exit status %d): %s",
-			         exit_status, detail);
+			pkg_fail(e, is_final_upgrade, PKG_FAILURE_FETCH,
+			         "fetch failed (curl exit status %d): %s", exit_status, detail);
 		else
-			snprintf(e->error, sizeof(e->error), "fetch failed (curl exit status %d)", exit_status);
+			pkg_fail(e, is_final_upgrade, PKG_FAILURE_FETCH, "fetch failed (curl exit status %d)",
+			         exit_status);
 		logstore_write("thincd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
 		g_chains[chain_idx].name[0] = '\0';
 		g_chains[chain_idx].dep_queue_count = 0;
@@ -3201,8 +3263,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 	if (find_recipe_path(e->name, current_fetch_effective_version(chain_idx), recipe_path,
 	                      sizeof(recipe_path)) != 0 ||
 	    parse_recipe(recipe_path, &recipe) != 0) {
-		e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
-		snprintf(e->error, sizeof(e->error), "recipe became unreadable mid-install");
+		pkg_fail(e, is_final_upgrade, PKG_FAILURE_RECIPE, "recipe became unreadable mid-install");
 		g_chains[chain_idx].name[0] = '\0';
 		g_chains[chain_idx].dep_queue_count = 0;
 		return 0;
@@ -3249,8 +3310,8 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 			         recipe.version, i);
 			if (pkg_run_capture_sha256(src_path, sha_out, sizeof(sha_out)) != 0 ||
 			    strcasecmp(sha_out, recipe.sha256[i]) != 0) {
-				e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
-				snprintf(e->error, sizeof(e->error), "checksum mismatch (source %d)", i);
+				pkg_fail(e, is_final_upgrade, PKG_FAILURE_FETCH, "checksum mismatch (source %d)",
+				         i);
 				g_chains[chain_idx].name[0] = '\0';
 				g_chains[chain_idx].dep_queue_count = 0;
 				return 0;
@@ -3390,8 +3451,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 					logstore_write("thincd", "error",
 					                "pkg %s@%s: could not prepare build container (%s) -- see run_subprocess detail above",
 					                e->name, g_chains[chain_idx].image, prep_step);
-				e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
-				snprintf(e->error, sizeof(e->error),
+				pkg_fail(e, is_final_upgrade, PKG_FAILURE_BUILD,
 				         "could not prepare the build container (%s failed)", prep_step);
 				g_chains[chain_idx].name[0] = '\0';
 				g_chains[chain_idx].dep_queue_count = 0;
@@ -3411,8 +3471,8 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 			logstore_write("thincd", "error",
 			                "pkg %s@%s: could not prepare build container (create extra dir): %s",
 			                e->name, g_chains[chain_idx].image, strerror(errno));
-			e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
-			snprintf(e->error, sizeof(e->error), "could not prepare the build container (create extra dir failed)");
+			pkg_fail(e, is_final_upgrade, PKG_FAILURE_BUILD,
+			         "could not prepare the build container (create extra dir failed)");
 			g_chains[chain_idx].name[0] = '\0';
 			g_chains[chain_idx].dep_queue_count = 0;
 			return 0;
@@ -3428,8 +3488,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 				logstore_write("thincd", "error",
 				                "pkg %s@%s: could not prepare build container (copy extra source %d): %s",
 				                e->name, g_chains[chain_idx].image, i, strerror(errno));
-				e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
-				snprintf(e->error, sizeof(e->error),
+				pkg_fail(e, is_final_upgrade, PKG_FAILURE_BUILD,
 				         "could not prepare the build container (copy extra source %d failed)", i);
 				g_chains[chain_idx].name[0] = '\0';
 				g_chains[chain_idx].dep_queue_count = 0;
@@ -3642,8 +3701,7 @@ void pkg_build_spawn_failed(int chain_idx)
 	if (e != NULL) {
 		int is_final_upgrade = g_chains[chain_idx].dep_queue_is_upgrade && (g_chains[chain_idx].dep_queue_pos + 1 >= g_chains[chain_idx].dep_queue_count);
 
-		e->state = is_final_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
-		snprintf(e->error, sizeof(e->error), "could not start the build container");
+		pkg_fail(e, is_final_upgrade, PKG_FAILURE_BUILD, "could not start the build container");
 	}
 	g_chains[chain_idx].name[0] = '\0';
 	g_chains[chain_idx].dep_queue_count = 0;
@@ -4195,14 +4253,15 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			                "found\" from inside the recipe's own build script -- check the "
 			                "build output logged separately)",
 			                e->name, g_chains[chain_idx].image);
-			snprintf(e->error, sizeof(e->error), "build failed (exit 127 -- see build output in logs)");
+			pkg_fail(e, is_upgrade, PKG_FAILURE_BUILD,
+			         "build failed (exit 127 -- see build output in logs)");
 		} else {
-			snprintf(e->error, sizeof(e->error), "build failed (exit status %d)", exit_status);
+			pkg_fail(e, is_upgrade, PKG_FAILURE_BUILD, "build failed (exit status %d)",
+			         exit_status);
 		}
 		if (captured_len > 0)
 			logstore_write("thincd", "error", "pkg %s@%s: build output: %s", e->name,
 			                g_chains[chain_idx].image, captured);
-		e->state = is_upgrade ? PKG_STATE_INSTALLED : PKG_STATE_FAILED;
 
 		/*
 		 * ADR-0175/issue #35: only the chain's own final job (the
@@ -4301,8 +4360,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 
 		snprintf(artifact_dir, sizeof(artifact_dir), "%s/%s", g_artifacts_dir, e->name);
 		if (persist_mkdir_p(artifact_dir) != 0 || merge_tree(dest_dir, artifact_dir, "", e) != 0) {
-			e->state = PKG_STATE_FAILED;
-			snprintf(e->error, sizeof(e->error), "failed to harvest the built artifact");
+			pkg_fail(e, 0, PKG_FAILURE_INSTALL, "failed to harvest the built artifact");
 			g_chains[chain_idx].name[0] = '\0';
 			g_chains[chain_idx].dep_queue_count = 0;
 			g_chains[chain_idx].is_hostbuild = 0;
@@ -4315,8 +4373,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		ctx.e = e;
 		ctx.is_upgrade = is_upgrade;
 		if (image_produce_new_version(g_chains[chain_idx].image, install_mutate, &ctx) != 0) {
-			e->state = PKG_STATE_FAILED;
-			snprintf(e->error, sizeof(e->error),
+			pkg_fail(e, 0, PKG_FAILURE_INSTALL,
 			         "failed to merge installed files into the target image");
 			g_chains[chain_idx].name[0] = '\0';
 			g_chains[chain_idx].dep_queue_count = 0;

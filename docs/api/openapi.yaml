@@ -12028,6 +12028,21 @@ components:
           type: string
           nullable: true
           description: Populated only when state is "failed".
+        failure_kind:
+          type: string
+          nullable: true
+          enum: [recipe, fetch, build, install]
+          description: >
+            Issue #101: what kind of failure `error` describes. A source
+            that could not be reached is usually transient and worth
+            retrying; a build that did not work is a real defect and
+            retrying changes nothing; a missing or unparseable recipe is
+            a catalogue problem; an install failure means the build
+            worked and merging its output did not. "failed" on its own
+            could not be acted on, and an error string every caller had
+            to pattern-match was the same problem in disguise. Null when
+            nothing is wrong -- absence of a failure is not a kind of
+            failure.
         last_output_seconds_ago:
           type: integer
           nullable: true

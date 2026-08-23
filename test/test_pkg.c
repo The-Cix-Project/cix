@@ -557,6 +557,121 @@ int main(void)
 	}
 
 	/*
+	 * Issue #101: a package that could not be FETCHED and one that
+	 * failed to BUILD both used to read "failed", with only prose
+	 * telling them apart -- and they call for opposite responses: retry
+	 * the first, fix the second. The kind is a field now.
+	 */
+	{
+		char path[PATH_MAX];
+		FILE *f;
+
+		/* Unreachable by construction: 192.0.2.0/24 is TEST-NET-1,
+		 * reserved for documentation and routed nowhere. */
+		snprintf(path, sizeof(path), "%s/recipes/unreachable", g_pkg_state_dir);
+		mkdir(path, 0755);
+		snprintf(path, sizeof(path), "%s/recipes/unreachable/1.0", g_pkg_state_dir);
+		mkdir(path, 0755);
+		snprintf(path, sizeof(path), "%s/recipes/unreachable/1.0/build.sh", g_pkg_state_dir);
+		f = fopen(path, "w");
+		if (f != NULL) {
+			fprintf(f, "pkg_name=unreachable\npkg_version=1.0\n");
+			fprintf(f, "pkg_source=https://192.0.2.1/nothing.tar.gz\n");
+			fprintf(f, "pkg_sha256=%s\npkg_depends=\"\"\n\n", sha256);
+			fprintf(f, "pkg_build() {\n\ttrue\n}\n\npkg_install() {\n\ttrue\n}\n");
+			fclose(f);
+		}
+
+		/* Builds fine, fails in its own build step. */
+		snprintf(path, sizeof(path), "%s/recipes/badbuild", g_pkg_state_dir);
+		mkdir(path, 0755);
+		snprintf(path, sizeof(path), "%s/recipes/badbuild/1.0", g_pkg_state_dir);
+		mkdir(path, 0755);
+		snprintf(path, sizeof(path), "%s/recipes/badbuild/1.0/build.sh", g_pkg_state_dir);
+		f = fopen(path, "w");
+		if (f != NULL) {
+			fprintf(f, "pkg_name=badbuild\npkg_version=1.0\n");
+			fprintf(f, "pkg_source=file://%s\n", tarball_path);
+			fprintf(f, "pkg_sha256=%s\npkg_depends=\"\"\n\n", sha256);
+			fprintf(f, "pkg_build() {\n\texit 7\n}\n\npkg_install() {\n\ttrue\n}\n");
+			fclose(f);
+		}
+
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"unreachable\"}", &r);
+		kx_response_free(&r);
+		if (poll_pkg_state(&client, "unreachable", state, sizeof(state), 90) != 0 ||
+		    strcmp(state, "failed") != 0) {
+			fprintf(stderr, "FAIL: #101 unreachable ended in state '%s', expected failed\n", state);
+			ok = 0;
+		}
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pkg/unreachable", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: #101 GET unreachable, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const char *kind = json_str_field(r.json, "failure_kind");
+
+			if (kind == NULL || strcmp(kind, "fetch") != 0) {
+				fprintf(stderr, "FAIL: #101 a source that could not be reached reported kind "
+				                "'%s', expected fetch\n",
+				        kind != NULL ? kind : "(null)");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"badbuild\"}", &r);
+		kx_response_free(&r);
+		if (poll_pkg_state(&client, "badbuild", state, sizeof(state), 90) != 0 ||
+		    strcmp(state, "failed") != 0) {
+			fprintf(stderr, "FAIL: #101 badbuild ended in state '%s', expected failed\n", state);
+			ok = 0;
+		}
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pkg/badbuild", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: #101 GET badbuild, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const char *kind = json_str_field(r.json, "failure_kind");
+
+			if (kind == NULL || strcmp(kind, "build") != 0) {
+				fprintf(stderr,
+				        "FAIL: #101 a recipe whose build exited 7 reported kind '%s', expected "
+				        "build\n",
+				        kind != NULL ? kind : "(null)");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		/* And a healthy package says nothing at all -- absence of a
+		 * failure is not a kind of failure. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pkg/greeter", NULL, &r) == 0 &&
+		    r.status == 200) {
+			const struct json_value *k = json_object_get(r.json, "failure_kind");
+
+			if (k == NULL || k->type != JSON_NULL) {
+				fprintf(stderr, "FAIL: #101 an installed package reported a failure_kind\n");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		/* Leave nothing failed behind for later assertions to trip on. */
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "DELETE", "/v1/pkg/unreachable", NULL, &r);
+		kx_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "DELETE", "/v1/pkg/badbuild", NULL, &r);
+		kx_response_free(&r);
+	}
+
+	/*
 	 * Issue #64: which version an omitted version resolves to is a
 	 * per-package policy, not one fixed rule.
 	 *
