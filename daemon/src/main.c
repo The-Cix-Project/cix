@@ -24976,9 +24976,6 @@ int main(int argc, char **argv)
 	}
 
 	image_init(IMAGES_DIR);
-	/* Issue #40: after image_init, because it produces a real image
-	 * version; before anything can start a build against the sandbox. */
-	pkg_migrate_build_sandbox();
 	if (boot_subsystem_init(init_mode, "containerdef", containerdef_init(CONTAINER_DEFS_STATE_PATH)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "containerdef_rolling_config", containerdef_rolling_config_init(ROLLING_CONFIG_PATH)) != 0)
@@ -25012,6 +25009,15 @@ int main(int argc, char **argv)
 	}
 	if (boot_subsystem_init(init_mode, "logstore", logstore_init(LOG_DIR, LOG_STATE_PATH)) != 0)
 		return 1;
+	/*
+	 * Issue #40: after image_init (it produces a real image version)
+	 * AND after logstore_init, so what it did is visible where an
+	 * operator actually looks. Reporting it to stderr instead put the
+	 * one line that says whether a migration ran somewhere nothing
+	 * reads -- this project's own recorded lesson about stderr never
+	 * reaching the log store, learned again.
+	 */
+	pkg_migrate_build_sandbox();
 	if (boot_subsystem_init(init_mode, "resolv", resolv_init(RESOLV_CONF_PATH)) != 0)
 		return 1;
 

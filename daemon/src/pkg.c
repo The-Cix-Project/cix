@@ -2066,16 +2066,23 @@ static void pkg_migrate_flat_sandbox(const char *images_dir)
 
 	if (snprintf(flat, sizeof(flat), "%s/pkgbuild/rootfs", images_dir) >= (int)sizeof(flat))
 		return;
-	if (stat(flat, &st) != 0 || !S_ISDIR(st.st_mode))
-		return; /* already migrated, or never existed -- both fine */
+	if (stat(flat, &st) != 0 || !S_ISDIR(st.st_mode)) {
+		/* Already migrated, or never existed -- both fine, and both
+		 * worth saying once. A migration nobody can see run is a
+		 * migration nobody can trust ran. */
+		logstore_write("thincd", "info",
+		               "pkg: no flat build sandbox at %s -- nothing to migrate (issue #40)", flat);
+		return;
+	}
 
 	ctx.flat_rootfs = flat;
 	if (image_produce_new_version(PKG_BUILD_SANDBOX_IMAGE, sandbox_migrate_mutate, &ctx,
 	                               "migrate:flat-pkgbuild-rootfs") != 0) {
-		fprintf(stderr, "pkg: could not migrate the flat build sandbox into %s -- leaving it "
-		                "in place, builds will use the image's own content until this is "
-		                "resolved\n",
-		        PKG_BUILD_SANDBOX_IMAGE);
+		logstore_write("thincd", "error",
+		               "pkg: could not migrate the flat build sandbox at %s into %s -- leaving "
+		               "it in place; builds will use the image's own content until this is "
+		               "resolved (issue #40)",
+		               flat, PKG_BUILD_SANDBOX_IMAGE);
 		return;
 	}
 	if (image_current_version(PKG_BUILD_SANDBOX_IMAGE, version, sizeof(version)) != IMAGE_OK)
@@ -2083,9 +2090,10 @@ static void pkg_migrate_flat_sandbox(const char *images_dir)
 	if (snprintf(retired, sizeof(retired), "%s/pkgbuild/rootfs.migrated-%s", images_dir,
 	             version) < (int)sizeof(retired))
 		rename(flat, retired);
-	fprintf(stderr, "pkg: migrated the flat build sandbox into %s version %s (previous content "
-	                "kept at %s)\n",
-	        PKG_BUILD_SANDBOX_IMAGE, version, retired);
+	logstore_write("thincd", "info",
+	               "pkg: migrated the flat build sandbox into %s version %s (previous content "
+	               "kept at %s, not deleted) (issue #40)",
+	               PKG_BUILD_SANDBOX_IMAGE, version, retired);
 }
 
 /*
