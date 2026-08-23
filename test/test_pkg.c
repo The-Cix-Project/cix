@@ -557,6 +557,147 @@ int main(void)
 	}
 
 	/*
+	 * Issue #64: which version an omitted version resolves to is a
+	 * per-package policy, not one fixed rule.
+	 *
+	 * Set up deliberately so that HIGHEST and NEWEST disagree -- 2.0 is
+	 * published first, then 1.5 -- because that is the real case this
+	 * exists for: the Part 201 toolchain work published gcc 4.7.4 and
+	 * 6.4.0 *after* 16.2.0, so for gcc the highest version and the
+	 * newest published are different recipes and neither is what an
+	 * operator walking a bootstrap chain wants.
+	 *
+	 * Asserted through what actually gets INSTALLED, not through a
+	 * resolver's own opinion of itself.
+	 */
+	{
+		char installed[64];
+
+		if (write_recipe("policypkg", "2.0", tarball_path, sha256, "") != 0) {
+			fprintf(stderr, "FAIL: #64 could not write policypkg 2.0\n");
+			ok = 0;
+		}
+		sleep(1); /* distinct mtimes: "published later" has to be real */
+		if (write_recipe("policypkg", "1.5", tarball_path, sha256, "") != 0) {
+			fprintf(stderr, "FAIL: #64 could not write policypkg 1.5\n");
+			ok = 0;
+		}
+
+		/* Default: highest wins, which is 2.0 even though 1.5 is newer. */
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"policypkg\"}", &r);
+		kx_response_free(&r);
+		if (poll_pkg_state(&client, "policypkg", state, sizeof(state), 60) != 0 ||
+		    strcmp(state, "installed") != 0) {
+			fprintf(stderr, "FAIL: #64 policypkg default install ended '%s'\n", state);
+			ok = 0;
+		}
+		memset(&r, 0, sizeof(r));
+		installed[0] = '\0';
+		if (kx_client_request(&client, "GET", "/v1/pkg/policypkg", NULL, &r) == 0 && r.status == 200 &&
+		    json_str_field(r.json, "version") != NULL)
+			snprintf(installed, sizeof(installed), "%s", json_str_field(r.json, "version"));
+		kx_response_free(&r);
+		if (strcmp(installed, "2.0") != 0) {
+			fprintf(stderr, "FAIL: #64 default policy installed '%s', expected 2.0 (highest)\n",
+			        installed);
+			ok = 0;
+		}
+
+		/* newest: the later-published 1.5 wins over the higher 2.0. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/pkg/policies/policypkg",
+		                       "{\"policy\":\"newest\"}", &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: #64 set newest, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "DELETE", "/v1/pkg/policypkg", NULL, &r);
+		kx_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"policypkg\"}", &r);
+		kx_response_free(&r);
+		if (poll_pkg_state(&client, "policypkg", state, sizeof(state), 60) != 0 ||
+		    strcmp(state, "installed") != 0) {
+			fprintf(stderr, "FAIL: #64 policypkg newest install ended '%s'\n", state);
+			ok = 0;
+		}
+		memset(&r, 0, sizeof(r));
+		installed[0] = '\0';
+		if (kx_client_request(&client, "GET", "/v1/pkg/policypkg", NULL, &r) == 0 && r.status == 200 &&
+		    json_str_field(r.json, "version") != NULL)
+			snprintf(installed, sizeof(installed), "%s", json_str_field(r.json, "version"));
+		kx_response_free(&r);
+		if (strcmp(installed, "1.5") != 0) {
+			fprintf(stderr,
+			        "FAIL: #64 newest policy installed '%s', expected 1.5 (published later)\n",
+			        installed);
+			ok = 0;
+		}
+
+		/* pinned: held at 2.0 even with 1.5 newer and 3.0 published
+		 * after the pin -- a pin that drifts is not a pin. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/pkg/policies/policypkg",
+		                       "{\"policy\":\"pinned\",\"version\":\"2.0\"}", &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: #64 set pinned, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+		if (write_recipe("policypkg", "3.0", tarball_path, sha256, "") != 0) {
+			fprintf(stderr, "FAIL: #64 could not write policypkg 3.0\n");
+			ok = 0;
+		}
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "DELETE", "/v1/pkg/policypkg", NULL, &r);
+		kx_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"policypkg\"}", &r);
+		kx_response_free(&r);
+		if (poll_pkg_state(&client, "policypkg", state, sizeof(state), 60) != 0 ||
+		    strcmp(state, "installed") != 0) {
+			fprintf(stderr, "FAIL: #64 policypkg pinned install ended '%s'\n", state);
+			ok = 0;
+		}
+		memset(&r, 0, sizeof(r));
+		installed[0] = '\0';
+		if (kx_client_request(&client, "GET", "/v1/pkg/policypkg", NULL, &r) == 0 && r.status == 200 &&
+		    json_str_field(r.json, "version") != NULL)
+			snprintf(installed, sizeof(installed), "%s", json_str_field(r.json, "version"));
+		kx_response_free(&r);
+		if (strcmp(installed, "2.0") != 0) {
+			fprintf(stderr, "FAIL: #64 pinned policy installed '%s', expected the held 2.0\n",
+			        installed);
+			ok = 0;
+		}
+
+		/* A pin with no version is refused: it would claim to hold
+		 * something while meaning "highest". */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/pkg/policies/policypkg", "{\"policy\":\"pinned\"}",
+		                       &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: #64 pin without a version should 400, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* Leave nothing drifted behind: policypkg is installed at the
+		 * held 2.0 with a 3.0 published, which is a real update
+		 * candidate and would make a later "nothing to update"
+		 * assertion fail for a reason that has nothing to do with it. */
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "DELETE", "/v1/pkg/policypkg", NULL, &r);
+		kx_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "DELETE", "/v1/pkg/policies/policypkg", NULL, &r);
+		kx_response_free(&r);
+	}
+
+	/*
 	 * Issue #57: every build's COMPLETE output is teed to a file and
 	 * survives the build. Until now the log store kept a ~4KB tail and
 	 * `pkg build-log` was live-only, so a finished build's real output

@@ -1,4 +1,5 @@
 #include "pkg.h"
+#include "pkgpolicy.h"
 #include "image.h"
 #include "ldap.h"
 #include "linux_compat.h"
@@ -784,33 +785,77 @@ static int find_recipe_path(const char *name, const char *version, char *out_pat
 		return 0;
 	}
 
+	/*
+	 * Issue #64: which version an omitted version resolves to is a
+	 * per-package operator policy, resolved HERE and nowhere else --
+	 * this is the one function every implicit resolution in this daemon
+	 * goes through (plain install, dependency resolution, hostbuild,
+	 * update-candidate checks, follow_rolling rebuilds), so a policy
+	 * applied here is applied everywhere by construction rather than by
+	 * remembering to consult it in thirteen call sites.
+	 */
 	{
-		DIR *d = opendir(name_dir);
-		struct dirent *de;
-		char best[PKG_VERSION_MAX];
-		int have_best = 0;
+		enum pkg_policy_kind policy;
+		char pinned[PKG_VERSION_MAX];
 
-		if (d == NULL)
-			return -1;
-		while ((de = readdir(d)) != NULL) {
-			char candidate[PATH_MAX];
+		policy = pkgpolicy_get(name, pinned, sizeof(pinned));
+		if (policy == PKG_POLICY_PINNED && pinned[0] != '\0') {
 			struct stat st;
 
-			if (de->d_name[0] == '.')
-				continue;
-			snprintf(candidate, sizeof(candidate), "%s/%s/build.sh", name_dir, de->d_name);
-			if (stat(candidate, &st) != 0 || !S_ISREG(st.st_mode))
-				continue;
-			if (!have_best || pkg_version_compare(de->d_name, best) > 0) {
-				snprintf(best, sizeof(best), "%s", de->d_name);
-				have_best = 1;
-			}
+			/* A pin is a HOLD: if the pinned version is not published,
+			 * that is an error, not a reason to drift to another one.
+			 * Silently resolving elsewhere is the exact behaviour a pin
+			 * exists to prevent. */
+			snprintf(out_path, out_path_size, "%s/%s/build.sh", name_dir, pinned);
+			if (stat(out_path, &st) != 0 || !S_ISREG(st.st_mode))
+				return -1;
+			return 0;
 		}
-		closedir(d);
-		if (!have_best)
-			return -1;
-		snprintf(out_path, out_path_size, "%s/%s/build.sh", name_dir, best);
-		return 0;
+
+		{
+			DIR *d = opendir(name_dir);
+			struct dirent *de;
+			char best[PKG_VERSION_MAX];
+			long best_created = 0;
+			int have_best = 0;
+
+			if (d == NULL)
+				return -1;
+			while ((de = readdir(d)) != NULL) {
+				char candidate[PATH_MAX];
+				struct stat st;
+				int wins;
+
+				if (de->d_name[0] == '.')
+					continue;
+				snprintf(candidate, sizeof(candidate), "%s/%s/build.sh", name_dir, de->d_name);
+				if (stat(candidate, &st) != 0 || !S_ISREG(st.st_mode))
+					continue;
+				if (policy == PKG_POLICY_NEWEST) {
+					/* A recipe version's file is written exactly once
+					 * and never touched again (ADR-0107 immutability),
+					 * so its mtime really is "first published" -- see
+					 * recipe_created_at()'s own comment. Ties fall back
+					 * to the version order, so the answer is stable
+					 * rather than dependent on readdir() order. */
+					wins = !have_best || st.st_mtime > best_created ||
+					       (st.st_mtime == best_created &&
+					        pkg_version_compare(de->d_name, best) > 0);
+				} else {
+					wins = !have_best || pkg_version_compare(de->d_name, best) > 0;
+				}
+				if (wins) {
+					snprintf(best, sizeof(best), "%s", de->d_name);
+					best_created = (long)st.st_mtime;
+					have_best = 1;
+				}
+			}
+			closedir(d);
+			if (!have_best)
+				return -1;
+			snprintf(out_path, out_path_size, "%s/%s/build.sh", name_dir, best);
+			return 0;
+		}
 	}
 }
 

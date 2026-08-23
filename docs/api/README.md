@@ -209,6 +209,9 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/pkg/repo-config` | The configured recipe-sync source (ADR-0121); `auth_token` itself is never returned |
 | PUT | `/pkg/repo-config` | Partially update the configured recipe repo — fields omitted from the body are left unchanged |
 | POST | `/pkg/sync` | Start an async fetch-and-merge of the configured repo's recipes (async — returns immediately) |
+| GET | `/pkg/policies` | Per-package rolling policy — which version an omitted version resolves to (issue #64) |
+| PUT | `/pkg/policies/{name}` | Set it: `highest` (default), `newest`, or `pinned` with a version |
+| DELETE | `/pkg/policies/{name}` | Back to the default |
 | GET | `/pkg/build-logs` | Every persisted build log, newest first — the complete output of each recent build (issue #57) |
 | GET | `/pkg/build-logs/{file}` | One build log as plain text, tail-first if it is larger than the response cap |
 | GET | `/pkg/sync` | The most recent (or currently running) sync's status |
@@ -1606,6 +1609,29 @@ Two groups of fields are refused rather than silently ignored:
 - **`restart`, `restart_delay_seconds`, `depends_on`, `readiness`, `follow_rolling`, `follow_rolling_jitter_seconds`** — these feed the definition index, and its one parser lives in the create path. A second parser here would be a parallel implementation of the same validation, which this project does not do. The `400` names the offending field and says to recreate the container; extracting that parser is the follow-up that lifts the restriction.
 
 `thincctl container edit NAME --json='{...}'` is the CLI surface.
+
+
+## Per-package rolling policy (issue #64)
+
+```
+GET    /v1/pkg/policies
+PUT    /v1/pkg/policies/gcc      {"policy": "pinned", "version": "6.4.0-5"}
+DELETE /v1/pkg/policies/gcc
+```
+
+Every omitted-version resolution here — a plain `pkg install`, dependency resolution, `update-all`, a `follow_rolling` image's rebuild, the "available" column — has always used one rule: dpkg-style **highest version wins** ([ADR-0107](../adr/0107-image-versioning.md)). That is the right default for a rolling-release platform and stays the default.
+
+It is not always the right answer, and this project has the scar: the Part 201 toolchain work published gcc `4.7.4` and `6.4.0` *after* `16.2.0` already existed. For `gcc` the highest version and the newest published are different recipes, and neither is what an operator walking a bootstrap chain wants installed — they want one specific link of that chain, held.
+
+| Policy | Resolves to |
+|---|---|
+| `highest` | The highest version (the default; no policy set means this) |
+| `newest` | The most recently **published** recipe. A recipe version's file is written exactly once and never touched again (ADR-0107 immutability), so its mtime is a real first-published timestamp rather than an approximation |
+| `pinned` | The version named, and nothing bumps it — a real hold. `update-all` and `follow_rolling` resolve to the pinned version, so there is simply never an update to apply |
+
+Two deliberate refusals: a `pinned` policy with no version is a `400` (it would claim to hold something while meaning "highest" — the exact drift a pin exists to prevent), and a pinned version that is not published makes the package unresolvable rather than quietly resolving somewhere else.
+
+The policy is applied in the single function every implicit resolution goes through, so it applies everywhere by construction rather than by each of thirteen call sites remembering to consult it. Policy is operator state, never recipe content: a recipe cannot know which link of a chain a particular box is meant to sit on. `thincctl pkg policy ls|set|clear`.
 
 
 ## Capability restriction (issue #29)
