@@ -390,6 +390,33 @@ int main(void)
 		fprintf(stderr, "FAIL: could not stage fixture tarball\n");
 		return 1;
 	}
+	/* Issue #57: a recipe that actually PRINTS, so the persisted build
+	 * log has content to assert on -- greeter's own build is silent on
+	 * success, and "the file exists" would pass against a log that
+	 * never recorded a byte. Same layout write_recipe() uses
+	 * (recipes/<name>/<version>/build.sh), only the body differs. */
+	{
+		char dir[300];
+		char path[400];
+		FILE *f;
+
+		snprintf(dir, sizeof(dir), "%s/recipes/chatty", g_pkg_state_dir);
+		mkdir(dir, 0755);
+		snprintf(dir, sizeof(dir), "%s/recipes/chatty/1.0", g_pkg_state_dir);
+		mkdir(dir, 0755);
+		snprintf(path, sizeof(path), "%s/build.sh", dir);
+		f = fopen(path, "w");
+		if (f != NULL) {
+			fprintf(f, "pkg_name=chatty\npkg_version=1.0\n");
+			fprintf(f, "pkg_source=file://%s\n", tarball_path);
+			fprintf(f, "pkg_sha256=%s\npkg_depends=\"\"\n\n", sha256);
+			fprintf(f, "pkg_build() {\n\techo BUILD_LOG_MARKER_ONE\n\tgcc -o hello hello.c\n"
+			           "\techo BUILD_LOG_MARKER_TWO\n}\n\n");
+			fprintf(f, "pkg_install() {\n\tmkdir -p \"$PKG_DESTDIR/usr/bin\"\n"
+			           "\tcp hello \"$PKG_DESTDIR/usr/bin/chatty\"\n}\n");
+			fclose(f);
+		}
+	}
 	if (write_recipe("greeter", "1.0", tarball_path, sha256, "") != 0 ||
 	    write_recipe("concurrent", "1.0", tarball_path, sha256, "") != 0 ||
 	    write_recipe("overflow", "1.0", tarball_path, sha256, "") != 0 ||
@@ -527,6 +554,102 @@ int main(void)
 		}
 		if (fp != NULL)
 			pclose(fp);
+	}
+
+	/*
+	 * Issue #57: every build's COMPLETE output is teed to a file and
+	 * survives the build. Until now the log store kept a ~4KB tail and
+	 * `pkg build-log` was live-only, so a finished build's real output
+	 * survived nowhere -- which cost two multi-hour round trips on gcc:
+	 * once when a verbose configure swamped the tail and hid the error,
+	 * once when the workaround (redirecting inside the container)
+	 * silenced the live stream and a healthy build was killed by hand
+	 * as "hung".
+	 *
+	 * greeter has just built, so its log must exist and must contain
+	 * output the 4KB tail could not be relied on to hold.
+	 */
+	{
+		char logfile[256] = "";
+
+		/* Build the chatty package first, so there is output to find. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"chatty\"}", &r) != 0 ||
+		    r.status != 202) {
+			fprintf(stderr, "FAIL: #57 install chatty, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+		if (poll_pkg_state(&client, "chatty", state, sizeof(state), 60) != 0 ||
+		    strcmp(state, "installed") != 0) {
+			fprintf(stderr, "FAIL: #57 chatty ended in state '%s'\n", state);
+			ok = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pkg/build-logs", NULL, &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: #57 GET build-logs, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *logs = json_object_get(r.json, "logs");
+			size_t li;
+
+			if (logs == NULL || logs->type != JSON_ARRAY || logs->u.array.count == 0) {
+				fprintf(stderr, "FAIL: #57 no build log recorded for a build that just ran\n");
+				ok = 0;
+			} else {
+				for (li = 0; li < logs->u.array.count; li++) {
+					const char *f = json_str_field(logs->u.array.items[li], "file");
+
+					if (f != NULL && strncmp(f, "chatty-", 7) == 0) {
+						snprintf(logfile, sizeof(logfile), "%s", f);
+						break;
+					}
+				}
+				if (logfile[0] == '\0') {
+					fprintf(stderr, "FAIL: #57 no chatty build log among %d\n",
+					        (int)logs->u.array.count);
+					ok = 0;
+				}
+			}
+		}
+		kx_response_free(&r);
+
+		if (logfile[0] != '\0') {
+			char path[512];
+
+			snprintf(path, sizeof(path), "/v1/pkg/build-logs/%s", logfile);
+			memset(&r, 0, sizeof(r));
+			if (kx_client_request(&client, "GET", path, NULL, &r) != 0 || r.status != 200) {
+				fprintf(stderr, "FAIL: #57 reading %s, status=%d\n", path, r.status);
+				ok = 0;
+			} else if (memmem(r.body, r.body_len, "BUILD_LOG_MARKER_ONE",
+			                   strlen("BUILD_LOG_MARKER_ONE")) == NULL ||
+			           memmem(r.body, r.body_len, "BUILD_LOG_MARKER_TWO",
+			                   strlen("BUILD_LOG_MARKER_TWO")) == NULL) {
+				/* Both markers: the FIRST proves output from before the
+				 * compile survived, which is exactly what the 4KB tail
+				 * could not promise and what cost a real debugging round
+				 * trip on gcc. */
+				fprintf(stderr, "FAIL: #57 build log is missing its own markers (%d bytes)\n",
+				        (int)r.body_len);
+				ok = 0;
+			}
+			kx_response_free(&r);
+		}
+
+		/* A filename is a path component straight out of an HTTP
+		 * request and this opens a file with it, so traversal is
+		 * refused rather than sanitised into something plausible. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/pkg/build-logs/../../../etc/passwd", NULL, &r) ==
+		        0 &&
+		    r.status == 200) {
+			fprintf(stderr, "FAIL: #57 path traversal in a build-log name was served\n");
+			ok = 0;
+		}
+		kx_response_free(&r);
 	}
 
 	/*

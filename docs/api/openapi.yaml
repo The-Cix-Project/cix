@@ -5726,6 +5726,29 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refetch:
+                  type: string
+                  description: >
+                    "name@version" -- lets THIS sync replace that one
+                    already-seen recipe version instead of skipping it
+                    (issue #59). Recipe-version immutability is the
+                    default and ADR-0107's resolution rules depend on
+                    it, but during active development of a recipe the
+                    only workaround was burning a new version number per
+                    iteration; the catalogue really did collect five
+                    dead kernel pins and four dead gcc pins from a
+                    single investigation. One-shot: cleared when the
+                    sync completes, so the periodic background sync can
+                    never inherit it. A bare package name is a 400 --
+                    immutability is per version, so the escape hatch is
+                    too.
     get:
       summary: The most recent (or currently running) sync's status.
       operationId: getPkgSyncStatus
@@ -5843,6 +5866,77 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PkgArtifactConfig"
+
+  /pkg/build-logs:
+    get:
+      summary: Every persisted build log, newest first (issue #57)
+      description: >
+        The COMPLETE output of each recent build, teed to disk as it
+        streams. The consolidated log store keeps only a ~4KB tail and
+        `pkg build-log` is live-only, so a finished build's real output
+        used to survive nowhere -- which cost two multi-hour round trips
+        on one package alone: once when a verbose configure swamped the
+        tail and hid the error, and once when working around that
+        silenced the live stream and a healthy 71-minute build was
+        misread as hung and killed by hand.
+
+        Bounded: the oldest are pruned when a new build starts, so
+        diagnostics cannot fill the disk they are meant to help debug.
+        A killed build keeps its log, which is the case most worth
+        reading.
+      operationId: listBuildLogs
+      responses:
+        "200":
+          description: The logs currently kept
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        file:
+                          type: string
+                        size_bytes:
+                          type: integer
+                        modified_at:
+                          type: integer
+
+  /pkg/build-logs/{file}:
+    get:
+      summary: One build log, as plain text (issue #57)
+      description: >
+        Tail-first when the log is larger than the response cap: someone
+        reading a 40 MB build log wants the end, where the failure is. A
+        truncated response says so on its own first line rather than only
+        in a header, because a silently truncated log is exactly the
+        failure this endpoint exists to remove.
+
+        The filename is validated, not trusted -- it is a path component
+        from a request and this opens a file with it.
+      operationId: getBuildLog
+      parameters:
+        - name: file
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The log content (text/plain)
+          content:
+            text/plain:
+              schema:
+                type: string
+        "404":
+          description: No such build log
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /pkg/install:
     post:

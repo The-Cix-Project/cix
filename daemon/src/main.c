@@ -17768,12 +17768,44 @@ static void handle_pkg_repo_config_put(int fd, const char *body, size_t body_len
  * repo's recipes (never binaries -- see pkg_sync_completed()'s own
  * doc comment). 409 if one is already running, 400 if no repo is
  * configured yet. 202, poll GET /v1/pkg/sync for the outcome. */
-static void handle_pkg_sync_post(int fd)
+static void handle_pkg_sync_post(int fd, const char *body, size_t body_len)
 {
 	pid_t pid;
 	int pidfd;
 	enum pkg_error perr;
 	struct json_writer w;
+
+	/*
+	 * Issue #59: an optional, explicit "refetch": "name@version" --
+	 * this sync may REPLACE that one recipe version instead of skipping
+	 * it as a duplicate. Everything else keeps the immutability
+	 * ADR-0107's resolution rules depend on; without this the only way
+	 * to correct a recipe under development was to burn a new version
+	 * number per iteration, which is how the catalogue collected five
+	 * dead kernel pins and four dead gcc pins from one investigation.
+	 */
+	pkg_sync_set_refetch(NULL, NULL);
+	if (body != NULL && body_len > 0) {
+		struct json_value *root = json_parse(body, body_len);
+		const char *refetch = root != NULL ? json_as_string(json_object_get(root, "refetch")) : NULL;
+
+		if (refetch != NULL) {
+			const char *at = strchr(refetch, '@');
+			char name[PKG_NAME_MAX];
+
+			if (at == NULL || at == refetch || at[1] == '\0' ||
+			    (size_t)(at - refetch) >= sizeof(name)) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request",
+				              "refetch must be \"name@version\" -- immutability is per version, so "
+				              "the escape hatch is too");
+				return;
+			}
+			snprintf(name, sizeof(name), "%.*s", (int)(at - refetch), refetch);
+			pkg_sync_set_refetch(name, at + 1);
+		}
+		json_free(root);
+	}
 
 	perr = pkg_sync_start(&pid, &pidfd);
 	if (perr == PKG_ERR_BUSY) {
@@ -17895,6 +17927,98 @@ static void handle_rolling_config_put(int fd, const char *body, size_t body_len)
 	}
 	json_free(root);
 	handle_rolling_config_get(fd);
+}
+
+
+/*
+ * GET /v1/pkg/build-logs (issue #57) -- every persisted build log,
+ * newest first. The complete output of each build, not the ~4KB tail
+ * the log store keeps and not the live-only stream: a finished build's
+ * full output used to survive nowhere at all.
+ */
+static void handle_pkg_build_logs_list(int fd)
+{
+	struct pkg_build_log_entry entries[128];
+	struct json_writer w;
+	int count, i;
+
+	count = pkg_build_log_list(entries, (int)(sizeof(entries) / sizeof(entries[0])));
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "logs");
+	jw_arr_open(&w);
+	for (i = 0; i < count; i++) {
+		jw_obj_open(&w);
+		jw_key(&w, "file");
+		jw_str(&w, entries[i].file);
+		jw_key(&w, "size_bytes");
+		jw_int(&w, entries[i].size_bytes);
+		jw_key(&w, "modified_at");
+		jw_int(&w, entries[i].modified_at);
+		jw_obj_close(&w);
+	}
+	jw_arr_close(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * GET /v1/pkg/build-logs/{file} -- one log, as plain text.
+ *
+ * Tail-first when it does not fit the response cap: someone reading a
+ * 40 MB build log wants the end, where the failure is. The full size is
+ * reported in a header so a truncated read is never mistaken for the
+ * whole thing -- a silently truncated log is exactly the failure mode
+ * this endpoint exists to remove.
+ */
+#define PKG_BUILD_LOG_RESPONSE_MAX (2 * 1024 * 1024)
+
+static void handle_pkg_build_log_get(int fd, const char *file)
+{
+	char *buf = malloc(PKG_BUILD_LOG_RESPONSE_MAX);
+	long long total = 0, n;
+	char header[512];
+
+	if (buf == NULL) {
+		respond_error(fd, 500, "Internal Server Error", "out of memory");
+		return;
+	}
+	n = pkg_build_log_read(file, buf, PKG_BUILD_LOG_RESPONSE_MAX, &total);
+	if (n < 0) {
+		free(buf);
+		respond_error(fd, 404, "Not Found", "no such build log");
+		return;
+	}
+	/* Whether this is the whole log is stated IN the body's first line
+	 * rather than only in a header: this endpoint exists because a
+	 * silently truncated log cost real debugging time, and a reader
+	 * piping it to a file would never see a header. */
+	if (total > n) {
+		snprintf(header, sizeof(header),
+		         "[thinC: showing the last %lld of %lld bytes -- the tail is where the failure "
+		         "is; fetch the file itself for the whole log]\n",
+		         n, total);
+	} else {
+		header[0] = '\0';
+	}
+	{
+		size_t hlen = strlen(header);
+		char *body = malloc(hlen + (size_t)n);
+
+		if (body == NULL) {
+			free(buf);
+			respond_error(fd, 500, "Internal Server Error", "out of memory");
+			return;
+		}
+		memcpy(body, header, hlen);
+		memcpy(body + hlen, buf, (size_t)n);
+		http_set_blocking(fd);
+		http_write_response(fd, 200, "OK", "text/plain; charset=utf-8", body, hlen + (size_t)n);
+		free(body);
+	}
+	free(buf);
 }
 
 /*
@@ -20297,7 +20421,7 @@ static void dispatch(int fd, const struct http_request *req)
 	}
 	if (strcmp(req->path, "/v1/pkg/sync") == 0) {
 		if (strcmp(req->method, "POST") == 0) {
-			handle_pkg_sync_post(fd);
+			handle_pkg_sync_post(fd, req->body, req->body_len);
 			return;
 		}
 		if (strcmp(req->method, "GET") == 0) {
@@ -20332,6 +20456,18 @@ static void dispatch(int fd, const struct http_request *req)
 		}
 		if (strcmp(req->method, "PUT") == 0) {
 			handle_pkg_artifact_config_put(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/pkg/build-logs") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_pkg_build_logs_list(fd);
+			return;
+		}
+	}
+	if (strncmp(req->path, "/v1/pkg/build-logs/", 19) == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_pkg_build_log_get(fd, req->path + 19);
 			return;
 		}
 	}

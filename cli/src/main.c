@@ -10150,17 +10150,26 @@ static int cmd_pkg_sync(const struct kx_client *c, int json_mode, int argc, char
 	int wait = 0;
 	int i;
 	struct kx_response r;
+	const char *refetch = NULL;
+	char body[256];
 
 	for (i = 0; i < argc; i++) {
 		if (strcmp(argv[i], "--wait") == 0)
 			wait = 1;
+		else if (strncmp(argv[i], "--refetch=", 10) == 0)
+			refetch = argv[i] + 10;
 		else {
 			fprintf(stderr, "thincctl: unknown pkg sync option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
 
-	if (kx_client_request(c, "POST", "/v1/pkg/sync", NULL, &r) != 0) {
+	/* Issue #59: --refetch=name@version lets this ONE sync replace that
+	 * one recipe version instead of skipping it as already-seen. */
+	if (refetch != NULL)
+		snprintf(body, sizeof(body), "{\"refetch\":\"%s\"}", refetch);
+
+	if (kx_client_request(c, "POST", "/v1/pkg/sync", refetch != NULL ? body : NULL, &r) != 0) {
 		fprintf(stderr, "thincctl: could not reach daemon\n");
 		return 1;
 	}
@@ -11087,6 +11096,93 @@ static int cmd_pkg_build_log(const struct kx_client *c)
 	return kx_pkg_build_log_run(c) == 0 ? 0 : 1;
 }
 
+/*
+ * Issue #57: the persisted logs, as opposed to `pkg build-log`'s live
+ * stream. `--last` is the common case by a wide margin -- the build
+ * that just failed -- so it is what a bare invocation does.
+ */
+static void fmt_build_log_list(const struct json_value *v)
+{
+	const struct json_value *logs = json_object_get(v, "logs");
+	size_t i;
+
+	if (logs == NULL || logs->type != JSON_ARRAY || logs->u.array.count == 0) {
+		printf("no build logs recorded yet\n");
+		return;
+	}
+	for (i = 0; i < logs->u.array.count; i++) {
+		const struct json_value *l = logs->u.array.items[i];
+
+		printf("%-52s %10lld bytes  modified=%lld\n",
+		       json_str_field(l, "file") != NULL ? json_str_field(l, "file") : "-",
+		       (long long)json_as_number(json_object_get(l, "size_bytes")),
+		       (long long)json_as_number(json_object_get(l, "modified_at")));
+	}
+}
+
+static int cmd_pkg_build_logs(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	const char *file = NULL;
+	int want_last = 0;
+	int i;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--file=", 7) == 0)
+			file = argv[i] + 7;
+		else if (strcmp(argv[i], "--last") == 0)
+			want_last = 1;
+		else {
+			fprintf(stderr, "usage: thincctl pkg build-logs [--last | --file=NAME]\n");
+			return 2;
+		}
+	}
+
+	if (kx_client_request(c, "GET", "/v1/pkg/build-logs", NULL, &r) != 0) {
+		fprintf(stderr, "thincctl: could not reach daemon\n");
+		return 1;
+	}
+	if (file == NULL && want_last) {
+		const struct json_value *logs = r.json != NULL ? json_object_get(r.json, "logs") : NULL;
+		static char newest[256];
+
+		if (logs == NULL || logs->type != JSON_ARRAY || logs->u.array.count == 0) {
+			kx_response_free(&r);
+			fprintf(stderr, "thincctl: no build logs recorded yet\n");
+			return 1;
+		}
+		/* The list is already newest-first, server-side. */
+		snprintf(newest, sizeof(newest), "%s",
+		         json_str_field(logs->u.array.items[0], "file") != NULL
+		             ? json_str_field(logs->u.array.items[0], "file")
+		             : "");
+		file = newest;
+	}
+	if (file == NULL)
+		return emit(&r, json_mode, fmt_build_log_list);
+	kx_response_free(&r);
+
+	{
+		char path[512];
+
+		snprintf(path, sizeof(path), "/v1/pkg/build-logs/%s", file);
+		if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+			fprintf(stderr, "thincctl: could not reach daemon\n");
+			return 1;
+		}
+		if (r.status != 200) {
+			fprintf(stderr, "thincctl: no such build log '%s'\n", file);
+			kx_response_free(&r);
+			return 1;
+		}
+		fwrite(r.body, 1, r.body_len, stdout);
+		if (r.body_len > 0 && r.body[r.body_len - 1] != '\n')
+			printf("\n");
+		kx_response_free(&r);
+	}
+	return 0;
+}
+
 static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
@@ -11106,6 +11202,7 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 		                "       thincctl pkg resume --name=NAME [--image=IMAGE] [--version=VERSION] "
 		                "[--keep-on-failure]\n"
 		                "       thincctl pkg build-log\n"
+		                "       thincctl pkg build-logs [--last | --file=NAME]\n"
 		                "       thincctl pkg ls\n"
 		                "       thincctl pkg rm NAME[@IMAGE]\n"
 		                "       thincctl pkg update-all\n"
@@ -11140,6 +11237,8 @@ static int cmd_pkg(const struct kx_client *c, int json_mode, int argc, char **ar
 		return cmd_pkg_resume(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "build-log") == 0)
 		return cmd_pkg_build_log(c);
+	if (strcmp(sub, "build-logs") == 0)
+		return cmd_pkg_build_logs(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "ls") == 0)
 		return cmd_pkg_ls(c, json_mode);
 	if (strcmp(sub, "rm") == 0)

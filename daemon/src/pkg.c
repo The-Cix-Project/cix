@@ -102,6 +102,19 @@ struct pkg_entry {
 	int build_output_rd;
 	char build_output_captured[PKG_BUILD_OUTPUT_CAPTURE_MAX + 1];
 	int build_output_captured_len;
+	/*
+	 * Issue #57: the complete build output, teed to a real file as it
+	 * streams. build_output_captured above is a deliberate ~4KB TAIL,
+	 * and `pkg build-log` is live-only, so until now the full output of
+	 * a finished build survived nowhere -- which cost two multi-hour
+	 * round trips on gcc alone: once when a verbose configure swamped
+	 * the tail and hid the real error, and again when the workaround
+	 * (redirecting to a file inside the container) silenced the live
+	 * stream and a healthy 71-minute build was misread as hung and
+	 * killed by hand. Both failures were the same missing primitive.
+	 */
+	int build_log_fd;
+	char build_log_path[PATH_MAX];
 	/* Issue #58: wall-clock time of the last byte drained from this
 	 * entry's build-output pipe -- the daemon already owns that pipe,
 	 * so "is the build actually producing output?" is answerable
@@ -2535,6 +2548,9 @@ static const char *current_fetch_effective_version(int chain_idx)
 static int pkg_cache_has(const char *name, const char *version);
 static void pkg_cache_touch(const char *name, const char *version);
 static void pkg_cache_save(const char *name, const char *version, const char *dest_dir);
+static void pkg_build_log_dir(char *out, size_t out_size); /* issue #57 */
+static void pkg_build_log_open(struct pkg_entry *e, const char *version); /* issue #57 */
+static void pkg_build_log_close(struct pkg_entry *e);
 static void pkg_cache_save_from_file(const char *name, const char *version, const char *src_path);
 static int pkg_cache_extract(const char *name, const char *version, const char *out_dir);
 static int pkg_artifact_is_configured(void);
@@ -3023,6 +3039,7 @@ static int start_build_container_spec(int chain_idx, struct pkg_entry *e,
 
 	e->build_output_captured_len = 0;
 	e->last_output_at = 0;
+	pkg_build_log_open(e, current_fetch_effective_version(chain_idx)); /* issue #57 */
 	/* ADR-0157 Phase 1: this entry is now the one owning the open
 	 * build-output pipe, regardless of whether pipe2()/fcntl() below
 	 * actually succeed (both failure branches still explicitly set
@@ -3564,6 +3581,94 @@ void pkg_build_spawn_failed(int chain_idx)
 	pkg_build_output_close(chain_idx);
 }
 
+
+/*
+ * Issue #57: the persisted build logs, newest first. Deliberately a
+ * directory listing rather than an index file -- the files ARE the
+ * state, so nothing can drift out of step with them, and a log that
+ * was copied off the box by hand still shows up.
+ */
+int pkg_build_log_list(struct pkg_build_log_entry *out, int max)
+{
+	char dir[PATH_MAX];
+	struct dirent *ent;
+	DIR *d;
+	int count = 0, i;
+
+	pkg_build_log_dir(dir, sizeof(dir));
+	d = opendir(dir);
+	if (d == NULL)
+		return 0;
+	while ((ent = readdir(d)) != NULL && count < max) {
+		char path[PATH_MAX];
+		struct stat st;
+
+		if (ent->d_name[0] == '.')
+			continue;
+		snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
+		if (stat(path, &st) != 0 || !S_ISREG(st.st_mode))
+			continue;
+		snprintf(out[count].file, sizeof(out[count].file), "%s", ent->d_name);
+		out[count].size_bytes = (long long)st.st_size;
+		out[count].modified_at = (long long)st.st_mtime;
+		count++;
+	}
+	closedir(d);
+
+	/* Newest first: the log anyone wants is nearly always the last one. */
+	for (i = 1; i < count; i++) {
+		struct pkg_build_log_entry tmp = out[i];
+		int k = i;
+
+		while (k > 0 && out[k - 1].modified_at < tmp.modified_at) {
+			out[k] = out[k - 1];
+			k--;
+		}
+		out[k] = tmp;
+	}
+	return count;
+}
+
+/*
+ * Reads one build log into a caller-provided buffer, TAIL-first when it
+ * does not fit: a caller asking for the last 100 KB of a 40 MB build
+ * wants the end, where the failure is. Returns the number of bytes
+ * placed in buf, or -1 if there is no such log.
+ *
+ * The filename is validated rather than trusted: it is a path component
+ * from an HTTP request, and this function opens a file with it.
+ */
+long long pkg_build_log_read(const char *file, char *buf, long long cap, long long *out_total)
+{
+	char dir[PATH_MAX], path[PATH_MAX];
+	struct stat st;
+	int fd;
+	long long total, offset;
+	ssize_t n;
+
+	if (file == NULL || file[0] == '\0' || strchr(file, '/') != NULL || strstr(file, "..") != NULL)
+		return -1;
+	pkg_build_log_dir(dir, sizeof(dir));
+	snprintf(path, sizeof(path), "%s/%s", dir, file);
+	if (stat(path, &st) != 0 || !S_ISREG(st.st_mode))
+		return -1;
+	total = (long long)st.st_size;
+	if (out_total != NULL)
+		*out_total = total;
+
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	offset = total > cap ? total - cap : 0;
+	if (offset > 0 && lseek(fd, offset, SEEK_SET) < 0) {
+		close(fd);
+		return -1;
+	}
+	n = read(fd, buf, (size_t)(total - offset > cap ? cap : total - offset));
+	close(fd);
+	return n < 0 ? -1 : (long long)n;
+}
+
 int pkg_build_output_fd(int chain_idx)
 {
 	struct pkg_entry *e = g_build_output_entries[chain_idx];
@@ -3571,10 +3676,138 @@ int pkg_build_output_fd(int chain_idx)
 	return e != NULL ? e->build_output_rd : -1;
 }
 
+
+/*
+ * Issue #57: where every build's complete output is kept, and how many
+ * are kept. A bounded directory rather than an unbounded one -- build
+ * logs are diagnostic, and a box that fills its own disk with them has
+ * traded one failure for a worse one.
+ */
+#define PKG_BUILD_LOG_KEEP 40
+
+static void pkg_build_log_dir(char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/build-logs", g_pkg_dir);
+}
+
+/* Deletes oldest-first until at most PKG_BUILD_LOG_KEEP remain. Called
+ * before opening a new one, so the cap is enforced at the moment it
+ * would otherwise be exceeded rather than by a sweep nobody scheduled. */
+static void pkg_build_log_prune(void)
+{
+	char dir[PATH_MAX];
+	struct dirent *ent;
+	DIR *d;
+	struct {
+		char name[NAME_MAX + 1];
+		time_t mtime;
+	} entries[256];
+	int count = 0, i, j;
+
+	pkg_build_log_dir(dir, sizeof(dir));
+	d = opendir(dir);
+	if (d == NULL)
+		return;
+	while ((ent = readdir(d)) != NULL && count < (int)(sizeof(entries) / sizeof(entries[0]))) {
+		char path[PATH_MAX];
+		struct stat st;
+
+		if (ent->d_name[0] == '.')
+			continue;
+		snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
+		if (stat(path, &st) != 0 || !S_ISREG(st.st_mode))
+			continue;
+		snprintf(entries[count].name, sizeof(entries[count].name), "%s", ent->d_name);
+		entries[count].mtime = st.st_mtime;
+		count++;
+	}
+	closedir(d);
+	if (count <= PKG_BUILD_LOG_KEEP)
+		return;
+
+	/* Insertion sort, oldest first -- count is bounded by the array
+	 * above and in practice is the keep-count plus one. */
+	for (i = 1; i < count; i++) {
+		int k = i;
+
+		while (k > 0 && entries[k - 1].mtime > entries[k].mtime) {
+			char tmp_name[NAME_MAX + 1];
+			time_t tmp_mtime = entries[k - 1].mtime;
+
+			snprintf(tmp_name, sizeof(tmp_name), "%s", entries[k - 1].name);
+			entries[k - 1].mtime = entries[k].mtime;
+			snprintf(entries[k - 1].name, sizeof(entries[k - 1].name), "%s", entries[k].name);
+			entries[k].mtime = tmp_mtime;
+			snprintf(entries[k].name, sizeof(entries[k].name), "%s", tmp_name);
+			k--;
+		}
+	}
+	for (j = 0; j < count - PKG_BUILD_LOG_KEEP; j++) {
+		char path[PATH_MAX];
+
+		snprintf(path, sizeof(path), "%s/%s", dir, entries[j].name);
+		unlink(path);
+	}
+}
+
+/*
+ * Opens this build's own log file. Best-effort: a build whose log
+ * cannot be opened still builds, it just is not recorded -- diagnostics
+ * must never be the reason a build fails.
+ *
+ * The filename carries name, version and a start timestamp, so repeated
+ * attempts at the same version are separate files rather than one
+ * overwriting the other. Losing the failed attempt at the moment you
+ * retry it is precisely the wrong behaviour for a diagnostic.
+ */
+static void pkg_build_log_open(struct pkg_entry *e, const char *version)
+{
+	char dir[PATH_MAX];
+
+	e->build_log_fd = -1;
+	e->build_log_path[0] = '\0';
+	pkg_build_log_dir(dir, sizeof(dir));
+	if (persist_mkdir_p(dir) != 0)
+		return;
+	pkg_build_log_prune();
+	/*
+	 * The version has to be passed in rather than read off the entry:
+	 * on a first install e->version is only filled from the recipe once
+	 * the build COMPLETES, so naming the file from it produced
+	 * "<name>-unknown-<time>.log" for exactly the builds most worth
+	 * finding again.
+	 */
+	snprintf(e->build_log_path, sizeof(e->build_log_path), "%s/%s-%s-%lld.log", dir, e->name,
+	         version != NULL && version[0] != '\0'
+	             ? version
+	             : (e->version[0] != '\0' ? e->version : "unknown"),
+	         (long long)time(NULL));
+	e->build_log_fd = open(e->build_log_path, O_CREAT | O_TRUNC | O_WRONLY | O_CLOEXEC, 0644);
+	if (e->build_log_fd < 0)
+		e->build_log_path[0] = '\0';
+}
+
+static void pkg_build_log_close(struct pkg_entry *e)
+{
+	if (e->build_log_fd >= 0) {
+		close(e->build_log_fd);
+		e->build_log_fd = -1;
+	}
+}
+
 static void pkg_build_output_append(struct pkg_entry *e, const char *data, int len)
 {
 	int take = (len > PKG_BUILD_OUTPUT_CAPTURE_MAX) ? PKG_BUILD_OUTPUT_CAPTURE_MAX : len;
 	int new_total = e->build_output_captured_len + take;
+
+	/* Teed here, before the tail truncation below, because the whole
+	 * point is to keep what the tail throws away. A short write is
+	 * ignored deliberately -- a full disk must not fail the build. */
+	if (e->build_log_fd >= 0 && len > 0) {
+		ssize_t ignored = write(e->build_log_fd, data, (size_t)len);
+
+		(void)ignored;
+	}
 
 	if (new_total > PKG_BUILD_OUTPUT_CAPTURE_MAX) {
 		int overflow = new_total - PKG_BUILD_OUTPUT_CAPTURE_MAX;
@@ -3648,6 +3881,11 @@ void pkg_build_output_close(int chain_idx)
 		close(e->build_output_rd);
 		e->build_output_rd = -1;
 	}
+	/* Issue #57: the log file closes with the pipe, so a build that
+	 * was SIGKILLed leaves a complete-up-to-that-point log rather than
+	 * nothing -- the killed case is exactly the one worth reading. */
+	if (e != NULL)
+		pkg_build_log_close(e);
 	g_build_output_entries[chain_idx] = NULL;
 }
 
@@ -4193,6 +4431,23 @@ static enum sync_state g_sync_last_state = SYNC_NEVER;
 static time_t g_sync_last_attempt;
 static int g_sync_last_added;
 static int g_sync_last_skipped;
+/*
+ * Issue #59: one recipe version this sync is allowed to REPLACE rather
+ * than skip. Recipe-version immutability is a sound default -- ADR-0107's
+ * resolution rules depend on it -- but during active development of a
+ * recipe the only workaround was burning a new version number per
+ * iteration, and the catalogue really did accumulate five dead kernel
+ * pins and four dead gcc pins from a single investigation.
+ *
+ * Deliberately a single, explicit name@version rather than a blanket
+ * "refetch everything" flag: an operator correcting one recipe they are
+ * working on is a different act from silently rewriting history for a
+ * catalogue other boxes resolve against. One-shot -- cleared as soon as
+ * the sync that asked for it completes, so it can never leak into the
+ * periodic background sync.
+ */
+static char g_sync_refetch_name[PKG_NAME_MAX];
+static char g_sync_refetch_version[PKG_VERSION_MAX];
 static char g_sync_last_error[PKG_ERROR_MAX];
 
 static int repo_kind_is_valid(const char *kind)
@@ -4461,6 +4716,26 @@ static void sync_state_path(char *out, size_t out_size)
 	snprintf(out, out_size, "%s/sync.tar.gz", g_pkg_dir);
 }
 
+/*
+ * Issue #59: arms a one-shot refetch for the NEXT sync only. Empty
+ * name clears it. Returns -1 if the version is missing, since
+ * "refetch this whole package" is not a thing that can be asked for --
+ * immutability is per version, so the escape hatch is too.
+ */
+int pkg_sync_set_refetch(const char *name, const char *version)
+{
+	if (name == NULL || name[0] == '\0') {
+		g_sync_refetch_name[0] = '\0';
+		g_sync_refetch_version[0] = '\0';
+		return 0;
+	}
+	if (version == NULL || version[0] == '\0')
+		return -1;
+	snprintf(g_sync_refetch_name, sizeof(g_sync_refetch_name), "%s", name);
+	snprintf(g_sync_refetch_version, sizeof(g_sync_refetch_version), "%s", version);
+	return 0;
+}
+
 enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd)
 {
 	char url[PKGREPO_URL_MAX + PKGREPO_TOKEN_MAX + 64];
@@ -4727,6 +5002,16 @@ void pkg_sync_completed(int exit_status)
 				if (persist_read_file(script_path, &content, &content_len) != 0 ||
 				    content == NULL)
 					continue;
+				/* Issue #59: the one version this sync was explicitly
+				 * asked to re-fetch is deleted first, so the add below
+				 * takes the repo's current content instead of being
+				 * skipped as a duplicate. Everything else keeps the
+				 * immutability that ADR-0107 depends on. */
+				if (g_sync_refetch_name[0] != '\0' &&
+				    strcmp(g_sync_refetch_name, name_de->d_name) == 0 &&
+				    strcmp(g_sync_refetch_version, vde->d_name) == 0)
+					pkg_recipe_delete(name_de->d_name, vde->d_name);
+
 				rc = pkg_recipe_add(name_de->d_name, content);
 				free(content);
 				if (rc == PKG_OK)
@@ -4752,6 +5037,11 @@ void pkg_sync_completed(int exit_status)
 
 		run_subprocess(PKG_RM_BIN, rm_argv);
 	}
+
+	/* One-shot: cleared here so the periodic background sync can never
+	 * inherit a refetch an operator asked for once. */
+	g_sync_refetch_name[0] = '\0';
+	g_sync_refetch_version[0] = '\0';
 
 	g_sync_last_state = SYNC_SUCCESS;
 	g_sync_last_added = added;
