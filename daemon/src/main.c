@@ -32,6 +32,7 @@
 #include "cpreserve.h"
 #include "pkgpolicy.h"
 #include "bootconsole.h"
+#include "kernelpolicy.h"
 #include "stallwatch.h"
 #include "exec.h"
 #include "http.h"
@@ -155,6 +156,8 @@ static char SERVERHEALTH_STATE_PATH[PATH_MAX]; /* issue #81 -- drain flags only 
 static char CPRESERVE_STATE_PATH[PATH_MAX]; /* issue #86 -- control-plane reservation */
 static char PKGPOLICY_STATE_PATH[PATH_MAX];  /* issue #64 -- per-package rolling policy */
 static char BOOTCONSOLE_STATE_PATH[PATH_MAX]; /* issue #24 -- boot console parameters */
+static char KERNELPOLICY_STATE_PATH[PATH_MAX]; /* issue #65 -- which kernel line this box tracks */
+static char KERNEL_RELEASES_PATH[PATH_MAX];    /* issue #65 -- cached kernel.org releases.json */
 static char STALLWATCH_RECORDS_PATH[PATH_MAX]; /* issue #100 -- control-plane stall records */
 static char VOLUMES_STATE_PATH[PATH_MAX];      /* issue #88 */
 static char VOLUMES_DIR[PATH_MAX];             /* issue #88 -- where volume data lives */
@@ -293,6 +296,16 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(PKGPOLICY_STATE_PATH, sizeof(PKGPOLICY_STATE_PATH), "%s/pkg_policies.json",
 	         STATE_DIR);
 	snprintf(BOOTCONSOLE_STATE_PATH, sizeof(BOOTCONSOLE_STATE_PATH), "%s/boot_console.json",
+	         STATE_DIR);
+	snprintf(KERNELPOLICY_STATE_PATH, sizeof(KERNELPOLICY_STATE_PATH), "%s/kernel_policy.json",
+	         STATE_DIR);
+	/*
+	 * The fetched releases.json is cached on disk rather than in
+	 * memory alone: a box that has resolved its channel once can still
+	 * answer "how far behind am I" after a restart, and after a
+	 * reboot, without needing the network to be up first.
+	 */
+	snprintf(KERNEL_RELEASES_PATH, sizeof(KERNEL_RELEASES_PATH), "%s/kernel_releases.json",
 	         STATE_DIR);
 	snprintf(STALLWATCH_RECORDS_PATH, sizeof(STALLWATCH_RECORDS_PATH),
 	         "%s/control_plane_stalls.jsonl", STATE_DIR);
@@ -909,6 +922,7 @@ enum conn_kind {
 	                          * incrementally exactly like CONN_PKG_BUILD_OUTPUT (ADR-0087) */
 	CONN_ISO_ASSEMBLE,      /* server-side mkinstalleriso invocation (ADR-0064) */
 	CONN_BOOTSTRAP_FETCH,   /* pkg/bootstrap's own toolchain_url curl fetch (ADR-0065) */
+	CONN_KERNEL_RELEASES_FETCH, /* kernel.org releases.json curl fetch (issue #65) */
 	CONN_PKG_SYNC_FETCH,    /* pkg sync's own repo-archive curl fetch (ADR-0121) */
 	CONN_PKG_SYNC_PERIODIC_TIMER, /* permanent, re-arms itself -- fires pkg_sync_start() periodically if configured (ADR-0121) */
 	CONN_BACKUP_PERIODIC_TIMER, /* permanent, re-arms itself -- fires do_backup_snapshot_now() periodically if enabled+configured (ADR-0141 Phase 5) */
@@ -18813,6 +18827,274 @@ static void bootconsole_write_entries_json(struct json_writer *w)
 	jw_arr_close(w);
 }
 
+/* ---------- Issue #65: kernel release-channel policy ---------- */
+
+/*
+ * kernel.org's own machine-readable index of what each moniker
+ * currently means. Fetched, never mirrored: a copy of this in the repo
+ * would be a second source of truth for a fact that changes weekly
+ * without anyone here noticing it had.
+ */
+#define KERNEL_RELEASES_URL "https://www.kernel.org/releases.json"
+
+static int g_kernel_releases_fetching;
+static char g_kernel_releases_error[256];
+
+static void register_kernel_releases_pidfd(pid_t pid, int pidfd)
+{
+	struct conn *cc;
+	struct thinc_epoll_event ev;
+
+	cc = malloc(sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (kernel releases reactor conn)");
+		abort();
+	}
+	cc->kind = CONN_KERNEL_RELEASES_FETCH;
+	cc->fd = pidfd;
+	cc->pkg_fetch_pid = pid;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (thinc_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+		perror("epoll_ctl ADD kernel releases pidfd");
+		abort();
+	}
+}
+
+/*
+ * Fetched by the same forked-curl-watched-by-pidfd shape every other
+ * outbound fetch in this daemon uses -- never a blocking curl, which
+ * would stall the whole control plane behind a network timeout on a
+ * box whose resolvers are not configured (ADR-0076, and exactly the
+ * class of wedge ADR-0189's watchdog exists to catch).
+ */
+static int kernel_releases_fetch_start(char *err_msg, size_t err_msg_size)
+{
+	static char out_path[PATH_MAX];
+	char *argv[10];
+	pid_t pid;
+	int pidfd;
+
+	if (g_kernel_releases_fetching) {
+		snprintf(err_msg, err_msg_size, "a kernel release refresh is already running");
+		return -1;
+	}
+	snprintf(out_path, sizeof(out_path), "%s", KERNEL_RELEASES_PATH);
+
+	argv[0] = (char *)PKG_CURL_BIN;
+	argv[1] = "-fsSL";
+	argv[2] = "--max-time";
+	argv[3] = "30";
+	argv[4] = "-o";
+	argv[5] = out_path;
+	argv[6] = (char *)KERNEL_RELEASES_URL;
+	argv[7] = NULL;
+
+	pid = fork();
+	if (pid < 0) {
+		snprintf(err_msg, err_msg_size, "fork failed: %s", strerror(errno));
+		return -1;
+	}
+	if (pid == 0) {
+		execve(PKG_CURL_BIN, argv, environ);
+		perror("child: execve curl (kernel releases fetch)");
+		_exit(127);
+	}
+	pidfd = sys_pidfd_open(pid, 0);
+	if (pidfd < 0) {
+		snprintf(err_msg, err_msg_size, "pidfd_open failed: %s", strerror(errno));
+		kill(pid, SIGKILL);
+		waitpid(pid, NULL, 0);
+		return -1;
+	}
+	register_kernel_releases_pidfd(pid, pidfd);
+	g_kernel_releases_fetching = 1;
+	g_kernel_releases_error[0] = '\0';
+	return 0;
+}
+
+static void handle_kernel_releases_fetch_event(struct conn *cc)
+{
+	int status;
+
+	thinc_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	g_kernel_releases_fetching = 0;
+	if (waitpid(cc->pkg_fetch_pid, &status, 0) != cc->pkg_fetch_pid || !WIFEXITED(status) ||
+	    WEXITSTATUS(status) != 0) {
+		/*
+		 * A box with no resolvers configured cannot reach kernel.org
+		 * at all, and that is by far the likeliest cause here -- say
+		 * so, rather than leaving an operator to guess at a bare exit
+		 * code (CLAUDE.md, ADR-0076).
+		 */
+		snprintf(g_kernel_releases_error, sizeof(g_kernel_releases_error),
+		         "could not fetch %s (curl exit status %d) -- a host with no upstream "
+		         "resolvers set cannot resolve it at all, see PUT /v1/system/resolv",
+		         KERNEL_RELEASES_URL, WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+		fprintf(stderr, "kernel releases: %s\n", g_kernel_releases_error);
+		close(cc->fd);
+		free(cc);
+		return;
+	}
+	close(cc->fd);
+	free(cc);
+	if (kernelpolicy_ingest_releases(KERNEL_RELEASES_PATH, (long)time(NULL)) != 0) {
+		snprintf(g_kernel_releases_error, sizeof(g_kernel_releases_error),
+		         "fetched %s but it named no usable release -- the previous answer is kept",
+		         KERNEL_RELEASES_URL);
+		fprintf(stderr, "kernel releases: %s\n", g_kernel_releases_error);
+		return;
+	}
+	fprintf(stderr, "kernel releases: refreshed from %s\n", KERNEL_RELEASES_URL);
+}
+
+/*
+ * The running kernel's own version, which is what every "how far
+ * behind" question is measured against. Read from uname() rather than
+ * from the recipe pin: the pin says what was last built, the running
+ * kernel says what actually booted, and after a failed A/B update
+ * those are not the same fact.
+ */
+static void kernel_running_version(char *out, size_t out_size)
+{
+	struct utsname uts;
+
+	if (uname(&uts) == 0)
+		snprintf(out, out_size, "%s", uts.release);
+	else
+		snprintf(out, out_size, "%s", "");
+}
+
+static void kernel_policy_write_json(struct json_writer *w)
+{
+	char running[128];
+	char running_series[KERNEL_SERIES_MAX] = "";
+	struct kernel_resolution res;
+	enum kernel_channel channel = kernelpolicy_channel();
+
+	kernel_running_version(running, sizeof(running));
+	(void)kernel_version_series(running, running_series, sizeof(running_series));
+	kernelpolicy_resolve(channel, running_series, &res);
+
+	jw_obj_open(w);
+	jw_key(w, "channel");
+	jw_str(w, kernel_channel_name(channel));
+	jw_key(w, "running_version");
+	jw_str(w, running);
+	jw_key(w, "running_series");
+	jw_str(w, running_series);
+	jw_key(w, "resolved_version");
+	if (res.version[0] != '\0')
+		jw_str(w, res.version);
+	else
+		jw_null(w);
+	jw_key(w, "resolved_source_url");
+	if (res.source_url[0] != '\0')
+		jw_str(w, res.source_url);
+	else
+		jw_null(w);
+	/*
+	 * Whether an update is available is a question with three answers,
+	 * not two: yes, no, and "nothing has been resolved yet" -- which is
+	 * why this is null rather than false before a first refresh. A
+	 * false there would read as "you are up to date".
+	 */
+	jw_key(w, "behind");
+	if (res.version[0] == '\0' || running[0] == '\0')
+		jw_null(w);
+	else
+		jw_bool(w, strncmp(running, res.version, strlen(res.version)) != 0 ||
+		            (running[strlen(res.version)] != '\0' &&
+		             running[strlen(res.version)] != '-'));
+	jw_key(w, "running_series_maintained");
+	if (!res.known)
+		jw_null(w);
+	else
+		jw_bool(w, res.series_maintained);
+	jw_key(w, "newest_longterm");
+	if (res.newest_longterm[0] != '\0')
+		jw_str(w, res.newest_longterm);
+	else
+		jw_null(w);
+	jw_key(w, "newest_longterm_series");
+	if (res.newest_longterm_series[0] != '\0')
+		jw_str(w, res.newest_longterm_series);
+	else
+		jw_null(w);
+	jw_key(w, "releases_fetched_at");
+	if (kernelpolicy_fetched_at() == 0)
+		jw_null(w);
+	else
+		jw_int(w, kernelpolicy_fetched_at());
+	jw_key(w, "refreshing");
+	jw_bool(w, g_kernel_releases_fetching);
+	jw_key(w, "last_refresh_error");
+	if (g_kernel_releases_error[0] != '\0')
+		jw_str(w, g_kernel_releases_error);
+	else
+		jw_null(w);
+	jw_key(w, "source");
+	jw_str(w, KERNEL_RELEASES_URL);
+	jw_obj_close(w);
+}
+
+static void handle_kernel_policy_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	kernel_policy_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_kernel_policy_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = json_parse(body, body_len);
+	const struct json_value *jchannel;
+	enum kernel_channel channel;
+	struct json_writer w;
+
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	jchannel = json_object_get(root, "channel");
+	if (kernel_channel_from_name(json_as_string(jchannel), &channel) != 0) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		               "channel must be one of pinned, longterm, stable, mainline "
+		               "-- kernel.org's own monikers");
+		return;
+	}
+	json_free(root);
+	if (kernelpolicy_set_channel(channel) != 0) {
+		respond_error(fd, 500, "Internal Server Error", "failed to persist kernel policy");
+		return;
+	}
+	jw_init(&w);
+	kernel_policy_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_kernel_policy_refresh(int fd)
+{
+	char err[256];
+	struct json_writer w;
+
+	if (kernel_releases_fetch_start(err, sizeof(err)) != 0) {
+		respond_error(fd, 409, "Conflict", err);
+		return;
+	}
+	jw_init(&w);
+	kernel_policy_write_json(&w);
+	respond_json(fd, 202, "Accepted", &w);
+	jw_free(&w);
+}
+
 static void handle_bootconsole_get(int fd)
 {
 	struct json_writer w;
@@ -20302,6 +20584,21 @@ static void dispatch(int fd, const struct http_request *req)
 			handle_bootconsole_put(fd, req->body, req->body_len);
 			return;
 		}
+	}
+	if (strcmp(req->path, "/v1/system/kernel-policy") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_kernel_policy_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_kernel_policy_put(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/system/kernel-policy/refresh") == 0 &&
+	    strcmp(req->method, "POST") == 0) {
+		handle_kernel_policy_refresh(fd);
+		return;
 	}
 	if (strcmp(req->path, "/v1/system/control-plane-reservation") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
@@ -23430,6 +23727,16 @@ int main(int argc, char **argv)
 	cpreserve_init(CPRESERVE_STATE_PATH);   /* issue #86 */
 	pkgpolicy_init(PKGPOLICY_STATE_PATH);   /* issue #64 */
 	bootconsole_init(BOOTCONSOLE_STATE_PATH); /* issue #24 */
+	kernelpolicy_init(KERNELPOLICY_STATE_PATH); /* issue #65 */
+	/* A cached answer from a previous run, if there is one. Its own
+	 * mtime is the fetch time -- the file IS the record, so there is
+	 * no second place for "when did we last ask" to go stale. */
+	{
+		struct stat rst;
+
+		if (stat(KERNEL_RELEASES_PATH, &rst) == 0)
+			kernelpolicy_ingest_releases(KERNEL_RELEASES_PATH, (long)rst.st_mtime);
+	}
 
 	if (test_update_image != NULL || test_update_kernel != NULL) {
 		char body[2 * PATH_MAX + 64];
@@ -23933,6 +24240,8 @@ int main(int argc, char **argv)
 				handle_iso_assemble_event(cc);
 			else if (cc->kind == CONN_BOOTSTRAP_FETCH)
 				handle_bootstrap_fetch_event(cc);
+			else if (cc->kind == CONN_KERNEL_RELEASES_FETCH)
+				handle_kernel_releases_fetch_event(cc);
 			else if (cc->kind == CONN_PKG_SYNC_FETCH)
 				handle_pkg_sync_fetch_event(cc);
 			else if (cc->kind == CONN_PKG_SYNC_PERIODIC_TIMER)

@@ -6,6 +6,18 @@ A complete runbook: producing a kernel image, then rolling it onto a running ins
 
 thinC boots from one of two symmetric slots (`thinc-root-a`/`thinc-root-b`), each with its **own** kernel file pre-staged on the ESP at install time (`thinc-bzImage-a`/`thinc-bzImage-b`) — a kernel update always targets the *inactive* slot (whichever one this daemon is **not** currently running as), never the live one. `POST /system/update` writes the new kernel there and stages a fresh systemd-boot loader entry with a fresh **Automatic Boot Assessment** tries-left counter (`ROOT_UPDATE_TRIES = 3`). Nothing takes effect until you explicitly reboot into that slot — writing and booting are two separate, deliberate steps (ADR-0031). Once the newly-booted daemon reaches a genuinely healthy, serving state, it automatically renames its own loader entry to drop the tries-left counter — that's the actual "this slot is confirmed good" signal, and it needs no operator action. If a freshly-updated slot instead fails to boot to health three times in a row, systemd-boot's own native counter falls back to the previous good slot by itself — the old kernel and root are untouched the whole time, so a bad update is always recoverable by nature of A/B, not by a script hoping to undo damage after the fact.
 
+## Step 0: decide which version you are moving to
+
+Which kernel *line* this box tracks is a real setting (issue #65), not something to work out by hand each time:
+
+```sh
+thincctl kernel-policy refresh          # ask kernel.org what each channel is at
+thincctl kernel-policy show
+thincctl kernel-policy set --channel=longterm
+```
+
+It reports the running kernel, the version your channel currently points at, and whether you are behind it — resolved from kernel.org's own `releases.json`, so nothing here has to be kept up to date by hand. It deliberately stops there: it never rewrites the recipe pin, and the version you build below is still yours to choose. See [`docs/api/README.md`'s "Kernel line"](../api/README.md#kernel-line-issue-65) for why, including how `longterm` resolves when kernel.org lists six longterm lines at once.
+
 ## Step 1: get a kernel image
 
 Two ways to produce a `bzImage`; both use the exact same source version and kernel config fragment (`image/kernel/qemu-part1.config`), so they produce equivalent kernels.

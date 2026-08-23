@@ -77,7 +77,7 @@ Services
   Syslog
 System
   Software         (tabs: Recipes / Reconcile / Images / Packages / Repo & Sync / Cache & Artifacts / Package Builds / Update)
-  Host             (tabs: Daemon / Site / Routes / Sessions / Swap / Rolling Restart / Storage Placement / Boot Console / Control Plane / TLS Throttle / Backup / Volume Backups / Factory Reset)
+  Host             (tabs: Daemon / Site / Routes / Sessions / Swap / Rolling Restart / Storage Placement / Boot Console / Kernel Line / Control Plane / TLS Throttle / Backup / Volume Backups / Factory Reset)
   Devices
   Monitoring       (tabs: Host Stats / Processes / Log Store / Kernel Log / Server Health / Stalls)
 ```

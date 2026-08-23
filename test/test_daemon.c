@@ -337,6 +337,58 @@ int main(void)
 			ok = 0;
 		}
 
+		/*
+		 * Issue #65: the kernel-line endpoint's own contract. The
+		 * resolution logic itself is test_kernelpolicy's job (no
+		 * network there, and none needed here either) -- what this
+		 * asserts is that a never-refreshed box answers honestly
+		 * rather than guessing, and that an invented channel is
+		 * refused rather than silently stored.
+		 */
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "GET", "/v1/system/kernel-policy", NULL, &r) != 0 ||
+		    r.status != 200 || !str_eq(json_str_field(r.json, "channel"), "pinned") ||
+		    json_object_get(r.json, "resolved_version")->type != JSON_NULL ||
+		    json_object_get(r.json, "behind")->type != JSON_NULL) {
+			fprintf(stderr, "FAIL: #65 a fresh box should be pinned and resolve nothing "
+			                "(status=%d)\n",
+			        r.status);
+			ok = 0;
+		}
+		thinc_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "PUT", "/v1/system/kernel-policy",
+		                       "{\"channel\":\"edge\"}", &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: #65 an invented channel should 400, got %d\n", r.status);
+			ok = 0;
+		}
+		thinc_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "PUT", "/v1/system/kernel-policy",
+		                       "{\"channel\":\"longterm\"}", &r) != 0 ||
+		    r.status != 200 || !str_eq(json_str_field(r.json, "channel"), "longterm")) {
+			fprintf(stderr, "FAIL: #65 PUT channel=longterm, status=%d\n", r.status);
+			ok = 0;
+		}
+		thinc_response_free(&r);
+
+		/* Selecting a channel must not, by itself, invent a version:
+		 * nothing has been resolved, and reporting one would be the
+		 * kind of confident wrong answer this whole field exists to
+		 * replace. */
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "GET", "/v1/system/kernel-policy", NULL, &r) != 0 ||
+		    r.status != 200 ||
+		    json_object_get(r.json, "resolved_version")->type != JSON_NULL ||
+		    json_object_get(r.json, "releases_fetched_at")->type != JSON_NULL) {
+			fprintf(stderr, "FAIL: #65 selecting a channel resolved a version out of nothing\n");
+			ok = 0;
+		}
+		thinc_response_free(&r);
+
 		memset(&r, 0, sizeof(r));
 		if (thinc_client_request(&client, "GET", "/v1/system/control-plane-reservation", NULL, &r) !=
 		        0 ||

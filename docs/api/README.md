@@ -18,6 +18,9 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | DELETE | `/system/hostauth/sessions/{username}` | Revoke every active session for that user -- "log out everywhere" |
 | GET | `/system/boot` | Build version/time, A/B slot, kernel version (`uname`) |
 | GET | `/system/stalls` | Times the control plane stopped going round its own loop, recorded by a watchdog process (issue #100) |
+| GET | `/system/kernel-policy` | Which kernel line this box tracks, what that channel currently points at, and how far behind the running kernel is (issue #65) |
+| PUT | `/system/kernel-policy` | Set the channel — `pinned` / `longterm` / `stable` / `mainline` |
+| POST | `/system/kernel-policy/refresh` | Re-ask kernel.org what each channel is at (202; the fetch is async) |
 | GET | `/system/boot-console` | The installed system's own boot console parameters, and what each loader entry currently carries (issue #24) |
 | PUT | `/system/boot-console` | Set them — rewrites the loader entries on the ESP, effective next boot |
 | GET | `/system/control-plane-reservation` | How much of the machine is held back for the daemon itself (issue #86) |
@@ -1715,6 +1718,40 @@ Validation refuses rather than escapes. A console is a bare tty name with option
 `GET` reports the configured intent **and** the options line each entry on the ESP currently carries, because those differ on any box whose ESP is not writable from here. On a dev daemon `loader_entries` is empty — a fact, not an error.
 
 `thincctl boot-console show|set --console=… --extra="…"` is the CLI surface; the dashboard has a **Boot Console** tab under System > Host.
+
+
+## Kernel line (issue #65)
+
+```
+GET  /v1/system/kernel-policy
+PUT  /v1/system/kernel-policy          {"channel": "longterm"}
+POST /v1/system/kernel-policy/refresh
+```
+
+The platform used to make one judgment call on every operator's behalf: a single pinned kernel version in the recipe, with nothing anywhere expressing which *line* it belonged to or how far behind that line it had drifted. Both facts matter, and neither was anywhere. A cautious box wants `longterm`; an aggressive one wants `stable` or `mainline`; that is operator state, exactly like the per-package policy [#64](#per-package-rolling-policy-issue-64) introduced.
+
+**The channels are kernel.org's own monikers**, resolved from kernel.org's own `releases.json`. There is no copy of that data in this repo, deliberately: a mirror of a fact that changes weekly without anyone here noticing would be a second source of truth by construction.
+
+```json
+{"channel": "longterm", "running_version": "6.18.40", "running_series": "6.18",
+ "resolved_version": "6.18.46",
+ "resolved_source_url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.46.tar.xz",
+ "behind": true, "running_series_maintained": true,
+ "newest_longterm": "6.18.46", "newest_longterm_series": "6.18",
+ "releases_fetched_at": 1787496132, "refreshing": false, "last_refresh_error": null}
+```
+
+**Three states, not two.** `resolved_version` and `behind` are `null` until a refresh has succeeded, and `null` on the `pinned` channel, which proposes no version at all. A box that has never asked is not a box that is up to date, and reporting `behind: false` for it would be the one wrong answer that reads as reassuring.
+
+**`longterm` resolves within the line you are already on.** kernel.org lists six longterm lines at once (6.18, 6.12, 6.6, 6.1, 5.15, 5.10), so the moniker alone does not name a version. Resolving it to whichever is newest would silently propose a cross-major jump to a box deliberately sitting on an older longterm line. It falls back to the newest only once kernel.org stops listing your line — `running_series_maintained` tells you which of those happened, and `newest_longterm` reports the newest line either way, so both facts are visible rather than one hidden behind the other.
+
+**`running_version` comes from `uname()`, not from the recipe pin.** The pin says what was last built; the running kernel says what actually booted, and after a failed A/B update those are not the same fact.
+
+**Selecting a channel never moves the pin and never fetches anything.** It changes what is *reported*. `POST .../refresh` is the only thing that reaches the network, and it returns `202` immediately: the fetch is a forked `curl` watched by a pidfd, never a blocking call inside the event loop — a host with no upstream resolvers set (see [`/system/resolv`](#upstream-dns-resolvers-adr-0076)) would otherwise stall the whole control plane behind a DNS timeout, which is precisely the class of wedge the [stall watchdog](#control-plane-stalls-issue-100) exists to catch. A failed fetch keeps the previous answer and says why in `last_refresh_error`.
+
+The fetched file is cached on disk, so a box that has resolved once still answers "how far behind am I" after a restart with no network at all.
+
+`thincctl kernel-policy show|set --channel=…|refresh` is the CLI surface; the dashboard has a **Kernel Line** tab under System > Host.
 
 
 ## Control-plane stalls (issue #100)

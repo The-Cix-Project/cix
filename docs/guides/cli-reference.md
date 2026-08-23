@@ -167,6 +167,9 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 | Command | |
 |---|---|
 | `stalls` | Times the control plane stopped going round its own loop, with the kernel function it was sleeping in and the request it was serving (issue #100) — written by a watchdog process, because the loop cannot record its own silence |
+| `kernel-policy show` | Which kernel line this box tracks, what that channel is at, and whether the running kernel is behind it (issue #65) |
+| `kernel-policy set --channel=pinned\|longterm\|stable\|mainline` | Set the channel — kernel.org's own monikers. `pinned` (the default) proposes no version at all; the pin stays in the kernel recipe |
+| `kernel-policy refresh` | Re-ask kernel.org's `releases.json` what each channel is at. Async — the answer lands a moment after the command returns |
 | `boot-console show` | The installed system's own boot console parameters, plus the options line each loader entry currently carries (issue #24) |
 | `boot-console set [--console=NAME ...] [--extra="..."]` | Set them — `--console` is repeatable and ordered. Rewrites the loader entries on the ESP; takes effect at the next boot. Everything from `root=` onward is left alone |
 | `control-plane-reservation show` | How much CPU/memory is held back for the daemon itself, the host's totals, and the derived ceiling actually applied to the `thinc-workload` cgroup every container and build lives under (issue #86) |

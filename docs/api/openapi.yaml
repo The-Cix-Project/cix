@@ -2219,6 +2219,103 @@ paths:
                   threshold_seconds:
                     type: integer
 
+  /system/kernel-policy:
+    get:
+      summary: Which kernel line this box tracks (issue #65)
+      description: >
+        The platform used to make that judgment call for you: one pinned
+        version in the kernel recipe, and nothing anywhere expressing
+        which *line* it belonged to or how far behind that line it had
+        drifted. A cautious box tracks `longterm`, an aggressive one
+        `stable` or `mainline`; that is operator state, not recipe
+        content.
+
+        Channels are kernel.org's own monikers, resolved from
+        kernel.org's own `releases.json`. There is no copy of
+        kernel.org's state in this repo -- a mirror of a fact that
+        changes weekly without anyone here noticing is a second source
+        of truth by construction.
+
+        `resolved_version` and `behind` are **null** until a refresh has
+        succeeded, and null on the `pinned` channel, which proposes no
+        version at all. That is three states rather than two on purpose:
+        reporting `behind: false` for a box that has never asked would
+        read as "you are up to date".
+
+        `longterm` is the one channel a version alone cannot answer --
+        kernel.org lists six longterm lines at once. It resolves within
+        the line the box is already running, falling back to the newest
+        only once kernel.org stops listing that line;
+        `running_series_maintained` says which of those happened, and
+        `newest_longterm` reports the newest line regardless.
+      operationId: getKernelPolicy
+      responses:
+        "200":
+          description: The channel, what it currently points at, and the running kernel
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KernelPolicy"
+    put:
+      summary: Set the kernel release channel (issue #65)
+      description: >
+        `channel` is one of `pinned`, `longterm`, `stable`, `mainline`
+        -- kernel.org's own monikers, and anything else is a 400 rather
+        than a stored value nothing can resolve. `pinned` is the default
+        and today's behaviour: the version stays where it always has,
+        in the kernel recipe.
+
+        Selecting a channel changes what is **reported**; it never moves
+        the pin, and never fetches anything on its own.
+      operationId: setKernelPolicy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel]
+              properties:
+                channel:
+                  type: string
+                  enum: [pinned, longterm, stable, mainline]
+      responses:
+        "200":
+          description: Saved, reported the same way GET reports it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KernelPolicy"
+        "400":
+          description: Not one of kernel.org's monikers
+  /system/kernel-policy/refresh:
+    post:
+      summary: Re-ask kernel.org what each channel is at (issue #65)
+      description: >
+        Starts a fetch of kernel.org's `releases.json` and returns
+        immediately (202) -- the fetch is a forked curl watched by
+        pidfd, never a blocking call inside the event loop, because a
+        host with no upstream resolvers configured would otherwise stall
+        the entire control plane behind a DNS timeout.
+
+        The result lands a moment later; poll GET for
+        `releases_fetched_at` and `refreshing`. A failed fetch leaves
+        the previous answer in place and reports why in
+        `last_refresh_error` -- a stale true answer beats an empty one.
+
+        The fetched file is cached on disk, so a box that has resolved
+        once can still answer "how far behind am I" after a restart with
+        no network at all.
+      operationId: refreshKernelPolicy
+      responses:
+        "202":
+          description: A refresh was started; the body is the current (pre-refresh) state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KernelPolicy"
+        "409":
+          description: A refresh is already running
   /system/boot-console:
     get:
       summary: The installed system's own boot console parameters (issue #24)
@@ -9907,6 +10004,52 @@ components:
           type: number
         total_usec:
           type: integer
+    KernelPolicy:
+      type: object
+      properties:
+        channel:
+          type: string
+          enum: [pinned, longterm, stable, mainline]
+        running_version:
+          type: string
+          description: The running kernel from uname(), not the recipe pin -- after a failed A/B update those are different facts.
+        running_series:
+          type: string
+          description: The line the running kernel belongs to, e.g. "6.18".
+        resolved_version:
+          type: string
+          nullable: true
+          description: What this channel points at now; null on pinned, and null before any successful refresh.
+        resolved_source_url:
+          type: string
+          nullable: true
+          description: kernel.org's own tarball URL for that version.
+        behind:
+          type: boolean
+          nullable: true
+          description: Whether the running kernel differs from the resolved one; null when nothing is resolved.
+        running_series_maintained:
+          type: boolean
+          nullable: true
+          description: Whether kernel.org still lists the running line as longterm.
+        newest_longterm:
+          type: string
+          nullable: true
+        newest_longterm_series:
+          type: string
+          nullable: true
+        releases_fetched_at:
+          type: integer
+          nullable: true
+          description: Unix time of the last successful refresh; null if never.
+        refreshing:
+          type: boolean
+        last_refresh_error:
+          type: string
+          nullable: true
+        source:
+          type: string
+          description: The kernel.org URL this is resolved from.
     BootConsole:
       type: object
       properties:
