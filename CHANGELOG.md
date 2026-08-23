@@ -4,6 +4,14 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ### Part 203 (in progress): pre-bare-metal quality sprint
 
+**The dashboard got much gentler on the daemon.** It fetched all 47 endpoints every two seconds regardless of what was on screen — **24.1 requests/second, measured**, per open tab, forever, almost all of it for data nobody was reading. The status bar's LEDs made that visible rather than causing it, and the user was right that something was off.
+- Three tiers now: `/v1/health` every 2s (one tiny endpoint, and what the LEDs run on), the tree's data and *the current page's* data every 5s, and a full sweep every 30s. Since every tab is its own address (ADR-0185), the route names the page precisely, so per-page refresh sets are real rather than a guess.
+- **Nothing but health runs while the tab is hidden**, and coming back triggers an immediate catch-up.
+- The uptimes tick locally and re-sync once a minute — a clock that only moves when you poll it is a poll for a number the browser can add itself.
+- Measured A/B against the same daemon, old dashboard served from a copy of the pre-change files: **24.1/s → 3.6/s with a page open, 0.5/s in the background.**
+- The LEDs, the uptime and the load average all still work exactly as before; blinks are now coalesced to at most one per 120ms per lamp, which also stops a burst of requests from holding a lamp permanently lit.
+- **The 30s sweep is deliberate insurance**: a per-page set that misses an endpoint leaves that page 30 seconds stale, not broken — the right failure mode for a mapping maintained by hand.
+
 **#100: the control plane can no longer go silent without leaving evidence** ([ADR-0189](docs/adr/0189-control-plane-stall-watchdog.md)). The production host accepted TCP while answering nothing for at least five minutes, recovered on its own, and left **nothing in the log store from inside the window** — structurally, since the loop that would record "I am stuck" is the one that is stuck. A forked watchdog process now heartbeats against the loop and records a stall after five seconds of silence, with the kernel function the daemon is sleeping in (`/proc/<pid>/wchan`), its process state, and the request it was serving.
 - **A process, not a signal handler.** A handler runs on the stuck thread under async-signal-safety rules, which rules out reading `/proc` or formatting anything — the interesting part of a wedge is exactly what a handler cannot collect.
 - **The loop now wakes once a second** (`epoll_wait` used to block indefinitely when idle), so an idle daemon is never mistaken for a wedged one.
