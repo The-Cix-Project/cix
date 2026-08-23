@@ -34,4 +34,13 @@ The order of application is load-bearing and not obvious: pool percentage and co
 
 **This cannot be verified end to end in this project's dev sandbox.** An LXC mounts `/sys` read-only, so writing a kernel module parameter fails regardless of privilege — confirmed directly, as real root: `echo Y > /sys/module/zswap/parameters/enabled` returns `Read-only file system`. The same class of restriction as this sandbox's other confirmed denials (`clock_settime` EPERM, no loop devices, no `/dev/kvm`). What the sandbox *does* prove is the reporting: it shows configured `enabled` against kernel `disabled`, which is exactly the divergence this design exists to surface. The apply path itself is verified on the real host, and the test asserts only what holds everywhere rather than pretending otherwise.
 
-zswap's benefit is a reduction in disk I/O under pressure, which means it is measurable rather than assumable — the issue asked for a real before/after against the same load, and that measurement belongs with the deployment, not with the code.
+zswap's benefit is a reduction in disk I/O under pressure, which means it is measurable rather than assumable. Measured on the real host against a fixed, memcg-contained workload — a container capped at 128 MiB building a 400 MB anonymous buffer, so 400-700 MiB has to leave RAM — with two runs each way:
+
+| | wall | `vda` io_time | sectors written |
+|---|---|---|---|
+| zswap off | 75.2s / 73.1s | 52,796 ms / 52,132 ms | 4,197 MiB / 4,197 MiB |
+| zswap on | 24.3s / 24.3s | 88 ms / 24 ms | 0.3 MiB / 0.2 MiB |
+
+Real disk writes went from 4.2 GiB to a quarter of a megabyte, and the workload finished three times faster. **The magnitude here is best case and should not be read as typical**: the buffer is a single repeated byte, which compresses about as well as anything can. What the measurement establishes is the mechanism and its direction under genuine pressure, not a ratio to expect from a compile.
+
+The pressure was deliberately contained inside one cgroup rather than driven host-wide. Host-wide pressure on a box running nine real containers is the incident this exists to mitigate, not a test to run on purpose.
