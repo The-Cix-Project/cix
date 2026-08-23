@@ -1108,6 +1108,7 @@ const CATEGORY_VIEWS = {
 	processes: "view-monitoring",
 	"syslog-targets": "view-syslog-targets",
 	"tls-throttle": "view-daemon-config",
+	"control-plane-reservation": "view-daemon-config",
 	logs: "view-monitoring",
 	kmsg: "view-monitoring",
 	"server-health": "view-monitoring",
@@ -1184,6 +1185,7 @@ const SERVICE_TAB_VIEWS = {
 	"storage-placement": "view-daemon-config",
 	routes: "view-daemon-config",
 	"tls-throttle": "view-daemon-config",
+	"control-plane-reservation": "view-daemon-config",
 	backup: "view-daemon-config",
 	"volume-backup-config": "view-daemon-config",
 	"factory-reset": "view-daemon-config",
@@ -1261,6 +1263,8 @@ function renderCurrentView() {
 			renderSyslogTargetsList();
 		else if (route.category === "tls-throttle")
 			refreshTlsThrottleStatus();
+		else if (route.category === "control-plane-reservation")
+			refreshControlPlaneReservation();
 		else if (route.category === "logs")
 			renderLogsList();
 		else if (route.category === "kmsg")
@@ -5672,6 +5676,58 @@ async function removeLdapUser(name) {
 		showStatus("Failed to remove LDAP user " + name + ": " + e.message, true);
 	}
 }
+
+
+/* ---------- Control Plane Reservation (issue #86) ---------- */
+
+let cprDirty = false;
+
+async function refreshControlPlaneReservation() {
+	try {
+		const c = await apiRequest("GET", "/v1/system/control-plane-reservation");
+		const grid = document.getElementById("cpr-effect");
+
+		if (!cprDirty) {
+			document.getElementById("cpr-enabled").checked = !!c.enabled;
+			document.getElementById("cpr-cpu-percent").value = c.cpu_percent;
+			document.getElementById("cpr-memory-bytes").value = c.memory_bytes;
+		}
+		grid.textContent = "";
+		grid.appendChild(fieldBlock("This host", (c.host_cpus || 0) + " CPUs, " + formatBytes(c.host_memory_bytes || 0)));
+		grid.appendChild(fieldBlock("Workload cgroup", c.cgroup || "-"));
+		/* The raw cgroup values, not a prettied version: this is the
+		 * number the kernel is enforcing, and an operator checking
+		 * whether a limit is really in place wants to see exactly what
+		 * is in cpu.max. */
+		grid.appendChild(fieldBlock("Workload cpu.max", c.workload_cpu_max || "unlimited"));
+		grid.appendChild(fieldBlock("Workload memory.max",
+		                            c.workload_memory_max ? formatBytes(c.workload_memory_max) : "unlimited"));
+	} catch (e) {
+		/* Best-effort, like every other config panel here. */
+	}
+}
+
+for (const id of ["cpr-enabled", "cpr-cpu-percent", "cpr-memory-bytes"]) {
+	document.getElementById(id).addEventListener("input", () => {
+		cprDirty = true;
+	});
+}
+
+document.getElementById("cpr-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+	try {
+		await apiRequest("PUT", "/v1/system/control-plane-reservation", {
+			enabled: document.getElementById("cpr-enabled").checked,
+			cpu_percent: parseInt(document.getElementById("cpr-cpu-percent").value, 10),
+			memory_bytes: parseInt(document.getElementById("cpr-memory-bytes").value, 10),
+		});
+		cprDirty = false;
+		showStatus("Control plane reservation saved — the workload ceiling is in effect now.", false);
+		await refreshControlPlaneReservation();
+	} catch (e) {
+		showStatus("Could not save reservation: " + e.message, true);
+	}
+});
 
 /* ---------- LDAP Config: start_uid/start_gid auto-allocation floor (task #748) ---------- */
 

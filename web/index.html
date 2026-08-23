@@ -733,6 +733,7 @@
 				<button type="button" class="tab-button" data-tab="rolling-restart">Rolling Restart</button>
 				<button type="button" class="tab-button" data-tab="storage-placement">Storage Placement</button>
 				<button type="button" class="tab-button" data-tab="tls-throttle">TLS Throttle</button>
+				<button type="button" class="tab-button" data-tab="control-plane-reservation">Control Plane</button>
 				<button type="button" class="tab-button" data-tab="backup">Backup</button>
 				<button type="button" class="tab-button" data-tab="volume-backup-config">Volume Backups</button>
 				<button type="button" class="tab-button" data-tab="factory-reset">Factory Reset</button>
@@ -928,6 +929,44 @@
 					<a href="#backup">Maintenance &gt; Backup</a> chooses the disk automatic snapshots are
 					written to; <a href="#swap">Host &gt; Host Swap</a> chooses the disk the swap file lives
 					on (ADR-0169).</p>
+			</div>
+		</div>
+			<div class="tab-panel" data-tab="control-plane-reservation" hidden>
+			<div class="view-list">
+				<h2>Control Plane Reservation</h2>
+				<p class="hint">
+					How much of this machine is held back for the daemon itself (issue #86).
+					There is no SSH and no shell here, so a starved daemon is not a degraded
+					box &mdash; it is a box nobody can reach until someone walks to the
+					hypervisor, which has happened for real. Rather than asking the scheduler
+					to favour the daemon, everything that is <em>not</em> the daemon &mdash;
+					every container and every package build &mdash; lives under one
+					<code>thinc-workload</code> cgroup capped at the machine minus this
+					reservation, so what the control plane has left is enforced by the kernel
+					rather than hoped for.
+				</p>
+				<p class="hint">
+					Expressed as what the control plane keeps, not as what workloads may have:
+					that stays correct when the box is replaced by a bigger one. The ceiling
+					below is derived from live host totals every time it is applied.
+				</p>
+				<form id="cpr-form">
+					<label class="checkbox">
+						<input type="checkbox" id="cpr-enabled">
+						Enabled
+					</label>
+					<label>
+						Reserved CPU (percent of all cores, 1-50)
+						<input type="number" id="cpr-cpu-percent" min="1" max="50">
+					</label>
+					<label>
+						Reserved memory (bytes)
+						<input type="number" id="cpr-memory-bytes" min="67108864">
+					</label>
+					<button type="submit">Save</button>
+				</form>
+				<h3>In effect now</h3>
+				<div class="detail-grid" id="cpr-effect"></div>
 			</div>
 		</div>
 			<div class="tab-panel" data-tab="tls-throttle" hidden>

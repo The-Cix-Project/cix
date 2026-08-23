@@ -314,6 +314,85 @@ int main(void)
 		ok = 0;
 	}
 	kx_response_free(&r);
+	/*
+	 * Issue #86: a container's cgroup is a LEAF UNDER the workload
+	 * parent, and that parent carries the machine-minus-reservation
+	 * ceiling. This is what makes the control plane's share a
+	 * kernel-enforced remainder rather than a hope -- a real box was
+	 * lost to exactly this (four builds saturating a 2-CPU host, thincd
+	 * stopped answering, and with no SSH and no shell that is a
+	 * hypervisor trip).
+	 *
+	 * c49 is still alive at this point, so its leaf must be there.
+	 */
+	{
+		struct stat st;
+		char leaf[PATH_MAX];
+
+		snprintf(leaf, sizeof(leaf), "/sys/fs/cgroup/thinc-workload/c49");
+		if (stat(leaf, &st) != 0) {
+			fprintf(stderr, "FAIL: #86 container cgroup %s missing -- containers are not under "
+			                "the bounded workload parent\n",
+			        leaf);
+			ok = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/system/control-plane-reservation", NULL, &r) !=
+		        0 ||
+		    r.status != 200 || json_object_get(r.json, "enabled") == NULL ||
+		    !str_eq(json_str_field(r.json, "cgroup"), "thinc-workload")) {
+			fprintf(stderr, "FAIL: #86 GET control-plane-reservation, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* A reservation big enough to be a second workload budget is
+		 * refused: the range check is the difference between a safety
+		 * margin and an accidental new ceiling. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/system/control-plane-reservation",
+		                       "{\"cpu_percent\":80}", &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: #86 cpu_percent=80 should 400, got %d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		/* A real change takes effect immediately, on the live cgroup --
+		 * an operator raising the reservation because the box is under
+		 * strain needs it while it is under strain, not at the next
+		 * container creation. */
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/system/control-plane-reservation",
+		                       "{\"cpu_percent\":25}", &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: #86 PUT cpu_percent=25, status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const char *want = json_str_field(r.json, "workload_cpu_max");
+			FILE *f = fopen("/sys/fs/cgroup/thinc-workload/cpu.max", "r");
+			char got[64] = "";
+
+			if (f != NULL) {
+				if (fgets(got, sizeof(got), f) != NULL)
+					got[strcspn(got, "\n")] = '\0';
+				fclose(f);
+			}
+			if (want == NULL || strcmp(got, want) != 0) {
+				fprintf(stderr, "FAIL: #86 workload cpu.max='%s', reported '%s'\n", got,
+				        want != NULL ? want : "(null)");
+				ok = 0;
+			}
+		}
+		kx_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "PUT", "/v1/system/control-plane-reservation",
+		                   "{\"cpu_percent\":10}", &r);
+		kx_response_free(&r);
+	}
+
 	memset(&r, 0, sizeof(r));
 	kx_client_request(&client, "DELETE", "/v1/containers/c49", NULL, &r);
 	kx_response_free(&r);

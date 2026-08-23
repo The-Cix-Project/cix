@@ -171,6 +171,25 @@ int cgroup_create(const struct cgroup_limits *lim, int *out_fd)
  * a controller this daemon couldn't delegate.
  */
 /*
+ * Delegates each controller to dir's subtree INDIVIDUALLY, not as one
+ * "+cpu +memory +pids +cpuset" write. A single write is all-or-nothing:
+ * one controller the kernel does not offer at that level fails the
+ * whole line, and every other controller silently never gets delegated.
+ * That is how containers requesting a cpuset started failing with a
+ * bare 500 the moment they moved under a parent (issue #86) -- the
+ * parent had cpu and memory and nothing else, so the child's own
+ * cpuset.cpus write had no controller to write to.
+ */
+static void delegate_controllers(const char *dir)
+{
+	static const char *const wanted[] = { "+cpu", "+memory", "+pids", "+cpuset", "+io" };
+	size_t i;
+
+	for (i = 0; i < sizeof(wanted) / sizeof(wanted[0]); i++)
+		write_cgroup_file(dir, "cgroup.subtree_control", wanted[i]);
+}
+
+/*
  * Issue #85: creates (or updates) a PARENT cgroup that a group of
  * containers will live under, carrying the AGGREGATE limit for all of
  * them, and delegates the controllers its children need.
@@ -197,6 +216,31 @@ int cgroup_create_parent(const struct cgroup_limits *lim)
 	if (snprintf(dir, sizeof(dir), "%s/%s", CGROUP_ROOT, lim->name) >= (int)sizeof(dir)) {
 		errno = ENAMETOOLONG;
 		return -1;
+	}
+	/*
+	 * mkdir every component, not just the last: a nested parent
+	 * ("thinc-workload/thinc-pkgbuild") is how the build budget is kept
+	 * INSIDE the workload budget rather than beside it (issue #86).
+	 * Beside it would mean two ceilings that add up to more than the
+	 * machine, which is the same class of mistake #85 was.
+	 */
+	{
+		char *slash = dir + strlen(CGROUP_ROOT) + 1;
+
+		for (; *slash != '\0'; slash++) {
+			if (*slash != '/')
+				continue;
+			*slash = '\0';
+			if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+				perror("cgroup_create_parent: mkdir (intermediate)");
+				*slash = '/';
+				return -1;
+			}
+			/* An intermediate level must delegate too, or the next one
+			 * down cannot be created with any controller at all. */
+			delegate_controllers(dir);
+			*slash = '/';
+		}
 	}
 	if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
 		perror("cgroup_create_parent: mkdir");
@@ -229,12 +273,7 @@ int cgroup_create_parent(const struct cgroup_limits *lim)
 	 * doesn't get that child-level knob, which is not a reason to fail
 	 * the whole build subsystem.
 	 */
-	if (write_cgroup_file(dir, "cgroup.subtree_control", "+cpu +memory +pids") != 0) {
-		/* Retry without cpuset/io-style extras already excluded above --
-		 * report once, then continue: children still run, just without
-		 * their own per-child ceilings under this parent. */
-		perror("cgroup_create_parent: write cgroup.subtree_control");
-	}
+	delegate_controllers(dir);
 	return 0;
 }
 

@@ -165,6 +165,8 @@ Each flag maps directly to the matching `ContainerCreateRequest` field — see [
 
 | Command | |
 |---|---|
+| `control-plane-reservation show` | How much CPU/memory is held back for the daemon itself, the host's totals, and the derived ceiling actually applied to the `thinc-workload` cgroup every container and build lives under (issue #86) |
+| `control-plane-reservation set [--enabled\|--disabled] [--cpu-percent=N] [--memory-bytes=N]` | Change it — applied to the live cgroup immediately. `cpu_percent` 1-50; a larger reservation would be a second workload budget, not a safety margin |
 | `factory-reset --confirm=<instance name>` | Return the box to its just-installed state and reboot. Destroys every container, image, network, registration, package state, the log store, and **every volume and all data in them**. Keeps the installed OS; forgets disk roles without reformatting the disks |
 
 ## Software
