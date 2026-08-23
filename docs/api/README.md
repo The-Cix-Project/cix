@@ -17,6 +17,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/system/hostauth/sessions` | Every active session (username, expires-in) -- never a raw token, before or after issuance (ADR-0152) |
 | DELETE | `/system/hostauth/sessions/{username}` | Revoke every active session for that user -- "log out everywhere" |
 | GET | `/system/boot` | Build version/time, A/B slot, kernel version (`uname`) |
+| GET | `/system/boot-console` | The installed system's own boot console parameters, and what each loader entry currently carries (issue #24) |
+| PUT | `/system/boot-console` | Set them — rewrites the loader entries on the ESP, effective next boot |
 | GET | `/system/control-plane-reservation` | How much of the machine is held back for the daemon itself (issue #86) |
 | PUT | `/system/control-plane-reservation` | Set it — applied to the live workload cgroup immediately |
 | POST | `/system/factory-reset` | Return the box to its just-installed state and reboot — destroys everything including volumes (issue #63) |
@@ -1632,6 +1634,26 @@ It is not always the right answer, and this project has the scar: the Part 201 t
 Two deliberate refusals: a `pinned` policy with no version is a `400` (it would claim to hold something while meaning "highest" — the exact drift a pin exists to prevent), and a pinned version that is not published makes the package unresolvable rather than quietly resolving somewhere else.
 
 The policy is applied in the single function every implicit resolution goes through, so it applies everywhere by construction rather than by each of thirteen call sites remembering to consult it. Policy is operator state, never recipe content: a recipe cannot know which link of a chain a particular box is meant to sit on. `thincctl pkg policy ls|set|clear`.
+
+
+## Boot console (issue #24)
+
+```
+GET /v1/system/boot-console
+PUT /v1/system/boot-console   {"consoles": ["tty0", "ttyS0,115200n8"], "extra": "nomodeset"}
+```
+
+An installed thinC host boots through systemd-boot, and every loader entry carried a hardcoded `console=tty0 console=ttyS0`. That is a reasonable default and a poor thing to be stuck with — real hardware sometimes needs a serial console at a particular baud, a framebuffer argument to produce any output at all, or exactly the opposite (`nomodeset`) when the framebuffer is what breaks it. None of it was reachable without reinstalling.
+
+**A change is applied to the loader entries already on the ESP**, not only to entries written by future updates: an operator who cannot see the console is not in a position to wait for the next A/B update. It takes effect at the next boot, and the response says how many entries were rewritten.
+
+**Everything from `root=` onward is preserved byte for byte.** That half of the options line — `root=`, `rw`, `init=` and the daemon's own arguments — decides whether the machine boots at all, and is deliberately not editable here. This is a display setting, not a kernel command line editor: letting the whole string be edited would turn "I want serial output" into a way to make the box unbootable.
+
+Validation refuses rather than escapes. A console is a bare tty name with optional comma-separated options (`ttyS0,115200n8`, never `/dev/ttyS0`); extra parameters are plain kernel arguments; `console=`, `root=` and `init=` are refused inside `extra`, and anything that could split the boot line — whitespace inside a console name, a newline, a quote — is a `400`. The file being written is the one that decides whether this machine comes back.
+
+`GET` reports the configured intent **and** the options line each entry on the ESP currently carries, because those differ on any box whose ESP is not writable from here. On a dev daemon `loader_entries` is empty — a fact, not an error.
+
+`thincctl boot-console show|set --console=… --extra="…"` is the CLI surface; the dashboard has a **Boot Console** tab under System > Host.
 
 
 ## Capability restriction (issue #29)

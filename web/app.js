@@ -1109,6 +1109,7 @@ const CATEGORY_VIEWS = {
 	"syslog-targets": "view-syslog-targets",
 	"tls-throttle": "view-daemon-config",
 	"control-plane-reservation": "view-daemon-config",
+	"boot-console": "view-daemon-config",
 	logs: "view-monitoring",
 	kmsg: "view-monitoring",
 	"server-health": "view-monitoring",
@@ -1186,6 +1187,7 @@ const SERVICE_TAB_VIEWS = {
 	routes: "view-daemon-config",
 	"tls-throttle": "view-daemon-config",
 	"control-plane-reservation": "view-daemon-config",
+	"boot-console": "view-daemon-config",
 	backup: "view-daemon-config",
 	"volume-backup-config": "view-daemon-config",
 	"factory-reset": "view-daemon-config",
@@ -1265,6 +1267,8 @@ function renderCurrentView() {
 			refreshTlsThrottleStatus();
 		else if (route.category === "control-plane-reservation")
 			refreshControlPlaneReservation();
+		else if (route.category === "boot-console")
+			refreshBootConsole();
 		else if (route.category === "logs")
 			renderLogsList();
 		else if (route.category === "kmsg")
@@ -5747,6 +5751,82 @@ async function showBuildLog(file) {
 		view.textContent = "Could not read " + file + ": " + e.message;
 	}
 }
+
+
+/* ---------- Boot Console (issue #24) ---------- */
+
+let bootConsoleDirty = false;
+
+async function refreshBootConsole() {
+	try {
+		const data = await apiRequest("GET", "/v1/system/boot-console");
+		const cfg = data.config || {};
+		const grid = document.getElementById("bcf-effect");
+		const body = document.getElementById("boot-entries-body");
+
+		if (!bootConsoleDirty) {
+			document.getElementById("bcf-consoles").value = (cfg.consoles || []).join(" ");
+			document.getElementById("bcf-extra").value = cfg.extra || "";
+		}
+		grid.textContent = "";
+		grid.appendChild(fieldBlock("Rendered", cfg.rendered || "(none)"));
+
+		body.textContent = "";
+		const entries = data.loader_entries || [];
+
+		if (entries.length === 0) {
+			const tr = document.createElement("tr");
+			const td = document.createElement("td");
+
+			td.colSpan = 2;
+			td.className = "empty";
+			/* Not an error: a dev daemon has no ESP, and saying so beats
+			 * an empty table that looks like something failed. */
+			td.textContent = "No loader entries visible from here — this is not an installed host";
+			tr.appendChild(td);
+			body.appendChild(tr);
+			return;
+		}
+		for (const e of entries) {
+			const tr = document.createElement("tr");
+
+			for (const text of [e.entry, e.options]) {
+				const td = document.createElement("td");
+
+				td.textContent = text;
+				tr.appendChild(td);
+			}
+			body.appendChild(tr);
+		}
+	} catch (e) {
+		/* Best-effort, same as every other panel here. */
+	}
+}
+
+for (const id of ["bcf-consoles", "bcf-extra"]) {
+	document.getElementById(id).addEventListener("input", () => {
+		bootConsoleDirty = true;
+	});
+}
+
+document.getElementById("bcf-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+	const consoles = document.getElementById("bcf-consoles").value.trim();
+
+	try {
+		const res = await apiRequest("PUT", "/v1/system/boot-console", {
+			consoles: consoles === "" ? [] : consoles.split(/\s+/),
+			extra: document.getElementById("bcf-extra").value.trim(),
+		});
+
+		bootConsoleDirty = false;
+		showStatus("Boot console saved — " + (res.loader_entries_updated || 0) +
+		           " loader entry/entries rewritten; takes effect at the next boot.", false);
+		await refreshBootConsole();
+	} catch (e) {
+		showStatus("Could not save the boot console: " + e.message, true);
+	}
+});
 
 /* ---------- Control Plane Reservation (issue #86) ---------- */
 

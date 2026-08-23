@@ -75,7 +75,7 @@ Services
   Syslog
 System
   Software         (tabs: Recipes / Reconcile / Images / Packages / Repo & Sync / Cache & Artifacts / Package Builds / Update)
-  Host             (tabs: Daemon / Site / Routes / Sessions / Swap / Rolling Restart / Storage Placement / Control Plane / TLS Throttle / Backup / Volume Backups / Factory Reset)
+  Host             (tabs: Daemon / Site / Routes / Sessions / Swap / Rolling Restart / Storage Placement / Boot Console / Control Plane / TLS Throttle / Backup / Volume Backups / Factory Reset)
   Devices
   Monitoring       (tabs: Host Stats / Processes / Log Store / Kernel Log / Server Health)
 ```
@@ -95,7 +95,7 @@ The **Reconcile** tab is the one that earns the consolidation: it puts what is d
 
 **Host** is one leaf as well, and it is where everything you *configure about the box* ended up: identity, listeners, routes, sessions, swap, the rolling-restart window, storage placement, TLS throttling, backups, and Factory Reset. **Devices** stays outside it, because a physical hardware inventory is something you look at rather than configure — Routes is not in that category despite an earlier version of this page grouping the two, since the routing table is edited from its own page. **Update** and **Package Builds** live under Software, where anything about the software on this box belongs. Maintenance is gone as a grouping: it held three unrelated pages that each have a real home.
 
-Host carries twelve tabs, which is a lot for one bar — the alternative was a folder of eleven single-form pages, and one destination you scan beats a tree you navigate.
+Host carries thirteen tabs, which is a lot for one bar — the alternative was a folder of eleven single-form pages, and one destination you scan beats a tree you navigate.
 
 **Every tab on a collapsed page is an address.** Clicking one changes the URL to the address that tab replaced (`#routes`, `#processes`, `#ldap-users`), so tabs are bookmarkable and the browser's back button walks them. That is also what makes them render: a tab's own data is fetched by the same route handler its old page used, and before this, clicking a tab only revealed its panel — Host > Routes sat on "Loading…" indefinitely, because nothing had asked for routes. Tabs that are *not* addresses (a container's Summary/Hardware/Options/Console) are unaffected.
 

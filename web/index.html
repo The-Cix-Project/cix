@@ -734,6 +734,7 @@
 				<button type="button" class="tab-button" data-tab="storage-placement">Storage Placement</button>
 				<button type="button" class="tab-button" data-tab="tls-throttle">TLS Throttle</button>
 				<button type="button" class="tab-button" data-tab="control-plane-reservation">Control Plane</button>
+				<button type="button" class="tab-button" data-tab="boot-console">Boot Console</button>
 				<button type="button" class="tab-button" data-tab="backup">Backup</button>
 				<button type="button" class="tab-button" data-tab="volume-backup-config">Volume Backups</button>
 				<button type="button" class="tab-button" data-tab="factory-reset">Factory Reset</button>
@@ -929,6 +930,44 @@
 					<a href="#backup">Maintenance &gt; Backup</a> chooses the disk automatic snapshots are
 					written to; <a href="#swap">Host &gt; Host Swap</a> chooses the disk the swap file lives
 					on (ADR-0169).</p>
+			</div>
+		</div>
+			<div class="tab-panel" data-tab="boot-console" hidden>
+			<div class="view-list">
+				<h2>Boot Console</h2>
+				<p class="hint">
+					What this machine's own boot line says about consoles (issue #24). An installed
+					host boots through systemd-boot, and its loader entries carried a fixed
+					<code>console=tty0 console=ttyS0</code> &mdash; fine as a default, and impossible
+					to change without reinstalling. Real hardware sometimes needs a serial console at
+					a particular baud, a framebuffer argument to produce any output at all, or
+					exactly the opposite (<code>nomodeset</code>) when the framebuffer is the problem.
+				</p>
+				<p class="hint">
+					Saving rewrites the loader entries already on the ESP, so it takes effect at the
+					<strong>next boot</strong> rather than at the next A/B update. Everything from
+					<code>root=</code> onward is left exactly as it was: that half of the line decides
+					whether the machine boots at all, and is not editable here.
+				</p>
+				<form id="bcf-form">
+					<label class="wide">
+						Consoles (space separated, in order &mdash; e.g. <code>tty0 ttyS0,115200n8</code>)
+						<input type="text" id="bcf-consoles" placeholder="tty0 ttyS0">
+					</label>
+					<label class="wide">
+						Extra kernel parameters (e.g. <code>nomodeset video=efifb:off</code>)
+						<input type="text" id="bcf-extra" placeholder="">
+					</label>
+					<button type="submit">Save</button>
+				</form>
+				<h3>In effect</h3>
+				<div class="detail-grid" id="bcf-effect"></div>
+				<table id="boot-entries">
+					<thead><tr><th>Loader entry</th><th>options</th></tr></thead>
+					<tbody id="boot-entries-body">
+						<tr><td colspan="2" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
 			</div>
 		</div>
 			<div class="tab-panel" data-tab="control-plane-reservation" hidden>

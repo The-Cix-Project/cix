@@ -2158,6 +2158,80 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/boot-console:
+    get:
+      summary: The installed system's own boot console parameters (issue #24)
+      description: >
+        An installed thinC host boots through systemd-boot, and every
+        loader entry carried a hardcoded `console=tty0 console=ttyS0`.
+        Fine as a default, and impossible to change without
+        reinstalling: real hardware sometimes needs a serial console at
+        a particular baud, a framebuffer argument to produce any output
+        at all, or exactly the opposite (`nomodeset`) when the
+        framebuffer is the problem.
+
+        Reports both the configured intent and the options line each
+        loader entry on the ESP currently carries -- those differ on any
+        box whose ESP is not writable from here, and the difference is
+        the thing worth seeing. `loader_entries` is empty on a machine
+        that is not an installed host (a dev daemon), which is a fact
+        rather than an error.
+      operationId: getBootConsole
+      responses:
+        "200":
+          description: Configured consoles, the rendered line, and the live loader entries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BootConsole"
+    put:
+      summary: Set the boot console parameters (issue #24)
+      description: >
+        Absent fields are unchanged. Applied to the loader entries
+        already on the ESP, not only to future ones -- an operator who
+        cannot see the console is not in a position to wait for the next
+        A/B update. Everything from `root=` onward in each entry is
+        preserved byte for byte: that half of the line decides whether
+        the machine boots at all and is not this endpoint's business.
+
+        Takes effect at the next boot.
+
+        Deliberately NOT a free-form kernel command line. A console is a
+        bare tty name with optional comma-separated options
+        ("ttyS0,115200n8"); extra parameters are plain kernel arguments.
+        `console=`, `root=` and `init=` are refused inside `extra`, and
+        anything that could split the boot line (whitespace inside a
+        console name, quotes, newlines, a leading /dev/) is refused
+        rather than escaped -- this string is written into the file that
+        decides whether the machine comes back.
+      operationId: setBootConsole
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                consoles:
+                  type: array
+                  items:
+                    type: string
+                extra:
+                  type: string
+      responses:
+        "200":
+          description: Saved, with how many loader entries were rewritten
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BootConsole"
+        "400":
+          description: A console name or extra parameter that cannot be accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /system/control-plane-reservation:
     get:
       summary: How much of the machine is held back for the daemon itself (issue #86)
@@ -9674,6 +9748,38 @@ components:
           type: number
         total_usec:
           type: integer
+    BootConsole:
+      type: object
+      properties:
+        config:
+          type: object
+          properties:
+            consoles:
+              type: array
+              items:
+                type: string
+            extra:
+              type: string
+            rendered:
+              type: string
+              description: The exact console portion written into a loader entry's options line.
+        loader_entries:
+          type: array
+          description: The options line each entry on the ESP currently carries.
+          items:
+            type: object
+            properties:
+              entry:
+                type: string
+              options:
+                type: string
+        loader_entries_updated:
+          type: integer
+          description: PUT only -- how many entries were rewritten.
+        applies:
+          type: string
+          enum: ["next-boot"]
+
     ControlPlaneReservation:
       type: object
       required: [enabled, cpu_percent, memory_bytes, host_cpus, host_memory_bytes, cgroup]
