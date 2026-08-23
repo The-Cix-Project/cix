@@ -2509,12 +2509,9 @@ function drawChart(canvas, series, opts) {
 	const style = getComputedStyle(document.body);
 	const textColor = style.getPropertyValue("--muted").trim() || "#888";
 	const gridColor = style.getPropertyValue("--border").trim() || "#ccc";
-	const marginLeft = 46;
 	const marginBottom = 16;
 	const marginTop = 6;
 	const marginRight = 6;
-	const plotW = w - marginLeft - marginRight;
-	const plotH = h - marginTop - marginBottom;
 
 	ctx.clearRect(0, 0, w, h);
 
@@ -2528,6 +2525,20 @@ function drawChart(canvas, series, opts) {
 	if (maxV <= 0) maxV = 1;
 
 	ctx.font = "10px -apple-system, BlinkMacSystemFont, sans-serif";
+
+	/*
+	 * The left margin is measured, not assumed. A fixed 46px fitted
+	 * "100%" and "5.1 KiB/s" and silently clipped the leading digit off
+	 * anything wider -- which is how a per-network traffic chart came
+	 * to label its top gridline "0.1 KiB/s" when the real value was
+	 * 10.1: not a chart that looked cramped, a chart that read wrong by
+	 * a factor of a hundred.
+	 */
+	const marginLeft = Math.max(
+		...[0, 0.5, 1].map((frac) => ctx.measureText(opts.formatY(frac * maxV)).width)
+	) + 9;
+	const plotW = w - marginLeft - marginRight;
+	const plotH = h - marginTop - marginBottom;
 	ctx.strokeStyle = gridColor;
 	ctx.fillStyle = textColor;
 	ctx.lineWidth = 1;
