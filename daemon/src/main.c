@@ -34,6 +34,7 @@
 #include "bootconsole.h"
 #include "kernelpolicy.h"
 #include "zswap.h"
+#include "dhcp.h"
 #include "stallwatch.h"
 #include "exec.h"
 #include "http.h"
@@ -160,6 +161,7 @@ static char BOOTCONSOLE_STATE_PATH[PATH_MAX]; /* issue #24 -- boot console param
 static char KERNELPOLICY_STATE_PATH[PATH_MAX]; /* issue #65 -- which kernel line this box tracks */
 static char KERNEL_RELEASES_PATH[PATH_MAX];    /* issue #65 -- cached kernel.org releases.json */
 static char ZSWAP_STATE_PATH[PATH_MAX];        /* issue #51 -- compressed swap cache settings */
+static char DHCP_STATE_PATH[PATH_MAX];         /* DHCP ranges and static reservations */
 static char STALLWATCH_RECORDS_PATH[PATH_MAX]; /* issue #100 -- control-plane stall records */
 static char VOLUMES_STATE_PATH[PATH_MAX];      /* issue #88 */
 static char VOLUMES_DIR[PATH_MAX];             /* issue #88 -- where volume data lives */
@@ -310,6 +312,7 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(KERNEL_RELEASES_PATH, sizeof(KERNEL_RELEASES_PATH), "%s/kernel_releases.json",
 	         STATE_DIR);
 	snprintf(ZSWAP_STATE_PATH, sizeof(ZSWAP_STATE_PATH), "%s/zswap.json", STATE_DIR);
+	snprintf(DHCP_STATE_PATH, sizeof(DHCP_STATE_PATH), "%s/dhcp.json", STATE_DIR);
 	snprintf(STALLWATCH_RECORDS_PATH, sizeof(STALLWATCH_RECORDS_PATH),
 	         "%s/control_plane_stalls.jsonl", STATE_DIR);
 	/*
@@ -16215,6 +16218,10 @@ static void handle_network_ports_get(int fd, const char *name)
 	jw_free(&w);
 }
 
+/* Defined with the rest of the DHCP handlers further down; needed here
+ * so deleting a network can drop its DHCP config in the same breath. */
+static void dhcp_apply_and_maybe_restart(void);
+
 static void handle_network_get_one(int fd, const char *name)
 {
 	struct network_def *net = network_find(name);
@@ -16238,6 +16245,11 @@ static void handle_network_delete(int fd, const char *name)
 		respond_network_error(fd, nerr);
 		return;
 	}
+	/* A DHCP config for a network that no longer exists is a range
+	 * nothing can serve, kept alive by nothing but our own forgetting
+	 * to drop it. */
+	dhcp_forget_network(name);
+	dhcp_apply_and_maybe_restart();
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
@@ -19341,6 +19353,341 @@ static void kernel_policy_write_json(struct json_writer *w)
 	jw_obj_close(w);
 }
 
+/* ---------- DHCP (ADR-0197) ---------- */
+
+/*
+ * Whether an address lies inside a network's own subnet, and whether it
+ * lies inside an inclusive range. Both are two lines and are used only
+ * by the DHCP validation below -- worth naming rather than open-coding
+ * a mask twice, not worth a new module.
+ */
+static int dhcp_ip_in_subnet(const struct network_def *net, uint32_t ip_be)
+{
+	uint32_t mask = net->prefix_len == 0 ? 0 : htonl(0xffffffffu << (32 - net->prefix_len));
+
+	return (ip_be & mask) == (net->base_be & mask);
+}
+
+static int dhcp_ip_in_range(uint32_t ip_be, uint32_t start_be, uint32_t end_be)
+{
+	uint32_t ip = ntohl(ip_be);
+
+	return ip >= ntohl(start_be) && ip <= ntohl(end_be);
+}
+
+/* Whether this container is one the DNS subsystem already knows as a
+ * server. Asked through the enumerator dns.c already exposes, rather
+ * than a second lookup of its own table. */
+static int dhcp_server_is_dns_server(const char *name)
+{
+	char names[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
+	int count;
+	int i;
+
+	if (name == NULL || name[0] == '\0')
+		return 0;
+	count = dns_server_list_containers(names, DNS_SERVER_MAX);
+	for (i = 0; i < count; i++)
+		if (strcmp(names[i], name) == 0)
+			return 1;
+	return 0;
+}
+
+static void arm_rolling_restart_timer(const char *name, int delay_seconds);
+static int rolling_jitter_seconds(int window);
+
+/*
+ * Pushes the rendered files into every running DNS server and, if the
+ * ranges themselves changed, rolls those servers so the new ones are
+ * actually in force.
+ *
+ * The restart goes through the SAME jittered timer a rolling image
+ * update uses, rather than a second restart path of its own: with two
+ * servers registered, that jitter is what keeps them from going down
+ * together, which is the whole reason there are two.
+ */
+#define DHCP_RESTART_JITTER_SECONDS 20
+
+static void dhcp_apply_and_maybe_restart(void)
+{
+	int conf_changed = 0;
+	char names[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
+	int count;
+	int i;
+
+	dhcp_sync_all(&conf_changed);
+	if (!conf_changed)
+		return;
+	count = dns_server_list_containers(names, DNS_SERVER_MAX);
+	for (i = 0; i < count; i++) {
+		struct registry_entry *e = registry_find(names[i]);
+
+		if (e == NULL || !e->running)
+			continue;
+		arm_rolling_restart_timer(names[i], rolling_jitter_seconds(DHCP_RESTART_JITTER_SECONDS));
+	}
+	logstore_write("thincd", "info",
+	               "dhcp: ranges changed -- rolling %d DNS/DHCP server(s) so they take effect",
+	               count);
+}
+
+static void handle_dhcp_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	dhcp_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_dhcp_leases_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "leases");
+	dhcp_leases_write_json(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_dhcp_static_post(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = json_parse(body, body_len);
+	struct dhcp_static entry;
+	const char *mac;
+	const char *ip;
+	const char *host;
+	struct in_addr addr;
+	enum dhcp_error err;
+	struct json_writer w;
+
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	memset(&entry, 0, sizeof(entry));
+	mac = json_as_string(json_object_get(root, "mac"));
+	ip = json_as_string(json_object_get(root, "ip"));
+	host = json_as_string(json_object_get(root, "hostname"));
+	if (mac != NULL)
+		snprintf(entry.mac, sizeof(entry.mac), "%s", mac);
+	if (host != NULL)
+		snprintf(entry.hostname, sizeof(entry.hostname), "%s", host);
+	if (ip != NULL && inet_pton(AF_INET, ip, &addr) == 1)
+		entry.ip_be = addr.s_addr;
+	json_free(root);
+
+	err = dhcp_static_add(&entry);
+	if (err == DHCP_ERR_INVALID) {
+		respond_error(fd, 400, "Bad Request",
+		               "mac must be lower-case aa:bb:cc:dd:ee:ff, ip must be a valid IPv4 "
+		               "address, and hostname (if given) must be a plain DNS label");
+		return;
+	}
+	if (err == DHCP_ERR_DUPLICATE) {
+		respond_error(fd, 409, "Conflict",
+		               "that MAC already has a reservation, or that address is already "
+		               "reserved for a different MAC");
+		return;
+	}
+	if (err == DHCP_ERR_FULL) {
+		respond_error(fd, 507, "Insufficient Storage", "too many static reservations");
+		return;
+	}
+	if (err != DHCP_OK) {
+		respond_error(fd, 500, "Internal Server Error", "failed to persist the reservation");
+		return;
+	}
+	/* Static entries are live: the servers re-read them on SIGHUP, so
+	 * no restart is involved and none is triggered. */
+	dhcp_apply_and_maybe_restart();
+	jw_init(&w);
+	dhcp_write_json(&w);
+	respond_json(fd, 201, "Created", &w);
+	jw_free(&w);
+}
+
+static void handle_dhcp_static_delete(int fd, const char *mac)
+{
+	enum dhcp_error err = dhcp_static_delete(mac);
+
+	if (err == DHCP_ERR_NOT_FOUND) {
+		respond_error(fd, 404, "Not Found", "no reservation for that MAC");
+		return;
+	}
+	if (err != DHCP_OK) {
+		respond_error(fd, 500, "Internal Server Error", "failed to persist the removal");
+		return;
+	}
+	dhcp_apply_and_maybe_restart();
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+static void handle_network_dhcp_get(int fd, const char *network)
+{
+	const struct dhcp_network *cfg;
+	struct dhcp_network empty;
+	struct json_writer w;
+
+	if (network_find(network) == NULL) {
+		respond_error(fd, 404, "Not Found", "no such network");
+		return;
+	}
+	cfg = dhcp_network_find(network);
+	if (cfg == NULL) {
+		/*
+		 * A network with no DHCP config is not an error and not an
+		 * empty body: it is a network with DHCP off, which is a real
+		 * answer and the one every network starts with.
+		 */
+		memset(&empty, 0, sizeof(empty));
+		snprintf(empty.network, sizeof(empty.network), "%s", network);
+		/* The same default a PUT would start from, so what you read
+		 * here and what you would get by enabling it are the same
+		 * number rather than a 0 that means "unset" in one place. */
+		empty.lease_seconds = DHCP_DEFAULT_LEASE_SECONDS;
+		cfg = &empty;
+	}
+	jw_init(&w);
+	dhcp_network_write_json(cfg, &w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_network_dhcp_put(int fd, const char *network, const char *body, size_t body_len)
+{
+	struct json_value *root;
+	struct dhcp_network cfg;
+	const struct dhcp_network *existing;
+	const struct json_value *jen;
+	const char *s;
+	struct in_addr addr;
+	enum dhcp_error err;
+	struct json_writer w;
+	struct network_def *net = network_find(network);
+
+	if (net == NULL) {
+		respond_error(fd, 404, "Not Found", "no such network");
+		return;
+	}
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	/* Partial update over whatever is configured now, the same
+	 * convention every other config PUT here uses. */
+	existing = dhcp_network_find(network);
+	if (existing != NULL) {
+		cfg = *existing;
+	} else {
+		memset(&cfg, 0, sizeof(cfg));
+		cfg.lease_seconds = DHCP_DEFAULT_LEASE_SECONDS;
+	}
+	snprintf(cfg.network, sizeof(cfg.network), "%s", network);
+	jen = json_object_get(root, "enabled");
+	if (jen != NULL && jen->type == JSON_BOOL)
+		cfg.enabled = jen->u.boolean;
+	s = json_as_string(json_object_get(root, "range_start"));
+	if (s != NULL && inet_pton(AF_INET, s, &addr) == 1)
+		cfg.range_start_be = addr.s_addr;
+	s = json_as_string(json_object_get(root, "range_end"));
+	if (s != NULL && inet_pton(AF_INET, s, &addr) == 1)
+		cfg.range_end_be = addr.s_addr;
+	s = json_as_string(json_object_get(root, "router"));
+	if (s != NULL && inet_pton(AF_INET, s, &addr) == 1)
+		cfg.router_be = addr.s_addr;
+	if (json_object_get(root, "lease_seconds") != NULL)
+		cfg.lease_seconds = (int)json_as_number(json_object_get(root, "lease_seconds"));
+	s = json_as_string(json_object_get(root, "server"));
+	if (s != NULL)
+		snprintf(cfg.server, sizeof(cfg.server), "%s", s);
+	json_free(root);
+
+	if (cfg.enabled) {
+		char errbuf[256];
+
+		if (!dhcp_ip_in_subnet(net, cfg.range_start_be) ||
+		    !dhcp_ip_in_subnet(net, cfg.range_end_be)) {
+			/*
+			 * A range outside its own subnet is a range no client on
+			 * that wire can ever be given. Checked here rather than
+			 * left to dnsmasq, which would take it, start, and answer
+			 * nothing.
+			 */
+			respond_error(fd, 400, "Bad Request",
+			               "the range must lie inside this network's own subnet");
+			return;
+		}
+		if (net->has_address &&
+		    dhcp_ip_in_range(net->address_be, cfg.range_start_be, cfg.range_end_be)) {
+			respond_error(fd, 400, "Bad Request",
+			               "the range covers this network's own address -- handing the host's "
+			               "own IP to a client is a conflict, not a lease");
+			return;
+		}
+		/*
+		 * The server must already be a REGISTERED DNS SERVER. That is
+		 * what makes a lease resolvable the moment it is issued: the
+		 * instance handing out the address is the one answering for
+		 * the name. Anything else would need glue between two daemons
+		 * and a window where the two disagree.
+		 */
+		if (!dhcp_server_is_dns_server(cfg.server)) {
+			snprintf(errbuf, sizeof(errbuf),
+			         "server \"%s\" is not a registered DNS server -- DHCP is served by the "
+			         "same dnsmasq that serves DNS, so a lease resolves the moment it is "
+			         "issued; register it with POST /v1/dns/servers first",
+			         cfg.server);
+			respond_error(fd, 400, "Bad Request", errbuf);
+			return;
+		}
+	}
+
+	err = dhcp_network_set(&cfg);
+	if (err == DHCP_ERR_INVALID) {
+		respond_error(fd, 400, "Bad Request",
+		               "enabling DHCP needs range_start, range_end (start <= end), a "
+		               "lease_seconds between 60 and 30 days, and a server");
+		return;
+	}
+	if (err == DHCP_ERR_FULL) {
+		respond_error(fd, 507, "Insufficient Storage", "too many DHCP-configured networks");
+		return;
+	}
+	if (err != DHCP_OK) {
+		respond_error(fd, 500, "Internal Server Error", "failed to persist the DHCP config");
+		return;
+	}
+	dhcp_apply_and_maybe_restart();
+	jw_init(&w);
+	dhcp_network_write_json(dhcp_network_find(network), &w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_network_dhcp_delete(int fd, const char *network)
+{
+	enum dhcp_error err = dhcp_network_delete(network);
+
+	if (err == DHCP_ERR_NOT_FOUND) {
+		respond_error(fd, 404, "Not Found", "this network has no DHCP configuration");
+		return;
+	}
+	if (err != DHCP_OK) {
+		respond_error(fd, 500, "Internal Server Error", "failed to persist the removal");
+		return;
+	}
+	dhcp_apply_and_maybe_restart();
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
 /* ---------- Issue #51: zswap ---------- */
 
 static void handle_zswap_get(int fd)
@@ -21071,6 +21418,22 @@ static void dispatch(int fd, const struct http_request *req)
 			return;
 		}
 	}
+	if (strcmp(req->path, "/v1/dhcp") == 0 && strcmp(req->method, "GET") == 0) {
+		handle_dhcp_get(fd);
+		return;
+	}
+	if (strcmp(req->path, "/v1/dhcp/leases") == 0 && strcmp(req->method, "GET") == 0) {
+		handle_dhcp_leases_get(fd);
+		return;
+	}
+	if (strcmp(req->path, "/v1/dhcp/static") == 0 && strcmp(req->method, "POST") == 0) {
+		handle_dhcp_static_post(fd, req->body, req->body_len);
+		return;
+	}
+	if (strncmp(req->path, "/v1/dhcp/static/", 16) == 0 && strcmp(req->method, "DELETE") == 0) {
+		handle_dhcp_static_delete(fd, req->path + 16);
+		return;
+	}
 	if (strcmp(req->path, "/v1/system/zswap") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
 			handle_zswap_get(fd);
@@ -21586,6 +21949,24 @@ static void dispatch(int fd, const struct http_request *req)
 				net_name[nlen - 11] = '\0';
 				handle_network_attach_interface(fd, net_name, req->body, req->body_len);
 				return;
+			}
+			if (nlen > 5 && strcmp(name + nlen - 5, "/dhcp") == 0 && nlen - 5 < NETWORK_NAME_MAX) {
+				char net_name[NETWORK_NAME_MAX];
+
+				memcpy(net_name, name, nlen - 5);
+				net_name[nlen - 5] = '\0';
+				if (strcmp(req->method, "GET") == 0) {
+					handle_network_dhcp_get(fd, net_name);
+					return;
+				}
+				if (strcmp(req->method, "PUT") == 0) {
+					handle_network_dhcp_put(fd, net_name, req->body, req->body_len);
+					return;
+				}
+				if (strcmp(req->method, "DELETE") == 0) {
+					handle_network_dhcp_delete(fd, net_name);
+					return;
+				}
 			}
 			if (nlen > 6 && strcmp(name + nlen - 6, "/ports") == 0 &&
 			    strcmp(req->method, "GET") == 0 && nlen - 6 < NETWORK_NAME_MAX) {
@@ -24130,6 +24511,7 @@ int main(int argc, char **argv)
 	 * deliberately off, so this is the setting's only chance to survive
 	 * a reboot. */
 	zswap_init(ZSWAP_STATE_PATH);
+	dhcp_init(DHCP_STATE_PATH);
 	/* A cached answer from a previous run, if there is one. Its own
 	 * mtime is the fetch time -- the file IS the record, so there is
 	 * no second place for "when did we last ask" to go stale. */

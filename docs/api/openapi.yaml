@@ -1958,6 +1958,100 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /dhcp:
+    get:
+      summary: Every DHCP-configured network and every static reservation (ADR-0197)
+      operationId: getDhcp
+      responses:
+        "200":
+          description: The whole DHCP configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Dhcp"
+  /dhcp/leases:
+    get:
+      summary: Current leases, read from the serving container's own lease file (ADR-0197)
+      description: >
+        Read from each running DNS/DHCP server's lease file every time,
+        never cached: these are the server's own record of what it
+        handed out, and a copy kept here would be a second answer to a
+        question only the server can answer.
+
+        A lease is deliberately **not** a DNS record. Records are
+        durable operator intent (`/dns/records`); a lease is short-lived
+        state owned by its server. It resolves anyway, because the
+        instance that issued the address is the same dnsmasq that
+        answers for the name.
+      operationId: getDhcpLeases
+      responses:
+        "200":
+          description: Every current lease across every running server
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  leases:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DhcpLease"
+  /dhcp/static:
+    post:
+      summary: Reserve an address for a MAC (ADR-0197)
+      description: >
+        Live: the reservations file is re-read by the server on SIGHUP,
+        so this takes effect without restarting anything.
+
+        Refused rather than sanitised. The MAC must be lower-case
+        `aa:bb:cc:dd:ee:ff` and the hostname, if given, must be a plain
+        DNS label -- both are written into a file dnsmasq parses, and
+        the hostname additionally becomes a name it answers for. A MAC
+        that already has a reservation, or an address already reserved
+        for a different MAC, is a `409`: two reservations for one
+        address is a conflict waiting for both machines to be on at
+        once.
+      operationId: addDhcpReservation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mac, ip]
+              properties:
+                mac:
+                  type: string
+                ip:
+                  type: string
+                hostname:
+                  type: string
+      responses:
+        "201":
+          description: Reserved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Dhcp"
+        "400":
+          description: Malformed MAC, address, or hostname
+        "409":
+          description: That MAC or that address is already reserved
+  /dhcp/static/{mac}:
+    delete:
+      summary: Remove a reservation (ADR-0197)
+      operationId: deleteDhcpReservation
+      parameters:
+        - name: mac
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Removed
+        "404":
+          description: No reservation for that MAC
   /system/zswap:
     get:
       summary: The compressed swap cache (issue #51)
@@ -4228,6 +4322,107 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /networks/{name}/dhcp:
+    get:
+      summary: This network's DHCP configuration (ADR-0197)
+      description: >
+        A network with no configuration is reported as DHCP-off rather
+        than as a 404 -- that is a real answer, and the one every
+        network starts with. The `lease_seconds` reported for such a
+        network is the same default a PUT would start from, so reading
+        it and enabling it agree on the number.
+      operationId: getNetworkDhcp
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: This network's DHCP configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DhcpNetwork"
+        "404":
+          description: No such network
+    put:
+      summary: Configure DHCP on this network (ADR-0197)
+      description: >
+        Partial update -- absent fields keep what is configured now.
+
+        `server` must name a container that is **already a registered
+        DNS server**. DHCP is served by the same dnsmasq that serves
+        DNS, so a lease is resolvable the moment it is issued; requiring
+        it makes that structural rather than something to keep in sync.
+
+        Everything that could not actually serve is refused here rather
+        than discovered by a client that never got an address: a range
+        outside this network's own subnet, a range covering the
+        network's own address (that is a conflict, not a lease), a range
+        that runs backwards, a lease time outside 60s..30d, or enabling
+        with no addresses at all.
+
+        **Changing a range restarts the serving containers.** dnsmasq
+        reads ranges only at startup, so rendering without restarting
+        would leave a setting that says it is in force and is not. The
+        restart goes through the same jittered rolling-restart timer a
+        rolling image update uses. Static reservations are unaffected --
+        they are live via SIGHUP.
+      operationId: setNetworkDhcp
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                range_start:
+                  type: string
+                range_end:
+                  type: string
+                lease_seconds:
+                  type: integer
+                router:
+                  type: string
+                  description: Default route to advertise (DHCP option 3). Omit to advertise none.
+                server:
+                  type: string
+                  description: A container already registered via POST /dns/servers.
+      responses:
+        "200":
+          description: Saved and rendered to the serving container
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DhcpNetwork"
+        "400":
+          description: A configuration that could not serve
+        "404":
+          description: No such network
+    delete:
+      summary: Remove this network's DHCP configuration (ADR-0197)
+      operationId: deleteNetworkDhcp
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Removed
+        "404":
+          description: This network had no DHCP configuration
   /networks/{name}/ports:
     get:
       summary: What is plugged into this network's bridge right now (issue #26)
@@ -10273,6 +10468,62 @@ components:
           description: Compression algorithms this kernel was built with, from /proc/crypto. Empty means no zswap at all.
           items:
             type: string
+    DhcpNetwork:
+      type: object
+      properties:
+        network:
+          type: string
+        enabled:
+          type: boolean
+        range_start:
+          type: string
+          nullable: true
+        range_end:
+          type: string
+          nullable: true
+        lease_seconds:
+          type: integer
+        router:
+          type: string
+          nullable: true
+        server:
+          type: string
+          nullable: true
+          description: The registered DNS server that also serves DHCP here.
+    Dhcp:
+      type: object
+      properties:
+        networks:
+          type: array
+          items:
+            $ref: "#/components/schemas/DhcpNetwork"
+        static:
+          type: array
+          items:
+            type: object
+            properties:
+              mac:
+                type: string
+              ip:
+                type: string
+              hostname:
+                type: string
+                nullable: true
+    DhcpLease:
+      type: object
+      properties:
+        server:
+          type: string
+        mac:
+          type: string
+        ip:
+          type: string
+        hostname:
+          type: string
+          nullable: true
+          description: Null when the client offered no name.
+        expires_at:
+          type: integer
     BootConsole:
       type: object
       properties:

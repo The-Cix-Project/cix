@@ -3131,6 +3131,243 @@ static int cmd_time(const struct thinc_client *c, int json_mode, int argc, char 
 }
 
 /*
+ * DHCP (ADR-0197). Served by the same dnsmasq that serves DNS, which is
+ * why enabling it names a registered DNS server rather than a host and
+ * port -- a lease resolves the moment it is handed out.
+ */
+static void fmt_dhcp(const struct json_value *v)
+{
+	const struct json_value *nets = json_object_get(v, "networks");
+	const struct json_value *statics = json_object_get(v, "static");
+	size_t i;
+	int any = 0;
+
+	if (nets != NULL && nets->type == JSON_ARRAY) {
+		for (i = 0; i < nets->u.array.count; i++) {
+			const struct json_value *n = nets->u.array.items[i];
+			const struct json_value *en = json_object_get(n, "enabled");
+			int on = en != NULL && en->type == JSON_BOOL && en->u.boolean;
+
+			if (!any) {
+				printf("%-16s %-9s %-32s %-8s %s\n", "NETWORK", "STATE", "RANGE", "LEASE",
+				       "SERVER");
+				any = 1;
+			}
+			printf("%-16s %-9s %-32s %-8lds %s\n",
+			       json_str_field(n, "network") != NULL ? json_str_field(n, "network") : "-",
+			       on ? "enabled" : "disabled",
+			       json_str_field(n, "range_start") != NULL
+			           ? json_str_field(n, "range_start")
+			           : "-",
+			       (long)json_as_number(json_object_get(n, "lease_seconds")),
+			       json_str_field(n, "server") != NULL ? json_str_field(n, "server") : "-");
+			if (json_str_field(n, "range_end") != NULL)
+				printf("%-16s %-9s   .. %s\n", "", "", json_str_field(n, "range_end"));
+		}
+	}
+	if (!any)
+		printf("no network has DHCP configured\n");
+	if (statics != NULL && statics->type == JSON_ARRAY && statics->u.array.count > 0) {
+		printf("\n%-20s %-16s %s\n", "MAC", "IP", "HOSTNAME");
+		for (i = 0; i < statics->u.array.count; i++) {
+			const struct json_value *e = statics->u.array.items[i];
+
+			printf("%-20s %-16s %s\n", json_str_field(e, "mac"), json_str_field(e, "ip"),
+			       json_str_field(e, "hostname") != NULL ? json_str_field(e, "hostname") : "-");
+		}
+	}
+}
+
+static void fmt_dhcp_leases(const struct json_value *v)
+{
+	const struct json_value *leases = json_object_get(v, "leases");
+	size_t i;
+
+	if (leases == NULL || leases->type != JSON_ARRAY || leases->u.array.count == 0) {
+		printf("no leases -- nothing has asked for an address yet\n");
+		return;
+	}
+	printf("%-20s %-16s %-20s %-12s %s\n", "MAC", "IP", "HOSTNAME", "EXPIRES(UNIX)", "SERVER");
+	for (i = 0; i < leases->u.array.count; i++) {
+		const struct json_value *e = leases->u.array.items[i];
+
+		printf("%-20s %-16s %-20s %-12lld %s\n", json_str_field(e, "mac"),
+		       json_str_field(e, "ip"),
+		       json_str_field(e, "hostname") != NULL ? json_str_field(e, "hostname") : "-",
+		       (long long)json_as_number(json_object_get(e, "expires_at")),
+		       json_str_field(e, "server"));
+	}
+}
+
+static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char **argv)
+{
+	struct thinc_response r;
+	const char *sub = argc > 0 ? argv[0] : "show";
+	const char *network = NULL, *range = NULL, *server = NULL, *router = NULL;
+	const char *mac = NULL, *ip = NULL, *hostname = NULL;
+	long lease_seconds = -1;
+	char path[256];
+	struct json_writer w;
+	int i;
+
+	if (strcmp(sub, "show") == 0) {
+		if (thinc_client_request(c, "GET", "/v1/dhcp", NULL, &r) != 0) {
+			fprintf(stderr, "thincctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_dhcp);
+	}
+	if (strcmp(sub, "leases") == 0) {
+		if (thinc_client_request(c, "GET", "/v1/dhcp/leases", NULL, &r) != 0) {
+			fprintf(stderr, "thincctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_dhcp_leases);
+	}
+	for (i = 1; i < argc; i++) {
+		if (strncmp(argv[i], "--network=", 10) == 0)
+			network = argv[i] + 10;
+		else if (strncmp(argv[i], "--range=", 8) == 0)
+			range = argv[i] + 8;
+		else if (strncmp(argv[i], "--server=", 9) == 0)
+			server = argv[i] + 9;
+		else if (strncmp(argv[i], "--router=", 9) == 0)
+			router = argv[i] + 9;
+		else if (strncmp(argv[i], "--lease-seconds=", 16) == 0)
+			lease_seconds = atol(argv[i] + 16);
+		else if (strncmp(argv[i], "--mac=", 6) == 0)
+			mac = argv[i] + 6;
+		else if (strncmp(argv[i], "--ip=", 5) == 0)
+			ip = argv[i] + 5;
+		else if (strncmp(argv[i], "--hostname=", 11) == 0)
+			hostname = argv[i] + 11;
+		else if (argv[i][0] != '-' && mac == NULL)
+			mac = argv[i];
+	}
+
+	if (strcmp(sub, "enable") == 0 || strcmp(sub, "disable") == 0) {
+		int enable = strcmp(sub, "enable") == 0;
+
+		if (network == NULL || (enable && (range == NULL || server == NULL))) {
+			fprintf(stderr,
+			        "usage: thincctl dhcp enable --network=NAME --range=START-END "
+			        "--server=CONTAINER\n"
+			        "                            [--lease-seconds=N] [--router=IP]\n"
+			        "       thincctl dhcp disable --network=NAME\n"
+			        "  --server= must already be a registered DNS server: DHCP is served by\n"
+			        "  the same dnsmasq, so a lease resolves the moment it is handed out\n");
+			return 2;
+		}
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "enabled");
+		jw_bool(&w, enable);
+		if (range != NULL) {
+			const char *dash = strchr(range, '-');
+
+			if (dash == NULL) {
+				jw_free(&w);
+				fprintf(stderr, "thincctl: --range= must be START-END, e.g. "
+				                "172.30.0.100-172.30.0.200\n");
+				return 2;
+			}
+			{
+				char start[64];
+				size_t n = (size_t)(dash - range);
+
+				if (n >= sizeof(start)) {
+					jw_free(&w);
+					fprintf(stderr, "thincctl: --range= start is too long\n");
+					return 2;
+				}
+				memcpy(start, range, n);
+				start[n] = '\0';
+				jw_key(&w, "range_start");
+				jw_str(&w, start);
+				jw_key(&w, "range_end");
+				jw_str(&w, dash + 1);
+			}
+		}
+		if (server != NULL) {
+			jw_key(&w, "server");
+			jw_str(&w, server);
+		}
+		if (router != NULL) {
+			jw_key(&w, "router");
+			jw_str(&w, router);
+		}
+		if (lease_seconds >= 0) {
+			jw_key(&w, "lease_seconds");
+			jw_int(&w, lease_seconds);
+		}
+		jw_obj_close(&w);
+		w.buf[w.len] = '\0';
+		snprintf(path, sizeof(path), "/v1/networks/%s/dhcp", network);
+		if (thinc_client_request(c, "PUT", path, w.buf, &r) != 0) {
+			jw_free(&w);
+			fprintf(stderr, "thincctl: could not reach daemon\n");
+			return 1;
+		}
+		jw_free(&w);
+		return emit(&r, json_mode, NULL);
+	}
+
+	if (strcmp(sub, "static") == 0) {
+		const char *op = argc > 1 ? argv[1] : "";
+
+		if (strcmp(op, "add") == 0) {
+			if (mac == NULL || ip == NULL) {
+				fprintf(stderr, "usage: thincctl dhcp static add --mac=M --ip=IP "
+				                "[--hostname=NAME]\n");
+				return 2;
+			}
+			jw_init(&w);
+			jw_obj_open(&w);
+			jw_key(&w, "mac");
+			jw_str(&w, mac);
+			jw_key(&w, "ip");
+			jw_str(&w, ip);
+			if (hostname != NULL) {
+				jw_key(&w, "hostname");
+				jw_str(&w, hostname);
+			}
+			jw_obj_close(&w);
+			w.buf[w.len] = '\0';
+			if (thinc_client_request(c, "POST", "/v1/dhcp/static", w.buf, &r) != 0) {
+				jw_free(&w);
+				fprintf(stderr, "thincctl: could not reach daemon\n");
+				return 1;
+			}
+			jw_free(&w);
+			return emit(&r, json_mode, fmt_dhcp);
+		}
+		if (strcmp(op, "rm") == 0) {
+			if (argc < 3) {
+				fprintf(stderr, "usage: thincctl dhcp static rm MAC\n");
+				return 2;
+			}
+			snprintf(path, sizeof(path), "/v1/dhcp/static/%s", argv[2]);
+			if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
+				fprintf(stderr, "thincctl: could not reach daemon\n");
+				return 1;
+			}
+			return emit(&r, json_mode, NULL);
+		}
+		fprintf(stderr, "usage: thincctl dhcp static add --mac=M --ip=IP [--hostname=NAME]\n"
+		                "       thincctl dhcp static rm MAC\n");
+		return 2;
+	}
+
+	fprintf(stderr, "usage: thincctl dhcp show | leases\n"
+	                "       thincctl dhcp enable --network=NAME --range=START-END "
+	                "--server=CONTAINER\n"
+	                "       thincctl dhcp disable --network=NAME\n"
+	                "       thincctl dhcp static add --mac=M --ip=IP [--hostname=NAME]\n"
+	                "       thincctl dhcp static rm MAC\n");
+	return 2;
+}
+
+/*
  * Issue #51: thincctl zswap show|set. Prints the configured intent and
  * what the kernel actually reports side by side -- they are different
  * questions, and the only interesting case is when they differ.
@@ -12409,6 +12646,8 @@ static int dispatch_command(const struct thinc_client *client, int json_mode, co
 		return cmd_storage(client, json_mode, argc, argv);
 	if (strcmp(cmd, "logs") == 0)
 		return cmd_logs_top(client, json_mode, argc, argv);
+	if (strcmp(cmd, "dhcp") == 0)
+		return cmd_dhcp(client, json_mode, argc, argv);
 	if (strcmp(cmd, "zswap") == 0)
 		return cmd_zswap(client, json_mode, argc, argv);
 	if (strcmp(cmd, "swap") == 0)
@@ -12596,7 +12835,7 @@ static const char *const SHELL_COMMANDS[] = {
 	"resolv",
 	"restore", "rm",       "rolling-config", "routes",        "run",      "shutdown",  "site",
 	"start",  "stats",     "stop",          "storage",  "swap",     "sysctl",   "syslog",    "time",      "tls-throttle", "unpause",   "update",
-	"control-plane-reservation", "boot-console", "kernel-policy", "zswap", "stalls",
+	"control-plane-reservation", "boot-console", "kernel-policy", "zswap", "dhcp", "stalls",
 	NULL
 };
 

@@ -326,6 +326,7 @@
 				<button type="button" class="tab-button active" data-tab="ports">Switch Panel</button>
 				<button type="button" class="tab-button" data-tab="containers">Containers</button>
 				<button type="button" class="tab-button" data-tab="interfaces">Interfaces</button>
+				<button type="button" class="tab-button" data-tab="netdhcp">DHCP</button>
 				<button type="button" class="tab-button" data-tab="netroutes">Routes</button>
 			</div>
 			<div class="tab-panel" data-tab="ports">
@@ -373,6 +374,77 @@
 					</label>
 					<button type="submit">Attach</button>
 				</form>
+			</div>
+			<div class="tab-panel" data-tab="netdhcp" hidden>
+				<p class="hint">
+					DHCP here is served by the same dnsmasq that serves this platform's DNS
+					(ADR-0197), which is why the server has to be a <strong>registered DNS
+					server</strong>: a lease resolves the moment it is handed out, with nothing
+					in between to keep in step. Changing a range <strong>restarts</strong> the
+					serving container &mdash; dnsmasq reads ranges only at startup. Static
+					reservations below are live.
+				</p>
+				<p class="hint" id="nd-dhcp-warning">
+					<strong>On a network that reaches a real LAN this will answer requests from
+					machines that are not this platform's.</strong> Most LANs already have a DHCP
+					server, and a second one is not a redundant pair &mdash; it is two servers with
+					separate lease databases handing out overlapping addresses.
+				</p>
+				<form id="nd-dhcp-form">
+					<label class="checkbox">
+						<input type="checkbox" id="nd-dhcp-enabled">
+						Serve DHCP on this network
+					</label>
+					<label>
+						Range start
+						<input type="text" id="nd-dhcp-start" placeholder="172.30.7.100">
+					</label>
+					<label>
+						Range end
+						<input type="text" id="nd-dhcp-end" placeholder="172.30.7.200">
+					</label>
+					<label>
+						Lease seconds
+						<input type="number" id="nd-dhcp-lease" min="60" max="2592000">
+					</label>
+					<label>
+						Router to advertise (optional)
+						<input type="text" id="nd-dhcp-router" placeholder="(none)">
+					</label>
+					<label>
+						Server
+						<select id="nd-dhcp-server"></select>
+					</label>
+					<button type="submit">Save</button>
+				</form>
+				<h3>Static reservations</h3>
+				<table id="nd-dhcp-static">
+					<thead><tr><th>MAC</th><th>IP</th><th>Hostname</th><th></th></tr></thead>
+					<tbody></tbody>
+				</table>
+				<form id="nd-dhcp-static-form">
+					<label>
+						MAC
+						<input type="text" id="nd-dhcp-mac" placeholder="aa:bb:cc:dd:ee:01">
+					</label>
+					<label>
+						IP
+						<input type="text" id="nd-dhcp-ip" placeholder="172.30.7.50">
+					</label>
+					<label>
+						Hostname (optional)
+						<input type="text" id="nd-dhcp-hostname" placeholder="printer">
+					</label>
+					<button type="submit">Reserve</button>
+				</form>
+				<h3>Leases</h3>
+				<p class="hint">Read from the serving container's own lease file. A lease is not a
+					DNS record &mdash; it resolves anyway, because the same dnsmasq issues it and
+					answers for it.</p>
+				<table id="nd-dhcp-leases">
+					<thead><tr><th>MAC</th><th>IP</th><th>Hostname</th><th>Expires</th></tr></thead>
+					<tbody></tbody>
+				</table>
 			</div>
 			<div class="tab-panel" data-tab="netroutes" hidden>
 				<p class="hint">Filtered from the box's own real kernel routing table (ADR-0066) -- routes the kernel resolves to this network's own bridge interface as their outgoing route.</p>
