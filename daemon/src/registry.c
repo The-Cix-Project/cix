@@ -739,14 +739,17 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 	 * "nothing configured" reading, not a read failure.
 	 */
 	{
-		long long memory_max, pids_max;
-		int mem_unlimited = 1, pids_unlimited = 1;
+		long long memory_max, pids_max, memory_swap_max;
+		int mem_unlimited = 1, pids_unlimited = 1, swap_unlimited = 1;
 		char cpu_max[64];
 		int have_cpu_max = 0;
 
 		if (cgroup_read_single_value(entry->handle.cgroup_fd, "memory.max", &memory_max,
 		                              &mem_unlimited) != 0)
 			mem_unlimited = 1;
+		if (cgroup_read_single_value(entry->handle.cgroup_fd, "memory.swap.max", &memory_swap_max,
+		                              &swap_unlimited) != 0)
+			swap_unlimited = 1;
 		if (cgroup_read_single_value(entry->handle.cgroup_fd, "pids.max", &pids_max,
 		                              &pids_unlimited) != 0)
 			pids_unlimited = 1;
@@ -759,6 +762,15 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 			jw_null(w);
 		else
 			jw_int(w, memory_max);
+		/* Issue #52: read back live like the rest. Zero is a real
+		 * value here (this container may not swap), so it is reported
+		 * as 0 rather than folded into the null that means "no limit"
+		 * -- the two are opposite settings. */
+		jw_key(w, "memory_swap_max");
+		if (swap_unlimited)
+			jw_null(w);
+		else
+			jw_int(w, memory_swap_max);
 		jw_key(w, "cpu_max");
 		if (have_cpu_max)
 			jw_str(w, cpu_max);

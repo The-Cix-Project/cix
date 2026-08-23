@@ -8141,6 +8141,7 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 	const image = document.getElementById("f-image").value.trim();
 	const cmdText = document.getElementById("f-cmd").value.trim();
 	const memoryMaxText = document.getElementById("f-memory-max").value.trim();
+	const memorySwapMaxText = document.getElementById("f-memory-swap-max").value.trim();
 	const pidsMaxText = document.getElementById("f-pids-max").value.trim();
 	const cpuMaxText = document.getElementById("f-cpu-max").value.trim();
 	const cpusetText = document.getElementById("f-cpuset").value.trim();
@@ -8182,6 +8183,10 @@ document.getElementById("run-form").addEventListener("submit", async (event) => 
 	};
 	if (memoryMaxText !== "")
 		body.memory_max = parseInt(memoryMaxText, 10);
+	/* Blank is unset, and 0 is a real setting -- so this is a check for
+	 * an empty field, never for a falsy number. */
+	if (memorySwapMaxText !== "")
+		body.memory_swap_max = parseInt(memorySwapMaxText, 10);
 	if (pidsMaxText !== "")
 		body.pids_max = parseInt(pidsMaxText, 10);
 	if (cpuMaxText !== "")

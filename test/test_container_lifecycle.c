@@ -688,6 +688,96 @@ int main(void)
 		thinc_response_free(&r);
 	}
 
+	/*
+	 * Issue #52: memory_swap_max round-trips into the container's own
+	 * real memory.swap.max, and 0 is a REAL setting -- this container
+	 * may not swap at all -- distinguishable from the field being
+	 * absent, which leaves the kernel's own "max". A limit whose "off"
+	 * value and whose strictest setting were the same number could not
+	 * express that, which is why 0 is asserted rather than a round
+	 * number nobody would confuse.
+	 */
+	{
+		char swap_max[64];
+
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"lc4s\",\"image\":\"lifecycletest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"],"
+		                       "\"memory_swap_max\":0}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST lc4s with memory_swap_max=0, status=%d\n", r.status);
+			ok = 0;
+		}
+		thinc_response_free(&r);
+
+		if (read_cgroup_value("lc4s", "memory.swap.max", swap_max, sizeof(swap_max)) != 0) {
+			fprintf(stderr, "FAIL: could not read lc4s memory.swap.max -- this kernel may not "
+			                "expose cgroup swap accounting at all\n");
+			ok = 0;
+		} else if (strcmp(swap_max, "0") != 0) {
+			fprintf(stderr, "FAIL: lc4s memory.swap.max = \"%s\", expected \"0\"\n", swap_max);
+			ok = 0;
+		}
+
+		/* And it is reported back, read from the kernel rather than
+		 * echoed -- 0, not the null that means "no limit". */
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "GET", "/v1/containers/lc4s", NULL, &r) != 0 ||
+		    r.status != 200 || json_object_get(r.json, "memory_swap_max") == NULL ||
+		    json_object_get(r.json, "memory_swap_max")->type != JSON_NUMBER ||
+		    (long long)json_as_number(json_object_get(r.json, "memory_swap_max")) != 0) {
+			fprintf(stderr, "FAIL: #52 GET lc4s did not report memory_swap_max=0\n");
+			ok = 0;
+		}
+		thinc_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		thinc_client_request(&client, "DELETE", "/v1/containers/lc4s", NULL, &r);
+		thinc_response_free(&r);
+
+		/* Absent means unlimited, and must report as null rather than
+		 * as the 0 that means the opposite. */
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"lc4t\",\"image\":\"lifecycletest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"]}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST lc4t, status=%d\n", r.status);
+			ok = 0;
+		}
+		thinc_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "GET", "/v1/containers/lc4t", NULL, &r) != 0 ||
+		    r.status != 200 || json_object_get(r.json, "memory_swap_max") == NULL ||
+		    json_object_get(r.json, "memory_swap_max")->type != JSON_NULL) {
+			fprintf(stderr, "FAIL: #52 an unset memory_swap_max is not reported as null\n");
+			ok = 0;
+		}
+		thinc_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		thinc_client_request(&client, "DELETE", "/v1/containers/lc4t", NULL, &r);
+		thinc_response_free(&r);
+
+		/* A negative is refused rather than silently meaning "unset" --
+		 * that is what omitting the field is for. */
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"lc4u\",\"image\":\"lifecycletest\","
+		                       "\"cmd\":[\"/bin/daemon_child\",\"5\",\"0\"],"
+		                       "\"memory_swap_max\":-1}",
+		                       &r) != 0 ||
+		    r.status != 400) {
+			fprintf(stderr, "FAIL: #52 a negative memory_swap_max should 400, got %d\n", r.status);
+			ok = 0;
+		}
+		thinc_response_free(&r);
+	}
+
 	/* 10. capture_output: a container created with "capture_output":true
 	 * has its real stdout/stderr captured into the registry entry's own
 	 * "captured_output" field, readable back via GET even after the

@@ -12,6 +12,19 @@ struct ns_config {
 struct cgroup_limits {
 	const char *name;
 	long long memory_max;
+	/*
+	 * Issue #52: cgroup v2 memory.swap.max, in bytes. **-1 means
+	 * unset**, unlike every other limit here, where 0 does -- because 0
+	 * is a real and useful value for this one: it forbids the container
+	 * from swapping at all, so it is reclaimed or OOM-killed rather
+	 * than pushed to disk. A limit whose "off" value and whose
+	 * strictest setting were the same number could not express that.
+	 *
+	 * Every initialiser memsets this struct to zero, so each one has to
+	 * set this back to -1 explicitly; that is the price of 0 meaning
+	 * something.
+	 */
+	long long memory_swap_max;
 	long long pids_max;
 	const char *cpu_max;
 	/* Raw cgroup v2 cpuset.cpus range-list syntax (e.g. "0-1,3"),

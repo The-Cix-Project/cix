@@ -8739,6 +8739,19 @@ components:
           type: integer
           format: int64
           description: cgroup v2 memory.max in bytes. Omit for no limit.
+        memory_swap_max:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            cgroup v2 memory.swap.max in bytes (issue #52). **0 is a
+            real setting** -- this container may not swap at all, so
+            under memory pressure it is reclaimed or OOM-killed rather
+            than pushed to disk. Omit the field for unlimited swap; a
+            negative value is refused rather than silently meaning
+            "unset", which is what omitting it is for. Read back on GET
+            from the real cgroup: 0 stays 0, and null means no limit --
+            the two are opposite settings and never collapse.
         pids_max:
           type: integer
           format: int64
@@ -10397,6 +10410,16 @@ components:
               type: integer
               nullable: true
               description: The memory_max limit set at creation, or null if unlimited.
+            swap_current:
+              type: integer
+              description: Bytes of this container's memory currently swapped out (memory.swap.current).
+            swap_max:
+              type: integer
+              nullable: true
+              description: >
+                The memory_swap_max limit, read from memory.swap.max, or
+                null if unlimited. 0 means this container may not swap at
+                all -- the opposite of null, never folded into it.
             pressure:
               $ref: "#/components/schemas/Pressure"
               description: This container's own memory.pressure.
