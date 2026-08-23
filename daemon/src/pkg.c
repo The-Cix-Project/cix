@@ -2040,6 +2040,25 @@ enum pkg_error pkg_bootstrap_from_toolchain(const char *toolchain_path)
  */
 static void pkg_migrate_flat_sandbox(const char *images_dir);
 
+/*
+ * Set only when a flat sandbox exists that could NOT be migrated. While
+ * it is set, builds keep using it exactly as they always did.
+ *
+ * This exists because the first version of this change did not have it,
+ * and the consequence was immediate and total on the real box: the
+ * migration failed, builds silently switched to the image's own
+ * declared content, and the very next install died on `sed: command not
+ * found` -- sed being one of the many packages that had accreted into
+ * the flat sandbox and was never in the image's manifest. Which is,
+ * precisely, the thing this whole issue is about; it simply bit the
+ * migration first.
+ *
+ * So a failed migration must not change what builds run against. It
+ * degrades to the old behaviour and says so, rather than proceeding
+ * with content that is missing most of what recipes depend on.
+ */
+static char g_flat_sandbox_fallback[PATH_MAX];
+
 struct sandbox_migrate_ctx {
 	const char *flat_rootfs;
 };
@@ -2078,10 +2097,12 @@ static void pkg_migrate_flat_sandbox(const char *images_dir)
 	ctx.flat_rootfs = flat;
 	if (image_produce_new_version(PKG_BUILD_SANDBOX_IMAGE, sandbox_migrate_mutate, &ctx,
 	                               "migrate:flat-pkgbuild-rootfs") != 0) {
+		snprintf(g_flat_sandbox_fallback, sizeof(g_flat_sandbox_fallback), "%s", flat);
 		logstore_write("thincd", "error",
-		               "pkg: could not migrate the flat build sandbox at %s into %s -- leaving "
-		               "it in place; builds will use the image's own content until this is "
-		               "resolved (issue #40)",
+		               "pkg: could not migrate the flat build sandbox at %s into %s -- keeping "
+		               "it, and builds keep using it, exactly as before. The image's own "
+		               "content is NOT a substitute: it lacks everything that only ever "
+		               "accreted here (issue #40)",
 		               flat, PKG_BUILD_SANDBOX_IMAGE);
 		return;
 	}
@@ -2110,6 +2131,12 @@ static int pkg_build_sandbox_rootfs(char *out, size_t out_size)
 {
 	char version[IMAGE_VERSION_MAX];
 
+	/* An un-migrated flat sandbox wins: it is what builds have always
+	 * run against, and the image's own content is not equivalent. */
+	if (g_flat_sandbox_fallback[0] != '\0') {
+		snprintf(out, out_size, "%s", g_flat_sandbox_fallback);
+		return 0;
+	}
 	if (image_current_version(PKG_BUILD_SANDBOX_IMAGE, version, sizeof(version)) != IMAGE_OK)
 		return -1;
 	image_version_rootfs_path(PKG_BUILD_SANDBOX_IMAGE, version, out, out_size);

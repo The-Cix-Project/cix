@@ -38,6 +38,10 @@ Simply resolving the image instead would silently discard everything that had ac
 
 So an existing flat `pkgbuild/rootfs` is folded in as a real version of the image, once, at startup, and then **set aside rather than deleted** — renamed with the version it produced, so the previous state is still on disk if the migration proves wrong. What the sandbox *contains* is unchanged by this; only how it is tracked changes.
 
+**And if the migration fails, builds keep using the flat directory.** That safety net is not defensive padding — it is there because the first version of this change did not have it, and the consequence on the real box was immediate and total: the migration failed, builds silently switched to the image's own declared content, and the very next install died on `sed: command not found`. `sed` is one of the many packages that had only ever accreted into the flat sandbox and was never in the image's manifest — which is precisely what this whole issue is about, biting the migration first. The box was rolled back within minutes and the fallback added.
+
+The lesson generalises past this change: the image's declared content is **not** a substitute for the accreted sandbox, and anything that assumes it is will fail on whichever undeclared package a given recipe happens to need. Until the declared-package-list half of #40 lands, the accreted content is load-bearing.
+
 ## Consequences
 
 What is in the build sandbox is now inspectable through `GET /v1/images/thinc-builder` like anything else, has history, and can be rolled back. A recipe that stops building can be compared against the version it last built under.
