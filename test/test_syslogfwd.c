@@ -38,14 +38,14 @@ extern char **environ;
 static char g_data_dir[PATH_MAX];
 static char g_image_root[PATH_MAX];
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -73,9 +73,9 @@ int main(void)
 	pid_t daemon_pid;
 	char *dargv[5];
 	char data_dir_arg[PATH_MAX + 11];
-	struct kx_client client;
+	struct thinc_client client;
 	int ok = 1;
-	struct kx_response r;
+	struct thinc_response r;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
@@ -114,7 +114,7 @@ int main(void)
 		_exit(127);
 	}
 
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -125,17 +125,17 @@ int main(void)
 
 	/* 1. Register a nonexistent container -> 404. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/syslog/targets", "{\"container\":\"no-such\"}", &r) !=
+	if (thinc_client_request(&client, "POST", "/v1/syslog/targets", "{\"container\":\"no-such\"}", &r) !=
 	        0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: register nonexistent container expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 1a. A real container, but not running -- also 404. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"stoppedsl\",\"image\":\"syslogfwdtest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"0\",\"0\"]}",
 	                       &r) != 0 ||
@@ -143,25 +143,25 @@ int main(void)
 		fprintf(stderr, "FAIL: POST stoppedsl, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	usleep(300000);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/syslog/targets", "{\"container\":\"stoppedsl\"}",
+	if (thinc_client_request(&client, "POST", "/v1/syslog/targets", "{\"container\":\"stoppedsl\"}",
 	                       &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: register not-running container expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
-	kx_client_request(&client, "DELETE", "/v1/containers/stoppedsl", NULL, &r);
-	kx_response_free(&r);
+	thinc_response_free(&r);
+	thinc_client_request(&client, "DELETE", "/v1/containers/stoppedsl", NULL, &r);
+	thinc_response_free(&r);
 
 	/* 2. A real, running container: register/duplicate/list/unregister,
 	 * using daemon_child (no real syslog receiver needed for this pure
 	 * bookkeeping half). */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"slbook1\",\"image\":\"syslogfwdtest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"300\",\"0\"]}",
 	                       &r) != 0 ||
@@ -169,28 +169,28 @@ int main(void)
 		fprintf(stderr, "FAIL: POST slbook1, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/syslog/targets", "{\"container\":\"slbook1\"}", &r) !=
+	if (thinc_client_request(&client, "POST", "/v1/syslog/targets", "{\"container\":\"slbook1\"}", &r) !=
 	        0 ||
 	    r.status != 201 || !str_eq(json_str_field(r.json, "container"), "slbook1")) {
 		fprintf(stderr, "FAIL: register slbook1, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/syslog/targets", "{\"container\":\"slbook1\"}", &r) !=
+	if (thinc_client_request(&client, "POST", "/v1/syslog/targets", "{\"container\":\"slbook1\"}", &r) !=
 	        0 ||
 	    r.status != 409) {
 		fprintf(stderr, "FAIL: duplicate registration expected 409, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/syslog/targets", NULL, &r) != 0 || r.status != 200) {
+	if (thinc_client_request(&client, "GET", "/v1/syslog/targets", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/syslog/targets, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -208,23 +208,23 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "DELETE", "/v1/syslog/targets/no-such", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "DELETE", "/v1/syslog/targets/no-such", NULL, &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: unregister nonexistent expected 404, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 2a. syslogfwd_target_forget(): deleting the container removes the
 	 * registration too, no separate DELETE /v1/syslog/targets/... needed. */
-	kx_client_request(&client, "DELETE", "/v1/containers/slbook1", NULL, &r);
-	kx_response_free(&r);
+	thinc_client_request(&client, "DELETE", "/v1/containers/slbook1", NULL, &r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/syslog/targets", NULL, &r) != 0 || r.status != 200) {
+	if (thinc_client_request(&client, "GET", "/v1/syslog/targets", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/syslog/targets after container delete, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -239,7 +239,7 @@ int main(void)
 				}
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 3. The real wire-level proof: a network + a real receiver
 	 * container (syslog_recv_child, binds real UDP :514) + a real
@@ -248,7 +248,7 @@ int main(void)
 	 * transparent capture) shows it really got a well-formed RFC 3164
 	 * datagram naming the sender as HOSTNAME and carrying its message. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/networks",
+	if (thinc_client_request(&client, "POST", "/v1/networks",
 	                       "{\"name\":\"" SYSLOG_NETWORK_NAME "\",\"subnet\":\"" SYSLOG_NETWORK_SUBNET
 	                       "\",\"prefix_len\":24,\"address\":\"172.61.0.1\"}",
 	                       &r) != 0 ||
@@ -256,10 +256,10 @@ int main(void)
 		fprintf(stderr, "FAIL: POST " SYSLOG_NETWORK_NAME ", status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"slrecv\",\"image\":\"syslogfwdtest\","
 	                       "\"cmd\":[\"/bin/syslog_recv_child\"],"
 	                       "\"networks\":[\"" SYSLOG_NETWORK_NAME "\"]}",
@@ -268,19 +268,19 @@ int main(void)
 		fprintf(stderr, "FAIL: POST slrecv, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/syslog/targets", "{\"container\":\"slrecv\"}", &r) !=
+	if (thinc_client_request(&client, "POST", "/v1/syslog/targets", "{\"container\":\"slrecv\"}", &r) !=
 	        0 ||
 	    r.status != 201) {
 		fprintf(stderr, "FAIL: register slrecv, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"slsend\",\"image\":\"syslogfwdtest\","
 	                       "\"cmd\":[\"/bin/output_child\"],"
 	                       "\"networks\":[\"" SYSLOG_NETWORK_NAME "\"]}",
@@ -289,7 +289,7 @@ int main(void)
 		fprintf(stderr, "FAIL: POST slsend, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* slrecv's recvfrom() has a 5s timeout; slsend's output_child exits
 	 * almost immediately, so the forwarded line should already be in
@@ -302,7 +302,7 @@ int main(void)
 		for (i = 0; i < 60 && !found; i++) {
 			usleep(100000);
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "GET",
+			if (thinc_client_request(&client, "GET",
 			                       "/v1/system/logs?source=container&container=slrecv", NULL,
 			                       &r) == 0 &&
 			    r.status == 200 && r.json != NULL && r.json->type == JSON_ARRAY) {
@@ -329,7 +329,7 @@ int main(void)
 					}
 				}
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 		}
 		if (!found) {
 			fprintf(stderr, "FAIL: slrecv never received a forwarded syslog datagram\n");
@@ -337,21 +337,21 @@ int main(void)
 		}
 	}
 
-	kx_client_request(&client, "DELETE", "/v1/containers/slsend", NULL, &r);
-	kx_response_free(&r);
-	kx_client_request(&client, "DELETE", "/v1/containers/slrecv", NULL, &r);
-	kx_response_free(&r);
+	thinc_client_request(&client, "DELETE", "/v1/containers/slsend", NULL, &r);
+	thinc_response_free(&r);
+	thinc_client_request(&client, "DELETE", "/v1/containers/slrecv", NULL, &r);
+	thinc_response_free(&r);
 	/* Real kernel bridge cleanup, matching test_container_restart.c's
 	 * own convention -- a leftover real interface otherwise outlives
 	 * this process (plain SIGTERM doesn't tear down live network
 	 * state) and collides with any later rerun of this same test. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "DELETE", "/v1/networks/" SYSLOG_NETWORK_NAME, NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "DELETE", "/v1/networks/" SYSLOG_NETWORK_NAME, NULL, &r) != 0 ||
 	    r.status != 204) {
 		fprintf(stderr, "FAIL: DELETE " SYSLOG_NETWORK_NAME ", status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	kill(daemon_pid, SIGTERM);
 	{

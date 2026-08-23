@@ -16,7 +16,7 @@ This asymmetry has existed since `json.c` was first written, deliberately: `json
 
 `parse_string_raw()` gains a `case 'u':` branch: reads exactly 4 hex digits, decodes them as a single byte (`0x00`-`0xFF`), and rejects (fails the parse, same as before) any value above `0xFF` or malformed hex — deliberately still narrower than full RFC 8259 (no UTF-16 surrogate-pair handling), matching what the writer side actually ever produces (`jw_escaped_string()` only emits `\u00XX` for control characters below `0x20`) rather than attempting general Unicode support this project's own API has never needed. `json.h`'s own scope-boundary comment updated to describe the new, narrower-but-real contract instead of claiming `\uXXXX` is unsupported outright.
 
-A real regression test closes the gap that let this ship unnoticed: `test/output_child.c` (the exec target `test_container_lifecycle.c`'s own `capture_output` test, step 10, uses) now writes a real ANSI color escape into its stdout line, and the test asserts the raw `ESC` byte survives the full write-then-parse round trip through the exact same `kx_client_request()`/`json_parse()` path every CLI command uses.
+A real regression test closes the gap that let this ship unnoticed: `test/output_child.c` (the exec target `test_container_lifecycle.c`'s own `capture_output` test, step 10, uses) now writes a real ANSI color escape into its stdout line, and the test asserts the raw `ESC` byte survives the full write-then-parse round trip through the exact same `thinc_client_request()`/`json_parse()` path every CLI command uses.
 
 ## Verification
 

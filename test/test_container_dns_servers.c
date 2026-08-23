@@ -38,14 +38,14 @@ static const char *json_str_field(const struct json_value *obj, const char *key)
 	return json_as_string(json_object_get(obj, key));
 }
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -106,9 +106,9 @@ static int read_whole_file(const char *path, char *buf, size_t buf_size)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct kx_client client;
+	struct thinc_client client;
 	int ok = 1;
-	struct kx_response r;
+	struct thinc_response r;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
@@ -134,7 +134,7 @@ int main(void)
 		return 1;
 	}
 
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -145,7 +145,7 @@ int main(void)
 
 	/* 1. Invalid IPv4 entry -> 400. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"badip\",\"image\":\"dnstest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],"
 	                       "\"dns_servers\":[\"not-an-ip\"]}",
@@ -154,11 +154,11 @@ int main(void)
 		fprintf(stderr, "FAIL: POST with invalid dns_servers entry expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 2. Too many entries (max 3) -> 400. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"toomany\",\"image\":\"dnstest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],"
 	                       "\"dns_servers\":[\"1.1.1.1\",\"2.2.2.2\",\"3.3.3.3\",\"4.4.4.4\"]}",
@@ -167,12 +167,12 @@ int main(void)
 		fprintf(stderr, "FAIL: POST with 4 dns_servers entries expected 400, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 3. Combining dns_servers with an explicit files[] entry for
 	 * /etc/resolv.conf -> 400, a real, unresolvable ambiguity. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"conflict\",\"image\":\"dnstest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"],"
 	                       "\"dns_servers\":[\"1.1.1.1\"],"
@@ -183,12 +183,12 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 4. Real success path: dns_servers actually staged, and echoed
 	 * back correctly on GET. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"realdns\",\"image\":\"dnstest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
 	                       "\"dns_servers\":[\"192.168.15.101\",\"192.168.15.102\"]}",
@@ -206,10 +206,10 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/containers/realdns", NULL, &r) != 0 || r.status != 200) {
+	if (thinc_client_request(&client, "GET", "/v1/containers/realdns", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET realdns, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -220,7 +220,7 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 5. The real content actually staged into the container's own
 	 * overlay upperdir, readable directly from the host side. */
@@ -242,7 +242,7 @@ int main(void)
 	/* 6. Omitted dns_servers -> empty array on GET, no resolv.conf
 	 * staged at all. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/containers",
+	if (thinc_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"nodns\",\"image\":\"dnstest\","
 	                       "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}",
 	                       &r) != 0 ||
@@ -257,7 +257,7 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	{
 		char resolv_path[PATH_MAX];
 		FILE *f;
@@ -274,11 +274,11 @@ int main(void)
 
 	/* Cleanup. */
 	memset(&r, 0, sizeof(r));
-	kx_client_request(&client, "DELETE", "/v1/containers/realdns", NULL, &r);
-	kx_response_free(&r);
+	thinc_client_request(&client, "DELETE", "/v1/containers/realdns", NULL, &r);
+	thinc_response_free(&r);
 	memset(&r, 0, sizeof(r));
-	kx_client_request(&client, "DELETE", "/v1/containers/nodns", NULL, &r);
-	kx_response_free(&r);
+	thinc_client_request(&client, "DELETE", "/v1/containers/nodns", NULL, &r);
+	thinc_response_free(&r);
 
 	if (stop_daemon(daemon_pid) != 0) {
 		fprintf(stderr, "FAIL: daemon did not exit cleanly on SIGTERM\n");

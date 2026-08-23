@@ -4,6 +4,12 @@ All notable changes to this project are recorded here. Format is loosely [Keep a
 
 ### Part 203 (in progress): pre-bare-metal quality sprint
 
+**#75 done: one identifier prefix, and it is the project's own name** ([ADR-0192](docs/adr/0192-thinc-identifier-prefix.md)). `kx_` was **Kanxeo** — this project's name before it was thinC — still on the compat structs, the whole HTTP client, and a handful of utilities. 3,601 occurrences, 1,345 of them `kx_client_request` alone.
+- Renamed to `thinc_`/`THINC_`, which is not a new convention: it is the prefix everything named since already uses (`THINC_VERSION`, `thinc_devcg`, every test's own temp-dir template). The codebase had two prefixes for one project, and the older one named something that no longer exists.
+- `tc_` — the shorter candidate the issue suggested — was rejected for a reason specific to this project: `tc` is Linux traffic control, in a codebase shipping its own networking data plane, and reads as Tiny C in one whose only compiler is TCC. Four characters do not pay for two wrong readings.
+- Its own commit, touching nothing else, so the diff is reviewable as "anything here that is not the prefix is a bug". Verified by the compiler and the suite rather than by reading 3,601 sites: full `-Wall -Werror` build (a missed rename is an undeclared identifier, and no `kx_` name was ever a string literal or preprocessor-assembled token — both checked first) and 62/62 regression suite.
+- `CHANGELOG.md` is left as written — it says what things were called when each entry was made. The ADRs naming these symbols *are* updated, since they document mechanisms that still exist and a reader following one should find the symbol.
+
 **A container's volumes table stopped resizing itself once a second.** Reported live on `jump`: the Backups column jumped width continuously while you were reading it.
 - The cell is filled by a request of its own — a volume's backup policy belongs to the volume, not to the container mounting it — and that request was re-issued on **every redraw of the page**, blanking the cell to `…` first. Narrow placeholder, then wide answer, once per poll cycle, forever.
 - The answer now lives in one remembered summary per volume, written straight into the cell on redraw and re-asked only once it is 30s old. Measured against the real box on the same page over the same 30 seconds: **9 requests to 1**, and the column holds still.

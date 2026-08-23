@@ -92,14 +92,14 @@ static int stop_daemon(pid_t pid)
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -589,9 +589,9 @@ static int test_partition_grow(void)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct kx_client client;
+	struct thinc_client client;
 	int ok = 1;
-	struct kx_response r;
+	struct thinc_response r;
 	char part_name[64] = "";
 	char part_parent[64] = "";
 	char other_part_name[64] = "";
@@ -607,7 +607,7 @@ int main(void)
 		return 1;
 	}
 
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -625,7 +625,7 @@ int main(void)
 	 * one exists, for the wrong-parent check below.
 	 */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/disks", NULL, &r) != 0 || r.status != 200 ||
+	if (thinc_client_request(&client, "GET", "/v1/disks", NULL, &r) != 0 || r.status != 200 ||
 	    r.json == NULL) {
 		fprintf(stderr, "FAIL: GET /v1/disks failed (status %d)\n", r.status);
 		ok = 0;
@@ -700,7 +700,7 @@ int main(void)
 			}
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	if (ok && partitions_found == 0) {
 		fprintf(stderr, "FAIL: no real partitions found on this sandbox's own disks -- "
@@ -712,25 +712,25 @@ int main(void)
 	/* 2. create-table/add-partition on a nonexistent disk -> 404. */
 	if (ok) {
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/disks/nosuchdisk12345/partition-table",
+		if (thinc_client_request(&client, "POST", "/v1/disks/nosuchdisk12345/partition-table",
 		                       "{\"confirm_disk_name\":\"nosuchdisk12345\"}", &r) != 0 ||
 		    r.status != 404) {
 			fprintf(stderr, "FAIL: partition-table on nonexistent disk: expected 404, got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	}
 	if (ok) {
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/disks/nosuchdisk12345/partitions",
+		if (thinc_client_request(&client, "POST", "/v1/disks/nosuchdisk12345/partitions",
 		                       "{\"name\":\"data\"}", &r) != 0 ||
 		    r.status != 404) {
 			fprintf(stderr, "FAIL: add-partition on nonexistent disk: expected 404, got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	}
 
 	/* 3. create-table targeting a real partition (not a whole disk) -> 400. */
@@ -740,13 +740,13 @@ int main(void)
 		snprintf(path, sizeof(path), "/v1/disks/%s/partition-table", part_name);
 		snprintf(body, sizeof(body), "{\"confirm_disk_name\":\"%s\"}", part_name);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", path, body, &r) != 0 || r.status != 400) {
+		if (thinc_client_request(&client, "POST", path, body, &r) != 0 || r.status != 400) {
 			fprintf(stderr,
 			        "FAIL: partition-table targeting a real partition (%s): expected 400, got %d\n",
 			        part_name, r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	}
 
 	/* 4. create-table on a real whole disk with a wrong confirm -> 400. */
@@ -755,14 +755,14 @@ int main(void)
 
 		snprintf(path, sizeof(path), "/v1/disks/%s/partition-table", part_parent);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", path, "{\"confirm_disk_name\":\"not-the-right-name\"}",
+		if (thinc_client_request(&client, "POST", path, "{\"confirm_disk_name\":\"not-the-right-name\"}",
 		                       &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: partition-table with wrong confirm: expected 400, got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	}
 
 	/* 5. add-partition on a real whole disk with no "name" field -> 400. */
@@ -771,11 +771,11 @@ int main(void)
 
 		snprintf(path, sizeof(path), "/v1/disks/%s/partitions", part_parent);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", path, "{}", &r) != 0 || r.status != 400) {
+		if (thinc_client_request(&client, "POST", path, "{}", &r) != 0 || r.status != 400) {
 			fprintf(stderr, "FAIL: add-partition with no name: expected 400, got %d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	}
 
 	/* 6. delete a nonexistent partition -> 404. */
@@ -784,11 +784,11 @@ int main(void)
 
 		snprintf(path, sizeof(path), "/v1/disks/%s/partitions/nosuchpart999", part_parent);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 404) {
+		if (thinc_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 404) {
 			fprintf(stderr, "FAIL: delete nonexistent partition: expected 404, got %d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	}
 
 	/* 7. delete targeting a whole disk (not a partition) -> 400. */
@@ -797,12 +797,12 @@ int main(void)
 
 		snprintf(path, sizeof(path), "/v1/disks/%s/partitions/%s", part_parent, part_parent);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 400) {
+		if (thinc_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 400) {
 			fprintf(stderr, "FAIL: delete a whole disk as a partition: expected 400, got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	}
 
 	/* 8. delete a real partition via the wrong parent's URL -> 404. */
@@ -811,25 +811,25 @@ int main(void)
 
 		snprintf(path, sizeof(path), "/v1/disks/%s/partitions/%s", other_part_parent, part_name);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 404) {
+		if (thinc_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 404) {
 			fprintf(stderr, "FAIL: delete %s via wrong parent %s: expected 404, got %d\n",
 			        part_name, other_part_parent, r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	}
 
 	/* 9. invalid disk-name charset -> 400, distinct from not-found. */
 	if (ok) {
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/disks/bad$name/partition-table",
+		if (thinc_client_request(&client, "POST", "/v1/disks/bad$name/partition-table",
 		                       "{\"confirm_disk_name\":\"bad$name\"}", &r) != 0 ||
 		    r.status != 400) {
 			fprintf(stderr, "FAIL: partition-table with invalid disk name: expected 400, got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	}
 
 	/*
@@ -843,12 +843,12 @@ int main(void)
 
 		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"backup\"}", part_parent);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
+		if (thinc_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
 			fprintf(stderr, "FAIL: assigning backup role to %s: expected 201, got %d\n",
 			        part_parent, r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	}
 	if (ok) {
 		char path[128], body[128];
@@ -856,34 +856,34 @@ int main(void)
 		snprintf(path, sizeof(path), "/v1/disks/%s/partition-table", part_parent);
 		snprintf(body, sizeof(body), "{\"confirm_disk_name\":\"%s\"}", part_parent);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", path, body, &r) != 0 || r.status != 409) {
+		if (thinc_client_request(&client, "POST", path, body, &r) != 0 || r.status != 409) {
 			fprintf(stderr,
 			        "FAIL: partition-table on a role-assigned disk: expected 409, got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	}
 	if (ok) {
 		char path[128];
 
 		snprintf(path, sizeof(path), "/v1/disks/%s/partitions", part_parent);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", path, "{\"name\":\"data\"}", &r) != 0 ||
+		if (thinc_client_request(&client, "POST", path, "{\"name\":\"data\"}", &r) != 0 ||
 		    r.status != 409) {
 			fprintf(stderr, "FAIL: add-partition on a role-assigned disk: expected 409, got %d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	}
 	{
 		char path[128];
 
 		snprintf(path, sizeof(path), "/v1/diskroles/%s", part_parent);
 		memset(&r, 0, sizeof(r));
-		kx_client_request(&client, "DELETE", path, NULL, &r);
-		kx_response_free(&r);
+		thinc_client_request(&client, "DELETE", path, NULL, &r);
+		thinc_response_free(&r);
 	}
 
 	/*
@@ -897,33 +897,33 @@ int main(void)
 
 		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"backup\"}", part_name);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
+		if (thinc_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
 			fprintf(stderr, "FAIL: assigning backup role to partition %s: expected 201, got %d\n",
 			        part_name, r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	}
 	if (ok) {
 		char path[160];
 
 		snprintf(path, sizeof(path), "/v1/disks/%s/partitions/%s", part_parent, part_name);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 409) {
+		if (thinc_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 409) {
 			fprintf(stderr,
 			        "FAIL: deleting a role-assigned partition %s: expected 409, got %d\n",
 			        part_name, r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	}
 	{
 		char path[128];
 
 		snprintf(path, sizeof(path), "/v1/diskroles/%s", part_name);
 		memset(&r, 0, sizeof(r));
-		kx_client_request(&client, "DELETE", path, NULL, &r);
-		kx_response_free(&r);
+		thinc_client_request(&client, "DELETE", path, NULL, &r);
+		thinc_response_free(&r);
 	}
 
 	if (!test_mount_attribution())

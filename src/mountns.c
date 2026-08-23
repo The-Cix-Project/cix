@@ -243,7 +243,7 @@ int mountns_bind_into(pid_t child_pid, const char *host_dir, const char *contain
 	 * because the container's /proc belongs to its own PID namespace
 	 * and the helper is not in it, so /proc/self does not resolve.
 	 */
-	src_fd = kx_open_tree(AT_FDCWD, host_dir, OPEN_TREE_CLONE | AT_RECURSIVE);
+	src_fd = thinc_open_tree(AT_FDCWD, host_dir, OPEN_TREE_CLONE | AT_RECURSIVE);
 	if (src_fd < 0) {
 		fprintf(stderr, "mountns_bind_into: open_tree(%s): %s\n", host_dir, strerror(errno));
 		return -1;
@@ -270,7 +270,7 @@ int mountns_bind_into(pid_t child_pid, const char *host_dir, const char *contain
 		 * create-time path already creates it. */
 		if (mkdir(container_path, 0755) != 0 && errno != EEXIST)
 			_exit(3);
-		if (kx_move_mount(src_fd, "", AT_FDCWD, container_path, MOVE_MOUNT_F_EMPTY_PATH) != 0)
+		if (thinc_move_mount(src_fd, "", AT_FDCWD, container_path, MOVE_MOUNT_F_EMPTY_PATH) != 0)
 			_exit(4);
 		if (read_only) {
 			/*

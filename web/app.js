@@ -495,7 +495,7 @@ document.getElementById("menu-about").addEventListener("click", async () => {
  * daemon's write-gating leaves every GET open, always, regardless of
  * auth state); apiRequest()/apiRequestRaw() below attach it to every
  * request automatically once set -- one place, not every one of this
- * file's many call sites, the same design kx_client_set_token() gives
+ * file's many call sites, the same design thinc_client_set_token() gives
  * thincctl (client/include/httpclient.h).
  */
 let authToken = localStorage.getItem("thinc-auth-token") || null;

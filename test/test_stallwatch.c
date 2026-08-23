@@ -34,14 +34,14 @@ extern char **environ;
 
 static char g_data_dir[PATH_MAX];
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -87,8 +87,8 @@ static int stop_daemon(pid_t pid)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct kx_client client;
-	struct kx_response r;
+	struct thinc_client client;
+	struct thinc_response r;
 	int ok = 1;
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
@@ -99,7 +99,7 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -112,7 +112,7 @@ int main(void)
 	 * ticks on its own so silence means something. */
 	sleep(2);
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/system/stalls", NULL, &r) != 0 || r.status != 200) {
+	if (thinc_client_request(&client, "GET", "/v1/system/stalls", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/system/stalls, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -127,7 +127,7 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 2. Freeze it. This is the real thing, not a simulation: the
 	 * process stops running, the kernel keeps completing TCP handshakes
@@ -138,7 +138,7 @@ int main(void)
 	sleep(2);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/system/stalls", NULL, &r) != 0 || r.status != 200) {
+	if (thinc_client_request(&client, "GET", "/v1/system/stalls", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET stalls after the freeze, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -188,16 +188,16 @@ int main(void)
 			}
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 3. And the daemon is fine afterwards -- the watchdog observes,
 	 * it does not interfere. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/health", NULL, &r) != 0 || r.status != 200) {
+	if (thinc_client_request(&client, "GET", "/v1/health", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: daemon not healthy after the freeze, status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	stop_daemon(daemon_pid);
 
@@ -213,7 +213,7 @@ int main(void)
 		return 1;
 	}
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/system/stalls", NULL, &r) != 0 || r.status != 200) {
+	if (thinc_client_request(&client, "GET", "/v1/system/stalls", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET stalls after restart, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -224,7 +224,7 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	stop_daemon(daemon_pid);
 	test_data_dir_cleanup(g_data_dir);

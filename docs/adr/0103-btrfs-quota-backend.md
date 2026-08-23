@@ -37,7 +37,7 @@ instead of `ip`, raw ICMP instead of `ping`, `quotactl(2)` itself instead of
 
 `overlay_backing_is_btrfs(const char *path)` (`src/overlay.c`, declared in
 `include/container.h`) does a `statfs(2)` on `path` and compares
-`f_type` against `KX_BTRFS_SUPER_MAGIC` (`0x9123683e`). It's the one place
+`f_type` against `THINC_BTRFS_SUPER_MAGIC` (`0x9123683e`). It's the one place
 that decides which quota mechanism applies, called from two places that both
 need the same answer:
 
@@ -96,17 +96,17 @@ infrastructure the original task framing expected to need.
 Per the user's explicit directive and this project's established convention
 (`clone3`'s `struct clone_args`, `epoll_event`'s packing, `fsxattr`), the
 btrfs uapi structs and ioctl numbers are hand-transcribed into
-`include/linux_compat.h` with a `KX_` prefix rather than including
+`include/linux_compat.h` with a `THINC_` prefix rather than including
 `<linux/btrfs.h>` directly (avoiding the same class of glibc/kernel-uapi
 header clash this project has hit before) and rather than shelling out to
 `btrfs` CLI tooling (which this environment doesn't even have installed, and
 which the project's own conventions reject on principle for anything with a
 direct ioctl path). The four new ioctl numbers
-(`KX_BTRFS_IOC_SUBVOL_CREATE` = `0x5000940e`, `KX_BTRFS_IOC_QUOTA_CTL` =
-`0xc0109428`, `KX_BTRFS_IOC_QGROUP_LIMIT` = `0x8030942b`) were hand-derived
+(`THINC_BTRFS_IOC_SUBVOL_CREATE` = `0x5000940e`, `THINC_BTRFS_IOC_QUOTA_CTL` =
+`0xc0109428`, `THINC_BTRFS_IOC_QGROUP_LIMIT` = `0x8030942b`) were hand-derived
 via the standard `_IOC(dir,type,nr,size)` encoding and cross-checked by
 independently re-deriving this project's own two already-shipped, already-
-verified `KX_FS_IOC_FS{GET,SET}XATTR` constants with the identical method,
+verified `THINC_FS_IOC_FS{GET,SET}XATTR` constants with the identical method,
 confirming an exact bit-for-bit match before trusting the same process for
 the new, previously-unverified values.
 

@@ -95,7 +95,7 @@ int persist_read_file(const char *path, char **out_buf, size_t *out_len)
 
 int persist_mkdir_p(const char *dir_path)
 {
-	return kx_mkdir_p(dir_path);
+	return thinc_mkdir_p(dir_path);
 }
 
 /*

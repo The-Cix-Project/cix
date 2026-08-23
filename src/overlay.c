@@ -20,7 +20,7 @@ int overlay_backing_is_btrfs(const char *path)
 
 	if (statfs(path, &sf) != 0)
 		return 0;
-	return sf.f_type == KX_BTRFS_SUPER_MAGIC;
+	return sf.f_type == THINC_BTRFS_SUPER_MAGIC;
 }
 
 /*
@@ -49,7 +49,7 @@ static int overlay_create_btrfs_upperdir(const char *upperdir, long long quota_b
 	const char *leaf;
 	const char *slash = strrchr(upperdir, '/');
 	int parent_fd, upper_fd;
-	struct kx_btrfs_ioctl_vol_args vol_args;
+	struct thinc_btrfs_ioctl_vol_args vol_args;
 
 	if (slash == NULL || slash == upperdir) {
 		errno = EINVAL;
@@ -66,7 +66,7 @@ static int overlay_create_btrfs_upperdir(const char *upperdir, long long quota_b
 
 	memset(&vol_args, 0, sizeof(vol_args));
 	snprintf(vol_args.name, sizeof(vol_args.name), "%s", leaf);
-	if (ioctl(parent_fd, KX_BTRFS_IOC_SUBVOL_CREATE, &vol_args) != 0) {
+	if (ioctl(parent_fd, THINC_BTRFS_IOC_SUBVOL_CREATE, &vol_args) != 0) {
 		/* EEXIST: a previous run already created this subvolume
 		 * (the container is being recreated after a crash/restart
 		 * before cleanup) -- same tolerant convention the plain
@@ -89,11 +89,11 @@ static int overlay_create_btrfs_upperdir(const char *upperdir, long long quota_b
 	}
 
 	{
-		struct kx_btrfs_ioctl_quota_ctl_args qc;
+		struct thinc_btrfs_ioctl_quota_ctl_args qc;
 
 		memset(&qc, 0, sizeof(qc));
-		qc.cmd = KX_BTRFS_QUOTA_CTL_ENABLE;
-		if (ioctl(upper_fd, KX_BTRFS_IOC_QUOTA_CTL, &qc) != 0 && errno != EINVAL) {
+		qc.cmd = THINC_BTRFS_QUOTA_CTL_ENABLE;
+		if (ioctl(upper_fd, THINC_BTRFS_IOC_QUOTA_CTL, &qc) != 0 && errno != EINVAL) {
 			perror("overlay_create: BTRFS_IOC_QUOTA_CTL (enable)");
 			close(upper_fd);
 			return OVERLAY_ERR_QUOTA;
@@ -101,14 +101,14 @@ static int overlay_create_btrfs_upperdir(const char *upperdir, long long quota_b
 	}
 
 	{
-		struct kx_btrfs_ioctl_qgroup_limit_args ql;
+		struct thinc_btrfs_ioctl_qgroup_limit_args ql;
 
 		memset(&ql, 0, sizeof(ql));
 		ql.qgroupid = 0; /* the subvolume owning upper_fd itself */
-		ql.lim.flags = KX_BTRFS_QGROUP_LIMIT_MAX_RFER | KX_BTRFS_QGROUP_LIMIT_MAX_EXCL;
+		ql.lim.flags = THINC_BTRFS_QGROUP_LIMIT_MAX_RFER | THINC_BTRFS_QGROUP_LIMIT_MAX_EXCL;
 		ql.lim.max_rfer = (uint64_t)quota_bytes;
 		ql.lim.max_excl = (uint64_t)quota_bytes;
-		if (ioctl(upper_fd, KX_BTRFS_IOC_QGROUP_LIMIT, &ql) != 0) {
+		if (ioctl(upper_fd, THINC_BTRFS_IOC_QGROUP_LIMIT, &ql) != 0) {
 			perror("overlay_create: BTRFS_IOC_QGROUP_LIMIT");
 			close(upper_fd);
 			return OVERLAY_ERR_QUOTA;
@@ -139,21 +139,21 @@ static int overlay_create_btrfs_upperdir(const char *upperdir, long long quota_b
 int overlay_tag_project_id(const char *dir, unsigned int project_id, const char *what)
 {
 	int fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-	struct kx_fsxattr fsx;
+	struct thinc_fsxattr fsx;
 
 	if (fd < 0) {
 		fprintf(stderr, "overlay_create: open(%s) for project-quota tagging: %s\n", what,
 		        strerror(errno));
 		return OVERLAY_ERR_QUOTA;
 	}
-	if (ioctl(fd, KX_FS_IOC_FSGETXATTR, &fsx) != 0) {
+	if (ioctl(fd, THINC_FS_IOC_FSGETXATTR, &fsx) != 0) {
 		fprintf(stderr, "overlay_create: FS_IOC_FSGETXATTR(%s): %s\n", what, strerror(errno));
 		close(fd);
 		return OVERLAY_ERR_QUOTA;
 	}
 	fsx.fsx_projid = project_id;
-	fsx.fsx_xflags |= KX_FS_XFLAG_PROJINHERIT;
-	if (ioctl(fd, KX_FS_IOC_FSSETXATTR, &fsx) != 0) {
+	fsx.fsx_xflags |= THINC_FS_XFLAG_PROJINHERIT;
+	if (ioctl(fd, THINC_FS_IOC_FSSETXATTR, &fsx) != 0) {
 		fprintf(stderr, "overlay_create: FS_IOC_FSSETXATTR(%s): %s\n", what, strerror(errno));
 		close(fd);
 		return OVERLAY_ERR_QUOTA;

@@ -292,7 +292,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		const char *fail_step = NULL;
 		int prep_ret = 0;
 
-		overlay_lower_fd = (int)kx_open_tree(-1, spec->ov.userns_rootfs, OPEN_TREE_CLONE);
+		overlay_lower_fd = (int)thinc_open_tree(-1, spec->ov.userns_rootfs, OPEN_TREE_CLONE);
 		if (overlay_lower_fd < 0) {
 			saved_errno = errno;
 			fail_step = "container_create: open_tree(userns_rootfs)";
@@ -441,7 +441,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		 * of this.
 		 */
 		if (spec->userns_enabled) {
-			if (kx_move_mount(overlay_lower_fd, "", -1, spec->ov.merged,
+			if (thinc_move_mount(overlay_lower_fd, "", -1, spec->ov.merged,
 			                  MOVE_MOUNT_F_EMPTY_PATH) != 0) {
 				child_diag(diag_pipe[1], "child: move_mount userns rootfs");
 				_exit(122);

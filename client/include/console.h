@@ -24,7 +24,7 @@
  * Returns 0 on a clean session end, -1 on a connection/handshake
  * failure (a message is already printed to stderr).
  */
-int kx_console_run(const struct kx_client *c, const char *container_name, const char *cmd);
+int thinc_console_run(const struct thinc_client *c, const char *container_name, const char *cmd);
 
 /*
  * Live-tails the currently in-flight pkg build's own stdout/stderr
@@ -38,6 +38,6 @@ int kx_console_run(const struct kx_client *c, const char *container_name, const 
  * connection/handshake failure (e.g. no build currently in progress
  * -- a message is already printed to stderr).
  */
-int kx_pkg_build_log_run(const struct kx_client *c);
+int thinc_pkg_build_log_run(const struct thinc_client *c);
 
 #endif /* CONSOLE_H */

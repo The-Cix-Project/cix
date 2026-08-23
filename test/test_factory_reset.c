@@ -62,16 +62,16 @@ static pid_t start_daemon(void)
 	return pid;
 }
 
-static int wait_up(const struct kx_client *c)
+static int wait_up(const struct thinc_client *c)
 {
 	int i;
 
 	for (i = 0; i < 100; i++) {
-		struct kx_response r;
+		struct thinc_response r;
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -81,8 +81,8 @@ static int wait_up(const struct kx_client *c)
 
 int main(void)
 {
-	struct kx_client client;
-	struct kx_response r;
+	struct thinc_client client;
+	struct thinc_response r;
 	pid_t pid;
 	int i;
 
@@ -93,7 +93,7 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_up(&client) != 0) {
 		fprintf(stderr, "FAIL: daemon never came up\n");
 		kill(pid, SIGKILL);
@@ -105,15 +105,15 @@ int main(void)
 	/* Real operator state, of two different kinds, so the test cannot
 	 * pass by one subsystem happening to be wiped. */
 	memset(&r, 0, sizeof(r));
-	check(kx_client_request(&client, "POST", "/v1/volumes", "{\"name\":\"frvol\"}", &r) == 0 &&
+	check(thinc_client_request(&client, "POST", "/v1/volumes", "{\"name\":\"frvol\"}", &r) == 0 &&
 	          r.status == 201,
 	      "a volume exists before the reset");
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	memset(&r, 0, sizeof(r));
-	check(kx_client_request(&client, "POST", "/v1/images", "{\"name\":\"frimg\"}", &r) == 0 &&
+	check(thinc_client_request(&client, "POST", "/v1/images", "{\"name\":\"frimg\"}", &r) == 0 &&
 	          r.status == 201,
 	      "an image exists before the reset");
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/*
 	 * The confirmation is this install's own name, not a boolean: a
@@ -121,34 +121,34 @@ int main(void)
 	 * name only by something that looked it up first.
 	 */
 	memset(&r, 0, sizeof(r));
-	check(kx_client_request(&client, "POST", "/v1/system/factory-reset", "{}", &r) == 0 &&
+	check(thinc_client_request(&client, "POST", "/v1/system/factory-reset", "{}", &r) == 0 &&
 	          r.status == 400,
 	      "a factory reset with no confirmation is refused");
-	kx_response_free(&r);
+	thinc_response_free(&r);
 	memset(&r, 0, sizeof(r));
-	check(kx_client_request(&client, "POST", "/v1/system/factory-reset",
+	check(thinc_client_request(&client, "POST", "/v1/system/factory-reset",
 	                         "{\"confirm\":\"not-this-box\"}", &r) == 0 &&
 	          r.status == 400,
 	      "a factory reset with the wrong name is refused");
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* Still all there after the refusals -- a refused reset must not
 	 * have destroyed anything on its way to saying no. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/volumes", NULL, &r) == 0) {
+	if (thinc_client_request(&client, "GET", "/v1/volumes", NULL, &r) == 0) {
 		const struct json_value *v = json_object_get(r.json, "volumes");
 
 		check(v != NULL && v->type == JSON_ARRAY && v->u.array.count == 1,
 		      "a refused reset changed nothing");
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	check(kx_client_request(&client, "POST", "/v1/system/factory-reset",
+	check(thinc_client_request(&client, "POST", "/v1/system/factory-reset",
 	                         "{\"confirm\":\"thinc\"}", &r) == 0 &&
 	          r.status == 202,
 	      "a confirmed factory reset is accepted");
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* It arms and reboots; here that means the daemon exits. */
 	for (i = 0; i < 100; i++) {
@@ -170,7 +170,7 @@ int main(void)
 	check(pid > 0 && wait_up(&client) == 0, "the daemon came back after the reset");
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/volumes", NULL, &r) == 0 && r.status == 200) {
+	if (thinc_client_request(&client, "GET", "/v1/volumes", NULL, &r) == 0 && r.status == 200) {
 		const struct json_value *v = json_object_get(r.json, "volumes");
 
 		check(v != NULL && v->type == JSON_ARRAY && v->u.array.count == 0,
@@ -178,10 +178,10 @@ int main(void)
 	} else {
 		check(0, "every volume is gone after the reset -- not just its file");
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/images", NULL, &r) == 0 && r.status == 200) {
+	if (thinc_client_request(&client, "GET", "/v1/images", NULL, &r) == 0 && r.status == 200) {
 		const struct json_value *v = json_object_get(r.json, "images");
 
 		check(v != NULL && v->type == JSON_ARRAY && v->u.array.count == 0,
@@ -189,14 +189,14 @@ int main(void)
 	} else {
 		check(0, "every image is gone after the reset");
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* And the box is usable again rather than merely empty. */
 	memset(&r, 0, sizeof(r));
-	check(kx_client_request(&client, "POST", "/v1/volumes", "{\"name\":\"afterreset\"}", &r) == 0 &&
+	check(thinc_client_request(&client, "POST", "/v1/volumes", "{\"name\":\"afterreset\"}", &r) == 0 &&
 	          r.status == 201,
 	      "the box works normally after a reset");
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	kill(pid, SIGTERM);
 	waitpid(pid, NULL, 0);

@@ -76,14 +76,14 @@ static int stop_daemon(pid_t pid)
 	return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -209,9 +209,9 @@ static int read_file_string(const char *path, char *out, size_t out_size)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct kx_client client;
+	struct thinc_client client;
 	int ok = 1;
-	struct kx_response r;
+	struct thinc_response r;
 	char scratch_dir[] = "/tmp/thinc_test_kmod_build_XXXXXX";
 	char tarball_path[512], sha256[128];
 	char artifact_path[PATH_MAX] = "";
@@ -270,7 +270,7 @@ int main(void)
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
 	}
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -281,16 +281,16 @@ int main(void)
 
 	/* 1. Error paths first (no job in flight yet for any of these). */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/system/kmod-build", "{}", &r) != 0 ||
+	if (thinc_client_request(&client, "POST", "/v1/system/kmod-build", "{}", &r) != 0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: POST kmod-build with no build_image: expected 400, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/system/kmod-build",
+	if (thinc_client_request(&client, "POST", "/v1/system/kmod-build",
 	                       "{\"build_image\":\"hbimage\",\"config_symbols\":[\"not_a_config_symbol\"]}",
 	                       &r) != 0 ||
 	    r.status != 400) {
@@ -300,10 +300,10 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/system/kmod-build",
+	if (thinc_client_request(&client, "POST", "/v1/system/kmod-build",
 	                       "{\"build_image\":\"hbimage\",\"config_symbols\":\"CONFIG_FOO\"}", &r) !=
 	        0 ||
 	    r.status != 400) {
@@ -312,22 +312,22 @@ int main(void)
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/system/kmod-build",
+	if (thinc_client_request(&client, "POST", "/v1/system/kmod-build",
 	                       "{\"build_image\":\"no-such-image\"}", &r) != 0 ||
 	    r.status != 404) {
 		fprintf(stderr, "FAIL: POST kmod-build with unknown build_image: expected 404, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 2. The real payoff: config_symbols actually reaches the build
 	 * container as THINC_KMOD_EXTRA_SYMBOLS, space-joined. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (kx_client_request(&client, "POST", "/v1/system/kmod-build",
+	if (ok && (thinc_client_request(&client, "POST", "/v1/system/kmod-build",
 	                              "{\"build_image\":\"hbimage\","
 	                              "\"config_symbols\":[\"CONFIG_FOO\",\"CONFIG_BAR\"]}",
 	                              &r) != 0 ||
@@ -335,25 +335,25 @@ int main(void)
 		fprintf(stderr, "FAIL: POST kmod-build hbimage: expected 202, got %d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	state[0] = '\0';
 	for (i = 0; ok && i < 30; i++) {
 		const char *s;
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/pkg/hostbuild/kernel", NULL, &r) != 0 ||
+		if (thinc_client_request(&client, "GET", "/v1/pkg/hostbuild/kernel", NULL, &r) != 0 ||
 		    r.status != 200) {
-			kx_response_free(&r);
+			thinc_response_free(&r);
 			break;
 		}
 		s = json_as_string(json_object_get(r.json, "state"));
 		if (s == NULL) {
-			kx_response_free(&r);
+			thinc_response_free(&r);
 			break;
 		}
 		snprintf(state, sizeof(state), "%s", s);
-		kx_response_free(&r);
+		thinc_response_free(&r);
 		if (strcmp(state, "fetching") != 0 && strcmp(state, "building") != 0)
 			break;
 		usleep(300000);
@@ -365,7 +365,7 @@ int main(void)
 
 	if (ok) {
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "GET", "/v1/pkg/hostbuild/kernel", NULL, &r) != 0 ||
+		if (thinc_client_request(&client, "GET", "/v1/pkg/hostbuild/kernel", NULL, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: GET hostbuild/kernel after completion, status=%d\n", r.status);
 			ok = 0;
@@ -379,7 +379,7 @@ int main(void)
 				snprintf(artifact_path, sizeof(artifact_path), "%s", ap);
 			}
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 	}
 
 	if (ok && artifact_path[0] != '\0') {

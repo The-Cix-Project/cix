@@ -22,14 +22,14 @@ extern char **environ;
 #define TEST_PORT 7623
 #define PORT_ARG "--port=7623"
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -37,13 +37,13 @@ static int wait_for_daemon(const struct kx_client *c, int max_attempts)
 	return -1;
 }
 
-static void check(const struct kx_client *c, const char *path, int want_status,
+static void check(const struct thinc_client *c, const char *path, int want_status,
                    const char *want_content_type, const char *want_body_substr,
                    const char *forbid_body_substr, int *ok)
 {
-	struct kx_response r;
+	struct thinc_response r;
 
-	if (kx_client_request(c, "GET", path, NULL, &r) != 0) {
+	if (thinc_client_request(c, "GET", path, NULL, &r) != 0) {
 		fprintf(stderr, "FAIL: GET %s: transport error\n", path);
 		*ok = 0;
 		return;
@@ -70,7 +70,7 @@ static void check(const struct kx_client *c, const char *path, int want_status,
 		*ok = 0;
 	}
 
-	kx_response_free(&r);
+	thinc_response_free(&r);
 }
 
 int main(void)
@@ -79,7 +79,7 @@ int main(void)
 	char *dargv[4];
 	char data_dir[PATH_MAX];
 	char data_dir_arg[PATH_MAX + 11];
-	struct kx_client client;
+	struct thinc_client client;
 	int ok = 1;
 
 	if (test_data_dir_create(data_dir, sizeof(data_dir)) != 0)
@@ -103,7 +103,7 @@ int main(void)
 		_exit(127);
 	}
 
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");

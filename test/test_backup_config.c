@@ -35,14 +35,14 @@ extern char **environ;
 
 static char g_data_dir[PATH_MAX];
 
-static int wait_for_daemon(const struct kx_client *c, int max_attempts)
+static int wait_for_daemon(const struct thinc_client *c, int max_attempts)
 {
 	int i;
-	struct kx_response r;
+	struct thinc_response r;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (kx_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
-			kx_response_free(&r);
+		if (thinc_client_request(c, "GET", "/v1/health", NULL, &r) == 0) {
+			thinc_response_free(&r);
 			return 0;
 		}
 		usleep(100000);
@@ -93,9 +93,9 @@ static int stop_daemon(pid_t pid)
 int main(void)
 {
 	pid_t daemon_pid;
-	struct kx_client client;
+	struct thinc_client client;
 	int ok = 1;
-	struct kx_response r;
+	struct thinc_response r;
 	char non_os_disk[64] = "";
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
@@ -107,7 +107,7 @@ int main(void)
 		return 1;
 	}
 
-	kx_client_init(&client, "127.0.0.1", TEST_PORT);
+	thinc_client_init(&client, "127.0.0.1", TEST_PORT);
 	if (wait_for_daemon(&client, 50) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
@@ -118,7 +118,7 @@ int main(void)
 
 	/* 1. Default state, fresh daemon: no disk, disabled, no schedule. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/system/backup-config", NULL, &r) != 0 || r.status != 200) {
+	if (thinc_client_request(&client, "GET", "/v1/system/backup-config", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/system/backup-config, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -139,10 +139,10 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/system/backup-config/status", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "GET", "/v1/system/backup-config/status", NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: GET /v1/system/backup-config/status, status=%d\n", r.status);
 		ok = 0;
@@ -155,12 +155,12 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 2. Snapshot-now with no disk configured -> real, immediate,
 	 * synchronous failure -- always deterministic, no hardware needed. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "POST", "/v1/system/backup-config/snapshot-now", NULL, &r) != 0 ||
+	if (thinc_client_request(&client, "POST", "/v1/system/backup-config/snapshot-now", NULL, &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: POST snapshot-now (no disk), status=%d\n", r.status);
 		ok = 0;
@@ -179,30 +179,30 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 3. Partial-update PUT semantics (ADR-0141's own explicit design
 	 * note, mirroring daemon-config): setting one field must not touch
 	 * the others. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "PUT", "/v1/system/backup-config", "{\"interval_hours\":6}", &r) !=
+	if (thinc_client_request(&client, "PUT", "/v1/system/backup-config", "{\"interval_hours\":6}", &r) !=
 	            0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: PUT backup-config (interval_hours only), status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "PUT", "/v1/system/backup-config", "{\"enabled\":true}", &r) != 0 ||
+	if (thinc_client_request(&client, "PUT", "/v1/system/backup-config", "{\"enabled\":true}", &r) != 0 ||
 	    r.status != 200) {
 		fprintf(stderr, "FAIL: PUT backup-config (enabled only), status=%d\n", r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/system/backup-config", NULL, &r) != 0 || r.status != 200) {
+	if (thinc_client_request(&client, "GET", "/v1/system/backup-config", NULL, &r) != 0 || r.status != 200) {
 		fprintf(stderr, "FAIL: GET backup-config after partial updates, status=%d\n", r.status);
 		ok = 0;
 	} else {
@@ -220,25 +220,25 @@ int main(void)
 			ok = 0;
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* 4. A negative interval is rejected. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "PUT", "/v1/system/backup-config", "{\"interval_hours\":-1}", &r) !=
+	if (thinc_client_request(&client, "PUT", "/v1/system/backup-config", "{\"interval_hours\":-1}", &r) !=
 	            0 ||
 	    r.status != 400) {
 		fprintf(stderr, "FAIL: PUT backup-config with a negative interval expected 400, got %d\n",
 		        r.status);
 		ok = 0;
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	/* Find a real, non-OS disk to exercise the role/mount-state
 	 * validation paths against -- adapts to whatever hardware is
 	 * actually present. Every step below (diskrole create/rm, PUT
 	 * backup-config) is non-destructive. */
 	memset(&r, 0, sizeof(r));
-	if (kx_client_request(&client, "GET", "/v1/disks", NULL, &r) == 0 && r.status == 200) {
+	if (thinc_client_request(&client, "GET", "/v1/disks", NULL, &r) == 0 && r.status == 200) {
 		const struct json_value *disks = json_object_get(r.json, "disks");
 		size_t i;
 
@@ -254,7 +254,7 @@ int main(void)
 			}
 		}
 	}
-	kx_response_free(&r);
+	thinc_response_free(&r);
 
 	if (non_os_disk[0] == '\0') {
 		printf("(no non-OS disk discovered on this host -- scenarios 5-7 skipped)\n");
@@ -266,25 +266,25 @@ int main(void)
 		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"container-storage\"}",
 		         non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
+		if (thinc_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
 			fprintf(stderr, "FAIL: POST /v1/diskroles (container-storage), status=%d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		snprintf(body, sizeof(body), "{\"disk\":\"%s\"}", non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "PUT", "/v1/system/backup-config", body, &r) != 0 ||
+		if (thinc_client_request(&client, "PUT", "/v1/system/backup-config", body, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: PUT backup-config with a wrong-role disk, status=%d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/system/backup-config/snapshot-now", NULL, &r) !=
+		if (thinc_client_request(&client, "POST", "/v1/system/backup-config/snapshot-now", NULL, &r) !=
 		            0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: POST snapshot-now (wrong role), status=%d\n", r.status);
@@ -300,7 +300,7 @@ int main(void)
 				ok = 0;
 			}
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* Clear backup-config's own disk pointer before removing the
 		 * role below -- otherwise the 409 safety check (this disk is
@@ -310,16 +310,16 @@ int main(void)
 		 * as-designed behavior -- exercised deliberately in scenario 7
 		 * below, not a bug to route around silently here. */
 		memset(&r, 0, sizeof(r));
-		kx_client_request(&client, "PUT", "/v1/system/backup-config", "{\"disk\":null}", &r);
-		kx_response_free(&r);
+		thinc_client_request(&client, "PUT", "/v1/system/backup-config", "{\"disk\":null}", &r);
+		thinc_response_free(&r);
 
 		{
 			char path[96];
 
 			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
 			memset(&r, 0, sizeof(r));
-			kx_client_request(&client, "DELETE", path, NULL, &r);
-			kx_response_free(&r);
+			thinc_client_request(&client, "DELETE", path, NULL, &r);
+			thinc_response_free(&r);
 		}
 
 		/* 6. The right role (backup) but not currently mounted (never
@@ -327,24 +327,24 @@ int main(void)
 		 * can't safely exercise) -> a distinct, clear reason. */
 		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"backup\"}", non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
+		if (thinc_client_request(&client, "POST", "/v1/diskroles", body, &r) != 0 || r.status != 201) {
 			fprintf(stderr, "FAIL: POST /v1/diskroles (backup), status=%d\n", r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		snprintf(body, sizeof(body), "{\"disk\":\"%s\"}", non_os_disk);
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "PUT", "/v1/system/backup-config", body, &r) != 0 ||
+		if (thinc_client_request(&client, "PUT", "/v1/system/backup-config", body, &r) != 0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: PUT backup-config with the now-correct-role disk, status=%d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "POST", "/v1/system/backup-config/snapshot-now", NULL, &r) !=
+		if (thinc_client_request(&client, "POST", "/v1/system/backup-config/snapshot-now", NULL, &r) !=
 		            0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: POST snapshot-now (role-correct, unmounted), status=%d\n",
@@ -361,7 +361,7 @@ int main(void)
 				ok = 0;
 			}
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		/* 7. The 409 safety check: this disk is now the configured
 		 * backup-config disk -- removing its role must be refused. */
@@ -370,41 +370,41 @@ int main(void)
 
 			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 409) {
+			if (thinc_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 409) {
 				fprintf(stderr,
 				        "FAIL: DELETE diskrole for the active backup-config disk "
 				        "expected 409, got %d\n",
 				        r.status);
 				ok = 0;
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 		}
 
 		/* Cleanup: clear the backup-config disk first (via PUT
 		 * disk:null), then the role removal above is unblocked. */
 		memset(&r, 0, sizeof(r));
-		if (kx_client_request(&client, "PUT", "/v1/system/backup-config", "{\"disk\":null}", &r) !=
+		if (thinc_client_request(&client, "PUT", "/v1/system/backup-config", "{\"disk\":null}", &r) !=
 		            0 ||
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: PUT backup-config disk:null (cleanup), status=%d\n",
 			        r.status);
 			ok = 0;
 		}
-		kx_response_free(&r);
+		thinc_response_free(&r);
 
 		{
 			char path[96];
 
 			snprintf(path, sizeof(path), "/v1/diskroles/%s", non_os_disk);
 			memset(&r, 0, sizeof(r));
-			if (kx_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 204) {
+			if (thinc_client_request(&client, "DELETE", path, NULL, &r) != 0 || r.status != 204) {
 				fprintf(stderr,
 				        "FAIL: DELETE diskrole after clearing backup-config expected "
 				        "204, got %d\n",
 				        r.status);
 				ok = 0;
 			}
-			kx_response_free(&r);
+			thinc_response_free(&r);
 		}
 	}
 
