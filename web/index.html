@@ -1293,7 +1293,7 @@
 
 			<h3>Client delivery</h3>
 			<p class="hint">
-				What <code>ldap_login</code> containers are actually handed right now
+				What <code>ldap_client</code> containers are actually handed right now
 				(issue #84) -- derived from registered servers when no explicit
 				<code>client_uri</code> is set, and with drained or unhealthy servers
 				dropped either way. A URI pointing at a directory thinC does not manage
@@ -2305,7 +2305,7 @@
 						</label>
 						<!-- Issue #77 surface parity: these three were REST-only until now.
 						     userns = ADR-0179 user namespaces (opt-in);
-						     ldap_login = server-staged nsswitch/nslcd from /ldap/config (#80);
+						     ldap_client = server-staged nsswitch/nslcd from /ldap/config (#80);
 						     capture_output = keep the container's own stdout/stderr, the
 						     first thing to reach for on a silent crash-loop. -->
 						<label class="checkbox">
@@ -2313,8 +2313,13 @@
 							User namespace (map root to an unprivileged host uid)
 						</label>
 						<label class="checkbox">
-							<input type="checkbox" id="f-ldap-login">
+							<input type="checkbox" id="f-ldap-client">
 							LDAP login (stage nsswitch.conf + nslcd.conf from the daemon's LDAP config)
+						</label>
+						<label class="wide">
+							Restrict LDAP login to groups
+							<input type="text" id="f-ldap-allow-groups"
+							       placeholder="(none -- any directory account may log in), or comma-separated group names, e.g. jumpusers, admins">
 						</label>
 						<label class="checkbox">
 							<input type="checkbox" id="f-capture-output">

@@ -10113,7 +10113,8 @@ static const char *container_body_unknown_key(const struct json_value *root)
 		"pki_days", "disk", "ldap_provision", "ldap_user", "ldap_group", "ldap_uid",
 		"ldap_secret_dir", "restart", "restart_delay_seconds", "follow_rolling",
 		"follow_rolling_jitter_seconds", "depends_on", "readiness", "memory_max",
-		"cpu_max", "pids_max", "cpuset_cpus", "disk_quota_bytes", "ldap_login",
+		"cpu_max", "pids_max", "cpuset_cpus", "disk_quota_bytes", "ldap_client",
+		"ldap_allow_groups",
 		"userns",
 		/* Issue #88: persistent volumes. */
 		"volumes",
@@ -10141,7 +10142,7 @@ static const char *container_body_unknown_key(const struct json_value *root)
  * Issue #66: stage one file directly into a container's upperdir, the
  * same open(O_CREAT|O_TRUNC)/write/optional-fchown sequence
  * create_container_from_body()'s own files[] loop already uses --
- * factored out so the ldap_login synthetic files below share exactly
+ * factored out so the ldap_client synthetic files below share exactly
  * that path (and its own already-audited safety: file_path_is_safe()
  * is enforced by the caller for user files; these synthetic paths are
  * fixed literals). Returns 0, or -1 with errno set. Records nothing in
@@ -10342,7 +10343,7 @@ static void ldap_filter_configured_client_uri(const char *configured, char *out,
 
 /*
  * Issue #66 (auto-derivation): the effective LDAP client URI list for
- * ldap_login -- the explicitly-configured client_uri if set, else one
+ * ldap_client -- the explicitly-configured client_uri if set, else one
  * built from the IPs of the containers an operator has already
  * registered as LDAP servers (ldap server register), so registering
  * the servers is the only step needed. Writes into out (returns 1) or
@@ -10539,7 +10540,15 @@ static int create_container_from_body(const char *body, size_t body_len,
 	int capture_output = 0;
 	const struct json_value *juserns; /* ADR-0179 #29 phase 2 opt-in */
 	int userns = 0;
-	int ldap_login = 0; /* issue #66 */
+	int ldap_client = 0; /* issue #66 */
+	/*
+	 * Issue #76: which LDAP groups may log in here. Empty means no
+	 * restriction -- any valid account in the directory, which is what
+	 * an ldap_client container has always done. Naming groups turns
+	 * that into "these groups only", enforced by nslcd itself rather
+	 * than by anything this daemon has to be running to check.
+	 */
+	const struct json_value *jallow_groups = NULL;
 	int output_pipe[2] = { -1, -1 };
 	int stdio_write_fd = -1;
 	struct route_spec route_specs[CONTAINER_MAX_ROUTES];
@@ -10613,10 +10622,11 @@ static int create_container_from_body(const char *body, size_t body_len,
 	jdns_servers = json_object_get(root, "dns_servers");
 	jdns_register = json_object_get(root, "dns_register");
 	{
-		const struct json_value *jll = json_object_get(root, "ldap_login");
+		const struct json_value *jll = json_object_get(root, "ldap_client");
 
-		ldap_login = (jll != NULL && jll->type == JSON_BOOL && jll->u.boolean);
+		ldap_client = (jll != NULL && jll->type == JSON_BOOL && jll->u.boolean);
 	}
+	jallow_groups = json_object_get(root, "ldap_allow_groups");
 	jpki_issue = json_object_get(root, "pki_issue");
 	jpki_cert_dir = json_object_get(root, "pki_cert_dir");
 	jpki_days = json_object_get(root, "pki_days");
@@ -10866,6 +10876,23 @@ static int create_container_from_body(const char *body, size_t body_len,
 			snprintf(err_msg, err_msg_size, "ldap_user is not a valid LDAP username");
 			return 400;
 		}
+	}
+	/*
+	 * Issue #76: an allow-list only means anything to nslcd, so naming
+	 * one without ldap_client is a request that cannot do what it says
+	 * -- refused rather than silently ignored, which would read as a
+	 * restriction that is in force when it is not.
+	 */
+	if (jallow_groups != NULL && !ldap_client) {
+		json_free(root);
+		snprintf(err_msg, err_msg_size,
+		         "ldap_allow_groups requires ldap_client -- there is nothing to restrict without it");
+		return 400;
+	}
+	if (jallow_groups != NULL && jallow_groups->type != JSON_ARRAY) {
+		json_free(root);
+		snprintf(err_msg, err_msg_size, "ldap_allow_groups must be an array of group names");
+		return 400;
 	}
 	if (jroutes != NULL) {
 		if (jroutes->type != JSON_ARRAY || jroutes->u.array.count > CONTAINER_MAX_ROUTES) {
@@ -11138,7 +11165,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 	}
 	/*
-	 * Issue #66: ldap_login stages the two identity-resolution files
+	 * Issue #66: ldap_client stages the two identity-resolution files
 	 * that would otherwise hand-carry the daemon's own LDAP client
 	 * config -- /etc/nsswitch.conf (passwd/group/shadow: files ldap)
 	 * and /etc/nslcd.conf (uri/base/binddn/bindpw from
@@ -11153,7 +11180,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	 * to render), and budget-checked against CONTAINER_MAX_FILES up
 	 * front so a create can't half-stage and then 500.
 	 */
-	if (ldap_login) {
+	if (ldap_client) {
 		const struct ldap_config *lc = ldap_config_get();
 		int user_files = (jfiles != NULL) ? (int)jfiles->u.array.count : 0;
 		char probe_uri[600];
@@ -11161,14 +11188,14 @@ static int create_container_from_body(const char *body, size_t body_len,
 		if (lc->base_dn[0] == '\0' || !ldap_effective_client_uri(probe_uri, sizeof(probe_uri))) {
 			json_free(root);
 			snprintf(err_msg, err_msg_size,
-			         "ldap_login requires base_dn (PUT /ldap/config) and either client_uri "
+			         "ldap_client requires base_dn (PUT /ldap/config) and either client_uri "
 			         "or at least one running registered LDAP server");
 			return 400;
 		}
 		if (user_files + 2 > CONTAINER_MAX_FILES) {
 			json_free(root);
 			snprintf(err_msg, err_msg_size,
-			         "ldap_login needs 2 file slots; too many files[] entries already");
+			         "ldap_client needs 2 file slots; too many files[] entries already");
 			return 400;
 		}
 	}
@@ -11455,7 +11482,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 		file_count = (int)jfiles->u.array.count;
 	}
-	if (ldap_login) {
+	if (ldap_client) {
 		/* Rendered from the daemon's own LDAP client config (validated
 		 * present above). nslcd.conf holds the bind credential -> 0600.
 		 * nsswitch.conf is the standard "files then ldap" resolution
@@ -11485,20 +11512,96 @@ static int create_container_from_body(const char *body, size_t body_len,
 		                          "shadow:         files ldap\n",
 		                          0644, (uid_t)-1, (gid_t)-1) != 0) {
 			json_free(root);
-			snprintf(err_msg, err_msg_size, "failed to stage ldap_login nsswitch.conf");
+			snprintf(err_msg, err_msg_size, "failed to stage ldap_client nsswitch.conf");
 			return 500;
 		}
 		snprintf(file_paths[file_count], sizeof(file_paths[file_count]), "%s",
 		         "/etc/nsswitch.conf");
 		file_count++;
 
-		snprintf(nslcd, sizeof(nslcd),
-		         "uri %s\nbase %s\nbinddn %s\nbindpw %s\npam_authc_ppolicy no\n",
-		         effective_uri, lc->base_dn, lc->bind_dn, lc->bind_password);
+		{
+			/*
+			 * Issue #76: host-scoped authorisation.
+			 *
+			 * Without ldap_allow_groups this file carries no
+			 * pam_authz_search at all and any valid account in the
+			 * directory may log in -- what an ldap_client container has
+			 * always done. With it, nslcd runs the search below after
+			 * authenticating and refuses the login if it matches
+			 * nothing, so "which users" is enforced by the same daemon
+			 * that resolves them rather than by anything of ours that
+			 * has to still be running.
+			 *
+			 * Group membership is the mechanism, and it is what this
+			 * directory actually supports: verified live against the
+			 * deployed glauth that a user entry carries memberOf DNs of
+			 * the form "ou=<group>,ou=groups,<base>" for BOTH its
+			 * primary and its secondary groups, that filtering on them
+			 * matches a member and returns nothing for a non-member.
+			 * (The `host` attribute this issue originally suggested
+			 * would need custom-attribute support this glauth's config
+			 * backend does not expose; groups are a first-class concept
+			 * here already, and a user can be in many, which is exactly
+			 * what "may log into several hosts" needs.)
+			 */
+			char authz[512] = "";
+
+			if (jallow_groups != NULL && jallow_groups->type == JSON_ARRAY &&
+			    jallow_groups->u.array.count > 0) {
+				size_t gi;
+				size_t off = 0;
+
+				off += (size_t)snprintf(authz + off, sizeof(authz) - off,
+				                         "pam_authz_search "
+				                         "(&(objectClass=posixAccount)(uid=$username)(|");
+				for (gi = 0; gi < jallow_groups->u.array.count; gi++) {
+					const char *g = json_as_string(jallow_groups->u.array.items[gi]);
+
+					/*
+					 * Refused, never escaped: this string is written
+					 * into a file nslcd parses as an LDAP filter, and a
+					 * group name is already constrained to a safe set
+					 * elsewhere in this daemon -- anything outside it is
+					 * a mistake worth reporting, not something to encode
+					 * around.
+					 */
+					if (g == NULL || !simple_name_is_valid(g, LDAP_GROUP_NAME_MAX)) {
+						json_free(root);
+						snprintf(err_msg, err_msg_size,
+						         "ldap_allow_groups entries must be plain group names");
+						return 400;
+					}
+					if (ldap_group_find(g) == NULL) {
+						/*
+						 * The message is built BEFORE the tree is freed:
+						 * g points into it.
+						 */
+						snprintf(err_msg, err_msg_size,
+						         "ldap_allow_groups names group \"%s\", which does not exist -- "
+						         "create it first, so a typo cannot silently lock everyone out",
+						         g);
+						json_free(root);
+						return 400;
+					}
+					off += (size_t)snprintf(authz + off, sizeof(authz) - off,
+					                         "(memberOf=ou=%s,ou=groups,%s)", g, lc->base_dn);
+					if (off >= sizeof(authz)) {
+						json_free(root);
+						snprintf(err_msg, err_msg_size, "too many ldap_allow_groups entries");
+						return 400;
+					}
+				}
+				snprintf(authz + off, sizeof(authz) - off, "))\n");
+			}
+
+			snprintf(nslcd, sizeof(nslcd),
+			         "uri %s\nbase %s\nbinddn %s\nbindpw %s\npam_authc_ppolicy no\n%s",
+			         effective_uri, lc->base_dn, lc->bind_dn, lc->bind_password, authz);
+		}
 		if (stage_container_file(stage_dir, "/etc/nslcd.conf", nslcd, 0600, (uid_t)-1,
 		                          (gid_t)-1) != 0) {
 			json_free(root);
-			snprintf(err_msg, err_msg_size, "failed to stage ldap_login nslcd.conf");
+			snprintf(err_msg, err_msg_size, "failed to stage ldap_client nslcd.conf");
 			return 500;
 		}
 		snprintf(file_paths[file_count], sizeof(file_paths[file_count]), "%s", "/etc/nslcd.conf");
@@ -16977,7 +17080,7 @@ static void handle_ldap_config_get(int fd)
 	 * ldap_config_write_json() opens the object and writes the stored
 	 * fields; effective_client_uri is appended into that same object
 	 * before it closes, because it is not stored anywhere -- it is what
-	 * ldap_login containers are actually handed right now, after
+	 * ldap_client containers are actually handed right now, after
 	 * derivation from registered servers and after health filtering
 	 * (issues #66, #81, #84).
 	 *

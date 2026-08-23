@@ -565,13 +565,94 @@ void containerdef_repoint(const char *new_state_path)
 	snprintf(g_state_path, sizeof(g_state_path), "%s", new_state_path);
 }
 
+
+/*
+ * Issue #76: a one-shot rewrite of the legacy `ldap_login` key to
+ * `ldap_client` in every persisted definition.
+ *
+ * This is a migration, not a compatibility shim, and the difference
+ * matters: the API does not accept `ldap_login` any more -- an unknown
+ * field is a 400 (issue #68) -- so a definition written before the
+ * rename would fail on its next start, which is a container silently
+ * not coming back after a daemon restart. Converting the stored state
+ * once, at load, is what a clean cut-over looks like when there is
+ * already state on disk.
+ *
+ * Parsed and rebuilt rather than string-replaced: `ldap_login` could
+ * legitimately appear inside a VALUE (a container's own cmd, an env
+ * var, a staged file's content), and rewriting those would corrupt a
+ * definition to save a few lines.
+ */
+static int migrate_ldap_login_key(void)
+{
+	int i, migrated = 0;
+
+	for (i = 0; i < CONTAINERDEF_MAX; i++) {
+		struct container_def *d = &g_defs[i];
+		struct json_value *root;
+		struct json_writer w;
+		size_t k;
+		int found = 0;
+
+		if (!d->in_use || d->body == NULL)
+			continue;
+		root = json_parse(d->body, d->body_len);
+		if (root == NULL || root->type != JSON_OBJECT) {
+			json_free(root);
+			continue;
+		}
+		for (k = 0; k < root->u.object.count; k++)
+			if (strcmp(root->u.object.keys[k], "ldap_login") == 0)
+				found = 1;
+		if (!found) {
+			json_free(root);
+			continue;
+		}
+
+		jw_init(&w);
+		jw_obj_open(&w);
+		for (k = 0; k < root->u.object.count; k++) {
+			jw_key(&w, strcmp(root->u.object.keys[k], "ldap_login") == 0 ? "ldap_client"
+			                                                             : root->u.object.keys[k]);
+			jw_value(&w, root->u.object.values[k]);
+		}
+		jw_obj_close(&w);
+		json_free(root);
+
+		if (w.buf != NULL) {
+			free(d->body);
+			d->body = malloc(w.len + 1);
+			if (d->body != NULL) {
+				memcpy(d->body, w.buf, w.len);
+				d->body[w.len] = '\0';
+				d->body_len = w.len;
+				migrated++;
+			} else {
+				d->body_len = 0;
+			}
+		}
+		jw_free(&w);
+	}
+	if (migrated > 0) {
+		fprintf(stderr, "containerdef: migrated %d definition(s) from ldap_login to ldap_client\n",
+		        migrated);
+		return save_state();
+	}
+	return 0;
+}
+
 int containerdef_init(const char *state_path)
 {
 	if (snprintf(g_state_path, sizeof(g_state_path), "%s", state_path) >=
 	    (int)sizeof(g_state_path))
 		return -1;
 	memset(g_defs, 0, sizeof(g_defs));
-	return load_state();
+	if (load_state() != 0)
+		return -1;
+	/* Issue #76: convert any pre-rename state once, before anything
+	 * replays a definition through the create path that would now
+	 * reject the old key. */
+	return migrate_ldap_login_key();
 }
 
 /*

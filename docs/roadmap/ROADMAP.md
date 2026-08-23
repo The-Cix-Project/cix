@@ -2453,6 +2453,8 @@ Tracked issue by issue in the repo's own Gitea tracker rather than restated here
 
 **Platform** (#63 factory reset, #62 non-interactive exec, #61 container file listing plus a real host-file disclosure fixed on the way, #83 DNS/LDAP undeliverable-state warnings, #84 LDAP health filtering that an explicit `client_uri` used to walk straight past, #85 aggregate build budget, #86 a kernel-enforced control-plane reservation with ADR-0187, #57 complete per-build logs, #59 one-shot recipe re-fetch, #64 per-package rolling policy with ADR-0188, #11 in-place container definition edit).
 
+**Identity** (#76 per-container LDAP login restriction with [ADR-0191](../adr/0191-per-container-ldap-login-restriction.md)): `ldap_allow_groups` renders a `pam_authz_search` into the staged `/etc/nslcd.conf`, so *which users may log into this container* is enforced by `nslcd` against the directory, holding with `thincd` stopped. The field it extends was renamed `ldap_login` -> `ldap_client` in the same change (a clean cut-over with a one-shot definition migration), since it configures a container as an LDAP client and never had anything to do with logging in.
+
 **Dashboard** (ADR-0184/0185/0186): the tree has no folders left — one leaf per real resource, tabbed pages for everything else; the menu bar speaks the tree's own vocabulary with hover submenus; tabs are real addresses that navigate rather than panels that reveal (which fixed a page that sat on "Loading…" indefinitely); and the status bar carries uptime, load and two TX/RX LEDs.
 
 Tagged **v1.85.0** partway through, with everything since deployed to 192.168.15.95 as it landed.

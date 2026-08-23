@@ -585,7 +585,7 @@ thinC lets you register redundant backend servers for four subsystems &mdash; LD
 - **`in_service`** &mdash; the question consumers actually ask. False only when drained or confirmed unhealthy; a never-yet-probed server counts as in service, so switching health tracking on can never black-hole a working deployment during the first sweep.
 - **`probe`** &mdash; how the verdict was reached, reported so `healthy` is never read as more than it is. `tcp:PORT` is a real service check (the server accepted a connection). `process` means only that the providing container is running &mdash; used for the UDP services (NTP, syslog), where a TCP connect would be a meaningless check dressed up as a real one.
 
-**Servers that are not in service are withheld from generated client configuration.** Concretely: an unhealthy or drained LDAP server stops being handed to `ldap_login` containers. One deliberate safety rule &mdash; if filtering would leave *nothing*, the unfiltered list is used instead, because handing a client a possibly-down server beats handing it none at all.
+**Servers that are not in service are withheld from generated client configuration.** Concretely: an unhealthy or drained LDAP server stops being handed to `ldap_client` containers. One deliberate safety rule &mdash; if filtering would leave *nothing*, the unfiltered list is used instead, because handing a client a possibly-down server beats handing it none at all.
 
 This applies to an **explicitly configured `client_uri`** as well, not only to the list derived from registered servers (issue #84). It did not until that fix: an explicit list returned verbatim before any filtering ran, so every rule above was silently inert on any box that had one set &mdash; which included the real one, where draining a server changed nothing about what clients received. Health is keyed by container name and `client_uri` is free-form URIs, so each URI is mapped back to a registered server by resolving that server's live IP; two conservative rules bound it. A URI that maps to **no** registered server is left strictly alone (an operator may legitimately point at a directory this platform does not manage, and dropping it on evidence that does not exist would be far worse than not filtering), and a URI on a **different port** than the one health actually probes maps to nothing either &mdash; same IP, different port, is a different service, and dropping it on the strength of a probe that never touched it would be a guess dressed up as a health decision.
 
@@ -1104,6 +1104,33 @@ PUT /v1/ldap/config
 - LDAP users intended for real SSH login need a real `loginshell` set (e.g. `/usr/bin/bash` — this project's own real path, not `/bin/bash`, see `CLAUDE.md`) — an empty `loginshell` renders as glauth's own default, which doesn't resolve on this project's minimal images (`sshd` rejects the login: "User ... not allowed because shell ... does not exist"). **The symptom is actively misleading and has cost real debugging time**: `sshd` treats an account whose shell doesn't exist as invalid and then deliberately runs the PAM/LDAP auth with a *bogus* credential (so it leaks no information about whether the account exists), so the client sees a plain `Permission denied` and `nslcd -d` logs `ldap_sasl_bind(...) → Invalid credentials` for the user's own DN — pointing straight at the password, which is entirely correct the whole time. Confirmed by A/B: the identical account and password authenticate the moment `loginshell` is changed to a path that exists, and a bare `ldapsearch -D <user-dn> -w <password>` bind succeeds against glauth throughout. If a login fails with `Invalid credentials` in the nslcd log but a direct `ldapsearch` bind as that same user works, check `loginshell` before touching the password.
 
 Verified end-to-end against a real throwaway LDAP account (created, tested, deleted) on the real `jumpbox1` container: real pubkey login via a live `AuthorizedKeysCommand` LDAP query, real password login via `pam_ldap.so`'s own live bind-as-user check, and a wrong password correctly rejected.
+
+### Who may log in here: `ldap_allow_groups` (issue #76)
+
+An `ldap_client` container hands every account in the directory to the container's own NSS and PAM stack, which means every account can log into every such container. `ldap_allow_groups` on `POST /v1/containers` narrows that to named groups:
+
+```json
+{"name": "jumpbox1", "image": "jumpbox", "cmd": ["/usr/sbin/sshd", "-D"],
+ "ldap_client": true, "ldap_allow_groups": ["jumpusers", "admins"]}
+```
+
+which renders one extra line into the staged `/etc/nslcd.conf`:
+
+```
+pam_authz_search (&(objectClass=posixAccount)(uid=$username)(|(memberOf=ou=jumpusers,ou=groups,dc=thinc,dc=internal)(memberOf=ou=admins,ou=groups,dc=thinc,dc=internal)))
+```
+
+`nslcd` runs that search *after* authenticating and refuses the login when it matches nothing, so the restriction is enforced by the same daemon that resolves the account — not by anything of thinC's that has to still be running for it to hold. Group membership is the mechanism because it is what this directory actually supports: a user entry carries `memberOf` DNs of the form `ou=<group>,ou=groups,<base-dn>` for both its primary *and* its secondary groups (verified live against the deployed glauth), and a user can be in many groups, which is exactly what "may log into several hosts" needs. The `host` attribute idiom this would traditionally use needs custom-attribute support glauth's `config` backend does not expose.
+
+Three rules, all enforced at creation time so a mistake is a `400` rather than a container that silently admits everyone:
+
+- **Every named group must already exist** — a typo is refused, naming the offending group, instead of rendering a filter that matches nobody and locks the container out entirely.
+- **Names are refused, never escaped** — this string is written into a file `nslcd` parses as an LDAP filter, and a group name is already constrained to a plain character set everywhere else in this daemon.
+- **`ldap_allow_groups` without `ldap_client` is refused** — there is nothing to restrict without it, and silently ignoring it would read as a restriction that is in force when it is not.
+
+Omitting the field stages no `pam_authz_search` at all, which is the pre-existing behaviour: any valid account may log in. That absence is deliberate — a filter written to allow everyone is a filter that can be got wrong.
+
+`thincctl container run ... --ldap-client --ldap-allow-group=jumpusers --ldap-allow-group=admins` is the CLI form; the web dashboard's container form carries it as a comma-separated field under the LDAP login checkbox.
 
 ### Automatic provisioning: `ldap_provision`
 
@@ -1731,7 +1758,7 @@ A volume is a directory this daemon creates as **root**, and until now nothing c
 - **`owner_uid` is null, not 0, when nobody has said.** 0 is a real uid, and a field that cannot tell "deliberately root" from "unsaid" is one that gets read wrong eventually.
 - The ids are the numeric ones **the container sees**, which for every container without a user namespace are the host's own ids too.
 
-For an `ldap_login` container the right ids are already known — `GET /v1/ldap/users` reports each account's `uidnumber` and `primarygroup` — so giving a user their home is one call rather than a `chown` through an exec.
+For an `ldap_client` container the right ids are already known — `GET /v1/ldap/users` reports each account's `uidnumber` and `primarygroup` — so giving a user their home is one call rather than a `chown` through an exec.
 
 `thincctl volume create --name=home --owner-uid=10000 --owner-gid=10000`, `thincctl volume owner home --uid=10000 --gid=10000 [--recursive]`, `thincctl volume owner home --root`; the dashboard has the same controls on the volume's own page.
 

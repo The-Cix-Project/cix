@@ -397,16 +397,16 @@ int main(void)
 	kx_client_request(&client, "DELETE", "/v1/containers/c49", NULL, &r);
 	kx_response_free(&r);
 
-	/* 6.6. issue #66: ldap_login refused with no client config, then
+	/* 6.6. issue #66: ldap_client refused with no client config, then
 	 * accepted once configured -- and it stages the two identity files
 	 * rendered from that config (nslcd.conf carries the bind values,
 	 * proving they came from the daemon, not the recipe). */
 	if (kx_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"cll\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
-	                       "\"ldap_login\":true}",
+	                       "\"ldap_client\":true}",
 	                       &r) != 0 ||
 	    r.status != 400) {
-		fprintf(stderr, "FAIL: ldap_login with no client config should 400, got %d\n", r.status);
+		fprintf(stderr, "FAIL: ldap_client with no client config should 400, got %d\n", r.status);
 		ok = 0;
 	}
 	kx_response_free(&r);
@@ -415,16 +415,16 @@ int main(void)
 	                       "\"base_dn\":\"dc=t,dc=local\","
 	                       "\"bind_dn\":\"cn=svc,dc=t,dc=local\","
 	                       "\"bind_password\":\"llpw\"}", &r) != 0 || r.status != 200) {
-		fprintf(stderr, "FAIL: PUT ldap client config for ldap_login, status=%d\n", r.status);
+		fprintf(stderr, "FAIL: PUT ldap client config for ldap_client, status=%d\n", r.status);
 		ok = 0;
 	}
 	kx_response_free(&r);
 	if (kx_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"cll\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
-	                       "\"ldap_login\":true}",
+	                       "\"ldap_client\":true}",
 	                       &r) != 0 ||
 	    r.status != 201) {
-		fprintf(stderr, "FAIL: ldap_login create once configured, status=%d\n", r.status);
+		fprintf(stderr, "FAIL: ldap_client create once configured, status=%d\n", r.status);
 		ok = 0;
 	}
 	kx_response_free(&r);
@@ -433,15 +433,91 @@ int main(void)
 	    r.status != 200 || r.body == NULL ||
 	    strstr(r.body, "uri ldap://10.7.7.7:3893/") == NULL ||
 	    strstr(r.body, "bindpw llpw") == NULL) {
-		fprintf(stderr, "FAIL: ldap_login nslcd.conf not rendered from daemon config (status=%d)\n",
+		fprintf(stderr, "FAIL: ldap_client nslcd.conf not rendered from daemon config (status=%d)\n",
 		        r.status);
 		ok = 0;
+	} else if (strstr(r.body, "pam_authz_search") != NULL) {
+		/* Issue #76: no ldap_allow_groups means no restriction at all,
+		 * which has to be the ABSENCE of the search rather than a
+		 * permissive one -- a filter that is meant to allow everyone is
+		 * a filter that can be got wrong. */
+		fprintf(stderr, "FAIL: an unrestricted ldap_client container carries a pam_authz_search\n");
+		ok = 0;
 	}
+	kx_response_free(&r);
+
+	/*
+	 * Issue #76: host-scoped authorisation. Which users may log into
+	 * THIS container is a per-container statement, enforced by nslcd
+	 * itself after authentication -- not by anything of ours that has
+	 * to still be running.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"cllg\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+	                       "\"ldap_client\":true,\"ldap_allow_groups\":[\"nosuchgroup\"]}",
+	                       &r) != 0 ||
+	    r.status != 400 || json_str_field(r.json, "error") == NULL ||
+	    strstr(json_str_field(r.json, "error"), "nosuchgroup") == NULL) {
+		fprintf(stderr, "FAIL: an unknown allow-group should 400 naming it, got %d: %.*s\n", r.status, (int)r.body_len, r.body ? r.body : "");
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/ldap/groups", "{\"name\":\"jumpusers\"}", &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: create group jumpusers, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	/*
+	 * A name that would change the filter's meaning is refused, never
+	 * escaped: this string is written into a file nslcd parses as an
+	 * LDAP filter.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"cllg\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+	                       "\"ldap_client\":true,\"ldap_allow_groups\":[\"evil)(uid=*\"]}",
+	                       &r) != 0 ||
+	    r.status != 400) {
+		fprintf(stderr, "FAIL: a filter-shaped group name should 400, got %d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"cllg\",\"image\":\"test\",\"cmd\":[\"/bin/daemon_child\",\"30\",\"0\"],"
+	                       "\"ldap_client\":true,\"ldap_allow_groups\":[\"jumpusers\"]}",
+	                       &r) != 0 ||
+	    r.status != 201) {
+		fprintf(stderr, "FAIL: ldap_client with an allow-group, status=%d\n", r.status);
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (kx_client_request(&client, "GET", "/v1/containers/cllg/files?path=/etc/nslcd.conf", NULL,
+	                       &r) != 0 ||
+	    r.status != 200 || r.body == NULL ||
+	    strstr(r.body, "pam_authz_search (&(objectClass=posixAccount)(uid=$username)"
+	                   "(|(memberOf=ou=jumpusers,ou=groups,dc=t,dc=local)))") == NULL) {
+		fprintf(stderr, "FAIL: the staged nslcd.conf carries no usable pam_authz_search:\n%.*s\n",
+		        (int)r.body_len, r.body != NULL ? r.body : "");
+		ok = 0;
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	kx_client_request(&client, "DELETE", "/v1/containers/cllg", NULL, &r);
 	kx_response_free(&r);
 	if (kx_client_request(&client, "GET", "/v1/containers/cll/files?path=/etc/nsswitch.conf", NULL,
 	                       &r) != 0 ||
 	    r.status != 200 || r.body == NULL || strstr(r.body, "files ldap") == NULL) {
-		fprintf(stderr, "FAIL: ldap_login nsswitch.conf not staged (status=%d)\n", r.status);
+		fprintf(stderr, "FAIL: ldap_client nsswitch.conf not staged (status=%d)\n", r.status);
 		ok = 0;
 	}
 	kx_response_free(&r);

@@ -62,7 +62,9 @@ static void print_usage(FILE *out)
 	        "  container ls  -- every provisioned container and its current state\n"
 	        "  container run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N]\n"
 	        "      [--cpu-max=\"Q P\"] [--cpuset=0-1,3] [--disk-quota=BYTES] [--network=NAME[:IP] ...]\n"
-	        "      [--ip-forward] [--dns-register] [--userns] [--ldap-login] [--capture-output]\n"
+	        "      [--ip-forward] [--dns-register] [--userns] [--ldap-client] [--capture-output]\n"
+	        "      [--ldap-allow-group=NAME ...]  -- with --ldap-client, restricts login to\n"
+	        "                                        members of these LDAP groups\n"
 	        "      [--pki-issue] [--pki-cert-dir=PATH]\n"
 	        "      [--pki-days=N] [--ldap-provision] [--ldap-user=NAME] [--ldap-group=NAME]\n"
 	        "      [--ldap-uid=N] [--ldap-secret-dir=PATH]\n"
@@ -5175,6 +5177,7 @@ static int parse_volume_flag(const char *arg, struct cli_volume_mount *out)
 /* Matches daemon's CONTAINER_MAX_INTERFACES -- see include/container.h. */
 #define CLI_MAX_INTERFACES 16
 #define CLI_MAX_CAP_ADD 8
+#define CLI_MAX_LDAP_ALLOW_GROUPS 8
 /* Matches daemon's CONTAINERDEF_MAX_DEPENDS -- see daemon/include/containerdef.h. */
 #define CLI_MAX_DEPENDS 16
 /* Matches daemon's CONTAINER_MAX_FILES -- see include/container.h. */
@@ -7080,6 +7083,8 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	int interface_count = 0;
 	const char *cap_add[CLI_MAX_CAP_ADD];
 	int cap_add_count = 0;
+	const char *ldap_allow_groups[CLI_MAX_LDAP_ALLOW_GROUPS];
+	int ldap_allow_group_count = 0;
 	const char *restart = NULL;
 	long restart_delay = -1;
 	int follow_rolling = 0;
@@ -7091,7 +7096,7 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 	int ip_forward = 0;
 	int dns_register = 0;
 	int userns = 0;
-	int ldap_login = 0;
+	int ldap_client = 0;
 	int capture_output = 0;
 	int pki_issue = 0;
 	const char *pki_cert_dir = NULL;
@@ -7227,8 +7232,15 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 			dns_register = 1;
 		} else if (strcmp(argv[i], "--userns") == 0) {
 			userns = 1;
-		} else if (strcmp(argv[i], "--ldap-login") == 0) {
-			ldap_login = 1;
+		} else if (strcmp(argv[i], "--ldap-client") == 0) {
+			ldap_client = 1;
+		} else if (strncmp(argv[i], "--ldap-allow-group=", 19) == 0) {
+			if (ldap_allow_group_count >= CLI_MAX_LDAP_ALLOW_GROUPS) {
+				fprintf(stderr, "thincctl: too many --ldap-allow-group= flags (max %d)\n",
+				        CLI_MAX_LDAP_ALLOW_GROUPS);
+				return 2;
+			}
+			ldap_allow_groups[ldap_allow_group_count++] = argv[i] + 19;
 		} else if (strcmp(argv[i], "--capture-output") == 0) {
 			capture_output = 1;
 		} else if (strcmp(argv[i], "--pki-issue") == 0) {
@@ -7445,8 +7457,8 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		jw_key(&w, "userns");
 		jw_bool(&w, 1);
 	}
-	if (ldap_login) {
-		jw_key(&w, "ldap_login");
+	if (ldap_client) {
+		jw_key(&w, "ldap_client");
 		jw_bool(&w, 1);
 	}
 	if (capture_output) {
@@ -7544,6 +7556,13 @@ static int cmd_run(const struct kx_client *c, int json_mode, int argc, char **ar
 		jw_arr_open(&w);
 		for (i = 0; i < cap_add_count; i++)
 			jw_str(&w, cap_add[i]);
+		jw_arr_close(&w);
+	}
+	if (ldap_allow_group_count > 0) {
+		jw_key(&w, "ldap_allow_groups");
+		jw_arr_open(&w);
+		for (i = 0; i < ldap_allow_group_count; i++)
+			jw_str(&w, ldap_allow_groups[i]);
 		jw_arr_close(&w);
 	}
 	if (restart != NULL) {
