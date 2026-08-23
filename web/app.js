@@ -453,6 +453,18 @@ for (const item of document.querySelectorAll(".menu-bar button[data-modal]")) {
  * (an update staged to the inactive slot, a reboot) and this is the
  * one place meant to answer "what is this box actually running right
  * now," so a stale answer would defeat its own purpose. */
+/*
+ * This instance's own fully-qualified name, composed the same way
+ * everywhere it is shown. site_name is the optional middle: a site
+ * that has never been named yields host.domain rather than a name
+ * with an empty label in the middle of it.
+ */
+function instanceFqdn(site) {
+	return site.site_name
+		? site.instance_name + "." + site.site_name + "." + site.domain_suffix
+		: site.instance_name + "." + site.domain_suffix;
+}
+
 document.getElementById("menu-about").addEventListener("click", async () => {
 	const instanceEl = document.getElementById("about-instance");
 	const buildEl = document.getElementById("about-build");
@@ -465,11 +477,7 @@ document.getElementById("menu-about").addEventListener("click", async () => {
 			apiRequest("GET", "/v1/system/boot"),
 			apiRequest("GET", "/v1/system/site"),
 		]);
-		const fqdn = site.site_name
-			? site.instance_name + "." + site.site_name + "." + site.domain_suffix
-			: site.instance_name + "." + site.domain_suffix;
-
-		instanceEl.textContent = fqdn;
+		instanceEl.textContent = instanceFqdn(site);
 		buildEl.textContent = boot.build_version + " (" + boot.build_time + ")";
 		slotEl.textContent = boot.slot || "(none)";
 		kernelEl.textContent = boot.kernel_version || "(unknown)";
@@ -982,6 +990,11 @@ async function refreshHealth() {
 		await apiRequest("GET", "/v1/health");
 		const ms = Math.round(performance.now() - start);
 
+		/* Back after an absence: the daemon may have restarted into a
+		 * different build, so re-ask rather than keep showing the one
+		 * that was running before it went away. */
+		if (consecutiveHealthFailures > 0)
+			refreshStatusVersion();
 		consecutiveHealthFailures = 0;
 		statusLeds.className = "status-leds led-state-ok";
 		statusLeds.title = "Daemon reachable — " + ms + "ms";
@@ -1021,17 +1034,57 @@ function formatUptime(seconds) {
  */
 let statusMetaBase = null;
 
-function renderStatusMeta() {
-	if (statusMetaBase === null)
-		return;
-	const elapsed = Math.floor((Date.now() - statusMetaBase.fetchedAt) / 1000);
+/*
+ * Which build is actually running, and out of which slot. Fetched
+ * rather than derived: after an A/B update the page in front of you
+ * may well be older than the daemon answering it, and the version in
+ * the corner is the one thing that has to be the daemon's own answer.
+ */
+let statusVersion = null;
 
-	statusMeta.textContent =
-		"up " + formatUptime(statusMetaBase.host + elapsed) +
-		"  ·  thincd " + formatUptime(statusMetaBase.daemon + elapsed) +
-		"  ·  load " + statusMetaBase.load1.toFixed(2) +
-		" " + statusMetaBase.load5.toFixed(2) +
-		" " + statusMetaBase.load15.toFixed(2);
+function renderStatusMeta() {
+	const parts = [];
+
+	if (statusVersion !== null) {
+		/* Slot is an A/B fact and only a real installed host has one --
+		 * a dev daemon reports none, and "slot ?" would be inventing an
+		 * answer to a question that does not apply. */
+		parts.push("thinC " + statusVersion.version +
+		           (statusVersion.slot !== null ? " · slot " + statusVersion.slot : ""));
+	}
+	if (statusMetaBase !== null) {
+		const elapsed = Math.floor((Date.now() - statusMetaBase.fetchedAt) / 1000);
+
+		parts.push("up " + formatUptime(statusMetaBase.host + elapsed));
+		parts.push("thincd " + formatUptime(statusMetaBase.daemon + elapsed));
+		parts.push("load " + statusMetaBase.load1.toFixed(2) +
+		           " " + statusMetaBase.load5.toFixed(2) +
+		           " " + statusMetaBase.load15.toFixed(2));
+	}
+	statusMeta.textContent = parts.join("  ·  ");
+}
+
+/*
+ * The running build never changes under a daemon that stays up, so
+ * this is fetched once at load and again only after the daemon has
+ * been away -- a restart is the one thing that can change the answer,
+ * and it is exactly what the LEDs going red and back already detect.
+ */
+async function refreshStatusVersion() {
+	try {
+		const b = await apiRequest("GET", "/v1/system/boot");
+
+		statusVersion = { version: b.build_version || "unknown", slot: b.slot || null };
+		statusMeta.title = "thinC " + statusVersion.version +
+		                   ", built " + (b.build_time || "unknown") +
+		                   (statusVersion.slot !== null ? ", running from slot " + statusVersion.slot : "") +
+		                   " on kernel " + (b.kernel_version || "unknown");
+		renderStatusMeta();
+	} catch (e) {
+		/* Unreachable is already said by the LEDs; the last known
+		 * version stays put rather than blanking, since it is still
+		 * the last true thing anyone told us. */
+	}
 }
 
 /*
@@ -8489,9 +8542,13 @@ async function refreshSiteConfig() {
 
 		const label = document.getElementById("tree-instance-label");
 
-		label.textContent = site.instance_name;
+		/* The host's real name, not just its bare label -- which box
+		 * this is includes the site it is in and the domain it answers
+		 * under, and those are exactly what tell two instances apart. */
+		label.textContent = instanceFqdn(site);
+		label.title = instanceFqdn(site);
 		label.hidden = false;
-		document.title = "thinC — " + site.instance_name;
+		document.title = "thinC — " + instanceFqdn(site);
 	} catch (e) {
 		/* Best-effort -- the form/header just stay at whatever was last shown. */
 	}
@@ -10379,6 +10436,7 @@ document.addEventListener("visibilitychange", () => {
  * each time, and one request a minute is the price of it. Skipped
  * entirely while the tab is hidden.
  */
+refreshStatusVersion();
 refreshStatusMeta();
 setInterval(renderStatusMeta, 1000);
 setInterval(() => {

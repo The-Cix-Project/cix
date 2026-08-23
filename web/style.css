@@ -637,15 +637,20 @@ header {
 	cursor: row-resize;
 }
 
+/* No uppercasing: this is a real host name now, and a DNS name shown
+ * in capitals is a name shown wrongly. Long ones ellipsize rather than
+ * widen the tree; the full name is on the title attribute. */
 .tree-instance-label {
 	flex: 0 0 auto;
 	padding: 0.75rem 1rem 0.5rem;
 	font-size: 0.7rem;
 	font-weight: 600;
 	letter-spacing: 0.04em;
-	text-transform: uppercase;
 	color: var(--muted);
 	border-bottom: 1px solid var(--border);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .tree {
