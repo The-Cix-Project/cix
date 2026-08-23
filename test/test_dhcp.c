@@ -263,6 +263,45 @@ int main(void)
 	}
 	thinc_response_free(&r);
 
+	/*
+	 * A registered DNS server on a DIFFERENT network gets none of this
+	 * range. It has no interface in that subnet, so the pool would be
+	 * one it could not serve on -- and handing it one would also
+	 * restart a container that had no business being restarted.
+	 */
+	expect(&client, "POST", "/v1/networks",
+	        "{\"name\":\"dhcpother\",\"subnet\":\"172.30.9.0\",\"prefix_len\":24,"
+	        "\"address\":\"172.30.9.1\"}",
+	        201, "create an unrelated network");
+	expect(&client, "POST", "/v1/containers",
+	        "{\"name\":\"dhcpelsewhere\",\"image\":\"dhcptest\","
+	        "\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"],\"networks\":[\"dhcpother\"],"
+	        "\"restart\":\"always\"}",
+	        201, "a server on the unrelated network");
+	expect(&client, "POST", "/v1/dns/servers",
+	        "{\"container\":\"dhcpelsewhere\",\"hosts_path\":\"/etc/dnsmasq-hosts\"}", 201,
+	        "register it as a DNS server too");
+	memset(&r, 0, sizeof(r));
+	if (thinc_client_request(&client, "GET",
+	                       "/v1/containers/dhcpelsewhere/files?path=/etc/dnsmasq-dhcp.conf", NULL,
+	                       &r) != 0 ||
+	    r.status != 200 || r.body == NULL || strstr(r.body, "dhcp-range=") != NULL) {
+		fprintf(stderr, "FAIL: a server on another network was given this network's range\n");
+		ok = 0;
+	}
+	thinc_response_free(&r);
+	/* And it did not change the split on the network it is not on. */
+	memset(&r, 0, sizeof(r));
+	if (thinc_client_request(&client, "GET", "/v1/networks/dhcplab/dhcp", NULL, &r) != 0 ||
+	    r.status != 200 || json_object_get(r.json, "slices") == NULL ||
+	    json_object_get(r.json, "slices")->u.array.count != 2) {
+		fprintf(stderr, "FAIL: an unrelated server changed this network's split\n");
+		ok = 0;
+	}
+	thinc_response_free(&r);
+	expect(&client, "DELETE", "/v1/dns/servers/dhcpelsewhere", NULL, 204, "unregister it");
+	expect(&client, "DELETE", "/v1/containers/dhcpelsewhere", NULL, 204, "remove it");
+
 	/* 5. The payoff: the rendered files are really inside the serving
 	 * container, read back rather than assumed from a successful write. */
 	memset(&r, 0, sizeof(r));
@@ -348,6 +387,7 @@ int main(void)
 		}
 	}
 	expect(&client, "DELETE", "/v1/networks/dhcplab", NULL, 204, "remove the lab network");
+	expect(&client, "DELETE", "/v1/networks/dhcpother", NULL, 204, "remove the unrelated network");
 
 	kill(daemon_pid, SIGTERM);
 	waitpid(daemon_pid, NULL, 0);

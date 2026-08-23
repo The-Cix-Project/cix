@@ -19,7 +19,6 @@ static char g_state_path[512];
  * config changed but the servers are still serving the old one" a
  * detectable state rather than an invisible one.
  */
-static char g_conf_in_force[16384];
 
 static int mac_is_valid(const char *mac)
 {
@@ -351,6 +350,43 @@ enum dhcp_error dhcp_static_delete(const char *mac)
  * preventing them handing one address to two machines is that neither
  * holds it.
  */
+
+/*
+ * The registered DNS servers actually ATTACHED to this network. A
+ * server on a different bridge has no interface in the range's subnet,
+ * so giving it that range would be handing dnsmasq a pool it cannot
+ * serve on -- and, worse, would restart a container that had no
+ * business being restarted. The split is per network for the same
+ * reason: two servers exist on this wire, not two servers exist.
+ */
+static int servers_on_network(const char *network, char out[][DNS_SERVER_NAME_MAX], int max)
+{
+	char names[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
+	int count = dns_server_list_containers(names, DNS_SERVER_MAX);
+	int n = 0;
+	int i, j;
+
+	for (i = 0; i < count && n < max; i++) {
+		struct registry_entry *e = registry_find(names[i]);
+
+		if (e == NULL)
+			continue;
+		for (j = 0; j < e->net_count; j++) {
+			if (strcmp(e->nets[j].name, network) != 0)
+				continue;
+			snprintf(out[n], DNS_SERVER_NAME_MAX, "%s", names[i]);
+			n++;
+			break;
+		}
+	}
+	return n;
+}
+
+int dhcp_servers_on_network(const char *network, char out[][DNS_SERVER_NAME_MAX], int max)
+{
+	return servers_on_network(network, out, max);
+}
+
 int dhcp_slice_for(const struct dhcp_network *cfg, int server_index, int server_count,
                     uint32_t *out_start_be, uint32_t *out_end_be)
 {
@@ -382,7 +418,7 @@ int dhcp_slice_for(const struct dhcp_network *cfg, int server_index, int server_
 	return 0;
 }
 
-int dhcp_render_conf(int server_index, int server_count, char *out, size_t out_size)
+int dhcp_render_conf(const char *server_name, char *out, size_t out_size)
 {
 	size_t off = 0;
 	int i;
@@ -392,21 +428,33 @@ int dhcp_render_conf(int server_index, int server_count, char *out, size_t out_s
 	             "# Rendered by thincd -- every edit here is overwritten.\n"
 	             "# Ranges take effect only when dnsmasq starts, which is why\n"
 	             "# changing one restarts this container.\n"
-	             "# This server holds slice %d of %d: dnsmasq has no failover\n"
-	             "# protocol, so redundancy here is disjoint pools.\n",
-	             server_index + 1, server_count < 1 ? 1 : server_count);
+	             "# Only this server's own slice of each range appears here:\n"
+	             "# dnsmasq has no failover protocol, so two servers on one\n"
+	             "# wire are safe only because their pools do not overlap.\n");
 	if (n < 0 || (size_t)n >= out_size)
 		return -1;
 	off = (size_t)n;
 
 	for (i = 0; i < DHCP_MAX_NETWORKS; i++) {
 		char start[16], end[16], router[16];
+		char on_net[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
 		uint32_t slice_start, slice_end;
+		int count;
+		int index = -1;
+		int k;
 
 		if (g_networks[i].network[0] == '\0' || !g_networks[i].enabled)
 			continue;
-		if (dhcp_slice_for(&g_networks[i], server_index, server_count, &slice_start,
-		                    &slice_end) != 0)
+		count = servers_on_network(g_networks[i].network, on_net, DNS_SERVER_MAX);
+		for (k = 0; k < count; k++)
+			if (strcmp(on_net[k], server_name) == 0) {
+				index = k;
+				break;
+			}
+		/* Not on this network: not this server's range. */
+		if (index < 0)
+			continue;
+		if (dhcp_slice_for(&g_networks[i], index, count, &slice_start, &slice_end) != 0)
 			continue;
 		ip_str(slice_start, start, sizeof(start));
 		ip_str(slice_end, end, sizeof(end));
@@ -455,36 +503,67 @@ int dhcp_render_hosts(char *out, size_t out_size)
 	return (int)off;
 }
 
-void dhcp_sync_all(int *out_conf_changed)
+/*
+ * Per server, because each one's conf is now its own: what it should
+ * serve depends on which networks it is attached to and how many
+ * others share them. The previous conf is remembered per server so a
+ * change to one network does not restart servers on another -- a
+ * restart nobody asked for is exactly what this pairing with DNS makes
+ * expensive.
+ */
+static char g_conf_in_force_name[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
+static char g_conf_in_force_text[DNS_SERVER_MAX][4096];
+
+static char *conf_in_force_slot(const char *name)
+{
+	int i;
+	int free_slot = -1;
+
+	for (i = 0; i < DNS_SERVER_MAX; i++) {
+		if (g_conf_in_force_name[i][0] == '\0') {
+			if (free_slot < 0)
+				free_slot = i;
+			continue;
+		}
+		if (strcmp(g_conf_in_force_name[i], name) == 0)
+			return g_conf_in_force_text[i];
+	}
+	if (free_slot < 0)
+		return NULL;
+	snprintf(g_conf_in_force_name[free_slot], DNS_SERVER_NAME_MAX, "%s", name);
+	g_conf_in_force_text[free_slot][0] = '\0';
+	return g_conf_in_force_text[free_slot];
+}
+
+void dhcp_sync_all(char changed[][DNS_SERVER_NAME_MAX], int max_changed, int *out_changed_count)
 {
 	char conf[4096];
-	static char all_conf[16384];
 	char hosts[8192];
 	char names[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
 	int count;
 	int i;
 
-	if (out_conf_changed != NULL)
-		*out_conf_changed = 0;
+	if (out_changed_count != NULL)
+		*out_changed_count = 0;
 	if (dhcp_render_hosts(hosts, sizeof(hosts)) < 0)
 		return;
 
 	count = dns_server_list_containers(names, DNS_SERVER_MAX);
-	/*
-	 * Every server's conf is compared as one string, not each against
-	 * its own: adding or removing a server changes every OTHER server's
-	 * slice too, so "did the config change" is a question about the set,
-	 * never about one member of it.
-	 */
-	all_conf[0] = '\0';
 	for (i = 0; i < count; i++) {
 		struct registry_entry *entry = registry_find(names[i]);
+		char *in_force;
 		char path[128];
 
-		if (dhcp_render_conf(i, count, conf, sizeof(conf)) < 0)
-			return;
-		if (strlen(all_conf) + strlen(conf) + 1 < sizeof(all_conf))
-			strcat(all_conf, conf);
+		if (dhcp_render_conf(names[i], conf, sizeof(conf)) < 0)
+			continue;
+		in_force = conf_in_force_slot(names[i]);
+		if (in_force != NULL && strcmp(in_force, conf) != 0) {
+			snprintf(in_force, 4096, "%s", conf);
+			if (changed != NULL && out_changed_count != NULL && *out_changed_count < max_changed) {
+				snprintf(changed[*out_changed_count], DNS_SERVER_NAME_MAX, "%s", names[i]);
+				(*out_changed_count)++;
+			}
+		}
 		if (entry == NULL || !entry->running)
 			continue;
 		snprintf(path, sizeof(path), "/proc/%d/root%s", (int)entry->handle.pid, DHCP_CONF_PATH);
@@ -494,12 +573,6 @@ void dhcp_sync_all(int *out_conf_changed)
 		/* Puts the hosts file into force immediately. The conf file is
 		 * untouched by this signal -- see the header. */
 		sys_pidfd_send_signal(entry->handle.pidfd, SIGHUP);
-	}
-
-	if (strcmp(all_conf, g_conf_in_force) != 0) {
-		if (out_conf_changed != NULL)
-			*out_conf_changed = 1;
-		snprintf(g_conf_in_force, sizeof(g_conf_in_force), "%s", all_conf);
 	}
 }
 
@@ -538,7 +611,7 @@ void dhcp_network_write_json(const struct dhcp_network *cfg, int include_slices,
 	}
 	if (include_slices) {
 		char names[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
-		int count = dns_server_list_containers(names, DNS_SERVER_MAX);
+		int count = servers_on_network(cfg->network, names, DNS_SERVER_MAX);
 		int i;
 
 		jw_key(w, "slices");
