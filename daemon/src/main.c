@@ -33,6 +33,7 @@
 #include "pkgpolicy.h"
 #include "bootconsole.h"
 #include "kernelpolicy.h"
+#include "zswap.h"
 #include "stallwatch.h"
 #include "exec.h"
 #include "http.h"
@@ -158,6 +159,7 @@ static char PKGPOLICY_STATE_PATH[PATH_MAX];  /* issue #64 -- per-package rolling
 static char BOOTCONSOLE_STATE_PATH[PATH_MAX]; /* issue #24 -- boot console parameters */
 static char KERNELPOLICY_STATE_PATH[PATH_MAX]; /* issue #65 -- which kernel line this box tracks */
 static char KERNEL_RELEASES_PATH[PATH_MAX];    /* issue #65 -- cached kernel.org releases.json */
+static char ZSWAP_STATE_PATH[PATH_MAX];        /* issue #51 -- compressed swap cache settings */
 static char STALLWATCH_RECORDS_PATH[PATH_MAX]; /* issue #100 -- control-plane stall records */
 static char VOLUMES_STATE_PATH[PATH_MAX];      /* issue #88 */
 static char VOLUMES_DIR[PATH_MAX];             /* issue #88 -- where volume data lives */
@@ -307,6 +309,7 @@ static void compute_state_dir_relative_paths(void)
 	 */
 	snprintf(KERNEL_RELEASES_PATH, sizeof(KERNEL_RELEASES_PATH), "%s/kernel_releases.json",
 	         STATE_DIR);
+	snprintf(ZSWAP_STATE_PATH, sizeof(ZSWAP_STATE_PATH), "%s/zswap.json", STATE_DIR);
 	snprintf(STALLWATCH_RECORDS_PATH, sizeof(STALLWATCH_RECORDS_PATH),
 	         "%s/control_plane_stalls.jsonl", STATE_DIR);
 	/*
@@ -19338,6 +19341,84 @@ static void kernel_policy_write_json(struct json_writer *w)
 	jw_obj_close(w);
 }
 
+/* ---------- Issue #51: zswap ---------- */
+
+static void handle_zswap_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	zswap_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_zswap_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = json_parse(body, body_len);
+	const struct json_value *jen;
+	const struct json_value *jpct;
+	const char *jcomp;
+	struct zswap_config next;
+	enum zswap_error err;
+	struct json_writer w;
+
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	/* Partial update: absent fields keep what is configured now, the
+	 * same convention every other config PUT here uses. */
+	next = *zswap_get();
+	jen = json_object_get(root, "enabled");
+	jpct = json_object_get(root, "max_pool_percent");
+	jcomp = json_as_string(json_object_get(root, "compressor"));
+	if (jen != NULL && jen->type == JSON_BOOL)
+		next.enabled = jen->u.boolean;
+	if (jpct != NULL && jpct->type == JSON_NUMBER)
+		next.max_pool_percent = (int)json_as_number(jpct);
+	if (jcomp != NULL)
+		snprintf(next.compressor, sizeof(next.compressor), "%s", jcomp);
+	json_free(root);
+
+	err = zswap_set(&next);
+	if (err == ZSWAP_ERR_INVALID) {
+		respond_error(fd, 400, "Bad Request",
+		               "max_pool_percent must be 1-100 and compressor must be a plain "
+		               "algorithm name");
+		return;
+	}
+	if (err == ZSWAP_ERR_UNSUPPORTED) {
+		/*
+		 * Two different unsupported things, one status: this kernel
+		 * has no zswap at all, or has it but was not built with that
+		 * compressor. Both mean the request cannot be honoured, and
+		 * GET's own available_compressors is where the difference is
+		 * visible -- an empty list is the first case.
+		 */
+		respond_error(fd, 409, "Conflict",
+		               "this kernel cannot do that -- either it has no zswap at all, or it "
+		               "was not built with the requested compressor (GET this endpoint for "
+		               "the list it does have)");
+		return;
+	}
+	if (err == ZSWAP_ERR_APPLY_FAILED) {
+		respond_error(fd, 500, "Internal Server Error",
+		               "the kernel refused the settings; the previous ones were restored");
+		return;
+	}
+	if (err == ZSWAP_ERR_PERSIST_FAILED) {
+		respond_error(fd, 500, "Internal Server Error",
+		               "applied to the running kernel but could not be persisted -- it will "
+		               "not survive a reboot");
+		return;
+	}
+	jw_init(&w);
+	zswap_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_kernel_policy_get(int fd)
 {
 	struct json_writer w;
@@ -20987,6 +21068,16 @@ static void dispatch(int fd, const struct http_request *req)
 		name = req->path + strlen(SYSLOG_TARGETS_PREFIX);
 		if (name[0] != '\0' && strcmp(req->method, "DELETE") == 0) {
 			handle_syslog_target_delete(fd, name);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/system/zswap") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_zswap_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_zswap_put(fd, req->body, req->body_len);
 			return;
 		}
 	}
@@ -24035,6 +24126,10 @@ int main(int argc, char **argv)
 	pkgpolicy_init(PKGPOLICY_STATE_PATH);   /* issue #64 */
 	bootconsole_init(BOOTCONSOLE_STATE_PATH); /* issue #24 */
 	kernelpolicy_init(KERNELPOLICY_STATE_PATH); /* issue #65 */
+	/* Issue #51: applied here, not just on PUT -- the kernel default is
+	 * deliberately off, so this is the setting's only chance to survive
+	 * a reboot. */
+	zswap_init(ZSWAP_STATE_PATH);
 	/* A cached answer from a previous run, if there is one. Its own
 	 * mtime is the fetch time -- the file IS the record, so there is
 	 * no second place for "when did we last ask" to go stale. */

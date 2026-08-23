@@ -2455,6 +2455,8 @@ Tracked issue by issue in the repo's own Gitea tracker rather than restated here
 
 **Identity** (#76 per-container LDAP login restriction with [ADR-0191](../adr/0191-per-container-ldap-login-restriction.md)): `ldap_allow_groups` renders a `pam_authz_search` into the staged `/etc/nslcd.conf`, so *which users may log into this container* is enforced by `nslcd` against the directory, holding with `thincd` stopped. The field it extends was renamed `ldap_login` -> `ldap_client` in the same change (a clean cut-over with a one-shot definition migration), since it configures a container as an LDAP client and never had anything to do with logging in.
 
+**Memory pressure** (#51 zswap with [ADR-0196](../adr/0196-zswap-owned-by-the-daemon.md)): compiled into the kernel with its default-on symbol deliberately unset, so the daemon is the only thing that decides whether it runs, and configured intent is reported separately from what the kernel actually took.
+
 **Resources** (#52 per-container swap limit with [ADR-0195](../adr/0195-per-container-swap-limit.md)): `memory_swap_max` -> cgroup v2 `memory.swap.max`, with 0 a real setting (may not swap at all) rather than "unset". Needed no kernel change -- `CONFIG_MEMCG_SWAP` was removed upstream before 6.1 and the capability is unconditional wherever memcg and `CONFIG_SWAP` are on, which this kernel already had.
 
 **Networking** (#26 per-network switch panel with [ADR-0194](../adr/0194-network-ports-from-the-kernel.md)): a network's ports are read from the kernel's own view of the bridge rather than from this daemon's registry, so the panel can show a port nothing can account for — a disagreement between belief and reality that nothing else surfaces.

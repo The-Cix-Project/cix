@@ -47,6 +47,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/system/swap` | Whether a host swap file is currently enabled, and its size |
 | POST | `/system/swap` | Enable a host swap file at a given size |
 | DELETE | `/system/swap` | Disable and remove the host swap file |
+| GET | `/system/zswap` | The compressed swap cache: configured intent, what the kernel actually has, and which compressors it was built with (issue #51) |
+| PUT | `/system/zswap` | Configure it -- partial update, applied to the running kernel and persisted |
 | GET | `/system/logs` | Query the consolidated log store (`source`/`level`/`container`/`regex`/`since`/`tail` filters) |
 | GET | `/system/logs/config` | The consolidated log store's size cap |
 | PUT | `/system/logs/config` | Set the log store's size cap |
@@ -1751,6 +1753,31 @@ Validation refuses rather than escapes. A console is a bare tty name with option
 
 `thincctl boot-console show|set --console=… --extra="…"` is the CLI surface; the dashboard has a **Boot Console** tab under System > Host.
 
+
+## Compressed swap cache: zswap (issue #51)
+
+```
+GET /v1/system/zswap
+PUT /v1/system/zswap   {"enabled": true, "max_pool_percent": 20, "compressor": "lzo"}
+```
+
+zswap compresses pages in RAM before they would otherwise be written to the real swap device — memory pressure costs CPU instead of disk I/O. It is here because of a specific incident, not as a general nicety: 192.168.15.95 went fully unresponsive during a heavy `-j6` gcc bootstrap that drove it into swap thrashing, on a disk that had already produced two kernel Oopses in the page-cache/writeback path that same session. zswap does not fix a bug in that path; it reduces how often that path is entered at all.
+
+```json
+{"supported": true, "enabled": true, "max_pool_percent": 20, "compressor": "lzo",
+ "kernel": {"enabled": true, "max_pool_percent": 20, "compressor": "lzo"},
+ "available_compressors": ["lzo", "lz4", "zstd", "deflate"]}
+```
+
+**Configured intent and kernel state are reported separately, and the interesting case is when they differ.** The kernel silently ignores a parameter it cannot honour, so an endpoint that echoed back its own input would report success for a setting that never took. `kernel.*` is read back from `/sys/module/zswap/parameters`; when `kernel.enabled` disagrees with `enabled`, that is the whole story.
+
+**`available_compressors` comes from `/proc/crypto`** — what this kernel was actually built with. It is what decides whether the `compressor` knob means anything at all, and it is why a compressor this kernel lacks is a `409` rather than a write the kernel would quietly drop. An empty list means no zswap at all (`supported: false`).
+
+**On by default**, unlike the swap file itself, which is opt-in because it consumes real disk. zswap consumes nothing until the box is already swapping, and at that point there is no reading of "off by default" that helps the operator whose box is thrashing. The kernel's own `CONFIG_ZSWAP_DEFAULT_ON` is deliberately **not** set: whether zswap is on is a setting this platform owns, and a kernel that also decided it at boot would be a second source of truth for one fact.
+
+Validation happens before the write, never after. An out-of-range percentage or a compressor name that is not a plain algorithm name is a `400` — the string goes into a sysfs file, so it is refused rather than escaped. And if the kernel refuses the settings, the previous ones are restored and **nothing is persisted**: a config file describing a state the machine is not in is worse than the failure it was recording.
+
+`thincctl zswap show|set [--enable|--disable] [--max-pool-percent=N] [--compressor=NAME]` is the CLI surface; the dashboard has it under System > Host > Swap, below the swap file itself.
 
 ## Kernel line (issue #65)
 
