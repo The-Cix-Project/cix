@@ -17237,6 +17237,13 @@ static void handle_dns_server_create(int fd, const char *body, size_t body_len)
 		respond_dns_server_error(fd, serr);
 		return;
 	}
+	/*
+	 * A DNS server is a DHCP server (ADR-0197), so one arriving changes
+	 * how every range on its networks is split -- and it has no DHCP
+	 * config of its own yet at all. Re-render and restart whoever is
+	 * affected, which is exactly the set whose own conf changed.
+	 */
+	dhcp_apply_and_maybe_restart();
 
 	/*
 	 * container_name/hosts_path still point into root -- build the
@@ -17276,6 +17283,10 @@ static void handle_dns_server_delete(int fd, const char *name)
 		respond_dns_server_error(fd, serr);
 		return;
 	}
+	/* One fewer server means a wider slice for each that remains, so
+	 * the survivors have to be re-rendered and restarted -- otherwise
+	 * the departed server's addresses are served by nobody. */
+	dhcp_apply_and_maybe_restart();
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
@@ -19392,15 +19403,16 @@ static int rolling_jitter_seconds(int window);
 
 static void dhcp_apply_and_maybe_restart(void)
 {
-	int conf_changed = 0;
 	char names[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
-	int count;
+	int count = 0;
 	int i;
 
-	dhcp_sync_all(&conf_changed);
-	if (!conf_changed)
+	/* Only the servers whose OWN conf changed. A range on one network
+	 * is nothing to a server on another, and restarting it anyway
+	 * would make an unrelated edit cost a DNS outage. */
+	dhcp_sync_all(names, DNS_SERVER_MAX, &count);
+	if (count == 0)
 		return;
-	count = dns_server_list_containers(names, DNS_SERVER_MAX);
 	for (i = 0; i < count; i++) {
 		struct registry_entry *e = registry_find(names[i]);
 
@@ -19629,15 +19641,16 @@ static void handle_network_dhcp_put(int fd, const char *network, const char *bod
 		 */
 		{
 			char names[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
-			int servers = dns_server_list_containers(names, DNS_SERVER_MAX);
+			int servers = dhcp_servers_on_network(network, names, DNS_SERVER_MAX);
 			uint32_t first = ntohl(cfg.range_start_be);
 			uint32_t last = ntohl(cfg.range_end_be);
 
 			if (servers == 0) {
 				respond_error(fd, 400, "Bad Request",
-				               "no DNS server is registered -- DHCP is served by the same "
-				               "dnsmasq that serves DNS, so a lease resolves the moment it is "
-				               "issued; register one with POST /v1/dns/servers first");
+				               "no registered DNS server is attached to this network -- DHCP is "
+				               "served by the same dnsmasq that serves DNS, and only a server "
+				               "on this wire can answer here. Attach one and register it with "
+				               "POST /v1/dns/servers");
 				return;
 			}
 			/*
@@ -19650,8 +19663,8 @@ static void handle_network_dhcp_put(int fd, const char *network, const char *bod
 			 */
 			if (last - first + 1 < (uint32_t)servers) {
 				snprintf(errbuf, sizeof(errbuf),
-				         "the range holds %u address(es) but there are %d DNS servers to split "
-				         "it between -- each needs at least one, since they have no shared "
+				         "the range holds %u address(es) but %d DNS servers on this network "
+				         "must split it -- each needs at least one, since they have no shared "
 				         "lease database and only disjoint pools keep them from colliding",
 				         last - first + 1, servers);
 				respond_error(fd, 400, "Bad Request", errbuf);

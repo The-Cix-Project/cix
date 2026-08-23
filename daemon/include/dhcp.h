@@ -107,11 +107,16 @@ enum dhcp_error dhcp_static_delete(const char *mac);
  * wrong. Returns bytes written (excluding NUL), or -1 if it did not
  * fit. */
 /*
- * server_index of server_count: renders only that server's own slice of
- * every enabled range. server_count of 0 or 1 renders the whole range,
- * which is the single-server case and needs no special path.
+ * Renders only what THIS server should serve: its own slice of the
+ * ranges on the networks it is actually attached to. A server on a
+ * different bridge gets none of them -- it has no interface in that
+ * subnet, so the pool would be one it could not serve on.
  */
-int dhcp_render_conf(int server_index, int server_count, char *out, size_t out_size);
+int dhcp_render_conf(const char *server_name, char *out, size_t out_size);
+
+/* The registered DNS servers attached to this network -- who actually
+ * serves DHCP here, and therefore how many ways the range is split. */
+int dhcp_servers_on_network(const char *network, char out[][64], int max);
 
 /* The slice server_index of server_count would be given, for reporting
  * it back. Returns -1 if the range cannot be divided that many ways. */
@@ -122,11 +127,12 @@ int dhcp_render_hosts(char *out, size_t out_size);
 /*
  * Writes both files into every currently-running DNS server container
  * and SIGHUPs it, which puts a static-entry change into force
- * immediately. Ranges are NOT live: conf_changed says the conf file's
- * content differs from what the running servers were started against,
- * and the caller is what decides to restart them.
+ * immediately. Ranges are NOT live: `changed` is filled with the names
+ * of the servers whose conf now differs from what they were started
+ * against -- only those need restarting, so a change on one network
+ * never disturbs a server on another.
  */
-void dhcp_sync_all(int *out_conf_changed);
+void dhcp_sync_all(char changed[][64], int max_changed, int *out_changed_count);
 
 /* Whether any network currently has DHCP enabled. */
 int dhcp_any_enabled(void);
