@@ -150,6 +150,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/volumes/{name}/backup` | Take one snapshot now |
 | POST | `/volumes/{name}/restore` | **Replace** the volume's contents with a snapshot |
 | DELETE | `/volumes/{name}/backups/{snapshot}` | Delete one snapshot |
+| PUT | `/volumes/{name}/owner` | Who owns the volume's directory — a volume is created root-owned, which a non-root workload cannot write to (issue #102) |
 | PUT | `/volumes/{name}/quota` | Set or clear a real, kernel-enforced size limit on a volume (issue #93) |
 | POST | `/volumes/{name}/migrate` | Move a volume's data to another disk or partition |
 | DELETE | `/volumes/{name}` | Delete a volume **and all of its data** -- refused (409) while any container definition references it |
@@ -1678,6 +1679,29 @@ The daemon is a single-threaded event loop, and on an installed host it is the o
 A stall is five seconds without the loop completing an iteration. The loop wakes at least once a second on its own, so an idle daemon is never mistaken for a stalled one — and a legitimate slow synchronous operation crossing the threshold is not a false positive, it is exactly the thing worth knowing about.
 
 Records are appended to `<data-dir>/state/control_plane_stalls.jsonl` and survive the daemon, a restart and a reboot: a wedge is usually followed by one of those, and a diagnostic that dies with what it was diagnosing is not a diagnostic. `thincctl stalls` prints them; the dashboard has a **Stalls** tab under System > Monitoring.
+
+
+### Volume ownership (issue #102)
+
+```
+POST /v1/volumes              {"name": "home", "owner_uid": 10000, "owner_gid": 10000}
+PUT  /v1/volumes/home/owner   {"uid": 10000, "gid": 10000, "recursive": false}
+PUT  /v1/volumes/home/owner   {"uid": null, "gid": null}     # hand it back to root
+```
+
+A volume is a directory this daemon creates as **root**, and until now nothing could change that — so a workload that does not run as root could not write to its own volume. That was found the plain way: an operator logged into the jump box and their home directory, which is a volume, belonged to root.
+
+`pam_mkhomedir` does not save you here, and it is worth knowing why: it creates a home that does *not* exist, and does nothing at all to one that does. Any directory the daemon has already put inside a volume — staged files, a restored backup, a migration — is there before the first login, and stays root's.
+
+- **Both ids together.** `owner_uid` without `owner_gid` is a `400`: a volume owned by one user and an unrelated group is almost always a typo. On the `PUT`, pass the value a field already has to leave it alone.
+- **`recursive` defaults to false**, and is the caller's explicit choice. A volume that has been in use holds files whose ownership someone may have set deliberately, and rewriting all of them because the top-level owner changed is a quiet kind of data loss.
+- **Null uid and gid hands it back to root**, and really `chown`s it there rather than leaving whoever owned it last still owning it.
+- **`owner_uid` is null, not 0, when nobody has said.** 0 is a real uid, and a field that cannot tell "deliberately root" from "unsaid" is one that gets read wrong eventually.
+- The ids are the numeric ones **the container sees**, which for every container without a user namespace are the host's own ids too.
+
+For an `ldap_login` container the right ids are already known — `GET /v1/ldap/users` reports each account's `uidnumber` and `primarygroup` — so giving a user their home is one call rather than a `chown` through an exec.
+
+`thincctl volume create --name=home --owner-uid=10000 --owner-gid=10000`, `thincctl volume owner home --uid=10000 --gid=10000 [--recursive]`, `thincctl volume owner home --root`; the dashboard has the same controls on the volume's own page.
 
 
 ## Capability restriction (issue #29)

@@ -4260,6 +4260,18 @@ static void fmt_volume_one(const struct json_value *v)
 		printf("%-20s limit=%.0f bytes (%.1f GiB)\n", "", quota, quota / (1024 * 1024 * 1024));
 	else
 		printf("%-20s limit=none -- can grow until the disk is full\n", "");
+	/* Issue #102: said either way, because "root owns it" is the state
+	 * that stops a workload writing to its own volume and it should
+	 * never have to be inferred from silence. */
+	{
+		const struct json_value *ou = json_object_get(v, "owner_uid");
+		const struct json_value *og = json_object_get(v, "owner_gid");
+
+		if (ou != NULL && ou->type == JSON_NUMBER)
+			printf("%-20s owner=%d:%d\n", "", (int)json_as_number(ou), (int)json_as_number(og));
+		else
+			printf("%-20s owner=root (0:0) -- a non-root workload cannot write to it\n", "");
+	}
 }
 
 /*
@@ -4650,6 +4662,9 @@ static int cmd_volume(const struct kx_client *c, int json_mode, int argc, char *
 	if (strcmp(sub, "create") == 0) {
 		struct json_writer w;
 		const char *name = NULL, *disk = NULL;
+		/* Issue #102: who the volume belongs to, since a volume created
+		 * as root is one its own workload cannot write to. */
+		const char *owner_uid = NULL, *owner_gid = NULL;
 		int i, rc;
 
 		for (i = 1; i < argc; i++) {
@@ -4657,9 +4672,14 @@ static int cmd_volume(const struct kx_client *c, int json_mode, int argc, char *
 				name = argv[i] + 7;
 			else if (strncmp(argv[i], "--disk=", 7) == 0)
 				disk = argv[i] + 7;
+			else if (strncmp(argv[i], "--owner-uid=", 12) == 0)
+				owner_uid = argv[i] + 12;
+			else if (strncmp(argv[i], "--owner-gid=", 12) == 0)
+				owner_gid = argv[i] + 12;
 		}
-		if (name == NULL) {
-			fprintf(stderr, "usage: thincctl volume create --name=NAME [--disk=DISK]\n");
+		if (name == NULL || (owner_uid != NULL) != (owner_gid != NULL)) {
+			fprintf(stderr, "usage: thincctl volume create --name=NAME [--disk=DISK] "
+			                "[--owner-uid=N --owner-gid=N]\n");
 			return 2;
 		}
 		jw_init(&w);
@@ -4670,9 +4690,72 @@ static int cmd_volume(const struct kx_client *c, int json_mode, int argc, char *
 			jw_key(&w, "disk");
 			jw_str(&w, disk);
 		}
+		if (owner_uid != NULL) {
+			jw_key(&w, "owner_uid");
+			jw_int(&w, atol(owner_uid));
+			jw_key(&w, "owner_gid");
+			jw_int(&w, atol(owner_gid));
+		}
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
 		rc = kx_client_request(c, "POST", "/v1/volumes", w.buf, &r);
+		jw_free(&w);
+		if (rc != 0) {
+			fprintf(stderr, "thincctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_volume_one);
+	}
+	/*
+	 * Issue #102: hand a volume to the account that will actually use
+	 * it. --recursive is explicit because a volume in use holds files
+	 * whose ownership someone may have chosen deliberately.
+	 */
+	if (strcmp(sub, "owner") == 0 && argc >= 2) {
+		struct json_writer w;
+		const char *uid = NULL, *gid = NULL;
+		int recursive = 0, clear = 0, i, rc;
+		char path[160];
+
+		for (i = 2; i < argc; i++) {
+			if (strncmp(argv[i], "--uid=", 6) == 0)
+				uid = argv[i] + 6;
+			else if (strncmp(argv[i], "--gid=", 6) == 0)
+				gid = argv[i] + 6;
+			else if (strcmp(argv[i], "--recursive") == 0)
+				recursive = 1;
+			else if (strcmp(argv[i], "--root") == 0)
+				clear = 1;
+			else {
+				fprintf(stderr, "thincctl: unknown volume owner option '%s'\n", argv[i]);
+				return 2;
+			}
+		}
+		if (!clear && (uid == NULL || gid == NULL)) {
+			fprintf(stderr, "usage: thincctl volume owner NAME --uid=N --gid=N [--recursive]\n"
+			                "       thincctl volume owner NAME --root   (hand it back to root)\n");
+			return 2;
+		}
+
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "uid");
+		if (clear)
+			jw_null(&w);
+		else
+			jw_int(&w, atol(uid));
+		jw_key(&w, "gid");
+		if (clear)
+			jw_null(&w);
+		else
+			jw_int(&w, atol(gid));
+		jw_key(&w, "recursive");
+		jw_bool(&w, recursive);
+		jw_obj_close(&w);
+		w.buf[w.len] = '\0';
+
+		snprintf(path, sizeof(path), "/v1/volumes/%s/owner", argv[1]);
+		rc = kx_client_request(c, "PUT", path, w.buf, &r);
 		jw_free(&w);
 		if (rc != 0) {
 			fprintf(stderr, "thincctl: could not reach daemon\n");

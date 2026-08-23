@@ -18,6 +18,7 @@
 #include "json.h"
 #include "test_image_fixture.h"
 
+#include <sys/stat.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>
@@ -520,6 +521,115 @@ int main(void)
 	                         &r) == 0 &&
 	          (r.status == 404 || r.status == 409),
 	      "restoring a snapshot that does not exist fails rather than emptying the volume");
+	kx_response_free(&r);
+
+	/*
+	 * 5d-bis. Ownership (issue #102). A volume is a directory the
+	 * daemon creates as root, and until this there was no way to change
+	 * that -- so a workload not running as root could not write to its
+	 * own volume. Found the plain way: an operator logged into the jump
+	 * box and their home directory, a volume, belonged to root.
+	 */
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "POST", "/v1/volumes",
+	                         "{\"name\":\"ownedvol\",\"owner_uid\":10000,\"owner_gid\":10000}",
+	                         &r) == 0 &&
+	          r.status == 201 &&
+	          (long)json_as_number(json_object_get(r.json, "owner_uid")) == 10000,
+	      "a volume can be created owned by someone other than root");
+	{
+		/* The record is only half the claim -- the directory on disk is
+		 * the half that decides whether anyone can write to it. */
+		const char *hp = json_str_field(r.json, "host_path");
+		struct stat st;
+
+		check(hp != NULL && stat(hp, &st) == 0 && st.st_uid == 10000 && st.st_gid == 10000,
+		      "and the real directory on disk is owned by them, not just the record");
+	}
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "POST", "/v1/volumes",
+	                         "{\"name\":\"halfowned\",\"owner_uid\":10000}", &r) == 0 &&
+	          r.status == 400,
+	      "an owner_uid with no owner_gid is refused rather than half-applied");
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "GET", "/v1/volumes/vol1", NULL, &r) == 0 && r.status == 200 &&
+	          json_object_get(r.json, "owner_uid") != NULL &&
+	          json_object_get(r.json, "owner_uid")->type == JSON_NULL,
+	      "a volume nobody claimed reports null, not uid 0 -- \"root\" and \"unsaid\" are different");
+	kx_response_free(&r);
+
+	/*
+	 * Changing it afterwards, and the recursive flag meaning exactly
+	 * what it says: a volume in use holds files whose ownership someone
+	 * may have set deliberately, so rewriting all of them is asked for,
+	 * never assumed.
+	 */
+	{
+		char child[PATH_MAX];
+		char host_path[PATH_MAX] = "";
+		struct stat st;
+		FILE *f;
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "GET", "/v1/volumes/ownedvol", NULL, &r) == 0 &&
+		    json_str_field(r.json, "host_path") != NULL)
+			snprintf(host_path, sizeof(host_path), "%s", json_str_field(r.json, "host_path"));
+		kx_response_free(&r);
+
+		snprintf(child, sizeof(child), "%s/preexisting", host_path);
+		f = fopen(child, "w");
+		if (f != NULL)
+			fclose(f);
+		chown(child, 0, 0);
+
+		memset(&r, 0, sizeof(r));
+		check(kx_client_request(&client, "PUT", "/v1/volumes/ownedvol/owner",
+		                         "{\"uid\":10001,\"gid\":10002}", &r) == 0 &&
+		          r.status == 200,
+		      "a volume's owner can be changed afterwards");
+		kx_response_free(&r);
+
+		check(stat(host_path, &st) == 0 && st.st_uid == 10001,
+		      "the volume directory itself follows the new owner");
+		check(stat(child, &st) == 0 && st.st_uid == 0,
+		      "and content inside it is left alone unless recursion is asked for");
+
+		memset(&r, 0, sizeof(r));
+		check(kx_client_request(&client, "PUT", "/v1/volumes/ownedvol/owner",
+		                         "{\"uid\":10001,\"gid\":10002,\"recursive\":true}", &r) == 0 &&
+		          r.status == 200,
+		      "and recursion is available when it IS what was meant");
+		kx_response_free(&r);
+		check(stat(child, &st) == 0 && st.st_uid == 10001,
+		      "which does reach the content");
+
+		/* Handing it back to root is a real request, not the absence of
+		 * one: the directory must actually change hands. */
+		memset(&r, 0, sizeof(r));
+		check(kx_client_request(&client, "PUT", "/v1/volumes/ownedvol/owner",
+		                         "{\"uid\":null,\"gid\":null}", &r) == 0 &&
+		          r.status == 200 &&
+		          json_object_get(r.json, "owner_uid")->type == JSON_NULL,
+		      "clearing an owner hands the volume back to root");
+		check(stat(host_path, &st) == 0 && st.st_uid == 0,
+		      "and the directory really is root's again");
+	}
+
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "PUT", "/v1/volumes/ownedvol/owner", "{\"uid\":5}", &r) == 0 &&
+	          r.status == 400,
+	      "a uid with no gid is refused");
+	kx_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	check(kx_client_request(&client, "PUT", "/v1/volumes/nosuchvol/owner", "{\"uid\":1,\"gid\":1}",
+	                         &r) == 0 &&
+	          r.status == 404,
+	      "setting an owner on an unknown volume is refused");
 	kx_response_free(&r);
 
 	/* 5e. size limits (issue #93). A volume had none, which made it an

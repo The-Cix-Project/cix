@@ -2056,6 +2056,36 @@
 		<section class="view" id="view-volume-detail" hidden>
 			<h2 id="vd-title"></h2>
 			<div class="detail-grid" id="vd-fields"></div>
+			<h3>Owner</h3>
+			<p class="hint" id="vd-owner-note"></p>
+			<form id="vd-owner-form">
+				<label>
+					uid
+					<input type="number" id="vd-owner-uid" min="0" step="1" style="width:6rem">
+				</label>
+				<label>
+					gid
+					<input type="number" id="vd-owner-gid" min="0" step="1" style="width:6rem">
+				</label>
+				<label class="checkbox">
+					<input type="checkbox" id="vd-owner-recursive">
+					Also rewrite everything already inside it
+				</label>
+				<button type="submit">Apply</button>
+				<button type="button" id="vd-owner-root">Hand back to root</button>
+			</form>
+			<p class="hint">
+				A volume is a directory this daemon creates as <strong>root</strong> (issue #102), so a
+				workload that does not run as root cannot write to its own volume &mdash; found the plain
+				way, by an operator logging into the jump box and finding their home directory owned by
+				root. These are the ids as the container sees them.
+			</p>
+			<p class="hint">
+				Recursion is off by default on purpose: a volume that has been in use holds files whose
+				ownership someone may have set deliberately, and rewriting all of them because the
+				top-level owner changed is a quiet kind of data loss.
+			</p>
+
 			<h3>Size limit</h3>
 			<p class="hint" id="vd-quota-note"></p>
 			<form id="vd-quota-form">
@@ -2417,6 +2447,19 @@
 						Disk (optional)
 						<input type="text" id="vf-disk" placeholder="(default OS-disk placement)">
 					</label>
+					<label>
+						Owner uid (optional)
+						<input type="number" id="vf-owner-uid" min="0" placeholder="root">
+					</label>
+					<label>
+						Owner gid (optional)
+						<input type="number" id="vf-owner-gid" min="0" placeholder="root">
+					</label>
+					<p class="hint">
+						A volume is created owned by root (issue #102). A workload that does not run
+						as root cannot write to it until someone says otherwise &mdash; for a home
+						directory, that is the LDAP account's own uid/gid.
+					</p>
 					<button type="submit">Create volume</button>
 				</form>
 			</div>

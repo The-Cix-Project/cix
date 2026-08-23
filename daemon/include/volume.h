@@ -133,6 +133,26 @@ struct volume {
 	/* When the scheduled sweep last took one, so it can tell what is
 	 * due without re-reading the snapshot store for every volume. */
 	time_t backup_last_at;
+	/*
+	 * Issue #102: who owns the volume's own directory. -1 means "never
+	 * set", which reads as root -- the same thing a volume created
+	 * before this existed already is.
+	 *
+	 * A volume is a directory the daemon creates as root, and until now
+	 * nothing could change that. A workload that does not run as root
+	 * therefore could not write to its own volume, which was found the
+	 * plain way: an operator logged into the jump box and their home
+	 * directory -- a volume -- belonged to root.
+	 *
+	 * These are the numeric ids as the CONTAINER sees them, which for
+	 * every container without a user namespace are the host's own ids
+	 * too. For a userns container (ADR-0179, opt-in) the host-side
+	 * owner is its subordinate base plus this value, and the daemon
+	 * does that arithmetic at mount time rather than making an operator
+	 * think about it -- see volume_owner_host_ids().
+	 */
+	int owner_uid;
+	int owner_gid;
 	int in_use;
 };
 
@@ -221,5 +241,25 @@ void volume_note_backup_taken(const char *name, time_t when);
  * and can be re-applied after a migrate.
  */
 enum volume_error volume_set_quota(const char *name, long long quota_bytes);
+
+/*
+ * Issue #102: set (or clear) a volume's owner. uid/gid of -1 clears it
+ * back to root. Records the intent; applying it to the real directory
+ * is volume_apply_owner()'s job, so a restart or a migrate can re-apply
+ * the same answer rather than losing it.
+ */
+enum volume_error volume_set_owner(const char *name, int uid, int gid);
+
+/*
+ * chown()s the volume's own directory to its recorded owner. recursive
+ * rewrites everything inside it too -- deliberately a caller's choice,
+ * never a default: a volume that has been in use holds files whose
+ * ownership an operator may have set deliberately, and rewriting those
+ * without being asked is data loss of a quiet kind.
+ *
+ * Returns VOLUME_OK when there is nothing to do (no owner set), so a
+ * caller can apply unconditionally.
+ */
+enum volume_error volume_apply_owner(const struct volume *v, int recursive);
 
 #endif /* VOLUME_H */

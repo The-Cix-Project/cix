@@ -185,7 +185,9 @@ Storage whose lifetime is independent of any container using it — deleting a c
 
 | Command | |
 |---|---|
-| `volume create --name=NAME [--disk=DISK]` | Create a volume; `--disk=` places it by the same disk-role naming a container's own `--disk=` uses, omitted means default OS-disk placement |
+| `volume create --name=NAME [--disk=DISK] [--owner-uid=N --owner-gid=N]` | Create a persistent volume. Without an owner it belongs to root, which a non-root workload cannot write to (issue #102) |
+| `volume owner NAME --uid=N --gid=N [--recursive]` | Hand a volume to the account that will use it. `--recursive` also rewrites what is already inside; off by default, since a volume in use holds files whose ownership may have been set deliberately |
+| `volume owner NAME --root` | Hand it back to root |
 | `volume ls` / `volume show NAME` | List / inspect one (disk, resolved host path, creation time) |
 | `volume backups NAME [--enable\|--disable] [--retain=N] [--while-running=refuse\|pause\|allow]` | Show or set a volume's backup policy. Opt-in. `--while-running` decides what happens when a container is using it: `refuse` skips (and an always-on container means never), `pause` freezes every container using it for the copy then resumes them (a genuinely consistent snapshot, at the cost of real downtime), `allow` copies live and accepts a crash-consistent snapshot |
 | `volume backup NAME` | Take one snapshot now |

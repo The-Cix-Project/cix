@@ -6857,11 +6857,58 @@ static void handle_volume_create(int fd, const char *body, size_t body_len)
 		respond_error(fd, 400, "Bad Request", "name is required");
 		return;
 	}
-	verr = volume_create(name, disk, &v);
-	json_free(root);
-	if (verr != VOLUME_OK) {
-		respond_volume_error(fd, verr);
-		return;
+	{
+		/*
+		 * Issue #102: owner at creation, because the moment a volume
+		 * exists is the only moment its contents are certainly empty
+		 * -- setting it later means deciding what to do about files
+		 * that are already there, which is a question worth not having
+		 * to ask.
+		 */
+		const struct json_value *ju = json_object_get(root, "owner_uid");
+		const struct json_value *jg = json_object_get(root, "owner_gid");
+		int uid = ju != NULL ? (int)json_as_number(ju) : -1;
+		int gid = jg != NULL ? (int)json_as_number(jg) : -1;
+
+		if ((ju != NULL) != (jg != NULL)) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request",
+			              "owner_uid and owner_gid go together -- a volume owned by one user and "
+			              "an unrelated group is almost always a typo");
+			return;
+		}
+		if (ju != NULL && (uid < 0 || gid < 0)) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "owner_uid/owner_gid must not be negative");
+			return;
+		}
+
+		verr = volume_create(name, disk, &v);
+		if (verr != VOLUME_OK) {
+			json_free(root);
+			respond_volume_error(fd, verr);
+			return;
+		}
+		if (ju != NULL) {
+			verr = volume_set_owner(name, uid, gid);
+			if (verr == VOLUME_OK)
+				verr = volume_apply_owner(v, 0);
+			if (verr != VOLUME_OK) {
+				json_free(root);
+				/* The directory exists and is root-owned: report the
+				 * real outcome rather than a 201 that implies an owner
+				 * that was never applied. */
+				respond_volume_error(fd, verr);
+				return;
+			}
+		}
+		/*
+		 * Freed only now. `name` points INTO this tree, and every call
+		 * above takes it -- freeing before them left volume_set_owner()
+		 * looking up a name in freed memory and answering "no such
+		 * volume" for one it had just created.
+		 */
+		json_free(root);
 	}
 	jw_init(&w);
 	volume_write_json_one(v, &w);
@@ -7104,6 +7151,95 @@ static void handle_volume_migrate(int fd, const char *name, const char *body, si
 		}
 	}
 	handle_volume_get(fd, name);
+}
+
+/*
+ * PUT /v1/volumes/{name}/owner (issue #102) -- who may write to this
+ * volume.
+ *
+ * A volume is a directory the daemon creates as root, and nothing could
+ * change that: a workload not running as root could not write to its
+ * own volume. Found the plain way, by an operator logging into the jump
+ * box and finding their home directory -- a volume -- owned by root.
+ *
+ * `recursive` is the caller's explicit choice and defaults to false. A
+ * volume that has been in use holds files whose ownership someone may
+ * have set deliberately, and rewriting all of it because the top-level
+ * owner changed is a quiet kind of data loss.
+ */
+static void handle_volume_owner_put(int fd, const char *name, const char *body, size_t body_len)
+{
+	struct json_value *root = json_parse(body, body_len);
+	const struct json_value *ju, *jg, *jr;
+	struct volume *v;
+	enum volume_error verr;
+	int uid, gid, recursive;
+	struct json_writer w;
+
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	v = volume_find(name);
+	if (v == NULL) {
+		json_free(root);
+		respond_error(fd, 404, "Not Found", "no such volume");
+		return;
+	}
+	ju = json_object_get(root, "uid");
+	jg = json_object_get(root, "gid");
+	jr = json_object_get(root, "recursive");
+	recursive = (jr != NULL && jr->type == JSON_BOOL && jr->u.boolean);
+
+	if (ju == NULL || jg == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "uid and gid are both required -- pass the value it already has to leave "
+		              "one alone, or null for both to hand the volume back to root");
+		return;
+	}
+	if (ju->type == JSON_NULL && jg->type == JSON_NULL) {
+		uid = -1;
+		gid = -1;
+	} else {
+		uid = (int)json_as_number(ju);
+		gid = (int)json_as_number(jg);
+		if (uid < 0 || gid < 0) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "uid/gid must not be negative");
+			return;
+		}
+	}
+	json_free(root);
+
+	verr = volume_set_owner(name, uid, gid);
+	if (verr != VOLUME_OK) {
+		respond_volume_error(fd, verr);
+		return;
+	}
+	v = volume_find(name);
+	/* Clearing back to root is a real request too: chown it to 0:0
+	 * rather than leaving whoever owned it last still owning it. */
+	if (uid < 0) {
+		char path[PATH_MAX];
+
+		if (volume_host_path(v, path, sizeof(path)) == 0 && lchown(path, 0, 0) != 0) {
+			respond_error(fd, 500, "Internal Server Error",
+			              "could not hand the volume directory back to root");
+			return;
+		}
+	} else {
+		verr = volume_apply_owner(v, recursive);
+		if (verr != VOLUME_OK) {
+			respond_volume_error(fd, verr);
+			return;
+		}
+	}
+
+	jw_init(&w);
+	volume_write_json_one(v, &w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
 }
 
 /*
@@ -19812,6 +19948,10 @@ static void dispatch(int fd, const struct http_request *req)
 
 				if (strcmp(slash, "/migrate") == 0 && strcmp(req->method, "POST") == 0) {
 					handle_volume_migrate(fd, volume_name, req->body, req->body_len);
+					return;
+				}
+				if (strcmp(slash, "/owner") == 0 && strcmp(req->method, "PUT") == 0) {
+					handle_volume_owner_put(fd, volume_name, req->body, req->body_len);
 					return;
 				}
 				if (strcmp(slash, "/quota") == 0 && strcmp(req->method, "PUT") == 0) {
