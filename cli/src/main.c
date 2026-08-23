@@ -23,6 +23,10 @@
 #define DEFAULT_HOST "127.0.0.1"
 #define DEFAULT_PORT 80
 
+/* A range split more than eight ways gives each server a handful of
+ * addresses at best; past that the split is the problem, not the limit. */
+#define DHCP_CLI_MAX_SERVERS 8
+
 static void print_usage(FILE *out)
 {
 	fprintf(out,
@@ -3198,6 +3202,33 @@ static void fmt_dhcp(const struct json_value *v)
 	}
 }
 
+/* Whether a DHCP server is also a DNS server is REPORTED, not required:
+ * dnsmasq answers for the names of clients it leased addresses to, so a
+ * server that is both makes leases resolve the moment they are issued.
+ * Saying which is true beats one service quietly requiring the other. */
+static void fmt_dhcp_servers(const struct json_value *v)
+{
+	const struct json_value *servers = json_object_get(v, "servers");
+	size_t i;
+
+	if (servers == NULL || servers->type != JSON_ARRAY || servers->u.array.count == 0) {
+		printf("no DHCP server registered\n");
+		return;
+	}
+	printf("%-24s %-12s %s\n", "CONTAINER", "STATE", "RESOLVES LEASES");
+	for (i = 0; i < servers->u.array.count; i++) {
+		const struct json_value *e = servers->u.array.items[i];
+		const struct json_value *run = json_object_get(e, "running");
+		const struct json_value *res = json_object_get(e, "resolves_leases");
+
+		printf("%-24s %-12s %s\n", json_str_field(e, "container"),
+		       run != NULL && run->type == JSON_BOOL && run->u.boolean ? "running" : "stopped",
+		       res != NULL && res->type == JSON_BOOL && res->u.boolean
+		           ? "yes"
+		           : "no -- not a DNS server");
+	}
+}
+
 static void fmt_dhcp_leases(const struct json_value *v)
 {
 	const struct json_value *leases = json_object_get(v, "leases");
@@ -3224,6 +3255,8 @@ static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char 
 	struct thinc_response r;
 	const char *sub = argc > 0 ? argv[0] : "show";
 	const char *network = NULL, *range = NULL, *router = NULL;
+	const char *servers[DHCP_CLI_MAX_SERVERS];
+	int server_count = 0;
 	const char *mac = NULL, *ip = NULL, *hostname = NULL;
 	long lease_seconds = -1;
 	char path[256];
@@ -3251,6 +3284,14 @@ static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char 
 			range = argv[i] + 8;
 		else if (strncmp(argv[i], "--router=", 9) == 0)
 			router = argv[i] + 9;
+		else if (strncmp(argv[i], "--server=", 9) == 0) {
+			if (server_count >= DHCP_CLI_MAX_SERVERS) {
+				fprintf(stderr, "thincctl: too many --server= flags (max %d)\n",
+				        DHCP_CLI_MAX_SERVERS);
+				return 2;
+			}
+			servers[server_count++] = argv[i] + 9;
+		}
 		else if (strncmp(argv[i], "--lease-seconds=", 16) == 0)
 			lease_seconds = atol(argv[i] + 16);
 		else if (strncmp(argv[i], "--mac=", 6) == 0)
@@ -3266,15 +3307,16 @@ static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char 
 	if (strcmp(sub, "enable") == 0 || strcmp(sub, "disable") == 0) {
 		int enable = strcmp(sub, "enable") == 0;
 
-		if (network == NULL || (enable && range == NULL)) {
+		if (network == NULL || (enable && (range == NULL || server_count == 0))) {
 			fprintf(stderr,
 			        "usage: thincctl dhcp enable --network=NAME --range=START-END\n"
+			        "                            --server=CONTAINER [--server=CONTAINER ...]\n"
 			        "                            [--lease-seconds=N] [--router=IP]\n"
 			        "       thincctl dhcp disable --network=NAME\n"
-			        "  Served by EVERY registered DNS server, so a lease resolves the moment\n"
-			        "  it is handed out. The range is split into one disjoint slice per\n"
-			        "  server: dnsmasq has no failover protocol, so that split is what makes\n"
-			        "  two servers redundant rather than two servers colliding.\n");
+			        "  --server= is repeatable. dnsmasq has no failover protocol, so a range\n"
+			        "  named to more than one server is split into disjoint slices: all of\n"
+			        "  them answer, and no two hold the same address. Register servers first\n"
+			        "  with `thincctl dhcp server add`.\n");
 			return 2;
 		}
 		jw_init(&w);
@@ -3311,13 +3353,20 @@ static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char 
 			jw_key(&w, "router");
 			jw_str(&w, router);
 		}
+		if (server_count > 0) {
+			jw_key(&w, "servers");
+			jw_arr_open(&w);
+			for (i = 0; i < server_count; i++)
+				jw_str(&w, servers[i]);
+			jw_arr_close(&w);
+		}
 		if (lease_seconds >= 0) {
 			jw_key(&w, "lease_seconds");
 			jw_int(&w, lease_seconds);
 		}
 		jw_obj_close(&w);
 		w.buf[w.len] = '\0';
-		snprintf(path, sizeof(path), "/v1/networks/%s/dhcp", network);
+		snprintf(path, sizeof(path), "/v1/dhcp/networks/%s", network);
 		if (thinc_client_request(c, "PUT", path, w.buf, &r) != 0) {
 			jw_free(&w);
 			fprintf(stderr, "thincctl: could not reach daemon\n");
@@ -3327,6 +3376,42 @@ static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char 
 		return emit(&r, json_mode, NULL);
 	}
 
+	if (strcmp(sub, "server") == 0) {
+		const char *op = argc > 1 ? argv[1] : "";
+
+		if (strcmp(op, "add") == 0 && argc > 2) {
+			jw_init(&w);
+			jw_obj_open(&w);
+			jw_key(&w, "container");
+			jw_str(&w, argv[2]);
+			jw_obj_close(&w);
+			w.buf[w.len] = '\0';
+			if (thinc_client_request(c, "POST", "/v1/dhcp/servers", w.buf, &r) != 0) {
+				jw_free(&w);
+				fprintf(stderr, "thincctl: could not reach daemon\n");
+				return 1;
+			}
+			jw_free(&w);
+			return emit(&r, json_mode, fmt_dhcp_servers);
+		}
+		if (strcmp(op, "rm") == 0 && argc > 2) {
+			snprintf(path, sizeof(path), "/v1/dhcp/servers/%s", argv[2]);
+			if (thinc_client_request(c, "DELETE", path, NULL, &r) != 0) {
+				fprintf(stderr, "thincctl: could not reach daemon\n");
+				return 1;
+			}
+			return emit(&r, json_mode, NULL);
+		}
+		if (strcmp(op, "ls") == 0 || op[0] == '\0') {
+			if (thinc_client_request(c, "GET", "/v1/dhcp/servers", NULL, &r) != 0) {
+				fprintf(stderr, "thincctl: could not reach daemon\n");
+				return 1;
+			}
+			return emit(&r, json_mode, fmt_dhcp_servers);
+		}
+		fprintf(stderr, "usage: thincctl dhcp server ls | add CONTAINER | rm CONTAINER\n");
+		return 2;
+	}
 	if (strcmp(sub, "static") == 0) {
 		const char *op = argc > 1 ? argv[1] : "";
 
@@ -3374,6 +3459,7 @@ static int cmd_dhcp(const struct thinc_client *c, int json_mode, int argc, char 
 	}
 
 	fprintf(stderr, "usage: thincctl dhcp show | leases\n"
+	                "       thincctl dhcp server ls | add CONTAINER | rm CONTAINER\n"
 	                "       thincctl dhcp enable --network=NAME --range=START-END\n"
 	                "       thincctl dhcp disable --network=NAME\n"
 	                "       thincctl dhcp static add --mac=M --ip=IP [--hostname=NAME]\n"

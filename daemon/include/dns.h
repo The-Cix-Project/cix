@@ -143,6 +143,12 @@ void dns_server_write_json_list(struct json_writer *w);
 /* Issue #81: uniform enumerator for the shared server-health prober. */
 int dns_server_list_containers(char out[][DNS_SERVER_NAME_MAX], int max);
 
+/* Whether this container is a registered DNS server. Exists so another
+ * service can REPORT the pairing (a DHCP server that is also this is a
+ * DHCP server whose leases resolve) without reaching into this one's
+ * table or depending on it. */
+int dns_server_is_registered(const char *container);
+
 /* Issue #83: number of records currently managed -- used to detect the
  * silent state where records exist with no registered server to receive
  * them. */

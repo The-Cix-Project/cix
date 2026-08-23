@@ -1,4 +1,4 @@
-# 0197 — DHCP is served by the DNS server, and a lease is not a record
+# 0197 — DHCP is a self-contained service, and a lease is not a record
 
 ## Status
 
@@ -14,11 +14,15 @@ The operator asked for DHCP with ranges per network, an enable switch per networ
 
 ## Decision
 
-**DHCP is served by every registered DNS server, and the range is split into one disjoint slice per server.**
+**DHCP registers its own servers, owns its own ranges and reservations, and every endpoint it has lives under `/v1/dhcp`.**
 
-The pairing with DNS is not a convenience. dnsmasq resolves the names of clients it has itself leased addresses to, so when the instance handing out the address is the instance answering for the name, a lease is resolvable the moment it exists — no synchronisation, no window in which the two disagree, and no component whose job is to keep them agreeing. Serving from the DNS servers makes that structural rather than something an operator has to get right.
+Containment is the constraint, and it came from the operator directly: services are to stay self-sufficient and consistent because they may become loadable plugins. A service that reaches into another service's registry can never be lifted out and made optional — so DHCP does not consult the DNS server table, and nothing DHCP-shaped hangs off `/v1/networks`.
 
-**Redundancy is split scope, because with dnsmasq it has to be.** The operator asked for both servers working redundantly, primary and backup, the way ISC dhcpd is configured. dnsmasq implements no failover protocol — there is no peer relationship for it to join, the two instances share no lease database, and neither can know what the other has handed out. The standard technique in its absence is to give each server a disjoint slice of one range: both answer, a client takes whichever offer reaches it first, and handing one address to two machines is impossible because no two servers hold it. Either server alone keeps serving, from its own slice, which is the practical property primary/backup exists to provide. What it does not provide is a hot standby that takes over the *whole* pool knowing its peer's leases; that needs a server implementing a failover protocol (ISC Kea or dhcpd), which is a package this platform does not have.
+The first version of this got that wrong in a way worth recording: it required a DHCP server to be a registered *DNS* server, and hung the range off the network resource. Both read as elegant integration and were actually coupling — the range endpoint made DHCP a property of networking rather than a service, and the DNS requirement made one service's registry load-bearing for another's validation.
+
+**The pairing with DNS survives as a reported fact.** dnsmasq answers for the names of clients it has itself leased addresses to, so registering the same container as both makes a lease resolvable the moment it is issued. `resolves_leases` on each server says whether that is true. Reporting it gives an operator the same information enforcing it would have, and costs nothing structurally.
+
+**Redundancy is split scope, because with dnsmasq it has to be.** The operator asked for both servers working redundantly, primary and backup, the way ISC dhcpd is configured. Each range names the servers that serve it — one, two or more, an operator's decision rather than this daemon's — and the order is preserved because it is the slice order: a derived order would move every client's address whenever something unrelated changed. dnsmasq implements no failover protocol — there is no peer relationship for it to join, the two instances share no lease database, and neither can know what the other has handed out. The standard technique in its absence is to give each server a disjoint slice of one range: both answer, a client takes whichever offer reaches it first, and handing one address to two machines is impossible because no two servers hold it. Either server alone keeps serving, from its own slice, which is the practical property primary/backup exists to provide. What it does not provide is a hot standby that takes over the *whole* pool knowing its peer's leases; that needs a server implementing a failover protocol (ISC Kea or dhcpd), which is a package this platform does not have.
 
 **The split is per network, not per platform.** Only registered DNS servers actually *attached* to a network serve its range, and only they count towards the split. A server on a different bridge has no interface in that subnet, so it could not answer there anyway — and rendering it that range would additionally restart a container that had no business being restarted. Each server's conf is therefore its own, and only the servers whose own conf changed are rolled: an edit on one network never costs a DNS outage on another.
 
@@ -34,7 +38,7 @@ The restart happens whatever the serving container's restart policy says. [ADR-0
 
 MAC addresses and hostnames are **refused, never sanitised**: both are written into a file dnsmasq parses, and a hostname additionally becomes a name it answers for, so it is held to a DNS label's shape.
 
-**It is a service, not only a network setting.** A range belongs to a network, so enabling it lives on that network's own page — but who is serving what, every reservation and every lease span networks, and those live on a DHCP page under Services alongside DNS, LDAP, NTP and Syslog. That is the same split DNS already has between its records and its servers, and the operator asked for exactly that consistency.
+**One place to configure each thing.** The DHCP service page owns servers, ranges and reservations; a network's own page shows the leases on that network and nothing else. The first version had reservations on three surfaces at once — the network page, the service page, and the menu — which is three places to change one thing and three chances for them to disagree. Creating now happens only from the Services menu, listing only on the page: the rule [ADR-0184](0184-dashboard-navigation-one-vocabulary.md) already set for the rest of the dashboard, applied here rather than excepted.
 
 ## Consequences
 

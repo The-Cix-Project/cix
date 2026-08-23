@@ -1183,7 +1183,8 @@ const CATEGORY_VIEWS = {
 	"ntp-config": "view-ntp-config",
 	"ntp-servers": "view-ntp-config",
 	"ntp-time": "view-ntp-config",
-	"dhcp-networks": "view-dhcp",
+	"dhcp-servers": "view-dhcp",
+	"dhcp-ranges": "view-dhcp",
 	"dhcp-static": "view-dhcp",
 	"dhcp-leases": "view-dhcp",
 	"pki-ca": "view-pki-ca",
@@ -1298,7 +1299,8 @@ const SERVICE_TAB_VIEWS = {
 	"ntp-config": "view-ntp-config",
 	"ntp-servers": "view-ntp-config",
 	"ntp-time": "view-ntp-config",
-	"dhcp-networks": "view-dhcp",
+	"dhcp-servers": "view-dhcp",
+	"dhcp-ranges": "view-dhcp",
 	"dhcp-static": "view-dhcp",
 	"dhcp-leases": "view-dhcp",
 	"host-stats": "view-monitoring",
@@ -1918,7 +1920,7 @@ function renderTree() {
 				{ label: "DNS", hash: "dns-records", icon: "dns" },
 				{ label: "LDAP", hash: "ldap-servers", icon: "dns" },
 				{ label: "NTP", hash: "ntp-config", icon: "dns" },
-				{ label: "DHCP", hash: "dhcp-networks", icon: "dns" },
+				{ label: "DHCP", hash: "dhcp-servers", icon: "dns" },
 				{ label: "Syslog", hash: "syslog-targets", icon: "system" },
 			],
 		},
@@ -3434,305 +3436,152 @@ async function removeNetwork(name) {
 	}
 }
 
-/* ---------- DHCP (ADR-0197) ---------- */
+/* ---------- DHCP: a self-contained service (ADR-0197) ----------
+ *
+ * Its own servers, its own ranges, its own reservations, every request
+ * under /v1/dhcp. Nothing here reads or writes another service's
+ * state, which is what has to be true for it to become a loadable
+ * plugin later rather than a thing tangled through everything.
+ *
+ * Creating happens from the Services menu and listing happens on the
+ * page, the same division the rest of the dashboard uses. The network
+ * page shows leases on that network and nothing else -- one place to
+ * configure a range, not two that can disagree.
+ */
+let dhcpCache = { servers: [], networks: [], static: [] };
 
-let dhcpDirty = false;
-let dhcpNetworkName = null;
+function dhcpFillTable(tbody, rows, columns, emptyText) {
+	tbody.textContent = "";
+	if (rows.length === 0) {
+		const tr = document.createElement("tr");
+		const td = document.createElement("td");
 
-function renderDhcpSlices(cfg) {
-	const body = document.querySelector("#nd-dhcp-slices tbody");
-	const slices = cfg.slices || [];
-
-	body.textContent = "";
-	if (slices.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
-
-		cell.colSpan = 2;
-		cell.className = "empty";
-		cell.textContent = cfg.enabled
-			? "No DNS server is registered, so nothing is serving this range"
-			: "DHCP is off on this network";
-		row.appendChild(cell);
-		body.appendChild(row);
-		return;
+		td.colSpan = columns;
+		td.className = "empty";
+		td.textContent = emptyText;
+		tr.appendChild(td);
+		tbody.appendChild(tr);
+		return false;
 	}
-	for (const sl of slices) {
-		const row = document.createElement("tr");
+	return true;
+}
 
-		for (const text of [sl.server, sl.range_start + " – " + sl.range_end]) {
+function renderDhcpServers(servers) {
+	const body = document.querySelector("#dhcp-servers-table tbody");
+
+	if (!dhcpFillTable(body, servers, 4,
+	                    "No DHCP server registered — register one from the Services menu"))
+		return;
+	for (const srv of servers) {
+		const row = document.createElement("tr");
+		const actions = document.createElement("td");
+		const del = document.createElement("button");
+
+		for (const text of [srv.container, srv.running ? "running" : "not running",
+		                     srv.resolves_leases ? "yes" : "no — not a DNS server"]) {
 			const td = document.createElement("td");
 
 			td.textContent = text;
 			row.appendChild(td);
 		}
+		del.type = "button";
+		del.className = "button-small";
+		del.textContent = "Unregister";
+		del.addEventListener("click", async () => {
+			try {
+				await apiRequest("DELETE", "/v1/dhcp/servers/" + encodeURIComponent(srv.container));
+				showStatus("Unregistered — any range that named it has been re-split.", false);
+				refreshDhcp();
+			} catch (e) {
+				showStatus("Failed to unregister: " + e.message, true);
+			}
+		});
+		actions.appendChild(del);
+		row.appendChild(actions);
 		body.appendChild(row);
 	}
 }
 
-function renderDhcpTables(all, leases) {
-	const staticBody = document.querySelector("#nd-dhcp-static tbody");
-	const leaseBody = document.querySelector("#nd-dhcp-leases tbody");
+function renderDhcpRanges(networks) {
+	const body = document.querySelector("#dhcp-ranges-table tbody");
+	const configured = networks.filter((n) => n.enabled || n.server_count !== 0 || n.range_start !== null);
 
-	staticBody.textContent = "";
-	const entries = (all && all.static) || [];
-
-	if (entries.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
-
-		cell.colSpan = 4;
-		cell.className = "empty";
-		cell.textContent = "No reservations — every client gets an address from the range";
-		row.appendChild(cell);
-		staticBody.appendChild(row);
-	} else {
-		for (const e of entries) {
-			const row = document.createElement("tr");
-			const actions = document.createElement("td");
-			const del = document.createElement("button");
-
-			for (const text of [e.mac, e.ip, e.hostname === null ? "-" : e.hostname]) {
-				const td = document.createElement("td");
-
-				td.textContent = text;
-				row.appendChild(td);
-			}
-			del.type = "button";
-			del.className = "button-small";
-			del.textContent = "Remove";
-			del.addEventListener("click", async () => {
-				try {
-					await apiRequest("DELETE", "/v1/dhcp/static/" + encodeURIComponent(e.mac));
-					showStatus("Reservation removed.", false);
-					refreshNetworkDhcp(dhcpNetworkName);
-				} catch (err) {
-					showStatus("Failed to remove: " + err.message, true);
-				}
-			});
-			actions.appendChild(del);
-			row.appendChild(actions);
-			staticBody.appendChild(row);
-		}
-	}
-
-	leaseBody.textContent = "";
-	const rows = (leases && leases.leases) || [];
-
-	if (rows.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
-
-		cell.colSpan = 4;
-		cell.className = "empty";
-		cell.textContent = "No leases — nothing has asked for an address yet";
-		row.appendChild(cell);
-		leaseBody.appendChild(row);
+	if (!dhcpFillTable(body, configured, 6,
+	                    "No range configured — add one from the Services menu"))
 		return;
-	}
-	for (const l of rows) {
+	for (const n of configured) {
 		const row = document.createElement("tr");
+		const nameCell = document.createElement("td");
+		const actions = document.createElement("td");
+		const edit = document.createElement("button");
 
-		for (const text of [l.mac, l.ip, l.hostname === null ? "-" : l.hostname,
-		                     new Date(l.expires_at * 1000).toLocaleString()]) {
+		nameCell.appendChild(treeLink("#networks/" + encodeURIComponent(n.network), n.network, ""));
+		row.appendChild(nameCell);
+		for (const text of [n.enabled ? "enabled" : "disabled",
+		                     n.range_start === null ? "-" : n.range_start + " – " + n.range_end,
+		                     n.lease_seconds + "s",
+		                     /* The split, not the count: two servers are
+		                      * redundant only because their pools are
+		                      * disjoint, and that is the thing worth seeing. */
+		                     (n.slices || []).length === 0
+		                         ? "-"
+		                         : (n.slices || [])
+		                               .map((s) => s.server + " " + s.range_start + "–" + s.range_end)
+		                               .join(", ")]) {
 			const td = document.createElement("td");
 
 			td.textContent = text;
 			row.appendChild(td);
 		}
-		leaseBody.appendChild(row);
+		edit.type = "button";
+		edit.className = "button-small";
+		edit.textContent = "Edit";
+		edit.addEventListener("click", () => openDhcpRangeModal(n.network));
+		actions.appendChild(edit);
+		row.appendChild(actions);
+		body.appendChild(row);
 	}
 }
 
-async function refreshNetworkDhcp(name) {
-	if (name === null || name === undefined)
+function renderDhcpStatic(entries) {
+	const body = document.querySelector("#dhcp-static-table tbody");
+
+	if (!dhcpFillTable(body, entries, 4,
+	                    "No reservations — every client gets an address from the range"))
 		return;
-	dhcpNetworkName = name;
-	try {
-		const [cfg, all, leases] = await Promise.all([
-			apiRequest("GET", "/v1/networks/" + encodeURIComponent(name) + "/dhcp"),
-			apiRequest("GET", "/v1/dhcp"),
-			apiRequest("GET", "/v1/dhcp/leases"),
-		]);
-		if (!dhcpDirty) {
-			document.getElementById("nd-dhcp-enabled").checked = !!cfg.enabled;
-			document.getElementById("nd-dhcp-start").value = cfg.range_start || "";
-			document.getElementById("nd-dhcp-end").value = cfg.range_end || "";
-			document.getElementById("nd-dhcp-lease").value = cfg.lease_seconds;
-			document.getElementById("nd-dhcp-router").value = cfg.router || "";
-		}
-		renderDhcpSlices(cfg);
-		renderDhcpTables(all, leases);
-	} catch (e) {
-		/* Best-effort, same as every other panel here. */
-	}
-}
-
-for (const id of ["nd-dhcp-enabled", "nd-dhcp-start", "nd-dhcp-end", "nd-dhcp-lease",
-                   "nd-dhcp-router"]) {
-	document.getElementById(id).addEventListener("input", () => {
-		dhcpDirty = true;
-	});
-}
-
-document.getElementById("nd-dhcp-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-	if (dhcpNetworkName === null)
-		return;
-	const router = document.getElementById("nd-dhcp-router").value.trim();
-	const body = {
-		enabled: document.getElementById("nd-dhcp-enabled").checked,
-		range_start: document.getElementById("nd-dhcp-start").value.trim(),
-		range_end: document.getElementById("nd-dhcp-end").value.trim(),
-		lease_seconds: parseInt(document.getElementById("nd-dhcp-lease").value, 10),
-	};
-
-	if (router !== "")
-		body.router = router;
-	try {
-		await apiRequest("PUT", "/v1/networks/" + encodeURIComponent(dhcpNetworkName) + "/dhcp",
-		                  body);
-		dhcpDirty = false;
-		/* Said every time, not only when a range actually changed: the
-		 * daemon decides that, and promising "no restart" from here
-		 * would be this page guessing at it. */
-		showStatus("DHCP saved — if the range changed, the serving container is being restarted.",
-		           false);
-		refreshNetworkDhcp(dhcpNetworkName);
-	} catch (e) {
-		showStatus("Failed to save DHCP: " + e.message, true);
-	}
-});
-
-document.getElementById("nd-dhcp-static-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-	const hostname = document.getElementById("nd-dhcp-hostname").value.trim();
-	const body = {
-		mac: document.getElementById("nd-dhcp-mac").value.trim(),
-		ip: document.getElementById("nd-dhcp-ip").value.trim(),
-	};
-
-	if (hostname !== "")
-		body.hostname = hostname;
-	try {
-		await apiRequest("POST", "/v1/dhcp/static", body);
-		showStatus("Reserved.", false);
-		document.getElementById("nd-dhcp-mac").value = "";
-		document.getElementById("nd-dhcp-ip").value = "";
-		document.getElementById("nd-dhcp-hostname").value = "";
-		refreshNetworkDhcp(dhcpNetworkName);
-	} catch (e) {
-		showStatus("Failed to reserve: " + e.message, true);
-	}
-});
-
-
-/* The service-wide DHCP page (ADR-0197). The per-network page owns the
- * range, because a range belongs to a network; this owns the questions
- * that span networks -- who is serving what, every reservation, every
- * lease -- the same split DNS already has between its records and its
- * servers. */
-function renderDhcpService(all, leases) {
-	const netBody = document.querySelector("#dhcp-networks-table tbody");
-	const staticBody = document.querySelector("#dhcp-static-table tbody");
-	const leaseBody = document.querySelector("#dhcp-leases-table tbody");
-
-	netBody.textContent = "";
-	const nets = (all && all.networks) || [];
-
-	if (nets.length === 0) {
+	for (const e of entries) {
 		const row = document.createElement("tr");
-		const cell = document.createElement("td");
+		const actions = document.createElement("td");
+		const del = document.createElement("button");
 
-		cell.colSpan = 5;
-		cell.className = "empty";
-		cell.textContent = "No network has DHCP configured — enable it from a network's own page";
-		row.appendChild(cell);
-		netBody.appendChild(row);
-	} else {
-		for (const n of nets) {
-			const row = document.createElement("tr");
-			const nameCell = document.createElement("td");
-			const served = document.createElement("td");
+		for (const text of [e.mac, e.ip, e.hostname === null ? "-" : e.hostname]) {
+			const td = document.createElement("td");
 
-			nameCell.appendChild(treeLink("#networks/" + encodeURIComponent(n.network), n.network, ""));
-			row.appendChild(nameCell);
-			for (const text of [n.enabled ? "enabled" : "disabled",
-			                     n.range_start === null ? "-" : n.range_start + " – " + n.range_end,
-			                     n.lease_seconds + "s"]) {
-				const td = document.createElement("td");
-
-				td.textContent = text;
-				row.appendChild(td);
+			td.textContent = text;
+			row.appendChild(td);
+		}
+		del.type = "button";
+		del.className = "button-small";
+		del.textContent = "Remove";
+		del.addEventListener("click", async () => {
+			try {
+				await apiRequest("DELETE", "/v1/dhcp/static/" + encodeURIComponent(e.mac));
+				showStatus("Reservation removed.", false);
+				refreshDhcp();
+			} catch (err) {
+				showStatus("Failed to remove: " + err.message, true);
 			}
-			/* The split, not just the count: two servers are only
-			 * redundant because their pools are disjoint, and that is
-			 * the thing worth being able to see. */
-			served.textContent = (n.slices || []).length === 0
-				? "-"
-				: (n.slices || []).map((s) => s.server + " " + s.range_start + "–" + s.range_end).join(", ");
-			row.appendChild(served);
-			netBody.appendChild(row);
-		}
+		});
+		actions.appendChild(del);
+		row.appendChild(actions);
+		body.appendChild(row);
 	}
+}
 
-	staticBody.textContent = "";
-	const entries = (all && all.static) || [];
-
-	if (entries.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
-
-		cell.colSpan = 4;
-		cell.className = "empty";
-		cell.textContent = "No reservations — every client gets an address from the range";
-		row.appendChild(cell);
-		staticBody.appendChild(row);
-	} else {
-		for (const e of entries) {
-			const row = document.createElement("tr");
-			const actions = document.createElement("td");
-			const del = document.createElement("button");
-
-			for (const text of [e.mac, e.ip, e.hostname === null ? "-" : e.hostname]) {
-				const td = document.createElement("td");
-
-				td.textContent = text;
-				row.appendChild(td);
-			}
-			del.type = "button";
-			del.className = "button-small";
-			del.textContent = "Remove";
-			del.addEventListener("click", async () => {
-				try {
-					await apiRequest("DELETE", "/v1/dhcp/static/" + encodeURIComponent(e.mac));
-					showStatus("Reservation removed.", false);
-					refreshDhcpService();
-				} catch (err) {
-					showStatus("Failed to remove: " + err.message, true);
-				}
-			});
-			actions.appendChild(del);
-			row.appendChild(actions);
-			staticBody.appendChild(row);
-		}
-	}
-
-	leaseBody.textContent = "";
-	const rows = (leases && leases.leases) || [];
-
-	if (rows.length === 0) {
-		const row = document.createElement("tr");
-		const cell = document.createElement("td");
-
-		cell.colSpan = 5;
-		cell.className = "empty";
-		cell.textContent = "No leases — nothing has asked for an address yet";
-		row.appendChild(cell);
-		leaseBody.appendChild(row);
+function renderLeaseRows(tbody, leases) {
+	if (!dhcpFillTable(tbody, leases, 5, "No leases — nothing has asked for an address yet"))
 		return;
-	}
-	for (const l of rows) {
+	for (const l of leases) {
 		const row = document.createElement("tr");
 
 		for (const text of [l.mac, l.ip, l.hostname === null ? "-" : l.hostname,
@@ -3742,26 +3591,136 @@ function renderDhcpService(all, leases) {
 			td.textContent = text;
 			row.appendChild(td);
 		}
-		leaseBody.appendChild(row);
+		tbody.appendChild(row);
 	}
 }
 
-async function refreshDhcpService() {
+async function refreshDhcp() {
 	try {
-		const [all, leases] = await Promise.all([
+		const [all, servers, leases] = await Promise.all([
 			apiRequest("GET", "/v1/dhcp"),
+			apiRequest("GET", "/v1/dhcp/servers"),
 			apiRequest("GET", "/v1/dhcp/leases"),
 		]);
 
-		renderDhcpService(all, leases);
+		dhcpCache = {
+			servers: servers.servers || [],
+			networks: all.networks || [],
+			static: all.static || [],
+		};
+		renderDhcpServers(dhcpCache.servers);
+		renderDhcpRanges(dhcpCache.networks);
+		renderDhcpStatic(dhcpCache.static);
+		renderLeaseRows(document.querySelector("#dhcp-leases-table tbody"), leases.leases || []);
 	} catch (e) {
 		/* Best-effort, same as every other page here. */
 	}
 }
 
-/* The Services-menu shortcut writes the same reservation the service
- * page's own form does, through the same endpoint -- one action, two
- * places to reach it, not two implementations of it. */
+/* The network page's own DHCP tab: leases on THIS network and nothing
+ * else. Filtered by whether the leased address is one this network's
+ * own range hands out, since a lease carries no network of its own --
+ * the server does not record one, and inventing a field for it here
+ * would be storing a second answer to a question the range already
+ * answers. */
+async function refreshNetworkDhcp(name) {
+	if (name === null || name === undefined)
+		return;
+	try {
+		const [all, leases] = await Promise.all([
+			apiRequest("GET", "/v1/dhcp"),
+			apiRequest("GET", "/v1/dhcp/leases"),
+		]);
+		const cfg = (all.networks || []).find((n) => n.network === name);
+		const servers = cfg === undefined ? [] : (cfg.slices || []).map((s) => s.server);
+		const mine = (leases.leases || []).filter((l) => servers.indexOf(l.server) !== -1);
+
+		renderLeaseRows(document.querySelector("#nd-dhcp-leases tbody"), mine);
+	} catch (e) {
+		/* Best-effort. */
+	}
+}
+
+/* ---- Creating things: from the Services menu, never from the page ---- */
+
+function openDhcpRangeModal(network) {
+	const netSelect = document.getElementById("drf-network");
+	const srvSelect = document.getElementById("drf-servers");
+	const cfg = dhcpCache.networks.find((n) => n.network === network);
+
+	netSelect.textContent = "";
+	for (const n of cache.networks || []) {
+		const opt = document.createElement("option");
+
+		opt.value = n.name;
+		opt.textContent = n.name;
+		netSelect.appendChild(opt);
+	}
+	if (network !== undefined && network !== null)
+		netSelect.value = network;
+
+	/* Only registered DHCP servers, because only they can serve one.
+	 * Offering anything else would offer a choice the daemon refuses. */
+	srvSelect.textContent = "";
+	for (const srv of dhcpCache.servers) {
+		const opt = document.createElement("option");
+
+		opt.value = srv.container;
+		opt.textContent = srv.container + (srv.resolves_leases ? "" : " (leases will not resolve)");
+		opt.selected = cfg !== undefined && (cfg.servers || []).indexOf(srv.container) !== -1;
+		srvSelect.appendChild(opt);
+	}
+	document.getElementById("drf-enabled").checked = cfg !== undefined && cfg.enabled;
+	document.getElementById("drf-start").value = cfg === undefined ? "" : cfg.range_start || "";
+	document.getElementById("drf-end").value = cfg === undefined ? "" : cfg.range_end || "";
+	document.getElementById("drf-lease").value = cfg === undefined ? 3600 : cfg.lease_seconds;
+	document.getElementById("drf-router").value = cfg === undefined ? "" : cfg.router || "";
+	openModal("dhcp-range-form", "DHCP range");
+}
+
+document.getElementById("dhcp-range-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+	const network = document.getElementById("drf-network").value;
+	const router = document.getElementById("drf-router").value.trim();
+	const body = {
+		enabled: document.getElementById("drf-enabled").checked,
+		range_start: document.getElementById("drf-start").value.trim(),
+		range_end: document.getElementById("drf-end").value.trim(),
+		lease_seconds: parseInt(document.getElementById("drf-lease").value, 10),
+		servers: Array.from(document.getElementById("drf-servers").selectedOptions).map((o) => o.value),
+	};
+
+	if (router !== "")
+		body.router = router;
+	try {
+		await apiRequest("PUT", "/v1/dhcp/networks/" + encodeURIComponent(network), body);
+		closeModal();
+		/* Said every time rather than only when a range really changed:
+		 * the daemon decides that, and promising "no restart" from here
+		 * would be this page guessing at it. */
+		showStatus("Range saved — if it changed, the servers serving it are being restarted.",
+		           false);
+		refreshDhcp();
+	} catch (e) {
+		showStatus("Failed to save the range: " + e.message, true);
+	}
+});
+
+document.getElementById("dhcp-server-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+	try {
+		await apiRequest("POST", "/v1/dhcp/servers", {
+			container: document.getElementById("dsv-container").value.trim(),
+		});
+		closeModal();
+		document.getElementById("dsv-container").value = "";
+		showStatus("Registered.", false);
+		refreshDhcp();
+	} catch (e) {
+		showStatus("Failed to register: " + e.message, true);
+	}
+});
+
 document.getElementById("dhcp-static-modal-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
 	const hostname = document.getElementById("dsm-hostname").value.trim();
@@ -3779,29 +3738,7 @@ document.getElementById("dhcp-static-modal-form").addEventListener("submit", asy
 		document.getElementById("dsm-mac").value = "";
 		document.getElementById("dsm-ip").value = "";
 		document.getElementById("dsm-hostname").value = "";
-		refreshDhcpService();
-	} catch (e) {
-		showStatus("Failed to reserve: " + e.message, true);
-	}
-});
-
-document.getElementById("dhcp-static-form").addEventListener("submit", async (event) => {
-	event.preventDefault();
-	const hostname = document.getElementById("dhcp-s-hostname").value.trim();
-	const body = {
-		mac: document.getElementById("dhcp-s-mac").value.trim(),
-		ip: document.getElementById("dhcp-s-ip").value.trim(),
-	};
-
-	if (hostname !== "")
-		body.hostname = hostname;
-	try {
-		await apiRequest("POST", "/v1/dhcp/static", body);
-		showStatus("Reserved.", false);
-		document.getElementById("dhcp-s-mac").value = "";
-		document.getElementById("dhcp-s-ip").value = "";
-		document.getElementById("dhcp-s-hostname").value = "";
-		refreshDhcpService();
+		refreshDhcp();
 	} catch (e) {
 		showStatus("Failed to reserve: " + e.message, true);
 	}
@@ -11029,9 +10966,10 @@ const VIEW_REFRESHERS = {
 	"ldap-users": [refreshLdapUsers, refreshLdapGroups],
 	"ldap-config": [refreshLdapConfig, refreshLdapServers],
 	"ntp-config": [refreshNtpConfig, refreshNtpServers],
-	"dhcp-networks": [refreshDhcpService],
-	"dhcp-static": [refreshDhcpService],
-	"dhcp-leases": [refreshDhcpService],
+	"dhcp-servers": [refreshDhcp],
+	"dhcp-ranges": [refreshDhcp],
+	"dhcp-static": [refreshDhcp],
+	"dhcp-leases": [refreshDhcp],
 	"ntp-servers": [refreshNtpServers, refreshNtpConfig],
 	"ntp-time": [refreshNtpStatus, refreshNtpTime],
 	"syslog-targets": [refreshSyslogTargets],

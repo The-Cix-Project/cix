@@ -12,6 +12,7 @@
 
 static struct dhcp_network g_networks[DHCP_MAX_NETWORKS];
 static struct dhcp_static g_statics[DHCP_MAX_STATIC];
+static char g_servers[DHCP_MAX_SERVERS][DHCP_SERVER_NAME_MAX];
 static char g_state_path[512];
 /*
  * The conf text the running servers were last started against. A range
@@ -120,6 +121,12 @@ static int save_state(void)
 		return -1;
 	jw_init(&w);
 	jw_obj_open(&w);
+	jw_key(&w, "servers");
+	jw_arr_open(&w);
+	for (i = 0; i < DHCP_MAX_SERVERS; i++)
+		if (g_servers[i][0] != '\0')
+			jw_str(&w, g_servers[i]);
+	jw_arr_close(&w);
 	jw_key(&w, "networks");
 	jw_arr_open(&w);
 	for (i = 0; i < DHCP_MAX_NETWORKS; i++)
@@ -155,6 +162,126 @@ static int save_state(void)
 	return rc;
 }
 
+
+/* ---- Servers ---- */
+
+int dhcp_server_is_registered(const char *container)
+{
+	int i;
+
+	if (container == NULL || container[0] == '\0')
+		return 0;
+	for (i = 0; i < DHCP_MAX_SERVERS; i++)
+		if (g_servers[i][0] != '\0' && strcmp(g_servers[i], container) == 0)
+			return 1;
+	return 0;
+}
+
+int dhcp_server_list(char out[][DHCP_SERVER_NAME_MAX], int max)
+{
+	int i, n = 0;
+
+	for (i = 0; i < DHCP_MAX_SERVERS && n < max; i++)
+		if (g_servers[i][0] != '\0')
+			snprintf(out[n++], DHCP_SERVER_NAME_MAX, "%s", g_servers[i]);
+	return n;
+}
+
+enum dhcp_error dhcp_server_register(const char *container)
+{
+	int i, slot = -1;
+
+	if (container == NULL || container[0] == '\0')
+		return DHCP_ERR_INVALID;
+	if (dhcp_server_is_registered(container))
+		return DHCP_ERR_DUPLICATE;
+	for (i = 0; i < DHCP_MAX_SERVERS; i++)
+		if (g_servers[i][0] == '\0') {
+			slot = i;
+			break;
+		}
+	if (slot < 0)
+		return DHCP_ERR_FULL;
+	snprintf(g_servers[slot], DHCP_SERVER_NAME_MAX, "%s", container);
+	return save_state() == 0 ? DHCP_OK : DHCP_ERR_PERSIST_FAILED;
+}
+
+/*
+ * Unregistering drops the server from every range that named it. A
+ * range still naming a server nobody serves from would be a slice of
+ * addresses handed to nothing -- worse than one fewer server, because
+ * it looks like coverage.
+ */
+enum dhcp_error dhcp_server_unregister(const char *container)
+{
+	int i, j, k;
+	int found = 0;
+
+	for (i = 0; i < DHCP_MAX_SERVERS; i++) {
+		if (g_servers[i][0] == '\0' || strcmp(g_servers[i], container) != 0)
+			continue;
+		g_servers[i][0] = '\0';
+		found = 1;
+	}
+	if (!found)
+		return DHCP_ERR_NOT_FOUND;
+	for (i = 0; i < DHCP_MAX_NETWORKS; i++) {
+		if (g_networks[i].network[0] == '\0')
+			continue;
+		for (j = 0; j < g_networks[i].server_count; j++) {
+			if (strcmp(g_networks[i].servers[j], container) != 0)
+				continue;
+			for (k = j; k + 1 < g_networks[i].server_count; k++)
+				snprintf(g_networks[i].servers[k], DHCP_SERVER_NAME_MAX, "%s",
+				         g_networks[i].servers[k + 1]);
+			g_networks[i].server_count--;
+			g_networks[i].servers[g_networks[i].server_count][0] = '\0';
+			/* No server left to serve it: the range is off, said
+			 * plainly rather than left enabled and unserved. */
+			if (g_networks[i].server_count == 0)
+				g_networks[i].enabled = 0;
+			break;
+		}
+	}
+	return save_state() == 0 ? DHCP_OK : DHCP_ERR_PERSIST_FAILED;
+}
+
+void dhcp_server_forget(const char *container)
+{
+	if (dhcp_server_is_registered(container))
+		(void)dhcp_server_unregister(container);
+}
+
+void dhcp_servers_write_json(struct json_writer *w)
+{
+	int i;
+
+	jw_arr_open(w);
+	for (i = 0; i < DHCP_MAX_SERVERS; i++) {
+		struct registry_entry *e;
+
+		if (g_servers[i][0] == '\0')
+			continue;
+		e = registry_find(g_servers[i]);
+		jw_obj_open(w);
+		jw_key(w, "container");
+		jw_str(w, g_servers[i]);
+		jw_key(w, "running");
+		jw_bool(w, e != NULL && e->running);
+		/*
+		 * Whether this same container also serves DNS. Reported, not
+		 * required: dnsmasq answers for the names of clients it leased
+		 * addresses to, so a server that is both makes leases resolve
+		 * the instant they are issued -- and one that is not, does
+		 * not. Saying which is true beats quietly enforcing it.
+		 */
+		jw_key(w, "resolves_leases");
+		jw_bool(w, dns_server_is_registered(g_servers[i]));
+		jw_obj_close(w);
+	}
+	jw_arr_close(w);
+}
+
 static uint32_t parse_ip(const char *s)
 {
 	struct in_addr a;
@@ -175,6 +302,7 @@ int dhcp_init(const char *path)
 	snprintf(g_state_path, sizeof(g_state_path), "%s", path);
 	memset(g_networks, 0, sizeof(g_networks));
 	memset(g_statics, 0, sizeof(g_statics));
+	memset(g_servers, 0, sizeof(g_servers));
 	if (persist_read_file(path, &buf, &len) != 0)
 		return -1;
 	if (buf == NULL)
@@ -184,6 +312,19 @@ int dhcp_init(const char *path)
 	if (root == NULL)
 		return 0;
 
+	arr = json_object_get(root, "servers");
+	if (arr != NULL && arr->type == JSON_ARRAY) {
+		int slot = 0;
+
+		for (i = 0; i < arr->u.array.count && slot < DHCP_MAX_SERVERS; i++) {
+			const char *nm = json_as_string(arr->u.array.items[i]);
+
+			if (nm == NULL || nm[0] == '\0')
+				continue;
+			snprintf(g_servers[slot], DHCP_SERVER_NAME_MAX, "%s", nm);
+			slot++;
+		}
+	}
 	arr = json_object_get(root, "networks");
 	if (arr != NULL && arr->type == JSON_ARRAY) {
 		int slot = 0;
@@ -205,6 +346,23 @@ int dhcp_init(const char *path)
 			g_networks[slot].lease_seconds =
 			    (int)json_as_number(json_object_get(e, "lease_seconds"));
 			g_networks[slot].router_be = parse_ip(json_as_string(json_object_get(e, "router")));
+			{
+				const struct json_value *srv = json_object_get(e, "servers");
+				size_t k;
+
+				if (srv != NULL && srv->type == JSON_ARRAY) {
+					for (k = 0; k < srv->u.array.count &&
+					            g_networks[slot].server_count < DHCP_MAX_RANGE_SERVERS; k++) {
+						const char *nm = json_as_string(srv->u.array.items[k]);
+
+						if (nm == NULL || nm[0] == '\0')
+							continue;
+						snprintf(g_networks[slot].servers[g_networks[slot].server_count],
+						         DHCP_SERVER_NAME_MAX, "%s", nm);
+						g_networks[slot].server_count++;
+					}
+				}
+			}
 			slot++;
 		}
 	}
@@ -255,6 +413,8 @@ enum dhcp_error dhcp_network_set(const struct dhcp_network *cfg)
 		if (ntohl(cfg->range_start_be) > ntohl(cfg->range_end_be))
 			return DHCP_ERR_INVALID;
 		if (cfg->lease_seconds < 60 || cfg->lease_seconds > 30 * 24 * 3600)
+			return DHCP_ERR_INVALID;
+		if (cfg->server_count < 1)
 			return DHCP_ERR_INVALID;
 	}
 
@@ -352,39 +512,21 @@ enum dhcp_error dhcp_static_delete(const char *mac)
  */
 
 /*
- * The registered DNS servers actually ATTACHED to this network. A
- * server on a different bridge has no interface in the range's subnet,
- * so giving it that range would be handing dnsmasq a pool it cannot
- * serve on -- and, worse, would restart a container that had no
- * business being restarted. The split is per network for the same
- * reason: two servers exist on this wire, not two servers exist.
+ * The servers this range names, in the order it names them. Order is
+ * the slice order, so it has to be stable -- which is why the range
+ * carries a list rather than the daemon deriving one from whatever
+ * happens to be attached: a derived order changes when something
+ * unrelated does, and every client's address changes with it.
  */
-static int servers_on_network(const char *network, char out[][DNS_SERVER_NAME_MAX], int max)
+static int servers_for_network(const struct dhcp_network *cfg, char out[][DHCP_SERVER_NAME_MAX],
+                                int max)
 {
-	char names[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
-	int count = dns_server_list_containers(names, DNS_SERVER_MAX);
-	int n = 0;
-	int i, j;
+	int i, n = 0;
 
-	for (i = 0; i < count && n < max; i++) {
-		struct registry_entry *e = registry_find(names[i]);
-
-		if (e == NULL)
-			continue;
-		for (j = 0; j < e->net_count; j++) {
-			if (strcmp(e->nets[j].name, network) != 0)
-				continue;
-			snprintf(out[n], DNS_SERVER_NAME_MAX, "%s", names[i]);
-			n++;
-			break;
-		}
-	}
+	for (i = 0; i < cfg->server_count && n < max; i++)
+		if (dhcp_server_is_registered(cfg->servers[i]))
+			snprintf(out[n++], DHCP_SERVER_NAME_MAX, "%s", cfg->servers[i]);
 	return n;
-}
-
-int dhcp_servers_on_network(const char *network, char out[][DNS_SERVER_NAME_MAX], int max)
-{
-	return servers_on_network(network, out, max);
 }
 
 int dhcp_slice_for(const struct dhcp_network *cfg, int server_index, int server_count,
@@ -437,7 +579,7 @@ int dhcp_render_conf(const char *server_name, char *out, size_t out_size)
 
 	for (i = 0; i < DHCP_MAX_NETWORKS; i++) {
 		char start[16], end[16], router[16];
-		char on_net[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
+		char on_net[DHCP_MAX_RANGE_SERVERS][DHCP_SERVER_NAME_MAX];
 		uint32_t slice_start, slice_end;
 		int count;
 		int index = -1;
@@ -445,13 +587,13 @@ int dhcp_render_conf(const char *server_name, char *out, size_t out_size)
 
 		if (g_networks[i].network[0] == '\0' || !g_networks[i].enabled)
 			continue;
-		count = servers_on_network(g_networks[i].network, on_net, DNS_SERVER_MAX);
+		count = servers_for_network(&g_networks[i], on_net, DHCP_MAX_RANGE_SERVERS);
 		for (k = 0; k < count; k++)
 			if (strcmp(on_net[k], server_name) == 0) {
 				index = k;
 				break;
 			}
-		/* Not on this network: not this server's range. */
+		/* This range does not name this server: not its range. */
 		if (index < 0)
 			continue;
 		if (dhcp_slice_for(&g_networks[i], index, count, &slice_start, &slice_end) != 0)
@@ -511,15 +653,15 @@ int dhcp_render_hosts(char *out, size_t out_size)
  * restart nobody asked for is exactly what this pairing with DNS makes
  * expensive.
  */
-static char g_conf_in_force_name[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
-static char g_conf_in_force_text[DNS_SERVER_MAX][4096];
+static char g_conf_in_force_name[DHCP_MAX_SERVERS][DHCP_SERVER_NAME_MAX];
+static char g_conf_in_force_text[DHCP_MAX_SERVERS][4096];
 
 static char *conf_in_force_slot(const char *name)
 {
 	int i;
 	int free_slot = -1;
 
-	for (i = 0; i < DNS_SERVER_MAX; i++) {
+	for (i = 0; i < DHCP_MAX_SERVERS; i++) {
 		if (g_conf_in_force_name[i][0] == '\0') {
 			if (free_slot < 0)
 				free_slot = i;
@@ -530,16 +672,16 @@ static char *conf_in_force_slot(const char *name)
 	}
 	if (free_slot < 0)
 		return NULL;
-	snprintf(g_conf_in_force_name[free_slot], DNS_SERVER_NAME_MAX, "%s", name);
+	snprintf(g_conf_in_force_name[free_slot], DHCP_SERVER_NAME_MAX, "%s", name);
 	g_conf_in_force_text[free_slot][0] = '\0';
 	return g_conf_in_force_text[free_slot];
 }
 
-void dhcp_sync_all(char changed[][DNS_SERVER_NAME_MAX], int max_changed, int *out_changed_count)
+void dhcp_sync_all(char changed[][DHCP_SERVER_NAME_MAX], int max_changed, int *out_changed_count)
 {
 	char conf[4096];
 	char hosts[8192];
-	char names[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
+	char names[DHCP_MAX_SERVERS][DHCP_SERVER_NAME_MAX];
 	int count;
 	int i;
 
@@ -548,7 +690,7 @@ void dhcp_sync_all(char changed[][DNS_SERVER_NAME_MAX], int max_changed, int *ou
 	if (dhcp_render_hosts(hosts, sizeof(hosts)) < 0)
 		return;
 
-	count = dns_server_list_containers(names, DNS_SERVER_MAX);
+	count = dhcp_server_list(names, DHCP_MAX_SERVERS);
 	for (i = 0; i < count; i++) {
 		struct registry_entry *entry = registry_find(names[i]);
 		char *in_force;
@@ -560,7 +702,7 @@ void dhcp_sync_all(char changed[][DNS_SERVER_NAME_MAX], int max_changed, int *ou
 		if (in_force != NULL && strcmp(in_force, conf) != 0) {
 			snprintf(in_force, 4096, "%s", conf);
 			if (changed != NULL && out_changed_count != NULL && *out_changed_count < max_changed) {
-				snprintf(changed[*out_changed_count], DNS_SERVER_NAME_MAX, "%s", names[i]);
+				snprintf(changed[*out_changed_count], DHCP_SERVER_NAME_MAX, "%s", names[i]);
 				(*out_changed_count)++;
 			}
 		}
@@ -602,6 +744,15 @@ void dhcp_network_write_json(const struct dhcp_network *cfg, int include_slices,
 	}
 	jw_key(w, "lease_seconds");
 	jw_int(w, cfg->lease_seconds);
+	jw_key(w, "servers");
+	jw_arr_open(w);
+	{
+		int si;
+
+		for (si = 0; si < cfg->server_count; si++)
+			jw_str(w, cfg->servers[si]);
+	}
+	jw_arr_close(w);
 	jw_key(w, "router");
 	if (cfg->router_be != 0) {
 		ip_str(cfg->router_be, buf, sizeof(buf));
@@ -610,8 +761,8 @@ void dhcp_network_write_json(const struct dhcp_network *cfg, int include_slices,
 		jw_null(w);
 	}
 	if (include_slices) {
-		char names[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
-		int count = servers_on_network(cfg->network, names, DNS_SERVER_MAX);
+		char names[DHCP_MAX_RANGE_SERVERS][DHCP_SERVER_NAME_MAX];
+		int count = servers_for_network(cfg, names, DHCP_MAX_RANGE_SERVERS);
 		int i;
 
 		jw_key(w, "slices");
@@ -682,8 +833,8 @@ void dhcp_write_json(struct json_writer *w)
  */
 void dhcp_leases_write_json(struct json_writer *w)
 {
-	char names[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
-	int count = dns_server_list_containers(names, DNS_SERVER_MAX);
+	char names[DHCP_MAX_SERVERS][DHCP_SERVER_NAME_MAX];
+	int count = dhcp_server_list(names, DHCP_MAX_SERVERS);
 	int i;
 
 	jw_arr_open(w);
