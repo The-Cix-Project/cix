@@ -369,6 +369,7 @@ int main(void)
 	char tarball_path[512], sha256[128];
 	char bad_sha256[128];
 	char state[32];
+	char sandbox_version_before[128] = { 0 };
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
@@ -533,6 +534,31 @@ int main(void)
 	}
 	thinc_response_free(&r);
 
+	/*
+	 * Issue #40: the shared build sandbox is a real, versioned image
+	 * now, so an ordinary install has to produce a NEW version of it.
+	 *
+	 * Worth asserting precisely because the obvious implementation is
+	 * silently wrong: an image's version identity is a hash of its
+	 * MANIFEST (ADR-0108), and folding a package into the sandbox adds
+	 * no manifest entry -- so the hash would be byte-identical, the
+	 * staging copy would be discarded as "already produced", and the
+	 * merge would vanish with every call reporting success. That is
+	 * ADR-0155's own same-manifest trap reached from the other
+	 * direction. A test that only checked "the install succeeded"
+	 * would have passed throughout.
+	 */
+	{
+		char before[128] = { 0 };
+
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "GET", "/v1/images/thinc-builder", NULL, &r) == 0 &&
+		    r.status == 200 && json_str_field(r.json, "current_version") != NULL)
+			snprintf(before, sizeof(before), "%s", json_str_field(r.json, "current_version"));
+		thinc_response_free(&r);
+		snprintf(sandbox_version_before, sizeof(sandbox_version_before), "%s", before);
+	}
+
 	/* 5. poll until BOTH greeter and concurrent finish; confirm each
 	 * actually installed and its binary genuinely runs from the base
 	 * image -- the real payoff, not just files with the right names. */
@@ -543,6 +569,24 @@ int main(void)
 		fprintf(stderr, "FAIL: greeter ended in state '%s', not installed\n", state);
 		ok = 0;
 	} else {
+		/* Issue #40: the sandbox moved forward, and can be seen to
+		 * have. If this ever reads equal, the accretion is being
+		 * discarded and every build after it is running against stale
+		 * content while reporting success. */
+		memset(&r, 0, sizeof(r));
+		if (thinc_client_request(&client, "GET", "/v1/images/thinc-builder", NULL, &r) != 0 ||
+		    r.status != 200 || json_str_field(r.json, "current_version") == NULL) {
+			fprintf(stderr, "FAIL: #40 the build sandbox is not a real image\n");
+			ok = 0;
+		} else if (sandbox_version_before[0] != '\0' &&
+		           strcmp(sandbox_version_before, json_str_field(r.json, "current_version")) == 0) {
+			fprintf(stderr, "FAIL: #40 an install did not produce a new build-sandbox version -- "
+			                "the merge into it is being silently discarded\n");
+			ok = 0;
+		}
+		thinc_response_free(&r);
+	}
+	if (strcmp(state, "installed") == 0) {
 		char run_out[256] = { 0 };
 		FILE *fp = popen(base_path("/usr/bin/greeter"), "r");
 

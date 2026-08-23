@@ -24976,6 +24976,9 @@ int main(int argc, char **argv)
 	}
 
 	image_init(IMAGES_DIR);
+	/* Issue #40: after image_init, because it produces a real image
+	 * version; before anything can start a build against the sandbox. */
+	pkg_migrate_build_sandbox();
 	if (boot_subsystem_init(init_mode, "containerdef", containerdef_init(CONTAINER_DEFS_STATE_PATH)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "containerdef_rolling_config", containerdef_rolling_config_init(ROLLING_CONFIG_PATH)) != 0)

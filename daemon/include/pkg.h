@@ -281,6 +281,15 @@ int pkg_run_capture_sha256(const char *path, char *out, size_t out_size);
 int pkg_toolchain_has_gcc(void);
 
 /*
+ * Issue #40: folds a pre-existing flat <images_dir>/pkgbuild/rootfs
+ * into the build-sandbox image, once, and sets the old directory aside
+ * rather than deleting it. Must be called AFTER image_init(), since it
+ * goes through the ordinary image versioning path; a no-op on any box
+ * that has already migrated or never had a flat sandbox.
+ */
+void pkg_migrate_build_sandbox(void);
+
+/*
  * Seeds a target rootfs directory with the fixed baseline every
  * container needs but no image ever gets from pkg install alone
  * (ADR-0019, ADR-0023, ADR-0041): the C runtime a dynamically-linked

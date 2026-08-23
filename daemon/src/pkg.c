@@ -173,7 +173,23 @@ static char g_containers_dir[PATH_MAX];
  * unlike the old single hardcoded "base" destination, this now varies
  * per install call. */
 static char g_images_dir[PATH_MAX];
-static char g_pkgbuild_rootfs[PATH_MAX];
+/*
+ * Issue #40: the shared build sandbox is a real, ordinary, versioned
+ * image now, resolved exactly the way a hostbuild's own --build-image=
+ * already is -- not a flat, unversioned directory living beside the
+ * image mechanism as a second concept.
+ *
+ * It is `thinc-builder`, the image that already served the structurally
+ * identical "toolchain lowerdir for a build container" role for
+ * hostbuilds. Operator's decision, made deliberately over a separate
+ * name, and it has a real consequence worth stating rather than
+ * discovering: this image is now grown by EVERY successful ordinary
+ * install, not only by an explicit `pkg install --image=thinc-builder`.
+ * A hostbuild's own inputs therefore move when unrelated things are
+ * installed -- which is exactly why it now has real version history to
+ * see that in, and to roll back to.
+ */
+#define PKG_BUILD_SANDBOX_IMAGE "thinc-builder"
 
 /*
  * Issue #85: the one parent cgroup every build container lives under. Its
@@ -246,7 +262,8 @@ struct pkg_chain {
 	/* Only meaningful while is_hostbuild is true: the real image whose
 	 * rootfs supplies the build container's own lowerdir (e.g.
 	 * "thinc-builder"), as opposed to the always-shared
-	 * g_pkgbuild_rootfs every ordinary install uses. */
+	 * shared build-sandbox image every ordinary install uses
+	 * (PKG_BUILD_SANDBOX_IMAGE). */
 	char build_image[PKG_IMAGE_NAME_MAX];
 	/* ADR-0107: the caller-requested explicit version pin for the
 	 * single top-level package this job actually installs/hostbuilds
@@ -1506,7 +1523,7 @@ static const char *build_image_manifest_string(const char *image)
  */
 static int image_produce_new_version(const char *image,
                                       int (*mutate)(const char *staging_rootfs, void *ctx),
-                                      void *ctx)
+                                      void *ctx, const char *extra_identity)
 {
 	char old_version[IMAGE_VERSION_MAX];
 	char old_rootfs[PATH_MAX];
@@ -1542,7 +1559,32 @@ static int image_produce_new_version(const char *image,
 	}
 
 	manifest_str = build_image_manifest_string(image);
-	if (image_hash_manifest_string(manifest_str, new_version, sizeof(new_version)) != 0) {
+	/*
+	 * extra_identity exists for the one caller whose change is real but
+	 * invisible to the manifest: merging a package into the shared
+	 * build sandbox does not add a manifest entry, so the hash above
+	 * would be byte-identical to the previous version's, the staging
+	 * copy would be discarded as "already produced", and the merge
+	 * would be silently lost. That is not hypothetical -- it is
+	 * ADR-0155's own confirmed same-manifest-reinstall trap, arrived at
+	 * from the other direction.
+	 *
+	 * Folding the OLD version in as well as the caller's own string
+	 * makes the identity a real chain (v(n+1) = H(manifest, v(n),
+	 * change)), so two different histories that happen to merge the
+	 * same package last still get different versions. Every other
+	 * caller passes NULL and is hashed exactly as before.
+	 */
+	if (extra_identity != NULL) {
+		char identity[512];
+
+		snprintf(identity, sizeof(identity), "%s\n%s\n%s", manifest_str, old_version,
+		         extra_identity);
+		if (image_hash_manifest_string(identity, new_version, sizeof(new_version)) != 0) {
+			persist_remove_tree(staging);
+			return -1;
+		}
+	} else if (image_hash_manifest_string(manifest_str, new_version, sizeof(new_version)) != 0) {
 		persist_remove_tree(staging);
 		return -1;
 	}
@@ -1839,7 +1881,6 @@ void pkg_repoint(const char *pkg_dir, const char *installed_state_path, const ch
 	snprintf(g_sources_dir, sizeof(g_sources_dir), "%s/sources", pkg_dir);
 	snprintf(g_installed_state_path, sizeof(g_installed_state_path), "%s", installed_state_path);
 	snprintf(g_images_dir, sizeof(g_images_dir), "%s", images_dir);
-	snprintf(g_pkgbuild_rootfs, sizeof(g_pkgbuild_rootfs), "%s/pkgbuild/rootfs", images_dir);
 	snprintf(g_artifacts_dir, sizeof(g_artifacts_dir), "%s", artifacts_dir);
 	image_recipe_repoint(pkg_dir);
 	container_recipe_repoint(pkg_dir);
@@ -1863,9 +1904,6 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
 	    (int)sizeof(g_containers_dir))
 		return -1;
 	if (snprintf(g_images_dir, sizeof(g_images_dir), "%s", images_dir) >= (int)sizeof(g_images_dir))
-		return -1;
-	if (snprintf(g_pkgbuild_rootfs, sizeof(g_pkgbuild_rootfs), "%s/pkgbuild/rootfs", images_dir) >=
-	    (int)sizeof(g_pkgbuild_rootfs))
 		return -1;
 	if (snprintf(g_artifacts_dir, sizeof(g_artifacts_dir), "%s", artifacts_dir) >=
 	    (int)sizeof(g_artifacts_dir))
@@ -1893,11 +1931,46 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
  * the existing bare `POST /v1/pkg/bootstrap` (no body) keeps behaving
  * exactly as it always has.
  */
+/* image_produce_new_version()'s mutate() for the dev/test seed. */
+static int bootstrap_stage_mutate(const char *staging_rootfs, void *ctx_v)
+{
+	(void)ctx_v;
+	return test_image_fixture_stage_toolchain(staging_rootfs);
+}
+
 enum pkg_error pkg_bootstrap_build_image(void)
 {
-	if (test_image_fixture_stage_toolchain(g_pkgbuild_rootfs) != 0)
+	/*
+	 * Issue #40: seeded as a real version of a real image, not written
+	 * straight to a flat directory. "extra identity" is the seed itself
+	 * -- a bootstrap genuinely changes the content without changing any
+	 * manifest, the same reason the accretion merge below needs one.
+	 */
+	if (image_produce_new_version(PKG_BUILD_SANDBOX_IMAGE, bootstrap_stage_mutate, NULL,
+	                               "bootstrap:host-toolchain") != 0)
 		return PKG_ERR_SPAWN_FAILED;
 	return PKG_OK;
+}
+
+struct toolchain_seed_ctx {
+	const char *toolchain_path;
+};
+
+/*
+ * -no-xattrs: the build sandbox is build tooling, not something needing
+ * POSIX capabilities/ACLs preserved on its own binaries -- confirmed
+ * directly that without this, unsquashfs exits nonzero on a destination
+ * filesystem that cannot store xattrs (e.g. tmpfs, boot_init()'s own
+ * containers-partition fallback) even though the extraction fully
+ * succeeds; the tool's own diagnostic names this exact flag as the fix.
+ */
+static int toolchain_seed_mutate(const char *staging_rootfs, void *ctx_v)
+{
+	struct toolchain_seed_ctx *ctx = ctx_v;
+	char *argv[] = { (char *)PKG_UNSQUASHFS_BIN, "-f", "-no-xattrs", "-d",
+		          (char *)staging_rootfs, (char *)ctx->toolchain_path, NULL };
+
+	return run_subprocess(PKG_UNSQUASHFS_BIN, argv);
 }
 
 enum pkg_error pkg_bootstrap_from_toolchain(const char *toolchain_path)
@@ -1913,8 +1986,7 @@ enum pkg_error pkg_bootstrap_from_toolchain(const char *toolchain_path)
 	 * fallback) even though the actual extraction fully succeeds; the
 	 * tool's own diagnostic message names this exact flag as the fix.
 	 */
-	char *argv[] = { (char *)PKG_UNSQUASHFS_BIN, "-f", "-no-xattrs", "-d", g_pkgbuild_rootfs,
-		          (char *)toolchain_path, NULL };
+	struct toolchain_seed_ctx seed_ctx;
 
 	/*
 	 * Real, on-disk squashfs magic check ("hsqs", the little-endian
@@ -1940,21 +2012,111 @@ enum pkg_error pkg_bootstrap_from_toolchain(const char *toolchain_path)
 	}
 	close(src);
 
-	if (persist_mkdir_p(g_pkgbuild_rootfs) != 0)
-		return PKG_ERR_PERSIST_FAILED;
-
-	if (run_subprocess(PKG_UNSQUASHFS_BIN, argv) != 0)
+	seed_ctx.toolchain_path = toolchain_path;
+	if (image_produce_new_version(PKG_BUILD_SANDBOX_IMAGE, toolchain_seed_mutate, &seed_ctx,
+	                               toolchain_path) != 0)
 		return PKG_ERR_SPAWN_FAILED;
 
 	return PKG_OK;
 }
 
+/*
+ * Issue #40, one-time migration. Before the sandbox was a real image it
+ * lived at a flat <images_dir>/pkgbuild/rootfs, grown by every install.
+ * Simply resolving the image instead would silently DISCARD all of that
+ * -- turning a structural refactor into an unannounced content change,
+ * which is exactly the kind of thing that should never ride along
+ * inside one.
+ *
+ * So the flat directory is folded in as a real version of the image,
+ * once, and then set aside rather than deleted: renamed with the
+ * version it produced, so the previous state is still on disk if the
+ * migration turns out to have been wrong. What the sandbox CONTAINS is
+ * unchanged by this commit; only how it is tracked changes.
+ *
+ * Cleaning up what accreted in there (issue #37) stays a separate,
+ * deliberate act -- and is now something an operator can actually do,
+ * because the content finally has versions to inspect and roll back to.
+ */
+static void pkg_migrate_flat_sandbox(const char *images_dir);
+
+struct sandbox_migrate_ctx {
+	const char *flat_rootfs;
+};
+
+static int sandbox_migrate_mutate(const char *staging_rootfs, void *ctx_v)
+{
+	struct sandbox_migrate_ctx *ctx = ctx_v;
+
+	return merge_tree(ctx->flat_rootfs, staging_rootfs, "", NULL);
+}
+
+void pkg_migrate_build_sandbox(void)
+{
+	pkg_migrate_flat_sandbox(g_images_dir);
+}
+
+static void pkg_migrate_flat_sandbox(const char *images_dir)
+{
+	char flat[PATH_MAX];
+	char retired[PATH_MAX];
+	char version[IMAGE_VERSION_MAX];
+	struct sandbox_migrate_ctx ctx;
+	struct stat st;
+
+	if (snprintf(flat, sizeof(flat), "%s/pkgbuild/rootfs", images_dir) >= (int)sizeof(flat))
+		return;
+	if (stat(flat, &st) != 0 || !S_ISDIR(st.st_mode))
+		return; /* already migrated, or never existed -- both fine */
+
+	ctx.flat_rootfs = flat;
+	if (image_produce_new_version(PKG_BUILD_SANDBOX_IMAGE, sandbox_migrate_mutate, &ctx,
+	                               "migrate:flat-pkgbuild-rootfs") != 0) {
+		fprintf(stderr, "pkg: could not migrate the flat build sandbox into %s -- leaving it "
+		                "in place, builds will use the image's own content until this is "
+		                "resolved\n",
+		        PKG_BUILD_SANDBOX_IMAGE);
+		return;
+	}
+	if (image_current_version(PKG_BUILD_SANDBOX_IMAGE, version, sizeof(version)) != IMAGE_OK)
+		return;
+	if (snprintf(retired, sizeof(retired), "%s/pkgbuild/rootfs.migrated-%s", images_dir,
+	             version) < (int)sizeof(retired))
+		rename(flat, retired);
+	fprintf(stderr, "pkg: migrated the flat build sandbox into %s version %s (previous content "
+	                "kept at %s)\n",
+	        PKG_BUILD_SANDBOX_IMAGE, version, retired);
+}
+
+/*
+ * Where the build sandbox's content currently lives. Resolved fresh on
+ * every call, because "current" genuinely moves: each install produces
+ * a new version, and a caller holding yesterday's path would be reading
+ * an immutable directory nothing writes to any more.
+ *
+ * Returns -1 when the sandbox has never been bootstrapped, which is a
+ * real state (a box that has never run `pkg bootstrap`) and not an
+ * error to paper over with a path that does not exist.
+ */
+static int pkg_build_sandbox_rootfs(char *out, size_t out_size)
+{
+	char version[IMAGE_VERSION_MAX];
+
+	if (image_current_version(PKG_BUILD_SANDBOX_IMAGE, version, sizeof(version)) != IMAGE_OK)
+		return -1;
+	image_version_rootfs_path(PKG_BUILD_SANDBOX_IMAGE, version, out, out_size);
+	return 0;
+}
+
 int pkg_toolchain_has_gcc(void)
 {
+	char rootfs[PATH_MAX];
 	char gcc_path[PATH_MAX];
 	struct stat st;
 
-	snprintf(gcc_path, sizeof(gcc_path), "%s/usr/bin/gcc", g_pkgbuild_rootfs);
+	if (pkg_build_sandbox_rootfs(rootfs, sizeof(rootfs)) != 0)
+		return 0;
+	snprintf(gcc_path, sizeof(gcc_path), "%s/usr/bin/gcc", rootfs);
 	return stat(gcc_path, &st) == 0;
 }
 
@@ -3365,7 +3527,13 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 		else
 			e->build_lowerdir[0] = '\0';
 	} else {
-		snprintf(e->build_lowerdir, sizeof(e->build_lowerdir), "%s", g_pkgbuild_rootfs);
+		/* Issue #40: the shared sandbox resolves exactly like the
+		 * hostbuild image above -- same mechanism, not a second one.
+		 * An empty lowerdir here means the sandbox was never
+		 * bootstrapped, which the caller already handles as the real
+		 * state it is. */
+		if (pkg_build_sandbox_rootfs(e->build_lowerdir, sizeof(e->build_lowerdir)) != 0)
+			e->build_lowerdir[0] = '\0';
 	}
 	snprintf(e->build_upperdir, sizeof(e->build_upperdir), "%s/upper", container_base);
 	snprintf(e->build_workdir, sizeof(e->build_workdir), "%s/work", container_base);
@@ -3514,7 +3682,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 	 * /usr/bin/bash, not /bin/sh -- caught empirically (ADR-0056) the
 	 * first time a hostbuild job's own build_image was one of this
 	 * project's OWN from-recipe images rather than the shared
-	 * g_pkgbuild_rootfs toolchain sandbox: every from-recipe image
+	 * shared build sandbox: every from-recipe image
 	 * follows this project's own no-/bin, usr/bin-only FHS convention
 	 * (the exact same reasoning CONSOLE_DEFAULT_CMD in main.c already
 	 * documents), so "/bin/sh" -- which happened to work for years
@@ -4043,6 +4211,26 @@ struct install_mutate_ctx {
 	int is_upgrade;
 };
 
+/*
+ * image_produce_new_version()'s mutate() for folding a just-installed
+ * package into the shared build sandbox. Deliberately merge-only: no
+ * manifest entry and no baseline seeding, matching exactly what the
+ * previous flat merge_tree() call did. The sandbox's manifest still
+ * describes only what an operator installed into it directly -- its
+ * CONTENT is the wider union, and closing that gap is the declared
+ * package-list half of issue #40, not this half.
+ */
+struct sandbox_merge_ctx {
+	const char *dest_dir;
+};
+
+static int sandbox_merge_mutate(const char *staging_rootfs, void *ctx_v)
+{
+	struct sandbox_merge_ctx *ctx = ctx_v;
+
+	return merge_tree(ctx->dest_dir, staging_rootfs, "", NULL);
+}
+
 static int install_mutate(const char *staging_rootfs, void *ctx_v)
 {
 	struct install_mutate_ctx *ctx = ctx_v;
@@ -4376,7 +4564,8 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		ctx.dest_dir = dest_dir;
 		ctx.e = e;
 		ctx.is_upgrade = is_upgrade;
-		if (image_produce_new_version(g_chains[chain_idx].image, install_mutate, &ctx) != 0) {
+		if (image_produce_new_version(g_chains[chain_idx].image, install_mutate, &ctx, NULL) !=
+		    0) {
 			pkg_fail(e, 0, PKG_FAILURE_INSTALL,
 			         "failed to merge installed files into the target image");
 			g_chains[chain_idx].name[0] = '\0';
@@ -4396,34 +4585,44 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			pkg_cache_save(e->name, e->version, dest_dir);
 
 		/*
-		 * ALSO merge into g_pkgbuild_rootfs (the one shared, persistent
-		 * toolchain sandbox every ordinary install's own build container
-		 * uses as its lowerdir -- see g_pkgbuild_rootfs's own comment)
-		 * -- not just the target image above. Found as a real, genuine
-		 * gap, not speculative: sbsigntools.recipe (Part 5, bare-metal-
-		 * readiness plan) needs bfd.h/uuid.h/efi.h from binutils-dev/
-		 * libuuid/gnu-efi, each already merged into the "dev" target
-		 * image by an earlier install -- but g_pkgbuild_rootfs is a
-		 * fixed snapshot, staged once from this host's own real
-		 * toolchain (pkg_bootstrap_build_image()) and never otherwise
+		/*
+		 * ALSO fold into the shared build sandbox
+		 * (PKG_BUILD_SANDBOX_IMAGE) -- the image every ordinary
+		 * install's own build container uses as its lowerdir -- not
+		 * just the target image above. Found as a real gap, not
+		 * speculative: sbsigntools.recipe needs bfd.h/uuid.h/efi.h
+		 * from binutils-dev/libuuid/gnu-efi, each already merged into
+		 * the "dev" target image by an earlier install, but the
+		 * sandbox was a fixed snapshot staged once and never otherwise
 		 * touched by a package install, so it never had bfd.h at all.
-		 * Every prior recipe with a real pkg_depends (gcc on m4/
-		 * binutils, autoconf on m4, ...) happened not to expose this:
-		 * those dependencies' own tools already existed in this
-		 * sandbox's real host toolchain, masking the gap until a
-		 * recipe needed a header/library that only this project's own
-		 * package manager -- never the bare host OS -- had ever
-		 * installed. e=NULL: g_pkgbuild_rootfs is a build-time-only
-		 * sandbox, never itself an installed image a manifest could
-		 * ever need to unlink from (the same NULL-manifest shape the
-		 * hostbuild-artifact merge above already uses). A failure here
-		 * is deliberately non-fatal (best-effort) -- the real,
-		 * authoritative install (the target-image merge just above)
-		 * already succeeded; a future recipe losing this particular
-		 * build-time visibility is a real but strictly smaller problem
-		 * than unwinding an otherwise-successful install over it.
+		 * Every prior recipe with a real pkg_depends happened not to
+		 * expose this: those dependencies' tools already existed in
+		 * the snapshot, masking the gap until a recipe needed
+		 * something only this project's own package manager had ever
+		 * installed.
+		 *
+		 * Issue #40: this is a real image version now, not a silent
+		 * write into a flat directory -- so what the sandbox contains
+		 * has history, is inspectable through GET /v1/images, and can
+		 * be rolled back. A failure here stays deliberately non-fatal:
+		 * the authoritative install (the target-image merge just
+		 * above) already succeeded, and a future recipe losing this
+		 * particular build-time visibility is a strictly smaller
+		 * problem than unwinding an otherwise-successful install over
+		 * it. It is reported rather than swallowed, which the previous
+		 * best-effort merge_tree() call did not do.
 		 */
-		merge_tree(dest_dir, g_pkgbuild_rootfs, "", NULL);
+		{
+			struct sandbox_merge_ctx sctx;
+			char identity[PKG_NAME_MAX + PKG_VERSION_MAX + 2];
+
+			sctx.dest_dir = dest_dir;
+			snprintf(identity, sizeof(identity), "%s@%s", e->name, e->version);
+			if (image_produce_new_version(PKG_BUILD_SANDBOX_IMAGE, sandbox_merge_mutate, &sctx,
+			                               identity) != 0)
+				fprintf(stderr, "pkg: could not fold %s into the %s build sandbox\n", e->name,
+				        PKG_BUILD_SANDBOX_IMAGE);
+		}
 	}
 
 	save_state();
@@ -4586,7 +4785,7 @@ enum pkg_error pkg_delete(const char *name, const char *image)
 	memset(e, 0, sizeof(*e));
 	ctx.e = &saved;
 
-	if (image_produce_new_version(normalize_image(image), delete_mutate, &ctx) != 0) {
+	if (image_produce_new_version(normalize_image(image), delete_mutate, &ctx, NULL) != 0) {
 		*e = saved; /* the uninstall never actually happened -- restore e exactly */
 		return PKG_ERR_PERSIST_FAILED;
 	}
