@@ -17,6 +17,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/system/hostauth/sessions` | Every active session (username, expires-in) -- never a raw token, before or after issuance (ADR-0152) |
 | DELETE | `/system/hostauth/sessions/{username}` | Revoke every active session for that user -- "log out everywhere" |
 | GET | `/system/boot` | Build version/time, A/B slot, kernel version (`uname`) |
+| GET | `/system/control-plane-reservation` | How much of the machine is held back for the daemon itself (issue #86) |
+| PUT | `/system/control-plane-reservation` | Set it — applied to the live workload cgroup immediately |
 | POST | `/system/factory-reset` | Return the box to its just-installed state and reboot — destroys everything including volumes (issue #63) |
 | POST | `/system/shutdown` | Stop `thincd`; powers off the host too when running as real PID 1 |
 | POST | `/system/reboot` | Stop `thincd`; restarts the host too when running as real PID 1 |
@@ -1543,6 +1545,31 @@ It keeps the installed OS itself (both root slots, the kernel, the ESP, the inst
 **The mechanism is a sentinel plus a reboot, and both halves of that are correctness rather than taste.** The daemon holds this state in memory and rewrites its files on any change, so deleting them underneath a running daemon is a race it usually loses — the next container event or health probe writes the file straight back and the reset silently half-happens. And it is crash-safe: once armed the reset happens, on this boot or the next. A reset that got as far as telling the operator "yes" and then evaporated because the reboot did not complete is the worst possible outcome for an operation whose entire purpose is being certain of the starting state.
 
 The wipe runs at startup **before any subsystem reads its state**. That placement is the whole correctness of it: put later in the sequence — which is where it was first written — the earlier subsystems have already loaded the old world into memory and will write every bit of it back on the next change. The files vanish, the API still answers with everything that was supposed to be gone, and the reset looks like it worked.
+
+
+## Control-plane reservation (issue #86)
+
+```
+GET  /v1/system/control-plane-reservation
+PUT  /v1/system/control-plane-reservation   {"enabled": true, "cpu_percent": 10, "memory_bytes": 536870912}
+```
+
+```json
+{"enabled": true, "cpu_percent": 10, "memory_bytes": 536870912,
+ "host_cpus": 4, "host_memory_bytes": 17179869184,
+ "workload_cpu_max": "360000 100000", "workload_memory_max": 16642998272,
+ "cgroup": "thinc-workload"}
+```
+
+Here the REST daemon is not one management path among several — it is the only one. There is no SSH and no general shell ([ADR-0034](../adr/0034-no-ssh-on-installed-hosts.md)), so a starved `thincd` is not a degraded box, it is a box nobody can reach until someone walks to the hypervisor. That is not hypothetical: four concurrent package builds oversubscribed a 2-CPU machine, the kernel stayed perfectly healthy throughout (ping 0% loss, 0.26ms), and the daemon simply stopped answering.
+
+**The mechanism bounds everything else rather than favouring the daemon.** Every container and every package build is a leaf under one `thinc-workload` cgroup whose ceiling is the machine minus this reservation (builds nest one level deeper, under `thinc-workload/thinc-pkgbuild`, so the build budget sits *inside* the workload budget rather than beside it — beside it would be two ceilings that add up to more than the machine, which is the same class of mistake issue #85 was). What the control plane has left is then enforced by the kernel, not hoped for. Priority (`nice -20`, `oom_score_adj -1000`, set at startup) is the cheap 80% of the same goal and remains in place.
+
+**It is expressed as what the control plane keeps, not as what workloads may have.** An operator reasons about "leave the daemon a tenth of the box", and that reasoning stays correct when the box is replaced by a bigger one — the ceiling is derived from live host totals on every apply, so the same config means the same thing on a 2-CPU VM and on a 32-core machine. `workload_cpu_max`/`workload_memory_max` report that derivation, raw, because a percentage on its own is not something anyone can act on.
+
+**Enabled by default** (10%, 512 MiB). A reservation that has to be discovered and switched on is a reservation nobody has when they need it, and the failure it prevents is the worst one this platform has. `cpu_percent` is capped at 50 and `memory_bytes` floored at 64 MiB: a bigger reservation is not a safety margin, it is a second workload budget. Disabling it leaves the hierarchy exactly as it is and only removes the ceilings — turning it off is not a migration.
+
+Changes apply to the live cgroup immediately, not at the next container creation: an operator raising the reservation because the box is under strain needs it while it is under strain.
 
 
 ## Capability restriction (issue #29)

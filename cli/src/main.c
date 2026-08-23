@@ -6217,6 +6217,110 @@ static int cmd_pkg_build_config(const struct kx_client *c, int json_mode, int ar
 	return 2;
 }
 
+
+/*
+ * Issue #86: thincctl control-plane-reservation show|set -- how much of
+ * the machine is held back for the daemon itself. Reported with the
+ * derived workload ceiling, because a percentage on its own is not
+ * something an operator can act on.
+ */
+static void fmt_cpreserve(const struct json_value *v)
+{
+	const struct json_value *en = json_object_get(v, "enabled");
+	const char *cpu_max = json_str_field(v, "workload_cpu_max");
+	const struct json_value *mem_max = json_object_get(v, "workload_memory_max");
+
+	printf("enabled=%s\n",
+	       (en != NULL && en->type == JSON_BOOL && en->u.boolean) ? "true" : "false");
+	printf("reserved cpu_percent=%d memory_bytes=%lld\n",
+	       (int)json_as_number(json_object_get(v, "cpu_percent")),
+	       (long long)json_as_number(json_object_get(v, "memory_bytes")));
+	printf("host cpus=%d memory_bytes=%lld\n",
+	       (int)json_as_number(json_object_get(v, "host_cpus")),
+	       (long long)json_as_number(json_object_get(v, "host_memory_bytes")));
+	{
+		char mem_str[32];
+
+		if (mem_max != NULL && mem_max->type == JSON_NUMBER)
+			snprintf(mem_str, sizeof(mem_str), "%lld", (long long)json_as_number(mem_max));
+		else
+			snprintf(mem_str, sizeof(mem_str), "(unlimited)");
+		printf("workload cgroup=%s cpu.max=%s memory.max=%s\n",
+		       json_str_field(v, "cgroup") != NULL ? json_str_field(v, "cgroup") : "-",
+		       cpu_max != NULL ? cpu_max : "(unlimited)", mem_str);
+	}
+}
+
+static int cmd_cpreserve(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	const char *sub = argc > 0 ? argv[0] : "show";
+	const char *cpu = NULL, *mem = NULL;
+	int want_enabled = -1;
+	int i;
+	struct json_writer w;
+
+	if (strcmp(sub, "show") == 0) {
+		if (kx_client_request(c, "GET", "/v1/system/control-plane-reservation", NULL, &r) != 0) {
+			fprintf(stderr, "thincctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_cpreserve);
+	}
+	if (strcmp(sub, "set") != 0) {
+		fprintf(stderr, "usage: thincctl control-plane-reservation show\n"
+		                "       thincctl control-plane-reservation set [--enabled | --disabled] "
+		                "[--cpu-percent=N] [--memory-bytes=N]\n");
+		return 2;
+	}
+	for (i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--enabled") == 0)
+			want_enabled = 1;
+		else if (strcmp(argv[i], "--disabled") == 0)
+			want_enabled = 0;
+		else if (strncmp(argv[i], "--cpu-percent=", 14) == 0)
+			cpu = argv[i] + 14;
+		else if (strncmp(argv[i], "--memory-bytes=", 15) == 0)
+			mem = argv[i] + 15;
+		else {
+			fprintf(stderr, "thincctl: unknown control-plane-reservation set option '%s'\n",
+			        argv[i]);
+			return 2;
+		}
+	}
+	if (want_enabled == -1 && cpu == NULL && mem == NULL) {
+		fprintf(stderr, "usage: thincctl control-plane-reservation set [--enabled | --disabled] "
+		                "[--cpu-percent=N] [--memory-bytes=N]\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	if (want_enabled != -1) {
+		jw_key(&w, "enabled");
+		jw_bool(&w, want_enabled);
+	}
+	if (cpu != NULL) {
+		jw_key(&w, "cpu_percent");
+		jw_int(&w, atol(cpu));
+	}
+	if (mem != NULL) {
+		jw_key(&w, "memory_bytes");
+		jw_int(&w, atoll(mem));
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (kx_client_request(c, "PUT", "/v1/system/control-plane-reservation", w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "thincctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_cpreserve);
+}
+
+
 /*
  * ADR-0134: thincctl tls-throttle show|set|status -- per-source-IP
  * throttling for repeated failed HTTPS handshakes. show/set mirror
@@ -11470,6 +11574,8 @@ static int dispatch_command(const struct kx_client *client, int json_mode, const
 		return cmd_pkg_build_config(client, json_mode, argc, argv);
 	if (strcmp(cmd, "tls-throttle") == 0)
 		return cmd_tls_throttle(client, json_mode, argc, argv);
+	if (strcmp(cmd, "control-plane-reservation") == 0)
+		return cmd_cpreserve(client, json_mode, argc, argv);
 	if (strcmp(cmd, "hostauth-config") == 0)
 		return cmd_hostauth_config(client, json_mode, argc, argv);
 	if (strcmp(cmd, "hostauth-sessions") == 0)
@@ -11671,6 +11777,7 @@ static const char *const SHELL_COMMANDS[] = {
 	"resolv",
 	"restore", "rm",       "rolling-config", "routes",        "run",      "shutdown",  "site",
 	"start",  "stats",     "stop",          "storage",  "swap",     "sysctl",   "syslog",    "time",      "tls-throttle", "unpause",   "update",
+	"control-plane-reservation",
 	NULL
 };
 

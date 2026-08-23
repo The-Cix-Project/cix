@@ -529,6 +529,124 @@ int main(void)
 			pclose(fp);
 	}
 
+	/*
+	 * Issue #85: the build budget is AGGREGATE, carried by one parent
+	 * cgroup every build container is a leaf of -- not a per-container
+	 * ceiling that silently multiplies by max_concurrent_jobs (default
+	 * 10). That mistake took a real 2-CPU box off the network: four
+	 * concurrent builds at 1.5 CPU each demanded 6 CPUs, starved thincd
+	 * off the run queue, and a shell-less host has no other way in.
+	 *
+	 * Asserted by CHANGING the configured budget and running a build,
+	 * then reading the parent back -- not merely by the parent existing.
+	 * The directory survives a daemon restart and even a reboot-less
+	 * revert of this whole feature, so "it is there" proves nothing;
+	 * "it carries the number I just set" proves the aggregate cgroup is
+	 * really being created and re-applied per build, which is exactly
+	 * what stops a stale ceiling outliving a config change.
+	 */
+	{
+		const char *parent = "/sys/fs/cgroup/thinc-workload/thinc-pkgbuild";
+		const char *want_cpu = "70000 100000";
+		const long long want_mem = 1610612736LL;
+		char path[PATH_MAX];
+		char restore[128];
+
+		snprintf(restore, sizeof(restore), "{\"cpu_max\":\"150000 100000\",\"memory_max\":4294967296}");
+
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "PUT", "/v1/system/pkg-build-config",
+		                       "{\"cpu_max\":\"70000 100000\",\"memory_max\":1610612736}", &r) != 0 ||
+		    r.status != 200) {
+			fprintf(stderr, "FAIL: #85 could not set a distinctive build budget, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+
+		if (write_recipe("budgeted", "1.0", tarball_path, sha256, "") != 0) {
+			fprintf(stderr, "FAIL: #85 could not write budgeted recipe\n");
+			ok = 0;
+		}
+		memset(&r, 0, sizeof(r));
+		if (kx_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"budgeted\"}", &r) != 0 ||
+		    r.status != 202) {
+			fprintf(stderr, "FAIL: #85 install budgeted, status=%d\n", r.status);
+			ok = 0;
+		}
+		kx_response_free(&r);
+		if (poll_pkg_state(&client, "budgeted", state, sizeof(state), 60) != 0 ||
+		    strcmp(state, "installed") != 0) {
+			fprintf(stderr, "FAIL: #85 budgeted ended in state '%s'\n", state);
+			ok = 0;
+		}
+
+		snprintf(path, sizeof(path), "%s/cpu.max", parent);
+		{
+			FILE *f = fopen(path, "r");
+			char got[64] = "";
+
+			if (f == NULL) {
+				fprintf(stderr,
+				        "FAIL: #85 aggregate build cgroup %s missing -- builds are back to "
+				        "per-container limits, which multiply by concurrency\n",
+				        parent);
+				ok = 0;
+			} else {
+				if (fgets(got, sizeof(got), f) != NULL)
+					got[strcspn(got, "\n")] = '\0';
+				fclose(f);
+				if (strcmp(got, want_cpu) != 0) {
+					fprintf(stderr,
+					        "FAIL: #85 parent cpu.max='%s', configured '%s' -- the aggregate "
+					        "ceiling is not being applied per build\n",
+					        got, want_cpu);
+					ok = 0;
+				}
+			}
+		}
+
+		snprintf(path, sizeof(path), "%s/memory.max", parent);
+		{
+			FILE *f = fopen(path, "r");
+			long long got = -1;
+
+			if (f != NULL) {
+				if (fscanf(f, "%lld", &got) != 1)
+					got = -1;
+				fclose(f);
+			}
+			if (got != want_mem) {
+				fprintf(stderr, "FAIL: #85 parent memory.max=%lld, configured %lld\n", got,
+				        want_mem);
+				ok = 0;
+			}
+		}
+
+		/* A cgroup v2 parent has to delegate controllers to its subtree
+		 * or its children get no accounting under it at all. */
+		snprintf(path, sizeof(path), "%s/cgroup.subtree_control", parent);
+		{
+			FILE *f = fopen(path, "r");
+			char got[128] = "";
+
+			if (f != NULL) {
+				if (fgets(got, sizeof(got), f) == NULL)
+					got[0] = '\0';
+				fclose(f);
+			}
+			if (strstr(got, "cpu") == NULL || strstr(got, "memory") == NULL) {
+				fprintf(stderr, "FAIL: #85 parent subtree_control='%s' (want cpu and memory)\n",
+				        got);
+				ok = 0;
+			}
+		}
+
+		memset(&r, 0, sizeof(r));
+		kx_client_request(&client, "PUT", "/v1/system/pkg-build-config", restore, &r);
+		kx_response_free(&r);
+	}
+
 	if (poll_pkg_state(&client, "concurrent", state, sizeof(state), 60) != 0) {
 		fprintf(stderr, "FAIL: concurrent never left fetching/building\n");
 		ok = 0;

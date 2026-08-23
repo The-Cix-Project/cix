@@ -2158,6 +2158,83 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/control-plane-reservation:
+    get:
+      summary: How much of the machine is held back for the daemon itself (issue #86)
+      description: >
+        On this platform the REST daemon is not one management path among
+        several -- it is the only one. There is no SSH and no general
+        shell (ADR-0034), so a starved thincd is not a degraded box, it
+        is a box nobody can reach until someone walks to the hypervisor.
+        That happened for real: four concurrent package builds
+        oversubscribed a 2-CPU machine, the kernel stayed perfectly
+        healthy (ping 0% loss, 0.26ms) and the daemon simply stopped
+        answering.
+
+        Rather than asking the scheduler to favour the daemon, everything
+        that is NOT the daemon -- every container, and every package
+        build -- lives under one `thinc-workload` cgroup capped at the
+        machine minus this reservation. What the control plane has left
+        is then a kernel-enforced remainder rather than a hope.
+
+        Expressed as what the control plane KEEPS, not as what workloads
+        may have: an operator reasons about "leave the daemon a tenth of
+        the box", and that reasoning stays correct when the box is
+        replaced by a bigger one. The workload ceiling is derived from
+        live host totals on every apply, and is reported here alongside
+        the stored numbers because a percentage on its own is not
+        something anyone can act on.
+
+        Enabled by default. A reservation that has to be discovered and
+        switched on is a reservation nobody has when they need it.
+      operationId: getControlPlaneReservation
+      responses:
+        "200":
+          description: Current reservation, host totals, and the derived workload ceiling
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ControlPlaneReservation"
+    put:
+      summary: Set the control-plane reservation (issue #86)
+      description: >
+        Every field optional; absent means unchanged. Applied to the live
+        cgroup immediately, not at the next container creation -- an
+        operator raising the reservation because the box is under strain
+        needs it while it is under strain.
+
+        `cpu_percent` must be 1-50 and `memory_bytes` at least 64 MiB: a
+        reservation larger than that is not a safety margin, it is a
+        second workload budget, and would look like a scheduler bug
+        rather than a setting.
+      operationId: setControlPlaneReservation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                cpu_percent:
+                  type: integer
+                memory_bytes:
+                  type: integer
+      responses:
+        "200":
+          description: Updated reservation, reported exactly as GET reports it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ControlPlaneReservation"
+        "400":
+          description: A value outside the permitted range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /system/tls-throttle:
     get:
       summary: >
@@ -9339,6 +9416,40 @@ components:
           type: number
         total_usec:
           type: integer
+    ControlPlaneReservation:
+      type: object
+      required: [enabled, cpu_percent, memory_bytes, host_cpus, host_memory_bytes, cgroup]
+      properties:
+        enabled:
+          type: boolean
+        cpu_percent:
+          type: integer
+          description: Percent of total CPU capacity held back for the control plane (1-50).
+        memory_bytes:
+          type: integer
+          description: Bytes of RAM held back for the control plane.
+        host_cpus:
+          type: integer
+        host_memory_bytes:
+          type: integer
+        workload_cpu_max:
+          type: [string, "null"]
+          description: >
+            The derived cgroup v2 cpu.max applied to the workload parent
+            ("<quota> <period>" in microseconds), or null when the
+            reservation is off. Reported raw rather than prettied: this
+            is the number the kernel is enforcing.
+        workload_memory_max:
+          type: [integer, "null"]
+          description: >
+            The derived memory.max for the workload parent, or null when
+            the reservation is off or the box is too small for a memory
+            ceiling to do more good than harm (the reservation must
+            still leave workloads the clear majority of RAM).
+        cgroup:
+          type: string
+          description: Name of the parent cgroup carrying the ceiling.
+
     SystemStats:
       type: object
       required: [uptime, load, cpu, memory, disk, networks]

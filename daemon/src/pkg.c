@@ -163,7 +163,12 @@ static char g_pkgbuild_rootfs[PATH_MAX];
  * limits are the real, aggregate build budget -- see build_spec_init()'s
  * own comment for why a per-container limit was not one.
  */
-#define PKG_BUILD_CGROUP_PARENT "thinc-pkgbuild"
+/* Issue #86: nested INSIDE the workload parent, not beside it. Beside
+ * it would be two ceilings that add up to more than the machine -- the
+ * same class of mistake #85 itself was. The build budget still applies
+ * on its own at this level; the level above simply bounds builds and
+ * ordinary containers together. */
+#define PKG_BUILD_CGROUP_PARENT "thinc-workload/thinc-pkgbuild"
 
 static void pkg_build_ensure_parent_cgroup(void)
 {

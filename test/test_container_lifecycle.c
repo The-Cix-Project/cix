@@ -158,7 +158,7 @@ static int read_cgroup_value(const char *name, const char *file, char *out, size
 	FILE *f;
 	size_t n;
 
-	snprintf(path, sizeof(path), "/sys/fs/cgroup/%s/%s", name, file);
+	snprintf(path, sizeof(path), "/sys/fs/cgroup/thinc-workload/%s/%s", name, file);
 	f = fopen(path, "r");
 	if (f == NULL)
 		return -1;
@@ -183,7 +183,11 @@ static int cgroup_is_frozen(const char *name)
 	char line[64];
 	int result = -1;
 
-	snprintf(path, sizeof(path), "/sys/fs/cgroup/%s/cgroup.events", name);
+	/* Issue #86: leaves live under the workload parent now, so their
+	 * COLLECTIVE demand is bounded and the control plane keeps a real
+	 * reservation. The freeze itself is unchanged -- the daemon writes
+	 * through its own cgroup_fd and never rebuilds this path. */
+	snprintf(path, sizeof(path), "/sys/fs/cgroup/thinc-workload/%s/cgroup.events", name);
 	f = fopen(path, "r");
 	if (f == NULL)
 		return -1;
@@ -350,7 +354,7 @@ int main(void)
 		kx_response_free(&r);
 
 		if (cgroup_is_frozen("lc1") != 1) {
-			fprintf(stderr, "FAIL: /sys/fs/cgroup/lc1/cgroup.events does not report frozen 1 after pause\n");
+			fprintf(stderr, "FAIL: cgroup.events for lc1 does not report frozen 1 after pause\n");
 			ok = 0;
 		}
 
@@ -374,7 +378,7 @@ int main(void)
 		kx_response_free(&r);
 
 		if (cgroup_is_frozen("lc1") != 0) {
-			fprintf(stderr, "FAIL: /sys/fs/cgroup/lc1/cgroup.events does not report frozen 0 after unpause\n");
+			fprintf(stderr, "FAIL: cgroup.events for lc1 does not report frozen 0 after unpause\n");
 			ok = 0;
 		}
 

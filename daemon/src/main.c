@@ -29,6 +29,7 @@
 #include "serverhealth.h"
 #include "volume.h"
 #include "volumebackup.h"
+#include "cpreserve.h"
 #include "exec.h"
 #include "http.h"
 #include "image.h"
@@ -148,6 +149,7 @@ static char LDAP_GROUPS_STATE_PATH[PATH_MAX];
 static char LDAP_CONFIG_STATE_PATH[PATH_MAX];
 static char SUBID_STATE_PATH[PATH_MAX]; /* ADR-0179 */
 static char SERVERHEALTH_STATE_PATH[PATH_MAX]; /* issue #81 -- drain flags only */
+static char CPRESERVE_STATE_PATH[PATH_MAX]; /* issue #86 -- control-plane reservation */
 static char VOLUMES_STATE_PATH[PATH_MAX];      /* issue #88 */
 static char VOLUMES_DIR[PATH_MAX];             /* issue #88 -- where volume data lives */
 static char VOLUME_BACKUP_CONFIG_PATH[PATH_MAX]; /* issue #96 -- the volume-snapshot schedule */
@@ -280,6 +282,8 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(SERVERHEALTH_STATE_PATH, sizeof(SERVERHEALTH_STATE_PATH), "%s/server_health.json",
 	         STATE_DIR);
 	snprintf(VOLUMES_STATE_PATH, sizeof(VOLUMES_STATE_PATH), "%s/volumes.json", STATE_DIR);
+	snprintf(CPRESERVE_STATE_PATH, sizeof(CPRESERVE_STATE_PATH),
+	         "%s/control_plane_reservation.json", STATE_DIR);
 	/*
 	 * Issue #88: volume data is a direct child of the base dir, alongside
 	 * CONTAINERS_DIR rather than inside it -- a volume deliberately
@@ -10237,6 +10241,87 @@ static int ldap_effective_client_uri(char *out, size_t out_size)
 	return off > 0;
 }
 
+
+/*
+ * Issue #86: the workload cgroup every container and every build lives
+ * under, carrying "the machine minus the control plane's reservation".
+ *
+ * Priority (nice -20, oom_score_adj -1000) is the cheap 80% of not
+ * losing the box; this is the structurally sound part. Rather than
+ * asking the scheduler to favour the daemon, everything that is not the
+ * daemon is bounded, so what the control plane has left is a
+ * kernel-enforced remainder rather than a hope.
+ *
+ * Derived from LIVE host totals on every apply, never stored: the same
+ * "keep a tenth of the box" config has to keep meaning that when the
+ * box is replaced by a bigger one, which is about to happen -- this
+ * project's next install is real hardware, not the 2-CPU VM every
+ * number here was first chosen against.
+ *
+ * Best-effort, deliberately: a sandbox where cgroup writes are not
+ * permitted must still run containers. A safety margin that refuses to
+ * start the system it protects is not one.
+ */
+#define CGROUP_WORKLOAD_PARENT "thinc-workload"
+
+static void workload_parent_ensure(void)
+{
+	const struct cpreserve_config *c = cpreserve_get();
+	struct cgroup_limits lim;
+	char cpu_max[64];
+	long long mem_total, mem_free, mem_avail, mem_buffers, mem_cached, swap_total, swap_free;
+	long cpus;
+
+	memset(&lim, 0, sizeof(lim));
+	lim.name = CGROUP_WORKLOAD_PARENT;
+
+	/*
+	 * Disabled means an UNLIMITED parent, not a different shape: every
+	 * container and build stays exactly where it is in the hierarchy
+	 * either way, and only the ceiling appears or disappears. Moving
+	 * the topology with the setting would make turning the reservation
+	 * off a migration, and would leave existing containers accounted
+	 * somewhere their successors are not.
+	 */
+	cpus = c->enabled ? sysconf(_SC_NPROCESSORS_ONLN) : 0;
+	if (cpus > 0) {
+		/* cgroup v2 cpu.max is "<quota> <period>" in microseconds, and
+		 * 100000 is the conventional period, so one whole CPU is
+		 * 100000. Truncation lands in the safe direction (marginally
+		 * more reserved than asked), and the floor stops a very small
+		 * box ending up with a workload ceiling of nothing. */
+		long long quota = (long long)cpus * 100000LL * (100 - c->cpu_percent) / 100;
+
+		if (quota < 10000)
+			quota = 10000;
+		snprintf(cpu_max, sizeof(cpu_max), "%lld 100000", quota);
+		lim.cpu_max = cpu_max;
+	}
+
+	if (c->enabled) {
+		read_meminfo(&mem_total, &mem_free, &mem_avail, &mem_buffers, &mem_cached, &swap_total,
+		             &swap_free);
+		/* Only when the reservation still leaves workloads the clear
+		 * majority of RAM. On a box too small for that, a memory
+		 * ceiling would do more harm than the starvation it guards
+		 * against. */
+		if (mem_total > c->memory_bytes * 2)
+			lim.memory_max = mem_total - c->memory_bytes;
+	}
+
+	cgroup_create_parent(&lim);
+}
+
+/* Where a container's own cgroup leaf goes -- always under the workload
+ * parent, whose ceiling is present or absent according to the
+ * reservation. See workload_parent_ensure() for why the shape does not
+ * move with the setting. */
+static void workload_cgroup_path(const char *name, char *out, size_t out_size)
+{
+	workload_parent_ensure();
+	snprintf(out, out_size, "%s/%s", CGROUP_WORKLOAD_PARENT, name);
+}
+
 static int create_container_from_body(const char *body, size_t body_len,
                                        struct registry_entry **out_entry,
                                        char out_restart_policy[16], int *out_restart_delay_seconds,
@@ -10267,6 +10352,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	char resolved_image_version[IMAGE_VERSION_MAX];
 	char container_base[PATH_MAX];
 	char upperdir[PATH_MAX], workdir[PATH_MAX], merged[PATH_MAX];
+	char container_cgroup_path[PATH_MAX]; /* issue #86 -- under the workload parent */
 	char userns_rootfs[PATH_MAX]; /* ADR-0179 phase 2c option (a) */
 	const char *stage_dir;        /* where container files are staged: upper, or the userns rootfs */
 	struct stat st;
@@ -11376,7 +11462,11 @@ static int create_container_from_body(const char *body, size_t body_len,
 		spec.userns_len = SUBID_RANGE_LEN;
 	}
 	spec.ns.hostname = name;
-	spec.cg.name = name;
+	/* Issue #86: leaves live under the workload parent, so their
+	 * COLLECTIVE demand is bounded and the control plane keeps a real
+	 * reservation rather than whatever happens to be left over. */
+	workload_cgroup_path(name, container_cgroup_path, sizeof(container_cgroup_path));
+	spec.cg.name = container_cgroup_path;
 	jmem = json_object_get(root, "memory_max");
 	spec.cg.memory_max = jmem != NULL ? (long long)json_as_number(jmem) : 0;
 	jpids = json_object_get(root, "pids_max");
@@ -17915,6 +18005,105 @@ static void handle_pkg_build_config_put(int fd, const char *body, size_t body_le
 	handle_pkg_build_config_get(fd);
 }
 
+
+/*
+ * GET/PUT /v1/system/control-plane-reservation (issue #86) -- how much
+ * of the machine is held back for the daemon itself.
+ *
+ * Reported with the DERIVED workload ceiling alongside the stored
+ * numbers, because "10 percent" is not an answer anyone can act on: the
+ * operator wants to know what workloads may actually use on this box,
+ * and a percentage plus a live core count is a calculation the API
+ * should do once rather than every caller doing it differently.
+ */
+static void handle_cpreserve_get(int fd)
+{
+	const struct cpreserve_config *c = cpreserve_get();
+	struct json_writer w;
+	long long mem_total, mem_free, mem_avail, mem_buffers, mem_cached, swap_total, swap_free;
+	long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+
+	read_meminfo(&mem_total, &mem_free, &mem_avail, &mem_buffers, &mem_cached, &swap_total,
+	             &swap_free);
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "enabled");
+	jw_bool(&w, c->enabled);
+	jw_key(&w, "cpu_percent");
+	jw_int(&w, c->cpu_percent);
+	jw_key(&w, "memory_bytes");
+	jw_int(&w, c->memory_bytes);
+	jw_key(&w, "host_cpus");
+	jw_int(&w, cpus > 0 ? cpus : 0);
+	jw_key(&w, "host_memory_bytes");
+	jw_int(&w, mem_total);
+	jw_key(&w, "workload_cpu_max");
+	if (c->enabled && cpus > 0) {
+		char cpu_max[64];
+		long long quota = (long long)cpus * 100000LL * (100 - c->cpu_percent) / 100;
+
+		if (quota < 10000)
+			quota = 10000;
+		snprintf(cpu_max, sizeof(cpu_max), "%lld 100000", quota);
+		jw_str(&w, cpu_max);
+	} else {
+		jw_null(&w);
+	}
+	jw_key(&w, "workload_memory_max");
+	if (c->enabled && mem_total > c->memory_bytes * 2)
+		jw_int(&w, mem_total - c->memory_bytes);
+	else
+		jw_null(&w);
+	jw_key(&w, "cgroup");
+	jw_str(&w, CGROUP_WORKLOAD_PARENT);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_cpreserve_put(int fd, const char *body, size_t body_len)
+{
+	const struct cpreserve_config *c = cpreserve_get();
+	struct json_value *root;
+	const struct json_value *j;
+	int enabled = c->enabled;
+	int cpu_percent = c->cpu_percent;
+	long long memory_bytes = c->memory_bytes;
+
+	root = json_parse(body, body_len);
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	/* Every field optional, absent = unchanged -- the same convention
+	 * every other config endpoint here uses, so a caller can flip
+	 * `enabled` without restating numbers it does not care about. */
+	j = json_object_get(root, "enabled");
+	if (j != NULL && j->type == JSON_BOOL)
+		enabled = j->u.boolean;
+	j = json_object_get(root, "cpu_percent");
+	if (j != NULL)
+		cpu_percent = (int)json_as_number(j);
+	j = json_object_get(root, "memory_bytes");
+	if (j != NULL)
+		memory_bytes = (long long)json_as_number(j);
+	json_free(root);
+
+	if (cpreserve_set(enabled, cpu_percent, memory_bytes) != 0) {
+		respond_error(fd, 400, "Bad Request",
+		              "cpu_percent must be 1-50 and memory_bytes at least 64 MiB -- a "
+		              "reservation larger than that is not a safety margin, it is a second "
+		              "workload budget");
+		return;
+	}
+	/* Applied immediately, not at the next container creation: an
+	 * operator raising the reservation because the box is under strain
+	 * needs it to take effect while it is under strain. */
+	workload_parent_ensure();
+	handle_cpreserve_get(fd);
+}
+
 /*
  * GET/PUT /v1/system/tls-throttle, GET /v1/system/tls-throttle/status
  * (ADR-0134) -- per-source-IP throttling for repeated failed HTTPS
@@ -19186,6 +19375,16 @@ static void dispatch(int fd, const struct http_request *req)
 		}
 		if (strcmp(req->method, "PUT") == 0) {
 			handle_pkg_build_config_put(fd, req->body, req->body_len);
+			return;
+		}
+	}
+	if (strcmp(req->path, "/v1/system/control-plane-reservation") == 0) {
+		if (strcmp(req->method, "GET") == 0) {
+			handle_cpreserve_get(fd);
+			return;
+		}
+		if (strcmp(req->method, "PUT") == 0) {
+			handle_cpreserve_put(fd, req->body, req->body_len);
 			return;
 		}
 	}
@@ -22450,6 +22649,7 @@ int main(int argc, char **argv)
 	                         serverhealth_init(SERVERHEALTH_STATE_PATH)) != 0)
 		return 1;
 	volume_set_dir(VOLUMES_DIR);
+	cpreserve_init(CPRESERVE_STATE_PATH);
 	if (boot_subsystem_init(init_mode, "volume", volume_init(VOLUMES_STATE_PATH)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "ldap_config", ldap_config_init(LDAP_CONFIG_STATE_PATH)) != 0)
