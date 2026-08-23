@@ -868,6 +868,18 @@ function clearStatus() {
  * and re-adding it is what makes each one a distinct flash.
  */
 function ledBlink(led) {
+	/*
+	 * Coalesced: a burst of requests (the poll loop still sends a
+	 * handful at once) would otherwise force a synchronous layout per
+	 * request per lamp, and hold the lamp permanently lit into the
+	 * bargain -- neither useful nor free. One flash per window is what
+	 * an eye can resolve anyway.
+	 */
+	const now = Date.now();
+
+	if (led.blinkingUntil !== undefined && now < led.blinkingUntil)
+		return;
+	led.blinkingUntil = now + 120;
 	led.classList.remove("led-blink");
 	void led.offsetWidth;
 	led.classList.add("led-blink");
@@ -1002,6 +1014,27 @@ function formatUptime(seconds) {
 }
 
 /*
+ * The last stats fetch, so the uptimes can tick locally between them.
+ * Counting seconds client-side is exactly as accurate as asking, and a
+ * clock that only moves when you poll it is a poll you are doing for a
+ * number you could have added yourself.
+ */
+let statusMetaBase = null;
+
+function renderStatusMeta() {
+	if (statusMetaBase === null)
+		return;
+	const elapsed = Math.floor((Date.now() - statusMetaBase.fetchedAt) / 1000);
+
+	statusMeta.textContent =
+		"up " + formatUptime(statusMetaBase.host + elapsed) +
+		"  ·  thincd " + formatUptime(statusMetaBase.daemon + elapsed) +
+		"  ·  load " + statusMetaBase.load1.toFixed(2) +
+		" " + statusMetaBase.load5.toFixed(2) +
+		" " + statusMetaBase.load15.toFixed(2);
+}
+
+/*
  * Host uptime, this daemon's own uptime, and load average, along the
  * left of the status bar. The two uptimes are separate on purpose:
  * they diverge after a control-plane restart that was not a reboot,
@@ -1018,12 +1051,15 @@ async function refreshStatusMeta() {
 		const up = s.uptime || {};
 		const load = s.load || {};
 
-		statusMeta.textContent =
-			"up " + formatUptime(up.host_seconds || 0) +
-			"  ·  thincd " + formatUptime(up.daemon_seconds || 0) +
-			"  ·  load " + (load.load1 || 0).toFixed(2) +
-			" " + (load.load5 || 0).toFixed(2) +
-			" " + (load.load15 || 0).toFixed(2);
+		statusMetaBase = {
+			fetchedAt: Date.now(),
+			host: up.host_seconds || 0,
+			daemon: up.daemon_seconds || 0,
+			load1: load.load1 || 0,
+			load5: load.load5 || 0,
+			load15: load.load15 || 0,
+		};
+		renderStatusMeta();
 	} catch (e) {
 		/* Unreachable is already said by the LEDs going red -- saying it
 		 * twice in two places adds nothing, so the last known values
@@ -9910,67 +9946,148 @@ document.getElementById("menu-shutdown").addEventListener("click", async () => {
 
 /* ---------- poll loop ---------- */
 
+/*
+ * ---------- polling ----------
+ *
+ * This used to fetch all 47 endpoints every two seconds, whatever the
+ * operator was looking at: ~26 requests a second, forever, per open
+ * tab. On a two-CPU box that is real, continuous load produced almost
+ * entirely for data nobody was reading, and it is the load the status
+ * bar's own LEDs made visible rather than caused.
+ *
+ * Three tiers now, and the fastest one is deliberately the cheapest
+ * request there is:
+ *
+ *   health   -- every 2s. One tiny endpoint. It drives the TX/RX LEDs
+ *               and the reachability colour, so the bar stays as live
+ *               as it ever was.
+ *   core     -- every 5s. Exactly what the tree renders (containers,
+ *               networks, disks, volumes), because the tree is on
+ *               screen no matter which page is open.
+ *   view     -- every 5s. Only what the CURRENT page needs. Since every
+ *               tab is its own address (ADR-0185), the route names the
+ *               tab precisely, so this is a real per-page set rather
+ *               than a per-section guess.
+ *   sweep    -- every 30s. Everything, exactly as before. This is the
+ *               safety net: if a page's own set below is missing an
+ *               endpoint, that page is at most 30 seconds stale rather
+ *               than broken, which is the right failure mode for a
+ *               mapping maintained by hand.
+ *
+ * And nothing but health runs while the tab is hidden -- a dashboard
+ * left open on another desktop should not cost the box anything.
+ */
+const CORE_REFRESHERS = [
+	refreshContainers,
+	refreshNetworks,
+	refreshDisks,
+	refreshDiskRoles,
+	refreshDiskFormatStatuses,
+	refreshVolumeCache,
+];
+
+/* Route category -> what that page actually reads. Keyed by the same
+ * addresses the tree and the tab bars use. */
+const VIEW_REFRESHERS = {
+	images: [refreshImages, refreshPkgRecipes, refreshImageRecipesList, refreshContainerRecipesList,
+	         refreshPkgList, refreshImageRecipeApplyStatus],
+	recipes: [refreshPkgRecipes, refreshImageRecipesList, refreshContainerRecipesList,
+	          refreshImages, refreshPkgList],
+	packages: [refreshPkgList, refreshImages, refreshPkgRecipes],
+	"pkg-repo": [refreshPkgRepoConfig, refreshPkgSyncStatus],
+	"pkg-cache": [refreshPkgCacheConfig, refreshPkgCacheStatus, refreshPkgArtifactConfig],
+	"pkg-build-config": [refreshPkgBuildConfig],
+	update: [refreshImages, refreshPkgList],
+	devices: [refreshDevices, refreshDeviceMaps, refreshKmod, refreshKmodConfig],
+	"dns-records": [refreshDnsRecords, refreshDnsServers],
+	"dns-servers": [refreshDnsRecords, refreshDnsServers],
+	"ldap-servers": [refreshLdapServers, refreshLdapGroups, refreshLdapUsers, refreshLdapConfig],
+	"ldap-groups": [refreshLdapGroups, refreshLdapUsers],
+	"ldap-users": [refreshLdapUsers, refreshLdapGroups],
+	"ldap-config": [refreshLdapConfig, refreshLdapServers],
+	"ntp-config": [refreshNtpConfig, refreshNtpServers],
+	"ntp-servers": [refreshNtpServers, refreshNtpConfig],
+	"ntp-time": [refreshNtpStatus, refreshNtpTime],
+	"syslog-targets": [refreshSyslogTargets],
+	"pki-ca": [refreshPkiCa, refreshPkiIntermediate, refreshPkiCerts],
+	"pki-intermediate": [refreshPkiCa, refreshPkiIntermediate],
+	"pki-certs": [refreshPkiCerts],
+	"daemon-config": [refreshDaemonConfig, refreshSiteConfig],
+	site: [refreshSiteConfig],
+	routes: [refreshRoutes],
+	sysctl: [refreshSysctl],
+	"host-swap": [refreshSwap],
+	"rolling-restart": [refreshRollingConfig],
+	"tls-throttle": [refreshTlsThrottleConfig, refreshTlsThrottleStatus],
+	backup: [refreshBackupConfig, refreshBackupStatus],
+	volumes: [refreshVolumeCache],
+};
+
+const ALL_REFRESHERS = [
+	refreshContainers, refreshNetworks, refreshImages, refreshDevices, refreshDeviceMaps,
+	refreshDisks, refreshDiskRoles, refreshDiskFormatStatuses, refreshVolumeCache,
+	refreshBackupConfig, refreshBackupStatus, refreshDnsRecords, refreshDnsServers,
+	refreshLdapServers, refreshLdapGroups, refreshLdapUsers, refreshLdapConfig, refreshNtpConfig,
+	refreshNtpServers, refreshSyslogTargets, refreshNtpStatus, refreshNtpTime, refreshPkiCa,
+	refreshPkiIntermediate, refreshPkiCerts, refreshPkgRecipes, refreshImageRecipesList,
+	refreshContainerRecipesList, refreshPkgList, refreshPkgRepoConfig, refreshPkgSyncStatus,
+	refreshPkgCacheConfig, refreshPkgCacheStatus, refreshPkgArtifactConfig,
+	refreshImageRecipeApplyStatus, refreshSiteConfig, refreshDaemonConfig, refreshRollingConfig,
+	refreshPkgBuildConfig, refreshRoutes, refreshSysctl, refreshKmod, refreshKmodConfig,
+	refreshSwap, refreshTlsThrottleConfig, refreshTlsThrottleStatus,
+];
+
+const SWEEP_INTERVAL_MS = 30000;
+const VIEW_INTERVAL_MS = 5000;
+let lastSweepAt = 0;
+let lastViewRefreshAt = 0;
+
+async function runRefreshers(list) {
+	for (const fn of list) {
+		try {
+			await fn();
+		} catch (e) {
+			/* One endpoint failing must not stop the rest: a single
+			 * unhappy subsystem should cost its own panel, not the
+			 * whole dashboard's freshness. */
+		}
+	}
+}
+
 async function poll() {
 	await refreshHealth();
+	/* Health only while hidden: the LEDs and the reachability colour
+	 * stay honest for anyone who looks back at the tab, and nothing
+	 * else is being read by anybody. */
+	if (document.hidden)
+		return;
+
+	const now = Date.now();
+	const route = parseHash();
+	const sweeping = now - lastSweepAt >= SWEEP_INTERVAL_MS;
+
+	/* Core and view data every VIEW_INTERVAL_MS rather than on every
+	 * tick: container status and disk state do not change faster than
+	 * a person can read them, and the LEDs above are what make the page
+	 * feel live. */
+	if (!sweeping && now - lastViewRefreshAt < VIEW_INTERVAL_MS) {
+		renderTree();
+		renderCurrentView();
+		return;
+	}
+	lastViewRefreshAt = now;
+
+	if (sweeping) {
+		lastSweepAt = now;
+		await runRefreshers(ALL_REFRESHERS);
+	} else {
+		await runRefreshers(CORE_REFRESHERS);
+		await runRefreshers(VIEW_REFRESHERS[route.category] || []);
+	}
 	try {
-		await refreshContainers();
-		await refreshNetworks();
-		await refreshImages();
-		await refreshDevices();
-		await refreshDeviceMaps();
-		await refreshDisks();
-		await refreshDiskRoles();
-		await refreshDiskFormatStatuses();
-		/* The Storage tree hangs volumes under the device holding them,
-		 * so the volume list has to be current whether or not the
-		 * Volumes page is the one showing. */
-		await refreshVolumeCache();
-		await refreshStoragePlacement("state");
-		await refreshStoragePlacementMigrate("state");
-		await refreshStoragePlacement("logs");
-		await refreshStoragePlacementMigrate("logs");
-		await refreshStoragePlacement("rebuildable");
-		await refreshStoragePlacementMigrate("rebuildable");
-		await refreshBackupConfig();
-		await refreshBackupStatus();
-		await refreshDnsRecords();
-		await refreshDnsServers();
-		await refreshLdapServers();
-		await refreshLdapGroups();
-		await refreshLdapUsers();
-		await refreshLdapConfig();
-		await refreshNtpConfig();
-		await refreshNtpServers();
-		await refreshSyslogTargets();
-		await refreshNtpStatus();
-		await refreshNtpTime();
-		await refreshPkiCa();
-		await refreshPkiIntermediate();
-		await refreshPkiCerts();
-		await refreshPkgRecipes();
-		await refreshImageRecipesList();
-		await refreshContainerRecipesList();
-		await refreshPkgList();
-		await refreshPkgRepoConfig();
-		await refreshPkgSyncStatus();
-		await refreshPkgCacheConfig();
-		await refreshPkgCacheStatus();
-		await refreshPkgArtifactConfig();
-		await refreshImageRecipeApplyStatus();
-		await refreshSiteConfig();
-		await refreshDaemonConfig();
-		await refreshRollingConfig();
-		await refreshPkgBuildConfig();
-		await refreshRoutes();
-		await refreshSysctl();
-		await refreshKmod();
-		await refreshKmodConfig();
-		await refreshSwap();
-		await refreshTlsThrottleConfig();
-		await refreshTlsThrottleStatus();
 		await pollServerLogs();
 	} catch (e) {
-		showStatus("Poll failed: " + e.message, true);
+		/* The log panel is best-effort like everything else here. */
 	}
 	renderTree();
 	renderCurrentView();
@@ -10119,9 +10236,35 @@ document.addEventListener("scroll", hideContextMenu, true);
 
 restoreLastViewIfNoHash();
 poll().then(ensureActiveCategoryExpanded);
+/*
+ * The loop itself still ticks at POLL_INTERVAL_MS, because that is the
+ * cadence the health check (and therefore the LEDs) wants. poll() then
+ * decides what else is worth fetching on this tick -- see its own
+ * comment for the tiers. A hidden tab costs one small request per tick
+ * and nothing else.
+ */
 setInterval(poll, POLL_INTERVAL_MS);
 
-/* Uptime and load move slowly; 10s is plenty and keeps them out of the
- * 2s poll, which already makes two dozen requests per round. */
+/* Coming back to the tab should feel instant, not "wait for the next
+ * tick" -- and this is also when a tab that has been hidden for hours
+ * catches up on everything it skipped. */
+document.addEventListener("visibilitychange", () => {
+	if (!document.hidden) {
+		lastSweepAt = 0;
+		poll();
+	}
+});
+
+/*
+ * The uptimes advance locally every second and are re-synced from the
+ * daemon once a minute -- the display stays live while asking for it
+ * sixty times less often. Load average is genuinely new information
+ * each time, and one request a minute is the price of it. Skipped
+ * entirely while the tab is hidden.
+ */
 refreshStatusMeta();
-setInterval(refreshStatusMeta, 10000);
+setInterval(renderStatusMeta, 1000);
+setInterval(() => {
+	if (!document.hidden)
+		refreshStatusMeta();
+}, 60000);
