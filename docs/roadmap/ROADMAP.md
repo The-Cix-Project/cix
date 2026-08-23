@@ -2447,9 +2447,17 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
 
 ## Part 203 (in progress): pre-bare-metal quality sprint
 
-Tracked issue by issue in the repo's own Gitea tracker rather than restated here; see [CHANGELOG.md](../../CHANGELOG.md)'s Part 203 entry for the full per-issue record. Shipped so far: #73 (persist-all container lifecycle, ADR-0181), #77 (CLI/web surface parity for five REST-only capabilities), #78/#79 (signal-death and teardown-kind log clarity), #80 (live LDAP login end to end, base-DN drift + bind-account auto-provisioning), #81 (registered-server health probing, ADR-0182), #83 (build-limit operational warnings), #85 (aggregate pkgbuild cgroup budget -- the fix for a real box lockout), #86 (control-plane starvation hardening: nice -20, oom_score_adj -1000), #88 (persistent volumes, ADR-0183), #2, #27 and #61 part 2 (a real host-file disclosure through the container file-read endpoint), plus real operator tooling on the jump box (procps/mtr/vim) and the four TCC gaps closing it required.
+Tracked issue by issue in the repo's own Gitea tracker rather than restated here; see [CHANGELOG.md](../../CHANGELOG.md)'s Part 203 entry for the full per-issue record.
 
-Verified: the full local regression suite green (58 daemon/runtime/CLI/web tests, plus the five long-running QEMU boot/installer/stress tests), and each user-visible fix re-verified against the real installed host at 192.168.15.95 rather than locally alone.
+**Storage** (#88 persistent volumes with ADR-0183, #93 kernel-enforced quotas, #92 live attach/detach, #96 scheduled content backups with retention/restore and pause-before-backup, #97 catalogue reconciliation, #9/#94/#95/#90/#91 partition-level management — including that `sfdisk` had never been staged in the control-plane image, so partitioning could not have worked on any installed host, and a mounted partition reporting `mounted:false` let `DELETE` destroy a live ext4).
+
+**Platform** (#63 factory reset, #62 non-interactive exec, #61 container file listing plus a real host-file disclosure fixed on the way, #83 DNS/LDAP undeliverable-state warnings, #84 LDAP health filtering that an explicit `client_uri` used to walk straight past, #85 aggregate build budget, #86 a kernel-enforced control-plane reservation with ADR-0187, #57 complete per-build logs, #59 one-shot recipe re-fetch, #64 per-package rolling policy with ADR-0188, #11 in-place container definition edit).
+
+**Dashboard** (ADR-0184/0185/0186): the tree has no folders left — one leaf per real resource, tabbed pages for everything else; the menu bar speaks the tree's own vocabulary with hover submenus; tabs are real addresses that navigate rather than panels that reveal (which fixed a page that sat on "Loading…" indefinitely); and the status bar carries uptime, load and two TX/RX LEDs.
+
+Tagged **v1.85.0** partway through, with everything since deployed to 192.168.15.95 as it landed.
+
+Verified: full local regression suite green (64/64 binaries, including the QEMU boot/installer/stress tests), every user-visible change re-verified against the real installed host rather than locally alone, and one intermittent suite-only failure filed as issue #98 with its evidence rather than dismissed as a flake.
 
 ## Part 202 (done): async container teardown -- a delete/stop can never freeze the daemon again (ADR-0180, issue #67)
 
