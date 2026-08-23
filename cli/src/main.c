@@ -3740,6 +3740,9 @@ static int cmd_files(const struct kx_client *c, int argc, char **argv);
 static int cmd_migrate_storage(const struct kx_client *c, int json_mode, int argc, char **argv);
 static int cmd_migrate_storage_status(const struct kx_client *c, int json_mode, int argc, char **argv);
 
+static int cmd_container_edit(const struct kx_client *c, int json_mode, int argc,
+                               char **argv); /* issue #11 -- defined below */
+
 static int cmd_container(const struct kx_client *c, int json_mode, int argc, char **argv)
 {
 	if (argc >= 1 && strcmp(argv[0], "recipe") == 0)
@@ -3764,6 +3767,8 @@ static int cmd_container(const struct kx_client *c, int json_mode, int argc, cha
 		return cmd_run(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "inspect") == 0)
 		return cmd_inspect(c, json_mode, argc - 1, argv + 1);
+	if (argc >= 1 && strcmp(argv[0], "edit") == 0)
+		return cmd_container_edit(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "start") == 0)
 		return cmd_start(c, json_mode, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "stop") == 0)
@@ -11095,6 +11100,49 @@ static int cmd_pkg_build_log(const struct kx_client *c)
 {
 	return kx_pkg_build_log_run(c) == 0 ? 0 : 1;
 }
+
+/*
+ * Issue #11: thincctl container edit NAME --field=VALUE ... -- edits the
+ * stored definition in place instead of delete-and-recreate. Applies at
+ * the container's next start, which the output states rather than
+ * leaving the operator to infer.
+ */
+static void fmt_container_patch(const struct json_value *v)
+{
+	const struct json_value *rr = json_object_get(v, "restart_required");
+
+	printf("%s: definition updated, applies %s%s\n",
+	       json_str_field(v, "name") != NULL ? json_str_field(v, "name") : "-",
+	       json_str_field(v, "applies") != NULL ? json_str_field(v, "applies") : "?",
+	       (rr != NULL && rr->type == JSON_BOOL && rr->u.boolean)
+	           ? " -- it is running now, so restart it to pick this up"
+	           : "");
+}
+
+static int cmd_container_edit(const struct kx_client *c, int json_mode, int argc, char **argv)
+{
+	struct kx_response r;
+	char path[256];
+
+	if (argc < 2 || argv[0][0] == '-') {
+		fprintf(stderr, "usage: thincctl container edit NAME --json='{\"cmd\":[...]}'\n"
+		                "  Fields given replace those fields; a field set to null removes it.\n"
+		                "  restart/depends_on/readiness/follow_rolling cannot be edited yet --\n"
+		                "  recreate the container to change those.\n");
+		return 2;
+	}
+	if (strncmp(argv[1], "--json=", 7) != 0) {
+		fprintf(stderr, "thincctl: container edit needs --json='{...}'\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), "/v1/containers/%s", argv[0]);
+	if (kx_client_request(c, "PATCH", path, argv[1] + 7, &r) != 0) {
+		fprintf(stderr, "thincctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_container_patch);
+}
+
 
 /*
  * Issue #57: the persisted logs, as opposed to `pkg build-log`'s live

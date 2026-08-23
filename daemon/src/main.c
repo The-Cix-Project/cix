@@ -12514,6 +12514,153 @@ static void respond_container_volumes(int fd, int status, const char *status_tex
 	jw_free(&w);
 }
 
+
+/*
+ * PATCH /v1/containers/{name} (issue #11) -- edit a container's stored
+ * definition in place, instead of the delete-and-recreate that was the
+ * only way to change a cmd, an env var or a file.
+ *
+ * Applies at the container's next start, and the response says so
+ * rather than leaving the caller to guess. That is not a limitation
+ * being papered over: a running process's argv cannot be changed
+ * without re-exec'ing it, so "change cmd on a running container" is
+ * `restart` by another name, and pretending otherwise would be the
+ * kind of half-truth this API is supposed to avoid. What genuinely
+ * CAN change live already does, through its own endpoints -- volumes
+ * (issue #92) and network attach (ADR-0156).
+ *
+ * Merge semantics: a key present in the patch replaces that key; a key
+ * set to null removes it; everything else is untouched. Top-level only
+ * -- a deep merge would make "how do I clear one entry of files[]"
+ * unanswerable.
+ *
+ * The four index fields (restart, depends_on, readiness,
+ * follow_rolling) are deliberately refused with a 400 naming them.
+ * They feed containerdef's cached index, whose one parser lives in the
+ * create path; a second parser here for the same fields is exactly the
+ * parallel implementation this project forbids. Lifting that needs
+ * that parser extracted first -- a real follow-up, tracked, not a
+ * placeholder left in the code.
+ */
+static void handle_container_patch(int fd, const char *name, const char *body, size_t body_len)
+{
+	static const char *const index_fields[] = { "restart", "restart_delay_seconds", "depends_on",
+		                                        "readiness", "follow_rolling",
+		                                        "follow_rolling_jitter_seconds" };
+	struct container_def *def = containerdef_find(name);
+	struct registry_entry *e = registry_find(name);
+	struct json_value *patch, *current;
+	struct json_writer w;
+	size_t i, k;
+	int rc;
+
+	if (def == NULL) {
+		respond_error(fd, 404, "Not Found",
+		              "no such container definition -- only a container this daemon has a "
+		              "persisted definition for can be edited");
+		return;
+	}
+	patch = json_parse(body, body_len);
+	if (patch == NULL || patch->type != JSON_OBJECT) {
+		json_free(patch);
+		respond_error(fd, 400, "Bad Request", "body must be a JSON object of fields to change");
+		return;
+	}
+	for (i = 0; i < patch->u.object.count; i++) {
+		if (strcmp(patch->u.object.keys[i], "name") == 0) {
+			json_free(patch);
+			respond_error(fd, 400, "Bad Request",
+			              "a container's name is its identity -- create a new one instead");
+			return;
+		}
+		for (k = 0; k < sizeof(index_fields) / sizeof(index_fields[0]); k++) {
+			if (strcmp(patch->u.object.keys[i], index_fields[k]) != 0)
+				continue;
+			json_free(patch);
+			{
+				char msg[256];
+
+				snprintf(msg, sizeof(msg),
+				         "'%s' cannot be edited in place yet -- it feeds the definition index, "
+				         "whose only parser is the create path; recreate the container to change "
+				         "it",
+				         index_fields[k]);
+				respond_error(fd, 400, "Bad Request", msg);
+			}
+			return;
+		}
+	}
+
+	current = json_parse(def->body, def->body_len);
+	if (current == NULL || current->type != JSON_OBJECT) {
+		json_free(patch);
+		json_free(current);
+		respond_error(fd, 500, "Internal Server Error",
+		              "this container's stored definition could not be parsed");
+		return;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	for (i = 0; i < current->u.object.count; i++) {
+		const struct json_value *replacement = json_object_get(patch, current->u.object.keys[i]);
+
+		/* An explicit null removes the key; anything else replaces it. */
+		if (replacement != NULL && replacement->type == JSON_NULL)
+			continue;
+		jw_key(&w, current->u.object.keys[i]);
+		jw_value(&w, replacement != NULL ? replacement : current->u.object.values[i]);
+	}
+	for (i = 0; i < patch->u.object.count; i++) {
+		if (json_object_get(current, patch->u.object.keys[i]) != NULL)
+			continue; /* already written above, in the stored body's own order */
+		if (patch->u.object.values[i]->type == JSON_NULL)
+			continue;
+		jw_key(&w, patch->u.object.keys[i]);
+		jw_value(&w, patch->u.object.values[i]);
+	}
+	jw_obj_close(&w);
+
+	if (w.buf == NULL) {
+		jw_free(&w);
+		json_free(patch);
+		json_free(current);
+		respond_error(fd, 500, "Internal Server Error", "could not build the updated definition");
+		return;
+	}
+	rc = containerdef_set_body(name, w.buf, w.len);
+	jw_free(&w);
+	json_free(patch);
+	json_free(current);
+	if (rc != 0) {
+		respond_error(fd, 500, "Internal Server Error", "could not persist the updated definition");
+		return;
+	}
+
+	def = containerdef_find(name);
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "applies");
+	jw_str(&w, "next-start");
+	jw_key(&w, "restart_required");
+	jw_bool(&w, e != NULL && e->running);
+	jw_key(&w, "definition");
+	{
+		struct json_value *merged = json_parse(def->body, def->body_len);
+
+		if (merged != NULL)
+			jw_value(&w, merged);
+		else
+			jw_null(&w);
+		json_free(merged);
+	}
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 /*
  * Rewrites def's stored body with `volumes` replaced by new_volumes
  * (which may be NULL to drop the key entirely). Every other field is
@@ -19912,6 +20059,13 @@ static void dispatch(int fd, const struct http_request *req)
 			}
 			if (strcmp(req->method, "GET") == 0) {
 				handle_get_one(fd, name);
+				return;
+			}
+			/* Issue #11: edit the stored definition in place, instead
+			 * of delete-and-recreate being the only way to change a
+			 * cmd, an env var or a file. */
+			if (strcmp(req->method, "PATCH") == 0) {
+				handle_container_patch(fd, name, req->body, req->body_len);
 				return;
 			}
 			if (strcmp(req->method, "DELETE") == 0) {

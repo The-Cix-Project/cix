@@ -101,6 +101,7 @@ Every container operation is a subcommand of `container` — one noun-based name
 | `container ls` | List all containers (running, stopped, and exited) |
 | `container run --name=NAME --image=IMAGE [flags...] -- CMD [ARGS...]` | Create and start a container — see below for the full flag list |
 | `container inspect NAME` | Show one container |
+| `container edit NAME --json='{...}'` | Edit the stored definition in place — cmd, env, files, limits, volumes (issue #11). Applies at the container's next start; the output says so, and says when a restart is needed. `name` and the index fields (`restart`/`depends_on`/`readiness`/`follow_rolling`) are refused with a 400 naming them |
 | `container stop NAME` | Kill it now, keep its persisted definition — it reappears as `stopped` (only `container rm` removes it; ADR-0181) |
 | `container start NAME` | Bring a stopped or exited container back, no daemon restart needed |
 | `container pause NAME` / `container unpause NAME` | Freeze/thaw via the real cgroup v2 freezer, not `SIGSTOP` |
