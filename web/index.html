@@ -1884,6 +1884,7 @@
 				<button type="button" class="tab-button" data-tab="logs">Log Store</button>
 				<button type="button" class="tab-button" data-tab="kmsg">Kernel Log</button>
 				<button type="button" class="tab-button" data-tab="server-health">Server Health</button>
+				<button type="button" class="tab-button" data-tab="stalls">Stalls</button>
 			</div>
 			<div class="tab-panel" data-tab="host-stats">
 			<h2>Host Stats</h2>
@@ -1992,6 +1993,33 @@
 			</div>
 		
 			</div>
+			<div class="tab-panel" data-tab="stalls" hidden>
+			<div class="view-list">
+				<h2>Control-plane stalls</h2>
+				<p class="hint">
+					Times this daemon's event loop stopped going round (issue #100). Recorded by a
+					separate watchdog process, because the loop cannot report its own silence &mdash;
+					a real multi-minute outage on the production host left <em>nothing</em> in the log
+					store for exactly that reason, and could not be analysed afterwards at all.
+				</p>
+				<p class="hint">
+					<strong>wchan</strong> is the kernel function the daemon was sleeping in, read
+					from <code>/proc</code> by the watchdog: the single most useful fact about a wedge,
+					and the one thing unavailable from inside it. <strong>state</strong> is the process
+					state &mdash; <code>D</code> is uninterruptible sleep, the kind that cannot even be
+					killed. <strong>activity</strong> is the request being served when the loop went
+					quiet, so a stall names the thing that did not come back.
+				</p>
+				<table id="stalls">
+					<thead>
+						<tr><th>When</th><th>Event</th><th>Quiet for</th><th>State</th><th>wchan</th><th>Activity</th></tr>
+					</thead>
+					<tbody id="stalls-body">
+						<tr><td colspan="6" class="empty">Loading&hellip;</td></tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
 		</section>
 
 		<section class="view" id="view-syslog-targets" hidden>

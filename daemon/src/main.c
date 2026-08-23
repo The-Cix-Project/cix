@@ -32,6 +32,7 @@
 #include "cpreserve.h"
 #include "pkgpolicy.h"
 #include "bootconsole.h"
+#include "stallwatch.h"
 #include "exec.h"
 #include "http.h"
 #include "image.h"
@@ -154,6 +155,7 @@ static char SERVERHEALTH_STATE_PATH[PATH_MAX]; /* issue #81 -- drain flags only 
 static char CPRESERVE_STATE_PATH[PATH_MAX]; /* issue #86 -- control-plane reservation */
 static char PKGPOLICY_STATE_PATH[PATH_MAX];  /* issue #64 -- per-package rolling policy */
 static char BOOTCONSOLE_STATE_PATH[PATH_MAX]; /* issue #24 -- boot console parameters */
+static char STALLWATCH_RECORDS_PATH[PATH_MAX]; /* issue #100 -- control-plane stall records */
 static char VOLUMES_STATE_PATH[PATH_MAX];      /* issue #88 */
 static char VOLUMES_DIR[PATH_MAX];             /* issue #88 -- where volume data lives */
 static char VOLUME_BACKUP_CONFIG_PATH[PATH_MAX]; /* issue #96 -- the volume-snapshot schedule */
@@ -292,6 +294,8 @@ static void compute_state_dir_relative_paths(void)
 	         STATE_DIR);
 	snprintf(BOOTCONSOLE_STATE_PATH, sizeof(BOOTCONSOLE_STATE_PATH), "%s/boot_console.json",
 	         STATE_DIR);
+	snprintf(STALLWATCH_RECORDS_PATH, sizeof(STALLWATCH_RECORDS_PATH),
+	         "%s/control_plane_stalls.jsonl", STATE_DIR);
 	/*
 	 * Issue #88: volume data is a direct child of the base dir, alongside
 	 * CONTAINERS_DIR rather than inside it -- a volume deliberately
@@ -18485,6 +18489,37 @@ static int bootconsole_apply_to_esp(void)
 	return rewritten;
 }
 
+
+/*
+ * GET /v1/system/stalls (issue #100) -- times the control plane stopped
+ * going round its own loop, recorded by the watchdog process because
+ * the loop cannot report its own silence. Each record carries how long
+ * the loop was quiet, the kernel function it was sleeping in
+ * (/proc/<pid>/wchan, which is the single most useful fact about a
+ * wedge), its process state, and the request it was serving.
+ */
+static void handle_stalls_get(int fd, const struct http_request *req)
+{
+	struct json_writer w;
+	int limit = 50;
+	const char *q = strchr(req->path, '?');
+
+	if (q != NULL && strstr(q, "limit=") != NULL)
+		limit = atoi(strstr(q, "limit=") + 6);
+	if (limit <= 0)
+		limit = 50;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "stalls");
+	stallwatch_write_json(&w, limit);
+	jw_key(&w, "threshold_seconds");
+	jw_int(&w, 5);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 /* The options line each loader entry currently carries, so the response
  * shows what the machine will really boot with rather than only what
  * was asked for -- the two differ on any box whose ESP is not writable
@@ -19543,6 +19578,18 @@ static void handle_pkg_delete(int fd, const char *raw_name)
 static void dispatch(int fd, const struct http_request *req)
 {
 	const char *name;
+	/*
+	 * Issue #100: what the loop is working on, readable by the
+	 * watchdog process. Set before any handler runs and cleared after,
+	 * so a request that never returns is named in the stall record
+	 * rather than leaving "something, somewhere" as the only clue.
+	 */
+	{
+		char activity[160];
+
+		snprintf(activity, sizeof(activity), "%s %s", req->method, req->path);
+		stallwatch_activity(activity);
+	}
 
 	/* Every thincctl command and every web UI action already goes
 	 * through this exact function (API-First Mandate, no exceptions)
@@ -19997,6 +20044,11 @@ static void dispatch(int fd, const struct http_request *req)
 			handle_pkg_build_config_put(fd, req->body, req->body_len);
 			return;
 		}
+	}
+	if (strncmp(req->path, "/v1/system/stalls", 17) == 0 &&
+	    (req->path[17] == '\0' || req->path[17] == '?') && strcmp(req->method, "GET") == 0) {
+		handle_stalls_get(fd, req);
+		return;
 	}
 	if (strcmp(req->path, "/v1/system/boot-console") == 0) {
 		if (strcmp(req->method, "GET") == 0) {
@@ -21815,8 +21867,13 @@ static void handle_client_event(struct conn *cc)
 				cr = try_pkg_build_log_upgrade(cc, &req);
 			if (cr == CONSOLE_HANDLED)
 				return; /* cc repurposed into CONN_PKG_BUILD_LOG_WS -- must not be touched again */
-			if (cr == CONSOLE_NOT_MATCHED)
+			if (cr == CONSOLE_NOT_MATCHED) {
 				dispatch(cc->fd, &req);
+				/* Cleared only on the way out: anything still set when
+				 * the loop goes quiet is, by construction, the request
+				 * that did not come back (issue #100). */
+				stallwatch_activity_clear();
+			}
 			/* CONSOLE_FAILED: an error response (or nothing, if the
 			 * client was already gone) was already written by
 			 * whichever upgrade attempt failed -- cc still needs the
@@ -23581,11 +23638,28 @@ int main(int argc, char **argv)
 		spawn_console_shell("/dev/ttyS0");
 	}
 
+	/*
+	 * Issue #100: a separate process that notices when this loop stops
+	 * going round. It has to be separate -- the loop cannot report its
+	 * own silence, which is exactly why a real multi-minute outage on
+	 * the production box left no trace anywhere.
+	 */
+	stallwatch_start(STALLWATCH_RECORDS_PATH);
+
 	while (!g_stop) {
 		struct kx_epoll_event events[MAX_EVENTS];
-		int n = kx_epoll_wait(g_epfd, events, MAX_EVENTS, -1);
+		/*
+		 * One-second timeout rather than an indefinite block: the
+		 * heartbeat below has to happen even with nothing to do, or an
+		 * idle daemon would be indistinguishable from a wedged one.
+		 * A wakeup per second costs nothing next to the per-2s polling
+		 * every dashboard client already does.
+		 */
+		int n = kx_epoll_wait(g_epfd, events, MAX_EVENTS, 1000);
 		int j;
 		struct conn *cc;
+
+		stallwatch_heartbeat();
 
 		if (n < 0) {
 			if (errno == EINTR)

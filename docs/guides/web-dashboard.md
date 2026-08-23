@@ -77,7 +77,7 @@ System
   Software         (tabs: Recipes / Reconcile / Images / Packages / Repo & Sync / Cache & Artifacts / Package Builds / Update)
   Host             (tabs: Daemon / Site / Routes / Sessions / Swap / Rolling Restart / Storage Placement / Boot Console / Control Plane / TLS Throttle / Backup / Volume Backups / Factory Reset)
   Devices
-  Monitoring       (tabs: Host Stats / Processes / Log Store / Kernel Log / Server Health)
+  Monitoring       (tabs: Host Stats / Processes / Log Store / Kernel Log / Server Health / Stalls)
 ```
 
 Every folder in this tree is gone: the deepest thing left is one leaf per real resource. Monitoring was the last five-leaf group, and it collapsed for the same reason the others did — each of its pages is a facet of one question ("what is this box doing"), and a folder of five single-purpose pages meant navigating to find out which one a thing was on.

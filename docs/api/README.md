@@ -17,6 +17,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/system/hostauth/sessions` | Every active session (username, expires-in) -- never a raw token, before or after issuance (ADR-0152) |
 | DELETE | `/system/hostauth/sessions/{username}` | Revoke every active session for that user -- "log out everywhere" |
 | GET | `/system/boot` | Build version/time, A/B slot, kernel version (`uname`) |
+| GET | `/system/stalls` | Times the control plane stopped going round its own loop, recorded by a watchdog process (issue #100) |
 | GET | `/system/boot-console` | The installed system's own boot console parameters, and what each loader entry currently carries (issue #24) |
 | PUT | `/system/boot-console` | Set them — rewrites the loader entries on the ESP, effective next boot |
 | GET | `/system/control-plane-reservation` | How much of the machine is held back for the daemon itself (issue #86) |
@@ -1654,6 +1655,29 @@ Validation refuses rather than escapes. A console is a bare tty name with option
 `GET` reports the configured intent **and** the options line each entry on the ESP currently carries, because those differ on any box whose ESP is not writable from here. On a dev daemon `loader_entries` is empty — a fact, not an error.
 
 `thincctl boot-console show|set --console=… --extra="…"` is the CLI surface; the dashboard has a **Boot Console** tab under System > Host.
+
+
+## Control-plane stalls (issue #100)
+
+```
+GET /v1/system/stalls
+```
+
+```json
+{"stalls": [
+   {"ts": 1787476574, "event": "recovered", "seconds": 10, "state": "S", "wchan": "do_epoll_wait", "activity": ""},
+   {"ts": 1787476569, "event": "stall", "seconds": 5, "state": "T", "wchan": "do_signal_stop", "activity": "POST /v1/system/update"}
+ ],
+ "threshold_seconds": 5}
+```
+
+The daemon is a single-threaded event loop, and on an installed host it is the only way in — no SSH, no shell ([ADR-0034](../adr/0034-no-ssh-on-installed-hosts.md)). It has been observed accepting TCP while answering nothing for minutes, then recovering on its own, with **nothing in the log store from inside the window**. That silence is structural rather than an oversight: the loop that would record "I am stuck" is the one that is stuck, so a wedge's only trace is its own absence and nothing about it can be analysed afterwards.
+
+**These records are written by a separate process**, forked at startup, so they exist precisely when the daemon cannot write anything. That also buys something a signal handler could never do safely: the watchdog reads `/proc/<pid>/wchan` — the kernel function the daemon is sleeping in — which is the single most useful fact about a wedge and is unavailable from inside it. `state` is the process state (`D` is uninterruptible sleep, the kind that cannot even be killed); `activity` is the request being served when the loop went quiet, so a stall names the thing that did not come back.
+
+A stall is five seconds without the loop completing an iteration. The loop wakes at least once a second on its own, so an idle daemon is never mistaken for a stalled one — and a legitimate slow synchronous operation crossing the threshold is not a false positive, it is exactly the thing worth knowing about.
+
+Records are appended to `<data-dir>/state/control_plane_stalls.jsonl` and survive the daemon, a restart and a reboot: a wedge is usually followed by one of those, and a diagnostic that dies with what it was diagnosing is not a diagnostic. `thincctl stalls` prints them; the dashboard has a **Stalls** tab under System > Monitoring.
 
 
 ## Capability restriction (issue #29)

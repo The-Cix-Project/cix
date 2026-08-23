@@ -2158,6 +2158,67 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/stalls:
+    get:
+      summary: Times the control plane stopped going round its own loop (issue #100)
+      description: >
+        This daemon is a single-threaded event loop and, on an installed
+        host, the only way in -- there is no SSH and no shell
+        (ADR-0034). It has been observed accepting TCP while answering
+        nothing for minutes, then recovering on its own, with NOTHING in
+        the log store from inside the window. That silence is
+        structural: the loop that would record "I am stuck" is the one
+        that is stuck.
+
+        These records are written by a separate watchdog process, so
+        they exist precisely when the daemon cannot write anything. Each
+        carries how long the loop was quiet, the process state, the
+        kernel function it was sleeping in (/proc/<pid>/wchan -- the
+        single most useful fact about a wedge, and unavailable from
+        inside it), and the request being served when it went quiet.
+
+        Records survive the daemon and the machine: a wedge is usually
+        followed by a restart, and a diagnostic that dies with what it
+        was diagnosing is not one.
+      operationId: getStalls
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Recent stall records, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stalls:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        ts:
+                          type: integer
+                        event:
+                          type: string
+                          enum: [stall, stall-continues, recovered]
+                        seconds:
+                          type: integer
+                        state:
+                          type: string
+                          description: Process state -- D is uninterruptible sleep, the kind that cannot be killed.
+                        wchan:
+                          type: string
+                          description: Kernel function the daemon was sleeping in; empty means it was running.
+                        activity:
+                          type: string
+                          description: The request being served when the loop went quiet.
+                  threshold_seconds:
+                    type: integer
+
   /system/boot-console:
     get:
       summary: The installed system's own boot console parameters (issue #24)
