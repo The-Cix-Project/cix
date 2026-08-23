@@ -127,6 +127,7 @@ Every container operation is a subcommand of `container` — one noun-based name
 ```
 container run --name=NAME --image=IMAGE
     [--memory-max=BYTES] [--pids-max=N] [--cpu-max="QUOTA PERIOD"] [--cpuset=0-1,3]
+    [--memory-swap-max=BYTES]   -- 0 = may not swap at all; omit = swap unlimited
     [--disk-quota=BYTES] [--disk=NAME]
     [--network=NAME[:IP] ...] [--ip-forward]
     [--userns] [--ldap-client] [--ldap-allow-group=NAME ...] [--capture-output]

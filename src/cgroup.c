@@ -82,6 +82,19 @@ int cgroup_create(const struct cgroup_limits *lim, int *out_fd)
 		}
 	}
 
+	/*
+	 * >= 0, not > 0: zero is a real setting here -- no swap at all for
+	 * this container. See struct cgroup_limits.
+	 */
+	if (lim->memory_swap_max >= 0) {
+		snprintf(value, sizeof(value), "%lld", lim->memory_swap_max);
+		if (write_cgroup_file(dir, "memory.swap.max", value) != 0) {
+			perror("cgroup_create: write memory.swap.max");
+			container_set_last_error_step("cgroup_create: write memory.swap.max");
+			return -1;
+		}
+	}
+
 	if (lim->pids_max > 0) {
 		snprintf(value, sizeof(value), "%lld", lim->pids_max);
 		if (write_cgroup_file(dir, "pids.max", value) != 0) {

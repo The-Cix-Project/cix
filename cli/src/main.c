@@ -61,6 +61,8 @@ static void print_usage(FILE *out)
 	        "               produces to the configured disk right now, regardless of schedule\n"
 	        "  container ls  -- every provisioned container and its current state\n"
 	        "  container run --name=NAME --image=IMAGE [--memory-max=BYTES] [--pids-max=N]\n"
+	        "      [--memory-swap-max=BYTES]  -- 0 means this container may not swap at all;\n"
+	        "                                    omit it to leave swap unlimited\n"
 	        "      [--cpu-max=\"Q P\"] [--cpuset=0-1,3] [--disk-quota=BYTES] [--network=NAME[:IP] ...]\n"
 	        "      [--ip-forward] [--dns-register] [--userns] [--ldap-client] [--capture-output]\n"
 	        "      [--ldap-allow-group=NAME ...]  -- with --ldap-client, restricts login to\n"
@@ -7232,6 +7234,13 @@ static int cmd_run(const struct thinc_client *c, int json_mode, int argc, char *
 	struct cli_env envs[CLI_MAX_ENV];
 	int env_count = 0;
 	long memory_max = -1;
+	/*
+	 * Issue #52: -2 is "flag not given", because -1 cannot be -- 0 is
+	 * a real value here (this container may not swap) and a negative
+	 * one is refused by the daemon, so the sentinel has to sit outside
+	 * both.
+	 */
+	long memory_swap_max = -2;
 	long pids_max = -1;
 	const char *cpu_max = NULL;
 	const char *cpuset_cpus = NULL;
@@ -7255,6 +7264,8 @@ static int cmd_run(const struct thinc_client *c, int json_mode, int argc, char *
 			image = argv[i] + 8;
 		else if (strncmp(argv[i], "--memory-max=", 13) == 0)
 			memory_max = atol(argv[i] + 13);
+		else if (strncmp(argv[i], "--memory-swap-max=", 18) == 0)
+			memory_swap_max = atol(argv[i] + 18);
 		else if (strncmp(argv[i], "--pids-max=", 11) == 0)
 			pids_max = atol(argv[i] + 11);
 		else if (strncmp(argv[i], "--cpu-max=", 10) == 0)
@@ -7518,6 +7529,10 @@ static int cmd_run(const struct thinc_client *c, int json_mode, int argc, char *
 	if (memory_max >= 0) {
 		jw_key(&w, "memory_max");
 		jw_int(&w, memory_max);
+	}
+	if (memory_swap_max >= 0) {
+		jw_key(&w, "memory_swap_max");
+		jw_int(&w, memory_swap_max);
 	}
 	if (pids_max >= 0) {
 		jw_key(&w, "pids_max");

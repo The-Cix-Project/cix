@@ -193,6 +193,10 @@ static void pkg_build_ensure_parent_cgroup(void)
 
 	memset(&lim, 0, sizeof(lim));
 	lim.name = PKG_BUILD_CGROUP_PARENT;
+	/* -1 = leave memory.swap.max alone; 0 would forbid swapping
+	 * entirely, which is not what "no swap limit configured" means.
+	 * See struct cgroup_limits. */
+	lim.memory_swap_max = -1;
 	lim.memory_max = pkg_build_get_memory_max();
 	lim.cpu_max = pkg_build_get_cpu_max();
 	/* Re-applied on every build so a runtime change to the configured

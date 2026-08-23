@@ -10148,7 +10148,7 @@ static const char *container_body_unknown_key(const struct json_value *root)
 		"sysctls", "env", "dns_servers", "dns_register", "pki_issue", "pki_cert_dir",
 		"pki_days", "disk", "ldap_provision", "ldap_user", "ldap_group", "ldap_uid",
 		"ldap_secret_dir", "restart", "restart_delay_seconds", "follow_rolling",
-		"follow_rolling_jitter_seconds", "depends_on", "readiness", "memory_max",
+		"follow_rolling_jitter_seconds", "depends_on", "readiness", "memory_max", "memory_swap_max",
 		"cpu_max", "pids_max", "cpuset_cpus", "disk_quota_bytes", "ldap_client",
 		"ldap_allow_groups",
 		"userns",
@@ -10478,6 +10478,10 @@ static void workload_parent_ensure(void)
 
 	memset(&lim, 0, sizeof(lim));
 	lim.name = CGROUP_WORKLOAD_PARENT;
+	/* -1 = leave memory.swap.max alone; 0 would forbid swapping
+	 * entirely, which is not what "no swap limit configured" means.
+	 * See struct cgroup_limits. */
+	lim.memory_swap_max = -1;
 
 	/*
 	 * Disabled means an UNLIMITED parent, not a different shape: every
@@ -10538,7 +10542,7 @@ static int create_container_from_body(const char *body, size_t body_len,
                                        size_t err_msg_size)
 {
 	struct json_value *root;
-	const struct json_value *jname, *jimage, *jimage_version, *jcmd, *jmem, *jpids, *jcpu, *jcpuset,
+	const struct json_value *jname, *jimage, *jimage_version, *jcmd, *jmem, *jswapmax, *jpids, *jcpu, *jcpuset,
 	    *jnetworks, *jip_forward, *jroutes;
 	const struct json_value *jdisk_quota;
 	long long disk_quota_bytes;
@@ -11775,6 +11779,20 @@ static int create_container_from_body(const char *body, size_t body_len,
 	spec.cg.name = container_cgroup_path;
 	jmem = json_object_get(root, "memory_max");
 	spec.cg.memory_max = jmem != NULL ? (long long)json_as_number(jmem) : 0;
+	jswapmax = json_object_get(root, "memory_swap_max");
+	/*
+	 * Issue #52: absent is -1 (leave the kernel's own "max" alone), not
+	 * 0 -- 0 is the operator asking for a container that may not swap
+	 * at all, and the two must not collapse into one another.
+	 */
+	spec.cg.memory_swap_max = jswapmax != NULL ? (long long)json_as_number(jswapmax) : -1;
+	if (jswapmax != NULL && spec.cg.memory_swap_max < 0) {
+		json_free(root);
+		snprintf(err_msg, err_msg_size,
+		         "memory_swap_max must be a non-negative byte count -- 0 means this container "
+		         "may not swap at all; omit the field to leave swap unlimited");
+		return 400;
+	}
 	jpids = json_object_get(root, "pids_max");
 	spec.cg.pids_max = jpids != NULL ? (long long)json_as_number(jpids) : 0;
 	jcpu = json_object_get(root, "cpu_max");
@@ -14292,6 +14310,12 @@ static void handle_container_stats(int fd, const char *name)
 	struct json_writer w;
 	long long cpu_usage, cpu_user, cpu_system;
 	long long mem_current, mem_peak, mem_max;
+	/* Issue #52: a swap limit with no way to see swap use is half a
+	 * feature -- the number an operator acts on is how close the
+	 * container is to it. */
+	long long swap_current = 0, swap_max = 0;
+	int swap_max_unlimited = 1;
+	int swap_current_unlimited = 0;
 	int mem_max_unlimited;
 	long long disk_bytes = 0;
 	long long io_rbytes, io_wbytes, io_rios, io_wios;
@@ -14309,6 +14333,12 @@ static void handle_container_stats(int fd, const char *name)
 	cgroup_read_single_value(e->handle.cgroup_fd, "memory.current", &mem_current, &mem_max_unlimited);
 	cgroup_read_single_value(e->handle.cgroup_fd, "memory.peak", &mem_peak, &mem_max_unlimited);
 	cgroup_read_single_value(e->handle.cgroup_fd, "memory.max", &mem_max, &mem_max_unlimited);
+	if (cgroup_read_single_value(e->handle.cgroup_fd, "memory.swap.current", &swap_current,
+	                              &swap_current_unlimited) != 0)
+		swap_current = 0;
+	if (cgroup_read_single_value(e->handle.cgroup_fd, "memory.swap.max", &swap_max,
+	                              &swap_max_unlimited) != 0)
+		swap_max_unlimited = 1;
 	cgroup_read_io_totals(e->handle.cgroup_fd, &io_rbytes, &io_wbytes, &io_rios, &io_wios);
 	cgroup_read_pressure(e->handle.cgroup_fd, "cpu.pressure", &cpu_pressure);
 	cgroup_read_pressure(e->handle.cgroup_fd, "io.pressure", &io_pressure);
@@ -14349,6 +14379,13 @@ static void handle_container_stats(int fd, const char *name)
 		jw_null(&w);
 	else
 		jw_int(&w, mem_max);
+	jw_key(&w, "swap_current");
+	jw_int(&w, swap_current);
+	jw_key(&w, "swap_max");
+	if (swap_max_unlimited)
+		jw_null(&w);
+	else
+		jw_int(&w, swap_max);
 	jw_key(&w, "pressure");
 	jw_obj_open(&w);
 	write_pressure_json(&w, &mem_pressure);
