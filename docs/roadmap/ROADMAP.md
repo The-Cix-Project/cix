@@ -2457,7 +2457,7 @@ Tracked issue by issue in the repo's own Gitea tracker rather than restated here
 
 **Dashboard** (ADR-0184/0185/0186): the tree has no folders left — one leaf per real resource, tabbed pages for everything else; the menu bar speaks the tree's own vocabulary with hover submenus; tabs are real addresses that navigate rather than panels that reveal (which fixed a page that sat on "Loading…" indefinitely); and the status bar carries uptime, load and two TX/RX LEDs.
 
-Tagged **v1.85.0** partway through, with everything since deployed to 192.168.15.95 as it landed.
+Tagged **v1.85.0** partway through and **v1.86.0** at the end, with everything deployed to 192.168.15.95 as it landed. v1.86.0 went out via the box's own `pkg hostbuild thinc --upgrade --wait --deploy` (ADR-0057) rather than a dev-machine `mkbootroot` — the API-First path, which builds the control plane on the target and assembles its own squashfs there.
 
 Verified: full local regression suite green (64/64 binaries, including the QEMU boot/installer/stress tests), every user-visible change re-verified against the real installed host rather than locally alone, and one intermittent suite-only failure filed as issue #98 with its evidence rather than dismissed as a flake.
 
